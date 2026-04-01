@@ -57,3 +57,7 @@ Key routing rules:
 - Architecture review → invoke plan-eng-review
 - Save progress, checkpoint, resume → invoke checkpoint
 - Code quality, health check → invoke health
+
+# Tracking work
+
+Please keep track of what is implemented in docs/DONE.md. Keep updating it for all code changes.
