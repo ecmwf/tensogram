@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tensogram-core",
+    "crates/tensogram-encodings",
+    "crates/tensogram-cli",
+    "crates/tensogram-ffi",
+    "crates/tensogram-python",
+]
+
+[workspace.dependencies]
+thiserror = "2"
+ciborium = "0.2"
+serde = { version = "1", features = ["derive"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+sha1 = "0.10"
+md5 = "0.7"
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
