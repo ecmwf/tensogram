@@ -1,0 +1,16 @@
+[package]
+name = "tensogram-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tensogram-encodings = { path = "../tensogram-encodings" }
+thiserror.workspace = true
+ciborium = { workspace = true }
+serde.workspace = true
+xxhash-rust.workspace = true
+sha1.workspace = true
+md5.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
