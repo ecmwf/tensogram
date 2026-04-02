@@ -1,6 +1,6 @@
 /target
 Cargo.lock
-/book/book
+/docs/book
 /.venv
 *.swp
 *.swo
