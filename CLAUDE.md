@@ -58,6 +58,14 @@ Key routing rules:
 - Save progress, checkpoint, resume → invoke checkpoint
 - Code quality, health check → invoke health
 
+# Design & Purpose
+
+- plans/DESIGN.md -- purpose and design of the library
+- plans/PLAN.md -- initial plan iteration 0 before further improvements added
+- plans/DONE.md -- keep updated with implementation progress
+- plans/IMPROVEMENTS.md -- plans for future improvements to consider when implementing if opportune pick from there
+- plans/TODO.md -- long term TODO list of features that may or not be implemented
+
 ## Build / lint / test (required before marking done)
 
 - Format: `cargo fmt`
@@ -70,7 +78,7 @@ Please keep track of what is implemented in plans/DONE.md. Keep updating it for 
 
 # Documentation
 
-Create documentation, as you develop and implement, an easy to follow by average tech person, with well separated topics.
+Create documentation under docs/, as you develop and implement, an easy to follow by average tech person, with well separated topics.
 - Use mdbook 
 - Add mermaid diagrams when necessary
 - Add examples when it becomes hard to follow
