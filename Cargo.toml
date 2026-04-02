@@ -5,8 +5,12 @@ members = [
     "crates/tensogram-encodings",
     "crates/tensogram-cli",
     "crates/tensogram-ffi",
-    "crates/tensogram-python",
     "examples/rust",
+]
+# tensogram-python is built via `maturin develop` (PyO3 extension modules
+# require the Python linker). It is excluded from default workspace builds.
+exclude = [
+    "crates/tensogram-python",
 ]
 
 [workspace.dependencies]

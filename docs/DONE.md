@@ -27,8 +27,32 @@ Implemented: 2026-04-02
 - Immutable key protection in `set`
 - Filename placeholder expansion in `copy`
 
-### tensogram-ffi + tensogram-python
-- Stubs ready for future implementation
+### tensogram-ffi (C FFI)
+- Full C API with opaque handles (`TgmMessage`, `TgmMetadata`, `TgmFile`, `TgmScanResult`)
+- `tgm_encode()` — JSON metadata + raw data slices → wire-format bytes
+- `tgm_decode()`, `tgm_decode_metadata()`, `tgm_decode_object()`, `tgm_decode_range()`
+- `tgm_scan()` — multi-message buffer scanning
+- File API: `tgm_file_open/create/message_count/decode_message/read_message/append_raw/close`
+- Typed accessors: `tgm_object_shape/strides/dtype/data`, `tgm_metadata_get_string/int/float`
+- `tgm_simple_packing_compute_params()` — direct packing parameter computation
+- Thread-local error messages via `tgm_last_error()`
+- Auto-generated `tensogram.h` via cbindgen
+- Static library (`libtenogram_ffi.a`) + shared library (`libtenogram_ffi.dylib/.so`)
+
+### tensogram-python (PyO3 bindings)
+- Full Python API with numpy integration (returns `numpy.ndarray` directly)
+- `tensogram.encode()` — dict metadata + list of byte arrays → bytes
+- `tensogram.decode()` — bytes → `(Metadata, list[numpy.ndarray])`
+- `tensogram.decode_metadata()` — bytes → `Metadata` (no payload read)
+- `tensogram.decode_object()` — bytes → `(ObjectDescriptor, numpy.ndarray)` by index
+- `tensogram.decode_range()` — partial sub-tensor extraction → `numpy.ndarray`
+- `tensogram.scan()` — `bytes → list[(offset, length)]`
+- `tensogram.compute_packing_params()` — numpy array → packing parameters dict
+- `TensogramFile` class: `open/create/append/message_count/decode_message/read_message/messages`
+- `Metadata`, `ObjectDescriptor`, `PayloadDescriptor` Python classes with property accessors
+- Dict-like access: `meta['mars']['class']`
+- CBOR ↔ Python type conversion (str, int, float, bool, None, list, dict)
+- Built via `maturin develop` (excluded from default workspace build)
 
 ## Key design properties implemented
 - Binary header index (deterministic size, O(1) object access)
@@ -45,8 +69,6 @@ Implemented: 2026-04-02
 - `async` feature gate (tokio + spawn_blocking for libaec FFI)
 - `mmap` feature gate (memmap2 for memory-mapped file access)
 - Streaming mode (total_length=0 path)
-- C FFI (opaque handles + typed getters via cbindgen)
-- Python bindings (PyO3/maturin)
 - Cross-language golden binary test files
 - `tensogram filter` subcommand (v2 rules engine)
 - ciborium canonical encoding verification (current two-step approach works but should be validated against a reference implementation)

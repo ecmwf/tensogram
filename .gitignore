@@ -1,6 +1,7 @@
 /target
 Cargo.lock
 /book/book
+/.venv
 *.swp
 *.swo
 *~

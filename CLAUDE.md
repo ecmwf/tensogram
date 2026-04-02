@@ -69,3 +69,10 @@ Create documentation, as you develop and implement, an easy to follow by average
 - Add mermaid diagrams when necessary
 - Add examples when it becomes hard to follow
 - Especially note the edge cases
+
+# Examples
+
+Create and maintain a sub-dir examples/<lang> populated with examples of caller code on how to use the library interface:
+- create sub-dir per language of the caller: Rust, C++, Python
+- examplify the most common cases
+- show uses of all the API functions

@@ -8,3 +8,10 @@ crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 tensogram-core = { path = "../tensogram-core" }
+tensogram-encodings = { path = "../tensogram-encodings" }
+serde_json = "1"
+ciborium.workspace = true
+serde.workspace = true
+
+[build-dependencies]
+cbindgen = "0.27"
