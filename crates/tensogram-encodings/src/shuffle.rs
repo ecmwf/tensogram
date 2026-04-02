@@ -11,7 +11,7 @@ pub enum ShuffleError {
     },
 }
 
-/// Byte-level shuffle: groups byte[0] of all elements, then byte[1], etc.
+/// Byte-level shuffle: groups `byte[0]` of all elements, then `byte[1]`, etc.
 /// Input length must be divisible by element_size.
 /// Returns `Err(ShuffleError::InvalidElementSize)` if element_size is 0.
 /// Returns `Err(ShuffleError::Misaligned)` if data.len() % element_size != 0.

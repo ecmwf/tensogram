@@ -99,13 +99,7 @@ pub fn decode_range(
         ));
     }
 
-    // Partial range decode only works for uncompressed, unencoded data
     if payload_desc.encoding != "none" || payload_desc.compression != "none" {
-        if payload_desc.filter == "shuffle" {
-            return Err(TensogramError::Encoding(
-                "partial range decode not supported with shuffle filter".to_string(),
-            ));
-        }
         // For simple_packing + szip: would need RSI block seeking (future)
         if payload_desc.compression != "none" {
             return Err(TensogramError::Encoding(
@@ -135,7 +129,12 @@ pub fn decode_range(
         let byte_start = (offset as usize)
             .checked_mul(element_size)
             .ok_or_else(|| TensogramError::Object("byte offset overflow".to_string()))?;
-        let byte_end = byte_start + count as usize * element_size;
+        let byte_count = (count as usize)
+            .checked_mul(element_size)
+            .ok_or_else(|| TensogramError::Object("byte count overflow".to_string()))?;
+        let byte_end = byte_start
+            .checked_add(byte_count)
+            .ok_or_else(|| TensogramError::Object("byte end overflow".to_string()))?;
         if byte_end > payload_bytes.len() {
             return Err(TensogramError::Object(format!(
                 "range ({offset}, {count}) exceeds payload size"
