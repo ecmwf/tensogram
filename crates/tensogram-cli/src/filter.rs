@@ -37,7 +37,10 @@ pub fn parse_where(input: &str) -> Result<WhereClause, String> {
     }
 }
 
-/// Look up a dot-notation key in metadata, returning the string value if found.
+/// Look up a dot-notation key in metadata, returning the FIRST matching value.
+///
+/// For multi-object messages, this intentionally stops at the first object that
+/// contains a matching key. That is the documented CLI behavior.
 pub fn lookup_key(metadata: &Metadata, key: &str) -> Option<String> {
     let parts: Vec<&str> = key.split('.').collect();
 

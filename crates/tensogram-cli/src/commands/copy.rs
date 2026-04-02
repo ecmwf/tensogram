@@ -60,6 +60,9 @@ pub fn run(
 }
 
 /// Expand `[keyName]` placeholders in a filename template using metadata values.
+///
+/// For multi-object messages, each placeholder resolves to the first matching
+/// object-level or top-level key. That keeps split filenames stable.
 fn expand_placeholders(template: &str, metadata: &tensogram_core::Metadata) -> String {
     let mut result = template.to_string();
     // Find all [key] patterns
