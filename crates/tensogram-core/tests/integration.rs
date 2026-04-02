@@ -586,6 +586,54 @@ fn test_validate_ndim_mismatch() {
 }
 
 #[test]
+fn test_param_out_of_bounds() {
+    let mut packing_params = BTreeMap::new();
+    packing_params.insert("reference_value".to_string(), ciborium::Value::Float(0.0));
+    packing_params.insert(
+        "binary_scale_factor".to_string(),
+        ciborium::Value::Integer(i64::MAX.into()),
+    );
+    packing_params.insert(
+        "decimal_scale_factor".to_string(),
+        ciborium::Value::Integer(0.into()),
+    );
+    packing_params.insert(
+        "bits_per_value".to_string(),
+        ciborium::Value::Integer(16.into()),
+    );
+
+    let metadata = Metadata {
+        version: 1,
+        objects: vec![ObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: Dtype::Float64,
+            extra: BTreeMap::new(),
+        }],
+        payload: vec![PayloadDescriptor {
+            byte_order: ByteOrder::Big,
+            encoding: "simple_packing".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: packing_params,
+            hash: None,
+        }],
+        extra: BTreeMap::new(),
+    };
+
+    let data = vec![0u8; 4 * 8];
+    let result = encode(&metadata, &[&data], &EncodeOptions::default());
+    assert!(result.is_err(), "expected Err but got Ok");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("binary_scale_factor"),
+        "expected 'binary_scale_factor' in error, got: {msg}"
+    );
+}
+
+#[test]
 fn test_validate_empty_obj_type() {
     let metadata = Metadata {
         version: 1,

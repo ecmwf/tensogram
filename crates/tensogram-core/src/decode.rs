@@ -61,7 +61,8 @@ pub fn decode_object(
         }
     }
 
-    let num_elements = metadata.objects[index].shape.iter().product::<u64>() as usize;
+    let num_elements = usize::try_from(metadata.objects[index].shape.iter().product::<u64>())
+        .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
     let config = build_pipeline_config(&metadata.payload[index], num_elements)?;
     let decoded = pipeline::decode_pipeline(payload_bytes, &config)
         .map_err(|e| TensogramError::Encoding(e.to_string()))?;
@@ -130,7 +131,9 @@ pub fn decode_range(
 
     let mut result = Vec::new();
     for &(offset, count) in ranges {
-        let byte_start = offset as usize * element_size;
+        let byte_start = (offset as usize)
+            .checked_mul(element_size)
+            .ok_or_else(|| TensogramError::Object("byte offset overflow".to_string()))?;
         let byte_end = byte_start + count as usize * element_size;
         if byte_end > payload_bytes.len() {
             return Err(TensogramError::Object(format!(
@@ -157,7 +160,8 @@ fn verify_and_decode_object(
         }
     }
 
-    let num_elements = metadata.objects[index].shape.iter().product::<u64>() as usize;
+    let num_elements = usize::try_from(metadata.objects[index].shape.iter().product::<u64>())
+        .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
     let config = build_pipeline_config(&metadata.payload[index], num_elements)?;
     let decoded = pipeline::decode_pipeline(payload_bytes, &config)
         .map_err(|e| TensogramError::Encoding(e.to_string()))?;

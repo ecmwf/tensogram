@@ -4,7 +4,7 @@ use crate::error::{Result, TensogramError};
 use crate::framing;
 use crate::hash::{compute_hash, HashAlgorithm};
 use crate::metadata::metadata_to_cbor;
-use crate::types::{HashDescriptor, Metadata, PayloadDescriptor};
+use crate::types::{HashDescriptor, Metadata, ObjectDescriptor, PayloadDescriptor};
 use tensogram_encodings::pipeline::{
     self, CompressionType, EncodingType, FilterType, PipelineConfig,
 };
@@ -23,6 +23,48 @@ impl Default for EncodeOptions {
             hash_algorithm: Some(HashAlgorithm::Xxh3),
         }
     }
+}
+
+fn validate_object(
+    obj: &ObjectDescriptor,
+    payload: &PayloadDescriptor,
+    data_len: usize,
+) -> Result<()> {
+    if obj.obj_type.is_empty() {
+        return Err(TensogramError::Metadata(
+            "obj_type must not be empty".to_string(),
+        ));
+    }
+    if obj.ndim as usize != obj.shape.len() {
+        return Err(TensogramError::Metadata(format!(
+            "ndim {} does not match shape.len() {}",
+            obj.ndim,
+            obj.shape.len()
+        )));
+    }
+    if obj.strides.len() != obj.shape.len() {
+        return Err(TensogramError::Metadata(format!(
+            "strides.len() {} does not match shape.len() {}",
+            obj.strides.len(),
+            obj.shape.len()
+        )));
+    }
+    if payload.encoding == "none" && obj.dtype.byte_width() > 0 {
+        let product = obj
+            .shape
+            .iter()
+            .try_fold(1u64, |acc, &x| acc.checked_mul(x))
+            .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
+        let expected_bytes = product
+            .checked_mul(obj.dtype.byte_width() as u64)
+            .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
+        if expected_bytes != data_len as u64 {
+            return Err(TensogramError::Metadata(format!(
+                "data_len {data_len} does not match expected {expected_bytes} bytes from shape and dtype"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Encode a complete Tensogram message.
@@ -57,6 +99,8 @@ pub fn encode(
     // Encode each data object through its pipeline
     let mut encoded_payloads = Vec::with_capacity(data_objects.len());
     for (i, &data) in data_objects.iter().enumerate() {
+        validate_object(&metadata.objects[i], &metadata.payload[i], data.len())?;
+
         let payload_desc = &metadata.payload[i];
         let num_elements = metadata.objects[i].shape.iter().product::<u64>() as usize;
 
@@ -117,7 +161,13 @@ pub(crate) fn build_pipeline_config(
     let filter = match desc.filter.as_str() {
         "none" => FilterType::None,
         "shuffle" => {
-            let element_size = get_u64_param(&desc.params, "shuffle_element_size")? as usize;
+            let element_size = usize::try_from(get_u64_param(
+                &desc.params,
+                "shuffle_element_size",
+            )?)
+            .map_err(|_| {
+                TensogramError::Metadata("shuffle_element_size out of usize range".to_string())
+            })?;
             FilterType::Shuffle { element_size }
         }
         other => return Err(TensogramError::Encoding(format!("unknown filter: {other}"))),
@@ -126,9 +176,14 @@ pub(crate) fn build_pipeline_config(
     let compression = match desc.compression.as_str() {
         "none" => CompressionType::None,
         "szip" => {
-            let rsi = get_u64_param(&desc.params, "szip_rsi")? as u32;
-            let block_size = get_u64_param(&desc.params, "szip_block_size")? as u32;
-            let flags = get_u64_param(&desc.params, "szip_flags")? as u32;
+            let rsi = u32::try_from(get_u64_param(&desc.params, "szip_rsi")?)
+                .map_err(|_| TensogramError::Metadata("szip_rsi out of u32 range".to_string()))?;
+            let block_size = u32::try_from(get_u64_param(&desc.params, "szip_block_size")?)
+                .map_err(|_| {
+                    TensogramError::Metadata("szip_block_size out of u32 range".to_string())
+                })?;
+            let flags = u32::try_from(get_u64_param(&desc.params, "szip_flags")?)
+                .map_err(|_| TensogramError::Metadata("szip_flags out of u32 range".to_string()))?;
             CompressionType::Szip {
                 rsi,
                 block_size,
@@ -155,9 +210,15 @@ fn extract_simple_packing_params(
 ) -> Result<SimplePackingParams> {
     Ok(SimplePackingParams {
         reference_value: get_f64_param(params, "reference_value")?,
-        binary_scale_factor: get_i64_param(params, "binary_scale_factor")? as i32,
-        decimal_scale_factor: get_i64_param(params, "decimal_scale_factor")? as i32,
-        bits_per_value: get_u64_param(params, "bits_per_value")? as u32,
+        binary_scale_factor: i32::try_from(get_i64_param(params, "binary_scale_factor")?).map_err(
+            |_| TensogramError::Metadata("binary_scale_factor out of i32 range".to_string()),
+        )?,
+        decimal_scale_factor: i32::try_from(get_i64_param(params, "decimal_scale_factor")?)
+            .map_err(|_| {
+                TensogramError::Metadata("decimal_scale_factor out of i32 range".to_string())
+            })?,
+        bits_per_value: u32::try_from(get_u64_param(params, "bits_per_value")?)
+            .map_err(|_| TensogramError::Metadata("bits_per_value out of u32 range".to_string()))?,
     })
 }
 
@@ -181,7 +242,9 @@ fn get_i64_param(params: &BTreeMap<String, ciborium::Value>, key: &str) -> Resul
     match params.get(key) {
         Some(ciborium::Value::Integer(i)) => {
             let n: i128 = (*i).into();
-            Ok(n as i64)
+            i64::try_from(n).map_err(|_| {
+                TensogramError::Metadata(format!("integer value {n} out of i64 range for {key}"))
+            })
         }
         Some(other) => Err(TensogramError::Metadata(format!(
             "expected integer for {key}, got {other:?}"
@@ -196,7 +259,9 @@ fn get_u64_param(params: &BTreeMap<String, ciborium::Value>, key: &str) -> Resul
     match params.get(key) {
         Some(ciborium::Value::Integer(i)) => {
             let n: i128 = (*i).into();
-            Ok(n as u64)
+            u64::try_from(n).map_err(|_| {
+                TensogramError::Metadata(format!("integer value {n} out of u64 range for {key}"))
+            })
         }
         Some(other) => Err(TensogramError::Metadata(format!(
             "expected integer for {key}, got {other:?}"
