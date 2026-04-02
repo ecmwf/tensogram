@@ -18,7 +18,6 @@ pub struct SimplePackingParams {
     pub bits_per_value: u32,
 }
 
-/// Compute optimal packing parameters from input data and desired bits_per_value.
 pub fn compute_params(
     values: &[f64],
     bits_per_value: u32,

@@ -54,10 +54,11 @@ tensogram copy forecast.tgm "steps/[mars.step].tgm" -w "mars.type=fc"
 
 ### Missing Placeholder Key
 
-If a message does not have the key referenced by a placeholder, that message is **skipped** (not copied to any output). A warning is printed:
+If a message does not have the key referenced by a placeholder, that placeholder expands to `unknown`:
 
-```
-Warning: message 5 skipped — key "mars.param" not found
+```bash
+# If mars.param is missing, the message is written to by_param/unknown.tgm
+tensogram copy forecast.tgm "by_param/[mars.param].tgm"
 ```
 
 ### Output Directory
@@ -71,7 +72,7 @@ tensogram copy forecast.tgm "by_param/[mars.param].tgm"
 
 ### Overwriting
 
-If the expanded output filename already exists before the copy starts, it is **overwritten** (truncated). Messages are then appended in order. This means running `copy` twice will duplicate messages. To avoid this, delete or rename existing outputs first.
+If the expanded output filename already exists before the copy starts, it is **truncated once** and matching messages are then appended in order. This means running `copy` twice will duplicate messages. To avoid this, delete or rename existing outputs first.
 
 ### Placeholder Syntax Conflicts
 

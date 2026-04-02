@@ -39,6 +39,10 @@ Error: key "mars.nonexistent" not found in message 0
 
 This makes `get` safe to use in shell scripts where missing data should fail fast.
 
+## Multi-Object Messages
+
+For messages with multiple objects, `get` returns the first matching value found. Lookup checks top-level metadata first and then scans objects in order until it finds a match.
+
 ## JSON Output
 
 ```bash

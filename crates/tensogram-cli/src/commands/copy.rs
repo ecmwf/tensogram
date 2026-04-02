@@ -83,3 +83,41 @@ fn expand_placeholders(template: &str, metadata: &tensogram_core::Metadata) -> S
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use tensogram_core::{ByteOrder, Dtype, Metadata, ObjectDescriptor, PayloadDescriptor};
+
+    fn metadata_without_param() -> Metadata {
+        Metadata {
+            version: 1,
+            objects: vec![ObjectDescriptor {
+                obj_type: "ntensor".to_string(),
+                ndim: 1,
+                shape: vec![1],
+                strides: vec![1],
+                dtype: Dtype::Float32,
+                extra: BTreeMap::new(),
+            }],
+            payload: vec![PayloadDescriptor {
+                byte_order: ByteOrder::Big,
+                encoding: "none".to_string(),
+                filter: "none".to_string(),
+                compression: "none".to_string(),
+                params: BTreeMap::new(),
+                hash: None,
+            }],
+            extra: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn expand_placeholders_uses_unknown_for_missing_keys() {
+        let metadata = metadata_without_param();
+        let expanded = expand_placeholders("by_param/[mars.param].tgm", &metadata);
+        assert_eq!(expanded, "by_param/unknown.tgm");
+    }
+}

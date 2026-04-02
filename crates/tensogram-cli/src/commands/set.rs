@@ -73,7 +73,6 @@ pub fn run(
             .is_none_or(|c| filter::matches(&metadata, c));
 
         if should_modify {
-            // Decode full message, modify metadata, re-encode while preserving the payload hash.
             let (mut meta, objects) = decode(msg, &DecodeOptions::default())?;
             let original_hashes: Vec<_> = meta.payload.iter().map(|p| p.hash.clone()).collect();
             for (key, value) in &mutations {

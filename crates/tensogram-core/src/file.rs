@@ -63,7 +63,7 @@ impl TensogramFile {
         Ok(self
             .message_offsets
             .as_ref()
-            .expect("message_offsets set by ensure_scanned")
+            .expect("message_offsets guaranteed after ensure_scanned() succeeds")
             .len())
     }
 
@@ -94,7 +94,7 @@ impl TensogramFile {
         let offsets = self
             .message_offsets
             .as_ref()
-            .expect("message_offsets set by ensure_scanned");
+            .expect("message_offsets guaranteed after ensure_scanned() succeeds");
         if index >= offsets.len() {
             return Err(TensogramError::Framing(format!(
                 "message index {} out of range (count={})",
@@ -117,7 +117,7 @@ impl TensogramFile {
         let count = self
             .message_offsets
             .as_ref()
-            .expect("message_offsets set by ensure_scanned")
+            .expect("message_offsets guaranteed after ensure_scanned() succeeds")
             .len();
         let mut msgs = Vec::with_capacity(count);
         for i in 0..count {

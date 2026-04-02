@@ -2,7 +2,7 @@
 
 Implemented: 2026-04-02
 
-## Workspace: 5 crates, 64 tests, 0 clippy warnings
+## Workspace: 5 crates, 75+ tests, 0 clippy warnings
 
 ### tensogram-core (23 unit tests + 14 integration tests)
 - `wire.rs` — Binary header with TENSOGRM magic, terminator, object offsets
@@ -21,11 +21,14 @@ Implemented: 2026-04-02
 - `compression.rs` — `Compressor` trait with `NoopCompressor` and `SzipCompressor` (stub)
 - `pipeline.rs` — Encode → filter → compress dispatch
 
-### tensogram-cli (3 tests)
+### tensogram-cli (4+ tests)
 - `tensogram info/ls/dump/get/set/copy` subcommands
 - Where-clause filtering (`-w`), key selection (`-p`), JSON output (`-j`)
 - Immutable key protection in `set`
+- Object-level metadata mutations in `set` via `objects.<index>.<path>`
+- Payload hash preservation in `set` when payload bytes are unchanged
 - Filename placeholder expansion in `copy`
+- First-match metadata lookup semantics in `get`, `copy`, and filters for multi-object messages
 
 ### tensogram-ffi (C FFI)
 - Full C API with opaque handles (`TgmMessage`, `TgmMetadata`, `TgmFile`, `TgmScanResult`)

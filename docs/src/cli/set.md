@@ -1,6 +1,6 @@
 # tensogram set
 
-Modifies metadata keys in messages and writes the result to a new file. The payload (tensor data) is never re-encoded — only the CBOR metadata section changes.
+Modifies metadata keys in messages and writes the result to a new file. Matching messages are decoded, their metadata is updated, and they are re-encoded with the original payload bytes and pipeline settings.
 
 ## Usage
 
@@ -37,7 +37,14 @@ tensogram set in.tgm out.tgm key1=val1,key2=val2,key3=val3
 
 Keys use dot-notation: `mars.param` sets the `param` field inside the `mars` namespace. A top-level key like `experiment` sets a top-level metadata field.
 
-## Immutable Keys
+Object-level metadata can be updated with `objects.<index>.<path>`:
+
+```bash
+# Add object-specific metadata to the first object
+tensogram set input.tgm output.tgm objects.0.processing.version=2
+```
+
+## Structural/Integrity Keys
 
 The following keys **cannot** be modified because they describe the physical structure of the payload. Changing them would make the metadata inconsistent with the actual bytes on disk:
 
@@ -68,7 +75,7 @@ Attempting to modify any of these returns an error before any output is written.
 
 Messages that do not match the `-w` filter are copied verbatim to the output file. Their bytes are not re-encoded or re-hashed.
 
-> **Note:** Messages that are modified are re-encoded (decode + mutate + encode). The re-encoded message does not include a hash (the payload is unchanged, but the metadata has changed, so the old hash would still be valid for the payload — however, for simplicity, the hash is omitted on re-encoded messages).
+> **Note:** Messages that are modified are re-encoded after the metadata mutation. Because the decoded payload bytes are unchanged, `set` preserves the original payload hash instead of recomputing it.
 
 ## Workflow
 
@@ -78,7 +85,7 @@ flowchart TD
     B -- No --> C[Write raw bytes to output]
     B -- Yes --> D[Decode metadata]
     D --> E[Apply mutations]
-    E --> F[Re-encode message\nno hash]
+    E --> F[Re-encode message\npreserve payload hash]
     F --> G[Write to output]
     C --> H[Next message]
     G --> H

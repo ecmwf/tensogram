@@ -196,8 +196,9 @@ pub fn scan(buf: &[u8]) -> Vec<(usize, usize)> {
         if &buf[pos..pos + MAGIC.len()] == MAGIC {
             // Try to read total_length
             if pos + 16 <= buf.len() {
-                let total_length =
-                    u64::from_be_bytes(buf[pos + 8..pos + 16].try_into().unwrap()) as usize;
+                let mut total_length_bytes = [0u8; 8];
+                total_length_bytes.copy_from_slice(&buf[pos + 8..pos + 16]);
+                let total_length = u64::from_be_bytes(total_length_bytes) as usize;
 
                 if total_length > 0 && pos + total_length <= buf.len() {
                     // Validate terminator

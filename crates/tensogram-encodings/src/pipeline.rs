@@ -153,10 +153,11 @@ pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8
 
 fn estimate_decompressed_size(config: &PipelineConfig) -> usize {
     match &config.encoding {
-        EncodingType::None => config.num_values * 8, // rough estimate
+        EncodingType::None => config.num_values.saturating_mul(config.dtype_byte_width),
         EncodingType::SimplePacking(params) => {
-            let total_bits = config.num_values as u64 * params.bits_per_value as u64;
-            total_bits.div_ceil(8) as usize
+            let total_bits =
+                (config.num_values as u128).saturating_mul(params.bits_per_value as u128);
+            total_bits.div_ceil(8).min(usize::MAX as u128) as usize
         }
     }
 }
@@ -164,7 +165,8 @@ fn estimate_decompressed_size(config: &PipelineConfig) -> usize {
 fn bytes_to_f64(data: &[u8], byte_order: ByteOrder) -> Vec<f64> {
     data.chunks_exact(8)
         .map(|chunk| {
-            let arr: [u8; 8] = chunk.try_into().unwrap();
+            let mut arr = [0u8; 8];
+            arr.copy_from_slice(chunk);
             match byte_order {
                 ByteOrder::Big => f64::from_be_bytes(arr),
                 ByteOrder::Little => f64::from_le_bytes(arr),

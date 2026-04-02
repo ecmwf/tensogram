@@ -38,10 +38,10 @@ impl BinaryHeader {
             return Err(TensogramError::Framing("invalid magic bytes".to_string()));
         }
 
-        let total_length = u64::from_be_bytes(buf[8..16].try_into().unwrap());
-        let metadata_offset = u64::from_be_bytes(buf[16..24].try_into().unwrap());
-        let metadata_length = u64::from_be_bytes(buf[24..32].try_into().unwrap());
-        let num_objects = u64::from_be_bytes(buf[32..40].try_into().unwrap());
+        let total_length = read_u64_be(buf, 8);
+        let metadata_offset = read_u64_be(buf, 16);
+        let metadata_length = read_u64_be(buf, 24);
+        let num_objects = read_u64_be(buf, 32);
 
         let full_header_size = Self::header_size(num_objects);
         if buf.len() < full_header_size {
@@ -56,7 +56,7 @@ impl BinaryHeader {
         let object_offsets = (0..num_objects as usize)
             .map(|i| {
                 let offset = FIXED_HEADER_SIZE + i * 8;
-                u64::from_be_bytes(buf[offset..offset + 8].try_into().unwrap())
+                read_u64_be(buf, offset)
             })
             .collect();
 
@@ -80,6 +80,12 @@ impl BinaryHeader {
             out.extend_from_slice(&offset.to_be_bytes());
         }
     }
+}
+
+fn read_u64_be(buf: &[u8], offset: usize) -> u64 {
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&buf[offset..offset + 8]);
+    u64::from_be_bytes(bytes)
 }
 
 #[cfg(test)]
