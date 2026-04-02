@@ -60,7 +60,11 @@ impl TensogramFile {
     /// Count messages without decoding them.
     pub fn message_count(&mut self) -> Result<usize> {
         self.ensure_scanned()?;
-        Ok(self.message_offsets.as_ref().unwrap().len())
+        Ok(self
+            .message_offsets
+            .as_ref()
+            .expect("message_offsets set by ensure_scanned")
+            .len())
     }
 
     /// Append a message to the file.
@@ -84,7 +88,10 @@ impl TensogramFile {
     /// Read raw message bytes at a specific index.
     pub fn read_message(&mut self, index: usize) -> Result<Vec<u8>> {
         self.ensure_scanned()?;
-        let offsets = self.message_offsets.as_ref().unwrap();
+        let offsets = self
+            .message_offsets
+            .as_ref()
+            .expect("message_offsets set by ensure_scanned");
         if index >= offsets.len() {
             return Err(TensogramError::Framing(format!(
                 "message index {} out of range (count={})",
@@ -101,7 +108,10 @@ impl TensogramFile {
     pub fn messages(&mut self) -> Result<Vec<Vec<u8>>> {
         self.ensure_scanned()?;
         let data = fs::read(&self.path)?;
-        let offsets = self.message_offsets.as_ref().unwrap();
+        let offsets = self
+            .message_offsets
+            .as_ref()
+            .expect("message_offsets set by ensure_scanned");
         let mut msgs = Vec::with_capacity(offsets.len());
         for &(offset, length) in offsets {
             msgs.push(data[offset..offset + length].to_vec());

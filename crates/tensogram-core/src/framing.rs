@@ -93,6 +93,19 @@ pub fn decode_frame(buf: &[u8]) -> Result<DecodedFrame<'_>> {
     }
     let cbor_bytes = &buf[meta_start..meta_end];
 
+    // Validate that object offsets are strictly increasing
+    for i in 1..header.object_offsets.len() {
+        if header.object_offsets[i] <= header.object_offsets[i - 1] {
+            return Err(TensogramError::Framing(format!(
+                "object offsets not monotonically increasing: offsets[{}]={} <= offsets[{}]={}",
+                i,
+                header.object_offsets[i],
+                i - 1,
+                header.object_offsets[i - 1]
+            )));
+        }
+    }
+
     // Validate OBJS/OBJE markers for each object
     for (i, &obj_offset) in header.object_offsets.iter().enumerate() {
         let off = obj_offset as usize;
@@ -154,7 +167,20 @@ pub fn extract_object_payload<'a>(
     } else {
         buf.len() - TERMINATOR.len()
     };
+
+    if obj_end < 4 {
+        return Err(TensogramError::Object(format!(
+            "object {index} region too small to contain OBJE marker"
+        )));
+    }
     let payload_end = obj_end - 4; // before OBJE
+
+    if obj_start > payload_end || payload_end > buf.len() {
+        return Err(TensogramError::Object(format!(
+            "object {index} region out of bounds: [{obj_start}..{payload_end}] in buf len {}",
+            buf.len()
+        )));
+    }
 
     Ok(&buf[obj_start..payload_end])
 }

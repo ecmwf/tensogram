@@ -16,8 +16,17 @@ pub enum ShuffleError {
 /// Returns `Err(ShuffleError::InvalidElementSize)` if element_size is 0.
 /// Returns `Err(ShuffleError::Misaligned)` if data.len() % element_size != 0.
 pub fn shuffle(data: &[u8], element_size: usize) -> Result<Vec<u8>, ShuffleError> {
-    if element_size <= 1 || data.is_empty() {
+    if element_size == 0 {
+        return Err(ShuffleError::InvalidElementSize);
+    }
+    if element_size == 1 || data.is_empty() {
         return Ok(data.to_vec());
+    }
+    if !data.len().is_multiple_of(element_size) {
+        return Err(ShuffleError::Misaligned {
+            data_len: data.len(),
+            element_size,
+        });
     }
     let num_elements = data.len() / element_size;
 
@@ -34,8 +43,17 @@ pub fn shuffle(data: &[u8], element_size: usize) -> Result<Vec<u8>, ShuffleError
 /// Returns `Err(ShuffleError::InvalidElementSize)` if element_size is 0.
 /// Returns `Err(ShuffleError::Misaligned)` if data.len() % element_size != 0.
 pub fn unshuffle(data: &[u8], element_size: usize) -> Result<Vec<u8>, ShuffleError> {
-    if element_size <= 1 || data.is_empty() {
+    if element_size == 0 {
+        return Err(ShuffleError::InvalidElementSize);
+    }
+    if element_size == 1 || data.is_empty() {
         return Ok(data.to_vec());
+    }
+    if !data.len().is_multiple_of(element_size) {
+        return Err(ShuffleError::Misaligned {
+            data_len: data.len(),
+            element_size,
+        });
     }
     let num_elements = data.len() / element_size;
 
