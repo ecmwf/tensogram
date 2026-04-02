@@ -12,9 +12,8 @@
 use std::collections::BTreeMap;
 
 use tensogram_core::{
-    decode, decode_metadata, decode_object, decode_range, encode,
-    ByteOrder, DecodeOptions, Dtype, EncodeOptions,
-    Metadata, ObjectDescriptor, PayloadDescriptor,
+    decode, decode_metadata, decode_object, decode_range, encode, ByteOrder, DecodeOptions, Dtype,
+    EncodeOptions, Metadata, ObjectDescriptor, PayloadDescriptor,
 };
 
 fn make_metadata_3obj() -> Metadata {
@@ -48,9 +47,9 @@ fn make_metadata_3obj() -> Metadata {
     Metadata {
         version: 1,
         objects: vec![
-            make_obj(vec![10, 20], Dtype::Float32),  // obj 0: 10×20 f32
-            make_obj(vec![5],      Dtype::Float64),  // obj 1: 5 f64
-            make_obj(vec![8, 8],   Dtype::Uint8),    // obj 2: 8×8 u8
+            make_obj(vec![10, 20], Dtype::Float32), // obj 0: 10×20 f32
+            make_obj(vec![5], Dtype::Float64),      // obj 1: 5 f64
+            make_obj(vec![8, 8], Dtype::Uint8),     // obj 2: 8×8 u8
         ],
         payload: vec![make_payload(), make_payload(), make_payload()],
         extra: BTreeMap::new(),
@@ -62,8 +61,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Known data: each object filled with a distinct byte value
     let data0 = vec![0xAAu8; 10 * 20 * 4]; // float32
-    let data1 = vec![0xBBu8; 5 * 8];        // float64
-    let data2 = vec![0xCCu8; 8 * 8];        // uint8
+    let data1 = vec![0xBBu8; 5 * 8]; // float64
+    let data2 = vec![0xCCu8; 8 * 8]; // uint8
 
     let message = encode(
         &metadata,
@@ -85,7 +84,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         // Verify hash descriptor was stored by encoder
         let hash = &meta.payload[0].hash;
-        println!("  payload[0].hash: {:?}", hash.as_ref().map(|h| &h.hash_type));
+        println!(
+            "  payload[0].hash: {:?}",
+            hash.as_ref().map(|h| &h.hash_type)
+        );
     }
 
     // ── decode() — all objects ────────────────────────────────────────────────
@@ -132,13 +134,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Extract elements 10..18 (8 elements from the second row of the 8×8 grid)
         let partial = decode_range(
             &message,
-            2,                  // object index
-            &[(10, 8)],         // offset=10, count=8
+            2,          // object index
+            &[(10, 8)], // offset=10, count=8
             &DecodeOptions::default(),
         )?;
 
         println!("\ndecode_range(obj=2, offset=10, count=8):");
-        println!("  {} bytes, all=0x{:02X}: {}", partial.len(), 0xCC, partial.iter().all(|&b| b == 0xCC));
+        println!(
+            "  {} bytes, all=0x{:02X}: {}",
+            partial.len(),
+            0xCC,
+            partial.iter().all(|&b| b == 0xCC)
+        );
         assert_eq!(partial.len(), 8);
 
         // Multiple ranges in one call (non-contiguous slices)
@@ -148,7 +155,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &[(0, 4), (60, 4)], // first 4 bytes + last 4 bytes of the 8×8 grid
             &DecodeOptions::default(),
         )?;
-        println!("  Two ranges [(0,4),(60,4)]: {} bytes total", partial2.len());
+        println!(
+            "  Two ranges [(0,4),(60,4)]: {} bytes total",
+            partial2.len()
+        );
         assert_eq!(partial2.len(), 8);
     }
 

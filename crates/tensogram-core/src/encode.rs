@@ -69,7 +69,10 @@ pub fn encode(
             metadata.payload[i].params.insert(
                 "szip_block_offsets".to_string(),
                 ciborium::Value::Array(
-                    offsets.iter().map(|&o| ciborium::Value::Integer(o.into())).collect(),
+                    offsets
+                        .iter()
+                        .map(|&o| ciborium::Value::Integer(o.into()))
+                        .collect(),
                 ),
             );
         }
@@ -117,11 +120,7 @@ pub(crate) fn build_pipeline_config(
             let element_size = get_u64_param(&desc.params, "shuffle_element_size")? as usize;
             FilterType::Shuffle { element_size }
         }
-        other => {
-            return Err(TensogramError::Encoding(format!(
-                "unknown filter: {other}"
-            )))
-        }
+        other => return Err(TensogramError::Encoding(format!("unknown filter: {other}"))),
     };
 
     let compression = match desc.compression.as_str() {
@@ -130,7 +129,11 @@ pub(crate) fn build_pipeline_config(
             let rsi = get_u64_param(&desc.params, "szip_rsi")? as u32;
             let block_size = get_u64_param(&desc.params, "szip_block_size")? as u32;
             let flags = get_u64_param(&desc.params, "szip_flags")? as u32;
-            CompressionType::Szip { rsi, block_size, flags }
+            CompressionType::Szip {
+                rsi,
+                block_size,
+                flags,
+            }
         }
         other => {
             return Err(TensogramError::Encoding(format!(

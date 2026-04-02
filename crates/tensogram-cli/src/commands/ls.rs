@@ -11,7 +11,9 @@ pub fn run(
     keys: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let clause = where_clause.map(filter::parse_where).transpose()
+    let clause = where_clause
+        .map(filter::parse_where)
+        .transpose()
         .map_err(|e| format!("invalid where clause: {e}"))?;
 
     let key_list: Vec<String> = keys

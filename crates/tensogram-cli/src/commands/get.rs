@@ -9,7 +9,9 @@ pub fn run(
     where_clause: Option<&str>,
     keys: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let clause = where_clause.map(filter::parse_where).transpose()
+    let clause = where_clause
+        .map(filter::parse_where)
+        .transpose()
         .map_err(|e| format!("invalid where clause: {e}"))?;
 
     let key_list: Vec<String> = keys.split(',').map(|s| s.trim().to_string()).collect();

@@ -96,7 +96,7 @@ Implemented: 2026-04-02
 
 ## Documentation (mdbook)
 
-- `book/` — mdbook source (build with `PATH="$HOME/.cargo/bin:$PATH" mdbook build` from `book/`)
+- `docs/` — mdbook source (build with `PATH="$HOME/.cargo/bin:$PATH" mdbook build` from `docs/`)
 - Introduction, Concepts (messages, metadata, objects, pipeline)
 - Wire Format (message layout, CBOR schema, dtypes)
 - Developer Guide (quickstart, encoding, decoding, file API)

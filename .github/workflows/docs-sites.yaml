@@ -1,0 +1,210 @@
+# Builds mdBook docs and publishes them to ECMWF Sites:
+# - PRs get preview publish/unpublish under `dev-section/pull-requests`.
+# - Pushes to `main`/tags publish canonical docs under `dev-section`.
+# - Manual runs are build-only by default; publish is opt-in.
+name: Docs Sites Publish
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  push:
+    branches:
+      - main
+    tags:
+      - "*"
+  workflow_dispatch:
+    inputs:
+      # Safe default: allow validating workflow/build from GitHub UI without publishing.
+      publish:
+        description: "Also publish docs to sites (default: build artifact only)"
+        required: false
+        type: boolean
+        default: false
+      # Optional override for manual publish id/path segment.
+      publish_id:
+        description: "Optional publish id when publish=true (default: manual-<run_id>)"
+        required: false
+        type: string
+
+concurrency:
+  # Keep only the latest run per PR/ref to avoid stale docs publishes.
+  group: docs-sites-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Build docs for push/manual and all open PRs (including forks).
+  # Fork PRs do not publish previews because secrets are unavailable there.
+  # This artifact is consumed by preview/publish jobs when eligible.
+  build-docs:
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.action != 'closed') }}
+    runs-on: ubuntu-latest
+    env:
+      MDBOOK_VERSION: "0.5.2"
+      MDBOOK_TABS_VERSION: "0.3.4"
+      MDBOOK_MERMAID_VERSION: "0.17.0"
+    outputs:
+      artifact-id: ${{ steps.upload-docs.outputs.artifact-id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      # Cache cargo install artifacts for mdBook tooling.
+      # Key includes pinned versions so tool upgrades refresh cache automatically.
+      - name: Cache cargo install artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-docs-tools-${{ env.MDBOOK_VERSION }}-${{ env.MDBOOK_TABS_VERSION }}-${{ env.MDBOOK_MERMAID_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-docs-tools-
+
+      - name: Build docs toolchain
+        run: |
+          ensure_tool() {
+            local bin="$1"
+            local crate="$2"
+            local version="$3"
+
+            if command -v "${bin}" >/dev/null 2>&1; then
+              local current
+              # mdbook tools report versions like `v0.4.x`; normalize to `0.4.x`.
+              current="$("${bin}" --version | awk '{print $2}')"
+              current="${current#v}"
+              if [ "${current}" = "${version}" ]; then
+                echo "${bin} ${version} already present; skipping install."
+                return 0
+              fi
+            fi
+
+            cargo install --locked "${crate}" --version "${version}" --force
+          }
+
+          ensure_tool mdbook mdbook "${MDBOOK_VERSION}"
+          ensure_tool mdbook-tabs mdbook-tabs "${MDBOOK_TABS_VERSION}"
+          ensure_tool mdbook-mermaid mdbook-mermaid "${MDBOOK_MERMAID_VERSION}"
+
+      - name: Build mdBook
+        run: |
+          mdbook build docs
+
+      - name: Archive documentation
+        id: upload-docs
+        uses: actions/upload-artifact@v4
+        with:
+          name: tensogram-docs
+          path: docs/book
+
+  # Publish PR preview docs and attach preview link to the PR.
+  preview-publish:
+    if: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: build-docs
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: ecmwf/reusable-workflows/.github/workflows/pr-preview-publish.yml@5a1d1cb1442aa632f7823e4088d639b980627afc
+    with:
+      artifact-id: ${{ needs.build-docs.outputs.artifact-id }}
+      space: docs
+      name: dev-section
+      path: tensogram/pull-requests
+      link-tag: PREVIEW-PUBLISH-TENSOGRAM-DOCS
+      link-text: "Docs Preview"
+    secrets:
+      sites-token: ${{ secrets.ECMWF_SITES_DOCS_DEV_SECTION_TOKEN }}
+
+  # Remove preview docs when PR is closed to avoid stale preview content.
+  preview-unpublish:
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository }}
+    uses: ecmwf/reusable-workflows/.github/workflows/pr-preview-unpublish.yml@5a1d1cb1442aa632f7823e4088d639b980627afc
+    with:
+      space: docs
+      name: dev-section
+      path: tensogram/pull-requests
+    secrets:
+      sites-token: ${{ secrets.ECMWF_SITES_DOCS_DEV_SECTION_TOKEN }}
+
+  # Compute a safe publish id used for docs publish path segments.
+  # This prevents malformed or path-like values from workflow inputs/tags.
+  compute-publish-id:
+    if: >-
+      ${{
+        (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_type == 'tag')) ||
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
+      }}
+    runs-on: ubuntu-latest
+    outputs:
+      publish-id: ${{ steps.sanitize.outputs.publish_id }}
+    steps:
+      - name: Compute raw publish id
+        id: raw
+        run: |
+          set -euo pipefail
+
+          RAW_ID="${{ github.ref_name }}"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW_ID="${{ github.event.inputs.publish_id }}"
+            if [ -z "$RAW_ID" ]; then
+              RAW_ID="manual-${{ github.run_id }}"
+            fi
+          fi
+
+          # Use multiline-safe output format to avoid output injection.
+          {
+            echo "raw_id<<EOF"
+            printf '%s\n' "$RAW_ID"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Sanitize publish id
+        id: sanitize
+        run: |
+          set -euo pipefail
+          RAW_ID="${{ steps.raw.outputs.raw_id }}"
+
+          # Keep only URL/path-safe chars and normalize repeated separators.
+          SANITIZED="$(printf '%s' "$RAW_ID" | sed -E 's|/+|-|g; s|[^A-Za-z0-9._-]|-|g; s|-+|-|g; s|\.+|.|g; s|^[.-]+||; s|[.-]+$||')"
+
+          if [ -z "$SANITIZED" ]; then
+            echo "Sanitized publish id is empty; refusing to publish." >&2
+            exit 1
+          fi
+
+          echo "publish_id=${SANITIZED}" >> "$GITHUB_OUTPUT"
+
+  # Publish canonical docs on:
+  # - push to main/tags, or
+  # - manual run when publish=true.
+  publish-docs:
+    if: >-
+      ${{
+        (github.event_name == 'push' && (github.ref_name == 'main' || github.ref_type == 'tag')) ||
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
+      }}
+    needs:
+      - build-docs
+      - compute-publish-id
+    uses: ecmwf/reusable-workflows/.github/workflows/docs-publish.yml@5a1d1cb1442aa632f7823e4088d639b980627afc
+    with:
+      artifact-id: ${{ needs.build-docs.outputs.artifact-id }}
+      space: docs
+      name: dev-section
+      path: tensogram
+      # Use sanitized id from compute-publish-id.
+      id: ${{ needs.compute-publish-id.outputs.publish-id }}
+      # Keep stable aliases only for push events:
+      # - tag publish => stable
+      # - main publish => latest
+      softlink: ${{ github.event_name == 'push' && (github.ref_type == 'tag' && 'stable' || github.ref_name == 'main' && 'latest') || '' }}
+    secrets:
+      sites-token: ${{ secrets.ECMWF_SITES_DOCS_DEV_SECTION_TOKEN }}

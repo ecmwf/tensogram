@@ -30,7 +30,10 @@ pub fn format_json(metadata: &Metadata, keys: Option<&[String]>) -> String {
         .iter()
         .map(|obj| {
             let mut m = serde_json::Map::new();
-            m.insert("type".to_string(), serde_json::Value::String(obj.obj_type.clone()));
+            m.insert(
+                "type".to_string(),
+                serde_json::Value::String(obj.obj_type.clone()),
+            );
             m.insert(
                 "dtype".to_string(),
                 serde_json::Value::String(obj.dtype.to_string()),
@@ -38,7 +41,10 @@ pub fn format_json(metadata: &Metadata, keys: Option<&[String]>) -> String {
             m.insert(
                 "shape".to_string(),
                 serde_json::Value::Array(
-                    obj.shape.iter().map(|&s| serde_json::Value::Number(s.into())).collect(),
+                    obj.shape
+                        .iter()
+                        .map(|&s| serde_json::Value::Number(s.into()))
+                        .collect(),
                 ),
             );
             for (k, v) in &obj.extra {

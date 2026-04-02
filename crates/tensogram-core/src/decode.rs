@@ -7,13 +7,11 @@ use crate::types::Metadata;
 use tensogram_encodings::pipeline;
 
 /// Options for decoding.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct DecodeOptions {
     /// Whether to verify payload hashes during decode.
     pub verify_hash: bool,
 }
-
 
 /// Decode all objects from a message buffer.
 /// Returns (metadata, decoded_data_objects).

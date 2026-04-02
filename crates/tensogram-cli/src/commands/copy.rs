@@ -10,7 +10,9 @@ pub fn run(
     output: &str,
     where_clause: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let clause = where_clause.map(filter::parse_where).transpose()
+    let clause = where_clause
+        .map(filter::parse_where)
+        .transpose()
         .map_err(|e| format!("invalid where clause: {e}"))?;
 
     let has_placeholders = output.contains('[') && output.contains(']');
@@ -57,7 +59,7 @@ pub fn run(
     Ok(())
 }
 
-/// Expand [keyName] placeholders in a filename template using metadata values.
+/// Expand `[keyName]` placeholders in a filename template using metadata values.
 fn expand_placeholders(template: &str, metadata: &tensogram_core::Metadata) -> String {
     let mut result = template.to_string();
     // Find all [key] patterns
@@ -65,7 +67,12 @@ fn expand_placeholders(template: &str, metadata: &tensogram_core::Metadata) -> S
         if let Some(end) = result[start..].find(']') {
             let key = &result[start + 1..start + end];
             let value = lookup_key(metadata, key).unwrap_or_else(|| "unknown".to_string());
-            result = format!("{}{}{}", &result[..start], value, &result[start + end + 1..]);
+            result = format!(
+                "{}{}{}",
+                &result[..start],
+                value,
+                &result[start + end + 1..]
+            );
         } else {
             break;
         }

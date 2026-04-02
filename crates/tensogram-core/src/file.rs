@@ -183,9 +183,7 @@ mod tests {
         let msgs = file.messages().unwrap();
         assert_eq!(msgs.len(), 2);
 
-        let (meta, objects) = file
-            .decode_message(0, &DecodeOptions::default())
-            .unwrap();
+        let (meta, objects) = file.decode_message(0, &DecodeOptions::default()).unwrap();
         assert_eq!(meta.version, 1);
         assert_eq!(objects.len(), 1);
         assert_eq!(objects[0], data);

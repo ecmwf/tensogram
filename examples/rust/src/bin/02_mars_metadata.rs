@@ -10,9 +10,8 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode, decode_metadata, encode,
-    ByteOrder, DecodeOptions, Dtype, EncodeOptions,
-    Metadata, ObjectDescriptor, PayloadDescriptor,
+    decode, decode_metadata, encode, ByteOrder, DecodeOptions, Dtype, EncodeOptions, Metadata,
+    ObjectDescriptor, PayloadDescriptor,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,10 +22,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // so insertion order does not matter.
     let mars_msg = Value::Map(vec![
         (Value::Text("class".into()), Value::Text("od".into())),
-        (Value::Text("date".into()),  Value::Text("20260401".into())),
-        (Value::Text("step".into()),  Value::Integer(6.into())),
-        (Value::Text("time".into()),  Value::Text("0000".into())),
-        (Value::Text("type".into()),  Value::Text("fc".into())),
+        (Value::Text("date".into()), Value::Text("20260401".into())),
+        (Value::Text("step".into()), Value::Integer(6.into())),
+        (Value::Text("time".into()), Value::Text("0000".into())),
+        (Value::Text("type".into()), Value::Text("fc".into())),
     ]);
 
     let mut msg_extra = BTreeMap::new();
@@ -38,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // same message can have different parameters.
     let mars_obj = Value::Map(vec![
         (Value::Text("levtype".into()), Value::Text("sfc".into())),
-        (Value::Text("param".into()),   Value::Text("2t".into())),
+        (Value::Text("param".into()), Value::Text("2t".into())),
     ]);
 
     let mut obj_extra = BTreeMap::new();
@@ -50,10 +49,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         objects: vec![ObjectDescriptor {
             obj_type: "ntensor".to_string(),
             ndim: 2,
-            shape: vec![721, 1440],    // 0.25-degree global grid
+            shape: vec![721, 1440], // 0.25-degree global grid
             strides: vec![1440, 1],
             dtype: Dtype::Float32,
-            extra: obj_extra,           // parameter goes here
+            extra: obj_extra, // parameter goes here
         }],
         payload: vec![PayloadDescriptor {
             byte_order: ByteOrder::Big,
@@ -63,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             params: BTreeMap::new(),
             hash: None,
         }],
-        extra: msg_extra,               // forecast context goes here
+        extra: msg_extra, // forecast context goes here
     };
 
     let data = vec![0u8; 721 * 1440 * 4]; // zeros stand in for real values
@@ -80,7 +79,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Value::Map(entries) = map {
             for (k, v) in entries {
                 if matches!(k, Value::Text(s) if s == key) {
-                    if let Value::Text(t) = v { return Some(t); }
+                    if let Value::Text(t) = v {
+                        return Some(t);
+                    }
                 }
             }
         }
@@ -94,15 +95,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  type  = {}", get_mars_key(mars, "type").unwrap_or("?"));
     println!("  step  = {:?}", {
         if let Value::Map(e) = mars {
-            e.iter().find(|(k,_)| matches!(k, Value::Text(s) if s == "step"))
-             .map(|(_,v)| v)
-        } else { None }
+            e.iter()
+                .find(|(k, _)| matches!(k, Value::Text(s) if s == "step"))
+                .map(|(_, v)| v)
+        } else {
+            None
+        }
     });
 
     let obj_mars = &meta.objects[0].extra["mars"];
     println!("Object 0:");
-    println!("  param   = {}", get_mars_key(obj_mars, "param").unwrap_or("?"));
-    println!("  levtype = {}", get_mars_key(obj_mars, "levtype").unwrap_or("?"));
+    println!(
+        "  param   = {}",
+        get_mars_key(obj_mars, "param").unwrap_or("?")
+    );
+    println!(
+        "  levtype = {}",
+        get_mars_key(obj_mars, "levtype").unwrap_or("?")
+    );
     println!("  shape   = {:?}", meta.objects[0].shape);
 
     // ── Full decode ───────────────────────────────────────────────────────────
