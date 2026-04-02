@@ -277,7 +277,10 @@ fn test_adversarial_shuffle_misaligned() {
     let num_elements: usize = 10;
     let element_size_that_doesnt_divide_40: u64 = 3;
 
-    let metadata = make_shuffle_meta(vec![num_elements as u64], element_size_that_doesnt_divide_40);
+    let metadata = make_shuffle_meta(
+        vec![num_elements as u64],
+        element_size_that_doesnt_divide_40,
+    );
     let data = vec![0u8; num_elements * float32_byte_width];
     let result = encode(&metadata, &[&data], &EncodeOptions::default());
     assert!(
