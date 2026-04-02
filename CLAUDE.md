@@ -61,3 +61,11 @@ Key routing rules:
 # Tracking work
 
 Please keep track of what is implemented in docs/DONE.md. Keep updating it for all code changes.
+
+# Documentation
+
+Create documentation, as you develop and implement, an easy to follow by average tech person, with well separated topics.
+- Use mdbook 
+- Add mermaid diagrams when necessary
+- Add examples when it becomes hard to follow
+- Especially note the edge cases
