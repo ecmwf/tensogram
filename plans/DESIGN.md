@@ -8,7 +8,7 @@ Mode: Intrapreneurship
 
 ## Problem Statement
 
-ECMWF's operational weather forecasting pipelines rely primarily on GRIB (1 and 2) for encoding and transmitting meteorological data. GRIB is an international standard controlled by WMO, which means vocabulary evolution (new parameter types, metadata concepts, level types) requires international negotiation — a process that takes months to years. This creates concrete delays in implementation of new processed products that don't match existing WMO descriptions.
+ECMWF's operational weather forecasting pipelines rely primarily on GRIB (1 and 2) for encoding and transmitting meteorological data. GRIB is an international standard developed by WMO, which means vocabulary evolution (new parameter types, metadata concepts, level types) requires international negotiation — a process that takes months. This creates concrete delays in implementation of new processed products that don't match existing WMO descriptions.
 
 Additionally, GRIB is fundamentally limited to 1-Tensors (single fields). Multi-dimensional data like sea wave spectra — which should be represented as a 3-tensor (spatial lat-lon, parameter, frequency) — must be flattened into sequences of GRIB messages with ad-hoc conventions, creating persistent technical debt.
 
@@ -24,7 +24,7 @@ A developer retreat and brainstorming session concluded that ECMWF would move fa
 
 ## Status Quo
 
-- **GRIB 1 & 2:** Primary workhorse format for all operational data. Good tooling ecosystem (ecCodes). Users value the metadata and tool availability. But vocabulary is WMO-controlled and structurally limited to 1-tensors.
+- **GRIB 1 & 2:** Primary workhorse format for all operational data. Good tooling ecosystem (ecCodes). Users value the metadata and tool availability. But vocabulary is WMO-regulated and structurally limited to 1-tensors.
 - **NetCDF / HDF5:** Minimal internal use, mostly for static data. Users appreciate metadata flexibility.
 - **BUFR / ODB:** Separate column formats for observations. Potential future unification target (time-series observations as 1-tensors in Tensogram), but explicitly deferred.
 
