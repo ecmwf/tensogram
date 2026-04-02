@@ -91,6 +91,12 @@ pub fn decode_range(
     let payload_desc = &metadata.payload[object_index];
     let obj_desc = &metadata.objects[object_index];
 
+    if payload_desc.filter != "none" {
+        return Err(TensogramError::Encoding(
+            "decode_range is not supported when a filter (e.g. shuffle) is applied".to_string(),
+        ));
+    }
+
     // Partial range decode only works for uncompressed, unencoded data
     if payload_desc.encoding != "none" || payload_desc.compression != "none" {
         if payload_desc.filter == "shuffle" {
