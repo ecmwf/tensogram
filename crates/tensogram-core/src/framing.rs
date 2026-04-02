@@ -277,4 +277,48 @@ mod tests {
         msg[len - 1] = 0xFF;
         assert!(decode_frame(&msg).is_err());
     }
+
+    #[test]
+    fn test_framing_non_monotonic_offset() {
+        use crate::wire::{BinaryHeader, TERMINATOR};
+
+        // Craft a message where object_offsets are non-monotonic [200, 100].
+        // We carefully place OBJS/OBJE markers so that decode_frame (without a
+        // monotonicity check) would return Ok — revealing the lurking panic in
+        // extract_object_payload when it computes &buf[204..96].
+        // After the fix, decode_frame returns Err before reaching the slice.
+        let total_size = 400usize;
+        let mut buf = vec![0u8; total_size];
+
+        let header = BinaryHeader {
+            total_length: total_size as u64,
+            metadata_offset: 56,
+            metadata_length: 1,
+            num_objects: 2,
+            object_offsets: vec![200, 100],
+        };
+        let mut header_bytes = Vec::new();
+        header.write_to(&mut header_bytes);
+        buf[..header_bytes.len()].copy_from_slice(&header_bytes);
+
+        buf[56] = 0xA0;
+
+        // OBJE at 96..100 and OBJS at 100..104 — satisfies current validation
+        // loop's check for object 0 (obje_off = 100-4 = 96) and object 1 start
+        buf[96..100].copy_from_slice(b"OBJE");
+        buf[100..104].copy_from_slice(b"OBJS");
+
+        // OBJS for object 0 at its stated offset
+        buf[200..204].copy_from_slice(b"OBJS");
+
+        // OBJE for object 1 at total_length - TERMINATOR - 4
+        buf[388..392].copy_from_slice(b"OBJE");
+
+        buf[392..400].copy_from_slice(TERMINATOR);
+
+        assert!(
+            decode_frame(&buf).is_err(),
+            "decode_frame must reject non-monotonic object offsets"
+        );
+    }
 }

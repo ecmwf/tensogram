@@ -77,19 +77,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // integrating with other pipelines.
     use tensogram_encodings::shuffle::{shuffle, unshuffle};
 
-    let shuffled = shuffle(&raw_bytes, 4);
+    let shuffled = shuffle(&raw_bytes, 4)?;
 
-    // Verify that byte 0 of every float32 is now contiguous in the first quarter
     for i in 0..n {
         assert_eq!(
-            shuffled[i],      // byte 0 of element i in shuffled layout
-            raw_bytes[i * 4], // byte 0 of element i in original layout
+            shuffled[i],
+            raw_bytes[i * 4],
             "byte-0 mismatch at element {i}"
         );
     }
     println!("Byte-0 contiguity verified after shuffle.");
 
-    let unshuffled = unshuffle(&shuffled, 4);
+    let unshuffled = unshuffle(&shuffled, 4)?;
     assert_eq!(unshuffled, raw_bytes);
     println!("Direct unshuffle OK.");
 

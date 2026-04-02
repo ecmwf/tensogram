@@ -11,6 +11,8 @@ pub enum PipelineError {
     Encoding(#[from] PackingError),
     #[error("compression error: {0}")]
     Compression(#[from] CompressionError),
+    #[error("shuffle error: {0}")]
+    Shuffle(String),
     #[error("unknown encoding: {0}")]
     UnknownEncoding(String),
     #[error("unknown filter: {0}")]
@@ -73,7 +75,8 @@ pub fn encode_pipeline(
     // Step 2: Filter
     let filtered = match &config.filter {
         FilterType::None => encoded,
-        FilterType::Shuffle { element_size } => shuffle::shuffle(&encoded, *element_size),
+        FilterType::Shuffle { element_size } => shuffle::shuffle(&encoded, *element_size)
+            .map_err(|e| PipelineError::Shuffle(e.to_string()))?,
     };
 
     // Step 3: Compression
@@ -124,7 +127,8 @@ pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8
     // Step 2: Unshuffle
     let unfiltered = match &config.filter {
         FilterType::None => decompressed,
-        FilterType::Shuffle { element_size } => shuffle::unshuffle(&decompressed, *element_size),
+        FilterType::Shuffle { element_size } => shuffle::unshuffle(&decompressed, *element_size)
+            .map_err(|e| PipelineError::Shuffle(e.to_string()))?,
     };
 
     // Step 3: Decode
