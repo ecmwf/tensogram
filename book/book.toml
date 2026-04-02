@@ -1,0 +1,11 @@
+[book]
+title = "Tensogram"
+authors = ["ECMWF"]
+language = "en"
+src = "src"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+additional-js = ["mermaid.min.js", "mermaid-init.js"]

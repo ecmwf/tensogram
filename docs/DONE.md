@@ -51,6 +51,17 @@ Implemented: 2026-04-02
 - `tensogram filter` subcommand (v2 rules engine)
 - ciborium canonical encoding verification (current two-step approach works but should be validated against a reference implementation)
 
+## Documentation (mdbook)
+
+- `book/` — mdbook source (build with `PATH="$HOME/.cargo/bin:$PATH" mdbook build` from `book/`)
+- Introduction, Concepts (messages, metadata, objects, pipeline)
+- Wire Format (message layout, CBOR schema, dtypes)
+- Developer Guide (quickstart, encoding, decoding, file API)
+- Encodings (simple_packing, shuffle, compression)
+- CLI Reference (info, ls, dump, get, set, copy)
+- Edge Cases and Internals reference pages
+- Mermaid diagrams throughout
+
 ## Dependencies
 - ciborium 0.2 — CBOR encode/decode
 - serde 1 — serialization framework
