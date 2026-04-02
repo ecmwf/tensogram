@@ -421,6 +421,43 @@ fn test_partial_range_decode_uncompressed() {
 }
 
 #[test]
+fn test_decode_range_shuffle_rejected() {
+    let data: Vec<u8> = (0..40).collect();
+
+    let mut params = BTreeMap::new();
+    params.insert(
+        "shuffle_element_size".to_string(),
+        ciborium::Value::Integer(4.into()),
+    );
+
+    let metadata = Metadata {
+        version: 1,
+        objects: vec![ObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![10],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            extra: BTreeMap::new(),
+        }],
+        payload: vec![PayloadDescriptor {
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "shuffle".to_string(),
+            compression: "none".to_string(),
+            params,
+            hash: None,
+        }],
+        extra: BTreeMap::new(),
+    };
+
+    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let err = decode_range(&encoded, 0, &[(3, 3)], &DecodeOptions::default()).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("shuffle") || msg.contains("filter"), "{msg}");
+}
+
+#[test]
 fn test_objects_payload_mismatch_rejected() {
     // Manually construct metadata with mismatched lengths
     let metadata = Metadata {
