@@ -2,9 +2,9 @@
 
 Implemented: 2026-04-02
 
-## Workspace: 5 crates, 52 tests, 0 clippy warnings
+## Workspace: 5 crates, 64 tests, 0 clippy warnings
 
-### tensogram-core (21 unit tests + 14 integration tests)
+### tensogram-core (23 unit tests + 14 integration tests)
 - `wire.rs` — Binary header with TENSOGRM magic, terminator, object offsets
 - `framing.rs` — `encode_frame()`, `decode_frame()`, `extract_object_payload()`, `scan()`
 - `metadata.rs` — Deterministic CBOR encoding (two-step: serialize → canonicalize → write)
@@ -13,7 +13,7 @@ Implemented: 2026-04-02
 - `hash.rs` — xxh3, sha1, md5 hashing + verification
 - `encode.rs` — Full encode pipeline: validate → encode per object → hash → CBOR → frame
 - `decode.rs` — `decode()`, `decode_metadata()`, `decode_object()`, `decode_range()`
-- `file.rs` — `TensogramFile`: open, create, lazy scan, append, messages iterator, random access
+- `file.rs` — `TensogramFile`: open, create, lazy scan, append, seek-based random access, deprecated `messages()` iterator
 
 ### tensogram-encodings (14 tests)
 - `simple_packing.rs` — GRIB-style lossy quantization, MSB-first bit packing, 0-64 bits, NaN rejection
