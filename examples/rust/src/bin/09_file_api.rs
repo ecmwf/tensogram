@@ -5,9 +5,9 @@
 //!   open()           — existing file for reading
 //!   append()         — encode and append a message
 //!   message_count()  — how many valid messages are in the file
-//!   read_message()   — raw bytes of message[i]
-//!   messages()       — all raw message bytes as a Vec<Vec<u8>>
-//!   decode_message() — decode message[i] → (Metadata, Vec<Vec<u8>>)
+//!   read_message()   — raw bytes of message\[i\]
+//!   messages()       — all raw message bytes as a `Vec<Vec<u8>>`
+//!   decode_message() — decode message\[i\] → (Metadata, `Vec<Vec<u8>>`)
 //!   path()           — the file path
 //!
 //! The file is lazily scanned: no I/O happens on open()/create().

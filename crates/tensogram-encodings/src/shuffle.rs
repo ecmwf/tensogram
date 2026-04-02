@@ -1,4 +1,4 @@
-/// Byte-level shuffle: groups byte[0] of all elements, then byte[1], etc.
+/// Byte-level shuffle: groups byte\[0\] of all elements, then byte\[1\], etc.
 /// Input length must be divisible by element_size.
 pub fn shuffle(data: &[u8], element_size: usize) -> Vec<u8> {
     if element_size <= 1 || data.is_empty() {

@@ -59,7 +59,7 @@ pub fn run(
     Ok(())
 }
 
-/// Expand [keyName] placeholders in a filename template using metadata values.
+/// Expand `[keyName]` placeholders in a filename template using metadata values.
 fn expand_placeholders(template: &str, metadata: &tensogram_core::Metadata) -> String {
     let mut result = template.to_string();
     // Find all [key] patterns

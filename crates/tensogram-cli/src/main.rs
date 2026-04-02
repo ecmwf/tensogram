@@ -65,7 +65,7 @@ enum Commands {
         #[arg(short = 'w')]
         where_clause: Option<String>,
         input: PathBuf,
-        /// Output path (supports [keyName] placeholders for splitting)
+        /// Output path (supports `[keyName]` placeholders for splitting)
         output: String,
     },
 }

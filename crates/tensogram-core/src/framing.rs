@@ -4,7 +4,7 @@ use crate::wire::{BinaryHeader, MAGIC, OBJE, OBJS, TERMINATOR};
 /// Encode a complete message frame.
 /// `cbor_bytes` is the serialized CBOR metadata.
 /// `encoded_payloads` is a list of already-encoded payload byte vectors (one per data object).
-/// Returns the complete wire-format message as Vec<u8>.
+/// Returns the complete wire-format message as `Vec<u8>`.
 pub fn encode_frame(cbor_bytes: &[u8], encoded_payloads: &[Vec<u8>]) -> Vec<u8> {
     let num_objects = encoded_payloads.len() as u64;
     let header_size = BinaryHeader::header_size(num_objects);
