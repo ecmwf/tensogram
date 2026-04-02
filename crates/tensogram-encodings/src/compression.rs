@@ -33,6 +33,7 @@ impl Compressor for NoopCompressor {
     }
 }
 
+#[allow(dead_code)]
 pub struct SzipCompressor {
     pub rsi: u32,
     pub block_size: u32,

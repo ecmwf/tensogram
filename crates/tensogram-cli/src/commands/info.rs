@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use tensogram_core::{decode_metadata, TensogramFile};
 
+/// Print summary information for one or more Tensogram files.
 pub fn run(files: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
     for path in files {
         let mut file = TensogramFile::open(path)?;

@@ -28,11 +28,8 @@ pub fn compute_params(
         return Err(PackingError::BitsPerValueTooLarge(bits_per_value));
     }
 
-    // Check for NaN
-    for (i, &v) in values.iter().enumerate() {
-        if v.is_nan() {
-            return Err(PackingError::NanValue(i));
-        }
+    if let Some(i) = values.iter().position(|v| v.is_nan()) {
+        return Err(PackingError::NanValue(i));
     }
 
     if values.is_empty() || bits_per_value == 0 {
@@ -82,11 +79,8 @@ pub fn encode(values: &[f64], params: &SimplePackingParams) -> Result<Vec<u8>, P
         return Err(PackingError::BitsPerValueTooLarge(params.bits_per_value));
     }
 
-    // Check for NaN
-    for (i, &v) in values.iter().enumerate() {
-        if v.is_nan() {
-            return Err(PackingError::NanValue(i));
-        }
+    if let Some(i) = values.iter().position(|v| v.is_nan()) {
+        return Err(PackingError::NanValue(i));
     }
 
     // bits_per_value == 0: constant field, empty payload

@@ -16,6 +16,4 @@ pub use error::{Result, TensogramError};
 pub use file::TensogramFile;
 pub use framing::scan;
 pub use hash::HashAlgorithm;
-pub use types::{
-    ByteOrder, DataObject, HashDescriptor, Metadata, ObjectDescriptor, PayloadDescriptor,
-};
+pub use types::{ByteOrder, HashDescriptor, Metadata, ObjectDescriptor, PayloadDescriptor};

@@ -26,6 +26,7 @@ const IMMUTABLE_KEYS: &[&str] = &[
     "shuffle_element_size",
 ];
 
+/// Update selected metadata keys in matching messages.
 pub fn run(
     input: &PathBuf,
     output: &PathBuf,

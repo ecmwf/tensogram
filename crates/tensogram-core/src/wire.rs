@@ -53,13 +53,12 @@ impl BinaryHeader {
             )));
         }
 
-        let mut object_offsets = Vec::with_capacity(num_objects as usize);
-        for i in 0..num_objects as usize {
-            let offset = 40 + i * 8;
-            object_offsets.push(u64::from_be_bytes(
-                buf[offset..offset + 8].try_into().unwrap(),
-            ));
-        }
+        let object_offsets = (0..num_objects as usize)
+            .map(|i| {
+                let offset = FIXED_HEADER_SIZE + i * 8;
+                u64::from_be_bytes(buf[offset..offset + 8].try_into().unwrap())
+            })
+            .collect();
 
         Ok(BinaryHeader {
             total_length,

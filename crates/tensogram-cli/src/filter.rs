@@ -94,7 +94,7 @@ pub fn matches(metadata: &Metadata, clause: &WhereClause) -> bool {
 
 fn cbor_value_to_string(value: &ciborium::Value) -> String {
     match value {
-        ciborium::Value::Text(s) => s.clone(),
+        ciborium::Value::Text(s) => s.to_string(),
         ciborium::Value::Integer(i) => {
             let n: i128 = (*i).into();
             n.to_string()

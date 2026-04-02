@@ -4,6 +4,7 @@ use tensogram_core::{decode_metadata, TensogramFile};
 
 use crate::filter::{self, lookup_key};
 
+/// Print selected metadata values for matching messages.
 pub fn run(
     files: &[PathBuf],
     where_clause: Option<&str>,

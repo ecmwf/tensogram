@@ -55,8 +55,18 @@ fn canonicalize(value: &mut ciborium::Value) {
                 let mut a_bytes = Vec::new();
                 let mut b_bytes = Vec::new();
                 // These shouldn't fail for already-valid Values
-                let _ = ciborium::into_writer(a, &mut a_bytes);
-                let _ = ciborium::into_writer(b, &mut b_bytes);
+                let result = ciborium::into_writer(a, &mut a_bytes);
+                debug_assert!(
+                    result.is_ok(),
+                    "ciborium serialization failed: {:?}",
+                    result
+                );
+                let result = ciborium::into_writer(b, &mut b_bytes);
+                debug_assert!(
+                    result.is_ok(),
+                    "ciborium serialization failed: {:?}",
+                    result
+                );
                 a_bytes.cmp(&b_bytes)
             });
         }

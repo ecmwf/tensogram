@@ -58,10 +58,3 @@ pub struct Metadata {
     #[serde(flatten)]
     pub extra: BTreeMap<String, ciborium::Value>,
 }
-
-/// A decoded data object: metadata + raw bytes in the logical dtype.
-#[derive(Debug, Clone)]
-pub struct DataObject {
-    pub descriptor: ObjectDescriptor,
-    pub data: Vec<u8>,
-}

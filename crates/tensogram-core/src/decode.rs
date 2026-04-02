@@ -20,7 +20,7 @@ pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(Metadata, Vec<Vec<
     let metadata = cbor_to_metadata(frame.cbor_bytes)?;
 
     let mut data_objects = Vec::with_capacity(metadata.objects.len());
-    for i in 0..metadata.objects.len() {
+    for (i, _) in metadata.objects.iter().enumerate() {
         let payload_bytes = framing::extract_object_payload(buf, &frame, i)?;
         verify_and_decode_object(&metadata, i, payload_bytes, options, &mut data_objects)?;
     }

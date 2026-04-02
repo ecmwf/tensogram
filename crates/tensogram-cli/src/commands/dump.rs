@@ -5,6 +5,7 @@ use tensogram_core::{decode_metadata, TensogramFile};
 use crate::filter;
 use crate::output;
 
+/// Dump full message metadata and object summaries.
 pub fn run(
     files: &[PathBuf],
     where_clause: Option<&str>,
