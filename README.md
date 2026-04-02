@@ -26,7 +26,7 @@ message carries its own begin/terminator codes.
 ## Quick Start
 
 
-## Building
+## Building and Testing
 
 
 ## Dependencies
