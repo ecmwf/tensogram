@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::dtype::Dtype;
 use crate::error::{Result, TensogramError};
 use crate::framing;
 use crate::hash::{compute_hash, HashAlgorithm};
@@ -103,8 +104,9 @@ pub fn encode(
 
         let payload_desc = &metadata.payload[i];
         let num_elements = metadata.objects[i].shape.iter().product::<u64>() as usize;
+        let dtype = metadata.objects[i].dtype;
 
-        let config = build_pipeline_config(payload_desc, num_elements)?;
+        let config = build_pipeline_config(payload_desc, num_elements, dtype)?;
         let result = pipeline::encode_pipeline(data, &config)
             .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
@@ -140,14 +142,19 @@ pub fn encode(
     Ok(framing::encode_frame(&cbor_bytes, &encoded_payloads))
 }
 
-/// Build a PipelineConfig from a PayloadDescriptor.
 pub(crate) fn build_pipeline_config(
     desc: &PayloadDescriptor,
     num_values: usize,
+    dtype: Dtype,
 ) -> Result<PipelineConfig> {
     let encoding = match desc.encoding.as_str() {
         "none" => EncodingType::None,
         "simple_packing" => {
+            if dtype.byte_width() != 8 {
+                return Err(TensogramError::Encoding(
+                    "simple_packing only supports float64 dtype".to_string(),
+                ));
+            }
             let params = extract_simple_packing_params(&desc.params)?;
             EncodingType::SimplePacking(params)
         }
@@ -202,6 +209,8 @@ pub(crate) fn build_pipeline_config(
         filter,
         compression,
         num_values,
+        byte_order: desc.byte_order,
+        dtype_byte_width: dtype.byte_width(),
     })
 }
 

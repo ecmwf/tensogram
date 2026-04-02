@@ -3,7 +3,15 @@ use crate::compression::{
 };
 use crate::shuffle;
 use crate::simple_packing::{self, PackingError, SimplePackingParams};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ByteOrder {
+    Big,
+    Little,
+}
 
 #[derive(Debug, Error)]
 pub enum PipelineError {
@@ -48,8 +56,9 @@ pub struct PipelineConfig {
     pub encoding: EncodingType,
     pub filter: FilterType,
     pub compression: CompressionType,
-    /// Number of values (needed for simple_packing decode)
     pub num_values: usize,
+    pub byte_order: ByteOrder,
+    pub dtype_byte_width: usize,
 }
 
 pub struct PipelineResult {
@@ -66,8 +75,7 @@ pub fn encode_pipeline(
     let encoded = match &config.encoding {
         EncodingType::None => data.to_vec(),
         EncodingType::SimplePacking(params) => {
-            // Interpret data as f64 values
-            let values = bytes_to_f64(data);
+            let values = bytes_to_f64(data, config.byte_order);
             simple_packing::encode(&values, params)?
         }
     };
@@ -136,7 +144,7 @@ pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8
         EncodingType::None => unfiltered,
         EncodingType::SimplePacking(params) => {
             let values = simple_packing::decode(&unfiltered, config.num_values, params)?;
-            f64_to_bytes(&values)
+            f64_to_bytes(&values, config.byte_order)
         }
     };
 
@@ -153,14 +161,26 @@ fn estimate_decompressed_size(config: &PipelineConfig) -> usize {
     }
 }
 
-fn bytes_to_f64(data: &[u8]) -> Vec<f64> {
+fn bytes_to_f64(data: &[u8], byte_order: ByteOrder) -> Vec<f64> {
     data.chunks_exact(8)
-        .map(|chunk| f64::from_ne_bytes(chunk.try_into().unwrap()))
+        .map(|chunk| {
+            let arr: [u8; 8] = chunk.try_into().unwrap();
+            match byte_order {
+                ByteOrder::Big => f64::from_be_bytes(arr),
+                ByteOrder::Little => f64::from_le_bytes(arr),
+            }
+        })
         .collect()
 }
 
-fn f64_to_bytes(values: &[f64]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_ne_bytes()).collect()
+fn f64_to_bytes(values: &[f64], byte_order: ByteOrder) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|v| match byte_order {
+            ByteOrder::Big => v.to_be_bytes(),
+            ByteOrder::Little => v.to_le_bytes(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -175,6 +195,8 @@ mod tests {
             filter: FilterType::None,
             compression: CompressionType::None,
             num_values: 1,
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 8,
         };
         let result = encode_pipeline(&data, &config).unwrap();
         assert_eq!(result.encoded_bytes, data);
@@ -185,7 +207,7 @@ mod tests {
     #[test]
     fn test_simple_packing_pipeline() {
         let values: Vec<f64> = (0..50).map(|i| 200.0 + i as f64 * 0.1).collect();
-        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
         let params = simple_packing::compute_params(&values, 16, 0).unwrap();
 
         let config = PipelineConfig {
@@ -193,11 +215,13 @@ mod tests {
             filter: FilterType::None,
             compression: CompressionType::None,
             num_values: values.len(),
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 8,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
         let decoded = decode_pipeline(&result.encoded_bytes, &config).unwrap();
-        let decoded_values = bytes_to_f64(&decoded);
+        let decoded_values = bytes_to_f64(&decoded, ByteOrder::Little);
 
         for (orig, dec) in values.iter().zip(decoded_values.iter()) {
             assert!((orig - dec).abs() < 0.01, "orig={orig}, dec={dec}");
@@ -206,13 +230,14 @@ mod tests {
 
     #[test]
     fn test_shuffle_pipeline() {
-        // 4 float32 values = 16 bytes
         let data: Vec<u8> = (0..16).collect();
         let config = PipelineConfig {
             encoding: EncodingType::None,
             filter: FilterType::Shuffle { element_size: 4 },
             compression: CompressionType::None,
             num_values: 4,
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 4,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -233,6 +258,8 @@ mod tests {
                 flags: 0,
             },
             num_values: 100,
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 1,
         };
         assert!(encode_pipeline(&data, &config).is_err());
     }

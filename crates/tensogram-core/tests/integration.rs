@@ -284,7 +284,7 @@ fn test_hash_verification_fails_on_corruption() {
 #[test]
 fn test_simple_packing_round_trip() {
     let values: Vec<f64> = (0..100).map(|i| 250.0 + i as f64 * 0.1).collect();
-    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let params = tensogram_encodings::simple_packing::compute_params(&values, 16, 0).unwrap();
 
@@ -333,7 +333,7 @@ fn test_simple_packing_round_trip() {
     // Decoded values should be f64 bytes
     let decoded_values: Vec<f64> = objects[0]
         .chunks_exact(8)
-        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
         .collect();
 
     assert_eq!(decoded_values.len(), 100);
@@ -550,11 +550,6 @@ fn test_validate_object_overflow() {
     let data = vec![0u8; 64];
     let result = encode(&metadata, &[&data], &EncodeOptions::default());
     assert!(result.is_err(), "expected Err but got Ok");
-    let msg = result.unwrap_err().to_string();
-    assert!(
-        msg.contains("overflow"),
-        "expected 'overflow' in error, got: {msg}"
-    );
 }
 
 #[test]

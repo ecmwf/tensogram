@@ -3,4 +3,6 @@ pub mod pipeline;
 pub mod shuffle;
 pub mod simple_packing;
 
-pub use pipeline::{CompressionType, EncodingType, FilterType, PipelineConfig, PipelineResult};
+pub use pipeline::{
+    ByteOrder, CompressionType, EncodingType, FilterType, PipelineConfig, PipelineResult,
+};

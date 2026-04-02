@@ -63,7 +63,8 @@ pub fn decode_object(
 
     let num_elements = usize::try_from(metadata.objects[index].shape.iter().product::<u64>())
         .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
-    let config = build_pipeline_config(&metadata.payload[index], num_elements)?;
+    let dtype = metadata.objects[index].dtype;
+    let config = build_pipeline_config(&metadata.payload[index], num_elements, dtype)?;
     let decoded = pipeline::decode_pipeline(payload_bytes, &config)
         .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
@@ -162,10 +163,10 @@ fn verify_and_decode_object(
 
     let num_elements = usize::try_from(metadata.objects[index].shape.iter().product::<u64>())
         .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
-    let config = build_pipeline_config(&metadata.payload[index], num_elements)?;
+    let dtype = metadata.objects[index].dtype;
+    let config = build_pipeline_config(&metadata.payload[index], num_elements, dtype)?;
     let decoded = pipeline::decode_pipeline(payload_bytes, &config)
         .map_err(|e| TensogramError::Encoding(e.to_string()))?;
-
     out.push(decoded);
     Ok(())
 }

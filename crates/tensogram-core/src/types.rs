@@ -3,13 +3,7 @@ use std::collections::BTreeMap;
 
 use crate::dtype::Dtype;
 
-/// Byte order for payload data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ByteOrder {
-    Big,
-    Little,
-}
+pub use tensogram_encodings::ByteOrder;
 
 /// Hash descriptor for payload integrity verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
