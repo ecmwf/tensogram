@@ -16,9 +16,8 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode, encode,
-    ByteOrder, DecodeOptions, Dtype, EncodeOptions,
-    Metadata, ObjectDescriptor, PayloadDescriptor,
+    decode, encode, ByteOrder, DecodeOptions, Dtype, EncodeOptions, Metadata, ObjectDescriptor,
+    PayloadDescriptor,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -51,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         payload: vec![PayloadDescriptor {
             byte_order: ByteOrder::Big,
             encoding: "none".to_string(),
-            filter: "shuffle".to_string(),    // ← shuffle is the filter stage
+            filter: "shuffle".to_string(), // ← shuffle is the filter stage
             compression: "none".to_string(),
             params: filter_params,
             hash: None,
@@ -83,8 +82,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Verify that byte 0 of every float32 is now contiguous in the first quarter
     for i in 0..n {
         assert_eq!(
-            shuffled[i],                        // byte 0 of element i in shuffled layout
-            raw_bytes[i * 4],                   // byte 0 of element i in original layout
+            shuffled[i],      // byte 0 of element i in shuffled layout
+            raw_bytes[i * 4], // byte 0 of element i in original layout
             "byte-0 mismatch at element {i}"
         );
     }

@@ -17,17 +17,16 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode_metadata, scan,
-    ByteOrder, DecodeOptions, Dtype, EncodeOptions, TensogramFile,
-    Metadata, ObjectDescriptor, PayloadDescriptor,
+    decode_metadata, scan, ByteOrder, DecodeOptions, Dtype, EncodeOptions, Metadata,
+    ObjectDescriptor, PayloadDescriptor, TensogramFile,
 };
 
 fn make_forecast_message(param: &str, step: i64) -> (Metadata, Vec<u8>) {
     let mars = Value::Map(vec![
         (Value::Text("param".into()), Value::Text(param.into())),
-        (Value::Text("step".into()),  Value::Integer(step.into())),
-        (Value::Text("date".into()),  Value::Text("20260401".into())),
-        (Value::Text("type".into()),  Value::Text("fc".into())),
+        (Value::Text("step".into()), Value::Integer(step.into())),
+        (Value::Text("date".into()), Value::Text("20260401".into())),
+        (Value::Text("type".into()), Value::Text("fc".into())),
     ]);
     let mut extra = BTreeMap::new();
     extra.insert("mars".to_string(), mars);
@@ -70,8 +69,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Created: {}", file.path().display());
 
         let params_steps = [
-            ("2t", 0i64), ("10u", 0), ("10v", 0), ("msl", 0),
-            ("2t", 6),    ("10u", 6), ("10v", 6), ("msl", 6),
+            ("2t", 0i64),
+            ("10u", 0),
+            ("10v", 0),
+            ("msl", 0),
+            ("2t", 6),
+            ("10u", 6),
+            ("10v", 6),
+            ("msl", 6),
         ];
 
         for (param, step) in params_steps {
@@ -101,7 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (meta, objects) = file.decode_message(i, &DecodeOptions::default())?;
             let mars = &meta.extra["mars"];
             let param = get_text(mars, "param");
-            let step  = get_int(mars, "step");
+            let step = get_int(mars, "step");
             println!(
                 "  [{i}] param={param:5}  step={step:2}  data={} bytes",
                 objects[0].len()
@@ -155,7 +160,9 @@ fn get_text<'a>(map: &'a Value, key: &str) -> &'a str {
     if let Value::Map(entries) = map {
         for (k, v) in entries {
             if matches!(k, Value::Text(s) if s == key) {
-                if let Value::Text(t) = v { return t; }
+                if let Value::Text(t) = v {
+                    return t;
+                }
             }
         }
     }

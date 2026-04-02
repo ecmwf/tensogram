@@ -74,7 +74,7 @@ mod tests {
         let data = b"hello world";
         let hash = compute_hash(data, HashAlgorithm::Xxh3);
         assert_eq!(hash.len(), 16); // 64-bit = 16 hex chars
-        // Verify deterministic
+                                    // Verify deterministic
         assert_eq!(hash, compute_hash(data, HashAlgorithm::Xxh3));
     }
 

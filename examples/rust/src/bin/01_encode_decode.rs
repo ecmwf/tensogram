@@ -10,9 +10,8 @@
 use std::collections::BTreeMap;
 
 use tensogram_core::{
-    decode, encode,
-    ByteOrder, DecodeOptions, Dtype, EncodeOptions,
-    Metadata, ObjectDescriptor, PayloadDescriptor,
+    decode, encode, ByteOrder, DecodeOptions, Dtype, EncodeOptions, Metadata, ObjectDescriptor,
+    PayloadDescriptor,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,9 +37,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }],
         payload: vec![PayloadDescriptor {
             byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),     // exact copy, no quantization
-            filter: "none".to_string(),        // no byte rearrangement
-            compression: "none".to_string(),   // no compression
+            encoding: "none".to_string(), // exact copy, no quantization
+            filter: "none".to_string(),   // no byte rearrangement
+            compression: "none".to_string(), // no compression
             params: BTreeMap::new(),
             hash: None, // hash is filled in by encode() when EncodeOptions::default()
         }],
@@ -59,7 +58,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    println!("Input:  {} bytes ({} float32 elements)", raw_bytes.len(), 20_000);
+    println!(
+        "Input:  {} bytes ({} float32 elements)",
+        raw_bytes.len(),
+        20_000
+    );
 
     // ── 3. Encode ─────────────────────────────────────────────────────────────
     //
@@ -89,8 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "  Object 0: dtype={}, shape={:?}",
-        decoded_meta.objects[0].dtype,
-        decoded_meta.objects[0].shape,
+        decoded_meta.objects[0].dtype, decoded_meta.objects[0].shape,
     );
 
     assert_eq!(decoded_objects[0], raw_bytes, "round-trip mismatch");

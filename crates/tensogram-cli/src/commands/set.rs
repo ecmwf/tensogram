@@ -6,10 +6,23 @@ use crate::filter;
 
 /// Keys that cannot be modified via `set` (structural/integrity keys).
 const IMMUTABLE_KEYS: &[&str] = &[
-    "shape", "strides", "dtype", "ndim", "type",
-    "encoding", "filter", "compression",
-    "hash", "szip_rsi", "szip_block_size", "szip_flags", "szip_block_offsets",
-    "reference_value", "binary_scale_factor", "decimal_scale_factor", "bits_per_value",
+    "shape",
+    "strides",
+    "dtype",
+    "ndim",
+    "type",
+    "encoding",
+    "filter",
+    "compression",
+    "hash",
+    "szip_rsi",
+    "szip_block_size",
+    "szip_flags",
+    "szip_block_offsets",
+    "reference_value",
+    "binary_scale_factor",
+    "decimal_scale_factor",
+    "bits_per_value",
     "shuffle_element_size",
 ];
 
@@ -19,14 +32,17 @@ pub fn run(
     set_values: &str,
     where_clause: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let clause = where_clause.map(filter::parse_where).transpose()
+    let clause = where_clause
+        .map(filter::parse_where)
+        .transpose()
         .map_err(|e| format!("invalid where clause: {e}"))?;
 
     // Parse set values: "key=val,key2=val2"
     let mutations: Vec<(String, String)> = set_values
         .split(',')
         .map(|kv| {
-            let (k, v) = kv.split_once('=')
+            let (k, v) = kv
+                .split_once('=')
                 .ok_or_else(|| format!("invalid set value: {kv}"))?;
             Ok((k.trim().to_string(), v.trim().to_string()))
         })
@@ -82,18 +98,18 @@ fn apply_mutation(metadata: &mut tensogram_core::Metadata, key: &str, value: &st
 
     if parts.len() == 1 {
         // Top-level key
-        metadata.extra.insert(
-            key.to_string(),
-            ciborium::Value::Text(value.to_string()),
-        );
+        metadata
+            .extra
+            .insert(key.to_string(), ciborium::Value::Text(value.to_string()));
     } else if parts.len() == 2 {
         // Namespaced key like "mars.class"
         let ns = parts[0];
         let field = parts[1];
 
-        let ns_val = metadata.extra.entry(ns.to_string()).or_insert_with(|| {
-            ciborium::Value::Map(Vec::new())
-        });
+        let ns_val = metadata
+            .extra
+            .entry(ns.to_string())
+            .or_insert_with(|| ciborium::Value::Map(Vec::new()));
 
         if let ciborium::Value::Map(entries) = ns_val {
             // Update existing or insert new

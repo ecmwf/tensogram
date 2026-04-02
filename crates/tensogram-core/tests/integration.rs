@@ -31,10 +31,16 @@ fn make_mars_metadata(shape: Vec<u64>, param: &str) -> Metadata {
     let mut mars = BTreeMap::new();
     mars.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
     mars.insert("type".to_string(), ciborium::Value::Text("fc".to_string()));
-    mars.insert("date".to_string(), ciborium::Value::Text("20260401".to_string()));
+    mars.insert(
+        "date".to_string(),
+        ciborium::Value::Text("20260401".to_string()),
+    );
 
     let mut obj_mars = BTreeMap::new();
-    obj_mars.insert("param".to_string(), ciborium::Value::Text(param.to_string()));
+    obj_mars.insert(
+        "param".to_string(),
+        ciborium::Value::Text(param.to_string()),
+    );
 
     let mut obj_extra = BTreeMap::new();
     obj_extra.insert(
@@ -153,7 +159,7 @@ fn test_multi_object_message() {
     };
 
     let data1 = vec![1u8; 4 * 5 * 4]; // 20 float32
-    let data2 = vec![2u8; 3 * 8];       // 3 float64
+    let data2 = vec![2u8; 3 * 8]; // 3 float64
 
     let encoded = encode(&metadata, &[&data1, &data2], &EncodeOptions::default()).unwrap();
     let (meta, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
@@ -332,10 +338,7 @@ fn test_simple_packing_round_trip() {
 
     assert_eq!(decoded_values.len(), 100);
     for (orig, dec) in values.iter().zip(decoded_values.iter()) {
-        assert!(
-            (orig - dec).abs() < 0.01,
-            "orig={orig}, dec={dec}"
-        );
+        assert!((orig - dec).abs() < 0.01, "orig={orig}, dec={dec}");
     }
 }
 
@@ -413,10 +416,7 @@ fn test_partial_range_decode_uncompressed() {
     // Decode range: elements 3..6 (3 elements)
     let partial = decode_range(&encoded, 0, &[(3, 3)], &DecodeOptions::default()).unwrap();
 
-    let expected: Vec<u8> = values[3..6]
-        .iter()
-        .flat_map(|v| v.to_ne_bytes())
-        .collect();
+    let expected: Vec<u8> = values[3..6].iter().flat_map(|v| v.to_ne_bytes()).collect();
     assert_eq!(partial, expected);
 }
 
@@ -461,7 +461,9 @@ fn test_file_multi_message_round_trip() {
 
     // Read back and verify each
     for i in 0..3u8 {
-        let (_, objects) = file.decode_message(i as usize, &DecodeOptions::default()).unwrap();
+        let (_, objects) = file
+            .decode_message(i as usize, &DecodeOptions::default())
+            .unwrap();
         assert_eq!(objects[0], vec![i; 4 * 4]);
     }
 }

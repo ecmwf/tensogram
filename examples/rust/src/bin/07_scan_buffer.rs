@@ -14,15 +14,14 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode_metadata, encode, scan,
-    ByteOrder, Dtype, EncodeOptions,
-    Metadata, ObjectDescriptor, PayloadDescriptor,
+    decode_metadata, encode, scan, ByteOrder, Dtype, EncodeOptions, Metadata, ObjectDescriptor,
+    PayloadDescriptor,
 };
 
 fn make_message(param: &str, step: i64) -> Vec<u8> {
     let mars = Value::Map(vec![
         (Value::Text("param".into()), Value::Text(param.into())),
-        (Value::Text("step".into()),  Value::Integer(step.into())),
+        (Value::Text("step".into()), Value::Integer(step.into())),
     ]);
     let mut extra = BTreeMap::new();
     extra.insert("mars".to_string(), mars);
@@ -77,7 +76,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  (injected 256 garbage bytes after message 1)");
         }
     }
-    println!("Buffer size with corruption: {} bytes\n", corrupted_buffer.len());
+    println!(
+        "Buffer size with corruption: {} bytes\n",
+        corrupted_buffer.len()
+    );
 
     // ── 3. Scan ────────────────────────────────────────────────────────────────
     //
@@ -95,24 +97,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Read the mars namespace
         let (param, step) = if let Some(Value::Map(entries)) = meta.extra.get("mars") {
-            let param = entries.iter()
+            let param = entries
+                .iter()
                 .find(|(k, _)| matches!(k, Value::Text(s) if s == "param"))
-                .and_then(|(_, v)| if let Value::Text(t) = v { Some(t.as_str()) } else { None })
+                .and_then(|(_, v)| {
+                    if let Value::Text(t) = v {
+                        Some(t.as_str())
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or("?");
-            let step = entries.iter()
+            let step = entries
+                .iter()
                 .find(|(k, _)| matches!(k, Value::Text(s) if s == "step"))
-                .and_then(|(_, v)| if let Value::Integer(i) = v {
-                    let n: i128 = (*i).into(); Some(n)
-                } else { None })
+                .and_then(|(_, v)| {
+                    if let Value::Integer(i) = v {
+                        let n: i128 = (*i).into();
+                        Some(n)
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or(-1);
             (param, step)
         } else {
             ("?", -1)
         };
 
-        println!(
-            "  [{i}] offset={start:6}  len={len:6}  param={param:5}  step={step}"
-        );
+        println!("  [{i}] offset={start:6}  len={len:6}  param={param:5}  step={step}");
     }
 
     println!("\nAll 5 messages decoded correctly despite 256 bytes of injected garbage.");

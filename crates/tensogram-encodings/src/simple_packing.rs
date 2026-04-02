@@ -228,7 +228,10 @@ mod tests {
             decimal_scale_factor: 0,
             bits_per_value: 16,
         };
-        assert!(matches!(encode(&values, &params), Err(PackingError::NanValue(1))));
+        assert!(matches!(
+            encode(&values, &params),
+            Err(PackingError::NanValue(1))
+        ));
     }
 
     #[test]
@@ -238,10 +241,7 @@ mod tests {
         let encoded = encode(&values, &params).unwrap();
         let decoded = decode(&encoded, values.len(), &params).unwrap();
         for (orig, dec) in values.iter().zip(decoded.iter()) {
-            assert!(
-                (orig - dec).abs() < 0.01,
-                "orig={orig}, dec={dec}"
-            );
+            assert!((orig - dec).abs() < 0.01, "orig={orig}, dec={dec}");
         }
     }
 
@@ -254,10 +254,7 @@ mod tests {
         assert_eq!(encoded.len(), 15);
         let decoded = decode(&encoded, values.len(), &params).unwrap();
         for (orig, dec) in values.iter().zip(decoded.iter()) {
-            assert!(
-                (orig - dec).abs() < 0.01,
-                "orig={orig}, dec={dec}"
-            );
+            assert!((orig - dec).abs() < 0.01, "orig={orig}, dec={dec}");
         }
     }
 

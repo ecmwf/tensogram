@@ -35,9 +35,7 @@ impl BinaryHeader {
         }
 
         if &buf[0..8] != MAGIC {
-            return Err(TensogramError::Framing(
-                "invalid magic bytes".to_string(),
-            ));
+            return Err(TensogramError::Framing("invalid magic bytes".to_string()));
         }
 
         let total_length = u64::from_be_bytes(buf[8..16].try_into().unwrap());
@@ -58,7 +56,9 @@ impl BinaryHeader {
         let mut object_offsets = Vec::with_capacity(num_objects as usize);
         for i in 0..num_objects as usize {
             let offset = 40 + i * 8;
-            object_offsets.push(u64::from_be_bytes(buf[offset..offset + 8].try_into().unwrap()));
+            object_offsets.push(u64::from_be_bytes(
+                buf[offset..offset + 8].try_into().unwrap(),
+            ));
         }
 
         Ok(BinaryHeader {

@@ -76,9 +76,7 @@ pub fn decode_frame(buf: &[u8]) -> Result<DecodedFrame<'_>> {
         // Validate terminator
         let term_offset = header.total_length as usize - TERMINATOR.len();
         if &buf[term_offset..term_offset + TERMINATOR.len()] != TERMINATOR {
-            return Err(TensogramError::Framing(
-                "invalid terminator".to_string(),
-            ));
+            return Err(TensogramError::Framing("invalid terminator".to_string()));
         }
     }
 
@@ -88,7 +86,9 @@ pub fn decode_frame(buf: &[u8]) -> Result<DecodedFrame<'_>> {
     if meta_end > buf.len() {
         return Err(TensogramError::Framing(format!(
             "metadata extends beyond buffer: {}+{} > {}",
-            meta_start, header.metadata_length, buf.len()
+            meta_start,
+            header.metadata_length,
+            buf.len()
         )));
     }
     let cbor_bytes = &buf[meta_start..meta_end];
@@ -134,7 +134,11 @@ pub fn decode_frame(buf: &[u8]) -> Result<DecodedFrame<'_>> {
 
 /// Extract the raw payload bytes for object at `index` from a decoded frame.
 /// Strips OBJS/OBJE markers.
-pub fn extract_object_payload<'a>(buf: &'a [u8], frame: &DecodedFrame, index: usize) -> Result<&'a [u8]> {
+pub fn extract_object_payload<'a>(
+    buf: &'a [u8],
+    frame: &DecodedFrame,
+    index: usize,
+) -> Result<&'a [u8]> {
     if index >= frame.header.num_objects as usize {
         return Err(TensogramError::Object(format!(
             "object index {} out of range (num_objects={})",
@@ -206,7 +210,7 @@ mod tests {
     fn test_single_object_round_trip() {
         let cbor = vec![0xA0];
         let payload = vec![1u8, 2, 3, 4, 5];
-        let msg = encode_frame(&cbor, &[payload.clone()]);
+        let msg = encode_frame(&cbor, std::slice::from_ref(&payload));
 
         let frame = decode_frame(&msg).unwrap();
         assert_eq!(frame.header.num_objects, 1);

@@ -24,7 +24,8 @@ pub fn cbor_to_metadata(cbor_bytes: &[u8]) -> Result<Metadata> {
     let value: ciborium::Value = ciborium::from_reader(cbor_bytes)
         .map_err(|e| TensogramError::Metadata(format!("failed to parse CBOR: {e}")))?;
 
-    let metadata: Metadata = value.deserialized()
+    let metadata: Metadata = value
+        .deserialized()
         .map_err(|e| TensogramError::Metadata(format!("failed to deserialize metadata: {e}")))?;
 
     // Validate objects.len == payload.len
@@ -80,21 +81,18 @@ mod tests {
 
     fn make_test_metadata() -> Metadata {
         let mut mars = BTreeMap::new();
-        mars.insert(
-            "class".to_string(),
-            ciborium::Value::Text("od".to_string()),
-        );
-        mars.insert(
-            "type".to_string(),
-            ciborium::Value::Text("fc".to_string()),
-        );
+        mars.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+        mars.insert("type".to_string(), ciborium::Value::Text("fc".to_string()));
 
         let mut extra = BTreeMap::new();
-        extra.insert("mars".to_string(), ciborium::Value::Map(
-            mars.into_iter()
-                .map(|(k, v)| (ciborium::Value::Text(k), v))
-                .collect(),
-        ));
+        extra.insert(
+            "mars".to_string(),
+            ciborium::Value::Map(
+                mars.into_iter()
+                    .map(|(k, v)| (ciborium::Value::Text(k), v))
+                    .collect(),
+            ),
+        );
 
         Metadata {
             version: 1,

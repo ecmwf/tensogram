@@ -12,9 +12,8 @@
 use std::collections::BTreeMap;
 
 use tensogram_core::{
-    decode, encode,
-    ByteOrder, DecodeOptions, Dtype, EncodeOptions, HashAlgorithm,
-    Metadata, ObjectDescriptor, PayloadDescriptor, TensogramError,
+    decode, encode, ByteOrder, DecodeOptions, Dtype, EncodeOptions, HashAlgorithm, Metadata,
+    ObjectDescriptor, PayloadDescriptor, TensogramError,
 };
 
 fn make_metadata() -> Metadata {
@@ -46,7 +45,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 1. Encode with xxh3 (default) ─────────────────────────────────────────
     {
-        let options = EncodeOptions { hash_algorithm: Some(HashAlgorithm::Xxh3) };
+        let options = EncodeOptions {
+            hash_algorithm: Some(HashAlgorithm::Xxh3),
+        };
         let message = encode(&metadata, &[&data], &options)?;
 
         let meta = tensogram_core::decode_metadata(&message)?;
@@ -61,7 +62,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 2. Encode with sha1 ────────────────────────────────────────────────────
     {
-        let options = EncodeOptions { hash_algorithm: Some(HashAlgorithm::Sha1) };
+        let options = EncodeOptions {
+            hash_algorithm: Some(HashAlgorithm::Sha1),
+        };
         let message = encode(&metadata, &[&data], &options)?;
 
         let meta = tensogram_core::decode_metadata(&message)?;
@@ -75,7 +78,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 3. Encode with md5 ─────────────────────────────────────────────────────
     {
-        let options = EncodeOptions { hash_algorithm: Some(HashAlgorithm::Md5) };
+        let options = EncodeOptions {
+            hash_algorithm: Some(HashAlgorithm::Md5),
+        };
         let message = encode(&metadata, &[&data], &options)?;
 
         let meta = tensogram_core::decode_metadata(&message)?;
@@ -89,7 +94,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 4. Encode with no hash ─────────────────────────────────────────────────
     {
-        let options = EncodeOptions { hash_algorithm: None };
+        let options = EncodeOptions {
+            hash_algorithm: None,
+        };
         let message = encode(&metadata, &[&data], &options)?;
 
         let meta = tensogram_core::decode_metadata(&message)?;

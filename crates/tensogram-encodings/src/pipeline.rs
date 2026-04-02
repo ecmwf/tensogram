@@ -1,4 +1,6 @@
-use crate::compression::{Compressor, CompressResult, CompressionError, NoopCompressor, SzipCompressor};
+use crate::compression::{
+    CompressResult, CompressionError, Compressor, NoopCompressor, SzipCompressor,
+};
 use crate::shuffle;
 use crate::simple_packing::{self, PackingError, SimplePackingParams};
 use thiserror::Error;
@@ -32,7 +34,11 @@ pub enum FilterType {
 #[derive(Debug, Clone)]
 pub enum CompressionType {
     None,
-    Szip { rsi: u32, block_size: u32, flags: u32 },
+    Szip {
+        rsi: u32,
+        block_size: u32,
+        flags: u32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -73,14 +79,21 @@ pub fn encode_pipeline(
     // Step 3: Compression
     let compressor: Box<dyn Compressor> = match &config.compression {
         CompressionType::None => Box::new(NoopCompressor),
-        CompressionType::Szip { rsi, block_size, flags } => Box::new(SzipCompressor {
+        CompressionType::Szip {
+            rsi,
+            block_size,
+            flags,
+        } => Box::new(SzipCompressor {
             rsi: *rsi,
             block_size: *block_size,
             flags: *flags,
         }),
     };
 
-    let CompressResult { data: compressed, block_offsets } = compressor.compress(&filtered)?;
+    let CompressResult {
+        data: compressed,
+        block_offsets,
+    } = compressor.compress(&filtered)?;
 
     Ok(PipelineResult {
         encoded_bytes: compressed,
@@ -89,14 +102,15 @@ pub fn encode_pipeline(
 }
 
 /// Full reverse pipeline: decompress → unshuffle → decode
-pub fn decode_pipeline(
-    encoded: &[u8],
-    config: &PipelineConfig,
-) -> Result<Vec<u8>, PipelineError> {
+pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8>, PipelineError> {
     // Step 1: Decompress
     let decompressor: Box<dyn Compressor> = match &config.compression {
         CompressionType::None => Box::new(NoopCompressor),
-        CompressionType::Szip { rsi, block_size, flags } => Box::new(SzipCompressor {
+        CompressionType::Szip {
+            rsi,
+            block_size,
+            flags,
+        } => Box::new(SzipCompressor {
             rsi: *rsi,
             block_size: *block_size,
             flags: *flags,
@@ -182,10 +196,7 @@ mod tests {
         let decoded_values = bytes_to_f64(&decoded);
 
         for (orig, dec) in values.iter().zip(decoded_values.iter()) {
-            assert!(
-                (orig - dec).abs() < 0.01,
-                "orig={orig}, dec={dec}"
-            );
+            assert!((orig - dec).abs() < 0.01, "orig={orig}, dec={dec}");
         }
     }
 

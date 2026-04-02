@@ -31,7 +31,9 @@ pub fn parse_where(input: &str) -> Result<WhereClause, String> {
             values,
         })
     } else {
-        Err(format!("invalid where-clause: {input} (expected key=value or key!=value)"))
+        Err(format!(
+            "invalid where-clause: {input} (expected key=value or key!=value)"
+        ))
     }
 }
 

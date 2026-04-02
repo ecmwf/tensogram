@@ -13,9 +13,8 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode, decode_object, encode,
-    ByteOrder, DecodeOptions, Dtype, EncodeOptions,
-    Metadata, ObjectDescriptor, PayloadDescriptor,
+    decode, decode_object, encode, ByteOrder, DecodeOptions, Dtype, EncodeOptions, Metadata,
+    ObjectDescriptor, PayloadDescriptor,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,7 +28,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     let obj0_mars = Value::Map(vec![
-        (Value::Text("param".into()), Value::Text("wave_spectra".into())),
+        (
+            Value::Text("param".into()),
+            Value::Text("wave_spectra".into()),
+        ),
         (Value::Text("levtype".into()), Value::Text("sfc".into())),
     ]);
     let mut obj0_extra = BTreeMap::new();
@@ -50,9 +52,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Shared forecast context ───────────────────────────────────────────────
     let mars_msg = Value::Map(vec![
         (Value::Text("class".into()), Value::Text("od".into())),
-        (Value::Text("date".into()),  Value::Text("20260401".into())),
-        (Value::Text("step".into()),  Value::Integer(6.into())),
-        (Value::Text("type".into()),  Value::Text("fc".into())),
+        (Value::Text("date".into()), Value::Text("20260401".into())),
+        (Value::Text("step".into()), Value::Integer(6.into())),
+        (Value::Text("type".into()), Value::Text("fc".into())),
     ]);
     let mut msg_extra = BTreeMap::new();
     msg_extra.insert("mars".to_string(), mars_msg);
@@ -64,7 +66,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metadata = Metadata {
         version: 1,
         objects: vec![
-            ObjectDescriptor {               // object 0 — spectrum
+            ObjectDescriptor {
+                // object 0 — spectrum
                 obj_type: "ntensor".to_string(),
                 ndim: 3,
                 shape: vec![nlat as u64, nlon as u64, nfreq as u64],
@@ -72,7 +75,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 dtype: Dtype::Float32,
                 extra: obj0_extra,
             },
-            ObjectDescriptor {               // object 1 — mask
+            ObjectDescriptor {
+                // object 1 — mask
                 obj_type: "ntensor".to_string(),
                 ndim: 2,
                 shape: vec![nlat as u64, nlon as u64],
@@ -82,7 +86,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         ],
         payload: vec![
-            PayloadDescriptor {              // payload 0 — float32 big-endian, no encoding
+            PayloadDescriptor {
+                // payload 0 — float32 big-endian, no encoding
                 byte_order: ByteOrder::Big,
                 encoding: "none".to_string(),
                 filter: "none".to_string(),
@@ -90,7 +95,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 params: BTreeMap::new(),
                 hash: None,
             },
-            PayloadDescriptor {              // payload 1 — uint8, no encoding needed
+            PayloadDescriptor {
+                // payload 1 — uint8, no encoding needed
                 byte_order: ByteOrder::Big,
                 encoding: "none".to_string(),
                 filter: "none".to_string(),
@@ -107,7 +113,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!(
         "Encoded: {} bytes  (spectrum={} bytes  mask={} bytes)",
-        message.len(), spectrum.len(), mask.len()
+        message.len(),
+        spectrum.len(),
+        mask.len()
     );
 
     // ── Decode all objects ────────────────────────────────────────────────────
@@ -132,7 +140,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (_meta2, mask_decoded) = decode_object(&message, 1, &DecodeOptions::default())?;
 
     println!("\ndecode_object(index=1):");
-    println!("  {} bytes, matches original: {}", mask_decoded.len(), mask_decoded == mask);
+    println!(
+        "  {} bytes, matches original: {}",
+        mask_decoded.len(),
+        mask_decoded == mask
+    );
 
     Ok(())
 }

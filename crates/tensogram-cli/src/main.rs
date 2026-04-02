@@ -17,9 +17,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Show file-level summary: message count, size, version
-    Info {
-        files: Vec<PathBuf>,
-    },
+    Info { files: Vec<PathBuf> },
     /// List metadata from messages in tabular format
     Ls {
         /// Where-clause filter (e.g., mars.param=2t/10u)
@@ -77,21 +75,34 @@ fn main() {
 
     let result = match cli.command {
         Commands::Info { files } => commands::info::run(&files),
-        Commands::Ls { where_clause, keys, json, files } => {
-            commands::ls::run(&files, where_clause.as_deref(), keys.as_deref(), json)
-        }
-        Commands::Dump { where_clause, keys, json, files } => {
-            commands::dump::run(&files, where_clause.as_deref(), keys.as_deref(), json)
-        }
-        Commands::Get { where_clause, keys, files } => {
-            commands::get::run(&files, where_clause.as_deref(), &keys)
-        }
-        Commands::Set { set_values, where_clause, input, output } => {
-            commands::set::run(&input, &output, &set_values, where_clause.as_deref())
-        }
-        Commands::Copy { where_clause, input, output } => {
-            commands::copy::run(&input, &output, where_clause.as_deref())
-        }
+        Commands::Ls {
+            where_clause,
+            keys,
+            json,
+            files,
+        } => commands::ls::run(&files, where_clause.as_deref(), keys.as_deref(), json),
+        Commands::Dump {
+            where_clause,
+            keys,
+            json,
+            files,
+        } => commands::dump::run(&files, where_clause.as_deref(), keys.as_deref(), json),
+        Commands::Get {
+            where_clause,
+            keys,
+            files,
+        } => commands::get::run(&files, where_clause.as_deref(), &keys),
+        Commands::Set {
+            set_values,
+            where_clause,
+            input,
+            output,
+        } => commands::set::run(&input, &output, &set_values, where_clause.as_deref()),
+        Commands::Copy {
+            where_clause,
+            input,
+            output,
+        } => commands::copy::run(&input, &output, where_clause.as_deref()),
     };
 
     if let Err(e) = result {

@@ -11,11 +11,13 @@ pub fn run(
     keys: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let clause = where_clause.map(filter::parse_where).transpose()
+    let clause = where_clause
+        .map(filter::parse_where)
+        .transpose()
         .map_err(|e| format!("invalid where clause: {e}"))?;
 
-    let key_list: Option<Vec<String>> = keys
-        .map(|k| k.split(',').map(|s| s.trim().to_string()).collect());
+    let key_list: Option<Vec<String>> =
+        keys.map(|k| k.split(',').map(|s| s.trim().to_string()).collect());
 
     for path in files {
         let mut file = TensogramFile::open(path)?;
@@ -31,16 +33,16 @@ pub fn run(
             }
 
             if json {
-                println!(
-                    "{}",
-                    output::format_json(&metadata, key_list.as_deref())
-                );
+                println!("{}", output::format_json(&metadata, key_list.as_deref()));
             } else {
                 println!("=== Message {i} ===");
                 println!("version: {}", metadata.version);
                 println!("objects: {}", metadata.objects.len());
                 for (j, obj) in metadata.objects.iter().enumerate() {
-                    println!("  object[{j}]: type={}, dtype={}, shape={:?}", obj.obj_type, obj.dtype, obj.shape);
+                    println!(
+                        "  object[{j}]: type={}, dtype={}, shape={:?}",
+                        obj.obj_type, obj.dtype, obj.shape
+                    );
                 }
                 for (key, value) in &metadata.extra {
                     println!("  {key}: {}", output::format_json_value(value));
