@@ -558,6 +558,171 @@ fn test_validate_object_overflow() {
 }
 
 #[test]
+fn test_cross_endian_round_trip() {
+    let values: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 0.5).collect();
+
+    let params = tensogram_encodings::simple_packing::compute_params(&values, 16, 0).unwrap();
+
+    let mut packing_params = BTreeMap::new();
+    packing_params.insert(
+        "reference_value".to_string(),
+        ciborium::Value::Float(params.reference_value),
+    );
+    packing_params.insert(
+        "binary_scale_factor".to_string(),
+        ciborium::Value::Integer((params.binary_scale_factor as i64).into()),
+    );
+    packing_params.insert(
+        "decimal_scale_factor".to_string(),
+        ciborium::Value::Integer((params.decimal_scale_factor as i64).into()),
+    );
+    packing_params.insert(
+        "bits_per_value".to_string(),
+        ciborium::Value::Integer((params.bits_per_value as i64).into()),
+    );
+
+    let be_data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+
+    let be_metadata = Metadata {
+        version: 1,
+        objects: vec![ObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![50],
+            strides: vec![1],
+            dtype: Dtype::Float64,
+            extra: BTreeMap::new(),
+        }],
+        payload: vec![PayloadDescriptor {
+            byte_order: ByteOrder::Big,
+            encoding: "simple_packing".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: packing_params.clone(),
+            hash: None,
+        }],
+        extra: BTreeMap::new(),
+    };
+
+    let encoded_be = encode(&be_metadata, &[&be_data], &EncodeOptions::default()).unwrap();
+    let (_, objects_be) = decode(&encoded_be, &DecodeOptions::default()).unwrap();
+
+    let decoded_be_values: Vec<f64> = objects_be[0]
+        .chunks_exact(8)
+        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+
+    assert_eq!(decoded_be_values.len(), 50);
+    for (orig, dec) in values.iter().zip(decoded_be_values.iter()) {
+        assert!(
+            (orig - dec).abs() < 0.01,
+            "BE round-trip: orig={orig}, dec={dec}"
+        );
+    }
+
+    let le_data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+
+    let le_metadata = Metadata {
+        version: 1,
+        objects: vec![ObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![50],
+            strides: vec![1],
+            dtype: Dtype::Float64,
+            extra: BTreeMap::new(),
+        }],
+        payload: vec![PayloadDescriptor {
+            byte_order: ByteOrder::Little,
+            encoding: "simple_packing".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: packing_params.clone(),
+            hash: None,
+        }],
+        extra: BTreeMap::new(),
+    };
+
+    let encoded_le = encode(&le_metadata, &[&le_data], &EncodeOptions::default()).unwrap();
+    let (_, objects_le) = decode(&encoded_le, &DecodeOptions::default()).unwrap();
+
+    let decoded_le_values: Vec<f64> = objects_le[0]
+        .chunks_exact(8)
+        .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+
+    assert_eq!(decoded_le_values.len(), 50);
+    for (orig, dec) in values.iter().zip(decoded_le_values.iter()) {
+        assert!(
+            (orig - dec).abs() < 0.01,
+            "LE round-trip: orig={orig}, dec={dec}"
+        );
+    }
+
+    assert_ne!(
+        objects_be[0], objects_le[0],
+        "BE and LE decoded bytes should differ"
+    );
+}
+
+#[test]
+fn test_simple_packing_rejects_non_f64() {
+    let values: Vec<f64> = (0..10).map(|i| i as f64).collect();
+    let params = tensogram_encodings::simple_packing::compute_params(&values, 16, 0).unwrap();
+
+    let mut packing_params = BTreeMap::new();
+    packing_params.insert(
+        "reference_value".to_string(),
+        ciborium::Value::Float(params.reference_value),
+    );
+    packing_params.insert(
+        "binary_scale_factor".to_string(),
+        ciborium::Value::Integer((params.binary_scale_factor as i64).into()),
+    );
+    packing_params.insert(
+        "decimal_scale_factor".to_string(),
+        ciborium::Value::Integer((params.decimal_scale_factor as i64).into()),
+    );
+    packing_params.insert(
+        "bits_per_value".to_string(),
+        ciborium::Value::Integer((params.bits_per_value as i64).into()),
+    );
+
+    let metadata = Metadata {
+        version: 1,
+        objects: vec![ObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![10],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            extra: BTreeMap::new(),
+        }],
+        payload: vec![PayloadDescriptor {
+            byte_order: ByteOrder::Big,
+            encoding: "simple_packing".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: packing_params,
+            hash: None,
+        }],
+        extra: BTreeMap::new(),
+    };
+
+    let data = vec![0u8; 10 * 4];
+    let result = encode(&metadata, &[&data], &EncodeOptions::default());
+    assert!(
+        result.is_err(),
+        "expected error for simple_packing with Float32 dtype"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("float64") || msg.contains("f64"),
+        "expected 'float64' in error, got: {msg}"
+    );
+}
+
+#[test]
 fn test_validate_ndim_mismatch() {
     let metadata = Metadata {
         version: 1,
