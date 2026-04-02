@@ -523,3 +523,92 @@ fn test_namespaced_metadata_round_trip() {
         assert!(matches!(class_val, Some(ciborium::Value::Text(s)) if s == "od"));
     }
 }
+
+#[test]
+fn test_validate_object_overflow() {
+    let metadata = Metadata {
+        version: 1,
+        objects: vec![ObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 2,
+            shape: vec![u64::MAX, 2],
+            strides: vec![2, 1],
+            dtype: Dtype::Float32,
+            extra: BTreeMap::new(),
+        }],
+        payload: vec![PayloadDescriptor {
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        }],
+        extra: BTreeMap::new(),
+    };
+
+    let data = vec![0u8; 64];
+    let result = encode(&metadata, &[&data], &EncodeOptions::default());
+    assert!(result.is_err(), "expected Err but got Ok");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("overflow"),
+        "expected 'overflow' in error, got: {msg}"
+    );
+}
+
+#[test]
+fn test_validate_ndim_mismatch() {
+    let metadata = Metadata {
+        version: 1,
+        objects: vec![ObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 3,
+            shape: vec![4, 5],
+            strides: vec![5, 1],
+            dtype: Dtype::Float32,
+            extra: BTreeMap::new(),
+        }],
+        payload: vec![PayloadDescriptor {
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        }],
+        extra: BTreeMap::new(),
+    };
+
+    let data = vec![0u8; 4 * 5 * 4];
+    let result = encode(&metadata, &[&data], &EncodeOptions::default());
+    assert!(result.is_err(), "expected Err but got Ok");
+}
+
+#[test]
+fn test_validate_empty_obj_type() {
+    let metadata = Metadata {
+        version: 1,
+        objects: vec![ObjectDescriptor {
+            obj_type: "".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            extra: BTreeMap::new(),
+        }],
+        payload: vec![PayloadDescriptor {
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        }],
+        extra: BTreeMap::new(),
+    };
+
+    let data = vec![0u8; 4 * 4];
+    let result = encode(&metadata, &[&data], &EncodeOptions::default());
+    assert!(result.is_err(), "expected Err but got Ok");
+}
