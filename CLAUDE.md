@@ -58,9 +58,15 @@ Key routing rules:
 - Save progress, checkpoint, resume → invoke checkpoint
 - Code quality, health check → invoke health
 
+## Build / lint / test (required before marking done)
+
+- Format: `cargo fmt`
+- Lint: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- Test: `cargo test --workspace`
+
 # Tracking work
 
-Please keep track of what is implemented in docs/DONE.md. Keep updating it for all code changes.
+Please keep track of what is implemented in plans/DONE.md. Keep updating it for all code changes.
 
 # Documentation
 
