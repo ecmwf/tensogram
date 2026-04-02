@@ -1,84 +1,36 @@
-# CLAUDE.md
+# Skill routing
 
-## gstack
-
-Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
-
-### Available skills
-
-- `/office-hours` - Office hours
-- `/plan-ceo-review` - Plan CEO review
-- `/plan-eng-review` - Plan engineering review
-- `/plan-design-review` - Plan design review
-- `/design-consultation` - Design consultation
-- `/design-shotgun` - Design shotgun
-- `/design-html` - Design HTML
-- `/review` - Code review
-- `/ship` - Ship
-- `/land-and-deploy` - Land and deploy
-- `/canary` - Canary
-- `/benchmark` - Benchmark
-- `/browse` - Web browsing
-- `/connect-chrome` - Connect Chrome
-- `/qa` - QA
-- `/qa-only` - QA only
-- `/design-review` - Design review
-- `/setup-browser-cookies` - Setup browser cookies
-- `/setup-deploy` - Setup deploy
-- `/retro` - Retro
-- `/investigate` - Investigate
-- `/document-release` - Document release
-- `/codex` - Codex
-- `/cso` - CSO
-- `/autoplan` - Autoplan
-- `/careful` - Careful mode
-- `/freeze` - Freeze
-- `/guard` - Guard
-- `/unfreeze` - Unfreeze
-- `/gstack-upgrade` - Upgrade gstack
-- `/learn` - Learn
-
-## Skill routing
+- CRITICAL: Always prefer the LSP tool over Grep/Read for code navigation. Use it to find definitions, references, and workspace symbols.
 
 When the user's request matches an available skill, ALWAYS invoke it using the Skill
 tool as your FIRST action. Do NOT answer directly, do NOT use other tools first.
 The skill has specialized workflows that produce better results than ad-hoc answers.
 
-Key routing rules:
-- Product ideas, "is this worth building", brainstorming → invoke office-hours
-- Bugs, errors, "why is this broken", 500 errors → invoke investigate
-- Ship, deploy, push, create PR → invoke ship
-- QA, test the site, find bugs → invoke qa
-- Code review, check my diff → invoke review
-- Update docs after shipping → invoke document-release
-- Weekly retro → invoke retro
-- Design system, brand → invoke design-consultation
-- Visual audit, design polish → invoke design-review
-- Architecture review → invoke plan-eng-review
-- Save progress, checkpoint, resume → invoke checkpoint
-- Code quality, health check → invoke health
-
 # Design & Purpose
 
+- README.md -- entry level generic information
 - plans/DESIGN.md -- purpose and design of the library
+- plans/STYLE.md -- code style conventions
 - plans/PLAN.md -- initial plan iteration 0 before further improvements added
 - plans/DONE.md -- keep updated with implementation progress
-- plans/IMPROVEMENTS.md -- plans for future improvements to consider when implementing if opportune pick from there
+- plans/IMPROVEMENTS.md -- future improvements to consider when implementing, if opportune pick from there
 - plans/TODO.md -- long term TODO list of features that may or not be implemented
 
-## Build / lint / test (required before marking done)
+Follow docs/DESIGN.md principles and docs/STYLE.md conventions in all code.
+
+# Build / lint / test (required before marking done)
 
 - Format: `cargo fmt`
 - Lint: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - Test: `cargo test --workspace`
 
-# Tracking work
+# Tracking Work Done
 
 Please keep track of what is implemented in plans/DONE.md. Keep updating it for all code changes.
 
 # Documentation
 
-Create documentation under docs/, as you develop and implement, an easy to follow by average tech person, with well separated topics.
+Create and maintain documentation under docs/. Easy to follow by average tech person, with well separated topics.
 - Use mdbook 
 - Add mermaid diagrams when necessary
 - Add examples when it becomes hard to follow
@@ -86,7 +38,7 @@ Create documentation under docs/, as you develop and implement, an easy to follo
 
 # Examples
 
-Create and maintain a sub-dir examples/<lang> populated with examples of caller code on how to use the library interface:
+Create and maintain a sub-dir examples/<lang> populated with examples of caller code showing how to use interfaces:
 - create sub-dir per language of the caller: Rust, C++, Python
 - examplify the most common cases
-- show uses of all the API functions
+- show how to use all API functions
