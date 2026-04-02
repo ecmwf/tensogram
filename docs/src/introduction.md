@@ -25,7 +25,7 @@ Tensogram solves both. The metadata is CBOR (a compact binary version of JSON) s
 The library is a Rust workspace with five crates:
 
 ```
-tensogram2/
+tensogram/
 ├── crates/
 │   ├── tensogram-core        ← encode, decode, framing, file API
 │   ├── tensogram-encodings   ← simple_packing, shuffle, compression
