@@ -22,9 +22,8 @@ use std::ptr;
 use std::slice;
 
 use tensogram_core::{
-    decode, decode_metadata, decode_object, decode_range, encode, scan,
-    DecodeOptions, EncodeOptions, HashAlgorithm, Metadata,
-    TensogramError, TensogramFile,
+    decode, decode_metadata, decode_object, decode_range, encode, scan, DecodeOptions,
+    EncodeOptions, HashAlgorithm, Metadata, TensogramError, TensogramFile,
 };
 
 // ---------------------------------------------------------------------------
@@ -218,7 +217,7 @@ pub extern "C" fn tgm_encode(
     };
 
     let options = EncodeOptions { hash_algorithm };
-    let refs: Vec<&[u8]> = data_slices.iter().copied().collect();
+    let refs: Vec<&[u8]> = data_slices.to_vec();
 
     match encode(&metadata, &refs, &options) {
         Ok(mut bytes) => {
@@ -227,7 +226,9 @@ pub extern "C" fn tgm_encode(
                 len: bytes.len(),
             };
             std::mem::forget(bytes); // ownership transferred to C
-            unsafe { *out = result; }
+            unsafe {
+                *out = result;
+            }
             TgmError::Ok
         }
         Err(e) => {
@@ -261,7 +262,9 @@ pub extern "C" fn tgm_decode(
     }
 
     let data = unsafe { slice::from_raw_parts(buf, buf_len) };
-    let options = DecodeOptions { verify_hash: verify_hash != 0 };
+    let options = DecodeOptions {
+        verify_hash: verify_hash != 0,
+    };
 
     match decode(data, &options) {
         Ok((metadata, objects)) => {
@@ -270,8 +273,14 @@ pub extern "C" fn tgm_decode(
                 .iter()
                 .map(|o| CString::new(o.dtype.to_string()).unwrap())
                 .collect();
-            let msg = Box::new(TgmMessage { metadata, objects, dtype_strings });
-            unsafe { *out = Box::into_raw(msg); }
+            let msg = Box::new(TgmMessage {
+                metadata,
+                objects,
+                dtype_strings,
+            });
+            unsafe {
+                *out = Box::into_raw(msg);
+            }
             TgmError::Ok
         }
         Err(e) => {
@@ -301,7 +310,9 @@ pub extern "C" fn tgm_decode_metadata(
                 metadata,
                 cache: std::cell::RefCell::new(BTreeMap::new()),
             });
-            unsafe { *out = Box::into_raw(m); }
+            unsafe {
+                *out = Box::into_raw(m);
+            }
             TgmError::Ok
         }
         Err(e) => {
@@ -329,7 +340,9 @@ pub extern "C" fn tgm_decode_object(
     }
 
     let data = unsafe { slice::from_raw_parts(buf, buf_len) };
-    let options = DecodeOptions { verify_hash: verify_hash != 0 };
+    let options = DecodeOptions {
+        verify_hash: verify_hash != 0,
+    };
 
     match decode_object(data, index, &options) {
         Ok((metadata, obj_bytes)) => {
@@ -343,7 +356,9 @@ pub extern "C" fn tgm_decode_object(
                 objects: vec![obj_bytes],
                 dtype_strings,
             });
-            unsafe { *out = Box::into_raw(msg); }
+            unsafe {
+                *out = Box::into_raw(msg);
+            }
             TgmError::Ok
         }
         Err(e) => {
@@ -380,7 +395,9 @@ pub extern "C" fn tgm_decode_range(
     }
 
     let data = unsafe { slice::from_raw_parts(buf, buf_len) };
-    let options = DecodeOptions { verify_hash: verify_hash != 0 };
+    let options = DecodeOptions {
+        verify_hash: verify_hash != 0,
+    };
 
     let ranges: Vec<(u64, u64)> = if num_ranges == 0 {
         vec![]
@@ -388,7 +405,11 @@ pub extern "C" fn tgm_decode_range(
         unsafe {
             let offsets = slice::from_raw_parts(ranges_offsets, num_ranges);
             let counts = slice::from_raw_parts(ranges_counts, num_ranges);
-            offsets.iter().zip(counts.iter()).map(|(&o, &c)| (o, c)).collect()
+            offsets
+                .iter()
+                .zip(counts.iter())
+                .map(|(&o, &c)| (o, c))
+                .collect()
         }
     };
 
@@ -399,7 +420,9 @@ pub extern "C" fn tgm_decode_range(
                 len: bytes.len(),
             };
             std::mem::forget(bytes);
-            unsafe { *out = result; }
+            unsafe {
+                *out = result;
+            }
             TgmError::Ok
         }
         Err(e) => {
@@ -435,18 +458,28 @@ pub extern "C" fn tgm_scan(
         .map(|(offset, length)| TgmScanEntry { offset, length })
         .collect();
     let result = Box::new(TgmScanResult { entries });
-    unsafe { *out = Box::into_raw(result); }
+    unsafe {
+        *out = Box::into_raw(result);
+    }
     TgmError::Ok
 }
 
 /// # Safety: caller must pass valid, non-null pointer from tgm_scan.
 unsafe fn as_scan(result: *const TgmScanResult) -> Option<&'static TgmScanResult> {
-    if result.is_null() { None } else { Some(&*result) }
+    if result.is_null() {
+        None
+    } else {
+        Some(&*result)
+    }
 }
 
 /// # Safety: caller must pass valid, non-null pointer from tgm_decode*.
 unsafe fn as_msg(msg: *const TgmMessage) -> Option<&'static TgmMessage> {
-    if msg.is_null() { None } else { Some(&*msg) }
+    if msg.is_null() {
+        None
+    } else {
+        Some(&*msg)
+    }
 }
 
 #[no_mangle]
@@ -456,7 +489,10 @@ pub extern "C" fn tgm_scan_count(result: *const TgmScanResult) -> usize {
 
 #[no_mangle]
 pub extern "C" fn tgm_scan_entry(result: *const TgmScanResult, index: usize) -> TgmScanEntry {
-    let fallback = TgmScanEntry { offset: 0, length: 0 };
+    let fallback = TgmScanEntry {
+        offset: 0,
+        length: 0,
+    };
     unsafe {
         as_scan(result)
             .and_then(|r| r.entries.get(index).copied())
@@ -467,7 +503,9 @@ pub extern "C" fn tgm_scan_entry(result: *const TgmScanResult, index: usize) -> 
 #[no_mangle]
 pub extern "C" fn tgm_scan_free(result: *mut TgmScanResult) {
     if !result.is_null() {
-        unsafe { drop(Box::from_raw(result)); }
+        unsafe {
+            drop(Box::from_raw(result));
+        }
     }
 }
 
@@ -596,7 +634,9 @@ pub extern "C" fn tgm_payload_has_hash(msg: *const TgmMessage, index: usize) -> 
 #[no_mangle]
 pub extern "C" fn tgm_message_free(msg: *mut TgmMessage) {
     if !msg.is_null() {
-        unsafe { drop(Box::from_raw(msg)); }
+        unsafe {
+            drop(Box::from_raw(msg));
+        }
     }
 }
 
@@ -606,13 +646,17 @@ pub extern "C" fn tgm_message_free(msg: *mut TgmMessage) {
 
 #[no_mangle]
 pub extern "C" fn tgm_metadata_version(meta: *const TgmMetadata) -> u64 {
-    if meta.is_null() { return 0; }
+    if meta.is_null() {
+        return 0;
+    }
     unsafe { (*meta).metadata.version }
 }
 
 #[no_mangle]
 pub extern "C" fn tgm_metadata_num_objects(meta: *const TgmMetadata) -> usize {
-    if meta.is_null() { return 0; }
+    if meta.is_null() {
+        return 0;
+    }
     unsafe { (*meta).metadata.objects.len() }
 }
 
@@ -624,7 +668,9 @@ pub extern "C" fn tgm_metadata_get_string(
     meta: *const TgmMetadata,
     key: *const c_char,
 ) -> *const c_char {
-    if meta.is_null() || key.is_null() { return ptr::null(); }
+    if meta.is_null() || key.is_null() {
+        return ptr::null();
+    }
 
     let key_str = match unsafe { CStr::from_ptr(key) }.to_str() {
         Ok(s) => s,
@@ -637,9 +683,9 @@ pub extern "C" fn tgm_metadata_get_string(
     match value {
         Some(s) => {
             let mut cache = m.cache.borrow_mut();
-            let entry = cache.entry(key_str.to_string()).or_insert_with(|| {
-                CString::new(s.clone()).unwrap_or_default()
-            });
+            let entry = cache
+                .entry(key_str.to_string())
+                .or_insert_with(|| CString::new(s.clone()).unwrap_or_default());
             entry.as_ptr()
         }
         None => ptr::null(),
@@ -654,7 +700,9 @@ pub extern "C" fn tgm_metadata_get_int(
     key: *const c_char,
     default_val: i64,
 ) -> i64 {
-    if meta.is_null() || key.is_null() { return default_val; }
+    if meta.is_null() || key.is_null() {
+        return default_val;
+    }
 
     let key_str = match unsafe { CStr::from_ptr(key) }.to_str() {
         Ok(s) => s,
@@ -672,7 +720,9 @@ pub extern "C" fn tgm_metadata_get_float(
     key: *const c_char,
     default_val: f64,
 ) -> f64 {
-    if meta.is_null() || key.is_null() { return default_val; }
+    if meta.is_null() || key.is_null() {
+        return default_val;
+    }
 
     let key_str = match unsafe { CStr::from_ptr(key) }.to_str() {
         Ok(s) => s,
@@ -686,7 +736,9 @@ pub extern "C" fn tgm_metadata_get_float(
 #[no_mangle]
 pub extern "C" fn tgm_metadata_free(meta: *mut TgmMetadata) {
     if !meta.is_null() {
-        unsafe { drop(Box::from_raw(meta)); }
+        unsafe {
+            drop(Box::from_raw(meta));
+        }
     }
 }
 
@@ -695,10 +747,7 @@ pub extern "C" fn tgm_metadata_free(meta: *mut TgmMetadata) {
 // ---------------------------------------------------------------------------
 
 #[no_mangle]
-pub extern "C" fn tgm_file_open(
-    path: *const c_char,
-    out: *mut *mut TgmFile,
-) -> TgmError {
+pub extern "C" fn tgm_file_open(path: *const c_char, out: *mut *mut TgmFile) -> TgmError {
     if path.is_null() || out.is_null() {
         set_last_error("null argument");
         return TgmError::InvalidArg;
@@ -715,7 +764,9 @@ pub extern "C" fn tgm_file_open(
     match TensogramFile::open(path_str) {
         Ok(file) => {
             let handle = Box::new(TgmFile { file });
-            unsafe { *out = Box::into_raw(handle); }
+            unsafe {
+                *out = Box::into_raw(handle);
+            }
             TgmError::Ok
         }
         Err(e) => {
@@ -726,10 +777,7 @@ pub extern "C" fn tgm_file_open(
 }
 
 #[no_mangle]
-pub extern "C" fn tgm_file_create(
-    path: *const c_char,
-    out: *mut *mut TgmFile,
-) -> TgmError {
+pub extern "C" fn tgm_file_create(path: *const c_char, out: *mut *mut TgmFile) -> TgmError {
     if path.is_null() || out.is_null() {
         set_last_error("null argument");
         return TgmError::InvalidArg;
@@ -746,7 +794,9 @@ pub extern "C" fn tgm_file_create(
     match TensogramFile::create(path_str) {
         Ok(file) => {
             let handle = Box::new(TgmFile { file });
-            unsafe { *out = Box::into_raw(handle); }
+            unsafe {
+                *out = Box::into_raw(handle);
+            }
             TgmError::Ok
         }
         Err(e) => {
@@ -757,10 +807,7 @@ pub extern "C" fn tgm_file_create(
 }
 
 #[no_mangle]
-pub extern "C" fn tgm_file_message_count(
-    file: *mut TgmFile,
-    out_count: *mut usize,
-) -> TgmError {
+pub extern "C" fn tgm_file_message_count(file: *mut TgmFile, out_count: *mut usize) -> TgmError {
     if file.is_null() || out_count.is_null() {
         set_last_error("null argument");
         return TgmError::InvalidArg;
@@ -769,7 +816,9 @@ pub extern "C" fn tgm_file_message_count(
     let f = unsafe { &mut (*file).file };
     match f.message_count() {
         Ok(count) => {
-            unsafe { *out_count = count; }
+            unsafe {
+                *out_count = count;
+            }
             TgmError::Ok
         }
         Err(e) => {
@@ -794,7 +843,9 @@ pub extern "C" fn tgm_file_decode_message(
     }
 
     let f = unsafe { &mut (*file).file };
-    let options = DecodeOptions { verify_hash: verify_hash != 0 };
+    let options = DecodeOptions {
+        verify_hash: verify_hash != 0,
+    };
 
     match f.decode_message(index, &options) {
         Ok((metadata, objects)) => {
@@ -803,8 +854,14 @@ pub extern "C" fn tgm_file_decode_message(
                 .iter()
                 .map(|o| CString::new(o.dtype.to_string()).unwrap())
                 .collect();
-            let msg = Box::new(TgmMessage { metadata, objects, dtype_strings });
-            unsafe { *out = Box::into_raw(msg); }
+            let msg = Box::new(TgmMessage {
+                metadata,
+                objects,
+                dtype_strings,
+            });
+            unsafe {
+                *out = Box::into_raw(msg);
+            }
             TgmError::Ok
         }
         Err(e) => {
@@ -836,7 +893,9 @@ pub extern "C" fn tgm_file_read_message(
                 len: bytes.len(),
             };
             std::mem::forget(bytes);
-            unsafe { *out = result; }
+            unsafe {
+                *out = result;
+            }
             TgmError::Ok
         }
         Err(e) => {
@@ -881,7 +940,9 @@ pub extern "C" fn tgm_file_append_raw(
 #[no_mangle]
 pub extern "C" fn tgm_file_close(file: *mut TgmFile) {
     if !file.is_null() {
-        unsafe { drop(Box::from_raw(file)); }
+        unsafe {
+            drop(Box::from_raw(file));
+        }
     }
 }
 
@@ -936,7 +997,10 @@ fn lookup_string_key(metadata: &Metadata, key: &str) -> Option<String> {
 
     lookup_cbor_value(metadata, key).and_then(|v| match v {
         ciborium::Value::Text(s) => Some(s.clone()),
-        ciborium::Value::Integer(i) => { let n: i128 = (*i).into(); Some(n.to_string()) }
+        ciborium::Value::Integer(i) => {
+            let n: i128 = (*i).into();
+            Some(n.to_string())
+        }
         ciborium::Value::Float(f) => Some(f.to_string()),
         ciborium::Value::Bool(b) => Some(b.to_string()),
         _ => None,
@@ -949,7 +1013,10 @@ fn lookup_int_key(metadata: &Metadata, key: &str) -> Option<i64> {
     }
 
     lookup_cbor_value(metadata, key).and_then(|v| match v {
-        ciborium::Value::Integer(i) => { let n: i128 = (*i).into(); Some(n as i64) }
+        ciborium::Value::Integer(i) => {
+            let n: i128 = (*i).into();
+            Some(n as i64)
+        }
         _ => None,
     })
 }
@@ -957,7 +1024,10 @@ fn lookup_int_key(metadata: &Metadata, key: &str) -> Option<i64> {
 fn lookup_float_key(metadata: &Metadata, key: &str) -> Option<f64> {
     lookup_cbor_value(metadata, key).and_then(|v| match v {
         ciborium::Value::Float(f) => Some(*f),
-        ciborium::Value::Integer(i) => { let n: i128 = (*i).into(); Some(n as f64) }
+        ciborium::Value::Integer(i) => {
+            let n: i128 = (*i).into();
+            Some(n as f64)
+        }
         _ => None,
     })
 }
