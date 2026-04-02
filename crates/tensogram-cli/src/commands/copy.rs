@@ -18,6 +18,7 @@ pub fn run(
     let has_placeholders = output.contains('[') && output.contains(']');
 
     let mut in_file = TensogramFile::open(input)?;
+    #[allow(deprecated)]
     let messages = in_file.messages()?;
 
     if !has_placeholders {

@@ -11,9 +11,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
 use tensogram_core::{
-    decode, decode_metadata, decode_object, decode_range, encode, scan,
-    ByteOrder, DecodeOptions, Dtype, EncodeOptions, HashAlgorithm, Metadata,
-    ObjectDescriptor, PayloadDescriptor, TensogramError, TensogramFile,
+    decode, decode_metadata, decode_object, decode_range, encode, scan, ByteOrder, DecodeOptions,
+    Dtype, EncodeOptions, HashAlgorithm, Metadata, ObjectDescriptor, PayloadDescriptor,
+    TensogramError, TensogramFile,
 };
 
 // ---------------------------------------------------------------------------
@@ -25,12 +25,14 @@ fn to_py_err(e: TensogramError) -> PyErr {
         TensogramError::Framing(msg) => PyValueError::new_err(format!("FramingError: {msg}")),
         TensogramError::Metadata(msg) => PyValueError::new_err(format!("MetadataError: {msg}")),
         TensogramError::Encoding(msg) => PyValueError::new_err(format!("EncodingError: {msg}")),
-        TensogramError::Compression(msg) => PyValueError::new_err(format!("CompressionError: {msg}")),
+        TensogramError::Compression(msg) => {
+            PyValueError::new_err(format!("CompressionError: {msg}"))
+        }
         TensogramError::Object(msg) => PyValueError::new_err(format!("ObjectError: {msg}")),
         TensogramError::Io(e) => PyIOError::new_err(format!("{e}")),
-        TensogramError::HashMismatch { expected, actual } => {
-            PyRuntimeError::new_err(format!("HashMismatch: expected={expected}, actual={actual}"))
-        }
+        TensogramError::HashMismatch { expected, actual } => PyRuntimeError::new_err(format!(
+            "HashMismatch: expected={expected}, actual={actual}"
+        )),
     }
 }
 
@@ -46,7 +48,12 @@ fn cbor_to_py(py: Python<'_>, val: &ciborium::Value) -> PyObject {
             (n as i64).into_pyobject(py).unwrap().into_any().unbind()
         }
         ciborium::Value::Float(f) => f.into_pyobject(py).unwrap().into_any().unbind(),
-        ciborium::Value::Bool(b) => (*b).into_pyobject(py).unwrap().to_owned().into_any().unbind(),
+        ciborium::Value::Bool(b) => (*b)
+            .into_pyobject(py)
+            .unwrap()
+            .to_owned()
+            .into_any()
+            .unbind(),
         ciborium::Value::Null => py.None(),
         ciborium::Value::Array(arr) => {
             let list = PyList::new(py, arr.iter().map(|v| cbor_to_py(py, v))).unwrap();
@@ -61,10 +68,12 @@ fn cbor_to_py(py: Python<'_>, val: &ciborium::Value) -> PyObject {
             }
             dict.into_any().unbind()
         }
-        ciborium::Value::Bytes(b) => {
-            PyBytes::new(py, b).into_any().unbind()
-        }
-        _ => format!("{val:?}").into_pyobject(py).unwrap().into_any().unbind(),
+        ciborium::Value::Bytes(b) => PyBytes::new(py, b).into_any().unbind(),
+        _ => format!("{val:?}")
+            .into_pyobject(py)
+            .unwrap()
+            .into_any()
+            .unbind(),
     }
 }
 
@@ -96,7 +105,8 @@ fn py_to_cbor(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<ciborium::Value> {
         return Ok(ciborium::Value::Array(items?));
     }
     Err(PyValueError::new_err(format!(
-        "cannot convert {} to CBOR", obj.get_type().name()?
+        "cannot convert {} to CBOR",
+        obj.get_type().name()?
     )))
 }
 
@@ -130,22 +140,34 @@ struct PyObjectDescriptor {
 #[pymethods]
 impl PyObjectDescriptor {
     #[getter]
-    fn obj_type(&self) -> &str { &self.inner.obj_type }
+    fn obj_type(&self) -> &str {
+        &self.inner.obj_type
+    }
 
     #[getter]
-    fn ndim(&self) -> u64 { self.inner.ndim }
+    fn ndim(&self) -> u64 {
+        self.inner.ndim
+    }
 
     #[getter]
-    fn shape(&self) -> Vec<u64> { self.inner.shape.clone() }
+    fn shape(&self) -> Vec<u64> {
+        self.inner.shape.clone()
+    }
 
     #[getter]
-    fn strides(&self) -> Vec<u64> { self.inner.strides.clone() }
+    fn strides(&self) -> Vec<u64> {
+        self.inner.strides.clone()
+    }
 
     #[getter]
-    fn dtype(&self) -> String { self.inner.dtype.to_string() }
+    fn dtype(&self) -> String {
+        self.inner.dtype.to_string()
+    }
 
     #[getter]
-    fn extra(&self, py: Python<'_>) -> PyObject { extra_to_py(py, &self.inner.extra) }
+    fn extra(&self, py: Python<'_>) -> PyObject {
+        extra_to_py(py, &self.inner.extra)
+    }
 
     fn __repr__(&self) -> String {
         format!(
@@ -176,13 +198,19 @@ impl PyPayloadDescriptor {
     }
 
     #[getter]
-    fn encoding(&self) -> &str { &self.inner.encoding }
+    fn encoding(&self) -> &str {
+        &self.inner.encoding
+    }
 
     #[getter]
-    fn filter(&self) -> &str { &self.inner.filter }
+    fn filter(&self) -> &str {
+        &self.inner.filter
+    }
 
     #[getter]
-    fn compression(&self) -> &str { &self.inner.compression }
+    fn compression(&self) -> &str {
+        &self.inner.compression
+    }
 
     #[getter]
     fn hash(&self, py: Python<'_>) -> PyObject {
@@ -198,7 +226,9 @@ impl PyPayloadDescriptor {
     }
 
     #[getter]
-    fn params(&self, py: Python<'_>) -> PyObject { extra_to_py(py, &self.inner.params) }
+    fn params(&self, py: Python<'_>) -> PyObject {
+        extra_to_py(py, &self.inner.params)
+    }
 
     fn __repr__(&self) -> String {
         format!(
@@ -221,20 +251,32 @@ struct PyMetadata {
 #[pymethods]
 impl PyMetadata {
     #[getter]
-    fn version(&self) -> u64 { self.inner.version }
+    fn version(&self) -> u64 {
+        self.inner.version
+    }
 
     #[getter]
     fn objects(&self) -> Vec<PyObjectDescriptor> {
-        self.inner.objects.iter().map(|o| PyObjectDescriptor { inner: o.clone() }).collect()
+        self.inner
+            .objects
+            .iter()
+            .map(|o| PyObjectDescriptor { inner: o.clone() })
+            .collect()
     }
 
     #[getter]
     fn payload(&self) -> Vec<PyPayloadDescriptor> {
-        self.inner.payload.iter().map(|p| PyPayloadDescriptor { inner: p.clone() }).collect()
+        self.inner
+            .payload
+            .iter()
+            .map(|p| PyPayloadDescriptor { inner: p.clone() })
+            .collect()
     }
 
     #[getter]
-    fn extra(&self, py: Python<'_>) -> PyObject { extra_to_py(py, &self.inner.extra) }
+    fn extra(&self, py: Python<'_>) -> PyObject {
+        extra_to_py(py, &self.inner.extra)
+    }
 
     /// Dictionary-style access to top-level extra keys.
     fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<PyObject> {
@@ -298,7 +340,9 @@ impl PyTensogramFile {
         let refs: Vec<&[u8]> = bufs.iter().map(|v| v.as_slice()).collect();
 
         let options = make_encode_options(hash)?;
-        self.file.append(&metadata, &refs, &options).map_err(to_py_err)
+        self.file
+            .append(&metadata, &refs, &options)
+            .map_err(to_py_err)
     }
 
     /// Decode message at index → (Metadata, list[bytes]).
@@ -309,20 +353,30 @@ impl PyTensogramFile {
         index: usize,
         verify_hash: Option<bool>,
     ) -> PyResult<(PyMetadata, PyObject)> {
-        let options = DecodeOptions { verify_hash: verify_hash.unwrap_or(false) };
-        let (meta, objects) = self.file.decode_message(index, &options).map_err(to_py_err)?;
+        let options = DecodeOptions {
+            verify_hash: verify_hash.unwrap_or(false),
+        };
+        let (meta, objects) = self
+            .file
+            .decode_message(index, &options)
+            .map_err(to_py_err)?;
         let arrays = objects_to_numpy(py, &meta, &objects)?;
         Ok((PyMetadata { inner: meta }, arrays))
     }
 
     /// Raw message bytes at index.
-    fn read_message<'py>(&mut self, py: Python<'py>, index: usize) -> PyResult<Bound<'py, PyBytes>> {
+    fn read_message<'py>(
+        &mut self,
+        py: Python<'py>,
+        index: usize,
+    ) -> PyResult<Bound<'py, PyBytes>> {
         let bytes = self.file.read_message(index).map_err(to_py_err)?;
         Ok(PyBytes::new(py, &bytes))
     }
 
     /// All raw message bytes as a list of bytes objects.
     fn messages<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        #[allow(deprecated)]
         let msgs = self.file.messages().map_err(to_py_err)?;
         let items: Vec<PyObject> = msgs
             .iter()
@@ -367,11 +421,7 @@ fn py_encode<'py>(
 /// Decode a complete message → (Metadata, list[numpy.ndarray]).
 #[pyfunction]
 #[pyo3(name = "decode", signature = (buf, verify_hash=false))]
-fn py_decode(
-    py: Python<'_>,
-    buf: &[u8],
-    verify_hash: bool,
-) -> PyResult<(PyMetadata, PyObject)> {
+fn py_decode(py: Python<'_>, buf: &[u8], verify_hash: bool) -> PyResult<(PyMetadata, PyObject)> {
     let options = DecodeOptions { verify_hash };
     let (meta, objects) = decode(buf, &options).map_err(to_py_err)?;
     let arrays = objects_to_numpy(py, &meta, &objects)?;
@@ -398,7 +448,12 @@ fn py_decode_object(
     let options = DecodeOptions { verify_hash };
     let (meta, obj_bytes) = decode_object(buf, index, &options).map_err(to_py_err)?;
     let arr = bytes_to_numpy(py, &meta.objects[index], &obj_bytes, &meta.payload[index])?;
-    Ok((PyObjectDescriptor { inner: meta.objects[index].clone() }, arr))
+    Ok((
+        PyObjectDescriptor {
+            inner: meta.objects[index].clone(),
+        },
+        arr,
+    ))
 }
 
 /// Decode a partial range from an uncompressed object → numpy.ndarray.
@@ -437,7 +492,9 @@ fn compute_packing_params(
     bits_per_value: u32,
     decimal_scale_factor: i32,
 ) -> PyResult<PyObject> {
-    let slice = values.as_slice().map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let slice = values
+        .as_slice()
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
     let params = tensogram_encodings::simple_packing::compute_params(
         slice,
         bits_per_value,
@@ -493,30 +550,42 @@ fn extract_data_list(_py: Python<'_>, data_list: &Bound<'_, PyList>) -> PyResult
     for item in data_list.iter() {
         // Try as numpy array first, then as bytes
         if let Ok(arr) = item.extract::<numpy::PyReadonlyArrayDyn<'_, u8>>() {
-            bufs.push(arr.as_slice().map_err(|e| PyValueError::new_err(format!("{e}")))?.to_vec());
+            bufs.push(
+                arr.as_slice()
+                    .map_err(|e| PyValueError::new_err(format!("{e}")))?
+                    .to_vec(),
+            );
         } else if let Ok(arr) = item.extract::<numpy::PyReadonlyArrayDyn<'_, f32>>() {
-            let s = arr.as_slice().map_err(|e| PyValueError::new_err(format!("{e}")))?;
+            let s = arr
+                .as_slice()
+                .map_err(|e| PyValueError::new_err(format!("{e}")))?;
             let bytes: Vec<u8> = s.iter().flat_map(|v| v.to_ne_bytes()).collect();
             bufs.push(bytes);
         } else if let Ok(arr) = item.extract::<numpy::PyReadonlyArrayDyn<'_, f64>>() {
-            let s = arr.as_slice().map_err(|e| PyValueError::new_err(format!("{e}")))?;
+            let s = arr
+                .as_slice()
+                .map_err(|e| PyValueError::new_err(format!("{e}")))?;
             let bytes: Vec<u8> = s.iter().flat_map(|v| v.to_ne_bytes()).collect();
             bufs.push(bytes);
         } else if let Ok(b) = item.extract::<Vec<u8>>() {
             bufs.push(b);
         } else {
-            return Err(PyValueError::new_err("data_list items must be numpy arrays or bytes"));
+            return Err(PyValueError::new_err(
+                "data_list items must be numpy arrays or bytes",
+            ));
         }
     }
     Ok(bufs)
 }
 
 fn dict_to_metadata(dict: &Bound<'_, PyDict>) -> PyResult<Metadata> {
-    let version: u64 = dict.get_item("version")?
+    let version: u64 = dict
+        .get_item("version")?
         .ok_or_else(|| PyValueError::new_err("missing 'version'"))?
         .extract()?;
 
-    let objects_list = dict.get_item("objects")?
+    let objects_list = dict
+        .get_item("objects")?
         .ok_or_else(|| PyValueError::new_err("missing 'objects'"))?;
     let objects_list = objects_list.downcast::<PyList>()?;
 
@@ -557,17 +626,25 @@ fn dict_to_metadata(dict: &Bound<'_, PyDict>) -> PyResult<Metadata> {
         }
     }
 
-    Ok(Metadata { version, objects, payload, extra })
+    Ok(Metadata {
+        version,
+        objects,
+        payload,
+        extra,
+    })
 }
 
 fn dict_to_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<ObjectDescriptor> {
-    let obj_type: String = dict.get_item("type")?
+    let obj_type: String = dict
+        .get_item("type")?
         .ok_or_else(|| PyValueError::new_err("object missing 'type'"))?
         .extract()?;
-    let shape: Vec<u64> = dict.get_item("shape")?
+    let shape: Vec<u64> = dict
+        .get_item("shape")?
         .ok_or_else(|| PyValueError::new_err("object missing 'shape'"))?
         .extract()?;
-    let dtype_str: String = dict.get_item("dtype")?
+    let dtype_str: String = dict
+        .get_item("dtype")?
         .ok_or_else(|| PyValueError::new_err("object missing 'dtype'"))?
         .extract()?;
 
@@ -592,7 +669,14 @@ fn dict_to_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<ObjectDescrip
         }
     }
 
-    Ok(ObjectDescriptor { obj_type, ndim, shape, strides, dtype, extra })
+    Ok(ObjectDescriptor {
+        obj_type,
+        ndim,
+        shape,
+        strides,
+        dtype,
+        extra,
+    })
 }
 
 fn dict_to_payload_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<PayloadDescriptor> {
@@ -600,15 +684,18 @@ fn dict_to_payload_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<PayloadDescr
         Some(Ok(s)) if s == "little" => ByteOrder::Little,
         _ => ByteOrder::Big,
     };
-    let encoding = dict.get_item("encoding")?
+    let encoding = dict
+        .get_item("encoding")?
         .map(|v| v.extract::<String>())
         .transpose()?
         .unwrap_or_else(|| "none".to_string());
-    let filter = dict.get_item("filter")?
+    let filter = dict
+        .get_item("filter")?
         .map(|v| v.extract::<String>())
         .transpose()?
         .unwrap_or_else(|| "none".to_string());
-    let compression = dict.get_item("compression")?
+    let compression = dict
+        .get_item("compression")?
         .map(|v| v.extract::<String>())
         .transpose()?
         .unwrap_or_else(|| "none".to_string());
@@ -623,7 +710,14 @@ fn dict_to_payload_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<PayloadDescr
         }
     }
 
-    Ok(PayloadDescriptor { byte_order, encoding, filter, compression, params, hash: None })
+    Ok(PayloadDescriptor {
+        byte_order,
+        encoding,
+        filter,
+        compression,
+        params,
+        hash: None,
+    })
 }
 
 fn parse_dtype(s: &str) -> PyResult<Dtype> {
@@ -648,7 +742,9 @@ fn parse_dtype(s: &str) -> PyResult<Dtype> {
 }
 
 fn compute_strides(shape: &[u64]) -> Vec<u64> {
-    if shape.is_empty() { return vec![]; }
+    if shape.is_empty() {
+        return vec![];
+    }
     let mut strides = vec![1u64; shape.len()];
     for i in (0..shape.len() - 1).rev() {
         strides[i] = strides[i + 1] * shape[i + 1];
@@ -657,11 +753,7 @@ fn compute_strides(shape: &[u64]) -> Vec<u64> {
 }
 
 /// Convert decoded object bytes to numpy arrays.
-fn objects_to_numpy(
-    py: Python<'_>,
-    meta: &Metadata,
-    objects: &[Vec<u8>],
-) -> PyResult<PyObject> {
+fn objects_to_numpy(py: Python<'_>, meta: &Metadata, objects: &[Vec<u8>]) -> PyResult<PyObject> {
     let mut arrays: Vec<PyObject> = Vec::new();
     for (i, obj_bytes) in objects.iter().enumerate() {
         let desc = &meta.objects[i];
@@ -690,28 +782,32 @@ fn bytes_to_numpy(
 
     match effective_dtype {
         Dtype::Float32 => {
-            let values: Vec<f32> = bytes.chunks_exact(4)
+            let values: Vec<f32> = bytes
+                .chunks_exact(4)
                 .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
                 .collect();
             let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
             Ok(arr.into_any().unbind())
         }
         Dtype::Float64 => {
-            let values: Vec<f64> = bytes.chunks_exact(8)
+            let values: Vec<f64> = bytes
+                .chunks_exact(8)
                 .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
                 .collect();
             let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
             Ok(arr.into_any().unbind())
         }
         Dtype::Int32 => {
-            let values: Vec<i32> = bytes.chunks_exact(4)
+            let values: Vec<i32> = bytes
+                .chunks_exact(4)
                 .map(|c| i32::from_ne_bytes(c.try_into().unwrap()))
                 .collect();
             let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
             Ok(arr.into_any().unbind())
         }
         Dtype::Int64 => {
-            let values: Vec<i64> = bytes.chunks_exact(8)
+            let values: Vec<i64> = bytes
+                .chunks_exact(8)
                 .map(|c| i64::from_ne_bytes(c.try_into().unwrap()))
                 .collect();
             let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
@@ -722,21 +818,24 @@ fn bytes_to_numpy(
             Ok(arr.into_any().unbind())
         }
         Dtype::Uint16 => {
-            let values: Vec<u16> = bytes.chunks_exact(2)
+            let values: Vec<u16> = bytes
+                .chunks_exact(2)
                 .map(|c| u16::from_ne_bytes(c.try_into().unwrap()))
                 .collect();
             let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
             Ok(arr.into_any().unbind())
         }
         Dtype::Uint32 => {
-            let values: Vec<u32> = bytes.chunks_exact(4)
+            let values: Vec<u32> = bytes
+                .chunks_exact(4)
                 .map(|c| u32::from_ne_bytes(c.try_into().unwrap()))
                 .collect();
             let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
             Ok(arr.into_any().unbind())
         }
         Dtype::Uint64 => {
-            let values: Vec<u64> = bytes.chunks_exact(8)
+            let values: Vec<u64> = bytes
+                .chunks_exact(8)
                 .map(|c| u64::from_ne_bytes(c.try_into().unwrap()))
                 .collect();
             let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
@@ -748,7 +847,8 @@ fn bytes_to_numpy(
             Ok(arr.into_any().unbind())
         }
         Dtype::Int16 => {
-            let values: Vec<i16> = bytes.chunks_exact(2)
+            let values: Vec<i16> = bytes
+                .chunks_exact(2)
                 .map(|c| i16::from_ne_bytes(c.try_into().unwrap()))
                 .collect();
             let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
@@ -772,14 +872,16 @@ fn raw_bytes_to_numpy_flat(
 ) -> PyResult<PyObject> {
     match dtype {
         Dtype::Float32 => {
-            let values: Vec<f32> = bytes.chunks_exact(4)
+            let values: Vec<f32> = bytes
+                .chunks_exact(4)
                 .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
                 .collect();
             let arr = numpy::PyArray::from_vec(py, values);
             Ok(arr.into_any().unbind())
         }
         Dtype::Float64 => {
-            let values: Vec<f64> = bytes.chunks_exact(8)
+            let values: Vec<f64> = bytes
+                .chunks_exact(8)
                 .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
                 .collect();
             let arr = numpy::PyArray::from_vec(py, values);

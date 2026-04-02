@@ -127,6 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // ── 5. messages() — all as Vec<Vec<u8>> ───────────────────────────────
         //
         // Reads all messages into memory. Convenient for small files.
+        #[allow(deprecated)]
         let all = file.messages()?;
         println!("\nmessages(): {} raw buffers loaded into memory", all.len());
         for (i, msg) in all.iter().enumerate() {

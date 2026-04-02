@@ -63,6 +63,7 @@ pub fn run(
 
     let mut in_file = TensogramFile::open(input)?;
     let mut out = std::fs::File::create(output)?;
+    #[allow(deprecated)]
     let messages = in_file.messages()?;
 
     for msg in &messages {

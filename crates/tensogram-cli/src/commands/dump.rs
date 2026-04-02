@@ -22,6 +22,7 @@ pub fn run(
 
     for path in files {
         let mut file = TensogramFile::open(path)?;
+        #[allow(deprecated)]
         let messages = file.messages()?;
 
         for (i, msg) in messages.iter().enumerate() {
