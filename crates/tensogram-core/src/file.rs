@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::decode::{self, DecodeOptions};
@@ -86,6 +86,9 @@ impl TensogramFile {
     }
 
     /// Read raw message bytes at a specific index.
+    ///
+    /// Uses `seek()` + `read_exact()` to read only the requested message
+    /// without loading the entire file into memory.
     pub fn read_message(&mut self, index: usize) -> Result<Vec<u8>> {
         self.ensure_scanned()?;
         let offsets = self
@@ -100,21 +103,25 @@ impl TensogramFile {
             )));
         }
         let (offset, length) = offsets[index];
-        let data = fs::read(&self.path)?;
-        Ok(data[offset..offset + length].to_vec())
+        let mut file = fs::File::open(&self.path)?;
+        file.seek(SeekFrom::Start(offset as u64))?;
+        let mut buf = vec![0u8; length];
+        file.read_exact(&mut buf)?;
+        Ok(buf)
     }
 
     /// Iterate over messages. Each item is the raw message bytes.
+    #[deprecated(note = "Use message_count() + read_message(index) for lazy access")]
     pub fn messages(&mut self) -> Result<Vec<Vec<u8>>> {
         self.ensure_scanned()?;
-        let data = fs::read(&self.path)?;
-        let offsets = self
+        let count = self
             .message_offsets
             .as_ref()
-            .expect("message_offsets set by ensure_scanned");
-        let mut msgs = Vec::with_capacity(offsets.len());
-        for &(offset, length) in offsets {
-            msgs.push(data[offset..offset + length].to_vec());
+            .expect("message_offsets set by ensure_scanned")
+            .len();
+        let mut msgs = Vec::with_capacity(count);
+        for i in 0..count {
+            msgs.push(self.read_message(i)?);
         }
         Ok(msgs)
     }
@@ -190,6 +197,7 @@ mod tests {
 
         assert_eq!(file.message_count().unwrap(), 2);
 
+        #[allow(deprecated)]
         let msgs = file.messages().unwrap();
         assert_eq!(msgs.len(), 2);
 
@@ -197,6 +205,37 @@ mod tests {
         assert_eq!(meta.version, 1);
         assert_eq!(objects.len(), 1);
         assert_eq!(objects[0], data);
+    }
+
+    #[test]
+    fn test_file_lazy_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lazy.tgm");
+
+        let mut file = TensogramFile::create(&path).unwrap();
+        let metadata = make_metadata(vec![4]);
+
+        let data0 = vec![0u8; 16];
+        let data1 = vec![1u8; 16];
+        let data2 = vec![2u8; 16];
+
+        file.append(&metadata, &[&data0], &EncodeOptions::default())
+            .unwrap();
+        file.append(&metadata, &[&data1], &EncodeOptions::default())
+            .unwrap();
+        file.append(&metadata, &[&data2], &EncodeOptions::default())
+            .unwrap();
+
+        assert_eq!(file.message_count().unwrap(), 3);
+
+        let (_, obj1) = file.decode_message(1, &DecodeOptions::default()).unwrap();
+        assert_eq!(obj1[0], data1);
+
+        let (_, obj0) = file.decode_message(0, &DecodeOptions::default()).unwrap();
+        assert_eq!(obj0[0], data0);
+
+        let (_, obj2) = file.decode_message(2, &DecodeOptions::default()).unwrap();
+        assert_eq!(obj2[0], data2);
     }
 
     #[test]
