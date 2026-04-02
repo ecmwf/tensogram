@@ -15,11 +15,21 @@ Given a set of float64 values `V[i]`:
 The parameters `D` (decimal scale factor), `E` (binary scale factor), and `B` (bits per value) are chosen automatically by `compute_params()`.
 
 ```mermaid
-flowchart LR
-    A["V = [250.0, 251.3, 252.7]"] --> B["Find R = 250.0"]
-    B --> C["Scale: [0, 1.3, 2.7] × scale"]
-    C --> D["Round to integers: [0, 17369, 36044]"]
-    D --> E["Pack as 16-bit MSB: 00 00 43 99 8C 8C"]
+flowchart TD
+    A["Input: V = [250.0, 251.3, 252.7]"]
+    B["Find reference value
+    R = min(V) = 250.0"]
+    C["Scale relative to R
+    [0, 1.3, 2.7] × 10^D × 2^−E"]
+    D["Round to integers
+    [0, 17369, 36044]"]
+    E["Pack as 16-bit MSB
+    00 00 43 99 8C 8C"]
+
+    A --> B --> C --> D --> E
+
+    style A fill:#e8f5e9,stroke:#388e3c
+    style E fill:#e3f2fd,stroke:#1565c0
 ```
 
 ## Limitations and Edge Cases

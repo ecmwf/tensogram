@@ -77,11 +77,20 @@ for msg in &messages {
 One of Tensogram's design goals is O(1) object access. After scanning, any message is reachable in constant time. Within a message, any object is reachable in constant time via the binary header's offset table:
 
 ```mermaid
-flowchart LR
-    A[file.decode_message(42)] -->|seek + read| B[message bytes]
-    B --> C[binary header]
-    C -->|object_offsets[2]| D[seek to payload 2]
-    D --> E[decode only object 2]
+flowchart TD
+    A["file.decode_message(42)"]
+    B["Message bytes"]
+    C["Binary header"]
+    D["Seek to payload 2"]
+    E["Decode only object 2"]
+
+    A -- "seek + read" --> B
+    B --> C
+    C -- "lookup offset for object 2" --> D
+    D --> E
+
+    style A fill:#e8f5e9,stroke:#388e3c
+    style E fill:#e3f2fd,stroke:#1565c0
 ```
 
 ## File Layout Diagram

@@ -3,16 +3,37 @@
 Every object payload passes through a three-stage pipeline on the way in (encoding) and out (decoding). The stages always run in the same order:
 
 ```mermaid
-flowchart LR
-    A[Raw bytes] -->|encode| B[Encoding\nlossy quantization]
-    B -->|encode| C[Filter\nbyte shuffle]
-    C -->|encode| D[Compression\ndeflate / szip]
-    D --> E[Stored bytes]
+flowchart TD
+    subgraph Encode["Encode Path"]
+        direction TB
+        A["Raw bytes"]
+        B["Stage 1 — Encoding
+        (lossy quantization)"]
+        C["Stage 2 — Filter
+        (byte shuffle)"]
+        D["Stage 3 — Compression
+        (deflate / szip)"]
+        A --> B --> C --> D
+    end
 
-    E -->|decode| F[Decompress]
-    F -->|decode| G[Unshuffle]
-    G -->|decode| H[Decode\ndequantize]
-    H --> I[Raw bytes]
+    S[("Stored bytes")]
+
+    subgraph Decode["Decode Path"]
+        direction TB
+        F["Stage 3 — Decompress"]
+        G["Stage 2 — Unshuffle"]
+        H["Stage 1 — Dequantize"]
+        I["Raw bytes"]
+        F --> G --> H --> I
+    end
+
+    D --> S --> F
+
+    style A fill:#e8f5e9,stroke:#388e3c
+    style S fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    style I fill:#e8f5e9,stroke:#388e3c
+    style Encode fill:#e3f2fd,stroke:#1565c0,color:#1565c0
+    style Decode fill:#fce4ec,stroke:#c62828,color:#c62828
 ```
 
 Each stage is **independently configurable per object**. Set a stage to `"none"` to skip it.
