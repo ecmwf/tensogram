@@ -1,0 +1,47 @@
+[package]
+name = "tensogram-examples"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "01_encode_decode"
+path = "src/bin/01_encode_decode.rs"
+
+[[bin]]
+name = "02_mars_metadata"
+path = "src/bin/02_mars_metadata.rs"
+
+[[bin]]
+name = "03_simple_packing"
+path = "src/bin/03_simple_packing.rs"
+
+[[bin]]
+name = "04_shuffle_filter"
+path = "src/bin/04_shuffle_filter.rs"
+
+[[bin]]
+name = "05_multi_object"
+path = "src/bin/05_multi_object.rs"
+
+[[bin]]
+name = "06_hash_verification"
+path = "src/bin/06_hash_verification.rs"
+
+[[bin]]
+name = "07_scan_buffer"
+path = "src/bin/07_scan_buffer.rs"
+
+[[bin]]
+name = "08_decode_variants"
+path = "src/bin/08_decode_variants.rs"
+
+[[bin]]
+name = "09_file_api"
+path = "src/bin/09_file_api.rs"
+
+[dependencies]
+tensogram-core = { path = "../../crates/tensogram-core" }
+tensogram-encodings = { path = "../../crates/tensogram-encodings" }
+ciborium = "0.2"
+tempfile = "3"

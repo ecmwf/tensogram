@@ -51,6 +51,27 @@ Implemented: 2026-04-02
 - `tensogram filter` subcommand (v2 rules engine)
 - ciborium canonical encoding verification (current two-step approach works but should be validated against a reference implementation)
 
+## Examples
+
+### examples/rust/ (9 runnable examples, workspace member)
+- `01_encode_decode` — basic round-trip, all message fields
+- `02_mars_metadata` — MARS namespace at message and object level
+- `03_simple_packing` — lossy compression, precision measurement
+- `04_shuffle_filter` — byte-level shuffle, direct API
+- `05_multi_object` — multiple tensors per message, per-object metadata
+- `06_hash_verification` — xxh3/sha1/md5, corruption detection
+- `07_scan_buffer` — multi-message buffer, injected corruption, recovery
+- `08_decode_variants` — all four decode functions with edge cases
+- `09_file_api` — full TensogramFile lifecycle
+
+### examples/cpp/ (intended C FFI API, 4 examples)
+- `01_encode_decode.cpp`, `02_mars_metadata.cpp`, `03_simple_packing.cpp`, `04_file_api.cpp`
+- `README.md` — planned header (`tensogram.h`) with full function signatures
+
+### examples/python/ (intended PyO3 API, 6 examples)
+- `01_encode_decode.py` through `06_hash_and_errors.py`
+- `README.md` — planned module structure, NumPy dtype mapping, error hierarchy
+
 ## Documentation (mdbook)
 
 - `book/` — mdbook source (build with `PATH="$HOME/.cargo/bin:$PATH" mdbook build` from `book/`)
