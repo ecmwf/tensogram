@@ -21,9 +21,21 @@ typedef enum tgm_TgmError {
 } tgm_TgmError;
 
 /**
+ * Opaque handle for iterating over messages in a byte buffer.
+ *
+ * The caller's buffer must remain valid for the lifetime of this iterator.
+ */
+typedef struct tgm_TgmBufferIter tgm_TgmBufferIter;
+
+/**
  * File handle.
  */
 typedef struct tgm_TgmFile tgm_TgmFile;
+
+/**
+ * Opaque handle for iterating over messages in a file.
+ */
+typedef struct tgm_TgmFileIter tgm_TgmFileIter;
 
 /**
  * Decoded message: metadata + decoded object payloads.
@@ -34,6 +46,11 @@ typedef struct tgm_TgmMessage tgm_TgmMessage;
  * Metadata-only handle (no decoded payloads).
  */
 typedef struct tgm_TgmMetadata tgm_TgmMetadata;
+
+/**
+ * Opaque handle for iterating over objects within a single message.
+ */
+typedef struct tgm_TgmObjectIter tgm_TgmObjectIter;
 
 typedef struct tgm_TgmScanResult tgm_TgmScanResult;
 
@@ -268,5 +285,76 @@ enum tgm_TgmError tgm_simple_packing_compute_params(const double *values,
                                                     int32_t decimal_scale_factor,
                                                     double *out_reference_value,
                                                     int32_t *out_binary_scale_factor);
+
+/**
+ * Create a buffer message iterator.
+ *
+ * Scans `buf` once and stores message boundaries. The buffer must remain
+ * valid and unmodified until `tgm_buffer_iter_free` is called.
+ */
+enum tgm_TgmError tgm_buffer_iter_create(const uint8_t *buf,
+                                         uintptr_t buf_len,
+                                         struct tgm_TgmBufferIter **out);
+
+/**
+ * Return the total number of messages in the buffer iterator.
+ */
+uintptr_t tgm_buffer_iter_count(const struct tgm_TgmBufferIter *iter);
+
+/**
+ * Advance the buffer iterator. On success, sets `out_buf` and `out_len` to
+ * the next message slice (borrowed from the original buffer).
+ *
+ * Returns `TgmError::Ok` if a message is available, `TgmError::Object` when
+ * iteration is exhausted.
+ */
+enum tgm_TgmError tgm_buffer_iter_next(struct tgm_TgmBufferIter *iter,
+                                       const uint8_t **out_buf,
+                                       uintptr_t *out_len);
+
+void tgm_buffer_iter_free(struct tgm_TgmBufferIter *iter);
+
+/**
+ * Create a file message iterator from an open TgmFile.
+ *
+ * Scans the file to locate message boundaries. The file handle remains
+ * usable after this call.
+ */
+enum tgm_TgmError tgm_file_iter_create(struct tgm_TgmFile *file, struct tgm_TgmFileIter **out);
+
+/**
+ * Advance the file iterator. On success, fills `out` with a `TgmBytes`
+ * buffer containing the raw message bytes (caller owns, free with
+ * `tgm_bytes_free`).
+ *
+ * Returns `TgmError::Ok` when a message is available, `TgmError::Object`
+ * when iteration is exhausted.
+ */
+enum tgm_TgmError tgm_file_iter_next(struct tgm_TgmFileIter *iter, struct tgm_TgmBytes *out);
+
+void tgm_file_iter_free(struct tgm_TgmFileIter *iter);
+
+/**
+ * Create an object iterator from raw message bytes.
+ *
+ * Parses metadata once, then decodes each object on demand when
+ * `tgm_object_iter_next` is called.
+ */
+enum tgm_TgmError tgm_object_iter_create(const uint8_t *buf,
+                                         uintptr_t buf_len,
+                                         int32_t verify_hash,
+                                         struct tgm_TgmObjectIter **out);
+
+/**
+ * Advance the object iterator. On success, fills `out` with a `TgmMessage`
+ * handle containing exactly one decoded object (the next in sequence).
+ *
+ * Returns `TgmError::Ok` when an object is available, `TgmError::Object`
+ * when iteration is exhausted. Free each yielded `TgmMessage` with
+ * `tgm_message_free`.
+ */
+enum tgm_TgmError tgm_object_iter_next(struct tgm_TgmObjectIter *iter, struct tgm_TgmMessage **out);
+
+void tgm_object_iter_free(struct tgm_TgmObjectIter *iter);
 
 #endif  /* TENSOGRAM_H */
