@@ -21,6 +21,8 @@ pub enum PipelineError {
     Compression(#[from] CompressionError),
     #[error("shuffle error: {0}")]
     Shuffle(String),
+    #[error("range error: {0}")]
+    Range(String),
     #[error("unknown encoding: {0}")]
     UnknownEncoding(String),
     #[error("unknown filter: {0}")]
@@ -158,8 +160,8 @@ pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8
 
 /// Decode a partial sample range from a compressed+encoded pipeline.
 ///
-/// Only supports `simple_packing+szip` and `none+none` (uncompressed) pipelines.
-/// Shuffle filter is not supported with range decode.
+/// Supports all pipeline combinations: `none+none`, `simple_packing+none`,
+/// `none+szip`, and `simple_packing+szip`. Shuffle filter is not supported.
 ///
 /// `sample_offset` and `sample_count` are in logical element units.
 /// `block_offsets` are bit offsets of RSI block boundaries from encoding.
@@ -185,15 +187,15 @@ pub fn decode_range_pipeline(
             let elem_size = config.dtype_byte_width;
             let byte_start = (sample_offset as usize)
                 .checked_mul(elem_size)
-                .ok_or_else(|| PipelineError::Shuffle("byte offset overflow".to_string()))?;
+                .ok_or_else(|| PipelineError::Range("byte offset overflow".to_string()))?;
             let byte_count = (sample_count as usize)
                 .checked_mul(elem_size)
-                .ok_or_else(|| PipelineError::Shuffle("byte count overflow".to_string()))?;
+                .ok_or_else(|| PipelineError::Range("byte count overflow".to_string()))?;
             let byte_end = byte_start
                 .checked_add(byte_count)
-                .ok_or_else(|| PipelineError::Shuffle("byte end overflow".to_string()))?;
+                .ok_or_else(|| PipelineError::Range("byte end overflow".to_string()))?;
             if byte_end > encoded.len() {
-                return Err(PipelineError::Shuffle(format!(
+                return Err(PipelineError::Range(format!(
                     "range ({sample_offset}, {sample_count}) exceeds payload size"
                 )));
             }
@@ -249,7 +251,7 @@ pub fn decode_range_pipeline(
             let byte_start = (bit_start / 8) as usize;
             let byte_end = (bit_start + bit_count).div_ceil(8) as usize;
             if byte_end > encoded.len() {
-                return Err(PipelineError::Shuffle(format!(
+                return Err(PipelineError::Range(format!(
                     "range ({sample_offset}, {sample_count}) exceeds packed data size"
                 )));
             }
@@ -281,8 +283,12 @@ pub fn decode_range_pipeline(
                 bits_per_sample: *bits_per_sample,
             };
             let elem_size = config.dtype_byte_width;
-            let byte_pos = (sample_offset as usize) * elem_size;
-            let byte_size = (sample_count as usize) * elem_size;
+            let byte_pos = (sample_offset as usize)
+                .checked_mul(elem_size)
+                .ok_or_else(|| PipelineError::Range("byte position overflow".to_string()))?;
+            let byte_size = (sample_count as usize)
+                .checked_mul(elem_size)
+                .ok_or_else(|| PipelineError::Range("byte size overflow".to_string()))?;
             let decompressed =
                 compressor.decompress_range(encoded, block_offsets, byte_pos, byte_size)?;
             Ok(decompressed)
