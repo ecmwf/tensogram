@@ -136,6 +136,24 @@ impl TensogramFile {
         decode::decode(&msg, options)
     }
 
+    /// Return a lazy iterator over the messages in this file.
+    ///
+    /// Scans the file once to locate message boundaries, then yields raw
+    /// message bytes on demand via seek-based reads. The iterator does not
+    /// borrow `self` — it owns a cloned path and offset list.
+    pub fn iter(&mut self) -> Result<crate::iter::FileMessageIter> {
+        self.ensure_scanned()?;
+        let offsets = self
+            .message_offsets
+            .as_ref()
+            .expect("message_offsets guaranteed after ensure_scanned() succeeds")
+            .clone();
+        Ok(crate::iter::FileMessageIter::new(
+            self.path.clone(),
+            offsets,
+        ))
+    }
+
     /// Get the file path.
     pub fn path(&self) -> &Path {
         &self.path
@@ -257,5 +275,32 @@ mod tests {
         let (_, obj2) = file.decode_message(1, &DecodeOptions::default()).unwrap();
         assert_eq!(obj1[0], data1);
         assert_eq!(obj2[0], data2);
+    }
+
+    #[test]
+    fn test_file_iter_via_tensogram_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("iter.tgm");
+
+        let mut file = TensogramFile::create(&path).unwrap();
+        let data0 = vec![0u8; 16];
+        let data1 = vec![1u8; 16];
+        let data2 = vec![2u8; 16];
+        let metadata = make_metadata(vec![4]);
+        file.append(&metadata, &[&data0], &EncodeOptions::default())
+            .unwrap();
+        file.append(&metadata, &[&data1], &EncodeOptions::default())
+            .unwrap();
+        file.append(&metadata, &[&data2], &EncodeOptions::default())
+            .unwrap();
+
+        let raw_messages: Vec<Vec<u8>> = file.iter().unwrap().map(|r| r.unwrap()).collect();
+        assert_eq!(raw_messages.len(), 3);
+
+        // Verify each message decodes to the correct data
+        for (i, raw) in raw_messages.iter().enumerate() {
+            let (_, objects) = crate::decode::decode(raw, &DecodeOptions::default()).unwrap();
+            assert_eq!(objects[0], vec![i as u8; 16]);
+        }
     }
 }
