@@ -36,11 +36,11 @@ flowchart TD
     style Decode fill:#fce4ec,stroke:#c62828,color:#c62828
 ```
 
-Each stage is **independently configurable per object**. Set a stage to `"none"` to skip it.
+Each stage is **independently configurable per object** via fields in the `DataObjectDescriptor`. Set a stage to `"none"` to skip it.
 
 ## Stage 1: Encoding
 
-Encoding transforms values to reduce the number of bits needed to represent them. The only supported encoding right now is `simple_packing` — a GRIB-style lossy quantization that maps a range of floating-point values onto N-bit integers.
+Encoding transforms values to reduce the number of bits needed to represent them. The only supported encoding right now is `simple_packing` -- a GRIB-style lossy quantization that maps a range of floating-point values onto N-bit integers.
 
 | Value | Meaning |
 |---|---|
@@ -58,7 +58,7 @@ Filters rearrange bytes to improve compression ratios. The shuffle filter reorde
 
 ## Stage 3: Compression
 
-Compression reduces the total byte count. Seven compressors are available:
+Compression reduces the total byte count. Seven compressors are implemented:
 
 | Value | Type | Random Access | Notes |
 |---|---|---|---|
@@ -72,7 +72,7 @@ Compression reduces the total byte count. Seven compressors are available:
 
 See [Compression](../encodings/compression.md) for full details on each compressor, including parameters and random access support.
 
-> **Note**: ZFP and SZ3 operate directly on typed floating-point data. Use them with `encoding: "none"` and `filter: "none"` — they replace both encoding and compression.
+> **Note**: ZFP and SZ3 operate directly on typed floating-point data. Use them with `encoding: "none"` and `filter: "none"` -- they replace both encoding and compression.
 
 ## Typical Combinations
 
@@ -88,9 +88,34 @@ See [Compression](../encodings/compression.md) for full details on each compress
 | Lossy float w/ random access | `none` | `none` | `zfp` (fixed_rate) |
 | Error-bounded science | `none` | `none` | `sz3` |
 
+## How It Looks in Code
+
+The entire pipeline is configured through the `DataObjectDescriptor`:
+
+```rust
+DataObjectDescriptor {
+    obj_type: "ntensor".into(),
+    ndim: 2,
+    shape: vec![721, 1440],
+    strides: vec![1440, 1],
+    dtype: Dtype::Float32,
+    byte_order: ByteOrder::Big,
+    encoding: "simple_packing".into(),
+    filter: "none".into(),
+    compression: "szip".into(),
+    params: BTreeMap::from([
+        ("reference_value".into(), Value::Float(230.5)),
+        ("bits_per_value".into(), Value::Integer(16.into())),
+    ]),
+    hash: None, // set automatically during encoding
+}
+```
+
+All encoding parameters (reference_value, bits_per_value, szip_block_offsets, etc.) go into the `params` map. The encoder populates additional params during encoding (like block offsets for szip), and the decoder reads them back.
+
 ## Integrity Hashing
 
-After all three stages, the stored bytes can be hashed. The hash is stored in the payload descriptor alongside the encoded bytes. On decode, if `verify_hash: true` is set, the hash is recomputed and compared.
+After all three stages, the stored bytes can be hashed. The hash is stored in the `DataObjectDescriptor`'s `hash` field alongside the encoded bytes. On decode, if `verify_hash: true` is set, the hash is recomputed and compared.
 
 | Algorithm | Hash length | Notes |
 |---|---|---|

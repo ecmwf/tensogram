@@ -19,10 +19,10 @@ message carries its own begin/terminator codes.
 - **Support for n-Tensors** — each message can contain multiple n-Tensors of different element types
 - **No panics** — all fallible operations return `Result<T, TensogramError>`
 - **Stateless & thread-safe** — no global state
-- **Compression** — optional szip (libaec) and Blosc2 encoding per data object
+- **Compression** — optional szip, zstd, lz4, blosc2, zfp, and sz3 compression per data object
 - **Hash verification** — xxHash xxh3-64 integrity check on every data object (can be skipped for trusted buffers)
 - **Support for multiple languages** — Python NumPy-based API, C++ and Rust
-- **File convenience API** — convinience API functions to handle files containing multiple messages
+- **File convenience API** — convenience API functions to handle files containing multiple messages
 - **multiple data types** — float16/32/64, bfloat16, int8-64, uint8-64, complex64/128, bit, etc
 
 ## Quick Start
@@ -42,29 +42,27 @@ Encode and decode a 2D float32 tensor:
 ```rust
 use std::collections::BTreeMap;
 use tensogram_core::{
-    decode, encode, ByteOrder, DecodeOptions, Dtype, EncodeOptions,
-    Metadata, ObjectDescriptor, PayloadDescriptor,
+    encode, decode, ByteOrder, DataObjectDescriptor, DecodeOptions,
+    Dtype, EncodeOptions, GlobalMetadata,
 };
 
 // Describe a 100×200 temperature grid
-let metadata = Metadata {
-    version: 1,
-    objects: vec![ObjectDescriptor {
-        obj_type: "ntensor".to_string(),
-        ndim: 2,
-        shape: vec![100, 200],
-        strides: vec![200, 1],
-        dtype: Dtype::Float32,
-        extra: BTreeMap::new(),
-    }],
-    payload: vec![PayloadDescriptor {
-        byte_order: ByteOrder::Big,
-        encoding: "none".to_string(),
-        filter: "none".to_string(),
-        compression: "none".to_string(),
-        params: BTreeMap::new(),
-        hash: None,
-    }],
+let desc = DataObjectDescriptor {
+    obj_type: "ntensor".to_string(),
+    ndim: 2,
+    shape: vec![100, 200],
+    strides: vec![200, 1],
+    dtype: Dtype::Float32,
+    byte_order: ByteOrder::Big,
+    encoding: "none".to_string(),
+    filter: "none".to_string(),
+    compression: "none".to_string(),
+    params: BTreeMap::new(),
+    hash: None,
+};
+
+let global_meta = GlobalMetadata {
+    version: 2,
     extra: BTreeMap::new(),
 };
 
@@ -74,11 +72,11 @@ let raw: Vec<u8> = (0u32..20_000)
     .collect();
 
 // Encode to wire-format bytes
-let message = encode(&metadata, &[raw.as_slice()], EncodeOptions::default())?;
+let message = encode(&global_meta, &[(&desc, &raw)], &EncodeOptions::default())?;
 
 // Decode back
-let (meta, objects) = decode(&message, DecodeOptions::default())?;
-assert_eq!(objects[0].data.len(), 20_000 * 4);
+let (meta, objects) = decode(&message, &DecodeOptions::default())?;
+assert_eq!(objects[0].1.len(), 20_000 * 4);
 ```
 
 See `examples/rust/` for more: MARS metadata, simple packing, multi-object messages, file API.
@@ -100,12 +98,19 @@ import tensogram
 
 temps = np.linspace(273.15, 283.15, 100 * 200, dtype=np.float32).reshape(100, 200)
 
-metadata = tensogram.Metadata(
-    version=1,
-    objects=[tensogram.ObjectDescriptor(type="ntensor", shape=[100, 200], dtype="float32")],
+message: bytes = tensogram.encode(
+    metadata={"version": 2},
+    objects=[{
+        "type": "ntensor",
+        "shape": [100, 200],
+        "dtype": "float32",
+        "byte_order": "big",
+        "encoding": "none",
+        "filter": "none",
+        "compression": "none",
+    }],
+    data=[temps],
 )
-
-message: bytes = tensogram.encode(metadata, temps)
 meta, arrays = tensogram.decode(message)
 
 assert arrays[0].shape == temps.shape
@@ -121,12 +126,15 @@ Link against the FFI library and include the generated header:
 ```cpp
 #include "tensogram.h"
 
-const char *meta_json = R"({"version":1,"objects":[{
-    "type":"ntensor","ndim":2,"shape":[100,200],"strides":[200,1],"dtype":"float32"
-}],"payload":[{"byte_order":"big","encoding":"none","filter":"none","compression":"none"}]})";
+const char *meta_json = R"({"version":2})";
+const char *obj_json = R"({
+    "type":"ntensor","ndim":2,"shape":[100,200],"strides":[200,1],
+    "dtype":"float32","byte_order":"big","encoding":"none",
+    "filter":"none","compression":"none"
+})";
 
 tgm_message_t *msg = nullptr;
-tgm_encode(meta_json, data_ptr, data_len, TGM_HASH_XXH3, &msg);
+tgm_encode(meta_json, obj_json, data_ptr, data_len, TGM_HASH_XXH3, &msg);
 // ... use msg ...
 tgm_message_free(msg);
 ```
@@ -225,6 +233,11 @@ python examples/python/01_encode_decode.py
 | Library | Purpose                              | Type           |
 |---------|--------------------------------------|----------------|
 | libaec  | szip lossless compression (CCSDS standard) | C library (FFI) |
+| zstd | Zstandard lossless compression | Rust crate |
+| lz4_flex | LZ4 lossless compression (pure Rust) | Rust crate |
+| blosc2 | Blosc2 multi-codec meta-compressor | Rust crate |
+| zfp-sys-cc | ZFP floating-point compression (C FFI) | Rust crate |
+| sz3 | SZ3 error-bounded lossy compression | Rust crate |
 
 ## Repository Layout
 
@@ -244,6 +257,7 @@ tensogram
 ├── docs/                       # mdBook documentation
 └── plans/
     ├── DESIGN.md               # Architecture and wire format specification
+    ├── WIRE_FORMAT.md          # Wire format v2 specification
     ├── DONE.md                 # Implementation status
     ├── IMPROVEMENTS.md         # Future improvements backlog
     └── TODO.md                 # Long-term feature ideas

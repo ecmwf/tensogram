@@ -9,10 +9,10 @@ graph TD
     F[File / Buffer] -->|messages| M1[Message 1]
     F -->|messages| M2[Message 2]
     F -->|messages| M3[Message N]
-    M1 -->|objects| O1[Object 0]
-    M1 -->|objects| O2[Object 1]
-    O1 -->|decode| D1["data: Vec<u8>"]
-    O2 -->|decode| D2["data: Vec<u8>"]
+    M1 -->|objects| O1["(DataObjectDescriptor, Vec&lt;u8&gt;)"]
+    M1 -->|objects| O2["(DataObjectDescriptor, Vec&lt;u8&gt;)"]
+    O1 -->|access| D1["descriptor + data"]
+    O2 -->|access| D2["descriptor + data"]
 ```
 
 ## Rust API
@@ -32,33 +32,33 @@ for msg_bytes in messages(&buf) {
 }
 ```
 
-The iterator calls `framing::scan()` once on construction, then yields `&[u8]` slices in sequence. Garbage between valid messages is silently skipped.
+The iterator calls `scan()` once on construction, then yields `&[u8]` slices in sequence. Garbage between valid messages is silently skipped.
 
 `MessageIter` implements `ExactSizeIterator`, so `.len()` returns the remaining count at any point.
 
 ### Object iterator
 
-Iterate over the decoded objects (tensors) inside a single message:
+Iterate over the decoded objects (tensors) inside a single message. Each item is a `(DataObjectDescriptor, Vec<u8>)` tuple:
 
 ```rust
 use tensogram_core::{objects, DecodeOptions};
 
 for result in objects(&msg_bytes, DecodeOptions::default())? {
     let (descriptor, data) = result?;
-    println!("shape={:?} dtype={} bytes={}",
-             descriptor.shape, descriptor.dtype, data.len());
+    println!("shape={:?} dtype={} encoding={} bytes={}",
+             descriptor.shape, descriptor.dtype, descriptor.encoding, data.len());
 }
 ```
 
 Each object is decoded through the full pipeline on demand — objects you don't consume are never decoded.
 
-For metadata-only access (no payload decode), use `objects_metadata`:
+For metadata-only access (no payload decode), use `objects_metadata`. This returns `DataObjectDescriptor`s without decoding any payloads:
 
 ```rust
 use tensogram_core::objects_metadata;
 
 for desc in objects_metadata(&msg_bytes)? {
-    println!("shape={:?} dtype={}", desc.shape, desc.dtype);
+    println!("shape={:?} dtype={} byte_order={}", desc.shape, desc.dtype, desc.byte_order);
 }
 ```
 
@@ -75,7 +75,7 @@ for raw in file.iter()? {
     // Nested: iterate objects within this message
     for result in objects(&raw, DecodeOptions::default())? {
         let (desc, data) = result?;
-        println!("{:?} {} bytes", desc.shape, data.len());
+        println!("{:?} {} {} bytes", desc.shape, desc.dtype, data.len());
     }
 }
 ```

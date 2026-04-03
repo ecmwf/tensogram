@@ -1,19 +1,19 @@
 # Tensogram Library — Implementation Status
 
-Implemented: 2026-04-02
+Implemented: 2026-04-03
 
-## Workspace: 5 crates, 132 tests, 0 clippy warnings
+## Workspace: 5 crates, 137 tests, 0 clippy warnings
 
-### tensogram-core (38 unit tests + 31 integration tests)
-- `wire.rs` — Binary header with TENSOGRM magic, terminator, object offsets
-- `framing.rs` — `encode_frame()`, `decode_frame()`, `extract_object_payload()`, `scan()`
-- `metadata.rs` — Deterministic CBOR encoding (two-step: serialize → canonicalize → write)
-- `types.rs` — `Metadata`, `ObjectDescriptor`, `PayloadDescriptor`, `ByteOrder`, `HashDescriptor`
+### tensogram-core (43 unit tests + 42 integration + 12 adversarial)
+- `wire.rs` — v2 frame-based wire format: Preamble (24B), FrameHeader (16B), Postamble (16B), FrameType enum, MessageFlags, DataObjectFlags
+- `framing.rs` — `encode_message()` with two-pass index construction, `decode_message()`, `scan()` for multi-message buffers
+- `metadata.rs` — Deterministic CBOR encoding for GlobalMetadata, DataObjectDescriptor, IndexFrame, HashFrame (three-step: serialize → canonicalize → write)
+- `types.rs` — `GlobalMetadata`, `DataObjectDescriptor` (merged object + payload), `IndexFrame`, `HashFrame`, `DecodedObject` type alias
 - `dtype.rs` — All 15 dtypes (float16/32/64, bfloat16, complex64/128, int/uint 8-64, bitmask)
 - `hash.rs` — xxh3, sha1, md5 hashing + verification
-- `encode.rs` — Full encode pipeline: validate → encode per object → hash → CBOR → frame
+- `encode.rs` — Full encode pipeline: validate → build pipeline config → encode per object → hash → assemble frames
 - `decode.rs` — `decode()`, `decode_metadata()`, `decode_object()`, `decode_range()`
-- `file.rs` — `TensogramFile`: open, create, lazy scan, append, seek-based random access, `iter()` for lazy file iteration, deprecated `messages()` iterator
+- `file.rs` — `TensogramFile`: open, create, lazy scan, append, seek-based random access, `iter()` for lazy file iteration
 - `iter.rs` — `MessageIter` (zero-copy buffer iteration), `ObjectIter` (lazy per-object decode), `FileMessageIter` (seek-based file iteration), `objects_metadata()` (descriptor-only)
 
 ### tensogram-encodings (47 tests)
@@ -30,7 +30,7 @@ Implemented: 2026-04-02
 - `zfp_ffi.rs` — Safe Rust wrapper around ZFP C library (compress/decompress/range for f64 arrays)
 - `pipeline.rs` — Two-phase dispatch (build_compressor → compress/decompress), `decode_range_pipeline()` supports all compressors with random access capability
 
-### tensogram-cli (4+ tests)
+### tensogram-cli (5 tests)
 - `tensogram info/ls/dump/get/set/copy` subcommands
 - Where-clause filtering (`-w`), key selection (`-p`), JSON output (`-j`)
 - Immutable key protection in `set`
@@ -50,7 +50,7 @@ Implemented: 2026-04-02
 - Iterator API: `tgm_buffer_iter_*`, `tgm_file_iter_*`, `tgm_object_iter_*` with create/next/free pattern
 - Thread-local error messages via `tgm_last_error()`
 - Auto-generated `tensogram.h` via cbindgen
-- Static library (`libtenogram_ffi.a`) + shared library (`libtenogram_ffi.dylib/.so`)
+- Static library (`libtensogram_ffi.a`) + shared library (`libtensogram_ffi.dylib/.so`)
 
 ### tensogram-python (PyO3 bindings)
 - Full Python API with numpy integration (returns `numpy.ndarray` directly)
@@ -62,19 +62,36 @@ Implemented: 2026-04-02
 - `tensogram.scan()` — `bytes → list[(offset, length)]`
 - `tensogram.compute_packing_params()` — numpy array → packing parameters dict
 - `TensogramFile` class: `open/create/append/message_count/decode_message/read_message/messages`
-- `Metadata`, `ObjectDescriptor`, `PayloadDescriptor` Python classes with property accessors
 - Dict-like access: `meta['mars']['class']`
 - CBOR ↔ Python type conversion (str, int, float, bool, None, list, dict)
 - Built via `maturin develop` (excluded from default workspace build)
 
+## Wire format history
+
+### v1 (initial implementation, 2026-04-02)
+- Monolithic binary header: TENSOGRM magic + total_length + metadata_offset + metadata_length + num_objects + object_offsets[]
+- Single CBOR metadata block with `objects[]` and `payload[]` arrays
+- OBJS/OBJE markers per data object
+- 39277777 terminator
+
+### v2 (current, 2026-04-03)
+- Frame-based format: Preamble + optional header frames + data object frames + optional footer frames + Postamble
+- Each data object has its own CBOR descriptor embedded in its frame
+- Merged `ObjectDescriptor` + `PayloadDescriptor` → `DataObjectDescriptor`
+- `Metadata` → `GlobalMetadata` (version + free-form extra map)
+- Streaming support: total_length=0, footer-based index
+- Two-pass index construction for non-streaming mode
+- All panic paths eliminated from library code
+
 ## Key design properties implemented
-- Binary header index (deterministic size, O(1) object access)
+- Frame-based wire format with streaming support (v2)
 - Deterministic CBOR (RFC 8949 §4.2 canonical key ordering)
 - Per-object encoding pipelines with independent byte order
 - Payload integrity hashing (xxh3 default)
-- OBJS/OBJE corruption markers per object
+- FR/ENDF frame markers for corruption detection
 - Multi-message file scanning with corruption recovery
 - Partial range decode (szip, blosc2, zfp fixed-rate; stream compressors zstd/lz4/sz3 return RangeNotSupported)
+- No panics in library code — all fallible operations return Result
 
 ## Examples
 

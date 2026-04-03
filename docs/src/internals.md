@@ -4,16 +4,16 @@ This page explains implementation decisions that are not obvious from the public
 
 ## Deterministic CBOR Canonicalization
 
-The library encodes metadata using a two-step process:
+The library encodes all CBOR structures (global metadata, data object descriptors, index frames, hash frames) using a three-step process:
 
-1. **Serialize** the `Metadata` struct to a `ciborium::Value` tree using serde.
+1. **Serialize** the struct to a `ciborium::Value` tree using serde.
 2. **Recursively sort** all map keys by their CBOR byte encoding.
 3. **Write** the sorted Value tree to bytes.
 
 Standard serde serialization into ciborium does not guarantee key order (it depends on the HashMap/BTreeMap iteration order of the struct). Even though the library uses `BTreeMap` throughout (which gives alphabetical iteration order for string keys), relying on that would be fragile. The explicit canonicalization step ensures the output matches RFC 8949 §4.2 regardless of how the keys were stored.
 
 ```
-Metadata struct
+GlobalMetadata / DataObjectDescriptor struct
     ↓ serde serialization
 ciborium::Value::Map (arbitrary key order)
     ↓ canonicalize() — sort all maps recursively by CBOR-encoded key bytes
@@ -22,34 +22,64 @@ ciborium::Value::Map (canonical order)
 CBOR bytes (deterministic)
 ```
 
+Note: `canonicalize()` returns `Result<()>` and propagates errors rather than panicking.
+
 ## BTreeMap Throughout
 
-All `extra` fields in `Metadata`, `ObjectDescriptor`, and `PayloadDescriptor` are `BTreeMap<String, ciborium::Value>`. This:
+The `extra` field in `GlobalMetadata` and the `params` field in `DataObjectDescriptor` are `BTreeMap<String, ciborium::Value>`. This:
 
 - Gives alphabetical iteration order for string keys (which matches CBOR canonical order for short strings).
 - Avoids the non-determinism of `HashMap`.
 - Makes it easy to read and write keys without worrying about order.
 
-## Binary Header Size
+## Frame-Based Wire Format (v2)
 
-The fixed header is exactly 40 bytes:
+The v2 wire format uses a frame-based structure instead of the v1 monolithic binary header.
+
+### Preamble (24 bytes)
 
 ```
-MAGIC (8) + total_length (8) + metadata_offset (8) + metadata_length (8) + num_objects (8)
+MAGIC "TENSOGRM" (8) + version u16 (2) + flags u16 (2) + reserved u32 (4) + total_length u64 (8)
 ```
 
-Each object offset is an additional 8 bytes. So the full header is `40 + 8 × N` bytes, where N is the number of objects.
+The preamble flags indicate which optional frames are present (header/footer metadata, index, hashes). `total_length = 0` signals streaming mode.
 
-The `metadata_offset` field in the header is always equal to `40 + 8 × N`. It is stored explicitly so a decoder can locate the CBOR section without knowing N (by reading `num_objects` first).
+### Frame Header (16 bytes)
 
-## OBJS/OBJE Markers
+Every frame (metadata, index, hash, data object) starts with:
 
-Each payload is wrapped in 4-byte ASCII markers:
+```
+"FR" (2) + frame_type u16 (2) + version u16 (2) + flags u16 (2) + total_length u64 (8)
+```
 
-- `OBJS` = `4F 42 4A 53` — Object Start
-- `OBJE` = `4F 42 4A 45` — Object End
+And ends with `"ENDF"` (4 bytes). Frame versions are independent of message version.
 
-These markers serve as a secondary corruption check. If a decoder finds the right byte count of payload but the bytes after it are not `OBJE`, the message is corrupted.
+### Data Object Frame Layout
+
+Each data object is a self-contained frame:
+
+```
+Frame header (16B) + [CBOR descriptor] + payload bytes + [CBOR descriptor] + cbor_offset u64 (8B) + "ENDF" (4B)
+```
+
+The `cbor_offset` is the byte offset from the frame start to the CBOR descriptor. A flag bit controls whether the CBOR descriptor appears before or after the payload (default: after, since encoding parameters like hash are only known after encoding completes).
+
+### Postamble (16 bytes)
+
+```
+first_footer_offset u64 (8) + END_MAGIC "39277777" (8)
+```
+
+`first_footer_offset` is never zero. It points to the first footer frame, or to the postamble itself when no footer frames are present.
+
+### Two-Pass Index Construction
+
+When encoding a non-streaming message, the index frame contains byte offsets of each data object. But the index frame's own size affects those offsets (circular dependency). The encoder solves this with a two-pass approach:
+
+1. First pass: compute index CBOR with placeholder offsets to determine the index frame size.
+2. Second pass: compute final offsets using the known index frame size, re-encode the index CBOR.
+
+If the re-encoded CBOR changes size (edge case), the encoder returns an error rather than silently producing incorrect offsets.
 
 ## simple_packing Bit Layout
 
@@ -78,7 +108,7 @@ Where:
 
 ## Lazy File Scanning
 
-`TensogramFile::open()` does not read the file. The first call that needs the message list (e.g. `message_count()`, `read_message()`, `messages()`) triggers a full scan. After that, the list of `(offset, length)` pairs is cached in memory for the lifetime of the `TensogramFile` object.
+`TensogramFile::open()` does not read the file. The first call that needs the message list (e.g. `message_count()`, `read_message()`) triggers a full scan. After that, the list of `(offset, length)` pairs is cached in memory for the lifetime of the `TensogramFile` object.
 
 ```rust
 // No I/O here
@@ -95,11 +125,11 @@ let msg = file.read_message(999)?;
 
 ```
 TensogramError
-├── Framing     — invalid magic, truncated header, bad terminator
+├── Framing     — invalid magic, truncated preamble, bad frame markers, missing postamble
 ├── Metadata    — CBOR serialization/deserialization failure
 ├── Encoding    — invalid encoding params, NaN in simple_packing
-├── Compression — szip not available
-├── Object      — index out of range, objects/payload length mismatch
+├── Compression — compressor error (szip, zstd, lz4, blosc2, zfp, sz3)
+├── Object      — index out of range
 ├── Io          — filesystem errors (wraps std::io::Error)
 └── HashMismatch { expected, actual } — payload integrity failure
 ```

@@ -1,25 +1,47 @@
 # Objects and Dtypes
 
-An **object** is one N-dimensional tensor inside a message. A message can carry multiple objects. Each object has:
+An **object** is one N-dimensional tensor inside a message. A message can carry multiple objects. In v2, each object is fully described by a single struct:
 
-- A **descriptor** in the `objects` array (shape, dtype, strides, extra metadata)
-- A **payload descriptor** in the `payload` array (encoding, filter, compression, hash)
-- The actual **binary payload** between its `OBJS`/`OBJE` markers
+- A **`DataObjectDescriptor`** carrying tensor metadata, encoding pipeline, and integrity hash -- all in one place
+- The actual **binary payload** within the object's frame
 
-The two arrays are always the same length and correspond by index: `objects[0]` pairs with `payload[0]`, and so on.
+There is no separate "payload descriptor" array. The descriptor travels with the data inside the same frame.
 
-## Object Descriptor
+## DataObjectDescriptor
 
 ```rust
-ObjectDescriptor {
-    obj_type: "ntensor",   // always "ntensor" for now
-    ndim: 2,               // number of dimensions
-    shape: vec![100, 200], // size of each dimension
-    strides: vec![200, 1], // elements to skip per dimension step
-    dtype: Dtype::Float32, // element type
-    extra: BTreeMap::new(), // any extra metadata
+DataObjectDescriptor {
+    // ── Tensor metadata ──
+    obj_type: "ntensor",           // always "ntensor" for now
+    ndim: 2,                       // number of dimensions
+    shape: vec![100, 200],         // size of each dimension
+    strides: vec![200, 1],         // elements to skip per dimension step
+    dtype: Dtype::Float32,         // element type
+
+    // ── Encoding pipeline ──
+    byte_order: ByteOrder::Big,    // big or little endian
+    encoding: "simple_packing",    // or "none"
+    filter: "shuffle",             // or "none"
+    compression: "szip",           // or "none", "zstd", "lz4", etc.
+
+    // ── Flexible parameters ──
+    params: BTreeMap::from([       // encoding params + per-object metadata
+        ("reference_value", 230.5),
+        ("bits_per_value", 16),
+        ("mars", { "param": "2t" }),
+    ]),
+
+    // ── Integrity ──
+    hash: Some(HashDescriptor {
+        hash_type: "xxh3",
+        value: "a1b2c3d4e5f6...",
+    }),
 }
 ```
+
+The `params` map is flattened into the CBOR alongside the fixed fields, so the on-wire CBOR is a single flat map. This keeps things simple for decoders -- no nested "encoding" or "tensor" sub-objects to navigate.
+
+Each data object has its **own** descriptor, so different objects in the same message can use different encodings, byte orders, and hash algorithms.
 
 ### Strides
 
@@ -66,21 +88,6 @@ fn compute_strides(shape: &[u64]) -> Vec<u64> {
 
 > **Edge case:** `bitmask` returns `0` from `byte_width()`. Callers that need the actual byte count must compute it from the element count: `(num_elements + 7) / 8`.
 
-## Payload Descriptor
-
-```rust
-PayloadDescriptor {
-    byte_order: ByteOrder::Big,          // big or little endian
-    encoding: "simple_packing".to_string(), // or "none"
-    filter: "shuffle".to_string(),          // or "none"
-    compression: "none".to_string(),        // or "szip" (stub)
-    params: BTreeMap::new(),                // encoding parameters
-    hash: Some(HashDescriptor { ... }),     // optional integrity hash
-}
-```
-
-Each object has its **own** payload descriptor, so different objects in the same message can use different encodings, byte orders, and hash algorithms.
-
 ## Multiple Objects in One Message
 
 A common use case: a sea wave spectrum message carries one tensor for the spectrum itself and a second tensor for land/sea mask metadata:
@@ -92,6 +99,6 @@ block-beta
     B["Object 1\nLand mask\nuint8 · 721×1440\nencoding: none"]:1
 ```
 
-Both share the same CBOR metadata section, including the forecast date, step, and MARS keys.
+Both objects live in the same message and share the same `GlobalMetadata` (forecast date, step, MARS keys). Each object has its own `DataObjectDescriptor` embedded in its frame, so they can use completely different encoding pipelines.
 
-> **Edge case:** The number of entries in `objects`, `payload`, and the data slices passed to `encode()` must all be equal. The encoder returns an error if they do not match.
+> **Edge case:** The number of `DataObjectDescriptor` entries and the data slices passed to `encode()` must be equal. The encoder returns an error if they do not match.

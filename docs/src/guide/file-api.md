@@ -15,7 +15,28 @@ This creates (or truncates) the file. No data is written yet.
 ## Appending Messages
 
 ```rust
-file.append(&metadata, &[&data], &EncodeOptions::default())?;
+use std::collections::BTreeMap;
+use tensogram_core::{
+    GlobalMetadata, DataObjectDescriptor, ByteOrder, Dtype, EncodeOptions,
+};
+
+let global = GlobalMetadata { version: 2, extra: BTreeMap::new() };
+
+let desc = DataObjectDescriptor {
+    obj_type: "ntensor".to_string(),
+    ndim: 2,
+    shape: vec![100, 200],
+    strides: vec![200, 1],
+    dtype: Dtype::Float32,
+    byte_order: ByteOrder::Big,
+    encoding: "none".to_string(),
+    filter: "none".to_string(),
+    compression: "none".to_string(),
+    params: BTreeMap::new(),
+    hash: None,
+};
+
+file.append(global, &[(&desc, &data)], &EncodeOptions::default())?;
 ```
 
 Each `append` encodes one message and appends it to the end of the file. You can call it as many times as you like — each message is independent and self-describing.
@@ -26,8 +47,8 @@ Typical pattern for writing a multi-parameter forecast file:
 let mut file = TensogramFile::create("output.tgm")?;
 
 for param in ["2t", "10u", "10v", "msl"] {
-    let (metadata, data) = produce_field(param);
-    file.append(&metadata, &[&data], &EncodeOptions::default())?;
+    let (global, desc, data) = produce_field(param);
+    file.append(global, &[(&desc, &data)], &EncodeOptions::default())?;
 }
 ```
 
@@ -41,17 +62,22 @@ let count = file.message_count()?;
 println!("{} messages in file", count);
 ```
 
-Scanning reads the entire file once and records each message's `(offset, length)`. After that, every `read_message` and `decode_message` call is a seek + read — no further scanning.
+Scanning reads the entire file once and records each message's `(offset, length)`. After that, every `read_message` call is a seek + read — no further scanning.
 
 ## Reading Messages
 
 ```rust
+use tensogram_core::{decode, DecodeOptions};
+
 // Read raw bytes of message 3
 let raw_bytes = file.read_message(3)?;
 
-// Decode message 3 directly
-use tensogram_core::DecodeOptions;
-let (meta, objects) = file.decode_message(3, &DecodeOptions::default())?;
+// Decode message 3
+let (meta, objects) = decode(&raw_bytes, &DecodeOptions::default())?;
+
+// Each element is (DataObjectDescriptor, Vec<u8>)
+let (ref desc, ref data) = objects[0];
+println!("shape: {:?}, dtype: {}", desc.shape, desc.dtype);
 ```
 
 Both are O(1) after the initial scan: they seek to the stored offset and read `length` bytes.
@@ -61,16 +87,14 @@ Both are O(1) after the initial scan: they seek to the stored offset and read `l
 ```rust
 let mut file = TensogramFile::open("forecast.tgm")?;
 
-// Returns a Vec<&[u8]> — references into the in-memory scan cache
-let messages = file.messages()?;
-
-for msg in &messages {
-    let meta = tensogram_core::decode_metadata(msg)?;
-    println!("shape: {:?}", meta.objects[0].shape);
+for raw in file.iter()? {
+    let raw = raw?;
+    let meta = tensogram_core::decode_metadata(&raw)?;
+    println!("version: {}", meta.version);
 }
 ```
 
-> **Memory note:** `messages()` loads all message bytes into memory. For files with many large messages, prefer iterating by index with `decode_message(i, ...)` inside a loop to process one at a time.
+> **Memory note:** For files with many large messages, prefer iterating by index with `read_message(i)` inside a loop to process one at a time.
 
 ## Random Access by Index
 
@@ -78,7 +102,7 @@ One of Tensogram's design goals is O(1) object access. After scanning, any messa
 
 ```mermaid
 flowchart TD
-    A["file.decode_message(42)"]
+    A["file.read_message(42)"]
     B["Message bytes"]
     C["Binary header"]
     D["Seek to payload 2"]
@@ -101,7 +125,7 @@ forecast.tgm
 ├── [message 1] — TENSOGRM ... 39277777
 ├── [message 2] — TENSOGRM ... 39277777
 │   ├── binary header (num_objects=2, offsets=[...]
-│   ├── CBOR metadata
+│   ├── CBOR metadata (GlobalMetadata + DataObjectDescriptors)
 │   ├── OBJS payload[0] OBJE
 │   └── OBJS payload[1] OBJE
 └── ...
@@ -118,7 +142,9 @@ No file-level header, no file-level index. All indexing is per-message, built in
 ```rust
 use std::io::Write;
 let mut f = std::fs::OpenOptions::new().append(true).open("forecast.tgm")?;
-let message = encode(&metadata, &[&data], &EncodeOptions::default())?;
+
+let global = GlobalMetadata { version: 2, extra: BTreeMap::new() };
+let message = encode(global, &[(&desc, &data)], &EncodeOptions::default())?;
 f.write_all(&message)?;
 ```
 

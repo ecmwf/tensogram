@@ -6,14 +6,14 @@ This page covers the `encode()` function and `EncodeOptions` in detail.
 
 ```rust
 pub fn encode(
-    metadata: &Metadata,
-    data: &[&[u8]],
+    global_metadata: GlobalMetadata,
+    objects: &[(&DataObjectDescriptor, &[u8])],
     options: &EncodeOptions,
 ) -> Result<Vec<u8>>
 ```
 
-- `metadata` — describes all objects and their payload configuration
-- `data` — a slice of raw byte slices, one per object
+- `global_metadata` — message-level metadata (version, extra fields)
+- `objects` — a slice of `(descriptor, data)` pairs, one per object
 - `options` — controls hash algorithm
 
 Returns a complete, self-contained message as a `Vec<u8>`.
@@ -47,15 +47,15 @@ let options = EncodeOptions {
 
 For each object, in order:
 
-1. **Validate** — checks that `objects.len() == payload.len() == data.len()`
-2. **Run the encoding pipeline** — applies encoding, filter, compression from the payload descriptor
-3. **Hash** — if `hash_algorithm` is set, computes and stores the hash in the payload descriptor
-4. **Serialize CBOR** — encodes the (now complete) metadata to canonical CBOR
+1. **Validate** — checks that each pair has a descriptor and corresponding data
+2. **Run the encoding pipeline** — applies encoding, filter, compression from the object's `DataObjectDescriptor`
+3. **Hash** — if `hash_algorithm` is set, computes and stores the hash in the descriptor
+4. **Serialize CBOR** — encodes the `GlobalMetadata` and all `DataObjectDescriptor`s to canonical CBOR
 5. **Frame** — assembles magic, header, CBOR block, OBJS/payload/OBJE blocks, terminator
 
 ## Encoding with Simple Packing
 
-To use simple_packing, you need to compute the quantization parameters first, then put them in the payload descriptor:
+To use simple_packing, you need to compute the quantization parameters first, then put them in the `DataObjectDescriptor`:
 
 ```rust
 use tensogram_encodings::simple_packing;
@@ -67,7 +67,7 @@ let values: Vec<f64> = temperature_data.iter().map(|&x| x as f64).collect();
 // Compute quantization parameters for 16 bits per value
 let params = simple_packing::compute_params(&values, 16, 0)?;
 
-// Put the parameters into the payload descriptor
+// Put the parameters into the descriptor
 let mut packing_params = BTreeMap::new();
 packing_params.insert("reference_value".into(),
     Value::Float(params.reference_value));
@@ -78,7 +78,12 @@ packing_params.insert("decimal_scale_factor".into(),
 packing_params.insert("bits_per_value".into(),
     Value::Integer((params.bits_per_value as i64).into()));
 
-let payload = PayloadDescriptor {
+let desc = DataObjectDescriptor {
+    obj_type: "ntensor".to_string(),
+    ndim: 2,
+    shape: vec![100, 200],
+    strides: vec![200, 1],
+    dtype: Dtype::Float64,
     byte_order: ByteOrder::Big,
     encoding: "simple_packing".to_string(),
     filter: "none".to_string(),
@@ -92,30 +97,33 @@ Then encode as normal, passing the original raw bytes (as f64 bytes):
 
 ```rust
 let raw: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
-let message = encode(&metadata, &[&raw], &EncodeOptions::default())?;
+
+let global = GlobalMetadata { version: 2, extra: BTreeMap::new() };
+let message = encode(global, &[(&desc, &raw)], &EncodeOptions::default())?;
 ```
 
 The encoder applies simple_packing internally. The payload stored in the message is the packed bits, not the original f64 bytes.
 
 ## Encoding Multiple Objects
 
-Pass multiple data slices, one per object:
+Pass multiple `(descriptor, data)` pairs:
 
 ```rust
+let global = GlobalMetadata { version: 2, extra: BTreeMap::new() };
+
 let message = encode(
-    &metadata,
-    &[&spectrum_data, &land_mask_data],
+    global,
+    &[(&spectrum_desc, &spectrum_data), (&mask_desc, &land_mask_data)],
     &EncodeOptions::default(),
 )?;
 ```
 
-`metadata.objects`, `metadata.payload`, and the data slice must all have the same length. The encoder checks this and returns `TensogramError::Object` if they differ.
+Each descriptor independently specifies its own encoding, compression, dtype, and byte order. The encoder processes each pair in sequence.
 
 ## Error Conditions
 
 | Error | Cause |
 |---|---|
-| `Object` | `objects.len()` ≠ `payload.len()` ≠ `data.len()` |
 | `Encoding` | NaN in data when using simple_packing |
 | `Encoding` | bits_per_value out of range (0–64) |
 | `Compression` | Compressor-specific error (invalid params, unsupported dtype) |

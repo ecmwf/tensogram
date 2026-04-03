@@ -30,8 +30,8 @@ tensogram/
 │   ├── tensogram-core        ← encode, decode, framing, file API
 │   ├── tensogram-encodings   ← simple_packing, shuffle, compression
 │   ├── tensogram-cli         ← `tensogram` command-line tool
-│   ├── tensogram-ffi         ← C FFI (future)
-│   └── tensogram-python      ← Python bindings (future)
+│   ├── tensogram-ffi         ← C FFI layer for C/C++ callers
+│   └── tensogram-python      ← Python bindings (PyO3 / maturin)
 ```
 
 Most users interact with `tensogram-core` and the CLI. The encodings crate is used internally by the core but is also importable directly if you need to call the encoding functions outside of a full message.
@@ -41,29 +41,27 @@ Most users interact with `tensogram-core` and the CLI. The encodings crate is us
 ```rust
 use std::collections::BTreeMap;
 use tensogram_core::{
-    encode, decode, Metadata, ObjectDescriptor, PayloadDescriptor,
+    encode, decode, GlobalMetadata, DataObjectDescriptor,
     ByteOrder, Dtype, EncodeOptions, DecodeOptions,
 };
 
 // Describe what you're storing: a 100×200 grid of f32 values
-let metadata = Metadata {
-    version: 1,
-    objects: vec![ObjectDescriptor {
-        obj_type: "ntensor".to_string(),
-        ndim: 2,
-        shape: vec![100, 200],
-        strides: vec![200, 1],
-        dtype: Dtype::Float32,
-        extra: BTreeMap::new(),
-    }],
-    payload: vec![PayloadDescriptor {
-        byte_order: ByteOrder::Big,
-        encoding: "none".to_string(),
-        filter: "none".to_string(),
-        compression: "none".to_string(),
-        params: BTreeMap::new(),
-        hash: None,
-    }],
+let desc = DataObjectDescriptor {
+    obj_type: "ntensor".to_string(),
+    ndim: 2,
+    shape: vec![100, 200],
+    strides: vec![200, 1],
+    dtype: Dtype::Float32,
+    byte_order: ByteOrder::Big,
+    encoding: "none".to_string(),
+    filter: "none".to_string(),
+    compression: "none".to_string(),
+    params: BTreeMap::new(),
+    hash: None,
+};
+
+let global_meta = GlobalMetadata {
+    version: 2,
     extra: BTreeMap::new(),
 };
 
@@ -71,12 +69,12 @@ let metadata = Metadata {
 let data = vec![0u8; 100 * 200 * 4];
 
 // Encode into a self-contained message
-let message = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+let message = encode(&global_meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
 // Decode it back
 let (meta, objects) = decode(&message, &DecodeOptions::default()).unwrap();
-assert_eq!(meta.objects[0].shape, vec![100, 200]);
-assert_eq!(objects[0], data);
+assert_eq!(objects[0].0.shape, vec![100, 200]);
+assert_eq!(objects[0].1, data);
 ```
 
 The `message` bytes can be written to a file, sent over a socket, or stored in a database. The receiver does not need any external schema — everything is self-describing.

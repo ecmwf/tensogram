@@ -1,88 +1,210 @@
-# Message Layout
+# Wire Format (v2)
 
-This page describes the exact byte layout of a Tensogram message. You need this if you are implementing a reader in another language or debugging a corrupted file.
-
-## Overview
-
-```
-Offset  Size    Field
-──────  ──────  ─────────────────────────────────────────────────────────────
-0       8       Magic: "TENSOGRM" (ASCII, no null terminator)
-8       8       total_length (big-endian uint64, includes magic + terminator)
-16      8       metadata_offset (byte offset of CBOR section from start)
-24      8       metadata_length (byte length of CBOR section)
-32      8       num_objects (N)
-40      8×N     object_offsets[0..N] (byte offsets of each OBJS marker)
-40+8N   varies  CBOR metadata bytes
-...     varies  Object payloads (each: OBJS · data · OBJE)
-end-8   8       Terminator: "39277777" (ASCII)
-```
+This page describes the exact byte layout of a Tensogram v2 message. You need this if you are implementing a reader in another language, debugging a corrupted file, or just want to understand what is happening under the hood.
 
 All integer fields are **big-endian** (network byte order).
 
-## Binary Header in Detail
+## Overview
 
-The fixed header is always 40 bytes, followed by 8 bytes per object for the offset table:
-
-```
-Bytes 0–7:   54 45 4E 53 4F 47 52 4D   "TENSOGRM"
-Bytes 8–15:  00 00 00 00 00 01 23 45   total_length = 74565
-Bytes 16–23: 00 00 00 00 00 00 00 38   metadata_offset = 56 (right after header)
-Bytes 24–31: 00 00 00 00 00 00 01 C0   metadata_length = 448
-Bytes 32–39: 00 00 00 00 00 00 00 02   num_objects = 2
-Bytes 40–47: 00 00 00 00 00 00 02 00   object_offsets[0] = 512
-Bytes 48–55: 00 00 00 00 00 00 84 00   object_offsets[1] = 33792
-```
-
-Header size = `40 + num_objects × 8` bytes.
-
-## Object Payloads
-
-Each object payload is wrapped in OBJS/OBJE markers (4 bytes each):
+A Tensogram message is built from three sections: a **header** (preamble + optional frames), one or more **data object frames**, and a **footer** (optional frames + postamble).
 
 ```
-4 bytes:   "OBJS" (ASCII)
-N bytes:   encoded payload bytes
-4 bytes:   "OBJE" (ASCII)
+┌──────────────────────────────────────────────────────────────┐
+│  PREAMBLE           magic, version, flags, length  (24 B)    │
+├──────────────────────────────────────────────────────────────┤
+│  HEADER METADATA FRAME    CBOR global metadata   (optional)  │
+├──────────────────────────────────────────────────────────────┤
+│  HEADER INDEX FRAME       CBOR object offsets    (optional)   │
+├──────────────────────────────────────────────────────────────┤
+│  HEADER HASH FRAME        CBOR object hashes     (optional)   │
+├──────────────────────────────────────────────────────────────┤
+│  DATA OBJECT FRAME 0      header + payload + descriptor       │
+│  DATA OBJECT FRAME 1      ...                                 │
+│  ...                      (any number of objects)             │
+├──────────────────────────────────────────────────────────────┤
+│  FOOTER HASH FRAME        CBOR object hashes     (optional)   │
+├──────────────────────────────────────────────────────────────┤
+│  FOOTER INDEX FRAME       CBOR object offsets    (optional)   │
+├──────────────────────────────────────────────────────────────┤
+│  FOOTER METADATA FRAME    CBOR global metadata   (optional)   │
+├──────────────────────────────────────────────────────────────┤
+│  POSTAMBLE          first_footer_offset, end_magic (16 B)     │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-The `object_offsets` array in the header points to the start of each `OBJS` marker, so a decoder can seek directly to any object without scanning the others.
+At least one metadata frame (header or footer) must be present — messages cannot exist without metadata. Index and hash frames are optional but highly encouraged. By default, the encoder places them in the header when writing to a buffer, or in the footer when streaming.
 
-## Terminator
+## Preamble (24 bytes)
 
-The last 8 bytes of every message are `39277777` (ASCII). This pattern was chosen because it is unlikely to appear naturally in floating-point or integer data, making it safe to use as a corruption boundary detector.
+The preamble is the fixed-size start of every message.
+
+```
+Offset  Size    Field
+──────  ──────  ─────────────────────────────────
+0       8       Magic: "TENSOGRM" (ASCII)
+8       2       Version (uint16 BE) — currently 2
+10      2       Flags (uint16 BE)
+12      4       Reserved (uint32 BE) — set to zero
+16      8       Total length (uint64 BE)
+```
+
+**Total length** is the byte count of the entire message from the first byte of the preamble to the last byte of the postamble. A value of **zero** means the encoder is in **streaming mode** — the total length was not known when the preamble was written.
+
+### Preamble flags
+
+The flags field is a bitmask indicating which optional frames are present:
+
+| Bit | Frame |
+|-----|-------|
+| 0   | CBOR descriptor placement: 0 = before payload, 1 = after payload (default) |
+| 1   | Header Metadata Frame present |
+| 2   | Footer Metadata Frame present |
+| 3   | Header Index Frame present |
+| 4   | Footer Index Frame present |
+| 5   | Header Hash Frame present |
+| 6   | Footer Hash Frame present |
+
+Unused flag bits must be set to zero.
+
+## Frames
+
+Every frame (header, footer, and data object) shares a common 16-byte frame header and ends with a 4-byte end marker.
+
+### Frame header (16 bytes)
+
+```
+Offset  Size    Field
+──────  ──────  ─────────────────────────────────
+0       2       Start marker: "FR" (ASCII)
+2       2       Frame type (uint16 BE)
+4       2       Frame version (uint16 BE)
+6       2       Reserved flags (uint16 BE)
+8       8       Frame length — offset to end of frame (uint64 BE)
+```
+
+Frame versions are independent from the message version and from each other.
+
+### Frame end marker (4 bytes)
+
+Every frame ends with the ASCII string `ENDF`.
+
+### Frame types
+
+| Type | Name | Contents |
+|------|------|----------|
+| 1 | Header Metadata | CBOR global metadata map |
+| 2 | Header Index | CBOR index of data object offsets |
+| 3 | Header Hash | CBOR array of per-object hashes |
+| 4 | Data Object | Descriptor + payload (see below) |
+| 5 | Footer Hash | CBOR array of per-object hashes |
+| 6 | Footer Index | CBOR index of data object offsets |
+| 7 | Footer Metadata | CBOR global metadata map |
+
+### Padding between frames
+
+It is valid to have padding bytes between a frame's `ENDF` marker and the next frame's `FR` marker. This allows encoders to align frame starts to 8-byte (64-bit) boundaries for memory-mapped access.
+
+## Data Object Frames
+
+A data object frame wraps one tensor's payload together with its CBOR descriptor. The descriptor can go either **before** or **after** the payload — flag bit 0 in the preamble controls this. The default is **after**, because when encoding the descriptor is sometimes only fully known once the payload has been written (e.g., after computing a hash or determining compressed size).
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  FRAME HEADER       "FR" + type(4) + ver + flags + len (16 B)│
+├──────────────────────────────────────────────────────────────┤
+│  CBOR DESCRIPTOR              (if before — flag bit 0 = 0)   │
+├──────────────────────────────────────────────────────────────┤
+│  DATA PAYLOAD                 raw or compressed bytes        │
+├──────────────────────────────────────────────────────────────┤
+│  CBOR DESCRIPTOR              (if after — flag bit 0 = 1)    │
+├──────────────────────────────────────────────────────────────┤
+│  cbor_offset (uint64 BE, 8 B) offset to CBOR from frame start│
+├──────────────────────────────────────────────────────────────┤
+│  "ENDF" (4 B)                 end marker                     │
+└──────────────────────────────────────────────────────────────┘
+```
+
+The `cbor_offset` field (8 bytes, immediately before `ENDF`) tells the reader where the CBOR descriptor starts relative to the beginning of this frame. This lets a reader jump straight to the descriptor regardless of whether it is placed before or after the payload.
+
+The CBOR descriptor fully describes the data object: its type, shape, strides, data type, byte order, encoding pipeline, and optional per-object metadata. See the [CBOR Metadata](cbor-metadata.md) page for the schema.
+
+## Postamble (16 bytes)
+
+The postamble sits at the very end of every message.
+
+```
+Offset  Size    Field
+──────  ──────  ─────────────────────────────────
+0       8       first_footer_offset (uint64 BE)
+8       8       End magic: "39277777" (ASCII)
+```
+
+**`first_footer_offset`** is the byte offset (from the start of the message) to the first footer frame. This is **never zero**:
+
+- If footer frames exist, it points to the start of the first one (e.g., the Footer Hash Frame).
+- If no footer frames exist, it points to the postamble itself.
+
+This guarantee means a reader can always distinguish "no footer frames" from "footer at offset 0" without ambiguity.
+
+The end magic `39277777` was chosen because it is unlikely to appear naturally in floating-point or integer data, making it useful as a corruption boundary detector.
+
+## Random Access Patterns
+
+### With a header index (most common)
+
+When a message was written in non-streaming mode, the index is in the header. This is the fastest path — no seeking to the end required.
+
+```
+1. Read preamble (24 B) → check flags
+2. Read header metadata frame → global context
+3. Read header index frame → offsets[], object_count
+4. Seek to offsets[N], read data object frame → decode
+```
+
+### With a footer index only (streaming mode)
+
+When a message was written in streaming mode, the encoder did not know the object count or offsets up front. The index lives in the footer.
+
+```
+1. Seek to end − 16, read postamble → first_footer_offset
+2. Seek to first_footer_offset, scan footer frames → find index
+3. Read footer index frame → offsets[], object_count
+4. Seek to offsets[N], read data object frame → decode
+```
+
+Both paths give **O(1) access** to any data object by index.
 
 ## Scanning a Multi-Message File
 
-To find all messages in a file, scan forward looking for the `TENSOGRM` magic bytes. When found, read `total_length` from bytes 8–15 to know how far to advance. Verify the terminator at `offset + total_length - 8`.
+Multiple messages can be concatenated into a single `.tgm` file. To find message boundaries:
+
+1. Scan forward for the `TENSOGRM` magic (8 bytes).
+2. Read `total_length` from the preamble.
+   - If `total_length` is non-zero, advance by that many bytes to reach the next message.
+   - If `total_length` is zero (streaming mode), use the header index frame length if present.
+3. If neither total length nor header index is available, walk frame-by-frame — each frame header contains a length field — until the next `TENSOGRM` magic or EOF.
+4. Verify the `39277777` end magic at the expected position to confirm message integrity.
 
 ```mermaid
 flowchart TD
     A[Start of file] --> B{Find TENSOGRM?}
     B -- No --> Z[End of scan]
-    B -- Yes --> C[Read total_length at +8]
-    C --> D[Verify 39277777 at offset+total_length-8]
-    D -- Valid --> E[Record message: offset, length]
-    E --> F[Advance to offset + total_length]
-    F --> B
-    D -- Invalid --> G[Skip 1 byte, resume scan]
-    G --> B
+    B -- Yes --> C[Read total_length at +16]
+    C --> D{total_length > 0?}
+    D -- Yes --> E[Advance to offset + total_length]
+    D -- No --> F[Walk frame-by-frame to next magic]
+    E --> G[Verify 39277777 end magic]
+    F --> G
+    G -- Valid --> H[Record message]
+    H --> B
+    G -- Invalid --> I[Skip 1 byte, resume scan]
+    I --> B
 ```
 
-If the terminator does not match, the message is corrupt. The scanner skips one byte and resumes searching for the next `TENSOGRM` start — this is the **corruption recovery** path.
+If the end magic does not match, the message is likely corrupt. The scanner skips one byte and resumes searching — this is the **corruption recovery** path.
 
-## Partial Decode
+## A Note on CBOR
 
-Because the header contains `metadata_offset` and `metadata_length`, a decoder can read only the CBOR metadata without touching any payload:
+Frames that contain CBOR data (metadata, index, hash) use length-prefixed CBOR encoding — there are no explicit start/end markers within the CBOR stream itself. The CBOR decoder reads the first byte to determine the data type and item count, then consumes exactly that many bytes. The frame boundaries (`FR`...`ENDF`) provide the outer containment.
 
-```rust
-let meta = decode_metadata(&message_bytes)?;
-// No object bytes were read or allocated
-```
-
-And because `object_offsets` gives the position of each `OBJS` marker, the decoder can seek to and read a single object by index without reading the others:
-
-```rust
-let (descriptor, payload) = decode_object(&message_bytes, 2, &DecodeOptions::default())?;
-// Objects 0 and 1 were never read
-```
+All CBOR maps use deterministic encoding with canonical key ordering (RFC 8949 section 4.2). See [CBOR Metadata](cbor-metadata.md) for details.

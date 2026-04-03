@@ -16,28 +16,29 @@ Repo: ecmwf/tensogram
 - Cross-language byte-identical output (Rust, Python, C++)
 - Partial range decode via szip block offsets (simple_packing+szip path)
 - CLI subcommands: info, ls, dump, get, set, copy with -w filtering and -p key selection
-- Binary header index: object_offsets[] correct for multi-object messages; O(1) random access by index
-- mmap-based file access: seek to message, seek to object, decode partial range
-- Async encode/decode paths (feature-gated): spawn_blocking for libaec FFI calls
+- Frame-based index: header/footer index frames with correct object offsets for multi-object messages; O(1) random access by index
+- Streaming mode: total_length=0, footer-based index, decoder reads from postamble backward
+- mmap-based file access: seek to message, seek to object, decode partial range (planned)
+- Async encode/decode paths (feature-gated): spawn_blocking for libaec FFI calls (planned)
 
 ## Edge Cases
 - NaN input to simple_packing → must reject with EncodingError
 - Zero-object message (metadata-only, N=0 in binary header)
-- Streaming mode (total_length=0, metadata_offset/object_offsets omitted)
-- Payload > 4 GiB (uint64 offsets in binary header)
+- Streaming mode (total_length=0, footer-based metadata and index)
+- Payload > 4 GiB (uint64 offsets in index frames)
 - Non-byte-aligned bit packing (12-bit, 24-bit, 1-bit bitmask)
 - Corrupted message mid-file → scan recovers to next valid TENSOGRM marker
 - `tensogram set` with immutable key (shape, strides, dtype, encoding, hash) → must reject
-- objects.len != payload.len → MetadataError on decode
 - Empty tensor (ndim=0, scalar value)
-- OBJS/OBJE marker corruption in one data object → that object rejected, others accessible via binary header
-- metadata_offset with padding bytes between binary header and CBOR block
+- Frame marker corruption (FR/ENDF) in one data object → that object rejected, others accessible via index
+- Inter-frame padding for alignment
 - Shuffle + partial range decode → must be rejected or documented as unsupported combination
 - ciborium canonical encoding: same metadata map serializes to byte-identical CBOR on every call
 
 ## Critical Paths
 - Message encode → network transmit → decode must be bit-exact (lossless) or within quantization tolerance (lossy)
 - File append → scan → random access by message index → decode object by index
-- mmap → seek to message via binary header → decode partial range via szip_block_offsets
+- Streaming encode → footer index → random access to data objects
+- mmap → seek to message via index frame → decode partial range via szip_block_offsets (planned)
 - Golden binary .tgm files: decoded identically by Rust, Python, and C++ test suites on every CI run
 - `tensogram copy -w mars.param=2t input.tgm output.tgm` → only matching messages copied, byte-identical

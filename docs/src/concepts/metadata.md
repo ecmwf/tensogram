@@ -1,21 +1,71 @@
 # Metadata
 
-Metadata in Tensogram is stored as **CBOR** — Concise Binary Object Representation (RFC 8949). Think of it as a compact, binary version of JSON. It supports the same types (strings, integers, floats, booleans, arrays, maps), but is smaller and faster to parse.
+Metadata in Tensogram is stored as **CBOR** -- Concise Binary Object Representation (RFC 8949). Think of it as a compact, binary version of JSON. It supports the same types (strings, integers, floats, booleans, arrays, maps), but is smaller and faster to parse.
 
-## Top-Level Structure
+## Two Levels of Metadata
 
-Every message's metadata has this shape:
+In v2, metadata lives in two distinct places:
 
-```json
-{
-  "version": 1,
-  "objects": [ ...one descriptor per tensor... ],
-  "payload": [ ...one descriptor per tensor... ],
-  "mars": { "class": "od", "type": "fc", "date": "20260401" }
+| Level | Where it lives | What it contains |
+|---|---|---|
+| **Global** | Header or footer metadata frame | `GlobalMetadata`: version + free-form application keys |
+| **Per-object** | Each data object frame's CBOR descriptor | `DataObjectDescriptor`: tensor shape, encoding pipeline, hash, plus `params` for extra per-object keys |
+
+There are no top-level `"objects"` or `"payload"` arrays in the global metadata. Each data object carries its own descriptor inline within its frame.
+
+## GlobalMetadata
+
+The global metadata frame contains a `GlobalMetadata` struct:
+
+```rust
+GlobalMetadata {
+    version: 2,           // u16, wire format version
+    extra: BTreeMap::new() // free-form application-level keys
 }
 ```
 
-The `version`, `objects`, and `payload` fields are fixed. Everything else is **free-form** — you can add any key at the top level or inside an object descriptor, using any CBOR value type.
+In CBOR, this looks like:
+
+```json
+{
+  "version": 2,
+  "mars": {
+    "class": "od",
+    "type": "fc",
+    "date": "20260401",
+    "time": "1200"
+  }
+}
+```
+
+The `version` field is required (u16). Everything else in `extra` is **free-form** -- you can add any key using any CBOR value type. The library does not interpret or validate these keys. Your application layer assigns meaning.
+
+## Per-Object Metadata
+
+Per-object metadata lives in the `params` field of each `DataObjectDescriptor`. This is a `BTreeMap<String, ciborium::Value>` that gets flattened into the CBOR descriptor alongside the tensor and encoding fields.
+
+For example, a data object's CBOR descriptor might look like:
+
+```json
+{
+  "type": "ntensor",
+  "ndim": 2,
+  "shape": [721, 1440],
+  "strides": [1440, 1],
+  "dtype": "float32",
+  "byte_order": "big",
+  "encoding": "simple_packing",
+  "filter": "none",
+  "compression": "szip",
+  "reference_value": 230.5,
+  "bits_per_value": 16,
+  "mars": { "param": "2t" },
+  "units": "K",
+  "hash": { "type": "xxh3", "value": "a1b2c3d4e5f6..." }
+}
+```
+
+Here, `reference_value`, `bits_per_value`, `mars`, and `units` all live in the `params` map. They are flattened into the same CBOR map as the fixed fields.
 
 ## Namespaced Keys
 
@@ -23,43 +73,18 @@ Convention: application-layer keys are grouped under a **namespace** key. ECMWF'
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "mars": {
     "class": "od",
     "type": "fc",
     "param": "2t",
     "date": "20260401",
     "step": 6
-  },
-  "objects": [...],
-  "payload": [...]
+  }
 }
 ```
 
-The library does not interpret or validate these keys. Your application layer assigns meaning.
-
-## Per-Object vs Message-Level Metadata
-
-You can attach metadata at two levels:
-
-| Level | Where it goes | Typical use |
-|---|---|---|
-| **Message-level** | Top-level `extra` fields | Forecast date, run type, domain |
-| **Per-object** | `objects[i].extra` fields | Parameter name, level, units |
-
-Both use the same namespace convention:
-
-```rust
-// Message-level: mars.class = "od"
-extra.insert("mars", Value::Map(vec![
-    (Value::Text("class"), Value::Text("od")),
-]));
-
-// Per-object: mars.param = "2t"
-obj_extra.insert("mars", Value::Map(vec![
-    (Value::Text("param"), Value::Text("2t")),
-]));
-```
+This convention applies at both levels -- global metadata and per-object params.
 
 ## Filtering with the CLI
 
@@ -73,10 +98,10 @@ tensogram ls forecast.tgm -w "mars.param=2t/10u"
 tensogram ls forecast.tgm -w "mars.class!=od"
 ```
 
-The `/` character separates OR values. Key lookup checks message-level metadata first, then object-level (returning the first match).
+The `/` character separates OR values. Key lookup checks global metadata first, then per-object params (returning the first match).
 
 ## Deterministic Encoding
 
-When Tensogram encodes metadata to CBOR, it **sorts all map keys** by their CBOR byte representation (RFC 8949 §4.2 canonical form). This guarantees that the same metadata always produces the same bytes, regardless of the order you inserted keys in your application code. This matters for hashing and reproducibility.
+When Tensogram encodes metadata to CBOR, it **sorts all map keys** by their CBOR byte representation (RFC 8949 Section 4.2 canonical form). This guarantees that the same metadata always produces the same bytes, regardless of the order you inserted keys in your application code. This matters for hashing and reproducibility.
 
 > **Edge case:** Nested maps are also sorted recursively. Even metadata stored inside a CBOR map value (like the `"mars"` namespace) gets canonical ordering.

@@ -1,10 +1,13 @@
-# Features decided to implemented
+# Features decided to implement
 - `async` feature gate (tokio + spawn_blocking for libaec FFI)
 - `mmap` feature gate (memmap2 for memory-mapped file access)
-- Streaming mode (may need revisit of Wire Format)
 - Cross-language golden binary test files
 - ciborium canonical encoding verification (current two-step approach works but should be validated against a reference implementation)
-- ciborium canonical encoding verification: confirm RFC 8949 Section 4.2 deterministic output; build BTreeMap wrapper if needed
+
+# Code quality improvements (from code review)
+- Decompose `encode_message` in framing.rs (~198 lines) into smaller helper functions
+- Add stricter frame sync validation in `decode_message` (verify frame types appear in expected order)
+- Optimize `ensure_scanned` in file.rs to avoid loading full file into memory (use streaming scan)
 
 # Deferred TODO list (not yet decided)
 - `tensogram filter` subcommand (v2 rules engine)

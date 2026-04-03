@@ -56,9 +56,9 @@ A developer retreat and brainstorming session concluded that ECMWF would move fa
 
 3. **Minimal unnecessary memory copies** — tensor payloads are encoded (lossy or lossless) and optionally compressed. Supported encodings: simple_packing (GRIB-style lossy quantization) and szip/libaec (lossless compression). More encoding formats expected as the library evolves.
 
-4. **Message framing: `TENSOGRM` (8 bytes) ... `39277777` (8 bytes)** — mixed-pattern terminator for corruption resistance. Each message independently parseable. Multiple messages appendable to files.
+4. **Frame-based message framing** — preamble opens with `TENSOGRM` (8 bytes), postamble closes with `39277777` (8 bytes). Internal structure uses typed frames (`FR` + type marker / `ENDF`). Mixed-pattern terminator for corruption resistance. Each message independently parseable. Multiple messages appendable to files.
 
-5. **Hybrid architecture** — binary header index + CBOR metadata sections + binary-encoded tensor payload sections within each message.
+5. **Frame-based architecture** — preamble + typed frames (metadata, index, hash, data object) + postamble. Each data object frame carries its own CBOR descriptor alongside the binary-encoded tensor payload.
 
 6. **Limited dependencies** — tinycbor/libcbor (or Rust CBOR crate) + libaec. No heavy frameworks.
 
@@ -108,8 +108,8 @@ The buffer interface operates on in-memory byte slices. This is the most common 
 
 - `encode(metadata, data_objects) → Vec<u8>` — encode a complete message to a byte buffer
 - `decode(bytes) → (metadata, data_objects)` — decode all data objects from a message buffer
-- `decode_metadata(bytes) → metadata` — decode only metadata, skip payload (uses binary header object offsets)
-- `decode_object(bytes, index) → data_object` — decode a single data object by index (O(1) random access via binary header object_offsets[])
+- `decode_metadata(bytes) → metadata` — decode only GlobalMetadata from the metadata frame, skip payloads
+- `decode_object(bytes, index) → data_object` — decode a single data object by index (O(1) random access via index frame offsets)
 - `decode_range(bytes, object_index, ranges) → partial_data` — decode a partial sample range from a data object. Uses szip_block_offsets for compressed data (GribJump-style), or direct byte offset for uncompressed data. `ranges` is a list of (offset, count) pairs for multi-range extraction with bucket merging.
 - `scan(bytes) → Vec<message_offset>` — scan a multi-message buffer, return offset/length of each message (using TENSOGRM markers)
 
@@ -150,129 +150,171 @@ All fixed-width framing fields use big-endian (network) byte order.
 Payload byte order is per-data-object, specified in metadata (see below).
 CBOR encoding MUST use deterministic encoding (RFC 8949 Section 4.2) with canonical key ordering (lexicographic by key bytes) to ensure byte-identical output across implementations.
 
+The v2 wire format is frame-based. A message consists of a preamble, a sequence of frames, and a postamble. See `plans/WIRE_FORMAT.md` for the authoritative specification.
+
+**Preamble (24 bytes):**
 ```
-Offset    Size     Field
---------  -------  ----------------------------------------
-0         8        Magic: "TENSOGRM" (ASCII, 0x54454E534F47524D)
-8         8        Total length (uint64 big-endian, includes magic + terminator)
-16        8        Metadata offset (uint64 big-endian, byte offset of CBOR block from message start)
-24        8        Metadata length (uint64 big-endian, byte count of CBOR block)
-32        8        Number of data objects N (uint64 big-endian)
-40        N×8      Object offsets[0..N-1] (N × uint64 big-endian, byte offsets of each OBJS marker from message start)
-40+N×8    var      CBOR metadata map (variable-length, see structure below)
-var       var      Data object 0: OBJS (4B) | payload bytes | OBJE (4B)
-          var      Data object 1: OBJS (4B) | payload bytes | OBJE (4B)
-          ...      (one data object per entry in "payload" array)
-N-8       8        Terminator: "39277777" (ASCII, 0x3339323737373737)
+Offset  Size    Field
+------  ------  ----------------------------------------
+0       8       Magic: "TENSOGRM" (ASCII, 0x54454E534F47524D)
+8       2       Version (uint16 BE) — currently 2
+10      2       Flags (uint16 BE) — indicates which optional frames are present
+12      4       Reserved (uint32 BE) — must be zero
+16      8       Total length (uint64 BE) — 0 for streaming mode
 ```
 
-Where N = total length (last field value), not num_data_objects.
-`OBJS` = 0x4F424A53 (ASCII), `OBJE` = 0x4F424A45 (ASCII).
+**Frame header (16 bytes, shared by all frame types):**
+```
+Offset  Size    Field
+------  ------  ----------------------------------------
+0       2       Magic: "FR" (ASCII)
+2       2       Frame type (uint16 BE): 1=header metadata, 2=header index,
+                3=header hash, 4=data object, 5=footer hash,
+                6=footer index, 7=footer metadata
+4       2       Frame version (uint16 BE) — independent of message version
+6       2       Reserved flags (uint16 BE)
+8       8       Total length / offset to end of frame (uint64 BE)
+```
 
-The metadata_offset field accommodates optional padding bytes between the binary header and the CBOR block (e.g., for alignment). In the common case with no padding, metadata_offset = 40 + num_data_objects × 8.
+Every frame ends with the 4-byte marker `ENDF` (ASCII). Padding between frames (from `ENDF` to next `FR`) is permitted for 64-bit alignment.
 
-**CBOR metadata structure:**
+**Data object frame layout:**
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Frame header (16 bytes): "FR" + type=4 + version + flags + len │
+├──────────────────────────────────────────────────────────────┤
+│  [CBOR DataObjectDescriptor — before payload, if flag=0]       │
+├──────────────────────────────────────────────────────────────┤
+│  Data bytestream payload                                       │
+├──────────────────────────────────────────────────────────────┤
+│  [CBOR DataObjectDescriptor — after payload, if flag=1 (default)] │
+├──────────────────────────────────────────────────────────────┤
+│  CBOR offset (uint64 BE) + end marker "ENDF" (4 bytes)        │
+└──────────────────────────────────────────────────────────────┘
+```
 
+Each data object is self-contained: its CBOR descriptor carries all encoding parameters needed to decode the payload. A flag in the frame header indicates whether the CBOR descriptor appears before or after the payload (default: after, since encoding parameters like hash are only known after encoding completes).
+
+**Optional header/footer frames:** metadata (GlobalMetadata CBOR), index (object count + offsets), hashes (object count + hash type + hash values). Either a header or footer metadata frame must always be present.
+
+**Postamble (16 bytes):**
+```
+Offset  Size    Field
+------  ------  ----------------------------------------
+0       8       first_footer_offset (uint64 BE) — offset to start of first footer frame
+8       8       End magic: "39277777" (ASCII, 0x3339323737373737)
+```
+
+`total_length=0` in the preamble signals streaming mode: the encoder does not know the message size in advance, and the index is placed in the footer. `first_footer_offset` is never zero (the postamble always exists).
+
+**CBOR metadata structures:**
+
+In v2, metadata is split across two locations:
+- **GlobalMetadata** — in a header or footer metadata frame (shared across all data objects)
+- **DataObjectDescriptor** — embedded in each data object frame (self-contained per object)
+
+There is no top-level `"objects"` or `"payload"` array. Each data object frame carries its own CBOR descriptor with both the tensor description and the encoding pipeline parameters.
+
+**GlobalMetadata** (in metadata frame):
 ```
 {
-  "version": 1,                          // uint, required
-
-  // --- Common metadata (shared across all data objects) ---
-  // Organized in namespaces (sub-objects) for clarity
+  "version": 2,                          // uint, required
+  // Arbitrary keys — application-layer metadata
   "mars": {                              // MARS vocabulary namespace
     "class": "od",
     "type": "fc",
+    "stream": "oper",
+    "expver": "0001",
     "date": "20260401",
     "time": "1200"
   },
-  ... (arbitrary namespaced scientific metadata) ...
+  "source": "ifs-cycle49r1",            // producing system
+  "created": "2026-04-01T12:34:56Z"     // ISO 8601 timestamp
+  // ... arbitrary namespaced scientific metadata ...
+}
+```
 
-  // --- Per-object metadata (entries that differ between objects) ---
-  "objects": [
-    {
-      "type": "ntensor",                 // data object type
-      "ndim": 3,                         // number of dimensions
-      "shape": [1801, 3600, 30],         // dimension sizes (row-major/C order)
-      "strides": [108000, 30, 1],        // stride per dimension (in elements)
-                                         // flat_index = dot(index_vector, strides)
-      "dtype": "float64",               // decoded logical type (not on-wire storage)
-      "mars": {                          // per-object MARS keys (namespace)
-        "param": "wave_spectra"
-      },
-      "units": "m^2 s",                 // scientific metadata
-      ... (arbitrary per-object metadata) ...
-    },
-    {
-      "type": "ntensor",
-      "ndim": 2,
-      "shape": [1801, 3600],
-      "strides": [3600, 1],
-      "dtype": "float32",
-      "mars": {
-        "param": "2t"
-      },
-      "units": "K"
-    }
-  ],
+**DataObjectDescriptor** (per data object frame, in CBOR):
+```
+{
+  "obj_type": "ntensor",                // data object type
+  "ndim": 3,                            // number of dimensions
+  "shape": [1801, 3600, 30],            // dimension sizes (row-major/C order)
+  "strides": [108000, 30, 1],           // stride per dimension (in elements)
+  "dtype": "float64",                   // decoded logical type (not on-wire storage)
+  "byte_order": "big",                  // byte order of this object's raw data
 
-  // --- Payload decoding instructions (per data object) ---
-  //     Pipeline: encode → filter → compress (reverse for decode)
-  //     Contains everything needed to decode each object
-  //     Byte offsets and lengths live in the binary header (object_offsets[])
-  "payload": [
-    {
-      "byte_order": "big",              // byte order of this object's raw data
-      "encoding": "simple_packing",      // lossy quantization to integers
-      "filter": "none",                  // no filter needed (already integers)
-      "compression": "szip",             // libaec lossless compression
-      "reference_value": 230.5,          // encoding-specific params
-      "binary_scale_factor": -2,
-      "decimal_scale_factor": 0,
-      "bits_per_value": 16,
-      // --- Partial decoding support (GribJump-style) ---
-      "szip_rsi": 128,                  // Reference Sample Interval
-      "szip_block_size": 32,            // AEC block size
-      "szip_flags": 0,                  // AEC encoding flags
-      "szip_block_offsets": [0, 4128, 8240, ...],  // bit offsets of RSI block
-                                         // boundaries in compressed stream
-                                         // (computed during encoding, enables
-                                         // partial range decoding without
-                                         // decompressing entire bytestream)
-      // --- Integrity hash (computed during encoding) ---
-      "hash": {
-        "type": "xxh3",                  // hash algorithm: "xxh3", "sha1", or "md5"
-        "value": "a1b2c3d4e5f6..."       // hex-encoded hash of the encoded payload
-      }
-    },
-    {
-      "byte_order": "little",           // client encoded natively, no byte flip
-      "encoding": "none",               // raw float32 data
-      "filter": "shuffle",              // byte shuffle for better compression
-      "shuffle_element_size": 4,         // 4 bytes per float32 element
-      "compression": "szip",            // compress shuffled bytes as uint8
-      "szip_rsi": 128,
-      "szip_block_size": 32,
-      "szip_flags": 0,
-      "szip_block_offsets": [0, 2064, 4112, ...],
-      "hash": {
-        "type": "xxh3",
-        "value": "f7e8d9c0b1a2..."
-      }
-    }
-  ]
+  // --- Encoding pipeline (encode → filter → compress) ---
+  "encoding": "simple_packing",          // lossy quantization to integers
+  "filter": "none",                      // no filter needed (already integers)
+  "compression": "szip",                 // libaec lossless compression
+
+  // --- Encoding-specific params ---
+  "reference_value": 230.5,
+  "binary_scale_factor": -2,
+  "decimal_scale_factor": 0,
+  "bits_per_value": 16,
+
+  // --- Partial decoding support (GribJump-style) ---
+  "szip_rsi": 128,
+  "szip_block_size": 32,
+  "szip_flags": 0,
+  "szip_block_offsets": [0, 4128, 8240, ...],
+
+  // --- Integrity hash (computed during encoding) ---
+  "hash": {
+    "type": "xxh3",
+    "value": "a1b2c3d4e5f6..."
+  },
+
+  // --- Per-object application metadata ---
+  "mars": {
+    "param": "wave_spectra"
+  },
+  "units": "m^2 s"
+  // ... arbitrary per-object metadata ...
+}
+```
+
+**Example: 2D temperature field DataObjectDescriptor:**
+```
+{
+  "obj_type": "ntensor",
+  "ndim": 2,
+  "shape": [1801, 3600],
+  "strides": [3600, 1],
+  "dtype": "float32",
+  "byte_order": "little",
+  "encoding": "none",
+  "filter": "shuffle",
+  "shuffle_element_size": 4,
+  "compression": "szip",
+  "szip_rsi": 128,
+  "szip_block_size": 32,
+  "szip_flags": 0,
+  "szip_block_offsets": [0, 2064, 4112, ...],
+  "hash": {
+    "type": "xxh3",
+    "value": "f7e8d9c0b1a2..."
+  },
+  "mars": {
+    "param": "2t"
+  },
+  "units": "K"
 }
 ```
 
 **Strided memory layout:** Each data object describes its N-Tensor via shape + strides, separating the logical tensor structure from the raw memory buffer (as in NumPy, PyTorch, ndarray). The 1D flat index for a multi-dimensional index vector `I` is: `flat_index = sum(I[k] * strides[k] for k in 0..ndim)`. This enables non-contiguous views, transposed tensors, and sliced sub-tensors to be described without copying data.
 
 **Key design decisions:**
-- **Binary header index** (total_length, metadata_offset, metadata_length, num_data_objects, object_offsets[]) precedes the CBOR block. This has fixed, deterministic size for any given N, enabling O(1) random access to any data object without CBOR parsing. It also eliminates the CBOR circular dependency: since offsets live outside CBOR, the CBOR block can be written at a fixed position without knowing data object positions in advance.
-- **Metadata offset field** accommodates optional padding between binary header and CBOR block (e.g., for cache-line alignment). Decoders seek to metadata_offset rather than computing 40 + N×8.
-- **Total length field** enables seeking past messages without any parsing.
-- **Two-level metadata:** common entries (shared) + per-object entries (in `"objects"` array). Avoids duplicating shared metadata across objects.
-- **Payload directory** (`"payload"` array) provides encoding pipeline parameters per data object. Byte offsets and payload lengths live in the binary header's object_offsets[], not CBOR.
+- **Frame-based format** instead of a monolithic binary header index. Each frame (header metadata, header index, data object, footer index, etc.) is self-describing with its own `FR`+type header and `ENDF` end marker. This enables flexible ordering and optional frames without a rigid header layout.
+- **Self-contained data objects** — each data object frame carries its own CBOR DataObjectDescriptor with all encoding parameters. No external index or separate `"payload"` array is needed to decode an individual object. This eliminates the CBOR circular dependency: object descriptors are written alongside (typically after) their payloads.
+- **Two-pass index construction** for non-streaming mode: the encoder first writes all data object frames, then constructs the header index frame with known offsets. For streaming mode (`total_length=0`), the index is placed in the footer instead.
+- **Streaming support** via `total_length=0` in the preamble. When streaming, the encoder does not know the message size or object count in advance. The footer index frame records object offsets after all data has been written. `first_footer_offset` in the postamble is never zero — the postamble always exists.
+- **FR/ENDF frame markers** per data object provide corruption detection at the object level, not just message level. Each frame's length field enables skipping without parsing the frame contents.
+- **Two-level metadata:** GlobalMetadata (shared, in metadata frame) + DataObjectDescriptor (per object, in data object frame). Avoids duplicating shared metadata across objects while keeping each object self-contained for decoding.
 - **Per-object byte order** — `"byte_order"` per data object allows clients to encode large payloads in native endianness without byte-flipping, while framing fields remain network byte order.
-- **OBJS/OBJE markers** per data object provide corruption detection at the object level, not just message level.
+- **Total length field** in the preamble enables seeking past messages without any parsing.
 - **Version entry** in every message enables forward-compatible evolution.
 
 ### Encoding Support (initial)
@@ -297,14 +339,14 @@ The metadata_offset field accommodates optional padding bytes between the binary
 | `"uint64"` | 8 | Unsigned 64-bit integer |
 | `"bitmask"` | 1/8 | Packed bits (8 bits per byte, MSB-first). Tensor elements are single bits; byte width for stride/offset calculations is 1/8. Padding bits in the final byte are zero-filled. |
 
-**Note on sizes:** Data objects may exceed 4 GiB. All offsets and lengths in the binary header are uint64.
+**Note on sizes:** Data objects may exceed 4 GiB. All offsets and lengths in frame headers and index frames are uint64.
 
-**Encoding pipeline:** Encoding, pre-processing filters, and compression are specified per data object in the `"payload"` array:
+**Encoding pipeline:** Encoding, pre-processing filters, and compression are specified per data object in its DataObjectDescriptor:
 - `"encoding"` — data encoding: `"none"`, `"simple_packing"` (or future formats)
 - `"filter"` — optional pre-processing: `"none"` (default), `"shuffle"` (or future filters)
 - `"compression"` — optional compression applied last: `"none"` (default), `"szip"` (or future formats)
 
-The full pipeline is: **encode → filter → compress** (and reverse for decoding). Each data object in a message can use a different pipeline. Every step in the pipeline MUST be fully described in the `"payload"` metadata entry for that object — decoders must never make assumptions about what was applied.
+The full pipeline is: **encode → filter → compress** (and reverse for decoding). Each data object in a message can use a different pipeline. Every step in the pipeline MUST be fully described in the DataObjectDescriptor for that object — decoders must never make assumptions about what was applied.
 
 **Encoding details:**
 
@@ -336,21 +378,21 @@ The full pipeline is: **encode → filter → compress** (and reverse for decodi
 
    Granularity: the minimum skip unit is one RSI block (typically 4096 samples). Required payload metadata: `szip_rsi`, `szip_block_size`, `szip_flags`, `szip_block_offsets` (array of uint64 bit offsets).
 
-   For uncompressed data (`"compression": "none"`), partial range decoding is trivial — direct byte offset calculation from the binary header object_offsets[] entry + sample index × element size.
+   For uncompressed data (`"compression": "none"`), partial range decoding is trivial — direct byte offset calculation from the data object frame's payload start + sample index × element size.
 
 **Note on shuffle + partial range decode:** These do not compose. Partial range decode only works for `simple_packing+szip` and uncompressed data. For shuffled data, the byte rearrangement means the RSI block boundaries do not correspond to contiguous sample ranges in the original tensor. Document this limitation clearly; do not attempt to combine shuffle with partial range decode.
 
-**Compression roadmap (planned, not v1):**
+**Additional compressors (implemented):**
 
-The encoding pipeline and metadata structure are designed to accommodate these without wire format changes — each is just a new `"compression"` or `"encoding"` string value with its own metadata parameters.
+All five additional compressors are now implemented alongside szip. The encoding pipeline and metadata structure accommodate them without wire format changes — each is a `"compression"` string value with its own metadata parameters in the DataObjectDescriptor.
 
 | Compression | Type | Notes |
 |------------|------|-------|
-| `"blosc2"` | Lossless | Multi-threaded, supports multiple internal codecs. Research: dtype support, thread safety in FFI. |
-| `"zstd"` | Lossless | Excellent ratio/speed tradeoff. Widely available. Research: streaming vs block mode for large tensors. |
+| `"blosc2"` | Lossless | Multi-threaded, supports multiple internal codecs. |
+| `"zstd"` | Lossless | Excellent ratio/speed tradeoff. Widely available. |
 | `"lz4"` | Lossless | Fastest decompression. Good for real-time pipelines. |
-| `"zfp"` | Lossy | Purpose-built for floating-point arrays. Research: fixed-rate vs fixed-precision modes, dimension limits. |
-| `"sz3"` | Lossy | Error-bounded lossy compression for scientific data. Research: supported dtypes, error bound specification in metadata. |
+| `"zfp"` | Lossy | Purpose-built for floating-point arrays. Supports fixed-rate and fixed-precision modes. |
+| `"sz3"` | Lossy | Error-bounded lossy compression for scientific data. |
 
 **Implementation note on compression limitations:** Each compression algorithm has dtype and dimensionality constraints. When implementing new compressors, thoroughly research:
 - Which dtypes are natively supported (integer-only like libaec? float-only like ZFP?)
@@ -382,7 +424,7 @@ The hash is computed over the final encoded payload bytes (after the full encode
 
 - **Round-trip correctness:** Encode → decode → verify bit-exact (for lossless) or within quantization tolerance (for simple_packing)
 - **Real data tests:** Use actual ECMWF data shapes (0.1-degree global fields: 1801x3600, ensemble tensors, wave spectra 3-tensors)
-- **Multi-object tests:** Messages containing multiple data objects with different encodings, dtypes, and byte orders. Verify random access by index via binary header object_offsets[].
+- **Multi-object tests:** Messages containing multiple data objects with different encodings, dtypes, and byte orders. Verify random access by index via header/footer index frames.
 - **Strided layout tests:** Non-contiguous strides, transposed views, sliced sub-tensors — verify correct flat-index computation
 - **Multi-message tests:** Append multiple messages to buffer, verify independent parsing
 - **Corruption tests:** Verify framing markers detect truncated/corrupted messages
@@ -391,16 +433,15 @@ The hash is computed over the final encoded payload bytes (after the full encode
 ### Error Handling & Recovery
 
 - **Framing validation:** Decoder verifies `TENSOGRM` magic at expected offset. If missing, scanner advances byte-by-byte to find next `TENSOGRM` marker (skip-to-next-marker recovery for multi-message files).
-- **Corrupted messages:** If total_length is inconsistent with terminator position, or terminator `39277777` is missing/wrong, the message is rejected. Decoder skips to next magic marker and continues.
-- **Partial reads:** A message without a terminator is never valid. Partial messages at end-of-stream are reported as truncated, not silently dropped.
+- **Corrupted messages:** If total_length is inconsistent with postamble position, or end magic `39277777` is missing/wrong, the message is rejected. Decoder skips to next magic marker and continues.
+- **Partial reads:** A message without a postamble is never valid. Partial messages at end-of-stream are reported as truncated, not silently dropped.
 - **Unknown CBOR keys:** Decoders MUST ignore unknown CBOR keys (forward compatibility). Unknown encoding types are rejected with a clear error.
-- **Data object validation:** Each data object's `OBJS`/`OBJE` markers are verified. If a data object is corrupted, that object is rejected but other objects in the same message may still be accessible via binary header object_offsets[].
-- **Validation:** objects.len == payload.len must hold; if not, the message is rejected with MetadataError.
+- **Data object validation:** Each data object frame's `FR`/`ENDF` markers and frame length are verified. If a data object frame is corrupted, that object is rejected but other objects in the same message may still be accessible via the index frame offsets.
 - **API error surface:** All functions return Result types (Rust), error codes (C FFI), and raise exceptions (Python) with structured error categories: FramingError, MetadataError, EncodingError, CompressionError, ObjectError.
 
 ### Version Compatibility Rules
 
-- Version is a single unsigned integer starting at 1.
+- Version is a single unsigned integer, currently 2.
 - **Minor evolution (same version):** Adding new CBOR metadata keys or new encoding types does NOT bump the version. Decoders ignore unknown keys and reject unknown encodings gracefully.
 - **Version bump:** Only required when the wire format structure changes (field positions, framing semantics, CBOR structure changes). Decoders MUST reject messages with an unrecognized version.
 - **No backward compatibility obligation across major version bumps.** The version field exists to fail fast, not to maintain legacy decode paths.
@@ -418,8 +459,8 @@ The hash is computed over the final encoded payload bytes (after the full encode
 - **Message-level checksum:** No checksum in v1. Framing markers + transport-layer checksums are sufficient. Can be added as an optional CBOR metadata key in future.
 - **Dimension ordering:** Row-major (C order), matching Rust/Python/C conventions. Specified in the `shape` array.
 - **dtype semantics:** `dtype` is the decoded logical type, not the on-wire storage type.
-- **Object offsets location:** Object byte offsets live in the binary header (object_offsets[]), not in the CBOR objects[] entries. This eliminates the CBOR circular dependency during encoding.
-- **Zero-object messages:** Valid. A message with N=0 has an empty binary header index and no payload sections. Useful for pipeline signaling via metadata-only messages.
+- **Object offsets location:** Object byte offsets live in index frames (header or footer), not in the GlobalMetadata CBOR. Each data object frame's DataObjectDescriptor is self-contained alongside its payload, eliminating the CBOR circular dependency during encoding.
+- **Zero-object messages:** Valid. A message with no data object frames has only metadata frame(s) and no index. Useful for pipeline signaling via metadata-only messages.
 
 ## Success Criteria
 
@@ -457,4 +498,4 @@ Before writing any library code: **encode one real sea wave spectrum dataset by 
 - When I challenged CBOR for tensor descriptors with a performance argument, you didn't just disagree — you explained exactly why: "messages of tens to hundreds of MiB, where most time will be spent decoding the N-tensor payloads." You sized the problem before answering.
 - The `39277777` terminator correction — "both a changing pattern and a constant pattern to minimise undetected spurious corruption" — shows you think about failure modes at the bit level. That's the kind of detail that separates formats that survive production from ones that don't.
 - You chose Rust over C++ for a library at an organization that runs on C/C++. That takes conviction. You're not optimizing for organizational inertia — you're optimizing for correctness in production.
-- The binary header index proposal — moving object offsets out of CBOR into a fixed-size prefix — solved the circular dependency cleanly and in one move. That's the kind of insight that saves a week of debugging later.
+- The frame-based architecture — moving object descriptors into self-contained data object frames and offsets into dedicated index frames — solved the circular dependency cleanly and in one move. That's the kind of insight that saves a week of debugging later.

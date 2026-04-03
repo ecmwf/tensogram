@@ -14,7 +14,7 @@ tensogram-core = { path = "../crates/tensogram-core" }
 ```rust
 use std::collections::BTreeMap;
 use tensogram_core::{
-    encode, decode, Metadata, ObjectDescriptor, PayloadDescriptor,
+    encode, decode, GlobalMetadata, DataObjectDescriptor,
     ByteOrder, Dtype, EncodeOptions, DecodeOptions,
 };
 
@@ -29,29 +29,27 @@ fn main() {
         .collect();
 
     // 2. Describe the tensor
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 2,
-            shape,
-            strides,
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: BTreeMap::new(),
-            hash: None,  // hash is added automatically by EncodeOptions::default()
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
     };
 
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 2,
+        shape,
+        strides,
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None, // hash is added automatically by EncodeOptions::default()
+    };
+
     // 3. Encode — produces a self-contained message
-    let message = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let message = encode(global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     println!("Encoded {} bytes", message.len());
 
@@ -60,11 +58,11 @@ fn main() {
 
     println!(
         "Decoded: {} objects, shape {:?}, dtype {}",
-        meta.objects.len(),
-        meta.objects[0].shape,
-        meta.objects[0].dtype,
+        objects.len(),
+        objects[0].0.shape,
+        objects[0].0.dtype,
     );
-    assert_eq!(objects[0], data);
+    assert_eq!(objects[0].1, data);
 }
 ```
 
@@ -86,32 +84,23 @@ let mars_map = vec![
 let mut extra = BTreeMap::new();
 extra.insert("mars".to_string(), Value::Map(mars_map));
 
-// Per-object: the parameter name
-let obj_mars = vec![
-    (Value::Text("param".into()), Value::Text("2t".into())),
-];
-let mut obj_extra = BTreeMap::new();
-obj_extra.insert("mars".to_string(), Value::Map(obj_mars));
-
-let metadata = Metadata {
-    version: 1,
-    objects: vec![ObjectDescriptor {
-        obj_type: "ntensor".to_string(),
-        ndim: 2,
-        shape: vec![100, 200],
-        strides: vec![200, 1],
-        dtype: Dtype::Float32,
-        extra: obj_extra,  // per-object MARS keys here
-    }],
-    payload: vec![PayloadDescriptor {
-        byte_order: ByteOrder::Big,
-        encoding: "none".to_string(),
-        filter: "none".to_string(),
-        compression: "none".to_string(),
-        params: BTreeMap::new(),
-        hash: None,
-    }],
+let global = GlobalMetadata {
+    version: 2,
     extra, // message-level MARS keys here
+};
+
+let desc = DataObjectDescriptor {
+    obj_type: "ntensor".to_string(),
+    ndim: 2,
+    shape: vec![100, 200],
+    strides: vec![200, 1],
+    dtype: Dtype::Float32,
+    byte_order: ByteOrder::Big,
+    encoding: "none".to_string(),
+    filter: "none".to_string(),
+    compression: "none".to_string(),
+    params: BTreeMap::new(),
+    hash: None,
 };
 ```
 
