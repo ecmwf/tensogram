@@ -1,3 +1,4 @@
+.claude/
 .sisyphus/
 /target
 Cargo.lock
