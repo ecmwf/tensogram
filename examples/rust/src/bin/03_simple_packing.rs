@@ -6,7 +6,7 @@
 //!
 //! Steps:
 //!   1. Compute packing parameters from your data.
-//!   2. Put the parameters in the PayloadDescriptor.
+//!   2. Put the parameters in the DataObjectDescriptor.
 //!   3. Pass the raw f64 bytes to encode() — the pipeline does the rest.
 //!   4. decode() returns f64 bytes regardless of the original dtype.
 
@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode, encode, ByteOrder, DecodeOptions, Dtype, EncodeOptions, Metadata, ObjectDescriptor,
-    PayloadDescriptor,
+    decode, encode, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
+    GlobalMetadata,
 };
 use tensogram_encodings::simple_packing;
 
@@ -27,7 +27,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let values: Vec<f64> = (0..n).map(|i| 249.15 + (i as f64) * 0.1).collect();
 
     // encode() expects raw bytes. simple_packing always operates on f64.
-    let raw_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+    // Use big-endian bytes to match byte_order: ByteOrder::Big below.
+    let raw_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     println!("Source: {} f64 values  raw={} bytes", n, raw_bytes.len());
     println!("  range: [{:.2}, {:.2}]", values[0], values[n - 1]);
@@ -46,10 +47,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  decimal_scale_factor = {}", params.decimal_scale_factor);
     println!("  bits_per_value       = {}", params.bits_per_value);
 
-    // ── 3. Build metadata with packing parameters ─────────────────────────────
+    // ── 3. Build descriptor with packing parameters ───────────────────────────
     //
-    // The parameters must be stored in params BTreeMap of the PayloadDescriptor
-    // so decode() can reconstruct them.
+    // The parameters must be stored in the params BTreeMap of the
+    // DataObjectDescriptor so decode() can reconstruct them.
     let mut packing_params: BTreeMap<String, Value> = BTreeMap::new();
     packing_params.insert(
         "reference_value".into(),
@@ -68,24 +69,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Value::Integer((params.bits_per_value as i64).into()),
     );
 
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![n as u64],
-            strides: vec![1],
-            dtype: Dtype::Float64, // source dtype
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "simple_packing".to_string(), // ← key change
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: packing_params,
-            hash: None,
-        }],
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![n as u64],
+        strides: vec![1],
+        dtype: Dtype::Float64, // source dtype
+        byte_order: ByteOrder::Big,
+        encoding: "simple_packing".to_string(), // ← key change
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: packing_params,
+        hash: None,
+    };
+
+    let global_meta = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
     };
 
@@ -93,7 +92,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // encode() calls simple_packing::encode() internally. The stored payload
     // is the packed bits, not the original f64 bytes.
-    let message = encode(&metadata, &[&raw_bytes], &EncodeOptions::default())?;
+    let message = encode(
+        &global_meta,
+        &[(&desc, &raw_bytes)],
+        &EncodeOptions::default(),
+    )?;
 
     // Approximate payload size: (n * bits_per_value + 7) / 8 bytes
     let expected_payload = (n * bits_per_value as usize).div_ceil(8);
@@ -111,8 +114,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // regardless of the dtype stored in the object descriptor.
     let (_meta, objects) = decode(&message, &DecodeOptions::default())?;
     let decoded: Vec<f64> = objects[0]
+        .1
         .chunks_exact(8)
-        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
         .collect();
 
     // ── 6. Measure precision loss ──────────────────────────────────────────────

@@ -2,88 +2,73 @@ use std::collections::BTreeMap;
 use tensogram_core::*;
 use tensogram_encodings::simple_packing;
 
-fn make_float32_metadata(shape: Vec<u64>) -> Metadata {
+fn make_float32_descriptor(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescriptor) {
     let strides = compute_strides(&shape);
-
-    Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: shape.len() as u64,
-            shape,
-            strides,
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: BTreeMap::new(),
-            hash: None,
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
-    }
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: shape.len() as u64,
+        shape,
+        strides,
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    };
+    (global, desc)
 }
 
-fn make_mars_metadata(shape: Vec<u64>, param: &str) -> Metadata {
+fn make_mars_pair(shape: Vec<u64>, param: &str) -> (GlobalMetadata, DataObjectDescriptor) {
     let strides = compute_strides(&shape);
-    let mut mars = BTreeMap::new();
-    mars.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
-    mars.insert("type".to_string(), ciborium::Value::Text("fc".to_string()));
-    mars.insert(
+
+    let mut mars_global = BTreeMap::new();
+    mars_global.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+    mars_global.insert("type".to_string(), ciborium::Value::Text("fc".to_string()));
+    mars_global.insert(
         "date".to_string(),
         ciborium::Value::Text("20260401".to_string()),
-    );
-
-    let mut obj_mars = BTreeMap::new();
-    obj_mars.insert(
-        "param".to_string(),
-        ciborium::Value::Text(param.to_string()),
-    );
-
-    let mut obj_extra = BTreeMap::new();
-    obj_extra.insert(
-        "mars".to_string(),
-        ciborium::Value::Map(
-            obj_mars
-                .into_iter()
-                .map(|(k, v)| (ciborium::Value::Text(k), v))
-                .collect(),
-        ),
     );
 
     let mut extra = BTreeMap::new();
     extra.insert(
         "mars".to_string(),
         ciborium::Value::Map(
-            mars.into_iter()
+            mars_global
+                .into_iter()
                 .map(|(k, v)| (ciborium::Value::Text(k), v))
                 .collect(),
         ),
     );
 
-    Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: shape.len() as u64,
-            shape,
-            strides,
-            dtype: Dtype::Float32,
-            extra: obj_extra,
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: BTreeMap::new(),
-            hash: None,
-        }],
-        extra,
-    }
+    let global = GlobalMetadata { version: 2, extra };
+
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: shape.len() as u64,
+        shape,
+        strides,
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: {
+            let mut p = BTreeMap::new();
+            p.insert(
+                "mars_param".to_string(),
+                ciborium::Value::Text(param.to_string()),
+            );
+            p
+        },
+        hash: None,
+    };
+    (global, desc)
 }
 
 fn compute_strides(shape: &[u64]) -> Vec<u64> {
@@ -99,187 +84,185 @@ fn compute_strides(shape: &[u64]) -> Vec<u64> {
 
 #[test]
 fn test_full_round_trip_single_object() {
-    let metadata = make_float32_metadata(vec![10, 20]);
+    let (global, desc) = make_float32_descriptor(vec![10, 20]);
     let data = vec![0u8; 10 * 20 * 4]; // 200 float32 = 800 bytes
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Verify magic and terminator
     assert_eq!(&encoded[0..8], b"TENSOGRM");
     assert_eq!(&encoded[encoded.len() - 8..], b"39277777");
 
     let (decoded_meta, decoded_objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert_eq!(decoded_meta.version, 1);
+    assert_eq!(decoded_meta.version, 2);
     assert_eq!(decoded_objects.len(), 1);
-    assert_eq!(decoded_objects[0], data);
+    assert_eq!(decoded_objects[0].1, data);
 }
 
 #[test]
 fn test_multi_object_message() {
     let strides1 = compute_strides(&[4, 5]);
 
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![
-            ObjectDescriptor {
-                obj_type: "ntensor".to_string(),
-                ndim: 2,
-                shape: vec![4, 5],
-                strides: strides1,
-                dtype: Dtype::Float32,
-                extra: BTreeMap::new(),
-            },
-            ObjectDescriptor {
-                obj_type: "ntensor".to_string(),
-                ndim: 1,
-                shape: vec![3],
-                strides: vec![1],
-                dtype: Dtype::Float64,
-                extra: BTreeMap::new(),
-            },
-        ],
-        payload: vec![
-            PayloadDescriptor {
-                byte_order: ByteOrder::Big,
-                encoding: "none".to_string(),
-                filter: "none".to_string(),
-                compression: "none".to_string(),
-                params: BTreeMap::new(),
-                hash: None,
-            },
-            PayloadDescriptor {
-                byte_order: ByteOrder::Little,
-                encoding: "none".to_string(),
-                filter: "none".to_string(),
-                compression: "none".to_string(),
-                params: BTreeMap::new(),
-                hash: None,
-            },
-        ],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
+    };
+
+    let desc1 = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 2,
+        shape: vec![4, 5],
+        strides: strides1,
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    };
+    let desc2 = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![3],
+        strides: vec![1],
+        dtype: Dtype::Float64,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
     };
 
     let data1 = vec![1u8; 4 * 5 * 4]; // 20 float32
     let data2 = vec![2u8; 3 * 8]; // 3 float64
 
-    let encoded = encode(&metadata, &[&data1, &data2], &EncodeOptions::default()).unwrap();
+    let encoded = encode(
+        &global,
+        &[(&desc1, &data1), (&desc2, &data2)],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
     let (meta, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
 
-    assert_eq!(meta.objects.len(), 2);
     assert_eq!(objects.len(), 2);
-    assert_eq!(objects[0], data1);
-    assert_eq!(objects[1], data2);
+    assert_eq!(objects[0].1, data1);
+    assert_eq!(objects[1].1, data2);
+    let _ = meta;
 }
 
 #[test]
 fn test_decode_metadata_only() {
-    let metadata = make_mars_metadata(vec![10], "2t");
+    let (global, desc) = make_mars_pair(vec![10], "2t");
     let data = vec![0u8; 10 * 4];
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let meta = decode_metadata(&encoded).unwrap();
 
-    assert_eq!(meta.version, 1);
-    assert_eq!(meta.objects[0].shape, vec![10]);
+    assert_eq!(meta.version, 2);
 }
 
 #[test]
 fn test_decode_single_object_by_index() {
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![
-            ObjectDescriptor {
-                obj_type: "ntensor".to_string(),
-                ndim: 1,
-                shape: vec![2],
-                strides: vec![1],
-                dtype: Dtype::Float32,
-                extra: BTreeMap::new(),
-            },
-            ObjectDescriptor {
-                obj_type: "ntensor".to_string(),
-                ndim: 1,
-                shape: vec![3],
-                strides: vec![1],
-                dtype: Dtype::Float32,
-                extra: BTreeMap::new(),
-            },
-        ],
-        payload: vec![
-            PayloadDescriptor {
-                byte_order: ByteOrder::Big,
-                encoding: "none".to_string(),
-                filter: "none".to_string(),
-                compression: "none".to_string(),
-                params: BTreeMap::new(),
-                hash: None,
-            },
-            PayloadDescriptor {
-                byte_order: ByteOrder::Big,
-                encoding: "none".to_string(),
-                filter: "none".to_string(),
-                compression: "none".to_string(),
-                params: BTreeMap::new(),
-                hash: None,
-            },
-        ],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
+    };
+
+    let desc1 = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![2],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    };
+    let desc2 = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![3],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
     };
 
     let data1 = vec![0xAA; 2 * 4];
     let data2 = vec![0xBB; 3 * 4];
 
-    let encoded = encode(&metadata, &[&data1, &data2], &EncodeOptions::default()).unwrap();
+    let encoded = encode(
+        &global,
+        &[(&desc1, &data1), (&desc2, &data2)],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
 
-    let (_, obj) = decode_object(&encoded, 1, &DecodeOptions::default()).unwrap();
+    let (_, _returned_desc, obj) = decode_object(&encoded, 1, &DecodeOptions::default()).unwrap();
     assert_eq!(obj, data2);
 }
 
 #[test]
 fn test_zero_object_message() {
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![],
-        payload: vec![],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
     };
 
-    let encoded = encode(&metadata, &[], &EncodeOptions::default()).unwrap();
-    let (meta, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert_eq!(meta.objects.len(), 0);
+    let encoded = encode(&global, &[], &EncodeOptions::default()).unwrap();
+    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
     assert_eq!(objects.len(), 0);
 }
 
 #[test]
 fn test_hash_verification_passes() {
-    let metadata = make_float32_metadata(vec![4]);
+    let (global, desc) = make_float32_descriptor(vec![4]);
     let data = vec![42u8; 4 * 4];
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Decode with hash verification enabled
     let options = DecodeOptions { verify_hash: true };
     let (_, objects) = decode(&encoded, &options).unwrap();
-    assert_eq!(objects[0], data);
+    assert_eq!(objects[0].1, data);
 }
 
 #[test]
 fn test_hash_verification_fails_on_corruption() {
-    let metadata = make_float32_metadata(vec![4]);
-    let data = vec![42u8; 4 * 4];
+    // Use a larger payload so the data object frame is well-separated from
+    // the metadata frames and easy to corrupt.
+    let (global, desc) = make_float32_descriptor(vec![100]);
+    let data = vec![42u8; 100 * 4];
 
-    let mut encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let mut encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
-    // Corrupt one byte of payload (find the OBJS marker and corrupt after it)
-    let objs_pos = encoded
+    // The v2 message layout: preamble(24) | header frames | data-object frame | footer frames | postamble(16).
+    // The DataObject frame is identified by the "FR" marker followed by frame-type byte 0x00 0x04.
+    // Find the data object frame and corrupt a byte inside its payload region.
+    let data_frame_marker: &[u8] = &[b'F', b'R', 0x00, 0x04];
+    let frame_start = encoded
         .windows(4)
-        .position(|w| w == b"OBJS")
-        .expect("OBJS marker not found");
-    encoded[objs_pos + 5] ^= 0xFF; // flip a byte in the payload
+        .position(|w| w == data_frame_marker)
+        .expect("DataObject frame not found in encoded message");
+    // Skip the 16-byte frame header to reach the payload; flip the first payload byte.
+    let payload_byte = frame_start + 16;
+    encoded[payload_byte] ^= 0xFF;
 
     let options = DecodeOptions { verify_hash: true };
     let result = decode(&encoded, &options);
-    assert!(result.is_err());
+    assert!(
+        result.is_err(),
+        "expected hash verification failure after corruption"
+    );
 }
 
 #[test]
@@ -307,32 +290,30 @@ fn test_simple_packing_round_trip() {
         ciborium::Value::Integer((params.bits_per_value as i64).into()),
     );
 
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![100],
-            strides: vec![1],
-            dtype: Dtype::Float64,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "simple_packing".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: packing_params,
-            hash: None,
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
     };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![100],
+        strides: vec![1],
+        dtype: Dtype::Float64,
+        byte_order: ByteOrder::Big,
+        encoding: "simple_packing".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: packing_params,
+        hash: None,
+    };
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
 
     // Decoded values should be f64 bytes
     let decoded_values: Vec<f64> = objects[0]
+        .1
         .chunks_exact(8)
         .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
         .collect();
@@ -354,41 +335,38 @@ fn test_shuffle_round_trip() {
         ciborium::Value::Integer(4.into()),
     );
 
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![10],
-            strides: vec![1],
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "shuffle".to_string(),
-            compression: "none".to_string(),
-            params,
-            hash: None,
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
     };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![10],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "shuffle".to_string(),
+        compression: "none".to_string(),
+        params,
+        hash: None,
+    };
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert_eq!(objects[0], data);
+    assert_eq!(objects[0].1, data);
 }
 
 #[test]
 fn test_scan_multi_message_buffer() {
-    let meta1 = make_mars_metadata(vec![4], "2t");
-    let meta2 = make_mars_metadata(vec![8], "10u");
+    let (global1, desc1) = make_mars_pair(vec![4], "2t");
+    let (global2, desc2) = make_mars_pair(vec![8], "10u");
     let data1 = vec![0u8; 4 * 4];
     let data2 = vec![0u8; 8 * 4];
 
-    let msg1 = encode(&meta1, &[&data1], &EncodeOptions::default()).unwrap();
-    let msg2 = encode(&meta2, &[&data2], &EncodeOptions::default()).unwrap();
+    let msg1 = encode(&global1, &[(&desc1, &data1)], &EncodeOptions::default()).unwrap();
+    let msg2 = encode(&global2, &[(&desc2, &data2)], &EncodeOptions::default()).unwrap();
 
     let mut buf = Vec::new();
     buf.extend_from_slice(&msg1);
@@ -398,10 +376,18 @@ fn test_scan_multi_message_buffer() {
     assert_eq!(offsets.len(), 2);
 
     // Decode each message from the scanned offsets
-    let m1 = decode_metadata(&buf[offsets[0].0..offsets[0].0 + offsets[0].1]).unwrap();
-    let m2 = decode_metadata(&buf[offsets[1].0..offsets[1].0 + offsets[1].1]).unwrap();
-    assert_eq!(m1.objects[0].shape, vec![4]);
-    assert_eq!(m2.objects[0].shape, vec![8]);
+    let (_, objects1) = decode(
+        &buf[offsets[0].0..offsets[0].0 + offsets[0].1],
+        &DecodeOptions::default(),
+    )
+    .unwrap();
+    let (_, objects2) = decode(
+        &buf[offsets[1].0..offsets[1].0 + offsets[1].1],
+        &DecodeOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(objects1[0].0.shape, vec![4]);
+    assert_eq!(objects2[0].0.shape, vec![8]);
 }
 
 #[test]
@@ -410,9 +396,9 @@ fn test_partial_range_decode_uncompressed() {
     let values: Vec<f32> = (0..10).map(|i| i as f32 * 1.5).collect();
     let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
-    let metadata = make_float32_metadata(vec![10]);
+    let (global, desc) = make_float32_descriptor(vec![10]);
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Decode range: elements 3..6 (3 elements)
     let partial = decode_range(&encoded, 0, &[(3, 3)], &DecodeOptions::default()).unwrap();
@@ -431,53 +417,28 @@ fn test_decode_range_shuffle_rejected() {
         ciborium::Value::Integer(4.into()),
     );
 
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![10],
-            strides: vec![1],
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "shuffle".to_string(),
-            compression: "none".to_string(),
-            params,
-            hash: None,
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
     };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![10],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "shuffle".to_string(),
+        compression: "none".to_string(),
+        params,
+        hash: None,
+    };
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let err = decode_range(&encoded, 0, &[(3, 3)], &DecodeOptions::default()).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("shuffle") || msg.contains("filter"), "{msg}");
-}
-
-#[test]
-fn test_objects_payload_mismatch_rejected() {
-    // Manually construct metadata with mismatched lengths
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![4],
-            strides: vec![1],
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![], // mismatch!
-        extra: BTreeMap::new(),
-    };
-
-    let data = vec![0u8; 16];
-    let result = encode(&metadata, &[&data], &EncodeOptions::default());
-    assert!(result.is_err());
 }
 
 #[test]
@@ -489,9 +450,9 @@ fn test_file_multi_message_round_trip() {
 
     // Append 3 messages with different data
     for i in 0..3u8 {
-        let metadata = make_float32_metadata(vec![4]);
+        let (global, desc) = make_float32_descriptor(vec![4]);
         let data = vec![i; 4 * 4];
-        file.append(&metadata, &[&data], &EncodeOptions::default())
+        file.append(&global, &[(&desc, &data)], &EncodeOptions::default())
             .unwrap();
     }
 
@@ -502,19 +463,19 @@ fn test_file_multi_message_round_trip() {
         let (_, objects) = file
             .decode_message(i as usize, &DecodeOptions::default())
             .unwrap();
-        assert_eq!(objects[0], vec![i; 4 * 4]);
+        assert_eq!(objects[0].1, vec![i; 4 * 4]);
     }
 }
 
 #[test]
 fn test_namespaced_metadata_round_trip() {
-    let metadata = make_mars_metadata(vec![4], "wave_spectra");
+    let (global, desc) = make_mars_pair(vec![4], "wave_spectra");
     let data = vec![0u8; 4 * 4];
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let meta = decode_metadata(&encoded).unwrap();
 
-    // Verify mars namespace
+    // Verify mars namespace in global metadata
     assert!(meta.extra.contains_key("mars"));
     if let ciborium::Value::Map(entries) = &meta.extra["mars"] {
         let class_val = entries
@@ -527,29 +488,26 @@ fn test_namespaced_metadata_round_trip() {
 
 #[test]
 fn test_validate_object_overflow() {
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 2,
-            shape: vec![u64::MAX, 2],
-            strides: vec![2, 1],
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: BTreeMap::new(),
-            hash: None,
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 2,
+        shape: vec![u64::MAX, 2],
+        strides: vec![2, 1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
     };
 
     let data = vec![0u8; 64];
-    let result = encode(&metadata, &[&data], &EncodeOptions::default());
+    let result = encode(&global, &[(&desc, &data)], &EncodeOptions::default());
     assert!(result.is_err(), "expected Err but got Ok");
 }
 
@@ -579,31 +537,29 @@ fn test_cross_endian_round_trip() {
 
     let be_data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
-    let be_metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![50],
-            strides: vec![1],
-            dtype: Dtype::Float64,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "simple_packing".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: packing_params.clone(),
-            hash: None,
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
     };
+    let be_desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![50],
+        strides: vec![1],
+        dtype: Dtype::Float64,
+        byte_order: ByteOrder::Big,
+        encoding: "simple_packing".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: packing_params.clone(),
+        hash: None,
+    };
 
-    let encoded_be = encode(&be_metadata, &[&be_data], &EncodeOptions::default()).unwrap();
+    let encoded_be = encode(&global, &[(&be_desc, &be_data)], &EncodeOptions::default()).unwrap();
     let (_, objects_be) = decode(&encoded_be, &DecodeOptions::default()).unwrap();
 
     let decoded_be_values: Vec<f64> = objects_be[0]
+        .1
         .chunks_exact(8)
         .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
         .collect();
@@ -618,31 +574,25 @@ fn test_cross_endian_round_trip() {
 
     let le_data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
 
-    let le_metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![50],
-            strides: vec![1],
-            dtype: Dtype::Float64,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Little,
-            encoding: "simple_packing".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: packing_params.clone(),
-            hash: None,
-        }],
-        extra: BTreeMap::new(),
+    let le_desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![50],
+        strides: vec![1],
+        dtype: Dtype::Float64,
+        byte_order: ByteOrder::Little,
+        encoding: "simple_packing".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: packing_params.clone(),
+        hash: None,
     };
 
-    let encoded_le = encode(&le_metadata, &[&le_data], &EncodeOptions::default()).unwrap();
+    let encoded_le = encode(&global, &[(&le_desc, &le_data)], &EncodeOptions::default()).unwrap();
     let (_, objects_le) = decode(&encoded_le, &DecodeOptions::default()).unwrap();
 
     let decoded_le_values: Vec<f64> = objects_le[0]
+        .1
         .chunks_exact(8)
         .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
         .collect();
@@ -656,7 +606,7 @@ fn test_cross_endian_round_trip() {
     }
 
     assert_ne!(
-        objects_be[0], objects_le[0],
+        objects_be[0].1, objects_le[0].1,
         "BE and LE decoded bytes should differ"
     );
 }
@@ -684,29 +634,26 @@ fn test_simple_packing_rejects_non_f64() {
         ciborium::Value::Integer((params.bits_per_value as i64).into()),
     );
 
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![10],
-            strides: vec![1],
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "simple_packing".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: packing_params,
-            hash: None,
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![10],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "simple_packing".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: packing_params,
+        hash: None,
     };
 
     let data = vec![0u8; 10 * 4];
-    let result = encode(&metadata, &[&data], &EncodeOptions::default());
+    let result = encode(&global, &[(&desc, &data)], &EncodeOptions::default());
     assert!(
         result.is_err(),
         "expected error for simple_packing with Float32 dtype"
@@ -720,29 +667,26 @@ fn test_simple_packing_rejects_non_f64() {
 
 #[test]
 fn test_validate_ndim_mismatch() {
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 3,
-            shape: vec![4, 5],
-            strides: vec![5, 1],
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: BTreeMap::new(),
-            hash: None,
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 3,
+        shape: vec![4, 5],
+        strides: vec![5, 1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
     };
 
     let data = vec![0u8; 4 * 5 * 4];
-    let result = encode(&metadata, &[&data], &EncodeOptions::default());
+    let result = encode(&global, &[(&desc, &data)], &EncodeOptions::default());
     assert!(result.is_err(), "expected Err but got Ok");
 }
 
@@ -763,29 +707,26 @@ fn test_param_out_of_bounds() {
         ciborium::Value::Integer(16.into()),
     );
 
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![4],
-            strides: vec![1],
-            dtype: Dtype::Float64,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "simple_packing".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: packing_params,
-            hash: None,
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![1],
+        dtype: Dtype::Float64,
+        byte_order: ByteOrder::Big,
+        encoding: "simple_packing".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: packing_params,
+        hash: None,
     };
 
     let data = vec![0u8; 4 * 8];
-    let result = encode(&metadata, &[&data], &EncodeOptions::default());
+    let result = encode(&global, &[(&desc, &data)], &EncodeOptions::default());
     assert!(result.is_err(), "expected Err but got Ok");
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -796,11 +737,11 @@ fn test_param_out_of_bounds() {
 
 // --- szip compression integration tests ---
 
-/// Build metadata for simple_packing + szip pipeline.
-fn make_szip_packing_metadata(
+/// Build (GlobalMetadata, DataObjectDescriptor) for simple_packing + szip pipeline.
+fn make_szip_packing_pair(
     num_values: u64,
     params: &simple_packing::SimplePackingParams,
-) -> Metadata {
+) -> (GlobalMetadata, DataObjectDescriptor) {
     let mut packing_params = BTreeMap::new();
     packing_params.insert(
         "reference_value".to_string(),
@@ -828,30 +769,28 @@ fn make_szip_packing_metadata(
         ciborium::Value::Integer(8_i64.into()),
     );
 
-    Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![num_values],
-            strides: vec![1],
-            dtype: Dtype::Float64,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "simple_packing".to_string(),
-            filter: "none".to_string(),
-            compression: "szip".to_string(),
-            params: packing_params,
-            hash: None,
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
-    }
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![num_values],
+        strides: vec![1],
+        dtype: Dtype::Float64,
+        byte_order: ByteOrder::Big,
+        encoding: "simple_packing".to_string(),
+        filter: "none".to_string(),
+        compression: "szip".to_string(),
+        params: packing_params,
+        hash: None,
+    };
+    (global, desc)
 }
 
-/// Build metadata for raw szip compression (no encoding, no filter).
-fn make_szip_raw_metadata(num_values: u64, dtype: Dtype) -> Metadata {
+/// Build (GlobalMetadata, DataObjectDescriptor) for raw szip compression (no encoding, no filter).
+fn make_szip_raw_pair(num_values: u64, dtype: Dtype) -> (GlobalMetadata, DataObjectDescriptor) {
     let mut params = BTreeMap::new();
     params.insert("szip_rsi".to_string(), ciborium::Value::Integer(128.into()));
     params.insert(
@@ -863,26 +802,24 @@ fn make_szip_raw_metadata(num_values: u64, dtype: Dtype) -> Metadata {
         ciborium::Value::Integer(8_i64.into()),
     );
 
-    Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![num_values],
-            strides: vec![1],
-            dtype,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "none".to_string(),
-            compression: "szip".to_string(),
-            params,
-            hash: None,
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
-    }
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![num_values],
+        strides: vec![1],
+        dtype,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "szip".to_string(),
+        params,
+        hash: None,
+    };
+    (global, desc)
 }
 
 #[test]
@@ -891,16 +828,16 @@ fn test_szip_simple_packing_round_trip() {
     let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
-    let metadata = make_szip_packing_metadata(4096, &packing);
+    let (global, desc) = make_szip_packing_pair(4096, &packing);
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Verify szip_block_offsets were stored in metadata
-    let meta = decode_metadata(&encoded).unwrap();
-    assert!(meta.payload[0].params.contains_key("szip_block_offsets"));
+    let (_, objects_meta) = decode(&encoded, &DecodeOptions::default()).unwrap();
+    assert!(objects_meta[0].0.params.contains_key("szip_block_offsets"));
 
-    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    let decoded_values: Vec<f64> = objects[0]
+    let decoded_values: Vec<f64> = objects_meta[0]
+        .1
         .chunks_exact(8)
         .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
         .collect();
@@ -917,13 +854,14 @@ fn test_szip_simple_packing_decode_range_vs_full() {
     let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
-    let metadata = make_szip_packing_metadata(4096, &packing);
+    let (global, desc) = make_szip_packing_pair(4096, &packing);
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Full decode
     let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
     let full_values: Vec<f64> = objects[0]
+        .1
         .chunks_exact(8)
         .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
         .collect();
@@ -951,12 +889,13 @@ fn test_szip_simple_packing_decode_range_first_elements() {
     let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
-    let metadata = make_szip_packing_metadata(4096, &packing);
+    let (global, desc) = make_szip_packing_pair(4096, &packing);
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
     let full_values: Vec<f64> = objects[0]
+        .1
         .chunks_exact(8)
         .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
         .collect();
@@ -983,12 +922,13 @@ fn test_szip_simple_packing_decode_range_last_elements() {
     let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
-    let metadata = make_szip_packing_metadata(4096, &packing);
+    let (global, desc) = make_szip_packing_pair(4096, &packing);
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
     let full_values: Vec<f64> = objects[0]
+        .1
         .chunks_exact(8)
         .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
         .collect();
@@ -1013,11 +953,11 @@ fn test_szip_simple_packing_decode_range_last_elements() {
 #[test]
 fn test_szip_raw_u8_round_trip() {
     let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
-    let metadata = make_szip_raw_metadata(4096, Dtype::Uint8);
+    let (global, desc) = make_szip_raw_pair(4096, Dtype::Uint8);
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert_eq!(objects[0], data);
+    assert_eq!(objects[0].1, data);
 }
 
 #[test]
@@ -1039,30 +979,27 @@ fn test_szip_shuffle_round_trip() {
         ciborium::Value::Integer(8_i64.into()),
     );
 
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![1024],
-            strides: vec![1],
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "shuffle".to_string(),
-            compression: "szip".to_string(),
-            params,
-            hash: None,
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
     };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![1024],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "shuffle".to_string(),
+        compression: "szip".to_string(),
+        params,
+        hash: None,
+    };
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert_eq!(objects[0], data);
+    assert_eq!(objects[0].1, data);
 }
 
 #[test]
@@ -1084,28 +1021,25 @@ fn test_szip_shuffle_decode_range_rejected() {
         ciborium::Value::Integer(8_i64.into()),
     );
 
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![1024],
-            strides: vec![1],
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "shuffle".to_string(),
-            compression: "szip".to_string(),
-            params,
-            hash: None,
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
     };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![1024],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "shuffle".to_string(),
+        compression: "szip".to_string(),
+        params,
+        hash: None,
+    };
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let err = decode_range(&encoded, 0, &[(0, 10)], &DecodeOptions::default()).unwrap_err();
     assert!(err.to_string().contains("shuffle") || err.to_string().contains("filter"));
 }
@@ -1148,59 +1082,50 @@ fn test_szip_multi_object_mixed_compression() {
 
     let packed_data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![
-            ObjectDescriptor {
-                obj_type: "ntensor".to_string(),
-                ndim: 1,
-                shape: vec![10],
-                strides: vec![1],
-                dtype: Dtype::Float32,
-                extra: BTreeMap::new(),
-            },
-            ObjectDescriptor {
-                obj_type: "ntensor".to_string(),
-                ndim: 1,
-                shape: vec![2048],
-                strides: vec![1],
-                dtype: Dtype::Float64,
-                extra: BTreeMap::new(),
-            },
-        ],
-        payload: vec![
-            PayloadDescriptor {
-                byte_order: ByteOrder::Big,
-                encoding: "none".to_string(),
-                filter: "none".to_string(),
-                compression: "none".to_string(),
-                params: BTreeMap::new(),
-                hash: None,
-            },
-            PayloadDescriptor {
-                byte_order: ByteOrder::Big,
-                encoding: "simple_packing".to_string(),
-                filter: "none".to_string(),
-                compression: "szip".to_string(),
-                params: packing_params,
-                hash: None,
-            },
-        ],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
+    };
+    let raw_desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![10],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    };
+    let packed_desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![2048],
+        strides: vec![1],
+        dtype: Dtype::Float64,
+        byte_order: ByteOrder::Big,
+        encoding: "simple_packing".to_string(),
+        filter: "none".to_string(),
+        compression: "szip".to_string(),
+        params: packing_params,
+        hash: None,
     };
 
     let encoded = encode(
-        &metadata,
-        &[&raw_data, &packed_data],
+        &global,
+        &[(&raw_desc, &raw_data), (&packed_desc, &packed_data)],
         &EncodeOptions::default(),
     )
     .unwrap();
 
     let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
     assert_eq!(objects.len(), 2);
-    assert_eq!(objects[0], raw_data);
+    assert_eq!(objects[0].1, raw_data);
 
     let decoded_values: Vec<f64> = objects[1]
+        .1
         .chunks_exact(8)
         .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
         .collect();
@@ -1215,14 +1140,14 @@ fn test_szip_hash_verification() {
     let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
-    let metadata = make_szip_packing_metadata(2048, &packing);
+    let (global, desc) = make_szip_packing_pair(2048, &packing);
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Should pass with hash verification
     let options = DecodeOptions { verify_hash: true };
     let (_, objects) = decode(&encoded, &options).unwrap();
-    assert_eq!(objects[0].len(), 2048 * 8);
+    assert_eq!(objects[0].1.len(), 2048 * 8);
 }
 
 #[test]
@@ -1231,12 +1156,13 @@ fn test_szip_decode_range_multiple_ranges() {
     let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
-    let metadata = make_szip_packing_metadata(4096, &packing);
+    let (global, desc) = make_szip_packing_pair(4096, &packing);
 
-    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
     let full_values: Vec<f64> = objects[0]
+        .1
         .chunks_exact(8)
         .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
         .collect();
@@ -1270,28 +1196,25 @@ fn test_szip_decode_range_multiple_ranges() {
 
 #[test]
 fn test_validate_empty_obj_type() {
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "".to_string(),
-            ndim: 1,
-            shape: vec![4],
-            strides: vec![1],
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: BTreeMap::new(),
-            hash: None,
-        }],
+    let global = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
     };
 
     let data = vec![0u8; 4 * 4];
-    let result = encode(&metadata, &[&data], &EncodeOptions::default());
+    let result = encode(&global, &[(&desc, &data)], &EncodeOptions::default());
     assert!(result.is_err(), "expected Err but got Ok");
 }

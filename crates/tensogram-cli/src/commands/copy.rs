@@ -60,11 +60,11 @@ pub fn run(
     Ok(())
 }
 
-/// Expand `[keyName]` placeholders in a filename template using metadata values.
+/// Expand `[keyName]` placeholders in a filename template using global metadata values.
 ///
-/// For multi-object messages, each placeholder resolves to the first matching
-/// object-level or top-level key. That keeps split filenames stable.
-fn expand_placeholders(template: &str, metadata: &tensogram_core::Metadata) -> String {
+/// For multi-object messages, each placeholder resolves to global metadata keys only.
+/// That keeps split filenames stable.
+fn expand_placeholders(template: &str, metadata: &tensogram_core::GlobalMetadata) -> String {
     let mut result = template.to_string();
     // Find all [key] patterns
     while let Some(start) = result.find('[') {
@@ -89,27 +89,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use tensogram_core::{ByteOrder, Dtype, Metadata, ObjectDescriptor, PayloadDescriptor};
+    use tensogram_core::GlobalMetadata;
 
-    fn metadata_without_param() -> Metadata {
-        Metadata {
-            version: 1,
-            objects: vec![ObjectDescriptor {
-                obj_type: "ntensor".to_string(),
-                ndim: 1,
-                shape: vec![1],
-                strides: vec![1],
-                dtype: Dtype::Float32,
-                extra: BTreeMap::new(),
-            }],
-            payload: vec![PayloadDescriptor {
-                byte_order: ByteOrder::Big,
-                encoding: "none".to_string(),
-                filter: "none".to_string(),
-                compression: "none".to_string(),
-                params: BTreeMap::new(),
-                hash: None,
-            }],
+    fn metadata_without_param() -> GlobalMetadata {
+        GlobalMetadata {
+            version: 2,
             extra: BTreeMap::new(),
         }
     }

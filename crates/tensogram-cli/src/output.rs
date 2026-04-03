@@ -1,17 +1,23 @@
-use tensogram_core::Metadata;
+use tensogram_core::{DataObjectDescriptor, GlobalMetadata};
 
 use crate::filter::lookup_key;
 
 /// Format metadata values as a table row.
-pub fn format_table_row<K: AsRef<str>>(metadata: &Metadata, keys: &[K]) -> String {
+pub fn format_table_row<K: AsRef<str>>(metadata: &GlobalMetadata, keys: &[K]) -> String {
     keys.iter()
         .map(|key| lookup_key(metadata, key.as_ref()).unwrap_or_else(|| "N/A".to_string()))
         .collect::<Vec<_>>()
         .join("\t")
 }
 
-/// Format metadata as JSON. If keys is Some, only include those keys.
-pub fn format_json<K: AsRef<str>>(metadata: &Metadata, keys: Option<&[K]>) -> String {
+/// Format global metadata as JSON. If keys is Some, only include those keys.
+///
+/// `objects` optionally includes per-object descriptor info in the output.
+pub fn format_json<K: AsRef<str>>(
+    metadata: &GlobalMetadata,
+    keys: Option<&[K]>,
+    objects: Option<&[(DataObjectDescriptor, Vec<u8>)]>,
+) -> String {
     let mut map = serde_json::Map::new();
 
     map.insert(
@@ -24,36 +30,40 @@ pub fn format_json<K: AsRef<str>>(metadata: &Metadata, keys: Option<&[K]>) -> St
         map.insert(key.to_string(), cbor_to_json(value));
     }
 
-    // Add objects summary
-    let objects: Vec<serde_json::Value> = metadata
-        .objects
-        .iter()
-        .map(|obj| {
-            let mut m = serde_json::Map::new();
-            m.insert(
-                "type".to_string(),
-                serde_json::Value::String(obj.obj_type.to_string()),
-            );
-            m.insert(
-                "dtype".to_string(),
-                serde_json::Value::String(obj.dtype.to_string()),
-            );
-            m.insert(
-                "shape".to_string(),
-                serde_json::Value::Array(
-                    obj.shape
-                        .iter()
-                        .map(|&s| serde_json::Value::Number(s.into()))
-                        .collect(),
-                ),
-            );
-            for (k, v) in &obj.extra {
-                m.insert(k.to_string(), cbor_to_json(v));
-            }
-            serde_json::Value::Object(m)
-        })
-        .collect();
-    map.insert("objects".to_string(), serde_json::Value::Array(objects));
+    // Add objects summary if provided
+    if let Some(objs) = objects {
+        let objects_json: Vec<serde_json::Value> = objs
+            .iter()
+            .map(|(desc, _)| {
+                let mut m = serde_json::Map::new();
+                m.insert(
+                    "type".to_string(),
+                    serde_json::Value::String(desc.obj_type.clone()),
+                );
+                m.insert(
+                    "dtype".to_string(),
+                    serde_json::Value::String(desc.dtype.to_string()),
+                );
+                m.insert(
+                    "shape".to_string(),
+                    serde_json::Value::Array(
+                        desc.shape
+                            .iter()
+                            .map(|&s| serde_json::Value::Number(s.into()))
+                            .collect(),
+                    ),
+                );
+                for (k, v) in &desc.params {
+                    m.insert(k.to_string(), cbor_to_json(v));
+                }
+                serde_json::Value::Object(m)
+            })
+            .collect();
+        map.insert(
+            "objects".to_string(),
+            serde_json::Value::Array(objects_json),
+        );
+    }
 
     if let Some(keys) = keys {
         // Filter to only requested keys

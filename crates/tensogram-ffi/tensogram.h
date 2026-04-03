@@ -42,7 +42,7 @@ typedef struct tgm_TgmFile tgm_TgmFile;
 typedef struct tgm_TgmFileIter tgm_TgmFileIter;
 
 /**
- * Decoded message: metadata + decoded object payloads.
+ * Decoded message: global metadata + decoded (descriptor, payload) pairs.
  */
 typedef struct tgm_TgmMessage tgm_TgmMessage;
 
@@ -88,8 +88,13 @@ void tgm_bytes_free(struct tgm_TgmBytes buf);
 /**
  * Encode a Tensogram message from JSON metadata and raw data slices.
  *
- * `metadata_json`: null-terminated UTF-8 JSON string describing the message.
+ * `metadata_json`: null-terminated UTF-8 JSON string. Must contain:
+ *   - `"version"` (integer)
+ *   - `"descriptors"` (array of per-object descriptor objects)
+ *   - optional extra keys (e.g. `"mars"`) at the top level
+ *
  * `data_ptrs` / `data_lens`: arrays of length `num_objects`, raw bytes per object.
+ *
  * `hash_algo`: null-terminated string ("xxh3", "sha1", "md5") or NULL for no hash.
  *
  * On success returns `TgmError::Ok` and fills `out` with the encoded bytes.
@@ -103,7 +108,7 @@ enum tgm_TgmError tgm_encode(const char *metadata_json,
                              struct tgm_TgmBytes *out);
 
 /**
- * Decode a complete message (metadata + all object payloads).
+ * Decode a complete message (global metadata + all object payloads).
  *
  * `buf` / `buf_len`: the wire-format message bytes.
  * `verify_hash`: if non-zero, verify payload hashes during decode.
@@ -117,7 +122,7 @@ enum tgm_TgmError tgm_decode(const uint8_t *buf,
                              struct tgm_TgmMessage **out);
 
 /**
- * Decode only the metadata (no payload bytes are read).
+ * Decode only the global metadata (no payload bytes are read).
  */
 enum tgm_TgmError tgm_decode_metadata(const uint8_t *buf,
                                       uintptr_t buf_len,
@@ -127,7 +132,7 @@ enum tgm_TgmError tgm_decode_metadata(const uint8_t *buf,
  * Decode a single object by index.
  *
  * On success, fills `out` with a `TgmMessage` handle containing exactly
- * one object (at index 0). The metadata covers the whole message.
+ * one object (at index 0). The global metadata covers the whole message.
  */
 enum tgm_TgmError tgm_decode_object(const uint8_t *buf,
                                     uintptr_t buf_len,
@@ -168,11 +173,16 @@ void tgm_scan_free(struct tgm_TgmScanResult *result);
 
 uint64_t tgm_message_version(const struct tgm_TgmMessage *msg);
 
+/**
+ * Returns the number of decoded objects in this message handle.
+ * For `tgm_decode` this equals the total object count; for
+ * `tgm_decode_object` this is always 1.
+ */
 uintptr_t tgm_message_num_objects(const struct tgm_TgmMessage *msg);
 
 /**
  * Returns the number of decoded payload buffers.
- * For tgm_decode this equals num_objects; for tgm_decode_object this is 1.
+ * Equivalent to `tgm_message_num_objects` — kept for ABI compatibility.
  */
 uintptr_t tgm_message_num_decoded(const struct tgm_TgmMessage *msg);
 
@@ -206,12 +216,12 @@ const uint8_t *tgm_object_data(const struct tgm_TgmMessage *msg,
                                uintptr_t *out_len);
 
 /**
- * Returns the encoding string for a payload descriptor (e.g. "none", "simple_packing").
+ * Returns the encoding string for a data object descriptor (e.g. "none", "simple_packing").
  */
 const char *tgm_payload_encoding(const struct tgm_TgmMessage *msg, uintptr_t index);
 
 /**
- * Returns 1 if the payload has a hash, 0 otherwise.
+ * Returns 1 if the object descriptor has a hash, 0 otherwise.
  */
 int32_t tgm_payload_has_hash(const struct tgm_TgmMessage *msg, uintptr_t index);
 
@@ -219,6 +229,13 @@ void tgm_message_free(struct tgm_TgmMessage *msg);
 
 uint64_t tgm_metadata_version(const struct tgm_TgmMetadata *meta);
 
+/**
+ * Returns the number of objects described in the global metadata.
+ *
+ * In wire format v2, `GlobalMetadata` does not embed per-object descriptors,
+ * so this function always returns 0. Use `tgm_message_num_objects` on a
+ * decoded `TgmMessage` to get the actual object count.
+ */
 uintptr_t tgm_metadata_num_objects(const struct tgm_TgmMetadata *meta);
 
 /**

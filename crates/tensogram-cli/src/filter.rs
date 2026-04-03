@@ -1,4 +1,4 @@
-use tensogram_core::Metadata;
+use tensogram_core::GlobalMetadata;
 
 /// A parsed where-clause filter.
 #[derive(Debug)]
@@ -37,32 +37,20 @@ pub fn parse_where(input: &str) -> Result<WhereClause, String> {
     }
 }
 
-/// Look up a dot-notation key in metadata, returning the FIRST matching value.
+/// Look up a dot-notation key in global metadata, returning the FIRST matching value.
 ///
-/// For multi-object messages, this intentionally stops at the first object that
-/// contains a matching key. That is the documented CLI behavior.
-pub fn lookup_key(metadata: &Metadata, key: &str) -> Option<String> {
+/// For v2, per-object metadata lives in `DataObjectDescriptor` (not in `GlobalMetadata`).
+/// This function only resolves keys from global metadata.
+pub fn lookup_key(metadata: &GlobalMetadata, key: &str) -> Option<String> {
     let parts: Vec<&str> = key.split('.').collect();
 
-    // Check top-level extra keys first (namespaced like "mars.param")
+    // Check top-level extra keys (namespaced like "mars.param")
     if parts.len() == 2 {
         if let Some(ciborium::Value::Map(entries)) = metadata.extra.get(parts[0]) {
             for (k, v) in entries {
                 if let ciborium::Value::Text(k_str) = k {
                     if k_str == parts[1] {
                         return Some(cbor_value_to_string(v));
-                    }
-                }
-            }
-        }
-        // Also check per-object extra (return first match)
-        for obj in &metadata.objects {
-            if let Some(ciborium::Value::Map(entries)) = obj.extra.get(parts[0]) {
-                for (k, v) in entries {
-                    if let ciborium::Value::Text(k_str) = k {
-                        if k_str == parts[1] {
-                            return Some(cbor_value_to_string(v));
-                        }
                     }
                 }
             }
@@ -84,8 +72,8 @@ pub fn lookup_key(metadata: &Metadata, key: &str) -> Option<String> {
     None
 }
 
-/// Test if metadata matches a where-clause.
-pub fn matches(metadata: &Metadata, clause: &WhereClause) -> bool {
+/// Test if global metadata matches a where-clause.
+pub fn matches(metadata: &GlobalMetadata, clause: &WhereClause) -> bool {
     match lookup_key(metadata, &clause.key) {
         Some(actual) => match clause.op {
             FilterOp::Eq => clause.values.iter().any(|v| v == &actual),

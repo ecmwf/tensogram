@@ -6,52 +6,53 @@
 //! EncodeOptions::default() uses xxh3 (fast, 64-bit non-cryptographic).
 //! sha1 and md5 are available for archival or legacy compatibility.
 //!
-//! The hash is stored in the CBOR metadata alongside the payload descriptor,
+//! The hash is stored in the CBOR metadata alongside the object descriptor,
 //! so it survives any transport layer that carries the full message bytes.
 
 use std::collections::BTreeMap;
 
 use tensogram_core::{
-    decode, encode, ByteOrder, DecodeOptions, Dtype, EncodeOptions, HashAlgorithm, Metadata,
-    ObjectDescriptor, PayloadDescriptor, TensogramError,
+    decode, encode, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
+    GlobalMetadata, HashAlgorithm, TensogramError,
 };
 
-fn make_metadata() -> Metadata {
-    Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![100],
-            strides: vec![1],
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: BTreeMap::new(),
-            hash: None,
-        }],
+fn make_descriptor() -> DataObjectDescriptor {
+    DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![100],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    }
+}
+
+fn make_global_meta() -> GlobalMetadata {
+    GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = vec![42u8; 100 * 4];
-    let metadata = make_metadata();
+    let desc = make_descriptor();
+    let global_meta = make_global_meta();
 
     // ── 1. Encode with xxh3 (default) ─────────────────────────────────────────
     {
         let options = EncodeOptions {
             hash_algorithm: Some(HashAlgorithm::Xxh3),
         };
-        let message = encode(&metadata, &[&data], &options)?;
+        let message = encode(&global_meta, &[(&desc, &data)], &options)?;
 
-        let meta = tensogram_core::decode_metadata(&message)?;
-        let hash = meta.payload[0].hash.as_ref().unwrap();
+        let (_, objects) = decode(&message, &DecodeOptions::default())?;
+        let hash = objects[0].0.hash.as_ref().unwrap();
         println!("xxh3 hash: {}:{}", hash.hash_type, hash.value);
 
         // Verify on decode — this is where the hash is checked
@@ -65,10 +66,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let options = EncodeOptions {
             hash_algorithm: Some(HashAlgorithm::Sha1),
         };
-        let message = encode(&metadata, &[&data], &options)?;
+        let message = encode(&global_meta, &[(&desc, &data)], &options)?;
 
-        let meta = tensogram_core::decode_metadata(&message)?;
-        let hash = meta.payload[0].hash.as_ref().unwrap();
+        let (_, objects) = decode(&message, &DecodeOptions::default())?;
+        let hash = objects[0].0.hash.as_ref().unwrap();
         println!("\nsha1 hash: {}:{}", hash.hash_type, &hash.value[..16]);
 
         let verify_opts = DecodeOptions { verify_hash: true };
@@ -81,10 +82,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let options = EncodeOptions {
             hash_algorithm: Some(HashAlgorithm::Md5),
         };
-        let message = encode(&metadata, &[&data], &options)?;
+        let message = encode(&global_meta, &[(&desc, &data)], &options)?;
 
-        let meta = tensogram_core::decode_metadata(&message)?;
-        let hash = meta.payload[0].hash.as_ref().unwrap();
+        let (_, objects) = decode(&message, &DecodeOptions::default())?;
+        let hash = objects[0].0.hash.as_ref().unwrap();
         println!("\nmd5 hash:  {}:{}", hash.hash_type, &hash.value[..16]);
 
         let verify_opts = DecodeOptions { verify_hash: true };
@@ -97,10 +98,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let options = EncodeOptions {
             hash_algorithm: None,
         };
-        let message = encode(&metadata, &[&data], &options)?;
+        let message = encode(&global_meta, &[(&desc, &data)], &options)?;
 
-        let meta = tensogram_core::decode_metadata(&message)?;
-        assert!(meta.payload[0].hash.is_none());
+        let (_, objects) = decode(&message, &DecodeOptions::default())?;
+        assert!(objects[0].0.hash.is_none());
 
         // verify_hash: true on a message without a hash is silently skipped
         let verify_opts = DecodeOptions { verify_hash: true };
@@ -110,16 +111,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 5. Corruption detection ────────────────────────────────────────────────
     {
-        let message = encode(&metadata, &[&data], &EncodeOptions::default())?;
+        let message = encode(&global_meta, &[(&desc, &data)], &EncodeOptions::default())?;
 
-        // Corrupt one byte in the payload area (past the CBOR metadata section)
+        // Corrupt one byte in the payload area.
+        // The message preamble is 24 bytes, followed by frame headers (16 bytes each).
+        // Flip a byte well into the message to hit the encoded payload region.
         let mut corrupted = message.clone();
-        // Find OBJS marker and flip a byte in the payload
-        let objs_pos = corrupted
-            .windows(4)
-            .position(|w| w == b"OBJS")
-            .expect("OBJS marker not found");
-        corrupted[objs_pos + 10] ^= 0xFF; // flip a byte
+        let mid = message.len() / 2;
+        corrupted[mid] ^= 0xFF; // flip a byte in the middle of the message
 
         let verify_opts = DecodeOptions { verify_hash: true };
         let result = decode(&corrupted, &verify_opts);

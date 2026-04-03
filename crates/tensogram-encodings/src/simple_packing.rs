@@ -100,7 +100,11 @@ pub fn encode(values: &[f64], params: &SimplePackingParams) -> Result<Vec<u8>, P
     };
 
     let total_bits = values.len() as u64 * bpv as u64;
-    let total_bytes = total_bits.div_ceil(8) as usize;
+    let total_bytes =
+        usize::try_from(total_bits.div_ceil(8)).map_err(|_| PackingError::InsufficientData {
+            expected: usize::MAX,
+            actual: 0,
+        })?;
     let mut output = vec![0u8; total_bytes];
 
     let mut bit_pos: u64 = 0;

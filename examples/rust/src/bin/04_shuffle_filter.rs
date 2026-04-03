@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode, encode, ByteOrder, DecodeOptions, Dtype, EncodeOptions, Metadata, ObjectDescriptor,
-    PayloadDescriptor,
+    decode, encode, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
+    GlobalMetadata,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Source: {} float32 values = {} bytes", n, raw_bytes.len());
 
-    // ── 2. Build metadata with shuffle filter ─────────────────────────────────
+    // ── 2. Build descriptor with shuffle filter ───────────────────────────────
     //
     // shuffle_element_size must equal the byte width of the dtype (4 for float32).
     let mut filter_params: BTreeMap<String, Value> = BTreeMap::new();
@@ -37,29 +37,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Value::Integer(4.into()), // 4 bytes per float32
     );
 
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![n as u64],
-            strides: vec![1],
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "shuffle".to_string(), // ← shuffle is the filter stage
-            compression: "none".to_string(),
-            params: filter_params,
-            hash: None,
-        }],
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![n as u64],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "shuffle".to_string(), // ← shuffle is the filter stage
+        compression: "none".to_string(),
+        params: filter_params,
+        hash: None,
+    };
+
+    let global_meta = GlobalMetadata {
+        version: 2,
         extra: BTreeMap::new(),
     };
 
     // ── 3. Encode (shuffle applied internally) ────────────────────────────────
-    let message = encode(&metadata, &[&raw_bytes], &EncodeOptions::default())?;
+    let message = encode(
+        &global_meta,
+        &[(&desc, &raw_bytes)],
+        &EncodeOptions::default(),
+    )?;
     println!("Encoded: {} bytes", message.len());
 
     // ── 4. Decode (unshuffle applied internally) ──────────────────────────────
@@ -68,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // You get back the original bytes unchanged.
     let (_meta, objects) = decode(&message, &DecodeOptions::default())?;
 
-    assert_eq!(objects[0], raw_bytes, "shuffle round-trip mismatch");
+    assert_eq!(objects[0].1, raw_bytes, "shuffle round-trip mismatch");
     println!("Round-trip OK: shuffle + unshuffle produced identical bytes.");
 
     // ── 5. Direct shuffle API ─────────────────────────────────────────────────

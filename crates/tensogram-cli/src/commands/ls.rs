@@ -41,7 +41,7 @@ pub fn run(
             }
 
             if json {
-                println!("{}", output::format_json(&metadata, Some(&key_list)));
+                println!("{}", output::format_json(&metadata, Some(&key_list), None));
             } else {
                 println!("{}", output::format_table_row(&metadata, &key_list));
             }

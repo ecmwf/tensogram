@@ -2,8 +2,7 @@ use crate::encode::build_pipeline_config;
 use crate::error::{Result, TensogramError};
 use crate::framing;
 use crate::hash;
-use crate::metadata::cbor_to_metadata;
-use crate::types::Metadata;
+use crate::types::{DataObjectDescriptor, DecodedObject, GlobalMetadata};
 use tensogram_encodings::pipeline;
 
 fn extract_block_offsets(
@@ -42,82 +41,48 @@ pub struct DecodeOptions {
 }
 
 /// Decode all objects from a message buffer.
-/// Returns (metadata, decoded_data_objects).
-pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(Metadata, Vec<Vec<u8>>)> {
-    let frame = framing::decode_frame(buf)?;
-    let metadata = cbor_to_metadata(frame.cbor_bytes)?;
+/// Returns (global_metadata, list of (descriptor, decoded_data)).
+pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Vec<DecodedObject>)> {
+    let msg = framing::decode_message(buf)?;
 
-    let mut data_objects = Vec::with_capacity(metadata.objects.len());
-    for (i, _) in metadata.objects.iter().enumerate() {
-        let payload_bytes = framing::extract_object_payload(buf, &frame, i)?;
-        verify_and_decode_object(&metadata, i, payload_bytes, options, &mut data_objects)?;
+    let mut data_objects = Vec::with_capacity(msg.objects.len());
+    for (desc, payload_bytes, _offset) in &msg.objects {
+        let decoded = decode_single_object(desc, payload_bytes, options)?;
+        data_objects.push((desc.clone(), decoded));
     }
 
-    Ok((metadata, data_objects))
+    Ok((msg.global_metadata, data_objects))
 }
 
-/// Decode only metadata from a message buffer, skipping payloads.
-pub fn decode_metadata(buf: &[u8]) -> Result<Metadata> {
-    let frame = framing::decode_frame(buf)?;
-    cbor_to_metadata(frame.cbor_bytes)
+/// Decode only global metadata from a message buffer, skipping payloads.
+pub fn decode_metadata(buf: &[u8]) -> Result<GlobalMetadata> {
+    framing::decode_metadata_only(buf)
 }
 
-/// Decode a single object by index (O(1) access via binary header).
-/// Returns (metadata, decoded_data).
+/// Decode a single object by index (O(1) access via index frame).
+/// Returns (global_metadata, descriptor, decoded_data).
 pub fn decode_object(
     buf: &[u8],
     index: usize,
     options: &DecodeOptions,
-) -> Result<(Metadata, Vec<u8>)> {
-    let frame = framing::decode_frame(buf)?;
-    let metadata = cbor_to_metadata(frame.cbor_bytes)?;
-    let decoded = decode_object_raw(buf, &frame, &metadata, index, options)?;
-    Ok((metadata, decoded))
-}
+) -> Result<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)> {
+    let msg = framing::decode_message(buf)?;
 
-/// Decode a single object using pre-parsed frame and metadata.
-///
-/// Avoids re-parsing the binary header and CBOR metadata when iterating
-/// over multiple objects in the same message.
-pub(crate) fn decode_object_raw(
-    buf: &[u8],
-    frame: &framing::DecodedFrame<'_>,
-    metadata: &Metadata,
-    index: usize,
-    options: &DecodeOptions,
-) -> Result<Vec<u8>> {
-    if index >= metadata.objects.len() {
+    if index >= msg.objects.len() {
         return Err(TensogramError::Object(format!(
             "object index {} out of range (num_objects={})",
             index,
-            metadata.objects.len()
+            msg.objects.len()
         )));
     }
 
-    let payload_bytes = framing::extract_object_payload(buf, frame, index)?;
+    let (desc, payload_bytes, _) = &msg.objects[index];
+    let decoded = decode_single_object(desc, payload_bytes, options)?;
 
-    // Verify hash if requested
-    if options.verify_hash {
-        if let Some(ref hash_desc) = metadata.payload[index].hash {
-            hash::verify_hash(payload_bytes, hash_desc)?;
-        }
-    }
-
-    let num_elements = usize::try_from(metadata.objects[index].shape.iter().product::<u64>())
-        .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
-    let dtype = metadata.objects[index].dtype;
-    let config = build_pipeline_config(&metadata.payload[index], num_elements, dtype)?;
-    let decoded = pipeline::decode_pipeline(payload_bytes, &config)
-        .map_err(|e| TensogramError::Encoding(e.to_string()))?;
-
-    Ok(decoded)
+    Ok((msg.global_metadata, desc.clone(), decoded))
 }
 
 /// Decode a partial range from a data object.
-///
-/// Supports uncompressed data (direct byte slicing), simple_packing (bit extraction),
-/// szip-compressed data (RSI block seeking via libaec), and combinations thereof.
-/// Shuffle filter is NOT supported with range decode (returns error).
 ///
 /// `ranges` is a list of (element_offset, element_count) pairs.
 pub fn decode_range(
@@ -126,49 +91,43 @@ pub fn decode_range(
     ranges: &[(u64, u64)],
     options: &DecodeOptions,
 ) -> Result<Vec<u8>> {
-    let frame = framing::decode_frame(buf)?;
-    let metadata = cbor_to_metadata(frame.cbor_bytes)?;
+    let msg = framing::decode_message(buf)?;
 
-    if object_index >= metadata.objects.len() {
+    if object_index >= msg.objects.len() {
         return Err(TensogramError::Object(format!(
             "object index {} out of range (num_objects={})",
             object_index,
-            metadata.objects.len()
+            msg.objects.len()
         )));
     }
 
-    let payload_desc = &metadata.payload[object_index];
-    let obj_desc = &metadata.objects[object_index];
+    let (desc, payload_bytes, _) = &msg.objects[object_index];
 
-    // Reject shuffle filter — byte rearrangement makes RSI block boundaries
-    // not correspond to contiguous sample ranges (documented limitation)
-    if payload_desc.filter != "none" {
+    // Reject shuffle filter
+    if desc.filter != "none" {
         return Err(TensogramError::Encoding(
             "decode_range is not supported when a filter (e.g. shuffle) is applied".to_string(),
         ));
     }
 
-    if obj_desc.dtype.byte_width() == 0 {
+    if desc.dtype.byte_width() == 0 {
         return Err(TensogramError::Encoding(
             "partial range decode not supported for bitmask dtype".to_string(),
         ));
     }
 
-    let payload_bytes = framing::extract_object_payload(buf, &frame, object_index)?;
-
     if options.verify_hash {
-        if let Some(ref hash_desc) = payload_desc.hash {
+        if let Some(ref hash_desc) = desc.hash {
             hash::verify_hash(payload_bytes, hash_desc)?;
         }
     }
 
-    let num_elements = usize::try_from(obj_desc.shape.iter().product::<u64>())
+    let num_elements = usize::try_from(desc.shape.iter().product::<u64>())
         .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
-    let config = build_pipeline_config(payload_desc, num_elements, obj_desc.dtype)?;
+    let config = build_pipeline_config(desc, num_elements, desc.dtype)?;
 
-    // Extract block offsets if compression is szip
-    let block_offsets = if payload_desc.compression == "szip" {
-        extract_block_offsets(&payload_desc.params)?
+    let block_offsets = if desc.compression == "szip" {
+        extract_block_offsets(&desc.params)?
     } else {
         Vec::new()
     };
@@ -184,26 +143,23 @@ pub fn decode_range(
     Ok(result)
 }
 
-fn verify_and_decode_object(
-    metadata: &Metadata,
-    index: usize,
+/// Decode a single object through the full pipeline.
+fn decode_single_object(
+    desc: &DataObjectDescriptor,
     payload_bytes: &[u8],
     options: &DecodeOptions,
-    out: &mut Vec<Vec<u8>>,
-) -> Result<()> {
-    // Verify hash if requested
+) -> Result<Vec<u8>> {
     if options.verify_hash {
-        if let Some(ref hash_desc) = metadata.payload[index].hash {
+        if let Some(ref hash_desc) = desc.hash {
             hash::verify_hash(payload_bytes, hash_desc)?;
         }
     }
 
-    let num_elements = usize::try_from(metadata.objects[index].shape.iter().product::<u64>())
+    let num_elements = usize::try_from(desc.shape.iter().product::<u64>())
         .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
-    let dtype = metadata.objects[index].dtype;
-    let config = build_pipeline_config(&metadata.payload[index], num_elements, dtype)?;
+    let config = build_pipeline_config(desc, num_elements, desc.dtype)?;
     let decoded = pipeline::decode_pipeline(payload_bytes, &config)
         .map_err(|e| TensogramError::Encoding(e.to_string()))?;
-    out.push(decoded);
-    Ok(())
+
+    Ok(decoded)
 }

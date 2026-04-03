@@ -75,7 +75,16 @@ impl Compressor for Blosc2Compressor {
 
         // Trim to exact byte range within the item-aligned result
         let offset_in_items = byte_pos % ts;
-        Ok(items[offset_in_items..offset_in_items + byte_size].to_vec())
+        let end = offset_in_items
+            .checked_add(byte_size)
+            .ok_or_else(|| CompressionError::Blosc2("range overflow".to_string()))?;
+        if end > items.len() {
+            return Err(CompressionError::Blosc2(format!(
+                "range exceeds decompressed data: need {end} bytes, got {}",
+                items.len()
+            )));
+        }
+        Ok(items[offset_in_items..end].to_vec())
     }
 }
 

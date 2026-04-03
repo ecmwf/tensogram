@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode, decode_metadata, encode, ByteOrder, DecodeOptions, Dtype, EncodeOptions, Metadata,
-    ObjectDescriptor, PayloadDescriptor,
+    decode, decode_metadata, encode, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype,
+    EncodeOptions, GlobalMetadata,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,30 +43,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut obj_extra = BTreeMap::new();
     obj_extra.insert("mars".to_string(), mars_obj);
 
-    // ── Build metadata ────────────────────────────────────────────────────────
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 2,
-            shape: vec![721, 1440], // 0.25-degree global grid
-            strides: vec![1440, 1],
-            dtype: Dtype::Float32,
-            extra: obj_extra, // parameter goes here
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: BTreeMap::new(),
-            hash: None,
-        }],
+    // ── Build descriptor and global metadata ──────────────────────────────────
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 2,
+        shape: vec![721, 1440], // 0.25-degree global grid
+        strides: vec![1440, 1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: obj_extra, // parameter goes here
+        hash: None,
+    };
+
+    let global_meta = GlobalMetadata {
+        version: 2,
         extra: msg_extra, // forecast context goes here
     };
 
     let data = vec![0u8; 721 * 1440 * 4]; // zeros stand in for real values
-    let message = encode(&metadata, &[&data], &EncodeOptions::default())?;
+    let message = encode(&global_meta, &[(&desc, &data)], &EncodeOptions::default())?;
 
     // ── Read back metadata only (no payload decode) ───────────────────────────
     //
@@ -103,7 +101,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let obj_mars = &meta.objects[0].extra["mars"];
+    // ── Full decode ───────────────────────────────────────────────────────────
+    let (_meta2, objects) = decode(&message, &DecodeOptions::default())?;
+
+    // Per-object MARS keys are now in the DataObjectDescriptor's params field
+    let obj_desc = &objects[0].0;
+    let obj_mars = &obj_desc.params["mars"];
     println!("Object 0:");
     println!(
         "  param   = {}",
@@ -113,11 +116,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  levtype = {}",
         get_mars_key(obj_mars, "levtype").unwrap_or("?")
     );
-    println!("  shape   = {:?}", meta.objects[0].shape);
+    println!("  shape   = {:?}", obj_desc.shape);
 
-    // ── Full decode ───────────────────────────────────────────────────────────
-    let (_meta2, objects) = decode(&message, &DecodeOptions::default())?;
-    assert_eq!(objects[0], data);
+    assert_eq!(objects[0].1, data);
     println!("\nFull decode OK.");
 
     Ok(())

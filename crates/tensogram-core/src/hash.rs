@@ -68,8 +68,9 @@ fn hex_encode(bytes: &[u8]) -> String {
         out.push(HEX[(b >> 4) as usize]);
         out.push(HEX[(b & 0x0f) as usize]);
     }
-    // SAFETY: HEX table only contains valid ASCII bytes.
-    unsafe { String::from_utf8_unchecked(out) }
+    // Every byte in `out` is drawn from HEX, which contains only ASCII digits
+    // and lowercase letters, so the buffer is always valid UTF-8.
+    String::from_utf8(out).expect("hex output is always valid UTF-8")
 }
 
 #[cfg(test)]

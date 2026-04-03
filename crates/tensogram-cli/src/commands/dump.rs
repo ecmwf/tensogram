@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use tensogram_core::{decode_metadata, TensogramFile};
+use tensogram_core::{decode, decode_metadata, DecodeOptions, TensogramFile};
 
 use crate::filter;
 use crate::output;
@@ -26,6 +26,7 @@ pub fn run(
         let messages = file.messages()?;
 
         for (i, msg) in messages.iter().enumerate() {
+            // Decode metadata first for cheap filtering
             let metadata = decode_metadata(msg)?;
 
             if let Some(ref clause) = clause {
@@ -34,19 +35,25 @@ pub fn run(
                 }
             }
 
+            // Decode full message to access per-object descriptors
+            let (global_meta, objects) = decode(msg, &DecodeOptions::default())?;
+
             if json {
-                println!("{}", output::format_json(&metadata, key_list.as_deref()));
+                println!(
+                    "{}",
+                    output::format_json(&global_meta, key_list.as_deref(), Some(&objects))
+                );
             } else {
                 println!("=== Message {i} ===");
-                println!("version: {}", metadata.version);
-                println!("objects: {}", metadata.objects.len());
-                for (j, obj) in metadata.objects.iter().enumerate() {
+                println!("version: {}", global_meta.version);
+                println!("objects: {}", objects.len());
+                for (j, (desc, _)) in objects.iter().enumerate() {
                     println!(
                         "  object[{j}]: type={}, dtype={}, shape={:?}",
-                        obj.obj_type, obj.dtype, obj.shape
+                        desc.obj_type, desc.dtype, desc.shape
                     );
                 }
-                for (key, value) in &metadata.extra {
+                for (key, value) in &global_meta.extra {
                     println!("  {key}: {}", output::format_json_value(value));
                 }
                 println!();

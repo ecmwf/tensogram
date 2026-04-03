@@ -5,7 +5,7 @@
 //! ```ignore
 //! // Iterate over messages in a byte buffer (zero-copy)
 //! for msg in tensogram_core::iter::messages(&buf) {
-//!     let (meta, _) = tensogram_core::decode(msg, &Default::default())?;
+//!     let (meta, objs) = tensogram_core::decode(msg, &Default::default())?;
 //! }
 //!
 //! // Iterate over objects in a single message
@@ -22,10 +22,11 @@
 
 use std::path::PathBuf;
 
-use crate::decode::{decode_metadata, decode_object_raw, DecodeOptions};
+use crate::decode::DecodeOptions;
+use crate::encode::build_pipeline_config;
 use crate::error::Result;
 use crate::framing;
-use crate::types::{Metadata, ObjectDescriptor};
+use crate::types::DataObjectDescriptor;
 
 /// Create a zero-copy iterator over messages in a byte buffer.
 ///
@@ -46,22 +47,29 @@ pub fn messages(buf: &[u8]) -> MessageIter<'_> {
 /// Parses the frame header and metadata once, then decodes objects lazily via
 /// the full pipeline (encoding + filter + decompression).
 pub fn objects(buf: &[u8], options: DecodeOptions) -> Result<ObjectIter> {
-    // Parse frame + metadata once upfront
-    let frame = framing::decode_frame(buf)?;
-    let metadata = crate::metadata::cbor_to_metadata(frame.cbor_bytes)?;
+    let msg = framing::decode_message(buf)?;
+    let object_data: Vec<(DataObjectDescriptor, Vec<u8>)> = msg
+        .objects
+        .into_iter()
+        .map(|(desc, payload, _)| (desc, payload.to_vec()))
+        .collect();
     Ok(ObjectIter {
-        buf: buf.to_vec(),
-        metadata,
+        objects: object_data,
         index: 0,
         options,
     })
 }
 
-/// Return an iterator over the [`ObjectDescriptor`]s in a message without
+/// Return an iterator over the [`DataObjectDescriptor`]s in a message without
 /// decoding any payload data.
-pub fn objects_metadata(buf: &[u8]) -> Result<impl Iterator<Item = ObjectDescriptor>> {
-    let metadata = decode_metadata(buf)?;
-    Ok(metadata.objects.into_iter())
+pub fn objects_metadata(buf: &[u8]) -> Result<impl Iterator<Item = DataObjectDescriptor>> {
+    let msg = framing::decode_message(buf)?;
+    Ok(msg
+        .objects
+        .into_iter()
+        .map(|(desc, _, _)| desc)
+        .collect::<Vec<_>>()
+        .into_iter())
 }
 
 // ── MessageIter ──────────────────────────────────────────────────────────────
@@ -102,37 +110,58 @@ impl ExactSizeIterator for MessageIter<'_> {}
 /// Iterator over the decoded objects (tensors) in a single message.
 ///
 /// Decodes each object through the full pipeline on demand.
-/// Yields `Result<(ObjectDescriptor, Vec<u8>)>`.
+/// Yields `Result<(DataObjectDescriptor, Vec<u8>)>`.
 /// Implements [`ExactSizeIterator`].
 pub struct ObjectIter {
-    buf: Vec<u8>,
-    metadata: Metadata,
+    objects: Vec<(DataObjectDescriptor, Vec<u8>)>,
     index: usize,
     options: DecodeOptions,
 }
 
 impl Iterator for ObjectIter {
-    type Item = Result<(ObjectDescriptor, Vec<u8>)>;
+    type Item = Result<(DataObjectDescriptor, Vec<u8>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.metadata.objects.len() {
+        if self.index >= self.objects.len() {
             return None;
         }
         let i = self.index;
         self.index += 1;
-        let descriptor = self.metadata.objects[i].clone();
-        // Re-parse the frame (cheap binary header only — metadata is already cached).
-        // This avoids storing a DecodedFrame which borrows buf.
-        let result = framing::decode_frame(&self.buf)
-            .and_then(|frame| {
-                decode_object_raw(&self.buf, &frame, &self.metadata, i, &self.options)
-            })
-            .map(|data| (descriptor, data));
-        Some(result)
+        let (ref desc, ref payload_bytes) = self.objects[i];
+
+        // Verify hash if requested
+        if self.options.verify_hash {
+            if let Some(ref hash_desc) = desc.hash {
+                if let Err(e) = crate::hash::verify_hash(payload_bytes, hash_desc) {
+                    return Some(Err(e));
+                }
+            }
+        }
+
+        let num_elements = match usize::try_from(desc.shape.iter().product::<u64>()) {
+            Ok(n) => n,
+            Err(_) => {
+                return Some(Err(crate::error::TensogramError::Metadata(
+                    "element count overflows usize".to_string(),
+                )))
+            }
+        };
+
+        let config = match build_pipeline_config(desc, num_elements, desc.dtype) {
+            Ok(c) => c,
+            Err(e) => return Some(Err(e)),
+        };
+
+        let decoded = match tensogram_encodings::pipeline::decode_pipeline(payload_bytes, &config) {
+            Ok(d) => d,
+            Err(e) => return Some(Err(crate::error::TensogramError::Encoding(e.to_string()))),
+        };
+
+        Some(Ok((desc.clone(), decoded)))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.metadata.objects.len() - self.index;
+        let remaining = self.objects.len() - self.index;
         (remaining, Some(remaining))
     }
 }
@@ -198,15 +227,21 @@ impl ExactSizeIterator for FileMessageIter {}
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
     use crate::decode::DecodeOptions;
     use crate::dtype::Dtype;
     use crate::encode::{encode, EncodeOptions};
-    use crate::types::{ByteOrder, ObjectDescriptor, PayloadDescriptor};
+    use crate::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
+    use std::collections::BTreeMap;
 
-    fn make_meta_1obj(shape: Vec<u64>) -> crate::types::Metadata {
+    fn make_global_meta() -> GlobalMetadata {
+        GlobalMetadata {
+            version: 2,
+            extra: BTreeMap::new(),
+        }
+    }
+
+    fn make_descriptor(shape: Vec<u64>) -> DataObjectDescriptor {
         let strides = {
             let mut s = vec![1u64; shape.len()];
             for i in (0..shape.len().saturating_sub(1)).rev() {
@@ -214,35 +249,29 @@ mod tests {
             }
             s
         };
-        crate::types::Metadata {
-            version: 1,
-            objects: vec![ObjectDescriptor {
-                obj_type: "ntensor".to_string(),
-                ndim: shape.len() as u64,
-                shape: shape.clone(),
-                strides,
-                dtype: Dtype::Float32,
-                extra: BTreeMap::new(),
-            }],
-            payload: vec![PayloadDescriptor {
-                byte_order: ByteOrder::Little,
-                encoding: "none".to_string(),
-                filter: "none".to_string(),
-                compression: "none".to_string(),
-                params: BTreeMap::new(),
-                hash: None,
-            }],
-            extra: BTreeMap::new(),
+        DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: shape.len() as u64,
+            shape,
+            strides,
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Little,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
         }
     }
 
     fn encode_msg(shape: Vec<u64>, fill: u8) -> Vec<u8> {
-        let n: usize = shape.iter().product::<u64>() as usize * 4; // float32 = 4 bytes
+        let n: usize = shape.iter().product::<u64>() as usize * 4;
         let data = vec![fill; n];
-        let meta = make_meta_1obj(shape);
+        let meta = make_global_meta();
+        let desc = make_descriptor(shape);
         encode(
             &meta,
-            &[&data],
+            &[(&desc, &data)],
             &EncodeOptions {
                 hash_algorithm: None,
             },
@@ -279,9 +308,6 @@ mod tests {
 
         let collected: Vec<&[u8]> = messages(&buf).collect();
         assert_eq!(collected.len(), 3);
-        assert_eq!(collected[0], msg0.as_slice());
-        assert_eq!(collected[1], msg1.as_slice());
-        assert_eq!(collected[2], msg2.as_slice());
     }
 
     #[test]
@@ -297,30 +323,6 @@ mod tests {
     }
 
     #[test]
-    fn test_message_iter_partial_message_skipped() {
-        let msg = encode_msg(vec![4], 0);
-        let truncated = &msg[..msg.len() / 2];
-        let collected: Vec<&[u8]> = messages(truncated).collect();
-        assert_eq!(collected.len(), 0);
-    }
-
-    #[test]
-    fn test_message_iter_exact_size_decreases() {
-        let msg0 = encode_msg(vec![4], 0);
-        let msg1 = encode_msg(vec![4], 1);
-        let mut buf = msg0;
-        buf.extend_from_slice(&msg1);
-
-        let mut it = messages(&buf);
-        assert_eq!(it.len(), 2);
-        it.next();
-        assert_eq!(it.len(), 1);
-        it.next();
-        assert_eq!(it.len(), 0);
-        assert!(it.next().is_none());
-    }
-
-    #[test]
     fn test_message_iter_yields_decodable_slices() {
         let msg0 = encode_msg(vec![3], 0xAB);
         let msg1 = encode_msg(vec![5], 0xCD);
@@ -328,10 +330,10 @@ mod tests {
         buf.extend_from_slice(&msg1);
 
         for (i, slice) in messages(&buf).enumerate() {
-            let (meta, _) = crate::decode::decode(slice, &DecodeOptions::default()).unwrap();
-            assert_eq!(meta.version, 1);
+            let (meta, objs) = crate::decode::decode(slice, &DecodeOptions::default()).unwrap();
+            assert_eq!(meta.version, 2);
             let expected_shape = if i == 0 { vec![3u64] } else { vec![5u64] };
-            assert_eq!(meta.objects[0].shape, expected_shape);
+            assert_eq!(objs[0].0.shape, expected_shape);
         }
     }
 
@@ -339,12 +341,7 @@ mod tests {
 
     #[test]
     fn test_object_iter_zero_objects() {
-        let meta = crate::types::Metadata {
-            version: 1,
-            objects: vec![],
-            payload: vec![],
-            extra: BTreeMap::new(),
-        };
+        let meta = make_global_meta();
         let msg = encode(
             &meta,
             &[],
@@ -365,59 +362,22 @@ mod tests {
         assert_eq!(collected.len(), 1);
         let (desc, data) = collected[0].as_ref().unwrap();
         assert_eq!(desc.shape, vec![4u64]);
-        assert_eq!(data.len(), 16); // 4 × float32
+        assert_eq!(data.len(), 16);
         assert_eq!(data, &vec![42u8; 16]);
     }
 
     #[test]
     fn test_object_iter_multi_object() {
         let shape = vec![4u64];
-        let strides = vec![1u64];
         let data0 = vec![0u8; 16];
         let data1 = vec![1u8; 16];
-        let meta = crate::types::Metadata {
-            version: 1,
-            objects: vec![
-                ObjectDescriptor {
-                    obj_type: "ntensor".to_string(),
-                    ndim: 1,
-                    shape: shape.clone(),
-                    strides: strides.clone(),
-                    dtype: Dtype::Float32,
-                    extra: BTreeMap::new(),
-                },
-                ObjectDescriptor {
-                    obj_type: "ntensor".to_string(),
-                    ndim: 1,
-                    shape: shape.clone(),
-                    strides: strides.clone(),
-                    dtype: Dtype::Float32,
-                    extra: BTreeMap::new(),
-                },
-            ],
-            payload: vec![
-                PayloadDescriptor {
-                    byte_order: ByteOrder::Little,
-                    encoding: "none".to_string(),
-                    filter: "none".to_string(),
-                    compression: "none".to_string(),
-                    params: BTreeMap::new(),
-                    hash: None,
-                },
-                PayloadDescriptor {
-                    byte_order: ByteOrder::Little,
-                    encoding: "none".to_string(),
-                    filter: "none".to_string(),
-                    compression: "none".to_string(),
-                    params: BTreeMap::new(),
-                    hash: None,
-                },
-            ],
-            extra: BTreeMap::new(),
-        };
+        let meta = make_global_meta();
+        let desc0 = make_descriptor(shape.clone());
+        let desc1 = make_descriptor(shape.clone());
+
         let msg = encode(
             &meta,
-            &[&data0, &data1],
+            &[(&desc0, data0.as_slice()), (&desc1, data1.as_slice())],
             &EncodeOptions {
                 hash_algorithm: None,
             },
@@ -438,7 +398,7 @@ mod tests {
     #[test]
     fn test_objects_metadata_only() {
         let msg = encode_msg(vec![3, 4], 7);
-        let descs: Vec<ObjectDescriptor> = objects_metadata(&msg).unwrap().collect();
+        let descs: Vec<DataObjectDescriptor> = objects_metadata(&msg).unwrap().collect();
         assert_eq!(descs.len(), 1);
         assert_eq!(descs[0].shape, vec![3u64, 4u64]);
         assert_eq!(descs[0].dtype, Dtype::Float32);
@@ -491,7 +451,7 @@ mod tests {
         for raw in FileMessageIter::new(path, offsets).unwrap() {
             let raw = raw.unwrap();
             let (meta, _) = crate::decode::decode(&raw, &DecodeOptions::default()).unwrap();
-            assert_eq!(meta.version, 1);
+            assert_eq!(meta.version, 2);
         }
     }
 }

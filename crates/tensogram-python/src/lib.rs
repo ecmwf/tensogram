@@ -11,8 +11,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
 use tensogram_core::{
-    decode, decode_metadata, decode_object, decode_range, encode, scan, ByteOrder, DecodeOptions,
-    Dtype, EncodeOptions, HashAlgorithm, Metadata, ObjectDescriptor, PayloadDescriptor,
+    decode, decode_metadata, decode_object, decode_range, encode, scan, ByteOrder,
+    DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, HashAlgorithm,
     TensogramError, TensogramFile,
 };
 
@@ -69,10 +69,7 @@ fn cbor_to_py(py: Python<'_>, val: &ciborium::Value) -> PyResult<PyObject> {
             Ok(dict.into_any().unbind())
         }
         ciborium::Value::Bytes(b) => Ok(PyBytes::new(py, b).into_any().unbind()),
-        _ => Ok(format!("{val:?}")
-            .into_pyobject(py)?
-            .into_any()
-            .unbind()),
+        _ => Ok(format!("{val:?}").into_pyobject(py)?.into_any().unbind()),
     }
 }
 
@@ -117,27 +114,24 @@ fn extra_to_py(py: Python<'_>, extra: &BTreeMap<String, ciborium::Value>) -> PyR
     Ok(dict.into_any().unbind())
 }
 
-fn py_to_extra(dict: &Bound<'_, PyDict>) -> PyResult<BTreeMap<String, ciborium::Value>> {
-    let mut map = BTreeMap::new();
-    for (k, v) in dict.iter() {
-        let key: String = k.extract()?;
-        map.insert(key, py_to_cbor(&v)?);
-    }
-    Ok(map)
-}
-
 // ---------------------------------------------------------------------------
-// PyObjectDescriptor — wraps ObjectDescriptor for Python access
+// PyDataObjectDescriptor — wraps DataObjectDescriptor (merged tensor + encoding)
 // ---------------------------------------------------------------------------
 
-#[pyclass(name = "ObjectDescriptor")]
+/// Python class exposing all fields of a DataObjectDescriptor.
+///
+/// In v2 this single descriptor replaces the old split between
+/// `ObjectDescriptor` (tensor info) and `PayloadDescriptor` (encoding info).
+#[pyclass(name = "DataObjectDescriptor")]
 #[derive(Clone)]
-struct PyObjectDescriptor {
-    inner: ObjectDescriptor,
+struct PyDataObjectDescriptor {
+    inner: DataObjectDescriptor,
 }
 
 #[pymethods]
-impl PyObjectDescriptor {
+impl PyDataObjectDescriptor {
+    // ── Tensor metadata ──
+
     #[getter]
     fn obj_type(&self) -> &str {
         &self.inner.obj_type
@@ -163,31 +157,8 @@ impl PyObjectDescriptor {
         self.inner.dtype.to_string()
     }
 
-    #[getter]
-    fn extra(&self, py: Python<'_>) -> PyResult<PyObject> {
-        extra_to_py(py, &self.inner.extra)
-    }
+    // ── Encoding pipeline ──
 
-    fn __repr__(&self) -> String {
-        format!(
-            "ObjectDescriptor(type='{}', shape={:?}, dtype='{}')",
-            self.inner.obj_type, self.inner.shape, self.inner.dtype
-        )
-    }
-}
-
-// ---------------------------------------------------------------------------
-// PyPayloadDescriptor
-// ---------------------------------------------------------------------------
-
-#[pyclass(name = "PayloadDescriptor")]
-#[derive(Clone)]
-struct PyPayloadDescriptor {
-    inner: PayloadDescriptor,
-}
-
-#[pymethods]
-impl PyPayloadDescriptor {
     #[getter]
     fn byte_order(&self) -> &str {
         match self.inner.byte_order {
@@ -212,6 +183,11 @@ impl PyPayloadDescriptor {
     }
 
     #[getter]
+    fn params(&self, py: Python<'_>) -> PyResult<PyObject> {
+        extra_to_py(py, &self.inner.params)
+    }
+
+    #[getter]
     fn hash(&self, py: Python<'_>) -> PyResult<PyObject> {
         match &self.inner.hash {
             Some(h) => {
@@ -224,52 +200,38 @@ impl PyPayloadDescriptor {
         }
     }
 
-    #[getter]
-    fn params(&self, py: Python<'_>) -> PyResult<PyObject> {
-        extra_to_py(py, &self.inner.params)
-    }
-
     fn __repr__(&self) -> String {
         format!(
-            "PayloadDescriptor(encoding='{}', filter='{}', compression='{}')",
-            self.inner.encoding, self.inner.filter, self.inner.compression
+            "DataObjectDescriptor(type='{}', shape={:?}, dtype='{}', encoding='{}', compression='{}')",
+            self.inner.obj_type,
+            self.inner.shape,
+            self.inner.dtype,
+            self.inner.encoding,
+            self.inner.compression,
         )
     }
 }
 
 // ---------------------------------------------------------------------------
-// PyMetadata — wraps Metadata
+// PyMetadata — wraps GlobalMetadata
+//
+// Python name kept as "Metadata" for backward compatibility with callers that
+// already do `tensogram.Metadata`. Internals now use GlobalMetadata (v2).
+// The `objects` and `payload` attributes are gone; per-object info lives on
+// each DataObjectDescriptor returned alongside the decoded bytes.
 // ---------------------------------------------------------------------------
 
 #[pyclass(name = "Metadata")]
 #[derive(Clone)]
 struct PyMetadata {
-    inner: Metadata,
+    inner: GlobalMetadata,
 }
 
 #[pymethods]
 impl PyMetadata {
     #[getter]
-    fn version(&self) -> u64 {
+    fn version(&self) -> u16 {
         self.inner.version
-    }
-
-    #[getter]
-    fn objects(&self) -> Vec<PyObjectDescriptor> {
-        self.inner
-            .objects
-            .iter()
-            .map(|o| PyObjectDescriptor { inner: o.clone() })
-            .collect()
-    }
-
-    #[getter]
-    fn payload(&self) -> Vec<PyPayloadDescriptor> {
-        self.inner
-            .payload
-            .iter()
-            .map(|p| PyPayloadDescriptor { inner: p.clone() })
-            .collect()
     }
 
     #[getter]
@@ -287,9 +249,8 @@ impl PyMetadata {
 
     fn __repr__(&self) -> String {
         format!(
-            "Metadata(version={}, objects={}, extra_keys={:?})",
+            "Metadata(version={}, extra_keys={:?})",
             self.inner.version,
-            self.inner.objects.len(),
             self.inner.extra.keys().collect::<Vec<_>>()
         )
     }
@@ -325,26 +286,32 @@ impl PyTensogramFile {
         self.file.message_count().map_err(to_py_err)
     }
 
-    /// Append one message. `data_list` is a list of numpy arrays (one per object).
-    #[pyo3(signature = (metadata_dict, data_list, hash=Some("xxh3")))]
+    /// Append one message.
+    ///
+    /// `global_meta_dict` describes version and any extra top-level keys.
+    /// `descriptors_and_data` is a list of (descriptor_dict, data) pairs where
+    /// each descriptor_dict contains both tensor info (type, shape, dtype) and
+    /// encoding info (byte_order, encoding, filter, compression, params).
+    #[pyo3(signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3")))]
     fn append(
         &mut self,
         py: Python<'_>,
-        metadata_dict: &Bound<'_, PyDict>,
-        data_list: &Bound<'_, PyList>,
+        global_meta_dict: &Bound<'_, PyDict>,
+        descriptors_and_data: &Bound<'_, PyList>,
         hash: Option<&str>,
     ) -> PyResult<()> {
-        let metadata = dict_to_metadata(metadata_dict)?;
-        let bufs = extract_data_list(py, data_list)?;
-        let refs: Vec<&[u8]> = bufs.iter().map(|v| v.as_slice()).collect();
+        let global_meta = dict_to_global_metadata(global_meta_dict)?;
+        let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
+        let refs: Vec<(&DataObjectDescriptor, &[u8])> =
+            pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
         let options = make_encode_options(hash)?;
         self.file
-            .append(&metadata, &refs, &options)
+            .append(&global_meta, &refs, &options)
             .map_err(to_py_err)
     }
 
-    /// Decode message at index → (Metadata, list[bytes]).
+    /// Decode message at index → (Metadata, list[(DataObjectDescriptor, numpy.ndarray)]).
     #[pyo3(signature = (index, verify_hash=None))]
     fn decode_message(
         &mut self,
@@ -355,12 +322,12 @@ impl PyTensogramFile {
         let options = DecodeOptions {
             verify_hash: verify_hash.unwrap_or(false),
         };
-        let (meta, objects) = self
+        let (global_meta, data_objects) = self
             .file
             .decode_message(index, &options)
             .map_err(to_py_err)?;
-        let arrays = objects_to_numpy(py, &meta, &objects)?;
-        Ok((PyMetadata { inner: meta }, arrays))
+        let result_list = data_objects_to_python(py, &data_objects)?;
+        Ok((PyMetadata { inner: global_meta }, result_list))
     }
 
     /// Raw message bytes at index.
@@ -381,7 +348,7 @@ impl PyTensogramFile {
             .iter()
             .map(|m| PyBytes::new(py, m).into_any().unbind())
             .collect();
-        Ok(PyList::new(py, items)?)
+        PyList::new(py, items)
     }
 
     fn __repr__(&self) -> String {
@@ -395,36 +362,40 @@ impl PyTensogramFile {
 
 /// Encode a Tensogram message.
 ///
-/// metadata_dict: dict describing the message (version, objects, payload, extras).
-/// data_list: list of numpy arrays, one per object.
+/// global_meta_dict: dict with 'version' (int) and any extra top-level keys.
+/// descriptors_and_data: list of (descriptor_dict, data) pairs.
+///   Each descriptor_dict has tensor fields (type, shape, dtype) and
+///   encoding fields (byte_order, encoding, filter, compression, and params as
+///   additional keys).
 /// hash: hash algorithm name ("xxh3", "sha1", "md5") or None.
 ///
 /// Returns bytes.
 #[pyfunction]
-#[pyo3(name = "encode", signature = (metadata_dict, data_list, hash=Some("xxh3")))]
+#[pyo3(name = "encode", signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3")))]
 fn py_encode<'py>(
     py: Python<'py>,
-    metadata_dict: &Bound<'_, PyDict>,
-    data_list: &Bound<'_, PyList>,
+    global_meta_dict: &Bound<'_, PyDict>,
+    descriptors_and_data: &Bound<'_, PyList>,
     hash: Option<&str>,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let metadata = dict_to_metadata(metadata_dict)?;
-    let bufs = extract_data_list(py, data_list)?;
-    let refs: Vec<&[u8]> = bufs.iter().map(|v| v.as_slice()).collect();
+    let global_meta = dict_to_global_metadata(global_meta_dict)?;
+    let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
+    let refs: Vec<(&DataObjectDescriptor, &[u8])> =
+        pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
     let options = make_encode_options(hash)?;
-    let msg = encode(&metadata, &refs, &options).map_err(to_py_err)?;
+    let msg = encode(&global_meta, &refs, &options).map_err(to_py_err)?;
     Ok(PyBytes::new(py, &msg))
 }
 
-/// Decode a complete message → (Metadata, list[numpy.ndarray]).
+/// Decode a complete message → (Metadata, list[(DataObjectDescriptor, numpy.ndarray)]).
 #[pyfunction]
 #[pyo3(name = "decode", signature = (buf, verify_hash=false))]
 fn py_decode(py: Python<'_>, buf: &[u8], verify_hash: bool) -> PyResult<(PyMetadata, PyObject)> {
     let options = DecodeOptions { verify_hash };
-    let (meta, objects) = decode(buf, &options).map_err(to_py_err)?;
-    let arrays = objects_to_numpy(py, &meta, &objects)?;
-    Ok((PyMetadata { inner: meta }, arrays))
+    let (global_meta, data_objects) = decode(buf, &options).map_err(to_py_err)?;
+    let result_list = data_objects_to_python(py, &data_objects)?;
+    Ok((PyMetadata { inner: global_meta }, result_list))
 }
 
 /// Decode only metadata (no payload bytes touched).
@@ -435,7 +406,7 @@ fn py_decode_metadata(buf: &[u8]) -> PyResult<PyMetadata> {
     Ok(PyMetadata { inner: meta })
 }
 
-/// Decode a single object by index → (ObjectDescriptor, numpy.ndarray).
+/// Decode a single object by index → (Metadata, DataObjectDescriptor, numpy.ndarray).
 #[pyfunction]
 #[pyo3(name = "decode_object", signature = (buf, index, verify_hash=false))]
 fn py_decode_object(
@@ -443,28 +414,13 @@ fn py_decode_object(
     buf: &[u8],
     index: usize,
     verify_hash: bool,
-) -> PyResult<(PyObjectDescriptor, PyObject)> {
+) -> PyResult<(PyMetadata, PyDataObjectDescriptor, PyObject)> {
     let options = DecodeOptions { verify_hash };
-    let (meta, obj_bytes) = decode_object(buf, index, &options).map_err(to_py_err)?;
-    let obj_desc = meta.objects.get(index).ok_or_else(|| {
-        PyValueError::new_err(format!(
-            "object index {} out of range (num_objects={})",
-            index,
-            meta.objects.len()
-        ))
-    })?;
-    let payload_desc = meta.payload.get(index).ok_or_else(|| {
-        PyValueError::new_err(format!(
-            "payload index {} out of range (num_payload={})",
-            index,
-            meta.payload.len()
-        ))
-    })?;
-    let arr = bytes_to_numpy(py, obj_desc, &obj_bytes, payload_desc)?;
+    let (global_meta, desc, obj_bytes) = decode_object(buf, index, &options).map_err(to_py_err)?;
+    let arr = bytes_to_numpy(py, &desc, &obj_bytes)?;
     Ok((
-        PyObjectDescriptor {
-            inner: obj_desc.clone(),
-        },
+        PyMetadata { inner: global_meta },
+        PyDataObjectDescriptor { inner: desc },
         arr,
     ))
 }
@@ -482,15 +438,12 @@ fn py_decode_range(
     let options = DecodeOptions { verify_hash };
     let bytes = decode_range(buf, object_index, &ranges, &options).map_err(to_py_err)?;
 
-    // decode_range returns raw bytes in the logical dtype
-    let meta = decode_metadata(buf).map_err(to_py_err)?;
-    let desc = meta.objects.get(object_index).ok_or_else(|| {
-        PyValueError::new_err(format!(
-            "object index {} out of range (num_objects={})",
-            object_index,
-            meta.objects.len()
-        ))
-    })?;
+    // decode_range returns raw bytes in the logical dtype — look up the dtype
+    // from the metadata so we can reconstruct the correct numpy array type.
+    // We need the DataObjectDescriptor for the dtype; re-decode the object header.
+    let (_gm, desc, _) =
+        decode_object(buf, object_index, &DecodeOptions { verify_hash: false })
+            .map_err(to_py_err)?;
     let total_elements: u64 = ranges.iter().map(|(_, c)| c).sum();
     let arr = raw_bytes_to_numpy_flat(py, desc.dtype, &bytes, total_elements as usize)?;
     Ok(arr)
@@ -543,8 +496,7 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_scan, m)?)?;
     m.add_function(wrap_pyfunction!(compute_packing_params, m)?)?;
     m.add_class::<PyMetadata>()?;
-    m.add_class::<PyObjectDescriptor>()?;
-    m.add_class::<PyPayloadDescriptor>()?;
+    m.add_class::<PyDataObjectDescriptor>()?;
     m.add_class::<PyTensogramFile>()?;
     Ok(())
 }
@@ -564,112 +516,130 @@ fn make_encode_options(hash: Option<&str>) -> PyResult<EncodeOptions> {
     Ok(EncodeOptions { hash_algorithm })
 }
 
-fn extract_data_list(_py: Python<'_>, data_list: &Bound<'_, PyList>) -> PyResult<Vec<Vec<u8>>> {
-    let mut bufs = Vec::new();
-    for item in data_list.iter() {
-        // Try as numpy array first, then as bytes
-        if let Ok(arr) = item.extract::<numpy::PyReadonlyArrayDyn<'_, u8>>() {
-            bufs.push(
-                arr.as_slice()
-                    .map_err(|e| PyValueError::new_err(format!("{e}")))?
-                    .to_vec(),
-            );
-        } else if let Ok(arr) = item.extract::<numpy::PyReadonlyArrayDyn<'_, f32>>() {
-            let s = arr
-                .as_slice()
-                .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-            let bytes: Vec<u8> = s.iter().flat_map(|v| v.to_ne_bytes()).collect();
-            bufs.push(bytes);
-        } else if let Ok(arr) = item.extract::<numpy::PyReadonlyArrayDyn<'_, f64>>() {
-            let s = arr
-                .as_slice()
-                .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-            let bytes: Vec<u8> = s.iter().flat_map(|v| v.to_ne_bytes()).collect();
-            bufs.push(bytes);
-        } else if let Ok(b) = item.extract::<Vec<u8>>() {
-            bufs.push(b);
-        } else {
+/// Extract a list of (descriptor, raw_bytes) pairs from a Python list of
+/// (descriptor_dict, data) tuples used by `encode` and `append`.
+fn extract_descriptor_data_pairs(
+    py: Python<'_>,
+    pairs_list: &Bound<'_, PyList>,
+) -> PyResult<Vec<(DataObjectDescriptor, Vec<u8>)>> {
+    let mut result = Vec::new();
+    for item in pairs_list.iter() {
+        // Accept a 2-tuple (descriptor_dict, data)
+        let tuple = item.downcast::<pyo3::types::PyTuple>().map_err(|_| {
+            PyValueError::new_err("each element must be a (descriptor_dict, data) tuple")
+        })?;
+        if tuple.len() != 2 {
             return Err(PyValueError::new_err(
-                "data_list items must be numpy arrays or bytes",
+                "each element must be a (descriptor_dict, data) tuple of length 2",
             ));
         }
+        let desc_dict = tuple.get_item(0)?.downcast_into::<PyDict>().map_err(|_| {
+            PyValueError::new_err("first element of each pair must be a descriptor dict")
+        })?;
+        let desc = dict_to_data_object_descriptor(&desc_dict)?;
+
+        // Extract data bytes from the second element
+        let data_item = tuple.get_item(1)?;
+        let data = extract_single_data_item(py, &data_item)?;
+
+        result.push((desc, data));
     }
-    Ok(bufs)
+    Ok(result)
 }
 
-fn dict_to_metadata(dict: &Bound<'_, PyDict>) -> PyResult<Metadata> {
-    let version: u64 = dict
+/// Extract raw bytes from a single data item (numpy array or bytes).
+fn extract_single_data_item(_py: Python<'_>, item: &Bound<'_, pyo3::PyAny>) -> PyResult<Vec<u8>> {
+    if let Ok(arr) = item.extract::<numpy::PyReadonlyArrayDyn<'_, u8>>() {
+        return arr
+            .as_slice()
+            .map(|s| s.to_vec())
+            .map_err(|e| PyValueError::new_err(format!("{e}")));
+    }
+    if let Ok(arr) = item.extract::<numpy::PyReadonlyArrayDyn<'_, f32>>() {
+        let s = arr
+            .as_slice()
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        return Ok(s.iter().flat_map(|v| v.to_ne_bytes()).collect());
+    }
+    if let Ok(arr) = item.extract::<numpy::PyReadonlyArrayDyn<'_, f64>>() {
+        let s = arr
+            .as_slice()
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        return Ok(s.iter().flat_map(|v| v.to_ne_bytes()).collect());
+    }
+    if let Ok(b) = item.extract::<Vec<u8>>() {
+        return Ok(b);
+    }
+    Err(PyValueError::new_err("data must be a numpy array or bytes"))
+}
+
+/// Convert GlobalMetadata + decoded data objects list to a Python list of
+/// (DataObjectDescriptor, numpy.ndarray) tuples.
+fn data_objects_to_python(
+    py: Python<'_>,
+    data_objects: &[(DataObjectDescriptor, Vec<u8>)],
+) -> PyResult<PyObject> {
+    let items: PyResult<Vec<PyObject>> = data_objects
+        .iter()
+        .map(|(desc, bytes)| {
+            let arr = bytes_to_numpy(py, desc, bytes)?;
+            let py_desc = PyDataObjectDescriptor {
+                inner: desc.clone(),
+            }
+            .into_pyobject(py)?
+            .into_any()
+            .unbind();
+            let pair = pyo3::types::PyTuple::new(py, [py_desc, arr])?
+                .into_any()
+                .unbind();
+            Ok(pair)
+        })
+        .collect();
+    Ok(PyList::new(py, items?)?.into_any().unbind())
+}
+
+/// Build a GlobalMetadata from a Python dict.
+///
+/// Expected keys: 'version' (int). All other keys are stored as `extra`.
+fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata> {
+    let version: u16 = dict
         .get_item("version")?
         .ok_or_else(|| PyValueError::new_err("missing 'version'"))?
         .extract()?;
 
-    let objects_list = dict
-        .get_item("objects")?
-        .ok_or_else(|| PyValueError::new_err("missing 'objects'"))?;
-    let objects_list = objects_list.downcast::<PyList>()?;
-
-    let mut objects = Vec::new();
-    for obj_any in objects_list.iter() {
-        let obj_dict = obj_any.downcast::<PyDict>()?;
-        objects.push(dict_to_object_descriptor(obj_dict)?);
-    }
-
-    let mut payload = Vec::new();
-    if let Some(payload_any) = dict.get_item("payload")? {
-        let payload_list = payload_any.downcast::<PyList>()?;
-        for p_any in payload_list.iter() {
-            let p_dict = p_any.downcast::<PyDict>()?;
-            payload.push(dict_to_payload_descriptor(p_dict)?);
-        }
-    } else {
-        // Default: one "none" payload per object
-        for _ in &objects {
-            payload.push(PayloadDescriptor {
-                byte_order: ByteOrder::Big,
-                encoding: "none".to_string(),
-                filter: "none".to_string(),
-                compression: "none".to_string(),
-                params: BTreeMap::new(),
-                hash: None,
-            });
-        }
-    }
-
-    // Collect extra keys (everything except version, objects, payload)
+    // Collect extra keys (everything except 'version')
     let mut extra = BTreeMap::new();
-    let reserved = ["version", "objects", "payload"];
     for (k, v) in dict.iter() {
         let key: String = k.extract()?;
-        if !reserved.contains(&key.as_str()) {
+        if key != "version" {
             extra.insert(key, py_to_cbor(&v)?);
         }
     }
 
-    Ok(Metadata {
-        version,
-        objects,
-        payload,
-        extra,
-    })
+    Ok(GlobalMetadata { version, extra })
 }
 
-fn dict_to_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<ObjectDescriptor> {
+/// Build a DataObjectDescriptor from a Python dict.
+///
+/// Tensor fields: 'type', 'shape', 'dtype', optionally 'strides', 'ndim'.
+/// Encoding fields: 'byte_order', 'encoding', 'filter', 'compression'.
+/// All other keys are stored in `params`.
+fn dict_to_data_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<DataObjectDescriptor> {
     let obj_type: String = dict
         .get_item("type")?
-        .ok_or_else(|| PyValueError::new_err("object missing 'type'"))?
+        .ok_or_else(|| PyValueError::new_err("descriptor missing 'type'"))?
         .extract()?;
     let shape: Vec<u64> = dict
         .get_item("shape")?
-        .ok_or_else(|| PyValueError::new_err("object missing 'shape'"))?
+        .ok_or_else(|| PyValueError::new_err("descriptor missing 'shape'"))?
         .extract()?;
     let dtype_str: String = dict
         .get_item("dtype")?
-        .ok_or_else(|| PyValueError::new_err("object missing 'dtype'"))?
+        .ok_or_else(|| PyValueError::new_err("descriptor missing 'dtype'"))?
         .extract()?;
 
     let ndim = shape.len() as u64;
 
-    // Compute strides if not provided
     let strides: Vec<u64> = if let Some(s) = dict.get_item("strides")? {
         s.extract()?
     } else {
@@ -678,27 +648,6 @@ fn dict_to_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<ObjectDescrip
 
     let dtype = parse_dtype(&dtype_str)?;
 
-    // Extra keys
-    let reserved = ["type", "ndim", "shape", "strides", "dtype"];
-    let mut extra = BTreeMap::new();
-    for (k, v) in dict.iter() {
-        let key: String = k.extract()?;
-        if !reserved.contains(&key.as_str()) {
-            extra.insert(key, py_to_cbor(&v)?);
-        }
-    }
-
-    Ok(ObjectDescriptor {
-        obj_type,
-        ndim,
-        shape,
-        strides,
-        dtype,
-        extra,
-    })
-}
-
-fn dict_to_payload_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<PayloadDescriptor> {
     let byte_order = match dict.get_item("byte_order")?.map(|v| v.extract::<String>()) {
         Some(Ok(s)) if s == "little" => ByteOrder::Little,
         _ => ByteOrder::Big,
@@ -719,8 +668,19 @@ fn dict_to_payload_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<PayloadDescr
         .transpose()?
         .unwrap_or_else(|| "none".to_string());
 
-    // Collect params (everything except the fixed keys)
-    let reserved = ["byte_order", "encoding", "filter", "compression", "hash"];
+    // All remaining keys go into params (replaces the old separate params dict)
+    let reserved = [
+        "type",
+        "ndim",
+        "shape",
+        "strides",
+        "dtype",
+        "byte_order",
+        "encoding",
+        "filter",
+        "compression",
+        "hash",
+    ];
     let mut params = BTreeMap::new();
     for (k, v) in dict.iter() {
         let key: String = k.extract()?;
@@ -729,7 +689,12 @@ fn dict_to_payload_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<PayloadDescr
         }
     }
 
-    Ok(PayloadDescriptor {
+    Ok(DataObjectDescriptor {
+        obj_type,
+        ndim,
+        shape,
+        strides,
+        dtype,
         byte_order,
         encoding,
         filter,
@@ -771,26 +736,13 @@ fn compute_strides(shape: &[u64]) -> Vec<u64> {
     strides
 }
 
-/// Convert decoded object bytes to numpy arrays.
-fn objects_to_numpy(py: Python<'_>, meta: &Metadata, objects: &[Vec<u8>]) -> PyResult<PyObject> {
-    let mut arrays: Vec<PyObject> = Vec::new();
-    for (i, obj_bytes) in objects.iter().enumerate() {
-        let desc = &meta.objects[i];
-        let payload_desc = &meta.payload[i];
-        let arr = bytes_to_numpy(py, desc, obj_bytes, payload_desc)?;
-        arrays.push(arr);
-    }
-    Ok(PyList::new(py, arrays)?.into_any().unbind())
-}
-
-fn bytes_to_numpy(
-    py: Python<'_>,
-    desc: &ObjectDescriptor,
-    bytes: &[u8],
-    payload_desc: &PayloadDescriptor,
-) -> PyResult<PyObject> {
-    // If simple_packing was used, decoded bytes are f64 regardless of dtype
-    let effective_dtype = if payload_desc.encoding == "simple_packing" {
+/// Convert a single decoded object's bytes to a numpy array.
+///
+/// Uses `DataObjectDescriptor` for both shape/dtype and encoding info
+/// (the v2 unified descriptor).
+fn bytes_to_numpy(py: Python<'_>, desc: &DataObjectDescriptor, bytes: &[u8]) -> PyResult<PyObject> {
+    // If simple_packing was used, decoded bytes are f64 regardless of declared dtype
+    let effective_dtype = if desc.encoding == "simple_packing" {
         Dtype::Float64
     } else {
         desc.dtype

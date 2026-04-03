@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode_metadata, encode, scan, ByteOrder, Dtype, EncodeOptions, Metadata, ObjectDescriptor,
-    PayloadDescriptor,
+    decode_metadata, encode, scan, ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions,
+    GlobalMetadata,
 };
 
 fn make_message(param: &str, step: i64) -> Vec<u8> {
@@ -26,29 +26,24 @@ fn make_message(param: &str, step: i64) -> Vec<u8> {
     let mut extra = BTreeMap::new();
     extra.insert("mars".to_string(), mars);
 
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 1,
-            shape: vec![10],
-            strides: vec![1],
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: BTreeMap::new(),
-            hash: None,
-        }],
-        extra,
+    let global_meta = GlobalMetadata { version: 2, extra };
+
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![10],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
     };
 
     let data = vec![0u8; 10 * 4];
-    encode(&metadata, &[&data], &EncodeOptions::default()).unwrap()
+    encode(&global_meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap()
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

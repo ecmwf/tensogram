@@ -1,87 +1,292 @@
 use crate::error::{Result, TensogramError};
-use crate::types::Metadata;
+use crate::types::{DataObjectDescriptor, GlobalMetadata, HashFrame, IndexFrame};
 
-/// Serialize metadata to deterministic CBOR bytes (RFC 8949 Section 4.2).
-/// Two-step process: serialize to ciborium::Value, canonicalize key ordering, write bytes.
-pub fn metadata_to_cbor(metadata: &Metadata) -> Result<Vec<u8>> {
-    // Step 1: Serialize to ciborium::Value via serde
+/// Serialize global metadata to deterministic CBOR bytes (RFC 8949 Section 4.2).
+pub fn global_metadata_to_cbor(metadata: &GlobalMetadata) -> Result<Vec<u8>> {
     let mut value: ciborium::Value = ciborium::Value::serialized(metadata)
         .map_err(|e| TensogramError::Metadata(format!("failed to serialize metadata: {e}")))?;
-
-    // Step 2: Canonicalize all map keys (sort by CBOR-encoded bytes)
-    canonicalize(&mut value);
-
-    // Step 3: Write to bytes
-    let mut buf = Vec::new();
-    ciborium::into_writer(&value, &mut buf)
-        .map_err(|e| TensogramError::Metadata(format!("failed to write CBOR: {e}")))?;
-
-    Ok(buf)
+    canonicalize(&mut value)?;
+    value_to_bytes(&value)
 }
 
-/// Deserialize metadata from CBOR bytes. Unknown keys are preserved in `extra` fields.
-pub fn cbor_to_metadata(cbor_bytes: &[u8]) -> Result<Metadata> {
+/// Deserialize global metadata from CBOR bytes.
+pub fn cbor_to_global_metadata(cbor_bytes: &[u8]) -> Result<GlobalMetadata> {
     let value: ciborium::Value = ciborium::from_reader(cbor_bytes)
         .map_err(|e| TensogramError::Metadata(format!("failed to parse CBOR: {e}")))?;
-
-    let metadata: Metadata = value
+    value
         .deserialized()
-        .map_err(|e| TensogramError::Metadata(format!("failed to deserialize metadata: {e}")))?;
+        .map_err(|e| TensogramError::Metadata(format!("failed to deserialize metadata: {e}")))
+}
 
-    // Validate objects.len == payload.len
-    if metadata.objects.len() != metadata.payload.len() {
+/// Serialize a data object descriptor to deterministic CBOR bytes.
+pub fn object_descriptor_to_cbor(desc: &DataObjectDescriptor) -> Result<Vec<u8>> {
+    let mut value: ciborium::Value = ciborium::Value::serialized(desc)
+        .map_err(|e| TensogramError::Metadata(format!("failed to serialize descriptor: {e}")))?;
+    canonicalize(&mut value)?;
+    value_to_bytes(&value)
+}
+
+/// Deserialize a data object descriptor from CBOR bytes.
+pub fn cbor_to_object_descriptor(cbor_bytes: &[u8]) -> Result<DataObjectDescriptor> {
+    let value: ciborium::Value = ciborium::from_reader(cbor_bytes)
+        .map_err(|e| TensogramError::Metadata(format!("failed to parse descriptor CBOR: {e}")))?;
+    value
+        .deserialized()
+        .map_err(|e| TensogramError::Metadata(format!("failed to deserialize descriptor: {e}")))
+}
+
+/// Serialize an index frame to deterministic CBOR bytes.
+///
+/// CBOR structure: { "object_count": uint, "offsets": [uint, ...], "lengths": [uint, ...] }
+pub fn index_to_cbor(index: &IndexFrame) -> Result<Vec<u8>> {
+    use ciborium::Value;
+    let map = Value::Map(vec![
+        (
+            Value::Text("object_count".to_string()),
+            Value::Integer(index.object_count.into()),
+        ),
+        (
+            Value::Text("offsets".to_string()),
+            Value::Array(
+                index
+                    .offsets
+                    .iter()
+                    .map(|&o| Value::Integer(o.into()))
+                    .collect(),
+            ),
+        ),
+        (
+            Value::Text("lengths".to_string()),
+            Value::Array(
+                index
+                    .lengths
+                    .iter()
+                    .map(|&l| Value::Integer(l.into()))
+                    .collect(),
+            ),
+        ),
+    ]);
+    let mut sorted = map;
+    canonicalize(&mut sorted)?;
+    value_to_bytes(&sorted)
+}
+
+/// Deserialize an index frame from CBOR bytes.
+pub fn cbor_to_index(cbor_bytes: &[u8]) -> Result<IndexFrame> {
+    let value: ciborium::Value = ciborium::from_reader(cbor_bytes)
+        .map_err(|e| TensogramError::Metadata(format!("failed to parse index CBOR: {e}")))?;
+
+    let map = match &value {
+        ciborium::Value::Map(m) => m,
+        _ => {
+            return Err(TensogramError::Metadata(
+                "index CBOR is not a map".to_string(),
+            ))
+        }
+    };
+
+    let mut index = IndexFrame::default();
+
+    for (k, v) in map {
+        let key = match k {
+            ciborium::Value::Text(s) => s.as_str(),
+            _ => continue,
+        };
+        match key {
+            "object_count" => {
+                index.object_count = cbor_to_u64(v, "object_count")?;
+            }
+            "offsets" => {
+                index.offsets = cbor_to_u64_array(v, "offsets")?;
+            }
+            "lengths" => {
+                index.lengths = cbor_to_u64_array(v, "lengths")?;
+            }
+            _ => {} // ignore unknown keys
+        }
+    }
+
+    if index.object_count != index.offsets.len() as u64 {
         return Err(TensogramError::Metadata(format!(
-            "objects.len ({}) != payload.len ({})",
-            metadata.objects.len(),
-            metadata.payload.len()
+            "index object_count ({}) != offsets.len() ({})",
+            index.object_count,
+            index.offsets.len()
         )));
     }
 
-    Ok(metadata)
+    Ok(index)
+}
+
+/// Serialize a hash frame to deterministic CBOR bytes.
+///
+/// CBOR structure: { "object_count": uint, "hash_type": text, "hashes": [text, ...] }
+pub fn hash_frame_to_cbor(hf: &HashFrame) -> Result<Vec<u8>> {
+    use ciborium::Value;
+    let map = Value::Map(vec![
+        (
+            Value::Text("hash_type".to_string()),
+            Value::Text(hf.hash_type.clone()),
+        ),
+        (
+            Value::Text("hashes".to_string()),
+            Value::Array(hf.hashes.iter().map(|h| Value::Text(h.clone())).collect()),
+        ),
+        (
+            Value::Text("object_count".to_string()),
+            Value::Integer(hf.object_count.into()),
+        ),
+    ]);
+    let mut sorted = map;
+    canonicalize(&mut sorted)?;
+    value_to_bytes(&sorted)
+}
+
+/// Deserialize a hash frame from CBOR bytes.
+pub fn cbor_to_hash_frame(cbor_bytes: &[u8]) -> Result<HashFrame> {
+    let value: ciborium::Value = ciborium::from_reader(cbor_bytes)
+        .map_err(|e| TensogramError::Metadata(format!("failed to parse hash CBOR: {e}")))?;
+
+    let map = match &value {
+        ciborium::Value::Map(m) => m,
+        _ => {
+            return Err(TensogramError::Metadata(
+                "hash frame CBOR is not a map".to_string(),
+            ))
+        }
+    };
+
+    let mut object_count = 0u64;
+    let mut hash_type = String::new();
+    let mut hashes = Vec::new();
+
+    for (k, v) in map {
+        let key = match k {
+            ciborium::Value::Text(s) => s.as_str(),
+            _ => continue,
+        };
+        match key {
+            "object_count" => {
+                object_count = cbor_to_u64(v, "object_count")?;
+            }
+            "hash_type" => {
+                hash_type = match v {
+                    ciborium::Value::Text(s) => s.clone(),
+                    _ => {
+                        return Err(TensogramError::Metadata(
+                            "hash_type must be text".to_string(),
+                        ))
+                    }
+                };
+            }
+            "hashes" => {
+                hashes = match v {
+                    ciborium::Value::Array(arr) => arr
+                        .iter()
+                        .map(|item| match item {
+                            ciborium::Value::Text(s) => Ok(s.clone()),
+                            _ => Err(TensogramError::Metadata(
+                                "hash entry must be text".to_string(),
+                            )),
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                    _ => {
+                        return Err(TensogramError::Metadata(
+                            "hashes must be an array".to_string(),
+                        ))
+                    }
+                };
+            }
+            _ => {}
+        }
+    }
+
+    if object_count != hashes.len() as u64 {
+        return Err(TensogramError::Metadata(format!(
+            "hash frame object_count ({object_count}) != hashes.len() ({})",
+            hashes.len()
+        )));
+    }
+
+    Ok(HashFrame {
+        object_count,
+        hash_type,
+        hashes,
+    })
+}
+
+// ── CBOR helpers ─────────────────────────────────────────────────────────────
+
+fn value_to_bytes(value: &ciborium::Value) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    ciborium::into_writer(value, &mut buf)
+        .map_err(|e| TensogramError::Metadata(format!("failed to write CBOR: {e}")))?;
+    Ok(buf)
+}
+
+fn cbor_to_u64(v: &ciborium::Value, field: &str) -> Result<u64> {
+    match v {
+        ciborium::Value::Integer(i) => {
+            let n: i128 = (*i).into();
+            u64::try_from(n).map_err(|_| {
+                TensogramError::Metadata(format!("{field} value {n} out of u64 range"))
+            })
+        }
+        _ => Err(TensogramError::Metadata(format!(
+            "{field} must be an integer"
+        ))),
+    }
+}
+
+fn cbor_to_u64_array(v: &ciborium::Value, field: &str) -> Result<Vec<u64>> {
+    match v {
+        ciborium::Value::Array(arr) => arr.iter().map(|item| cbor_to_u64(item, field)).collect(),
+        _ => Err(TensogramError::Metadata(format!(
+            "{field} must be an array"
+        ))),
+    }
 }
 
 /// Recursively sort all map keys in a ciborium::Value tree for canonical encoding.
 /// Keys are sorted by their CBOR-encoded byte representation (lexicographic).
-fn canonicalize(value: &mut ciborium::Value) {
+pub(crate) fn canonicalize(value: &mut ciborium::Value) -> Result<()> {
     match value {
         ciborium::Value::Map(entries) => {
-            // Recursively canonicalize all values (and keys if they're maps)
             for (k, v) in entries.iter_mut() {
-                canonicalize(k);
-                canonicalize(v);
+                canonicalize(k)?;
+                canonicalize(v)?;
             }
-            // Pre-compute serialized key bytes to avoid repeated allocation during sort.
-            let mut keyed: Vec<(Vec<u8>, (ciborium::Value, ciborium::Value))> = entries
-                .drain(..)
-                .map(|(k, v)| {
-                    let mut key_bytes = Vec::new();
-                    let _ = ciborium::into_writer(&k, &mut key_bytes);
-                    (key_bytes, (k, v))
-                })
-                .collect();
+            let mut keyed: Vec<(Vec<u8>, (ciborium::Value, ciborium::Value))> = Vec::new();
+            for (k, v) in entries.drain(..) {
+                let mut key_bytes = Vec::new();
+                ciborium::into_writer(&k, &mut key_bytes).map_err(|e| {
+                    TensogramError::Metadata(format!("CBOR key serialisation failed: {e}"))
+                })?;
+                keyed.push((key_bytes, (k, v)));
+            }
             keyed.sort_by(|(a, _), (b, _)| a.cmp(b));
             *entries = keyed.into_iter().map(|(_, kv)| kv).collect();
         }
         ciborium::Value::Array(items) => {
             for item in items.iter_mut() {
-                canonicalize(item);
+                canonicalize(item)?;
             }
         }
         ciborium::Value::Tag(_, inner) => {
-            canonicalize(inner);
+            canonicalize(inner)?;
         }
         _ => {}
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dtype::Dtype;
-    use crate::types::{ByteOrder, ObjectDescriptor, PayloadDescriptor};
+    use crate::types::ByteOrder;
     use std::collections::BTreeMap;
 
-    fn make_test_metadata() -> Metadata {
+    fn make_test_global_metadata() -> GlobalMetadata {
         let mut mars = BTreeMap::new();
         mars.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
         mars.insert("type".to_string(), ciborium::Value::Text("fc".to_string()));
@@ -96,78 +301,93 @@ mod tests {
             ),
         );
 
-        Metadata {
-            version: 1,
-            objects: vec![ObjectDescriptor {
-                obj_type: "ntensor".to_string(),
-                ndim: 2,
-                shape: vec![10, 20],
-                strides: vec![20, 1],
-                dtype: Dtype::Float32,
-                extra: BTreeMap::new(),
-            }],
-            payload: vec![PayloadDescriptor {
-                byte_order: ByteOrder::Big,
-                encoding: "none".to_string(),
-                filter: "none".to_string(),
-                compression: "none".to_string(),
-                params: BTreeMap::new(),
-                hash: None,
-            }],
-            extra,
+        GlobalMetadata { version: 2, extra }
+    }
+
+    fn make_test_descriptor() -> DataObjectDescriptor {
+        DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 2,
+            shape: vec![10, 20],
+            strides: vec![20, 1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
         }
     }
 
     #[test]
-    fn test_deterministic_encoding() {
-        let metadata = make_test_metadata();
-        let bytes1 = metadata_to_cbor(&metadata).unwrap();
-        let bytes2 = metadata_to_cbor(&metadata).unwrap();
-        assert_eq!(bytes1, bytes2, "CBOR encoding must be deterministic");
+    fn test_global_metadata_round_trip() {
+        let meta = make_test_global_metadata();
+        let bytes = global_metadata_to_cbor(&meta).unwrap();
+        let decoded = cbor_to_global_metadata(&bytes).unwrap();
+        assert_eq!(decoded.version, 2);
+        assert!(decoded.extra.contains_key("mars"));
     }
 
     #[test]
-    fn test_round_trip() {
-        let metadata = make_test_metadata();
-        let bytes = metadata_to_cbor(&metadata).unwrap();
-        let decoded = cbor_to_metadata(&bytes).unwrap();
-        assert_eq!(decoded.version, 1);
-        assert_eq!(decoded.objects.len(), 1);
-        assert_eq!(decoded.objects[0].shape, vec![10, 20]);
-        assert_eq!(decoded.payload[0].encoding, "none");
+    fn test_global_metadata_deterministic() {
+        let meta = make_test_global_metadata();
+        let b1 = global_metadata_to_cbor(&meta).unwrap();
+        let b2 = global_metadata_to_cbor(&meta).unwrap();
+        assert_eq!(b1, b2);
     }
 
     #[test]
-    fn test_objects_payload_length_mismatch() {
-        let mut metadata = make_test_metadata();
-        metadata.payload.clear(); // mismatch: 1 object, 0 payload
-        let bytes = metadata_to_cbor(&metadata).unwrap();
-        assert!(cbor_to_metadata(&bytes).is_err());
+    fn test_descriptor_round_trip() {
+        let desc = make_test_descriptor();
+        let bytes = object_descriptor_to_cbor(&desc).unwrap();
+        let decoded = cbor_to_object_descriptor(&bytes).unwrap();
+        assert_eq!(decoded.obj_type, "ntensor");
+        assert_eq!(decoded.shape, vec![10, 20]);
+        assert_eq!(decoded.dtype, Dtype::Float32);
+        assert_eq!(decoded.encoding, "none");
     }
 
     #[test]
-    fn test_empty_objects() {
-        let metadata = Metadata {
-            version: 1,
-            objects: vec![],
-            payload: vec![],
+    fn test_index_round_trip() {
+        let index = IndexFrame {
+            object_count: 3,
+            offsets: vec![100, 500, 1200],
+            lengths: vec![400, 700, 300],
+        };
+        let bytes = index_to_cbor(&index).unwrap();
+        let decoded = cbor_to_index(&bytes).unwrap();
+        assert_eq!(decoded.object_count, 3);
+        assert_eq!(decoded.offsets, vec![100, 500, 1200]);
+        assert_eq!(decoded.lengths, vec![400, 700, 300]);
+    }
+
+    #[test]
+    fn test_hash_frame_round_trip() {
+        let hf = HashFrame {
+            object_count: 2,
+            hash_type: "xxh3".to_string(),
+            hashes: vec![
+                "abcdef0123456789".to_string(),
+                "1234567890abcdef".to_string(),
+            ],
+        };
+        let bytes = hash_frame_to_cbor(&hf).unwrap();
+        let decoded = cbor_to_hash_frame(&bytes).unwrap();
+        assert_eq!(decoded.object_count, 2);
+        assert_eq!(decoded.hash_type, "xxh3");
+        assert_eq!(decoded.hashes, hf.hashes);
+    }
+
+    #[test]
+    fn test_empty_global_metadata() {
+        let meta = GlobalMetadata {
+            version: 2,
             extra: BTreeMap::new(),
         };
-        let bytes = metadata_to_cbor(&metadata).unwrap();
-        let decoded = cbor_to_metadata(&bytes).unwrap();
-        assert_eq!(decoded.objects.len(), 0);
-        assert_eq!(decoded.payload.len(), 0);
-    }
-
-    #[test]
-    fn test_unknown_keys_preserved() {
-        let mut metadata = make_test_metadata();
-        metadata.extra.insert(
-            "custom_namespace".to_string(),
-            ciborium::Value::Text("test_value".to_string()),
-        );
-        let bytes = metadata_to_cbor(&metadata).unwrap();
-        let decoded = cbor_to_metadata(&bytes).unwrap();
-        assert!(decoded.extra.contains_key("custom_namespace"));
+        let bytes = global_metadata_to_cbor(&meta).unwrap();
+        let decoded = cbor_to_global_metadata(&bytes).unwrap();
+        assert_eq!(decoded.version, 2);
+        assert!(decoded.extra.is_empty());
     }
 }

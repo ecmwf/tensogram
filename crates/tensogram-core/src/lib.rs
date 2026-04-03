@@ -18,4 +18,8 @@ pub use file::TensogramFile;
 pub use framing::scan;
 pub use hash::HashAlgorithm;
 pub use iter::{messages, objects, objects_metadata, FileMessageIter, MessageIter, ObjectIter};
-pub use types::{ByteOrder, HashDescriptor, Metadata, ObjectDescriptor, PayloadDescriptor};
+pub use types::{
+    ByteOrder, DataObjectDescriptor, DecodedObject, GlobalMetadata, HashDescriptor, HashFrame,
+    IndexFrame,
+};
+pub use wire::{FrameType, MessageFlags};

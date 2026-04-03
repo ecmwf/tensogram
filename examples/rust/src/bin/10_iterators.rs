@@ -12,11 +12,11 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode, messages, objects, objects_metadata, ByteOrder, DecodeOptions, Dtype, EncodeOptions,
-    Metadata, ObjectDescriptor, PayloadDescriptor, TensogramFile,
+    decode, messages, objects, objects_metadata, ByteOrder, DataObjectDescriptor, DecodeOptions,
+    Dtype, EncodeOptions, GlobalMetadata, TensogramFile,
 };
 
-fn make_message(param: &str, fill: u8) -> (Metadata, Vec<u8>) {
+fn make_message(param: &str, fill: u8) -> (GlobalMetadata, DataObjectDescriptor, Vec<u8>) {
     let mars = Value::Map(vec![(
         Value::Text("param".into()),
         Value::Text(param.into()),
@@ -24,30 +24,24 @@ fn make_message(param: &str, fill: u8) -> (Metadata, Vec<u8>) {
     let mut extra = BTreeMap::new();
     extra.insert("mars".to_string(), mars);
 
-    let shape = vec![4u64, 4];
-    let strides = vec![4u64, 1];
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 2,
-            shape,
-            strides,
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Little,
-            encoding: "none".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: BTreeMap::new(),
-            hash: None,
-        }],
-        extra,
+    let global_meta = GlobalMetadata { version: 2, extra };
+
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 2,
+        shape: vec![4u64, 4],
+        strides: vec![4u64, 1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
     };
+
     let data = vec![fill; 4 * 4 * 4]; // 4×4 float32
-    (metadata, data)
+    (global_meta, desc, data)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -59,8 +53,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .enumerate()
         .map(|(i, &p)| {
-            let (meta, data) = make_message(p, i as u8);
-            tensogram_core::encode(&meta, &[&data], &EncodeOptions::default()).unwrap()
+            let (meta, desc, data) = make_message(p, i as u8);
+            tensogram_core::encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap()
         })
         .collect();
 
@@ -114,8 +108,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let mut file = TensogramFile::create(&path)?;
         for (i, &p) in params.iter().enumerate() {
-            let (meta, data) = make_message(p, i as u8);
-            file.append(&meta, &[&data], &EncodeOptions::default())?;
+            let (meta, desc, data) = make_message(p, i as u8);
+            file.append(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
         }
     }
 

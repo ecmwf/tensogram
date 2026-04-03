@@ -6,7 +6,7 @@ use crate::decode::{self, DecodeOptions};
 use crate::encode::{self, EncodeOptions};
 use crate::error::{Result, TensogramError};
 use crate::framing;
-use crate::types::Metadata;
+use crate::types::{DataObjectDescriptor, DecodedObject, GlobalMetadata};
 
 /// A handle for reading/writing Tensogram message files.
 pub struct TensogramFile {
@@ -34,11 +34,9 @@ impl TensogramFile {
     /// Create a new file for writing (truncates if exists).
     pub fn create(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        // Create parent directories if needed
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        // Create/truncate the file
         fs::File::create(&path)?;
         Ok(TensogramFile {
             path,
@@ -70,25 +68,21 @@ impl TensogramFile {
     /// Append a message to the file.
     pub fn append(
         &mut self,
-        metadata: &Metadata,
-        data_objects: &[&[u8]],
+        global_metadata: &GlobalMetadata,
+        descriptors: &[(&DataObjectDescriptor, &[u8])],
         options: &EncodeOptions,
     ) -> Result<()> {
-        let msg = encode::encode(metadata, data_objects, options)?;
+        let msg = encode::encode(global_metadata, descriptors, options)?;
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)?;
         file.write_all(&msg)?;
-        // Invalidate cached scan
         self.message_offsets = None;
         Ok(())
     }
 
     /// Read raw message bytes at a specific index.
-    ///
-    /// Uses `seek()` + `read_exact()` to read only the requested message
-    /// without loading the entire file into memory.
     pub fn read_message(&mut self, index: usize) -> Result<Vec<u8>> {
         self.ensure_scanned()?;
         let offsets = self
@@ -131,16 +125,12 @@ impl TensogramFile {
         &mut self,
         index: usize,
         options: &DecodeOptions,
-    ) -> Result<(Metadata, Vec<Vec<u8>>)> {
+    ) -> Result<(GlobalMetadata, Vec<DecodedObject>)> {
         let msg = self.read_message(index)?;
         decode::decode(&msg, options)
     }
 
     /// Return a lazy iterator over the messages in this file.
-    ///
-    /// Scans the file once to locate message boundaries, then yields raw
-    /// message bytes on demand via seek-based reads. The iterator does not
-    /// borrow `self` — it owns a cloned path and offset list.
     pub fn iter(&mut self) -> Result<crate::iter::FileMessageIter> {
         self.ensure_scanned()?;
         let offsets = self
@@ -161,10 +151,17 @@ impl TensogramFile {
 mod tests {
     use super::*;
     use crate::dtype::Dtype;
-    use crate::types::{ByteOrder, ObjectDescriptor, PayloadDescriptor};
+    use crate::types::ByteOrder;
     use std::collections::BTreeMap;
 
-    fn make_metadata(shape: Vec<u64>) -> Metadata {
+    fn make_global_meta() -> GlobalMetadata {
+        GlobalMetadata {
+            version: 2,
+            extra: BTreeMap::new(),
+        }
+    }
+
+    fn make_descriptor(shape: Vec<u64>) -> DataObjectDescriptor {
         let strides = if shape.is_empty() {
             vec![]
         } else {
@@ -175,25 +172,18 @@ mod tests {
             s
         };
 
-        Metadata {
-            version: 1,
-            objects: vec![ObjectDescriptor {
-                obj_type: "ntensor".to_string(),
-                ndim: shape.len() as u64,
-                shape,
-                strides,
-                dtype: Dtype::Float32,
-                extra: BTreeMap::new(),
-            }],
-            payload: vec![PayloadDescriptor {
-                byte_order: ByteOrder::Big,
-                encoding: "none".to_string(),
-                filter: "none".to_string(),
-                compression: "none".to_string(),
-                params: BTreeMap::new(),
-                hash: None,
-            }],
-            extra: BTreeMap::new(),
+        DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: shape.len() as u64,
+            shape,
+            strides,
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
         }
     }
 
@@ -203,12 +193,21 @@ mod tests {
         let path = dir.path().join("test.tgm");
 
         let mut file = TensogramFile::create(&path).unwrap();
-        let metadata = make_metadata(vec![4]);
-        let data = vec![0u8; 16]; // 4 float32 = 16 bytes
-        file.append(&metadata, &[&data], &EncodeOptions::default())
-            .unwrap();
-        file.append(&metadata, &[&data], &EncodeOptions::default())
-            .unwrap();
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
 
         assert_eq!(file.message_count().unwrap(), 2);
 
@@ -216,10 +215,10 @@ mod tests {
         let msgs = file.messages().unwrap();
         assert_eq!(msgs.len(), 2);
 
-        let (meta, objects) = file.decode_message(0, &DecodeOptions::default()).unwrap();
-        assert_eq!(meta.version, 1);
+        let (decoded_meta, objects) = file.decode_message(0, &DecodeOptions::default()).unwrap();
+        assert_eq!(decoded_meta.version, 2);
         assert_eq!(objects.len(), 1);
-        assert_eq!(objects[0], data);
+        assert_eq!(objects[0].1, data);
     }
 
     #[test]
@@ -228,50 +227,42 @@ mod tests {
         let path = dir.path().join("lazy.tgm");
 
         let mut file = TensogramFile::create(&path).unwrap();
-        let metadata = make_metadata(vec![4]);
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
 
         let data0 = vec![0u8; 16];
         let data1 = vec![1u8; 16];
         let data2 = vec![2u8; 16];
 
-        file.append(&metadata, &[&data0], &EncodeOptions::default())
-            .unwrap();
-        file.append(&metadata, &[&data1], &EncodeOptions::default())
-            .unwrap();
-        file.append(&metadata, &[&data2], &EncodeOptions::default())
-            .unwrap();
+        file.append(
+            &meta,
+            &[(&desc, data0.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        file.append(
+            &meta,
+            &[(&desc, data1.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        file.append(
+            &meta,
+            &[(&desc, data2.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
 
         assert_eq!(file.message_count().unwrap(), 3);
 
         let (_, obj1) = file.decode_message(1, &DecodeOptions::default()).unwrap();
-        assert_eq!(obj1[0], data1);
+        assert_eq!(obj1[0].1, data1);
 
         let (_, obj0) = file.decode_message(0, &DecodeOptions::default()).unwrap();
-        assert_eq!(obj0[0], data0);
+        assert_eq!(obj0[0].1, data0);
 
         let (_, obj2) = file.decode_message(2, &DecodeOptions::default()).unwrap();
-        assert_eq!(obj2[0], data2);
-    }
-
-    #[test]
-    fn test_file_read_message_by_index() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test2.tgm");
-
-        let mut file = TensogramFile::create(&path).unwrap();
-        let data1 = vec![1u8; 16];
-        let data2 = vec![2u8; 16];
-
-        let metadata = make_metadata(vec![4]);
-        file.append(&metadata, &[&data1], &EncodeOptions::default())
-            .unwrap();
-        file.append(&metadata, &[&data2], &EncodeOptions::default())
-            .unwrap();
-
-        let (_, obj1) = file.decode_message(0, &DecodeOptions::default()).unwrap();
-        let (_, obj2) = file.decode_message(1, &DecodeOptions::default()).unwrap();
-        assert_eq!(obj1[0], data1);
-        assert_eq!(obj2[0], data2);
+        assert_eq!(obj2[0].1, data2);
     }
 
     #[test]
@@ -280,24 +271,38 @@ mod tests {
         let path = dir.path().join("iter.tgm");
 
         let mut file = TensogramFile::create(&path).unwrap();
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+
         let data0 = vec![0u8; 16];
         let data1 = vec![1u8; 16];
         let data2 = vec![2u8; 16];
-        let metadata = make_metadata(vec![4]);
-        file.append(&metadata, &[&data0], &EncodeOptions::default())
-            .unwrap();
-        file.append(&metadata, &[&data1], &EncodeOptions::default())
-            .unwrap();
-        file.append(&metadata, &[&data2], &EncodeOptions::default())
-            .unwrap();
+
+        file.append(
+            &meta,
+            &[(&desc, data0.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        file.append(
+            &meta,
+            &[(&desc, data1.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        file.append(
+            &meta,
+            &[(&desc, data2.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
 
         let raw_messages: Vec<Vec<u8>> = file.iter().unwrap().map(|r| r.unwrap()).collect();
         assert_eq!(raw_messages.len(), 3);
 
-        // Verify each message decodes to the correct data
         for (i, raw) in raw_messages.iter().enumerate() {
             let (_, objects) = crate::decode::decode(raw, &DecodeOptions::default()).unwrap();
-            assert_eq!(objects[0], vec![i as u8; 16]);
+            assert_eq!(objects[0].1, vec![i as u8; 16]);
         }
     }
 }

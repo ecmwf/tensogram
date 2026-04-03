@@ -7,7 +7,7 @@
 //!   message_count()  — how many valid messages are in the file
 //!   read_message()   — raw bytes of message\[i\]
 //!   messages()       — all raw message bytes as a `Vec<Vec<u8>>`
-//!   decode_message() — decode message\[i\] → (Metadata, `Vec<Vec<u8>>`)
+//!   decode_message() — decode message\[i\] → (GlobalMetadata, Vec<(DataObjectDescriptor, Vec<u8>)>)
 //!   path()           — the file path
 //!
 //! The file is lazily scanned: no I/O happens on open()/create().
@@ -17,11 +17,14 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode_metadata, scan, ByteOrder, DecodeOptions, Dtype, EncodeOptions, Metadata,
-    ObjectDescriptor, PayloadDescriptor, TensogramFile,
+    decode_metadata, scan, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
+    GlobalMetadata, TensogramFile,
 };
 
-fn make_forecast_message(param: &str, step: i64) -> (Metadata, Vec<u8>) {
+fn make_forecast_message(
+    param: &str,
+    step: i64,
+) -> (GlobalMetadata, DataObjectDescriptor, Vec<u8>) {
     let mars = Value::Map(vec![
         (Value::Text("param".into()), Value::Text(param.into())),
         (Value::Text("step".into()), Value::Integer(step.into())),
@@ -31,32 +34,25 @@ fn make_forecast_message(param: &str, step: i64) -> (Metadata, Vec<u8>) {
     let mut extra = BTreeMap::new();
     extra.insert("mars".to_string(), mars);
 
-    let shape = vec![721u64, 1440];
-    let strides = vec![1440u64, 1];
-    let metadata = Metadata {
-        version: 1,
-        objects: vec![ObjectDescriptor {
-            obj_type: "ntensor".to_string(),
-            ndim: 2,
-            shape,
-            strides,
-            dtype: Dtype::Float32,
-            extra: BTreeMap::new(),
-        }],
-        payload: vec![PayloadDescriptor {
-            byte_order: ByteOrder::Big,
-            encoding: "none".to_string(),
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            params: BTreeMap::new(),
-            hash: None,
-        }],
-        extra,
+    let global_meta = GlobalMetadata { version: 2, extra };
+
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 2,
+        shape: vec![721u64, 1440],
+        strides: vec![1440u64, 1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
     };
 
     // Payload: zeros stand in for real forecast data
     let data = vec![0u8; 721 * 1440 * 4];
-    (metadata, data)
+    (global_meta, desc, data)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -80,8 +76,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ];
 
         for (param, step) in params_steps {
-            let (meta, data) = make_forecast_message(param, step);
-            file.append(&meta, &[&data], &EncodeOptions::default())?;
+            let (meta, desc, data) = make_forecast_message(param, step);
+            file.append(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
         }
 
         println!("Appended {} messages", params_steps.len());
@@ -109,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let step = get_int(mars, "step");
             println!(
                 "  [{i}] param={param:5}  step={step:2}  data={} bytes",
-                objects[0].len()
+                objects[0].1.len()
             );
         }
 

@@ -2,10 +2,9 @@ use std::collections::BTreeMap;
 
 use crate::dtype::Dtype;
 use crate::error::{Result, TensogramError};
-use crate::framing;
+use crate::framing::{self, EncodedObject};
 use crate::hash::{compute_hash, HashAlgorithm};
-use crate::metadata::metadata_to_cbor;
-use crate::types::{HashDescriptor, Metadata, ObjectDescriptor, PayloadDescriptor};
+use crate::types::{DataObjectDescriptor, GlobalMetadata, HashDescriptor};
 use tensogram_encodings::pipeline::{
     self, Blosc2Codec, CompressionType, EncodingType, FilterType, PipelineConfig, Sz3ErrorBound,
     ZfpMode,
@@ -27,38 +26,34 @@ impl Default for EncodeOptions {
     }
 }
 
-fn validate_object(
-    obj: &ObjectDescriptor,
-    payload: &PayloadDescriptor,
-    data_len: usize,
-) -> Result<()> {
-    if obj.obj_type.is_empty() {
+fn validate_object(desc: &DataObjectDescriptor, data_len: usize) -> Result<()> {
+    if desc.obj_type.is_empty() {
         return Err(TensogramError::Metadata(
             "obj_type must not be empty".to_string(),
         ));
     }
-    if obj.ndim as usize != obj.shape.len() {
+    if desc.ndim as usize != desc.shape.len() {
         return Err(TensogramError::Metadata(format!(
             "ndim {} does not match shape.len() {}",
-            obj.ndim,
-            obj.shape.len()
+            desc.ndim,
+            desc.shape.len()
         )));
     }
-    if obj.strides.len() != obj.shape.len() {
+    if desc.strides.len() != desc.shape.len() {
         return Err(TensogramError::Metadata(format!(
             "strides.len() {} does not match shape.len() {}",
-            obj.strides.len(),
-            obj.shape.len()
+            desc.strides.len(),
+            desc.shape.len()
         )));
     }
-    if payload.encoding == "none" && obj.dtype.byte_width() > 0 {
-        let product = obj
+    if desc.encoding == "none" && desc.dtype.byte_width() > 0 {
+        let product = desc
             .shape
             .iter()
             .try_fold(1u64, |acc, &x| acc.checked_mul(x))
             .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
         let expected_bytes = product
-            .checked_mul(obj.dtype.byte_width() as u64)
+            .checked_mul(desc.dtype.byte_width() as u64)
             .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
         if expected_bytes != data_len as u64 {
             return Err(TensogramError::Metadata(format!(
@@ -71,49 +66,33 @@ fn validate_object(
 
 /// Encode a complete Tensogram message.
 ///
-/// `metadata` describes all objects and their encoding pipeline.
-/// `data_objects` is a list of raw data byte slices, one per object.
+/// `global_metadata` is the message-level metadata (version, MARS keys, etc.).
+/// `descriptors` is a list of (DataObjectDescriptor, raw_data) pairs.
 /// Returns the complete wire-format message.
 pub fn encode(
-    metadata: &Metadata,
-    data_objects: &[&[u8]],
+    global_metadata: &GlobalMetadata,
+    descriptors: &[(&DataObjectDescriptor, &[u8])],
     options: &EncodeOptions,
 ) -> Result<Vec<u8>> {
-    // Validate array lengths
-    if metadata.objects.len() != metadata.payload.len() {
-        return Err(TensogramError::Metadata(format!(
-            "objects.len ({}) != payload.len ({})",
-            metadata.objects.len(),
-            metadata.payload.len()
-        )));
-    }
-    if metadata.objects.len() != data_objects.len() {
-        return Err(TensogramError::Metadata(format!(
-            "objects.len ({}) != data_objects.len ({})",
-            metadata.objects.len(),
-            data_objects.len()
-        )));
-    }
+    let mut encoded_objects = Vec::with_capacity(descriptors.len());
 
-    // Clone metadata so we can update hash and szip_block_offsets
-    let mut metadata = metadata.clone();
+    for (desc, data) in descriptors {
+        validate_object(desc, data.len())?;
 
-    // Encode each data object through its pipeline
-    let mut encoded_payloads = Vec::with_capacity(data_objects.len());
-    for (i, &data) in data_objects.iter().enumerate() {
-        validate_object(&metadata.objects[i], &metadata.payload[i], data.len())?;
+        let num_elements = usize::try_from(desc.shape.iter().product::<u64>())
+            .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
+        let dtype = desc.dtype;
 
-        let payload_desc = &metadata.payload[i];
-        let num_elements = metadata.objects[i].shape.iter().product::<u64>() as usize;
-        let dtype = metadata.objects[i].dtype;
-
-        let config = build_pipeline_config(payload_desc, num_elements, dtype)?;
+        let config = build_pipeline_config(desc, num_elements, dtype)?;
         let result = pipeline::encode_pipeline(data, &config)
             .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
+        // Build the final descriptor with computed fields
+        let mut final_desc = (*desc).clone();
+
         // Store szip block offsets if produced
         if let Some(offsets) = &result.block_offsets {
-            metadata.payload[i].params.insert(
+            final_desc.params.insert(
                 "szip_block_offsets".to_string(),
                 ciborium::Value::Array(
                     offsets
@@ -127,24 +106,23 @@ pub fn encode(
         // Compute hash
         if let Some(algorithm) = options.hash_algorithm {
             let hash_value = compute_hash(&result.encoded_bytes, algorithm);
-            metadata.payload[i].hash = Some(HashDescriptor {
+            final_desc.hash = Some(HashDescriptor {
                 hash_type: algorithm.as_str().to_string(),
                 value: hash_value,
             });
         }
 
-        encoded_payloads.push(result.encoded_bytes);
+        encoded_objects.push(EncodedObject {
+            descriptor: final_desc,
+            encoded_payload: result.encoded_bytes,
+        });
     }
 
-    // Serialize metadata to CBOR
-    let cbor_bytes = metadata_to_cbor(&metadata)?;
-
-    // Build the wire-format frame
-    Ok(framing::encode_frame(&cbor_bytes, &encoded_payloads))
+    framing::encode_message(global_metadata, &encoded_objects)
 }
 
 pub(crate) fn build_pipeline_config(
-    desc: &PayloadDescriptor,
+    desc: &DataObjectDescriptor,
     num_values: usize,
     dtype: Dtype,
 ) -> Result<PipelineConfig> {
@@ -192,10 +170,6 @@ pub(crate) fn build_pipeline_config(
                 })?;
             let flags = u32::try_from(get_u64_param(&desc.params, "szip_flags")?)
                 .map_err(|_| TensogramError::Metadata("szip_flags out of u32 range".to_string()))?;
-            // Determine bits_per_sample based on what precedes compression:
-            // - simple_packing: bits_per_value from packing params
-            // - shuffle: 8 (shuffled bytes are uint8)
-            // - none: dtype byte width * 8
             let bits_per_sample = match (&encoding, &filter) {
                 (EncodingType::SimplePacking(params), _) => params.bits_per_value,
                 (EncodingType::None, FilterType::Shuffle { .. }) => 8,
@@ -333,7 +307,7 @@ fn extract_simple_packing_params(
     })
 }
 
-fn get_f64_param(params: &BTreeMap<String, ciborium::Value>, key: &str) -> Result<f64> {
+pub(crate) fn get_f64_param(params: &BTreeMap<String, ciborium::Value>, key: &str) -> Result<f64> {
     match params.get(key) {
         Some(ciborium::Value::Float(f)) => Ok(*f),
         Some(ciborium::Value::Integer(i)) => {
@@ -349,7 +323,7 @@ fn get_f64_param(params: &BTreeMap<String, ciborium::Value>, key: &str) -> Resul
     }
 }
 
-fn get_i64_param(params: &BTreeMap<String, ciborium::Value>, key: &str) -> Result<i64> {
+pub(crate) fn get_i64_param(params: &BTreeMap<String, ciborium::Value>, key: &str) -> Result<i64> {
     match params.get(key) {
         Some(ciborium::Value::Integer(i)) => {
             let n: i128 = (*i).into();
@@ -366,7 +340,7 @@ fn get_i64_param(params: &BTreeMap<String, ciborium::Value>, key: &str) -> Resul
     }
 }
 
-fn get_u64_param(params: &BTreeMap<String, ciborium::Value>, key: &str) -> Result<u64> {
+pub(crate) fn get_u64_param(params: &BTreeMap<String, ciborium::Value>, key: &str) -> Result<u64> {
     match params.get(key) {
         Some(ciborium::Value::Integer(i)) => {
             let n: i128 = (*i).into();
