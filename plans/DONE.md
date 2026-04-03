@@ -2,9 +2,9 @@
 
 Implemented: 2026-04-02
 
-## Workspace: 5 crates, 102 tests, 0 clippy warnings
+## Workspace: 5 crates, 117 tests, 0 clippy warnings
 
-### tensogram-core (23 unit tests + 31 integration tests)
+### tensogram-core (38 unit tests + 31 integration tests)
 - `wire.rs` — Binary header with TENSOGRM magic, terminator, object offsets
 - `framing.rs` — `encode_frame()`, `decode_frame()`, `extract_object_payload()`, `scan()`
 - `metadata.rs` — Deterministic CBOR encoding (two-step: serialize → canonicalize → write)
@@ -13,7 +13,8 @@ Implemented: 2026-04-02
 - `hash.rs` — xxh3, sha1, md5 hashing + verification
 - `encode.rs` — Full encode pipeline: validate → encode per object → hash → CBOR → frame
 - `decode.rs` — `decode()`, `decode_metadata()`, `decode_object()`, `decode_range()`
-- `file.rs` — `TensogramFile`: open, create, lazy scan, append, seek-based random access, deprecated `messages()` iterator
+- `file.rs` — `TensogramFile`: open, create, lazy scan, append, seek-based random access, `iter()` for lazy file iteration, deprecated `messages()` iterator
+- `iter.rs` — `MessageIter` (zero-copy buffer iteration), `ObjectIter` (lazy per-object decode), `FileMessageIter` (seek-based file iteration), `objects_metadata()` (descriptor-only)
 
 ### tensogram-encodings (32 tests)
 - `simple_packing.rs` — GRIB-style lossy quantization, MSB-first bit packing, 0-64 bits, NaN rejection, `decode_range()` for arbitrary bit offsets
@@ -39,6 +40,7 @@ Implemented: 2026-04-02
 - File API: `tgm_file_open/create/message_count/decode_message/read_message/append_raw/close`
 - Typed accessors: `tgm_object_shape/strides/dtype/data`, `tgm_metadata_get_string/int/float`
 - `tgm_simple_packing_compute_params()` — direct packing parameter computation
+- Iterator API: `tgm_buffer_iter_*`, `tgm_file_iter_*`, `tgm_object_iter_*` with create/next/free pattern
 - Thread-local error messages via `tgm_last_error()`
 - Auto-generated `tensogram.h` via cbindgen
 - Static library (`libtenogram_ffi.a`) + shared library (`libtenogram_ffi.dylib/.so`)
@@ -77,7 +79,7 @@ Implemented: 2026-04-02
 
 ## Examples
 
-### examples/rust/ (9 runnable examples, workspace member)
+### examples/rust/ (10 runnable examples, workspace member)
 - `01_encode_decode` — basic round-trip, all message fields
 - `02_mars_metadata` — MARS namespace at message and object level
 - `03_simple_packing` — lossy compression, precision measurement
@@ -87,13 +89,14 @@ Implemented: 2026-04-02
 - `07_scan_buffer` — multi-message buffer, injected corruption, recovery
 - `08_decode_variants` — all four decode functions with edge cases
 - `09_file_api` — full TensogramFile lifecycle
+- `10_iterators` — buffer/object/file iteration patterns
 
-### examples/cpp/ (intended C FFI API, 4 examples)
-- `01_encode_decode.cpp`, `02_mars_metadata.cpp`, `03_simple_packing.cpp`, `04_file_api.cpp`
+### examples/cpp/ (intended C FFI API, 5 examples)
+- `01_encode_decode.cpp`, `02_mars_metadata.cpp`, `03_simple_packing.cpp`, `04_file_api.cpp`, `05_iterators.cpp`
 - `README.md` — planned header (`tensogram.h`) with full function signatures
 
-### examples/python/ (intended PyO3 API, 6 examples)
-- `01_encode_decode.py` through `06_hash_and_errors.py`
+### examples/python/ (intended PyO3 API, 7 examples)
+- `01_encode_decode.py` through `07_iterators.py`
 - `README.md` — planned module structure, NumPy dtype mapping, error hierarchy
 
 ## Documentation (mdbook)
@@ -101,7 +104,7 @@ Implemented: 2026-04-02
 - `docs/` — mdbook source (build with `PATH="$HOME/.cargo/bin:$PATH" mdbook build` from `docs/`)
 - Introduction, Concepts (messages, metadata, objects, pipeline)
 - Wire Format (message layout, CBOR schema, dtypes)
-- Developer Guide (quickstart, encoding, decoding, file API)
+- Developer Guide (quickstart, encoding, decoding, file API, iterators)
 - Encodings (simple_packing, shuffle, compression)
 - CLI Reference (info, ls, dump, get, set, copy)
 - Edge Cases and Internals reference pages

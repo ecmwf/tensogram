@@ -27,6 +27,7 @@
 - [Encoding Data](guide/encoding.md)
 - [Decoding Data](guide/decoding.md)
 - [Working with Files](guide/file-api.md)
+- [Iterators](guide/iterators.md)
 
 ---
 
