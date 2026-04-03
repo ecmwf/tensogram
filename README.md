@@ -5,7 +5,7 @@
 > [!IMPORTANT]
 > This software is **Emerging** and subject to ECMWF's guidelines on [Software Maturity](https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity).
 
-Tensogram is a fast, efficient telegram for multidimensional tensors ⏩[NxM]⏩
+Tensogram is a fast, efficient *'telegram'* for multidimensional tensors. ⏩[NxM]⏩
 
 A library to encode and decode binary N-Tensor scientific data with semantic metadata close to the data, in a serialisable format that can be sent over the network, encoded into in-memory buffers and decoded with zero-copy. It is geared to a lightweight implementation, self-description of data and high-performance with limited dependencies.
 

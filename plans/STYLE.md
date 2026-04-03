@@ -10,8 +10,8 @@ Follow `DESIGN.md`. When in doubt, read the existing code.
 
 ## Functions
 
-Prefer short functions (10–50 lines)
+- Prefer short functions (10–50 lines)
 
 ## Comments
 
-Try hard to explain *why*, not *what*
+- Try hard to explain *why*, not *what*

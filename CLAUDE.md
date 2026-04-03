@@ -24,17 +24,19 @@ Follow docs/DESIGN.md principles and docs/STYLE.md conventions in all code.
 
 # Build / lint / test (required before marking done)
 
+- Build: `cargo build --workspace`
 - Format: `cargo fmt`
 - Lint: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - Test: `cargo test --workspace`
 
 # Tracking Work Done
 
-Please keep track of what is implemented in plans/DONE.md. Keep updating it for all code changes.
+Keep track of implementations in plans/DONE.md for all code changes.
 
 # Documentation
 
-Create and maintain documentation under docs/. Easy to follow by average tech person, with well separated topics.
+Create and maintain documentation under docs/. 
+- Easy to follow by average tech person, with well separated topics.
 - Use mdbook 
 - Add mermaid diagrams when necessary
 - Add examples when it becomes hard to follow
@@ -42,7 +44,8 @@ Create and maintain documentation under docs/. Easy to follow by average tech pe
 
 # Examples
 
-Create and maintain a sub-dir examples/<lang> populated with examples of caller code showing how to use interfaces:
-- create sub-dir per language of the caller: Rust, C++, Python
+Create and maintain a sub-dir examples/<lang> 
+- 1 sub-dir per supported language of the caller Rust, C++, Python
+- Populate with examples of caller code showing how to use interfaces
 - examplify the most common cases
 - show how to use all API functions
