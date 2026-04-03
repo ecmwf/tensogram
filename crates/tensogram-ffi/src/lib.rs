@@ -41,6 +41,8 @@ pub enum TgmError {
     Io = 6,
     HashMismatch = 7,
     InvalidArg = 8,
+    /// Returned by `tgm_*_iter_next` when iteration is exhausted.
+    EndOfIter = 9,
 }
 
 fn to_error_code(e: &TensogramError) -> TgmError {
@@ -1127,8 +1129,8 @@ pub extern "C" fn tgm_buffer_iter_count(iter: *const TgmBufferIter) -> usize {
 /// Advance the buffer iterator. On success, sets `out_buf` and `out_len` to
 /// the next message slice (borrowed from the original buffer).
 ///
-/// Returns `TgmError::Ok` if a message is available, `TgmError::Object` when
-/// iteration is exhausted.
+/// Returns `TgmError::Ok` if a message is available, `TgmError::EndOfIter`
+/// when iteration is exhausted.
 #[no_mangle]
 pub extern "C" fn tgm_buffer_iter_next(
     iter: *mut TgmBufferIter,
@@ -1141,7 +1143,7 @@ pub extern "C" fn tgm_buffer_iter_next(
     }
     let it = unsafe { &mut *iter };
     if it.pos >= it.offsets.len() {
-        return TgmError::Object; // sentinel: end of iteration
+        return TgmError::EndOfIter;
     }
     let (offset, length) = it.offsets[it.pos];
     it.pos += 1;
@@ -1196,7 +1198,7 @@ pub extern "C" fn tgm_file_iter_create(file: *mut TgmFile, out: *mut *mut TgmFil
 /// buffer containing the raw message bytes (caller owns, free with
 /// `tgm_bytes_free`).
 ///
-/// Returns `TgmError::Ok` when a message is available, `TgmError::Object`
+/// Returns `TgmError::Ok` when a message is available, `TgmError::EndOfIter`
 /// when iteration is exhausted.
 #[no_mangle]
 pub extern "C" fn tgm_file_iter_next(iter: *mut TgmFileIter, out: *mut TgmBytes) -> TgmError {
@@ -1276,7 +1278,7 @@ pub extern "C" fn tgm_object_iter_create(
 /// Advance the object iterator. On success, fills `out` with a `TgmMessage`
 /// handle containing exactly one decoded object (the next in sequence).
 ///
-/// Returns `TgmError::Ok` when an object is available, `TgmError::Object`
+/// Returns `TgmError::Ok` when an object is available, `TgmError::EndOfIter`
 /// when iteration is exhausted. Free each yielded `TgmMessage` with
 /// `tgm_message_free`.
 #[no_mangle]

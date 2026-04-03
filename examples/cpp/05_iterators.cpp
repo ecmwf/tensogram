@@ -6,7 +6,7 @@
 ///   tgm_object_iter_*  — iterate over objects within a message
 ///
 /// All iterators follow the create → next → free pattern.
-/// tgm_*_iter_next returns TGM_OK while items remain, TGM_OBJECT when done.
+/// tgm_*_iter_next returns TGM_OK while items remain, TGM_END_OF_ITER when done.
 
 #include <cassert>
 #include <cstdio>

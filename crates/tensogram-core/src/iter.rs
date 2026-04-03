@@ -118,10 +118,8 @@ impl Iterator for ObjectIter {
         }
         let i = self.index;
         self.index += 1;
-        Some(
-            decode_object(&self.buf, i, &self.options)
-                .map(|(meta, data)| (meta.objects[i].clone(), data)),
-        )
+        let descriptor = self.metadata.objects[i].clone();
+        Some(decode_object(&self.buf, i, &self.options).map(|(_, data)| (descriptor, data)))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

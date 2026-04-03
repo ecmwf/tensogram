@@ -84,7 +84,7 @@ for raw in file.iter()? {
 
 ## C / C++ API
 
-The C FFI uses an opaque-handle + `next()` pattern. Each iterator returns `TGM_OK` while items remain, and `TGM_OBJECT` as an end sentinel.
+The C FFI uses an opaque-handle + `next()` pattern. Each iterator returns `TGM_OK` while items remain, and `TGM_END_OF_ITER` as an end sentinel.
 
 ### Buffer iterator
 
