@@ -178,6 +178,16 @@ pub fn decode_range(
     }
 
     let bpv = params.bits_per_value;
+
+    let end_bit = bit_offset as u64 + num_values as u64 * bpv as u64;
+    let required_bytes = end_bit.div_ceil(8) as usize;
+    if packed.len() < required_bytes {
+        return Err(PackingError::InsufficientData {
+            expected: required_bytes,
+            actual: packed.len(),
+        });
+    }
+
     let d_factor = 10f64.powi(-params.decimal_scale_factor);
     let e_factor = 2f64.powi(params.binary_scale_factor);
 

@@ -40,40 +40,39 @@ fn to_py_err(e: TensogramError) -> PyErr {
 // CBOR ↔ Python conversion
 // ---------------------------------------------------------------------------
 
-fn cbor_to_py(py: Python<'_>, val: &ciborium::Value) -> PyObject {
+fn cbor_to_py(py: Python<'_>, val: &ciborium::Value) -> PyResult<PyObject> {
     match val {
-        ciborium::Value::Text(s) => s.into_pyobject(py).unwrap().into_any().unbind(),
+        ciborium::Value::Text(s) => Ok(s.into_pyobject(py)?.into_any().unbind()),
         ciborium::Value::Integer(i) => {
             let n: i128 = (*i).into();
-            (n as i64).into_pyobject(py).unwrap().into_any().unbind()
+            Ok((n as i64).into_pyobject(py)?.into_any().unbind())
         }
-        ciborium::Value::Float(f) => f.into_pyobject(py).unwrap().into_any().unbind(),
-        ciborium::Value::Bool(b) => (*b)
-            .into_pyobject(py)
-            .unwrap()
+        ciborium::Value::Float(f) => Ok(f.into_pyobject(py)?.into_any().unbind()),
+        ciborium::Value::Bool(b) => Ok((*b)
+            .into_pyobject(py)?
             .to_owned()
             .into_any()
-            .unbind(),
-        ciborium::Value::Null => py.None(),
+            .unbind()),
+        ciborium::Value::Null => Ok(py.None()),
         ciborium::Value::Array(arr) => {
-            let list = PyList::new(py, arr.iter().map(|v| cbor_to_py(py, v))).unwrap();
-            list.into_any().unbind()
+            let items: PyResult<Vec<PyObject>> = arr.iter().map(|v| cbor_to_py(py, v)).collect();
+            let list = PyList::new(py, items?)?;
+            Ok(list.into_any().unbind())
         }
         ciborium::Value::Map(entries) => {
             let dict = PyDict::new(py);
             for (k, v) in entries {
-                let key = cbor_to_py(py, k);
-                let val = cbor_to_py(py, v);
-                dict.set_item(key, val).unwrap();
+                let key = cbor_to_py(py, k)?;
+                let val = cbor_to_py(py, v)?;
+                dict.set_item(key, val)?;
             }
-            dict.into_any().unbind()
+            Ok(dict.into_any().unbind())
         }
-        ciborium::Value::Bytes(b) => PyBytes::new(py, b).into_any().unbind(),
-        _ => format!("{val:?}")
-            .into_pyobject(py)
-            .unwrap()
+        ciborium::Value::Bytes(b) => Ok(PyBytes::new(py, b).into_any().unbind()),
+        _ => Ok(format!("{val:?}")
+            .into_pyobject(py)?
             .into_any()
-            .unbind(),
+            .unbind()),
     }
 }
 
@@ -110,12 +109,12 @@ fn py_to_cbor(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<ciborium::Value> {
     )))
 }
 
-fn extra_to_py(py: Python<'_>, extra: &BTreeMap<String, ciborium::Value>) -> PyObject {
+fn extra_to_py(py: Python<'_>, extra: &BTreeMap<String, ciborium::Value>) -> PyResult<PyObject> {
     let dict = PyDict::new(py);
     for (k, v) in extra {
-        dict.set_item(k, cbor_to_py(py, v)).unwrap();
+        dict.set_item(k, cbor_to_py(py, v)?)?;
     }
-    dict.into_any().unbind()
+    Ok(dict.into_any().unbind())
 }
 
 fn py_to_extra(dict: &Bound<'_, PyDict>) -> PyResult<BTreeMap<String, ciborium::Value>> {
@@ -165,7 +164,7 @@ impl PyObjectDescriptor {
     }
 
     #[getter]
-    fn extra(&self, py: Python<'_>) -> PyObject {
+    fn extra(&self, py: Python<'_>) -> PyResult<PyObject> {
         extra_to_py(py, &self.inner.extra)
     }
 
@@ -213,20 +212,20 @@ impl PyPayloadDescriptor {
     }
 
     #[getter]
-    fn hash(&self, py: Python<'_>) -> PyObject {
+    fn hash(&self, py: Python<'_>) -> PyResult<PyObject> {
         match &self.inner.hash {
             Some(h) => {
                 let d = PyDict::new(py);
-                d.set_item("type", &h.hash_type).unwrap();
-                d.set_item("value", &h.value).unwrap();
-                d.into_any().unbind()
+                d.set_item("type", &h.hash_type)?;
+                d.set_item("value", &h.value)?;
+                Ok(d.into_any().unbind())
             }
-            None => py.None(),
+            None => Ok(py.None()),
         }
     }
 
     #[getter]
-    fn params(&self, py: Python<'_>) -> PyObject {
+    fn params(&self, py: Python<'_>) -> PyResult<PyObject> {
         extra_to_py(py, &self.inner.params)
     }
 
@@ -274,14 +273,14 @@ impl PyMetadata {
     }
 
     #[getter]
-    fn extra(&self, py: Python<'_>) -> PyObject {
+    fn extra(&self, py: Python<'_>) -> PyResult<PyObject> {
         extra_to_py(py, &self.inner.extra)
     }
 
     /// Dictionary-style access to top-level extra keys.
     fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<PyObject> {
         match self.inner.extra.get(key) {
-            Some(v) => Ok(cbor_to_py(py, v)),
+            Some(v) => cbor_to_py(py, v),
             None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_string())),
         }
     }
@@ -447,10 +446,24 @@ fn py_decode_object(
 ) -> PyResult<(PyObjectDescriptor, PyObject)> {
     let options = DecodeOptions { verify_hash };
     let (meta, obj_bytes) = decode_object(buf, index, &options).map_err(to_py_err)?;
-    let arr = bytes_to_numpy(py, &meta.objects[index], &obj_bytes, &meta.payload[index])?;
+    let obj_desc = meta.objects.get(index).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "object index {} out of range (num_objects={})",
+            index,
+            meta.objects.len()
+        ))
+    })?;
+    let payload_desc = meta.payload.get(index).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "payload index {} out of range (num_payload={})",
+            index,
+            meta.payload.len()
+        ))
+    })?;
+    let arr = bytes_to_numpy(py, obj_desc, &obj_bytes, payload_desc)?;
     Ok((
         PyObjectDescriptor {
-            inner: meta.objects[index].clone(),
+            inner: obj_desc.clone(),
         },
         arr,
     ))
@@ -471,7 +484,13 @@ fn py_decode_range(
 
     // decode_range returns raw bytes in the logical dtype
     let meta = decode_metadata(buf).map_err(to_py_err)?;
-    let desc = &meta.objects[object_index];
+    let desc = meta.objects.get(object_index).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "object index {} out of range (num_objects={})",
+            object_index,
+            meta.objects.len()
+        ))
+    })?;
     let total_elements: u64 = ranges.iter().map(|(_, c)| c).sum();
     let arr = raw_bytes_to_numpy_flat(py, desc.dtype, &bytes, total_elements as usize)?;
     Ok(arr)
