@@ -1074,3 +1074,253 @@ pub extern "C" fn tgm_simple_packing_compute_params(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Iterator API
+// ---------------------------------------------------------------------------
+
+/// Opaque handle for iterating over messages in a byte buffer.
+///
+/// The caller's buffer must remain valid for the lifetime of this iterator.
+pub struct TgmBufferIter {
+    offsets: Vec<(usize, usize)>,
+    buf_ptr: *const u8,
+    pos: usize,
+}
+
+/// Create a buffer message iterator.
+///
+/// Scans `buf` once and stores message boundaries. The buffer must remain
+/// valid and unmodified until `tgm_buffer_iter_free` is called.
+#[no_mangle]
+pub extern "C" fn tgm_buffer_iter_create(
+    buf: *const u8,
+    buf_len: usize,
+    out: *mut *mut TgmBufferIter,
+) -> TgmError {
+    if buf.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let data = unsafe { slice::from_raw_parts(buf, buf_len) };
+    let offsets = scan(data);
+    let iter = Box::new(TgmBufferIter {
+        offsets,
+        buf_ptr: buf,
+        pos: 0,
+    });
+    unsafe {
+        *out = Box::into_raw(iter);
+    }
+    TgmError::Ok
+}
+
+/// Return the total number of messages in the buffer iterator.
+#[no_mangle]
+pub extern "C" fn tgm_buffer_iter_count(iter: *const TgmBufferIter) -> usize {
+    if iter.is_null() {
+        return 0;
+    }
+    unsafe { (*iter).offsets.len() }
+}
+
+/// Advance the buffer iterator. On success, sets `out_buf` and `out_len` to
+/// the next message slice (borrowed from the original buffer).
+///
+/// Returns `TgmError::Ok` if a message is available, `TgmError::Object` when
+/// iteration is exhausted.
+#[no_mangle]
+pub extern "C" fn tgm_buffer_iter_next(
+    iter: *mut TgmBufferIter,
+    out_buf: *mut *const u8,
+    out_len: *mut usize,
+) -> TgmError {
+    if iter.is_null() || out_buf.is_null() || out_len.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let it = unsafe { &mut *iter };
+    if it.pos >= it.offsets.len() {
+        return TgmError::Object; // sentinel: end of iteration
+    }
+    let (offset, length) = it.offsets[it.pos];
+    it.pos += 1;
+    unsafe {
+        *out_buf = it.buf_ptr.add(offset);
+        *out_len = length;
+    }
+    TgmError::Ok
+}
+
+#[no_mangle]
+pub extern "C" fn tgm_buffer_iter_free(iter: *mut TgmBufferIter) {
+    if !iter.is_null() {
+        unsafe {
+            drop(Box::from_raw(iter));
+        }
+    }
+}
+
+/// Opaque handle for iterating over messages in a file.
+pub struct TgmFileIter {
+    inner: tensogram_core::FileMessageIter,
+}
+
+/// Create a file message iterator from an open TgmFile.
+///
+/// Scans the file to locate message boundaries. The file handle remains
+/// usable after this call.
+#[no_mangle]
+pub extern "C" fn tgm_file_iter_create(file: *mut TgmFile, out: *mut *mut TgmFileIter) -> TgmError {
+    if file.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let f = unsafe { &mut (*file).file };
+    match f.iter() {
+        Ok(inner) => {
+            let iter = Box::new(TgmFileIter { inner });
+            unsafe {
+                *out = Box::into_raw(iter);
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
+/// Advance the file iterator. On success, fills `out` with a `TgmBytes`
+/// buffer containing the raw message bytes (caller owns, free with
+/// `tgm_bytes_free`).
+///
+/// Returns `TgmError::Ok` when a message is available, `TgmError::Object`
+/// when iteration is exhausted.
+#[no_mangle]
+pub extern "C" fn tgm_file_iter_next(iter: *mut TgmFileIter, out: *mut TgmBytes) -> TgmError {
+    if iter.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let it = unsafe { &mut (*iter).inner };
+    match it.next() {
+        None => TgmError::Object, // sentinel: end of iteration
+        Some(Err(e)) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+        Some(Ok(mut bytes)) => {
+            let result = TgmBytes {
+                data: bytes.as_mut_ptr(),
+                len: bytes.len(),
+            };
+            std::mem::forget(bytes);
+            unsafe {
+                *out = result;
+            }
+            TgmError::Ok
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tgm_file_iter_free(iter: *mut TgmFileIter) {
+    if !iter.is_null() {
+        unsafe {
+            drop(Box::from_raw(iter));
+        }
+    }
+}
+
+/// Opaque handle for iterating over objects within a single message.
+pub struct TgmObjectIter {
+    inner: tensogram_core::ObjectIter,
+}
+
+/// Create an object iterator from raw message bytes.
+///
+/// Parses metadata once, then decodes each object on demand when
+/// `tgm_object_iter_next` is called.
+#[no_mangle]
+pub extern "C" fn tgm_object_iter_create(
+    buf: *const u8,
+    buf_len: usize,
+    verify_hash: i32,
+    out: *mut *mut TgmObjectIter,
+) -> TgmError {
+    if buf.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let data = unsafe { slice::from_raw_parts(buf, buf_len) };
+    let options = DecodeOptions {
+        verify_hash: verify_hash != 0,
+    };
+    match tensogram_core::objects(data, options) {
+        Ok(inner) => {
+            let iter = Box::new(TgmObjectIter { inner });
+            unsafe {
+                *out = Box::into_raw(iter);
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
+/// Advance the object iterator. On success, fills `out` with a `TgmMessage`
+/// handle containing exactly one decoded object (the next in sequence).
+///
+/// Returns `TgmError::Ok` when an object is available, `TgmError::Object`
+/// when iteration is exhausted. Free each yielded `TgmMessage` with
+/// `tgm_message_free`.
+#[no_mangle]
+pub extern "C" fn tgm_object_iter_next(
+    iter: *mut TgmObjectIter,
+    out: *mut *mut TgmMessage,
+) -> TgmError {
+    if iter.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let it = unsafe { &mut (*iter).inner };
+    match it.next() {
+        None => TgmError::Object, // sentinel: end of iteration
+        Some(Err(e)) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+        Some(Ok((descriptor, data))) => {
+            let dtype_str = CString::new(descriptor.dtype.to_string()).unwrap_or_default();
+            let metadata = Metadata {
+                version: 1,
+                objects: vec![descriptor],
+                payload: vec![],
+                extra: BTreeMap::new(),
+            };
+            let msg = Box::new(TgmMessage {
+                metadata,
+                objects: vec![data],
+                dtype_strings: vec![dtype_str],
+            });
+            unsafe {
+                *out = Box::into_raw(msg);
+            }
+            TgmError::Ok
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tgm_object_iter_free(iter: *mut TgmObjectIter) {
+    if !iter.is_null() {
+        unsafe {
+            drop(Box::from_raw(iter));
+        }
+    }
+}
