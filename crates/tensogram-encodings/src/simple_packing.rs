@@ -158,6 +158,42 @@ pub fn decode(
     Ok(values)
 }
 
+/// Decode a range of packed values starting at an arbitrary bit offset.
+///
+/// `packed` is a byte slice containing the packed bits.
+/// `bit_offset` is the starting bit position within `packed`.
+/// `num_values` is how many values to unpack.
+pub fn decode_range(
+    packed: &[u8],
+    bit_offset: usize,
+    num_values: usize,
+    params: &SimplePackingParams,
+) -> Result<Vec<f64>, PackingError> {
+    if params.bits_per_value > 64 {
+        return Err(PackingError::BitsPerValueTooLarge(params.bits_per_value));
+    }
+
+    if params.bits_per_value == 0 {
+        return Ok(vec![params.reference_value; num_values]);
+    }
+
+    let bpv = params.bits_per_value;
+    let d_factor = 10f64.powi(-params.decimal_scale_factor);
+    let e_factor = 2f64.powi(params.binary_scale_factor);
+
+    let mut values = Vec::with_capacity(num_values);
+    let mut bit_pos = bit_offset as u64;
+
+    for _ in 0..num_values {
+        let packed_int = read_bits(packed, bit_pos, bpv);
+        let value = params.reference_value + e_factor * d_factor * packed_int as f64;
+        values.push(value);
+        bit_pos += bpv as u64;
+    }
+
+    Ok(values)
+}
+
 /// Write `nbits` bits of `value` at `bit_offset` in `buf`, MSB-first.
 fn write_bits(buf: &mut [u8], bit_offset: u64, value: u64, nbits: u32) {
     if nbits == 0 {

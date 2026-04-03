@@ -2,9 +2,9 @@
 
 Implemented: 2026-04-02
 
-## Workspace: 5 crates, 75+ tests, 0 clippy warnings
+## Workspace: 5 crates, 102 tests, 0 clippy warnings
 
-### tensogram-core (23 unit tests + 14 integration tests)
+### tensogram-core (23 unit tests + 31 integration tests)
 - `wire.rs` — Binary header with TENSOGRM magic, terminator, object offsets
 - `framing.rs` — `encode_frame()`, `decode_frame()`, `extract_object_payload()`, `scan()`
 - `metadata.rs` — Deterministic CBOR encoding (two-step: serialize → canonicalize → write)
@@ -15,11 +15,12 @@ Implemented: 2026-04-02
 - `decode.rs` — `decode()`, `decode_metadata()`, `decode_object()`, `decode_range()`
 - `file.rs` — `TensogramFile`: open, create, lazy scan, append, seek-based random access, deprecated `messages()` iterator
 
-### tensogram-encodings (14 tests)
-- `simple_packing.rs` — GRIB-style lossy quantization, MSB-first bit packing, 0-64 bits, NaN rejection
+### tensogram-encodings (32 tests)
+- `simple_packing.rs` — GRIB-style lossy quantization, MSB-first bit packing, 0-64 bits, NaN rejection, `decode_range()` for arbitrary bit offsets
 - `shuffle.rs` — Byte-level shuffle/unshuffle (HDF5-style)
-- `compression.rs` — `Compressor` trait with `NoopCompressor` and `SzipCompressor` (stub)
-- `pipeline.rs` — Encode → filter → compress dispatch
+- `libaec.rs` — Safe Rust wrapper around libaec (CCSDS 121.0-B-3): `aec_compress()` with RSI block offset tracking, `aec_decompress()`, `aec_decompress_range()` for partial range decode
+- `compression.rs` — `Compressor` trait with `NoopCompressor` and `SzipCompressor` (full libaec integration), `decompress_range()` method
+- `pipeline.rs` — Encode → filter → compress dispatch, `decode_range_pipeline()` supporting 4 pipeline combinations (none+none, simple_packing+szip, simple_packing+none, none+szip)
 
 ### tensogram-cli (4+ tests)
 - `tensogram info/ls/dump/get/set/copy` subcommands
@@ -64,11 +65,9 @@ Implemented: 2026-04-02
 - Payload integrity hashing (xxh3 default)
 - OBJS/OBJE corruption markers per object
 - Multi-message file scanning with corruption recovery
-- Partial range decode (uncompressed path)
+- Partial range decode (all pipeline combinations: uncompressed, simple_packing, szip, simple_packing+szip)
 
 ## Not yet implemented
-- szip/libaec compression (stub in place, returns error — needs libaec C bindings)
-- Partial range decode for szip-compressed data (RSI block seeking, ~200-300 LOC)
 - `async` feature gate (tokio + spawn_blocking for libaec FFI)
 - `mmap` feature gate (memmap2 for memory-mapped file access)
 - Streaming mode (total_length=0 path)
@@ -112,6 +111,7 @@ Implemented: 2026-04-02
 - ciborium 0.2 — CBOR encode/decode
 - serde 1 — serialization framework
 - thiserror 2 — error derive macros
+- libaec-sys 0.1 — CCSDS 121.0-B-3 (szip) compression via libaec 1.1.4
 - xxhash-rust 0.8 — xxh3 payload hashing
 - sha1 0.10, md5 0.7 — legacy hash support
 - clap 4 — CLI argument parsing

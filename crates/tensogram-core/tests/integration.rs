@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use tensogram_core::*;
+use tensogram_encodings::simple_packing;
 
 fn make_float32_metadata(shape: Vec<u64>) -> Metadata {
     let strides = compute_strides(&shape);
@@ -791,6 +792,480 @@ fn test_param_out_of_bounds() {
         msg.contains("binary_scale_factor"),
         "expected 'binary_scale_factor' in error, got: {msg}"
     );
+}
+
+// --- szip compression integration tests ---
+
+/// Build metadata for simple_packing + szip pipeline.
+fn make_szip_packing_metadata(
+    num_values: u64,
+    params: &simple_packing::SimplePackingParams,
+) -> Metadata {
+    let mut packing_params = BTreeMap::new();
+    packing_params.insert(
+        "reference_value".to_string(),
+        ciborium::Value::Float(params.reference_value),
+    );
+    packing_params.insert(
+        "binary_scale_factor".to_string(),
+        ciborium::Value::Integer((params.binary_scale_factor as i64).into()),
+    );
+    packing_params.insert(
+        "decimal_scale_factor".to_string(),
+        ciborium::Value::Integer((params.decimal_scale_factor as i64).into()),
+    );
+    packing_params.insert(
+        "bits_per_value".to_string(),
+        ciborium::Value::Integer((params.bits_per_value as i64).into()),
+    );
+    packing_params.insert("szip_rsi".to_string(), ciborium::Value::Integer(128.into()));
+    packing_params.insert(
+        "szip_block_size".to_string(),
+        ciborium::Value::Integer(16.into()),
+    );
+    packing_params.insert(
+        "szip_flags".to_string(),
+        ciborium::Value::Integer(8_i64.into()),
+    );
+
+    Metadata {
+        version: 1,
+        objects: vec![ObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![num_values],
+            strides: vec![1],
+            dtype: Dtype::Float64,
+            extra: BTreeMap::new(),
+        }],
+        payload: vec![PayloadDescriptor {
+            byte_order: ByteOrder::Big,
+            encoding: "simple_packing".to_string(),
+            filter: "none".to_string(),
+            compression: "szip".to_string(),
+            params: packing_params,
+            hash: None,
+        }],
+        extra: BTreeMap::new(),
+    }
+}
+
+/// Build metadata for raw szip compression (no encoding, no filter).
+fn make_szip_raw_metadata(num_values: u64, dtype: Dtype) -> Metadata {
+    let mut params = BTreeMap::new();
+    params.insert("szip_rsi".to_string(), ciborium::Value::Integer(128.into()));
+    params.insert(
+        "szip_block_size".to_string(),
+        ciborium::Value::Integer(16.into()),
+    );
+    params.insert(
+        "szip_flags".to_string(),
+        ciborium::Value::Integer(8_i64.into()),
+    );
+
+    Metadata {
+        version: 1,
+        objects: vec![ObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![num_values],
+            strides: vec![1],
+            dtype,
+            extra: BTreeMap::new(),
+        }],
+        payload: vec![PayloadDescriptor {
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "szip".to_string(),
+            params,
+            hash: None,
+        }],
+        extra: BTreeMap::new(),
+    }
+}
+
+#[test]
+fn test_szip_simple_packing_round_trip() {
+    let values: Vec<f64> = (0..4096).map(|i| 250.0 + i as f64 * 0.1).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+
+    let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
+    let metadata = make_szip_packing_metadata(4096, &packing);
+
+    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+
+    // Verify szip_block_offsets were stored in metadata
+    let meta = decode_metadata(&encoded).unwrap();
+    assert!(meta.payload[0].params.contains_key("szip_block_offsets"));
+
+    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
+    let decoded_values: Vec<f64> = objects[0]
+        .chunks_exact(8)
+        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+
+    assert_eq!(decoded_values.len(), 4096);
+    for (orig, dec) in values.iter().zip(decoded_values.iter()) {
+        assert!((orig - dec).abs() < 0.01, "orig={orig}, dec={dec}");
+    }
+}
+
+#[test]
+fn test_szip_simple_packing_decode_range_vs_full() {
+    let values: Vec<f64> = (0..4096).map(|i| 100.0 + i as f64 * 0.5).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+
+    let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
+    let metadata = make_szip_packing_metadata(4096, &packing);
+
+    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+
+    // Full decode
+    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
+    let full_values: Vec<f64> = objects[0]
+        .chunks_exact(8)
+        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+
+    // Partial decode: elements 100..600 (500 elements)
+    let partial_bytes =
+        decode_range(&encoded, 0, &[(100, 500)], &DecodeOptions::default()).unwrap();
+    let partial_values: Vec<f64> = partial_bytes
+        .chunks_exact(8)
+        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+
+    assert_eq!(partial_values.len(), 500);
+    for (full, partial) in full_values[100..600].iter().zip(partial_values.iter()) {
+        assert!(
+            (full - partial).abs() < 1e-10,
+            "full={full}, partial={partial}"
+        );
+    }
+}
+
+#[test]
+fn test_szip_simple_packing_decode_range_first_elements() {
+    let values: Vec<f64> = (0..4096).map(|i| i as f64).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+
+    let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
+    let metadata = make_szip_packing_metadata(4096, &packing);
+
+    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+
+    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
+    let full_values: Vec<f64> = objects[0]
+        .chunks_exact(8)
+        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+
+    // First 10 elements
+    let partial_bytes = decode_range(&encoded, 0, &[(0, 10)], &DecodeOptions::default()).unwrap();
+    let partial_values: Vec<f64> = partial_bytes
+        .chunks_exact(8)
+        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+
+    assert_eq!(partial_values.len(), 10);
+    for (full, partial) in full_values[..10].iter().zip(partial_values.iter()) {
+        assert!(
+            (full - partial).abs() < 1e-10,
+            "full={full}, partial={partial}"
+        );
+    }
+}
+
+#[test]
+fn test_szip_simple_packing_decode_range_last_elements() {
+    let values: Vec<f64> = (0..4096).map(|i| i as f64 * 3.125).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+
+    let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
+    let metadata = make_szip_packing_metadata(4096, &packing);
+
+    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+
+    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
+    let full_values: Vec<f64> = objects[0]
+        .chunks_exact(8)
+        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+
+    // Last 50 elements
+    let partial_bytes =
+        decode_range(&encoded, 0, &[(4046, 50)], &DecodeOptions::default()).unwrap();
+    let partial_values: Vec<f64> = partial_bytes
+        .chunks_exact(8)
+        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+
+    assert_eq!(partial_values.len(), 50);
+    for (full, partial) in full_values[4046..].iter().zip(partial_values.iter()) {
+        assert!(
+            (full - partial).abs() < 1e-10,
+            "full={full}, partial={partial}"
+        );
+    }
+}
+
+#[test]
+fn test_szip_raw_u8_round_trip() {
+    let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+    let metadata = make_szip_raw_metadata(4096, Dtype::Uint8);
+
+    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects[0], data);
+}
+
+#[test]
+fn test_szip_shuffle_round_trip() {
+    // shuffle + szip: float32 data shuffled to bytes, then szip-compressed
+    let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect(); // 1024 float32s
+    let mut params = BTreeMap::new();
+    params.insert(
+        "shuffle_element_size".to_string(),
+        ciborium::Value::Integer(4.into()),
+    );
+    params.insert("szip_rsi".to_string(), ciborium::Value::Integer(128.into()));
+    params.insert(
+        "szip_block_size".to_string(),
+        ciborium::Value::Integer(16.into()),
+    );
+    params.insert(
+        "szip_flags".to_string(),
+        ciborium::Value::Integer(8_i64.into()),
+    );
+
+    let metadata = Metadata {
+        version: 1,
+        objects: vec![ObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![1024],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            extra: BTreeMap::new(),
+        }],
+        payload: vec![PayloadDescriptor {
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "shuffle".to_string(),
+            compression: "szip".to_string(),
+            params,
+            hash: None,
+        }],
+        extra: BTreeMap::new(),
+    };
+
+    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects[0], data);
+}
+
+#[test]
+fn test_szip_shuffle_decode_range_rejected() {
+    // shuffle + szip: decode_range should be rejected
+    let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+    let mut params = BTreeMap::new();
+    params.insert(
+        "shuffle_element_size".to_string(),
+        ciborium::Value::Integer(4.into()),
+    );
+    params.insert("szip_rsi".to_string(), ciborium::Value::Integer(128.into()));
+    params.insert(
+        "szip_block_size".to_string(),
+        ciborium::Value::Integer(16.into()),
+    );
+    params.insert(
+        "szip_flags".to_string(),
+        ciborium::Value::Integer(8_i64.into()),
+    );
+
+    let metadata = Metadata {
+        version: 1,
+        objects: vec![ObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![1024],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            extra: BTreeMap::new(),
+        }],
+        payload: vec![PayloadDescriptor {
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "shuffle".to_string(),
+            compression: "szip".to_string(),
+            params,
+            hash: None,
+        }],
+        extra: BTreeMap::new(),
+    };
+
+    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+    let err = decode_range(&encoded, 0, &[(0, 10)], &DecodeOptions::default()).unwrap_err();
+    assert!(err.to_string().contains("shuffle") || err.to_string().contains("filter"));
+}
+
+#[test]
+fn test_szip_multi_object_mixed_compression() {
+    // Object 0: raw uncompressed float32
+    // Object 1: simple_packing + szip float64
+    let values: Vec<f64> = (0..2048).map(|i| 100.0 + i as f64 * 0.1).collect();
+    let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
+
+    let raw_data = vec![0u8; 10 * 4]; // 10 float32
+
+    let mut packing_params = BTreeMap::new();
+    packing_params.insert(
+        "reference_value".to_string(),
+        ciborium::Value::Float(packing.reference_value),
+    );
+    packing_params.insert(
+        "binary_scale_factor".to_string(),
+        ciborium::Value::Integer((packing.binary_scale_factor as i64).into()),
+    );
+    packing_params.insert(
+        "decimal_scale_factor".to_string(),
+        ciborium::Value::Integer((packing.decimal_scale_factor as i64).into()),
+    );
+    packing_params.insert(
+        "bits_per_value".to_string(),
+        ciborium::Value::Integer((packing.bits_per_value as i64).into()),
+    );
+    packing_params.insert("szip_rsi".to_string(), ciborium::Value::Integer(128.into()));
+    packing_params.insert(
+        "szip_block_size".to_string(),
+        ciborium::Value::Integer(16.into()),
+    );
+    packing_params.insert(
+        "szip_flags".to_string(),
+        ciborium::Value::Integer(8_i64.into()),
+    );
+
+    let packed_data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+
+    let metadata = Metadata {
+        version: 1,
+        objects: vec![
+            ObjectDescriptor {
+                obj_type: "ntensor".to_string(),
+                ndim: 1,
+                shape: vec![10],
+                strides: vec![1],
+                dtype: Dtype::Float32,
+                extra: BTreeMap::new(),
+            },
+            ObjectDescriptor {
+                obj_type: "ntensor".to_string(),
+                ndim: 1,
+                shape: vec![2048],
+                strides: vec![1],
+                dtype: Dtype::Float64,
+                extra: BTreeMap::new(),
+            },
+        ],
+        payload: vec![
+            PayloadDescriptor {
+                byte_order: ByteOrder::Big,
+                encoding: "none".to_string(),
+                filter: "none".to_string(),
+                compression: "none".to_string(),
+                params: BTreeMap::new(),
+                hash: None,
+            },
+            PayloadDescriptor {
+                byte_order: ByteOrder::Big,
+                encoding: "simple_packing".to_string(),
+                filter: "none".to_string(),
+                compression: "szip".to_string(),
+                params: packing_params,
+                hash: None,
+            },
+        ],
+        extra: BTreeMap::new(),
+    };
+
+    let encoded = encode(
+        &metadata,
+        &[&raw_data, &packed_data],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
+
+    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 2);
+    assert_eq!(objects[0], raw_data);
+
+    let decoded_values: Vec<f64> = objects[1]
+        .chunks_exact(8)
+        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+    for (orig, dec) in values.iter().zip(decoded_values.iter()) {
+        assert!((orig - dec).abs() < 0.01);
+    }
+}
+
+#[test]
+fn test_szip_hash_verification() {
+    let values: Vec<f64> = (0..2048).map(|i| i as f64).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+
+    let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
+    let metadata = make_szip_packing_metadata(2048, &packing);
+
+    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+
+    // Should pass with hash verification
+    let options = DecodeOptions { verify_hash: true };
+    let (_, objects) = decode(&encoded, &options).unwrap();
+    assert_eq!(objects[0].len(), 2048 * 8);
+}
+
+#[test]
+fn test_szip_decode_range_multiple_ranges() {
+    let values: Vec<f64> = (0..4096).map(|i| i as f64 * 2.5).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+
+    let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
+    let metadata = make_szip_packing_metadata(4096, &packing);
+
+    let encoded = encode(&metadata, &[&data], &EncodeOptions::default()).unwrap();
+
+    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
+    let full_values: Vec<f64> = objects[0]
+        .chunks_exact(8)
+        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+
+    // Two disjoint ranges: [10..20) and [3000..3050)
+    let partial_bytes = decode_range(
+        &encoded,
+        0,
+        &[(10, 10), (3000, 50)],
+        &DecodeOptions::default(),
+    )
+    .unwrap();
+    let partial_values: Vec<f64> = partial_bytes
+        .chunks_exact(8)
+        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+
+    assert_eq!(partial_values.len(), 60);
+    // First 10 values from range [10..20)
+    for (full, partial) in full_values[10..20].iter().zip(partial_values[..10].iter()) {
+        assert!((full - partial).abs() < 1e-10);
+    }
+    // Next 50 values from range [3000..3050)
+    for (full, partial) in full_values[3000..3050]
+        .iter()
+        .zip(partial_values[10..].iter())
+    {
+        assert!((full - partial).abs() < 1e-10);
+    }
 }
 
 #[test]

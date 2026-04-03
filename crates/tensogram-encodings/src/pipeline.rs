@@ -48,6 +48,7 @@ pub enum CompressionType {
         rsi: u32,
         block_size: u32,
         flags: u32,
+        bits_per_sample: u32,
     },
 }
 
@@ -94,10 +95,12 @@ pub fn encode_pipeline(
             rsi,
             block_size,
             flags,
+            bits_per_sample,
         } => Box::new(SzipCompressor {
             rsi: *rsi,
             block_size: *block_size,
             flags: *flags,
+            bits_per_sample: *bits_per_sample,
         }),
     };
 
@@ -121,10 +124,12 @@ pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8
             rsi,
             block_size,
             flags,
+            bits_per_sample,
         } => Box::new(SzipCompressor {
             rsi: *rsi,
             block_size: *block_size,
             flags: *flags,
+            bits_per_sample: *bits_per_sample,
         }),
     };
 
@@ -149,6 +154,140 @@ pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8
     };
 
     Ok(decoded)
+}
+
+/// Decode a partial sample range from a compressed+encoded pipeline.
+///
+/// Only supports `simple_packing+szip` and `none+none` (uncompressed) pipelines.
+/// Shuffle filter is not supported with range decode.
+///
+/// `sample_offset` and `sample_count` are in logical element units.
+/// `block_offsets` are bit offsets of RSI block boundaries from encoding.
+pub fn decode_range_pipeline(
+    encoded: &[u8],
+    config: &PipelineConfig,
+    block_offsets: &[u64],
+    sample_offset: u64,
+    sample_count: u64,
+) -> Result<Vec<u8>, PipelineError> {
+    match &config.filter {
+        FilterType::None => {}
+        FilterType::Shuffle { .. } => {
+            return Err(PipelineError::Shuffle(
+                "partial range decode is not supported with shuffle filter".to_string(),
+            ));
+        }
+    }
+
+    match (&config.encoding, &config.compression) {
+        // Uncompressed, unencoded: direct byte slice
+        (EncodingType::None, CompressionType::None) => {
+            let elem_size = config.dtype_byte_width;
+            let byte_start = (sample_offset as usize)
+                .checked_mul(elem_size)
+                .ok_or_else(|| PipelineError::Shuffle("byte offset overflow".to_string()))?;
+            let byte_count = (sample_count as usize)
+                .checked_mul(elem_size)
+                .ok_or_else(|| PipelineError::Shuffle("byte count overflow".to_string()))?;
+            let byte_end = byte_start
+                .checked_add(byte_count)
+                .ok_or_else(|| PipelineError::Shuffle("byte end overflow".to_string()))?;
+            if byte_end > encoded.len() {
+                return Err(PipelineError::Shuffle(format!(
+                    "range ({sample_offset}, {sample_count}) exceeds payload size"
+                )));
+            }
+            Ok(encoded[byte_start..byte_end].to_vec())
+        }
+
+        // simple_packing + szip: decompress range, then unpack
+        (
+            EncodingType::SimplePacking(params),
+            CompressionType::Szip {
+                rsi,
+                block_size,
+                flags,
+                bits_per_sample,
+            },
+        ) => {
+            let compressor = SzipCompressor {
+                rsi: *rsi,
+                block_size: *block_size,
+                flags: *flags,
+                bits_per_sample: *bits_per_sample,
+            };
+
+            // Compute byte range in the packed (pre-compression) stream.
+            // Each sample is bits_per_value bits, packed MSB-first.
+            let bit_start = sample_offset * params.bits_per_value as u64;
+            let bit_count = sample_count * params.bits_per_value as u64;
+            // We need to decompress at byte-aligned boundaries that cover our bit range
+            let byte_start = (bit_start / 8) as usize;
+            let byte_end = (bit_start + bit_count).div_ceil(8) as usize;
+            let byte_size = byte_end - byte_start;
+
+            let packed_bytes =
+                compressor.decompress_range(encoded, block_offsets, byte_start, byte_size)?;
+
+            // Unpack the sample range from the decompressed packed bytes
+            // The bit offset within our decompressed chunk
+            let bit_offset_in_chunk = (bit_start % 8) as usize;
+            let values = simple_packing::decode_range(
+                &packed_bytes,
+                bit_offset_in_chunk,
+                sample_count as usize,
+                params,
+            )?;
+
+            Ok(f64_to_bytes(&values, config.byte_order))
+        }
+
+        // simple_packing without compression: decompress range from packed bits
+        (EncodingType::SimplePacking(params), CompressionType::None) => {
+            let bit_start = sample_offset * params.bits_per_value as u64;
+            let bit_count = sample_count * params.bits_per_value as u64;
+            let byte_start = (bit_start / 8) as usize;
+            let byte_end = (bit_start + bit_count).div_ceil(8) as usize;
+            if byte_end > encoded.len() {
+                return Err(PipelineError::Shuffle(format!(
+                    "range ({sample_offset}, {sample_count}) exceeds packed data size"
+                )));
+            }
+            let packed_bytes = &encoded[byte_start..byte_end];
+            let bit_offset_in_chunk = (bit_start % 8) as usize;
+            let values = simple_packing::decode_range(
+                packed_bytes,
+                bit_offset_in_chunk,
+                sample_count as usize,
+                params,
+            )?;
+            Ok(f64_to_bytes(&values, config.byte_order))
+        }
+
+        // none encoding + szip: decompress range directly
+        (
+            EncodingType::None,
+            CompressionType::Szip {
+                rsi,
+                block_size,
+                flags,
+                bits_per_sample,
+            },
+        ) => {
+            let compressor = SzipCompressor {
+                rsi: *rsi,
+                block_size: *block_size,
+                flags: *flags,
+                bits_per_sample: *bits_per_sample,
+            };
+            let elem_size = config.dtype_byte_width;
+            let byte_pos = (sample_offset as usize) * elem_size;
+            let byte_size = (sample_count as usize) * elem_size;
+            let decompressed =
+                compressor.decompress_range(encoded, block_offsets, byte_pos, byte_size)?;
+            Ok(decompressed)
+        }
+    }
 }
 
 fn estimate_decompressed_size(config: &PipelineConfig) -> usize {
@@ -249,20 +388,26 @@ mod tests {
     }
 
     #[test]
-    fn test_szip_returns_error() {
-        let data = vec![0u8; 100];
+    fn test_szip_round_trip_pipeline() {
+        let data: Vec<u8> = (0..2048).map(|i| (i % 256) as u8).collect();
         let config = PipelineConfig {
             encoding: EncodingType::None,
             filter: FilterType::None,
             compression: CompressionType::Szip {
                 rsi: 128,
-                block_size: 32,
-                flags: 0,
+                block_size: 16,
+                flags: libaec_sys::AEC_DATA_PREPROCESS,
+                bits_per_sample: 8,
             },
-            num_values: 100,
+            num_values: 2048,
             byte_order: ByteOrder::Little,
             dtype_byte_width: 1,
         };
-        assert!(encode_pipeline(&data, &config).is_err());
+
+        let result = encode_pipeline(&data, &config).unwrap();
+        assert!(result.szip_block_offsets.is_some());
+
+        let decoded = decode_pipeline(&result.encoded_bytes, &config).unwrap();
+        assert_eq!(decoded, data);
     }
 }

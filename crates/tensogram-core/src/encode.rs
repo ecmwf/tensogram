@@ -191,10 +191,20 @@ pub(crate) fn build_pipeline_config(
                 })?;
             let flags = u32::try_from(get_u64_param(&desc.params, "szip_flags")?)
                 .map_err(|_| TensogramError::Metadata("szip_flags out of u32 range".to_string()))?;
+            // Determine bits_per_sample based on what precedes compression:
+            // - simple_packing: bits_per_value from packing params
+            // - shuffle: 8 (shuffled bytes are uint8)
+            // - none: dtype byte width * 8
+            let bits_per_sample = match (&encoding, &filter) {
+                (EncodingType::SimplePacking(params), _) => params.bits_per_value,
+                (EncodingType::None, FilterType::Shuffle { .. }) => 8,
+                (EncodingType::None, FilterType::None) => (dtype.byte_width() * 8) as u32,
+            };
             CompressionType::Szip {
                 rsi,
                 block_size,
                 flags,
+                bits_per_sample,
             }
         }
         other => {

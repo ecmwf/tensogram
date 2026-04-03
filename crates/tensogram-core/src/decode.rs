@@ -6,6 +6,34 @@ use crate::metadata::cbor_to_metadata;
 use crate::types::Metadata;
 use tensogram_encodings::pipeline;
 
+fn extract_block_offsets(
+    params: &std::collections::BTreeMap<String, ciborium::Value>,
+) -> Result<Vec<u64>> {
+    match params.get("szip_block_offsets") {
+        Some(ciborium::Value::Array(arr)) => arr
+            .iter()
+            .map(|v| match v {
+                ciborium::Value::Integer(i) => {
+                    let n: i128 = (*i).into();
+                    u64::try_from(n).map_err(|_| {
+                        TensogramError::Metadata("szip_block_offset out of u64 range".to_string())
+                    })
+                }
+                _ => Err(TensogramError::Metadata(
+                    "szip_block_offsets must contain integers".to_string(),
+                )),
+            })
+            .collect(),
+        Some(_) => Err(TensogramError::Metadata(
+            "szip_block_offsets must be an array".to_string(),
+        )),
+        None => Err(TensogramError::Compression(
+            "missing szip_block_offsets in payload metadata (required for partial range decode)"
+                .to_string(),
+        )),
+    }
+}
+
 /// Options for decoding.
 #[derive(Debug, Clone, Default)]
 pub struct DecodeOptions {
@@ -71,7 +99,12 @@ pub fn decode_object(
     Ok((metadata, decoded))
 }
 
-/// Decode a partial range from a data object (uncompressed path only for now).
+/// Decode a partial range from a data object.
+///
+/// Supports uncompressed data (direct byte slicing), simple_packing (bit extraction),
+/// szip-compressed data (RSI block seeking via libaec), and combinations thereof.
+/// Shuffle filter is NOT supported with range decode (returns error).
+///
 /// `ranges` is a list of (element_offset, element_count) pairs.
 pub fn decode_range(
     buf: &[u8],
@@ -93,19 +126,18 @@ pub fn decode_range(
     let payload_desc = &metadata.payload[object_index];
     let obj_desc = &metadata.objects[object_index];
 
+    // Reject shuffle filter — byte rearrangement makes RSI block boundaries
+    // not correspond to contiguous sample ranges (documented limitation)
     if payload_desc.filter != "none" {
         return Err(TensogramError::Encoding(
             "decode_range is not supported when a filter (e.g. shuffle) is applied".to_string(),
         ));
     }
 
-    if payload_desc.encoding != "none" || payload_desc.compression != "none" {
-        // For simple_packing + szip: would need RSI block seeking (future)
-        if payload_desc.compression != "none" {
-            return Err(TensogramError::Encoding(
-                "partial range decode with compression not yet implemented".to_string(),
-            ));
-        }
+    if obj_desc.dtype.byte_width() == 0 {
+        return Err(TensogramError::Encoding(
+            "partial range decode not supported for bitmask dtype".to_string(),
+        ));
     }
 
     let payload_bytes = framing::extract_object_payload(buf, &frame, object_index)?;
@@ -116,31 +148,23 @@ pub fn decode_range(
         }
     }
 
-    // For uncompressed data: direct byte offset
-    let element_size = obj_desc.dtype.byte_width();
-    if element_size == 0 {
-        return Err(TensogramError::Encoding(
-            "partial range decode not supported for bitmask dtype".to_string(),
-        ));
-    }
+    let num_elements = usize::try_from(obj_desc.shape.iter().product::<u64>())
+        .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
+    let config = build_pipeline_config(payload_desc, num_elements, obj_desc.dtype)?;
+
+    // Extract block offsets if compression is szip
+    let block_offsets = if payload_desc.compression == "szip" {
+        extract_block_offsets(&payload_desc.params)?
+    } else {
+        Vec::new()
+    };
 
     let mut result = Vec::new();
     for &(offset, count) in ranges {
-        let byte_start = (offset as usize)
-            .checked_mul(element_size)
-            .ok_or_else(|| TensogramError::Object("byte offset overflow".to_string()))?;
-        let byte_count = (count as usize)
-            .checked_mul(element_size)
-            .ok_or_else(|| TensogramError::Object("byte count overflow".to_string()))?;
-        let byte_end = byte_start
-            .checked_add(byte_count)
-            .ok_or_else(|| TensogramError::Object("byte end overflow".to_string()))?;
-        if byte_end > payload_bytes.len() {
-            return Err(TensogramError::Object(format!(
-                "range ({offset}, {count}) exceeds payload size"
-            )));
-        }
-        result.extend_from_slice(&payload_bytes[byte_start..byte_end]);
+        let range_bytes =
+            pipeline::decode_range_pipeline(payload_bytes, &config, &block_offsets, offset, count)
+                .map_err(|e| TensogramError::Encoding(e.to_string()))?;
+        result.extend_from_slice(&range_bytes);
     }
 
     Ok(result)
