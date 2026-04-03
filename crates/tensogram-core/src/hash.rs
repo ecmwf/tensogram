@@ -62,7 +62,14 @@ pub fn verify_hash(data: &[u8], descriptor: &HashDescriptor) -> Result<()> {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = Vec::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize]);
+        out.push(HEX[(b & 0x0f) as usize]);
+    }
+    // SAFETY: HEX table only contains valid ASCII bytes.
+    unsafe { String::from_utf8_unchecked(out) }
 }
 
 #[cfg(test)]

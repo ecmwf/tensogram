@@ -71,7 +71,21 @@ pub fn decode_object(
 ) -> Result<(Metadata, Vec<u8>)> {
     let frame = framing::decode_frame(buf)?;
     let metadata = cbor_to_metadata(frame.cbor_bytes)?;
+    let decoded = decode_object_raw(buf, &frame, &metadata, index, options)?;
+    Ok((metadata, decoded))
+}
 
+/// Decode a single object using pre-parsed frame and metadata.
+///
+/// Avoids re-parsing the binary header and CBOR metadata when iterating
+/// over multiple objects in the same message.
+pub(crate) fn decode_object_raw(
+    buf: &[u8],
+    frame: &framing::DecodedFrame<'_>,
+    metadata: &Metadata,
+    index: usize,
+    options: &DecodeOptions,
+) -> Result<Vec<u8>> {
     if index >= metadata.objects.len() {
         return Err(TensogramError::Object(format!(
             "object index {} out of range (num_objects={})",
@@ -80,7 +94,7 @@ pub fn decode_object(
         )));
     }
 
-    let payload_bytes = framing::extract_object_payload(buf, &frame, index)?;
+    let payload_bytes = framing::extract_object_payload(buf, frame, index)?;
 
     // Verify hash if requested
     if options.verify_hash {
@@ -96,7 +110,7 @@ pub fn decode_object(
     let decoded = pipeline::decode_pipeline(payload_bytes, &config)
         .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
-    Ok((metadata, decoded))
+    Ok(decoded)
 }
 
 /// Decode a partial range from a data object.

@@ -148,10 +148,7 @@ impl TensogramFile {
             .as_ref()
             .expect("message_offsets guaranteed after ensure_scanned() succeeds")
             .clone();
-        Ok(crate::iter::FileMessageIter::new(
-            self.path.clone(),
-            offsets,
-        ))
+        crate::iter::FileMessageIter::new(self.path.clone(), offsets)
     }
 
     /// Get the file path.

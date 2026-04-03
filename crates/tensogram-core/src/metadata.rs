@@ -50,25 +50,17 @@ fn canonicalize(value: &mut ciborium::Value) {
                 canonicalize(k);
                 canonicalize(v);
             }
-            // Sort by CBOR-encoded key bytes
-            entries.sort_by(|(a, _), (b, _)| {
-                let mut a_bytes = Vec::new();
-                let mut b_bytes = Vec::new();
-                // These shouldn't fail for already-valid Values
-                let result = ciborium::into_writer(a, &mut a_bytes);
-                debug_assert!(
-                    result.is_ok(),
-                    "ciborium serialization failed: {:?}",
-                    result
-                );
-                let result = ciborium::into_writer(b, &mut b_bytes);
-                debug_assert!(
-                    result.is_ok(),
-                    "ciborium serialization failed: {:?}",
-                    result
-                );
-                a_bytes.cmp(&b_bytes)
-            });
+            // Pre-compute serialized key bytes to avoid repeated allocation during sort.
+            let mut keyed: Vec<(Vec<u8>, (ciborium::Value, ciborium::Value))> = entries
+                .drain(..)
+                .map(|(k, v)| {
+                    let mut key_bytes = Vec::new();
+                    let _ = ciborium::into_writer(&k, &mut key_bytes);
+                    (key_bytes, (k, v))
+                })
+                .collect();
+            keyed.sort_by(|(a, _), (b, _)| a.cmp(b));
+            *entries = keyed.into_iter().map(|(_, kv)| kv).collect();
         }
         ciborium::Value::Array(items) => {
             for item in items.iter_mut() {

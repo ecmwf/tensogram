@@ -199,14 +199,47 @@ fn write_bits(buf: &mut [u8], bit_offset: u64, value: u64, nbits: u32) {
     if nbits == 0 {
         return;
     }
-    for i in 0..nbits {
-        let bit = (value >> (nbits - 1 - i)) & 1;
-        let pos = bit_offset + i as u64;
-        let byte_idx = (pos / 8) as usize;
-        let bit_idx = 7 - (pos % 8) as u32;
-        if bit == 1 {
-            buf[byte_idx] |= 1 << bit_idx;
+    let mut remaining = nbits;
+    let mut pos = bit_offset as usize;
+    let mut val = value;
+
+    // Bits available in the first byte
+    let first_avail = 8 - (pos % 8);
+    if remaining <= first_avail as u32 {
+        // Entire value fits in one byte
+        let byte_idx = pos / 8;
+        let shift = first_avail as u32 - remaining;
+        let mask = ((1u64 << remaining) - 1) as u8;
+        buf[byte_idx] |= (val as u8 & mask) << shift;
+        return;
+    }
+
+    // Write partial first byte
+    if !pos.is_multiple_of(8) {
+        let bits_in_first = first_avail as u32;
+        let byte_idx = pos / 8;
+        let top_bits = (val >> (remaining - bits_in_first)) as u8;
+        let mask = (1u8 << bits_in_first) - 1;
+        buf[byte_idx] |= top_bits & mask;
+        remaining -= bits_in_first;
+        pos += bits_in_first as usize;
+        val &= (1u64 << remaining) - 1;
+    }
+
+    // Write full bytes
+    while remaining >= 8 {
+        remaining -= 8;
+        buf[pos / 8] = (val >> remaining) as u8;
+        pos += 8;
+        if remaining > 0 {
+            val &= (1u64 << remaining) - 1;
         }
+    }
+
+    // Write partial last byte
+    if remaining > 0 {
+        let shift = 8 - remaining;
+        buf[pos / 8] |= (val as u8) << shift;
     }
 }
 
@@ -215,14 +248,43 @@ fn read_bits(buf: &[u8], bit_offset: u64, nbits: u32) -> u64 {
     if nbits == 0 {
         return 0;
     }
+    let mut remaining = nbits;
+    let mut pos = bit_offset as usize;
     let mut value: u64 = 0;
-    for i in 0..nbits {
-        let pos = bit_offset + i as u64;
-        let byte_idx = (pos / 8) as usize;
-        let bit_idx = 7 - (pos % 8) as u32;
-        let bit = ((buf[byte_idx] >> bit_idx) & 1) as u64;
-        value = (value << 1) | bit;
+
+    // Bits available in the first byte
+    let first_avail = (8 - (pos % 8)) as u32;
+    if remaining <= first_avail {
+        // Entire value in one byte
+        let byte_idx = pos / 8;
+        let shift = first_avail - remaining;
+        let mask = (1u64 << remaining) - 1;
+        return ((buf[byte_idx] >> shift) as u64) & mask;
     }
+
+    // Read partial first byte
+    if !pos.is_multiple_of(8) {
+        let bits_in_first = first_avail;
+        let byte_idx = pos / 8;
+        let mask = (1u8 << bits_in_first) - 1;
+        value = (buf[byte_idx] & mask) as u64;
+        remaining -= bits_in_first;
+        pos += bits_in_first as usize;
+    }
+
+    // Read full bytes
+    while remaining >= 8 {
+        value = (value << 8) | buf[pos / 8] as u64;
+        remaining -= 8;
+        pos += 8;
+    }
+
+    // Read partial last byte
+    if remaining > 0 {
+        let shift = 8 - remaining;
+        value = (value << remaining) | ((buf[pos / 8] >> shift) as u64);
+    }
+
     value
 }
 

@@ -22,7 +22,7 @@
 
 use std::path::PathBuf;
 
-use crate::decode::{decode_metadata, decode_object, DecodeOptions};
+use crate::decode::{decode_metadata, decode_object_raw, DecodeOptions};
 use crate::error::Result;
 use crate::framing;
 use crate::types::{Metadata, ObjectDescriptor};
@@ -43,10 +43,12 @@ pub fn messages(buf: &[u8]) -> MessageIter<'_> {
 
 /// Create an iterator that decodes each object in a message on demand.
 ///
-/// Parses the metadata header once, then decodes objects lazily via the full
-/// pipeline (encoding + filter + decompression).
+/// Parses the frame header and metadata once, then decodes objects lazily via
+/// the full pipeline (encoding + filter + decompression).
 pub fn objects(buf: &[u8], options: DecodeOptions) -> Result<ObjectIter> {
-    let metadata = decode_metadata(buf)?;
+    // Parse frame + metadata once upfront
+    let frame = framing::decode_frame(buf)?;
+    let metadata = crate::metadata::cbor_to_metadata(frame.cbor_bytes)?;
     Ok(ObjectIter {
         buf: buf.to_vec(),
         metadata,
@@ -119,7 +121,14 @@ impl Iterator for ObjectIter {
         let i = self.index;
         self.index += 1;
         let descriptor = self.metadata.objects[i].clone();
-        Some(decode_object(&self.buf, i, &self.options).map(|(_, data)| (descriptor, data)))
+        // Re-parse the frame (cheap binary header only — metadata is already cached).
+        // This avoids storing a DecodedFrame which borrows buf.
+        let result = framing::decode_frame(&self.buf)
+            .and_then(|frame| {
+                decode_object_raw(&self.buf, &frame, &self.metadata, i, &self.options)
+            })
+            .map(|data| (descriptor, data));
+        Some(result)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -134,23 +143,25 @@ impl ExactSizeIterator for ObjectIter {}
 
 /// Lazy iterator over messages stored in a file.
 ///
-/// Reads each message from disk on demand using seek + read, avoiding loading
-/// the entire file into memory. Constructed via [`TensogramFile::iter`].
+/// Holds a persistent file handle and seeks to each message offset on demand,
+/// avoiding both full-file reads and repeated open/close syscalls.
+/// Constructed via [`TensogramFile::iter`].
 ///
 /// [`TensogramFile::iter`]: crate::file::TensogramFile::iter
 pub struct FileMessageIter {
-    path: PathBuf,
+    file: std::fs::File,
     offsets: Vec<(usize, usize)>,
     pos: usize,
 }
 
 impl FileMessageIter {
-    pub(crate) fn new(path: PathBuf, offsets: Vec<(usize, usize)>) -> Self {
-        Self {
-            path,
+    pub(crate) fn new(path: PathBuf, offsets: Vec<(usize, usize)>) -> Result<Self> {
+        let file = std::fs::File::open(&path)?;
+        Ok(Self {
+            file,
             offsets,
             pos: 0,
-        }
+        })
     }
 }
 
@@ -158,12 +169,21 @@ impl Iterator for FileMessageIter {
     type Item = Result<Vec<u8>>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        use std::io::{Read, Seek, SeekFrom};
+
         if self.pos >= self.offsets.len() {
             return None;
         }
         let (offset, length) = self.offsets[self.pos];
         self.pos += 1;
-        Some(read_bytes_at(&self.path, offset, length))
+
+        let result = (|| {
+            self.file.seek(SeekFrom::Start(offset as u64))?;
+            let mut buf = vec![0u8; length];
+            self.file.read_exact(&mut buf)?;
+            Ok(buf)
+        })();
+        Some(result)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -173,15 +193,6 @@ impl Iterator for FileMessageIter {
 }
 
 impl ExactSizeIterator for FileMessageIter {}
-
-fn read_bytes_at(path: &std::path::Path, offset: usize, length: usize) -> Result<Vec<u8>> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut file = std::fs::File::open(path)?;
-    file.seek(SeekFrom::Start(offset as u64))?;
-    let mut buf = vec![0u8; length];
-    file.read_exact(&mut buf)?;
-    Ok(buf)
-}
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -440,7 +451,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.tgm");
         std::fs::write(&path, []).unwrap();
-        let it = FileMessageIter::new(path, vec![]);
+        let it = FileMessageIter::new(path, vec![]).unwrap();
         assert_eq!(it.len(), 0);
         assert_eq!(it.collect::<Vec<_>>().len(), 0);
     }
@@ -459,7 +470,7 @@ mod tests {
         std::fs::write(&path, &content).unwrap();
 
         let offsets = framing::scan(&content);
-        let it = FileMessageIter::new(path, offsets);
+        let it = FileMessageIter::new(path, offsets).unwrap();
         assert_eq!(it.len(), 3);
         let collected: Vec<_> = it.collect();
         assert_eq!(collected[0].as_ref().unwrap(), &msg0);
@@ -477,7 +488,7 @@ mod tests {
         std::fs::write(&path, &content).unwrap();
 
         let offsets = framing::scan(&content);
-        for raw in FileMessageIter::new(path, offsets) {
+        for raw in FileMessageIter::new(path, offsets).unwrap() {
             let raw = raw.unwrap();
             let (meta, _) = crate::decode::decode(&raw, &DecodeOptions::default()).unwrap();
             assert_eq!(meta.version, 1);

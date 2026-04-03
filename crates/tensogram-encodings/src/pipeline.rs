@@ -1,6 +1,6 @@
-use crate::compression::{
-    CompressResult, CompressionError, Compressor, NoopCompressor, SzipCompressor,
-};
+use std::borrow::Cow;
+
+use crate::compression::{CompressResult, CompressionError, Compressor, SzipCompressor};
 use crate::shuffle;
 use crate::simple_packing::{self, PackingError, SimplePackingParams};
 use serde::{Deserialize, Serialize};
@@ -74,81 +74,88 @@ pub fn encode_pipeline(
     data: &[u8],
     config: &PipelineConfig,
 ) -> Result<PipelineResult, PipelineError> {
-    // Step 1: Encoding
-    let encoded = match &config.encoding {
-        EncodingType::None => data.to_vec(),
+    // Step 1: Encoding — Cow avoids cloning when encoding is None
+    let encoded: Cow<'_, [u8]> = match &config.encoding {
+        EncodingType::None => Cow::Borrowed(data),
         EncodingType::SimplePacking(params) => {
             let values = bytes_to_f64(data, config.byte_order);
-            simple_packing::encode(&values, params)?
+            Cow::Owned(simple_packing::encode(&values, params)?)
         }
     };
 
     // Step 2: Filter
-    let filtered = match &config.filter {
+    let filtered: Cow<'_, [u8]> = match &config.filter {
         FilterType::None => encoded,
-        FilterType::Shuffle { element_size } => shuffle::shuffle(&encoded, *element_size)
-            .map_err(|e| PipelineError::Shuffle(e.to_string()))?,
+        FilterType::Shuffle { element_size } => Cow::Owned(
+            shuffle::shuffle(&encoded, *element_size)
+                .map_err(|e| PipelineError::Shuffle(e.to_string()))?,
+        ),
     };
 
     // Step 3: Compression
-    let compressor: Box<dyn Compressor> = match &config.compression {
-        CompressionType::None => Box::new(NoopCompressor),
+    match &config.compression {
+        CompressionType::None => Ok(PipelineResult {
+            encoded_bytes: filtered.into_owned(),
+            szip_block_offsets: None,
+        }),
         CompressionType::Szip {
             rsi,
             block_size,
             flags,
             bits_per_sample,
-        } => Box::new(SzipCompressor {
-            rsi: *rsi,
-            block_size: *block_size,
-            flags: *flags,
-            bits_per_sample: *bits_per_sample,
-        }),
-    };
-
-    let CompressResult {
-        data: compressed,
-        block_offsets,
-    } = compressor.compress(&filtered)?;
-
-    Ok(PipelineResult {
-        encoded_bytes: compressed,
-        szip_block_offsets: block_offsets,
-    })
+        } => {
+            let compressor = SzipCompressor {
+                rsi: *rsi,
+                block_size: *block_size,
+                flags: *flags,
+                bits_per_sample: *bits_per_sample,
+            };
+            let CompressResult {
+                data: compressed,
+                block_offsets,
+            } = compressor.compress(&filtered)?;
+            Ok(PipelineResult {
+                encoded_bytes: compressed,
+                szip_block_offsets: block_offsets,
+            })
+        }
+    }
 }
 
 /// Full reverse pipeline: decompress → unshuffle → decode
 pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8>, PipelineError> {
-    // Step 1: Decompress
-    let decompressor: Box<dyn Compressor> = match &config.compression {
-        CompressionType::None => Box::new(NoopCompressor),
+    // Step 1: Decompress — Cow avoids cloning when no compression
+    let decompressed: Cow<'_, [u8]> = match &config.compression {
+        CompressionType::None => Cow::Borrowed(encoded),
         CompressionType::Szip {
             rsi,
             block_size,
             flags,
             bits_per_sample,
-        } => Box::new(SzipCompressor {
-            rsi: *rsi,
-            block_size: *block_size,
-            flags: *flags,
-            bits_per_sample: *bits_per_sample,
-        }),
+        } => {
+            let decompressor = SzipCompressor {
+                rsi: *rsi,
+                block_size: *block_size,
+                flags: *flags,
+                bits_per_sample: *bits_per_sample,
+            };
+            let expected_size = estimate_decompressed_size(config);
+            Cow::Owned(decompressor.decompress(encoded, expected_size)?)
+        }
     };
 
-    // Estimate expected size for decompression
-    let expected_size = estimate_decompressed_size(config);
-    let decompressed = decompressor.decompress(encoded, expected_size)?;
-
     // Step 2: Unshuffle
-    let unfiltered = match &config.filter {
+    let unfiltered: Cow<'_, [u8]> = match &config.filter {
         FilterType::None => decompressed,
-        FilterType::Shuffle { element_size } => shuffle::unshuffle(&decompressed, *element_size)
-            .map_err(|e| PipelineError::Shuffle(e.to_string()))?,
+        FilterType::Shuffle { element_size } => Cow::Owned(
+            shuffle::unshuffle(&decompressed, *element_size)
+                .map_err(|e| PipelineError::Shuffle(e.to_string()))?,
+        ),
     };
 
     // Step 3: Decode
     let decoded = match &config.encoding {
-        EncodingType::None => unfiltered,
+        EncodingType::None => unfiltered.into_owned(),
         EncodingType::SimplePacking(params) => {
             let values = simple_packing::decode(&unfiltered, config.num_values, params)?;
             f64_to_bytes(&values, config.byte_order)

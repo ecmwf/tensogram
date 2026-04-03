@@ -219,9 +219,8 @@ pub extern "C" fn tgm_encode(
     };
 
     let options = EncodeOptions { hash_algorithm };
-    let refs: Vec<&[u8]> = data_slices.to_vec();
 
-    match encode(&metadata, &refs, &options) {
+    match encode(&metadata, &data_slices, &options) {
         Ok(mut bytes) => {
             let result = TgmBytes {
                 data: bytes.as_mut_ptr(),
@@ -1208,7 +1207,7 @@ pub extern "C" fn tgm_file_iter_next(iter: *mut TgmFileIter, out: *mut TgmBytes)
     }
     let it = unsafe { &mut (*iter).inner };
     match it.next() {
-        None => TgmError::Object, // sentinel: end of iteration
+        None => TgmError::EndOfIter,
         Some(Err(e)) => {
             set_last_error(&e.to_string());
             to_error_code(&e)
@@ -1292,7 +1291,7 @@ pub extern "C" fn tgm_object_iter_next(
     }
     let it = unsafe { &mut (*iter).inner };
     match it.next() {
-        None => TgmError::Object, // sentinel: end of iteration
+        None => TgmError::EndOfIter,
         Some(Err(e)) => {
             set_last_error(&e.to_string());
             to_error_code(&e)
