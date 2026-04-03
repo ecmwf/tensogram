@@ -2,7 +2,7 @@
 
 Implemented: 2026-04-02
 
-## Workspace: 5 crates, 117 tests, 0 clippy warnings
+## Workspace: 5 crates, 132 tests, 0 clippy warnings
 
 ### tensogram-core (38 unit tests + 31 integration tests)
 - `wire.rs` — Binary header with TENSOGRM magic, terminator, object offsets
@@ -16,12 +16,19 @@ Implemented: 2026-04-02
 - `file.rs` — `TensogramFile`: open, create, lazy scan, append, seek-based random access, `iter()` for lazy file iteration, deprecated `messages()` iterator
 - `iter.rs` — `MessageIter` (zero-copy buffer iteration), `ObjectIter` (lazy per-object decode), `FileMessageIter` (seek-based file iteration), `objects_metadata()` (descriptor-only)
 
-### tensogram-encodings (32 tests)
+### tensogram-encodings (47 tests)
 - `simple_packing.rs` — GRIB-style lossy quantization, MSB-first bit packing, 0-64 bits, NaN rejection, `decode_range()` for arbitrary bit offsets
 - `shuffle.rs` — Byte-level shuffle/unshuffle (HDF5-style)
 - `libaec.rs` — Safe Rust wrapper around libaec (CCSDS 121.0-B-3): `aec_compress()` with RSI block offset tracking, `aec_decompress()`, `aec_decompress_range()` for partial range decode
-- `compression.rs` — `Compressor` trait with `NoopCompressor` and `SzipCompressor` (full libaec integration), `decompress_range()` method
-- `pipeline.rs` — Encode → filter → compress dispatch, `decode_range_pipeline()` supporting 4 pipeline combinations (none+none, simple_packing+szip, simple_packing+none, none+szip)
+- `compression/` — Module directory with `Compressor` trait, `NoopCompressor`, and 6 compressor implementations:
+  - `szip.rs` — `SzipCompressor` (CCSDS 121.0-B-3 via libaec, RSI block random access)
+  - `zstd.rs` — `ZstdCompressor` (Zstandard lossless, stream compressor)
+  - `lz4.rs` — `Lz4Compressor` (LZ4 lossless via lz4_flex, fastest decompression)
+  - `blosc2.rs` — `Blosc2Compressor` (multi-codec meta-compressor, chunk-based random access via SChunk)
+  - `zfp.rs` — `ZfpCompressor` (lossy floating-point, fixed-rate/precision/accuracy modes, range decode support)
+  - `sz3.rs` — `Sz3Compressor` (SZ3 error-bounded lossy, absolute/relative/PSNR modes)
+- `zfp_ffi.rs` — Safe Rust wrapper around ZFP C library (compress/decompress/range for f64 arrays)
+- `pipeline.rs` — Two-phase dispatch (build_compressor → compress/decompress), `decode_range_pipeline()` supports all compressors with random access capability
 
 ### tensogram-cli (4+ tests)
 - `tensogram info/ls/dump/get/set/copy` subcommands
@@ -67,15 +74,7 @@ Implemented: 2026-04-02
 - Payload integrity hashing (xxh3 default)
 - OBJS/OBJE corruption markers per object
 - Multi-message file scanning with corruption recovery
-- Partial range decode (all pipeline combinations: uncompressed, simple_packing, szip, simple_packing+szip)
-
-## Not yet implemented
-- `async` feature gate (tokio + spawn_blocking for libaec FFI)
-- `mmap` feature gate (memmap2 for memory-mapped file access)
-- Streaming mode (total_length=0 path)
-- Cross-language golden binary test files
-- `tensogram filter` subcommand (v2 rules engine)
-- ciborium canonical encoding verification (current two-step approach works but should be validated against a reference implementation)
+- Partial range decode (szip, blosc2, zfp fixed-rate; stream compressors zstd/lz4/sz3 return RangeNotSupported)
 
 ## Examples
 
@@ -115,6 +114,11 @@ Implemented: 2026-04-02
 - serde 1 — serialization framework
 - thiserror 2 — error derive macros
 - libaec-sys 0.1 — CCSDS 121.0-B-3 (szip) compression via libaec 1.1.4
+- zstd 0.13 — Zstandard compression
+- lz4_flex 0.11 — LZ4 compression (pure Rust)
+- blosc2 0.2 — Blosc2 meta-compressor with chunk random access
+- zfp-sys-cc 0.2 — ZFP floating-point compression (FFI to C library)
+- sz3 0.4 — SZ3 error-bounded lossy compression
 - xxhash-rust 0.8 — xxh3 payload hashing
 - sha1 0.10, md5 0.7 — legacy hash support
 - clap 4 — CLI argument parsing

@@ -27,7 +27,7 @@ pub fn aec_compress(
 
     let sample_bytes = sample_byte_width(params.bits_per_sample);
     if !data.len().is_multiple_of(sample_bytes) {
-        return Err(CompressionError::SzipError(format!(
+        return Err(CompressionError::Szip(format!(
             "data length {} is not a multiple of sample byte width {}",
             data.len(),
             sample_bytes
@@ -61,7 +61,7 @@ pub fn aec_compress(
         let rc = aec_encode(&mut strm, AEC_FLUSH as _);
         if rc != AEC_OK as _ {
             aec_encode_end(&mut strm);
-            return Err(CompressionError::SzipError(format!(
+            return Err(CompressionError::Szip(format!(
                 "aec_encode failed with code {rc}"
             )));
         }
@@ -136,7 +136,7 @@ pub fn aec_decompress(
         let rc = aec_decode(&mut strm, AEC_FLUSH as _);
         if rc != AEC_OK as _ {
             aec_decode_end(&mut strm);
-            return Err(CompressionError::SzipError(format!(
+            return Err(CompressionError::Szip(format!(
                 "aec_decode failed with code {rc}"
             )));
         }
@@ -166,7 +166,7 @@ pub fn aec_decompress_range(
         return Ok(Vec::new());
     }
     if data.is_empty() {
-        return Err(CompressionError::SzipError(
+        return Err(CompressionError::Szip(
             "cannot decompress range from empty data".to_string(),
         ));
     }
@@ -196,7 +196,7 @@ pub fn aec_decompress_range(
         );
         if rc != AEC_OK as _ {
             aec_decode_end(&mut strm);
-            return Err(CompressionError::SzipError(format!(
+            return Err(CompressionError::Szip(format!(
                 "aec_decode_range failed with code {rc}"
             )));
         }
@@ -222,7 +222,7 @@ fn sample_byte_width(bits_per_sample: u32) -> usize {
 
 fn check_aec(rc: i32, context: &str) -> Result<(), CompressionError> {
     if rc != libaec_sys::AEC_OK as i32 {
-        Err(CompressionError::SzipError(format!(
+        Err(CompressionError::Szip(format!(
             "{context} failed with code {rc}"
         )))
     } else {
@@ -237,7 +237,7 @@ fn check_aec_cleanup(
 ) -> Result<(), CompressionError> {
     if rc != libaec_sys::AEC_OK as i32 {
         cleanup();
-        Err(CompressionError::SzipError(format!(
+        Err(CompressionError::Szip(format!(
             "{context} failed with code {rc}"
         )))
     } else {

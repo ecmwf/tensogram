@@ -7,7 +7,8 @@ use crate::hash::{compute_hash, HashAlgorithm};
 use crate::metadata::metadata_to_cbor;
 use crate::types::{HashDescriptor, Metadata, ObjectDescriptor, PayloadDescriptor};
 use tensogram_encodings::pipeline::{
-    self, CompressionType, EncodingType, FilterType, PipelineConfig,
+    self, Blosc2Codec, CompressionType, EncodingType, FilterType, PipelineConfig, Sz3ErrorBound,
+    ZfpMode,
 };
 use tensogram_encodings::simple_packing::SimplePackingParams;
 
@@ -111,7 +112,7 @@ pub fn encode(
             .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
         // Store szip block offsets if produced
-        if let Some(offsets) = &result.szip_block_offsets {
+        if let Some(offsets) = &result.block_offsets {
             metadata.payload[i].params.insert(
                 "szip_block_offsets".to_string(),
                 ciborium::Value::Array(
@@ -206,6 +207,97 @@ pub(crate) fn build_pipeline_config(
                 flags,
                 bits_per_sample,
             }
+        }
+        "zstd" => {
+            let level = get_i64_param(&desc.params, "zstd_level").unwrap_or(3) as i32;
+            CompressionType::Zstd { level }
+        }
+        "lz4" => CompressionType::Lz4,
+        "blosc2" => {
+            let codec_str = match desc.params.get("blosc2_codec") {
+                Some(ciborium::Value::Text(s)) => s.as_str(),
+                _ => "lz4",
+            };
+            let codec = match codec_str {
+                "blosclz" => Blosc2Codec::Blosclz,
+                "lz4" => Blosc2Codec::Lz4,
+                "lz4hc" => Blosc2Codec::Lz4hc,
+                "zlib" => Blosc2Codec::Zlib,
+                "zstd" => Blosc2Codec::Zstd,
+                other => {
+                    return Err(TensogramError::Encoding(format!(
+                        "unknown blosc2 codec: {other}"
+                    )))
+                }
+            };
+            let clevel = get_i64_param(&desc.params, "blosc2_clevel").unwrap_or(5) as i32;
+            let typesize = match (&encoding, &filter) {
+                (EncodingType::SimplePacking(params), _) => {
+                    (params.bits_per_value as usize).div_ceil(8)
+                }
+                (EncodingType::None, FilterType::Shuffle { .. }) => 1,
+                (EncodingType::None, FilterType::None) => dtype.byte_width(),
+            };
+            CompressionType::Blosc2 {
+                codec,
+                clevel,
+                typesize,
+            }
+        }
+        "zfp" => {
+            let mode_str = match desc.params.get("zfp_mode") {
+                Some(ciborium::Value::Text(s)) => s.clone(),
+                _ => {
+                    return Err(TensogramError::Metadata(
+                        "missing required parameter: zfp_mode".to_string(),
+                    ))
+                }
+            };
+            let mode = match mode_str.as_str() {
+                "fixed_rate" => {
+                    let rate = get_f64_param(&desc.params, "zfp_rate")?;
+                    ZfpMode::FixedRate { rate }
+                }
+                "fixed_precision" => {
+                    let precision = u32::try_from(get_u64_param(&desc.params, "zfp_precision")?)
+                        .map_err(|_| {
+                            TensogramError::Metadata("zfp_precision out of u32 range".to_string())
+                        })?;
+                    ZfpMode::FixedPrecision { precision }
+                }
+                "fixed_accuracy" => {
+                    let tolerance = get_f64_param(&desc.params, "zfp_tolerance")?;
+                    ZfpMode::FixedAccuracy { tolerance }
+                }
+                other => {
+                    return Err(TensogramError::Encoding(format!(
+                        "unknown zfp_mode: {other}"
+                    )))
+                }
+            };
+            CompressionType::Zfp { mode }
+        }
+        "sz3" => {
+            let mode_str = match desc.params.get("sz3_error_bound_mode") {
+                Some(ciborium::Value::Text(s)) => s.clone(),
+                _ => {
+                    return Err(TensogramError::Metadata(
+                        "missing required parameter: sz3_error_bound_mode".to_string(),
+                    ))
+                }
+            };
+            let bound_val = get_f64_param(&desc.params, "sz3_error_bound")?;
+            let error_bound = match mode_str.as_str() {
+                "abs" => Sz3ErrorBound::Absolute(bound_val),
+                "rel" => Sz3ErrorBound::Relative(bound_val),
+                "psnr" => Sz3ErrorBound::Psnr(bound_val),
+                other => {
+                    return Err(TensogramError::Encoding(format!(
+                        "unknown sz3_error_bound_mode: {other}"
+                    )))
+                }
+            };
+            CompressionType::Sz3 { error_bound }
         }
         other => {
             return Err(TensogramError::Encoding(format!(

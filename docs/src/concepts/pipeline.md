@@ -12,7 +12,7 @@ flowchart TD
         C["Stage 2 — Filter
         (byte shuffle)"]
         D["Stage 3 — Compression
-        (deflate / szip)"]
+        (szip / zstd / lz4 / blosc2 / zfp / sz3)"]
         A --> B --> C --> D
     end
 
@@ -58,21 +58,35 @@ Filters rearrange bytes to improve compression ratios. The shuffle filter reorde
 
 ## Stage 3: Compression
 
-Compression reduces the total byte count. The library currently supports only `"none"` in production. Szip/libaec is stubbed — the trait exists, but the bindings to the C library are not yet implemented.
+Compression reduces the total byte count. Seven compressors are available:
 
-| Value | Meaning |
-|---|---|
-| `"none"` | Pass through unchanged |
-| `"szip"` | Szip/libaec compression (stub — returns an error) |
+| Value | Type | Random Access | Notes |
+|---|---|---|---|
+| `"none"` | Pass-through | Yes | No compression |
+| `"szip"` | Lossless | Yes | CCSDS 121.0-B-3 via libaec |
+| `"zstd"` | Lossless | No | Excellent ratio/speed tradeoff |
+| `"lz4"` | Lossless | No | Fastest decompression |
+| `"blosc2"` | Lossless | Yes | Multi-codec, chunk-level access |
+| `"zfp"` | Lossy | Yes (fixed-rate) | Floating-point arrays |
+| `"sz3"` | Lossy | No | Error-bounded scientific data |
+
+See [Compression](../encodings/compression.md) for full details on each compressor, including parameters and random access support.
+
+> **Note**: ZFP and SZ3 operate directly on typed floating-point data. Use them with `encoding: "none"` and `filter: "none"` — they replace both encoding and compression.
 
 ## Typical Combinations
 
 | Use case | encoding | filter | compression |
 |---|---|---|---|
 | Exact integers (land mask) | `none` | `none` | `none` |
-| Lossy floats (temperature) | `simple_packing` | `none` | `none` |
-| Best compression (floats) | `none` | `shuffle` | *(future szip)* |
-| GRIB-compatible packing | `simple_packing` | `none` | `none` |
+| Lossy floats (temperature) | `simple_packing` | `none` | `szip` |
+| Best lossless (floats) | `none` | `shuffle` | `szip` or `blosc2` |
+| GRIB-compatible packing | `simple_packing` | `none` | `szip` |
+| Real-time streaming | `none` | `none` | `lz4` |
+| Archival storage | `none` | `shuffle` | `zstd` |
+| ML model weights | `none` | `none` | `blosc2` |
+| Lossy float w/ random access | `none` | `none` | `zfp` (fixed_rate) |
+| Error-bounded science | `none` | `none` | `sz3` |
 
 ## Integrity Hashing
 

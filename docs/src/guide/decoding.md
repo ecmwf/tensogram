@@ -70,7 +70,7 @@ Decodes a contiguous slice of elements from an uncompressed, unencoded object. U
 let partial = decode_range(&message, 0, &[(100, 50)], &DecodeOptions::default())?;
 ```
 
-> **Edge case:** `decode_range` only works for `encoding: "none"` and `compression: "none"`. It returns an error for simple_packing or any compressed object because those formats require decoding from the beginning.
+> **Edge case:** `decode_range` works with all encoding+compression combinations that support random access: uncompressed data, `simple_packing` (bit extraction), `szip` (RSI block seeking), `blosc2` (chunk access), and `zfp` fixed-rate mode. It returns an error for the `shuffle` filter (byte rearrangement breaks contiguous sample ranges) and for stream compressors (`zstd`, `lz4`, `sz3`) that don't support partial decode.
 
 ## DecodeOptions
 

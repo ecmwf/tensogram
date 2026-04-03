@@ -45,10 +45,11 @@ The metadata section of every Tensogram message is encoded as a CBOR map. This p
 | `byte_order` | text | Yes | `"big"` or `"little"` |
 | `encoding` | text | Yes | `"none"` or `"simple_packing"` |
 | `filter` | text | Yes | `"none"` or `"shuffle"` |
-| `compression` | text | Yes | `"none"` or `"szip"` |
+| `compression` | text | Yes | `"none"`, `"szip"`, `"zstd"`, `"lz4"`, `"blosc2"`, `"zfp"`, or `"sz3"` |
 | `hash` | map | No | Integrity hash (see below) |
 | *encoding params* | various | Conditional | Required when `encoding != "none"` |
 | *filter params* | various | Conditional | Required when `filter != "none"` |
+| *compression params* | various | Conditional | Required when `compression != "none"` |
 
 ### Encoding Parameters (simple_packing)
 
@@ -64,6 +65,49 @@ The metadata section of every Tensogram message is encoded as a CBOR map. This p
 | Key | Type | Description |
 |---|---|---|
 | `shuffle_element_size` | uint | Byte width of each element (e.g. 4 for float32) |
+
+### Compression Parameters
+
+**szip:**
+
+| Key | Type | Description |
+|---|---|---|
+| `szip_rsi` | uint | Reference sample interval |
+| `szip_block_size` | uint | Block size (typically 8 or 16) |
+| `szip_flags` | uint | AEC encoding flags |
+| `szip_block_offsets` | array of uint | Bit offsets of RSI block boundaries (computed during encoding) |
+
+**zstd:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `zstd_level` | int | 3 | Compression level (1–22) |
+
+**lz4:** No parameters required.
+
+**blosc2:**
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `blosc2_codec` | text | `"lz4"` | Internal codec: `blosclz`, `lz4`, `lz4hc`, `zlib`, `zstd` |
+| `blosc2_clevel` | int | 5 | Compression level (0–9) |
+| `blosc2_typesize` | uint | (auto) | Element byte width for shuffle optimization |
+
+**zfp:**
+
+| Key | Type | Description |
+|---|---|---|
+| `zfp_mode` | text | `"fixed_rate"`, `"fixed_precision"`, or `"fixed_accuracy"` |
+| `zfp_rate` | float | Bits per value (only for `fixed_rate`) |
+| `zfp_precision` | uint | Bit planes to keep (only for `fixed_precision`) |
+| `zfp_tolerance` | float | Max absolute error (only for `fixed_accuracy`) |
+
+**sz3:**
+
+| Key | Type | Description |
+|---|---|---|
+| `sz3_error_bound_mode` | text | `"abs"`, `"rel"`, or `"psnr"` |
+| `sz3_error_bound` | float | Error bound value |
 
 ### Hash Descriptor
 

@@ -118,5 +118,5 @@ let message = encode(
 | `Object` | `objects.len()` ≠ `payload.len()` ≠ `data.len()` |
 | `Encoding` | NaN in data when using simple_packing |
 | `Encoding` | bits_per_value out of range (0–64) |
-| `Compression` | szip requested (stub — not yet implemented) |
+| `Compression` | Compressor-specific error (invalid params, unsupported dtype) |
 | `Metadata` | CBOR serialization failed |

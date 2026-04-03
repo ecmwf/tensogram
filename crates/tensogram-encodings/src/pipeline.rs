@@ -1,6 +1,9 @@
 use std::borrow::Cow;
 
-use crate::compression::{CompressResult, CompressionError, Compressor, SzipCompressor};
+use crate::compression::{
+    Blosc2Compressor, CompressResult, CompressionError, Compressor, Lz4Compressor, Sz3Compressor,
+    SzipCompressor, ZfpCompressor, ZstdCompressor,
+};
 use crate::shuffle;
 use crate::simple_packing::{self, PackingError, SimplePackingParams};
 use serde::{Deserialize, Serialize};
@@ -43,6 +46,30 @@ pub enum FilterType {
     Shuffle { element_size: usize },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Blosc2Codec {
+    Blosclz,
+    Lz4,
+    Lz4hc,
+    Zlib,
+    Zstd,
+}
+
+#[derive(Debug, Clone)]
+pub enum ZfpMode {
+    FixedRate { rate: f64 },
+    FixedPrecision { precision: u32 },
+    FixedAccuracy { tolerance: f64 },
+}
+
+#[derive(Debug, Clone)]
+pub enum Sz3ErrorBound {
+    Absolute(f64),
+    Relative(f64),
+    Psnr(f64),
+}
+
 #[derive(Debug, Clone)]
 pub enum CompressionType {
     None,
@@ -51,6 +78,21 @@ pub enum CompressionType {
         block_size: u32,
         flags: u32,
         bits_per_sample: u32,
+    },
+    Zstd {
+        level: i32,
+    },
+    Lz4,
+    Blosc2 {
+        codec: Blosc2Codec,
+        clevel: i32,
+        typesize: usize,
+    },
+    Zfp {
+        mode: ZfpMode,
+    },
+    Sz3 {
+        error_bound: Sz3ErrorBound,
     },
 }
 
@@ -66,7 +108,48 @@ pub struct PipelineConfig {
 
 pub struct PipelineResult {
     pub encoded_bytes: Vec<u8>,
-    pub szip_block_offsets: Option<Vec<u64>>,
+    /// Block offsets produced by compressors that support random access (szip, blosc2).
+    pub block_offsets: Option<Vec<u64>>,
+}
+
+/// Build a boxed compressor from a CompressionType variant.
+fn build_compressor(
+    compression: &CompressionType,
+    config: &PipelineConfig,
+) -> Option<Box<dyn Compressor>> {
+    match compression {
+        CompressionType::None => None,
+        CompressionType::Szip {
+            rsi,
+            block_size,
+            flags,
+            bits_per_sample,
+        } => Some(Box::new(SzipCompressor {
+            rsi: *rsi,
+            block_size: *block_size,
+            flags: *flags,
+            bits_per_sample: *bits_per_sample,
+        })),
+        CompressionType::Zstd { level } => Some(Box::new(ZstdCompressor { level: *level })),
+        CompressionType::Lz4 => Some(Box::new(Lz4Compressor)),
+        CompressionType::Blosc2 {
+            codec,
+            clevel,
+            typesize,
+        } => Some(Box::new(Blosc2Compressor {
+            codec: *codec,
+            clevel: *clevel,
+            typesize: *typesize,
+        })),
+        CompressionType::Zfp { mode } => Some(Box::new(ZfpCompressor {
+            mode: mode.clone(),
+            num_values: config.num_values,
+        })),
+        CompressionType::Sz3 { error_bound } => Some(Box::new(Sz3Compressor {
+            error_bound: error_bound.clone(),
+            num_values: config.num_values,
+        })),
+    }
 }
 
 /// Full forward pipeline: encode → filter → compress
@@ -93,30 +176,19 @@ pub fn encode_pipeline(
     };
 
     // Step 3: Compression
-    match &config.compression {
-        CompressionType::None => Ok(PipelineResult {
+    match build_compressor(&config.compression, config) {
+        None => Ok(PipelineResult {
             encoded_bytes: filtered.into_owned(),
-            szip_block_offsets: None,
+            block_offsets: None,
         }),
-        CompressionType::Szip {
-            rsi,
-            block_size,
-            flags,
-            bits_per_sample,
-        } => {
-            let compressor = SzipCompressor {
-                rsi: *rsi,
-                block_size: *block_size,
-                flags: *flags,
-                bits_per_sample: *bits_per_sample,
-            };
+        Some(compressor) => {
             let CompressResult {
                 data: compressed,
                 block_offsets,
             } = compressor.compress(&filtered)?;
             Ok(PipelineResult {
                 encoded_bytes: compressed,
-                szip_block_offsets: block_offsets,
+                block_offsets,
             })
         }
     }
@@ -125,22 +197,11 @@ pub fn encode_pipeline(
 /// Full reverse pipeline: decompress → unshuffle → decode
 pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8>, PipelineError> {
     // Step 1: Decompress — Cow avoids cloning when no compression
-    let decompressed: Cow<'_, [u8]> = match &config.compression {
-        CompressionType::None => Cow::Borrowed(encoded),
-        CompressionType::Szip {
-            rsi,
-            block_size,
-            flags,
-            bits_per_sample,
-        } => {
-            let decompressor = SzipCompressor {
-                rsi: *rsi,
-                block_size: *block_size,
-                flags: *flags,
-                bits_per_sample: *bits_per_sample,
-            };
+    let decompressed: Cow<'_, [u8]> = match build_compressor(&config.compression, config) {
+        None => Cow::Borrowed(encoded),
+        Some(compressor) => {
             let expected_size = estimate_decompressed_size(config);
-            Cow::Owned(decompressor.decompress(encoded, expected_size)?)
+            Cow::Owned(compressor.decompress(encoded, expected_size)?)
         }
     };
 
@@ -167,11 +228,11 @@ pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8
 
 /// Decode a partial sample range from a compressed+encoded pipeline.
 ///
-/// Supports all pipeline combinations: `none+none`, `simple_packing+none`,
-/// `none+szip`, and `simple_packing+szip`. Shuffle filter is not supported.
+/// Supports compressors with random access (szip, blosc2, zfp fixed-rate).
+/// Shuffle filter is not supported with range decode.
 ///
 /// `sample_offset` and `sample_count` are in logical element units.
-/// `block_offsets` are bit offsets of RSI block boundaries from encoding.
+/// `block_offsets` are block boundary offsets from encoding (compressor-specific).
 pub fn decode_range_pipeline(
     encoded: &[u8],
     config: &PipelineConfig,
@@ -179,126 +240,63 @@ pub fn decode_range_pipeline(
     sample_offset: u64,
     sample_count: u64,
 ) -> Result<Vec<u8>, PipelineError> {
-    match &config.filter {
-        FilterType::None => {}
-        FilterType::Shuffle { .. } => {
-            return Err(PipelineError::Shuffle(
-                "partial range decode is not supported with shuffle filter".to_string(),
-            ));
-        }
+    if matches!(config.filter, FilterType::Shuffle { .. }) {
+        return Err(PipelineError::Shuffle(
+            "partial range decode is not supported with shuffle filter".to_string(),
+        ));
     }
 
-    match (&config.encoding, &config.compression) {
-        // Uncompressed, unencoded: direct byte slice
-        (EncodingType::None, CompressionType::None) => {
+    // Phase 1: Compute byte range needed from the (possibly compressed) stream
+    let (byte_start, byte_size, bit_offset_in_chunk) = match &config.encoding {
+        EncodingType::SimplePacking(params) => {
+            let bit_start = sample_offset * params.bits_per_value as u64;
+            let bit_count = sample_count * params.bits_per_value as u64;
+            let bs = (bit_start / 8) as usize;
+            let be = (bit_start + bit_count).div_ceil(8) as usize;
+            (bs, be - bs, Some((bit_start % 8) as usize))
+        }
+        EncodingType::None => {
             let elem_size = config.dtype_byte_width;
-            let byte_start = (sample_offset as usize)
+            let bs = (sample_offset as usize)
                 .checked_mul(elem_size)
                 .ok_or_else(|| PipelineError::Range("byte offset overflow".to_string()))?;
-            let byte_count = (sample_count as usize)
+            let sz = (sample_count as usize)
                 .checked_mul(elem_size)
                 .ok_or_else(|| PipelineError::Range("byte count overflow".to_string()))?;
+            (bs, sz, None)
+        }
+    };
+
+    // Phase 2: Get decompressed bytes for the range
+    let decompressed = match build_compressor(&config.compression, config) {
+        None => {
+            // No compression: slice directly from encoded buffer
             let byte_end = byte_start
-                .checked_add(byte_count)
+                .checked_add(byte_size)
                 .ok_or_else(|| PipelineError::Range("byte end overflow".to_string()))?;
             if byte_end > encoded.len() {
                 return Err(PipelineError::Range(format!(
                     "range ({sample_offset}, {sample_count}) exceeds payload size"
                 )));
             }
-            Ok(encoded[byte_start..byte_end].to_vec())
+            encoded[byte_start..byte_end].to_vec()
         }
-
-        // simple_packing + szip: decompress range, then unpack
-        (
-            EncodingType::SimplePacking(params),
-            CompressionType::Szip {
-                rsi,
-                block_size,
-                flags,
-                bits_per_sample,
-            },
-        ) => {
-            let compressor = SzipCompressor {
-                rsi: *rsi,
-                block_size: *block_size,
-                flags: *flags,
-                bits_per_sample: *bits_per_sample,
-            };
-
-            // Compute byte range in the packed (pre-compression) stream.
-            // Each sample is bits_per_value bits, packed MSB-first.
-            let bit_start = sample_offset * params.bits_per_value as u64;
-            let bit_count = sample_count * params.bits_per_value as u64;
-            // We need to decompress at byte-aligned boundaries that cover our bit range
-            let byte_start = (bit_start / 8) as usize;
-            let byte_end = (bit_start + bit_count).div_ceil(8) as usize;
-            let byte_size = byte_end - byte_start;
-
-            let packed_bytes =
-                compressor.decompress_range(encoded, block_offsets, byte_start, byte_size)?;
-
-            // Unpack the sample range from the decompressed packed bytes
-            // The bit offset within our decompressed chunk
-            let bit_offset_in_chunk = (bit_start % 8) as usize;
-            let values = simple_packing::decode_range(
-                &packed_bytes,
-                bit_offset_in_chunk,
-                sample_count as usize,
-                params,
-            )?;
-
-            Ok(f64_to_bytes(&values, config.byte_order))
+        Some(compressor) => {
+            compressor.decompress_range(encoded, block_offsets, byte_start, byte_size)?
         }
+    };
 
-        // simple_packing without compression: decompress range from packed bits
-        (EncodingType::SimplePacking(params), CompressionType::None) => {
-            let bit_start = sample_offset * params.bits_per_value as u64;
-            let bit_count = sample_count * params.bits_per_value as u64;
-            let byte_start = (bit_start / 8) as usize;
-            let byte_end = (bit_start + bit_count).div_ceil(8) as usize;
-            if byte_end > encoded.len() {
-                return Err(PipelineError::Range(format!(
-                    "range ({sample_offset}, {sample_count}) exceeds packed data size"
-                )));
-            }
-            let packed_bytes = &encoded[byte_start..byte_end];
-            let bit_offset_in_chunk = (bit_start % 8) as usize;
+    // Phase 3: Decode encoding from decompressed bytes
+    match &config.encoding {
+        EncodingType::None => Ok(decompressed),
+        EncodingType::SimplePacking(params) => {
             let values = simple_packing::decode_range(
-                packed_bytes,
-                bit_offset_in_chunk,
+                &decompressed,
+                bit_offset_in_chunk.unwrap_or(0),
                 sample_count as usize,
                 params,
             )?;
             Ok(f64_to_bytes(&values, config.byte_order))
-        }
-
-        // none encoding + szip: decompress range directly
-        (
-            EncodingType::None,
-            CompressionType::Szip {
-                rsi,
-                block_size,
-                flags,
-                bits_per_sample,
-            },
-        ) => {
-            let compressor = SzipCompressor {
-                rsi: *rsi,
-                block_size: *block_size,
-                flags: *flags,
-                bits_per_sample: *bits_per_sample,
-            };
-            let elem_size = config.dtype_byte_width;
-            let byte_pos = (sample_offset as usize)
-                .checked_mul(elem_size)
-                .ok_or_else(|| PipelineError::Range("byte position overflow".to_string()))?;
-            let byte_size = (sample_count as usize)
-                .checked_mul(elem_size)
-                .ok_or_else(|| PipelineError::Range("byte size overflow".to_string()))?;
-            let decompressed =
-                compressor.decompress_range(encoded, block_offsets, byte_pos, byte_size)?;
-            Ok(decompressed)
         }
     }
 }
@@ -418,7 +416,7 @@ mod tests {
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
-        assert!(result.szip_block_offsets.is_some());
+        assert!(result.block_offsets.is_some());
 
         let decoded = decode_pipeline(&result.encoded_bytes, &config).unwrap();
         assert_eq!(decoded, data);
