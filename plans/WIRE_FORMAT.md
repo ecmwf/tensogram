@@ -91,6 +91,20 @@ The flags in the message header preamble will indicate if the optional frames ex
 - Footer Hashes Frame
 
 Either a header or a footer metadata frame must always be present, ie Messages cannot be without metadata. Indexes and hashes, in header and footer are optional, but highly encouraged to always have 1 of them. Default is to add them, in the header encoding in a single buffer or default in the footer if encoding while streaming.
+
+## Metadata Frame
+
+Irrespective of position, Hearder or Footer, the metadata frame for uniquely identifies the message.
+Each metadata CBOR contains a mandatory sub-objects:
+ - 'common' holds metadata that is common to all data objects in the message. this may contain internal namespaces for managing different vocabularies.
+ - 'payload' holds a list of metadata per data object. the index of the list matches the order in the message, can be used to assert the data obj count. this may contain internal namespaces that should match 'common'.
+ - 'reserved' is set aside for internals of the message handling and support future features. Inside it contains:
+    - 'encoder' describes the library that encoded the message. contains:
+        - 'name', 'tensogram' for this one
+        - 'version', software version
+    - 'time' date-time in UTC zulu of time of encoding
+    - 'uuid' UUID RFC 4122 generated at time of encoding, useful for provenance and tracking.
+
 ## Footer
 
 ```
