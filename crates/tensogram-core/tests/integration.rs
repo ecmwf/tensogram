@@ -1365,8 +1365,8 @@ fn test_deep_nested_metadata_round_trip() {
 
     let max_depth: usize = 20;
 
-    // Build a nested CborValue::Map chain:
-    //   depth_0 → depth_1 → depth_2 → … → depth_19 → "leaf_at_20"
+    // Build a nested CborValue::Map chain (21 levels total):
+    //   common["depth_0"] → depth_1 → depth_2 → … → depth_20 → "leaf_at_20"
     let mut value = ciborium::Value::Text(format!("leaf_at_{max_depth}"));
     for d in (0..max_depth).rev() {
         value = ciborium::Value::Map(vec![(
