@@ -33,7 +33,8 @@ use std::slice;
 
 use tensogram_core::{
     decode, decode_metadata, decode_object, decode_range, encode, scan, DataObjectDescriptor,
-    DecodeOptions, EncodeOptions, GlobalMetadata, HashAlgorithm, TensogramError, TensogramFile,
+    DecodeOptions, EncodeOptions, GlobalMetadata, HashAlgorithm, StreamingEncoder, TensogramError,
+    TensogramFile,
 };
 
 // ---------------------------------------------------------------------------
@@ -122,6 +123,20 @@ pub struct TgmMessage {
     objects: Vec<(DataObjectDescriptor, Vec<u8>)>,
     /// Cached CStrings for dtype accessor returns (parallel to `objects`).
     dtype_strings: Vec<CString>,
+    /// Cached CStrings for object type accessor returns.
+    type_strings: Vec<CString>,
+    /// Cached CStrings for byte order accessor returns.
+    byte_order_strings: Vec<CString>,
+    /// Cached CStrings for filter accessor returns.
+    filter_strings: Vec<CString>,
+    /// Cached CStrings for compression accessor returns.
+    compression_strings: Vec<CString>,
+    /// Cached CStrings for encoding accessor returns.
+    encoding_strings: Vec<CString>,
+    /// Cached CStrings for hash type accessor returns (None when no hash).
+    hash_type_strings: Vec<Option<CString>>,
+    /// Cached CStrings for hash value accessor returns (None when no hash).
+    hash_value_strings: Vec<Option<CString>>,
 }
 
 /// Metadata-only handle (no decoded payloads).
@@ -134,6 +149,8 @@ pub struct TgmMetadata {
 /// File handle.
 pub struct TgmFile {
     file: TensogramFile,
+    /// Cached path string for `tgm_file_path`.
+    path_string: CString,
 }
 
 /// Scan result: array of (offset, length) pairs.
@@ -144,6 +161,7 @@ pub struct TgmScanEntry {
     pub length: usize,
 }
 
+/// Opaque handle for scan results.
 pub struct TgmScanResult {
     entries: Vec<TgmScanEntry>,
 }
@@ -225,6 +243,191 @@ fn parse_encode_json(
 }
 
 // ---------------------------------------------------------------------------
+// Message cache builder
+// ---------------------------------------------------------------------------
+
+/// Pre-built CString caches for all descriptor string fields.
+struct MessageCaches {
+    dtype_strings: Vec<CString>,
+    type_strings: Vec<CString>,
+    byte_order_strings: Vec<CString>,
+    filter_strings: Vec<CString>,
+    compression_strings: Vec<CString>,
+    encoding_strings: Vec<CString>,
+    hash_type_strings: Vec<Option<CString>>,
+    hash_value_strings: Vec<Option<CString>>,
+}
+
+/// Build all CString caches from the object descriptors.
+fn build_message_caches(objects: &[(DataObjectDescriptor, Vec<u8>)]) -> MessageCaches {
+    let dtype_strings = objects
+        .iter()
+        .map(|(desc, _)| CString::new(desc.dtype.to_string()).unwrap_or_default())
+        .collect();
+    let type_strings = objects
+        .iter()
+        .map(|(desc, _)| CString::new(desc.obj_type.as_str()).unwrap_or_default())
+        .collect();
+    let byte_order_strings = objects
+        .iter()
+        .map(|(desc, _)| {
+            let s = match desc.byte_order {
+                tensogram_core::ByteOrder::Big => "big",
+                tensogram_core::ByteOrder::Little => "little",
+            };
+            CString::new(s).unwrap_or_default()
+        })
+        .collect();
+    let filter_strings = objects
+        .iter()
+        .map(|(desc, _)| CString::new(desc.filter.as_str()).unwrap_or_default())
+        .collect();
+    let compression_strings = objects
+        .iter()
+        .map(|(desc, _)| CString::new(desc.compression.as_str()).unwrap_or_default())
+        .collect();
+    let encoding_strings = objects
+        .iter()
+        .map(|(desc, _)| CString::new(desc.encoding.as_str()).unwrap_or_default())
+        .collect();
+    let hash_type_strings = objects
+        .iter()
+        .map(|(desc, _)| {
+            desc.hash
+                .as_ref()
+                .map(|h| CString::new(h.hash_type.as_str()).unwrap_or_default())
+        })
+        .collect();
+    let hash_value_strings = objects
+        .iter()
+        .map(|(desc, _)| {
+            desc.hash
+                .as_ref()
+                .map(|h| CString::new(h.value.as_str()).unwrap_or_default())
+        })
+        .collect();
+
+    MessageCaches {
+        dtype_strings,
+        type_strings,
+        byte_order_strings,
+        filter_strings,
+        compression_strings,
+        encoding_strings,
+        hash_type_strings,
+        hash_value_strings,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared encode argument parsing
+// ---------------------------------------------------------------------------
+
+/// Parsed and validated arguments shared by `tgm_encode` and `tgm_file_append`.
+struct ParsedEncode<'a> {
+    global_metadata: GlobalMetadata,
+    descriptors: Vec<DataObjectDescriptor>,
+    data_slices: Vec<&'a [u8]>,
+    options: EncodeOptions,
+}
+
+/// Parse the hash algorithm from a nullable C string pointer.
+///
+/// Returns `Ok(None)` when the pointer is null, `Ok(Some(algo))` when valid,
+/// or `Err((code, message))` on parse failure.
+fn parse_hash_algo(hash_algo: *const c_char) -> Result<Option<HashAlgorithm>, (TgmError, String)> {
+    if hash_algo.is_null() {
+        return Ok(None);
+    }
+    let s = unsafe { CStr::from_ptr(hash_algo) }.to_str().map_err(|_| {
+        (
+            TgmError::InvalidArg,
+            "invalid UTF-8 in hash_algo".to_string(),
+        )
+    })?;
+    HashAlgorithm::parse(s)
+        .map(Some)
+        .map_err(|e| (TgmError::InvalidArg, e.to_string()))
+}
+
+/// Collect data slices from parallel C arrays with null-pointer validation.
+///
+/// # Safety
+///
+/// `data_ptrs` and `data_lens` must point to valid arrays of at least
+/// `num_objects` elements. Each `data_ptrs[i]` must be valid for
+/// `data_lens[i]` bytes (or may be null only when `data_lens[i] == 0`).
+unsafe fn collect_data_slices<'a>(
+    data_ptrs: *const *const u8,
+    data_lens: *const usize,
+    num_objects: usize,
+) -> Result<Vec<&'a [u8]>, (TgmError, String)> {
+    if num_objects == 0 {
+        return Ok(vec![]);
+    }
+    if data_ptrs.is_null() || data_lens.is_null() {
+        return Err((
+            TgmError::InvalidArg,
+            "null data_ptrs or data_lens".to_string(),
+        ));
+    }
+    let ptrs = slice::from_raw_parts(data_ptrs, num_objects);
+    let lens = slice::from_raw_parts(data_lens, num_objects);
+    for (i, (&p, &l)) in ptrs.iter().zip(lens.iter()).enumerate() {
+        if p.is_null() && l > 0 {
+            return Err((
+                TgmError::InvalidArg,
+                format!("null data pointer at index {i}"),
+            ));
+        }
+    }
+    Ok(ptrs
+        .iter()
+        .zip(lens.iter())
+        .map(|(&p, &l)| slice::from_raw_parts(p, l))
+        .collect())
+}
+
+/// Parse and validate the common arguments for `tgm_encode` / `tgm_file_append`.
+///
+/// # Safety
+///
+/// All pointer arguments must satisfy the same contracts as the public FFI
+/// functions that delegate to this helper.
+unsafe fn parse_encode_args<'a>(
+    json_str: &str,
+    data_ptrs: *const *const u8,
+    data_lens: *const usize,
+    num_objects: usize,
+    hash_algo: *const c_char,
+) -> Result<ParsedEncode<'a>, (TgmError, String)> {
+    let (global_metadata, descriptors) =
+        parse_encode_json(json_str).map_err(|e| (TgmError::Metadata, e))?;
+
+    if descriptors.len() != num_objects {
+        return Err((
+            TgmError::InvalidArg,
+            format!(
+                "descriptors array length {} does not match num_objects {}",
+                descriptors.len(),
+                num_objects
+            ),
+        ));
+    }
+
+    let data_slices = collect_data_slices(data_ptrs, data_lens, num_objects)?;
+    let hash_algorithm = parse_hash_algo(hash_algo)?;
+    let options = EncodeOptions { hash_algorithm };
+
+    Ok(ParsedEncode {
+        global_metadata,
+        descriptors,
+        data_slices,
+        options,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Encode
 // ---------------------------------------------------------------------------
 
@@ -263,73 +466,28 @@ pub extern "C" fn tgm_encode(
         }
     };
 
-    // Parse JSON → GlobalMetadata + Vec<DataObjectDescriptor>
-    let (global_metadata, descriptors) = match parse_encode_json(json_str) {
-        Ok(pair) => pair,
-        Err(e) => {
-            set_last_error(&e);
-            return TgmError::Metadata;
+    let parsed = match unsafe {
+        parse_encode_args(json_str, data_ptrs, data_lens, num_objects, hash_algo)
+    } {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            set_last_error(&msg);
+            return code;
         }
     };
-
-    if descriptors.len() != num_objects {
-        set_last_error(&format!(
-            "descriptors array length {} does not match num_objects {}",
-            descriptors.len(),
-            num_objects
-        ));
-        return TgmError::InvalidArg;
-    }
-
-    // Collect data slices
-    let data_slices: Vec<&[u8]> = if num_objects == 0 {
-        vec![]
-    } else {
-        if data_ptrs.is_null() || data_lens.is_null() {
-            set_last_error("null data_ptrs or data_lens");
-            return TgmError::InvalidArg;
-        }
-        unsafe {
-            let ptrs = slice::from_raw_parts(data_ptrs, num_objects);
-            let lens = slice::from_raw_parts(data_lens, num_objects);
-            ptrs.iter()
-                .zip(lens.iter())
-                .map(|(&p, &l)| slice::from_raw_parts(p, l))
-                .collect()
-        }
-    };
-
-    // Parse hash algorithm
-    let hash_algorithm = if hash_algo.is_null() {
-        None
-    } else {
-        let s = match unsafe { CStr::from_ptr(hash_algo) }.to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                set_last_error("invalid UTF-8 in hash_algo");
-                return TgmError::InvalidArg;
-            }
-        };
-        match HashAlgorithm::parse(s) {
-            Ok(a) => Some(a),
-            Err(e) => {
-                set_last_error(&e.to_string());
-                return TgmError::InvalidArg;
-            }
-        }
-    };
-
-    let options = EncodeOptions { hash_algorithm };
 
     // Build (descriptor, data) pairs for the encode API
-    let pairs: Vec<(&DataObjectDescriptor, &[u8])> = descriptors
+    let pairs: Vec<(&DataObjectDescriptor, &[u8])> = parsed
+        .descriptors
         .iter()
-        .zip(data_slices.iter())
+        .zip(parsed.data_slices.iter())
         .map(|(d, s)| (d, *s))
         .collect();
 
-    match encode(&global_metadata, &pairs, &options) {
-        Ok(mut bytes) => {
+    match encode(&parsed.global_metadata, &pairs, &parsed.options) {
+        Ok(bytes) => {
+            // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
+            let mut bytes = bytes.into_boxed_slice().into_vec();
             let result = TgmBytes {
                 data: bytes.as_mut_ptr(),
                 len: bytes.len(),
@@ -377,14 +535,18 @@ pub extern "C" fn tgm_decode(
 
     match decode(data, &options) {
         Ok((global_metadata, objects)) => {
-            let dtype_strings: Vec<CString> = objects
-                .iter()
-                .map(|(desc, _)| CString::new(desc.dtype.to_string()).unwrap_or_default())
-                .collect();
+            let caches = build_message_caches(&objects);
             let msg = Box::new(TgmMessage {
                 global_metadata,
                 objects,
-                dtype_strings,
+                dtype_strings: caches.dtype_strings,
+                type_strings: caches.type_strings,
+                byte_order_strings: caches.byte_order_strings,
+                filter_strings: caches.filter_strings,
+                compression_strings: caches.compression_strings,
+                encoding_strings: caches.encoding_strings,
+                hash_type_strings: caches.hash_type_strings,
+                hash_value_strings: caches.hash_value_strings,
             });
             unsafe {
                 *out = Box::into_raw(msg);
@@ -454,11 +616,19 @@ pub extern "C" fn tgm_decode_object(
 
     match decode_object(data, index, &options) {
         Ok((global_metadata, descriptor, obj_bytes)) => {
-            let dtype_str = CString::new(descriptor.dtype.to_string()).unwrap_or_default();
+            let objects = vec![(descriptor, obj_bytes)];
+            let caches = build_message_caches(&objects);
             let msg = Box::new(TgmMessage {
                 global_metadata,
-                objects: vec![(descriptor, obj_bytes)],
-                dtype_strings: vec![dtype_str],
+                objects,
+                dtype_strings: caches.dtype_strings,
+                type_strings: caches.type_strings,
+                byte_order_strings: caches.byte_order_strings,
+                filter_strings: caches.filter_strings,
+                compression_strings: caches.compression_strings,
+                encoding_strings: caches.encoding_strings,
+                hash_type_strings: caches.hash_type_strings,
+                hash_value_strings: caches.hash_value_strings,
             });
             unsafe {
                 *out = Box::into_raw(msg);
@@ -518,7 +688,9 @@ pub extern "C" fn tgm_decode_range(
     };
 
     match decode_range(data, object_index, &ranges, &options) {
-        Ok(mut bytes) => {
+        Ok(bytes) => {
+            // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
+            let mut bytes = bytes.into_boxed_slice().into_vec();
             let result = TgmBytes {
                 data: bytes.as_mut_ptr(),
                 len: bytes.len(),
@@ -586,6 +758,7 @@ unsafe fn as_msg(msg: *const TgmMessage) -> Option<&'static TgmMessage> {
     }
 }
 
+/// Returns the number of messages found by `tgm_scan`.
 #[no_mangle]
 pub extern "C" fn tgm_scan_count(result: *const TgmScanResult) -> usize {
     unsafe { as_scan(result).map(|r| r.entries.len()).unwrap_or(0) }
@@ -604,6 +777,7 @@ pub extern "C" fn tgm_scan_entry(result: *const TgmScanResult, index: usize) -> 
     }
 }
 
+/// Free a scan result handle.
 #[no_mangle]
 pub extern "C" fn tgm_scan_free(result: *mut TgmScanResult) {
     if !result.is_null() {
@@ -617,6 +791,7 @@ pub extern "C" fn tgm_scan_free(result: *mut TgmScanResult) {
 // Message accessors
 // ---------------------------------------------------------------------------
 
+/// Returns the wire format version from a decoded message.
 #[no_mangle]
 pub extern "C" fn tgm_message_version(msg: *const TgmMessage) -> u64 {
     unsafe {
@@ -641,6 +816,7 @@ pub extern "C" fn tgm_message_num_decoded(msg: *const TgmMessage) -> usize {
     unsafe { as_msg(msg).map(|m| m.objects.len()).unwrap_or(0) }
 }
 
+/// Returns the number of dimensions for object at index.
 #[no_mangle]
 pub extern "C" fn tgm_object_ndim(msg: *const TgmMessage, index: usize) -> u64 {
     unsafe {
@@ -715,19 +891,14 @@ pub extern "C" fn tgm_object_data(
 }
 
 /// Returns the encoding string for a data object descriptor (e.g. "none", "simple_packing").
+/// The pointer is valid until the message is freed.
 #[no_mangle]
 pub extern "C" fn tgm_payload_encoding(msg: *const TgmMessage, index: usize) -> *const c_char {
-    static NONE: &[u8] = b"none\0";
-    static SP: &[u8] = b"simple_packing\0";
     unsafe {
-        match as_msg(msg).and_then(|m| m.objects.get(index)) {
-            Some((desc, _)) => match desc.encoding.as_str() {
-                "none" => NONE.as_ptr() as *const c_char,
-                "simple_packing" => SP.as_ptr() as *const c_char,
-                _ => ptr::null(),
-            },
-            None => ptr::null(),
-        }
+        as_msg(msg)
+            .and_then(|m| m.encoding_strings.get(index))
+            .map(|s| s.as_ptr())
+            .unwrap_or(ptr::null())
     }
 }
 
@@ -742,6 +913,97 @@ pub extern "C" fn tgm_payload_has_hash(msg: *const TgmMessage, index: usize) -> 
     }
 }
 
+/// Extract a metadata handle from a decoded message.
+/// The metadata handle is independent — free it separately with `tgm_metadata_free`.
+#[no_mangle]
+pub extern "C" fn tgm_message_metadata(
+    msg: *const TgmMessage,
+    out: *mut *mut TgmMetadata,
+) -> TgmError {
+    if msg.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let m = unsafe { &*msg };
+    let meta = Box::new(TgmMetadata {
+        global_metadata: m.global_metadata.clone(),
+        cache: std::cell::RefCell::new(BTreeMap::new()),
+    });
+    unsafe {
+        *out = Box::into_raw(meta);
+    }
+    TgmError::Ok
+}
+
+/// Returns the object type string (e.g. "ndarray"). Valid until message freed.
+#[no_mangle]
+pub extern "C" fn tgm_object_type(msg: *const TgmMessage, index: usize) -> *const c_char {
+    unsafe {
+        as_msg(msg)
+            .and_then(|m| m.type_strings.get(index))
+            .map(|s| s.as_ptr())
+            .unwrap_or(ptr::null())
+    }
+}
+
+/// Returns the byte order string ("big" or "little"). Valid until message freed.
+#[no_mangle]
+pub extern "C" fn tgm_object_byte_order(msg: *const TgmMessage, index: usize) -> *const c_char {
+    unsafe {
+        as_msg(msg)
+            .and_then(|m| m.byte_order_strings.get(index))
+            .map(|s| s.as_ptr())
+            .unwrap_or(ptr::null())
+    }
+}
+
+/// Returns the filter string (e.g. "none", "shuffle"). Valid until message freed.
+#[no_mangle]
+pub extern "C" fn tgm_object_filter(msg: *const TgmMessage, index: usize) -> *const c_char {
+    unsafe {
+        as_msg(msg)
+            .and_then(|m| m.filter_strings.get(index))
+            .map(|s| s.as_ptr())
+            .unwrap_or(ptr::null())
+    }
+}
+
+/// Returns the compression string (e.g. "none", "zstd"). Valid until message freed.
+#[no_mangle]
+pub extern "C" fn tgm_object_compression(msg: *const TgmMessage, index: usize) -> *const c_char {
+    unsafe {
+        as_msg(msg)
+            .and_then(|m| m.compression_strings.get(index))
+            .map(|s| s.as_ptr())
+            .unwrap_or(ptr::null())
+    }
+}
+
+/// Returns the hash type string ("xxh3") or NULL if no hash. Valid until message freed.
+#[no_mangle]
+pub extern "C" fn tgm_object_hash_type(msg: *const TgmMessage, index: usize) -> *const c_char {
+    unsafe {
+        as_msg(msg)
+            .and_then(|m| m.hash_type_strings.get(index))
+            .and_then(|opt| opt.as_ref())
+            .map(|s| s.as_ptr())
+            .unwrap_or(ptr::null())
+    }
+}
+
+/// Returns the hash value hex string or NULL if no hash. Valid until message freed.
+#[no_mangle]
+pub extern "C" fn tgm_object_hash_value(msg: *const TgmMessage, index: usize) -> *const c_char {
+    unsafe {
+        as_msg(msg)
+            .and_then(|m| m.hash_value_strings.get(index))
+            .and_then(|opt| opt.as_ref())
+            .map(|s| s.as_ptr())
+            .unwrap_or(ptr::null())
+    }
+}
+
+/// Free a decoded message handle.
 #[no_mangle]
 pub extern "C" fn tgm_message_free(msg: *mut TgmMessage) {
     if !msg.is_null() {
@@ -755,6 +1017,7 @@ pub extern "C" fn tgm_message_free(msg: *mut TgmMessage) {
 // Metadata accessors
 // ---------------------------------------------------------------------------
 
+/// Returns the wire format version from metadata.
 #[no_mangle]
 pub extern "C" fn tgm_metadata_version(meta: *const TgmMetadata) -> u64 {
     if meta.is_null() {
@@ -849,6 +1112,7 @@ pub extern "C" fn tgm_metadata_get_float(
     lookup_float_key(&m.global_metadata, key_str).unwrap_or(default_val)
 }
 
+/// Free a metadata handle.
 #[no_mangle]
 pub extern "C" fn tgm_metadata_free(meta: *mut TgmMetadata) {
     if !meta.is_null() {
@@ -862,6 +1126,7 @@ pub extern "C" fn tgm_metadata_free(meta: *mut TgmMetadata) {
 // File API
 // ---------------------------------------------------------------------------
 
+/// Open an existing Tensogram file for reading.
 #[no_mangle]
 pub extern "C" fn tgm_file_open(path: *const c_char, out: *mut *mut TgmFile) -> TgmError {
     if path.is_null() || out.is_null() {
@@ -879,7 +1144,8 @@ pub extern "C" fn tgm_file_open(path: *const c_char, out: *mut *mut TgmFile) -> 
 
     match TensogramFile::open(path_str) {
         Ok(file) => {
-            let handle = Box::new(TgmFile { file });
+            let path_string = CString::new(path_str).unwrap_or_default();
+            let handle = Box::new(TgmFile { file, path_string });
             unsafe {
                 *out = Box::into_raw(handle);
             }
@@ -892,6 +1158,7 @@ pub extern "C" fn tgm_file_open(path: *const c_char, out: *mut *mut TgmFile) -> 
     }
 }
 
+/// Create a new Tensogram file for writing.
 #[no_mangle]
 pub extern "C" fn tgm_file_create(path: *const c_char, out: *mut *mut TgmFile) -> TgmError {
     if path.is_null() || out.is_null() {
@@ -909,7 +1176,8 @@ pub extern "C" fn tgm_file_create(path: *const c_char, out: *mut *mut TgmFile) -
 
     match TensogramFile::create(path_str) {
         Ok(file) => {
-            let handle = Box::new(TgmFile { file });
+            let path_string = CString::new(path_str).unwrap_or_default();
+            let handle = Box::new(TgmFile { file, path_string });
             unsafe {
                 *out = Box::into_raw(handle);
             }
@@ -922,6 +1190,7 @@ pub extern "C" fn tgm_file_create(path: *const c_char, out: *mut *mut TgmFile) -
     }
 }
 
+/// Count messages in the file (may trigger lazy scan).
 #[no_mangle]
 pub extern "C" fn tgm_file_message_count(file: *mut TgmFile, out_count: *mut usize) -> TgmError {
     if file.is_null() || out_count.is_null() {
@@ -965,14 +1234,18 @@ pub extern "C" fn tgm_file_decode_message(
 
     match f.decode_message(index, &options) {
         Ok((global_metadata, objects)) => {
-            let dtype_strings: Vec<CString> = objects
-                .iter()
-                .map(|(desc, _)| CString::new(desc.dtype.to_string()).unwrap_or_default())
-                .collect();
+            let caches = build_message_caches(&objects);
             let msg = Box::new(TgmMessage {
                 global_metadata,
                 objects,
-                dtype_strings,
+                dtype_strings: caches.dtype_strings,
+                type_strings: caches.type_strings,
+                byte_order_strings: caches.byte_order_strings,
+                filter_strings: caches.filter_strings,
+                compression_strings: caches.compression_strings,
+                encoding_strings: caches.encoding_strings,
+                hash_type_strings: caches.hash_type_strings,
+                hash_value_strings: caches.hash_value_strings,
             });
             unsafe {
                 *out = Box::into_raw(msg);
@@ -1002,7 +1275,9 @@ pub extern "C" fn tgm_file_read_message(
     let f = unsafe { &mut (*file).file };
 
     match f.read_message(index) {
-        Ok(mut bytes) => {
+        Ok(bytes) => {
+            // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
+            let mut bytes = bytes.into_boxed_slice().into_vec();
             let result = TgmBytes {
                 data: bytes.as_mut_ptr(),
                 len: bytes.len(),
@@ -1044,7 +1319,10 @@ pub extern "C" fn tgm_file_append_raw(
         .and_then(|mut fh| fh.write_all(data));
 
     match result {
-        Ok(()) => TgmError::Ok,
+        Ok(()) => {
+            f.invalidate_offsets();
+            TgmError::Ok
+        }
         Err(e) => {
             set_last_error(&e.to_string());
             TgmError::Io
@@ -1052,6 +1330,68 @@ pub extern "C" fn tgm_file_append_raw(
     }
 }
 
+/// Returns the file path as a null-terminated string.
+/// The pointer is valid until the file handle is closed.
+#[no_mangle]
+pub extern "C" fn tgm_file_path(file: *const TgmFile) -> *const c_char {
+    if file.is_null() {
+        return ptr::null();
+    }
+    unsafe { (*file).path_string.as_ptr() }
+}
+
+/// Encode and append a message to the file.
+/// Same JSON schema as `tgm_encode` for `metadata_json`.
+#[no_mangle]
+pub extern "C" fn tgm_file_append(
+    file: *mut TgmFile,
+    metadata_json: *const c_char,
+    data_ptrs: *const *const u8,
+    data_lens: *const usize,
+    num_objects: usize,
+    hash_algo: *const c_char,
+) -> TgmError {
+    if file.is_null() || metadata_json.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let json_str = match unsafe { CStr::from_ptr(metadata_json) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in metadata_json: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+
+    let parsed = match unsafe {
+        parse_encode_args(json_str, data_ptrs, data_lens, num_objects, hash_algo)
+    } {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            set_last_error(&msg);
+            return code;
+        }
+    };
+
+    let pairs: Vec<(&DataObjectDescriptor, &[u8])> = parsed
+        .descriptors
+        .iter()
+        .zip(parsed.data_slices.iter())
+        .map(|(d, s)| (d, *s))
+        .collect();
+
+    let f = unsafe { &mut (*file).file };
+    match f.append(&parsed.global_metadata, &pairs, &parsed.options) {
+        Ok(()) => TgmError::Ok,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
+/// Close a file handle and release resources.
 #[no_mangle]
 pub extern "C" fn tgm_file_close(file: *mut TgmFile) {
     if !file.is_null() {
@@ -1256,6 +1596,7 @@ pub extern "C" fn tgm_buffer_iter_next(
     TgmError::Ok
 }
 
+/// Free a buffer iterator handle.
 #[no_mangle]
 pub extern "C" fn tgm_buffer_iter_free(iter: *mut TgmBufferIter) {
     if !iter.is_null() {
@@ -1315,7 +1656,9 @@ pub extern "C" fn tgm_file_iter_next(iter: *mut TgmFileIter, out: *mut TgmBytes)
             set_last_error(&e.to_string());
             to_error_code(&e)
         }
-        Some(Ok(mut bytes)) => {
+        Some(Ok(bytes)) => {
+            // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
+            let mut bytes = bytes.into_boxed_slice().into_vec();
             let result = TgmBytes {
                 data: bytes.as_mut_ptr(),
                 len: bytes.len(),
@@ -1329,6 +1672,7 @@ pub extern "C" fn tgm_file_iter_next(iter: *mut TgmFileIter, out: *mut TgmBytes)
     }
 }
 
+/// Free a file iterator handle.
 #[no_mangle]
 pub extern "C" fn tgm_file_iter_free(iter: *mut TgmFileIter) {
     if !iter.is_null() {
@@ -1341,12 +1685,16 @@ pub extern "C" fn tgm_file_iter_free(iter: *mut TgmFileIter) {
 /// Opaque handle for iterating over objects within a single message.
 pub struct TgmObjectIter {
     inner: tensogram_core::ObjectIter,
+    /// Global metadata parsed from the message header, cloned into each
+    /// yielded `TgmMessage` to preserve the original version and extra fields.
+    global_metadata: GlobalMetadata,
 }
 
 /// Create an object iterator from raw message bytes.
 ///
 /// Parses metadata once, then decodes each object on demand when
-/// `tgm_object_iter_next` is called.
+/// `tgm_object_iter_next` is called. The global metadata from the
+/// original message is preserved in each yielded `TgmMessage`.
 #[no_mangle]
 pub extern "C" fn tgm_object_iter_create(
     buf: *const u8,
@@ -1362,9 +1710,17 @@ pub extern "C" fn tgm_object_iter_create(
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
     };
+
+    // Parse global metadata from the message header so we can attach it to
+    // each yielded TgmMessage instead of fabricating a default.
+    let global_metadata = decode_metadata(data).unwrap_or_default();
+
     match tensogram_core::objects(data, options) {
         Ok(inner) => {
-            let iter = Box::new(TgmObjectIter { inner });
+            let iter = Box::new(TgmObjectIter {
+                inner,
+                global_metadata,
+            });
             unsafe {
                 *out = Box::into_raw(iter);
             }
@@ -1392,24 +1748,28 @@ pub extern "C" fn tgm_object_iter_next(
         set_last_error("null argument");
         return TgmError::InvalidArg;
     }
-    let it = unsafe { &mut (*iter).inner };
-    match it.next() {
+    let it = unsafe { &mut *iter };
+    match it.inner.next() {
         None => TgmError::EndOfIter,
         Some(Err(e)) => {
             set_last_error(&e.to_string());
             to_error_code(&e)
         }
         Some(Ok((descriptor, data))) => {
-            let dtype_str = CString::new(descriptor.dtype.to_string()).unwrap_or_default();
-            let global_metadata = GlobalMetadata {
-                version: 2,
-                extra: BTreeMap::new(),
-                ..Default::default()
-            };
+            let global_metadata = it.global_metadata.clone();
+            let objects = vec![(descriptor, data)];
+            let caches = build_message_caches(&objects);
             let msg = Box::new(TgmMessage {
                 global_metadata,
-                objects: vec![(descriptor, data)],
-                dtype_strings: vec![dtype_str],
+                objects,
+                dtype_strings: caches.dtype_strings,
+                type_strings: caches.type_strings,
+                byte_order_strings: caches.byte_order_strings,
+                filter_strings: caches.filter_strings,
+                compression_strings: caches.compression_strings,
+                encoding_strings: caches.encoding_strings,
+                hash_type_strings: caches.hash_type_strings,
+                hash_value_strings: caches.hash_value_strings,
             });
             unsafe {
                 *out = Box::into_raw(msg);
@@ -1419,11 +1779,322 @@ pub extern "C" fn tgm_object_iter_next(
     }
 }
 
+/// Free an object iterator handle.
 #[no_mangle]
 pub extern "C" fn tgm_object_iter_free(iter: *mut TgmObjectIter) {
     if !iter.is_null() {
         unsafe {
             drop(Box::from_raw(iter));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Error code to string
+// ---------------------------------------------------------------------------
+
+/// Convert an error code to a human-readable string.
+/// Returns a static string (always valid, never NULL).
+///
+/// Accepts a raw integer and matches by value so that invalid discriminants
+/// from C callers do not trigger undefined behaviour in Rust.
+#[no_mangle]
+pub extern "C" fn tgm_error_string(err: TgmError) -> *const c_char {
+    // Convert to integer for safe matching — C callers may pass invalid values.
+    let code = err as i32;
+    let s: &[u8] = match code {
+        0 => b"ok\0",
+        1 => b"framing error\0",
+        2 => b"metadata error\0",
+        3 => b"encoding error\0",
+        4 => b"compression error\0",
+        5 => b"object error\0",
+        6 => b"I/O error\0",
+        7 => b"hash mismatch\0",
+        8 => b"invalid argument\0",
+        9 => b"end of iteration\0",
+        _ => b"unknown error\0",
+    };
+    s.as_ptr() as *const c_char
+}
+
+// ---------------------------------------------------------------------------
+// Hash utilities
+// ---------------------------------------------------------------------------
+
+/// Compute a hash of the given data.
+/// Returns `TGM_ERROR_OK` on success, fills `out` with a `tgm_bytes_t`
+/// containing the hex-encoded hash string (NOT null-terminated).
+/// Free with `tgm_bytes_free`.
+#[no_mangle]
+pub extern "C" fn tgm_compute_hash(
+    data: *const u8,
+    data_len: usize,
+    algo: *const c_char,
+    out: *mut TgmBytes,
+) -> TgmError {
+    if data.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let algorithm = if algo.is_null() {
+        HashAlgorithm::Xxh3
+    } else {
+        let s = match unsafe { CStr::from_ptr(algo) }.to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                set_last_error("invalid UTF-8 in algo");
+                return TgmError::InvalidArg;
+            }
+        };
+        match HashAlgorithm::parse(s) {
+            Ok(a) => a,
+            Err(e) => {
+                set_last_error(&e.to_string());
+                return TgmError::InvalidArg;
+            }
+        }
+    };
+
+    let input = unsafe { slice::from_raw_parts(data, data_len) };
+    let hex = tensogram_core::hash::compute_hash(input, algorithm);
+    // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
+    let mut bytes = hex.into_bytes().into_boxed_slice().into_vec();
+    let result = TgmBytes {
+        data: bytes.as_mut_ptr(),
+        len: bytes.len(),
+    };
+    std::mem::forget(bytes);
+    unsafe {
+        *out = result;
+    }
+    TgmError::Ok
+}
+
+// ---------------------------------------------------------------------------
+// Streaming encoder
+// ---------------------------------------------------------------------------
+
+/// Opaque handle for a streaming encoder that writes data objects progressively.
+pub struct TgmStreamingEncoder {
+    inner: Option<StreamingEncoder<std::io::BufWriter<std::fs::File>>>,
+}
+
+/// JSON used for streaming encoder creation — version + optional extra keys.
+#[derive(serde::Deserialize)]
+struct StreamingEncodeJson {
+    version: u16,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+/// Parse metadata JSON for the streaming encoder (no "descriptors" key).
+fn parse_streaming_metadata_json(json_str: &str) -> Result<GlobalMetadata, String> {
+    let parsed: StreamingEncodeJson = serde_json::from_str(json_str)
+        .map_err(|e| format!("failed to parse metadata JSON: {e}"))?;
+
+    let cbor_extra: BTreeMap<String, ciborium::Value> = parsed
+        .extra
+        .into_iter()
+        .map(|(k, v)| (k, json_to_cbor(v)))
+        .collect();
+
+    Ok(GlobalMetadata {
+        version: parsed.version,
+        extra: cbor_extra,
+        ..Default::default()
+    })
+}
+
+/// Create a streaming encoder writing to a file.
+///
+/// `metadata_json` must contain `"version"` key (and optional extra keys,
+/// but NOT `"descriptors"`).
+///
+/// `hash_algo`: null-terminated string ("xxh3") or NULL for no hash.
+///
+/// On success fills `out` with a `TgmStreamingEncoder` handle.
+/// Free with `tgm_streaming_encoder_free` or finalize with
+/// `tgm_streaming_encoder_finish`.
+#[no_mangle]
+pub extern "C" fn tgm_streaming_encoder_create(
+    path: *const c_char,
+    metadata_json: *const c_char,
+    hash_algo: *const c_char,
+    out: *mut *mut TgmStreamingEncoder,
+) -> TgmError {
+    if path.is_null() || metadata_json.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in path: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+
+    let json_str = match unsafe { CStr::from_ptr(metadata_json) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in metadata_json: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+
+    let global_metadata = match parse_streaming_metadata_json(json_str) {
+        Ok(m) => m,
+        Err(e) => {
+            set_last_error(&e);
+            return TgmError::Metadata;
+        }
+    };
+
+    let hash_algorithm = if hash_algo.is_null() {
+        None
+    } else {
+        let s = match unsafe { CStr::from_ptr(hash_algo) }.to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                set_last_error("invalid UTF-8 in hash_algo");
+                return TgmError::InvalidArg;
+            }
+        };
+        match HashAlgorithm::parse(s) {
+            Ok(a) => Some(a),
+            Err(e) => {
+                set_last_error(&e.to_string());
+                return TgmError::InvalidArg;
+            }
+        }
+    };
+
+    let file = match std::fs::File::create(path_str) {
+        Ok(f) => f,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            return TgmError::Io;
+        }
+    };
+
+    let options = EncodeOptions { hash_algorithm };
+    let writer = std::io::BufWriter::new(file);
+
+    match StreamingEncoder::new(writer, &global_metadata, &options) {
+        Ok(enc) => {
+            let handle = Box::new(TgmStreamingEncoder { inner: Some(enc) });
+            unsafe {
+                *out = Box::into_raw(handle);
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
+/// Write a single data object to the streaming encoder.
+///
+/// `descriptor_json` is a JSON object with the descriptor fields
+/// (type, ndim, shape, strides, dtype, byte_order, encoding, filter,
+/// compression, etc.).
+#[no_mangle]
+pub extern "C" fn tgm_streaming_encoder_write(
+    enc: *mut TgmStreamingEncoder,
+    descriptor_json: *const c_char,
+    data: *const u8,
+    data_len: usize,
+) -> TgmError {
+    if enc.is_null() || descriptor_json.is_null() || data.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let json_str = match unsafe { CStr::from_ptr(descriptor_json) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in descriptor_json: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+
+    let descriptor: DataObjectDescriptor = match serde_json::from_str(json_str) {
+        Ok(d) => d,
+        Err(e) => {
+            set_last_error(&format!("failed to parse descriptor JSON: {e}"));
+            return TgmError::Metadata;
+        }
+    };
+
+    let data_slice = unsafe { slice::from_raw_parts(data, data_len) };
+    let encoder = unsafe { &mut *enc };
+
+    match encoder.inner.as_mut() {
+        Some(inner) => match inner.write_object(&descriptor, data_slice) {
+            Ok(()) => TgmError::Ok,
+            Err(e) => {
+                set_last_error(&e.to_string());
+                to_error_code(&e)
+            }
+        },
+        None => {
+            set_last_error("streaming encoder already finished");
+            TgmError::InvalidArg
+        }
+    }
+}
+
+/// Return the number of objects written so far.
+#[no_mangle]
+pub extern "C" fn tgm_streaming_encoder_count(enc: *const TgmStreamingEncoder) -> usize {
+    if enc.is_null() {
+        return 0;
+    }
+    unsafe { (*enc).inner.as_ref().map(|e| e.object_count()).unwrap_or(0) }
+}
+
+/// Finalize the streaming encoder, writing footer and closing the file.
+///
+/// After calling this, the handle is still valid but empty — the caller
+/// must still call `tgm_streaming_encoder_free` to release it.
+#[no_mangle]
+pub extern "C" fn tgm_streaming_encoder_finish(enc: *mut TgmStreamingEncoder) -> TgmError {
+    if enc.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let encoder = unsafe { &mut *enc };
+    match encoder.inner.take() {
+        Some(inner) => match inner.finish() {
+            Ok(_writer) => {
+                // Writer is dropped, file is closed.
+                // Do NOT free enc — caller must call tgm_streaming_encoder_free.
+                TgmError::Ok
+            }
+            Err(e) => {
+                set_last_error(&e.to_string());
+                to_error_code(&e)
+            }
+        },
+        None => {
+            set_last_error("streaming encoder already finished");
+            TgmError::InvalidArg
+        }
+    }
+}
+
+/// Free a streaming encoder without finalizing (abandons the output).
+#[no_mangle]
+pub extern "C" fn tgm_streaming_encoder_free(enc: *mut TgmStreamingEncoder) {
+    if !enc.is_null() {
+        unsafe {
+            drop(Box::from_raw(enc));
         }
     }
 }

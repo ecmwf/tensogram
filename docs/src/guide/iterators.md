@@ -144,6 +144,62 @@ while (tgm_object_iter_next(iter, &obj) == TGM_OK) {
 tgm_object_iter_free(iter);
 ```
 
+## C++ API
+
+The C++ wrapper (`include/tensogram.hpp`) provides RAII iterator classes that manage the underlying C handles automatically.
+
+### Buffer iterator
+
+```cpp
+#include <tensogram.hpp>
+
+auto buf = /* read file into std::vector<uint8_t> */;
+tensogram::buffer_iterator iter(buf.data(), buf.size());
+
+const std::uint8_t* msg_ptr;
+std::size_t msg_len;
+while (iter.next(msg_ptr, msg_len)) {
+    auto msg = tensogram::decode(msg_ptr, msg_len);
+    std::printf("version=%llu objects=%zu\n", msg.version(), msg.num_objects());
+}
+```
+
+### File iterator
+
+```cpp
+auto f = tensogram::file::open("forecast.tgm");
+tensogram::file_iterator iter(f);
+
+std::vector<std::uint8_t> raw;
+while (iter.next(raw)) {
+    auto msg = tensogram::decode(raw.data(), raw.size());
+    std::printf("objects=%zu\n", msg.num_objects());
+}
+```
+
+### Object iterator
+
+```cpp
+tensogram::object_iterator iter(msg_ptr, msg_len);
+tensogram::message obj = tensogram::decode(msg_ptr, msg_len); // placeholder for next()
+while (iter.next(obj)) {
+    auto o = obj.object(0);
+    auto shape = o.shape();
+    std::printf("dtype=%s shape=[%llu, %llu]\n",
+                o.dtype_string().c_str(), shape[0], shape[1]);
+}
+```
+
+### Range-based for on message
+
+```cpp
+auto msg = tensogram::decode(buf, len);
+for (const auto& obj : msg) {
+    std::printf("dtype=%s bytes=%zu\n",
+                obj.dtype_string().c_str(), obj.data_size());
+}
+```
+
 ## Python API
 
 The Python bindings support the iterator protocol natively:

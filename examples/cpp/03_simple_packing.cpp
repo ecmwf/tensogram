@@ -1,24 +1,19 @@
-/// Example 03 — Simple packing (C++)
+/// @file 03_simple_packing.cpp
+/// @brief Example 03 — Simple packing (lossy quantization) using the C++ wrapper.
 ///
-/// Demonstrates lossy compression via simple_packing.
-/// The packing parameters (bits_per_value etc.) are computed by the library
-/// and embedded in the CBOR metadata, so the decoder is self-contained.
+/// Demonstrates encoding with simple_packing at a given bits_per_value,
+/// then decoding and measuring the quantization error.
 
+#include <tensogram.hpp>
+
+extern "C" {
+#include "tensogram.h"
+}
+
+#include <cassert>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
 #include <vector>
-#include <stdexcept>
-
-#include "tensogram.h"
-
-static void check(tgm_error_t err, const char *ctx) {
-    if (err != TGM_OK) {
-        char buf[256];
-        std::snprintf(buf, sizeof(buf), "%s: %s", ctx, tgm_error_string(err));
-        throw std::runtime_error(buf);
-    }
-}
 
 int main() {
     constexpr int N = 1000;
@@ -28,73 +23,58 @@ int main() {
     for (int i = 0; i < N; ++i)
         temps[i] = 249.15 + i * 0.1;
 
-    // ── Metadata requests simple_packing at 16 bits per value ─────────────────
-    //
-    // The library computes reference_value, binary_scale_factor, etc. from
-    // the actual data and writes them into the CBOR metadata automatically.
-    // The caller does not need to compute these parameters.
-    const char *metadata_json = R"({
-        "version": 1,
-        "objects": [{
-            "type": "ntensor",
-            "ndim": 1,
-            "shape": [1000],
-            "strides": [1],
-            "dtype": "float64"
-        }],
-        "payload": [{
-            "byte_order": "big",
-            "encoding": "simple_packing",
-            "bits_per_value": 16,
-            "decimal_scale_factor": 0,
-            "filter": "none",
-            "compression": "none"
-        }]
-    })";
+    // -- Compute packing parameters --
+    double reference_value = 0.0;
+    std::int32_t binary_scale_factor = 0;
+    constexpr std::uint32_t bits_per_value = 16;
+    constexpr std::int32_t decimal_scale_factor = 0;
 
-    // NOTE: The C API accepts encoding parameters in the JSON and computes
-    // the remaining parameters internally (reference_value, binary_scale_factor)
-    // from the actual data. This differs from the Rust API where you call
-    // compute_params() yourself.
+    tgm_error err = tgm_simple_packing_compute_params(
+        temps.data(), temps.size(),
+        bits_per_value, decimal_scale_factor,
+        &reference_value, &binary_scale_factor);
+    assert(err == TGM_ERROR_OK);
 
-    const uint8_t *data_ptr = reinterpret_cast<const uint8_t*>(temps.data());
-    size_t         data_len = N * sizeof(double);
-    const uint8_t *ptrs[]   = { data_ptr };
-    size_t         lens[]   = { data_len };
+    // -- Build JSON with simple_packing encoding --
+    char ref_buf[64];
+    std::snprintf(ref_buf, sizeof(ref_buf), "%.17g", reference_value);
 
-    uint8_t *msg_buf = nullptr;
-    size_t   msg_len = 0;
-    check(tgm_encode(metadata_json, ptrs, lens, 1, &msg_buf, &msg_len), "encode");
+    std::string json =
+        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[1000],"strides":[8],"dtype":"float64","byte_order":"little","encoding":"simple_packing","filter":"none","compression":"none","bits_per_value":)" +
+        std::to_string(bits_per_value) +
+        R"(,"reference_value":)" + std::string(ref_buf) +
+        R"(,"binary_scale_factor":)" + std::to_string(binary_scale_factor) +
+        R"(,"decimal_scale_factor":)" + std::to_string(decimal_scale_factor) +
+        R"(}]})";
 
-    std::size_t expected_packed = (N * 16 + 7) / 8;
-    std::printf("Raw:    %zu bytes\n", data_len);
-    std::printf("Packed: ~%zu bytes (estimate)\n", expected_packed);
-    std::printf("Total message: %zu bytes\n", msg_len);
-    std::printf("Compression ratio: ~%.1fx\n",
-                static_cast<double>(data_len) / expected_packed);
+    // -- Encode --
+    std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
+        {reinterpret_cast<const std::uint8_t*>(temps.data()),
+         temps.size() * sizeof(double)}
+    };
 
-    // ── Decode ────────────────────────────────────────────────────────────────
-    tgm_message_t *raw_msg = nullptr;
-    check(tgm_decode(msg_buf, msg_len, &raw_msg), "decode");
+    auto encoded = tensogram::encode(json, objects);
+    std::printf("Raw:     %zu bytes\n", temps.size() * sizeof(double));
+    std::printf("Encoded: %zu bytes\n", encoded.size());
 
-    size_t decoded_len = 0;
-    const uint8_t *decoded = tgm_object_data(raw_msg, 0, &decoded_len);
+    // -- Decode --
+    auto msg = tensogram::decode(encoded.data(), encoded.size());
+    auto obj = msg.object(0);
+    assert(obj.encoding() == "simple_packing");
 
-    // Decoded values are always f64 regardless of original dtype
-    const double *decoded_temps = reinterpret_cast<const double*>(decoded);
-    size_t n_decoded = decoded_len / sizeof(double);
-    assert(n_decoded == static_cast<size_t>(N));
+    const double* decoded = obj.data_as<double>();
+    const std::size_t count = obj.element_count<double>();
+    assert(count == static_cast<std::size_t>(N));
 
+    // -- Measure quantization error --
     double max_err = 0.0;
     for (int i = 0; i < N; ++i) {
-        double err = std::abs(temps[i] - decoded_temps[i]);
-        if (err > max_err) max_err = err;
+        const double e = std::abs(temps[i] - decoded[i]);
+        if (e > max_err) max_err = e;
     }
     std::printf("Max error: %.6f K\n", max_err);
     assert(max_err < 0.01);
     std::printf("Precision OK (< 0.01 K)\n");
 
-    tgm_message_free(raw_msg);
-    tgm_free(msg_buf);
     return 0;
 }

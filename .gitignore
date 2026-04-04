@@ -1,6 +1,7 @@
 .claude/
 .sisyphus/
 **/target
+/build/
 Cargo.lock
 /docs/book
 **/.venv

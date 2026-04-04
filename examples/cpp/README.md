@@ -1,97 +1,124 @@
 # C++ Examples
 
-> **Status:** The C FFI (`tensogram-ffi`) is not yet implemented.
-> These examples show the **intended API** once the FFI bindings are complete.
-> They document the design contract so implementors have a clear target.
+These examples demonstrate the Tensogram C++ wrapper API (`tensogram.hpp`),
+which provides RAII handle management, typed exceptions, and an idiomatic
+C++17 interface over the C FFI.
 
-The C API uses opaque handles and typed getters — a pattern that lets C++
-callers use it directly via `extern "C"` declarations without a wrapper layer.
+## Examples
 
-## Planned Header
+| File | Description |
+|------|-------------|
+| `01_encode_decode.cpp` | Basic encode/decode round-trip with a 2D float32 grid |
+| `02_mars_metadata.cpp` | MARS-namespaced metadata: encode, decode, dot-notation key lookup |
+| `03_simple_packing.cpp` | Lossy quantization via simple_packing with error measurement |
+| `04_file_api.cpp` | File API: create, append, open, random-access decode |
+| `05_iterators.cpp` | All iterator patterns: buffer, file, object, and range-based for |
 
-```c
-// tensogram.h (planned)
-#pragma once
-#include <stdint.h>
-#include <stddef.h>
+## API Overview
 
-// Opaque handles
-typedef struct tgm_message_t   tgm_message_t;
-typedef struct tgm_metadata_t  tgm_metadata_t;
-typedef struct tgm_file_t      tgm_file_t;
-
-// Error codes
-typedef enum {
-    TGM_OK              = 0,
-    TGM_ERR_FRAMING     = 1,
-    TGM_ERR_METADATA    = 2,
-    TGM_ERR_ENCODING    = 3,
-    TGM_ERR_HASH        = 4,
-    TGM_ERR_OBJECT      = 5,
-    TGM_ERR_IO          = 6,
-} tgm_error_t;
+```cpp
+#include <tensogram.hpp>
 
 // Encode
-tgm_error_t tgm_encode(
-    const char    *cbor_metadata_json,  // JSON → CBOR is done by the library
-    const uint8_t *const *data_ptrs,
-    const size_t  *data_lens,
-    size_t         num_objects,
-    uint8_t      **out_buf,             // caller must free with tgm_free()
-    size_t        *out_len
-);
+auto encoded = tensogram::encode(metadata_json, objects, opts);
 
 // Decode
-tgm_error_t tgm_decode(
-    const uint8_t *buf,
-    size_t         buf_len,
-    tgm_message_t **out_message
-);
+auto msg = tensogram::decode(buf, len);
+auto meta = tensogram::decode_metadata(buf, len);
+auto msg2 = tensogram::decode_object(buf, len, index);
 
-tgm_error_t tgm_decode_metadata(
-    const uint8_t  *buf,
-    size_t          buf_len,
-    tgm_metadata_t **out_metadata
-);
+// Access decoded data
+msg.version();          // wire-format version
+msg.num_objects();      // number of data objects
+auto obj = msg.object(0);
+obj.dtype_string();     // "float32", "int64", etc.
+obj.shape();            // std::vector<uint64_t>
+obj.data_as<float>();   // typed pointer to payload
 
-// Metadata accessors
-uint64_t    tgm_metadata_version(const tgm_metadata_t *m);
-size_t      tgm_metadata_num_objects(const tgm_metadata_t *m);
-const char *tgm_metadata_get_string(const tgm_metadata_t *m, const char *key);
-int64_t     tgm_metadata_get_int(const tgm_metadata_t *m, const char *key, int64_t default_val);
+// Range-based for over objects
+for (const auto& obj : msg) { ... }
 
-// Object accessors (from decoded message)
-size_t      tgm_message_num_objects(const tgm_message_t *msg);
-size_t      tgm_object_ndim(const tgm_message_t *msg, size_t index);
-const uint64_t *tgm_object_shape(const tgm_message_t *msg, size_t index);
-const char *tgm_object_dtype(const tgm_message_t *msg, size_t index);
-const uint8_t *tgm_object_data(const tgm_message_t *msg, size_t index, size_t *out_len);
+// Metadata key lookup (dot-notation)
+meta.get_string("mars.class");
+meta.get_int("custom_int", default_val);
+meta.get_float("custom_float", default_val);
 
 // File API
-tgm_error_t tgm_file_open(const char *path, tgm_file_t **out_file);
-tgm_error_t tgm_file_create(const char *path, tgm_file_t **out_file);
-tgm_error_t tgm_file_message_count(tgm_file_t *file, size_t *out_count);
-tgm_error_t tgm_file_decode_message(
-    tgm_file_t     *file,
-    size_t          index,
-    tgm_message_t **out_message
-);
-void tgm_file_close(tgm_file_t *file);
+auto f = tensogram::file::create(path);
+f.append(json, objects);
+f.append_raw(encoded_bytes);
+auto msg = f.decode_message(index);
 
-// Memory management
-void tgm_message_free(tgm_message_t *msg);
-void tgm_metadata_free(tgm_metadata_t *meta);
-void tgm_free(void *ptr);
+// Iterators
+tensogram::buffer_iterator iter(buf, len);
+tensogram::file_iterator iter(file);
+tensogram::object_iterator iter(buf, len);
 
-// Error string
-const char *tgm_error_string(tgm_error_t err);
+// Streaming encoder
+tensogram::streaming_encoder enc(path, metadata_json, opts);
+enc.write_object(descriptor_json, data, len);
+enc.finish();
+
+// Utilities
+auto entries = tensogram::scan(buf, len);
+auto hash = tensogram::compute_hash(data, len, "xxh3");
 ```
 
-## Build (planned)
+## Error Handling
 
-```cmake
-find_package(tensogram REQUIRED)
-target_link_libraries(my_app PRIVATE tensogram::tensogram)
+All Tensogram functions throw typed exceptions on failure:
+
+```cpp
+try {
+    auto msg = tensogram::decode(buf, len);
+} catch (const tensogram::framing_error& e) {
+    // Invalid message framing
+} catch (const tensogram::hash_mismatch_error& e) {
+    // Payload hash mismatch
+} catch (const tensogram::error& e) {
+    // Any Tensogram error (base class)
+    e.code();   // C-level tgm_error code
+    e.what();   // Human-readable message
+}
 ```
 
-Or manually with the `.a` / `.so` from `cargo build --release -p tensogram-ffi`.
+## Build
+
+### Prerequisites
+
+Build the Rust static library first (required by both methods):
+
+```bash
+cargo build --release
+```
+
+### CMake (recommended)
+
+The project root `CMakeLists.txt` already builds the Rust library and sets up
+include paths. Add example targets there, or build from the project root:
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
+
+### Manual g++ (fallback)
+
+```bash
+# Linux:
+g++ -std=c++17 \
+    -I include -I crates/tensogram-ffi \
+    examples/cpp/01_encode_decode.cpp \
+    -L target/release -ltensogram_ffi \
+    -ldl -lpthread -lm \
+    -o example_01
+
+# macOS:
+g++ -std=c++17 \
+    -I include -I crates/tensogram-ffi \
+    examples/cpp/01_encode_decode.cpp \
+    -L target/release -ltensogram_ffi \
+    -framework CoreFoundation -framework Security -framework SystemConfiguration \
+    -lc++ -lm \
+    -o example_01
+```

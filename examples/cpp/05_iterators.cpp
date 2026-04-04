@@ -1,110 +1,110 @@
-/// Example 05 — Iterator APIs (C++)
+/// @file 05_iterators.cpp
+/// @brief Example 05 — Iterator APIs using the C++ wrapper.
 ///
 /// Shows three iterator patterns:
-///   tgm_buffer_iter_*  — iterate over messages in a byte buffer
-///   tgm_file_iter_*    — iterate over messages in a file (seek-based)
-///   tgm_object_iter_*  — iterate over objects within a message
-///
-/// All iterators follow the create → next → free pattern.
-/// tgm_*_iter_next returns TGM_OK while items remain, TGM_END_OF_ITER when done.
+///   buffer_iterator  — iterate over messages in a byte buffer
+///   file_iterator    — iterate over messages in a file
+///   object_iterator  — iterate over objects within a message
+
+#include <tensogram.hpp>
 
 #include <cassert>
 #include <cstdio>
-#include <cstring>
-#include <stdexcept>
+#include <cstdlib>
 #include <vector>
 
-#include "tensogram.h"
-
-static void check(tgm_error_t err, const char *ctx) {
-    if (err != TGM_OK) {
-        char buf[256];
-        std::snprintf(buf, sizeof(buf), "%s: %s", ctx, tgm_error_string(err));
-        throw std::runtime_error(buf);
-    }
-}
-
-// Encode a small 4×4 float32 message for demonstration.
-static tgm_bytes_t encode_demo_message(const char *param) {
-    char json[512];
-    std::snprintf(json, sizeof(json), R"({
-        "version": 1,
-        "objects": [{
-            "type": "ntensor", "ndim": 2,
-            "shape": [4, 4], "strides": [4, 1],
-            "dtype": "float32"
-        }],
-        "payload": [{
-            "byte_order": "little",
-            "encoding": "none", "filter": "none", "compression": "none"
-        }],
-        "mars": {"param": "%s"}
-    })", param);
-
-    float data[16] = {};
-    const uint8_t *ptrs[] = { reinterpret_cast<const uint8_t*>(data) };
-    size_t lens[] = { sizeof(data) };
-
-    tgm_bytes_t out;
-    check(tgm_encode(json, ptrs, lens, 1, nullptr, &out), "encode");
-    return out;
-}
-
 int main() {
-    // ── 1. Buffer iteration ─────────────────────────────────────────────────
-    //
-    // Encode 3 messages, concatenate, iterate with tgm_buffer_iter.
-    printf("=== Buffer iterator ===\n");
+    // -- 1. Buffer iteration --
+    std::printf("=== Buffer iterator ===\n");
 
-    std::vector<tgm_bytes_t> encoded;
-    const char *params[] = { "2t", "10u", "msl" };
-    std::vector<uint8_t> buf;
+    // Encode 3 messages with different element counts
+    auto e1 = tensogram::encode(
+        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[2],"strides":[4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})",
+        {{reinterpret_cast<const std::uint8_t*>("\0\0\x80\x3f\0\0\0\x40"), 8}});
+    auto e2 = tensogram::encode(
+        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[3],"strides":[4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})",
+        {{reinterpret_cast<const std::uint8_t*>("\0\0\x80\x3f\0\0\0\x40\0\0\x40\x40"), 12}});
 
-    for (auto p : params) {
-        auto msg = encode_demo_message(p);
-        buf.insert(buf.end(), msg.data, msg.data + msg.len);
-        encoded.push_back(msg);
-    }
+    // Concatenate into a single buffer
+    std::vector<std::uint8_t> buf;
+    buf.insert(buf.end(), e1.begin(), e1.end());
+    buf.insert(buf.end(), e2.begin(), e2.end());
 
-    tgm_buffer_iter_t *iter = nullptr;
-    check(tgm_buffer_iter_create(buf.data(), buf.size(), &iter), "buffer_iter_create");
-    printf("  %zu messages found\n", tgm_buffer_iter_count(iter));
+    tensogram::buffer_iterator iter(buf.data(), buf.size());
+    std::printf("  %zu messages found\n", iter.count());
 
-    const uint8_t *msg_ptr;
-    size_t msg_len;
+    const std::uint8_t* msg_ptr = nullptr;
+    std::size_t msg_len = 0;
     int idx = 0;
-    while (tgm_buffer_iter_next(iter, &msg_ptr, &msg_len) == TGM_OK) {
-        printf("  [%d] %zu bytes\n", idx++, msg_len);
+    while (iter.next(msg_ptr, msg_len)) {
+        auto msg = tensogram::decode(msg_ptr, msg_len);
+        std::printf("  [%d] %zu bytes, %zu objects\n",
+                    idx++, msg_len, msg.num_objects());
     }
-    tgm_buffer_iter_free(iter);
 
-    // ── 2. Object iteration ─────────────────────────────────────────────────
-    //
-    // Iterate over objects in the first message.
-    printf("\n=== Object iterator ===\n");
+    // -- 2. File iteration --
+    std::printf("\n=== File iterator ===\n");
 
-    tgm_object_iter_t *obj_iter = nullptr;
-    check(tgm_object_iter_create(encoded[0].data, encoded[0].len, 0, &obj_iter),
-          "object_iter_create");
+    const char* path = "/tmp/tensogram_iter_example.tgm";
+    {
+        auto f = tensogram::file::create(path);
+        f.append_raw(e1);
+        f.append_raw(e2);
+    }
 
-    tgm_message_t *obj_msg = nullptr;
+    {
+        auto f = tensogram::file::open(path);
+        tensogram::file_iterator fiter(f);
+        std::vector<std::uint8_t> raw;
+        idx = 0;
+        while (fiter.next(raw)) {
+            auto msg = tensogram::decode(raw.data(), raw.size());
+            std::printf("  [%d] %zu bytes, %zu objects\n",
+                        idx++, raw.size(), msg.num_objects());
+        }
+    }
+    std::remove(path);
+
+    // -- 3. Object iteration --
+    std::printf("\n=== Object iterator ===\n");
+
+    // Build a 2-object message
+    std::vector<float> fvals = {1.0f, 2.0f};
+    std::vector<double> dvals = {10.0, 20.0, 30.0};
+
+    std::string multi_json = R"({"version":2,"descriptors":[)"
+        R"({"type":"ndarray","ndim":1,"shape":[2],"strides":[4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"},)"
+        R"({"type":"ndarray","ndim":1,"shape":[3],"strides":[8],"dtype":"float64","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
+
+    std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
+        {reinterpret_cast<const std::uint8_t*>(fvals.data()),
+         fvals.size() * sizeof(float)},
+        {reinterpret_cast<const std::uint8_t*>(dvals.data()),
+         dvals.size() * sizeof(double)}
+    };
+
+    auto multi_encoded = tensogram::encode(multi_json, objects);
+
+    // Need a message to receive each iteration result
+    auto dummy = tensogram::decode(multi_encoded.data(), multi_encoded.size());
+    tensogram::object_iterator oiter(multi_encoded.data(), multi_encoded.size());
     idx = 0;
-    while (tgm_object_iter_next(obj_iter, &obj_msg) == TGM_OK) {
-        uint64_t ndim = tgm_object_ndim(obj_msg, 0);
-        const uint64_t *shape = tgm_object_shape(obj_msg, 0);
-        printf("  object[%d] ndim=%llu shape=[%llu, %llu]\n",
-               idx++, (unsigned long long)ndim,
-               (unsigned long long)shape[0],
-               (unsigned long long)shape[1]);
-        tgm_message_free(obj_msg);
-    }
-    tgm_object_iter_free(obj_iter);
-
-    // Clean up encoded messages
-    for (auto &m : encoded) {
-        tgm_bytes_free(m);
+    while (oiter.next(dummy)) {
+        auto obj = dummy.object(0);
+        std::printf("  object[%d] dtype=%s  data=%zu bytes\n",
+                    idx++, obj.dtype_string().c_str(), obj.data_size());
     }
 
-    printf("\nIterator example complete.\n");
+    // -- 4. Range-based for over message objects --
+    std::printf("\n=== Range-based for ===\n");
+
+    auto msg = tensogram::decode(multi_encoded.data(), multi_encoded.size());
+    idx = 0;
+    for (const auto& obj : msg) {
+        std::printf("  object[%d] dtype=%s\n",
+                    idx++, obj.dtype_string().c_str());
+    }
+
+    std::printf("\nIterator example complete.\n");
     return 0;
 }

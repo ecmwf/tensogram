@@ -184,6 +184,15 @@ impl TensogramFile {
         &self.path
     }
 
+    /// Invalidate the cached message offsets.
+    ///
+    /// Call this after any external modification to the underlying file
+    /// (e.g. raw byte append) so that the next `message_count()` or
+    /// `read_message()` re-scans the file.
+    pub fn invalidate_offsets(&mut self) {
+        self.message_offsets = None;
+    }
+
     // ── Async API (requires `async` feature) ─────────────────────────
 
     /// Open a file and scan it asynchronously.
