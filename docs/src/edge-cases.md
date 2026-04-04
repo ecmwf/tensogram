@@ -111,3 +111,59 @@ This invariant means decoders can always seek to `first_footer_offset` and deter
 ## Inter-Frame Padding
 
 The encoder may insert padding bytes between frames for memory alignment (e.g. 64-bit alignment). Padding appears between the `ENDF` marker of one frame and the `FR` marker of the next. Decoders should scan for the `FR` marker rather than assuming frames are contiguous.
+
+## Zero-Element Tensors
+
+Shapes containing zero dimensions are valid: `shape: [0]`, `shape: [3, 0, 5]`. This matches numpy and PyTorch semantics where zero-element tensors are legitimate objects (e.g. an empty batch). The encoded payload for a zero-element tensor is zero bytes.
+
+## Scalar Tensors
+
+`shape: []` (empty shape, `ndim: 0`) represents a scalar tensor containing exactly one element. The payload size equals `dtype.byte_width()` bytes.
+
+## Metadata-Only Messages
+
+A message with zero data objects is valid. This can be used to transmit metadata without any tensor data (e.g. coordination signals, timestamps, provenance records). Both `encode()` with an empty descriptors slice and `StreamingEncoder` with no `write_object()` calls produce valid messages.
+
+## Mixed Dtypes in One Message
+
+Multiple data objects in the same message may have different dtypes. For example, a `Float32` tensor paired with a `Bitmask` object used as a missing-data mask. Each object's pipeline (encoding, filter, compression) is configured independently.
+
+## Bitmask with Encoding/Compression
+
+Bitmask data is internally packed into `uint8` bytes. Any encoding or compression pipeline that supports `uint8` should work with bitmask data. The total bit count must be stored separately (in the shape) since the byte count `ceil(N / 8)` may not equal `N` exactly.
+
+## Strides Validation
+
+Strides are validated for length: `strides.len()` must match `shape.len()`. Non-contiguous strides (e.g. `shape: [4, 4], strides: [8, 1]`) are accepted — they indicate a view into a larger array and are semantically valid.
+
+## Version Constraints
+
+- `version: 0` and `version: 1` are deprecated and must be rejected by the decoder.
+- `version: 2` is the current version.
+- Higher versions (3+) are reserved for future use and will be valid once defined.
+
+## NaN/Infinity in Simple Packing Parameters
+
+If `reference_value` is NaN or Infinity, encoding fails immediately with a clear error. This value is used in the quantization formula and would produce corrupt output. (`binary_scale_factor` and `decimal_scale_factor` are integers and cannot be NaN/Infinity.)
+
+## Duplicate CBOR Keys
+
+Duplicate keys at the same level in a CBOR map are never accepted. The library uses canonical CBOR (RFC 8949 §4.2) which inherently rejects duplicate keys. Same-name keys at different nesting levels are acceptable: `common["foo"]` and `reserved["foo"]` are distinct keys.
+
+## Unknown Hash Algorithm on Decode
+
+If a message contains a hash with an algorithm the decoder doesn't recognize (e.g. `"sha256"` when only `xxh3` is implemented), `verify_hash: true` issues a warning and skips verification rather than returning an error. This ensures forward compatibility when new hash algorithms are added.
+
+## decode_range with Empty Ranges
+
+Calling `decode_range()` with an empty `ranges` slice (`&[]`) returns an empty `Vec<u8>`. This is not an error.
+
+## File Concatenation
+
+Tensogram is a message format, not a file format. Multiple `.tgm` files can be concatenated:
+
+```bash
+cat 1.tgm 2.tgm > all.tgm
+```
+
+The resulting file is valid. `scan()` and `TensogramFile` will find all messages from both source files.

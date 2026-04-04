@@ -20,7 +20,8 @@
     - if successful, carefully:
         - select files and contributions to git add
         - ignore the build files and artifacts, don't add hidden directories
-        - create a new properly named branch and git commit
+        - if not in a branch, create a new properly named branch
+        - git commit
         - make a pull request to upstream github project
 
 # Design & Purpose

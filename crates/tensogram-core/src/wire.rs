@@ -120,8 +120,14 @@ impl Preamble {
         if &buf[0..8] != MAGIC {
             return Err(TensogramError::Framing("invalid magic bytes".to_string()));
         }
+        let version = read_u16_be(buf, 8);
+        if version < 2 {
+            return Err(TensogramError::Framing(format!(
+                "unsupported message version {version} (versions 0 and 1 are deprecated, minimum is 2)"
+            )));
+        }
         Ok(Preamble {
-            version: read_u16_be(buf, 8),
+            version,
             flags: MessageFlags::new(read_u16_be(buf, 10)),
             reserved: read_u32_be(buf, 12),
             total_length: read_u64_be(buf, 16),
