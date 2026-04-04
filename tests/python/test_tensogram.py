@@ -809,9 +809,10 @@ class TestErrors:
         with pytest.raises((ValueError, RuntimeError)):
             tensogram.decode(bytes(corrupted), verify_hash=True)
 
-    def test_file_open_nonexistent(self):
+    def test_file_open_nonexistent(self, tmp_path):
+        nonexistent_path = tmp_path / "nonexistent_file_12345.tgm"
         with pytest.raises(OSError, match="nonexistent"):
-            tensogram.TensogramFile.open("/tmp/nonexistent_file_12345.tgm")
+            tensogram.TensogramFile.open(str(nonexistent_path))
 
     def test_encode_bad_pair_format(self):
         """Passing non-tuple elements should raise."""

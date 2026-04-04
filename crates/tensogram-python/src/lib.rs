@@ -831,8 +831,16 @@ fn compute_strides(shape: &[u64]) -> Vec<u64> {
 // ---------------------------------------------------------------------------
 
 /// Decode raw bytes into a flat Vec<$T> by reinterpreting via from_ne_bytes.
+/// Returns a `PyValueError` if `bytes.len()` is not an exact multiple of `$width`.
 macro_rules! decode_ne_vec {
     ($bytes:expr, $T:ty, $width:expr) => {{
+        if $bytes.len() % $width != 0 {
+            return Err(PyValueError::new_err(format!(
+                "byte length {} is not a multiple of element width {}",
+                $bytes.len(),
+                $width,
+            )));
+        }
         $bytes
             .chunks_exact($width)
             .map(|c| <$T>::from_ne_bytes(c.try_into().unwrap()))
@@ -873,7 +881,9 @@ fn bytes_to_numpy(py: Python<'_>, desc: &DataObjectDescriptor, bytes: &[u8]) -> 
         Dtype::Float32 => numpy_from_ne!(py, bytes, shape, f32, 4),
         Dtype::Float64 => numpy_from_ne!(py, bytes, shape, f64, 8),
         Dtype::Int8 => {
-            // Safety: i8 and u8 have identical layout; reinterpret without copy.
+            // Safety: i8 and u8 have identical in-memory layout. Cast the slice
+            // to &[i8] to avoid an intermediate Vec allocation; from_slice still
+            // copies the data into the NumPy-owned buffer.
             let values: &[i8] =
                 unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<i8>(), bytes.len()) };
             let arr = numpy::PyArray::from_slice(py, values).reshape(shape)?;
@@ -883,7 +893,8 @@ fn bytes_to_numpy(py: Python<'_>, desc: &DataObjectDescriptor, bytes: &[u8]) -> 
         Dtype::Int32 => numpy_from_ne!(py, bytes, shape, i32, 4),
         Dtype::Int64 => numpy_from_ne!(py, bytes, shape, i64, 8),
         Dtype::Uint8 => {
-            // Zero-copy: numpy borrows the slice (copies internally in from_slice).
+            // Avoids intermediate Vec allocation; from_slice copies directly into
+            // the NumPy-owned buffer.
             let arr = numpy::PyArray::from_slice(py, bytes).reshape(shape)?;
             Ok(arr.into_any().unbind())
         }

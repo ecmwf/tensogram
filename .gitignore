@@ -1,9 +1,13 @@
 .claude/
 .sisyphus/
 /target
+**/target
 Cargo.lock
 /docs/book
 /.venv
+**/.venv
+**/.ruff_cache
+**/__pycache__
 *.swp
 *.swo
 *~

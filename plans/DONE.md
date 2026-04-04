@@ -185,7 +185,7 @@ Implemented: 2026-04-03
 - Added `CompressionError::NotAvailable` variant for disabled features
 - Updated ARCHITECTURE.md with feature gate table
 
-### Test count: 167 Rust tests (was 165), 84 Python tests, 0 clippy warnings
+### Test count: 167 Rust tests (was 165), 95 Python tests, 0 clippy warnings
 
 ## Examples
 
