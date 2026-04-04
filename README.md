@@ -64,6 +64,15 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint
 cargo build -p tensogram-core --features mmap,async
 ```
 
+**C++ wrapper** (`include/tensogram.hpp`):
+```bash
+cargo build --release                  # build Rust static library first
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build --output-on-failure  # run C++ tests
+```
+See `examples/cpp/` for encode/decode, metadata, file API, and iterator examples.
+
 **GRIB conversion** (requires [ecCodes](https://confluence.ecmwf.int/display/ECC)):
 ```bash
 cargo build -p tensogram-cli --features grib

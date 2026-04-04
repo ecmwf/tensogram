@@ -27,3 +27,11 @@ lz4_flex = "0.11"
 blosc2 = { version = "0.2", default-features = false }
 zfp-sys-cc = "0.2"
 sz3 = "0.4"
+
+# Prevent panics from unwinding across the FFI boundary (undefined behaviour).
+# With panic = "abort", any panic terminates the process immediately.
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
