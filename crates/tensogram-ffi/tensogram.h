@@ -5,74 +5,83 @@
 
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 
-typedef enum tgm_TgmError {
-  OK = 0,
-  FRAMING = 1,
-  METADATA = 2,
-  ENCODING = 3,
-  COMPRESSION = 4,
-  OBJECT = 5,
-  IO = 6,
-  HASH_MISMATCH = 7,
-  INVALID_ARG = 8,
+typedef enum {
+  TGM_ERROR_OK = 0,
+  TGM_ERROR_FRAMING = 1,
+  TGM_ERROR_METADATA = 2,
+  TGM_ERROR_ENCODING = 3,
+  TGM_ERROR_COMPRESSION = 4,
+  TGM_ERROR_OBJECT = 5,
+  TGM_ERROR_IO = 6,
+  TGM_ERROR_HASH_MISMATCH = 7,
+  TGM_ERROR_INVALID_ARG = 8,
   /**
    * Returned by `tgm_*_iter_next` when iteration is exhausted.
    */
-  END_OF_ITER = 9,
-} tgm_TgmError;
+  TGM_ERROR_END_OF_ITER = 9,
+} tgm_error;
 
 /**
  * Opaque handle for iterating over messages in a byte buffer.
  *
  * The caller's buffer must remain valid for the lifetime of this iterator.
  */
-typedef struct tgm_TgmBufferIter tgm_TgmBufferIter;
+typedef struct tgm_buffer_iter_t tgm_buffer_iter_t;
 
 /**
  * File handle.
  */
-typedef struct tgm_TgmFile tgm_TgmFile;
+typedef struct tgm_file_t tgm_file_t;
 
 /**
  * Opaque handle for iterating over messages in a file.
  */
-typedef struct tgm_TgmFileIter tgm_TgmFileIter;
+typedef struct tgm_file_iter_t tgm_file_iter_t;
 
 /**
  * Decoded message: global metadata + decoded (descriptor, payload) pairs.
  */
-typedef struct tgm_TgmMessage tgm_TgmMessage;
+typedef struct tgm_message_t tgm_message_t;
 
 /**
  * Metadata-only handle (no decoded payloads).
  */
-typedef struct tgm_TgmMetadata tgm_TgmMetadata;
+typedef struct tgm_metadata_t tgm_metadata_t;
 
 /**
  * Opaque handle for iterating over objects within a single message.
  */
-typedef struct tgm_TgmObjectIter tgm_TgmObjectIter;
+typedef struct tgm_object_iter_t tgm_object_iter_t;
 
-typedef struct tgm_TgmScanResult tgm_TgmScanResult;
+/**
+ * Opaque handle for scan results.
+ */
+typedef struct tgm_scan_result_t tgm_scan_result_t;
+
+/**
+ * Opaque handle for a streaming encoder that writes data objects progressively.
+ */
+typedef struct tgm_streaming_encoder_t tgm_streaming_encoder_t;
 
 /**
  * An owned byte buffer returned by encode functions.
  */
-typedef struct tgm_TgmBytes {
+typedef struct {
   uint8_t *data;
-  uintptr_t len;
-} tgm_TgmBytes;
+  size_t len;
+} tgm_bytes_t;
 
 /**
  * Scan result: array of (offset, length) pairs.
  */
-typedef struct tgm_TgmScanEntry {
-  uintptr_t offset;
-  uintptr_t length;
-} tgm_TgmScanEntry;
+typedef struct {
+  size_t offset;
+  size_t length;
+} tgm_scan_entry_t;
 
 /**
  * Returns a pointer to the last error message, or NULL if no error.
@@ -83,7 +92,7 @@ const char *tgm_last_error(void);
 /**
  * Free a byte buffer returned by `tgm_encode`.
  */
-void tgm_bytes_free(struct tgm_TgmBytes buf);
+void tgm_bytes_free(tgm_bytes_t buf);
 
 /**
  * Encode a Tensogram message from JSON metadata and raw data slices.
@@ -100,12 +109,12 @@ void tgm_bytes_free(struct tgm_TgmBytes buf);
  * On success returns `TgmError::Ok` and fills `out` with the encoded bytes.
  * The caller must free `out` with `tgm_bytes_free`.
  */
-enum tgm_TgmError tgm_encode(const char *metadata_json,
-                             const uint8_t *const *data_ptrs,
-                             const uintptr_t *data_lens,
-                             uintptr_t num_objects,
-                             const char *hash_algo,
-                             struct tgm_TgmBytes *out);
+tgm_error tgm_encode(const char *metadata_json,
+                     const uint8_t *const *data_ptrs,
+                     const size_t *data_lens,
+                     size_t num_objects,
+                     const char *hash_algo,
+                     tgm_bytes_t *out);
 
 /**
  * Decode a complete message (global metadata + all object payloads).
@@ -116,17 +125,12 @@ enum tgm_TgmError tgm_encode(const char *metadata_json,
  * On success, fills `out` with a `TgmMessage` handle.
  * Free with `tgm_message_free`.
  */
-enum tgm_TgmError tgm_decode(const uint8_t *buf,
-                             uintptr_t buf_len,
-                             int32_t verify_hash,
-                             struct tgm_TgmMessage **out);
+tgm_error tgm_decode(const uint8_t *buf, size_t buf_len, int32_t verify_hash, tgm_message_t **out);
 
 /**
  * Decode only the global metadata (no payload bytes are read).
  */
-enum tgm_TgmError tgm_decode_metadata(const uint8_t *buf,
-                                      uintptr_t buf_len,
-                                      struct tgm_TgmMetadata **out);
+tgm_error tgm_decode_metadata(const uint8_t *buf, size_t buf_len, tgm_metadata_t **out);
 
 /**
  * Decode a single object by index.
@@ -134,11 +138,11 @@ enum tgm_TgmError tgm_decode_metadata(const uint8_t *buf,
  * On success, fills `out` with a `TgmMessage` handle containing exactly
  * one object (at index 0). The global metadata covers the whole message.
  */
-enum tgm_TgmError tgm_decode_object(const uint8_t *buf,
-                                    uintptr_t buf_len,
-                                    uintptr_t index,
-                                    int32_t verify_hash,
-                                    struct tgm_TgmMessage **out);
+tgm_error tgm_decode_object(const uint8_t *buf,
+                            size_t buf_len,
+                            size_t index,
+                            int32_t verify_hash,
+                            tgm_message_t **out);
 
 /**
  * Decode a partial range from an uncompressed object.
@@ -148,14 +152,14 @@ enum tgm_TgmError tgm_decode_object(const uint8_t *buf,
  *
  * On success, fills `out` with a `TgmBytes` buffer of the extracted bytes.
  */
-enum tgm_TgmError tgm_decode_range(const uint8_t *buf,
-                                   uintptr_t buf_len,
-                                   uintptr_t object_index,
-                                   const uint64_t *ranges_offsets,
-                                   const uint64_t *ranges_counts,
-                                   uintptr_t num_ranges,
-                                   int32_t verify_hash,
-                                   struct tgm_TgmBytes *out);
+tgm_error tgm_decode_range(const uint8_t *buf,
+                           size_t buf_len,
+                           size_t object_index,
+                           const uint64_t *ranges_offsets,
+                           const uint64_t *ranges_counts,
+                           size_t num_ranges,
+                           int32_t verify_hash,
+                           tgm_bytes_t *out);
 
 /**
  * Scan a buffer for message boundaries.
@@ -163,47 +167,59 @@ enum tgm_TgmError tgm_decode_range(const uint8_t *buf,
  * Returns a `TgmScanResult` handle. Access entries with `tgm_scan_count`
  * and `tgm_scan_entry`. Free with `tgm_scan_free`.
  */
-enum tgm_TgmError tgm_scan(const uint8_t *buf, uintptr_t buf_len, struct tgm_TgmScanResult **out);
+tgm_error tgm_scan(const uint8_t *buf, size_t buf_len, tgm_scan_result_t **out);
 
-uintptr_t tgm_scan_count(const struct tgm_TgmScanResult *result);
+/**
+ * Returns the number of messages found by `tgm_scan`.
+ */
+size_t tgm_scan_count(const tgm_scan_result_t *result);
 
-struct tgm_TgmScanEntry tgm_scan_entry(const struct tgm_TgmScanResult *result, uintptr_t index);
+tgm_scan_entry_t tgm_scan_entry(const tgm_scan_result_t *result, size_t index);
 
-void tgm_scan_free(struct tgm_TgmScanResult *result);
+/**
+ * Free a scan result handle.
+ */
+void tgm_scan_free(tgm_scan_result_t *result);
 
-uint64_t tgm_message_version(const struct tgm_TgmMessage *msg);
+/**
+ * Returns the wire format version from a decoded message.
+ */
+uint64_t tgm_message_version(const tgm_message_t *msg);
 
 /**
  * Returns the number of decoded objects in this message handle.
  * For `tgm_decode` this equals the total object count; for
  * `tgm_decode_object` this is always 1.
  */
-uintptr_t tgm_message_num_objects(const struct tgm_TgmMessage *msg);
+size_t tgm_message_num_objects(const tgm_message_t *msg);
 
 /**
  * Returns the number of decoded payload buffers.
  * Equivalent to `tgm_message_num_objects` — kept for ABI compatibility.
  */
-uintptr_t tgm_message_num_decoded(const struct tgm_TgmMessage *msg);
+size_t tgm_message_num_decoded(const tgm_message_t *msg);
 
-uint64_t tgm_object_ndim(const struct tgm_TgmMessage *msg, uintptr_t index);
+/**
+ * Returns the number of dimensions for object at index.
+ */
+uint64_t tgm_object_ndim(const tgm_message_t *msg, size_t index);
 
 /**
  * Returns a pointer to the shape array. Length is `tgm_object_ndim()`.
  * The pointer is valid until the message is freed.
  */
-const uint64_t *tgm_object_shape(const struct tgm_TgmMessage *msg, uintptr_t index);
+const uint64_t *tgm_object_shape(const tgm_message_t *msg, size_t index);
 
 /**
  * Returns a pointer to the strides array. Length is `tgm_object_ndim()`.
  */
-const uint64_t *tgm_object_strides(const struct tgm_TgmMessage *msg, uintptr_t index);
+const uint64_t *tgm_object_strides(const tgm_message_t *msg, size_t index);
 
 /**
  * Returns the dtype as a null-terminated string (e.g. "float32").
  * The pointer is valid until the message is freed.
  */
-const char *tgm_object_dtype(const struct tgm_TgmMessage *msg, uintptr_t index);
+const char *tgm_object_dtype(const tgm_message_t *msg, size_t index);
 
 /**
  * Returns a pointer to the decoded payload bytes for a decoded object.
@@ -211,23 +227,64 @@ const char *tgm_object_dtype(const struct tgm_TgmMessage *msg, uintptr_t index);
  * first decoded object, regardless of the original object index).
  * `out_len` receives the byte length.
  */
-const uint8_t *tgm_object_data(const struct tgm_TgmMessage *msg,
-                               uintptr_t decoded_index,
-                               uintptr_t *out_len);
+const uint8_t *tgm_object_data(const tgm_message_t *msg, size_t decoded_index, size_t *out_len);
 
 /**
  * Returns the encoding string for a data object descriptor (e.g. "none", "simple_packing").
+ * The pointer is valid until the message is freed.
  */
-const char *tgm_payload_encoding(const struct tgm_TgmMessage *msg, uintptr_t index);
+const char *tgm_payload_encoding(const tgm_message_t *msg, size_t index);
 
 /**
  * Returns 1 if the object descriptor has a hash, 0 otherwise.
  */
-int32_t tgm_payload_has_hash(const struct tgm_TgmMessage *msg, uintptr_t index);
+int32_t tgm_payload_has_hash(const tgm_message_t *msg, size_t index);
 
-void tgm_message_free(struct tgm_TgmMessage *msg);
+/**
+ * Extract a metadata handle from a decoded message.
+ * The metadata handle is independent — free it separately with `tgm_metadata_free`.
+ */
+tgm_error tgm_message_metadata(const tgm_message_t *msg, tgm_metadata_t **out);
 
-uint64_t tgm_metadata_version(const struct tgm_TgmMetadata *meta);
+/**
+ * Returns the object type string (e.g. "ndarray"). Valid until message freed.
+ */
+const char *tgm_object_type(const tgm_message_t *msg, size_t index);
+
+/**
+ * Returns the byte order string ("big" or "little"). Valid until message freed.
+ */
+const char *tgm_object_byte_order(const tgm_message_t *msg, size_t index);
+
+/**
+ * Returns the filter string (e.g. "none", "shuffle"). Valid until message freed.
+ */
+const char *tgm_object_filter(const tgm_message_t *msg, size_t index);
+
+/**
+ * Returns the compression string (e.g. "none", "zstd"). Valid until message freed.
+ */
+const char *tgm_object_compression(const tgm_message_t *msg, size_t index);
+
+/**
+ * Returns the hash type string ("xxh3") or NULL if no hash. Valid until message freed.
+ */
+const char *tgm_object_hash_type(const tgm_message_t *msg, size_t index);
+
+/**
+ * Returns the hash value hex string or NULL if no hash. Valid until message freed.
+ */
+const char *tgm_object_hash_value(const tgm_message_t *msg, size_t index);
+
+/**
+ * Free a decoded message handle.
+ */
+void tgm_message_free(tgm_message_t *msg);
+
+/**
+ * Returns the wire format version from metadata.
+ */
+uint64_t tgm_metadata_version(const tgm_metadata_t *meta);
 
 /**
  * Returns the number of objects described in the global metadata.
@@ -236,63 +293,87 @@ uint64_t tgm_metadata_version(const struct tgm_TgmMetadata *meta);
  * so this function always returns 0. Use `tgm_message_num_objects` on a
  * decoded `TgmMessage` to get the actual object count.
  */
-uintptr_t tgm_metadata_num_objects(const struct tgm_TgmMetadata *meta);
+size_t tgm_metadata_num_objects(const tgm_metadata_t *meta);
 
 /**
  * Look up a string value by dot-notation key (e.g. "mars.class").
  * Returns NULL if the key is not found or is not a string.
  * The pointer is valid until the metadata handle is freed.
  */
-const char *tgm_metadata_get_string(const struct tgm_TgmMetadata *meta, const char *key);
+const char *tgm_metadata_get_string(const tgm_metadata_t *meta, const char *key);
 
 /**
  * Look up an integer value by dot-notation key.
  * Returns `default_val` if the key is not found or is not an integer.
  */
-int64_t tgm_metadata_get_int(const struct tgm_TgmMetadata *meta,
-                             const char *key,
-                             int64_t default_val);
+int64_t tgm_metadata_get_int(const tgm_metadata_t *meta, const char *key, int64_t default_val);
 
 /**
  * Look up a float value by dot-notation key.
  */
-double tgm_metadata_get_float(const struct tgm_TgmMetadata *meta,
-                              const char *key,
-                              double default_val);
+double tgm_metadata_get_float(const tgm_metadata_t *meta, const char *key, double default_val);
 
-void tgm_metadata_free(struct tgm_TgmMetadata *meta);
+/**
+ * Free a metadata handle.
+ */
+void tgm_metadata_free(tgm_metadata_t *meta);
 
-enum tgm_TgmError tgm_file_open(const char *path, struct tgm_TgmFile **out);
+/**
+ * Open an existing Tensogram file for reading.
+ */
+tgm_error tgm_file_open(const char *path, tgm_file_t **out);
 
-enum tgm_TgmError tgm_file_create(const char *path, struct tgm_TgmFile **out);
+/**
+ * Create a new Tensogram file for writing.
+ */
+tgm_error tgm_file_create(const char *path, tgm_file_t **out);
 
-enum tgm_TgmError tgm_file_message_count(struct tgm_TgmFile *file, uintptr_t *out_count);
+/**
+ * Count messages in the file (may trigger lazy scan).
+ */
+tgm_error tgm_file_message_count(tgm_file_t *file, size_t *out_count);
 
 /**
  * Decode message at `index` from the file.
  * On success fills `out` with a `TgmMessage` handle.
  */
-enum tgm_TgmError tgm_file_decode_message(struct tgm_TgmFile *file,
-                                          uintptr_t index,
-                                          int32_t verify_hash,
-                                          struct tgm_TgmMessage **out);
+tgm_error tgm_file_decode_message(tgm_file_t *file,
+                                  size_t index,
+                                  int32_t verify_hash,
+                                  tgm_message_t **out);
 
 /**
  * Read raw message bytes at `index`.
  * On success fills `out` with a `TgmBytes` buffer.
  */
-enum tgm_TgmError tgm_file_read_message(struct tgm_TgmFile *file,
-                                        uintptr_t index,
-                                        struct tgm_TgmBytes *out);
+tgm_error tgm_file_read_message(tgm_file_t *file, size_t index, tgm_bytes_t *out);
 
 /**
  * Append raw message bytes to the file.
  */
-enum tgm_TgmError tgm_file_append_raw(struct tgm_TgmFile *file,
-                                      const uint8_t *buf,
-                                      uintptr_t buf_len);
+tgm_error tgm_file_append_raw(tgm_file_t *file, const uint8_t *buf, size_t buf_len);
 
-void tgm_file_close(struct tgm_TgmFile *file);
+/**
+ * Returns the file path as a null-terminated string.
+ * The pointer is valid until the file handle is closed.
+ */
+const char *tgm_file_path(const tgm_file_t *file);
+
+/**
+ * Encode and append a message to the file.
+ * Same JSON schema as `tgm_encode` for `metadata_json`.
+ */
+tgm_error tgm_file_append(tgm_file_t *file,
+                          const char *metadata_json,
+                          const uint8_t *const *data_ptrs,
+                          const size_t *data_lens,
+                          size_t num_objects,
+                          const char *hash_algo);
+
+/**
+ * Close a file handle and release resources.
+ */
+void tgm_file_close(tgm_file_t *file);
 
 /**
  * Compute simple_packing parameters for a set of f64 values.
@@ -300,12 +381,12 @@ void tgm_file_close(struct tgm_TgmFile *file);
  * Returns TgmError::Ok on success, filling the out-params.
  * Returns Encoding error if data contains NaN.
  */
-enum tgm_TgmError tgm_simple_packing_compute_params(const double *values,
-                                                    uintptr_t num_values,
-                                                    uint32_t bits_per_value,
-                                                    int32_t decimal_scale_factor,
-                                                    double *out_reference_value,
-                                                    int32_t *out_binary_scale_factor);
+tgm_error tgm_simple_packing_compute_params(const double *values,
+                                            size_t num_values,
+                                            uint32_t bits_per_value,
+                                            int32_t decimal_scale_factor,
+                                            double *out_reference_value,
+                                            int32_t *out_binary_scale_factor);
 
 /**
  * Create a buffer message iterator.
@@ -313,14 +394,12 @@ enum tgm_TgmError tgm_simple_packing_compute_params(const double *values,
  * Scans `buf` once and stores message boundaries. The buffer must remain
  * valid and unmodified until `tgm_buffer_iter_free` is called.
  */
-enum tgm_TgmError tgm_buffer_iter_create(const uint8_t *buf,
-                                         uintptr_t buf_len,
-                                         struct tgm_TgmBufferIter **out);
+tgm_error tgm_buffer_iter_create(const uint8_t *buf, size_t buf_len, tgm_buffer_iter_t **out);
 
 /**
  * Return the total number of messages in the buffer iterator.
  */
-uintptr_t tgm_buffer_iter_count(const struct tgm_TgmBufferIter *iter);
+size_t tgm_buffer_iter_count(const tgm_buffer_iter_t *iter);
 
 /**
  * Advance the buffer iterator. On success, sets `out_buf` and `out_len` to
@@ -329,11 +408,12 @@ uintptr_t tgm_buffer_iter_count(const struct tgm_TgmBufferIter *iter);
  * Returns `TgmError::Ok` if a message is available, `TgmError::EndOfIter`
  * when iteration is exhausted.
  */
-enum tgm_TgmError tgm_buffer_iter_next(struct tgm_TgmBufferIter *iter,
-                                       const uint8_t **out_buf,
-                                       uintptr_t *out_len);
+tgm_error tgm_buffer_iter_next(tgm_buffer_iter_t *iter, const uint8_t **out_buf, size_t *out_len);
 
-void tgm_buffer_iter_free(struct tgm_TgmBufferIter *iter);
+/**
+ * Free a buffer iterator handle.
+ */
+void tgm_buffer_iter_free(tgm_buffer_iter_t *iter);
 
 /**
  * Create a file message iterator from an open TgmFile.
@@ -341,7 +421,7 @@ void tgm_buffer_iter_free(struct tgm_TgmBufferIter *iter);
  * Scans the file to locate message boundaries. The file handle remains
  * usable after this call.
  */
-enum tgm_TgmError tgm_file_iter_create(struct tgm_TgmFile *file, struct tgm_TgmFileIter **out);
+tgm_error tgm_file_iter_create(tgm_file_t *file, tgm_file_iter_t **out);
 
 /**
  * Advance the file iterator. On success, fills `out` with a `TgmBytes`
@@ -351,20 +431,24 @@ enum tgm_TgmError tgm_file_iter_create(struct tgm_TgmFile *file, struct tgm_TgmF
  * Returns `TgmError::Ok` when a message is available, `TgmError::EndOfIter`
  * when iteration is exhausted.
  */
-enum tgm_TgmError tgm_file_iter_next(struct tgm_TgmFileIter *iter, struct tgm_TgmBytes *out);
+tgm_error tgm_file_iter_next(tgm_file_iter_t *iter, tgm_bytes_t *out);
 
-void tgm_file_iter_free(struct tgm_TgmFileIter *iter);
+/**
+ * Free a file iterator handle.
+ */
+void tgm_file_iter_free(tgm_file_iter_t *iter);
 
 /**
  * Create an object iterator from raw message bytes.
  *
  * Parses metadata once, then decodes each object on demand when
- * `tgm_object_iter_next` is called.
+ * `tgm_object_iter_next` is called. The global metadata from the
+ * original message is preserved in each yielded `TgmMessage`.
  */
-enum tgm_TgmError tgm_object_iter_create(const uint8_t *buf,
-                                         uintptr_t buf_len,
-                                         int32_t verify_hash,
-                                         struct tgm_TgmObjectIter **out);
+tgm_error tgm_object_iter_create(const uint8_t *buf,
+                                 size_t buf_len,
+                                 int32_t verify_hash,
+                                 tgm_object_iter_t **out);
 
 /**
  * Advance the object iterator. On success, fills `out` with a `TgmMessage`
@@ -374,8 +458,78 @@ enum tgm_TgmError tgm_object_iter_create(const uint8_t *buf,
  * when iteration is exhausted. Free each yielded `TgmMessage` with
  * `tgm_message_free`.
  */
-enum tgm_TgmError tgm_object_iter_next(struct tgm_TgmObjectIter *iter, struct tgm_TgmMessage **out);
+tgm_error tgm_object_iter_next(tgm_object_iter_t *iter, tgm_message_t **out);
 
-void tgm_object_iter_free(struct tgm_TgmObjectIter *iter);
+/**
+ * Free an object iterator handle.
+ */
+void tgm_object_iter_free(tgm_object_iter_t *iter);
+
+/**
+ * Convert an error code to a human-readable string.
+ * Returns a static string (always valid, never NULL).
+ *
+ * Accepts a raw integer and matches by value so that invalid discriminants
+ * from C callers do not trigger undefined behaviour in Rust.
+ */
+const char *tgm_error_string(tgm_error err);
+
+/**
+ * Compute a hash of the given data.
+ * Returns `TGM_ERROR_OK` on success, fills `out` with a `tgm_bytes_t`
+ * containing the hex-encoded hash string (NOT null-terminated).
+ * Free with `tgm_bytes_free`.
+ */
+tgm_error tgm_compute_hash(const uint8_t *data,
+                           size_t data_len,
+                           const char *algo,
+                           tgm_bytes_t *out);
+
+/**
+ * Create a streaming encoder writing to a file.
+ *
+ * `metadata_json` must contain `"version"` key (and optional extra keys,
+ * but NOT `"descriptors"`).
+ *
+ * `hash_algo`: null-terminated string ("xxh3") or NULL for no hash.
+ *
+ * On success fills `out` with a `TgmStreamingEncoder` handle.
+ * Free with `tgm_streaming_encoder_free` or finalize with
+ * `tgm_streaming_encoder_finish`.
+ */
+tgm_error tgm_streaming_encoder_create(const char *path,
+                                       const char *metadata_json,
+                                       const char *hash_algo,
+                                       tgm_streaming_encoder_t **out);
+
+/**
+ * Write a single data object to the streaming encoder.
+ *
+ * `descriptor_json` is a JSON object with the descriptor fields
+ * (type, ndim, shape, strides, dtype, byte_order, encoding, filter,
+ * compression, etc.).
+ */
+tgm_error tgm_streaming_encoder_write(tgm_streaming_encoder_t *enc,
+                                      const char *descriptor_json,
+                                      const uint8_t *data,
+                                      size_t data_len);
+
+/**
+ * Return the number of objects written so far.
+ */
+size_t tgm_streaming_encoder_count(const tgm_streaming_encoder_t *enc);
+
+/**
+ * Finalize the streaming encoder, writing footer and closing the file.
+ *
+ * After calling this, the handle is still valid but empty — the caller
+ * must still call `tgm_streaming_encoder_free` to release it.
+ */
+tgm_error tgm_streaming_encoder_finish(tgm_streaming_encoder_t *enc);
+
+/**
+ * Free a streaming encoder without finalizing (abandons the output).
+ */
+void tgm_streaming_encoder_free(tgm_streaming_encoder_t *enc);
 
 #endif  /* TENSOGRAM_H */

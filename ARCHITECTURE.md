@@ -55,6 +55,16 @@ For the wire format byte layout, see [docs/src/format/wire-format.md](docs/src/f
 
 The dependency graph is a clean tree. `tensogram-encodings` has no internal dependencies. Everything else flows through `tensogram-core`. `tensogram-grib` is excluded from the default workspace build (requires the ecCodes C library).
 
+## C++ Wrapper
+
+The header-only C++17 wrapper lives at `include/tensogram.hpp`. It delegates all work to the C FFI (`tensogram-ffi`) and adds:
+
+- **RAII classes** — `message`, `metadata`, `file`, `buffer_iterator`, `file_iterator`, `object_iterator`, `streaming_encoder`, each wrapping an opaque C handle via `std::unique_ptr` with a custom deleter.
+- **Typed exceptions** — `tensogram::error` hierarchy maps every C error code to a specific subclass (`framing_error`, `io_error`, `hash_mismatch_error`, etc.).
+- **C++17 idioms** — `[[nodiscard]]`, `std::string_view`, range-based for over decoded objects.
+
+The CMake build system (`CMakeLists.txt`) invokes `cargo build --release` to produce the Rust static library, then exposes an INTERFACE header-only target that links the static lib and platform-specific system libraries.
+
 ## Core Modules (tensogram-core)
 
 ```

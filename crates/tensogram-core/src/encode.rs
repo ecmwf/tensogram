@@ -353,8 +353,14 @@ pub(crate) fn build_pipeline_config(
 fn extract_simple_packing_params(
     params: &BTreeMap<String, ciborium::Value>,
 ) -> Result<SimplePackingParams> {
+    let reference_value = get_f64_param(params, "reference_value")?;
+    if reference_value.is_nan() || reference_value.is_infinite() {
+        return Err(TensogramError::Metadata(format!(
+            "reference_value must be finite, got {reference_value}"
+        )));
+    }
     Ok(SimplePackingParams {
-        reference_value: get_f64_param(params, "reference_value")?,
+        reference_value,
         binary_scale_factor: i32::try_from(get_i64_param(params, "binary_scale_factor")?).map_err(
             |_| TensogramError::Metadata("binary_scale_factor out of i32 range".to_string()),
         )?,

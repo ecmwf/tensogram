@@ -2,9 +2,9 @@
 
 Implemented: 2026-04-03
 
-## Workspace: 5 crates, 137 tests, 0 clippy warnings
+## Workspace: 5 crates, 253 Rust tests + 103 C++ tests, 0 clippy warnings, 90.5% line coverage
 
-### tensogram-core (43 unit tests + 42 integration + 12 adversarial)
+### tensogram-core (43 unit tests + 42 integration + 12 adversarial + 84 edge-case)
 - `wire.rs` — v2 frame-based wire format: Preamble (24B), FrameHeader (16B), Postamble (16B), FrameType enum, MessageFlags, DataObjectFlags
 - `framing.rs` — `encode_message()` with two-pass index construction, `decode_message()`, `scan()` for multi-message buffers
 - `metadata.rs` — Deterministic CBOR encoding for GlobalMetadata, DataObjectDescriptor, IndexFrame, HashFrame (three-step: serialize → canonicalize → write)
@@ -39,18 +39,40 @@ Implemented: 2026-04-03
 - Filename placeholder expansion in `copy`
 - First-match metadata lookup semantics in `get`, `copy`, and filters for multi-object messages
 
-### tensogram-ffi (C FFI)
-- Full C API with opaque handles (`TgmMessage`, `TgmMetadata`, `TgmFile`, `TgmScanResult`)
-- `tgm_encode()` — JSON metadata + raw data slices → wire-format bytes
-- `tgm_decode()`, `tgm_decode_metadata()`, `tgm_decode_object()`, `tgm_decode_range()`
-- `tgm_scan()` — multi-message buffer scanning
-- File API: `tgm_file_open/create/message_count/decode_message/read_message/append_raw/close`
-- Typed accessors: `tgm_object_shape/strides/dtype/data`, `tgm_metadata_get_string/int/float`
-- `tgm_simple_packing_compute_params()` — direct packing parameter computation
+### tensogram-ffi (C FFI — redesigned 2026-04-04)
+- Redesigned C API with clean `tgm_` naming: `tgm_error`, `tgm_message_t`, `tgm_bytes_t`, etc.
+- Enum values use `TGM_ERROR_` prefix: `TGM_ERROR_OK`, `TGM_ERROR_FRAMING`, etc.
+- cbindgen.toml: `[export.rename]` for type names, `prefix_with_name = true` for enum variants
+- Opaque handles: `tgm_message_t`, `tgm_metadata_t`, `tgm_file_t`, `tgm_scan_result_t`, `tgm_streaming_encoder_t`
+- Core API: `tgm_encode()`, `tgm_decode()`, `tgm_decode_metadata()`, `tgm_decode_object()`, `tgm_decode_range()`
+- Scan: `tgm_scan()` — multi-message buffer scanning
+- File API: `tgm_file_open/create/message_count/decode_message/read_message/append_raw/append/path/close`
+- Message accessors: `tgm_message_version/num_objects/metadata`, `tgm_object_ndim/shape/strides/dtype/data/type/byte_order/filter/compression/hash_type/hash_value`, `tgm_payload_encoding/has_hash`
+- Metadata accessors: `tgm_metadata_version/num_objects/get_string/get_int/get_float`
 - Iterator API: `tgm_buffer_iter_*`, `tgm_file_iter_*`, `tgm_object_iter_*` with create/next/free pattern
-- Thread-local error messages via `tgm_last_error()`
-- Auto-generated `tensogram.h` via cbindgen
+- Streaming encoder: `tgm_streaming_encoder_create/write/count/finish/free`
+- Hash utilities: `tgm_compute_hash()` for arbitrary data
+- Error utilities: `tgm_error_string()` converts error code to static string, `tgm_last_error()` for thread-local messages
+- Simple packing: `tgm_simple_packing_compute_params()` — direct packing parameter computation
+- Centralized `build_message_caches()` helper: all TgmMessage construction sites share cache building for descriptor string accessors
+- Auto-generated `tensogram.h` (484 lines) via cbindgen with `usize_is_size_t = true`
 - Static library (`libtensogram_ffi.a`) + shared library (`libtensogram_ffi.dylib/.so`)
+
+### C++ wrapper (header-only, 100 tests — new 2026-04-04)
+- `include/tensogram.hpp` — single-header C++17 wrapper, ~870 lines
+- RAII classes with `std::unique_ptr` + custom deleters: `message`, `metadata`, `file`, `buffer_iterator`, `file_iterator`, `object_iterator`, `streaming_encoder`
+- Typed exception hierarchy: `error` → `framing_error`, `metadata_error`, `encoding_error`, `compression_error`, `object_error`, `io_error`, `hash_mismatch_error`, `invalid_arg_error`
+- `decoded_object` non-owning view with `data_as<T>()`, `element_count<T>()`, full descriptor access
+- `message::iterator` for range-based for loops over objects
+- Free functions: `encode()`, `decode()`, `decode_metadata()`, `decode_object()`, `decode_range()`, `scan()`, `compute_hash()`
+- `file` class: `open()`, `create()`, `append()`, `append_raw()`, `decode_message()`, `read_message()`, `message_count()`, `path()`
+- `streaming_encoder`: `write_object()`, `object_count()`, `finish()`
+- Value types: `scan_entry`, `encode_options`, `decode_options`
+- C++ Core Guidelines compliant: `[[nodiscard]]`, `noexcept` on deleters/moves, `const`-correct, `explicit` constructors, Rule of Five
+- Doxygen-documented classes and methods, thread-safety notes, lifetime documentation
+- CMake build system: `CMakeLists.txt` (root) + `tests/cpp/CMakeLists.txt` with GoogleTest v1.15.2
+- 100 GoogleTest tests across 10 files: encode_decode (12), metadata (12), descriptor (11), file (12), iterators (9), error (8), edge_cases (16), simple_packing (5), streaming (6), multi_dtype (10)
+- All 5 C++ examples rewritten to use the C++ wrapper API
 
 ### tensogram-python (PyO3 bindings)
 - Full Python API with numpy integration (returns `numpy.ndarray` directly)
@@ -185,6 +207,32 @@ Implemented: 2026-04-03
 - Added `CompressionError::NotAvailable` variant for disabled features
 - Updated ARCHITECTURE.md with feature gate table
 
+### Test count:
+- 181 Rust tests
+- 95 Python tests
+- 103 C++ tests
+- 0 clippy warnings
+
+## C++ wrapper & build system (2026-04-04)
+
+### Header-only C++17 wrapper (`include/tensogram.hpp`)
+- `tensogram` namespace wrapping entire C API
+- RAII classes: `message`, `metadata`, `file`, `buffer_iterator`, `file_iterator`, `object_iterator`, `streaming_encoder`
+- Each class holds `std::unique_ptr<T, custom_deleter>` for automatic cleanup
+- Move-only semantics (copy suppressed, move defaulted)
+- Typed exception hierarchy: `error` base → `framing_error`, `metadata_error`, `encoding_error`, `compression_error`, `object_error`, `io_error`, `hash_mismatch_error`, `invalid_arg_error`
+- `detail::check()` maps all C error codes to typed exceptions
+- `decoded_object` non-owning view with typed data access (`data_as<T>()`, `element_count<T>()`)
+- `message::iterator` for range-based for over decoded objects
+- Free functions: `encode()`, `decode()`, `decode_metadata()`, `decode_object()`, `decode_range()`, `scan()`, `compute_hash()`
+- Value types: `scan_entry`, `encode_options`, `decode_options`
+- C++17 only (`std::string_view` for parameters, no C++20 features)
+
+### CMake build system
+- Root `CMakeLists.txt`: builds Rust static library via `cargo build --release`, imports as CMake target, INTERFACE header-only library, platform-specific system library linking (macOS frameworks, Linux dl/pthread)
+- `tests/cpp/CMakeLists.txt`: GoogleTest v1.15.2 via FetchContent, `tensogram_tests` executable
+- 12 passing C++ tests: basic round-trip, helper round-trip, metadata access, decode metadata only, decode single object, descriptor fields, scan buffer, compute hash, hash verification, message iterator, invalid buffer error, error code preservation
+
 ### Metadata improvements (2026-04-04)
 
 #### Doc page: `docs/src/format/metadata-values.md`
@@ -266,8 +314,6 @@ Implemented: 2026-04-03
 - CLI: `--all-keys` flag on `convert-grib` subcommand
 - 3 new integration tests + 2 new unit tests for `partition_grib_keys`
 
-### Test count: 181 Rust tests (was 176), 95 Python tests, 0 clippy warnings
-
 ## Examples
 
 ### examples/rust/ (10 runnable examples, workspace member)
@@ -282,9 +328,10 @@ Implemented: 2026-04-03
 - `09_file_api` — full TensogramFile lifecycle
 - `10_iterators` — buffer/object/file iteration patterns
 
-### examples/cpp/ (intended C FFI API, 5 examples)
+### examples/cpp/ (C++ wrapper API, 5 examples)
 - `01_encode_decode.cpp`, `02_mars_metadata.cpp`, `03_simple_packing.cpp`, `04_file_api.cpp`, `05_iterators.cpp`
-- `README.md` — planned header (`tensogram.h`) with full function signatures
+- All examples use the C++ wrapper (`tensogram.hpp`), not the raw C FFI
+- `README.md` — API overview, error handling, CMake + manual build instructions
 
 ### examples/python/ (intended PyO3 API, 7 examples)
 - `01_encode_decode.py` through `07_iterators.py`
@@ -300,6 +347,45 @@ Implemented: 2026-04-03
 - CLI Reference (info, ls, dump, get, set, copy)
 - Edge Cases and Internals reference pages
 - Mermaid diagrams throughout
+
+## Security/quality audit fixes (2026-04-04)
+
+### Rust FFI (crates/tensogram-ffi/src/lib.rs)
+- Fix 1: Vec capacity UB — added `shrink_to_fit()` before all 5 `std::mem::forget(bytes)` sites to ensure `capacity == len` for safe `tgm_bytes_free` reconstruction via `Vec::from_raw_parts`
+- Fix 2: FFI panic safety — added `panic = "abort"` to both `[profile.release]` and `[profile.dev]` in workspace `Cargo.toml`, preventing UB from panic unwinding across FFI boundary
+- Fix 3: `tgm_streaming_encoder_finish` double-free — removed `Box::from_raw(enc)` from success path; handle is now left valid-but-empty, caller must always call `tgm_streaming_encoder_free`
+- Fix 4: Null data pointer UB — added per-element null check in both `tgm_encode` and `tgm_file_append` before constructing slices; returns `InvalidArg` with index in error message
+- Fix 5: `tgm_error_string` non-exhaustive enum — changed to integer-based matching (`err as i32`) with wildcard `_ => "unknown error"` for safety against invalid discriminants from C callers
+
+### C++ wrapper (include/tensogram.hpp)
+- Fix 6: `streaming_encoder::finish()` — removed `handle_.release()` since C side no longer frees; destructor safely calls `tgm_streaming_encoder_free` on the empty shell
+- Fix 7: Extracted `detail::scatter_gather` helper — deduplicates ptr/len vector building in `encode()` and `file::append()`
+- Fix 8: Added `-Wall -Wextra -Wpedantic -Wno-unused-parameter` to `tests/cpp/CMakeLists.txt` via `target_compile_options`
+- Fix 9: Fixed `examples/cpp/README.md` build command — changed `-I build/generated` to `-I crates/tensogram-ffi`
+
+### Verification: 167 Rust tests + 103 C++ tests pass, 0 clippy warnings, 0 compiler warnings
+
+## Third-pass audit fixes (2026-04-04)
+
+### test_helpers.hpp
+- Fix: `temp_path()` — `mkstemp()` creates a base file that was never deleted; added `std::remove(tmpl)` after `close(fd)` to release the base file before appending the suffix.
+
+### include/tensogram.hpp
+- Doc: `file::message_count()` — expanded Doxygen comment to explain non-const / lazy-scan semantics so callers are not surprised they cannot call it on `const file&`.
+- Doc: `file::raw()` — added `@warning` documenting that the returned pointer is non-owning and must not be freed or stored beyond the `file` lifetime.
+
+### tests/cpp/test_iterators.cpp
+- Fix: `ObjectIteratorSingleObject` — removed two dead variables (`iter` and `msg`) that created unused iterator and message objects.
+
+### tests/cpp/test_encode_decode.cpp
+- New: `DecodeRangePartial` — exercises `tensogram::decode_range()` with a sub-range request `[2, 3)` on an 8-element float32 message; verifies partial element extraction.
+- New: `DecodeRangeFull` — exercises `tensogram::decode_range()` with a full-range request; round-trips all 3 floats.
+
+### tests/cpp/test_error.cpp
+- New: `HashMismatchThrowsHashMismatchError` — encodes with xxh3, corrupts two bytes at the payload offset (53% into the wire buffer), decodes with `verify_hash=true`; asserts `tensogram::hash_mismatch_error` specifically (not just `tensogram::error`).
+
+### examples/cpp/README.md
+- Fix: manual build command was missing platform link flags; split into Linux (`-ldl -lpthread -lm`) and macOS (`-framework CoreFoundation -framework Security -framework SystemConfiguration -lc++ -lm`) sections.
 
 ## Dependencies
 - ciborium 0.2 — CBOR encode/decode
