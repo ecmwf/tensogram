@@ -45,14 +45,12 @@ fn cbor_to_py(py: Python<'_>, val: &ciborium::Value) -> PyResult<PyObject> {
         ciborium::Value::Text(s) => Ok(s.into_pyobject(py)?.into_any().unbind()),
         ciborium::Value::Integer(i) => {
             let n: i128 = (*i).into();
-            Ok((n as i64).into_pyobject(py)?.into_any().unbind())
+            let v = i64::try_from(n)
+                .map_err(|_| PyValueError::new_err(format!("CBOR integer {n} out of i64 range")))?;
+            Ok(v.into_pyobject(py)?.into_any().unbind())
         }
         ciborium::Value::Float(f) => Ok(f.into_pyobject(py)?.into_any().unbind()),
-        ciborium::Value::Bool(b) => Ok((*b)
-            .into_pyobject(py)?
-            .to_owned()
-            .into_any()
-            .unbind()),
+        ciborium::Value::Bool(b) => Ok((*b).into_pyobject(py)?.to_owned().into_any().unbind()),
         ciborium::Value::Null => Ok(py.None()),
         ciborium::Value::Array(arr) => {
             let items: PyResult<Vec<PyObject>> = arr.iter().map(|v| cbor_to_py(py, v)).collect();
@@ -118,10 +116,11 @@ fn extra_to_py(py: Python<'_>, extra: &BTreeMap<String, ciborium::Value>) -> PyR
 // PyDataObjectDescriptor — wraps DataObjectDescriptor (merged tensor + encoding)
 // ---------------------------------------------------------------------------
 
-/// Python class exposing all fields of a DataObjectDescriptor.
+/// Describes a single data object in a Tensogram message.
 ///
-/// In v2 this single descriptor replaces the old split between
-/// `ObjectDescriptor` (tensor info) and `PayloadDescriptor` (encoding info).
+/// Contains both tensor metadata (shape, dtype, strides) and encoding
+/// pipeline info (byte_order, encoding, filter, compression, params).
+/// Returned alongside decoded numpy arrays from ``decode()`` and friends.
 #[pyclass(name = "DataObjectDescriptor")]
 #[derive(Clone)]
 struct PyDataObjectDescriptor {
@@ -221,6 +220,10 @@ impl PyDataObjectDescriptor {
 // each DataObjectDescriptor returned alongside the decoded bytes.
 // ---------------------------------------------------------------------------
 
+/// Message-level metadata.
+///
+/// Access version via ``meta.version`` and extra keys via dict syntax:
+/// ``meta["mars"]``, ``"mars" in meta``, ``meta.extra``.
 #[pyclass(name = "Metadata")]
 #[derive(Clone)]
 struct PyMetadata {
@@ -239,12 +242,17 @@ impl PyMetadata {
         extra_to_py(py, &self.inner.extra)
     }
 
-    /// Dictionary-style access to top-level extra keys.
+    /// Dictionary-style access: ``meta["key"]``.  Raises ``KeyError`` if missing.
     fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<PyObject> {
         match self.inner.extra.get(key) {
             Some(v) => cbor_to_py(py, v),
             None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_string())),
         }
+    }
+
+    /// Membership test: ``"key" in meta``.
+    fn __contains__(&self, key: &str) -> bool {
+        self.inner.extra.contains_key(key)
     }
 
     fn __repr__(&self) -> String {
@@ -260,6 +268,17 @@ impl PyMetadata {
 // PyTensogramFile — wraps TensogramFile
 // ---------------------------------------------------------------------------
 
+/// File-based Tensogram container.
+///
+/// Supports context manager protocol::
+///
+///     with tensogram.TensogramFile.create("out.tgm") as f:
+///         f.append(meta, [(desc, data)])
+///
+///     with tensogram.TensogramFile.open("out.tgm") as f:
+///         meta, objects = f.decode_message(0)
+///
+/// Use ``len(f)`` to get the message count.
 #[pyclass(name = "TensogramFile")]
 struct PyTensogramFile {
     file: TensogramFile,
@@ -281,17 +300,19 @@ impl PyTensogramFile {
         Ok(PyTensogramFile { file })
     }
 
-    /// How many valid messages are in the file.
+    /// Number of valid messages in the file.
     fn message_count(&mut self) -> PyResult<usize> {
         self.file.message_count().map_err(to_py_err)
     }
 
     /// Append one message.
     ///
-    /// `global_meta_dict` describes version and any extra top-level keys.
-    /// `descriptors_and_data` is a list of (descriptor_dict, data) pairs where
-    /// each descriptor_dict contains both tensor info (type, shape, dtype) and
-    /// encoding info (byte_order, encoding, filter, compression, params).
+    /// Args:
+    ///     global_meta_dict: ``{"version": 2, ...}`` with any extra keys.
+    ///     descriptors_and_data: list of ``(descriptor_dict, data)`` pairs.
+    ///         Each descriptor_dict requires ``type``, ``shape``, ``dtype`` and
+    ///         optionally ``byte_order``, ``encoding``, ``filter``, ``compression``.
+    ///     hash: ``"xxh3"`` (default) or ``None`` to skip hashing.
     #[pyo3(signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3")))]
     fn append(
         &mut self,
@@ -311,7 +332,9 @@ impl PyTensogramFile {
             .map_err(to_py_err)
     }
 
-    /// Decode message at index → (Metadata, list[(DataObjectDescriptor, numpy.ndarray)]).
+    /// Decode message at *index* → ``(Metadata, list[(DataObjectDescriptor, ndarray)])``.
+    ///
+    /// Set *verify_hash* to ``True`` to verify payload integrity (default ``False``).
     #[pyo3(signature = (index, verify_hash=None))]
     fn decode_message(
         &mut self,
@@ -330,7 +353,7 @@ impl PyTensogramFile {
         Ok((PyMetadata { inner: global_meta }, result_list))
     }
 
-    /// Raw message bytes at index.
+    /// Raw wire-format bytes for the message at *index*.
     fn read_message<'py>(
         &mut self,
         py: Python<'py>,
@@ -340,7 +363,7 @@ impl PyTensogramFile {
         Ok(PyBytes::new(py, &bytes))
     }
 
-    /// All raw message bytes as a list of bytes objects.
+    /// All raw message bytes as a list of ``bytes`` objects.
     fn messages<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         #[allow(deprecated)]
         let msgs = self.file.messages().map_err(to_py_err)?;
@@ -354,22 +377,39 @@ impl PyTensogramFile {
     fn __repr__(&self) -> String {
         format!("TensogramFile(path='{}')", self.file.path().display())
     }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
+    fn __exit__(
+        &mut self,
+        _exc_type: Option<&Bound<'_, pyo3::PyAny>>,
+        _exc_val: Option<&Bound<'_, pyo3::PyAny>>,
+        _exc_tb: Option<&Bound<'_, pyo3::PyAny>>,
+    ) -> bool {
+        false // do not suppress exceptions
+    }
+
+    fn __len__(&mut self) -> PyResult<usize> {
+        self.file.message_count().map_err(to_py_err)
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Module-level functions
 // ---------------------------------------------------------------------------
 
-/// Encode a Tensogram message.
+/// Encode arrays into a Tensogram wire-format message.
 ///
-/// global_meta_dict: dict with 'version' (int) and any extra top-level keys.
-/// descriptors_and_data: list of (descriptor_dict, data) pairs.
-///   Each descriptor_dict has tensor fields (type, shape, dtype) and
-///   encoding fields (byte_order, encoding, filter, compression, and params as
-///   additional keys).
-/// hash: hash algorithm name ("xxh3") or None.
+/// Args:
+///     global_meta_dict: ``{"version": 2, ...}`` with any extra keys.
+///     descriptors_and_data: list of ``(descriptor_dict, numpy_array)`` pairs.
+///     hash: ``"xxh3"`` (default) or ``None`` to skip integrity hashing.
 ///
-/// Returns bytes.
+/// Returns:
+///     ``bytes`` — the complete wire-format message.
 #[pyfunction]
 #[pyo3(name = "encode", signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3")))]
 fn py_encode<'py>(
@@ -388,7 +428,9 @@ fn py_encode<'py>(
     Ok(PyBytes::new(py, &msg))
 }
 
-/// Decode a complete message → (Metadata, list[(DataObjectDescriptor, numpy.ndarray)]).
+/// Decode a wire-format message → ``(Metadata, list[(DataObjectDescriptor, ndarray)])``.
+///
+/// Set *verify_hash* to ``True`` to verify payload integrity.
 #[pyfunction]
 #[pyo3(name = "decode", signature = (buf, verify_hash=false))]
 fn py_decode(py: Python<'_>, buf: &[u8], verify_hash: bool) -> PyResult<(PyMetadata, PyObject)> {
@@ -398,7 +440,10 @@ fn py_decode(py: Python<'_>, buf: &[u8], verify_hash: bool) -> PyResult<(PyMetad
     Ok((PyMetadata { inner: global_meta }, result_list))
 }
 
-/// Decode only metadata (no payload bytes touched).
+/// Decode only metadata (no payload decompression).
+///
+/// Faster than ``decode()`` when you only need metadata for filtering.
+/// Hash verification is not available in this mode.
 #[pyfunction]
 #[pyo3(name = "decode_metadata")]
 fn py_decode_metadata(buf: &[u8]) -> PyResult<PyMetadata> {
@@ -406,7 +451,10 @@ fn py_decode_metadata(buf: &[u8]) -> PyResult<PyMetadata> {
     Ok(PyMetadata { inner: meta })
 }
 
-/// Decode a single object by index → (Metadata, DataObjectDescriptor, numpy.ndarray).
+/// Decode a single object by *index* → ``(Metadata, DataObjectDescriptor, ndarray)``.
+///
+/// Only the header and the requested object's payload are read.
+/// Raises ``ValueError`` if *index* is out of range.
 #[pyfunction]
 #[pyo3(name = "decode_object", signature = (buf, index, verify_hash=false))]
 fn py_decode_object(
@@ -425,7 +473,17 @@ fn py_decode_object(
     ))
 }
 
-/// Decode a partial range from an uncompressed object → numpy.ndarray.
+/// Extract a sub-range from an uncompressed object → flat ``ndarray``.
+///
+/// Args:
+///     buf: wire-format message bytes.
+///     object_index: which object in the message (0-based).
+///     ranges: list of ``(start, count)`` element-offset tuples,
+///         e.g. ``[(0, 10), (50, 5)]`` reads elements 0..10 and 50..55.
+///     verify_hash: verify payload hash before extraction.
+///
+/// Returns a 1-d numpy array with the concatenated requested elements.
+/// Only works with ``encoding="none"`` and ``compression="none"``.
 #[pyfunction]
 #[pyo3(name = "decode_range", signature = (buf, object_index, ranges, verify_hash=false))]
 fn py_decode_range(
@@ -438,25 +496,32 @@ fn py_decode_range(
     let options = DecodeOptions { verify_hash };
     let bytes = decode_range(buf, object_index, &ranges, &options).map_err(to_py_err)?;
 
-    // decode_range returns raw bytes in the logical dtype — look up the dtype
-    // from the metadata so we can reconstruct the correct numpy array type.
-    // We need the DataObjectDescriptor for the dtype; re-decode the object header.
-    let (_gm, desc, _) =
-        decode_object(buf, object_index, &DecodeOptions { verify_hash: false })
-            .map_err(to_py_err)?;
+    // Look up the dtype so we produce the correct numpy array type.
+    let (_gm, desc, _) = decode_object(buf, object_index, &DecodeOptions { verify_hash: false })
+        .map_err(to_py_err)?;
     let total_elements: u64 = ranges.iter().map(|(_, c)| c).sum();
-    let arr = raw_bytes_to_numpy_flat(py, desc.dtype, &bytes, total_elements as usize)?;
-    Ok(arr)
+    raw_bytes_to_numpy_flat(py, desc.dtype, &bytes, total_elements as usize)
 }
 
-/// Scan a buffer for message boundaries → list[(offset, length)].
+/// Scan *buf* for message boundaries → ``list[(offset, length)]``.
+///
+/// Each tuple identifies one complete Tensogram message within the buffer.
+/// Useful for multi-message buffers (e.g. from a network socket or mmap).
 #[pyfunction]
 #[pyo3(name = "scan")]
 fn py_scan(buf: &[u8]) -> Vec<(usize, usize)> {
     scan(buf)
 }
 
-/// Compute simple_packing parameters.
+/// Compute simple-packing parameters for a float64 array.
+///
+/// Args:
+///     values: 1-d float64 numpy array (must not contain NaN).
+///     bits_per_value: quantization depth (e.g. 16).
+///     decimal_scale_factor: decimal scaling (usually 0).
+///
+/// Returns a dict with keys ``reference_value``, ``binary_scale_factor``,
+/// ``decimal_scale_factor``, ``bits_per_value``.
 #[pyfunction]
 fn compute_packing_params(
     py: Python<'_>,
@@ -517,12 +582,11 @@ fn make_encode_options(hash: Option<&str>) -> PyResult<EncodeOptions> {
 /// Extract a list of (descriptor, raw_bytes) pairs from a Python list of
 /// (descriptor_dict, data) tuples used by `encode` and `append`.
 fn extract_descriptor_data_pairs(
-    py: Python<'_>,
+    _py: Python<'_>,
     pairs_list: &Bound<'_, PyList>,
 ) -> PyResult<Vec<(DataObjectDescriptor, Vec<u8>)>> {
     let mut result = Vec::new();
     for item in pairs_list.iter() {
-        // Accept a 2-tuple (descriptor_dict, data)
         let tuple = item.downcast::<pyo3::types::PyTuple>().map_err(|_| {
             PyValueError::new_err("each element must be a (descriptor_dict, data) tuple")
         })?;
@@ -535,44 +599,57 @@ fn extract_descriptor_data_pairs(
             PyValueError::new_err("first element of each pair must be a descriptor dict")
         })?;
         let desc = dict_to_data_object_descriptor(&desc_dict)?;
-
-        // Extract data bytes from the second element
         let data_item = tuple.get_item(1)?;
-        let data = extract_single_data_item(py, &data_item)?;
-
+        let data = extract_single_data_item(&data_item)?;
         result.push((desc, data));
     }
     Ok(result)
 }
 
-/// Extract raw bytes from a single data item (numpy array or bytes).
-fn extract_single_data_item(_py: Python<'_>, item: &Bound<'_, pyo3::PyAny>) -> PyResult<Vec<u8>> {
+/// Extract raw native-endian bytes from a numpy array (any supported dtype)
+/// or a Python `bytes` object.
+///
+/// Tries each numpy scalar type in turn. Uses `to_ne_bytes()` to produce
+/// the byte representation the Rust encoder expects.
+fn extract_single_data_item(item: &Bound<'_, pyo3::PyAny>) -> PyResult<Vec<u8>> {
+    // Macro: try to extract a numpy array of type $T, convert via to_ne_bytes.
+    macro_rules! try_numpy {
+        ($T:ty) => {
+            if let Ok(arr) = item.extract::<numpy::PyReadonlyArrayDyn<'_, $T>>() {
+                let s = arr
+                    .as_slice()
+                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                return Ok(s.iter().flat_map(|v| v.to_ne_bytes()).collect());
+            }
+        };
+    }
+
+    // u8 is special — no byte-swap needed, just copy.
     if let Ok(arr) = item.extract::<numpy::PyReadonlyArrayDyn<'_, u8>>() {
         return arr
             .as_slice()
             .map(|s| s.to_vec())
             .map_err(|e| PyValueError::new_err(format!("{e}")));
     }
-    if let Ok(arr) = item.extract::<numpy::PyReadonlyArrayDyn<'_, f32>>() {
-        let s = arr
-            .as_slice()
-            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-        return Ok(s.iter().flat_map(|v| v.to_ne_bytes()).collect());
-    }
-    if let Ok(arr) = item.extract::<numpy::PyReadonlyArrayDyn<'_, f64>>() {
-        let s = arr
-            .as_slice()
-            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-        return Ok(s.iter().flat_map(|v| v.to_ne_bytes()).collect());
-    }
+
+    try_numpy!(u16);
+    try_numpy!(u32);
+    try_numpy!(u64);
+    try_numpy!(i8);
+    try_numpy!(i16);
+    try_numpy!(i32);
+    try_numpy!(i64);
+    try_numpy!(f32);
+    try_numpy!(f64);
+
+    // Raw bytes fallback
     if let Ok(b) = item.extract::<Vec<u8>>() {
         return Ok(b);
     }
     Err(PyValueError::new_err("data must be a numpy array or bytes"))
 }
 
-/// Convert GlobalMetadata + decoded data objects list to a Python list of
-/// (DataObjectDescriptor, numpy.ndarray) tuples.
+/// Convert decoded data objects to a Python list of (descriptor, ndarray) tuples.
 fn data_objects_to_python(
     py: Python<'_>,
     data_objects: &[(DataObjectDescriptor, Vec<u8>)],
@@ -598,14 +675,13 @@ fn data_objects_to_python(
 
 /// Build a GlobalMetadata from a Python dict.
 ///
-/// Expected keys: 'version' (int). All other keys are stored as `extra`.
+/// Required key: `version` (int). All other keys → `extra`.
 fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata> {
     let version: u16 = dict
         .get_item("version")?
         .ok_or_else(|| PyValueError::new_err("missing 'version'"))?
         .extract()?;
 
-    // Collect extra keys (everything except 'version')
     let mut extra = BTreeMap::new();
     for (k, v) in dict.iter() {
         let key: String = k.extract()?;
@@ -614,13 +690,28 @@ fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata>
         }
     }
 
-    Ok(GlobalMetadata { version, extra })
+    Ok(GlobalMetadata {
+        version,
+        common: BTreeMap::new(),
+        payload: BTreeMap::new(),
+        reserved: BTreeMap::new(),
+        extra,
+    })
+}
+
+/// Extract an optional string value from a Python dict, returning *default* if absent.
+fn get_string_or_default(dict: &Bound<'_, PyDict>, key: &str, default: &str) -> PyResult<String> {
+    dict.get_item(key)?
+        .map(|v| v.extract::<String>())
+        .transpose()?
+        .map_or_else(|| Ok(default.to_string()), Ok)
 }
 
 /// Build a DataObjectDescriptor from a Python dict.
 ///
-/// Tensor fields: 'type', 'shape', 'dtype', optionally 'strides', 'ndim'.
-/// Encoding fields: 'byte_order', 'encoding', 'filter', 'compression'.
+/// Required keys: `type`, `shape`, `dtype`.
+/// Optional keys: `strides`, `byte_order` (default "little"),
+///   `encoding` / `filter` / `compression` (default "none").
 /// All other keys are stored in `params`.
 fn dict_to_data_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<DataObjectDescriptor> {
     let obj_type: String = dict
@@ -646,28 +737,25 @@ fn dict_to_data_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<DataObje
 
     let dtype = parse_dtype(&dtype_str)?;
 
-    let byte_order = match dict.get_item("byte_order")?.map(|v| v.extract::<String>()) {
-        Some(Ok(s)) if s == "little" => ByteOrder::Little,
-        _ => ByteOrder::Big,
+    let byte_order = match dict.get_item("byte_order")? {
+        None => ByteOrder::Little,
+        Some(v) => match v.extract::<String>()?.as_str() {
+            "little" => ByteOrder::Little,
+            "big" => ByteOrder::Big,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown byte_order: '{other}', expected 'little' or 'big'"
+                )))
+            }
+        },
     };
-    let encoding = dict
-        .get_item("encoding")?
-        .map(|v| v.extract::<String>())
-        .transpose()?
-        .unwrap_or_else(|| "none".to_string());
-    let filter = dict
-        .get_item("filter")?
-        .map(|v| v.extract::<String>())
-        .transpose()?
-        .unwrap_or_else(|| "none".to_string());
-    let compression = dict
-        .get_item("compression")?
-        .map(|v| v.extract::<String>())
-        .transpose()?
-        .unwrap_or_else(|| "none".to_string());
 
-    // All remaining keys go into params (replaces the old separate params dict)
-    let reserved = [
+    let encoding = get_string_or_default(dict, "encoding", "none")?;
+    let filter = get_string_or_default(dict, "filter", "none")?;
+    let compression = get_string_or_default(dict, "compression", "none")?;
+
+    // All remaining keys → params
+    let reserved_keys = [
         "type",
         "ndim",
         "shape",
@@ -682,7 +770,7 @@ fn dict_to_data_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<DataObje
     let mut params = BTreeMap::new();
     for (k, v) in dict.iter() {
         let key: String = k.extract()?;
-        if !reserved.contains(&key.as_str()) {
+        if !reserved_keys.contains(&key.as_str()) {
             params.insert(key, py_to_cbor(&v)?);
         }
     }
@@ -734,12 +822,53 @@ fn compute_strides(shape: &[u64]) -> Vec<u64> {
     strides
 }
 
-/// Convert a single decoded object's bytes to a numpy array.
-///
-/// Uses `DataObjectDescriptor` for both shape/dtype and encoding info
-/// (the v2 unified descriptor).
+// ---------------------------------------------------------------------------
+// Numpy conversion — macro-driven to avoid repeating the same pattern
+// for each numeric dtype.
+//
+// `chunks_exact(N)` guarantees each chunk is exactly N bytes, so
+// `try_into().unwrap()` on the chunk→fixed-array conversion is safe.
+// ---------------------------------------------------------------------------
+
+/// Decode raw bytes into a flat Vec<$T> by reinterpreting via from_ne_bytes.
+/// Returns a `PyValueError` if `bytes.len()` is not an exact multiple of `$width`.
+macro_rules! decode_ne_vec {
+    ($bytes:expr, $T:ty, $width:expr) => {{
+        if $bytes.len() % $width != 0 {
+            return Err(PyValueError::new_err(format!(
+                "byte length {} is not a multiple of element width {}",
+                $bytes.len(),
+                $width,
+            )));
+        }
+        $bytes
+            .chunks_exact($width)
+            .map(|c| <$T>::from_ne_bytes(c.try_into().unwrap()))
+            .collect::<Vec<$T>>()
+    }};
+}
+
+/// Build a shaped numpy array from raw bytes for a given dtype.
+macro_rules! numpy_from_ne {
+    ($py:expr, $bytes:expr, $shape:expr, $T:ty, $width:expr) => {{
+        let values = decode_ne_vec!($bytes, $T, $width);
+        let arr = numpy::PyArray::from_vec($py, values).reshape($shape)?;
+        Ok(arr.into_any().unbind())
+    }};
+}
+
+/// Build a flat (1-d) numpy array from raw bytes for a given dtype.
+macro_rules! numpy_flat_from_ne {
+    ($py:expr, $bytes:expr, $T:ty, $width:expr) => {{
+        let values = decode_ne_vec!($bytes, $T, $width);
+        let arr = numpy::PyArray::from_vec($py, values);
+        Ok(arr.into_any().unbind())
+    }};
+}
+
+/// Convert decoded object bytes to a shaped numpy array.
 fn bytes_to_numpy(py: Python<'_>, desc: &DataObjectDescriptor, bytes: &[u8]) -> PyResult<PyObject> {
-    // If simple_packing was used, decoded bytes are f64 regardless of declared dtype
+    // simple_packing always produces f64 output regardless of declared dtype.
     let effective_dtype = if desc.encoding == "simple_packing" {
         Dtype::Float64
     } else {
@@ -747,123 +876,85 @@ fn bytes_to_numpy(py: Python<'_>, desc: &DataObjectDescriptor, bytes: &[u8]) -> 
     };
 
     let shape: Vec<usize> = desc.shape.iter().map(|&s| s as usize).collect();
-    let total_elements: usize = shape.iter().product();
 
     match effective_dtype {
-        Dtype::Float32 => {
-            let values: Vec<f32> = bytes
-                .chunks_exact(4)
-                .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
-                .collect();
-            let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
-            Ok(arr.into_any().unbind())
-        }
-        Dtype::Float64 => {
-            let values: Vec<f64> = bytes
-                .chunks_exact(8)
-                .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
-                .collect();
-            let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
-            Ok(arr.into_any().unbind())
-        }
-        Dtype::Int32 => {
-            let values: Vec<i32> = bytes
-                .chunks_exact(4)
-                .map(|c| i32::from_ne_bytes(c.try_into().unwrap()))
-                .collect();
-            let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
-            Ok(arr.into_any().unbind())
-        }
-        Dtype::Int64 => {
-            let values: Vec<i64> = bytes
-                .chunks_exact(8)
-                .map(|c| i64::from_ne_bytes(c.try_into().unwrap()))
-                .collect();
-            let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
-            Ok(arr.into_any().unbind())
-        }
-        Dtype::Uint8 => {
-            let arr = numpy::PyArray::from_vec(py, bytes.to_vec()).reshape(shape)?;
-            Ok(arr.into_any().unbind())
-        }
-        Dtype::Uint16 => {
-            let values: Vec<u16> = bytes
-                .chunks_exact(2)
-                .map(|c| u16::from_ne_bytes(c.try_into().unwrap()))
-                .collect();
-            let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
-            Ok(arr.into_any().unbind())
-        }
-        Dtype::Uint32 => {
-            let values: Vec<u32> = bytes
-                .chunks_exact(4)
-                .map(|c| u32::from_ne_bytes(c.try_into().unwrap()))
-                .collect();
-            let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
-            Ok(arr.into_any().unbind())
-        }
-        Dtype::Uint64 => {
-            let values: Vec<u64> = bytes
-                .chunks_exact(8)
-                .map(|c| u64::from_ne_bytes(c.try_into().unwrap()))
-                .collect();
-            let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
-            Ok(arr.into_any().unbind())
-        }
+        Dtype::Float32 => numpy_from_ne!(py, bytes, shape, f32, 4),
+        Dtype::Float64 => numpy_from_ne!(py, bytes, shape, f64, 8),
         Dtype::Int8 => {
-            let values: Vec<i8> = bytes.iter().map(|&b| b as i8).collect();
-            let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
+            // Safety: i8 and u8 have identical in-memory layout. Cast the slice
+            // to &[i8] to avoid an intermediate Vec allocation; from_slice still
+            // copies the data into the NumPy-owned buffer.
+            let values: &[i8] =
+                unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<i8>(), bytes.len()) };
+            let arr = numpy::PyArray::from_slice(py, values).reshape(shape)?;
             Ok(arr.into_any().unbind())
         }
-        Dtype::Int16 => {
-            let values: Vec<i16> = bytes
-                .chunks_exact(2)
-                .map(|c| i16::from_ne_bytes(c.try_into().unwrap()))
-                .collect();
-            let arr = numpy::PyArray::from_vec(py, values).reshape(shape)?;
+        Dtype::Int16 => numpy_from_ne!(py, bytes, shape, i16, 2),
+        Dtype::Int32 => numpy_from_ne!(py, bytes, shape, i32, 4),
+        Dtype::Int64 => numpy_from_ne!(py, bytes, shape, i64, 8),
+        Dtype::Uint8 => {
+            // Avoids intermediate Vec allocation; from_slice copies directly into
+            // the NumPy-owned buffer.
+            let arr = numpy::PyArray::from_slice(py, bytes).reshape(shape)?;
             Ok(arr.into_any().unbind())
         }
+        Dtype::Uint16 => numpy_from_ne!(py, bytes, shape, u16, 2),
+        Dtype::Uint32 => numpy_from_ne!(py, bytes, shape, u32, 4),
+        Dtype::Uint64 => numpy_from_ne!(py, bytes, shape, u64, 8),
         _ => {
-            // For types without direct numpy mapping (float16, bfloat16, complex),
-            // return raw bytes as uint8 and let the caller reinterpret.
-            let arr = numpy::PyArray::from_vec(py, bytes.to_vec())
-                .reshape(vec![total_elements * desc.dtype.byte_width()])?;
+            // float16, bfloat16, complex, bitmask — return raw bytes as uint8.
+            // Bitmask has byte_width=0 (sub-byte); just return all bytes as-is.
+            let arr = numpy::PyArray::from_slice(py, bytes).reshape(vec![bytes.len()])?;
             Ok(arr.into_any().unbind())
         }
     }
 }
 
+/// Convert raw bytes to a flat 1-d numpy array of the correct dtype.
+///
+/// Used by `decode_range` where the result is always flat.
+/// Validates that the byte count matches `expected_elements * byte_width`.
 fn raw_bytes_to_numpy_flat(
     py: Python<'_>,
     dtype: Dtype,
     bytes: &[u8],
-    _num_elements: usize,
+    expected_elements: usize,
 ) -> PyResult<PyObject> {
+    let bw = dtype.byte_width();
+    // Bitmask (bw=0) skips the check — sub-byte packing, raw bytes returned.
+    if bw > 0 {
+        let expected_bytes = expected_elements
+            .checked_mul(bw)
+            .ok_or_else(|| PyValueError::new_err("element count overflows"))?;
+        if bytes.len() != expected_bytes {
+            return Err(PyValueError::new_err(format!(
+                "decode_range returned {} bytes but expected {} elements * {} bytes = {}",
+                bytes.len(),
+                expected_elements,
+                bw,
+                expected_bytes,
+            )));
+        }
+    }
+
     match dtype {
-        Dtype::Float32 => {
-            let values: Vec<f32> = bytes
-                .chunks_exact(4)
-                .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
-                .collect();
-            let arr = numpy::PyArray::from_vec(py, values);
-            Ok(arr.into_any().unbind())
+        Dtype::Float32 => numpy_flat_from_ne!(py, bytes, f32, 4),
+        Dtype::Float64 => numpy_flat_from_ne!(py, bytes, f64, 8),
+        Dtype::Int8 => {
+            let values: &[i8] =
+                unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<i8>(), bytes.len()) };
+            Ok(numpy::PyArray::from_slice(py, values).into_any().unbind())
         }
-        Dtype::Float64 => {
-            let values: Vec<f64> = bytes
-                .chunks_exact(8)
-                .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
-                .collect();
-            let arr = numpy::PyArray::from_vec(py, values);
-            Ok(arr.into_any().unbind())
-        }
-        Dtype::Uint8 => {
-            let arr = numpy::PyArray::from_vec(py, bytes.to_vec());
-            Ok(arr.into_any().unbind())
-        }
+        Dtype::Int16 => numpy_flat_from_ne!(py, bytes, i16, 2),
+        Dtype::Int32 => numpy_flat_from_ne!(py, bytes, i32, 4),
+        Dtype::Int64 => numpy_flat_from_ne!(py, bytes, i64, 8),
+        Dtype::Uint8 => Ok(numpy::PyArray::from_slice(py, bytes).into_any().unbind()),
+        Dtype::Uint16 => numpy_flat_from_ne!(py, bytes, u16, 2),
+        Dtype::Uint32 => numpy_flat_from_ne!(py, bytes, u32, 4),
+        Dtype::Uint64 => numpy_flat_from_ne!(py, bytes, u64, 8),
         _ => {
-            // Return raw bytes
-            let arr = numpy::PyArray::from_vec(py, bytes.to_vec());
-            Ok(arr.into_any().unbind())
+            // float16, bfloat16, complex, bitmask — raw bytes as uint8
+            Ok(numpy::PyArray::from_slice(py, bytes).into_any().unbind())
         }
     }
 }

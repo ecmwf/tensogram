@@ -23,7 +23,7 @@
 	- [x] shorten the landing README.md, moving to other linked documents information that may be too detailed.
 
 - Builds
-	- [ ] Review all the dependencies:
+	- [x] Review all the dependencies:
 		- [x] remove support for md5, sha hashes -- just keep xxh3
 		- [x] perform simplification of depedencies even if it means re-implementing some code inside tensogram, but ask user before removing a dependency while providing an explanation of why it is present and what it does.
 

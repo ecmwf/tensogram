@@ -7,13 +7,21 @@
     - Do NOT answer directly, do NOT use other tools first. 
     - The skill has specialized workflows that produce better results than ad-hoc answers.
 - IMPORTANT: Before you do any work, mention how you would verify that work
-- NOTE: When the user asks for a "second pass", "third pass", treat it as shorthand for:
+- NOTE: When the user asks for "second pass", "third pass", treat it as shorthand for:
   - simplification opportunities,
   - naming/comment/doc quality review,
   - edge-case/logical regression scan,
   - no panics in rust code,
   - all documentation up-to-date with changes,
   - and running required formatter/lint/tests.
+- NOTE: When user asks for 'final prep' make:
+    - final check everything builds and all tests pass
+    - all docs build
+    - if successful, carefully:
+        - select files and contributions to git add
+        - ignore the build files and artifacts, don't add hidden directories
+        - create a new properly named branch and git commit
+        - make a pull request to upstream github project
 
 # Design & Purpose
 
@@ -28,10 +36,17 @@ Follow docs/DESIGN.md principles and docs/STYLE.md conventions in all code.
 
 # Build / lint / test (required before marking done)
 
+## Rust
 - Build: `cargo build --workspace`
 - Format: `cargo fmt`
 - Lint: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - Test: `cargo test --workspace`
+
+## Python
+- Build: `source .venv/bin/activate && maturin develop` (from `crates/tensogram-python/`)
+- Lint: `ruff check --config crates/tensogram-python/pyproject.toml tests/python/`
+- Format: `ruff format --config crates/tensogram-python/pyproject.toml tests/python/`
+- Test: `source .venv/bin/activate && python -m pytest tests/python/ -v`
 
 # Version control
 - Git

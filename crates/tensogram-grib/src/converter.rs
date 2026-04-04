@@ -51,10 +51,7 @@ pub(crate) struct GribExtracted {
 /// Reads GRIB messages using ecCodes, extracts payload via `values` key
 /// and MARS namespace keys, partitions keys into common vs per-object,
 /// and produces one or more Tensogram messages.
-pub fn convert_grib_file(
-    path: &Path,
-    options: &ConvertOptions,
-) -> Result<Vec<Vec<u8>>, GribError> {
+pub fn convert_grib_file(path: &Path, options: &ConvertOptions) -> Result<Vec<Vec<u8>>, GribError> {
     let mut handle = CodesFile::new_from_file(path, ProductKind::GRIB)?;
 
     let mut grib_messages = Vec::new();
