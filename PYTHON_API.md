@@ -1,0 +1,120 @@
+# Tensogram Python API Quick Reference
+
+## Module: `tensogram`
+
+### Classes
+
+| Class | Purpose | Key Attributes |
+|-------|---------|-----------------|
+| **`Metadata`** | Global message metadata | `.version`, `.extra`, `[key]` |
+| **`DataObjectDescriptor`** | Tensor descriptor (shape, dtype, encoding) | `.shape`, `.dtype`, `.encoding`, `.params`, `.compression` |
+| **`TensogramFile`** | File I/O API | `.open()`, `.create()`, `.append()`, `.decode_message()` |
+
+### Module Functions
+
+| Function | Signature | Returns |
+|----------|-----------|---------|
+| **`encode`** | `encode(meta, descriptors_and_data, hash="xxh3")` | `bytes` |
+| **`decode`** | `decode(buf, verify_hash=False)` | `(Metadata, list)` |
+| **`decode_metadata`** | `decode_metadata(buf)` | `Metadata` |
+| **`decode_object`** | `decode_object(buf, index, verify_hash=False)` | `(Metadata, DataObjectDescriptor, array)` |
+| **`decode_range`** | `decode_range(buf, index, ranges, verify_hash=False)` | `numpy.ndarray` |
+| **`scan`** | `scan(buf)` | `list[(offset, length)]` |
+| **`compute_packing_params`** | `compute_packing_params(values, bits_per_value, decimal_scale_factor)` | `dict` |
+
+### TensogramFile Methods
+
+```python
+# Static
+TensogramFile.open(path: str) → TensogramFile
+TensogramFile.create(path: str) → TensogramFile
+
+# Instance
+file.message_count() → int
+file.append(global_meta_dict, descriptors_and_data, hash="xxh3")
+file.decode_message(index, verify_hash=False) → (Metadata, list)
+file.read_message(index) → bytes
+file.messages() → list[bytes]
+```
+
+### Supported dtypes
+
+```
+float16, bfloat16, float32, float64, complex64, complex128,
+int8, int16, int32, int64, uint8, uint16, uint32, uint64, bitmask
+```
+
+### Descriptor Fields
+
+**Required:**
+- `"type"` (str): Object type, e.g. "ntensor"
+- `"shape"` (list[int]): Tensor dimensions
+- `"dtype"` (str): Data type name
+
+**Optional:**
+- `"strides"` (list[int]): Computed if omitted
+- `"byte_order"` (str): "big" (default) or "little"
+- `"encoding"` (str): "none" (default), "simple_packing", etc.
+- `"filter"` (str): "none" (default), "delta", etc.
+- `"compression"` (str): "none" (default), "zstd", etc.
+- Any other keys → stored in `.params` dict
+
+### Common Patterns
+
+**Basic encode/decode:**
+```python
+import numpy as np
+import tensogram
+
+data = np.array([1, 2, 3], dtype=np.float32)
+meta = {"version": 1}
+desc = {"type": "ntensor", "shape": [3], "dtype": "float32"}
+
+msg = tensogram.encode(meta, [(desc, data)])
+meta_out, objs_out = tensogram.decode(msg)
+```
+
+**File API:**
+```python
+# Write
+with tensogram.TensogramFile.create("data.tgm") as f:
+    f.append({"version": 1}, [(descriptor, data)])
+
+# Read
+with tensogram.TensogramFile.open("data.tgm") as f:
+    for meta, objects in f:
+        for desc, array in objects:
+            print(array.shape)
+```
+
+**Metadata access:**
+```python
+meta, _ = tensogram.decode(message)
+print(meta.version)
+print(meta['custom_key'])  # KeyError if missing
+print(meta.extra)          # All extra fields
+```
+
+**Hash verification:**
+```python
+# Encode with hash
+msg = tensogram.encode(meta, objs, hash="xxh3")
+
+# Verify on decode
+meta, objs = tensogram.decode(msg, verify_hash=True)
+```
+
+### Error Handling
+
+- `ValueError`: Invalid parameters, dtype errors, NaN in packing
+- `IOError`: File I/O errors
+- `RuntimeError`: Hash mismatch
+- `KeyError`: Missing metadata key
+
+---
+
+## Source Code Location
+
+- **Implementation:** `crates/tensogram-python/src/lib.rs`
+- **Build config:** `crates/tensogram-python/Cargo.toml`, `pyproject.toml`
+- **Examples:** `examples/python/`
