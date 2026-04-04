@@ -80,7 +80,7 @@ enum Commands {
     Split {
         /// Input file
         input: PathBuf,
-        /// Output template (use [index] for numbering, e.g. "split_[index].tgm")
+        /// Output template (use `\[index\]` for numbering, e.g. "split_\[index\].tgm")
         #[arg(short = 'o', long)]
         output: String,
     },

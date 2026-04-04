@@ -42,7 +42,10 @@ pub(crate) fn extract_mars_keys(msg: &RefMessage) -> GribKeySet {
 /// - varying: for each message, the keys that differ from common
 pub(crate) fn partition_keys(
     all_keys: &[&GribKeySet],
-) -> (BTreeMap<String, CborValue>, Vec<BTreeMap<String, CborValue>>) {
+) -> (
+    BTreeMap<String, CborValue>,
+    Vec<BTreeMap<String, CborValue>>,
+) {
     if all_keys.is_empty() {
         return (BTreeMap::new(), vec![]);
     }
@@ -54,9 +57,11 @@ pub(crate) fn partition_keys(
     let first = &all_keys[0].keys;
 
     for (key, value) in first {
-        let is_common = all_keys[1..]
-            .iter()
-            .all(|ks| ks.keys.get(key).is_some_and(|v| cbor_values_equal(v, value)));
+        let is_common = all_keys[1..].iter().all(|ks| {
+            ks.keys
+                .get(key)
+                .is_some_and(|v| cbor_values_equal(v, value))
+        });
         if is_common {
             common.insert(key.clone(), value.clone());
         }
@@ -128,10 +133,7 @@ mod tests {
         assert!(common.contains_key("date"));
         assert!(!common.contains_key("param"));
 
-        assert_eq!(
-            varying[0].get("param"),
-            Some(&CborValue::Text("2t".into()))
-        );
+        assert_eq!(varying[0].get("param"), Some(&CborValue::Text("2t".into())));
         assert_eq!(
             varying[1].get("param"),
             Some(&CborValue::Text("10u".into()))
