@@ -32,8 +32,21 @@ pub fn compute_hash(data: &[u8], algorithm: HashAlgorithm) -> String {
 }
 
 /// Verify a hash descriptor against data.
+///
+/// If the hash algorithm is not recognized, a warning is logged and
+/// verification is skipped (returns Ok). This ensures forward compatibility
+/// when new hash algorithms are added.
 pub fn verify_hash(data: &[u8], descriptor: &HashDescriptor) -> Result<()> {
-    let algorithm = HashAlgorithm::parse(&descriptor.hash_type)?;
+    let algorithm = match HashAlgorithm::parse(&descriptor.hash_type) {
+        Ok(algo) => algo,
+        Err(_) => {
+            eprintln!(
+                "warning: unknown hash algorithm '{}', skipping verification",
+                descriptor.hash_type
+            );
+            return Ok(());
+        }
+    };
     let actual = compute_hash(data, algorithm);
     if actual != descriptor.value {
         return Err(TensogramError::HashMismatch {
@@ -79,13 +92,13 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_hash_type_rejected() {
+    fn test_unknown_hash_type_skips_verification() {
         let data = b"test data";
         let descriptor = HashDescriptor {
-            hash_type: "sha1".to_string(),
+            hash_type: "sha256".to_string(),
             value: "abc123".to_string(),
         };
-        let err = verify_hash(data, &descriptor).unwrap_err();
-        assert!(err.to_string().contains("unknown hash type"));
+        // Unknown hash algorithms skip verification with a warning (forward compatibility)
+        assert!(verify_hash(data, &descriptor).is_ok());
     }
 }

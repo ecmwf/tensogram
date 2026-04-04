@@ -2,9 +2,9 @@
 
 Implemented: 2026-04-03
 
-## Workspace: 5 crates, 137 Rust tests + 103 C++ tests, 0 clippy warnings
+## Workspace: 5 crates, 253 Rust tests + 103 C++ tests, 0 clippy warnings, 90.5% line coverage
 
-### tensogram-core (43 unit tests + 42 integration + 12 adversarial)
+### tensogram-core (43 unit tests + 42 integration + 12 adversarial + 84 edge-case)
 - `wire.rs` — v2 frame-based wire format: Preamble (24B), FrameHeader (16B), Postamble (16B), FrameType enum, MessageFlags, DataObjectFlags
 - `framing.rs` — `encode_message()` with two-pass index construction, `decode_message()`, `scan()` for multi-message buffers
 - `metadata.rs` — Deterministic CBOR encoding for GlobalMetadata, DataObjectDescriptor, IndexFrame, HashFrame (three-step: serialize → canonicalize → write)
