@@ -11,6 +11,8 @@
   - simplification opportunities,
   - naming/comment/doc quality review,
   - edge-case/logical regression scan,
+  - no panics in rust code,
+  - all documentation up-to-date with changes,
   - and running required formatter/lint/tests.
 
 # Design & Purpose
