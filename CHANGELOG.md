@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-04-04
+
+### Added
+- **Streaming API** — `StreamingEncoder<W: Write>` for progressive encode/transmit without buffering
+- **Metadata structure** — `GlobalMetadata` now has `common`, `payload`, `reserved` CBOR sections (backwards-compatible)
+- **CLI merge** — `tensogram merge` combines messages from multiple files into one
+- **CLI split** — `tensogram split` separates multi-object messages into individual files
+- **CLI reshuffle** — `tensogram reshuffle` converts streaming-mode to random-access-mode messages
+- **GRIB converter** — `tensogram-grib` crate with ecCodes FFI for GRIB→Tensogram conversion
+- **CLI convert-grib** — `tensogram convert-grib` subcommand (feature-gated behind `grib`)
+- **Feature-gated compression** — all 6 codecs (szip, zstd, lz4, blosc2, zfp, sz3) are optional features (default on)
+- **Streaming example** — `examples/rust/src/bin/11_streaming.rs`
+- **GRIB docs** — mdbook pages for GRIB conversion overview and MARS key mapping
+- **CLI docs** — mdbook pages for merge, split, reshuffle commands
+
+### Changed
+- `README.md` shortened from 302 to 100 lines; detailed content moved to mdbook docs
+
+### Removed
+- **md5 and sha1 hash support** — only xxh3 is supported; unknown hash types return a clear error
+
 ## [0.1.0] - 2026-04-04
 
 Initial release of Tensogram, a binary N-Tensor message format library for scientific data.
