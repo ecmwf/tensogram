@@ -8,6 +8,7 @@
 #include "test_helpers.hpp"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 

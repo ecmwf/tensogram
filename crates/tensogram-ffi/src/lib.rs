@@ -485,8 +485,9 @@ pub extern "C" fn tgm_encode(
         .collect();
 
     match encode(&parsed.global_metadata, &pairs, &parsed.options) {
-        Ok(mut bytes) => {
-            bytes.shrink_to_fit(); // ensure capacity == len for safe tgm_bytes_free
+        Ok(bytes) => {
+            // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
+            let mut bytes = bytes.into_boxed_slice().into_vec();
             let result = TgmBytes {
                 data: bytes.as_mut_ptr(),
                 len: bytes.len(),
@@ -687,8 +688,9 @@ pub extern "C" fn tgm_decode_range(
     };
 
     match decode_range(data, object_index, &ranges, &options) {
-        Ok(mut bytes) => {
-            bytes.shrink_to_fit(); // ensure capacity == len for safe tgm_bytes_free
+        Ok(bytes) => {
+            // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
+            let mut bytes = bytes.into_boxed_slice().into_vec();
             let result = TgmBytes {
                 data: bytes.as_mut_ptr(),
                 len: bytes.len(),
@@ -1273,8 +1275,9 @@ pub extern "C" fn tgm_file_read_message(
     let f = unsafe { &mut (*file).file };
 
     match f.read_message(index) {
-        Ok(mut bytes) => {
-            bytes.shrink_to_fit(); // ensure capacity == len for safe tgm_bytes_free
+        Ok(bytes) => {
+            // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
+            let mut bytes = bytes.into_boxed_slice().into_vec();
             let result = TgmBytes {
                 data: bytes.as_mut_ptr(),
                 len: bytes.len(),
@@ -1653,8 +1656,9 @@ pub extern "C" fn tgm_file_iter_next(iter: *mut TgmFileIter, out: *mut TgmBytes)
             set_last_error(&e.to_string());
             to_error_code(&e)
         }
-        Some(Ok(mut bytes)) => {
-            bytes.shrink_to_fit(); // ensure capacity == len for safe tgm_bytes_free
+        Some(Ok(bytes)) => {
+            // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
+            let mut bytes = bytes.into_boxed_slice().into_vec();
             let result = TgmBytes {
                 data: bytes.as_mut_ptr(),
                 len: bytes.len(),
@@ -1855,8 +1859,8 @@ pub extern "C" fn tgm_compute_hash(
 
     let input = unsafe { slice::from_raw_parts(data, data_len) };
     let hex = tensogram_core::hash::compute_hash(input, algorithm);
-    let mut bytes = hex.into_bytes();
-    bytes.shrink_to_fit(); // ensure capacity == len for safe tgm_bytes_free
+    // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
+    let mut bytes = hex.into_bytes().into_boxed_slice().into_vec();
     let result = TgmBytes {
         data: bytes.as_mut_ptr(),
         len: bytes.len(),

@@ -23,7 +23,11 @@ add_executable(tensogram_tests
 target_include_directories(tensogram_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
 
-target_compile_options(tensogram_tests PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+if(MSVC)
+    target_compile_options(tensogram_tests PRIVATE /W4)
+else()
+    target_compile_options(tensogram_tests PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+endif()
 
 target_link_libraries(tensogram_tests PRIVATE
     tensogram

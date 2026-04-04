@@ -2,7 +2,7 @@
 
 Implemented: 2026-04-03
 
-## Workspace: 5 crates, 137 Rust tests + 100 C++ tests, 0 clippy warnings
+## Workspace: 5 crates, 137 Rust tests + 103 C++ tests, 0 clippy warnings
 
 ### tensogram-core (43 unit tests + 42 integration + 12 adversarial)
 - `wire.rs` — v2 frame-based wire format: Preamble (24B), FrameHeader (16B), Postamble (16B), FrameType enum, MessageFlags, DataObjectFlags
@@ -207,7 +207,7 @@ Implemented: 2026-04-03
 - Added `CompressionError::NotAvailable` variant for disabled features
 - Updated ARCHITECTURE.md with feature gate table
 
-### Test count: 167 Rust tests (was 165), 95 Python tests, 12 C++ tests, 0 clippy warnings
+### Test count: 167 Rust tests (was 165), 95 Python tests, 103 C++ tests, 0 clippy warnings
 
 ## C++ wrapper & build system (2026-04-04)
 

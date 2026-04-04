@@ -14,6 +14,7 @@
 
 #ifdef _WIN32
 #include <io.h>
+#include <windows.h>
 #else
 #include <unistd.h>
 #endif
@@ -41,11 +42,18 @@ inline std::vector<std::uint8_t> encode_simple_f32(
 
 /// Create a unique temporary file path with @p suffix (e.g. ".tgm").
 ///
-/// mkstemp() creates a zero-length file at the template path to reserve the
-/// name.  We close and remove that base file immediately, then return the path
-/// with the caller-supplied suffix appended.  The base file must be removed
-/// here; otherwise it leaks in /tmp on every test run.
+/// On POSIX: uses mkstemp() to reserve a unique name, then removes the
+/// placeholder file and returns the path with the caller-supplied suffix.
+/// On Windows: uses GetTempPath/GetTempFileName for a portable equivalent.
 inline std::string temp_path(const std::string& suffix = ".tgm") {
+#ifdef _WIN32
+    char tmp_dir[MAX_PATH];
+    GetTempPathA(MAX_PATH, tmp_dir);
+    char tmp_file[MAX_PATH];
+    GetTempFileNameA(tmp_dir, "tgm", 0, tmp_file);
+    std::remove(tmp_file);  // remove placeholder — we want the suffixed path
+    return std::string(tmp_file) + suffix;
+#else
     char tmpl[] = "/tmp/tensogram_test_XXXXXX";
     int fd = mkstemp(tmpl);
     if (fd >= 0) {
@@ -53,6 +61,7 @@ inline std::string temp_path(const std::string& suffix = ".tgm") {
         std::remove(tmpl);   // remove the base file — we want the suffixed path
     }
     return std::string(tmpl) + suffix;
+#endif
 }
 
 /// RAII guard that creates a unique temp file and removes it on destruction.
