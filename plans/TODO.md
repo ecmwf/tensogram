@@ -11,7 +11,6 @@
 - Metadata:
 	- [ ] implement inside metadata frame, the CBOR contents required: 'common', 'payload' and 'reserved'.
 
-
 - Examples:
     - [ ] show-case the Streaming API
 
@@ -31,20 +30,3 @@
 
 # Code quality improvements (from code review)
 All items completed — see DONE.md for details.
-
-# Deferred TODO list (not yet decided)
-- Tools
-    - [ ] `tensogram filter` subcommand (v2 rules engine)
-
-- Bridges
-	- [ ] tensogram as backend for Zarr v3 (as storage backend)
-	- [ ] xarray loader form tensogram
-	- [ ] tensogram as a storageg backend for netcdf
-    - [ ] GRIB converter + benchmark suite: `tensogram from-grib` + `tensogram-bench`
-
-- Optimisations:
-    - [ ] SIMD payload alignment: optional padding for 16/32/64-byte aligned payloads. 
-
-- Performance
-	- [ ] add performance tests
-	- [ ] compare with eccodes simple+szip
