@@ -1343,3 +1343,83 @@ fn test_metadata_empty_sections_not_serialized() {
     assert!(decoded_meta.reserved.is_empty());
     assert!(decoded_meta.extra.contains_key("mars"));
 }
+
+// ── Deep-nested metadata encode/decode round-trip ───────────────────────────
+
+/// Helper: look up a text key in a CborValue::Map.
+fn cbor_map_lookup<'a>(map: &'a ciborium::Value, key: &str) -> Option<&'a ciborium::Value> {
+    if let ciborium::Value::Map(entries) = map {
+        for (k, v) in entries {
+            if matches!(k, ciborium::Value::Text(s) if s == key) {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn test_deep_nested_metadata_round_trip() {
+    let (_, desc) = make_float32_descriptor(vec![4]);
+    let data = vec![0u8; 4 * 4];
+
+    let max_depth: usize = 20;
+
+    // Build a nested CborValue::Map chain:
+    //   depth_0 → depth_1 → depth_2 → … → depth_19 → "leaf_at_20"
+    let mut value = ciborium::Value::Text(format!("leaf_at_{max_depth}"));
+    for d in (0..max_depth).rev() {
+        value = ciborium::Value::Map(vec![(
+            ciborium::Value::Text(format!("depth_{}", d + 1)),
+            value,
+        )]);
+    }
+
+    let mut common = BTreeMap::new();
+    common.insert("depth_0".to_string(), value.clone());
+
+    // Also put a nested chain in a payload entry.
+    let mut payload_entry = BTreeMap::new();
+    payload_entry.insert("nested".to_string(), value);
+
+    let global = GlobalMetadata {
+        version: 2,
+        common: common.clone(),
+        payload: vec![payload_entry],
+        ..Default::default()
+    };
+
+    let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let (decoded, _) = decode(&msg, &DecodeOptions::default()).unwrap();
+
+    // Verify common round-trips: walk depth_0.depth_1.….depth_20 == "leaf_at_20"
+    let mut current = decoded
+        .common
+        .get("depth_0")
+        .expect("common must have depth_0");
+    for d in 1..=max_depth {
+        let key = format!("depth_{d}");
+        current = cbor_map_lookup(current, &key)
+            .unwrap_or_else(|| panic!("missing key {key} at depth {d}"));
+    }
+    assert_eq!(
+        current,
+        &ciborium::Value::Text(format!("leaf_at_{max_depth}")),
+        "leaf value must survive round-trip at depth {max_depth}"
+    );
+
+    // Verify payload entry round-trips the same way.
+    let mut current = decoded.payload[0]
+        .get("nested")
+        .expect("payload entry must have 'nested'");
+    for d in 1..=max_depth {
+        let key = format!("depth_{d}");
+        current = cbor_map_lookup(current, &key)
+            .unwrap_or_else(|| panic!("missing key {key} in payload at depth {d}"));
+    }
+    assert_eq!(
+        current,
+        &ciborium::Value::Text(format!("leaf_at_{max_depth}")),
+        "payload leaf must survive round-trip at depth {max_depth}"
+    );
+}

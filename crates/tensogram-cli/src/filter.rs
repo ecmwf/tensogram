@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use tensogram_core::GlobalMetadata;
 
 /// A parsed where-clause filter.
@@ -39,96 +41,58 @@ pub fn parse_where(input: &str) -> Result<WhereClause, String> {
 
 /// Look up a dot-notation key in global metadata, returning the FIRST matching value.
 ///
-/// Supports 1-, 2-, and 3-level keys:
+/// Supports arbitrary nesting depth:
 ///   - `version` → struct field, then `common`, then `extra`
-///   - `mars.param` → `common["mars"]["param"]`, then `payload[i]`, then `extra`
-///   - `grib.geography.Ni` → `common["grib"]["geography"]["Ni"]`, then `payload[i]`
+///   - `mars.param` → `common["mars"]["param"]`, …
+///   - `grib.geography.Ni` → `common["grib"]["geography"]["Ni"]`, …
+///   - `a.b.c.d.e` → walks as many nested CBOR maps as needed
 ///
 /// Search order: `common` → `payload[i]` (first match) → `extra`.
 pub fn lookup_key(metadata: &GlobalMetadata, key: &str) -> Option<String> {
     let parts: Vec<&str> = key.split('.').collect();
 
-    match parts.len() {
-        1 => {
-            let k = parts[0];
-            if k == "version" {
-                return Some(metadata.version.to_string());
-            }
-            if let Some(val) = metadata.common.get(k) {
-                return Some(cbor_value_to_string(val));
-            }
-            if let Some(val) = metadata.extra.get(k) {
-                return Some(cbor_value_to_string(val));
-            }
-        }
-        2 => {
-            let (ns, field) = (parts[0], parts[1]);
-
-            if let Some(val) = lookup_in_cbor_map(metadata.common.get(ns), field) {
-                return Some(val);
-            }
-            for entry in &metadata.payload {
-                if let Some(val) = lookup_in_cbor_map(entry.get(ns), field) {
-                    return Some(val);
-                }
-            }
-            if let Some(val) = lookup_in_cbor_map(metadata.extra.get(ns), field) {
-                return Some(val);
-            }
-        }
-        3 => {
-            // e.g. grib.geography.Ni → common["grib"] → Map["geography"] → Map["Ni"]
-            let (top, mid, field) = (parts[0], parts[1], parts[2]);
-
-            if let Some(inner) = lookup_nested_cbor_map(metadata.common.get(top), mid) {
-                if let Some(val) = lookup_in_cbor_map(Some(inner), field) {
-                    return Some(val);
-                }
-            }
-            for entry in &metadata.payload {
-                if let Some(inner) = lookup_nested_cbor_map(entry.get(top), mid) {
-                    if let Some(val) = lookup_in_cbor_map(Some(inner), field) {
-                        return Some(val);
-                    }
-                }
-            }
-            if let Some(inner) = lookup_nested_cbor_map(metadata.extra.get(top), mid) {
-                if let Some(val) = lookup_in_cbor_map(Some(inner), field) {
-                    return Some(val);
-                }
-            }
-        }
-        _ => {}
+    if parts == ["version"] {
+        return Some(metadata.version.to_string());
     }
 
-    None
-}
-
-/// Look up a field inside a CBOR map value, returning the stringified value.
-fn lookup_in_cbor_map(map_value: Option<&ciborium::Value>, field: &str) -> Option<String> {
-    if let Some(ciborium::Value::Map(entries)) = map_value {
-        for (k, v) in entries {
-            if let ciborium::Value::Text(k_str) = k {
-                if k_str == field {
-                    return Some(cbor_value_to_string(v));
-                }
-            }
+    // Search: common → payload entries → extra
+    if let Some(val) = resolve_path_in_btree(&metadata.common, &parts) {
+        return Some(val);
+    }
+    for entry in &metadata.payload {
+        if let Some(val) = resolve_path_in_btree(entry, &parts) {
+            return Some(val);
         }
     }
-    None
+    resolve_path_in_btree(&metadata.extra, &parts)
 }
 
-/// Navigate one level into a CBOR map, returning the inner value.
-fn lookup_nested_cbor_map<'a>(
-    map_value: Option<&'a ciborium::Value>,
-    key: &str,
-) -> Option<&'a ciborium::Value> {
-    if let Some(ciborium::Value::Map(entries)) = map_value {
+/// Walk a dot-path starting from a `BTreeMap` root.
+///
+/// The first segment indexes the `BTreeMap` by string key.
+/// Remaining segments navigate nested `CborValue::Map` layers.
+fn resolve_path_in_btree(
+    map: &BTreeMap<String, ciborium::Value>,
+    parts: &[&str],
+) -> Option<String> {
+    let (first, rest) = parts.split_first()?;
+    let value = map.get(*first)?;
+    resolve_in_cbor(value, rest)
+}
+
+/// Recursively walk remaining path segments into a `CborValue`.
+///
+/// When no segments remain, stringify the leaf value.
+/// When segments remain, the current value must be a `CborValue::Map`
+/// to navigate further; otherwise returns `None`.
+fn resolve_in_cbor(value: &ciborium::Value, remaining: &[&str]) -> Option<String> {
+    if remaining.is_empty() {
+        return Some(cbor_value_to_string(value));
+    }
+    if let ciborium::Value::Map(entries) = value {
         for (k, v) in entries {
-            if let ciborium::Value::Text(k_str) = k {
-                if k_str == key {
-                    return Some(v);
-                }
+            if matches!(k, ciborium::Value::Text(s) if s == remaining[0]) {
+                return resolve_in_cbor(v, &remaining[1..]);
             }
         }
     }
@@ -163,6 +127,7 @@ fn cbor_value_to_string(value: &ciborium::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ciborium::Value;
 
     #[test]
     fn test_parse_eq() {
@@ -183,5 +148,75 @@ mod tests {
     #[test]
     fn test_parse_invalid() {
         assert!(parse_where("no_operator").is_err());
+    }
+
+    // ── lookup_key tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_lookup_depth_1() {
+        let mut common = BTreeMap::new();
+        common.insert("centre".into(), Value::Text("ecmwf".into()));
+        let meta = GlobalMetadata {
+            version: 2,
+            common,
+            ..Default::default()
+        };
+        assert_eq!(lookup_key(&meta, "centre"), Some("ecmwf".into()));
+    }
+
+    #[test]
+    fn test_lookup_depth_2() {
+        let mars = Value::Map(vec![(
+            Value::Text("param".into()),
+            Value::Text("2t".into()),
+        )]);
+        let mut common = BTreeMap::new();
+        common.insert("mars".into(), mars);
+        let meta = GlobalMetadata {
+            version: 2,
+            common,
+            ..Default::default()
+        };
+        assert_eq!(lookup_key(&meta, "mars.param"), Some("2t".into()));
+    }
+
+    #[test]
+    fn test_lookup_depth_3() {
+        let geo = Value::Map(vec![(
+            Value::Text("Ni".into()),
+            Value::Integer(1440.into()),
+        )]);
+        let grib = Value::Map(vec![(Value::Text("geography".into()), geo)]);
+        let mut common = BTreeMap::new();
+        common.insert("grib".into(), grib);
+        let meta = GlobalMetadata {
+            version: 2,
+            common,
+            ..Default::default()
+        };
+        assert_eq!(lookup_key(&meta, "grib.geography.Ni"), Some("1440".into()));
+    }
+
+    #[test]
+    fn test_lookup_missing_path() {
+        let meta = GlobalMetadata::default();
+        assert_eq!(lookup_key(&meta, "no.such.path"), None);
+    }
+
+    #[test]
+    fn test_lookup_payload_fallback() {
+        // Key in payload[0], not in common.
+        let mars = Value::Map(vec![(
+            Value::Text("param".into()),
+            Value::Text("lsm".into()),
+        )]);
+        let mut entry = BTreeMap::new();
+        entry.insert("mars".into(), mars);
+        let meta = GlobalMetadata {
+            version: 2,
+            payload: vec![entry],
+            ..Default::default()
+        };
+        assert_eq!(lookup_key(&meta, "mars.param"), Some("lsm".into()));
     }
 }
