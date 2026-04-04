@@ -7,7 +7,7 @@
     - Do NOT answer directly, do NOT use other tools first. 
     - The skill has specialized workflows that produce better results than ad-hoc answers.
 - IMPORTANT: Before you do any work, mention how you would verify that work
-- When the user asks for a "second pass", "third pass", treat it as shorthand for:
+- NOTE: When the user asks for a "second pass", "third pass", treat it as shorthand for:
   - simplification opportunities,
   - naming/comment/doc quality review,
   - edge-case/logical regression scan,
@@ -20,7 +20,6 @@
 - plans/STYLE.md -- code style conventions
 - plans/PLAN.md -- initial plan iteration 0 before further improvements added
 - plans/DONE.md -- keep updated with implementation progress
-- plans/IMPROVEMENTS.md -- future improvements to consider when implementing, if opportune pick from there
 - plans/TODO.md -- long term TODO list of features that may or not be implemented
 
 Follow docs/DESIGN.md principles and docs/STYLE.md conventions in all code.
@@ -31,6 +30,11 @@ Follow docs/DESIGN.md principles and docs/STYLE.md conventions in all code.
 - Format: `cargo fmt`
 - Lint: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - Test: `cargo test --workspace`
+
+# Version control
+- Git
+- IMPORTANT: versions are tagged using Semantic Versioning form 'MAJOR.MINOR.MICRO', NEVER update MAJOR unless users says so. Increment MINOR for new features. MICRO for bugfixes and documentation updates.
+- NEVER prepend git tag or releases with 'v'
 
 # Tracking Work Done
 
