@@ -39,60 +39,95 @@ pub fn parse_where(input: &str) -> Result<WhereClause, String> {
 
 /// Look up a dot-notation key in global metadata, returning the FIRST matching value.
 ///
-/// Search order for a namespaced key like `mars.param`:
-///   1. `common["mars"]["param"]`
-///   2. `payload[i]["mars"]["param"]` (first match across objects)
-///   3. `extra["mars"]["param"]` (backwards compatibility)
+/// Supports 1-, 2-, and 3-level keys:
+///   - `version` → struct field, then `common`, then `extra`
+///   - `mars.param` → `common["mars"]["param"]`, then `payload[i]`, then `extra`
+///   - `grib.geography.Ni` → `common["grib"]["geography"]["Ni"]`, then `payload[i]`
 ///
-/// For a single key like `version`, checks the struct field, then `extra`.
+/// Search order: `common` → `payload[i]` (first match) → `extra`.
 pub fn lookup_key(metadata: &GlobalMetadata, key: &str) -> Option<String> {
     let parts: Vec<&str> = key.split('.').collect();
 
-    if parts.len() == 2 {
-        let (ns, field) = (parts[0], parts[1]);
-
-        // 1. Check common[ns][field]
-        if let Some(val) = lookup_in_cbor_map(metadata.common.get(ns), field) {
-            return Some(val);
+    match parts.len() {
+        1 => {
+            let k = parts[0];
+            if k == "version" {
+                return Some(metadata.version.to_string());
+            }
+            if let Some(val) = metadata.common.get(k) {
+                return Some(cbor_value_to_string(val));
+            }
+            if let Some(val) = metadata.extra.get(k) {
+                return Some(cbor_value_to_string(val));
+            }
         }
+        2 => {
+            let (ns, field) = (parts[0], parts[1]);
 
-        // 2. Check payload[i][ns][field] — first match wins
-        for entry in &metadata.payload {
-            if let Some(val) = lookup_in_cbor_map(entry.get(ns), field) {
+            if let Some(val) = lookup_in_cbor_map(metadata.common.get(ns), field) {
+                return Some(val);
+            }
+            for entry in &metadata.payload {
+                if let Some(val) = lookup_in_cbor_map(entry.get(ns), field) {
+                    return Some(val);
+                }
+            }
+            if let Some(val) = lookup_in_cbor_map(metadata.extra.get(ns), field) {
                 return Some(val);
             }
         }
+        3 => {
+            // e.g. grib.geography.Ni → common["grib"] → Map["geography"] → Map["Ni"]
+            let (top, mid, field) = (parts[0], parts[1], parts[2]);
 
-        // 3. Check extra[ns][field] (backwards compat)
-        if let Some(val) = lookup_in_cbor_map(metadata.extra.get(ns), field) {
-            return Some(val);
-        }
-    }
-
-    if parts.len() == 1 {
-        match parts[0] {
-            "version" => return Some(metadata.version.to_string()),
-            key => {
-                if let Some(val) = metadata.common.get(key) {
-                    return Some(cbor_value_to_string(val));
+            if let Some(inner) = lookup_nested_cbor_map(metadata.common.get(top), mid) {
+                if let Some(val) = lookup_in_cbor_map(Some(inner), field) {
+                    return Some(val);
                 }
-                if let Some(val) = metadata.extra.get(key) {
-                    return Some(cbor_value_to_string(val));
+            }
+            for entry in &metadata.payload {
+                if let Some(inner) = lookup_nested_cbor_map(entry.get(top), mid) {
+                    if let Some(val) = lookup_in_cbor_map(Some(inner), field) {
+                        return Some(val);
+                    }
+                }
+            }
+            if let Some(inner) = lookup_nested_cbor_map(metadata.extra.get(top), mid) {
+                if let Some(val) = lookup_in_cbor_map(Some(inner), field) {
+                    return Some(val);
                 }
             }
         }
+        _ => {}
     }
 
     None
 }
 
-/// Look up a field inside a CBOR map value.
+/// Look up a field inside a CBOR map value, returning the stringified value.
 fn lookup_in_cbor_map(map_value: Option<&ciborium::Value>, field: &str) -> Option<String> {
     if let Some(ciborium::Value::Map(entries)) = map_value {
         for (k, v) in entries {
             if let ciborium::Value::Text(k_str) = k {
                 if k_str == field {
                     return Some(cbor_value_to_string(v));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Navigate one level into a CBOR map, returning the inner value.
+fn lookup_nested_cbor_map<'a>(
+    map_value: Option<&'a ciborium::Value>,
+    key: &str,
+) -> Option<&'a ciborium::Value> {
+    if let Some(ciborium::Value::Map(entries)) = map_value {
+        for (k, v) in entries {
+            if let ciborium::Value::Text(k_str) = k {
+                if k_str == key {
+                    return Some(v);
                 }
             }
         }
