@@ -54,17 +54,31 @@ Implemented: 2026-04-03
 
 ### tensogram-python (PyO3 bindings)
 - Full Python API with numpy integration (returns `numpy.ndarray` directly)
-- `tensogram.encode()` — dict metadata + list of byte arrays → bytes
-- `tensogram.decode()` — bytes → `(Metadata, list[numpy.ndarray])`
+- `tensogram.encode()` — dict metadata + list of `(descriptor_dict, ndarray)` pairs → bytes
+- `tensogram.decode()` — bytes → `(Metadata, list[(DataObjectDescriptor, ndarray)])`
 - `tensogram.decode_metadata()` — bytes → `Metadata` (no payload read)
-- `tensogram.decode_object()` — bytes → `(ObjectDescriptor, numpy.ndarray)` by index
-- `tensogram.decode_range()` — partial sub-tensor extraction → `numpy.ndarray`
+- `tensogram.decode_object()` — bytes → `(Metadata, DataObjectDescriptor, ndarray)` by index
+- `tensogram.decode_range()` — partial sub-tensor extraction → flat `ndarray`
 - `tensogram.scan()` — `bytes → list[(offset, length)]`
 - `tensogram.compute_packing_params()` — numpy array → packing parameters dict
 - `TensogramFile` class: `open/create/append/message_count/decode_message/read_message/messages`
-- Dict-like access: `meta['mars']['class']`
-- CBOR ↔ Python type conversion (str, int, float, bool, None, list, dict)
-- Built via `maturin develop` (excluded from default workspace build)
+  - Context manager protocol (`with TensogramFile.create(...) as f:`)
+  - `len(f)` returns message count
+- `Metadata`: `meta.version`, `meta["key"]`, `"key" in meta`, `meta.extra`
+- `DataObjectDescriptor`: all tensor + encoding fields as properties
+- All 10 numeric numpy dtypes accepted natively by encoder (u8–u64, i8–i64, f32, f64)
+- All 10 numeric dtypes decoded to correct numpy dtype (including `decode_range`)
+- CBOR ↔ Python type conversion (str, int, float, bool, None, list, dict, bytes)
+- Safe i128→i64 bounds check for CBOR integers
+- Strict `byte_order` validation (rejects unknown values)
+- DRY dtype handling via `decode_ne_vec!`/`numpy_from_ne!`/`numpy_flat_from_ne!` macros
+- Overflow-safe dimension calculation for unsupported dtypes (checked_mul)
+- `decode_range` validates byte count vs expected elements (no silent truncation)
+- Bitmask/float16/complex fallback returns raw bytes (fixed: was producing empty array for bitmask)
+- Performance: `from_slice` zero-copy for u8/i8 numpy conversion (avoids `.to_vec()` allocation)
+- Built via `maturin develop` (excluded from default workspace build, inline deps)
+- 95 Python tests (ruff-clean): parametrized dtype round-trip, multi-object, metadata, file API, multi-range decode, zero-object messages, big-endian, idempotency, wire determinism, errors, edge cases
+- ruff configured: E/W/F/I/N/UP/B/SIM/PT/RUF rules, line-length=99, 0 warnings
 
 ## Wire format history
 
@@ -171,7 +185,7 @@ Implemented: 2026-04-03
 - Added `CompressionError::NotAvailable` variant for disabled features
 - Updated ARCHITECTURE.md with feature gate table
 
-### Test count: 167 tests (was 165), 0 clippy warnings
+### Test count: 167 Rust tests (was 165), 84 Python tests, 0 clippy warnings
 
 ## Examples
 
