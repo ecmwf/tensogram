@@ -95,6 +95,7 @@ mod tests {
         GlobalMetadata {
             version: 2,
             extra: BTreeMap::new(),
+            ..Default::default()
         }
     }
 

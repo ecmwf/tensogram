@@ -7,39 +7,24 @@
 
 Tensogram is a fast, efficient *'telegram'* for multidimensional tensors. ⏩[NxM]⏩
 
-A library to encode and decode binary N-Tensor scientific data with semantic metadata close to the data, in a serialisable format that can be sent over the network, encoded into in-memory buffers and decoded with zero-copy. It is geared to a lightweight implementation, self-description of data and high-performance with limited dependencies.
+A library to encode and decode binary N-Tensor scientific data with semantic metadata close to the data, in a serialisable format that can be sent over the network, encoded into in-memory buffers and decoded with zero-copy.
 
-Tensogram defines a network-transmissible binary message format, not a file format.
-Multiple messages can be appended to a file, and that remains valid since each
-message carries its own begin/terminator codes.
+Tensogram defines a network-transmissible binary message format, not a file format. Multiple messages can be appended to a file, each carrying its own begin/terminator codes.
 
 ## Features
 
-- **Self-describing messages** — each message bundles CBOR-encoded key-value metadata with one or more typed data objects (tensors)
-- **Support for n-Tensors** — each message can contain multiple n-Tensors of different element types
+- **Self-describing messages** — CBOR-encoded metadata with structured `common`/`payload`/`reserved` sections
+- **N-Tensor support** — multiple tensors of different dtypes per message
 - **No panics** — all fallible operations return `Result<T, TensogramError>`
-- **Stateless & thread-safe** — no global state
-- **Compression** — optional szip, zstd, lz4, blosc2, zfp, and sz3 compression per data object
-- **Hash verification** — xxHash xxh3-64 integrity check on every data object (can be skipped for trusted buffers)
-- **Support for multiple languages** — Python NumPy-based API, C++ and Rust
-- **File convenience API** — convenience API functions to handle files containing multiple messages
-- **Optional memory-mapped I/O** — `mmap` feature gate for zero-copy file reads via memmap2
-- **Optional async I/O** — `async` feature gate for tokio-based non-blocking file operations
-- **multiple data types** — float16/32/64, bfloat16, int8-64, uint8-64, complex64/128, bit, etc
+- **Streaming encoder** — progressive encode/transmit without buffering the full message
+- **Compression** — szip, zstd, lz4, blosc2, zfp, sz3 per data object
+- **Hash verification** — xxHash xxh3-64 integrity check per object
+- **Multiple languages** — Rust, Python (NumPy), C/C++
+- **GRIB conversion** — import GRIB data with MARS metadata preservation
+- **CLI** — `tensogram info/ls/dump/get/set/copy/merge/split/reshuffle`
+- **Optional features** — `mmap` (zero-copy file reads), `async` (tokio I/O)
 
 ## Quick Start
-
-### Rust
-
-Add `tensogram-core` to your `Cargo.toml`:
-
-```toml
-[dependencies]
-tensogram-core = { path = "path/to/tensogram/crates/tensogram-core" }
-tensogram-encodings = { path = "path/to/tensogram/crates/tensogram-encodings" }
-```
-
-Encode and decode a 2D float32 tensor:
 
 ```rust
 use std::collections::BTreeMap;
@@ -48,249 +33,62 @@ use tensogram_core::{
     Dtype, EncodeOptions, GlobalMetadata,
 };
 
-// Describe a 100×200 temperature grid
 let desc = DataObjectDescriptor {
-    obj_type: "ntensor".to_string(),
-    ndim: 2,
-    shape: vec![100, 200],
-    strides: vec![200, 1],
-    dtype: Dtype::Float32,
-    byte_order: ByteOrder::Big,
-    encoding: "none".to_string(),
-    filter: "none".to_string(),
-    compression: "none".to_string(),
-    params: BTreeMap::new(),
-    hash: None,
+    obj_type: "ntensor".to_string(), ndim: 2,
+    shape: vec![100, 200], strides: vec![200, 1],
+    dtype: Dtype::Float32, byte_order: ByteOrder::Big,
+    encoding: "none".to_string(), filter: "none".to_string(),
+    compression: "none".to_string(), params: BTreeMap::new(), hash: None,
 };
 
-let global_meta = GlobalMetadata {
-    version: 2,
-    extra: BTreeMap::new(),
-};
+let meta = GlobalMetadata::default();
+let raw: Vec<u8> = vec![0u8; 100 * 200 * 4];
 
-// Raw big-endian float32 bytes
-let raw: Vec<u8> = (0u32..20_000)
-    .flat_map(|i| (273.15f32 + i as f32 * 0.001).to_be_bytes())
-    .collect();
-
-// Encode to wire-format bytes
-let message = encode(&global_meta, &[(&desc, &raw)], &EncodeOptions::default())?;
-
-// Decode back
-let (meta, objects) = decode(&message, &DecodeOptions::default())?;
-assert_eq!(objects[0].1.len(), 20_000 * 4);
+let message = encode(&meta, &[(&desc, &raw)], &EncodeOptions::default())?;
+let (_, objects) = decode(&message, &DecodeOptions::default())?;
+assert_eq!(objects[0].1.len(), 100 * 200 * 4);
 ```
 
-See `examples/rust/` for more: MARS metadata, simple packing, multi-object messages, file API.
+See `examples/rust/` for MARS metadata, streaming, compression, file API, and more.
 
-### Python
-
-Build the Python extension first:
+## Build & Test
 
 ```bash
-cd crates/tensogram-python
-maturin develop
+cargo build --workspace                                          # build
+cargo test --workspace                                           # test
+cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint
 ```
 
-Then:
-
-```python
-import numpy as np
-import tensogram
-
-temps = np.linspace(273.15, 283.15, 100 * 200, dtype=np.float32).reshape(100, 200)
-
-message: bytes = tensogram.encode(
-    metadata={"version": 2},
-    objects=[{
-        "type": "ntensor",
-        "shape": [100, 200],
-        "dtype": "float32",
-        "byte_order": "big",
-        "encoding": "none",
-        "filter": "none",
-        "compression": "none",
-    }],
-    data=[temps],
-)
-meta, arrays = tensogram.decode(message)
-
-assert arrays[0].shape == temps.shape
-np.testing.assert_array_equal(arrays[0], temps)
-```
-
-See `examples/python/` for more examples.
-
-### C++
-
-Link against the FFI library and include the generated header:
-
-```cpp
-#include "tensogram.h"
-
-const char *meta_json = R"({"version":2})";
-const char *obj_json = R"({
-    "type":"ntensor","ndim":2,"shape":[100,200],"strides":[200,1],
-    "dtype":"float32","byte_order":"big","encoding":"none",
-    "filter":"none","compression":"none"
-})";
-
-tgm_message_t *msg = nullptr;
-tgm_encode(meta_json, obj_json, data_ptr, data_len, TGM_HASH_XXH3, &msg);
-// ... use msg ...
-tgm_message_free(msg);
-```
-
-See `examples/cpp/` for more examples.
-
-### CLI
-
+**Optional features:**
 ```bash
-cargo install --path crates/tensogram-cli
-
-tensogram info data.tgm
-tensogram ls -p mars.param,mars.date data.tgm
-tensogram dump -j data.tgm
-tensogram get -p mars.param data.tgm
-tensogram set -s mars.date=20260401 input.tgm output.tgm
-tensogram copy -w mars.param=2t input.tgm output_[mars.param].tgm
-```
-
-## Building and Testing
-
-### Prerequisites
-
-- Rust 1.75+ (`rustup install stable`)
-- For Python bindings: Python 3.9+, `maturin` (`pip install maturin`)
-- For C/C++ bindings: a C++17 compiler
-
-### Build
-
-```bash
-# Build all workspace crates (excludes tensogram-python)
-cargo build --workspace
-
-# Build in release mode
-cargo build --workspace --release
-```
-
-### Optional Feature Flags
-
-`tensogram-core` has two optional features:
-
-```bash
-# Memory-mapped file I/O (zero-copy reads via memmap2)
-cargo build -p tensogram-core --features mmap
-
-# Async file I/O (tokio-based, uses spawn_blocking for FFI-safe decode)
-cargo build -p tensogram-core --features async
-
-# Both
 cargo build -p tensogram-core --features mmap,async
 ```
 
-### Format, Lint, Test
-
+**GRIB conversion** (requires [ecCodes](https://confluence.ecmwf.int/display/ECC)):
 ```bash
-cargo fmt                                                        # format
-cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint
-cargo test --workspace                                           # test
+cargo build -p tensogram-cli --features grib
+tensogram convert-grib forecast.grib -o forecast.tgm
 ```
-
-### Python bindings
-
-```bash
-cd crates/tensogram-python
-maturin develop          # installs into the current venv
-python -m pytest         # run Python tests
-```
-
-### C/C++ bindings
-
-The `tensogram.h` header is auto-generated by `cbindgen` during the `tensogram-ffi` build:
-
-```bash
-cargo build -p tensogram-ffi
-# Header: crates/tensogram-ffi/tensogram.h
-# Static lib: target/debug/libtensogram_ffi.a
-# Shared lib: target/debug/libtensogram_ffi.{so,dylib}
-```
-
-### Running examples
-
-```bash
-# Rust examples
-cargo run --bin 01_encode_decode    # from examples/rust/
-# or from workspace root:
-cargo run -p examples --bin 01_encode_decode
-
-# Python examples
-python examples/python/01_encode_decode.py
-```
-
-## Dependencies
-
-| Library         | Purpose                                          | Type           |
-|-----------------|--------------------------------------------------|----------------|
-| ciborium        | CBOR metadata encoding/decoding                  | Rust crate     |
-| xxhash-rust     | Payload hashing (xxh3, 64-bit)                   | Rust crate     |
-| thiserror       | Structured error types                           | Rust crate     |
-| serde           | Serialization framework (used with ciborium)     | Rust crate     |
-| sha1            | SHA-1 payload hashing (legacy support)           | Rust crate     |
-| md5             | MD5 payload hashing (legacy support)             | Rust crate     |
-| clap            | CLI argument parsing (`tensogram` binary)        | Rust crate     |
-| serde_json      | JSON ↔ CBOR metadata bridge for C FFI            | Rust crate     |
-| cbindgen        | C header generation from Rust FFI (build-time)   | Rust crate     |
-| pyo3            | Python bindings                                  | Rust crate     |
-| numpy (pyo3)    | NumPy array integration for Python bindings      | Rust crate     |
-| maturin         | Python extension build tool                      | Python tool    |
-
-**Optional system libraries and feature-gated dependencies:**
-
-| Library | Purpose                              | Type           |
-|---------|--------------------------------------|----------------|
-| libaec  | szip lossless compression (CCSDS standard) | C library (FFI) |
-| zstd | Zstandard lossless compression | Rust crate |
-| lz4_flex | LZ4 lossless compression (pure Rust) | Rust crate |
-| blosc2 | Blosc2 multi-codec meta-compressor | Rust crate |
-| zfp-sys-cc | ZFP floating-point compression (C FFI) | Rust crate |
-| sz3 | SZ3 error-bounded lossy compression | Rust crate |
-| memmap2 | Memory-mapped file I/O (`mmap` feature) | Rust crate |
-| tokio | Async file I/O (`async` feature) | Rust crate |
 
 ## Documentation
 
-- [Architecture](ARCHITECTURE.md) — how the crates fit together and why
-- [Contributing](CONTRIBUTING.md) — setup, workflow, test structure
+- [mdbook docs](docs/) — full developer guide (`cd docs && mdbook build`)
+- [Architecture](ARCHITECTURE.md) — crate structure and design decisions
+- [Contributing](CONTRIBUTING.md) — setup and workflow
 - [Changelog](CHANGELOG.md) — release history
-- [mdbook docs](docs/) — full developer guide (build with `cd docs && mdbook build`)
 
 ## Repository Layout
 
 ```
-tensogram
-├── Cargo.toml                  # Workspace root (members + shared dependencies)
-├── VERSION                     # Current version
-├── ARCHITECTURE.md             # Crate architecture and design decisions
-├── CONTRIBUTING.md             # Contributor guide
-├── CHANGELOG.md                # Release history
-├── crates/
-│   ├── tensogram-core/         # Core encode/decode library (Rust)
-│   ├── tensogram-encodings/    # Encoding pipeline (Rust)
-│   ├── tensogram-cli/          # CLI binary (`tensogram` command)
-│   ├── tensogram-ffi/          # C FFI layer for C/C++ callers
-│   └── tensogram-python/       # Python bindings (PyO3 / maturin)
-├── examples/
-│   ├── rust/                   # Rust usage examples (cargo run --bin <name>)
-│   ├── cpp/                    # C++ usage examples (require tensogram-ffi)
-│   └── python/                 # Python usage examples (require maturin develop)
-├── docs/                       # mdBook documentation
-└── plans/
-    ├── DESIGN.md               # Architecture and wire format specification
-    ├── WIRE_FORMAT.md          # Wire format v2 specification
-    ├── DONE.md                 # Implementation status
-    ├── STYLE.md                # Code style conventions
-    └── TODO.md                 # Long-term feature ideas
+crates/
+├── tensogram-core/       Core encode/decode library
+├── tensogram-encodings/  Encoding pipeline + compression codecs
+├── tensogram-cli/        CLI binary (tensogram command)
+├── tensogram-ffi/        C FFI layer
+├── tensogram-grib/       GRIB converter (ecCodes, excluded from default build)
+└── tensogram-python/     Python bindings (PyO3, excluded from default build)
+examples/{rust,cpp,python}/
+docs/                     mdBook documentation
 ```
 
 ## Copyright and License

@@ -4,7 +4,7 @@ Example 06 — Hash verification and error handling (Python)
 NOTE: Requires tensogram Python bindings (not yet implemented).
       This file documents the intended API.
 
-Shows all three hash algorithms, verify_hash on decode, and the
+Shows xxh3 hash algorithm, verify_hash on decode, and the
 exception hierarchy for common error conditions.
 """
 
@@ -28,7 +28,7 @@ metadata = tensogram.Metadata(
 )
 
 # ── 1. Hash algorithms ────────────────────────────────────────────────────────
-for algo in ["xxh3", "sha1", "md5", None]:
+for algo in ["xxh3", None]:
     msg = tensogram.encode(metadata, data, hash=algo)
     meta = tensogram.decode_metadata(msg)
     h = meta.payload[0].hash

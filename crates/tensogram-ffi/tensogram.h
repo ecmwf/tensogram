@@ -95,7 +95,7 @@ void tgm_bytes_free(struct tgm_TgmBytes buf);
  *
  * `data_ptrs` / `data_lens`: arrays of length `num_objects`, raw bytes per object.
  *
- * `hash_algo`: null-terminated string ("xxh3", "sha1", "md5") or NULL for no hash.
+ * `hash_algo`: null-terminated string ("xxh3") or NULL for no hash.
  *
  * On success returns `TgmError::Ok` and fills `out` with the encoded bytes.
  * The caller must free `out` with `tgm_bytes_free`.

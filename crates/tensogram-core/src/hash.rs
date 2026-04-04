@@ -4,24 +4,18 @@ use crate::types::HashDescriptor;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashAlgorithm {
     Xxh3,
-    Sha1,
-    Md5,
 }
 
 impl HashAlgorithm {
     pub fn as_str(&self) -> &'static str {
         match self {
             HashAlgorithm::Xxh3 => "xxh3",
-            HashAlgorithm::Sha1 => "sha1",
-            HashAlgorithm::Md5 => "md5",
         }
     }
 
     pub fn parse(s: &str) -> Result<Self> {
         match s {
             "xxh3" => Ok(HashAlgorithm::Xxh3),
-            "sha1" => Ok(HashAlgorithm::Sha1),
-            "md5" => Ok(HashAlgorithm::Md5),
             _ => Err(TensogramError::Metadata(format!("unknown hash type: {s}"))),
         }
     }
@@ -33,17 +27,6 @@ pub fn compute_hash(data: &[u8], algorithm: HashAlgorithm) -> String {
         HashAlgorithm::Xxh3 => {
             let hash = xxhash_rust::xxh3::xxh3_64(data);
             format!("{hash:016x}")
-        }
-        HashAlgorithm::Sha1 => {
-            use sha1::{Digest, Sha1};
-            let mut hasher = Sha1::new();
-            hasher.update(data);
-            let result = hasher.finalize();
-            hex_encode(&result)
-        }
-        HashAlgorithm::Md5 => {
-            let digest = md5::compute(data);
-            hex_encode(&digest.0)
         }
     }
 }
@@ -61,18 +44,6 @@ pub fn verify_hash(data: &[u8], descriptor: &HashDescriptor) -> Result<()> {
     Ok(())
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = Vec::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        out.push(HEX[(b >> 4) as usize]);
-        out.push(HEX[(b & 0x0f) as usize]);
-    }
-    // Every byte in `out` is drawn from HEX, which contains only ASCII digits
-    // and lowercase letters, so the buffer is always valid UTF-8.
-    String::from_utf8(out).expect("hex output is always valid UTF-8")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,20 +55,6 @@ mod tests {
         assert_eq!(hash.len(), 16); // 64-bit = 16 hex chars
                                     // Verify deterministic
         assert_eq!(hash, compute_hash(data, HashAlgorithm::Xxh3));
-    }
-
-    #[test]
-    fn test_sha1() {
-        let data = b"hello world";
-        let hash = compute_hash(data, HashAlgorithm::Sha1);
-        assert_eq!(hash.len(), 40); // 160-bit = 40 hex chars
-    }
-
-    #[test]
-    fn test_md5() {
-        let data = b"hello world";
-        let hash = compute_hash(data, HashAlgorithm::Md5);
-        assert_eq!(hash.len(), 32); // 128-bit = 32 hex chars
     }
 
     #[test]
@@ -119,5 +76,16 @@ mod tests {
             value: "0000000000000000".to_string(),
         };
         assert!(verify_hash(data, &descriptor).is_err());
+    }
+
+    #[test]
+    fn test_unknown_hash_type_rejected() {
+        let data = b"test data";
+        let descriptor = HashDescriptor {
+            hash_type: "sha1".to_string(),
+            value: "abc123".to_string(),
+        };
+        let err = verify_hash(data, &descriptor).unwrap_err();
+        assert!(err.to_string().contains("unknown hash type"));
     }
 }

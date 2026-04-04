@@ -1,16 +1,28 @@
+#[cfg(feature = "blosc2")]
 mod blosc2;
+#[cfg(feature = "lz4")]
 mod lz4;
+#[cfg(feature = "sz3")]
 mod sz3;
+#[cfg(feature = "szip")]
 mod szip;
+#[cfg(feature = "zfp")]
 mod zfp;
+#[cfg(feature = "zstd")]
 mod zstd;
 
+#[cfg(feature = "blosc2")]
+pub use self::blosc2::Blosc2Compressor;
+#[cfg(feature = "lz4")]
+pub use self::lz4::Lz4Compressor;
+#[cfg(feature = "sz3")]
 pub use self::sz3::Sz3Compressor;
-pub use blosc2::Blosc2Compressor;
-pub use lz4::Lz4Compressor;
-pub use szip::SzipCompressor;
-pub use zfp::ZfpCompressor;
-pub use zstd::ZstdCompressor;
+#[cfg(feature = "szip")]
+pub use self::szip::SzipCompressor;
+#[cfg(feature = "zfp")]
+pub use self::zfp::ZfpCompressor;
+#[cfg(feature = "zstd")]
+pub use self::zstd::ZstdCompressor;
 
 use thiserror::Error;
 
@@ -32,6 +44,8 @@ pub enum CompressionError {
     RangeNotSupported,
     #[error("unknown compression: {0}")]
     Unknown(String),
+    #[error("compression not available: {0} (feature not enabled at compile time)")]
+    NotAvailable(String),
 }
 
 pub struct CompressResult {

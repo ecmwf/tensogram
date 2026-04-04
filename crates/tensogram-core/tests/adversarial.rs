@@ -14,6 +14,7 @@ fn make_simple_float32_pair(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescr
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -49,6 +50,7 @@ fn make_shuffle_pair(shape: Vec<u64>, element_size: u64) -> (GlobalMetadata, Dat
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -151,6 +153,7 @@ fn test_adversarial_negative_cbor_int_wraps() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -200,6 +203,7 @@ fn test_adversarial_non_f64_simple_packing() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -287,6 +291,7 @@ fn test_adversarial_shape_product_overflow() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -335,6 +340,7 @@ fn test_adversarial_ndim_mismatch() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),

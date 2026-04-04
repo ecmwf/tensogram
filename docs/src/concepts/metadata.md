@@ -8,19 +8,22 @@ In v2, metadata lives in two distinct places:
 
 | Level | Where it lives | What it contains |
 |---|---|---|
-| **Global** | Header or footer metadata frame | `GlobalMetadata`: version + free-form application keys |
+| **Global** | Header or footer metadata frame | `GlobalMetadata`: version + structured sections (common/payload/reserved) + free-form extra keys |
 | **Per-object** | Each data object frame's CBOR descriptor | `DataObjectDescriptor`: tensor shape, encoding pipeline, hash, plus `params` for extra per-object keys |
 
-There are no top-level `"objects"` or `"payload"` arrays in the global metadata. Each data object carries its own descriptor inline within its frame.
+Each data object carries its own descriptor inline within its frame.
 
 ## GlobalMetadata
 
-The global metadata frame contains a `GlobalMetadata` struct:
+The global metadata frame contains a `GlobalMetadata` struct with three named sections:
 
 ```rust
 GlobalMetadata {
-    version: 2,           // u16, wire format version
-    extra: BTreeMap::new() // free-form application-level keys
+    version: 2,
+    common: BTreeMap::new(),   // keys shared across all objects
+    payload: BTreeMap::new(),  // keys describing the collection
+    reserved: BTreeMap::new(), // reserved for future use
+    extra: BTreeMap::new(),    // free-form application-level keys
 }
 ```
 

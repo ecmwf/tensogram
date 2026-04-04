@@ -408,13 +408,13 @@ Each data object's payload entry includes a `"hash"` sub-object with a `"type"` 
 
 | Hash type | Output size | Notes |
 |----------|------------|-------|
-| `"xxh3"` | 64-bit | Default. Non-cryptographic, extremely fast (~30 GB/s). Best for integrity verification. |
-| `"sha1"` | 160-bit | Cryptographic (legacy). Widely available. |
-| `"md5"` | 128-bit | Cryptographic (legacy). For compatibility with existing ECMWF infrastructure. |
+| `"xxh3"` | 64-bit | Default and only supported algorithm. Non-cryptographic, extremely fast (~30 GB/s). Best for integrity verification. |
+
+> **Note:** SHA-1 and MD5 were considered in the original design but removed before release. xxh3 provides sufficient integrity verification for the operational use case without the overhead of cryptographic hashing.
 
 The hash is computed over the final encoded payload bytes (after the full encode → filter → compress pipeline).
 
-**Encoding behavior:** Hash computation is on by default (xxh3). The encoder accepts an option to disable hashing or select a different algorithm. Since quantization and compression are typically slower than hashing, the performance impact is minimal.
+**Encoding behavior:** Hash computation is on by default (xxh3). The encoder accepts an option to disable hashing. Since quantization and compression are typically slower than hashing, the performance impact is minimal.
 
 **Decoding behavior:** Hash verification is off by default. The decoder accepts an option to enable verification. This design reflects ECMWF's operational reality: internal transmissions typically use error correction at the transport layer, so double-checking every payload is unnecessary overhead. Verification is available for scenarios where data traverses untrusted paths or for archival validation.
 
@@ -483,7 +483,7 @@ The hash is computed over the final encoded payload bytes (after the full encode
 - **Rust CBOR crate** (e.g., `ciborium` or `minicbor`) — CBOR encode/decode
 - **libaec** — szip lossless compression (C library, accessed via FFI)
 - **xxhash-rust** — xxHash (xxh3) for payload integrity hashing (pure Rust, no C deps)
-- **sha1 / md5 crates** — legacy hash support (pure Rust)
+- ~~sha1 / md5 crates~~ — removed (xxh3-only)
 - **PyO3 + maturin** — Python bindings
 - **cbindgen** — C header generation from Rust FFI
 - No other runtime dependencies

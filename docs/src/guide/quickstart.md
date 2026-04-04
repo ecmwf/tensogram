@@ -32,6 +32,7 @@ fn main() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+    ..Default::default()
     };
 
     let desc = DataObjectDescriptor {

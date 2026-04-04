@@ -63,6 +63,7 @@ let desc = DataObjectDescriptor {
 let global_meta = GlobalMetadata {
     version: 2,
     extra: BTreeMap::new(),
+..Default::default()
 };
 
 // Your raw bytes (100 × 200 × 4 bytes = 80,000 bytes)

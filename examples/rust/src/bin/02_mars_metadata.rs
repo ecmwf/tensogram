@@ -61,6 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let global_meta = GlobalMetadata {
         version: 2,
         extra: msg_extra, // forecast context goes here
+        ..Default::default()
     };
 
     let data = vec![0u8; 721 * 1440 * 4]; // zeros stand in for real values

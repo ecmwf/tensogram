@@ -1,6 +1,11 @@
+#[cfg(feature = "grib")]
+pub mod convert_grib;
 pub mod copy;
 pub mod dump;
 pub mod get;
 pub mod info;
 pub mod ls;
+pub mod merge;
+pub mod reshuffle;
 pub mod set;
+pub mod split;

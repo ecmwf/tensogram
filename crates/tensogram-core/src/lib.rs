@@ -7,6 +7,7 @@ pub mod framing;
 pub mod hash;
 pub mod iter;
 pub mod metadata;
+pub mod streaming;
 pub mod types;
 pub mod wire;
 
@@ -19,6 +20,7 @@ pub use framing::{scan, scan_file};
 pub use hash::HashAlgorithm;
 pub use iter::{messages, objects, objects_metadata, FileMessageIter, MessageIter, ObjectIter};
 pub use metadata::verify_canonical_cbor;
+pub use streaming::StreamingEncoder;
 pub use types::{
     ByteOrder, DataObjectDescriptor, DecodedObject, GlobalMetadata, HashDescriptor, HashFrame,
     IndexFrame,

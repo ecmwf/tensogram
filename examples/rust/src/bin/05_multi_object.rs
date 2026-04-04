@@ -96,6 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let global_meta = GlobalMetadata {
         version: 2,
         extra: msg_extra,
+        ..Default::default()
     };
 
     // ── Encode both objects in one message ────────────────────────────────────

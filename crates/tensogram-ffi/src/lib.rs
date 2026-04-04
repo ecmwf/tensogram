@@ -218,6 +218,7 @@ fn parse_encode_json(
     let global_metadata = GlobalMetadata {
         version: parsed.version,
         extra: cbor_extra,
+        ..Default::default()
     };
 
     Ok((global_metadata, parsed.descriptors))
@@ -236,7 +237,7 @@ fn parse_encode_json(
 ///
 /// `data_ptrs` / `data_lens`: arrays of length `num_objects`, raw bytes per object.
 ///
-/// `hash_algo`: null-terminated string ("xxh3", "sha1", "md5") or NULL for no hash.
+/// `hash_algo`: null-terminated string ("xxh3") or NULL for no hash.
 ///
 /// On success returns `TgmError::Ok` and fills `out` with the encoded bytes.
 /// The caller must free `out` with `tgm_bytes_free`.
@@ -1403,6 +1404,7 @@ pub extern "C" fn tgm_object_iter_next(
             let global_metadata = GlobalMetadata {
                 version: 2,
                 extra: BTreeMap::new(),
+                ..Default::default()
             };
             let msg = Box::new(TgmMessage {
                 global_metadata,

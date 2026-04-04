@@ -42,6 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let global_meta = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
 
     // ── 2. Prepare raw data bytes ─────────────────────────────────────────────

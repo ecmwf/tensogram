@@ -26,7 +26,11 @@ fn make_message(param: &str, step: i64) -> Vec<u8> {
     let mut extra = BTreeMap::new();
     extra.insert("mars".to_string(), mars);
 
-    let global_meta = GlobalMetadata { version: 2, extra };
+    let global_meta = GlobalMetadata {
+        version: 2,
+        extra,
+        ..Default::default()
+    };
 
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),

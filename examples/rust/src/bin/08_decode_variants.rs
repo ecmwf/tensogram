@@ -47,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let global_meta = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
 
     // Known data: each object filled with a distinct byte value

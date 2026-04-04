@@ -103,6 +103,7 @@ A message with no data object frames is valid. It contains only the Preamble, a 
 let metadata = GlobalMetadata {
     version: 2,
     extra: BTreeMap::new(),
+..Default::default()
 };
 let msg = encode(&metadata, &[], &EncodeOptions::default()).unwrap();
 ```

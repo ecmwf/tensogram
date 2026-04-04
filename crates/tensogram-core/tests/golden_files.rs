@@ -61,6 +61,7 @@ fn generate_golden_files() {
         let meta = GlobalMetadata {
             version: 2,
             extra: BTreeMap::new(),
+            ..Default::default()
         };
         let desc = make_descriptor(vec![4], Dtype::Float32);
         // 4 float32 values: 1.0, 2.0, 3.0, 4.0 (big-endian)
@@ -77,6 +78,7 @@ fn generate_golden_files() {
         let meta = GlobalMetadata {
             version: 2,
             extra: BTreeMap::new(),
+            ..Default::default()
         };
         let desc_f32 = make_descriptor(vec![2], Dtype::Float32);
         let desc_i64 = make_descriptor(vec![3], Dtype::Int64);
@@ -120,7 +122,11 @@ fn generate_golden_files() {
                     .collect(),
             ),
         );
-        let meta = GlobalMetadata { version: 2, extra };
+        let meta = GlobalMetadata {
+            version: 2,
+            extra,
+            ..Default::default()
+        };
         let desc = make_descriptor(vec![2, 3], Dtype::Float64);
         let mut payload = Vec::new();
         for v in [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0] {
@@ -135,6 +141,7 @@ fn generate_golden_files() {
         let meta = GlobalMetadata {
             version: 2,
             extra: BTreeMap::new(),
+            ..Default::default()
         };
         let desc = make_descriptor(vec![2], Dtype::Float32);
         let mut payload1 = Vec::new();
@@ -157,6 +164,7 @@ fn generate_golden_files() {
         let meta = GlobalMetadata {
             version: 2,
             extra: BTreeMap::new(),
+            ..Default::default()
         };
         let desc = make_descriptor(vec![4], Dtype::Float32);
         let mut payload = Vec::new();

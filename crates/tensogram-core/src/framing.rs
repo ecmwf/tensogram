@@ -798,7 +798,7 @@ mod tests {
     fn make_global_meta() -> GlobalMetadata {
         GlobalMetadata {
             version: 2,
-            extra: BTreeMap::new(),
+            ..Default::default()
         }
     }
 

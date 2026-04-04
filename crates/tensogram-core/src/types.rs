@@ -48,10 +48,32 @@ pub struct DataObjectDescriptor {
 ///
 /// Does NOT contain per-object information — that lives in each
 /// data object frame's `DataObjectDescriptor`.
+///
+/// The metadata frame CBOR has three named sections:
+/// - `common`: keys shared across all objects (e.g. production time, origin)
+/// - `payload`: keys describing the collection of objects
+/// - `reserved`: reserved for future use, must be preserved on round-trip
+///
+/// Any other top-level keys land in `extra` for backwards compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalMetadata {
     pub version: u16,
-    /// All other top-level keys (namespaced metadata like "mars": {...})
+
+    /// Common metadata shared across all objects in the message.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub common: BTreeMap<String, ciborium::Value>,
+
+    /// Payload-level metadata describing the collection of objects.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub payload: BTreeMap<String, ciborium::Value>,
+
+    /// Reserved for future use — must be preserved on round-trip.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reserved: BTreeMap<String, ciborium::Value>,
+
+    /// All other top-level keys (namespaced metadata like "mars": {...}).
+    /// Provides backwards compatibility with messages that don't use the
+    /// common/payload/reserved structure.
     #[serde(flatten)]
     pub extra: BTreeMap<String, ciborium::Value>,
 }
@@ -72,6 +94,18 @@ pub struct HashFrame {
     pub object_count: u64,
     pub hash_type: String,
     pub hashes: Vec<String>,
+}
+
+impl Default for GlobalMetadata {
+    fn default() -> Self {
+        Self {
+            version: 2,
+            common: BTreeMap::new(),
+            payload: BTreeMap::new(),
+            reserved: BTreeMap::new(),
+            extra: BTreeMap::new(),
+        }
+    }
 }
 
 /// A decoded object: its descriptor paired with its raw decoded payload bytes.

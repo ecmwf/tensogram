@@ -68,6 +68,43 @@ enum Commands {
         /// Output path (supports `[keyName]` placeholders for splitting)
         output: String,
     },
+    /// Merge messages from multiple files into a single message
+    Merge {
+        /// Input files
+        inputs: Vec<PathBuf>,
+        /// Output file
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+    },
+    /// Split multi-object messages into separate single-object files
+    Split {
+        /// Input file
+        input: PathBuf,
+        /// Output template (use [index] for numbering, e.g. "split_[index].tgm")
+        #[arg(short = 'o', long)]
+        output: String,
+    },
+    /// Reshuffle frames: move footer frames to header position
+    Reshuffle {
+        /// Input file
+        input: PathBuf,
+        /// Output file
+        #[arg(short = 'o', long)]
+        output: PathBuf,
+    },
+    /// Convert GRIB messages to Tensogram format (requires ecCodes)
+    #[cfg(feature = "grib")]
+    ConvertGrib {
+        /// Input GRIB file(s)
+        #[arg(required = true)]
+        inputs: Vec<String>,
+        /// Output file (omit for stdout)
+        #[arg(short = 'o', long)]
+        output: Option<String>,
+        /// Each GRIB message becomes a separate Tensogram message
+        #[arg(long)]
+        split: bool,
+    },
 }
 
 fn main() {
@@ -103,6 +140,15 @@ fn main() {
             input,
             output,
         } => commands::copy::run(&input, &output, where_clause.as_deref()),
+        Commands::Merge { inputs, output } => commands::merge::run(&inputs, &output),
+        Commands::Split { input, output } => commands::split::run(&input, &output),
+        Commands::Reshuffle { input, output } => commands::reshuffle::run(&input, &output),
+        #[cfg(feature = "grib")]
+        Commands::ConvertGrib {
+            inputs,
+            output,
+            split,
+        } => commands::convert_grib::run(&inputs, output.as_deref(), split),
     };
 
     if let Err(e) = result {

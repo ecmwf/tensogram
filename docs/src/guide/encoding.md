@@ -98,7 +98,7 @@ Then encode as normal, passing the original raw bytes (as f64 bytes):
 ```rust
 let raw: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
-let global = GlobalMetadata { version: 2, extra: BTreeMap::new() };
+let global = GlobalMetadata { version: 2, ..Default::default() };
 let message = encode(global, &[(&desc, &raw)], &EncodeOptions::default())?;
 ```
 
@@ -109,7 +109,7 @@ The encoder applies simple_packing internally. The payload stored in the message
 Pass multiple `(descriptor, data)` pairs:
 
 ```rust
-let global = GlobalMetadata { version: 2, extra: BTreeMap::new() };
+let global = GlobalMetadata { version: 2, ..Default::default() };
 
 let message = encode(
     global,

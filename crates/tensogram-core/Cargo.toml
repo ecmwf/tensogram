@@ -4,9 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = []
+default = ["szip", "zstd", "lz4", "blosc2", "zfp", "sz3"]
 mmap = ["dep:memmap2"]
 async = ["dep:tokio"]
+# Compression feature gates — forwarded to tensogram-encodings
+szip = ["tensogram-encodings/szip"]
+zstd = ["tensogram-encodings/zstd"]
+lz4 = ["tensogram-encodings/lz4"]
+blosc2 = ["tensogram-encodings/blosc2"]
+zfp = ["tensogram-encodings/zfp"]
+sz3 = ["tensogram-encodings/sz3"]
 
 [dependencies]
 tensogram-encodings = { path = "../tensogram-encodings" }
@@ -14,8 +21,6 @@ thiserror.workspace = true
 ciborium = { workspace = true }
 serde.workspace = true
 xxhash-rust.workspace = true
-sha1.workspace = true
-md5.workspace = true
 memmap2 = { version = "0.9", optional = true }
 tokio = { version = "1", features = ["fs", "rt"], optional = true }
 

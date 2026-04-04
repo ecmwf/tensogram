@@ -48,11 +48,12 @@ For the wire format byte layout, see [docs/src/format/wire-format.md](docs/src/f
 |-------|---------|------------|
 | `tensogram-core` | Wire format, framing, encode/decode, file API, iterators | `tensogram-encodings` |
 | `tensogram-encodings` | Encoding pipeline: simple packing, shuffle, 6 compression codecs | (standalone) |
-| `tensogram-cli` | Command-line tool (`tensogram info/ls/dump/get/set/copy`) | `tensogram-core` |
+| `tensogram-cli` | Command-line tool (`tensogram info/ls/dump/get/set/copy/merge/split/reshuffle`) | `tensogram-core` |
 | `tensogram-ffi` | C FFI with opaque handles and `tensogram.h` via cbindgen | `tensogram-core` |
 | `tensogram-python` | Python bindings via PyO3, returns NumPy arrays | `tensogram-core` |
+| `tensogram-grib` | GRIB→Tensogram converter via ecCodes (excluded from default build) | `tensogram-core` |
 
-The dependency graph is a clean tree. `tensogram-encodings` has no internal dependencies. Everything else flows through `tensogram-core`.
+The dependency graph is a clean tree. `tensogram-encodings` has no internal dependencies. Everything else flows through `tensogram-core`. `tensogram-grib` is excluded from the default workspace build (requires the ecCodes C library).
 
 ## Core Modules (tensogram-core)
 
@@ -67,7 +68,8 @@ src/
 ├── decode.rs     decode, decode_metadata, decode_object, decode_range
 ├── file.rs       TensogramFile: open, create, append, scan, mmap, async variants
 ├── iter.rs       MessageIter (zero-copy), ObjectIter (lazy decode), FileMessageIter (seek-based)
-├── hash.rs       xxh3, sha1, md5 hashing and verification
+├── hash.rs       xxh3 hashing and verification
+├── streaming.rs  StreamingEncoder<W: Write> for progressive encode to sinks
 └── error.rs      TensogramError enum with 7 variants
 ```
 
@@ -94,7 +96,7 @@ Raw bytes
   -> encoding (simple_packing: lossy quantization)
   -> filter (shuffle: byte-level transpose)
   -> compression (szip/zstd/lz4/blosc2/zfp/sz3)
-  -> hashing (xxh3/sha1/md5)
+  -> hashing (xxh3)
   -> data object frame
 ```
 
@@ -114,16 +116,33 @@ Each stage is optional and configured per object via `DataObjectDescriptor` fiel
 
 ## Feature Gates
 
-| Feature | Dependency | What it enables |
-|---------|------------|-----------------|
-| `mmap` | `memmap2` | `TensogramFile::open_mmap()` for zero-copy file reads |
-| `async` | `tokio` | `open_async()`, `read_message_async()`, `decode_message_async()` |
+### tensogram-core
 
-Both are off by default. The core library works without them.
+| Feature | Dependency | What it enables | Default |
+|---------|------------|-----------------|---------|
+| `mmap` | `memmap2` | `TensogramFile::open_mmap()` for zero-copy file reads | off |
+| `async` | `tokio` | `open_async()`, `read_message_async()`, `decode_message_async()` | off |
+| `szip` | `libaec-sys` | CCSDS 121.0-B-3 szip compression with random access | **on** |
+| `zstd` | `zstd` | Zstandard lossless compression | **on** |
+| `lz4` | `lz4_flex` | LZ4 lossless compression (pure Rust) | **on** |
+| `blosc2` | `blosc2` | Blosc2 multi-codec meta-compressor with chunk random access | **on** |
+| `zfp` | `zfp-sys-cc` | ZFP lossy floating-point compression | **on** |
+| `sz3` | `sz3` | SZ3 error-bounded lossy compression | **on** |
+
+All compression features are on by default. For a lightweight build without C FFI dependencies:
+```bash
+cargo build -p tensogram-core --no-default-features --features mmap
+```
+
+### tensogram-cli
+
+| Feature | Dependency | What it enables | Default |
+|---------|------------|-----------------|---------|
+| `grib` | `tensogram-grib` | `tensogram convert-grib` subcommand | off |
 
 ## Testing
 
-157 tests across the workspace:
+167+ tests across the workspace:
 
 - Unit tests in `#[cfg(test)]` modules alongside the code
 - Integration tests in `crates/tensogram-core/tests/` (round-trips, adversarial inputs, golden files)

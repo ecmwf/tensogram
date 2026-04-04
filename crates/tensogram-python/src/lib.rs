@@ -367,7 +367,7 @@ impl PyTensogramFile {
 ///   Each descriptor_dict has tensor fields (type, shape, dtype) and
 ///   encoding fields (byte_order, encoding, filter, compression, and params as
 ///   additional keys).
-/// hash: hash algorithm name ("xxh3", "sha1", "md5") or None.
+/// hash: hash algorithm name ("xxh3") or None.
 ///
 /// Returns bytes.
 #[pyfunction]
@@ -509,8 +509,6 @@ fn make_encode_options(hash: Option<&str>) -> PyResult<EncodeOptions> {
     let hash_algorithm = match hash {
         None => None,
         Some("xxh3") => Some(HashAlgorithm::Xxh3),
-        Some("sha1") => Some(HashAlgorithm::Sha1),
-        Some("md5") => Some(HashAlgorithm::Md5),
         Some(other) => return Err(PyValueError::new_err(format!("unknown hash: {other}"))),
     };
     Ok(EncodeOptions { hash_algorithm })

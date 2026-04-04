@@ -3,12 +3,21 @@ name = "tensogram-encodings"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["szip", "zstd", "lz4", "blosc2", "zfp", "sz3"]
+szip = ["dep:libaec-sys"]
+zstd = ["dep:zstd"]
+lz4 = ["dep:lz4_flex"]
+blosc2 = ["dep:blosc2"]
+zfp = ["dep:zfp-sys-cc"]
+sz3 = ["dep:sz3"]
+
 [dependencies]
 thiserror.workspace = true
 serde.workspace = true
-libaec-sys.workspace = true
-zstd.workspace = true
-lz4_flex.workspace = true
-blosc2.workspace = true
-zfp-sys-cc.workspace = true
-sz3.workspace = true
+libaec-sys = { workspace = true, optional = true }
+zstd = { workspace = true, optional = true }
+lz4_flex = { workspace = true, optional = true }
+blosc2 = { workspace = true, optional = true }
+zfp-sys-cc = { workspace = true, optional = true }
+sz3 = { workspace = true, optional = true }

@@ -5,9 +5,14 @@ use crate::error::{Result, TensogramError};
 use crate::framing::{self, EncodedObject};
 use crate::hash::{compute_hash, HashAlgorithm};
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashDescriptor};
+#[cfg(feature = "blosc2")]
+use tensogram_encodings::pipeline::Blosc2Codec;
+#[cfg(feature = "sz3")]
+use tensogram_encodings::pipeline::Sz3ErrorBound;
+#[cfg(feature = "zfp")]
+use tensogram_encodings::pipeline::ZfpMode;
 use tensogram_encodings::pipeline::{
-    self, Blosc2Codec, CompressionType, EncodingType, FilterType, PipelineConfig, Sz3ErrorBound,
-    ZfpMode,
+    self, CompressionType, EncodingType, FilterType, PipelineConfig,
 };
 use tensogram_encodings::simple_packing::SimplePackingParams;
 
@@ -26,7 +31,7 @@ impl Default for EncodeOptions {
     }
 }
 
-fn validate_object(desc: &DataObjectDescriptor, data_len: usize) -> Result<()> {
+pub(crate) fn validate_object(desc: &DataObjectDescriptor, data_len: usize) -> Result<()> {
     if desc.obj_type.is_empty() {
         return Err(TensogramError::Metadata(
             "obj_type must not be empty".to_string(),
@@ -161,6 +166,7 @@ pub(crate) fn build_pipeline_config(
 
     let compression = match desc.compression.as_str() {
         "none" => CompressionType::None,
+        #[cfg(feature = "szip")]
         "szip" => {
             let rsi = u32::try_from(get_u64_param(&desc.params, "szip_rsi")?)
                 .map_err(|_| TensogramError::Metadata("szip_rsi out of u32 range".to_string()))?;
@@ -182,11 +188,14 @@ pub(crate) fn build_pipeline_config(
                 bits_per_sample,
             }
         }
+        #[cfg(feature = "zstd")]
         "zstd" => {
             let level = get_i64_param(&desc.params, "zstd_level").unwrap_or(3) as i32;
             CompressionType::Zstd { level }
         }
+        #[cfg(feature = "lz4")]
         "lz4" => CompressionType::Lz4,
+        #[cfg(feature = "blosc2")]
         "blosc2" => {
             let codec_str = match desc.params.get("blosc2_codec") {
                 Some(ciborium::Value::Text(s)) => s.as_str(),
@@ -218,6 +227,7 @@ pub(crate) fn build_pipeline_config(
                 typesize,
             }
         }
+        #[cfg(feature = "zfp")]
         "zfp" => {
             let mode_str = match desc.params.get("zfp_mode") {
                 Some(ciborium::Value::Text(s)) => s.clone(),
@@ -251,6 +261,7 @@ pub(crate) fn build_pipeline_config(
             };
             CompressionType::Zfp { mode }
         }
+        #[cfg(feature = "sz3")]
         "sz3" => {
             let mode_str = match desc.params.get("sz3_error_bound_mode") {
                 Some(ciborium::Value::Text(s)) => s.clone(),

@@ -156,7 +156,7 @@ The optional `hash` field records an integrity digest of the raw payload bytes.
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `type` | text | `"xxh3"`, `"sha1"`, or `"md5"` |
+| `type` | text | `"xxh3"` |
 | `value` | text | Hex-encoded digest |
 
 ## IndexFrame
@@ -188,7 +188,7 @@ Hash frames (header or footer) store per-object integrity hashes, allowing verif
 | Key | Type | Description |
 |-----|------|-------------|
 | `object_count` | uint | Number of data objects |
-| `hash_type` | text | Hash algorithm: `"xxh3"`, `"sha1"`, or `"md5"` |
+| `hash_type` | text | Hash algorithm: `"xxh3"` |
 | `hashes` | array of text | Hex-encoded digest for each object, in order |
 
 ### Example HashFrame

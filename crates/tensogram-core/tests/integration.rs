@@ -7,6 +7,7 @@ fn make_float32_descriptor(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescri
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -46,7 +47,11 @@ fn make_mars_pair(shape: Vec<u64>, param: &str) -> (GlobalMetadata, DataObjectDe
         ),
     );
 
-    let global = GlobalMetadata { version: 2, extra };
+    let global = GlobalMetadata {
+        version: 2,
+        extra,
+        ..Default::default()
+    };
 
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -106,6 +111,7 @@ fn test_multi_object_message() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
 
     let desc1 = DataObjectDescriptor {
@@ -168,6 +174,7 @@ fn test_decode_single_object_by_index() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
 
     let desc1 = DataObjectDescriptor {
@@ -216,6 +223,7 @@ fn test_zero_object_message() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
 
     let encoded = encode(&global, &[], &EncodeOptions::default()).unwrap();
@@ -293,6 +301,7 @@ fn test_simple_packing_round_trip() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -338,6 +347,7 @@ fn test_shuffle_round_trip() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -420,6 +430,7 @@ fn test_decode_range_shuffle_rejected() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -491,6 +502,7 @@ fn test_validate_object_overflow() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -540,6 +552,7 @@ fn test_cross_endian_round_trip() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let be_desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -637,6 +650,7 @@ fn test_simple_packing_rejects_non_f64() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -670,6 +684,7 @@ fn test_validate_ndim_mismatch() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -710,6 +725,7 @@ fn test_param_out_of_bounds() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -772,6 +788,7 @@ fn make_szip_packing_pair(
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -805,6 +822,7 @@ fn make_szip_raw_pair(num_values: u64, dtype: Dtype) -> (GlobalMetadata, DataObj
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -982,6 +1000,7 @@ fn test_szip_shuffle_round_trip() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -1024,6 +1043,7 @@ fn test_szip_shuffle_decode_range_rejected() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -1085,6 +1105,7 @@ fn test_szip_multi_object_mixed_compression() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let raw_desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -1199,6 +1220,7 @@ fn test_validate_empty_obj_type() {
     let global = GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     };
     let desc = DataObjectDescriptor {
         obj_type: "".to_string(),
@@ -1217,4 +1239,82 @@ fn test_validate_empty_obj_type() {
     let data = vec![0u8; 4 * 4];
     let result = encode(&global, &[(&desc, &data)], &EncodeOptions::default());
     assert!(result.is_err(), "expected Err but got Ok");
+}
+
+// ── Metadata common/payload/reserved round-trip ─────────────────────────────
+
+#[test]
+fn test_metadata_common_payload_reserved_round_trip() {
+    let (_, desc) = make_float32_descriptor(vec![4]);
+    let data = vec![0u8; 4 * 4];
+
+    let mut common = BTreeMap::new();
+    common.insert(
+        "centre".to_string(),
+        ciborium::Value::Text("ecmwf".to_string()),
+    );
+    common.insert(
+        "date".to_string(),
+        ciborium::Value::Integer(20260404.into()),
+    );
+
+    let mut payload = BTreeMap::new();
+    payload.insert(
+        "object_count".to_string(),
+        ciborium::Value::Integer(1.into()),
+    );
+
+    let mut reserved = BTreeMap::new();
+    reserved.insert(
+        "future_field".to_string(),
+        ciborium::Value::Text("placeholder".to_string()),
+    );
+
+    let global = GlobalMetadata {
+        version: 2,
+        common: common.clone(),
+        payload: payload.clone(),
+        reserved: reserved.clone(),
+        extra: BTreeMap::new(),
+    };
+
+    let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap();
+
+    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.common, common);
+    assert_eq!(decoded_meta.payload, payload);
+    assert_eq!(decoded_meta.reserved, reserved);
+    assert!(decoded_meta.extra.is_empty());
+}
+
+#[test]
+fn test_metadata_empty_sections_not_serialized() {
+    let (_, desc) = make_float32_descriptor(vec![4]);
+    let data = vec![0u8; 4 * 4];
+
+    // Only set 'extra', leave common/payload/reserved empty
+    let mut extra = BTreeMap::new();
+    extra.insert(
+        "mars".to_string(),
+        ciborium::Value::Map(vec![(
+            ciborium::Value::Text("class".to_string()),
+            ciborium::Value::Text("od".to_string()),
+        )]),
+    );
+
+    let global = GlobalMetadata {
+        version: 2,
+        extra,
+        ..Default::default()
+    };
+
+    let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap();
+
+    assert_eq!(decoded_meta.version, 2);
+    assert!(decoded_meta.common.is_empty());
+    assert!(decoded_meta.payload.is_empty());
+    assert!(decoded_meta.reserved.is_empty());
+    assert!(decoded_meta.extra.contains_key("mars"));
 }

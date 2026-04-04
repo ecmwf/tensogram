@@ -4,7 +4,6 @@
 //! This detects corruption introduced during storage or transmission.
 //!
 //! EncodeOptions::default() uses xxh3 (fast, 64-bit non-cryptographic).
-//! sha1 and md5 are available for archival or legacy compatibility.
 //!
 //! The hash is stored in the CBOR metadata alongside the object descriptor,
 //! so it survives any transport layer that carries the full message bytes.
@@ -36,6 +35,7 @@ fn make_global_meta() -> GlobalMetadata {
     GlobalMetadata {
         version: 2,
         extra: BTreeMap::new(),
+        ..Default::default()
     }
 }
 
@@ -61,39 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("xxh3 verification: PASS");
     }
 
-    // ── 2. Encode with sha1 ────────────────────────────────────────────────────
-    {
-        let options = EncodeOptions {
-            hash_algorithm: Some(HashAlgorithm::Sha1),
-        };
-        let message = encode(&global_meta, &[(&desc, &data)], &options)?;
-
-        let (_, objects) = decode(&message, &DecodeOptions::default())?;
-        let hash = objects[0].0.hash.as_ref().unwrap();
-        println!("\nsha1 hash: {}:{}", hash.hash_type, &hash.value[..16]);
-
-        let verify_opts = DecodeOptions { verify_hash: true };
-        decode(&message, &verify_opts)?;
-        println!("sha1 verification: PASS");
-    }
-
-    // ── 3. Encode with md5 ─────────────────────────────────────────────────────
-    {
-        let options = EncodeOptions {
-            hash_algorithm: Some(HashAlgorithm::Md5),
-        };
-        let message = encode(&global_meta, &[(&desc, &data)], &options)?;
-
-        let (_, objects) = decode(&message, &DecodeOptions::default())?;
-        let hash = objects[0].0.hash.as_ref().unwrap();
-        println!("\nmd5 hash:  {}:{}", hash.hash_type, &hash.value[..16]);
-
-        let verify_opts = DecodeOptions { verify_hash: true };
-        decode(&message, &verify_opts)?;
-        println!("md5 verification: PASS");
-    }
-
-    // ── 4. Encode with no hash ─────────────────────────────────────────────────
+    // ── 2. Encode with no hash ──────────────────────────────────────────────────
     {
         let options = EncodeOptions {
             hash_algorithm: None,
@@ -109,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("\nNo-hash message decoded with verify_hash=true: silently skipped (OK)");
     }
 
-    // ── 5. Corruption detection ────────────────────────────────────────────────
+    // ── 3. Corruption detection ─────────────────────────────────────────────────
     {
         let message = encode(&global_meta, &[(&desc, &data)], &EncodeOptions::default())?;
 

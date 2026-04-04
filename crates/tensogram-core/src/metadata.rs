@@ -351,7 +351,11 @@ mod tests {
             ),
         );
 
-        GlobalMetadata { version: 2, extra }
+        GlobalMetadata {
+            version: 2,
+            extra,
+            ..Default::default()
+        }
     }
 
     fn make_test_descriptor() -> DataObjectDescriptor {
@@ -434,6 +438,7 @@ mod tests {
         let meta = GlobalMetadata {
             version: 2,
             extra: BTreeMap::new(),
+            ..Default::default()
         };
         let bytes = global_metadata_to_cbor(&meta).unwrap();
         let decoded = cbor_to_global_metadata(&bytes).unwrap();
@@ -529,6 +534,7 @@ mod tests {
         let meta1 = GlobalMetadata {
             version: 2,
             extra: extra1,
+            ..Default::default()
         };
 
         let mut extra2 = BTreeMap::new();
@@ -537,6 +543,7 @@ mod tests {
         let meta2 = GlobalMetadata {
             version: 2,
             extra: extra2,
+            ..Default::default()
         };
 
         let bytes1 = global_metadata_to_cbor(&meta1).unwrap();

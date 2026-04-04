@@ -47,6 +47,16 @@
 - [tensogram get](cli/get.md)
 - [tensogram set](cli/set.md)
 - [tensogram copy](cli/copy.md)
+- [tensogram merge](cli/merge.md)
+- [tensogram split](cli/split.md)
+- [tensogram reshuffle](cli/reshuffle.md)
+
+---
+
+# GRIB Conversion
+
+- [Overview](grib/overview.md)
+- [MARS Key Mapping](grib/metadata-mapping.md)
 
 ---
 

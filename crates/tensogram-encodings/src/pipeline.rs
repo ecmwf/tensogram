@@ -1,9 +1,18 @@
 use std::borrow::Cow;
 
-use crate::compression::{
-    Blosc2Compressor, CompressResult, CompressionError, Compressor, Lz4Compressor, Sz3Compressor,
-    SzipCompressor, ZfpCompressor, ZstdCompressor,
-};
+#[cfg(feature = "blosc2")]
+use crate::compression::Blosc2Compressor;
+#[cfg(feature = "lz4")]
+use crate::compression::Lz4Compressor;
+#[cfg(feature = "sz3")]
+use crate::compression::Sz3Compressor;
+#[cfg(feature = "szip")]
+use crate::compression::SzipCompressor;
+#[cfg(feature = "zfp")]
+use crate::compression::ZfpCompressor;
+#[cfg(feature = "zstd")]
+use crate::compression::ZstdCompressor;
+use crate::compression::{CompressResult, CompressionError, Compressor};
 use crate::shuffle;
 use crate::simple_packing::{self, PackingError, SimplePackingParams};
 use serde::{Deserialize, Serialize};
@@ -46,6 +55,7 @@ pub enum FilterType {
     Shuffle { element_size: usize },
 }
 
+#[cfg(feature = "blosc2")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Blosc2Codec {
@@ -56,6 +66,7 @@ pub enum Blosc2Codec {
     Zstd,
 }
 
+#[cfg(feature = "zfp")]
 #[derive(Debug, Clone)]
 pub enum ZfpMode {
     FixedRate { rate: f64 },
@@ -63,6 +74,7 @@ pub enum ZfpMode {
     FixedAccuracy { tolerance: f64 },
 }
 
+#[cfg(feature = "sz3")]
 #[derive(Debug, Clone)]
 pub enum Sz3ErrorBound {
     Absolute(f64),
@@ -73,24 +85,30 @@ pub enum Sz3ErrorBound {
 #[derive(Debug, Clone)]
 pub enum CompressionType {
     None,
+    #[cfg(feature = "szip")]
     Szip {
         rsi: u32,
         block_size: u32,
         flags: u32,
         bits_per_sample: u32,
     },
+    #[cfg(feature = "zstd")]
     Zstd {
         level: i32,
     },
+    #[cfg(feature = "lz4")]
     Lz4,
+    #[cfg(feature = "blosc2")]
     Blosc2 {
         codec: Blosc2Codec,
         clevel: i32,
         typesize: usize,
     },
+    #[cfg(feature = "zfp")]
     Zfp {
         mode: ZfpMode,
     },
+    #[cfg(feature = "sz3")]
     Sz3 {
         error_bound: Sz3ErrorBound,
     },
@@ -115,40 +133,46 @@ pub struct PipelineResult {
 /// Build a boxed compressor from a CompressionType variant.
 fn build_compressor(
     compression: &CompressionType,
-    config: &PipelineConfig,
-) -> Option<Box<dyn Compressor>> {
+    #[allow(unused_variables)] config: &PipelineConfig,
+) -> Result<Option<Box<dyn Compressor>>, CompressionError> {
     match compression {
-        CompressionType::None => None,
+        CompressionType::None => Ok(None),
+        #[cfg(feature = "szip")]
         CompressionType::Szip {
             rsi,
             block_size,
             flags,
             bits_per_sample,
-        } => Some(Box::new(SzipCompressor {
+        } => Ok(Some(Box::new(SzipCompressor {
             rsi: *rsi,
             block_size: *block_size,
             flags: *flags,
             bits_per_sample: *bits_per_sample,
-        })),
-        CompressionType::Zstd { level } => Some(Box::new(ZstdCompressor { level: *level })),
-        CompressionType::Lz4 => Some(Box::new(Lz4Compressor)),
+        }))),
+        #[cfg(feature = "zstd")]
+        CompressionType::Zstd { level } => Ok(Some(Box::new(ZstdCompressor { level: *level }))),
+        #[cfg(feature = "lz4")]
+        CompressionType::Lz4 => Ok(Some(Box::new(Lz4Compressor))),
+        #[cfg(feature = "blosc2")]
         CompressionType::Blosc2 {
             codec,
             clevel,
             typesize,
-        } => Some(Box::new(Blosc2Compressor {
+        } => Ok(Some(Box::new(Blosc2Compressor {
             codec: *codec,
             clevel: *clevel,
             typesize: *typesize,
-        })),
-        CompressionType::Zfp { mode } => Some(Box::new(ZfpCompressor {
+        }))),
+        #[cfg(feature = "zfp")]
+        CompressionType::Zfp { mode } => Ok(Some(Box::new(ZfpCompressor {
             mode: mode.clone(),
             num_values: config.num_values,
-        })),
-        CompressionType::Sz3 { error_bound } => Some(Box::new(Sz3Compressor {
+        }))),
+        #[cfg(feature = "sz3")]
+        CompressionType::Sz3 { error_bound } => Ok(Some(Box::new(Sz3Compressor {
             error_bound: error_bound.clone(),
             num_values: config.num_values,
-        })),
+        }))),
     }
 }
 
@@ -176,7 +200,7 @@ pub fn encode_pipeline(
     };
 
     // Step 3: Compression
-    match build_compressor(&config.compression, config) {
+    match build_compressor(&config.compression, config)? {
         None => Ok(PipelineResult {
             encoded_bytes: filtered.into_owned(),
             block_offsets: None,
@@ -197,7 +221,7 @@ pub fn encode_pipeline(
 /// Full reverse pipeline: decompress → unshuffle → decode
 pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8>, PipelineError> {
     // Step 1: Decompress — Cow avoids cloning when no compression
-    let decompressed: Cow<'_, [u8]> = match build_compressor(&config.compression, config) {
+    let decompressed: Cow<'_, [u8]> = match build_compressor(&config.compression, config)? {
         None => Cow::Borrowed(encoded),
         Some(compressor) => {
             let expected_size = estimate_decompressed_size(config);
@@ -268,7 +292,7 @@ pub fn decode_range_pipeline(
     };
 
     // Phase 2: Get decompressed bytes for the range
-    let decompressed = match build_compressor(&config.compression, config) {
+    let decompressed = match build_compressor(&config.compression, config)? {
         None => {
             // No compression: slice directly from encoded buffer
             let byte_end = byte_start
@@ -398,6 +422,7 @@ mod tests {
         assert_eq!(decoded, data);
     }
 
+    #[cfg(feature = "szip")]
     #[test]
     fn test_szip_round_trip_pipeline() {
         let data: Vec<u8> = (0..2048).map(|i| (i % 256) as u8).collect();

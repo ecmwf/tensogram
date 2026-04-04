@@ -120,7 +120,5 @@ After all three stages, the stored bytes can be hashed. The hash is stored in th
 | Algorithm | Hash length | Notes |
 |---|---|---|
 | `xxh3` | 16 hex chars (64-bit) | Default. Fast, non-cryptographic |
-| `sha1` | 40 hex chars | Slower. Use for archival |
-| `md5` | 32 hex chars | Legacy compatibility |
 
 > **Edge case:** The hash covers the **stored bytes** (after encoding + filter + compression), not the original raw bytes. This means a hash mismatch always indicates storage or transmission corruption, not a quantization difference from lossy encoding.

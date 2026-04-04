@@ -12,7 +12,7 @@ Initial release of Tensogram, a binary N-Tensor message format library for scien
 - **Pack multiple tensors per message**, each with its own shape, dtype, and encoding pipeline
 - **Choose from 6 compression codecs** per data object: szip (CCSDS), zstd, lz4, blosc2, zfp (lossy floating-point), and sz3 (error-bounded lossy)
 - **Apply GRIB-style simple packing** for lossy quantization with configurable bit depth (0-64 bits)
-- **Verify data integrity** with xxh3, SHA-1, or MD5 per-object payload hashing
+- **Verify data integrity** with xxh3 per-object payload hashing
 - **Work with files** containing multiple messages via `TensogramFile` with lazy scanning and O(1) random access
 - **Use from Python** with NumPy integration (encode/decode returns `numpy.ndarray` directly)
 - **Use from C/C++** via the FFI layer with auto-generated `tensogram.h` header
