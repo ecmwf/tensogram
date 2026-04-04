@@ -23,12 +23,12 @@ fn make_message(param: &str, step: i64) -> Vec<u8> {
         (Value::Text("param".into()), Value::Text(param.into())),
         (Value::Text("step".into()), Value::Integer(step.into())),
     ]);
-    let mut extra = BTreeMap::new();
-    extra.insert("mars".to_string(), mars);
+    let mut common = BTreeMap::new();
+    common.insert("mars".to_string(), mars);
 
     let global_meta = GlobalMetadata {
         version: 2,
-        extra,
+        common,
         ..Default::default()
     };
 
@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let meta = decode_metadata(msg)?;
 
         // Read the mars namespace
-        let (param, step) = if let Some(Value::Map(entries)) = meta.extra.get("mars") {
+        let (param, step) = if let Some(Value::Map(entries)) = meta.common.get("mars") {
             let param = entries
                 .iter()
                 .find(|(k, _)| matches!(k, Value::Text(s) if s == "param"))

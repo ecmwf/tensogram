@@ -27,10 +27,23 @@ pub fn run(input: &Path, output_template: &str) -> Result<(), Box<dyn std::error
             continue;
         }
 
-        for (desc, data) in &objects {
+        for (idx, (desc, data)) in objects.iter().enumerate() {
             let out_name = expand_index(output_template, total_written);
 
-            let encoded = encode(&meta, &[(desc, data.as_slice())], &EncodeOptions::default())?;
+            // Extract the payload entry specific to this object so that
+            // per-object metadata (e.g. mars keys) is preserved in the split.
+            let mut split_meta = meta.clone();
+            split_meta.payload = if idx < meta.payload.len() {
+                vec![meta.payload[idx].clone()]
+            } else {
+                vec![]
+            };
+
+            let encoded = encode(
+                &split_meta,
+                &[(desc, data.as_slice())],
+                &EncodeOptions::default(),
+            )?;
 
             let mut out = std::fs::File::create(&out_name)?;
             out.write_all(&encoded)?;

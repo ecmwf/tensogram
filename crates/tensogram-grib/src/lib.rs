@@ -13,7 +13,6 @@
 
 pub mod converter;
 pub mod error;
-pub mod keys;
 pub mod metadata;
 
 pub use converter::{convert_grib_file, ConvertOptions, Grouping};

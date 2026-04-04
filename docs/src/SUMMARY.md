@@ -17,6 +17,7 @@
 
 - [Message Layout](format/wire-format.md)
 - [CBOR Metadata Schema](format/cbor-metadata.md)
+- [Metadata Value Types](format/metadata-values.md)
 - [Data Types](format/dtypes.md)
 
 ---

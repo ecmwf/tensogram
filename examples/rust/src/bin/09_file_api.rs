@@ -31,12 +31,12 @@ fn make_forecast_message(
         (Value::Text("date".into()), Value::Text("20260401".into())),
         (Value::Text("type".into()), Value::Text("fc".into())),
     ]);
-    let mut extra = BTreeMap::new();
-    extra.insert("mars".to_string(), mars);
+    let mut common = BTreeMap::new();
+    common.insert("mars".to_string(), mars);
 
     let global_meta = GlobalMetadata {
         version: 2,
-        extra,
+        common,
         ..Default::default()
     };
 
@@ -104,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("\nRandom access by index:");
         for i in [0, 3, 7] {
             let (meta, objects) = file.decode_message(i, &DecodeOptions::default())?;
-            let mars = &meta.extra["mars"];
+            let mars = &meta.common["mars"];
             let param = get_text(mars, "param");
             let step = get_int(mars, "step");
             println!(
@@ -132,8 +132,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("\nmessages(): {} raw buffers loaded into memory", all.len());
         for (i, msg) in all.iter().enumerate() {
             let meta = decode_metadata(msg)?;
-            let step = get_int(&meta.extra["mars"], "step");
-            let param = get_text(&meta.extra["mars"], "param");
+            let step = get_int(&meta.common["mars"], "step");
+            let param = get_text(&meta.common["mars"], "param");
             println!("  [{i}] param={param:5}  step={step}");
         }
     }

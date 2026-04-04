@@ -1258,11 +1258,13 @@ fn test_metadata_common_payload_reserved_round_trip() {
         ciborium::Value::Integer(20260404.into()),
     );
 
-    let mut payload = BTreeMap::new();
-    payload.insert(
-        "object_count".to_string(),
-        ciborium::Value::Integer(1.into()),
+    // Pre-populate one payload entry with per-object metadata.
+    let mut obj_entry = BTreeMap::new();
+    obj_entry.insert(
+        "custom_key".to_string(),
+        ciborium::Value::Text("hello".to_string()),
     );
+    let payload = vec![obj_entry];
 
     let mut reserved = BTreeMap::new();
     reserved.insert(
@@ -1283,7 +1285,21 @@ fn test_metadata_common_payload_reserved_round_trip() {
 
     assert_eq!(decoded_meta.version, 2);
     assert_eq!(decoded_meta.common, common);
-    assert_eq!(decoded_meta.payload, payload);
+    // Payload must have one entry with user-supplied + auto-populated keys.
+    assert_eq!(decoded_meta.payload.len(), 1);
+    assert_eq!(
+        decoded_meta.payload[0].get("custom_key"),
+        Some(&ciborium::Value::Text("hello".to_string()))
+    );
+    // Encoder must auto-populate ndim/shape/strides/dtype.
+    assert!(
+        decoded_meta.payload[0].contains_key("ndim"),
+        "encoder must auto-populate ndim"
+    );
+    assert!(
+        decoded_meta.payload[0].contains_key("dtype"),
+        "encoder must auto-populate dtype"
+    );
     assert_eq!(decoded_meta.reserved, reserved);
     assert!(decoded_meta.extra.is_empty());
 }
@@ -1314,7 +1330,16 @@ fn test_metadata_empty_sections_not_serialized() {
 
     assert_eq!(decoded_meta.version, 2);
     assert!(decoded_meta.common.is_empty());
-    assert!(decoded_meta.payload.is_empty());
+    // Encoder auto-populates payload with one entry per object.
+    assert_eq!(
+        decoded_meta.payload.len(),
+        1,
+        "encoder must create one payload entry per object"
+    );
+    assert!(
+        decoded_meta.payload[0].contains_key("ndim"),
+        "encoder must auto-populate ndim"
+    );
     assert!(decoded_meta.reserved.is_empty());
     assert!(decoded_meta.extra.contains_key("mars"));
 }

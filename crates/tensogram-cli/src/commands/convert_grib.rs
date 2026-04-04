@@ -8,6 +8,7 @@ pub fn run(
     inputs: &[impl AsRef<Path>],
     output: Option<&str>,
     split: bool,
+    all_keys: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if inputs.is_empty() {
         return Err("no input files specified".into());
@@ -21,6 +22,7 @@ pub fn run(
 
     let options = ConvertOptions {
         grouping,
+        preserve_all_keys: all_keys,
         ..Default::default()
     };
 

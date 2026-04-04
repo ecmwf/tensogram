@@ -693,7 +693,7 @@ fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata>
     Ok(GlobalMetadata {
         version,
         common: BTreeMap::new(),
-        payload: BTreeMap::new(),
+        payload: Vec::new(),
         reserved: BTreeMap::new(),
         extra,
     })
