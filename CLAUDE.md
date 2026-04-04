@@ -50,9 +50,17 @@ Follow docs/DESIGN.md principles and docs/STYLE.md conventions in all code.
 - Test: `source .venv/bin/activate && python -m pytest tests/python/ -v`
 
 # Version control
-- Git
-- IMPORTANT: versions are tagged using Semantic Versioning form 'MAJOR.MINOR.MICRO', NEVER update MAJOR unless users says so. Increment MINOR for new features. MICRO for bugfixes and documentation updates.
+- Git project in github.com/ecmwf/tensogram
+- IMPORTANT: 
+    - versions are tagged using Semantic Versioning form 'MAJOR.MINOR.MICRO'
+    - NEVER update MAJOR unless users says so. 
+    - Increment MINOR for new features. MICRO for bugfixes and documentation updates.
 - NEVER prepend git tag or releases with 'v'
+- REMEBER on releases:
+    - check all is commited and pushed upstream, otherwise STOP and warn user
+    - update the VERSION file
+    - git tag with version
+    - push and create release in github
 
 # Tracking Work Done
 
