@@ -46,15 +46,12 @@ pub struct DataObjectDescriptor {
 
 /// Global message metadata (carried in header/footer metadata frames).
 ///
-/// Does NOT contain per-object information — that lives in each
-/// data object frame's `DataObjectDescriptor`.
-///
-/// The metadata frame CBOR has three named sections:
-/// - `common`: keys shared across all objects (e.g. production time, origin)
-/// - `payload`: keys describing the collection of objects
+/// The metadata frame CBOR has four sections:
+/// - `common`: keys shared across all objects (e.g. `"mars": {…}`)
+/// - `payload`: per-object metadata array — one entry per data object,
+///   auto-populated with `ndim`/`shape`/`strides`/`dtype` by the encoder
 /// - `reserved`: reserved for future use, must be preserved on round-trip
-///
-/// Any other top-level keys land in `extra` for backwards compatibility.
+/// - `extra`: all other top-level keys (backwards compatibility)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalMetadata {
     pub version: u16,
@@ -63,17 +60,20 @@ pub struct GlobalMetadata {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub common: BTreeMap<String, ciborium::Value>,
 
-    /// Payload-level metadata describing the collection of objects.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub payload: BTreeMap<String, ciborium::Value>,
+    /// Per-object metadata — one entry per data object in the message.
+    ///
+    /// The encoder auto-populates `ndim`, `shape`, `strides`, `dtype` in each
+    /// entry.  Application code may pre-populate additional keys (e.g.
+    /// `"mars": {…}`) before encoding; the encoder merges its fields in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub payload: Vec<BTreeMap<String, ciborium::Value>>,
 
     /// Reserved for future use — must be preserved on round-trip.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub reserved: BTreeMap<String, ciborium::Value>,
 
-    /// All other top-level keys (namespaced metadata like "mars": {...}).
-    /// Provides backwards compatibility with messages that don't use the
-    /// common/payload/reserved structure.
+    /// All other top-level keys not covered by `common`/`payload`/`reserved`.
+    /// Provides backwards compatibility with older messages.
     #[serde(flatten)]
     pub extra: BTreeMap<String, ciborium::Value>,
 }
@@ -101,7 +101,7 @@ impl Default for GlobalMetadata {
         Self {
             version: 2,
             common: BTreeMap::new(),
-            payload: BTreeMap::new(),
+            payload: Vec::new(),
             reserved: BTreeMap::new(),
             extra: BTreeMap::new(),
         }

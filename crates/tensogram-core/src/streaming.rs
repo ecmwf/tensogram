@@ -1,7 +1,10 @@
 use std::io::Write;
 
-use crate::encode::{build_pipeline_config, validate_object, EncodeOptions};
+use crate::encode::{
+    build_pipeline_config, populate_payload_entries, validate_object, EncodeOptions,
+};
 use crate::error::{Result, TensogramError};
+use crate::framing::EncodedObject;
 use crate::hash::{compute_hash, HashAlgorithm};
 use crate::metadata;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashDescriptor, HashFrame, IndexFrame};
@@ -42,10 +45,15 @@ pub struct StreamingEncoder<W: Write> {
     object_lengths: Vec<u64>,
     /// Per-object hash entries: (hash_type, hash_value).
     hash_entries: Vec<Option<(String, String)>>,
+    /// Descriptors of completed objects (payloads not retained) — used to
+    /// populate per-object payload entries in the footer metadata frame.
+    completed_objects: Vec<EncodedObject>,
     /// Total bytes written so far.
     bytes_written: u64,
     /// Hash algorithm to use for payload integrity.
     hash_algorithm: Option<HashAlgorithm>,
+    /// Original global metadata — re-used to build the footer metadata frame.
+    global_meta: GlobalMetadata,
 }
 
 impl<W: Write> StreamingEncoder<W> {
@@ -63,6 +71,7 @@ impl<W: Write> StreamingEncoder<W> {
         // Streaming preamble: total_length=0 signals unknown length at write time
         let mut flags = MessageFlags::default();
         flags.set(MessageFlags::HEADER_METADATA);
+        flags.set(MessageFlags::FOOTER_METADATA);
         flags.set(MessageFlags::FOOTER_INDEX);
         if options.hash_algorithm.is_some() {
             flags.set(MessageFlags::FOOTER_HASHES);
@@ -90,8 +99,10 @@ impl<W: Write> StreamingEncoder<W> {
             object_offsets: Vec::new(),
             object_lengths: Vec::new(),
             hash_entries: Vec::new(),
+            completed_objects: Vec::new(),
             bytes_written,
             hash_algorithm: options.hash_algorithm,
+            global_meta: global_meta.clone(),
         })
     }
 
@@ -147,6 +158,13 @@ impl<W: Write> StreamingEncoder<W> {
         self.object_offsets.push(self.bytes_written);
         self.object_lengths.push(result.encoded_bytes.len() as u64);
         self.hash_entries.push(hash_entry);
+        // Retain only the descriptor for footer metadata population.
+        // The encoded payload has already been written to the stream;
+        // keeping it in memory would negate streaming's memory benefits.
+        self.completed_objects.push(EncodedObject {
+            descriptor: final_desc,
+            encoded_payload: Vec::new(),
+        });
 
         // Write frame
         self.writer.write_all(&frame_bytes)?;
@@ -160,10 +178,23 @@ impl<W: Write> StreamingEncoder<W> {
 
     /// Finalize the streaming message.
     ///
-    /// Writes footer frames (hash + index) and the postamble.
+    /// Writes footer frames (payload metadata + hash + index) and the postamble.
     /// Consumes the encoder and returns the underlying writer.
     pub fn finish(mut self) -> Result<W> {
         let footer_start = self.bytes_written;
+
+        // Footer metadata frame: updated global metadata with per-object payload entries.
+        // The header metadata was written without knowing the objects; here we write
+        // a footer metadata frame that supersedes it with payload populated.
+        {
+            let mut enriched_meta = self.global_meta.clone();
+            populate_payload_entries(&mut enriched_meta.payload, &self.completed_objects);
+            let meta_cbor = metadata::global_metadata_to_cbor(&enriched_meta)?;
+            let frame_bytes = build_frame(FrameType::FooterMetadata, 1, 0, &meta_cbor);
+            self.writer.write_all(&frame_bytes)?;
+            self.bytes_written += frame_bytes.len() as u64;
+            write_padding(&mut self.writer, &mut self.bytes_written)?;
+        }
 
         // Footer hash frame (if any objects had hashes)
         let has_hashes = self.hash_entries.iter().any(|e| e.is_some());

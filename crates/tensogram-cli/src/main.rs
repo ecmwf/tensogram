@@ -104,6 +104,9 @@ enum Commands {
         /// Each GRIB message becomes a separate Tensogram message
         #[arg(long)]
         split: bool,
+        /// Preserve all GRIB namespace keys under a "grib" sub-object
+        #[arg(long)]
+        all_keys: bool,
     },
 }
 
@@ -148,7 +151,8 @@ fn main() {
             inputs,
             output,
             split,
-        } => commands::convert_grib::run(&inputs, output.as_deref(), split),
+            all_keys,
+        } => commands::convert_grib::run(&inputs, output.as_deref(), split, all_keys),
     };
 
     if let Err(e) = result {

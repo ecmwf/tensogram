@@ -207,10 +207,11 @@ Implemented: 2026-04-03
 - Added `CompressionError::NotAvailable` variant for disabled features
 - Updated ARCHITECTURE.md with feature gate table
 
-### Test count: 
-- 167 Rust tests
+### Test count:
+- 181 Rust tests
 - 95 Python tests
 - 103 C++ tests
+- 0 clippy warnings
 
 ## C++ wrapper & build system (2026-04-04)
 
@@ -231,6 +232,87 @@ Implemented: 2026-04-03
 - Root `CMakeLists.txt`: builds Rust static library via `cargo build --release`, imports as CMake target, INTERFACE header-only library, platform-specific system library linking (macOS frameworks, Linux dl/pthread)
 - `tests/cpp/CMakeLists.txt`: GoogleTest v1.15.2 via FetchContent, `tensogram_tests` executable
 - 12 passing C++ tests: basic round-trip, helper round-trip, metadata access, decode metadata only, decode single object, descriptor fields, scan buffer, compute hash, hash verification, message iterator, invalid buffer error, error code preservation
+
+### Metadata improvements (2026-04-04)
+
+#### Doc page: `docs/src/format/metadata-values.md`
+- New documentation page on allowed/forbidden CBOR types for metadata values
+- Covers: string, int, float, bool, null, array, map (string keys only)
+- Forbidden: byte strings, CBOR tags, undefined, half-precision floats
+- Documents `payload.objects` auto-populated summary structure
+- Updated `docs/src/SUMMARY.md`, `docs/src/concepts/metadata.md`, `docs/src/format/cbor-metadata.md`
+
+#### Auto-populate `payload["objects"]` in encoder
+- `build_payload_objects_summary()` helper in `encode.rs` — builds CBOR array with `{ndim, shape, strides, dtype}` per object, plus `gridName` if present in params
+- Buffered encoder (`encode()`) clones GlobalMetadata, inserts `payload["objects"]`, passes enriched metadata
+- Streaming encoder (`StreamingEncoder`) accumulates `completed_objects`, writes `FooterMetadata` with payload-enriched metadata in `finish()`
+- Regenerated all 5 golden test files
+
+#### Dynamic MARS namespace iteration (no hardcoded keys)
+- Deleted `crates/tensogram-grib/src/keys.rs` (was 49-line hardcoded key list)
+- Rewrote `extract_mars_keys()` in `metadata.rs` to use `msg.new_keys_iterator("mars")` — discovers keys at runtime
+- Two-phase approach: collect key names (holds `&mut msg`), drop iterator, then read values
+- Library is now vocabulary-agnostic — only the CLI knows about specific MARS keys
+
+#### Extract `gridType` into per-object params
+- Read `msg.read_key::<String>("gridType")` for each GRIB message (not in MARS namespace)
+- Stored as `"gridName"` in per-object `params` for `build_payload_objects_summary()` propagation
+- Injected into params for both `OneToOne` and `MergeAll` grouping modes
+
+#### ECMWF opendata GRIB test fixtures
+- 4 real GRIB files in `crates/tensogram-grib/testdata/` downloaded via byte-range HTTP
+- `lsm.grib2` (land-sea mask, sfc, 188KB), `2t.grib2` (2m temp, sfc, 661KB)
+- `q_150.grib2` (specific humidity, 150 hPa, 477KB), `t_600.grib2` (temperature, 600 hPa, 511KB)
+- Source: ECMWF IFS 0.25° operational forecast, 2026-04-04 00z step 0h
+- `download.sh` script for reproducibility
+
+#### Integration tests for tensogram-grib
+- 7 integration tests in `crates/tensogram-grib/tests/integration.rs`
+- `test_lsm_convert` — metadata verification (MARS keys, shape 721×1440)
+- `test_2t_round_trip` — f64 data round-trip, finite values, temperature sanity
+- `test_q_pl_convert` — pressure-level metadata (levelist/level key present)
+- `test_t_pl_round_trip` — temperature range check (200–320 K)
+- `test_multi_merge` — MergeAll: common keys shared, varying in per-object params
+- `test_multi_split` — OneToOne: 2 GRIB → 2 Tensogram messages
+- `test_payload_objects_metadata` — verifies ndim/shape/strides/dtype/gridName in payload.objects
+
+### Metadata restructuring: payload as array + mars namespace (2026-04-04)
+
+#### `GlobalMetadata.payload` type change
+- Changed from `BTreeMap<String, CborValue>` to `Vec<BTreeMap<String, CborValue>>`
+- Wire format: payload CBOR value changed from map `{"objects": [...]}` to array `[{...}, ...]`
+- Each entry corresponds to one data object in the message
+- Encoder auto-populates `ndim`, `shape`, `strides`, `dtype` into each entry
+- Pre-existing keys (e.g. `"mars"`) preserved via merge
+
+#### MARS keys under namespaced sub-object
+- Common MARS keys → `common["mars"]` (shared across all objects)
+- Per-object varying MARS keys → `payload[i]["mars"]`
+- GRIB `gridType` stored as `"grid"` in the mars namespace
+- `DataObjectDescriptor.params` no longer carries MARS keys — encoding params only
+- All Rust examples migrated from `extra["mars"]` / `params["mars"]` to `common["mars"]` / `payload[i]["mars"]`
+
+#### Encoder changes
+- Renamed `build_payload_objects_summary()` → `populate_payload_entries()`
+- New signature: mutates `&mut Vec<BTreeMap>` in-place (extend/truncate to object count)
+- Streaming encoder (`finish()`) uses same pattern
+
+#### CLI split correctness fix
+- `split.rs` now extracts `payload[idx]` per-object when splitting multi-object messages
+- Prevents loss of per-object metadata (mars keys) during split
+
+#### Golden files regenerated
+- All 5 `.tgm` files regenerated for new wire format
+- `test_golden_mars_metadata` migrated from `extra["mars"]` to `common["mars"]`
+
+#### `preserve_all_keys` option for GRIB converter
+- New `preserve_all_keys: bool` field on `ConvertOptions` (default `false`)
+- When enabled, extracts keys from 6 non-mars ecCodes namespaces: `ls`, `geography`, `time`, `vertical`, `parameter`, `statistics`
+- Keys stored under `common["grib"]["<namespace>"]["<key>"]` (shared) and `payload[i]["grib"]["<namespace>"]["<key>"]` (varying)
+- Same common/varying partitioning as mars keys, applied per-namespace independently
+- Refactored `metadata.rs`: extracted `read_namespace_keys()` helper, `dynamic_to_cbor()`, `partition_flat_keys()`, `partition_grib_keys()`
+- CLI: `--all-keys` flag on `convert-grib` subcommand
+- 3 new integration tests + 2 new unit tests for `partition_grib_keys`
 
 ## Examples
 

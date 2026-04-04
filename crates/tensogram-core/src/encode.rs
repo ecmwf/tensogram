@@ -123,7 +123,58 @@ pub fn encode(
         });
     }
 
-    framing::encode_message(global_metadata, &encoded_objects)
+    // Populate the per-object payload entries with ndim/shape/strides/dtype.
+    // Pre-existing application keys (e.g. "mars") are preserved.
+    // Structural keys (ndim/shape/strides/dtype) are authoritative and always
+    // overwritten by the encoder to match the actual encoded objects.
+    let mut enriched_meta = global_metadata.clone();
+    populate_payload_entries(&mut enriched_meta.payload, &encoded_objects);
+
+    framing::encode_message(&enriched_meta, &encoded_objects)
+}
+
+/// Populate per-object payload entries with structural tensor metadata.
+///
+/// Resizes `payload` to match the object count, then inserts `ndim`,
+/// `shape`, `strides`, and `dtype` into each entry.  These structural
+/// keys are authoritative and always overwritten.  Pre-existing
+/// application keys (e.g. `"mars"`) are preserved.
+pub(crate) fn populate_payload_entries(
+    payload: &mut Vec<BTreeMap<String, ciborium::Value>>,
+    encoded_objects: &[crate::framing::EncodedObject],
+) {
+    // Ensure payload has exactly one entry per object.
+    payload.resize_with(encoded_objects.len(), BTreeMap::new);
+
+    for (entry, obj) in payload.iter_mut().zip(encoded_objects.iter()) {
+        let desc = &obj.descriptor;
+        entry.insert(
+            "ndim".to_string(),
+            ciborium::Value::Integer(desc.ndim.into()),
+        );
+        entry.insert(
+            "shape".to_string(),
+            ciborium::Value::Array(
+                desc.shape
+                    .iter()
+                    .map(|&d| ciborium::Value::Integer(d.into()))
+                    .collect(),
+            ),
+        );
+        entry.insert(
+            "strides".to_string(),
+            ciborium::Value::Array(
+                desc.strides
+                    .iter()
+                    .map(|&s| ciborium::Value::Integer(s.into()))
+                    .collect(),
+            ),
+        );
+        entry.insert(
+            "dtype".to_string(),
+            ciborium::Value::Text(desc.dtype.to_string()),
+        );
+    }
 }
 
 pub(crate) fn build_pipeline_config(

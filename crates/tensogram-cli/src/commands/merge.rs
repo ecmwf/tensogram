@@ -29,9 +29,8 @@ pub fn run(inputs: &[impl AsRef<Path>], output: &Path) -> Result<(), Box<dyn std
                     for (k, v) in meta.common {
                         existing.common.entry(k).or_insert(v);
                     }
-                    for (k, v) in meta.payload {
-                        existing.payload.entry(k).or_insert(v);
-                    }
+                    // Concatenate per-object payload entries from each message.
+                    existing.payload.extend(meta.payload);
                     for (k, v) in meta.reserved {
                         existing.reserved.entry(k).or_insert(v);
                     }

@@ -16,26 +16,92 @@ The global metadata frame contains a single CBOR map. The only required key is `
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
 | `version` | uint | Yes | Format version. Currently `2` |
+| `common` | map | No | Keys shared across all objects (e.g. origin, date) |
+| `payload` | array of maps | No | Auto-populated by encoder — one entry per data object |
+| `reserved` | map | No | Reserved for future use; preserved on round-trip |
 | *any other key* | any | No | Application metadata (e.g., `"mars"`, `"source"`, `"timestamp"`) |
 
-Unlike v1, the global metadata does **not** contain an `objects` or `payload` array. Each data object is self-describing via its own descriptor (see below).
+Unlike v1, the global metadata does **not** contain a top-level `objects` array of full descriptors. Each data object is self-describing via its own per-frame descriptor (see below). However, the encoder automatically populates `payload` as a CBOR array of maps — one entry per data object — so readers can discover object layout from the global frame alone.
+
+### Payload Array
+
+The `payload` array is written by the encoder. Each entry is a CBOR map containing auto-populated keys (`ndim`, `shape`, `strides`, `dtype`) plus any pre-existing keys the application set before encoding:
+
+```json
+{
+  "payload": [
+    { "ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float64" },
+    {
+      "ndim": 1, "shape": [137], "strides": [1], "dtype": "float64",
+      "mars": { "param": "lnsp" }
+    }
+  ]
+}
+```
+
+Each element corresponds to one data object in order. The encoder inserts `ndim`/`shape`/`strides`/`dtype` into each entry (overwriting those keys if already present). Application keys such as `"mars"` are preserved. Per-object MARS keys that **vary** across objects (e.g. `param`) are stored under `payload[i]["mars"]`, while MARS keys **shared** by all objects live under `common["mars"]`.
 
 ### Example GlobalMetadata
 
 ```json
 {
   "version": 2,
-  "mars": {
-    "class": "od",
-    "stream": "oper",
-    "expver": "0001",
-    "date": "20260404",
-    "time": "0000",
-    "step": "0"
+  "common": {
+    "mars": {
+      "class": "od",
+      "stream": "oper",
+      "expver": "0001",
+      "date": "20260404",
+      "time": "0000",
+      "step": "0",
+      "levtype": "sfc",
+      "grid": "regular_ll"
+    }
   },
+  "payload": [
+    {
+      "ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float32",
+      "mars": { "param": "2t" }
+    },
+    {
+      "ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float32",
+      "mars": { "param": "10u" }
+    }
+  ],
   "source": "ifs-cycle49r2"
 }
 ```
+
+Keys identical across every object (`class`, `stream`, `date`, `levtype`, `grid`, etc.) go in `common["mars"]`. Keys that **differ** per object (here only `param`) go in each `payload` entry's `"mars"` map. The GRIB key `gridType` is stored as `"grid"` in the mars namespace.
+
+### Optional: Full GRIB Namespace Keys
+
+When the GRIB converter runs with `preserve_all_keys` (CLI: `--all-keys`), all non-mars ecCodes namespace keys are stored under a `"grib"` sub-object with the same common/varying partitioning:
+
+```json
+{
+  "common": {
+    "mars": { "class": "od", "grid": "regular_ll", "..." : "..." },
+    "grib": {
+      "geography": { "Ni": 1440, "Nj": 721, "gridType": "regular_ll" },
+      "time":      { "dataDate": 20260404, "dataTime": 0 },
+      "ls":        { "edition": 2, "centre": "ecmf", "packingType": "grid_ccsds" }
+    }
+  },
+  "payload": [
+    {
+      "ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float64",
+      "mars": { "param": 167 },
+      "grib": {
+        "parameter":  { "paramId": 167, "shortName": "2t", "units": "K" },
+        "statistics": { "max": 311.03, "min": 212.84, "avg": 277.6 }
+      }
+    }
+  ]
+}
+```
+
+The namespaces captured are: `ls`, `geography`, `time`, `vertical`, `parameter`, `statistics`. Keys may overlap between namespaces (e.g. `gridType` appears in both `ls` and `geography`); each namespace stores its own copy. Empty namespaces are omitted.
 
 ## DataObjectDescriptor
 
@@ -56,9 +122,9 @@ Each data object frame contains its own CBOR descriptor. This descriptor fully d
 | *encoding params* | various | Conditional | Required when `encoding != "none"` |
 | *filter params* | various | Conditional | Required when `filter != "none"` |
 | *compression params* | various | Conditional | Required when `compression != "none"` |
-| *any other key* | any | No | Per-object application metadata |
+| *any other key* | any | No | Per-object encoding parameters |
 
-### Example: Temperature Field with MARS Metadata
+### Example: Temperature Field Descriptor
 
 Here is what a descriptor might look like for a global temperature field at 0.25-degree resolution, compressed with zstd:
 
@@ -81,16 +147,11 @@ Here is what a descriptor might look like for a global temperature field at 0.25
   "hash": {
     "type": "xxh3",
     "value": "a1b2c3d4e5f60718"
-  },
-  "mars": {
-    "param": "temperature",
-    "levtype": "pl",
-    "levelist": "500"
   }
 }
 ```
 
-Notice how MARS metadata sits alongside the encoding parameters — the descriptor is a flat map with well-known keys for encoding and free-form keys for application use.
+The `params` field in `DataObjectDescriptor` is for encoding parameters only (e.g. `reference_value`, `bits_per_value`). MARS keys and other application metadata are stored in the global metadata — shared keys in `common["mars"]` and per-object keys in `payload[i]["mars"]`.
 
 ### Encoding Parameters (simple_packing)
 

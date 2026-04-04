@@ -34,8 +34,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         (Value::Text("levtype".into()), Value::Text("sfc".into())),
     ]);
-    let mut obj0_extra = BTreeMap::new();
-    obj0_extra.insert("mars".to_string(), obj0_mars);
+    let mut obj0_payload = BTreeMap::new();
+    obj0_payload.insert("mars".to_string(), obj0_mars);
 
     // ── Object 1: land/sea mask (uint8, lat × lon) ────────────────────────────
     let mask: Vec<u8> = (0..(nlat * nlon))
@@ -46,18 +46,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (Value::Text("param".into()), Value::Text("lsm".into())),
         (Value::Text("levtype".into()), Value::Text("sfc".into())),
     ]);
-    let mut obj1_extra = BTreeMap::new();
-    obj1_extra.insert("mars".to_string(), obj1_mars);
+    let mut obj1_payload = BTreeMap::new();
+    obj1_payload.insert("mars".to_string(), obj1_mars);
 
-    // ── Shared forecast context ───────────────────────────────────────────────
-    let mars_msg = Value::Map(vec![
+    // ── Shared forecast context → common["mars"] ──────────────────────────────
+    let mars_common = Value::Map(vec![
         (Value::Text("class".into()), Value::Text("od".into())),
         (Value::Text("date".into()), Value::Text("20260401".into())),
         (Value::Text("step".into()), Value::Integer(6.into())),
         (Value::Text("type".into()), Value::Text("fc".into())),
     ]);
-    let mut msg_extra = BTreeMap::new();
-    msg_extra.insert("mars".to_string(), mars_msg);
+    let mut common = BTreeMap::new();
+    common.insert("mars".to_string(), mars_common);
 
     // ── Descriptors: one per object ───────────────────────────────────────────
     //
@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
-        params: obj0_extra,
+        params: BTreeMap::new(),
         hash: None,
     };
 
@@ -89,13 +89,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
-        params: obj1_extra,
+        params: BTreeMap::new(),
         hash: None,
     };
 
     let global_meta = GlobalMetadata {
         version: 2,
-        extra: msg_extra,
+        common,
+        payload: vec![obj0_payload, obj1_payload],
         ..Default::default()
     };
 

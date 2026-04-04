@@ -851,18 +851,35 @@ fn metadata_namespaces_roundtrip() {
         "foo".to_string(),
         ciborium::Value::Text("reserved_foo".to_string()),
     );
-    let mut payload = BTreeMap::new();
-    payload.insert("bar".to_string(), ciborium::Value::Integer(42.into()));
+    let mut payload_entry = BTreeMap::new();
+    payload_entry.insert("bar".to_string(), ciborium::Value::Integer(42.into()));
 
     let meta = GlobalMetadata {
         version: 2,
         common,
-        payload,
+        payload: vec![payload_entry],
         reserved,
         extra: BTreeMap::new(),
     };
 
-    let encoded = encode(&meta, &[], &EncodeOptions::default()).unwrap();
+    // Encode with zero objects — payload entry will be truncated by encoder
+    // since there are no objects to match. Use one dummy object instead.
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![1],
+        strides: vec![1],
+        dtype: tensogram_core::Dtype::Uint8,
+        byte_order: tensogram_core::ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    };
+    let data = vec![0u8; 1];
+
+    let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let (decoded, _) = decode(&encoded, &DecodeOptions::default()).unwrap();
 
     // Same key "foo" at different levels should be preserved
@@ -874,8 +891,9 @@ fn metadata_namespaces_roundtrip() {
         decoded.reserved.get("foo"),
         Some(&ciborium::Value::Text("reserved_foo".to_string()))
     );
+    // Payload entry preserves application keys alongside auto-populated ones
     assert_eq!(
-        decoded.payload.get("bar"),
+        decoded.payload[0].get("bar"),
         Some(&ciborium::Value::Integer(42.into()))
     );
 }
