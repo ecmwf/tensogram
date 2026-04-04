@@ -34,6 +34,8 @@ A Tensogram message is built from three sections: a **header** (preamble + optio
 
 At least one metadata frame (header or footer) must be present — messages cannot exist without metadata. Index and hash frames are optional but highly encouraged. By default, the encoder places them in the header when writing to a buffer, or in the footer when streaming.
 
+**Frame ordering:** The decoder enforces that frames appear in order: header frames, then data object frames, then footer frames. A header frame appearing after a data object frame, or a data object frame appearing after a footer frame, is rejected as malformed.
+
 ## Preamble (24 bytes)
 
 The preamble is the fixed-size start of every message.

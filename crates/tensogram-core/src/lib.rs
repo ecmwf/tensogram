@@ -15,9 +15,10 @@ pub use dtype::Dtype;
 pub use encode::{encode, EncodeOptions};
 pub use error::{Result, TensogramError};
 pub use file::TensogramFile;
-pub use framing::scan;
+pub use framing::{scan, scan_file};
 pub use hash::HashAlgorithm;
 pub use iter::{messages, objects, objects_metadata, FileMessageIter, MessageIter, ObjectIter};
+pub use metadata::verify_canonical_cbor;
 pub use types::{
     ByteOrder, DataObjectDescriptor, DecodedObject, GlobalMetadata, HashDescriptor, HashFrame,
     IndexFrame,

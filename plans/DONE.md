@@ -93,6 +93,29 @@ Implemented: 2026-04-03
 - Partial range decode (szip, blosc2, zfp fixed-rate; stream compressors zstd/lz4/sz3 return RangeNotSupported)
 - No panics in library code — all fallible operations return Result
 
+## Code quality & features (2026-04-04)
+
+### Code quality improvements
+- Decomposed `encode_message` (framing.rs) into 5 focused helpers: `build_hash_frame_cbor()`, `build_index_frame()`, `compute_object_offsets()`, `compute_message_flags()`, `assemble_message()` — orchestrator is now ~30 lines
+- Added `DecodePhase` enum for frame ordering validation in `decode_message()` — rejects header frames after data objects, data objects after footers
+- Replaced `fs::read()` in `ensure_scanned()` with streaming `scan_file()` that reads preamble-sized chunks + seeks, avoiding full-file memory load
+- Added `Debug` derive on `DecodedMessage`
+
+### Feature gates
+- `mmap` feature: `memmap2` behind `#[cfg(feature = "mmap")]`, adds `TensogramFile::open_mmap()` with zero-copy scan + read
+- `async` feature: `tokio` behind `#[cfg(feature = "async")]`, adds `open_async()`, `read_message_async()`, `decode_message_async()` — all FFI/CPU work runs via `spawn_blocking`
+
+### Golden binary test files
+- 5 canonical `.tgm` files in `tests/golden/`: simple_f32, multi_object (3 dtypes), mars_metadata, multi_message, hash_xxh3
+- 6 integration tests verifying decode correctness, determinism, and hash verification
+- Files are byte-for-byte deterministic for cross-language interoperability testing
+
+### ciborium canonical encoding verification
+- Added `verify_canonical_cbor()` utility in metadata.rs — checks RFC 8949 §4.2.1 canonical map key ordering
+- 7 new tests: all CBOR outputs verified canonical, non-canonical CBOR rejected, nested maps sorted, insertion-order independence confirmed
+
+### Test count: 157 tests (was 137), 0 clippy warnings
+
 ## Examples
 
 ### examples/rust/ (10 runnable examples, workspace member)

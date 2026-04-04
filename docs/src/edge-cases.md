@@ -75,6 +75,21 @@ The library uses canonical CBOR key ordering (RFC 8949 §4.2). If you construct 
 
 If you need to compare metadata across languages or implementations, always compare the decoded values, not the raw CBOR bytes from different encoders.
 
+You can verify that any CBOR output is canonical using the `verify_canonical_cbor()` utility:
+
+```rust
+use tensogram_core::verify_canonical_cbor;
+
+let cbor_bytes = /* ... */;
+verify_canonical_cbor(&cbor_bytes)?; // Returns Ok(()) if canonical, Err if not
+```
+
+## Frame Ordering Violations
+
+The decoder validates that frames appear in the expected order: header frames first, then data object frames, then footer frames. A message with frames out of order (e.g. a header metadata frame appearing after a data object frame) is rejected with `TensogramError::Framing`.
+
+This catches malformed or tampered messages. Valid messages produced by the encoder always have correct ordering.
+
 ## Streaming Mode (total_length = 0)
 
 When encoding for a non-seekable output (e.g. TCP socket), the preamble's `total_length` is set to 0. In this mode:

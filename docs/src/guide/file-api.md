@@ -57,12 +57,12 @@ for param in ["2t", "10u", "10v", "msl"] {
 ```rust
 let mut file = TensogramFile::open("forecast.tgm")?;
 
-// Scanning happens here (lazily, on first access)
+// Streaming scan happens here (lazily, on first access)
 let count = file.message_count()?;
 println!("{} messages in file", count);
 ```
 
-Scanning reads the entire file once and records each message's `(offset, length)`. After that, every `read_message` call is a seek + read — no further scanning.
+The first access triggers a streaming scan that reads preamble-sized chunks and seeks forward, so it never loads the entire file into memory. After that, every `read_message` call is a seek + read — no further scanning.
 
 ## Reading Messages
 
@@ -124,14 +124,58 @@ forecast.tgm
 ├── [message 0] — TENSOGRM ... 39277777
 ├── [message 1] — TENSOGRM ... 39277777
 ├── [message 2] — TENSOGRM ... 39277777
-│   ├── binary header (num_objects=2, offsets=[...]
-│   ├── CBOR metadata (GlobalMetadata + DataObjectDescriptors)
-│   ├── OBJS payload[0] OBJE
-│   └── OBJS payload[1] OBJE
+│   ├── Preamble (24B)
+│   ├── Header Metadata Frame (CBOR GlobalMetadata)
+│   ├── Header Index Frame (CBOR offsets)
+│   ├── Data Object Frame 0 (payload + CBOR descriptor)
+│   └── Data Object Frame 1 (payload + CBOR descriptor)
+│   └── Postamble (16B)
 └── ...
 ```
 
 No file-level header, no file-level index. All indexing is per-message, built in-memory at scan time.
+
+## Memory-Mapped I/O (optional)
+
+Enable the `mmap` feature to use memory-mapped file access:
+
+```toml
+[dependencies]
+tensogram-core = { path = "...", features = ["mmap"] }
+```
+
+```rust
+let mut file = TensogramFile::open_mmap("forecast.tgm")?;
+
+// Scan happens during open_mmap — no lazy scan needed
+let count = file.message_count()?;
+
+// Reads from the memory-mapped region (no additional seek)
+let raw = file.read_message(0)?;
+```
+
+This is useful for large files where you want to avoid per-message seek + read overhead. The file is mapped read-only. All existing decode functions work unchanged.
+
+## Async I/O (optional)
+
+Enable the `async` feature for tokio-based non-blocking file operations:
+
+```toml
+[dependencies]
+tensogram-core = { path = "...", features = ["async"] }
+```
+
+```rust
+let mut file = TensogramFile::open_async("forecast.tgm").await?;
+
+// Read a message without blocking the async runtime
+let raw = file.read_message_async(0).await?;
+
+// Decode also runs on a blocking thread (safe for FFI codecs)
+let (meta, objects) = file.decode_message_async(0, &opts).await?;
+```
+
+All CPU-intensive work (scanning, decoding, FFI calls to compression libraries) runs via `tokio::task::spawn_blocking`, so it won't block the async runtime.
 
 ## Edge Cases
 

@@ -23,6 +23,8 @@ message carries its own begin/terminator codes.
 - **Hash verification** — xxHash xxh3-64 integrity check on every data object (can be skipped for trusted buffers)
 - **Support for multiple languages** — Python NumPy-based API, C++ and Rust
 - **File convenience API** — convenience API functions to handle files containing multiple messages
+- **Optional memory-mapped I/O** — `mmap` feature gate for zero-copy file reads via memmap2
+- **Optional async I/O** — `async` feature gate for tokio-based non-blocking file operations
 - **multiple data types** — float16/32/64, bfloat16, int8-64, uint8-64, complex64/128, bit, etc
 
 ## Quick Start
@@ -172,6 +174,21 @@ cargo build --workspace
 cargo build --workspace --release
 ```
 
+### Optional Feature Flags
+
+`tensogram-core` has two optional features:
+
+```bash
+# Memory-mapped file I/O (zero-copy reads via memmap2)
+cargo build -p tensogram-core --features mmap
+
+# Async file I/O (tokio-based, uses spawn_blocking for FFI-safe decode)
+cargo build -p tensogram-core --features async
+
+# Both
+cargo build -p tensogram-core --features mmap,async
+```
+
 ### Format, Lint, Test
 
 ```bash
@@ -228,7 +245,7 @@ python examples/python/01_encode_decode.py
 | numpy (pyo3)    | NumPy array integration for Python bindings      | Rust crate     |
 | maturin         | Python extension build tool                      | Python tool    |
 
-**Optional system library:**
+**Optional system libraries and feature-gated dependencies:**
 
 | Library | Purpose                              | Type           |
 |---------|--------------------------------------|----------------|
@@ -238,12 +255,25 @@ python examples/python/01_encode_decode.py
 | blosc2 | Blosc2 multi-codec meta-compressor | Rust crate |
 | zfp-sys-cc | ZFP floating-point compression (C FFI) | Rust crate |
 | sz3 | SZ3 error-bounded lossy compression | Rust crate |
+| memmap2 | Memory-mapped file I/O (`mmap` feature) | Rust crate |
+| tokio | Async file I/O (`async` feature) | Rust crate |
+
+## Documentation
+
+- [Architecture](ARCHITECTURE.md) — how the crates fit together and why
+- [Contributing](CONTRIBUTING.md) — setup, workflow, test structure
+- [Changelog](CHANGELOG.md) — release history
+- [mdbook docs](docs/) — full developer guide (build with `cd docs && mdbook build`)
 
 ## Repository Layout
 
 ```
 tensogram
 ├── Cargo.toml                  # Workspace root (members + shared dependencies)
+├── VERSION                     # Current version
+├── ARCHITECTURE.md             # Crate architecture and design decisions
+├── CONTRIBUTING.md             # Contributor guide
+├── CHANGELOG.md                # Release history
 ├── crates/
 │   ├── tensogram-core/         # Core encode/decode library (Rust)
 │   ├── tensogram-encodings/    # Encoding pipeline (Rust)
@@ -259,7 +289,7 @@ tensogram
     ├── DESIGN.md               # Architecture and wire format specification
     ├── WIRE_FORMAT.md          # Wire format v2 specification
     ├── DONE.md                 # Implementation status
-    ├── IMPROVEMENTS.md         # Future improvements backlog
+    ├── STYLE.md                # Code style conventions
     └── TODO.md                 # Long-term feature ideas
 ```
 

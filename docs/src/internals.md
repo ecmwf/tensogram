@@ -81,6 +81,16 @@ When encoding a non-streaming message, the index frame contains byte offsets of 
 
 If the re-encoded CBOR changes size (edge case), the encoder returns an error rather than silently producing incorrect offsets.
 
+### Encoder Structure
+
+The `encode_message()` function delegates to five focused helpers:
+
+- `build_hash_frame_cbor()` — collects hashes from objects and serializes the HashFrame
+- `build_index_frame()` — runs the two-pass index construction described above
+- `compute_object_offsets()` — calculates byte offsets with 8-byte alignment
+- `compute_message_flags()` — sets preamble flags from optional frame presence
+- `assemble_message()` — writes preamble, frames, and postamble into the final buffer
+
 ## simple_packing Bit Layout
 
 Values are packed MSB-first (most significant bit first), matching the GRIB 2 simple packing specification:
@@ -108,13 +118,13 @@ Where:
 
 ## Lazy File Scanning
 
-`TensogramFile::open()` does not read the file. The first call that needs the message list (e.g. `message_count()`, `read_message()`) triggers a full scan. After that, the list of `(offset, length)` pairs is cached in memory for the lifetime of the `TensogramFile` object.
+`TensogramFile::open()` does not read the file. The first call that needs the message list (e.g. `message_count()`, `read_message()`) triggers a streaming scan using `scan_file()`. The scanner reads only preamble-sized chunks and seeks forward, so it never loads the entire file into memory. After that, the list of `(offset, length)` pairs is cached in memory for the lifetime of the `TensogramFile` object.
 
 ```rust
 // No I/O here
 let mut file = TensogramFile::open("huge.tgm")?;
 
-// Scan happens here (once)
+// Streaming scan happens here (once) — reads preamble chunks, seeks forward
 let count = file.message_count()?;
 
 // O(1) seek + read
@@ -136,6 +146,35 @@ TensogramError
 
 All public functions return `Result<T>` where the error is `TensogramError`. The `Io` variant wraps `std::io::Error` via the `From` impl, so `?` on any `std::io::Result` produces a `TensogramError::Io` automatically.
 
-## Why Not mmap?
+## Memory-Mapped I/O (`mmap` feature)
 
-An `mmap` feature gate is planned. The current implementation reads messages into `Vec<u8>` buffers. With mmap, the file bytes are mapped directly into virtual memory, and the decoder can work on slices of the mapping without any copies. This is the zero-copy path. For now, the API is designed to accept `&[u8]` slices so the mmap implementation can slot in without changing the decode functions.
+The `mmap` feature gate enables memory-mapped file access via `memmap2`. When you open a file with `TensogramFile::open_mmap()`, the file is mapped into virtual memory and the existing `scan()` function runs directly on the mapped buffer. Subsequent `read_message()` calls return copies from the mapped region without additional seeks.
+
+```rust
+// Requires: cargo build --features mmap
+let mut file = TensogramFile::open_mmap("huge.tgm")?;
+let count = file.message_count()?; // already scanned during open_mmap
+let msg = file.read_message(42)?;  // copies from mmap, no seek
+```
+
+The regular `open()` path still works without the feature and uses streaming seek-based scanning.
+
+## Async I/O (`async` feature)
+
+The `async` feature gate adds tokio-based async variants: `open_async()`, `read_message_async()`, and `decode_message_async()`. All CPU-intensive work (scanning, decoding, FFI calls to libaec/zfp/blosc2) runs via `spawn_blocking` to avoid blocking the async runtime.
+
+```rust
+// Requires: cargo build --features async
+let mut file = TensogramFile::open_async("forecast.tgm").await?;
+let (meta, objects) = file.decode_message_async(0, &opts).await?;
+```
+
+## Frame Ordering Validation
+
+The decoder enforces that frames appear in the expected order within a message: header frames first, then data object frames, then footer frames. A `DecodePhase` state machine tracks the current phase and returns `TensogramError::Framing` if a frame type appears out of order.
+
+This catches malformed messages where, for example, a header metadata frame appears after a data object frame.
+
+## Canonical CBOR Verification
+
+The library provides `verify_canonical_cbor()` to check that a CBOR byte slice is in RFC 8949 §4.2.1 canonical form. This is used internally by tests to verify that all CBOR output (metadata, descriptors, index frames, hash frames) is deterministic. It can also be used by external tools that need to validate Tensogram CBOR output against the spec.

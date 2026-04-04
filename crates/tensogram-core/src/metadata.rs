@@ -279,6 +279,56 @@ pub(crate) fn canonicalize(value: &mut ciborium::Value) -> Result<()> {
     Ok(())
 }
 
+/// Verify that CBOR bytes are in RFC 8949 §4.2.1 canonical form.
+///
+/// Checks that all map keys are sorted by their encoded byte representation
+/// (length-first, then lexicographic). Returns `Ok(())` if canonical, or an
+/// error describing the first violation.
+pub fn verify_canonical_cbor(cbor_bytes: &[u8]) -> Result<()> {
+    let value: ciborium::Value = ciborium::from_reader(cbor_bytes)
+        .map_err(|e| TensogramError::Metadata(format!("failed to parse CBOR: {e}")))?;
+    verify_canonical_value(&value)
+}
+
+fn verify_canonical_value(value: &ciborium::Value) -> Result<()> {
+    match value {
+        ciborium::Value::Map(entries) => {
+            // Check keys are sorted by encoded byte representation
+            let mut prev_key_bytes: Option<Vec<u8>> = None;
+            for (k, v) in entries {
+                let mut key_bytes = Vec::new();
+                ciborium::into_writer(k, &mut key_bytes).map_err(|e| {
+                    TensogramError::Metadata(format!("CBOR key serialisation failed: {e}"))
+                })?;
+
+                if let Some(ref prev) = prev_key_bytes {
+                    if key_bytes <= *prev {
+                        return Err(TensogramError::Metadata(format!(
+                            "CBOR map keys not in canonical order: key {:?} should come before {:?}",
+                            prev, key_bytes
+                        )));
+                    }
+                }
+                prev_key_bytes = Some(key_bytes);
+
+                // Recurse into key and value
+                verify_canonical_value(k)?;
+                verify_canonical_value(v)?;
+            }
+        }
+        ciborium::Value::Array(items) => {
+            for item in items {
+                verify_canonical_value(item)?;
+            }
+        }
+        ciborium::Value::Tag(_, inner) => {
+            verify_canonical_value(inner)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,5 +439,111 @@ mod tests {
         let decoded = cbor_to_global_metadata(&bytes).unwrap();
         assert_eq!(decoded.version, 2);
         assert!(decoded.extra.is_empty());
+    }
+
+    // ── Phase 7: Canonical CBOR verification tests ───────────────────
+
+    #[test]
+    fn test_global_metadata_cbor_is_canonical() {
+        let meta = make_test_global_metadata();
+        let bytes = global_metadata_to_cbor(&meta).unwrap();
+        verify_canonical_cbor(&bytes).unwrap();
+    }
+
+    #[test]
+    fn test_descriptor_cbor_is_canonical() {
+        let desc = make_test_descriptor();
+        let bytes = object_descriptor_to_cbor(&desc).unwrap();
+        verify_canonical_cbor(&bytes).unwrap();
+    }
+
+    #[test]
+    fn test_index_cbor_is_canonical() {
+        let index = IndexFrame {
+            object_count: 3,
+            offsets: vec![100, 500, 1200],
+            lengths: vec![400, 700, 300],
+        };
+        let bytes = index_to_cbor(&index).unwrap();
+        verify_canonical_cbor(&bytes).unwrap();
+    }
+
+    #[test]
+    fn test_hash_frame_cbor_is_canonical() {
+        let hf = HashFrame {
+            object_count: 2,
+            hash_type: "xxh3".to_string(),
+            hashes: vec!["abc".to_string(), "def".to_string()],
+        };
+        let bytes = hash_frame_to_cbor(&hf).unwrap();
+        verify_canonical_cbor(&bytes).unwrap();
+    }
+
+    #[test]
+    fn test_verify_rejects_non_canonical() {
+        // Build a map with keys intentionally out of order (longer key first)
+        use ciborium::Value;
+        let non_canonical = Value::Map(vec![
+            (
+                Value::Text("zzz_long_key".to_string()),
+                Value::Integer(1.into()),
+            ),
+            (Value::Text("a".to_string()), Value::Integer(2.into())),
+        ]);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&non_canonical, &mut buf).unwrap();
+
+        let result = verify_canonical_cbor(&buf);
+        assert!(result.is_err(), "non-canonical CBOR should be rejected");
+    }
+
+    #[test]
+    fn test_canonicalize_sorts_nested_maps() {
+        use ciborium::Value;
+        // Create a map with nested maps, keys out of order
+        let mut value = Value::Map(vec![
+            (
+                Value::Text("z".to_string()),
+                Value::Map(vec![
+                    (Value::Text("b".to_string()), Value::Integer(2.into())),
+                    (Value::Text("a".to_string()), Value::Integer(1.into())),
+                ]),
+            ),
+            (Value::Text("a".to_string()), Value::Integer(0.into())),
+        ]);
+
+        canonicalize(&mut value).unwrap();
+
+        // Serialize and verify canonical
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&value, &mut bytes).unwrap();
+        verify_canonical_cbor(&bytes).unwrap();
+    }
+
+    #[test]
+    fn test_encoding_determinism_across_key_insertion_orders() {
+        // Insert keys in two different orders, verify same CBOR output
+        let mut extra1 = BTreeMap::new();
+        extra1.insert("zebra".to_string(), ciborium::Value::Integer(1.into()));
+        extra1.insert("apple".to_string(), ciborium::Value::Integer(2.into()));
+        let meta1 = GlobalMetadata {
+            version: 2,
+            extra: extra1,
+        };
+
+        let mut extra2 = BTreeMap::new();
+        extra2.insert("apple".to_string(), ciborium::Value::Integer(2.into()));
+        extra2.insert("zebra".to_string(), ciborium::Value::Integer(1.into()));
+        let meta2 = GlobalMetadata {
+            version: 2,
+            extra: extra2,
+        };
+
+        let bytes1 = global_metadata_to_cbor(&meta1).unwrap();
+        let bytes2 = global_metadata_to_cbor(&meta2).unwrap();
+        assert_eq!(
+            bytes1, bytes2,
+            "CBOR output must be independent of insertion order"
+        );
     }
 }
