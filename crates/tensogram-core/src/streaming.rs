@@ -45,7 +45,8 @@ pub struct StreamingEncoder<W: Write> {
     object_lengths: Vec<u64>,
     /// Per-object hash entries: (hash_type, hash_value).
     hash_entries: Vec<Option<(String, String)>>,
-    /// Completed encoded objects — used to populate payload entries in finish().
+    /// Descriptors of completed objects (payloads not retained) — used to
+    /// populate per-object payload entries in the footer metadata frame.
     completed_objects: Vec<EncodedObject>,
     /// Total bytes written so far.
     bytes_written: u64,
@@ -70,6 +71,7 @@ impl<W: Write> StreamingEncoder<W> {
         // Streaming preamble: total_length=0 signals unknown length at write time
         let mut flags = MessageFlags::default();
         flags.set(MessageFlags::HEADER_METADATA);
+        flags.set(MessageFlags::FOOTER_METADATA);
         flags.set(MessageFlags::FOOTER_INDEX);
         if options.hash_algorithm.is_some() {
             flags.set(MessageFlags::FOOTER_HASHES);
@@ -156,9 +158,12 @@ impl<W: Write> StreamingEncoder<W> {
         self.object_offsets.push(self.bytes_written);
         self.object_lengths.push(result.encoded_bytes.len() as u64);
         self.hash_entries.push(hash_entry);
+        // Retain only the descriptor for footer metadata population.
+        // The encoded payload has already been written to the stream;
+        // keeping it in memory would negate streaming's memory benefits.
         self.completed_objects.push(EncodedObject {
             descriptor: final_desc,
-            encoded_payload: result.encoded_bytes,
+            encoded_payload: Vec::new(),
         });
 
         // Write frame

@@ -32,7 +32,7 @@ The following CBOR types are **not** allowed in Tensogram metadata:
 
 ## The `payload` Section
 
-The `payload` section of `GlobalMetadata` is a CBOR **array of maps** — one entry per data object. The encoder automatically populates each entry with `ndim`, `shape`, `strides`, and `dtype` when you call `encode()` or `StreamingEncoder::finish()`. Any keys the application placed in a payload entry before encoding (e.g. per-object MARS keys) are preserved:
+The `payload` section of `GlobalMetadata` is a CBOR **array of maps** — one entry per data object. The encoder inserts `ndim`, `shape`, `strides`, and `dtype` into each entry when you call `encode()` or `StreamingEncoder::finish()` — these structural keys are authoritative and always overwritten. Any other keys the application placed in a payload entry before encoding (e.g. per-object MARS keys) are preserved:
 
 ```json
 {

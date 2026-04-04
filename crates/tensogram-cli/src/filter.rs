@@ -39,29 +39,43 @@ pub fn parse_where(input: &str) -> Result<WhereClause, String> {
 
 /// Look up a dot-notation key in global metadata, returning the FIRST matching value.
 ///
-/// For v2, per-object metadata lives in `DataObjectDescriptor` (not in `GlobalMetadata`).
-/// This function only resolves keys from global metadata.
+/// Search order for a namespaced key like `mars.param`:
+///   1. `common["mars"]["param"]`
+///   2. `payload[i]["mars"]["param"]` (first match across objects)
+///   3. `extra["mars"]["param"]` (backwards compatibility)
+///
+/// For a single key like `version`, checks the struct field, then `extra`.
 pub fn lookup_key(metadata: &GlobalMetadata, key: &str) -> Option<String> {
     let parts: Vec<&str> = key.split('.').collect();
 
-    // Check top-level extra keys (namespaced like "mars.param")
     if parts.len() == 2 {
-        if let Some(ciborium::Value::Map(entries)) = metadata.extra.get(parts[0]) {
-            for (k, v) in entries {
-                if let ciborium::Value::Text(k_str) = k {
-                    if k_str == parts[1] {
-                        return Some(cbor_value_to_string(v));
-                    }
-                }
+        let (ns, field) = (parts[0], parts[1]);
+
+        // 1. Check common[ns][field]
+        if let Some(val) = lookup_in_cbor_map(metadata.common.get(ns), field) {
+            return Some(val);
+        }
+
+        // 2. Check payload[i][ns][field] — first match wins
+        for entry in &metadata.payload {
+            if let Some(val) = lookup_in_cbor_map(entry.get(ns), field) {
+                return Some(val);
             }
+        }
+
+        // 3. Check extra[ns][field] (backwards compat)
+        if let Some(val) = lookup_in_cbor_map(metadata.extra.get(ns), field) {
+            return Some(val);
         }
     }
 
-    // Check single-key top-level fields
     if parts.len() == 1 {
         match parts[0] {
             "version" => return Some(metadata.version.to_string()),
             key => {
+                if let Some(val) = metadata.common.get(key) {
+                    return Some(cbor_value_to_string(val));
+                }
                 if let Some(val) = metadata.extra.get(key) {
                     return Some(cbor_value_to_string(val));
                 }
@@ -69,6 +83,20 @@ pub fn lookup_key(metadata: &GlobalMetadata, key: &str) -> Option<String> {
         }
     }
 
+    None
+}
+
+/// Look up a field inside a CBOR map value.
+fn lookup_in_cbor_map(map_value: Option<&ciborium::Value>, field: &str) -> Option<String> {
+    if let Some(ciborium::Value::Map(entries)) = map_value {
+        for (k, v) in entries {
+            if let ciborium::Value::Text(k_str) = k {
+                if k_str == field {
+                    return Some(cbor_value_to_string(v));
+                }
+            }
+        }
+    }
     None
 }
 

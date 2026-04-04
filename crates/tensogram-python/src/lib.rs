@@ -675,28 +675,68 @@ fn data_objects_to_python(
 
 /// Build a GlobalMetadata from a Python dict.
 ///
-/// Required key: `version` (int). All other keys → `extra`.
+/// Required key: `version` (int).
+/// Optional keys: `common` (dict), `payload` (list of dicts), `reserved` (dict).
+/// All other keys → `extra`.
 fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata> {
     let version: u16 = dict
         .get_item("version")?
         .ok_or_else(|| PyValueError::new_err("missing 'version'"))?
         .extract()?;
 
+    let common = match dict.get_item("common")? {
+        Some(v) => py_dict_to_btree(&v)?,
+        None => BTreeMap::new(),
+    };
+
+    let payload = match dict.get_item("payload")? {
+        Some(v) => {
+            let list = v
+                .downcast::<PyList>()
+                .map_err(|_| PyValueError::new_err("'payload' must be a list of dicts"))?;
+            let mut entries = Vec::with_capacity(list.len());
+            for item in list.iter() {
+                entries.push(py_dict_to_btree(&item)?);
+            }
+            entries
+        }
+        None => Vec::new(),
+    };
+
+    let reserved = match dict.get_item("reserved")? {
+        Some(v) => py_dict_to_btree(&v)?,
+        None => BTreeMap::new(),
+    };
+
+    let known_keys = ["version", "common", "payload", "reserved"];
     let mut extra = BTreeMap::new();
     for (k, v) in dict.iter() {
         let key: String = k.extract()?;
-        if key != "version" {
+        if !known_keys.contains(&key.as_str()) {
             extra.insert(key, py_to_cbor(&v)?);
         }
     }
 
     Ok(GlobalMetadata {
         version,
-        common: BTreeMap::new(),
-        payload: Vec::new(),
-        reserved: BTreeMap::new(),
+        common,
+        payload,
+        reserved,
         extra,
     })
+}
+
+/// Convert a Python dict (or dict-like CBOR map value) to `BTreeMap<String, CborValue>`.
+fn py_dict_to_btree(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<BTreeMap<String, ciborium::Value>> {
+    let dict = obj
+        .downcast::<PyDict>()
+        .map_err(|_| PyValueError::new_err("expected a dict"))?;
+    let mut map = BTreeMap::new();
+    for (k, v) in dict.iter() {
+        let key: String = k.extract()?;
+        map.insert(key, py_to_cbor(&v)?);
+    }
+    Ok(map)
 }
 
 /// Extract an optional string value from a Python dict, returning *default* if absent.

@@ -124,8 +124,9 @@ pub fn encode(
     }
 
     // Populate the per-object payload entries with ndim/shape/strides/dtype.
-    // Pre-existing entries (e.g. mars keys from GRIB converter) are preserved;
-    // the encoder merges its structural fields into each entry.
+    // Pre-existing application keys (e.g. "mars") are preserved.
+    // Structural keys (ndim/shape/strides/dtype) are authoritative and always
+    // overwritten by the encoder to match the actual encoded objects.
     let mut enriched_meta = global_metadata.clone();
     populate_payload_entries(&mut enriched_meta.payload, &encoded_objects);
 
@@ -134,9 +135,10 @@ pub fn encode(
 
 /// Populate per-object payload entries with structural tensor metadata.
 ///
-/// Extends or truncates `payload` to match the object count, then inserts
-/// `ndim`, `shape`, `strides`, and `dtype` into each entry.  Pre-existing
-/// keys (e.g. `"mars"`) are preserved.
+/// Resizes `payload` to match the object count, then inserts `ndim`,
+/// `shape`, `strides`, and `dtype` into each entry.  These structural
+/// keys are authoritative and always overwritten.  Pre-existing
+/// application keys (e.g. `"mars"`) are preserved.
 pub(crate) fn populate_payload_entries(
     payload: &mut Vec<BTreeMap<String, ciborium::Value>>,
     encoded_objects: &[crate::framing::EncodedObject],

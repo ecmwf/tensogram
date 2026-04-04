@@ -39,7 +39,7 @@ The `payload` array is written by the encoder. Each entry is a CBOR map containi
 }
 ```
 
-Each element corresponds to one data object in order. The encoder merges `ndim`/`shape`/`strides`/`dtype` into the entry without overwriting keys the application already placed there. Per-object MARS keys that **vary** across objects (e.g. `param`) are stored under `payload[i]["mars"]`, while MARS keys **shared** by all objects live under `common["mars"]`.
+Each element corresponds to one data object in order. The encoder inserts `ndim`/`shape`/`strides`/`dtype` into each entry (overwriting those keys if already present). Application keys such as `"mars"` are preserved. Per-object MARS keys that **vary** across objects (e.g. `param`) are stored under `payload[i]["mars"]`, while MARS keys **shared** by all objects live under `common["mars"]`.
 
 ### Example GlobalMetadata
 

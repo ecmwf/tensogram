@@ -99,11 +99,11 @@ tensogram ls forecast.tgm -w "mars.param=2t/10u"
 tensogram ls forecast.tgm -w "mars.class!=od"
 ```
 
-The `/` character separates OR values. Key lookup checks global metadata first, then per-object params (returning the first match).
+The `/` character separates OR values. Key lookup searches `common["mars"]` first, then `payload[i]["mars"]` entries (first match across objects), then `extra` for backwards compatibility.
 
 ## The `payload` Section
 
-The `payload` section of `GlobalMetadata` is a **CBOR array of maps** — one entry per data object. The encoder auto-populates each entry with `ndim`, `shape`, `strides`, and `dtype` when you call `encode()` or `StreamingEncoder::finish()`. Pre-existing keys in each entry (e.g. per-object MARS keys) are preserved:
+The `payload` section of `GlobalMetadata` is a **CBOR array of maps** — one entry per data object. The encoder inserts `ndim`, `shape`, `strides`, and `dtype` into each entry when you call `encode()` or `StreamingEncoder::finish()` — these structural keys are authoritative and always overwritten. Pre-existing application keys in each entry (e.g. per-object MARS keys) are preserved:
 
 ```json
 {
