@@ -239,7 +239,7 @@ class TensogramBackendArray(BackendArray):
                 try:
                     flat_ranges, out_shape = _nd_slice_to_flat_ranges(self.shape, key)
                     total_requested = sum(c for _, c in flat_ranges)
-                    total_elements = math.prod(self.shape) if self.shape else 0
+                    total_elements = math.prod(self.shape)
 
                     if (
                         total_elements > 0

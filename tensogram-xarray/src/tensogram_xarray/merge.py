@@ -552,8 +552,8 @@ def _build_multi_variable_dataset(
     """
     # Split by variable_key value.
     sub_groups: dict[str, list[ObjectInfo]] = defaultdict(list)
-    for i, obj in enumerate(group):
-        val = resolve_variable_name(i, obj.merged_meta, variable_key)
+    for obj in group:
+        val = resolve_variable_name(obj.obj_index, obj.per_object_meta, variable_key)
         sub_groups[val].append(obj)
 
     # Remaining varying keys (exclude variable_key).

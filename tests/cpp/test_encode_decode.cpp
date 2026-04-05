@@ -303,7 +303,8 @@ TEST(EncodeDecodeTest, DecodeRangeFull) {
 
     ASSERT_EQ(parts.size(), 1u);
     ASSERT_EQ(parts[0].size(), 3 * sizeof(float));
-    const float* p = reinterpret_cast<const float*>(parts[0].data());
+    float p[3];
+    std::memcpy(p, parts[0].data(), sizeof(p));
     EXPECT_FLOAT_EQ(p[0], 10.0f);
     EXPECT_FLOAT_EQ(p[1], 20.0f);
     EXPECT_FLOAT_EQ(p[2], 30.0f);
@@ -313,7 +314,8 @@ TEST(EncodeDecodeTest, DecodeRangeFull) {
         encoded.data(), encoded.size(), 0, ranges);
 
     ASSERT_EQ(raw.size(), 3 * sizeof(float));
-    const float* pj = reinterpret_cast<const float*>(raw.data());
+    float pj[3];
+    std::memcpy(pj, raw.data(), sizeof(pj));
     EXPECT_FLOAT_EQ(pj[0], 10.0f);
     EXPECT_FLOAT_EQ(pj[1], 20.0f);
     EXPECT_FLOAT_EQ(pj[2], 30.0f);
@@ -337,13 +339,15 @@ TEST(EncodeDecodeTest, DecodeRangeMultipleSplit) {
 
     // First part: elements [1, 2]
     ASSERT_EQ(parts[0].size(), 2 * sizeof(float));
-    const float* p0 = reinterpret_cast<const float*>(parts[0].data());
+    float p0[2];
+    std::memcpy(p0, parts[0].data(), sizeof(p0));
     EXPECT_FLOAT_EQ(p0[0], 1.0f);
     EXPECT_FLOAT_EQ(p0[1], 2.0f);
 
     // Second part: elements [7, 8, 9]
     ASSERT_EQ(parts[1].size(), 3 * sizeof(float));
-    const float* p1 = reinterpret_cast<const float*>(parts[1].data());
+    float p1[3];
+    std::memcpy(p1, parts[1].data(), sizeof(p1));
     EXPECT_FLOAT_EQ(p1[0], 7.0f);
     EXPECT_FLOAT_EQ(p1[1], 8.0f);
     EXPECT_FLOAT_EQ(p1[2], 9.0f);
@@ -364,7 +368,8 @@ TEST(EncodeDecodeTest, DecodeRangeMultipleJoined) {
         encoded.data(), encoded.size(), 0, ranges);
 
     ASSERT_EQ(raw.size(), 5 * sizeof(float));
-    const float* p = reinterpret_cast<const float*>(raw.data());
+    float p[5];
+    std::memcpy(p, raw.data(), sizeof(p));
     EXPECT_FLOAT_EQ(p[0], 1.0f);
     EXPECT_FLOAT_EQ(p[1], 2.0f);
     EXPECT_FLOAT_EQ(p[2], 7.0f);
