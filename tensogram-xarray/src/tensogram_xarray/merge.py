@@ -514,7 +514,9 @@ def _hypercube_dataset(
     stacked = StackedBackendArray(backing_arrays, outer_shape, inner_shape, np_dtype)
     lazy_data = indexing.LazilyIndexedArray(stacked)
 
-    var_name = resolve_variable_name(0, group[0].merged_meta, variable_key)
+    var_name = resolve_variable_name(
+        group[0].obj_index, group[0].merged_meta, variable_key
+    )
 
     # Add outer coordinates.
     merged_coords = dict(coord_vars)
