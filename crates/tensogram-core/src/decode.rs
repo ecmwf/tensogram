@@ -82,15 +82,18 @@ pub fn decode_object(
     Ok((msg.global_metadata, desc.clone(), decoded))
 }
 
-/// Decode a partial range from a data object.
+/// Decode partial ranges from a data object.
 ///
 /// `ranges` is a list of (element_offset, element_count) pairs.
+///
+/// Returns one `Vec<u8>` per range (split results).  Callers that need a
+/// single concatenated buffer can flatten with `results.into_iter().flatten()`.
 pub fn decode_range(
     buf: &[u8],
     object_index: usize,
     ranges: &[(u64, u64)],
     options: &DecodeOptions,
-) -> Result<Vec<u8>> {
+) -> Result<Vec<Vec<u8>>> {
     let msg = framing::decode_message(buf)?;
 
     if object_index >= msg.objects.len() {
@@ -132,15 +135,17 @@ pub fn decode_range(
         Vec::new()
     };
 
-    let mut result = Vec::new();
+    let mut results = Vec::with_capacity(ranges.len());
     for &(offset, count) in ranges {
         let range_bytes =
             pipeline::decode_range_pipeline(payload_bytes, &config, &block_offsets, offset, count)
-                .map_err(|e| TensogramError::Encoding(e.to_string()))?;
-        result.extend_from_slice(&range_bytes);
+                .map_err(|e| {
+                    TensogramError::Encoding(format!("range (offset={offset}, count={count}): {e}"))
+                })?;
+        results.push(range_bytes);
     }
 
-    Ok(result)
+    Ok(results)
 }
 
 /// Decode a single object through the full pipeline.

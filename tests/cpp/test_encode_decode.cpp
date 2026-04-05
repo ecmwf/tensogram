@@ -264,14 +264,27 @@ TEST(EncodeDecodeTest, DecodeRangePartial) {
 
     // Request elements [2, 3, 4] — offset=2, count=3
     std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges = {{2, 3}};
-    auto raw = tensogram::decode_range(
+
+    // Split mode: returns one vector per range
+    auto parts = tensogram::decode_range(
         encoded.data(), encoded.size(), 0, ranges);
 
-    ASSERT_EQ(raw.size(), 3 * sizeof(float));
-    const float* p = reinterpret_cast<const float*>(raw.data());
+    ASSERT_EQ(parts.size(), 1u);
+    ASSERT_EQ(parts[0].size(), 3 * sizeof(float));
+    const float* p = reinterpret_cast<const float*>(parts[0].data());
     EXPECT_FLOAT_EQ(p[0], 2.0f);
     EXPECT_FLOAT_EQ(p[1], 3.0f);
     EXPECT_FLOAT_EQ(p[2], 4.0f);
+
+    // Joined mode: returns a single concatenated vector
+    auto raw = tensogram::decode_range_joined(
+        encoded.data(), encoded.size(), 0, ranges);
+
+    ASSERT_EQ(raw.size(), 3 * sizeof(float));
+    const float* pj = reinterpret_cast<const float*>(raw.data());
+    EXPECT_FLOAT_EQ(pj[0], 2.0f);
+    EXPECT_FLOAT_EQ(pj[1], 3.0f);
+    EXPECT_FLOAT_EQ(pj[2], 4.0f);
 }
 
 // decode_range: full range returns entire payload
@@ -280,12 +293,78 @@ TEST(EncodeDecodeTest, DecodeRangeFull) {
     auto encoded = test_helpers::encode_simple_f32(values);
 
     std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges = {{0, 3}};
-    auto raw = tensogram::decode_range(
+
+    // Split mode: single range → one part containing the full payload
+    auto parts = tensogram::decode_range(
         encoded.data(), encoded.size(), 0, ranges);
 
-    ASSERT_EQ(raw.size(), 3 * sizeof(float));
-    const float* p = reinterpret_cast<const float*>(raw.data());
+    ASSERT_EQ(parts.size(), 1u);
+    ASSERT_EQ(parts[0].size(), 3 * sizeof(float));
+    const float* p = reinterpret_cast<const float*>(parts[0].data());
     EXPECT_FLOAT_EQ(p[0], 10.0f);
     EXPECT_FLOAT_EQ(p[1], 20.0f);
     EXPECT_FLOAT_EQ(p[2], 30.0f);
+
+    // Joined mode: identical result for a single range
+    auto raw = tensogram::decode_range_joined(
+        encoded.data(), encoded.size(), 0, ranges);
+
+    ASSERT_EQ(raw.size(), 3 * sizeof(float));
+    const float* pj = reinterpret_cast<const float*>(raw.data());
+    EXPECT_FLOAT_EQ(pj[0], 10.0f);
+    EXPECT_FLOAT_EQ(pj[1], 20.0f);
+    EXPECT_FLOAT_EQ(pj[2], 30.0f);
+}
+
+// decode_range: multiple ranges in split mode — one vector per range
+TEST(EncodeDecodeTest, DecodeRangeMultipleSplit) {
+    // Encode 10 floats: 0.0, 1.0, ..., 9.0
+    constexpr std::size_t N = 10;
+    std::vector<float> values(N);
+    for (std::size_t i = 0; i < N; ++i) values[i] = static_cast<float>(i);
+
+    auto encoded = test_helpers::encode_simple_f32(values);
+
+    // Two disjoint ranges: [1,2] and [7,8,9]
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges = {{1, 2}, {7, 3}};
+    auto parts = tensogram::decode_range(
+        encoded.data(), encoded.size(), 0, ranges);
+
+    ASSERT_EQ(parts.size(), 2u);
+
+    // First part: elements [1, 2]
+    ASSERT_EQ(parts[0].size(), 2 * sizeof(float));
+    const float* p0 = reinterpret_cast<const float*>(parts[0].data());
+    EXPECT_FLOAT_EQ(p0[0], 1.0f);
+    EXPECT_FLOAT_EQ(p0[1], 2.0f);
+
+    // Second part: elements [7, 8, 9]
+    ASSERT_EQ(parts[1].size(), 3 * sizeof(float));
+    const float* p1 = reinterpret_cast<const float*>(parts[1].data());
+    EXPECT_FLOAT_EQ(p1[0], 7.0f);
+    EXPECT_FLOAT_EQ(p1[1], 8.0f);
+    EXPECT_FLOAT_EQ(p1[2], 9.0f);
+}
+
+// decode_range_joined: multiple ranges concatenated into one buffer
+TEST(EncodeDecodeTest, DecodeRangeMultipleJoined) {
+    // Encode 10 floats: 0.0, 1.0, ..., 9.0
+    constexpr std::size_t N = 10;
+    std::vector<float> values(N);
+    for (std::size_t i = 0; i < N; ++i) values[i] = static_cast<float>(i);
+
+    auto encoded = test_helpers::encode_simple_f32(values);
+
+    // Two disjoint ranges: [1,2] and [7,8,9] → joined = 5 floats
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges = {{1, 2}, {7, 3}};
+    auto raw = tensogram::decode_range_joined(
+        encoded.data(), encoded.size(), 0, ranges);
+
+    ASSERT_EQ(raw.size(), 5 * sizeof(float));
+    const float* p = reinterpret_cast<const float*>(raw.data());
+    EXPECT_FLOAT_EQ(p[0], 1.0f);
+    EXPECT_FLOAT_EQ(p[1], 2.0f);
+    EXPECT_FLOAT_EQ(p[2], 7.0f);
+    EXPECT_FLOAT_EQ(p[3], 8.0f);
+    EXPECT_FLOAT_EQ(p[4], 9.0f);
 }

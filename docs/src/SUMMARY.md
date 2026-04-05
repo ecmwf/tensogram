@@ -30,6 +30,7 @@
 - [Working with Files](guide/file-api.md)
 - [Iterators](guide/iterators.md)
 - [C++ API](guide/cpp-api.md)
+- [xarray Integration](guide/xarray-integration.md)
 
 ---
 

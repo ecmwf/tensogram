@@ -68,23 +68,64 @@ println!("shape: {:?}, dtype: {}", descriptor.shape, descriptor.dtype);
 
 > **Edge case:** If `index >= num_objects`, returns `TensogramError::Object("index out of range")`.
 
-### `decode_range` — partial sub-tensor (uncompressed only)
+### `decode_range` — partial sub-tensor
 
 ```rust
 pub fn decode_range(
     message: &[u8],
     object_index: usize,
-    ranges: &[(usize, usize)],  // (offset, count) per flattened dimension
+    ranges: &[(usize, usize)],  // (offset, count) per dimension
     options: &DecodeOptions,
-) -> Result<Vec<u8>>
+) -> Result<Vec<Vec<u8>>>
 ```
 
-Decodes a contiguous slice of elements from an object. Useful when you have a large object and only need a subset of it.
+Decodes one or more contiguous slices of elements from an object. Each `(offset, count)` pair in `ranges` selects a span of elements along the flattened dimension; the function returns **one byte vector per range** by default. This split-result design avoids an unnecessary copy when the caller needs the ranges individually (e.g. to feed separate array slices).
+
+#### Rust — split results (default)
 
 ```rust
-// Elements 100 through 149 of object 0
-let partial = decode_range(&message, 0, &[(100, 50)], &DecodeOptions::default())?;
+// Two separate ranges from object 0
+let parts: Vec<Vec<u8>> = decode_range(
+    &message, 0,
+    &[(100, 50), (300, 25)],
+    &DecodeOptions::default(),
+)?;
+assert_eq!(parts.len(), 2);           // one Vec<u8> per range
+println!("first  range bytes: {}", parts[0].len());
+println!("second range bytes: {}", parts[1].len());
 ```
+
+#### Rust — joined result
+
+If you prefer a single contiguous buffer, flatten the results:
+
+```rust
+let joined: Vec<u8> = parts.into_iter().flatten().collect();
+```
+
+#### Python — split results (default, `join=False`)
+
+```python
+import tensogram
+
+parts = tensogram.decode_range(buf, object_index=0, ranges=[(100, 50), (300, 25)])
+# parts is a list of numpy arrays, one per range
+print(len(parts))        # 2
+print(parts[0].shape)    # (50,)
+```
+
+#### Python — joined result (`join=True`)
+
+```python
+arr = tensogram.decode_range(buf, object_index=0, ranges=[(100, 50), (300, 25)], join=True)
+# arr is a single flat numpy array with all ranges concatenated
+print(arr.shape)          # (75,)
+```
+
+> **N-dimensional slicing:** The xarray backend maps N-dimensional slice notation
+> (e.g. `ds["temperature"].sel(lat=slice(10, 20), lon=slice(30, 40))`) into the
+> `(offset, count)` pairs that `decode_range` expects, so you rarely need to
+> compute flattened offsets by hand when working through xarray.
 
 > **Edge case:** `decode_range` works with all encoding+compression combinations that support random access: uncompressed data, `simple_packing` (bit extraction), `szip` (RSI block seeking), `blosc2` (chunk access), and `zfp` fixed-rate mode. It returns an error for the `shuffle` filter (byte rearrangement breaks contiguous sample ranges) and for stream compressors (`zstd`, `lz4`, `sz3`) that don't support partial decode.
 

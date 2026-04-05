@@ -237,13 +237,39 @@ impl PyMetadata {
         self.inner.version
     }
 
+    /// Message-level common metadata (shared across all objects).
+    #[getter]
+    fn common(&self, py: Python<'_>) -> PyResult<PyObject> {
+        extra_to_py(py, &self.inner.common)
+    }
+
+    /// Per-object metadata list.  ``meta.payload[i]`` is a dict of
+    /// metadata for the *i*-th data object.
+    #[getter]
+    fn payload(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let items: Vec<PyObject> = self
+            .inner
+            .payload
+            .iter()
+            .map(|m| extra_to_py(py, m))
+            .collect::<PyResult<Vec<_>>>()?;
+        let list = pyo3::types::PyList::new(py, items)?;
+        Ok(list.into_any().unbind())
+    }
+
     #[getter]
     fn extra(&self, py: Python<'_>) -> PyResult<PyObject> {
         extra_to_py(py, &self.inner.extra)
     }
 
-    /// Dictionary-style access: ``meta["key"]``.  Raises ``KeyError`` if missing.
+    /// Dictionary-style access: ``meta["key"]``.
+    ///
+    /// Checks ``common`` first, then ``extra``.  Raises ``KeyError`` if
+    /// the key is not found in either.
     fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<PyObject> {
+        if let Some(v) = self.inner.common.get(key) {
+            return cbor_to_py(py, v);
+        }
         match self.inner.extra.get(key) {
             Some(v) => cbor_to_py(py, v),
             None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_string())),
@@ -252,13 +278,15 @@ impl PyMetadata {
 
     /// Membership test: ``"key" in meta``.
     fn __contains__(&self, key: &str) -> bool {
-        self.inner.extra.contains_key(key)
+        self.inner.common.contains_key(key) || self.inner.extra.contains_key(key)
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "Metadata(version={}, extra_keys={:?})",
+            "Metadata(version={}, common_keys={:?}, payload_len={}, extra_keys={:?})",
             self.inner.version,
+            self.inner.common.keys().collect::<Vec<_>>(),
+            self.inner.payload.len(),
             self.inner.extra.keys().collect::<Vec<_>>()
         )
     }
@@ -473,34 +501,52 @@ fn py_decode_object(
     ))
 }
 
-/// Extract a sub-range from an uncompressed object → flat ``ndarray``.
+/// Extract sub-ranges from a data object.
 ///
 /// Args:
 ///     buf: wire-format message bytes.
 ///     object_index: which object in the message (0-based).
 ///     ranges: list of ``(start, count)`` element-offset tuples,
 ///         e.g. ``[(0, 10), (50, 5)]`` reads elements 0..10 and 50..55.
+///     join: when ``True``, return a single concatenated 1-d ndarray
+///         (like the pre-0.6 behaviour).  When ``False`` (default),
+///         return a ``list`` of 1-d ndarrays, one per range.
 ///     verify_hash: verify payload hash before extraction.
 ///
-/// Returns a 1-d numpy array with the concatenated requested elements.
-/// Only works with ``encoding="none"`` and ``compression="none"``.
+/// Returns:
+///     ``list[ndarray]`` (default) or ``ndarray`` (when ``join=True``).
 #[pyfunction]
-#[pyo3(name = "decode_range", signature = (buf, object_index, ranges, verify_hash=false))]
+#[pyo3(name = "decode_range", signature = (buf, object_index, ranges, join=false, verify_hash=false))]
 fn py_decode_range(
     py: Python<'_>,
     buf: &[u8],
     object_index: usize,
     ranges: Vec<(u64, u64)>,
+    join: bool,
     verify_hash: bool,
 ) -> PyResult<PyObject> {
     let options = DecodeOptions { verify_hash };
-    let bytes = decode_range(buf, object_index, &ranges, &options).map_err(to_py_err)?;
+    let parts = decode_range(buf, object_index, &ranges, &options).map_err(to_py_err)?;
 
     // Look up the dtype so we produce the correct numpy array type.
     let (_gm, desc, _) = decode_object(buf, object_index, &DecodeOptions { verify_hash: false })
         .map_err(to_py_err)?;
-    let total_elements: u64 = ranges.iter().map(|(_, c)| c).sum();
-    raw_bytes_to_numpy_flat(py, desc.dtype, &bytes, total_elements as usize)
+
+    if join {
+        // Concatenate all parts into a single flat array.
+        let total_bytes: Vec<u8> = parts.into_iter().flatten().collect();
+        let total_elements: u64 = ranges.iter().map(|(_, c)| c).sum();
+        raw_bytes_to_numpy_flat(py, desc.dtype, &total_bytes, total_elements as usize)
+    } else {
+        // Return a list of arrays, one per range.
+        let mut arrays = Vec::with_capacity(parts.len());
+        for (part, &(_, count)) in parts.iter().zip(ranges.iter()) {
+            let arr = raw_bytes_to_numpy_flat(py, desc.dtype, part, count as usize)?;
+            arrays.push(arr);
+        }
+        let list = pyo3::types::PyList::new(py, arrays)?;
+        Ok(list.into_any().unbind())
+    }
 }
 
 /// Scan *buf* for message boundaries → ``list[(offset, length)]``.

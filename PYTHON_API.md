@@ -6,7 +6,7 @@
 
 | Class | Purpose | Key Attributes |
 |-------|---------|-----------------|
-| **`Metadata`** | Global message metadata | `.version`, `.extra`, `[key]` |
+| **`Metadata`** | Global message metadata | `.version`, `.extra`, `.common`, `.payload`, `[key]` |
 | **`DataObjectDescriptor`** | Tensor descriptor (shape, dtype, encoding) | `.shape`, `.dtype`, `.encoding`, `.params`, `.compression` |
 | **`TensogramFile`** | File I/O API | `.open()`, `.create()`, `.append()`, `.decode_message()` |
 
@@ -18,7 +18,7 @@
 | **`decode`** | `decode(buf, verify_hash=False)` | `(Metadata, list)` |
 | **`decode_metadata`** | `decode_metadata(buf)` | `Metadata` |
 | **`decode_object`** | `decode_object(buf, index, verify_hash=False)` | `(Metadata, DataObjectDescriptor, array)` |
-| **`decode_range`** | `decode_range(buf, index, ranges, verify_hash=False)` | `numpy.ndarray` |
+| **`decode_range`** | `decode_range(buf, object_index, ranges, join=False, verify_hash=False)` | `list[ndarray] \| ndarray` |
 | **`scan`** | `scan(buf)` | `list[(offset, length)]` |
 | **`compute_packing_params`** | `compute_packing_params(values, bits_per_value, decimal_scale_factor)` | `dict` |
 
@@ -93,6 +93,8 @@ meta, _ = tensogram.decode(message)
 print(meta.version)
 print(meta['custom_key'])  # KeyError if missing
 print(meta.extra)          # All extra fields
+print(meta.common)         # Common metadata dict
+print(meta.payload)        # Per-object metadata list
 ```
 
 **Hash verification:**

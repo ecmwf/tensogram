@@ -44,7 +44,7 @@ metadata = tensogram.Metadata(
         "date": "20260401",
         "step": 6,
         "type": "fc",
-    }
+    },
 )
 
 # ── Encode both arrays in one call ────────────────────────────────────────────
@@ -60,8 +60,10 @@ meta, arrays = tensogram.decode(message)
 
 print(f"\ndecode() — {len(arrays)} objects:")
 for i, (arr, desc) in enumerate(zip(arrays, meta.objects)):
-    print(f"  [{i}] shape={arr.shape}  dtype={arr.dtype}  "
-          f"param={desc.extra.get('mars', {}).get('param', '?')}")
+    print(
+        f"  [{i}] shape={arr.shape}  dtype={arr.dtype}  "
+        f"param={desc.extra.get('mars', {}).get('param', '?')}"
+    )
 
 np.testing.assert_array_equal(arrays[0], spectrum)
 np.testing.assert_array_equal(arrays[1], mask)
@@ -78,10 +80,25 @@ np.testing.assert_array_equal(mask_decoded, mask)
 # ── decode_range: partial slice from object 0 ──────────────────────────────────
 #
 # Extract elements [100 .. 149] of the flattened spectrum array.
-# Only works for encoding="none" and compression="none".
-partial = tensogram.decode_range(message, object_index=0, ranges=[(100, 50)])
+# Default: returns a list of arrays (one per range).
+parts = tensogram.decode_range(message, object_index=0, ranges=[(100, 50)])
+assert isinstance(parts, list) and len(parts) == 1
 expected = spectrum.ravel()[100:150]
-np.testing.assert_array_equal(partial, expected)
-print(f"\ndecode_range(obj=0, 100..150): shape={partial.shape}  OK")
+np.testing.assert_array_equal(parts[0], expected)
+print(
+    f"\ndecode_range(obj=0, 100..150) [split]: {len(parts)} part, shape={parts[0].shape}  OK"
+)
+
+# join=True: returns a single concatenated array (pre-0.6 behaviour).
+joined = tensogram.decode_range(message, object_index=0, ranges=[(100, 50)], join=True)
+np.testing.assert_array_equal(joined, expected)
+print(f"decode_range(obj=0, 100..150) [join]:  shape={joined.shape}  OK")
+
+# Multiple ranges: split returns one array per range.
+parts2 = tensogram.decode_range(message, object_index=0, ranges=[(0, 10), (200, 5)])
+assert len(parts2) == 2
+np.testing.assert_array_equal(parts2[0], spectrum.ravel()[:10])
+np.testing.assert_array_equal(parts2[1], spectrum.ravel()[200:205])
+print(f"decode_range(obj=0, multi) [split]:  {len(parts2)} parts  OK")
 
 print("\nAll assertions passed.")

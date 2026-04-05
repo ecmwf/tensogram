@@ -307,21 +307,44 @@ class TestDecodeRange:
     def test_basic_range(self):
         data = np.arange(100, dtype=np.float32)
         msg = encode_simple(data)
-        partial = tensogram.decode_range(msg, 0, [(10, 5)])
         expected = data[10:15]
-        np.testing.assert_array_equal(partial, expected)
+
+        # Default (join=False) returns a list
+        result = tensogram.decode_range(msg, 0, [(10, 5)])
+        assert isinstance(result, list)
+        assert len(result) == 1
+        np.testing.assert_array_equal(result[0], expected)
+
+        # join=True returns a flat array (old behavior)
+        joined = tensogram.decode_range(msg, 0, [(10, 5)], join=True)
+        assert isinstance(joined, np.ndarray)
+        np.testing.assert_array_equal(joined, expected)
 
     def test_range_from_start(self):
         data = np.arange(50, dtype=np.float32)
         msg = encode_simple(data)
-        partial = tensogram.decode_range(msg, 0, [(0, 10)])
-        np.testing.assert_array_equal(partial, data[:10])
+
+        result = tensogram.decode_range(msg, 0, [(0, 10)])
+        assert isinstance(result, list)
+        assert len(result) == 1
+        np.testing.assert_array_equal(result[0], data[:10])
+
+        joined = tensogram.decode_range(msg, 0, [(0, 10)], join=True)
+        assert isinstance(joined, np.ndarray)
+        np.testing.assert_array_equal(joined, data[:10])
 
     def test_range_at_end(self):
         data = np.arange(50, dtype=np.float32)
         msg = encode_simple(data)
-        partial = tensogram.decode_range(msg, 0, [(45, 5)])
-        np.testing.assert_array_equal(partial, data[45:50])
+
+        result = tensogram.decode_range(msg, 0, [(45, 5)])
+        assert isinstance(result, list)
+        assert len(result) == 1
+        np.testing.assert_array_equal(result[0], data[45:50])
+
+        joined = tensogram.decode_range(msg, 0, [(45, 5)], join=True)
+        assert isinstance(joined, np.ndarray)
+        np.testing.assert_array_equal(joined, data[45:50])
 
     def test_range_multi_object(self):
         """decode_range on a specific object in a multi-object message."""
@@ -334,31 +357,78 @@ class TestDecodeRange:
         ]
         msg = bytes(tensogram.encode(meta_dict, pairs))
 
-        partial = tensogram.decode_range(msg, 1, [(10, 5)])
-        np.testing.assert_array_equal(partial, b[10:15])
+        result = tensogram.decode_range(msg, 1, [(10, 5)])
+        assert isinstance(result, list)
+        assert len(result) == 1
+        np.testing.assert_array_equal(result[0], b[10:15])
+
+        joined = tensogram.decode_range(msg, 1, [(10, 5)], join=True)
+        assert isinstance(joined, np.ndarray)
+        np.testing.assert_array_equal(joined, b[10:15])
 
     def test_range_int32(self):
         """decode_range preserves int32 dtype (not raw bytes)."""
         data = np.arange(50, dtype=np.int32)
         msg = encode_simple(data, dtype="int32")
-        partial = tensogram.decode_range(msg, 0, [(5, 10)])
-        np.testing.assert_array_equal(partial, data[5:15])
-        assert partial.dtype == np.int32
+
+        result = tensogram.decode_range(msg, 0, [(5, 10)])
+        assert isinstance(result, list)
+        assert len(result) == 1
+        np.testing.assert_array_equal(result[0], data[5:15])
+        assert result[0].dtype == np.int32
+
+        joined = tensogram.decode_range(msg, 0, [(5, 10)], join=True)
+        assert isinstance(joined, np.ndarray)
+        np.testing.assert_array_equal(joined, data[5:15])
+        assert joined.dtype == np.int32
 
     def test_range_uint8(self):
         """decode_range with uint8 data."""
         data = np.arange(50, dtype=np.uint8)
         msg = encode_simple(data, dtype="uint8")
-        partial = tensogram.decode_range(msg, 0, [(5, 10)])
-        np.testing.assert_array_equal(partial, data[5:15])
+
+        result = tensogram.decode_range(msg, 0, [(5, 10)])
+        assert isinstance(result, list)
+        assert len(result) == 1
+        np.testing.assert_array_equal(result[0], data[5:15])
+
+        joined = tensogram.decode_range(msg, 0, [(5, 10)], join=True)
+        assert isinstance(joined, np.ndarray)
+        np.testing.assert_array_equal(joined, data[5:15])
 
     def test_range_multiple_spans(self):
         """decode_range with multiple (start, count) tuples in one call."""
         data = np.arange(100, dtype=np.float32)
         msg = encode_simple(data)
-        partial = tensogram.decode_range(msg, 0, [(10, 5), (50, 3)])
+
+        # Default (join=False): one array per range
+        result = tensogram.decode_range(msg, 0, [(10, 5), (50, 3)])
+        assert isinstance(result, list)
+        assert len(result) == 2
+        np.testing.assert_array_equal(result[0], data[10:15])
+        np.testing.assert_array_equal(result[1], data[50:53])
+
+        # join=True: concatenated flat array (old behavior)
+        joined = tensogram.decode_range(msg, 0, [(10, 5), (50, 3)], join=True)
+        assert isinstance(joined, np.ndarray)
         expected = np.concatenate([data[10:15], data[50:53]])
-        np.testing.assert_array_equal(partial, expected)
+        np.testing.assert_array_equal(joined, expected)
+
+    def test_range_single_split_type(self):
+        """Default call returns list, not ndarray."""
+        data = np.arange(20, dtype=np.float32)
+        msg = encode_simple(data)
+        result = tensogram.decode_range(msg, 0, [(0, 5)])
+        assert isinstance(result, list)
+        assert not isinstance(result, np.ndarray)
+
+    def test_range_single_join_type(self):
+        """join=True returns ndarray, not list."""
+        data = np.arange(20, dtype=np.float32)
+        msg = encode_simple(data)
+        result = tensogram.decode_range(msg, 0, [(0, 5)], join=True)
+        assert isinstance(result, np.ndarray)
+        assert not isinstance(result, list)
 
 
 # ---------------------------------------------------------------------------
@@ -971,8 +1041,17 @@ class TestEdgeCases:
         """decode_range with verify_hash=True on valid data."""
         data = np.arange(100, dtype=np.float32)
         msg = encode_simple(data, hash_algo="xxh3")
-        partial = tensogram.decode_range(msg, 0, [(10, 5)], verify_hash=True)
-        np.testing.assert_array_equal(partial, data[10:15])
+
+        # Default (join=False) with verify_hash
+        result = tensogram.decode_range(msg, 0, [(10, 5)], verify_hash=True)
+        assert isinstance(result, list)
+        assert len(result) == 1
+        np.testing.assert_array_equal(result[0], data[10:15])
+
+        # join=True with verify_hash
+        joined = tensogram.decode_range(msg, 0, [(10, 5)], join=True, verify_hash=True)
+        assert isinstance(joined, np.ndarray)
+        np.testing.assert_array_equal(joined, data[10:15])
 
     def test_decode_metadata_multi_object(self):
         """decode_metadata on multi-object message only reads metadata."""

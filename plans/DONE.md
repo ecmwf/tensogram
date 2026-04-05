@@ -387,6 +387,23 @@ Implemented: 2026-04-03
 ### examples/cpp/README.md
 - Fix: manual build command was missing platform link flags; split into Linux (`-ldl -lpthread -lm`) and macOS (`-framework CoreFoundation -framework Security -framework SystemConfiguration -lc++ -lm`) sections.
 
+## tensogram-xarray (separate Python package, 71 tests)
+- xarray backend engine for `.tgm` files — `engine="tensogram"` via entry_points
+- `TensogramBackendEntrypoint` — `open_dataset()`, `guess_can_open()` (`.tgm` extension)
+- `TensogramBackendArray` — lazy loading via `BackendArray`, pickle-safe for dask
+  - Full N-D random-access: maps N-D slices to flat byte ranges with adjacent-range merging, uses `decode_range()` with `none`/`szip`/`blosc2`/`zfp`(fixed_rate) compressors
+  - Ratio-based heuristic (`range_threshold` parameter, default 0.5) — falls back to full decode when selected ranges exceed threshold fraction of total size
+  - Falls back to `decode_object()` + in-memory slice for stream compressors or shuffle filter
+- `decode_range` API changed: returns split results per range by default (`join=True` for concatenated flat array)
+- `meta.common` and `meta.payload` getters added to PyMetadata
+- Coordinate auto-detection by name matching (13 known names: lat/latitude, lon/longitude, time, level, etc.)
+- User-specified dimension mapping (`dim_names`) and variable naming (`variable_key` with dotted paths)
+- File scanner: metadata extraction from all messages/objects via `desc.params`
+- Auto-merge: `open_datasets()` groups compatible objects (same shape/dtype) into hypercubes
+- Auto-split: incompatible objects go to separate Datasets
+- Documentation: `docs/src/guide/xarray-integration.md` — 7 worked examples covering the full conversion philosophy
+- Per-object metadata stored in descriptor extra keys (accessible via `desc.params`)
+
 ## Dependencies
 - ciborium 0.2 — CBOR encode/decode
 - serde 1 — serialization framework

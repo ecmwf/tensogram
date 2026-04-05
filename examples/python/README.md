@@ -1,10 +1,6 @@
 # Python Examples
 
-> **Status:** The Python bindings (`tensogram-python` / PyO3 + maturin) are not
-> yet implemented. These examples show the **intended API** once the bindings are
-> complete. They document the design contract for implementors.
-
-## Planned Installation
+## Installation
 
 ```bash
 pip install tensogram          # once published to PyPI
@@ -12,31 +8,57 @@ pip install tensogram          # once published to PyPI
 maturin develop                # build from source (from crates/tensogram-python/)
 ```
 
-## Intended Module Structure
+For the xarray integration example, also install:
+
+```bash
+pip install tensogram-xarray   # or: pip install -e tensogram-xarray/
+```
+
+## Examples
+
+| File | Topic |
+|------|-------|
+| `01_encode_decode.py` | Basic encode/decode round-trip |
+| `02_mars_metadata.py` | MARS-style metadata in common and payload |
+| `03_simple_packing.py` | Simple-packing encoding for integer quantization |
+| `04_multi_object.py` | Multi-object messages, `decode_object`, `decode_range` |
+| `05_file_api.py` | `TensogramFile` for multi-message `.tgm` files |
+| `06_hash_and_errors.py` | Hash verification and error handling |
+| `07_iterators.py` | Scanning and iterating over messages |
+| `08_xarray_integration.py` | Opening `.tgm` files as xarray Datasets |
+
+## Module Structure
 
 ```
 tensogram
-├── encode(metadata, *arrays, hash="xxh3") -> bytes
-├── decode(buf) -> (Metadata, list[numpy.ndarray])
+├── encode(metadata, descriptors_and_data, hash="xxh3") -> bytes
+├── decode(buf, verify_hash=False) -> (Metadata, list[(DataObjectDescriptor, ndarray)])
 ├── decode_metadata(buf) -> Metadata
-├── decode_object(buf, index) -> (ObjectDescriptor, numpy.ndarray)
-├── decode_range(buf, object_index, ranges) -> numpy.ndarray
+├── decode_object(buf, index, verify_hash=False) -> (Metadata, DataObjectDescriptor, ndarray)
+├── decode_range(buf, object_index, ranges, join=False, verify_hash=False) -> list[ndarray] | ndarray
 ├── scan(buf) -> list[tuple[int, int]]
+├── compute_packing_params(values, bits_per_value, decimal_scale_factor) -> dict
 └── TensogramFile
     ├── open(path) -> TensogramFile
     ├── create(path) -> TensogramFile
-    ├── append(metadata, *arrays, hash="xxh3")
+    ├── append(metadata, descriptors_and_data, hash="xxh3")
     ├── message_count() -> int
     ├── read_message(index) -> bytes
-    ├── decode_message(index) -> (Metadata, list[numpy.ndarray])
-    └── messages() -> list[bytes]
+    ├── decode_message(index, verify_hash=False) -> (Metadata, list[(DataObjectDescriptor, ndarray)])
+    └── context manager (__enter__ / __exit__)
 
-tensogram.Metadata         — top-level metadata dict-like object
-tensogram.ObjectDescriptor — per-object shape/dtype/extra
-tensogram.simple_packing
-    ├── compute_params(values, bits_per_value, decimal_scale_factor) -> PackingParams
-    ├── encode(values, params) -> bytes
-    └── decode(packed_bytes, num_values, params) -> numpy.ndarray
+tensogram.Metadata
+    .version -> int
+    .common  -> dict              # message-level common metadata
+    .payload -> list[dict]        # per-object metadata (one dict per object)
+    .extra   -> dict              # non-standard top-level keys
+    ["key"]  -> value             # dict-style access (checks common, then extra)
+
+tensogram.DataObjectDescriptor
+    .obj_type, .ndim, .shape, .strides, .dtype
+    .byte_order, .encoding, .filter, .compression
+    .params -> dict               # extra descriptor keys (user metadata)
+    .hash   -> dict | None
 ```
 
 ## NumPy Integration
