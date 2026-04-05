@@ -44,6 +44,14 @@
         - if not in a branch, create a new properly named branch
         - git commit
         - make a pull request to upstream github project
+- NOTE: when user asks to do 'pr reply' or 'pull request reply':
+    - check github pull request reviews
+    - consider them with respect to the phylosophy and aims of this software
+    - if in doubt seek user clarifications
+    - fix code and address the raised issues
+    - update the docs/
+    - make a summary and push your changes to update the PR
+    - continue iterating untill all recomentations and issue were addressed
 
 # Design & Purpose
 
