@@ -314,7 +314,8 @@ def _build_dataset_from_group(
     # "mars.param" are handled correctly.
     if variable_key is not None:
         variable_names = {
-            resolve_variable_name(obj.metadata, variable_key) for obj in group
+            resolve_variable_name(obj.obj_index, obj.per_object_meta, variable_key)
+            for obj in group
         }
         if len(variable_names) > 1:
             return _build_multi_variable_dataset(
@@ -520,9 +521,7 @@ def _hypercube_dataset(
     stacked = StackedBackendArray(backing_arrays, outer_shape, inner_shape, np_dtype)
     lazy_data = indexing.LazilyIndexedArray(stacked)
 
-    var_name = resolve_variable_name(
-        group[0].obj_index, group[0].merged_meta, variable_key
-    )
+    var_name = resolve_variable_name(group[0].obj_index, group[0].merged_meta, variable_key)
 
     # Add outer coordinates.
     merged_coords = dict(coord_vars)
