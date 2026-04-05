@@ -119,10 +119,10 @@ def scan_file(file_path: str) -> FileIndex:
             meta = tensogram.decode_metadata(raw)
             common = _common_from_meta(meta)
 
-            # Decode to get descriptors (and shapes).
-            _, objects = tensogram.decode(raw)
+            # Decode descriptors only (no payload decode).
+            _, descriptors = tensogram.decode_descriptors(raw)
 
-            for obj_idx, (desc, _arr) in enumerate(objects):
+            for obj_idx, desc in enumerate(descriptors):
                 per_obj = _merge_per_object_meta(meta, obj_idx, desc)
                 shape = tuple(desc.shape)
                 info = ObjectInfo(
@@ -147,10 +147,10 @@ def scan_message(raw_msg: bytes) -> list[ObjectInfo]:
     meta = tensogram.decode_metadata(raw_msg)
     common = _common_from_meta(meta)
 
-    _, objects = tensogram.decode(raw_msg)
+    _, descriptors = tensogram.decode_descriptors(raw_msg)
 
     result: list[ObjectInfo] = []
-    for obj_idx, (desc, _arr) in enumerate(objects):
+    for obj_idx, desc in enumerate(descriptors):
         per_obj = _merge_per_object_meta(meta, obj_idx, desc)
         shape = tuple(desc.shape)
         info = ObjectInfo(

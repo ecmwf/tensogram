@@ -190,6 +190,7 @@ class TensogramBackendArray(BackendArray):
         dtype: np.dtype,
         supports_range: bool,
         *,
+        verify_hash: bool = False,
         range_threshold: float = DEFAULT_RANGE_THRESHOLD,
         lock: threading.Lock | None = None,
     ):
@@ -199,6 +200,7 @@ class TensogramBackendArray(BackendArray):
         self.shape = shape
         self.dtype = dtype
         self.supports_range = supports_range
+        self.verify_hash = verify_hash
         self.range_threshold = range_threshold
         self.lock = lock or threading.Lock()
 
@@ -261,5 +263,102 @@ class TensogramBackendArray(BackendArray):
                     )
 
             # Full object decode + in-memory slice.
-            _meta, _desc, arr = tensogram.decode_object(raw_msg, self.obj_index)
+            _meta, _desc, arr = tensogram.decode_object(
+                raw_msg,
+                self.obj_index,
+                verify_hash=self.verify_hash,
+            )
             return np.asarray(arr[key])
+
+
+# ---------------------------------------------------------------------------
+# Stacked backend array (lazy hypercube)
+# ---------------------------------------------------------------------------
+
+
+class StackedBackendArray(BackendArray):
+    """Lazy stacked array composed of multiple :class:`TensogramBackendArray`.
+
+    Each position along the outer dimensions maps to a separate backing
+    array.  Indexing dispatches to the correct backing array(s) and
+    assembles the result, so no data is decoded until actually accessed.
+    """
+
+    def __init__(
+        self,
+        arrays: list[TensogramBackendArray],
+        outer_shape: tuple[int, ...],
+        inner_shape: tuple[int, ...],
+        dtype: np.dtype,
+    ):
+        if len(arrays) != math.prod(outer_shape):
+            msg = (
+                f"StackedBackendArray: expected {math.prod(outer_shape)} "
+                f"backing arrays for outer_shape={outer_shape}, "
+                f"got {len(arrays)}"
+            )
+            raise ValueError(msg)
+
+        self._arrays = arrays
+        self._outer_shape = outer_shape
+        self._inner_shape = inner_shape
+        self.shape = outer_shape + inner_shape
+        self.dtype = dtype
+
+    def __getitem__(self, key: indexing.ExplicitIndexer) -> np.ndarray:
+        return indexing.explicit_indexing_adapter(
+            key,
+            self.shape,
+            indexing.IndexingSupport.BASIC,
+            self._raw_indexing_method,
+        )
+
+    def _raw_indexing_method(self, key: tuple) -> np.ndarray:
+        n_outer = len(self._outer_shape)
+
+        # Split key into outer and inner parts.
+        outer_key = key[:n_outer]
+        inner_key = key[n_outer:]
+
+        # Compute which backing arrays are needed.
+        outer_indices = _expand_key_to_indices(outer_key, self._outer_shape)
+
+        # Determine output shape.
+        outer_out_shape = tuple(len(idx) for idx in outer_indices)
+        result = np.empty(outer_out_shape + self._inner_shape, dtype=self.dtype)
+
+        for flat_pos, combo in enumerate(iterproduct(*outer_indices)):
+            # Map N-D outer index to flat backing-array index (row-major).
+            flat_idx = 0
+            for dim, idx_val in enumerate(combo):
+                stride = 1
+                for d2 in range(dim + 1, n_outer):
+                    stride *= self._outer_shape[d2]
+                flat_idx += idx_val * stride
+
+            backing = self._arrays[flat_idx]
+            inner_data = backing._raw_indexing_method(inner_key)
+
+            # Unravel flat_pos into N-D output position.
+            out_idx = []
+            remainder = flat_pos
+            for size in outer_out_shape:
+                out_idx.append(remainder % size)
+                remainder //= size
+            result[tuple(out_idx)] = inner_data
+
+        # Apply outer slicing to produce correct output shape.
+        return result
+
+
+def _expand_key_to_indices(key: tuple, shape: tuple[int, ...]) -> list[list[int]]:
+    """Expand a tuple of slices/ints into lists of concrete indices."""
+    result: list[list[int]] = []
+    for k, size in zip(key, shape):
+        if isinstance(k, slice):
+            result.append(list(range(*k.indices(size))))
+        elif isinstance(k, int):
+            result.append([k])
+        else:
+            result.append(list(range(size)))
+    return result

@@ -21,9 +21,16 @@ from tensogram_xarray.mapping import resolve_dim_names, resolve_variable_name
 from tensogram_xarray.scanner import AUTO_PAYLOAD_KEYS
 
 # Map tensogram dtype strings to numpy dtypes.
+try:
+    import ml_dtypes
+
+    _BFLOAT16_DTYPE = ml_dtypes.bfloat16
+except ImportError:
+    _BFLOAT16_DTYPE = np.dtype("uint16")  # fallback: raw 2-byte words
+
 _DTYPE_MAP: dict[str, np.dtype] = {
     "float16": np.dtype("float16"),
-    "bfloat16": np.dtype("uint8"),  # no native numpy bfloat16 -- raw bytes
+    "bfloat16": np.dtype(_BFLOAT16_DTYPE),
     "float32": np.dtype("float32"),
     "float64": np.dtype("float64"),
     "complex64": np.dtype("complex64"),
@@ -90,8 +97,7 @@ class TensogramDataStore:
         self.range_threshold = range_threshold
         self._lock = threading.Lock()
 
-        # Eagerly read metadata + descriptors (payload is decoded to obtain
-        # descriptor shapes/dtypes, but data arrays are discarded).
+        # Eagerly read metadata + descriptors (no payload decode).
         self._meta, self._descriptors = self._read_metadata()
 
     def _read_metadata(self) -> tuple[Any, list]:
@@ -103,10 +109,8 @@ class TensogramDataStore:
 
         meta = tensogram.decode_metadata(raw)
 
-        # Decode all objects to get descriptors + shapes.
-        # We need the descriptors for lazy array construction.
-        _, objects = tensogram.decode(raw, verify_hash=self.verify_hash)
-        descriptors = [desc for desc, _arr in objects]
+        # Decode descriptors only (no payload decode).
+        _, descriptors = tensogram.decode_descriptors(raw)
         return meta, descriptors
 
     def _get_common_meta(self) -> dict[str, Any]:
@@ -182,6 +186,7 @@ class TensogramDataStore:
                 shape=shape,
                 dtype=np_dtype,
                 supports_range=_supports_range_decode(desc),
+                verify_hash=self.verify_hash,
                 range_threshold=self.range_threshold,
                 lock=self._lock,
             )
@@ -214,6 +219,7 @@ class TensogramDataStore:
                 shape=shape,
                 dtype=np_dtype,
                 supports_range=_supports_range_decode(desc),
+                verify_hash=self.verify_hash,
                 range_threshold=self.range_threshold,
                 lock=self._lock,
             )

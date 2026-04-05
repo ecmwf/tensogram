@@ -889,6 +889,10 @@ private:
                                     offsets.data(), counts.data(), ranges.size(),
                                     opts.verify_hash ? 1 : 0,
                                     1, &bytes, &out_count));
+    if (out_count != 1) {
+        tgm_bytes_free(bytes);
+        throw std::runtime_error("tgm_decode_range returned unexpected out_count in joined mode");
+    }
     std::vector<std::uint8_t> result(bytes.data, bytes.data + bytes.len);
     tgm_bytes_free(bytes);
     return result;

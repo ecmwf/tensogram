@@ -59,6 +59,19 @@ pub fn decode_metadata(buf: &[u8]) -> Result<GlobalMetadata> {
     framing::decode_metadata_only(buf)
 }
 
+/// Decode global metadata **and** per-object descriptors without decoding
+/// any payload data.
+///
+/// This is cheaper than [`decode`] because the pipeline (decompression,
+/// filter reversal, endian swap) is never executed.  Use it when you only
+/// need shapes, dtypes, and metadata — e.g. for building xarray Datasets
+/// at open time.
+pub fn decode_descriptors(buf: &[u8]) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>)> {
+    let msg = framing::decode_message(buf)?;
+    let descriptors = msg.objects.into_iter().map(|(desc, _, _)| desc).collect();
+    Ok((msg.global_metadata, descriptors))
+}
+
 /// Decode a single object by index (O(1) access via index frame).
 /// Returns (global_metadata, descriptor, decoded_data).
 pub fn decode_object(

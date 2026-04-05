@@ -11,7 +11,9 @@ pub mod streaming;
 pub mod types;
 pub mod wire;
 
-pub use decode::{decode, decode_metadata, decode_object, decode_range, DecodeOptions};
+pub use decode::{
+    decode, decode_descriptors, decode_metadata, decode_object, decode_range, DecodeOptions,
+};
 pub use dtype::Dtype;
 pub use encode::{encode, EncodeOptions};
 pub use error::{Result, TensogramError};

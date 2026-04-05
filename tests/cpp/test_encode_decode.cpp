@@ -271,7 +271,9 @@ TEST(EncodeDecodeTest, DecodeRangePartial) {
 
     ASSERT_EQ(parts.size(), 1u);
     ASSERT_EQ(parts[0].size(), 3 * sizeof(float));
-    const float* p = reinterpret_cast<const float*>(parts[0].data());
+    // Use memcpy to avoid UB from misaligned reinterpret_cast.
+    float p[3];
+    std::memcpy(p, parts[0].data(), 3 * sizeof(float));
     EXPECT_FLOAT_EQ(p[0], 2.0f);
     EXPECT_FLOAT_EQ(p[1], 3.0f);
     EXPECT_FLOAT_EQ(p[2], 4.0f);
@@ -281,7 +283,8 @@ TEST(EncodeDecodeTest, DecodeRangePartial) {
         encoded.data(), encoded.size(), 0, ranges);
 
     ASSERT_EQ(raw.size(), 3 * sizeof(float));
-    const float* pj = reinterpret_cast<const float*>(raw.data());
+    float pj[3];
+    std::memcpy(pj, raw.data(), 3 * sizeof(float));
     EXPECT_FLOAT_EQ(pj[0], 2.0f);
     EXPECT_FLOAT_EQ(pj[1], 3.0f);
     EXPECT_FLOAT_EQ(pj[2], 4.0f);

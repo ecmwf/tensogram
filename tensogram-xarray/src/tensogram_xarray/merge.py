@@ -15,11 +15,14 @@ from collections import defaultdict
 from collections.abc import Sequence
 from typing import Any
 
-import numpy as np
 import xarray as xr
 from xarray.core import indexing
 
-from tensogram_xarray.array import TensogramBackendArray, _supports_range_decode
+from tensogram_xarray.array import (
+    StackedBackendArray,
+    TensogramBackendArray,
+    _supports_range_decode,
+)
 from tensogram_xarray.coords import detect_coords
 from tensogram_xarray.mapping import resolve_dim_names, resolve_variable_name
 from tensogram_xarray.scanner import ObjectInfo, scan_file
@@ -86,10 +89,24 @@ def open_datasets(
             shape=shape,
             dtype=np_dtype,
             supports_range=_supports_range_decode(obj.descriptor),
+            verify_hash=verify_hash,
             range_threshold=range_threshold,
             lock=lock,
         )
         lazy_data = indexing.LazilyIndexedArray(backend_array)
+
+        if dim_name in coord_vars:
+            existing = coord_vars[dim_name]
+            if existing.shape != shape:
+                msg = (
+                    f"coordinate {dim_name!r} has conflicting shapes: "
+                    f"existing {existing.shape} vs new {shape} "
+                    f"(msg_index={obj.msg_index}, obj_index={obj.obj_index})"
+                )
+                raise ValueError(msg)
+            # Duplicate with matching shape -- skip (keep the first).
+            continue
+
         coord_vars[dim_name] = xr.Variable((dim_name,), lazy_data, dict(obj.per_object_meta))
 
     # Group data objects by structural compatibility.
@@ -106,6 +123,7 @@ def open_datasets(
             variable_key=variable_key,
             lock=lock,
             range_threshold=range_threshold,
+            verify_hash=verify_hash,
         )
         if ds is not None:
             datasets.append(ds)
@@ -262,6 +280,7 @@ def _build_dataset_from_group(
     variable_key: str | None,
     lock: threading.Lock,
     range_threshold: float = 0.5,
+    verify_hash: bool = False,
 ) -> xr.Dataset | None:
     """Build a Dataset from a group of structurally compatible objects.
 
@@ -282,6 +301,7 @@ def _build_dataset_from_group(
             variable_key,
             lock,
             range_threshold=range_threshold,
+            verify_hash=verify_hash,
         )
 
     # Multiple objects -> try hypercube merge.
@@ -301,6 +321,7 @@ def _build_dataset_from_group(
             varying,
             lock,
             range_threshold=range_threshold,
+            verify_hash=verify_hash,
         )
 
     # Check if the varying keys form a hypercube.
@@ -316,6 +337,7 @@ def _build_dataset_from_group(
             constant,
             lock,
             range_threshold=range_threshold,
+            verify_hash=verify_hash,
         )
 
     if _try_hypercube(group, varying):
@@ -329,6 +351,7 @@ def _build_dataset_from_group(
             varying,
             lock,
             range_threshold=range_threshold,
+            verify_hash=verify_hash,
         )
 
     # Hypercube incomplete -> just return as separate variables.
@@ -341,6 +364,7 @@ def _build_dataset_from_group(
         constant,
         lock,
         range_threshold=range_threshold,
+        verify_hash=verify_hash,
     )
 
 
@@ -352,6 +376,7 @@ def _single_object_dataset(
     variable_key: str | None,
     lock: threading.Lock,
     range_threshold: float = 0.5,
+    verify_hash: bool = False,
 ) -> xr.Dataset:
     """Build a Dataset from a single object."""
     np_dtype = _to_numpy_dtype(obj.dtype)
@@ -367,6 +392,7 @@ def _single_object_dataset(
         shape=shape,
         dtype=np_dtype,
         supports_range=_supports_range_decode(obj.descriptor),
+        verify_hash=verify_hash,
         range_threshold=range_threshold,
         lock=lock,
     )
@@ -387,14 +413,15 @@ def _flat_group_dataset(
     constant: dict[str, Any],
     lock: threading.Lock,
     range_threshold: float = 0.5,
+    verify_hash: bool = False,
 ) -> xr.Dataset:
     """Build a Dataset with one variable per object (no stacking)."""
     data_vars: dict[str, xr.Variable] = {}
 
-    for i, obj in enumerate(group):
+    for obj in group:
         np_dtype = _to_numpy_dtype(obj.dtype)
         shape = obj.shape
-        var_name = resolve_variable_name(i, obj.merged_meta, variable_key)
+        var_name = resolve_variable_name(obj.obj_index, obj.per_object_meta, variable_key)
         dims = _resolve_dims(shape, dim_names, coord_vars)
 
         backend_array = TensogramBackendArray(
@@ -404,6 +431,7 @@ def _flat_group_dataset(
             shape=shape,
             dtype=np_dtype,
             supports_range=_supports_range_decode(obj.descriptor),
+            verify_hash=verify_hash,
             range_threshold=range_threshold,
             lock=lock,
         )
@@ -425,6 +453,7 @@ def _hypercube_dataset(
     varying: dict[str, list[Any]],
     lock: threading.Lock,
     range_threshold: float = 0.5,
+    verify_hash: bool = False,
 ) -> xr.Dataset:
     """Stack objects into a Dataset with outer dimensions from varying keys.
 
@@ -451,23 +480,11 @@ def _hypercube_dataset(
     # Compute outer shape.
     outer_shape = tuple(len(outer_coords[k]) for k in outer_keys)
     outer_dims = tuple(outer_keys)
-    full_shape = outer_shape + inner_shape
     full_dims = outer_dims + inner_dims
 
-    # Build lazy arrays for each position in the outer grid.
-    # We construct a numpy object array of backend arrays, then use
-    # dask-style concatenation at access time.  For simplicity in v1,
-    # we use a full eager load into a stacked numpy array.
-
-    # Allocate output array.
-    total_elements = 1
-    for s in full_shape:
-        total_elements *= s
-
-    # Build the stacked array eagerly (decodes all objects).
-    import tensogram
-
-    stacked = np.empty(full_shape, dtype=np_dtype)
+    # Build lazy backing arrays for each position in the outer grid
+    # (row-major order).  No payload data is decoded here.
+    backing_arrays: list[TensogramBackendArray] = []
     for idx_tuple in itertools.product(*(range(s) for s in outer_shape)):
         coord_key = tuple(
             _make_hashable(outer_coords[outer_keys[d]][idx_tuple[d]])
@@ -480,13 +497,23 @@ def _hypercube_dataset(
                 f"in {file_path}"
             )
             raise ValueError(msg)
-        with lock:
-            with tensogram.TensogramFile.open(file_path) as f:
-                raw = f.read_message(obj.msg_index)
-            _, _, arr = tensogram.decode_object(raw, obj.obj_index)
-        stacked[idx_tuple] = arr
+        backing_arrays.append(
+            TensogramBackendArray(
+                file_path=file_path,
+                msg_index=obj.msg_index,
+                obj_index=obj.obj_index,
+                shape=inner_shape,
+                dtype=np_dtype,
+                supports_range=_supports_range_decode(obj.descriptor),
+                range_threshold=range_threshold,
+                verify_hash=verify_hash,
+                lock=lock,
+            )
+        )
 
-    # Build the Dataset.
+    stacked = StackedBackendArray(backing_arrays, outer_shape, inner_shape, np_dtype)
+    lazy_data = indexing.LazilyIndexedArray(stacked)
+
     var_name = resolve_variable_name(0, group[0].merged_meta, variable_key)
 
     # Add outer coordinates.
@@ -494,7 +521,7 @@ def _hypercube_dataset(
     for k in outer_keys:
         merged_coords[k] = xr.Variable((k,), outer_coords[k])
 
-    var = xr.Variable(full_dims, stacked, dict(constant))
+    var = xr.Variable(full_dims, lazy_data, dict(constant))
     ds = xr.Dataset({var_name: var}, coords=merged_coords, attrs=dict(constant))
     return ds
 
@@ -509,6 +536,7 @@ def _build_multi_variable_dataset(
     varying: dict[str, list[Any]],
     lock: threading.Lock,
     range_threshold: float = 0.5,
+    verify_hash: bool = False,
 ) -> xr.Dataset:
     """Split group by variable_key, then stack each sub-group.
 
@@ -541,6 +569,7 @@ def _build_multi_variable_dataset(
                 shape=inner_shape,
                 dtype=np_dtype,
                 supports_range=_supports_range_decode(obj.descriptor),
+                verify_hash=verify_hash,
                 range_threshold=range_threshold,
                 lock=lock,
             )
@@ -560,7 +589,6 @@ def _build_multi_variable_dataset(
 
                 outer_shape = tuple(len(outer_coords_local[k]) for k in outer_keys)
                 outer_dims = tuple(outer_keys)
-                full_shape = outer_shape + inner_shape
                 full_dims = outer_dims + inner_dims
 
                 obj_by_coord: dict[tuple, ObjectInfo] = {}
@@ -568,9 +596,8 @@ def _build_multi_variable_dataset(
                     coord_key = tuple(_make_hashable(sub_vary[k][j]) for k in outer_keys)
                     obj_by_coord[coord_key] = obj
 
-                import tensogram
-
-                stacked = np.empty(full_shape, dtype=np_dtype)
+                # Build lazy stacked array (no payload decode here).
+                backing: list[TensogramBackendArray] = []
                 for idx_tuple in itertools.product(*(range(s) for s in outer_shape)):
                     coord_key = tuple(
                         _make_hashable(outer_coords_local[outer_keys[d]][idx_tuple[d]])
@@ -583,15 +610,26 @@ def _build_multi_variable_dataset(
                             f"{dict(zip(outer_keys, idx_tuple))} in {file_path}"
                         )
                         raise ValueError(msg)
-                    with lock:
-                        with tensogram.TensogramFile.open(file_path) as f:
-                            raw = f.read_message(obj.msg_index)
-                        _, _, arr = tensogram.decode_object(raw, obj.obj_index)
-                    stacked[idx_tuple] = arr
+                    backing.append(
+                        TensogramBackendArray(
+                            file_path=file_path,
+                            msg_index=obj.msg_index,
+                            obj_index=obj.obj_index,
+                            shape=inner_shape,
+                            dtype=np_dtype,
+                            supports_range=_supports_range_decode(obj.descriptor),
+                            range_threshold=range_threshold,
+                            verify_hash=verify_hash,
+                            lock=lock,
+                        )
+                    )
+
+                stacked = StackedBackendArray(backing, outer_shape, inner_shape, np_dtype)
+                lazy_data = indexing.LazilyIndexedArray(stacked)
 
                 for k in outer_keys:
                     merged_coords[k] = xr.Variable((k,), outer_coords_local[k])
-                data_vars[var_name] = xr.Variable(full_dims, stacked, dict(sub_const))
+                data_vars[var_name] = xr.Variable(full_dims, lazy_data, dict(sub_const))
             else:
                 # Can't form hypercube -> use first object only.
                 logger.warning(
@@ -609,6 +647,7 @@ def _build_multi_variable_dataset(
                     shape=inner_shape,
                     dtype=np_dtype,
                     supports_range=_supports_range_decode(obj.descriptor),
+                    verify_hash=verify_hash,
                     range_threshold=range_threshold,
                     lock=lock,
                 )
@@ -632,6 +671,7 @@ def _build_multi_variable_dataset(
                 shape=inner_shape,
                 dtype=np_dtype,
                 supports_range=_supports_range_decode(obj.descriptor),
+                verify_hash=verify_hash,
                 range_threshold=range_threshold,
                 lock=lock,
             )

@@ -534,6 +534,22 @@ Common error scenarios and their messages:
 | Incomplete hypercube in merge | `ValueError` | Which coordinate combination is missing |
 | Silent data loss in merge | `WARNING` log | Variable name and count of dropped objects |
 | Hash verification failure | `ValueError` | Object index and expected/actual hash |
+| Conflicting coordinate objects | `ValueError` | Dimension name and mismatch details |
+
+### Hash Verification and Partial Reads
+
+When `verify_hash=True` is passed, xxh3 hash verification is performed on
+**full object reads** (`decode_object`) only.  Partial reads via
+`decode_range()` intentionally **skip** hash verification because:
+
+- Partial reads decode only a subset of the payload, so the full-object
+  hash cannot be validated.
+- The purpose of partial reads is to minimise I/O; verifying the hash
+  would require reading the entire payload, defeating the optimisation.
+
+This means that for lazily-loaded arrays, hash verification happens when
+a slice triggers a full-object decode (i.e. when the requested fraction
+exceeds `range_threshold`), but not when partial `decode_range()` is used.
 
 ### Logging
 
