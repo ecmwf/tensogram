@@ -245,14 +245,19 @@ TEST(StreamingTest, PrecederRoundTrip) {
         enc.finish();
     }
 
-    // Open and decode — preceder metadata should be in payload[0]
+    // Open and decode — verify data survives the preceder + data object path.
+    // (Preceder metadata merges into GlobalMetadata.payload[0] on the Rust side;
+    // the C++ metadata API currently doesn't expose payload entries directly.)
     auto f = tensogram::file::open(tmp.path);
     auto msg = f.decode_message(0);
     EXPECT_EQ(msg.num_objects(), 1u);
 
     auto obj = msg.object(0);
+    EXPECT_EQ(obj.dtype_string(), "float32");
     EXPECT_EQ(obj.element_count<float>(), 3u);
     EXPECT_FLOAT_EQ(obj.data_as<float>()[0], 1.0f);
+    EXPECT_FLOAT_EQ(obj.data_as<float>()[1], 2.0f);
+    EXPECT_FLOAT_EQ(obj.data_as<float>()[2], 3.0f);
 }
 
 // ---------------------------------------------------------------------------

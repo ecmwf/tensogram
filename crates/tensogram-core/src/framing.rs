@@ -640,9 +640,18 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
     // but footer-only keys (e.g. auto-populated ndim/shape/strides/dtype)
     // are preserved when absent from the preceder.
     let obj_count = objects.len();
-    global_metadata
-        .payload
-        .resize_with(obj_count, BTreeMap::new);
+    if global_metadata.payload.len() > obj_count {
+        return Err(TensogramError::Metadata(format!(
+            "metadata payload has {} entries but message contains {} objects",
+            global_metadata.payload.len(),
+            obj_count
+        )));
+    }
+    if global_metadata.payload.len() < obj_count {
+        global_metadata
+            .payload
+            .resize_with(obj_count, BTreeMap::new);
+    }
     for (i, preceder) in preceder_payloads.iter().enumerate() {
         if let Some(prec_map) = preceder {
             for (k, v) in prec_map {

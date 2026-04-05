@@ -58,7 +58,7 @@ Here is the overall message format:
 │  DATA OBJECT FRAME  header + payload + footer  (object 0)    │
 │  PRECEDER METADATA FRAME (for object 1, optional)            │
 │  DATA OBJECT FRAME  header + payload + footer  (object 1)    │
-���  DATA OBJECT FRAME  header + payload + footer  (object 2)    │
+│  DATA OBJECT FRAME  header + payload + footer  (object 2)    │
 │  ...                (any number of objects)                  │
 ├──────────────────────────────────────────────────────────────┤
 │  FOOTER HASH FRAME CBOR [count, hash_type, hashes] (optional)│
