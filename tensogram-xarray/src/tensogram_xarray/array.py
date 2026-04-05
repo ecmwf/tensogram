@@ -323,9 +323,19 @@ class StackedBackendArray(BackendArray):
         # Compute which backing arrays are needed.
         outer_indices = _expand_key_to_indices(outer_key, self._outer_shape)
 
-        # Determine output shape.
+        # Determine output shape for outer dimensions.
         outer_out_shape = tuple(len(idx) for idx in outer_indices)
-        result = np.empty(outer_out_shape + self._inner_shape, dtype=self.dtype)
+
+        # Compute inner output shape from inner_key: slices preserve the
+        # dimension (with the slice length), integer keys drop it -- matching
+        # numpy's basic-indexing semantics.
+        inner_out_shape = tuple(
+            len(range(*k.indices(s)))
+            for k, s in zip(inner_key, self._inner_shape)
+            if isinstance(k, slice)
+        )
+
+        result = np.empty(outer_out_shape + inner_out_shape, dtype=self.dtype)
 
         for flat_pos, combo in enumerate(iterproduct(*outer_indices)):
             # Map N-D outer index to flat backing-array index (row-major).
