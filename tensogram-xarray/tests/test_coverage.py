@@ -640,3 +640,188 @@ class TestErrorPaths:
         from tensogram_xarray.coords import CANONICAL_DIM, KNOWN_COORD_NAMES
 
         assert frozenset(CANONICAL_DIM.keys()) == KNOWN_COORD_NAMES
+
+
+# ---------------------------------------------------------------------------
+# Additional coverage: reachable gaps from code coverage audit
+# ---------------------------------------------------------------------------
+
+
+class TestStackedBackendArrayEdges:
+    """Cover StackedBackendArray error and edge paths in array.py."""
+
+    def test_count_mismatch_error(self):
+        """StackedBackendArray rejects wrong number of arrays (lines 298-303)."""
+        from tensogram_xarray.array import StackedBackendArray
+
+        with pytest.raises(ValueError, match="expected 6 backing arrays"):
+            StackedBackendArray(
+                arrays=[None, None],  # 2, but outer_shape needs 6
+                outer_shape=(2, 3),
+                inner_shape=(4,),
+                dtype=np.dtype("float32"),
+            )
+
+    def test_expand_key_wildcard(self):
+        """_expand_key_to_indices handles non-int/non-slice keys (lines 376-379)."""
+        from tensogram_xarray.array import _expand_key_to_indices
+
+        # Pass None as a key element — falls through to wildcard branch
+        result = _expand_key_to_indices((None, slice(1, 3)), (5, 10))
+        assert result[0] == list(range(5))  # wildcard: full range
+        assert result[1] == [1, 2]  # slice
+
+
+class TestDecodeRangeFallback:
+    """Cover the decode_range exception fallback in array.py (lines 258-259)."""
+
+    def test_fallback_when_decode_range_raises(self, tmp_path: Path):
+        """Inject a failure in decode_range to trigger the fallback path."""
+        from unittest.mock import patch
+
+        data = np.arange(12, dtype=np.float32).reshape(3, 4)
+        path = str(tmp_path / "fallback_exc.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append({"version": 2}, [(_desc([3, 4]), data)])
+
+        ds = xr.open_dataset(path, engine="tensogram", range_threshold=1.0)
+
+        # Patch decode_range to raise, forcing fallback to decode_object
+        with patch("tensogram.decode_range", side_effect=RuntimeError("mock fail")):
+            values = ds["object_0"][0:1, 0:2].values
+            np.testing.assert_array_equal(values, data[0:1, 0:2])
+
+
+class TestMergeConflictingCoords:
+    """Cover the conflicting coordinate shape error in merge.py (lines 99-108)."""
+
+    def test_conflicting_coord_shapes_raises(self, tmp_path: Path):
+        """Two lat coords with different sizes should raise ValueError."""
+        path = str(tmp_path / "conflict.tgm")
+        lat3 = np.linspace(-90, 90, 3, dtype=np.float64)
+        lat5 = np.linspace(-90, 90, 5, dtype=np.float64)
+        data3 = np.ones((3, 4), dtype=np.float32)
+        data5 = np.ones((5, 4), dtype=np.float32)
+
+        with tensogram.TensogramFile.create(path) as f:
+            # Message 0: lat has 3 elements
+            f.append(
+                {"version": 2},
+                [
+                    (_desc([3], dtype="float64", name="latitude"), lat3),
+                    (_desc([3, 4]), data3),
+                ],
+            )
+            # Message 1: lat has 5 elements — conflicting
+            f.append(
+                {"version": 2},
+                [
+                    (_desc([5], dtype="float64", name="latitude"), lat5),
+                    (_desc([5, 4]), data5),
+                ],
+            )
+
+        with pytest.raises(ValueError, match="conflicting shapes"):
+            open_datasets(path)
+
+
+class TestMergeNonHypercubeFallback:
+    """Cover non-hypercube fallback paths in merge.py (lines 642-686).
+
+    These paths are inside ``_build_multi_variable_dataset``, which requires
+    ``len(variable_names) > 1`` — so we need at least two distinct param
+    values to enter it.
+    """
+
+    def test_incomplete_sub_hypercube_warns(self, tmp_path: Path, caplog):
+        """Incomplete sub-group hypercube triggers warning (lines 642-662).
+
+        4 messages: param={2t, 10u}.  The 2t sub-group has 3 objects with
+        (date, level) varying as (d1,L1), (d1,L2), (d2,L1) — missing
+        (d2,L2) so the 2x2 grid is incomplete.
+        """
+        import logging
+
+        path = str(tmp_path / "incomplete_sub.tgm")
+        rng = np.random.default_rng(33)
+
+        with tensogram.TensogramFile.create(path) as f:
+            for date, level in [("d1", "L1"), ("d1", "L2"), ("d2", "L1")]:
+                data = rng.random((2, 3), dtype=np.float32).astype(np.float32)
+                desc = _desc([2, 3], param="2t", date=date, level=level)
+                f.append({"version": 2}, [(desc, data)])
+            data = rng.random((2, 3), dtype=np.float32).astype(np.float32)
+            desc = _desc([2, 3], param="10u", date="d1", level="L1")
+            f.append({"version": 2}, [(desc, data)])
+
+        with caplog.at_level(logging.WARNING, logger="tensogram_xarray"):
+            datasets = open_datasets(path, variable_key="param")
+
+        assert len(datasets) >= 1
+        assert any("cannot form a hypercube" in r.message for r in caplog.records)
+
+    def test_duplicate_objects_no_varying_warns(self, tmp_path: Path, caplog):
+        """Duplicate objects with identical metadata triggers warning (lines 664-686).
+
+        4 messages: 2 with param=2t (identical metadata), 2 with param=10u.
+        Within each sub-group, no varying keys remain, triggering the warning.
+        """
+        import logging
+
+        path = str(tmp_path / "dups.tgm")
+        data = np.ones((2, 3), dtype=np.float32)
+
+        with tensogram.TensogramFile.create(path) as f:
+            f.append({"version": 2}, [(_desc([2, 3], param="2t"), data)])
+            f.append({"version": 2}, [(_desc([2, 3], param="2t"), data)])
+            f.append({"version": 2}, [(_desc([2, 3], param="10u"), data * 2)])
+            f.append({"version": 2}, [(_desc([2, 3], param="10u"), data * 2)])
+
+        with caplog.at_level(logging.WARNING, logger="tensogram_xarray"):
+            datasets = open_datasets(path, variable_key="param")
+
+        assert len(datasets) >= 1
+        assert any("duplicate objects" in r.message for r in caplog.records)
+
+
+class TestScannerDescParamsFallback:
+    """Cover scanner.py desc.params fallback (line 79) and extra merge (line 102)."""
+
+    def test_desc_params_supplement(self, tmp_path: Path):
+        """Descriptor params fill in when payload is absent (line 79)."""
+        data = np.ones((3,), dtype=np.float32)
+        path = str(tmp_path / "params.tgm")
+        # No payload in metadata — desc.params is the only source
+        with tensogram.TensogramFile.create(path) as f:
+            f.append({"version": 2}, [(_desc([3], custom_key="hello"), data)])
+
+        idx = scan_file(path)
+        assert len(idx.objects) == 1
+        # custom_key should come from desc.params
+        assert idx.objects[0].per_object_meta.get("custom_key") == "hello"
+
+    def test_extra_in_common_meta(self, tmp_path: Path):
+        """meta.extra keys appear in common_meta (line 102)."""
+        data = np.ones((2,), dtype=np.float32)
+        path = str(tmp_path / "extra.tgm")
+        meta = {"version": 2, "experiment": "test99"}
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([2]), data)])
+
+        idx = scan_file(path)
+        assert idx.objects[0].common_meta.get("experiment") == "test99"
+
+
+class TestStoreMetaExtra:
+    """Cover store.py meta.extra merge (line 126)."""
+
+    def test_extra_keys_in_dataset_attrs(self, tmp_path: Path):
+        """meta.extra keys appear in dataset attributes (line 126)."""
+        data = np.ones((2, 3), dtype=np.float32)
+        path = str(tmp_path / "store_extra.tgm")
+        meta = {"version": 2, "custom_attr": "present"}
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([2, 3]), data)])
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds.attrs.get("custom_attr") == "present"

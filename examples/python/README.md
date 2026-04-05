@@ -8,10 +8,11 @@ pip install tensogram          # once published to PyPI
 maturin develop                # build from source (from crates/tensogram-python/)
 ```
 
-For the xarray integration example, also install:
+For the xarray and dask examples, also install:
 
 ```bash
-pip install tensogram-xarray   # or: pip install -e tensogram-xarray/
+pip install tensogram-xarray              # or: pip install -e tensogram-xarray/
+pip install "tensogram-xarray[dask]"      # adds dask[array] for example 09
 ```
 
 ## Examples
@@ -26,6 +27,7 @@ pip install tensogram-xarray   # or: pip install -e tensogram-xarray/
 | `06_hash_and_errors.py` | Hash verification and error handling |
 | `07_iterators.py` | Scanning and iterating over messages |
 | `08_xarray_integration.py` | Opening `.tgm` files as xarray Datasets |
+| `09_dask_distributed.py` | Dask distributed computing over 4-D tensors |
 
 ## Module Structure
 

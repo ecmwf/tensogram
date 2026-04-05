@@ -333,8 +333,9 @@ Implemented: 2026-04-03
 - All examples use the C++ wrapper (`tensogram.hpp`), not the raw C FFI
 - `README.md` — API overview, error handling, CMake + manual build instructions
 
-### examples/python/ (intended PyO3 API, 7 examples)
-- `01_encode_decode.py` through `07_iterators.py`
+### examples/python/ (intended PyO3 API, 9 examples)
+- `01_encode_decode.py` through `08_xarray_integration.py`
+- `09_dask_distributed.py` — Dask distributed computing with 4-D tensors: creates 4 .tgm files x 10 levels, opens lazily with dask, computes global/per-level statistics, demonstrates selective lazy-loading
 - `README.md` — planned module structure, NumPy dtype mapping, error hierarchy
 
 ## Documentation (mdbook)
@@ -342,7 +343,7 @@ Implemented: 2026-04-03
 - `docs/` — mdbook source (build with `PATH="$HOME/.cargo/bin:$PATH" mdbook build` from `docs/`)
 - Introduction, Concepts (messages, metadata, objects, pipeline)
 - Wire Format (message layout, CBOR schema, dtypes)
-- Developer Guide (quickstart, encoding, decoding, file API, iterators)
+- Developer Guide (quickstart, encoding, decoding, file API, iterators, xarray integration, dask integration)
 - Encodings (simple_packing, shuffle, compression)
 - CLI Reference (info, ls, dump, get, set, copy)
 - Edge Cases and Internals reference pages

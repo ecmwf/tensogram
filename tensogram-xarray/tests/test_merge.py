@@ -75,3 +75,96 @@ class TestSingleMessageMerge:
         ds = xr.open_dataset(str(simple_tgm), engine="tensogram", merge_objects=True)
         assert "object_0" in ds.data_vars
         np.testing.assert_array_equal(ds["object_0"].values, simple_data)
+
+
+class TestHypercubeDataCorrectness:
+    """Verify stacked hypercube data values are placed in correct positions.
+
+    Regression test for the StackedBackendArray unravel bug where
+    column-major unraveling placed elements in wrong positions for
+    multi-dimensional outer shapes.
+    """
+
+    def test_2d_outer_shape_values_correct(self, multi_msg_tgm: Path):
+        """multi_msg_tgm has param x date = 2x2 outer shape.
+
+        With variable_key="mars.param", each variable (2t, 10u) gets a
+        1-D outer shape from the date dimension. This tests stacking with
+        a single varying key.
+        """
+        import tensogram
+
+        datasets = open_datasets(str(multi_msg_tgm), variable_key="mars.param")
+        assert len(datasets) == 1
+        ds = datasets[0]
+
+        # Read expected values directly from each message.
+        with tensogram.TensogramFile.open(str(multi_msg_tgm)) as f:
+            expected = {}
+            for msg_idx in range(len(f)):
+                raw = f.read_message(msg_idx)
+                _meta, descs_and_data = tensogram.decode(raw)
+                desc, arr = descs_and_data[0]
+                param = desc.params.get("mars", {}).get("param", "")
+                date = desc.params.get("mars", {}).get("date", "")
+                expected[(param, date)] = np.asarray(arr)
+
+        # Check each variable's stacked values.
+        for var_name in ds.data_vars:
+            var = ds[var_name]
+            vals = var.values
+            # The variable should have an outer dimension from date.
+            if vals.ndim == 3:
+                # Outer dim is date (2 values), inner is (3,4).
+                for date_idx, date_val in enumerate(["20260401", "20260402"]):
+                    key = (var_name, date_val)
+                    if key in expected:
+                        np.testing.assert_array_equal(
+                            vals[date_idx],
+                            expected[key],
+                            err_msg=f"Mismatch for {var_name} date={date_val}",
+                        )
+
+    def test_stacked_backend_array_2d_outer(self):
+        """Direct unit test: StackedBackendArray with 2-D outer shape.
+
+        Creates mock backing arrays with known values and verifies
+        the full stacked result has every element in the right position.
+        """
+        from unittest.mock import MagicMock
+
+        from tensogram_xarray.array import StackedBackendArray
+
+        # 2x3 outer shape, (2,2) inner shape => total (2,3,2,2)
+        outer_shape = (2, 3)
+        inner_shape = (2, 2)
+        dtype = np.dtype("float32")
+
+        # Create 6 mock backing arrays with distinct fill values.
+        arrays = []
+        for i in range(6):
+            arr = MagicMock()
+            arr.file_path = "/fake"
+            arr.shape = inner_shape
+            arr.dtype = dtype
+            # Each backing array returns a constant fill for identification.
+            fill = np.full(inner_shape, float(i), dtype=dtype)
+            arr._raw_indexing_method = MagicMock(return_value=fill)
+            arrays.append(arr)
+
+        stacked = StackedBackendArray(arrays, outer_shape, inner_shape, dtype)
+        assert stacked.shape == (2, 3, 2, 2)
+
+        # Full read: key = all slices.
+        full_key = (slice(None), slice(None), slice(None), slice(None))
+        result = stacked._raw_indexing_method(full_key)
+
+        # Verify: result[i, j] should contain float(i*3 + j) everywhere.
+        for i in range(2):
+            for j in range(3):
+                expected_val = float(i * 3 + j)
+                np.testing.assert_array_equal(
+                    result[i, j],
+                    np.full(inner_shape, expected_val, dtype=dtype),
+                    err_msg=f"Wrong data at outer position [{i},{j}]",
+                )
