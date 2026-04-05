@@ -840,8 +840,43 @@ private:
     return message(raw);
 }
 
-/// Decode a partial range from an uncompressed object.
-[[nodiscard]] inline std::vector<std::uint8_t> decode_range(
+/// Decode partial ranges from a data object (split mode — one vector per range).
+[[nodiscard]] inline std::vector<std::vector<std::uint8_t>> decode_range(
+    const std::uint8_t* buf, std::size_t len,
+    std::size_t object_index,
+    const std::vector<std::pair<std::uint64_t, std::uint64_t>>& ranges,
+    const decode_options& opts = {})
+{
+    std::vector<std::uint64_t> offsets, counts;
+    offsets.reserve(ranges.size());
+    counts.reserve(ranges.size());
+    for (const auto& r : ranges) {
+        offsets.push_back(r.first);
+        counts.push_back(r.second);
+    }
+    std::vector<tgm_bytes_t> bufs(ranges.size());
+    std::size_t out_count = 0;
+    detail::check(tgm_decode_range(buf, len, object_index,
+                                    offsets.data(), counts.data(), ranges.size(),
+                                    opts.verify_hash ? 1 : 0,
+                                    0, bufs.data(), &out_count));
+    if (out_count > ranges.size()) {
+        for (std::size_t i = 0; i < ranges.size(); ++i) {
+            tgm_bytes_free(bufs[i]);
+        }
+        throw std::runtime_error("tgm_decode_range returned out_count > ranges.size()");
+    }
+    std::vector<std::vector<std::uint8_t>> result;
+    result.reserve(out_count);
+    for (std::size_t i = 0; i < out_count; ++i) {
+        result.emplace_back(bufs[i].data, bufs[i].data + bufs[i].len);
+        tgm_bytes_free(bufs[i]);
+    }
+    return result;
+}
+
+/// Decode partial ranges from a data object (joined — single concatenated vector).
+[[nodiscard]] inline std::vector<std::uint8_t> decode_range_joined(
     const std::uint8_t* buf, std::size_t len,
     std::size_t object_index,
     const std::vector<std::pair<std::uint64_t, std::uint64_t>>& ranges,
@@ -855,9 +890,15 @@ private:
         counts.push_back(r.second);
     }
     tgm_bytes_t bytes{};
+    std::size_t out_count = 0;
     detail::check(tgm_decode_range(buf, len, object_index,
                                     offsets.data(), counts.data(), ranges.size(),
-                                    opts.verify_hash ? 1 : 0, &bytes));
+                                    opts.verify_hash ? 1 : 0,
+                                    1, &bytes, &out_count));
+    if (out_count != 1) {
+        tgm_bytes_free(bytes);
+        throw std::runtime_error("tgm_decode_range returned unexpected out_count in joined mode");
+    }
     std::vector<std::uint8_t> result(bytes.data, bytes.data + bytes.len);
     tgm_bytes_free(bytes);
     return result;

@@ -413,8 +413,15 @@ fn test_partial_range_decode_uncompressed() {
     // Decode range: elements 3..6 (3 elements)
     let partial = decode_range(&encoded, 0, &[(3, 3)], &DecodeOptions::default()).unwrap();
 
+    // One range requested → one result part
+    assert_eq!(partial.len(), 1, "expected 1 part for 1 range");
+
     let expected: Vec<u8> = values[3..6].iter().flat_map(|v| v.to_ne_bytes()).collect();
-    assert_eq!(partial, expected);
+    assert_eq!(partial[0], expected);
+
+    // Also verify join produces the same result
+    let joined: Vec<u8> = partial.into_iter().flatten().collect();
+    assert_eq!(joined, expected);
 }
 
 #[test]
@@ -885,8 +892,13 @@ fn test_szip_simple_packing_decode_range_vs_full() {
         .collect();
 
     // Partial decode: elements 100..600 (500 elements)
-    let partial_bytes =
+    let partial_parts =
         decode_range(&encoded, 0, &[(100, 500)], &DecodeOptions::default()).unwrap();
+
+    // One range requested → one result part
+    assert_eq!(partial_parts.len(), 1, "expected 1 part for 1 range");
+
+    let partial_bytes: Vec<u8> = partial_parts.into_iter().flatten().collect();
     let partial_values: Vec<f64> = partial_bytes
         .chunks_exact(8)
         .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
@@ -919,7 +931,10 @@ fn test_szip_simple_packing_decode_range_first_elements() {
         .collect();
 
     // First 10 elements
-    let partial_bytes = decode_range(&encoded, 0, &[(0, 10)], &DecodeOptions::default()).unwrap();
+    let partial_parts = decode_range(&encoded, 0, &[(0, 10)], &DecodeOptions::default()).unwrap();
+    assert_eq!(partial_parts.len(), 1, "expected 1 part for 1 range");
+
+    let partial_bytes: Vec<u8> = partial_parts.into_iter().flatten().collect();
     let partial_values: Vec<f64> = partial_bytes
         .chunks_exact(8)
         .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
@@ -952,8 +967,11 @@ fn test_szip_simple_packing_decode_range_last_elements() {
         .collect();
 
     // Last 50 elements
-    let partial_bytes =
+    let partial_parts =
         decode_range(&encoded, 0, &[(4046, 50)], &DecodeOptions::default()).unwrap();
+    assert_eq!(partial_parts.len(), 1, "expected 1 part for 1 range");
+
+    let partial_bytes: Vec<u8> = partial_parts.into_iter().flatten().collect();
     let partial_values: Vec<f64> = partial_bytes
         .chunks_exact(8)
         .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
@@ -1189,30 +1207,42 @@ fn test_szip_decode_range_multiple_ranges() {
         .collect();
 
     // Two disjoint ranges: [10..20) and [3000..3050)
-    let partial_bytes = decode_range(
+    let partial_parts = decode_range(
         &encoded,
         0,
         &[(10, 10), (3000, 50)],
         &DecodeOptions::default(),
     )
     .unwrap();
-    let partial_values: Vec<f64> = partial_bytes
+
+    // Two ranges requested → two result parts
+    assert_eq!(partial_parts.len(), 2, "expected 2 parts for 2 ranges");
+
+    // Verify split: part 0 = 10 elements * 8 bytes, part 1 = 50 elements * 8 bytes
+    assert_eq!(partial_parts[0].len(), 10 * 8);
+    assert_eq!(partial_parts[1].len(), 50 * 8);
+
+    // Verify part 0 values match range [10..20)
+    let part0_values: Vec<f64> = partial_parts[0]
         .chunks_exact(8)
         .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
         .collect();
+    for (full, partial) in full_values[10..20].iter().zip(part0_values.iter()) {
+        assert!((full - partial).abs() < 1e-10);
+    }
 
-    assert_eq!(partial_values.len(), 60);
-    // First 10 values from range [10..20)
-    for (full, partial) in full_values[10..20].iter().zip(partial_values[..10].iter()) {
+    // Verify part 1 values match range [3000..3050)
+    let part1_values: Vec<f64> = partial_parts[1]
+        .chunks_exact(8)
+        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+    for (full, partial) in full_values[3000..3050].iter().zip(part1_values.iter()) {
         assert!((full - partial).abs() < 1e-10);
     }
-    // Next 50 values from range [3000..3050)
-    for (full, partial) in full_values[3000..3050]
-        .iter()
-        .zip(partial_values[10..].iter())
-    {
-        assert!((full - partial).abs() < 1e-10);
-    }
+
+    // Also verify the joined result has the expected total count
+    let total_bytes: usize = partial_parts.iter().map(|p| p.len()).sum();
+    assert_eq!(total_bytes, 60 * 8);
 }
 
 #[test]

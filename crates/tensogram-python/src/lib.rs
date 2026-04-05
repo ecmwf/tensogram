@@ -11,9 +11,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
 use tensogram_core::{
-    decode, decode_metadata, decode_object, decode_range, encode, scan, ByteOrder,
-    DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, HashAlgorithm,
-    TensogramError, TensogramFile,
+    decode, decode_descriptors, decode_metadata, decode_object, decode_range, encode, scan,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
+    HashAlgorithm, TensogramError, TensogramFile,
 };
 
 // ---------------------------------------------------------------------------
@@ -237,13 +237,39 @@ impl PyMetadata {
         self.inner.version
     }
 
+    /// Message-level common metadata (shared across all objects).
+    #[getter]
+    fn common(&self, py: Python<'_>) -> PyResult<PyObject> {
+        extra_to_py(py, &self.inner.common)
+    }
+
+    /// Per-object metadata list.  ``meta.payload[i]`` is a dict of
+    /// metadata for the *i*-th data object.
+    #[getter]
+    fn payload(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let items: Vec<PyObject> = self
+            .inner
+            .payload
+            .iter()
+            .map(|m| extra_to_py(py, m))
+            .collect::<PyResult<Vec<_>>>()?;
+        let list = pyo3::types::PyList::new(py, items)?;
+        Ok(list.into_any().unbind())
+    }
+
     #[getter]
     fn extra(&self, py: Python<'_>) -> PyResult<PyObject> {
         extra_to_py(py, &self.inner.extra)
     }
 
-    /// Dictionary-style access: ``meta["key"]``.  Raises ``KeyError`` if missing.
+    /// Dictionary-style access: ``meta["key"]``.
+    ///
+    /// Checks ``common`` first, then ``extra``.  Raises ``KeyError`` if
+    /// the key is not found in either.
     fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<PyObject> {
+        if let Some(v) = self.inner.common.get(key) {
+            return cbor_to_py(py, v);
+        }
         match self.inner.extra.get(key) {
             Some(v) => cbor_to_py(py, v),
             None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_string())),
@@ -252,13 +278,15 @@ impl PyMetadata {
 
     /// Membership test: ``"key" in meta``.
     fn __contains__(&self, key: &str) -> bool {
-        self.inner.extra.contains_key(key)
+        self.inner.common.contains_key(key) || self.inner.extra.contains_key(key)
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "Metadata(version={}, extra_keys={:?})",
+            "Metadata(version={}, common_keys={:?}, payload_len={}, extra_keys={:?})",
             self.inner.version,
+            self.inner.common.keys().collect::<Vec<_>>(),
+            self.inner.payload.len(),
             self.inner.extra.keys().collect::<Vec<_>>()
         )
     }
@@ -451,7 +479,27 @@ fn py_decode_metadata(buf: &[u8]) -> PyResult<PyMetadata> {
     Ok(PyMetadata { inner: meta })
 }
 
-/// Decode a single object by *index* → ``(Metadata, DataObjectDescriptor, ndarray)``.
+/// Decode global metadata **and** per-object descriptors without decoding
+/// any payload data.
+///
+/// Returns ``(Metadata, list[DataObjectDescriptor])``.  Cheaper than
+/// :func:`decode` because no decompression or filter reversal is performed.
+#[pyfunction]
+#[pyo3(name = "decode_descriptors")]
+fn py_decode_descriptors(py: Python<'_>, buf: &[u8]) -> PyResult<(PyMetadata, PyObject)> {
+    let (gm, descs) = decode_descriptors(buf).map_err(to_py_err)?;
+    let py_descs: Vec<PyObject> = descs
+        .into_iter()
+        .map(|d| {
+            let obj = PyDataObjectDescriptor { inner: d };
+            Ok(Py::new(py, obj)?.into_any())
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    let list = PyList::new(py, py_descs)?;
+    Ok((PyMetadata { inner: gm }, list.into_any().unbind()))
+}
+
+/// Decode a single object by *index* -> ``(Metadata, DataObjectDescriptor, ndarray)``.
 ///
 /// Only the header and the requested object's payload are read.
 /// Raises ``ValueError`` if *index* is out of range.
@@ -473,34 +521,57 @@ fn py_decode_object(
     ))
 }
 
-/// Extract a sub-range from an uncompressed object → flat ``ndarray``.
+/// Extract sub-ranges from a data object.
 ///
 /// Args:
 ///     buf: wire-format message bytes.
 ///     object_index: which object in the message (0-based).
 ///     ranges: list of ``(start, count)`` element-offset tuples,
 ///         e.g. ``[(0, 10), (50, 5)]`` reads elements 0..10 and 50..55.
+///     join: when ``True``, return a single concatenated 1-d ndarray
+///         (like the pre-0.6 behaviour).  When ``False`` (default),
+///         return a ``list`` of 1-d ndarrays, one per range.
 ///     verify_hash: verify payload hash before extraction.
 ///
-/// Returns a 1-d numpy array with the concatenated requested elements.
-/// Only works with ``encoding="none"`` and ``compression="none"``.
+/// Returns:
+///     ``list[ndarray]`` (default) or ``ndarray`` (when ``join=True``).
 #[pyfunction]
-#[pyo3(name = "decode_range", signature = (buf, object_index, ranges, verify_hash=false))]
+#[pyo3(name = "decode_range", signature = (buf, object_index, ranges, join=false, verify_hash=false))]
 fn py_decode_range(
     py: Python<'_>,
     buf: &[u8],
     object_index: usize,
     ranges: Vec<(u64, u64)>,
+    join: bool,
     verify_hash: bool,
 ) -> PyResult<PyObject> {
     let options = DecodeOptions { verify_hash };
-    let bytes = decode_range(buf, object_index, &ranges, &options).map_err(to_py_err)?;
+    let parts = decode_range(buf, object_index, &ranges, &options).map_err(to_py_err)?;
 
-    // Look up the dtype so we produce the correct numpy array type.
-    let (_gm, desc, _) = decode_object(buf, object_index, &DecodeOptions { verify_hash: false })
-        .map_err(to_py_err)?;
-    let total_elements: u64 = ranges.iter().map(|(_, c)| c).sum();
-    raw_bytes_to_numpy_flat(py, desc.dtype, &bytes, total_elements as usize)
+    // Look up the dtype from descriptors only — no payload decode.
+    let (_gm, descriptors) = decode_descriptors(buf).map_err(to_py_err)?;
+    let desc = descriptors.get(object_index).ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "object_index {object_index} out of range (num_objects={})",
+            descriptors.len()
+        ))
+    })?;
+
+    if join {
+        // Concatenate all parts into a single flat array.
+        let total_bytes: Vec<u8> = parts.into_iter().flatten().collect();
+        let total_elements: u64 = ranges.iter().map(|(_, c)| c).sum();
+        raw_bytes_to_numpy_flat(py, desc.dtype, &total_bytes, total_elements as usize)
+    } else {
+        // Return a list of arrays, one per range.
+        let mut arrays = Vec::with_capacity(parts.len());
+        for (part, &(_, count)) in parts.iter().zip(ranges.iter()) {
+            let arr = raw_bytes_to_numpy_flat(py, desc.dtype, part, count as usize)?;
+            arrays.push(arr);
+        }
+        let list = pyo3::types::PyList::new(py, arrays)?;
+        Ok(list.into_any().unbind())
+    }
 }
 
 /// Scan *buf* for message boundaries → ``list[(offset, length)]``.
@@ -556,6 +627,7 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_encode, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode_metadata, m)?)?;
+    m.add_function(wrap_pyfunction!(py_decode_descriptors, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode_object, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode_range, m)?)?;
     m.add_function(wrap_pyfunction!(py_scan, m)?)?;
@@ -906,6 +978,49 @@ macro_rules! numpy_flat_from_ne {
     }};
 }
 
+/// Create a numpy array via ``numpy.frombuffer(...).reshape(shape).copy()``.
+///
+/// Works for any dtype string that numpy understands (``"float16"``,
+/// ``"complex64"``, etc.).
+fn numpy_via_frombuffer(
+    py: Python<'_>,
+    bytes: &[u8],
+    dtype_str: &str,
+    shape: &[usize],
+) -> PyResult<PyObject> {
+    let np = py.import("numpy")?;
+    let py_bytes = PyBytes::new(py, bytes);
+    let dtype = np.getattr("dtype")?.call1((dtype_str,))?;
+    let arr = np.call_method1("frombuffer", (py_bytes, dtype))?;
+    let py_shape = pyo3::types::PyTuple::new(py, shape.iter().map(|&s| s as isize))?;
+    let reshaped = arr.call_method1("reshape", (py_shape,))?;
+    let copied = reshaped.call_method0("copy")?;
+    Ok(copied.unbind())
+}
+
+/// Create a numpy array with ``ml_dtypes.bfloat16`` dtype.
+///
+/// Falls back to ``uint16`` view if ``ml_dtypes`` is not installed.
+fn numpy_via_frombuffer_bfloat16(
+    py: Python<'_>,
+    bytes: &[u8],
+    shape: &[usize],
+) -> PyResult<PyObject> {
+    // Try ml_dtypes first.
+    if let Ok(ml) = py.import("ml_dtypes") {
+        let np = py.import("numpy")?;
+        let py_bytes = PyBytes::new(py, bytes);
+        let dtype = ml.getattr("bfloat16")?;
+        let arr = np.call_method1("frombuffer", (py_bytes, dtype))?;
+        let py_shape = pyo3::types::PyTuple::new(py, shape.iter().map(|&s| s as isize))?;
+        let reshaped = arr.call_method1("reshape", (py_shape,))?;
+        let copied = reshaped.call_method0("copy")?;
+        return Ok(copied.unbind());
+    }
+    // Fallback: return as uint16.
+    numpy_via_frombuffer(py, bytes, "uint16", shape)
+}
+
 /// Convert decoded object bytes to a shaped numpy array.
 fn bytes_to_numpy(py: Python<'_>, desc: &DataObjectDescriptor, bytes: &[u8]) -> PyResult<PyObject> {
     // simple_packing always produces f64 output regardless of declared dtype.
@@ -941,9 +1056,24 @@ fn bytes_to_numpy(py: Python<'_>, desc: &DataObjectDescriptor, bytes: &[u8]) -> 
         Dtype::Uint16 => numpy_from_ne!(py, bytes, shape, u16, 2),
         Dtype::Uint32 => numpy_from_ne!(py, bytes, shape, u32, 4),
         Dtype::Uint64 => numpy_from_ne!(py, bytes, shape, u64, 8),
+        Dtype::Float16 => {
+            // numpy natively supports float16: reinterpret raw bytes.
+            numpy_via_frombuffer(py, bytes, "float16", &shape)
+        }
+        Dtype::Bfloat16 => {
+            // Try ml_dtypes.bfloat16 first, fall back to uint16.
+            numpy_via_frombuffer_bfloat16(py, bytes, &shape)
+        }
+        Dtype::Complex64 => {
+            // complex64 = two float32 per element.
+            numpy_via_frombuffer(py, bytes, "complex64", &shape)
+        }
+        Dtype::Complex128 => {
+            // complex128 = two float64 per element.
+            numpy_via_frombuffer(py, bytes, "complex128", &shape)
+        }
         _ => {
-            // float16, bfloat16, complex, bitmask — return raw bytes as uint8.
-            // Bitmask has byte_width=0 (sub-byte); just return all bytes as-is.
+            // Bitmask has byte_width=0 (sub-byte); return raw bytes as uint8.
             let arr = numpy::PyArray::from_slice(py, bytes).reshape(vec![bytes.len()])?;
             Ok(arr.into_any().unbind())
         }
@@ -992,8 +1122,12 @@ fn raw_bytes_to_numpy_flat(
         Dtype::Uint16 => numpy_flat_from_ne!(py, bytes, u16, 2),
         Dtype::Uint32 => numpy_flat_from_ne!(py, bytes, u32, 4),
         Dtype::Uint64 => numpy_flat_from_ne!(py, bytes, u64, 8),
+        Dtype::Float16 => numpy_via_frombuffer(py, bytes, "float16", &[expected_elements]),
+        Dtype::Bfloat16 => numpy_via_frombuffer_bfloat16(py, bytes, &[expected_elements]),
+        Dtype::Complex64 => numpy_via_frombuffer(py, bytes, "complex64", &[expected_elements]),
+        Dtype::Complex128 => numpy_via_frombuffer(py, bytes, "complex128", &[expected_elements]),
         _ => {
-            // float16, bfloat16, complex, bitmask — raw bytes as uint8
+            // Bitmask — raw bytes as uint8.
             Ok(numpy::PyArray::from_slice(py, bytes).into_any().unbind())
         }
     }

@@ -130,39 +130,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── decode_range() — partial sub-slice ────────────────────────────────────
     //
-    // Extracts a contiguous slice of elements from object 2 (uint8, 8×8).
+    // Extracts sub-slices from object 2 (uint8, 8×8).
     // Works only for encoding="none" and compression="none".
     // ranges = [(element_offset, element_count), ...]
+    //
+    // Default return is split: one Vec<u8> per range.
     {
-        // Extract elements 10..18 (8 elements from the second row of the 8×8 grid)
-        let partial = decode_range(
+        // Single range — returns Vec<Vec<u8>> with one entry
+        let parts = decode_range(
             &message,
             2,          // object index
             &[(10, 8)], // offset=10, count=8
             &DecodeOptions::default(),
         )?;
 
-        println!("\ndecode_range(obj=2, offset=10, count=8):");
+        println!("\ndecode_range(obj=2, offset=10, count=8)  [split]:");
+        assert_eq!(parts.len(), 1);
+        let partial = &parts[0];
         println!(
-            "  {} bytes, all=0x{:02X}: {}",
+            "  1 part, {} bytes, all=0x{:02X}: {}",
             partial.len(),
             0xCC,
             partial.iter().all(|&b| b == 0xCC)
         );
         assert_eq!(partial.len(), 8);
 
-        // Multiple ranges in one call (non-contiguous slices)
-        let partial2 = decode_range(
+        // Multiple ranges — returns one Vec<u8> per range
+        let parts2 = decode_range(
             &message,
             2,
-            &[(0, 4), (60, 4)], // first 4 bytes + last 4 bytes of the 8×8 grid
+            &[(0, 4), (60, 4)], // first 4 + last 4 elements of the 8×8 grid
             &DecodeOptions::default(),
         )?;
-        println!(
-            "  Two ranges [(0,4),(60,4)]: {} bytes total",
-            partial2.len()
-        );
-        assert_eq!(partial2.len(), 8);
+        println!("  Two ranges [(0,4),(60,4)]: {} parts", parts2.len());
+        assert_eq!(parts2.len(), 2);
+        assert_eq!(parts2[0].len(), 4);
+        assert_eq!(parts2[1].len(), 4);
+
+        // Joined: flatten into a single Vec<u8>
+        let joined: Vec<u8> = parts2.into_iter().flatten().collect();
+        println!("  Joined: {} bytes total", joined.len());
+        assert_eq!(joined.len(), 8);
     }
 
     println!("\nAll decode variants OK.");

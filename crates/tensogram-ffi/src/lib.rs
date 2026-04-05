@@ -642,12 +642,18 @@ pub extern "C" fn tgm_decode_object(
     }
 }
 
-/// Decode a partial range from an uncompressed object.
+/// Decode partial ranges from a data object.
 ///
 /// `ranges_offsets` / `ranges_counts`: parallel arrays of (element_offset, element_count).
 /// `num_ranges`: length of both arrays.
+/// `join`: when non-zero, concatenate all ranges into a single buffer in `out[0]`
+///         and set `*out_count = 1`.  When zero (split mode), write one `TgmBytes`
+///         per range into `out[0..num_ranges]` and set `*out_count = num_ranges`.
+///         The caller must pre-allocate `out` with at least `num_ranges` entries
+///         when `join == 0`, or 1 entry when `join != 0`.
+/// `out_count`: filled with the number of buffers written to `out`.
 ///
-/// On success, fills `out` with a `TgmBytes` buffer of the extracted bytes.
+/// Free each returned buffer with `tgm_bytes_free`.
 #[no_mangle]
 pub extern "C" fn tgm_decode_range(
     buf: *const u8,
@@ -657,9 +663,11 @@ pub extern "C" fn tgm_decode_range(
     ranges_counts: *const u64,
     num_ranges: usize,
     verify_hash: i32,
+    join: i32,
     out: *mut TgmBytes,
+    out_count: *mut usize,
 ) -> TgmError {
-    if buf.is_null() || out.is_null() {
+    if buf.is_null() || out.is_null() || out_count.is_null() {
         set_last_error("null argument");
         return TgmError::InvalidArg;
     }
@@ -688,16 +696,37 @@ pub extern "C" fn tgm_decode_range(
     };
 
     match decode_range(data, object_index, &ranges, &options) {
-        Ok(bytes) => {
-            // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
-            let mut bytes = bytes.into_boxed_slice().into_vec();
-            let result = TgmBytes {
-                data: bytes.as_mut_ptr(),
-                len: bytes.len(),
-            };
-            std::mem::forget(bytes);
-            unsafe {
-                *out = result;
+        Ok(parts) => {
+            if join != 0 {
+                // Concatenate all parts into a single buffer.
+                let joined: Vec<u8> = parts.into_iter().flatten().collect();
+                let mut joined = joined.into_boxed_slice().into_vec();
+                let result = TgmBytes {
+                    data: joined.as_mut_ptr(),
+                    len: joined.len(),
+                };
+                std::mem::forget(joined);
+                unsafe {
+                    *out = result;
+                    *out_count = 1;
+                }
+            } else {
+                // Write one TgmBytes per range.
+                let n = parts.len();
+                for (i, part) in parts.into_iter().enumerate() {
+                    let mut part = part.into_boxed_slice().into_vec();
+                    let result = TgmBytes {
+                        data: part.as_mut_ptr(),
+                        len: part.len(),
+                    };
+                    std::mem::forget(part);
+                    unsafe {
+                        *out.add(i) = result;
+                    }
+                }
+                unsafe {
+                    *out_count = n;
+                }
             }
             TgmError::Ok
         }

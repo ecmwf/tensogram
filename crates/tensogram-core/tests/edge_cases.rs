@@ -1492,7 +1492,11 @@ fn decode_range_with_hash_verification() {
     // Range decode with hash verification
     let result =
         decode_range(&encoded, 0, &[(0, 5)], &DecodeOptions { verify_hash: true }).unwrap();
-    assert_eq!(result.len(), 20); // 5 * 4 bytes
+    // One range requested → one result part
+    assert_eq!(result.len(), 1, "expected 1 part for 1 range");
+    // Total bytes: 5 elements * 4 bytes each = 20
+    let total_bytes: usize = result.iter().map(|p| p.len()).sum();
+    assert_eq!(total_bytes, 20);
 }
 
 // ── 39. Streaming encoder validates objects ──────────────────────────────────

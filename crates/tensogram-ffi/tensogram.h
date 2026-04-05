@@ -145,12 +145,18 @@ tgm_error tgm_decode_object(const uint8_t *buf,
                             tgm_message_t **out);
 
 /**
- * Decode a partial range from an uncompressed object.
+ * Decode partial ranges from a data object.
  *
  * `ranges_offsets` / `ranges_counts`: parallel arrays of (element_offset, element_count).
  * `num_ranges`: length of both arrays.
+ * `join`: when non-zero, concatenate all ranges into a single buffer in `out[0]`
+ *         and set `*out_count = 1`.  When zero (split mode), write one `TgmBytes`
+ *         per range into `out[0..num_ranges]` and set `*out_count = num_ranges`.
+ *         The caller must pre-allocate `out` with at least `num_ranges` entries
+ *         when `join == 0`, or 1 entry when `join != 0`.
+ * `out_count`: filled with the number of buffers written to `out`.
  *
- * On success, fills `out` with a `TgmBytes` buffer of the extracted bytes.
+ * Free each returned buffer with `tgm_bytes_free`.
  */
 tgm_error tgm_decode_range(const uint8_t *buf,
                            size_t buf_len,
@@ -159,7 +165,9 @@ tgm_error tgm_decode_range(const uint8_t *buf,
                            const uint64_t *ranges_counts,
                            size_t num_ranges,
                            int32_t verify_hash,
-                           tgm_bytes_t *out);
+                           int32_t join,
+                           tgm_bytes_t *out,
+                           size_t *out_count);
 
 /**
  * Scan a buffer for message boundaries.
