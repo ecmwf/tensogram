@@ -24,7 +24,7 @@ pub struct EncodeOptions {
     /// Reserved for future buffered-mode preceder support.
     ///
     /// Currently, setting this to `true` in buffered mode (`encode()`)
-    /// returns an error — use [`StreamingEncoder::write_preceder`] instead.
+    /// returns an error — use [`StreamingEncoder::write_preceder`](crate::streaming::StreamingEncoder::write_preceder) instead.
     /// The streaming encoder ignores this field; it emits preceders only
     /// when `write_preceder()` is called explicitly.
     pub emit_preceders: bool,
