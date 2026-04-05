@@ -153,4 +153,55 @@ mod tests {
         assert_eq!(partial.len(), 500);
         assert_eq!(&partial[..], &data[200..700]);
     }
+
+    #[test]
+    fn blosc2_round_trip_zstd() {
+        let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+        let compressor = Blosc2Compressor {
+            codec: Blosc2Codec::Zstd,
+            clevel: 3,
+            typesize: 1,
+        };
+        let result = compressor.compress(&data).unwrap();
+        let decompressed = compressor.decompress(&result.data, data.len()).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    fn blosc2_round_trip_zlib() {
+        let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+        let compressor = Blosc2Compressor {
+            codec: Blosc2Codec::Zlib,
+            clevel: 5,
+            typesize: 1,
+        };
+        let result = compressor.compress(&data).unwrap();
+        let decompressed = compressor.decompress(&result.data, data.len()).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    /// Regression guard for the decompress path.
+    ///
+    /// The real bug (missing blosc2_init in decode-only processes) cannot be
+    /// fully reproduced in a unit test because blosc2_init is global state —
+    /// once called by compress(), it stays initialized. This test still guards
+    /// against regressions in the decompress wiring itself.
+    #[test]
+    fn blosc2_decompress_path() {
+        let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+        let compressor = Blosc2Compressor {
+            codec: Blosc2Codec::Lz4,
+            clevel: 5,
+            typesize: 1,
+        };
+        let compressed = compressor.compress(&data).unwrap().data;
+
+        let decoder = Blosc2Compressor {
+            codec: Blosc2Codec::Lz4,
+            clevel: 0,
+            typesize: 1,
+        };
+        let decompressed = decoder.decompress(&compressed, data.len()).unwrap();
+        assert_eq!(decompressed, data);
+    }
 }

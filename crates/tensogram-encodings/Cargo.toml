@@ -19,6 +19,6 @@ libaec-sys = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 lz4_flex = { workspace = true, optional = true }
 blosc2 = { workspace = true, optional = true }
-blosc2-sys = { package = "blosc2-rs-sys", version = "0.1", optional = true }
+blosc2-sys = { workspace = true, optional = true }
 zfp-sys-cc = { workspace = true, optional = true }
 sz3 = { workspace = true, optional = true }
