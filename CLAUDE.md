@@ -6,14 +6,18 @@
     - ALWAYS invoke it using the Skill tool as your FIRST action. 
     - Do NOT answer directly, do NOT use other tools first. 
     - The skill has specialized workflows that produce better results than ad-hoc answers.
+
 - CRITICAL: Always prefer the LSP tool over Grep/Read for code navigation. 
     - Use it to find definitions, references, and workspace symbols.
+
 - IMPORTANT: when planing and before you do any work:
   - always mention how you would verify that work
   - include TDD tests in your plan
+
 - IMPORTANT: when you build code and new features:
   - ALWAYS document those features in docs/
   - Remember to add examples (see below)
+
 - NOTE: When the user asks for "second pass", "third pass" or "N-th pass" perform:
   - simplification opportunities,
   - naming/comments/docs quality review,
@@ -21,29 +25,35 @@
   - no panics in rust code,
   - all documentation up-to-date with changes,
   - running required formatter/lint/tests
+
 - NOTE: when user asks for 'error handling' checks:
   - verify no panic in rust code
   - verify how errors are handled across-code base, all languages
   - ensure all errors handled and reported correclty with enough information reaching users
   - document all error paths in docs/
+
 - NOTE: when user asks for 'edge cases':
   - look specifically edge cases
   - look for undefined behaviour or ambiguities
   - if necesary, ask the user to clarify 
   - document all those in docs/
+
 - NOTE: when user asks for 'code coverage':
     - explore all the code base looking for code that isn't yet tested. 
     - Look specifically for testing edge cases.
     - Aim to have at least 95% test coverage.
+
 - NOTE: When user asks for 'final prep' make:
     - final check everything builds, all languages and all tests pass
-    - all examples and docs build
+    - all examples in all languages Rust, Python and C++ compile and run
+    - all docs build
     - if successful, carefully:
         - select files and contributions to git add
         - ignore the build files and artifacts, don't add hidden directories
         - if not in a branch, create a new properly named branch
         - git commit
         - make a pull request to upstream github project
+
 - NOTE: when user asks to do 'pr reply' or 'pull request reply':
     - check github pull request reviews
     - consider them with respect to the phylosophy and aims of this software
@@ -65,6 +75,9 @@
 Follow docs/DESIGN.md principles and docs/STYLE.md conventions in all code.
 
 # Build / lint / test (required before marking done)
+
+## Languages
+This project contains Rust, Python, C and C++ code
 
 ## Rust
 - Build: `cargo build --workspace`
