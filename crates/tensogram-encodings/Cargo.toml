@@ -8,7 +8,7 @@ default = ["szip", "zstd", "lz4", "blosc2", "zfp", "sz3"]
 szip = ["dep:libaec-sys"]
 zstd = ["dep:zstd"]
 lz4 = ["dep:lz4_flex"]
-blosc2 = ["dep:blosc2"]
+blosc2 = ["dep:blosc2", "dep:blosc2-sys"]
 zfp = ["dep:zfp-sys-cc"]
 sz3 = ["dep:sz3"]
 
@@ -19,5 +19,6 @@ libaec-sys = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 lz4_flex = { workspace = true, optional = true }
 blosc2 = { workspace = true, optional = true }
+blosc2-sys = { package = "blosc2-rs-sys", version = "0.1", optional = true }
 zfp-sys-cc = { workspace = true, optional = true }
 sz3 = { workspace = true, optional = true }
