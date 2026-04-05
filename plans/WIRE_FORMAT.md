@@ -24,7 +24,7 @@ Offset  Size    Field
 0       4       Magic: "FR" + uint16 (Frame type)
 4       2       Version (uint16 BE)
 6       2       Reserved Flags (uint16 BE)
-8       8       Total Lenght as Offset to end of object (uint64 BE)
+8       8       Total Length as Offset to end of object (uint64 BE)
 ```
 Frame versions are independent from version of message and other frame types.
 HEADER PREAMBLE and FOOTER POSTAMBLE are not considered Frames.
@@ -79,7 +79,7 @@ Offset  Size    Field
 8       2       Version (uint16 BE)
 10      2       Flags (uint16 BE)
 12      4       Reserved Flags (uint32 BE)
-16      8       Total Lenght to end of message (may be zero if stream)
+16      8       Total Length to end of message (may be zero if stream)
 ```
 
 The flags in the message header preamble will indicate if the optional frames exist:
@@ -94,7 +94,7 @@ Either a header or a footer metadata frame must always be present, ie Messages c
 
 ## Metadata Frame
 
-Irrespective of position, Hearder or Footer, the metadata frame for uniquely identifies the message.
+Irrespective of position, Header or Footer, the metadata frame uniquely identifies the message.
 Each metadata CBOR contains a mandatory sub-objects:
  - 'common' holds metadata that is common to all data objects in the message. this may contain internal namespaces for managing different vocabularies.
  - 'payload' holds a list of metadata per data object. the index of the list matches the order in the message, can be used to assert the data obj count. this may contain internal namespaces that should match 'common'.
@@ -129,18 +129,18 @@ Offset  Size    Field
 0       4       Magic: "FR" + uint16 (Frame type)
 4       2       Version (uint16 BE)
 6       2       Reserved Flags (uint16 BE)
-8       8       Total Lenght as Offset to end of object (uint64 BE)
+8       8       Total Length as Offset to end of object (uint64 BE)
 ```
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  DATA OBJ PREAMBLE  magic, version, flags, lenght (fixed sz) │
+│  DATA OBJ PREAMBLE  magic, version, flags, length (fixed sz)  │
 ├──────────────────────────────────────────────────────────────┤
-│  DATA OBJ ENCODING    CBOR descritption (before)             │
+│  DATA OBJ ENCODING    CBOR description (before)               │
 ├──────────────────────────────────────────────────────────────┤
-│  DATA BYTESTREAM PAYLOAD                                     │
+│  DATA BYTESTREAM PAYLOAD                                      │
 ├──────────────────────────────────────────────────────────────┤
-│  DATA OBJ ENCODING CBOR descritption (after - default)       │
+│  DATA OBJ ENCODING CBOR description (after - default)         │
 ├──────────────────────────────────────────────────────────────┤
 │  DATA OBJ FOOTER CBOR offset (uint64) + end_magic 'ENDF'     │
 └──────────────────────────────────────────────────────────────┘

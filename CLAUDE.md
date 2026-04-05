@@ -66,13 +66,18 @@
 # Design & Purpose
 
 - README.md -- entry level generic information
-- plans/DESIGN.md -- purpose and design of the library
+- plans/MOTIVATION.md -- why Tensogram exists and what we're building
+- plans/DESIGN.md -- design rationale and key architectural decisions
 - plans/STYLE.md -- code style conventions
-- plans/PLAN.md -- initial plan iteration 0 before further improvements added
-- plans/DONE.md -- keep updated with implementation progress
-- plans/TODO.md -- long term TODO list of features that may or not be implemented
+- plans/WIRE_FORMAT.md -- canonical wire format specification
+- plans/DONE.md -- current implementation status (keep updated)
+- plans/TODO.md -- features decided to implement (accepted backlog)
+- plans/IDEAS.md -- ideas for possible future features (not yet decided)
+- plans/TEST.md -- test plan and coverage summary
+- plans/PLAN.md -- HISTORICAL: iteration 0 planning decisions (read-only)
+- CHANGELOG.md -- release history
 
-Follow docs/DESIGN.md principles and docs/STYLE.md conventions in all code.
+Follow plans/DESIGN.md principles and plans/STYLE.md conventions in all code.
 
 # Build / lint / test (required before marking done)
 

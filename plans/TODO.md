@@ -1,17 +1,33 @@
-# Features decided to implement
+# Features Decided to Implement
 
-- API
+Accepted features that are planned but not yet implemented.
+For speculative ideas, see `IDEAS.md`.
 
-- CLI tools:
+## API
 
-- Metadata:
+- [ ] Populate `reserved` metadata field with provenance information:
+  - `reserved.encoder.name` — library name (`"tensogram"`)
+  - `reserved.encoder.version` — library version at encode time
+  - `reserved.time` — UTC timestamp of encoding
+  - `reserved.uuid` — RFC 4122 UUID for provenance tracking
+  (Specified in WIRE_FORMAT.md, not yet implemented in code)
 
-- Examples:
+## CLI
 
-- Tools
+- [ ] `tensogram merge` — merge common metadata from multiple files (currently first-takes-precedence; should support configurable merge strategies)
 
-- Documentation:
+## Metadata
 
-- Builds
+- (none currently)
 
-- Code Quality
+## Documentation
+
+- [ ] Document all error paths in docs/ (error handling reference page)
+
+## Builds
+
+- [ ] CI matrix for all three language test suites on every commit (partially done — Rust, Python, C++ run but GRIB tests gated on ecCodes availability)
+
+## Code Quality
+
+- [ ] Reach 95% test coverage (currently 90.5%)
