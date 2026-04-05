@@ -74,7 +74,7 @@ println!("shape: {:?}, dtype: {}", descriptor.shape, descriptor.dtype);
 pub fn decode_range(
     message: &[u8],
     object_index: usize,
-    ranges: &[(usize, usize)],  // (offset, count) per dimension
+    ranges: &[(usize, usize)],  // (offset, count) in flattened element order
     options: &DecodeOptions,
 ) -> Result<Vec<Vec<u8>>>
 ```
