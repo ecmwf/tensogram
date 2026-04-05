@@ -111,7 +111,7 @@ def _nd_slice_to_flat_ranges(
         output_dims.append(count)
     output_shape = tuple(output_dims)
 
-    total_output = math.prod(output_dims) if output_dims else 0
+    total_output = math.prod(output_dims)
     if total_output == 0:
         return [], output_shape
 
