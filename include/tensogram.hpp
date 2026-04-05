@@ -860,6 +860,12 @@ private:
                                     offsets.data(), counts.data(), ranges.size(),
                                     opts.verify_hash ? 1 : 0,
                                     0, bufs.data(), &out_count));
+    if (out_count > ranges.size()) {
+        for (std::size_t i = 0; i < ranges.size(); ++i) {
+            tgm_bytes_free(bufs[i]);
+        }
+        throw std::runtime_error("tgm_decode_range returned out_count > ranges.size()");
+    }
     std::vector<std::vector<std::uint8_t>> result;
     result.reserve(out_count);
     for (std::size_t i = 0; i < out_count; ++i) {
