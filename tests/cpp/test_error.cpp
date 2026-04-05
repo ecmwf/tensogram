@@ -148,7 +148,9 @@ TEST(ErrorTest, InvalidFilePathThrowsIoError) {
 // ---------------------------------------------------------------------------
 
 TEST(ErrorTest, HashMismatchThrowsHashMismatchError) {
-    std::vector<float> values = {1.0f, 2.0f, 3.0f};
+    // Use a large payload so corruption reliably hits payload data, not frame
+    // structure (ENDF markers, CBOR descriptors).
+    std::vector<float> values(256, 42.0f);
     std::string json = test_helpers::simple_f32_json(values.size());
     std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
         {reinterpret_cast<const std::uint8_t*>(values.data()),
@@ -158,11 +160,10 @@ TEST(ErrorTest, HashMismatchThrowsHashMismatchError) {
     enc_opts.hash_algo = "xxh3";
     auto encoded = tensogram::encode(json, objects, enc_opts);
 
-    // The wire format stores payload data inside the last data object frame.
-    // Corrupt a few bytes that are guaranteed to be in the payload area
-    // (around 53% into the message, well past all header/index/hash frames).
-    const std::size_t payload_offset = (encoded.size() * 53) / 100;
-    ASSERT_GT(encoded.size(), 20u);
+    // Corrupt bytes deep in the payload area (75% into message, safely past
+    // all header/index/hash frames and inside the 1024-byte payload).
+    const std::size_t payload_offset = (encoded.size() * 75) / 100;
+    ASSERT_GT(encoded.size(), payload_offset + 2);
     encoded[payload_offset]     ^= 0xFF;
     encoded[payload_offset + 1] ^= 0xFF;
 

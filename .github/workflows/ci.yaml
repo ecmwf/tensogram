@@ -90,19 +90,27 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Python dependencies
+      - name: Create virtualenv and install dependencies
         run: |
-          python -m pip install --upgrade pip
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
           pip install maturin numpy pytest ruff
 
       - name: Build Python extension
-        run: maturin develop --manifest-path crates/tensogram-python/Cargo.toml
+        run: |
+          source .venv/bin/activate
+          maturin develop --manifest-path crates/tensogram-python/Cargo.toml
 
       - name: Lint Python tests
-        run: ruff check --config crates/tensogram-python/pyproject.toml tests/python/
+        run: |
+          source .venv/bin/activate
+          ruff check --config crates/tensogram-python/pyproject.toml tests/python/
 
       - name: Run Python tests
-        run: python -m pytest tests/python/ -v
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/python/ -v
 
   grib-tests:
     runs-on: ubuntu-latest
