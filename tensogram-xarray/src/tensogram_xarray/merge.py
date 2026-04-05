@@ -128,7 +128,7 @@ def open_datasets(
         if ds is not None:
             datasets.append(ds)
 
-    return datasets if datasets else [xr.Dataset(attrs={"source": path})]
+    return datasets if datasets else [xr.Dataset(coords=coord_vars, attrs={"source": path})]
 
 
 # ---------------------------------------------------------------------------
