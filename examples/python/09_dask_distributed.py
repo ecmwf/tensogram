@@ -26,7 +26,7 @@ import dask
 import dask.array as da
 import numpy as np
 import tensogram
-import tensogram_xarray  # registers the backend engine
+import tensogram_xarray  # side-effect: registers engine="tensogram" with xarray
 import xarray as xr
 
 # ---------------------------------------------------------------------------

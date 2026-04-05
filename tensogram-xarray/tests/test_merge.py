@@ -109,21 +109,31 @@ class TestHypercubeDataCorrectness:
                 date = desc.params.get("mars", {}).get("date", "")
                 expected[(param, date)] = np.asarray(arr)
 
+        expected_dates = ["20260401", "20260402"]
+
         # Check each variable's stacked values.
         for var_name in ds.data_vars:
             var = ds[var_name]
             vals = var.values
             # The variable should have an outer dimension from date.
-            if vals.ndim == 3:
-                # Outer dim is date (2 values), inner is (3,4).
-                for date_idx, date_val in enumerate(["20260401", "20260402"]):
-                    key = (var_name, date_val)
-                    if key in expected:
-                        np.testing.assert_array_equal(
-                            vals[date_idx],
-                            expected[key],
-                            err_msg=f"Mismatch for {var_name} date={date_val}",
-                        )
+            assert vals.ndim == 3, (
+                f"Expected {var_name} to be stacked as 3-D (date, y, x), got shape {vals.shape}"
+            )
+            # Outer dim is date (2 values), inner is (3,4).
+            assert vals.shape[0] == len(expected_dates), (
+                f"Expected {var_name} to have {len(expected_dates)} date slices, "
+                f"got shape {vals.shape}"
+            )
+            for date_idx, date_val in enumerate(expected_dates):
+                key = (var_name, date_val)
+                assert key in expected, (
+                    f"Missing expected source message for {var_name} date={date_val}"
+                )
+                np.testing.assert_array_equal(
+                    vals[date_idx],
+                    expected[key],
+                    err_msg=f"Mismatch for {var_name} date={date_val}",
+                )
 
     def test_stacked_backend_array_2d_outer(self):
         """Direct unit test: StackedBackendArray with 2-D outer shape.

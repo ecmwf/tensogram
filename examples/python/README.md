@@ -8,11 +8,12 @@ pip install tensogram          # once published to PyPI
 maturin develop                # build from source (from crates/tensogram-python/)
 ```
 
-For the xarray and dask examples, also install:
+For the xarray and dask examples (08, 09), also install:
 
 ```bash
-pip install tensogram-xarray              # or: pip install -e tensogram-xarray/
-pip install "tensogram-xarray[dask]"      # adds dask[array] for example 09
+pip install "tensogram-xarray[dask]"   # includes xarray + dask[array]
+# or from source:
+pip install -e "tensogram-xarray/[dask]"
 ```
 
 ## Examples
