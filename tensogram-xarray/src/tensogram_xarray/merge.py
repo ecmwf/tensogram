@@ -309,20 +309,26 @@ def _build_dataset_from_group(
     constant, varying = _partition_keys(key_values)
 
     # If variable_key is specified, split by it first (each unique value
-    # becomes a separate variable in the Dataset).
-    if variable_key is not None and variable_key in varying:
-        return _build_multi_variable_dataset(
-            group,
-            file_path,
-            coord_vars,
-            dim_names,
-            variable_key,
-            constant,
-            varying,
-            lock,
-            range_threshold=range_threshold,
-            verify_hash=verify_hash,
-        )
+    # becomes a separate variable in the Dataset).  Use resolved variable
+    # names rather than membership in ``varying`` so dotted keys such as
+    # "mars.param" are handled correctly.
+    if variable_key is not None:
+        variable_names = {
+            resolve_variable_name(obj.metadata, variable_key) for obj in group
+        }
+        if len(variable_names) > 1:
+            return _build_multi_variable_dataset(
+                group,
+                file_path,
+                coord_vars,
+                dim_names,
+                variable_key,
+                constant,
+                varying,
+                lock,
+                range_threshold=range_threshold,
+                verify_hash=verify_hash,
+            )
 
     # Check if the varying keys form a hypercube.
     if not varying:
