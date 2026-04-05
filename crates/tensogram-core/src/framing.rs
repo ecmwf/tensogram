@@ -1488,4 +1488,31 @@ mod tests {
             });
         assert_eq!(source, Some("preceder"), "preceder should win over footer");
     }
+
+    #[test]
+    fn test_decode_rejects_payload_count_exceeding_objects() {
+        // Footer metadata with 3 payload entries but only 1 data object
+        // should be rejected (payload.len > obj_count).
+        let footer_meta = GlobalMetadata {
+            version: 2,
+            payload: vec![BTreeMap::new(), BTreeMap::new(), BTreeMap::new()],
+            ..Default::default()
+        };
+        let footer_cbor = crate::metadata::global_metadata_to_cbor(&footer_meta).unwrap();
+
+        let msg = build_raw_message(&[
+            (&footer_cbor, FrameType::HeaderMetadata),
+            (&[], FrameType::DataObject),
+        ]);
+        let result = decode_message(&msg);
+        assert!(
+            result.is_err(),
+            "payload with more entries than objects should be rejected"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("3") && err.contains("1"),
+            "error should mention counts: {err}"
+        );
+    }
 }

@@ -167,6 +167,7 @@ The decoder validates PrecederMetadata frames strictly:
 | Consecutive preceders without DataObject | `Framing` | "PrecederMetadata must be followed by a DataObject frame, got {type}" |
 | Dangling preceder (no DataObject follows) | `Framing` | "dangling PrecederMetadata: no DataObject frame followed" |
 | Payload has 0 or 2+ entries | `Metadata` | "PrecederMetadata payload must have exactly 1 entry, got {n}" |
+| Metadata payload entries > data objects | `Metadata` | "metadata payload has {n} entries but message contains {m} objects" |
 
 On the encoder side:
 - `StreamingEncoder::write_preceder()` errors if called twice without an intervening `write_object()`.
