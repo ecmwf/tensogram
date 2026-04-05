@@ -417,7 +417,10 @@ unsafe fn parse_encode_args<'a>(
 
     let data_slices = collect_data_slices(data_ptrs, data_lens, num_objects)?;
     let hash_algorithm = parse_hash_algo(hash_algo)?;
-    let options = EncodeOptions { hash_algorithm };
+    let options = EncodeOptions {
+        hash_algorithm,
+        ..Default::default()
+    };
 
     Ok(ParsedEncode {
         global_metadata,
@@ -2009,7 +2012,10 @@ pub extern "C" fn tgm_streaming_encoder_create(
         }
     };
 
-    let options = EncodeOptions { hash_algorithm };
+    let options = EncodeOptions {
+        hash_algorithm,
+        ..Default::default()
+    };
     let writer = std::io::BufWriter::new(file);
 
     match StreamingEncoder::new(writer, &global_metadata, &options) {
@@ -2023,6 +2029,63 @@ pub extern "C" fn tgm_streaming_encoder_create(
         Err(e) => {
             set_last_error(&e.to_string());
             to_error_code(&e)
+        }
+    }
+}
+
+/// Write a PrecederMetadata frame for the next data object.
+///
+/// `metadata_json` is a JSON object with per-object metadata keys
+/// (e.g. `{"mars": {"param": "2t"}, "units": "K"}`).  The keys
+/// become `payload[0]` in a GlobalMetadata CBOR with empty `common`.
+///
+/// Must be followed by exactly one `tgm_streaming_encoder_write` call
+/// before another preceder or `tgm_streaming_encoder_finish`.
+#[no_mangle]
+pub extern "C" fn tgm_streaming_encoder_write_preceder(
+    enc: *mut TgmStreamingEncoder,
+    metadata_json: *const c_char,
+) -> TgmError {
+    if enc.is_null() || metadata_json.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let json_str = match unsafe { CStr::from_ptr(metadata_json) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in metadata_json: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+
+    let map: BTreeMap<String, ciborium::Value> =
+        match serde_json::from_str::<serde_json::Value>(json_str) {
+            Ok(serde_json::Value::Object(obj)) => {
+                obj.into_iter().map(|(k, v)| (k, json_to_cbor(v))).collect()
+            }
+            Ok(_) => {
+                set_last_error("metadata_json must be a JSON object");
+                return TgmError::Metadata;
+            }
+            Err(e) => {
+                set_last_error(&format!("failed to parse metadata JSON: {e}"));
+                return TgmError::Metadata;
+            }
+        };
+
+    let encoder = unsafe { &mut *enc };
+    match encoder.inner.as_mut() {
+        Some(inner) => match inner.write_preceder(map) {
+            Ok(()) => TgmError::Ok,
+            Err(e) => {
+                set_last_error(&e.to_string());
+                to_error_code(&e)
+            }
+        },
+        None => {
+            set_last_error("streaming encoder already finished");
+            TgmError::InvalidArg
         }
     }
 }

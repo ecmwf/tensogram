@@ -166,6 +166,7 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
         }
         let opts = EncodeOptions {
             hash_algorithm: Some(tensogram_core::hash::HashAlgorithm::Xxh3),
+            ..Default::default()
         };
         let msg = encode::encode(&meta, &[(&desc, &payload)], &opts).unwrap();
         results.push(("hash_xxh3.tgm", msg));

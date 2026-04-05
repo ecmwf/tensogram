@@ -118,6 +118,13 @@ Implemented: 2026-04-03
 - Streaming support: total_length=0, footer-based index
 - Two-pass index construction for non-streaming mode
 - All panic paths eliminated from library code
+- Preceder Metadata Frame (type 8): optional per-object metadata frame preceding DataObject frames
+  - CBOR reuses GlobalMetadata format with empty `common`, single-entry `payload`
+  - Preamble flag bit 6 (`PRECEDER_METADATA`)
+  - Key-level merge on decode: preceder wins over footer for same object
+  - `StreamingEncoder::write_preceder()` API
+  - `EncodeOptions::emit_preceders` flag (default false)
+  - FFI: `tgm_streaming_encoder_write_preceder()`, C++: `streaming_encoder::write_preceder()`
 
 ## Key design properties implemented
 - Frame-based wire format with streaming support (v2)

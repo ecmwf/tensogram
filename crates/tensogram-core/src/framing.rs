@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::error::{Result, TensogramError};
 use crate::metadata;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashFrame, IndexFrame};
@@ -468,6 +470,11 @@ pub struct DecodedMessage<'a> {
     pub hash_frame: Option<HashFrame>,
     /// (descriptor, payload_slice, frame_offset_in_message)
     pub objects: Vec<(DataObjectDescriptor, &'a [u8], usize)>,
+    /// Per-object preceder metadata, parallel to `objects`.
+    /// `Some(map)` if a PrecederMetadata frame preceded that object.
+    /// After decode, these entries are merged into `global_metadata.payload`
+    /// (preceder wins over footer entries for the same object index).
+    pub preceder_payloads: Vec<Option<BTreeMap<String, ciborium::Value>>>,
 }
 
 /// Decode phase tracks expected frame ordering.
@@ -485,7 +492,9 @@ fn frame_phase(ft: FrameType) -> DecodePhase {
         FrameType::HeaderMetadata | FrameType::HeaderIndex | FrameType::HeaderHash => {
             DecodePhase::Headers
         }
-        FrameType::DataObject => DecodePhase::DataObjects,
+        // PrecederMetadata lives alongside DataObject frames — it must appear
+        // immediately before the DataObject it describes, within the data phase.
+        FrameType::DataObject | FrameType::PrecederMetadata => DecodePhase::DataObjects,
         FrameType::FooterHash | FrameType::FooterIndex | FrameType::FooterMetadata => {
             DecodePhase::Footers
         }
@@ -525,7 +534,12 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
     let mut index: Option<IndexFrame> = None;
     let mut hash_frame: Option<HashFrame> = None;
     let mut objects: Vec<(DataObjectDescriptor, &[u8], usize)> = Vec::new();
+    let mut preceder_payloads: Vec<Option<BTreeMap<String, ciborium::Value>>> = Vec::new();
     let mut current_phase = DecodePhase::Headers;
+
+    // Tracks a PrecederMetadata payload waiting for its DataObject.
+    // Two consecutive preceders (without an intervening DataObject) are invalid.
+    let mut pending_preceder: Option<BTreeMap<String, ciborium::Value>> = None;
 
     // Parse frames sequentially
     while pos < msg_end {
@@ -539,8 +553,6 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
             pos += 1;
             continue;
         }
-
-        let frame_start = pos;
 
         // Peek at frame type
         if pos + FRAME_HEADER_SIZE > buf.len() {
@@ -556,7 +568,18 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
                 fh.frame_type, current_phase
             )));
         }
+
+        // A pending preceder must be followed by a DataObject, not a footer
+        // or another preceder.
+        if pending_preceder.is_some() && fh.frame_type != FrameType::DataObject {
+            return Err(TensogramError::Framing(format!(
+                "PrecederMetadata must be followed by a DataObject frame, got {:?}",
+                fh.frame_type
+            )));
+        }
+
         current_phase = phase;
+        let frame_start = pos;
 
         match fh.frame_type {
             FrameType::HeaderMetadata | FrameType::FooterMetadata => {
@@ -577,17 +600,56 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
                 hash_frame = Some(hf);
                 pos += consumed;
             }
+            FrameType::PrecederMetadata => {
+                let (_, payload, consumed) = read_frame(&buf[pos..])?;
+                let preceder_meta = metadata::cbor_to_global_metadata(payload)?;
+                // Preceder payload must have exactly one entry
+                let n = preceder_meta.payload.len();
+                if n != 1 {
+                    return Err(TensogramError::Metadata(format!(
+                        "PrecederMetadata payload must have exactly 1 entry, got {n}"
+                    )));
+                }
+                // Safe: we just checked len == 1
+                pending_preceder = preceder_meta.payload.into_iter().next();
+                pos += consumed;
+            }
             FrameType::DataObject => {
                 let (desc, payload, consumed) = decode_data_object_frame(&buf[pos..])?;
                 objects.push((desc, payload, frame_start));
+                // Consume the pending preceder (if any) for this object
+                preceder_payloads.push(pending_preceder.take());
                 pos += consumed;
             }
         }
     }
 
-    let global_metadata = global_metadata.ok_or_else(|| {
+    // A preceder at the end of the stream with no following DataObject is invalid
+    if pending_preceder.is_some() {
+        return Err(TensogramError::Framing(
+            "dangling PrecederMetadata: no DataObject frame followed".to_string(),
+        ));
+    }
+
+    let mut global_metadata = global_metadata.ok_or_else(|| {
         TensogramError::Metadata("no metadata frame found in message".to_string())
     })?;
+
+    // Merge preceder payloads into global_metadata.payload (preceder wins).
+    // Key-level merge: preceder keys override footer keys on conflict,
+    // but footer-only keys (e.g. auto-populated ndim/shape/strides/dtype)
+    // are preserved when absent from the preceder.
+    let obj_count = objects.len();
+    global_metadata
+        .payload
+        .resize_with(obj_count, BTreeMap::new);
+    for (i, preceder) in preceder_payloads.iter().enumerate() {
+        if let Some(prec_map) = preceder {
+            for (k, v) in prec_map {
+                global_metadata.payload[i].insert(k.clone(), v.clone());
+            }
+        }
+    }
 
     Ok(DecodedMessage {
         preamble,
@@ -595,6 +657,7 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
         index,
         hash_frame,
         objects,
+        preceder_payloads,
     })
 }
 
@@ -1187,5 +1250,233 @@ mod tests {
             "footer after data objects should be accepted: {:?}",
             result.err()
         );
+    }
+
+    // ── Phase 4: PrecederMetadata frame tests ────────────────────────────
+
+    /// Helper: build a preceder metadata CBOR blob with a single payload entry.
+    fn make_preceder_cbor(entries: std::collections::BTreeMap<String, ciborium::Value>) -> Vec<u8> {
+        let meta = GlobalMetadata {
+            version: 2,
+            common: BTreeMap::new(),
+            payload: vec![entries],
+            reserved: BTreeMap::new(),
+            extra: BTreeMap::new(),
+        };
+        crate::metadata::global_metadata_to_cbor(&meta).unwrap()
+    }
+
+    #[test]
+    fn test_decode_preceder_before_data_object() {
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            "mars".to_string(),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("param".to_string()),
+                ciborium::Value::Text("2t".to_string()),
+            )]),
+        );
+        let preceder_cbor = make_preceder_cbor(entries);
+
+        let msg = build_raw_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&preceder_cbor, FrameType::PrecederMetadata),
+            (&[], FrameType::DataObject),
+        ]);
+        let decoded = decode_message(&msg).unwrap();
+
+        assert_eq!(decoded.objects.len(), 1);
+        assert_eq!(decoded.preceder_payloads.len(), 1);
+        assert!(decoded.preceder_payloads[0].is_some());
+
+        // Verify preceder merged into global_metadata.payload
+        assert_eq!(decoded.global_metadata.payload.len(), 1);
+        assert!(decoded.global_metadata.payload[0].contains_key("mars"));
+    }
+
+    #[test]
+    fn test_decode_consecutive_preceders_rejected() {
+        let entries = BTreeMap::new();
+        let preceder_cbor = make_preceder_cbor(entries);
+
+        let msg = build_raw_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&preceder_cbor, FrameType::PrecederMetadata),
+            (&preceder_cbor, FrameType::PrecederMetadata),
+            (&[], FrameType::DataObject),
+        ]);
+        let result = decode_message(&msg);
+        assert!(result.is_err(), "consecutive preceders should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("PrecederMetadata") && err.contains("DataObject"),
+            "error should explain preceder must precede DataObject: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_dangling_preceder_rejected() {
+        let entries = BTreeMap::new();
+        let preceder_cbor = make_preceder_cbor(entries);
+
+        // Preceder at end of message without a following DataObject
+        let msg = build_raw_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&[], FrameType::DataObject),
+            (&preceder_cbor, FrameType::PrecederMetadata),
+        ]);
+        let result = decode_message(&msg);
+        assert!(result.is_err(), "dangling preceder should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("dangling"),
+            "error should mention dangling: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_preceder_with_multiple_payload_entries_rejected() {
+        // Preceder with 2 payload entries — should be rejected (must have exactly 1)
+        let meta = GlobalMetadata {
+            version: 2,
+            payload: vec![BTreeMap::new(), BTreeMap::new()],
+            ..Default::default()
+        };
+        let bad_cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
+
+        let msg = build_raw_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&bad_cbor, FrameType::PrecederMetadata),
+            (&[], FrameType::DataObject),
+        ]);
+        let result = decode_message(&msg);
+        assert!(
+            result.is_err(),
+            "preceder with 2 payload entries should be rejected"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("exactly 1"),
+            "error should mention 'exactly 1': {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_preceder_with_zero_payload_entries_rejected() {
+        // Preceder with 0 payload entries — should be rejected
+        let meta = GlobalMetadata {
+            version: 2,
+            payload: vec![],
+            ..Default::default()
+        };
+        let bad_cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
+
+        let msg = build_raw_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&bad_cbor, FrameType::PrecederMetadata),
+            (&[], FrameType::DataObject),
+        ]);
+        let result = decode_message(&msg);
+        assert!(
+            result.is_err(),
+            "preceder with 0 payload entries should be rejected"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("exactly 1") && err.contains("got 0"),
+            "error should mention 'exactly 1' and 'got 0': {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_preceder_followed_by_footer_rejected() {
+        let entries = BTreeMap::new();
+        let preceder_cbor = make_preceder_cbor(entries);
+        let meta = make_global_meta();
+        let meta_cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
+
+        let msg = build_raw_message(&[
+            (&meta_cbor, FrameType::HeaderMetadata),
+            (&preceder_cbor, FrameType::PrecederMetadata),
+            (&meta_cbor, FrameType::FooterMetadata),
+        ]);
+        let result = decode_message(&msg);
+        assert!(
+            result.is_err(),
+            "preceder followed by footer should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_decode_mixed_preceder_and_no_preceder() {
+        // Object 0: has preceder, Object 1: no preceder
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            "note".to_string(),
+            ciborium::Value::Text("from preceder".to_string()),
+        );
+        let preceder_cbor = make_preceder_cbor(entries);
+
+        let msg = build_raw_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&preceder_cbor, FrameType::PrecederMetadata),
+            (&[], FrameType::DataObject),
+            (&[], FrameType::DataObject),
+        ]);
+        let decoded = decode_message(&msg).unwrap();
+
+        assert_eq!(decoded.objects.len(), 2);
+        assert_eq!(decoded.preceder_payloads.len(), 2);
+        assert!(decoded.preceder_payloads[0].is_some());
+        assert!(decoded.preceder_payloads[1].is_none());
+
+        // Payload[0] should have preceder entry, payload[1] should be empty
+        assert!(decoded.global_metadata.payload[0].contains_key("note"));
+        assert!(!decoded.global_metadata.payload[1].contains_key("note"));
+    }
+
+    #[test]
+    fn test_decode_preceder_wins_over_footer_payload() {
+        // Build a message where both footer metadata and preceder provide
+        // payload[0] — preceder should win.
+        let mut prec_entries = BTreeMap::new();
+        prec_entries.insert(
+            "source".to_string(),
+            ciborium::Value::Text("preceder".to_string()),
+        );
+        let preceder_cbor = make_preceder_cbor(prec_entries);
+
+        // Footer metadata with different payload[0]
+        let mut footer_payload = BTreeMap::new();
+        footer_payload.insert(
+            "source".to_string(),
+            ciborium::Value::Text("footer".to_string()),
+        );
+        let footer_meta = GlobalMetadata {
+            version: 2,
+            common: BTreeMap::new(),
+            payload: vec![footer_payload],
+            reserved: BTreeMap::new(),
+            extra: BTreeMap::new(),
+        };
+        let footer_cbor = crate::metadata::global_metadata_to_cbor(&footer_meta).unwrap();
+
+        let msg = build_raw_message(&[
+            (&[], FrameType::HeaderMetadata),
+            (&preceder_cbor, FrameType::PrecederMetadata),
+            (&[], FrameType::DataObject),
+            (&footer_cbor, FrameType::FooterMetadata),
+        ]);
+        let decoded = decode_message(&msg).unwrap();
+
+        // Footer metadata is parsed last, so global_metadata would have
+        // footer payload. But after merging, preceder wins.
+        let source = decoded.global_metadata.payload[0]
+            .get("source")
+            .and_then(|v| match v {
+                ciborium::Value::Text(s) => Some(s.as_str()),
+                _ => None,
+            });
+        assert_eq!(source, Some("preceder"), "preceder should win over footer");
     }
 }

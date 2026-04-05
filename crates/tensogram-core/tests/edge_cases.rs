@@ -563,6 +563,7 @@ fn encode_without_hash() {
 
     let options = EncodeOptions {
         hash_algorithm: None,
+        ..Default::default()
     };
     let encoded = encode(&meta, &[(&desc, &data)], &options).unwrap();
     let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
@@ -577,6 +578,7 @@ fn verify_hash_true_on_unhashed_message_succeeds() {
 
     let options = EncodeOptions {
         hash_algorithm: None,
+        ..Default::default()
     };
     let encoded = encode(&meta, &[(&desc, &data)], &options).unwrap();
     // verify_hash: true should silently skip if no hash present
@@ -1513,4 +1515,233 @@ fn streaming_encoder_rejects_invalid_object() {
     let mut enc = StreamingEncoder::new(buf, &meta, &options).unwrap();
     let result = enc.write_object(&desc, &[0u8; 16]);
     assert!(result.is_err());
+}
+
+#[test]
+fn buffered_encode_rejects_emit_preceders() {
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let data = vec![0u8; 16];
+    let options = EncodeOptions {
+        emit_preceders: true,
+        ..Default::default()
+    };
+    let result = encode(&meta, &[(&desc, &data)], &options);
+    assert!(
+        result.is_err(),
+        "emit_preceders in buffered mode should fail"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("StreamingEncoder"),
+        "error should mention StreamingEncoder: {err}"
+    );
+}
+
+// ── PrecederMetadata edge cases ─────────────────────────────────────────────
+
+#[test]
+fn preceder_all_objects_have_preceders() {
+    // Every object has its own preceder — verify all payloads merge correctly
+    let meta = GlobalMetadata::default();
+    let desc0 = make_descriptor(vec![2], Dtype::Float32);
+    let desc1 = make_descriptor(vec![3], Dtype::Float32);
+    let data0 = vec![0u8; 8];
+    let data1 = vec![0u8; 12];
+
+    let mut prec0 = BTreeMap::new();
+    prec0.insert("units".to_string(), ciborium::Value::Text("K".to_string()));
+    let mut prec1 = BTreeMap::new();
+    prec1.insert(
+        "units".to_string(),
+        ciborium::Value::Text("m/s".to_string()),
+    );
+
+    let buf = Vec::new();
+    let mut enc = streaming::StreamingEncoder::new(buf, &meta, &EncodeOptions::default()).unwrap();
+    enc.write_preceder(prec0).unwrap();
+    enc.write_object(&desc0, &data0).unwrap();
+    enc.write_preceder(prec1).unwrap();
+    enc.write_object(&desc1, &data1).unwrap();
+    let result = enc.finish().unwrap();
+
+    let (decoded_meta, objects) = decode(&result, &decode::DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 2);
+    assert_eq!(decoded_meta.payload.len(), 2);
+
+    // Each object's preceder metadata should be correct
+    let u0 = decoded_meta.payload[0].get("units").and_then(|v| match v {
+        ciborium::Value::Text(s) => Some(s.as_str()),
+        _ => None,
+    });
+    let u1 = decoded_meta.payload[1].get("units").and_then(|v| match v {
+        ciborium::Value::Text(s) => Some(s.as_str()),
+        _ => None,
+    });
+    assert_eq!(u0, Some("K"));
+    assert_eq!(u1, Some("m/s"));
+}
+
+#[test]
+fn preceder_with_hash_verification() {
+    // Preceder + hash — both features should work together
+    let meta = GlobalMetadata::default();
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let data = vec![42u8; 16];
+
+    let mut prec = BTreeMap::new();
+    prec.insert(
+        "mars".to_string(),
+        ciborium::Value::Map(vec![(
+            ciborium::Value::Text("param".to_string()),
+            ciborium::Value::Text("2t".to_string()),
+        )]),
+    );
+
+    let options = EncodeOptions {
+        hash_algorithm: Some(hash::HashAlgorithm::Xxh3),
+        ..Default::default()
+    };
+    let buf = Vec::new();
+    let mut enc = streaming::StreamingEncoder::new(buf, &meta, &options).unwrap();
+    enc.write_preceder(prec).unwrap();
+    enc.write_object(&desc, &data).unwrap();
+    let result = enc.finish().unwrap();
+
+    // Decode with hash verification — should pass
+    let verify_opts = decode::DecodeOptions { verify_hash: true };
+    let (decoded_meta, objects) = decode(&result, &verify_opts).unwrap();
+    assert!(objects[0].0.hash.is_some());
+    assert!(decoded_meta.payload[0].contains_key("mars"));
+}
+
+#[test]
+fn preceder_with_nonempty_common_tolerated() {
+    // The spec says preceder common should be empty, but tolerant decoding
+    // should accept non-empty common without error (ignored).
+    let preceder_meta = GlobalMetadata {
+        version: 2,
+        common: {
+            let mut m = BTreeMap::new();
+            m.insert(
+                "extra".to_string(),
+                ciborium::Value::Text("should be ignored".to_string()),
+            );
+            m
+        },
+        payload: vec![BTreeMap::new()],
+        ..Default::default()
+    };
+    let preceder_cbor = metadata::global_metadata_to_cbor(&preceder_meta).unwrap();
+
+    // Build a raw message: HeaderMeta → PrecederMeta → DataObject
+    let global = GlobalMetadata::default();
+    let meta_cbor = metadata::global_metadata_to_cbor(&global).unwrap();
+
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let payload = vec![0u8; 16];
+    let obj_frame = framing::encode_data_object_frame(&desc, &payload, false).unwrap();
+
+    let mut out = Vec::new();
+    // Preamble placeholder
+    out.extend_from_slice(&[0u8; 24]);
+    // Header metadata
+    write_test_frame(&mut out, 1, &meta_cbor);
+    // Preceder metadata (with non-empty common)
+    write_test_frame(&mut out, 8, &preceder_cbor);
+    // Data object
+    out.extend_from_slice(&obj_frame);
+    let pad = (8 - (out.len() % 8)) % 8;
+    out.extend(std::iter::repeat_n(0u8, pad));
+    // Postamble
+    let footer_off = out.len() as u64;
+    out.extend_from_slice(&footer_off.to_be_bytes());
+    out.extend_from_slice(b"39277777");
+    // Patch preamble
+    let total = out.len() as u64;
+    let mut pre = Vec::new();
+    pre.extend_from_slice(b"TENSOGRM");
+    pre.extend_from_slice(&2u16.to_be_bytes());
+    pre.extend_from_slice(&1u16.to_be_bytes()); // HEADER_METADATA flag
+    pre.extend_from_slice(&0u32.to_be_bytes());
+    pre.extend_from_slice(&total.to_be_bytes());
+    out[..24].copy_from_slice(&pre);
+
+    let decoded = framing::decode_message(&out).unwrap();
+    assert_eq!(decoded.objects.len(), 1);
+    // Common from preceder is not merged into global — only payload is
+}
+
+#[test]
+fn preceder_with_empty_payload_map() {
+    // Preceder with payload = [{}] — empty map is valid, just no keys
+    let meta = GlobalMetadata::default();
+    let desc = make_descriptor(vec![2], Dtype::Float32);
+    let data = vec![0u8; 8];
+
+    let buf = Vec::new();
+    let mut enc = streaming::StreamingEncoder::new(buf, &meta, &EncodeOptions::default()).unwrap();
+    enc.write_preceder(BTreeMap::new()).unwrap();
+    enc.write_object(&desc, &data).unwrap();
+    let result = enc.finish().unwrap();
+
+    let (decoded_meta, objects) = decode(&result, &decode::DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 1);
+    // Structural keys should still be present from footer
+    assert!(decoded_meta.payload[0].contains_key("ndim"));
+}
+
+#[test]
+fn preceder_with_nested_cbor_structures() {
+    // Deep nesting in preceder metadata — should round-trip
+    let meta = GlobalMetadata::default();
+    let desc = make_descriptor(vec![2], Dtype::Float32);
+    let data = vec![0u8; 8];
+
+    let mut prec = BTreeMap::new();
+    prec.insert(
+        "deep".to_string(),
+        ciborium::Value::Map(vec![(
+            ciborium::Value::Text("level1".to_string()),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("level2".to_string()),
+                ciborium::Value::Array(vec![
+                    ciborium::Value::Integer(1.into()),
+                    ciborium::Value::Integer(2.into()),
+                    ciborium::Value::Integer(3.into()),
+                ]),
+            )]),
+        )]),
+    );
+
+    let buf = Vec::new();
+    let mut enc = streaming::StreamingEncoder::new(buf, &meta, &EncodeOptions::default()).unwrap();
+    enc.write_preceder(prec).unwrap();
+    enc.write_object(&desc, &data).unwrap();
+    let result = enc.finish().unwrap();
+
+    let (decoded_meta, _) = decode(&result, &decode::DecodeOptions::default()).unwrap();
+    // Verify the nested structure survived
+    let deep = decoded_meta.payload[0].get("deep");
+    assert!(deep.is_some(), "deep nested key should survive round-trip");
+    if let Some(ciborium::Value::Map(level1)) = deep {
+        assert_eq!(level1.len(), 1);
+    } else {
+        panic!("expected map for 'deep'");
+    }
+}
+
+/// Helper: write a frame (FR + type + version=1 + flags=0 + len + payload + ENDF)
+/// with 8-byte alignment padding.
+fn write_test_frame(out: &mut Vec<u8>, frame_type: u16, payload: &[u8]) {
+    let total_len = (16 + payload.len() + 4) as u64;
+    out.extend_from_slice(b"FR");
+    out.extend_from_slice(&frame_type.to_be_bytes());
+    out.extend_from_slice(&1u16.to_be_bytes()); // version
+    out.extend_from_slice(&0u16.to_be_bytes()); // flags
+    out.extend_from_slice(&total_len.to_be_bytes());
+    out.extend_from_slice(payload);
+    out.extend_from_slice(b"ENDF");
+    let pad = (8 - (out.len() % 8)) % 8;
+    out.extend(std::iter::repeat_n(0u8, pad));
 }

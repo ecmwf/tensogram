@@ -48,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let options = EncodeOptions {
             hash_algorithm: Some(HashAlgorithm::Xxh3),
+            ..Default::default()
         };
         let message = encode(&global_meta, &[(&desc, &data)], &options)?;
 
@@ -65,6 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let options = EncodeOptions {
             hash_algorithm: None,
+            ..Default::default()
         };
         let message = encode(&global_meta, &[(&desc, &data)], &options)?;
 

@@ -221,3 +221,99 @@ TEST(StreamingTest, StreamingWithHash) {
     EXPECT_EQ(obj.hash_type(), "xxh3");
     EXPECT_FALSE(obj.hash_value().empty());
 }
+
+// ---------------------------------------------------------------------------
+// Preceder metadata: write_preceder + write_object round-trip
+// ---------------------------------------------------------------------------
+
+TEST(StreamingTest, PrecederRoundTrip) {
+    TempFile tmp;
+
+    std::string meta_json = R"({"version":2})";
+    {
+        tensogram::streaming_encoder enc(tmp.path, meta_json);
+
+        // Write preceder for first object
+        enc.write_preceder(R"({"mars":{"param":"2t"},"units":"K"})");
+
+        std::vector<float> values = {1.0f, 2.0f, 3.0f};
+        enc.write_object(
+            f32_descriptor(values.size()),
+            reinterpret_cast<const std::uint8_t*>(values.data()),
+            values.size() * sizeof(float));
+
+        enc.finish();
+    }
+
+    // Open and decode — preceder metadata should be in payload[0]
+    auto f = tensogram::file::open(tmp.path);
+    auto msg = f.decode_message(0);
+    EXPECT_EQ(msg.num_objects(), 1u);
+
+    auto obj = msg.object(0);
+    EXPECT_EQ(obj.element_count<float>(), 3u);
+    EXPECT_FLOAT_EQ(obj.data_as<float>()[0], 1.0f);
+}
+
+// ---------------------------------------------------------------------------
+// Preceder: mixed objects (some with, some without)
+// ---------------------------------------------------------------------------
+
+TEST(StreamingTest, PrecederMixedObjects) {
+    TempFile tmp;
+
+    std::string meta_json = R"({"version":2})";
+    {
+        tensogram::streaming_encoder enc(tmp.path, meta_json);
+
+        // Object 0: with preceder
+        enc.write_preceder(R"({"note":"obj0"})");
+        std::vector<float> v0 = {10.0f};
+        enc.write_object(
+            f32_descriptor(v0.size()),
+            reinterpret_cast<const std::uint8_t*>(v0.data()),
+            v0.size() * sizeof(float));
+
+        // Object 1: no preceder
+        std::vector<float> v1 = {20.0f};
+        enc.write_object(
+            f32_descriptor(v1.size()),
+            reinterpret_cast<const std::uint8_t*>(v1.data()),
+            v1.size() * sizeof(float));
+
+        enc.finish();
+    }
+
+    auto f = tensogram::file::open(tmp.path);
+    auto msg = f.decode_message(0);
+    ASSERT_EQ(msg.num_objects(), 2u);
+    EXPECT_FLOAT_EQ(msg.object(0).data_as<float>()[0], 10.0f);
+    EXPECT_FLOAT_EQ(msg.object(1).data_as<float>()[0], 20.0f);
+}
+
+// ---------------------------------------------------------------------------
+// Preceder: consecutive write_preceder without write_object throws
+// ---------------------------------------------------------------------------
+
+TEST(StreamingTest, PrecederDoubleWriteThrows) {
+    TempFile tmp;
+
+    std::string meta_json = R"({"version":2})";
+    tensogram::streaming_encoder enc(tmp.path, meta_json);
+
+    enc.write_preceder(R"({})");
+    EXPECT_THROW(enc.write_preceder(R"({})"), tensogram::framing_error);
+}
+
+// ---------------------------------------------------------------------------
+// Preceder: non-object JSON throws
+// ---------------------------------------------------------------------------
+
+TEST(StreamingTest, PrecederNonObjectJsonThrows) {
+    TempFile tmp;
+
+    std::string meta_json = R"({"version":2})";
+    tensogram::streaming_encoder enc(tmp.path, meta_json);
+
+    EXPECT_THROW(enc.write_preceder(R"([1,2,3])"), tensogram::metadata_error);
+}

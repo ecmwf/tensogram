@@ -158,6 +158,21 @@ If a message contains a hash with an algorithm the decoder doesn't recognize (e.
 
 Calling `decode_range()` with an empty `ranges` slice (`&[]`) returns an empty `Vec<u8>`. This is not an error.
 
+## Preceder Metadata Error Paths
+
+The decoder validates PrecederMetadata frames strictly:
+
+| Condition | Error type | Message |
+|-----------|-----------|---------|
+| Consecutive preceders without DataObject | `Framing` | "PrecederMetadata must be followed by a DataObject frame, got {type}" |
+| Dangling preceder (no DataObject follows) | `Framing` | "dangling PrecederMetadata: no DataObject frame followed" |
+| Payload has 0 or 2+ entries | `Metadata` | "PrecederMetadata payload must have exactly 1 entry, got {n}" |
+
+On the encoder side:
+- `StreamingEncoder::write_preceder()` errors if called twice without an intervening `write_object()`.
+- `StreamingEncoder::finish()` errors if a preceder was written without a following `write_object()`.
+- `encode()` (buffered mode) errors if `emit_preceders: true` — use `StreamingEncoder::write_preceder()` instead.
+
 ## File Concatenation
 
 Tensogram is a message format, not a file format. Multiple `.tgm` files can be concatenated:

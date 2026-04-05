@@ -18,8 +18,11 @@ A Tensogram message is built from three sections: a **header** (preamble + optio
 ├──────────────────────────────────────────────────────────────┤
 │  HEADER HASH FRAME        CBOR object hashes     (optional)   │
 ├──────────────────────────────────────────────────────────────┤
+│  PRECEDER METADATA FRAME  per-object metadata      (optional)  │
 │  DATA OBJECT FRAME 0      header + payload + descriptor       │
+│  PRECEDER METADATA FRAME  per-object metadata      (optional)  │
 │  DATA OBJECT FRAME 1      ...                                 │
+│  DATA OBJECT FRAME 2      (no preceder)                       │
 │  ...                      (any number of objects)             │
 ├──────────────────────────────────────────────────────────────┤
 │  FOOTER HASH FRAME        CBOR object hashes     (optional)   │
@@ -58,13 +61,13 @@ The flags field is a bitmask indicating which optional frames are present:
 
 | Bit | Frame |
 |-----|-------|
-| 0   | CBOR descriptor placement: 0 = before payload, 1 = after payload (default) |
-| 1   | Header Metadata Frame present |
-| 2   | Footer Metadata Frame present |
-| 3   | Header Index Frame present |
-| 4   | Footer Index Frame present |
-| 5   | Header Hash Frame present |
-| 6   | Footer Hash Frame present |
+| 0   | Header Metadata Frame present |
+| 1   | Footer Metadata Frame present |
+| 2   | Header Index Frame present |
+| 3   | Footer Index Frame present |
+| 4   | Header Hash Frame present |
+| 5   | Footer Hash Frame present |
+| 6   | Preceder Metadata Frames present |
 
 Unused flag bits must be set to zero.
 
@@ -101,6 +104,7 @@ Every frame ends with the ASCII string `ENDF`.
 | 5 | Footer Hash | CBOR array of per-object hashes |
 | 6 | Footer Index | CBOR index of data object offsets |
 | 7 | Footer Metadata | CBOR global metadata map |
+| 8 | Preceder Metadata | Per-object CBOR metadata (see below) |
 
 ### Padding between frames
 
@@ -129,6 +133,29 @@ A data object frame wraps one tensor's payload together with its CBOR descriptor
 The `cbor_offset` field (8 bytes, immediately before `ENDF`) tells the reader where the CBOR descriptor starts relative to the beginning of this frame. This lets a reader jump straight to the descriptor regardless of whether it is placed before or after the payload.
 
 The CBOR descriptor fully describes the data object: its type, shape, strides, data type, byte order, encoding pipeline, and optional per-object metadata. See the [CBOR Metadata](cbor-metadata.md) page for the schema.
+
+## Preceder Metadata Frame
+
+A Preceder Metadata Frame (type 8) optionally appears immediately before a Data Object Frame. It carries per-object metadata for the following data object, using the same GlobalMetadata CBOR format but with `common` empty and a single-entry `payload` array.
+
+**Use case:** Streaming producers that do not know ahead of time when the message will end can emit per-object metadata early via preceders, rather than waiting for the footer.
+
+**Ordering rules:**
+- Must appear in the data objects phase (after headers, before footers).
+- Must be followed by exactly one Data Object Frame.
+- Two consecutive preceders without an intervening DataObject are invalid.
+- A dangling preceder (not followed by a DataObject) is invalid.
+- Preceders are optional per-object.
+
+**CBOR structure:**
+```cbor
+{
+  "version": 2,
+  "payload": [{"mars": {"param": "2t"}, "units": "K"}]
+}
+```
+
+**Merge on decode:** Preceder keys override footer `payload[i]` keys on conflict. Footer-only keys (e.g., auto-populated `ndim`, `shape`) are preserved. The consumer sees a unified `GlobalMetadata.payload` — the preceder/footer distinction is transparent.
 
 ## Postamble (16 bytes)
 

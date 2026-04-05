@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::Write;
 
 use crate::encode::{
@@ -54,6 +55,12 @@ pub struct StreamingEncoder<W: Write> {
     hash_algorithm: Option<HashAlgorithm>,
     /// Original global metadata — re-used to build the footer metadata frame.
     global_meta: GlobalMetadata,
+    /// True when a PrecederMetadata frame has been written but the
+    /// corresponding DataObject has not yet been written.
+    pending_preceder: bool,
+    /// Per-object preceder payloads — stored so the footer metadata can
+    /// include all per-object metadata (for decoders that skip preceders).
+    preceder_payloads: Vec<Option<BTreeMap<String, ciborium::Value>>>,
 }
 
 impl<W: Write> StreamingEncoder<W> {
@@ -68,11 +75,14 @@ impl<W: Write> StreamingEncoder<W> {
     ) -> Result<Self> {
         let meta_cbor = metadata::global_metadata_to_cbor(global_meta)?;
 
-        // Streaming preamble: total_length=0 signals unknown length at write time
+        // Streaming preamble: total_length=0 signals unknown length at write time.
+        // Always set PRECEDER_METADATA in streaming mode — the flag is advisory
+        // and decoders handle the absence of actual preceder frames gracefully.
         let mut flags = MessageFlags::default();
         flags.set(MessageFlags::HEADER_METADATA);
         flags.set(MessageFlags::FOOTER_METADATA);
         flags.set(MessageFlags::FOOTER_INDEX);
+        flags.set(MessageFlags::PRECEDER_METADATA);
         if options.hash_algorithm.is_some() {
             flags.set(MessageFlags::FOOTER_HASHES);
         }
@@ -103,7 +113,40 @@ impl<W: Write> StreamingEncoder<W> {
             bytes_written,
             hash_algorithm: options.hash_algorithm,
             global_meta: global_meta.clone(),
+            pending_preceder: false,
+            preceder_payloads: Vec::new(),
         })
+    }
+
+    /// Write a PrecederMetadata frame for the next data object.
+    ///
+    /// The `metadata` map becomes `payload[0]` in a `GlobalMetadata` CBOR
+    /// with `common` empty.  Must be followed by exactly one
+    /// [`write_object`](Self::write_object) call before another
+    /// `write_preceder` or [`finish`](Self::finish).
+    pub fn write_preceder(&mut self, metadata: BTreeMap<String, ciborium::Value>) -> Result<()> {
+        if self.pending_preceder {
+            return Err(TensogramError::Framing(
+                "write_preceder called twice without an intervening write_object".to_string(),
+            ));
+        }
+
+        let preceder_meta = GlobalMetadata {
+            version: self.global_meta.version,
+            payload: vec![metadata.clone()],
+            ..Default::default()
+        };
+        let cbor = crate::metadata::global_metadata_to_cbor(&preceder_meta)?;
+        let frame_bytes = build_frame(FrameType::PrecederMetadata, 1, 0, &cbor);
+        self.writer.write_all(&frame_bytes)?;
+        self.bytes_written += frame_bytes.len() as u64;
+
+        write_padding(&mut self.writer, &mut self.bytes_written)?;
+
+        self.pending_preceder = true;
+        // Store for inclusion in footer metadata
+        self.preceder_payloads.push(Some(metadata));
+        Ok(())
     }
 
     /// Encode and write a single data object frame.
@@ -166,6 +209,14 @@ impl<W: Write> StreamingEncoder<W> {
             encoded_payload: Vec::new(),
         });
 
+        // Consume pending preceder — if no preceder was written for this
+        // object, record None so preceder_payloads stays aligned with objects.
+        if self.pending_preceder {
+            self.pending_preceder = false;
+        } else {
+            self.preceder_payloads.push(None);
+        }
+
         // Write frame
         self.writer.write_all(&frame_bytes)?;
         self.bytes_written += frame_bytes.len() as u64;
@@ -181,14 +232,34 @@ impl<W: Write> StreamingEncoder<W> {
     /// Writes footer frames (payload metadata + hash + index) and the postamble.
     /// Consumes the encoder and returns the underlying writer.
     pub fn finish(mut self) -> Result<W> {
+        if self.pending_preceder {
+            return Err(TensogramError::Framing(
+                "dangling PrecederMetadata: finish called without a following write_object"
+                    .to_string(),
+            ));
+        }
+
         let footer_start = self.bytes_written;
 
         // Footer metadata frame: updated global metadata with per-object payload entries.
         // The header metadata was written without knowing the objects; here we write
         // a footer metadata frame that supersedes it with payload populated.
+        // Preceder payloads are merged in so the footer is complete even for
+        // decoders that skip PrecederMetadata frames.
         {
             let mut enriched_meta = self.global_meta.clone();
             populate_payload_entries(&mut enriched_meta.payload, &self.completed_objects);
+
+            // Merge preceder payloads into footer metadata (preceder wins)
+            for (i, prec) in self.preceder_payloads.iter().enumerate() {
+                if let Some(prec_map) = prec {
+                    if i < enriched_meta.payload.len() {
+                        for (k, v) in prec_map {
+                            enriched_meta.payload[i].insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
             let meta_cbor = metadata::global_metadata_to_cbor(&enriched_meta)?;
             let frame_bytes = build_frame(FrameType::FooterMetadata, 1, 0, &meta_cbor);
             self.writer.write_all(&frame_bytes)?;
@@ -372,6 +443,7 @@ mod tests {
         let data = vec![42u8; 4 * 4];
         let options = EncodeOptions {
             hash_algorithm: Some(HashAlgorithm::Xxh3),
+            emit_preceders: false,
         };
 
         // Buffered encode
@@ -407,6 +479,7 @@ mod tests {
         let data = vec![42u8; 4 * 4];
         let options = EncodeOptions {
             hash_algorithm: Some(HashAlgorithm::Xxh3),
+            emit_preceders: false,
         };
 
         let buf = Vec::new();
@@ -425,6 +498,7 @@ mod tests {
         let meta = GlobalMetadata::default();
         let options = EncodeOptions {
             hash_algorithm: None,
+            emit_preceders: false,
         };
 
         let buf = Vec::new();
@@ -463,5 +537,179 @@ mod tests {
             decoded_meta.common.get("centre"),
             Some(&ciborium::Value::Text("ecmwf".to_string()))
         );
+    }
+
+    // ── PrecederMetadata tests ───────────────────────────────────────────
+
+    #[test]
+    fn streaming_preceder_round_trip() {
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![42u8; 4 * 4];
+
+        let mut prec = BTreeMap::new();
+        prec.insert(
+            "mars".to_string(),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("param".to_string()),
+                ciborium::Value::Text("2t".to_string()),
+            )]),
+        );
+
+        let buf = Vec::new();
+        let mut enc = StreamingEncoder::new(buf, &meta, &EncodeOptions::default()).unwrap();
+        enc.write_preceder(prec).unwrap();
+        enc.write_object(&desc, &data).unwrap();
+        let result = enc.finish().unwrap();
+
+        let (decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].1, data);
+
+        // Preceder mars keys should be in payload[0]
+        let mars = decoded_meta.payload[0].get("mars");
+        assert!(mars.is_some(), "mars key should be in payload[0]");
+    }
+
+    #[test]
+    fn streaming_preceder_wins_over_footer() {
+        // Pre-populate global_meta.payload[0] with a value — the preceder
+        // should override it after decode.
+        let mut footer_payload = BTreeMap::new();
+        footer_payload.insert(
+            "source".to_string(),
+            ciborium::Value::Text("footer".to_string()),
+        );
+        let meta = GlobalMetadata {
+            version: 2,
+            payload: vec![footer_payload],
+            ..Default::default()
+        };
+
+        let mut prec = BTreeMap::new();
+        prec.insert(
+            "source".to_string(),
+            ciborium::Value::Text("preceder".to_string()),
+        );
+
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 4 * 4];
+
+        let buf = Vec::new();
+        let mut enc = StreamingEncoder::new(buf, &meta, &EncodeOptions::default()).unwrap();
+        enc.write_preceder(prec).unwrap();
+        enc.write_object(&desc, &data).unwrap();
+        let result = enc.finish().unwrap();
+
+        let (decoded_meta, _) = decode(&result, &DecodeOptions::default()).unwrap();
+        let source = decoded_meta.payload[0].get("source").and_then(|v| match v {
+            ciborium::Value::Text(s) => Some(s.as_str()),
+            _ => None,
+        });
+        assert_eq!(source, Some("preceder"), "preceder should win over footer");
+    }
+
+    #[test]
+    fn streaming_consecutive_preceder_error() {
+        let meta = GlobalMetadata::default();
+        let buf = Vec::new();
+        let mut enc = StreamingEncoder::new(buf, &meta, &EncodeOptions::default()).unwrap();
+
+        enc.write_preceder(BTreeMap::new()).unwrap();
+        let result = enc.write_preceder(BTreeMap::new());
+        assert!(
+            result.is_err(),
+            "two write_preceder calls without intervening write_object should fail"
+        );
+    }
+
+    #[test]
+    fn streaming_dangling_preceder_error() {
+        let meta = GlobalMetadata::default();
+        let buf = Vec::new();
+        let mut enc = StreamingEncoder::new(buf, &meta, &EncodeOptions::default()).unwrap();
+
+        enc.write_preceder(BTreeMap::new()).unwrap();
+        let result = enc.finish();
+        assert!(
+            result.is_err(),
+            "finish with a dangling preceder should fail"
+        );
+    }
+
+    #[test]
+    fn streaming_mixed_objects_with_and_without_preceders() {
+        let meta = GlobalMetadata::default();
+        let desc0 = make_descriptor(vec![4]);
+        let desc1 = make_descriptor(vec![8]);
+        let data0 = vec![1u8; 4 * 4];
+        let data1 = vec![2u8; 8 * 4];
+
+        let mut prec = BTreeMap::new();
+        prec.insert(
+            "note".to_string(),
+            ciborium::Value::Text("only for obj 0".to_string()),
+        );
+
+        let buf = Vec::new();
+        let mut enc = StreamingEncoder::new(buf, &meta, &EncodeOptions::default()).unwrap();
+        // Object 0: with preceder
+        enc.write_preceder(prec).unwrap();
+        enc.write_object(&desc0, &data0).unwrap();
+        // Object 1: without preceder
+        enc.write_object(&desc1, &data1).unwrap();
+        let result = enc.finish().unwrap();
+
+        let (decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0].1, data0);
+        assert_eq!(objects[1].1, data1);
+
+        // Payload[0] should have preceder entry
+        assert!(decoded_meta.payload[0].contains_key("note"));
+        // Payload[1] should NOT have it
+        assert!(!decoded_meta.payload[1].contains_key("note"));
+    }
+
+    #[test]
+    fn streaming_preceder_metadata_preservation() {
+        // Verify application metadata from preceder survives the full
+        // encode → footer-merge → decode → preceder-merge path.
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![2]);
+        let data = vec![0u8; 2 * 4];
+
+        let mut prec = BTreeMap::new();
+        prec.insert("units".to_string(), ciborium::Value::Text("K".to_string()));
+        prec.insert(
+            "mars".to_string(),
+            ciborium::Value::Map(vec![
+                (
+                    ciborium::Value::Text("param".to_string()),
+                    ciborium::Value::Text("2t".to_string()),
+                ),
+                (
+                    ciborium::Value::Text("levtype".to_string()),
+                    ciborium::Value::Text("sfc".to_string()),
+                ),
+            ]),
+        );
+
+        let buf = Vec::new();
+        let mut enc = StreamingEncoder::new(buf, &meta, &EncodeOptions::default()).unwrap();
+        enc.write_preceder(prec).unwrap();
+        enc.write_object(&desc, &data).unwrap();
+        let result = enc.finish().unwrap();
+
+        let (decoded_meta, _) = decode(&result, &DecodeOptions::default()).unwrap();
+        let p = &decoded_meta.payload[0];
+        assert_eq!(
+            p.get("units"),
+            Some(&ciborium::Value::Text("K".to_string()))
+        );
+        assert!(p.contains_key("mars"));
+        // Structural keys (ndim, shape) should also be present from footer
+        assert!(p.contains_key("ndim"));
+        assert!(p.contains_key("shape"));
     }
 }
