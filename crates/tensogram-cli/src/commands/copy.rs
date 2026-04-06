@@ -105,4 +105,89 @@ mod tests {
         let expanded = expand_placeholders("by_param/[mars.param].tgm", &metadata);
         assert_eq!(expanded, "by_param/unknown.tgm");
     }
+
+    // ── Integration tests ──
+
+    use tensogram_core::{ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions};
+
+    fn make_test_file(dir: &std::path::Path) -> PathBuf {
+        let path = dir.join("copy_input.tgm");
+        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".into(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".into(),
+            filter: "none".into(),
+            compression: "none".into(),
+            params: Default::default(),
+            hash: None,
+        };
+        let data = vec![0u8; 16];
+        let mut extra1 = BTreeMap::new();
+        extra1.insert("param".to_string(), ciborium::Value::Text("2t".to_string()));
+        let meta1 = GlobalMetadata {
+            version: 2,
+            extra: extra1,
+            ..Default::default()
+        };
+        f.append(&meta1, &[(&desc, &data)], &EncodeOptions::default())
+            .unwrap();
+        let mut extra2 = BTreeMap::new();
+        extra2.insert(
+            "param".to_string(),
+            ciborium::Value::Text("msl".to_string()),
+        );
+        let meta2 = GlobalMetadata {
+            version: 2,
+            extra: extra2,
+            ..Default::default()
+        };
+        f.append(&meta2, &[(&desc, &data)], &EncodeOptions::default())
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn copy_all_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = make_test_file(dir.path());
+        let out = dir.path().join("copy_out.tgm");
+        run(&input, out.to_str().unwrap(), None).unwrap();
+        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        assert_eq!(f.message_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn copy_with_where_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = make_test_file(dir.path());
+        let out = dir.path().join("filtered.tgm");
+        run(&input, out.to_str().unwrap(), Some("param=2t")).unwrap();
+        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        assert_eq!(f.message_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn copy_with_placeholder_split() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = make_test_file(dir.path());
+        let template = format!("{}/[param].tgm", dir.path().display());
+        run(&input, &template, None).unwrap();
+        // Should create 2t.tgm and msl.tgm
+        assert!(dir.path().join("2t.tgm").exists());
+        assert!(dir.path().join("msl.tgm").exists());
+    }
+
+    #[test]
+    fn copy_where_no_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = make_test_file(dir.path());
+        let out = dir.path().join("empty.tgm");
+        run(&input, out.to_str().unwrap(), Some("param=nonexistent")).unwrap();
+        // Output file may be empty or not created
+    }
 }

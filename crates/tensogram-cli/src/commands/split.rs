@@ -99,4 +99,67 @@ mod tests {
         assert_eq!(expand_index("output.tgm", 0), "output_0000.tgm");
         assert_eq!(expand_index("dir/output.tgm", 5), "dir/output_0005.tgm");
     }
+
+    // ── Integration tests ──
+
+    use tensogram_core::{ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata};
+
+    fn make_multi_object_file(dir: &std::path::Path) -> PathBuf {
+        let path = dir.join("split_input.tgm");
+        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let desc1 = DataObjectDescriptor {
+            obj_type: "ntensor".into(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".into(),
+            filter: "none".into(),
+            compression: "none".into(),
+            params: Default::default(),
+            hash: None,
+        };
+        let desc2 = desc1.clone();
+        let data = vec![0u8; 16];
+        let meta = GlobalMetadata {
+            version: 2,
+            ..Default::default()
+        };
+        // One message with 2 objects
+        f.append(
+            &meta,
+            &[(&desc1, &data), (&desc2, &data)],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn split_multi_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = make_multi_object_file(dir.path());
+        let template = format!("{}/split_[index].tgm", dir.path().display());
+        run(&input, &template).unwrap();
+        assert!(dir.path().join("split_0000.tgm").exists());
+        assert!(dir.path().join("split_0001.tgm").exists());
+        // Verify each split file has 1 object
+        let mut f0 =
+            tensogram_core::TensogramFile::open(dir.path().join("split_0000.tgm")).unwrap();
+        let msg = f0.read_message(0).unwrap();
+        let (_, objs) =
+            tensogram_core::decode(&msg, &tensogram_core::DecodeOptions::default()).unwrap();
+        assert_eq!(objs.len(), 1);
+    }
+
+    #[test]
+    fn split_auto_naming() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = make_multi_object_file(dir.path());
+        let template = format!("{}/out.tgm", dir.path().display());
+        run(&input, &template).unwrap();
+        assert!(dir.path().join("out_0000.tgm").exists());
+        assert!(dir.path().join("out_0001.tgm").exists());
+    }
 }

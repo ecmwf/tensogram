@@ -279,4 +279,111 @@ mod tests {
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&output);
     }
+
+    #[test]
+    fn set_with_where_clause() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input.tgm");
+        let output = dir.path().join("output.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+
+        // Two messages: one with param=2t, one with param=msl
+        let mut meta1 = make_global_meta();
+        meta1
+            .extra
+            .insert("param".to_string(), ciborium::Value::Text("2t".to_string()));
+        let msg1 = encode(&meta1, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        let mut meta2 = make_global_meta();
+        meta2.extra.insert(
+            "param".to_string(),
+            ciborium::Value::Text("msl".to_string()),
+        );
+        let msg2 = encode(&meta2, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+        let mut buf = msg1;
+        buf.extend_from_slice(&msg2);
+        std::fs::write(&input, buf).unwrap();
+
+        // Set source=modified only for param=2t
+        run(&input, &output, "source=modified", Some("param=2t")).unwrap();
+
+        let mut f = TensogramFile::open(&output).unwrap();
+        assert_eq!(f.message_count().unwrap(), 2);
+
+        // First message should be modified
+        let m0 = f.read_message(0).unwrap();
+        let meta0 = decode_metadata(&m0).unwrap();
+        assert_eq!(
+            meta0.extra.get("source"),
+            Some(&ciborium::Value::Text("modified".to_string()))
+        );
+
+        // Second message should be unchanged
+        let m1 = f.read_message(1).unwrap();
+        let meta1_out = decode_metadata(&m1).unwrap();
+        assert_eq!(meta1_out.extra.get("source"), None);
+    }
+
+    #[test]
+    fn set_nested_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let meta = make_global_meta();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        run(&input, &output, "mars.class=od", None).unwrap();
+
+        let updated = decode_metadata(&std::fs::read(&output).unwrap()).unwrap();
+        // mars.class should exist nested under extra["mars"]["class"]
+        let mars = updated.extra.get("mars").unwrap();
+        if let ciborium::Value::Map(entries) = mars {
+            let class_entry = entries
+                .iter()
+                .find(|(k, _)| matches!(k, ciborium::Value::Text(s) if s == "class"));
+            assert!(class_entry.is_some(), "mars.class should exist");
+        } else {
+            panic!("mars should be a map");
+        }
+    }
+
+    #[test]
+    fn set_object_param() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let meta = make_global_meta();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        run(&input, &output, "objects.0.custom=hello", None).unwrap();
+
+        let (_, objects) =
+            decode(&std::fs::read(&output).unwrap(), &DecodeOptions::default()).unwrap();
+        assert_eq!(
+            objects[0].0.params.get("custom"),
+            Some(&ciborium::Value::Text("hello".to_string()))
+        );
+    }
+
+    #[test]
+    fn set_invalid_object_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let meta = make_global_meta();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        // Object index 99 doesn't exist
+        assert!(run(&input, &output, "objects.99.key=val", None).is_err());
+    }
 }
