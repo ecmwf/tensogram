@@ -25,42 +25,31 @@ Tensogram defines a network-transmissible binary message format, not a file form
 
 - **Self-describing messages** — CBOR-encoded metadata with structured `common`/`payload`/`reserved` sections and automatic provenance (encoder version, timestamp, UUID)
 - **N-Tensor support** — multiple tensors of different dtypes per message (float16 through float64, int8 through int64, complex, bfloat16)
-- **No panics** — all fallible operations return `Result<T, TensogramError>`
+- **No panics** — robust library where all fallible operations return `Result<T, TensogramError>`
 - **Streaming encoder** — progressive encode/transmit without buffering the full message; preceder metadata frames enable consumer-side streaming decode
 - **Compression** — szip, zstd, lz4, blosc2, zfp, sz3 per data object
 - **Hash verification** — xxHash xxh3-64 integrity check per object
 - **Multiple languages** — Rust, Python (NumPy), C/C++
 - **xarray backend** — `xr.open_dataset("file.tgm", engine="tensogram")` with lazy loading, coordinate auto-detection, and hypercube stacking via `open_datasets()`
 - **Zarr v3 store** — `zarr.open_group(store=TensogramStore.open_tgm("file.tgm"))` for standard Zarr API access with 14 bidirectionally-mapped dtypes
-- **Python iteration** — `for msg in file:`, `file[i]`, `file[1::2]`, `iter_messages(buf)` with `Message` namedtuple
 - **GRIB conversion** — import GRIB data with MARS metadata preservation and configurable namespace extraction
 - **CLI** — `tensogram info/ls/dump/get/set/copy/merge/split/reshuffle/convert-grib` with `--strategy first|last|error` merge conflict resolution
-- **Tracing** — structured logging via `TENSOGRAM_LOG=debug` on all performance-critical paths
 - **Optional features** — `mmap` (zero-copy file reads), `async` (tokio I/O)
 
 ## Quick Start
 
+### Rust
 ```rust
-use std::collections::BTreeMap;
-use tensogram_core::{
-    encode, decode, ByteOrder, DataObjectDescriptor, DecodeOptions,
-    Dtype, EncodeOptions, GlobalMetadata,
-};
-
 let desc = DataObjectDescriptor {
-    obj_type: "ntensor".to_string(), ndim: 2,
+    obj_type: "ntensor".into(), ndim: 2,
     shape: vec![100, 200], strides: vec![200, 1],
     dtype: Dtype::Float32, byte_order: ByteOrder::Big,
-    encoding: "none".to_string(), filter: "none".to_string(),
-    compression: "none".to_string(), params: BTreeMap::new(), hash: None,
+    encoding: "simple_packing".into(), filter: "none".into(),
+    compression: "szip".into(), params, hash: None,
 };
-
-let meta = GlobalMetadata::default();
-let raw: Vec<u8> = vec![0u8; 100 * 200 * 4];
 
 let message = encode(&meta, &[(&desc, &raw)], &EncodeOptions::default())?;
 let (_, objects) = decode(&message, &DecodeOptions::default())?;
-assert_eq!(objects[0].1.len(), 100 * 200 * 4);
 ```
 
 See `examples/rust/` for MARS metadata, streaming, compression, file API, and more.
@@ -68,46 +57,30 @@ See `examples/rust/` for MARS metadata, streaming, compression, file API, and mo
 ### Python
 
 ```python
-import numpy as np
-import tensogram
-
-# Encode
 data = np.random.randn(100, 200).astype(np.float32)
 msg = tensogram.encode(
     {"version": 2, "common": {"mars": {"param": "2t"}}},
-    [({"type": "ntensor", "shape": [100, 200], "dtype": "float32"}, data)],
+    [({"type": "ntensor", "shape": [100, 200], "dtype": "float32",
+       "encoding": "simple_packing", "compression": "szip"}, data)],
 )
-
-# Decode
 result = tensogram.decode(msg)
 arr = result.objects[0][1]  # numpy array
-
-# File iteration
-with tensogram.TensogramFile.open("forecast.tgm") as f:
-    for msg in f:
-        print(msg.metadata.common["mars"]["param"], msg.objects[0][1].shape)
 ```
 
 ### xarray
 
 ```python
-import xarray as xr
-
-ds = xr.open_dataset("forecast.tgm", engine="tensogram")
-print(ds)  # lazy-loaded Dataset with auto-detected coordinates
+ds = xr.open_dataset("forecast.tgm", engine="tensogram")  # lazy-loaded
 ```
 
 ### Zarr v3
 
 ```python
-import zarr
-from tensogram_zarr import TensogramStore
-
-group = zarr.open_group(store=TensogramStore.open_tgm("forecast.tgm"))
-print(group.tree())
+# open all .tgm files in a directory
+group = zarr.open_group(store=TensogramStore.open_dir("somedir/"))  # loads somedir/*.tgm
 ```
 
-See `examples/python/` for 9 examples covering encode/decode, metadata, packing, file API, iterators, xarray, zarr, and streaming consumer patterns.
+See `examples/python/` for encode/decode, metadata, packing, file API, iterators, xarray, zarr, and streaming consumer patterns.
 
 ## Build & Test
 
