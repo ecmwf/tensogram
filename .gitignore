@@ -8,6 +8,9 @@ Cargo.lock
 **/.venv
 **/.ruff_cache
 **/__pycache__
+*.so
+*.dylib
+*.pyd
 *.swp
 *.swo
 *~
