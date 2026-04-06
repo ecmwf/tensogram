@@ -178,7 +178,7 @@ A message with no data objects is valid (metadata-only). The store produces a ro
 
 ### Single chunk per array
 
-Each TGM data object maps to a Zarr array with **chunk_shape == array_shape** (one chunk). There is no sub-chunking; partial reads within the array are handled by Zarr's byte-range support against the single chunk.
+Each TGM data object maps to a Zarr array with **chunk_shape == array_shape** (one chunk). There is no sub-chunking; partial reads within the array are handled by Zarr's byte-range support against the single chunk. If a Zarr writer attempts to store multiple chunks for the same variable, a `ValueError` is raised — TensogramStore does not silently drop extra chunks.
 
 ### Out-of-range message index
 
@@ -187,6 +187,14 @@ If `message_index` exceeds the number of messages in the file, an `IndexError` i
 ### bfloat16 dtype
 
 `bfloat16` maps to Zarr data type `"bfloat16"` but is stored as raw 2-byte values (`<V2` numpy dtype) since numpy has no native bfloat16 type. Use `ml_dtypes.bfloat16` for interpretation.
+
+### Byte order handling
+
+The read path normalises all chunk data to little-endian (matching the Zarr `bytes` codec default). The write path respects `byte_order` from the Zarr codecs metadata — if a big-endian bytes codec is specified, the data is byte-swapped before encoding to TGM.
+
+### JSON serialization (RFC 8259)
+
+`serialize_zarr_json()` converts non-finite float values to their Zarr v3 string sentinels (`"NaN"`, `"Infinity"`, `"-Infinity"`) so the output is valid RFC 8259 JSON.
 
 ### Write path byte-count validation
 

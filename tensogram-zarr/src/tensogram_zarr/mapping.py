@@ -7,6 +7,7 @@ Converts TGM dtypes, descriptors, and global metadata into Zarr v3
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 import numpy as np
@@ -264,8 +265,33 @@ def parse_array_zarr_json(zarr_meta: dict[str, Any]) -> dict[str, Any]:
 
 
 def serialize_zarr_json(meta: dict[str, Any]) -> bytes:
-    """Serialize a zarr.json dict to UTF-8 JSON bytes."""
-    return json.dumps(meta, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    """Serialize a zarr.json dict to UTF-8 JSON bytes.
+
+    Non-finite float values (NaN, Infinity, -Infinity) are converted to
+    their Zarr v3 string sentinels so the output is valid RFC 8259 JSON.
+    """
+    safe = _json_safe_metadata(meta)
+    return json.dumps(safe, separators=(",", ":"), sort_keys=True, allow_nan=False).encode("utf-8")
+
+
+def _json_safe_metadata(obj: Any) -> Any:
+    """Recursively replace non-finite floats with Zarr v3 string sentinels.
+
+    RFC 8259 forbids bare ``NaN`` / ``Infinity`` tokens in JSON.  Zarr v3
+    uses the string values ``"NaN"``, ``"Infinity"``, ``"-Infinity"`` for
+    fill_value and similar fields.
+    """
+    if isinstance(obj, float):
+        if math.isnan(obj):
+            return "NaN"
+        if math.isinf(obj):
+            return "Infinity" if obj > 0 else "-Infinity"
+        return obj
+    if isinstance(obj, dict):
+        return {k: _json_safe_metadata(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe_metadata(v) for v in obj]
+    return obj
 
 
 def deserialize_zarr_json(data: bytes) -> dict[str, Any]:

@@ -24,6 +24,7 @@ from tensogram_zarr.mapping import (
 )
 from tensogram_zarr.store import (
     _apply_byte_range,
+    _find_chunk_data,
     _native_is_big,
 )
 
@@ -631,3 +632,111 @@ class TestRustErrorWrapping:
 
         with tensogram.TensogramFile.open(output_path) as f:
             assert len(f) == 1
+
+
+# ===================================================================
+# 11. Multi-chunk detection (_find_chunk_data)
+# ===================================================================
+
+
+class TestMultiChunkDetection:
+    """Verify _find_chunk_data raises on multiple chunks instead of silently
+    picking the first one (data loss risk)."""
+
+    def test_single_chunk_returns_data(self):
+        chunks = {"var/c/0": b"data"}
+        assert _find_chunk_data("var", chunks) == b"data"
+
+    def test_no_chunk_returns_none(self):
+        assert _find_chunk_data("var", {}) is None
+
+    def test_multiple_chunks_raises(self):
+        chunks = {
+            "var/c/0/0": b"chunk1",
+            "var/c/0/1": b"chunk2",
+        }
+        with pytest.raises(ValueError, match=r"2 chunk keys.*single-chunk"):
+            _find_chunk_data("var", chunks)
+
+    def test_other_var_chunks_not_matched(self):
+        chunks = {
+            "var/c/0": b"data",
+            "other_var/c/0": b"other",
+        }
+        assert _find_chunk_data("var", chunks) == b"data"
+
+
+# ===================================================================
+# 12. Stale group attrs on root zarr.json delete
+# ===================================================================
+
+
+class TestDeleteRootZarrJsonClearsGroupAttrs:
+    """Deleting root zarr.json must clear _write_group_attrs to prevent
+    stale attributes from being flushed."""
+
+    def test_delete_root_zarr_json_clears_group_attrs(self, output_path: str):
+        async def run():
+            from zarr.core.buffer import default_buffer_prototype
+
+            store = TensogramStore(output_path, mode="w")
+            await store._open()
+            proto = default_buffer_prototype()
+
+            # Set group metadata with some attributes
+            group_json = serialize_zarr_json(
+                {
+                    "zarr_format": 3,
+                    "node_type": "group",
+                    "attributes": {"important": "data"},
+                }
+            )
+            await store.set("zarr.json", proto.buffer.from_bytes(group_json))
+            assert store._write_group_attrs == {"important": "data"}
+
+            # Delete root zarr.json
+            await store.delete("zarr.json")
+
+            # Group attrs must be cleared
+            assert store._write_group_attrs == {}
+            store._dirty = False
+            store.close()
+
+        asyncio.run(run())
+
+    def test_delete_array_zarr_json_does_not_clear_group_attrs(self, output_path: str):
+        async def run():
+            from zarr.core.buffer import default_buffer_prototype
+
+            store = TensogramStore(output_path, mode="w")
+            await store._open()
+            proto = default_buffer_prototype()
+
+            # Set group attrs
+            group_json = serialize_zarr_json(
+                {
+                    "zarr_format": 3,
+                    "node_type": "group",
+                    "attributes": {"keep": "this"},
+                }
+            )
+            await store.set("zarr.json", proto.buffer.from_bytes(group_json))
+
+            # Set an array
+            arr_json = serialize_zarr_json(
+                {
+                    "zarr_format": 3,
+                    "node_type": "array",
+                    "shape": [3],
+                    "data_type": "int32",
+                }
+            )
+            await store.set("temp/zarr.json", proto.buffer.from_bytes(arr_json))
+
+            # Delete array zarr.json — group attrs should remain
+            await store.delete("temp/zarr.json")
+            assert store._write_group_attrs == {"keep": "this"}
+            store._dirty = False
+            store.close()
+
+        asyncio.run(run())

@@ -164,7 +164,7 @@ Tested indirectly via C++ wrapper (105 tests).
   - Bidirectional dtype conversion: TGM ↔ Zarr v3 ↔ NumPy (14 dtypes + bitmask)
   - `build_group_zarr_json()` / `build_array_zarr_json()` — read path metadata synthesis
   - `parse_array_zarr_json()` — write path metadata extraction
-  - `resolve_variable_name()` �� dotted-path metadata resolution with priority chain
+  - `resolve_variable_name()` — dotted-path metadata resolution with priority chain
 - **Integration**: works with `zarr.open_group()`, `zarr.open_array()`, slicing, scalar indexing
 - **Error handling** (hardened):
   - All Rust `tensogram.*` calls wrapped with Python-level context (file path, message index, variable name)
@@ -175,8 +175,14 @@ Tested indirectly via C++ wrapper (105 tests).
   - `deserialize_zarr_json` wraps `json.JSONDecodeError` with byte-count context
   - Silent-skip paths elevated to `WARNING` log level (arrays without chunks, empty flush)
 - **Second pass fixes**: file handle leak closed, `_open`/`_open_sync` deduplicated, `parse_array_zarr_json` no longer mutates input, bfloat16 fill value corrected, variable names with `/` sanitized
+- **PR review fixes** (Copilot review #12):
+  - `serialize_zarr_json()` now converts NaN/Infinity to Zarr v3 string sentinels for RFC 8259 compliance
+  - Write path (`_flush_to_tgm`) uses proper `tgm_dtype_to_numpy()` mapping (handles bfloat16, etc.) and honours byte_order from Zarr metadata
+  - `_find_chunk_data()` raises `ValueError` on multiple chunk keys instead of silently dropping data
+  - `delete("zarr.json")` now clears `_write_group_attrs` to prevent stale state on flush
+  - Replaced deprecated `ndarray.newbyteorder()` with `.view(dtype.newbyteorder())` for NumPy 2.x compatibility
 - **Edge case coverage**: 34 edge case tests (invalid mode, negative index, slash names, triple duplicates, zero-object messages, chunk key shapes 0D-5D, byte range boundaries, fill values, lifecycle double-open/close, dotted_get paths)
-- 156 tests: 33 mapping + 16 store read + 4 store write + 12 round-trip + 16 Zarr integration + 34 edge cases + 41 coverage gap tests
+- 172 tests: 43 mapping + 16 store read + 4 store write + 12 round-trip + 16 Zarr integration + 34 edge cases + 47 coverage gap tests
 - 0 ruff lint warnings
 - Documentation: `docs/src/guide/zarr-backend.md` with mermaid diagram, edge cases section, error handling table
 - Example: `examples/python/08_zarr_backend.py`

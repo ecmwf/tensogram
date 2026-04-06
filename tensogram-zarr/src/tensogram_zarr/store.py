@@ -26,10 +26,10 @@ from tensogram_zarr.mapping import (
     build_array_zarr_json,
     build_group_zarr_json,
     deserialize_zarr_json,
-    numpy_dtype_to_tgm,
     parse_array_zarr_json,
     resolve_variable_name,
     serialize_zarr_json,
+    tgm_dtype_to_numpy,
 )
 
 try:
@@ -273,7 +273,10 @@ class TensogramStore(ZarrStore):
         self._check_writable()
         await self._ensure_open()
         self._keys.pop(key, None)
-        if key.endswith("/zarr.json"):
+        if key == "zarr.json":
+            # Clear stale group attributes to keep flush state consistent
+            self._write_group_attrs = {}
+        elif key.endswith("/zarr.json"):
             self._write_arrays.pop(key[: -len("/zarr.json")], None)
         self._write_chunks.pop(key, None)
         self._dirty = True
@@ -391,9 +394,11 @@ class TensogramStore(ZarrStore):
                     f"failed to decode object {i} ({name!r}) "
                     f"in message {self._message_index} of {self._path!r}: {exc}"
                 ) from exc
-            # Store as little-endian raw bytes (matching the bytes codec)
+            # Store as little-endian raw bytes (matching the bytes codec).
+            # Use .view() instead of the deprecated ndarray.newbyteorder()
+            # (removed in NumPy 2.x).
             if arr.dtype.byteorder == ">" or (arr.dtype.byteorder == "=" and _native_is_big()):
-                arr = arr.byteswap().newbyteorder("<")
+                arr = arr.byteswap().view(arr.dtype.newbyteorder("<"))
             chunk_key = _chunk_key_for_shape(desc.shape)
             self._keys[f"{name}/{chunk_key}"] = arr.tobytes()
 
@@ -432,7 +437,14 @@ class TensogramStore(ZarrStore):
                 continue
 
             shape = parsed["shape"]
-            np_dtype = np.dtype(parsed["dtype"]).newbyteorder("<")
+            tgm_dtype = parsed["dtype"]
+            byte_order = parsed.get("byte_order", "little")
+
+            # Use the proper TGM→NumPy dtype mapping (handles bfloat16 etc.)
+            try:
+                np_dtype = tgm_dtype_to_numpy(tgm_dtype)
+            except ValueError as exc:
+                raise ValueError(f"unsupported dtype for variable {var_name!r}: {exc}") from exc
 
             # Validate byte count matches expected size
             n_elements = int(np.prod(shape)) if shape else 1
@@ -446,10 +458,9 @@ class TensogramStore(ZarrStore):
 
             arr = np.frombuffer(chunk_data, dtype=np_dtype).reshape(shape)
 
-            try:
-                tgm_dtype = numpy_dtype_to_tgm(arr.dtype.newbyteorder("="))
-            except ValueError as exc:
-                raise ValueError(f"unsupported dtype for variable {var_name!r}: {exc}") from exc
+            # Honor byte order from Zarr metadata — swap if big-endian
+            if byte_order == "big" and np_dtype.itemsize > 1:
+                arr = arr.byteswap().view(arr.dtype.newbyteorder("<"))
             desc_dict: dict[str, Any] = {
                 "type": "ntensor",
                 "shape": list(arr.shape),
@@ -506,13 +517,25 @@ def _find_chunk_data(var_name: str, chunks: dict[str, bytes]) -> bytes | None:
     """Find the single chunk data for a variable in the write buffer.
 
     Matches any key that starts with ``<var_name>/c/`` — since we only
-    support single-chunk arrays, there is at most one match.
+    support single-chunk arrays, there must be at most one match.
+
+    Raises
+    ------
+    ValueError
+        If multiple chunk keys are found for the same variable (Tensogram
+        only supports single-chunk arrays).
     """
     prefix = f"{var_name}/c/"
-    for key, data in chunks.items():
-        if key.startswith(prefix):
-            return data
-    return None
+    matches = [(key, data) for key, data in chunks.items() if key.startswith(prefix)]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        keys = [m[0] for m in matches]
+        raise ValueError(
+            f"variable {var_name!r} has {len(matches)} chunk keys {keys}; "
+            f"TensogramStore only supports single-chunk arrays"
+        )
+    return matches[0][1]
 
 
 def _chunk_key_for_shape(shape: list[int] | tuple[int, ...]) -> str:

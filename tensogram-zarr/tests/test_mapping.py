@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from tensogram_zarr.mapping import (
+    _json_safe_metadata,
     build_array_zarr_json,
     build_group_zarr_json,
     deserialize_zarr_json,
@@ -219,3 +220,81 @@ class TestSerialization:
         assert isinstance(data, bytes)
         restored = deserialize_zarr_json(data)
         assert restored == original
+
+
+# ---------------------------------------------------------------------------
+# JSON RFC 8259 compliance — NaN / Infinity handling
+# ---------------------------------------------------------------------------
+
+
+class TestJsonSafeMetadata:
+    """Test that non-finite floats are converted to Zarr v3 string sentinels."""
+
+    def test_nan_becomes_string(self):
+        result = _json_safe_metadata(float("nan"))
+        assert result == "NaN"
+
+    def test_positive_inf_becomes_string(self):
+        result = _json_safe_metadata(float("inf"))
+        assert result == "Infinity"
+
+    def test_negative_inf_becomes_string(self):
+        result = _json_safe_metadata(float("-inf"))
+        assert result == "-Infinity"
+
+    def test_normal_float_unchanged(self):
+        assert _json_safe_metadata(3.14) == 3.14
+
+    def test_nested_dict_nan_converted(self):
+        obj = {"fill_value": float("nan"), "other": 42}
+        result = _json_safe_metadata(obj)
+        assert result == {"fill_value": "NaN", "other": 42}
+
+    def test_nested_list_nan_converted(self):
+        obj = [float("nan"), 1.0, float("inf")]
+        result = _json_safe_metadata(obj)
+        assert result == ["NaN", 1.0, "Infinity"]
+
+    def test_deeply_nested(self):
+        obj = {"a": {"b": [float("-inf"), {"c": float("nan")}]}}
+        result = _json_safe_metadata(obj)
+        assert result == {"a": {"b": ["-Infinity", {"c": "NaN"}]}}
+
+    def test_non_float_passthrough(self):
+        assert _json_safe_metadata("hello") == "hello"
+        assert _json_safe_metadata(42) == 42
+        assert _json_safe_metadata(None) is None
+        assert _json_safe_metadata(True) is True
+
+
+class TestSerializeNanCompliance:
+    """Verify serialize_zarr_json produces valid RFC 8259 JSON with NaN."""
+
+    def test_nan_fill_value_valid_json(self):
+        """Float NaN fill_value should not produce bare NaN token."""
+        import json
+
+        meta = {"fill_value": float("nan"), "zarr_format": 3}
+        data = serialize_zarr_json(meta)
+        # Must be valid JSON (json.loads with strict mode rejects bare NaN)
+        parsed = json.loads(data)
+        assert parsed["fill_value"] == "NaN"
+
+    def test_array_zarr_json_float_fill_value(self):
+        """build_array_zarr_json produces NaN fill → serialize should be valid."""
+        import json
+
+        class Desc:
+            shape = [3]
+            dtype = "float32"
+            encoding = "none"
+            filter = "none"
+            compression = "none"
+            hash = None
+            params = {}
+
+        zarr_meta = build_array_zarr_json(Desc())
+        data = serialize_zarr_json(zarr_meta)
+        # Must be valid JSON
+        parsed = json.loads(data)
+        assert parsed["fill_value"] == "NaN"
