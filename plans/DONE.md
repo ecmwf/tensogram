@@ -6,9 +6,23 @@
 ## Summary
 
 - **Version:** 0.5.0
-- **Workspace:** 5 default crates + 2 optional (Python, GRIB) + 2 separate packages (xarray, zarr)
-- **Tests:** 888 total (283 Rust + 200 Python + 124 xarray + 172 Zarr + 109 C++)
+- **Workspace:** 6 default crates + 2 optional (Python, GRIB) + 2 separate packages (xarray, zarr)
+- **Tests:** 897 total (292 Rust + 200 Python + 124 xarray + 172 Zarr + 109 C++)
 - **Quality:** 0 clippy warnings, 90.5% Rust line coverage
+
+## tensogram-benchmarks
+
+9 tests (8 smoke + 1 GRIB, gated on `eccodes` feature). Separate workspace crate.
+
+- `datagen.rs` — Deterministic SplitMix64-based synthetic weather field generator
+  (smooth sinusoidal temperature field, base ≈ 280 K, amplitude ≈ 30 K, ±0.1 K noise).
+- `report.rs` — ASCII table formatter with reference-relative comparison columns
+  (`vs Ref Enc`, `vs Ref Dec`, `Ratio %`, `Size KiB`). `median_ns` helper for timing.
+- `codec_matrix.rs` — 24 pipeline combos: baseline + raw f64 + simple_packing × {none,zstd,lz4,blosc2,szip} × {16,24,32 bits} + ZFP (rate 16/24/32) + SZ3 (abs=0.01).
+- `grib_comparison.rs` — ecCodes CCSDS (`grid_ccsds`) vs `grid_simple` vs tensogram `sp(24)+szip`. Feature-gated by `eccodes`. Uses raw C API via `extern "C"` declarations.
+- Two binaries: `codec-matrix` (default) and `grib-comparison` (requires `--features eccodes`).
+- `build.rs` — links `libeccodes` via pkg-config or Homebrew fallback when `eccodes` feature is active.
+- Documentation: `docs/src/guide/benchmarks.md`.
 
 ## tensogram-core
 

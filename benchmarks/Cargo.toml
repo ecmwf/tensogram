@@ -1,0 +1,29 @@
+[package]
+name = "tensogram-benchmarks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Performance benchmarks for the Tensogram encoding pipeline"
+
+[[bin]]
+name = "codec-matrix"
+path = "src/bin/codec_matrix.rs"
+
+[[bin]]
+name = "grib-comparison"
+path = "src/bin/grib_comparison.rs"
+required-features = ["eccodes"]
+
+[lib]
+name = "tensogram_benchmarks"
+path = "src/lib.rs"
+
+[features]
+default = []
+eccodes = ["dep:eccodes", "dep:eccodes-sys"]
+
+[dependencies]
+tensogram-encodings = { path = "../crates/tensogram-encodings" }
+clap = { workspace = true }
+eccodes = { version = "0.14", default-features = false, optional = true }
+eccodes-sys = { version = "0.7", optional = true }
