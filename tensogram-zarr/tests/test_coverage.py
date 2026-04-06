@@ -1041,23 +1041,23 @@ class TestDefaultFillValueComprehensive:
     """Cover _default_fill_value for all dtype prefixes."""
 
     def test_float16(self):
-        from tensogram_zarr.mapping import _default_fill_value
-
         import math
+
+        from tensogram_zarr.mapping import _default_fill_value
 
         assert math.isnan(_default_fill_value("float16"))
 
     def test_bfloat16(self):
-        from tensogram_zarr.mapping import _default_fill_value
-
         import math
+
+        from tensogram_zarr.mapping import _default_fill_value
 
         assert math.isnan(_default_fill_value("bfloat16"))
 
     def test_complex128(self):
-        from tensogram_zarr.mapping import _default_fill_value
-
         import math
+
+        from tensogram_zarr.mapping import _default_fill_value
 
         # complex starts with "complex", not "float" — but the prefix
         # check should still match

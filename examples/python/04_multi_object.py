@@ -69,9 +69,7 @@ desc_mask = {
 }
 
 # -- Encode both arrays in one call --------------------------------------------
-message = bytes(
-    tensogram.encode(metadata, [(desc_spectrum, spectrum), (desc_mask, mask)])
-)
+message = bytes(tensogram.encode(metadata, [(desc_spectrum, spectrum), (desc_mask, mask)]))
 print(f"Message: {len(message)} bytes")
 print(f"  spectrum:  {spectrum.nbytes} bytes")
 print(f"  mask:      {mask.nbytes} bytes")
@@ -81,9 +79,7 @@ meta, objects = tensogram.decode(message)
 
 print(f"\ndecode() -- {len(objects)} objects:")
 for i, (desc, arr) in enumerate(objects):
-    print(
-        f"  [{i}] shape={arr.shape}  dtype={arr.dtype}  params_keys={list(desc.params.keys())}"
-    )
+    print(f"  [{i}] shape={arr.shape}  dtype={arr.dtype}  params_keys={list(desc.params.keys())}")
 
 np.testing.assert_array_equal(objects[0][1], spectrum)
 np.testing.assert_array_equal(objects[1][1], mask)
@@ -111,9 +107,7 @@ assert isinstance(parts, list)
 assert len(parts) == 1
 expected = spectrum.ravel()[100:150]
 np.testing.assert_array_equal(parts[0], expected)
-print(
-    f"\ndecode_range(obj=0, 100..150) [split]: {len(parts)} part, shape={parts[0].shape}  OK"
-)
+print(f"\ndecode_range(obj=0, 100..150) [split]: {len(parts)} part, shape={parts[0].shape}  OK")
 
 # join=True: returns a single concatenated array (pre-0.6 behaviour).
 joined = tensogram.decode_range(message, object_index=0, ranges=[(100, 50)], join=True)

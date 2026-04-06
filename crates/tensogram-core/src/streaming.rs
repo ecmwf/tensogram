@@ -270,11 +270,13 @@ impl<W: Write> StreamingEncoder<W> {
             // (preceder wins).  preceder_payloads is aligned 1:1 with
             // completed_objects by write_preceder/write_object bookkeeping,
             // so the lengths must match.
-            debug_assert_eq!(
-                self.preceder_payloads.len(),
-                self.completed_objects.len(),
-                "preceder_payloads out of sync with completed_objects"
-            );
+            if self.preceder_payloads.len() != self.completed_objects.len() {
+                return Err(TensogramError::Framing(format!(
+                    "internal: preceder_payloads ({}) out of sync with completed_objects ({})",
+                    self.preceder_payloads.len(),
+                    self.completed_objects.len()
+                )));
+            }
             for (i, prec) in self.preceder_payloads.iter().enumerate() {
                 if let Some(prec_map) = prec {
                     if i < enriched_meta.base.len() {

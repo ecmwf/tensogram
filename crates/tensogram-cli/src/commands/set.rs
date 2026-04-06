@@ -72,17 +72,17 @@ pub fn run(
 
     let mut in_file = TensogramFile::open(input)?;
     let mut out = std::fs::File::create(output)?;
-    #[allow(deprecated)]
-    let messages = in_file.messages()?;
+    let count = in_file.message_count()?;
 
-    for msg in &messages {
-        let metadata = decode_metadata(msg)?;
+    for i in 0..count {
+        let msg = in_file.read_message(i)?;
+        let metadata = decode_metadata(&msg)?;
         let should_modify = clause
             .as_ref()
             .is_none_or(|c| filter::matches(&metadata, c));
 
         if should_modify {
-            let (mut global_meta, mut objects) = decode(msg, &DecodeOptions::default())?;
+            let (mut global_meta, mut objects) = decode(&msg, &DecodeOptions::default())?;
 
             // Preserve original hashes per object before any re-encoding
             let original_hashes: Vec<_> =
@@ -117,7 +117,7 @@ pub fn run(
             out.write_all(&encoded)?;
         } else {
             // Pass through unchanged — reuse the already-open output handle.
-            out.write_all(msg)?;
+            out.write_all(&msg)?;
         }
     }
 

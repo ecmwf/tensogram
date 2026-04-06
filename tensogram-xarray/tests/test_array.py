@@ -7,7 +7,6 @@ from pathlib import Path
 
 import numpy as np
 import xarray as xr
-
 from tensogram_xarray.array import (
     TensogramBackendArray,
     _supports_range_decode,

@@ -12,12 +12,12 @@ Repo: ecmwf/tensogram
 | tensogram-encodings | 47 | Unit | ~85% |
 | tensogram-cli | 12 | Unit | ~70% |
 | tensogram-ffi | (via C++ wrapper) | Indirect | — |
-| C++ wrapper | 109 | GoogleTest | — |
+| C++ wrapper | 105 | GoogleTest | — |
 | tensogram-python | 226 | pytest (parametrized) | ~88% |
 | tensogram-grib | 17 | Integration | ~80% |
-| tensogram-xarray | 179 | pytest | ~98% |
+| tensogram-xarray | 181 | pytest | ~98% |
 | tensogram-zarr | 204 | pytest | ~95% |
-| **Total** | **~1010** | | **90.5% (Rust)** |
+| **Total** | **~1008** | | **90.5% (Rust)** |
 
 ## Affected Components
 

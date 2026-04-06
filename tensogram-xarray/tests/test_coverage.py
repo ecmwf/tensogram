@@ -18,7 +18,6 @@ import numpy as np
 import pytest
 import tensogram
 import xarray as xr
-
 from tensogram_xarray.array import (
     _is_contiguous_slice,
     _nd_slice_to_flat_ranges,
@@ -1243,6 +1242,7 @@ class TestResolveDimsForVar:
             )
 
         ds = xr.open_dataset(path, engine="tensogram")
-        dims = ds["object_2"].dims
+        # With the priority chain, base[2]["name"] = "field" is used.
+        dims = ds["field"].dims
         assert "latitude" in dims
         assert "longitude" in dims

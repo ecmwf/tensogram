@@ -42,6 +42,17 @@ def _resolve_dotted(meta: dict[str, Any], dotted_key: str) -> Any:
     return current
 
 
+# Dotted-path metadata keys to try for variable naming, in priority order.
+# Must match the priority chain in tensogram-zarr's mapping.py.
+_VARIABLE_NAME_KEYS = [
+    "name",
+    "mars.param",
+    "param",
+    "mars.shortName",
+    "shortName",
+]
+
+
 def resolve_variable_name(
     obj_index: int,
     per_object_meta: dict[str, Any],
@@ -50,11 +61,25 @@ def resolve_variable_name(
     """Determine the xarray variable name for a data object.
 
     If *variable_key* is given (e.g. ``"mars.param"``), the value at that
-    dotted path in the per-object metadata is used.  Otherwise a generic
-    ``"object_<index>"`` name is generated.
+    dotted path in the per-object metadata is used.  Otherwise the function
+    tries ``_VARIABLE_NAME_KEYS`` in priority order, then falls back to a
+    generic ``"object_<index>"`` name.
+
+    The priority chain matches ``tensogram-zarr``'s ``resolve_variable_name``
+    so that the same ``.tgm`` file produces consistent variable names
+    regardless of which backend opens it.
     """
-    if variable_key is not None:
-        val = _resolve_dotted(per_object_meta, variable_key)
+    source = per_object_meta or {}
+
+    # Try explicit key first, then the standard priority chain.
+    keys_to_try = [variable_key] if variable_key else []
+    keys_to_try.extend(_VARIABLE_NAME_KEYS)
+
+    for key in keys_to_try:
+        if key is None:
+            continue
+        val = _resolve_dotted(source, key)
         if val is not None:
             return str(val)
+
     return f"object_{obj_index}"

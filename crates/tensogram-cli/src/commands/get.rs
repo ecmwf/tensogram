@@ -19,11 +19,11 @@ pub fn run(
 
     for path in files {
         let mut file = TensogramFile::open(path)?;
-        #[allow(deprecated)]
-        let messages = file.messages()?;
+        let count = file.message_count()?;
 
-        for msg in &messages {
-            let metadata = decode_metadata(msg)?;
+        for i in 0..count {
+            let msg = file.read_message(i)?;
+            let metadata = decode_metadata(&msg)?;
 
             if let Some(ref clause) = clause {
                 if !filter::matches(&metadata, clause) {

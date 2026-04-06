@@ -385,7 +385,7 @@ class TestReservedKeyWritePath:
 
         # Read back and verify _reserved_ was not written as user data
         with tensogram.TensogramFile.open(path) as f:
-            meta, objects = f.decode_message(0)
+            meta, _objects = f.decode_message(0)
             base = meta.base[0]
             # The encoder's auto-populated _reserved_ is ok
             # But the user's bogus {"bogus": True} should NOT appear

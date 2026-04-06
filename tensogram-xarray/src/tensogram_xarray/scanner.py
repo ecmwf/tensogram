@@ -15,7 +15,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # The ``_reserved_`` key in base entries is populated by the encoder
 # with tensor info (ndim, shape, strides, dtype).  It must be excluded
 # from application-level metadata used for grouping and variable naming.

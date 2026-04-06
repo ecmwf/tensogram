@@ -6,7 +6,6 @@ from pathlib import Path
 
 import numpy as np
 import xarray as xr
-
 from tensogram_xarray.coords import KNOWN_COORD_NAMES, detect_coords
 
 

@@ -22,12 +22,13 @@ pub fn run(
 
     for path in files {
         let mut file = TensogramFile::open(path)?;
-        #[allow(deprecated)]
-        let messages = file.messages()?;
+        let count = file.message_count()?;
 
-        for (i, msg) in messages.iter().enumerate() {
+        for i in 0..count {
+            let msg = file.read_message(i)?;
+
             // Decode metadata first for cheap filtering
-            let metadata = decode_metadata(msg)?;
+            let metadata = decode_metadata(&msg)?;
 
             if let Some(ref clause) = clause {
                 if !filter::matches(&metadata, clause) {
@@ -36,7 +37,7 @@ pub fn run(
             }
 
             // Decode full message to access per-object descriptors
-            let (global_meta, objects) = decode(msg, &DecodeOptions::default())?;
+            let (global_meta, objects) = decode(&msg, &DecodeOptions::default())?;
 
             if json {
                 println!(

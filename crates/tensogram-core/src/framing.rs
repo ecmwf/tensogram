@@ -770,11 +770,13 @@ pub fn decode_metadata_only(buf: &[u8]) -> Result<GlobalMetadata> {
                 return metadata::cbor_to_global_metadata(payload);
             }
             _ => {
-                // Skip this frame — total_length was already validated
-                // to fit in usize by FrameHeader::read_from callers;
-                // on 32-bit this may truncate but the message would not
-                // fit in memory anyway.
-                let frame_total = fh.total_length as usize;
+                // Skip this frame
+                let frame_total = usize::try_from(fh.total_length).map_err(|_| {
+                    TensogramError::Framing(format!(
+                        "frame total_length {} overflows usize",
+                        fh.total_length
+                    ))
+                })?;
                 pos += frame_total;
                 pos = (pos + 7) & !7; // align
             }
@@ -800,9 +802,10 @@ pub fn scan(buf: &[u8]) -> Vec<(usize, usize)> {
             // Try to read preamble
             if let Ok(preamble) = Preamble::read_from(&buf[pos..]) {
                 if preamble.total_length > 0 {
-                    // Truncation is harmless: if total_length > usize::MAX the
-                    // bounds check below will fail and we skip this position.
-                    let total = preamble.total_length as usize;
+                    let Ok(total) = usize::try_from(preamble.total_length) else {
+                        pos += 1;
+                        continue;
+                    };
                     if pos + total <= buf.len() {
                         // Validate end magic
                         let end_magic_offset = pos + total - 8;
@@ -848,7 +851,10 @@ pub fn scan(buf: &[u8]) -> Vec<(usize, usize)> {
 pub fn scan_file(file: &mut (impl std::io::Read + std::io::Seek)) -> Result<Vec<(usize, usize)>> {
     use std::io::SeekFrom;
 
-    let file_len = file.seek(SeekFrom::End(0))? as usize;
+    let file_len_u64 = file.seek(SeekFrom::End(0))?;
+    let file_len = usize::try_from(file_len_u64).map_err(|_| {
+        TensogramError::Framing(format!("file size {file_len_u64} overflows usize"))
+    })?;
     file.seek(SeekFrom::Start(0))?;
 
     let mut messages = Vec::new();
@@ -865,8 +871,10 @@ pub fn scan_file(file: &mut (impl std::io::Read + std::io::Seek)) -> Result<Vec<
         if &preamble_buf[..MAGIC.len()] == MAGIC {
             if let Ok(preamble) = Preamble::read_from(&preamble_buf) {
                 if preamble.total_length > 0 {
-                    // Truncation is harmless: bounds check below catches it.
-                    let total = preamble.total_length as usize;
+                    let Ok(total) = usize::try_from(preamble.total_length) else {
+                        pos += 1;
+                        continue;
+                    };
                     if pos + total <= file_len {
                         // Read end magic to validate
                         let end_magic_offset = pos + total - 8;

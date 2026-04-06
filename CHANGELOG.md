@@ -17,7 +17,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Preceder Metadata Frames (type 8) for streaming per-object metadata
 
 ### Stats
-- 1010 total tests (283 Rust + 226 Python + 179 xarray + 204 Zarr + 109 C++ + 7 GRIB new + 2 streamer)
+- 1008 total tests (283 Rust + 226 Python + 181 xarray + 204 Zarr + 105 C++ + 7 GRIB new + 2 streamer)
 
 ## [0.5.0] - 2026-04-06
 

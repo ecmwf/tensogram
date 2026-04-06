@@ -22,13 +22,11 @@ NOTE: Requires building tensogram-python first:
 """
 
 import http.server
-import io
 import pathlib
 import tempfile
 import threading
 
 import numpy as np
-
 import tensogram
 
 # Check xarray availability (optional for this example)
@@ -156,7 +154,7 @@ def consume_stream(url: str):
                 msg = tensogram.decode(msg_bytes)
 
                 messages_decoded += 1
-                desc, arr = msg.objects[0]
+                _desc, arr = msg.objects[0]
 
                 param = "unknown"
                 if msg.metadata.base:
@@ -173,9 +171,7 @@ def consume_stream(url: str):
 
                 # Build xarray Dataset if available
                 if HAS_XARRAY:
-                    ds = xr.Dataset(
-                        {param: xr.DataArray(arr, dims=["latitude", "longitude"])}
-                    )
+                    ds = xr.Dataset({param: xr.DataArray(arr, dims=["latitude", "longitude"])})
                     datasets.append(ds)
 
             # Discard consumed bytes (everything up to end of last complete message)
@@ -191,7 +187,7 @@ def consume_stream(url: str):
             msg_bytes = bytes(buffer[offset : offset + length])
             msg = tensogram.decode(msg_bytes)
             messages_decoded += 1
-            desc, arr = msg.objects[0]
+            _desc, arr = msg.objects[0]
             print(f"  Message {messages_decoded}: shape={arr.shape} (trailing)")
 
     print(f"{'─' * 60}")

@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 import xarray as xr
-
 from tensogram_xarray.backend import TensogramBackendEntrypoint
 
 
@@ -119,7 +118,8 @@ class TestMessageIndex:
     def test_message_index(self, multi_msg_tgm: Path):
         ds0 = xr.open_dataset(str(multi_msg_tgm), engine="tensogram", message_index=0)
         ds1 = xr.open_dataset(str(multi_msg_tgm), engine="tensogram", message_index=1)
-        # Both should have data but potentially different values.
-        assert "object_0" in ds0.data_vars
-        assert "object_0" in ds1.data_vars
-        assert ds0["object_0"].shape == ds1["object_0"].shape
+        # Messages 0 and 1 both have param="2t" (different dates).
+        # Variable names come from the priority chain (mars.param → "2t").
+        assert "2t" in ds0.data_vars
+        assert "2t" in ds1.data_vars
+        assert ds0["2t"].shape == ds1["2t"].shape

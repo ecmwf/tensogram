@@ -7,7 +7,7 @@
 
 - **Version:** 0.6.0
 - **Workspace:** 6 default crates + 2 optional (Python, GRIB) + 2 separate packages (xarray, zarr)
-- **Tests:** 1010 total (283 Rust + 226 Python + 179 xarray + 204 Zarr + 109 C++ + 7 GRIB new + 2 streamer)
+- **Tests:** 1008 total (283 Rust + 226 Python + 181 xarray + 204 Zarr + 105 C++ + 7 GRIB new + 2 streamer)
 - **Quality:** 0 clippy warnings, 90.5% Rust line coverage
 
 ## tensogram-benchmarks
@@ -126,7 +126,7 @@ Tested indirectly via C++ wrapper (105 tests).
 
 ## tensogram-xarray
 
-179 tests, ~98% coverage. Separate pure-Python package.
+181 tests, ~98% coverage. Separate pure-Python package.
 
 - xarray backend engine: `engine="tensogram"` for `xr.open_dataset()`
 - `TensogramBackendArray` — lazy loading with N-D random-access slice mapping
@@ -143,8 +143,8 @@ Tested indirectly via C++ wrapper (105 tests).
 ### C++ (5 examples, C++ wrapper API)
 01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 file_api, 05 iterators
 
-### Python (9 examples)
-01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 multi_object, 05 file_api, 06 hash_and_errors, 07 iterators, 08 xarray_integration, 09 dask_distributed
+### Python (11 examples)
+01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 multi_object, 05 file_api, 06 hash_and_errors, 07 iterators, 08 xarray_integration, 08 zarr_backend, 09 dask_distributed, 09 streaming_consumer
 
 ## Documentation (mdbook)
 

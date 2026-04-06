@@ -18,27 +18,28 @@ pub fn run(
     let has_placeholders = output.contains('[') && output.contains(']');
 
     let mut in_file = TensogramFile::open(input)?;
-    #[allow(deprecated)]
-    let messages = in_file.messages()?;
+    let count = in_file.message_count()?;
 
     if !has_placeholders {
         // Simple copy: all matching messages to one output file
         let out_path = PathBuf::from(output);
         let mut out = std::fs::File::create(&out_path)?;
 
-        for msg in &messages {
-            let metadata = decode_metadata(msg)?;
+        for i in 0..count {
+            let msg = in_file.read_message(i)?;
+            let metadata = decode_metadata(&msg)?;
             if let Some(ref clause) = clause {
                 if !filter::matches(&metadata, clause) {
                     continue;
                 }
             }
-            out.write_all(msg)?;
+            out.write_all(&msg)?;
         }
     } else {
         // Splitting: expand [key] placeholders per message
-        for msg in &messages {
-            let metadata = decode_metadata(msg)?;
+        for i in 0..count {
+            let msg = in_file.read_message(i)?;
+            let metadata = decode_metadata(&msg)?;
             if let Some(ref clause) = clause {
                 if !filter::matches(&metadata, clause) {
                     continue;
@@ -53,7 +54,7 @@ pub fn run(
                 .create(true)
                 .append(true)
                 .open(&out_path)?;
-            out.write_all(msg)?;
+            out.write_all(&msg)?;
         }
     }
 
