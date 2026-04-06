@@ -57,12 +57,14 @@ The `_reserved_` section at the message level holds library-managed provenance i
 ```json
 {
   "_reserved_": {
-    "encoder": { "name": "tensogram", "version": "0.6.0" },
+    "encoder": { "name": "tensogram", "version": "0.1.0" },
     "time": "2026-04-06T12:00:00Z",
     "uuid": "550e8400-e29b-41d4-a716-446655440000"
   }
 }
 ```
+
+> **Note:** `_reserved_.encoder.version` is set to the library's crate version at compile time via `env!("CARGO_PKG_VERSION")` — the value above reflects the tensogram-core version in use.
 
 Within each `base[i]` entry, the encoder also auto-populates `_reserved_.tensor`:
 

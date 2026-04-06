@@ -1020,11 +1020,12 @@ fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata>
         Some(v) => py_dict_to_btree(&v)?,
         None => match dict.get_item("extra")? {
             Some(v) => {
-                // Only treat as alias if it's a dict (not some other value)
                 if v.downcast::<PyDict>().is_ok() {
                     py_dict_to_btree(&v)?
                 } else {
-                    BTreeMap::new()
+                    return Err(PyValueError::new_err(
+                        "'extra' must be a dict when provided as a convenience alias for '_extra_'",
+                    ));
                 }
             }
             None => BTreeMap::new(),

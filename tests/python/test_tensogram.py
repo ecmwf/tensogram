@@ -2315,25 +2315,20 @@ class TestEncodeOptionsCoverage:
 class TestDictToGlobalMetadataCoverage:
     """Test all branches in dict_to_global_metadata (Python bindings)."""
 
-    def test_extra_key_as_non_dict_silently_dropped(self):
-        """When 'extra' is a non-dict value, it's silently dropped.
+    def test_extra_key_as_non_dict_raises(self):
+        """When 'extra' is a non-dict value, a ValueError is raised.
 
-        The 'extra' key is in known_keys, so it's excluded from the catch-all
-        loop. When it's not a dict, it's also not used as the alias. This
-        means the value is lost — a known edge case. Users should use '_extra_'
-        for explicit extra targeting or just use top-level keys.
+        The 'extra' key is a convenience alias for '_extra_' and must be a
+        dict. Passing a non-dict value is an error to prevent silent data loss.
         """
         data = np.ones(4, dtype=np.float32)
         meta = {
             "version": 2,
-            "extra": "not_a_dict",  # non-dict: silently dropped
+            "extra": "not_a_dict",  # non-dict: must raise
         }
         desc = make_descriptor([4], dtype="float32")
-        msg = bytes(tensogram.encode(meta, [(desc, data)]))
-        decoded_meta = tensogram.decode_metadata(msg)
-        # "extra" is in known_keys so it doesn't go to catch-all;
-        # and it's not a dict so it's not used as alias → dropped
-        assert decoded_meta.extra.get("extra") is None
+        with pytest.raises(ValueError, match="'extra' must be a dict"):
+            tensogram.encode(meta, [(desc, data)])
 
     def test_unknown_top_level_keys_become_extra(self):
         """Keys not in known_keys go to extra."""

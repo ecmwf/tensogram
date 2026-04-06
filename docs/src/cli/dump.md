@@ -63,7 +63,7 @@ With `-j`, each message is a JSON object:
     "base": [
       {
         "mars": {"class": "od", "type": "fc", "date": "20260401", "step": 0, "param": "2t"},
-        "_reserved_": {"tensor": {"ndim": 2, "shape": [721, 1440], "dtype": "float32"}}
+        "_reserved_": {"tensor": {"ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float32"}}
       }
     ]
   },

@@ -152,11 +152,11 @@ cargo build -p tensogram-core --no-default-features --features mmap
 
 ## Testing
 
-984 tests across the workspace:
+1,262 tests across the workspace:
 
 - Unit tests in `#[cfg(test)]` modules alongside the code
 - Integration tests in `crates/tensogram-core/tests/` (round-trips, adversarial inputs, golden files)
-- Python tests in `tests/python/` (200 pytest tests with parametrized dtypes)
+- Python tests in `tests/python/` (226 pytest tests with parametrized dtypes)
 - xarray backend tests in `tensogram-xarray/tests/` (179 tests, ~98% coverage)
 - Zarr backend tests in `tensogram-zarr/tests/` (204 tests, ~95% coverage)
 - C++ wrapper tests via GoogleTest (109 tests across 10 files)
