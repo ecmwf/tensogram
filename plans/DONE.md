@@ -404,6 +404,42 @@ Implemented: 2026-04-03
 - Documentation: `docs/src/guide/xarray-integration.md` — 7 worked examples covering the full conversion philosophy
 - Per-object metadata stored in descriptor extra keys (accessible via `desc.params`)
 
+## tensogram-zarr (Zarr v3 store backend, 81 tests)
+- Zarr v3 Store implementation for `.tgm` files — `zarr.open_group(store=TensogramStore(...))`
+- `TensogramStore` — implements `zarr.abc.store.Store` ABC with full async interface
+- **Read path**: scans `.tgm` file, builds virtual Zarr key space, serves `get()` from decoded objects
+  - Each TGM data object → one Zarr array with single chunk (chunk_shape = array_shape)
+  - Root `zarr.json` synthesized from `GlobalMetadata` (common + extra → attributes)
+  - Per-array `zarr.json` synthesized from `DataObjectDescriptor` (shape, dtype, encoding metadata)
+  - Chunk keys use correct Zarr v3 multi-dimensional format (`c/0/0` for 2D, `c/0/0/0` for 3D)
+  - Variable naming from metadata (`mars.param`, `name`, `param`) with deduplication suffix
+  - Byte-range support: `RangeByteRequest`, `OffsetByteRequest`, `SuffixByteRequest`
+- **Write path**: buffers chunk data in memory, assembles into TGM message on `close()`
+  - Group attributes → `GlobalMetadata.common`
+  - Array metadata → `DataObjectDescriptor` with dtype/shape/encoding params
+  - Supports `mode="w"` (create) and `mode="a"` (append)
+- **Listing**: `list()`, `list_prefix()`, `list_dir()` — full async generators over virtual key space
+- **Mapping layer** (`mapping.py`):
+  - Bidirectional dtype conversion: TGM ↔ Zarr v3 ↔ NumPy (14 dtypes + bitmask)
+  - `build_group_zarr_json()` / `build_array_zarr_json()` — read path metadata synthesis
+  - `parse_array_zarr_json()` — write path metadata extraction
+  - `resolve_variable_name()` �� dotted-path metadata resolution with priority chain
+- **Integration**: works with `zarr.open_group()`, `zarr.open_array()`, slicing, scalar indexing
+- **Error handling** (hardened):
+  - All Rust `tensogram.*` calls wrapped with Python-level context (file path, message index, variable name)
+  - `OSError` for file-open failures, `ValueError` for decode/encode errors, `IndexError` for out-of-range
+  - Input validation: mode, message_index, path (non-empty string)
+  - `close()` exception-safe via `try/finally`; `__exit__` logs flush errors when exception already in flight
+  - Byte-count validation on write path; `TypeError` for unknown `ByteRequest` types
+  - `deserialize_zarr_json` wraps `json.JSONDecodeError` with byte-count context
+  - Silent-skip paths elevated to `WARNING` log level (arrays without chunks, empty flush)
+- **Second pass fixes**: file handle leak closed, `_open`/`_open_sync` deduplicated, `parse_array_zarr_json` no longer mutates input, bfloat16 fill value corrected, variable names with `/` sanitized
+- **Edge case coverage**: 34 edge case tests (invalid mode, negative index, slash names, triple duplicates, zero-object messages, chunk key shapes 0D-5D, byte range boundaries, fill values, lifecycle double-open/close, dotted_get paths)
+- 156 tests: 33 mapping + 16 store read + 4 store write + 12 round-trip + 16 Zarr integration + 34 edge cases + 41 coverage gap tests
+- 0 ruff lint warnings
+- Documentation: `docs/src/guide/zarr-backend.md` with mermaid diagram, edge cases section, error handling table
+- Example: `examples/python/08_zarr_backend.py`
+
 ## Dependencies
 - ciborium 0.2 — CBOR encode/decode
 - serde 1 — serialization framework

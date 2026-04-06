@@ -31,6 +31,7 @@
 - [Iterators](guide/iterators.md)
 - [C++ API](guide/cpp-api.md)
 - [xarray Integration](guide/xarray-integration.md)
+- [Zarr v3 Backend](guide/zarr-backend.md)
 
 ---
 
