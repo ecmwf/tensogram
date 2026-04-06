@@ -1114,3 +1114,299 @@ class TestEdgeCases:
         msg1 = encode_simple(data, hash_algo=None, extra_meta={"key": "val"})
         msg2 = encode_simple(data, hash_algo=None, extra_meta={"key": "val"})
         assert msg1 == msg2
+
+    # ── File iteration ──
+
+    def test_file_iter_basic(self, tmp_path):
+        """Iterate over file messages with for loop."""
+        path = str(tmp_path / "iter.tgm")
+        n = 5
+        with tensogram.TensogramFile.create(path) as f:
+            for i in range(n):
+                data = np.full(10, float(i), dtype=np.float32)
+                meta = make_global_meta(2, index=i)
+                desc = make_descriptor([10], dtype="float32")
+                f.append(meta, [(desc, data)])
+
+        collected = []
+        with tensogram.TensogramFile.open(path) as f:
+            for meta, objects in f:
+                _, arr = objects[0]
+                collected.append((meta["index"], arr[0]))
+
+        assert len(collected) == n
+        for i, (idx, val) in enumerate(collected):
+            assert idx == i
+            assert val == float(i)
+
+    def test_file_iter_empty(self, tmp_path):
+        """Iterating an empty file yields nothing."""
+        path = str(tmp_path / "empty.tgm")
+        with tensogram.TensogramFile.create(path):
+            pass
+
+        with tensogram.TensogramFile.open(path) as f:
+            items = list(f)
+        assert items == []
+
+    def test_file_iter_len(self, tmp_path):
+        """Iterator __len__ tracks remaining messages."""
+        path = str(tmp_path / "len.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            for i in range(3):
+                data = np.zeros(4, dtype=np.float32)
+                f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+
+        with tensogram.TensogramFile.open(path) as f:
+            it = iter(f)
+            assert len(it) == 3
+            next(it)
+            assert len(it) == 2
+            next(it)
+            assert len(it) == 1
+            next(it)
+            assert len(it) == 0
+
+    def test_file_iter_stops(self, tmp_path):
+        """Iterator raises StopIteration after exhaustion."""
+        path = str(tmp_path / "stop.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            data = np.ones(4, dtype=np.float32)
+            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+
+        with tensogram.TensogramFile.open(path) as f:
+            it = iter(f)
+            next(it)
+            with pytest.raises(StopIteration):
+                next(it)
+
+    def test_file_getitem(self, tmp_path):
+        """Index file messages with []."""
+        path = str(tmp_path / "getitem.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            for i in range(5):
+                data = np.full(8, float(i), dtype=np.float32)
+                f.append(make_global_meta(2, index=i),
+                         [(make_descriptor([8], dtype="float32"), data)])
+
+        with tensogram.TensogramFile.open(path) as f:
+            meta, objects = f[0]
+            assert meta["index"] == 0
+            meta, objects = f[4]
+            assert meta["index"] == 4
+            meta, objects = f[-1]
+            assert meta["index"] == 4
+            meta, objects = f[-5]
+            assert meta["index"] == 0
+
+    def test_file_getitem_out_of_range(self, tmp_path):
+        """file[bad_index] raises IndexError."""
+        path = str(tmp_path / "oob.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            data = np.ones(4, dtype=np.float32)
+            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+
+        with tensogram.TensogramFile.open(path) as f:
+            with pytest.raises(IndexError):
+                f[5]
+            with pytest.raises(IndexError):
+                f[-2]
+
+    def test_file_slice_basic(self, tmp_path):
+        """file[1:3] returns a list of two decoded messages."""
+        path = str(tmp_path / "slice.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            for i in range(5):
+                data = np.full(8, float(i), dtype=np.float32)
+                f.append(make_global_meta(2, index=i),
+                         [(make_descriptor([8], dtype="float32"), data)])
+
+        with tensogram.TensogramFile.open(path) as f:
+            result = f[1:3]
+            assert isinstance(result, list)
+            assert len(result) == 2
+            meta0, _ = result[0]
+            meta1, _ = result[1]
+            assert meta0["index"] == 1
+            assert meta1["index"] == 2
+
+    def test_file_slice_step(self, tmp_path):
+        """file[::2] returns every other message."""
+        path = str(tmp_path / "step.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            for i in range(6):
+                data = np.full(4, float(i), dtype=np.float32)
+                f.append(make_global_meta(2, index=i),
+                         [(make_descriptor([4], dtype="float32"), data)])
+
+        with tensogram.TensogramFile.open(path) as f:
+            result = f[::2]
+            assert len(result) == 3
+            indices = [meta["index"] for meta, _ in result]
+            assert indices == [0, 2, 4]
+
+    def test_file_slice_negative(self, tmp_path):
+        """file[-2:] returns the last two messages."""
+        path = str(tmp_path / "neg.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            for i in range(5):
+                data = np.full(4, float(i), dtype=np.float32)
+                f.append(make_global_meta(2, index=i),
+                         [(make_descriptor([4], dtype="float32"), data)])
+
+        with tensogram.TensogramFile.open(path) as f:
+            result = f[-2:]
+            assert len(result) == 2
+            assert result[0][0]["index"] == 3
+            assert result[1][0]["index"] == 4
+
+    def test_file_slice_reverse(self, tmp_path):
+        """file[::-1] returns all messages in reverse order."""
+        path = str(tmp_path / "rev.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            for i in range(4):
+                data = np.full(4, float(i), dtype=np.float32)
+                f.append(make_global_meta(2, index=i),
+                         [(make_descriptor([4], dtype="float32"), data)])
+
+        with tensogram.TensogramFile.open(path) as f:
+            result = f[::-1]
+            assert len(result) == 4
+            indices = [meta["index"] for meta, _ in result]
+            assert indices == [3, 2, 1, 0]
+
+    def test_file_slice_empty(self, tmp_path):
+        """file[2:2] returns an empty list."""
+        path = str(tmp_path / "empty_slice.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            for i in range(3):
+                data = np.zeros(4, dtype=np.float32)
+                f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+
+        with tensogram.TensogramFile.open(path) as f:
+            assert f[2:2] == []
+            assert f[5:10] == []
+
+    def test_file_getitem_bad_key(self, tmp_path):
+        """file['bad'] raises ValueError."""
+        path = str(tmp_path / "badkey.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            data = np.ones(4, dtype=np.float32)
+            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+
+        with tensogram.TensogramFile.open(path) as f:
+            with pytest.raises((TypeError, ValueError)):
+                f["bad"]
+
+    # ── Message namedtuple ──
+
+    def test_message_namedtuple_from_decode(self):
+        """decode() returns a Message with .metadata and .objects."""
+        data = np.arange(10, dtype=np.float32)
+        msg_bytes = encode_simple(data, extra_meta={"key": "val"})
+        msg = tensogram.decode(msg_bytes)
+        assert isinstance(msg, tensogram.Message)
+        assert msg.metadata["key"] == "val"
+        _, arr = msg.objects[0]
+        np.testing.assert_array_equal(arr, data)
+
+    def test_message_namedtuple_from_file(self, tmp_path):
+        """decode_message and iteration return Message namedtuples."""
+        path = str(tmp_path / "msg.tgm")
+        data = np.ones(4, dtype=np.float32)
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(make_global_meta(2, tag="test"),
+                     [(make_descriptor([4], dtype="float32"), data)])
+
+        with tensogram.TensogramFile.open(path) as f:
+            # decode_message
+            msg = f.decode_message(0)
+            assert isinstance(msg, tensogram.Message)
+            assert msg.metadata["tag"] == "test"
+            # indexing
+            msg2 = f[0]
+            assert isinstance(msg2, tensogram.Message)
+            # iteration
+            for msg3 in f:
+                assert isinstance(msg3, tensogram.Message)
+
+    def test_message_tuple_unpacking(self):
+        """Message supports tuple unpacking."""
+        data = np.ones(4, dtype=np.float32)
+        msg_bytes = encode_simple(data)
+        meta, objects = tensogram.decode(msg_bytes)
+        assert meta.version == 2
+        assert len(objects) == 1
+
+    # ── Buffer iteration ──
+
+    def test_iter_messages_basic(self):
+        """iter_messages yields decoded messages from a byte buffer."""
+        msgs = []
+        for i in range(4):
+            data = np.full(8, float(i), dtype=np.float32)
+            meta = make_global_meta(2, index=i)
+            desc = make_descriptor([8], dtype="float32")
+            msgs.append(bytes(tensogram.encode(meta, [(desc, data)])))
+
+        buf = b"".join(msgs)
+        collected = list(tensogram.iter_messages(buf))
+        assert len(collected) == 4
+        for i, (meta, objects) in enumerate(collected):
+            assert meta["index"] == i
+            _, arr = objects[0]
+            np.testing.assert_array_equal(arr, np.full(8, float(i), dtype=np.float32))
+
+    def test_iter_messages_empty(self):
+        """iter_messages on empty buffer yields nothing."""
+        assert list(tensogram.iter_messages(b"")) == []
+
+    def test_iter_messages_len(self):
+        """iter_messages supports len() tracking remaining."""
+        data = np.ones(4, dtype=np.float32)
+        meta = make_global_meta(2)
+        desc = make_descriptor([4], dtype="float32")
+        msg = bytes(tensogram.encode(meta, [(desc, data)]))
+        buf = msg * 3
+
+        it = tensogram.iter_messages(buf)
+        assert len(it) == 3
+        next(it)
+        assert len(it) == 2
+
+    def test_iter_messages_stops(self):
+        """iter_messages raises StopIteration after exhaustion."""
+        data = np.ones(4, dtype=np.float32)
+        msg = bytes(tensogram.encode(
+            make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]))
+
+        it = tensogram.iter_messages(msg)
+        next(it)
+        with pytest.raises(StopIteration):
+            next(it)
+
+    def test_iter_messages_with_garbage(self):
+        """iter_messages skips garbage between valid messages."""
+        data = np.ones(4, dtype=np.float32)
+        meta = make_global_meta(2, tag="valid")
+        desc = make_descriptor([4], dtype="float32")
+        msg = bytes(tensogram.encode(meta, [(desc, data)]))
+
+        buf = b"\xde\xad" + msg + b"\xff\xff" + msg
+        collected = list(tensogram.iter_messages(buf))
+        assert len(collected) == 2
+        for meta, _ in collected:
+            assert meta["tag"] == "valid"
+
+    def test_iter_messages_verify_hash(self):
+        """iter_messages with verify_hash=True on hashed data."""
+        data = np.arange(16, dtype=np.float32)
+        meta = make_global_meta(2)
+        desc = make_descriptor([16], dtype="float32")
+        msg = bytes(tensogram.encode(meta, [(desc, data)], hash="xxh3"))
+
+        collected = list(tensogram.iter_messages(msg, verify_hash=True))
+        assert len(collected) == 1
+        _, objects = collected[0]
+        _, arr = objects[0]
+        np.testing.assert_array_equal(arr, data)
