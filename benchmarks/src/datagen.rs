@@ -44,8 +44,10 @@ impl SplitMix64 {
 /// - A smooth large-scale sinusoidal pattern (base ≈ 280 K, amplitude ≈ 30 K)
 /// - Small random noise (±0.1 K) to mimic observation/model imperfections
 ///
-/// The function is pure and deterministic: same `seed` always produces the
-/// same output, regardless of platform or Rust version.
+/// The function is pure and deterministic for a given platform/toolchain:
+/// the same `seed` produces the same output in the same environment. Because
+/// it uses `f64::sin()`/`f64::cos()`, outputs may differ slightly across
+/// platforms or Rust versions.
 ///
 /// # Arguments
 /// * `num_points` – exact number of values to generate

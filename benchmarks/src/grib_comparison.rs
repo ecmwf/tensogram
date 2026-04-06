@@ -32,8 +32,9 @@ const AEC_DATA_PREPROCESS: u32 = 1;
 
 // ── ecCodes C API (raw) ───────────────────────────────────────────────────────
 //
-// We declare just the subset needed for this benchmark. The symbols are
-// available because the `eccodes` Rust crate links against libeccodes.
+// We declare just the subset needed for this benchmark. Linking to
+// `libeccodes` is provided by the benchmark crate's build configuration
+// (for example, `build.rs`), not by direct use of the `eccodes` crate here.
 
 extern "C" {
     fn codes_grib_handle_new_from_samples(ctx: *mut c_void, name: *const i8) -> *mut c_void;

@@ -12,6 +12,7 @@ use clap::Parser;
 )]
 struct Args {
     /// Number of float64 values to encode per benchmark run.
+    /// Rounded up to the next multiple of 4 (at most 3 extra values) for szip alignment.
     #[arg(long, default_value = "16000000")]
     num_points: usize,
 

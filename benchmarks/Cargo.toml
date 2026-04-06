@@ -20,11 +20,10 @@ path = "src/lib.rs"
 
 [features]
 default = []
-eccodes = ["dep:eccodes", "dep:eccodes-sys", "dep:tempfile"]
+eccodes = ["dep:eccodes", "dep:eccodes-sys"]
 
 [dependencies]
 tensogram-encodings = { path = "../crates/tensogram-encodings" }
 clap = { workspace = true }
 eccodes = { version = "0.14", default-features = false, optional = true }
 eccodes-sys = { version = "0.7", optional = true }
-tempfile = { version = "3", optional = true }

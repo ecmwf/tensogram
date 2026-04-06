@@ -69,8 +69,8 @@ pub fn ns_to_ms(ns: u64) -> f64 {
 ///
 /// `reference_name` must match the `.name` field of exactly one result; that
 /// row is marked `[REF]` and used as the baseline for the "vs Ref" columns.
-/// If no matching row is found the function still produces a valid table but
-/// omits reference-relative columns.
+/// If no matching row is found the function still produces a valid table and
+/// keeps the reference-relative columns, filling their cells with `N/A`.
 pub fn format_table(results: &[BenchmarkResult], reference_name: &str, title: &str) -> String {
     // Find the reference row.
     let ref_result = results.iter().find(|r| r.name == reference_name);

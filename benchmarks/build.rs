@@ -40,19 +40,28 @@ fn link_eccodes() {
 #[cfg(feature = "eccodes")]
 fn try_pkg_config() -> bool {
     let output = std::process::Command::new("pkg-config")
-        .args(["--libs", "--libs-only-L", "eccodes"])
+        .args(["--libs", "eccodes"])
         .output();
 
     match output {
         Ok(out) if out.status.success() => {
             let flags = String::from_utf8_lossy(&out.stdout);
+            let mut linked_eccodes = false;
+
             // Parse -L paths and -l libs from pkg-config output.
             for flag in flags.split_whitespace() {
                 if let Some(path) = flag.strip_prefix("-L") {
                     println!("cargo:rustc-link-search=native={path}");
                 } else if let Some(lib) = flag.strip_prefix("-l") {
+                    if lib == "eccodes" {
+                        linked_eccodes = true;
+                    }
                     println!("cargo:rustc-link-lib=dylib={lib}");
                 }
+            }
+
+            if !linked_eccodes {
+                println!("cargo:rustc-link-lib=dylib=eccodes");
             }
             true
         }

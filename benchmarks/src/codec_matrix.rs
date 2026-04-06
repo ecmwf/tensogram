@@ -234,6 +234,11 @@ fn run_case(
 ///
 /// Results are ordered with `none+none` first (the reference row).
 /// Called by the binary entry point and by integration tests.
+///
+/// # Note on `num_points` padding
+/// The actual number of values encoded is rounded up to the next multiple of 4
+/// (by at most 3 values) for szip alignment. The reported sizes and the
+/// `original_bytes` field in each result reflect this padded count.
 pub fn run_codec_matrix_results(
     num_points: usize,
     iterations: usize,
