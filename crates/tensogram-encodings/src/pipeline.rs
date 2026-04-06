@@ -49,6 +49,15 @@ pub enum EncodingType {
     SimplePacking(SimplePackingParams),
 }
 
+impl std::fmt::Display for EncodingType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EncodingType::None => write!(f, "none"),
+            EncodingType::SimplePacking(_) => write!(f, "simple_packing"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum FilterType {
     None,
@@ -177,6 +186,7 @@ fn build_compressor(
 }
 
 /// Full forward pipeline: encode → filter → compress
+#[tracing::instrument(skip(data, config), fields(data_len = data.len(), encoding = %config.encoding))]
 pub fn encode_pipeline(
     data: &[u8],
     config: &PipelineConfig,
@@ -219,6 +229,7 @@ pub fn encode_pipeline(
 }
 
 /// Full reverse pipeline: decompress → unshuffle → decode
+#[tracing::instrument(skip(encoded, config), fields(encoded_len = encoded.len()))]
 pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8>, PipelineError> {
     // Step 1: Decompress — Cow avoids cloning when no compression
     let decompressed: Cow<'_, [u8]> = match build_compressor(&config.compression, config)? {

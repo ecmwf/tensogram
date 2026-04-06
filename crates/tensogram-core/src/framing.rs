@@ -716,6 +716,7 @@ pub fn decode_metadata_only(buf: &[u8]) -> Result<GlobalMetadata> {
 
 /// Scan a multi-message buffer for message boundaries.
 /// Returns (offset, length) of each message found.
+#[tracing::instrument(skip(buf), fields(buf_len = buf.len()))]
 pub fn scan(buf: &[u8]) -> Vec<(usize, usize)> {
     let mut messages = Vec::new();
     let mut pos = 0;

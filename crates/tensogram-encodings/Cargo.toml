@@ -15,6 +15,7 @@ sz3 = ["dep:sz3"]
 [dependencies]
 thiserror.workspace = true
 serde.workspace = true
+tracing.workspace = true
 libaec-sys = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 lz4_flex = { workspace = true, optional = true }

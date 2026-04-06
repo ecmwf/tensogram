@@ -9,7 +9,7 @@ For speculative ideas, see `IDEAS.md`.
 
 ## CLI
 
-- [ ] `tensogram merge` — merge common metadata from multiple files (currently first-takes-precedence; should support configurable merge strategies)
+- [x] ~~`tensogram merge` strategies~~ → `--strategy first|last|error` flag added to CLI merge command
 
 ## Metadata
 
@@ -30,23 +30,17 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Builds
 
-- [ ] CI matrix for all three language test suites on every commit (partially done — Rust, Python, C++ run but GRIB tests gated on ecCodes availability)
+- [x] ~~CI matrix~~ → `.github/workflows/ci.yml` — Rust (ubuntu+macos), Python (3.12+3.13, ubuntu+macos), xarray, zarr, C++ (ubuntu+macos), docs. GRIB gated on ecCodes.
 
 ## Tests and Examples
 
-- [ ] *consumer-side-streaming*:
-  - please ensure there is python example in examples/  showing how to decode a stream, from downloading from a https file (you may need to moc the server) and decode the tensogram stream as it arrives without any large memory buffer allocation containing the whole tensogram message. At the recieving end, it should create xarray datasets locally in memory as the data object frames arrive. 
-  - Check that internally this indeed to parses the data objects as they arrive (we assume we can cope with a single data object at a time in memory) and transform them to xarray. This is possible because in streaming we insert the PRECEDER METADATA FRAME.
+- [x] ~~consumer-side-streaming~~ → `examples/python/09_streaming_consumer.py` — mock HTTP server, chunked download, progressive scan+decode, xarray Dataset assembly
 
 ## Optimisation
  
-- [ ] *minimise-mem-alloc*: 
-  - Tensogram should minimise large mem allocations or decoding of data where possible. 
-  - Decoding of actual data into tensors should be delayed until absolutely necessary (when data actually access for caller usage). 
-  - Use the metadata for dims sizes and shapes to prepare lazy objects where necessary.
-  - ensure this is reflected in the docs and as a strategic design choice in DESIGN.md
+- [x] ~~minimise-mem-alloc~~ → documented in DESIGN.md "Memory Strategy" section. Pipeline uses `Cow` for zero-copy when no encoding/filter/compression. Metadata-only ops never touch payloads. xarray/zarr use lazy loading.
 
 ## Code Quality
 
-- [ ] improve code coverage until it reachs >95% line coverage
-- [ ] add logging trace (not to stdout) of more performance critical information, so that we can analyse what is going on to be able to improve it.
+- [~] code coverage: Rust core ~91%, Python 200 tests, C++ 109 tests. Remaining gaps are szip/zfp edge cases and CLI/FFI (tested via C++/integration, not measurable by cargo-llvm-cov). Total 888 tests.
+- [x] ~~add logging trace~~ → `tracing` crate instrumented on encode/decode/scan/file/pipeline. Activate with `TENSOGRAM_LOG=debug`

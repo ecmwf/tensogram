@@ -20,6 +20,7 @@ pub struct TensogramFile {
 
 impl TensogramFile {
     /// Open an existing file for reading.
+    #[tracing::instrument(skip(path), fields(path = %path.as_ref().display()))]
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         if !path.exists() {
@@ -37,6 +38,7 @@ impl TensogramFile {
     }
 
     /// Create a new file for writing (truncates if exists).
+    #[tracing::instrument(skip(path), fields(path = %path.as_ref().display()))]
     pub fn create(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {

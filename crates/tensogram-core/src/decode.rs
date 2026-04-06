@@ -42,6 +42,7 @@ pub struct DecodeOptions {
 
 /// Decode all objects from a message buffer.
 /// Returns (global_metadata, list of (descriptor, decoded_data)).
+#[tracing::instrument(skip(buf, options), fields(buf_len = buf.len()))]
 pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Vec<DecodedObject>)> {
     let msg = framing::decode_message(buf)?;
 

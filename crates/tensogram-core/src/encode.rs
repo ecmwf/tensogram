@@ -82,6 +82,7 @@ pub(crate) fn validate_object(desc: &DataObjectDescriptor, data_len: usize) -> R
 /// `global_metadata` is the message-level metadata (version, MARS keys, etc.).
 /// `descriptors` is a list of (DataObjectDescriptor, raw_data) pairs.
 /// Returns the complete wire-format message.
+#[tracing::instrument(skip(global_metadata, descriptors, options), fields(objects = descriptors.len()))]
 pub fn encode(
     global_metadata: &GlobalMetadata,
     descriptors: &[(&DataObjectDescriptor, &[u8])],
