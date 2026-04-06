@@ -139,17 +139,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn convert_to_stdout() {
-        // No output file → writes to stdout (just verify it doesn't crash)
-        run(
-            &[testdata("2t.grib2")],
-            None, // stdout
-            false,
-            false,
-        )
-        .unwrap();
-    }
+    // Note: the stdout branch (output=None) is not unit-tested here because
+    // it writes binary Tensogram bytes to stdout, which bloats captured test
+    // output and makes failures noisy. The branch is trivial (write_all to
+    // stdout lock) and is exercised by the existing CI integration tests.
 
     #[test]
     fn convert_no_inputs_errors() {

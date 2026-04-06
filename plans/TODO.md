@@ -42,5 +42,5 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Code Quality
 
-- [x] ~~code coverage~~ → simple_packing 97%, zfp 92%, CLI info 96%, 23 new Rust tests (313 total). Remaining: CLI dump/ls/get/reshuffle at 0% (integration-tested via binary), FFI at 0% (109 C++ tests). Total 911 tests.
+- [x] ~~code coverage~~ → 86 new Rust tests (376 total). All CLI commands tested (ls 98%, dump 97%, get 97%, convert_grib 99%, output 96%, merge 94%, copy 94%, reshuffle 94%, set 91%, split 89%). Encodings: simple_packing 97%, zfp 92%. Remaining: FFI at 0% (tested by 109 C++ tests). Total 974 tests.
 - [x] ~~add logging trace~~ → `tracing` crate instrumented on encode/decode/scan/file/pipeline. Activate with `TENSOGRAM_LOG=debug`

@@ -72,7 +72,9 @@ mod tests {
 
     #[test]
     fn info_missing_file() {
-        let result = run(&[PathBuf::from("/nonexistent.tgm")]);
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.tgm");
+        let result = run(&[missing]);
         assert!(result.is_err());
     }
 }
