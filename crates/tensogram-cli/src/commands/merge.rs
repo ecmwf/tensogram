@@ -46,7 +46,7 @@ fn merge_key(
         }
         MergeStrategy::Error => {
             if let Some(existing) = map.get(&key) {
-                if *existing != value {
+                if existing != &value {
                     return Err(format!(
                         "conflicting values for key '{key}' (use --strategy first or last to resolve)"
                     )
@@ -125,4 +125,91 @@ pub fn run(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn val(s: &str) -> ciborium::Value {
+        ciborium::Value::Text(s.to_string())
+    }
+
+    #[test]
+    fn first_strategy_keeps_first() {
+        let mut map = BTreeMap::new();
+        map.insert("k".to_string(), val("first"));
+        merge_key(
+            &mut map,
+            "k".to_string(),
+            val("second"),
+            MergeStrategy::First,
+        )
+        .unwrap();
+        assert_eq!(map["k"], val("first"));
+    }
+
+    #[test]
+    fn first_strategy_inserts_new() {
+        let mut map = BTreeMap::new();
+        merge_key(&mut map, "k".to_string(), val("only"), MergeStrategy::First).unwrap();
+        assert_eq!(map["k"], val("only"));
+    }
+
+    #[test]
+    fn last_strategy_overwrites() {
+        let mut map = BTreeMap::new();
+        map.insert("k".to_string(), val("first"));
+        merge_key(
+            &mut map,
+            "k".to_string(),
+            val("second"),
+            MergeStrategy::Last,
+        )
+        .unwrap();
+        assert_eq!(map["k"], val("second"));
+    }
+
+    #[test]
+    fn error_strategy_allows_identical() {
+        let mut map = BTreeMap::new();
+        map.insert("k".to_string(), val("same"));
+        merge_key(&mut map, "k".to_string(), val("same"), MergeStrategy::Error).unwrap();
+        assert_eq!(map["k"], val("same"));
+    }
+
+    #[test]
+    fn error_strategy_rejects_conflict() {
+        let mut map = BTreeMap::new();
+        map.insert("k".to_string(), val("first"));
+        let result = merge_key(
+            &mut map,
+            "k".to_string(),
+            val("different"),
+            MergeStrategy::Error,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("conflicting"));
+    }
+
+    #[test]
+    fn parse_strategy_valid() {
+        assert!(matches!(
+            MergeStrategy::parse("first").unwrap(),
+            MergeStrategy::First
+        ));
+        assert!(matches!(
+            MergeStrategy::parse("last").unwrap(),
+            MergeStrategy::Last
+        ));
+        assert!(matches!(
+            MergeStrategy::parse("error").unwrap(),
+            MergeStrategy::Error
+        ));
+    }
+
+    #[test]
+    fn parse_strategy_invalid() {
+        assert!(MergeStrategy::parse("unknown").is_err());
+    }
 }

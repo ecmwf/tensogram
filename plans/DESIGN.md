@@ -228,7 +228,7 @@ Decoding of actual data into tensors is delayed until absolutely necessary.
 | `decode_descriptors()` | Reads metadata + per-object CBOR descriptors. No payload decode. |
 | `decode_object()` | Decodes a single object by index. Other objects' payloads are skipped. |
 | `decode_range()` | Decodes a sub-range of a single object. Avoids full payload decode when possible. |
-| `scan()` / `scan_file()` | Scans message boundaries by reading only magic/terminator bytes. O(1) per message. |
+| `scan()` / `scan_file()` | Scans message boundaries by reading magic/terminator bytes without decoding payloads. Worst-case time is linear in the scanned buffer/file region, with a fast-path when total message length is available. |
 | `TensogramFile::read_message()` | Reads raw bytes for one message. |
 | `TensogramFile::open()` | Reads file metadata only. Message data stays on disk. |
 | Mmap (`feature = "mmap"`) | Memory-mapped I/O — no buffer allocation for file contents. OS pages in on demand. |

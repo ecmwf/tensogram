@@ -81,9 +81,11 @@ def create_streaming_tgm(path: str) -> int:
                 "filter": "none",
                 "compression": "none",
             }
-            data = np.random.default_rng(hash(param) % 2**32).random(
-                shape, dtype=np.float32
-            )
+            # Use zlib.crc32 for a stable seed (Python hash() is randomized)
+            import zlib
+
+            seed = zlib.crc32(param.encode()) & 0xFFFFFFFF
+            data = np.random.default_rng(seed).random(shape, dtype=np.float32)
             f.append(meta, [(desc, data)])
     return pathlib.Path(path).stat().st_size
 
@@ -97,15 +99,19 @@ class TGMHandler(http.server.BaseHTTPRequestHandler):
     tgm_path: str = ""
 
     def do_GET(self):
-        data = pathlib.Path(self.tgm_path).read_bytes()
+        tgm_path = pathlib.Path(self.tgm_path)
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(tgm_path.stat().st_size))
         self.end_headers()
-        # Send in small chunks to simulate streaming
+        # Stream from disk in small chunks — no full-file buffer
         chunk_size = 4096
-        for i in range(0, len(data), chunk_size):
-            self.wfile.write(data[i : i + chunk_size])
+        with tgm_path.open("rb") as f:
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
 
     def log_message(self, *_args):
         pass  # suppress server logs
@@ -137,12 +143,15 @@ def consume_stream(url: str):
                 break
             buffer.extend(chunk)
 
-            # Scan for complete messages in the buffer
-            entries = tensogram.scan(bytes(buffer))
+            # Take a single bytes snapshot to avoid repeated copies
+            buf_snapshot = bytes(buffer)
+
+            # Scan for complete messages in the snapshot
+            entries = tensogram.scan(buf_snapshot)
 
             # Decode each complete message found
             for offset, length in entries:
-                msg_bytes = bytes(buffer[offset : offset + length])
+                msg_bytes = buf_snapshot[offset : offset + length]
                 msg = tensogram.decode(msg_bytes)
 
                 messages_decoded += 1
