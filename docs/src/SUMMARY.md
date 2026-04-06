@@ -32,6 +32,7 @@
 - [C++ API](guide/cpp-api.md)
 - [xarray Integration](guide/xarray-integration.md)
 - [Dask Integration](guide/dask-integration.md)
+- [Zarr v3 Backend](guide/zarr-backend.md)
 
 ---
 
