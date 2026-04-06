@@ -111,6 +111,16 @@ enum Commands {
 }
 
 fn main() {
+    // Activate tracing output via TENSOGRAM_LOG env var.
+    // Examples: TENSOGRAM_LOG=debug, TENSOGRAM_LOG=tensogram_core=trace
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_env("TENSOGRAM_LOG")
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
     let cli = Cli::parse();
 
     let result = match cli.command {

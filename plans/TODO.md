@@ -49,4 +49,4 @@ For speculative ideas, see `IDEAS.md`.
 ## Code Quality
 
 - [ ] improve code coverage until it reachs >95% line coverage
-- [ ] add logging trace (not to stdout) of more performance critical information, so that we can analyse what is going on to be able to improve it.
+- [x] ~~add logging trace~~ → `tracing` crate instrumented on encode/decode/scan/file/pipeline. Activate with `TENSOGRAM_LOG=debug`

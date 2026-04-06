@@ -22,6 +22,7 @@ ciborium = { workspace = true }
 serde.workspace = true
 xxhash-rust.workspace = true
 uuid.workspace = true
+tracing.workspace = true
 memmap2 = { version = "0.9", optional = true }
 tokio = { version = "1", features = ["fs", "rt"], optional = true }
 
