@@ -1,13 +1,13 @@
-# Tensogram — Current Implementation Status (v0.4.0)
+# Tensogram — Current Implementation Status (v0.5.0)
 
 > For historical release notes, see `../CHANGELOG.md`.
 > For planned features, see `TODO.md`. For ideas, see `IDEAS.md`.
 
 ## Summary
 
-- **Version:** 0.4.0
-- **Workspace:** 5 default crates + 2 optional (Python, GRIB) + 1 separate package (xarray)
-- **Tests:** 601 total (279 Rust + 97 Python + 113 xarray + 109 C++ + 3 golden)
+- **Version:** 0.5.0
+- **Workspace:** 5 default crates + 2 optional (Python, GRIB) + 2 separate packages (xarray, zarr)
+- **Tests:** 888 total (283 Rust + 200 Python + 124 xarray + 172 Zarr + 109 C++)
 - **Quality:** 0 clippy warnings, 90.5% Rust line coverage
 
 ## tensogram-core

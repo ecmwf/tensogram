@@ -67,5 +67,6 @@
 
 # Reference
 
+- [Error Handling](guide/error-handling.md)
 - [Edge Cases](edge-cases.md)
 - [Internals](internals.md)
