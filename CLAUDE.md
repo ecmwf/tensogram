@@ -126,6 +126,22 @@ This project contains Rust, Python, C and C++ code
     - git tag with version
     - push and create release in github
 
+- NOTE: SINGLE SOURCE OF TRUTH FOR VERSION — The `VERSION` file at the repo root is the
+  canonical version for the ENTIRE project. ALL version strings everywhere MUST match it.
+  When bumping the version (e.g. during a release), you MUST update ALL of these locations
+  to match the VERSION file:
+    - `VERSION` (the source of truth)
+    - `Cargo.toml` in EVERY crate: tensogram-core, tensogram-encodings, tensogram-cli,
+      tensogram-ffi, tensogram-python, tensogram-grib, benchmarks, examples/rust
+    - `pyproject.toml` in EVERY Python package: crates/tensogram-python, tensogram-xarray,
+      tensogram-zarr
+    - `CHANGELOG.md` (new release entry header)
+  The provenance encoder in `crates/tensogram-core/src/encode.rs` reads the version via
+  `env!("CARGO_PKG_VERSION")` which comes from Cargo.toml — so keeping Cargo.toml in sync
+  with VERSION is critical for correct provenance in encoded messages.
+  If ANY of these are out of sync, the release is broken. Always grep for the old version
+  string across the repo to catch stragglers.
+
 # Tracking Work Done
 
 Keep track of implementations in plans/DONE.md for all code changes.
