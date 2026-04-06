@@ -1,6 +1,7 @@
 .claude/
 .sisyphus/
 .coverage
+*.dylib.dSYM/
 **/target
 /build/
 Cargo.lock
