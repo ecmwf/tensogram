@@ -7,7 +7,7 @@ Ideas for possible future implementation. Do not implement these yet.
 
 - Bridges
 	- [ ] tensogram as backend for Zarr v3 (as storage backend)
-	- [ ] xarray loader from tensogram
+	- [x] xarray loader from tensogram (DONE — tensogram-xarray, 113 tests, shipped in 0.4.0)
 	- [ ] tensogram as a storage backend for netcdf
 
 - Optimisations:
