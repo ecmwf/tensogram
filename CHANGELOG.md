@@ -42,7 +42,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Python examples 01-03, 05-06 rewritten to use real API (were placeholder code)
 
 ### Stats
-- 806 total tests (283 Rust + 118 Python + 124 xarray + 172 Zarr + 109 C++)
+- 888 total tests (283 Rust + 200 Python + 124 xarray + 172 Zarr + 109 C++)
 
 ## [0.3.0] - 2026-04-04
 
