@@ -23,12 +23,12 @@ fn make_message(param: &str, step: i64) -> Vec<u8> {
         (Value::Text("param".into()), Value::Text(param.into())),
         (Value::Text("step".into()), Value::Integer(step.into())),
     ]);
-    let mut common = BTreeMap::new();
-    common.insert("mars".to_string(), mars);
+    let mut entry = BTreeMap::new();
+    entry.insert("mars".to_string(), mars);
 
     let global_meta = GlobalMetadata {
         version: 2,
-        common,
+        base: vec![entry],
         ..Default::default()
     };
 
@@ -94,8 +94,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let msg = &corrupted_buffer[*start..*start + *len];
         let meta = decode_metadata(msg)?;
 
-        // Read the mars namespace
-        let (param, step) = if let Some(Value::Map(entries)) = meta.common.get("mars") {
+        // Read the mars namespace from base[0]
+        let mars_val = meta.base.first().and_then(|e| e.get("mars"));
+        let (param, step) = if let Some(Value::Map(entries)) = mars_val {
             let param = entries
                 .iter()
                 .find(|(k, _)| matches!(k, Value::Text(s) if s == "param"))

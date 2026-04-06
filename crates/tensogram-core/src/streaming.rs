@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 use crate::encode::{
-    build_pipeline_config, populate_payload_entries, populate_reserved_provenance, validate_object,
+    build_pipeline_config, populate_base_entries, populate_reserved_provenance, validate_object,
     EncodeOptions,
 };
 use crate::error::{Result, TensogramError};
 use crate::framing::EncodedObject;
 use crate::hash::{compute_hash, HashAlgorithm};
-use crate::metadata;
+use crate::metadata::{self, RESERVED_KEY};
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashDescriptor, HashFrame, IndexFrame};
 use crate::wire::{
     FrameHeader, FrameType, MessageFlags, Postamble, Preamble, FRAME_END, FRAME_HEADER_SIZE,
@@ -121,8 +121,8 @@ impl<W: Write> StreamingEncoder<W> {
 
     /// Write a PrecederMetadata frame for the next data object.
     ///
-    /// The `metadata` map becomes `payload[0]` in a `GlobalMetadata` CBOR
-    /// with `common` empty.  Must be followed by exactly one
+    /// The `metadata` map becomes `base[0]` in a `GlobalMetadata` CBOR
+    /// wrapper.  Must be followed by exactly one
     /// [`write_object`](Self::write_object) call before another
     /// `write_preceder` or [`finish`](Self::finish).
     pub fn write_preceder(&mut self, metadata: BTreeMap<String, ciborium::Value>) -> Result<()> {
@@ -132,9 +132,18 @@ impl<W: Write> StreamingEncoder<W> {
             ));
         }
 
+        // Reject _reserved_ in preceder metadata — this namespace is library-managed
+        // and would collide with the encoder's auto-populated _reserved_.tensor.
+        if metadata.contains_key(RESERVED_KEY) {
+            return Err(TensogramError::Metadata(format!(
+                "client code must not write '{RESERVED_KEY}' in preceder metadata; \
+                     this field is populated by the library"
+            )));
+        }
+
         let preceder_meta = GlobalMetadata {
             version: self.global_meta.version,
-            payload: vec![metadata.clone()],
+            base: vec![metadata.clone()],
             ..Default::default()
         };
         let cbor = crate::metadata::global_metadata_to_cbor(&preceder_meta)?;
@@ -158,7 +167,12 @@ impl<W: Write> StreamingEncoder<W> {
     pub fn write_object(&mut self, desc: &DataObjectDescriptor, data: &[u8]) -> Result<()> {
         validate_object(desc, data.len())?;
 
-        let num_elements = usize::try_from(desc.shape.iter().product::<u64>())
+        let shape_product = desc
+            .shape
+            .iter()
+            .try_fold(1u64, |acc, &x| acc.checked_mul(x))
+            .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
+        let num_elements = usize::try_from(shape_product)
             .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
 
         let config = build_pipeline_config(desc, num_elements, desc.dtype)?;
@@ -249,12 +263,13 @@ impl<W: Write> StreamingEncoder<W> {
         // decoders that skip PrecederMetadata frames.
         {
             let mut enriched_meta = self.global_meta.clone();
-            populate_payload_entries(&mut enriched_meta.payload, &self.completed_objects);
+            populate_base_entries(&mut enriched_meta.base, &self.completed_objects);
             populate_reserved_provenance(&mut enriched_meta.reserved);
 
-            // Merge preceder payloads into footer metadata (preceder wins).
-            // preceder_payloads is aligned 1:1 with completed_objects by
-            // write_preceder/write_object bookkeeping, so the lengths must match.
+            // Merge preceder payloads into footer metadata base entries
+            // (preceder wins).  preceder_payloads is aligned 1:1 with
+            // completed_objects by write_preceder/write_object bookkeeping,
+            // so the lengths must match.
             debug_assert_eq!(
                 self.preceder_payloads.len(),
                 self.completed_objects.len(),
@@ -262,9 +277,9 @@ impl<W: Write> StreamingEncoder<W> {
             );
             for (i, prec) in self.preceder_payloads.iter().enumerate() {
                 if let Some(prec_map) = prec {
-                    if i < enriched_meta.payload.len() {
+                    if i < enriched_meta.base.len() {
                         for (k, v) in prec_map {
-                            enriched_meta.payload[i].insert(k.clone(), v.clone());
+                            enriched_meta.base[i].insert(k.clone(), v.clone());
                         }
                     }
                 }
@@ -522,14 +537,14 @@ mod tests {
 
     #[test]
     fn streaming_with_metadata() {
-        let mut common = BTreeMap::new();
-        common.insert(
+        let mut extra = BTreeMap::new();
+        extra.insert(
             "centre".to_string(),
             ciborium::Value::Text("ecmwf".to_string()),
         );
         let meta = GlobalMetadata {
             version: 2,
-            common,
+            extra,
             ..Default::default()
         };
 
@@ -543,7 +558,7 @@ mod tests {
 
         let (decoded_meta, _) = decode(&result, &DecodeOptions::default()).unwrap();
         assert_eq!(
-            decoded_meta.common.get("centre"),
+            decoded_meta.extra.get("centre"),
             Some(&ciborium::Value::Text("ecmwf".to_string()))
         );
     }
@@ -575,23 +590,23 @@ mod tests {
         assert_eq!(objects.len(), 1);
         assert_eq!(objects[0].1, data);
 
-        // Preceder mars keys should be in payload[0]
-        let mars = decoded_meta.payload[0].get("mars");
-        assert!(mars.is_some(), "mars key should be in payload[0]");
+        // Preceder mars keys should be in base[0]
+        let mars = decoded_meta.base[0].get("mars");
+        assert!(mars.is_some(), "mars key should be in base[0]");
     }
 
     #[test]
     fn streaming_preceder_wins_over_footer() {
-        // Pre-populate global_meta.payload[0] with a value — the preceder
+        // Pre-populate global_meta.base[0] with a value — the preceder
         // should override it after decode.
-        let mut footer_payload = BTreeMap::new();
-        footer_payload.insert(
+        let mut footer_base = BTreeMap::new();
+        footer_base.insert(
             "source".to_string(),
             ciborium::Value::Text("footer".to_string()),
         );
         let meta = GlobalMetadata {
             version: 2,
-            payload: vec![footer_payload],
+            base: vec![footer_base],
             ..Default::default()
         };
 
@@ -611,7 +626,7 @@ mod tests {
         let result = enc.finish().unwrap();
 
         let (decoded_meta, _) = decode(&result, &DecodeOptions::default()).unwrap();
-        let source = decoded_meta.payload[0].get("source").and_then(|v| match v {
+        let source = decoded_meta.base[0].get("source").and_then(|v| match v {
             ciborium::Value::Text(s) => Some(s.as_str()),
             _ => None,
         });
@@ -674,10 +689,10 @@ mod tests {
         assert_eq!(objects[0].1, data0);
         assert_eq!(objects[1].1, data1);
 
-        // Payload[0] should have preceder entry
-        assert!(decoded_meta.payload[0].contains_key("note"));
-        // Payload[1] should NOT have it
-        assert!(!decoded_meta.payload[1].contains_key("note"));
+        // base[0] should have preceder entry
+        assert!(decoded_meta.base[0].contains_key("note"));
+        // base[1] should NOT have it
+        assert!(!decoded_meta.base[1].contains_key("note"));
     }
 
     #[test]
@@ -711,14 +726,254 @@ mod tests {
         let result = enc.finish().unwrap();
 
         let (decoded_meta, _) = decode(&result, &DecodeOptions::default()).unwrap();
-        let p = &decoded_meta.payload[0];
+        let p = &decoded_meta.base[0];
         assert_eq!(
             p.get("units"),
             Some(&ciborium::Value::Text("K".to_string()))
         );
         assert!(p.contains_key("mars"));
-        // Structural keys (ndim, shape) should also be present from footer
-        assert!(p.contains_key("ndim"));
-        assert!(p.contains_key("shape"));
+        // Structural keys (ndim, shape) should be under _reserved_.tensor
+        assert!(p.contains_key("_reserved_"));
+    }
+
+    // ── Edge case: preceder with _reserved_ rejected ─────────────────────
+
+    #[test]
+    fn streaming_preceder_with_reserved_rejected() {
+        let meta = GlobalMetadata::default();
+        let buf = Vec::new();
+        let mut enc = StreamingEncoder::new(buf, &meta, &EncodeOptions::default()).unwrap();
+
+        let mut prec = BTreeMap::new();
+        prec.insert("_reserved_".to_string(), ciborium::Value::Map(vec![]));
+
+        let result = enc.write_preceder(prec);
+        assert!(result.is_err(), "_reserved_ in preceder should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("_reserved_"),
+            "error should mention _reserved_: {err}"
+        );
+    }
+
+    #[test]
+    fn streaming_preceder_reserved_stripped_on_decode() {
+        // If a non-standard producer includes _reserved_ in a preceder,
+        // the decoder strips it rather than failing, and the encoder's
+        // _reserved_.tensor is preserved.
+
+        // Build a raw message with a preceder that contains _reserved_.
+        // We bypass the encoder's validation by constructing frames manually.
+        let mut prec_entry = BTreeMap::new();
+        prec_entry.insert(
+            "mars".to_string(),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("param".to_string()),
+                ciborium::Value::Text("2t".to_string()),
+            )]),
+        );
+        prec_entry.insert(
+            "_reserved_".to_string(),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("rogue".to_string()),
+                ciborium::Value::Text("bad".to_string()),
+            )]),
+        );
+
+        // Encode normally to get a valid message first, then decode
+        // and verify _reserved_ from preceder doesn't clobber.
+        // We test via the framing level directly.
+        let preceder_meta = GlobalMetadata {
+            version: 2,
+            base: vec![prec_entry],
+            ..Default::default()
+        };
+        let preceder_cbor = crate::metadata::global_metadata_to_cbor(&preceder_meta).unwrap();
+
+        // Build a raw message with preceder + data object
+        let desc_for_frame = make_descriptor(vec![4]);
+        let payload = vec![0u8; 4 * 4];
+        let frame =
+            crate::framing::encode_data_object_frame(&desc_for_frame, &payload, false).unwrap();
+
+        // Footer metadata with _reserved_.tensor
+        let mut footer_base = BTreeMap::new();
+        let tensor_map = ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Text("ndim".to_string()),
+                ciborium::Value::Integer(1.into()),
+            ),
+            (
+                ciborium::Value::Text("shape".to_string()),
+                ciborium::Value::Array(vec![ciborium::Value::Integer(4.into())]),
+            ),
+            (
+                ciborium::Value::Text("strides".to_string()),
+                ciborium::Value::Array(vec![ciborium::Value::Integer(1.into())]),
+            ),
+            (
+                ciborium::Value::Text("dtype".to_string()),
+                ciborium::Value::Text("float32".to_string()),
+            ),
+        ]);
+        footer_base.insert(
+            "_reserved_".to_string(),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("tensor".to_string()),
+                tensor_map,
+            )]),
+        );
+        let footer_meta = GlobalMetadata {
+            version: 2,
+            base: vec![footer_base],
+            ..Default::default()
+        };
+        let footer_cbor = crate::metadata::global_metadata_to_cbor(&footer_meta).unwrap();
+
+        // Assemble raw message
+        use crate::wire::*;
+        let header_meta_cbor =
+            crate::metadata::global_metadata_to_cbor(&GlobalMetadata::default()).unwrap();
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0u8; PREAMBLE_SIZE]);
+
+        // Header metadata
+        let total_length = (FRAME_HEADER_SIZE + header_meta_cbor.len() + FRAME_END.len()) as u64;
+        let fh = FrameHeader {
+            frame_type: FrameType::HeaderMetadata,
+            version: 1,
+            flags: 0,
+            total_length,
+        };
+        fh.write_to(&mut out);
+        out.extend_from_slice(&header_meta_cbor);
+        out.extend_from_slice(FRAME_END);
+        let pad = (8 - (out.len() % 8)) % 8;
+        out.extend(std::iter::repeat_n(0u8, pad));
+
+        // Preceder metadata
+        let total_length = (FRAME_HEADER_SIZE + preceder_cbor.len() + FRAME_END.len()) as u64;
+        let fh = FrameHeader {
+            frame_type: FrameType::PrecederMetadata,
+            version: 1,
+            flags: 0,
+            total_length,
+        };
+        fh.write_to(&mut out);
+        out.extend_from_slice(&preceder_cbor);
+        out.extend_from_slice(FRAME_END);
+        let pad = (8 - (out.len() % 8)) % 8;
+        out.extend(std::iter::repeat_n(0u8, pad));
+
+        // Data object
+        out.extend_from_slice(&frame);
+        let pad = (8 - (out.len() % 8)) % 8;
+        out.extend(std::iter::repeat_n(0u8, pad));
+
+        // Footer metadata
+        let total_length = (FRAME_HEADER_SIZE + footer_cbor.len() + FRAME_END.len()) as u64;
+        let fh = FrameHeader {
+            frame_type: FrameType::FooterMetadata,
+            version: 1,
+            flags: 0,
+            total_length,
+        };
+        fh.write_to(&mut out);
+        out.extend_from_slice(&footer_cbor);
+        out.extend_from_slice(FRAME_END);
+        let pad = (8 - (out.len() % 8)) % 8;
+        out.extend(std::iter::repeat_n(0u8, pad));
+
+        // Postamble
+        let postamble_offset = out.len();
+        let postamble = Postamble {
+            first_footer_offset: postamble_offset as u64,
+        };
+        postamble.write_to(&mut out);
+
+        // Patch preamble
+        let total_length = out.len() as u64;
+        let mut flags = MessageFlags::default();
+        flags.set(MessageFlags::HEADER_METADATA);
+        flags.set(MessageFlags::FOOTER_METADATA);
+        flags.set(MessageFlags::PRECEDER_METADATA);
+        let preamble = Preamble {
+            version: 2,
+            flags,
+            reserved: 0,
+            total_length,
+        };
+        let mut preamble_bytes = Vec::new();
+        preamble.write_to(&mut preamble_bytes);
+        out[0..PREAMBLE_SIZE].copy_from_slice(&preamble_bytes);
+
+        // Decode
+        let decoded = crate::framing::decode_message(&out).unwrap();
+
+        // The preceder's _reserved_ should have been stripped by the decoder.
+        // The footer's _reserved_.tensor should be preserved.
+        let base0 = &decoded.global_metadata.base[0];
+        assert!(
+            base0.contains_key("mars"),
+            "mars from preceder should survive"
+        );
+        // _reserved_ should come from footer, not preceder
+        let reserved = base0.get("_reserved_");
+        assert!(
+            reserved.is_some(),
+            "_reserved_ from footer should be present"
+        );
+        if let Some(ciborium::Value::Map(pairs)) = reserved {
+            let has_tensor = pairs
+                .iter()
+                .any(|(k, _)| *k == ciborium::Value::Text("tensor".to_string()));
+            assert!(has_tensor, "tensor key from footer should be preserved");
+            let has_rogue = pairs
+                .iter()
+                .any(|(k, _)| *k == ciborium::Value::Text("rogue".to_string()));
+            assert!(
+                !has_rogue,
+                "rogue key from preceder's _reserved_ should have been stripped"
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_finish_preserves_preceder_does_not_clobber_reserved_tensor() {
+        // Verify that preceder metadata does NOT clobber the encoder's
+        // _reserved_.tensor in the footer metadata.
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![42u8; 4 * 4];
+
+        let mut prec = BTreeMap::new();
+        prec.insert("units".to_string(), ciborium::Value::Text("K".to_string()));
+
+        let buf = Vec::new();
+        let mut enc = StreamingEncoder::new(buf, &meta, &EncodeOptions::default()).unwrap();
+        enc.write_preceder(prec).unwrap();
+        enc.write_object(&desc, &data).unwrap();
+        let result = enc.finish().unwrap();
+
+        let (decoded_meta, _) = decode(&result, &DecodeOptions::default()).unwrap();
+        let base0 = &decoded_meta.base[0];
+
+        // preceder key should be present
+        assert!(base0.contains_key("units"));
+
+        // _reserved_.tensor should also be present
+        let reserved = base0.get("_reserved_").expect("_reserved_ missing");
+        if let ciborium::Value::Map(pairs) = reserved {
+            let has_tensor = pairs
+                .iter()
+                .any(|(k, _)| *k == ciborium::Value::Text("tensor".to_string()));
+            assert!(
+                has_tensor,
+                "_reserved_.tensor should be present after preceder merge"
+            );
+        } else {
+            panic!("_reserved_ should be a map");
+        }
     }
 }

@@ -27,7 +27,7 @@ cargo build -p tensogram-cli --features grib
 
 ### Merge All (default)
 
-All GRIB messages are combined into a single Tensogram message with N data objects. MARS keys that are identical across all messages go into `GlobalMetadata.common`; keys that differ go into each object's `DataObjectDescriptor.params`.
+All GRIB messages are combined into a single Tensogram message with N data objects. ALL MARS keys for each GRIB message are placed into the corresponding `base[i]` entry independently — there is no common/varying partitioning in the output.
 
 ```bash
 tensogram convert-grib forecast.grib -o forecast.tgm
@@ -35,7 +35,7 @@ tensogram convert-grib forecast.grib -o forecast.tgm
 
 ### One-to-One (split)
 
-Each GRIB message becomes a separate Tensogram message with one data object. All MARS keys go into `common`.
+Each GRIB message becomes a separate Tensogram message with one data object. All MARS keys go into `base[0]`.
 
 ```bash
 tensogram convert-grib forecast.grib -o forecast.tgm --split
@@ -63,8 +63,7 @@ let messages = convert_grib_file(Path::new("forecast.grib"), &options)?;
 | Grid values (`values` key) | Data object payload (float64, little-endian) |
 | Grid dimensions (Ni, Nj) | `DataObjectDescriptor.shape` as `[Nj, Ni]` |
 | Reduced Gaussian grids (Ni=0) | Shape `[numberOfPoints]` (1D) |
-| MARS keys (same across messages) | `GlobalMetadata.common` |
-| MARS keys (differ per message) | `DataObjectDescriptor.params` |
+| MARS keys (all, per message) | `GlobalMetadata.base[i]["mars"]` (each entry independent) |
 
 ## Scope
 

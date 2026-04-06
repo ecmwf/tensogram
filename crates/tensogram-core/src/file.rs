@@ -42,9 +42,19 @@ impl TensogramFile {
     pub fn create(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).map_err(|e| {
+                TensogramError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("cannot create parent directory for {}: {e}", path.display()),
+                ))
+            })?;
         }
-        fs::File::create(&path)?;
+        fs::File::create(&path).map_err(|e| {
+            TensogramError::Io(std::io::Error::new(
+                e.kind(),
+                format!("cannot create {}: {e}", path.display()),
+            ))
+        })?;
         Ok(TensogramFile {
             path,
             message_offsets: None,
@@ -60,7 +70,12 @@ impl TensogramFile {
     #[cfg(feature = "mmap")]
     pub fn open_mmap(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let file = fs::File::open(&path)?;
+        let file = fs::File::open(&path).map_err(|e| {
+            TensogramError::Io(std::io::Error::new(
+                e.kind(),
+                format!("{}: {e}", path.display()),
+            ))
+        })?;
         // SAFETY: the file is opened read-only and we hold the path for
         // the lifetime of TensogramFile. Concurrent writes by other
         // processes would violate the contract, but that is the standard
@@ -82,7 +97,12 @@ impl TensogramFile {
         if self.message_offsets.is_some() {
             return Ok(());
         }
-        let mut file = fs::File::open(&self.path)?;
+        let mut file = fs::File::open(&self.path).map_err(|e| {
+            TensogramError::Io(std::io::Error::new(
+                e.kind(),
+                format!("{}: {e}", self.path.display()),
+            ))
+        })?;
         let offsets = framing::scan_file(&mut file)?;
         self.message_offsets = Some(offsets);
         Ok(())
@@ -109,7 +129,13 @@ impl TensogramFile {
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.path)?;
+            .open(&self.path)
+            .map_err(|e| {
+                TensogramError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("{}: {e}", self.path.display()),
+                ))
+            })?;
         file.write_all(&msg)?;
         self.message_offsets = None;
         Ok(())
@@ -137,7 +163,12 @@ impl TensogramFile {
             return Ok(mmap[offset..offset + length].to_vec());
         }
 
-        let mut file = fs::File::open(&self.path)?;
+        let mut file = fs::File::open(&self.path).map_err(|e| {
+            TensogramError::Io(std::io::Error::new(
+                e.kind(),
+                format!("{}: {e}", self.path.display()),
+            ))
+        })?;
         file.seek(SeekFrom::Start(offset as u64))?;
         let mut buf = vec![0u8; length];
         file.read_exact(&mut buf)?;
@@ -212,7 +243,12 @@ impl TensogramFile {
         }
         let p = path.clone();
         let offsets = tokio::task::spawn_blocking(move || {
-            let mut file = fs::File::open(&p)?;
+            let mut file = fs::File::open(&p).map_err(|e| {
+                TensogramError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("{}: {e}", p.display()),
+                ))
+            })?;
             framing::scan_file(&mut file)
         })
         .await

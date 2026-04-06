@@ -3,8 +3,8 @@
 //! Shows how to attach ECMWF MARS vocabulary keys to a message and to
 //! individual objects, then read them back after decoding.
 //!
-//! - Message-level (common) MARS keys live in `common["mars"]`.
-//! - Per-object (varying) MARS keys live in `payload[i]["mars"]`.
+//! - Per-object MARS keys live in `base[i]["mars"]`.
+//! - Each base entry holds ALL metadata for that object independently.
 //!
 //! The library is vocabulary-agnostic: it stores and returns whatever keys
 //! you put in. Meaning is assigned by the application layer.
@@ -18,33 +18,23 @@ use tensogram_core::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // ── Message-level MARS keys → common["mars"] ──────────────────────────────
+    // ── Per-object MARS keys → base[0]["mars"] ────────────────────────────────
     //
-    // Keys shared across all objects in the message.
-    // The library sorts map keys canonically (RFC 8949 §4.2) on encode,
-    // so insertion order does not matter.
-    let mars_common = Value::Map(vec![
+    // Each base entry holds ALL metadata for one object.  Keys shared across
+    // objects are simply repeated in each entry — the library does not track
+    // what is common vs varying.
+    let mars_obj0 = Value::Map(vec![
         (Value::Text("class".into()), Value::Text("od".into())),
         (Value::Text("date".into()), Value::Text("20260401".into())),
         (Value::Text("step".into()), Value::Integer(6.into())),
         (Value::Text("time".into()), Value::Text("0000".into())),
         (Value::Text("type".into()), Value::Text("fc".into())),
-    ]);
-
-    let mut common = BTreeMap::new();
-    common.insert("mars".to_string(), mars_common);
-
-    // ── Per-object MARS keys → payload[0]["mars"] ─────────────────────────────
-    //
-    // The parameter name lives on the object because different objects in the
-    // same message can have different parameters.
-    let mars_obj = Value::Map(vec![
         (Value::Text("levtype".into()), Value::Text("sfc".into())),
         (Value::Text("param".into()), Value::Text("2t".into())),
     ]);
 
-    let mut obj0_payload = BTreeMap::new();
-    obj0_payload.insert("mars".to_string(), mars_obj);
+    let mut obj0_base = BTreeMap::new();
+    obj0_base.insert("mars".to_string(), mars_obj0);
 
     // ── Build descriptor and global metadata ──────────────────────────────────
     let desc = DataObjectDescriptor {
@@ -63,8 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let global_meta = GlobalMetadata {
         version: 2,
-        common,
-        payload: vec![obj0_payload], // per-object mars keys
+        base: vec![obj0_base],
         ..Default::default()
     };
 
@@ -91,12 +80,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     }
 
-    let mars = &meta.common["mars"];
-    println!("Message-level (common mars):");
-    println!("  class = {}", get_mars_key(mars, "class").unwrap_or("?"));
-    println!("  date  = {}", get_mars_key(mars, "date").unwrap_or("?"));
-    println!("  type  = {}", get_mars_key(mars, "type").unwrap_or("?"));
-    println!("  step  = {:?}", {
+    let mars = &meta.base[0]["mars"];
+    println!("Object 0 (base mars):");
+    println!("  class   = {}", get_mars_key(mars, "class").unwrap_or("?"));
+    println!("  date    = {}", get_mars_key(mars, "date").unwrap_or("?"));
+    println!("  type    = {}", get_mars_key(mars, "type").unwrap_or("?"));
+    println!("  step    = {:?}", {
         if let Value::Map(e) = mars {
             e.iter()
                 .find(|(k, _)| matches!(k, Value::Text(s) if s == "step"))
@@ -109,9 +98,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Full decode ───────────────────────────────────────────────────────────
     let (meta2, objects) = decode(&message, &DecodeOptions::default())?;
 
-    // Per-object MARS keys are in payload[i]["mars"]
-    let obj_mars = &meta2.payload[0]["mars"];
-    println!("Object 0 (payload mars):");
+    // Per-object MARS keys are in base[i]["mars"]
+    let obj_mars = &meta2.base[0]["mars"];
+    println!("Object 0 (decoded mars):");
     println!(
         "  param   = {}",
         get_mars_key(obj_mars, "param").unwrap_or("?")

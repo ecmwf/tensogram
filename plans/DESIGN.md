@@ -90,14 +90,13 @@ Common options:
 
 ## Key Design Decisions
 
-### Two-Level Metadata
+### Per-Object Metadata
 
-- **GlobalMetadata** (in header/footer metadata frame) — shared across all objects:
+- **GlobalMetadata** (in header/footer metadata frame):
   - `version` — wire format version (currently 2)
-  - `common` — metadata shared across all objects (e.g. `common.mars` for MARS keys)
-  - `payload` — per-object metadata array, indexed by object position
-  - `reserved` — reserved for future use (provenance, tracking)
-  - `extra` — backwards-compatible catch-all for other top-level keys
+  - `base` — per-object metadata array, one entry per data object, each entry holds ALL structured metadata for that object independently (no tracking of commonalities)
+  - `_reserved_` — library internals (provenance: encoder info, time, uuid). Client code can read but MUST NOT write.
+  - `_extra_` — client-writable catch-all for ad-hoc message-level annotations
 
 - **DataObjectDescriptor** (per data object frame) — encoding parameters only:
   - Tensor description: `obj_type`, `ndim`, `shape`, `strides`, `dtype`, `byte_order`
@@ -105,7 +104,7 @@ Common options:
   - Encoding-specific parameters (in `params` map)
   - Optional integrity `hash`
 
-MARS keys and application metadata live in `common["mars"]` and `payload[i]["mars"]`, not in the DataObjectDescriptor. The descriptor carries only what's needed to decode the payload.
+MARS keys and application metadata live in `base[i]["mars"]` (per-object). The encoder auto-populates `_reserved_.tensor` (ndim/shape/strides/dtype) in each `base[i]` entry. The descriptor carries only what's needed to decode the payload. A `compute_common()` utility can extract shared keys from base entries when needed (e.g. for display or merge operations) — commonalities are computed in software, not encoded in the wire format.
 
 ### Data Types
 

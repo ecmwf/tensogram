@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::error::{Result, TensogramError};
-use crate::metadata;
+use crate::metadata::{self, RESERVED_KEY};
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashFrame, IndexFrame};
 use crate::wire::{
     DataObjectFlags, FrameHeader, FrameType, MessageFlags, Postamble, Preamble,
@@ -42,7 +42,21 @@ fn write_frame(
 /// `total_bytes_consumed` includes any padding to the next 8-byte boundary.
 fn read_frame(buf: &[u8]) -> Result<(FrameHeader, &[u8], usize)> {
     let fh = FrameHeader::read_from(buf)?;
-    let frame_total = fh.total_length as usize;
+    let frame_total = usize::try_from(fh.total_length).map_err(|_| {
+        TensogramError::Framing(format!(
+            "frame total_length {} overflows usize",
+            fh.total_length
+        ))
+    })?;
+
+    // Minimum frame: header(16) + ENDF(4) = 20 bytes
+    let min_frame_size = FRAME_HEADER_SIZE + FRAME_END.len();
+    if frame_total < min_frame_size {
+        return Err(TensogramError::Framing(format!(
+            "frame total_length {} is smaller than minimum {min_frame_size}",
+            frame_total
+        )));
+    }
 
     if frame_total > buf.len() {
         return Err(TensogramError::Framing(format!(
@@ -140,7 +154,12 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
         )));
     }
 
-    let frame_total = fh.total_length as usize;
+    let frame_total = usize::try_from(fh.total_length).map_err(|_| {
+        TensogramError::Framing(format!(
+            "data object frame total_length {} overflows usize",
+            fh.total_length
+        ))
+    })?;
     // Minimum: frame_header(16) + cbor_offset(8) + ENDF(4) = 28
     let min_frame_size = FRAME_HEADER_SIZE + DATA_OBJECT_FOOTER_SIZE;
     if frame_total < min_frame_size {
@@ -166,8 +185,26 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
     }
 
     // Read cbor_offset from the data object footer (8 bytes before ENDF)
+    if endf_start < 8 {
+        return Err(TensogramError::Framing(format!(
+            "data object frame too small for cbor_offset: endf_start={endf_start} < 8"
+        )));
+    }
     let cbor_offset_pos = endf_start - 8;
-    let cbor_offset = crate::wire::read_u64_be(buf, cbor_offset_pos) as usize;
+    // cbor_offset_pos is guaranteed >= 0 (checked endf_start >= 8 above),
+    // and cbor_offset_pos + 8 <= endf_start <= frame_total <= buf.len(),
+    // so read_u64_be is safe.
+    let cbor_offset_raw = crate::wire::read_u64_be(buf, cbor_offset_pos);
+    let cbor_offset = usize::try_from(cbor_offset_raw).map_err(|_| {
+        TensogramError::Framing(format!("cbor_offset {cbor_offset_raw} overflows usize"))
+    })?;
+
+    // Validate cbor_offset points within the frame body
+    if cbor_offset < FRAME_HEADER_SIZE || cbor_offset > cbor_offset_pos {
+        return Err(TensogramError::Framing(format!(
+            "cbor_offset {cbor_offset} out of valid range [{FRAME_HEADER_SIZE}, {cbor_offset_pos}]"
+        )));
+    }
 
     let cbor_after = fh.flags & DataObjectFlags::CBOR_AFTER_PAYLOAD != 0;
 
@@ -472,7 +509,7 @@ pub struct DecodedMessage<'a> {
     pub objects: Vec<(DataObjectDescriptor, &'a [u8], usize)>,
     /// Per-object preceder metadata, parallel to `objects`.
     /// `Some(map)` if a PrecederMetadata frame preceded that object.
-    /// After decode, these entries are merged into `global_metadata.payload`
+    /// After decode, these entries are merged into `global_metadata.base`
     /// (preceder wins over footer entries for the same object index).
     pub preceder_payloads: Vec<Option<BTreeMap<String, ciborium::Value>>>,
 }
@@ -510,7 +547,13 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
 
     // Validate total_length if non-zero
     if preamble.total_length > 0 {
-        if (preamble.total_length as usize) > buf.len() {
+        let total_len = usize::try_from(preamble.total_length).map_err(|_| {
+            TensogramError::Framing(format!(
+                "total_length {} overflows usize",
+                preamble.total_length
+            ))
+        })?;
+        if total_len > buf.len() {
             return Err(TensogramError::Framing(format!(
                 "total_length {} exceeds buffer size {}",
                 preamble.total_length,
@@ -519,15 +562,21 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
         }
 
         // Validate postamble
-        let pa_offset = preamble.total_length as usize - POSTAMBLE_SIZE;
+        let pa_offset = total_len - POSTAMBLE_SIZE;
         let _postamble = Postamble::read_from(&buf[pa_offset..])?;
     }
 
     let mut pos = PREAMBLE_SIZE;
     let msg_end = if preamble.total_length > 0 {
+        // Safe: validated above that total_length fits in usize
         preamble.total_length as usize - POSTAMBLE_SIZE
     } else {
-        buf.len() - POSTAMBLE_SIZE
+        buf.len().checked_sub(POSTAMBLE_SIZE).ok_or_else(|| {
+            TensogramError::Framing(format!(
+                "buffer too short for postamble: {} < {POSTAMBLE_SIZE}",
+                buf.len()
+            ))
+        })?
     };
 
     let mut global_metadata: Option<GlobalMetadata> = None;
@@ -603,15 +652,21 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
             FrameType::PrecederMetadata => {
                 let (_, payload, consumed) = read_frame(&buf[pos..])?;
                 let preceder_meta = metadata::cbor_to_global_metadata(payload)?;
-                // Preceder payload must have exactly one entry
-                let n = preceder_meta.payload.len();
+                // Preceder base must have exactly one entry
+                let n = preceder_meta.base.len();
                 if n != 1 {
                     return Err(TensogramError::Metadata(format!(
-                        "PrecederMetadata payload must have exactly 1 entry, got {n}"
+                        "PrecederMetadata base must have exactly 1 entry, got {n}"
                     )));
                 }
                 // Safe: we just checked len == 1
-                pending_preceder = preceder_meta.payload.into_iter().next();
+                let mut entry = preceder_meta.base.into_iter().next().unwrap_or_default();
+                // Strip _reserved_ from preceder — it's library-managed and
+                // would collide with the encoder's auto-populated _reserved_.tensor.
+                // The decoder is permissive: strip rather than reject, since the
+                // data may come from a non-standard producer.
+                entry.remove(RESERVED_KEY);
+                pending_preceder = Some(entry);
                 pos += consumed;
             }
             FrameType::DataObject => {
@@ -635,27 +690,25 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
         TensogramError::Metadata("no metadata frame found in message".to_string())
     })?;
 
-    // Merge preceder payloads into global_metadata.payload (preceder wins).
+    // Merge preceder payloads into global_metadata.base (preceder wins).
     // Key-level merge: preceder keys override footer keys on conflict,
-    // but footer-only keys (e.g. auto-populated ndim/shape/strides/dtype)
-    // are preserved when absent from the preceder.
+    // but footer-only keys (e.g. _reserved_.tensor) are preserved when
+    // absent from the preceder.
     let obj_count = objects.len();
-    if global_metadata.payload.len() > obj_count {
+    if global_metadata.base.len() > obj_count {
         return Err(TensogramError::Metadata(format!(
-            "metadata payload has {} entries but message contains {} objects",
-            global_metadata.payload.len(),
+            "metadata base has {} entries but message contains {} objects",
+            global_metadata.base.len(),
             obj_count
         )));
     }
-    if global_metadata.payload.len() < obj_count {
-        global_metadata
-            .payload
-            .resize_with(obj_count, BTreeMap::new);
+    if global_metadata.base.len() < obj_count {
+        global_metadata.base.resize_with(obj_count, BTreeMap::new);
     }
     for (i, preceder) in preceder_payloads.iter().enumerate() {
         if let Some(prec_map) = preceder {
             for (k, v) in prec_map {
-                global_metadata.payload[i].insert(k.clone(), v.clone());
+                global_metadata.base[i].insert(k.clone(), v.clone());
             }
         }
     }
@@ -676,9 +729,27 @@ pub fn decode_metadata_only(buf: &[u8]) -> Result<GlobalMetadata> {
 
     let mut pos = PREAMBLE_SIZE;
     let msg_end = if preamble.total_length > 0 {
-        preamble.total_length as usize - POSTAMBLE_SIZE
+        // Safe: on 64-bit usize == u64; on 32-bit the message would already
+        // fail to fit in memory, so this truncation is acceptable.
+        let total_len = usize::try_from(preamble.total_length).map_err(|_| {
+            TensogramError::Framing(format!(
+                "total_length {} overflows usize",
+                preamble.total_length
+            ))
+        })?;
+        total_len.checked_sub(POSTAMBLE_SIZE).ok_or_else(|| {
+            TensogramError::Framing(format!(
+                "total_length {} too small for postamble",
+                preamble.total_length
+            ))
+        })?
     } else {
-        buf.len() - POSTAMBLE_SIZE
+        buf.len().checked_sub(POSTAMBLE_SIZE).ok_or_else(|| {
+            TensogramError::Framing(format!(
+                "buffer too short for postamble: {} < {POSTAMBLE_SIZE}",
+                buf.len()
+            ))
+        })?
     };
 
     while pos < msg_end {
@@ -699,7 +770,10 @@ pub fn decode_metadata_only(buf: &[u8]) -> Result<GlobalMetadata> {
                 return metadata::cbor_to_global_metadata(payload);
             }
             _ => {
-                // Skip this frame
+                // Skip this frame — total_length was already validated
+                // to fit in usize by FrameHeader::read_from callers;
+                // on 32-bit this may truncate but the message would not
+                // fit in memory anyway.
                 let frame_total = fh.total_length as usize;
                 pos += frame_total;
                 pos = (pos + 7) & !7; // align
@@ -726,6 +800,8 @@ pub fn scan(buf: &[u8]) -> Vec<(usize, usize)> {
             // Try to read preamble
             if let Ok(preamble) = Preamble::read_from(&buf[pos..]) {
                 if preamble.total_length > 0 {
+                    // Truncation is harmless: if total_length > usize::MAX the
+                    // bounds check below will fail and we skip this position.
                     let total = preamble.total_length as usize;
                     if pos + total <= buf.len() {
                         // Validate end magic
@@ -789,6 +865,7 @@ pub fn scan_file(file: &mut (impl std::io::Read + std::io::Seek)) -> Result<Vec<
         if &preamble_buf[..MAGIC.len()] == MAGIC {
             if let Ok(preamble) = Preamble::read_from(&preamble_buf) {
                 if preamble.total_length > 0 {
+                    // Truncation is harmless: bounds check below catches it.
                     let total = preamble.total_length as usize;
                     if pos + total <= file_len {
                         // Read end magic to validate
@@ -1063,6 +1140,7 @@ mod tests {
 
         let decoded_meta = decode_metadata_only(&msg).unwrap();
         assert_eq!(decoded_meta.version, 2);
+        // _extra_ is the CBOR key name (via serde rename)
         assert!(decoded_meta.extra.contains_key("test_key"));
     }
 
@@ -1264,14 +1342,12 @@ mod tests {
 
     // ── Phase 4: PrecederMetadata frame tests ────────────────────────────
 
-    /// Helper: build a preceder metadata CBOR blob with a single payload entry.
+    /// Helper: build a preceder metadata CBOR blob with a single base entry.
     fn make_preceder_cbor(entries: std::collections::BTreeMap<String, ciborium::Value>) -> Vec<u8> {
         let meta = GlobalMetadata {
             version: 2,
-            common: BTreeMap::new(),
-            payload: vec![entries],
-            reserved: BTreeMap::new(),
-            extra: BTreeMap::new(),
+            base: vec![entries],
+            ..Default::default()
         };
         crate::metadata::global_metadata_to_cbor(&meta).unwrap()
     }
@@ -1299,9 +1375,9 @@ mod tests {
         assert_eq!(decoded.preceder_payloads.len(), 1);
         assert!(decoded.preceder_payloads[0].is_some());
 
-        // Verify preceder merged into global_metadata.payload
-        assert_eq!(decoded.global_metadata.payload.len(), 1);
-        assert!(decoded.global_metadata.payload[0].contains_key("mars"));
+        // Verify preceder merged into global_metadata.base
+        assert_eq!(decoded.global_metadata.base.len(), 1);
+        assert!(decoded.global_metadata.base[0].contains_key("mars"));
     }
 
     #[test]
@@ -1345,11 +1421,11 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_preceder_with_multiple_payload_entries_rejected() {
-        // Preceder with 2 payload entries — should be rejected (must have exactly 1)
+    fn test_decode_preceder_with_multiple_base_entries_rejected() {
+        // Preceder with 2 base entries — should be rejected (must have exactly 1)
         let meta = GlobalMetadata {
             version: 2,
-            payload: vec![BTreeMap::new(), BTreeMap::new()],
+            base: vec![BTreeMap::new(), BTreeMap::new()],
             ..Default::default()
         };
         let bad_cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
@@ -1372,11 +1448,11 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_preceder_with_zero_payload_entries_rejected() {
-        // Preceder with 0 payload entries — should be rejected
+    fn test_decode_preceder_with_zero_base_entries_rejected() {
+        // Preceder with 0 base entries — should be rejected
         let meta = GlobalMetadata {
             version: 2,
-            payload: vec![],
+            base: vec![],
             ..Default::default()
         };
         let bad_cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
@@ -1440,9 +1516,9 @@ mod tests {
         assert!(decoded.preceder_payloads[0].is_some());
         assert!(decoded.preceder_payloads[1].is_none());
 
-        // Payload[0] should have preceder entry, payload[1] should be empty
-        assert!(decoded.global_metadata.payload[0].contains_key("note"));
-        assert!(!decoded.global_metadata.payload[1].contains_key("note"));
+        // base[0] should have preceder entry, base[1] should be empty
+        assert!(decoded.global_metadata.base[0].contains_key("note"));
+        assert!(!decoded.global_metadata.base[1].contains_key("note"));
     }
 
     #[test]
@@ -1456,18 +1532,16 @@ mod tests {
         );
         let preceder_cbor = make_preceder_cbor(prec_entries);
 
-        // Footer metadata with different payload[0]
-        let mut footer_payload = BTreeMap::new();
-        footer_payload.insert(
+        // Footer metadata with different base[0]
+        let mut footer_base = BTreeMap::new();
+        footer_base.insert(
             "source".to_string(),
             ciborium::Value::Text("footer".to_string()),
         );
         let footer_meta = GlobalMetadata {
             version: 2,
-            common: BTreeMap::new(),
-            payload: vec![footer_payload],
-            reserved: BTreeMap::new(),
-            extra: BTreeMap::new(),
+            base: vec![footer_base],
+            ..Default::default()
         };
         let footer_cbor = crate::metadata::global_metadata_to_cbor(&footer_meta).unwrap();
 
@@ -1480,8 +1554,8 @@ mod tests {
         let decoded = decode_message(&msg).unwrap();
 
         // Footer metadata is parsed last, so global_metadata would have
-        // footer payload. But after merging, preceder wins.
-        let source = decoded.global_metadata.payload[0]
+        // footer base. But after merging, preceder wins.
+        let source = decoded.global_metadata.base[0]
             .get("source")
             .and_then(|v| match v {
                 ciborium::Value::Text(s) => Some(s.as_str()),
@@ -1491,12 +1565,12 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_rejects_payload_count_exceeding_objects() {
-        // Footer metadata with 3 payload entries but only 1 data object
-        // should be rejected (payload.len > obj_count).
+    fn test_decode_rejects_base_count_exceeding_objects() {
+        // Footer metadata with 3 base entries but only 1 data object
+        // should be rejected (base.len > obj_count).
         let footer_meta = GlobalMetadata {
             version: 2,
-            payload: vec![BTreeMap::new(), BTreeMap::new(), BTreeMap::new()],
+            base: vec![BTreeMap::new(), BTreeMap::new(), BTreeMap::new()],
             ..Default::default()
         };
         let footer_cbor = crate::metadata::global_metadata_to_cbor(&footer_meta).unwrap();
@@ -1508,7 +1582,7 @@ mod tests {
         let result = decode_message(&msg);
         assert!(
             result.is_err(),
-            "payload with more entries than objects should be rejected"
+            "base with more entries than objects should be rejected"
         );
         let err = result.unwrap_err().to_string();
         assert!(

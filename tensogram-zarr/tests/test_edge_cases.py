@@ -72,7 +72,7 @@ class TestVariableNameSanitization:
         data = np.ones(3, dtype=np.float32)
         meta = {
             "version": 2,
-            "payload": [{"name": "temp/sfc"}],
+            "base": [{"name": "temp/sfc"}],
         }
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [({"type": "ntensor", "shape": [3], "dtype": "float32"}, data)])
@@ -96,7 +96,7 @@ class TestTripleDuplicateNames:
         data = np.ones(2, dtype=np.float32)
         meta = {
             "version": 2,
-            "payload": [{"name": "x"}, {"name": "x"}, {"name": "x"}],
+            "base": [{"name": "x"}, {"name": "x"}, {"name": "x"}],
         }
         with tensogram.TensogramFile.create(path) as f:
             f.append(
@@ -127,7 +127,7 @@ class TestZeroObjectMessage:
         path = str(tmp_path / "zero_obj.tgm")
         # Write a zero-object message via the append API with an empty list
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2, "common": {"signal": "start"}}, [])
+            f.append({"version": 2, "signal": "start"}, [])
 
         with TensogramStore(path, mode="r") as store:
             root_meta = json.loads(store._keys["zarr.json"])
@@ -326,3 +326,145 @@ class TestVariableNameEdgeCases:
 
     def test_none_meta_fallback(self):
         assert resolve_variable_name(5, None) == "object_5"
+
+    def test_common_meta_not_searched_for_name(self):
+        """common_meta is NOT searched for variable naming.
+
+        Variable names come exclusively from per-object metadata (base[i])
+        to avoid all objects in a message sharing the same name when
+        the name key only exists in extra metadata.
+        """
+        result = resolve_variable_name(0, {}, {"name": "from_extra"})
+        assert result == "object_0"
+
+
+# ---------------------------------------------------------------------------
+# _reserved_ key collision on write path
+# ---------------------------------------------------------------------------
+
+
+class TestReservedKeyWritePath:
+    def test_reserved_not_written_to_base(self, tmp_path: Path):
+        """Writing attributes with a '_reserved_' key must not create a
+        bogus _reserved_ entry in the TGM base that collides with the
+        encoder's auto-populated _reserved_.tensor."""
+        path = str(tmp_path / "reserved_write.tgm")
+        data = np.ones(3, dtype=np.float32)
+
+        with TensogramStore(path, mode="w") as store:
+            from tensogram_zarr.mapping import serialize_zarr_json
+
+            store._keys["zarr.json"] = serialize_zarr_json(
+                {
+                    "zarr_format": 3,
+                    "node_type": "group",
+                    "attributes": {},
+                }
+            )
+            store._write_group_attrs = {}
+
+            arr_meta = {
+                "zarr_format": 3,
+                "node_type": "array",
+                "shape": [3],
+                "data_type": "float32",
+                "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [3]}},
+                "codecs": [{"name": "bytes", "configuration": {"endian": "little"}}],
+                "fill_value": None,
+                "attributes": {
+                    "_tensogram_encoding": "none",
+                    "_tensogram_filter": "none",
+                    "_tensogram_compression": "none",
+                    "_reserved_": {"bogus": True},  # Should be filtered
+                    "units": "K",
+                },
+            }
+            store._write_arrays["temp"] = arr_meta
+            store._write_chunks["temp/c/0"] = data.tobytes()
+            store._dirty = True
+
+        # Read back and verify _reserved_ was not written as user data
+        with tensogram.TensogramFile.open(path) as f:
+            meta, objects = f.decode_message(0)
+            base = meta.base[0]
+            # The encoder's auto-populated _reserved_ is ok
+            # But the user's bogus {"bogus": True} should NOT appear
+            reserved = base.get("_reserved_", {})
+            if isinstance(reserved, dict):
+                assert "bogus" not in reserved
+
+
+# ---------------------------------------------------------------------------
+# Empty extra metadata
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyExtra:
+    def test_empty_extra_no_custom_attrs(self, simple_tgm: str):
+        """When meta.extra is empty, group zarr.json has only internal attrs."""
+        with TensogramStore(simple_tgm, mode="r") as store:
+            root = json.loads(store._keys["zarr.json"])
+            attrs = root["attributes"]
+            # Should have internal attrs but no custom ones
+            assert "_tensogram_version" in attrs
+            assert "_tensogram_variables" in attrs
+
+
+# ---------------------------------------------------------------------------
+# Zarr metadata key collision
+# ---------------------------------------------------------------------------
+
+
+class TestZarrKeyCollision:
+    def test_base_key_named_zarr_no_collision(self, tmp_path: Path):
+        """If meta.base[i] has a key named 'zarr' or 'chunks', it goes into
+        the array's attributes dict and doesn't collide with zarr metadata
+        at the top level."""
+        path = str(tmp_path / "collision.tgm")
+        data = np.ones(3, dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [{"zarr": "not_a_real_zarr_key", "chunks": 99}],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [({"type": "ntensor", "shape": [3], "dtype": "float32"}, data)])
+
+        with TensogramStore(path, mode="r") as store:
+            array_keys = [k for k in store._keys if k.endswith("/zarr.json") and k != "zarr.json"]
+            assert len(array_keys) == 1
+            arr_meta = json.loads(store._keys[array_keys[0]])
+            # User keys go into attributes, not top-level
+            assert arr_meta["node_type"] == "array"
+            attrs = arr_meta["attributes"]
+            assert attrs["zarr"] == "not_a_real_zarr_key"
+            assert attrs["chunks"] == 99
+            # Top-level zarr metadata should be unaffected
+            assert arr_meta["shape"] == [3]
+            assert arr_meta["data_type"] == "float32"
+
+
+# ---------------------------------------------------------------------------
+# Variable name resolution order
+# ---------------------------------------------------------------------------
+
+
+class TestVariableNameResolutionOrder:
+    def test_per_object_only_no_extra_fallback(self, tmp_path: Path):
+        """Variable names come from base[i] only, not from extra."""
+        path = str(tmp_path / "name_order.tgm")
+        data = np.ones(3, dtype=np.float32)
+        # Extra has a name, but base[0] does not
+        meta = {
+            "version": 2,
+            "name": "from_extra",
+            "base": [{}],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [({"type": "ntensor", "shape": [3], "dtype": "float32"}, data)])
+
+        with TensogramStore(path, mode="r") as store:
+            array_keys = [k for k in store._keys if k.endswith("/zarr.json") and k != "zarr.json"]
+            names = [k.split("/")[0] for k in array_keys]
+            # Should fallback to "object_0", NOT "from_extra"
+            assert "object_0" in names
+            assert "from_extra" not in names

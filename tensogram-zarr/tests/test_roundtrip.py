@@ -21,7 +21,7 @@ class TestTgmToZarrRoundTrip:
         # Write with tensogram
         with tensogram.TensogramFile.create(path) as f:
             f.append(
-                {"version": 2, "common": {"source": "test"}},
+                {"version": 2, "source": "test"},
                 [
                     ({"type": "ntensor", "shape": [4, 5], "dtype": "float32"}, original),
                 ],
@@ -49,7 +49,7 @@ class TestTgmToZarrRoundTrip:
             f.append(
                 {
                     "version": 2,
-                    "payload": [{"name": "floats"}, {"name": "ints"}],
+                    "base": [{"name": "floats"}, {"name": "ints"}],
                 },
                 [
                     ({"type": "ntensor", "shape": [3], "dtype": "float32"}, f32),
@@ -143,7 +143,7 @@ class TestStoreWriteReadRoundTrip:
         # Read via raw tensogram and check metadata
         with tensogram.TensogramFile.open(path) as f:
             meta, objects = f.decode_message(0)
-            assert meta.common.get("source") == "unittest"
+            assert meta.extra.get("source") == "unittest"
             _desc, arr = objects[0]
             np.testing.assert_array_equal(arr, [273, 280, 290])
 
@@ -191,7 +191,7 @@ class TestDuplicateNames:
         # Two objects with the same name
         meta = {
             "version": 2,
-            "payload": [
+            "base": [
                 {"name": "field"},
                 {"name": "field"},
             ],

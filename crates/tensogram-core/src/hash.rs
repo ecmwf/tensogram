@@ -40,9 +40,9 @@ pub fn verify_hash(data: &[u8], descriptor: &HashDescriptor) -> Result<()> {
     let algorithm = match HashAlgorithm::parse(&descriptor.hash_type) {
         Ok(algo) => algo,
         Err(_) => {
-            eprintln!(
-                "warning: unknown hash algorithm '{}', skipping verification",
-                descriptor.hash_type
+            tracing::warn!(
+                hash_type = %descriptor.hash_type,
+                "unknown hash algorithm, skipping verification"
             );
             return Ok(());
         }

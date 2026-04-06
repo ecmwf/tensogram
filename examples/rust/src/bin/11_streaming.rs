@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── 1. Stream to an in-memory buffer ────────────────────────────────────
     let meta = GlobalMetadata {
         version: 2,
-        common: {
+        extra: {
             let mut m = BTreeMap::new();
             m.insert(
                 "centre".to_string(),
@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         decoded_meta.version,
         objects.len()
     );
-    println!("  Common metadata: {:?}", decoded_meta.common);
+    println!("  Base metadata: {:?}", decoded_meta.base);
 
     for (i, (desc, data)) in objects.iter().enumerate() {
         let values: Vec<f32> = data

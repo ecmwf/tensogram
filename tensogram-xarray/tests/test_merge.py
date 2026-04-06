@@ -103,10 +103,13 @@ class TestHypercubeDataCorrectness:
             expected = {}
             for msg_idx in range(len(f)):
                 raw = f.read_message(msg_idx)
-                _meta, descs_and_data = tensogram.decode(raw)
-                desc, arr = descs_and_data[0]
-                param = desc.params.get("mars", {}).get("param", "")
-                date = desc.params.get("mars", {}).get("date", "")
+                meta, descs_and_data = tensogram.decode(raw)
+                _desc, arr = descs_and_data[0]
+                # Per-object metadata is in meta.base[0]
+                base_entry = meta.base[0] if meta.base else {}
+                mars = base_entry.get("mars", {})
+                param = mars.get("param", "")
+                date = mars.get("date", "")
                 expected[(param, date)] = np.asarray(arr)
 
         expected_dates = ["20260401", "20260402"]

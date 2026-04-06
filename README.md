@@ -23,7 +23,7 @@ Tensogram defines a network-transmissible binary message format, not a file form
 
 ## Features
 
-- **Self-describing messages** — CBOR-encoded metadata with structured `common`/`payload`/`reserved` sections and automatic provenance (encoder version, timestamp, UUID)
+- **Self-describing messages** — CBOR-encoded metadata with `base` (per-object entries), `_reserved_` (library internals), and `_extra_` (client annotations) sections, plus automatic provenance (encoder version, timestamp, UUID)
 - **N-Tensor support** — multiple tensors of different dtypes per message (float16 through float64, int8 through int64, complex, bfloat16)
 - **No panics** — robust library where all fallible operations return `Result<T, TensogramError>`
 - **Streaming encoder** — progressive encode/transmit without buffering the full message; preceder metadata frames enable consumer-side streaming decode
@@ -59,7 +59,7 @@ See `examples/rust/` for MARS metadata, streaming, compression, file API, and mo
 ```python
 data = np.random.randn(100, 200).astype(np.float32)
 msg = tensogram.encode(
-    {"version": 2, "common": {"mars": {"param": "2t"}}},
+    {"version": 2, "base": [{"mars": {"param": "2t"}}]},
     [({"type": "ntensor", "shape": [100, 200], "dtype": "float32",
        "encoding": "simple_packing", "compression": "szip"}, data)],
 )

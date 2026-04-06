@@ -60,16 +60,17 @@ def create_streaming_tgm(path: str) -> int:
         for param, long_name, shape in PARAMS:
             meta = {
                 "version": 2,
-                "common": {
-                    "mars": {
-                        "class": "od",
-                        "date": "20260401",
-                        "step": 0,
-                        "type": "fc",
+                "base": [
+                    {
+                        "mars": {
+                            "class": "od",
+                            "date": "20260401",
+                            "step": 0,
+                            "type": "fc",
+                            "param": param,
+                        },
+                        "long_name": long_name,
                     },
-                },
-                "payload": [
-                    {"mars": {"param": param}, "long_name": long_name},
                 ],
             }
             desc = {
@@ -158,8 +159,8 @@ def consume_stream(url: str):
                 desc, arr = msg.objects[0]
 
                 param = "unknown"
-                if msg.metadata.payload:
-                    mars = msg.metadata.payload[0].get("mars", {})
+                if msg.metadata.base:
+                    mars = msg.metadata.base[0].get("mars", {})
                     if isinstance(mars, dict):
                         param = mars.get("param", "unknown")
 

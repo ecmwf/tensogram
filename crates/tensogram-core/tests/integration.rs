@@ -36,8 +36,8 @@ fn make_mars_pair(shape: Vec<u64>, param: &str) -> (GlobalMetadata, DataObjectDe
         ciborium::Value::Text("20260401".to_string()),
     );
 
-    let mut extra = BTreeMap::new();
-    extra.insert(
+    let mut base_entry = BTreeMap::new();
+    base_entry.insert(
         "mars".to_string(),
         ciborium::Value::Map(
             mars_global
@@ -49,7 +49,7 @@ fn make_mars_pair(shape: Vec<u64>, param: &str) -> (GlobalMetadata, DataObjectDe
 
     let global = GlobalMetadata {
         version: 2,
-        extra,
+        base: vec![base_entry],
         ..Default::default()
     };
 
@@ -493,9 +493,9 @@ fn test_namespaced_metadata_round_trip() {
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let meta = decode_metadata(&encoded).unwrap();
 
-    // Verify mars namespace in global metadata
-    assert!(meta.extra.contains_key("mars"));
-    if let ciborium::Value::Map(entries) = &meta.extra["mars"] {
+    // Verify mars namespace in base[0] metadata
+    assert!(meta.base[0].contains_key("mars"));
+    if let ciborium::Value::Map(entries) = &meta.base[0]["mars"] {
         let class_val = entries
             .iter()
             .find(|(k, _)| matches!(k, ciborium::Value::Text(s) if s == "class"))
@@ -1274,69 +1274,51 @@ fn test_validate_empty_obj_type() {
 // ── Metadata common/payload/reserved round-trip ─────────────────────────────
 
 #[test]
-fn test_metadata_common_payload_reserved_round_trip() {
+fn test_metadata_base_reserved_round_trip() {
     let (_, desc) = make_float32_descriptor(vec![4]);
     let data = vec![0u8; 4 * 4];
 
-    let mut common = BTreeMap::new();
-    common.insert(
+    // Pre-populate one base entry with per-object metadata (merged common+payload).
+    let mut base_entry = BTreeMap::new();
+    base_entry.insert(
         "centre".to_string(),
         ciborium::Value::Text("ecmwf".to_string()),
     );
-    common.insert(
+    base_entry.insert(
         "date".to_string(),
         ciborium::Value::Integer(20260404.into()),
     );
-
-    // Pre-populate one payload entry with per-object metadata.
-    let mut obj_entry = BTreeMap::new();
-    obj_entry.insert(
+    base_entry.insert(
         "custom_key".to_string(),
         ciborium::Value::Text("hello".to_string()),
-    );
-    let payload = vec![obj_entry];
-
-    let mut reserved = BTreeMap::new();
-    reserved.insert(
-        "future_field".to_string(),
-        ciborium::Value::Text("placeholder".to_string()),
     );
 
     let global = GlobalMetadata {
         version: 2,
-        common: common.clone(),
-        payload: payload.clone(),
-        reserved: reserved.clone(),
-        extra: BTreeMap::new(),
+        base: vec![base_entry],
+        ..Default::default()
     };
 
     let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap();
 
     assert_eq!(decoded_meta.version, 2);
-    assert_eq!(decoded_meta.common, common);
-    // Payload must have one entry with user-supplied + auto-populated keys.
-    assert_eq!(decoded_meta.payload.len(), 1);
+    // base must have one entry with user-supplied + auto-populated keys.
+    assert_eq!(decoded_meta.base.len(), 1);
     assert_eq!(
-        decoded_meta.payload[0].get("custom_key"),
+        decoded_meta.base[0].get("centre"),
+        Some(&ciborium::Value::Text("ecmwf".to_string()))
+    );
+    assert_eq!(
+        decoded_meta.base[0].get("custom_key"),
         Some(&ciborium::Value::Text("hello".to_string()))
     );
-    // Encoder must auto-populate ndim/shape/strides/dtype.
+    // Encoder must auto-populate _reserved_.tensor with ndim/shape/strides/dtype.
     assert!(
-        decoded_meta.payload[0].contains_key("ndim"),
-        "encoder must auto-populate ndim"
+        decoded_meta.base[0].contains_key("_reserved_"),
+        "encoder must auto-populate _reserved_ in base entries"
     );
-    assert!(
-        decoded_meta.payload[0].contains_key("dtype"),
-        "encoder must auto-populate dtype"
-    );
-    // User-supplied reserved keys must be preserved.
-    assert_eq!(
-        decoded_meta.reserved.get("future_field"),
-        reserved.get("future_field"),
-        "user-supplied reserved keys must survive round-trip"
-    );
-    // Provenance fields auto-populated by the encoder.
+    // Provenance fields auto-populated by the encoder at message level.
     assert!(
         decoded_meta.reserved.contains_key("encoder"),
         "reserved must contain encoder provenance"
@@ -1357,7 +1339,7 @@ fn test_metadata_empty_sections_not_serialized() {
     let (_, desc) = make_float32_descriptor(vec![4]);
     let data = vec![0u8; 4 * 4];
 
-    // Only set 'extra', leave common/payload/reserved empty
+    // Only set 'extra', leave base/reserved empty
     let mut extra = BTreeMap::new();
     extra.insert(
         "mars".to_string(),
@@ -1377,18 +1359,17 @@ fn test_metadata_empty_sections_not_serialized() {
     let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap();
 
     assert_eq!(decoded_meta.version, 2);
-    assert!(decoded_meta.common.is_empty());
-    // Encoder auto-populates payload with one entry per object.
+    // Encoder auto-populates base with one entry per object.
     assert_eq!(
-        decoded_meta.payload.len(),
+        decoded_meta.base.len(),
         1,
-        "encoder must create one payload entry per object"
+        "encoder must create one base entry per object"
     );
     assert!(
-        decoded_meta.payload[0].contains_key("ndim"),
-        "encoder must auto-populate ndim"
+        decoded_meta.base[0].contains_key("_reserved_"),
+        "encoder must auto-populate _reserved_.tensor in base entries"
     );
-    // Reserved is no longer empty — encoder populates provenance.
+    // Reserved at message level — encoder populates provenance.
     assert!(
         decoded_meta.reserved.contains_key("encoder"),
         "reserved must contain encoder provenance"
@@ -1418,7 +1399,7 @@ fn test_deep_nested_metadata_round_trip() {
     let max_depth: usize = 20;
 
     // Build a nested CborValue::Map chain (21 levels total):
-    //   common["depth_0"] → depth_1 → depth_2 → … → depth_20 → "leaf_at_20"
+    //   base[0]["depth_0"] → depth_1 → depth_2 → … → depth_20 → "leaf_at_20"
     let mut value = ciborium::Value::Text(format!("leaf_at_{max_depth}"));
     for d in (0..max_depth).rev() {
         value = ciborium::Value::Map(vec![(
@@ -1427,28 +1408,24 @@ fn test_deep_nested_metadata_round_trip() {
         )]);
     }
 
-    let mut common = BTreeMap::new();
-    common.insert("depth_0".to_string(), value.clone());
-
-    // Also put a nested chain in a payload entry.
-    let mut payload_entry = BTreeMap::new();
-    payload_entry.insert("nested".to_string(), value);
+    // Put nested chains in a base entry (both as "depth_0" and "nested").
+    let mut base_entry = BTreeMap::new();
+    base_entry.insert("depth_0".to_string(), value.clone());
+    base_entry.insert("nested".to_string(), value);
 
     let global = GlobalMetadata {
         version: 2,
-        common: common.clone(),
-        payload: vec![payload_entry],
+        base: vec![base_entry],
         ..Default::default()
     };
 
     let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let (decoded, _) = decode(&msg, &DecodeOptions::default()).unwrap();
 
-    // Verify common round-trips: walk depth_0.depth_1.….depth_20 == "leaf_at_20"
-    let mut current = decoded
-        .common
+    // Verify base[0] round-trips: walk depth_0.depth_1.….depth_20 == "leaf_at_20"
+    let mut current = decoded.base[0]
         .get("depth_0")
-        .expect("common must have depth_0");
+        .expect("base[0] must have depth_0");
     for d in 1..=max_depth {
         let key = format!("depth_{d}");
         current = cbor_map_lookup(current, &key)
@@ -1460,18 +1437,18 @@ fn test_deep_nested_metadata_round_trip() {
         "leaf value must survive round-trip at depth {max_depth}"
     );
 
-    // Verify payload entry round-trips the same way.
-    let mut current = decoded.payload[0]
+    // Verify the "nested" key in the same base entry round-trips the same way.
+    let mut current = decoded.base[0]
         .get("nested")
-        .expect("payload entry must have 'nested'");
+        .expect("base[0] entry must have 'nested'");
     for d in 1..=max_depth {
         let key = format!("depth_{d}");
         current = cbor_map_lookup(current, &key)
-            .unwrap_or_else(|| panic!("missing key {key} in payload at depth {d}"));
+            .unwrap_or_else(|| panic!("missing key {key} in nested at depth {d}"));
     }
     assert_eq!(
         current,
         &ciborium::Value::Text(format!("leaf_at_{max_depth}")),
-        "payload leaf must survive round-trip at depth {max_depth}"
+        "nested leaf must survive round-trip at depth {max_depth}"
     );
 }

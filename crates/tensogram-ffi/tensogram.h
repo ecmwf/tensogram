@@ -297,9 +297,7 @@ uint64_t tgm_metadata_version(const tgm_metadata_t *meta);
 /**
  * Returns the number of objects described in the global metadata.
  *
- * In wire format v2, `GlobalMetadata` does not embed per-object descriptors,
- * so this function always returns 0. Use `tgm_message_num_objects` on a
- * decoded `TgmMessage` to get the actual object count.
+ * Returns the length of the `base` array, which has one entry per data object.
  */
 size_t tgm_metadata_num_objects(const tgm_metadata_t *meta);
 

@@ -37,23 +37,16 @@ def multi_object_tgm(tmp_dir: Path) -> str:
 
     meta = {
         "version": 2,
-        "common": {"mars": {"class": "od", "type": "fc"}},
-        "payload": [
+        "base": [
             {"mars": {"param": "2t"}},
             {"mars": {"param": "sp"}},
             {"mars": {"param": "q"}},
         ],
     }
     descs_and_data = [
-        ({"type": "ntensor", "shape": [4, 8], "dtype": "float64", "mars": {"param": "2t"}}, temp),
-        (
-            {"type": "ntensor", "shape": [4, 8], "dtype": "float64", "mars": {"param": "sp"}},
-            pressure,
-        ),
-        (
-            {"type": "ntensor", "shape": [4, 8], "dtype": "float32", "mars": {"param": "q"}},
-            humidity,
-        ),
+        ({"type": "ntensor", "shape": [4, 8], "dtype": "float64"}, temp),
+        ({"type": "ntensor", "shape": [4, 8], "dtype": "float64"}, pressure),
+        ({"type": "ntensor", "shape": [4, 8], "dtype": "float32"}, humidity),
     ]
     with tensogram.TensogramFile.create(path) as f:
         f.append(meta, descs_and_data)
@@ -67,17 +60,16 @@ def mars_metadata_tgm(tmp_dir: Path) -> str:
     data = np.ones((3, 5), dtype=np.float32) * 273.15
     meta = {
         "version": 2,
-        "common": {
-            "mars": {
-                "class": "od",
-                "type": "fc",
-                "stream": "oper",
-                "expver": "0001",
-                "date": "20260401",
-                "time": "1200",
-            },
+        # Message-level metadata goes into extra (unknown top-level keys)
+        "mars": {
+            "class": "od",
+            "type": "fc",
+            "stream": "oper",
+            "expver": "0001",
+            "date": "20260401",
+            "time": "1200",
         },
-        "payload": [
+        "base": [
             {"mars": {"param": "2t", "levtype": "sfc"}},
         ],
     }
@@ -95,7 +87,7 @@ def int_types_tgm(tmp_dir: Path) -> str:
     u16 = np.array([10, 20, 30], dtype=np.uint16)
     meta = {
         "version": 2,
-        "payload": [
+        "base": [
             {"name": "counts"},
             {"name": "flags"},
         ],

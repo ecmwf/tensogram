@@ -60,22 +60,24 @@ The converter reads the following MARS namespace keys from each GRIB message usi
 | `subCentre` | Sub-centre | `0` |
 | `generatingProcessIdentifier` | Process ID | `148` |
 
-## Partitioning Algorithm
+## Storage in Tensogram
 
 Given N GRIB messages in merge-all mode:
 
 1. Extract all MARS keys from each message using `read_key_dynamic`
-2. For each key, check if the value is identical across all N messages
-3. **Common**: key present in all messages with the same value → `GlobalMetadata.common`
-4. **Varying**: key differs → stored in each object's `DataObjectDescriptor.params`
+2. Store ALL keys for each GRIB message in the corresponding `base[i]["mars"]` entry independently
+3. There is no common/varying partitioning in the output — each `base[i]` entry is self-contained
 
 ```mermaid
 graph TD
     A[N GRIB messages] --> B[Extract MARS keys from each]
-    B --> C{Key identical across all?}
-    C -->|Yes| D[GlobalMetadata.common]
-    C -->|No| E[DataObjectDescriptor.params]
+    B --> C["Store in base[i] independently"]
+    C --> D["base[0]: all keys from GRIB msg 0"]
+    C --> E["base[1]: all keys from GRIB msg 1"]
+    C --> F["base[N-1]: all keys from GRIB msg N-1"]
 ```
+
+If you need to extract commonalities after decoding (e.g. for display), use the `compute_common()` utility in software.
 
 ## Sentinel Handling
 

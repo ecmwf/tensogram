@@ -21,12 +21,12 @@ fn make_message(param: &str, fill: u8) -> (GlobalMetadata, DataObjectDescriptor,
         Value::Text("param".into()),
         Value::Text(param.into()),
     )]);
-    let mut common = BTreeMap::new();
-    common.insert("mars".to_string(), mars);
+    let mut entry = BTreeMap::new();
+    entry.insert("mars".to_string(), mars);
 
     let global_meta = GlobalMetadata {
         version: 2,
-        common,
+        base: vec![entry],
         ..Default::default()
     };
 
@@ -73,7 +73,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for (i, msg_slice) in messages(&buf).enumerate() {
         let (meta, _) = decode(msg_slice, &DecodeOptions::default())?;
-        let param = get_text(&meta.common["mars"], "param");
+        let param = meta
+            .base
+            .first()
+            .and_then(|e| e.get("mars"))
+            .map(|m| get_text(m, "param"))
+            .unwrap_or("?");
         println!("  [{i}] param={param}  bytes={}", msg_slice.len());
     }
 
@@ -125,7 +130,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (i, raw) in file_iter.enumerate() {
         let raw = raw?;
         let (meta, _) = decode(&raw, &DecodeOptions::default())?;
-        let param = get_text(&meta.common["mars"], "param");
+        let param = meta
+            .base
+            .first()
+            .and_then(|e| e.get("mars"))
+            .map(|m| get_text(m, "param"))
+            .unwrap_or("?");
         println!("  [{i}] param={param}  bytes={}", raw.len());
 
         // Nested: iterate objects within this message

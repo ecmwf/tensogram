@@ -113,10 +113,15 @@ class TestVariableNaming:
     def test_fallback_to_index(self):
         assert resolve_variable_name(3, {}) == "object_3"
 
-    def test_common_meta_fallback(self):
-        assert resolve_variable_name(0, {}, {"mars": {"param": "global_var"}}) == "global_var"
+    def test_common_meta_not_searched(self):
+        """common_meta (extra) is NOT consulted for variable naming.
 
-    def test_per_object_takes_priority(self):
+        Variable names come exclusively from per-object metadata (base[i])
+        to avoid all objects in a message sharing the same name.
+        """
+        assert resolve_variable_name(0, {}, {"mars": {"param": "global_var"}}) == "object_0"
+
+    def test_per_object_only(self):
         per = {"mars": {"param": "local"}}
         com = {"mars": {"param": "global"}}
         assert resolve_variable_name(0, per, com) == "local"
@@ -133,8 +138,7 @@ class TestGroupZarrJson:
     def test_basic_structure(self):
         class FakeMeta:
             version = 2
-            common = {"mars": {"class": "od"}}
-            extra = {}
+            extra = {"mars": {"class": "od"}}
 
         result = build_group_zarr_json(FakeMeta(), ["temp", "pressure"])
         assert result["zarr_format"] == 3

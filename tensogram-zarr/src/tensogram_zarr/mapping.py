@@ -128,11 +128,7 @@ def build_group_zarr_json(
     """
     attrs: dict[str, Any] = {}
 
-    # Merge common metadata into attributes
-    if hasattr(meta, "common") and meta.common:
-        attrs.update(meta.common)
-
-    # Merge extra metadata
+    # Merge extra metadata (message-level annotations)
     if hasattr(meta, "extra") and meta.extra:
         attrs.update(meta.extra)
 
@@ -160,7 +156,7 @@ def build_array_zarr_json(
     desc : tensogram.DataObjectDescriptor
         The decoded object descriptor.
     per_object_meta : dict, optional
-        Per-object metadata from ``meta.payload[i]``.
+        Per-object metadata from ``meta.base[i]``.
 
     Returns
     -------
@@ -332,8 +328,14 @@ def resolve_variable_name(
 
     Tries ``variable_key`` first if given, then ``_VARIABLE_NAME_KEYS``,
     then falls back to ``object_<index>``.
+
+    Only ``per_object_meta`` (from ``meta.base[i]``) is consulted for
+    naming.  ``common_meta`` (from ``meta.extra``) is accepted for API
+    compatibility but is **not** searched — variable names should come
+    from per-object metadata to avoid all objects in a message sharing
+    the same name.
     """
-    sources = [per_object_meta or {}, common_meta or {}]
+    source = per_object_meta or {}
 
     # Try explicit key first
     keys_to_try = [variable_key] if variable_key else []
@@ -342,10 +344,9 @@ def resolve_variable_name(
     for key in keys_to_try:
         if key is None:
             continue
-        for src in sources:
-            val = _dotted_get(src, key)
-            if val is not None:
-                return str(val)
+        val = _dotted_get(source, key)
+        if val is not None:
+            return str(val)
 
     return f"object_{obj_index}"
 

@@ -34,8 +34,9 @@ pub enum FrameType {
     FooterIndex = 6,
     FooterMetadata = 7,
     /// Per-object metadata frame that immediately precedes a DataObject frame.
-    /// Carries a GlobalMetadata CBOR with `common` empty and a single-entry
-    /// `payload` array containing metadata for the next data object.
+    /// Carries a GlobalMetadata CBOR with a single-entry `base` array
+    /// containing metadata for the next data object. `_reserved_` and
+    /// `_extra_` are empty in the preceder.
     PrecederMetadata = 8,
 }
 
@@ -232,18 +233,27 @@ impl Postamble {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/// Read a big-endian u16 from `buf` at `offset`.
+///
+/// # Safety invariant
+/// Callers must ensure `offset + 2 <= buf.len()`.  All call sites
+/// in this crate validate buffer length before calling these helpers.
 pub(crate) fn read_u16_be(buf: &[u8], offset: usize) -> u16 {
     let mut bytes = [0u8; 2];
     bytes.copy_from_slice(&buf[offset..offset + 2]);
     u16::from_be_bytes(bytes)
 }
 
+/// Read a big-endian u32 from `buf` at `offset`.
+/// See [`read_u16_be`] for safety invariant.
 pub(crate) fn read_u32_be(buf: &[u8], offset: usize) -> u32 {
     let mut bytes = [0u8; 4];
     bytes.copy_from_slice(&buf[offset..offset + 4]);
     u32::from_be_bytes(bytes)
 }
 
+/// Read a big-endian u64 from `buf` at `offset`.
+/// See [`read_u16_be`] for safety invariant.
 pub(crate) fn read_u64_be(buf: &[u8], offset: usize) -> u64 {
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&buf[offset..offset + 8]);

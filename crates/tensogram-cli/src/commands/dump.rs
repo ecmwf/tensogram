@@ -53,8 +53,17 @@ pub fn run(
                         desc.obj_type, desc.dtype, desc.shape
                     );
                 }
-                for (key, value) in &global_meta.extra {
-                    println!("  {key}: {}", output::format_json_value(value));
+                for (j, entry) in global_meta.base.iter().enumerate() {
+                    println!("  base[{j}]:");
+                    for (key, value) in entry {
+                        println!("    {key}: {}", output::format_json_value(value));
+                    }
+                }
+                if !global_meta.extra.is_empty() {
+                    println!("  extra:");
+                    for (key, value) in &global_meta.extra {
+                        println!("    {key}: {}", output::format_json_value(value));
+                    }
                 }
                 println!();
             }

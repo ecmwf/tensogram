@@ -26,7 +26,7 @@ Note: `canonicalize()` returns `Result<()>` and propagates errors rather than pa
 
 ## BTreeMap Throughout
 
-The `extra` field in `GlobalMetadata` and the `params` field in `DataObjectDescriptor` are `BTreeMap<String, ciborium::Value>`. This:
+The `extra` (serialized as `_extra_`), `reserved` (serialized as `_reserved_`), and `base` entry fields in `GlobalMetadata`, as well as the `params` field in `DataObjectDescriptor`, are `BTreeMap<String, ciborium::Value>`. This:
 
 - Gives alphabetical iteration order for string keys (which matches CBOR canonical order for short strings).
 - Avoids the non-determinism of `HashMap`.

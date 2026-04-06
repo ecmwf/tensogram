@@ -8,9 +8,7 @@ use tensogram_core::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
 use tensogram_core::{encode, Dtype, EncodeOptions};
 
 use crate::error::GribError;
-use crate::metadata::{
-    extract_all_namespace_keys, extract_mars_keys, partition_grib_keys, partition_keys, GribKeySet,
-};
+use crate::metadata::{extract_all_namespace_keys, extract_mars_keys, GribKeySet};
 
 /// Options for GRIB → Tensogram conversion.
 #[derive(Debug, Clone)]
@@ -32,8 +30,8 @@ pub enum Grouping {
     /// Each GRIB message becomes one Tensogram message with one data object.
     OneToOne,
     /// All GRIB messages merged into a single Tensogram message
-    /// with N data objects. Common MARS keys go to `common["mars"]`,
-    /// varying keys go to `payload[i]["mars"]`.
+    /// with N data objects. Each `base[i]` holds ALL metadata
+    /// for that object independently.
     MergeAll,
 }
 
@@ -63,13 +61,11 @@ pub(crate) struct GribExtracted {
 /// and MARS namespace keys (discovered dynamically), partitions keys into
 /// common vs per-object, and produces one or more Tensogram messages.
 ///
-/// MARS keys are stored under a `"mars"` sub-object in both
-/// `common["mars"]` (shared keys) and `payload[i]["mars"]` (varying keys).
+/// MARS keys are stored under `base[i]["mars"]` for each data object.
 /// The ecCodes `gridType` key is stored as `"grid"` within the mars namespace.
 ///
 /// When `preserve_all_keys` is enabled, all non-mars namespace keys are
-/// stored under `common["grib"]` / `payload[i]["grib"]` with the same
-/// common/varying partitioning.
+/// stored under `base[i]["grib"]` for each data object.
 pub fn convert_grib_file(path: &Path, options: &ConvertOptions) -> Result<Vec<Vec<u8>>, GribError> {
     let mut handle = CodesFile::new_from_file(path, ProductKind::GRIB)?;
 
@@ -126,7 +122,7 @@ pub fn convert_grib_file(path: &Path, options: &ConvertOptions) -> Result<Vec<Ve
 
 /// One GRIB → one Tensogram message (1:1 mapping).
 ///
-/// All MARS keys go to `common["mars"]`; all grib keys to `common["grib"]`.
+/// All MARS keys go to `base[0]["mars"]`; all grib keys to `base[0]["grib"]`.
 fn convert_one_to_one(
     messages: &[GribExtracted],
     encode_options: &EncodeOptions,
@@ -134,19 +130,19 @@ fn convert_one_to_one(
     let mut results = Vec::with_capacity(messages.len());
 
     for msg in messages {
-        let mut common = BTreeMap::new();
+        let mut entry = BTreeMap::new();
         if !msg.keys.keys.is_empty() {
-            common.insert("mars".to_string(), btree_to_cbor_map(&msg.keys.keys));
+            entry.insert("mars".to_string(), btree_to_cbor_map(&msg.keys.keys));
         }
         if let Some(grib) = &msg.grib_keys {
             if !grib.is_empty() {
-                common.insert("grib".to_string(), nested_btree_to_cbor_map(grib));
+                entry.insert("grib".to_string(), nested_btree_to_cbor_map(grib));
             }
         }
 
         let global_meta = GlobalMetadata {
             version: 2,
-            common,
+            base: vec![entry],
             ..Default::default()
         };
 
@@ -162,50 +158,23 @@ fn convert_one_to_one(
 
 /// All GRIBs → one Tensogram message with N data objects.
 ///
-/// Common MARS keys → `common["mars"]`, varying → `payload[i]["mars"]`.
-/// Common grib keys → `common["grib"]`, varying → `payload[i]["grib"]`.
+/// Each object gets ALL its metadata in `base[i]` independently.
+/// No common/varying partitioning is needed — each base entry is self-contained.
 fn convert_merge_all(
     messages: &[GribExtracted],
     encode_options: &EncodeOptions,
 ) -> Result<Vec<Vec<u8>>, GribError> {
-    // Partition mars keys.
-    let all_mars: Vec<&GribKeySet> = messages.iter().map(|m| &m.keys).collect();
-    let (common_mars, varying_mars) = partition_keys(&all_mars);
-
-    let mut common = BTreeMap::new();
-    if !common_mars.is_empty() {
-        common.insert("mars".to_string(), btree_to_cbor_map(&common_mars));
-    }
-
-    // Partition grib namespace keys (if present).
-    let has_grib = messages.iter().any(|m| m.grib_keys.is_some());
-    let empty_grib = BTreeMap::new();
-    let (common_grib, varying_grib) = if has_grib {
-        let all_grib: Vec<&BTreeMap<String, BTreeMap<String, CborValue>>> = messages
-            .iter()
-            .map(|m| m.grib_keys.as_ref().unwrap_or(&empty_grib))
-            .collect();
-        partition_grib_keys(&all_grib)
-    } else {
-        (BTreeMap::new(), vec![])
-    };
-
-    if !common_grib.is_empty() {
-        common.insert("grib".to_string(), nested_btree_to_cbor_map(&common_grib));
-    }
-
-    // Build per-object payload entries with varying mars and grib keys.
-    let payload: Vec<BTreeMap<String, CborValue>> = (0..messages.len())
-        .map(|i| {
+    // Build per-object base entries — each entry holds ALL metadata for that object.
+    let base: Vec<BTreeMap<String, CborValue>> = messages
+        .iter()
+        .map(|msg| {
             let mut entry = BTreeMap::new();
-            if let Some(v) = varying_mars.get(i) {
-                if !v.is_empty() {
-                    entry.insert("mars".to_string(), btree_to_cbor_map(v));
-                }
+            if !msg.keys.keys.is_empty() {
+                entry.insert("mars".to_string(), btree_to_cbor_map(&msg.keys.keys));
             }
-            if let Some(v) = varying_grib.get(i) {
-                if !v.is_empty() {
-                    entry.insert("grib".to_string(), nested_btree_to_cbor_map(v));
+            if let Some(grib) = &msg.grib_keys {
+                if !grib.is_empty() {
+                    entry.insert("grib".to_string(), nested_btree_to_cbor_map(grib));
                 }
             }
             entry
@@ -214,8 +183,7 @@ fn convert_merge_all(
 
     let global_meta = GlobalMetadata {
         version: 2,
-        common,
-        payload,
+        base,
         ..Default::default()
     };
 
@@ -262,8 +230,8 @@ fn nested_btree_to_cbor_map(map: &BTreeMap<String, BTreeMap<String, CborValue>>)
 /// Byte order is little-endian: ecCodes returns native f64 values which we
 /// serialize as LE bytes. The descriptor records this so decoders know.
 ///
-/// `params` is empty — MARS keys are carried in `GlobalMetadata.common["mars"]`
-/// and `GlobalMetadata.payload[i]["mars"]`, not in the descriptor.
+/// `params` is empty — MARS keys are carried in `GlobalMetadata.base[i]["mars"]`,
+/// not in the descriptor.
 fn build_data_object(values: &[f64], shape: &[u64]) -> (DataObjectDescriptor, Vec<u8>) {
     let ndim = shape.len() as u64;
     let mut strides = vec![0u64; shape.len()];

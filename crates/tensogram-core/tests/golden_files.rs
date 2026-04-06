@@ -106,8 +106,8 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
         mars.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
         mars.insert("type".to_string(), ciborium::Value::Text("fc".to_string()));
         mars.insert("step".to_string(), ciborium::Value::Integer(12.into()));
-        let mut common = BTreeMap::new();
-        common.insert(
+        let mut base_entry = BTreeMap::new();
+        base_entry.insert(
             "mars".to_string(),
             ciborium::Value::Map(
                 mars.into_iter()
@@ -117,7 +117,7 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
         );
         let meta = GlobalMetadata {
             version: 2,
-            common,
+            base: vec![base_entry],
             ..Default::default()
         };
         let desc = make_descriptor(vec![2, 3], Dtype::Float64);
@@ -214,7 +214,6 @@ fn test_golden_files_are_deterministic() {
                 .unwrap_or_else(|e| panic!("{filename}[{i}] generated decode: {e}"));
 
             assert_eq!(c_meta.version, g_meta.version, "{filename}[{i}] version");
-            assert_eq!(c_meta.common, g_meta.common, "{filename}[{i}] common");
             assert_eq!(c_meta.extra, g_meta.extra, "{filename}[{i}] extra");
             assert_eq!(c_objs.len(), g_objs.len(), "{filename}[{i}] object count");
 
@@ -296,10 +295,10 @@ fn test_golden_mars_metadata() {
     let (meta, objects) = decode::decode(&data, &DecodeOptions::default()).unwrap();
 
     assert_eq!(meta.version, 2);
-    assert!(meta.common.contains_key("mars"));
+    assert!(meta.base[0].contains_key("mars"));
 
-    // Verify MARS keys are under common["mars"]
-    if let ciborium::Value::Map(mars) = &meta.common["mars"] {
+    // Verify MARS keys are under base[0]["mars"]
+    if let ciborium::Value::Map(mars) = &meta.base[0]["mars"] {
         let keys: Vec<&str> = mars
             .iter()
             .filter_map(|(k, _)| {

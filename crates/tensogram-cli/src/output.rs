@@ -25,9 +25,30 @@ pub fn format_json<K: AsRef<str>>(
         serde_json::Value::Number(serde_json::Number::from(metadata.version)),
     );
 
+    // Add base array (per-object metadata)
+    if !metadata.base.is_empty() {
+        let base_json: Vec<serde_json::Value> = metadata
+            .base
+            .iter()
+            .map(|entry| {
+                let m: serde_json::Map<String, serde_json::Value> = entry
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), cbor_to_json(v)))
+                    .collect();
+                serde_json::Value::Object(m)
+            })
+            .collect();
+        map.insert("base".to_string(), serde_json::Value::Array(base_json));
+    }
+
     // Add extra (namespaced) keys
-    for (key, value) in &metadata.extra {
-        map.insert(key.to_string(), cbor_to_json(value));
+    if !metadata.extra.is_empty() {
+        let extra_map: serde_json::Map<String, serde_json::Value> = metadata
+            .extra
+            .iter()
+            .map(|(k, v)| (k.to_string(), cbor_to_json(v)))
+            .collect();
+        map.insert("extra".to_string(), serde_json::Value::Object(extra_map));
     }
 
     // Add objects summary if provided
@@ -87,7 +108,14 @@ fn cbor_to_json(value: &ciborium::Value) -> serde_json::Value {
         ciborium::Value::Text(s) => serde_json::Value::String(s.to_string()),
         ciborium::Value::Integer(i) => {
             let n: i128 = (*i).into();
-            serde_json::Value::Number(serde_json::Number::from(n as i64))
+            // Try i64 first (common case), fall back to string for very large integers
+            if let Ok(v) = i64::try_from(n) {
+                serde_json::Value::Number(serde_json::Number::from(v))
+            } else if let Ok(v) = u64::try_from(n) {
+                serde_json::Value::Number(serde_json::Number::from(v))
+            } else {
+                serde_json::Value::String(n.to_string())
+            }
         }
         ciborium::Value::Float(f) => serde_json::Number::from_f64(*f)
             .map(serde_json::Value::Number)
@@ -282,5 +310,90 @@ mod tests {
         )]);
         let s = format_json_value(&val);
         assert!(s.contains("val"));
+    }
+
+    // ── Additional coverage: base array in JSON output ──
+
+    #[test]
+    fn json_with_base_entries() {
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            "mars".to_string(),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("param".to_string()),
+                ciborium::Value::Text("2t".to_string()),
+            )]),
+        );
+        let meta = GlobalMetadata {
+            version: 2,
+            base: vec![entry],
+            ..Default::default()
+        };
+        let json = format_json::<String>(&meta, None, None);
+        assert!(json.contains("\"base\""), "JSON should contain base array");
+        assert!(json.contains("\"mars\""), "JSON should contain mars key");
+        assert!(json.contains("\"param\""), "JSON should contain param key");
+        assert!(json.contains("\"2t\""), "JSON should contain value 2t");
+    }
+
+    #[test]
+    fn json_with_base_and_extra() {
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            "source".to_string(),
+            ciborium::Value::Text("ecmwf".to_string()),
+        );
+        let mut extra = BTreeMap::new();
+        extra.insert(
+            "experiment".to_string(),
+            ciborium::Value::Text("exp01".to_string()),
+        );
+        let meta = GlobalMetadata {
+            version: 2,
+            base: vec![entry],
+            extra,
+            ..Default::default()
+        };
+        let json = format_json::<String>(&meta, None, None);
+        assert!(json.contains("\"base\""));
+        assert!(json.contains("\"extra\""));
+        assert!(json.contains("\"ecmwf\""));
+        assert!(json.contains("\"exp01\""));
+    }
+
+    #[test]
+    fn json_empty_base_and_extra() {
+        let meta = GlobalMetadata {
+            version: 2,
+            ..Default::default()
+        };
+        let json = format_json::<String>(&meta, None, None);
+        // Should not contain base or extra sections when empty
+        assert!(!json.contains("\"base\""));
+        assert!(!json.contains("\"extra\""));
+        assert!(json.contains("\"version\": 2"));
+    }
+
+    #[test]
+    fn table_row_with_base_key() {
+        let mut entry = BTreeMap::new();
+        entry.insert("param".to_string(), ciborium::Value::Text("2t".to_string()));
+        let meta = GlobalMetadata {
+            version: 2,
+            base: vec![entry],
+            ..Default::default()
+        };
+        let row = format_table_row(&meta, &["param", "version"]);
+        assert!(row.contains("2t"));
+        assert!(row.contains("2"));
+    }
+
+    #[test]
+    fn cbor_to_json_large_integer() {
+        // u64 max value should fall back through i64 → u64 path
+        let val = ciborium::Value::Integer(ciborium::value::Integer::from(u64::MAX));
+        let json = cbor_to_json(&val);
+        // Should produce a number (u64 path) or string, not null
+        assert!(!json.is_null());
     }
 }

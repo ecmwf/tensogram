@@ -4,19 +4,20 @@ Repo: ecmwf/tensogram
 
 > For release-by-release changes, see `../CHANGELOG.md`.
 
-## Test Coverage Summary (v0.4.0)
+## Test Coverage Summary (v0.6.0)
 
 | Component | Tests | Type | Coverage |
 |-----------|-------|------|----------|
-| tensogram-core | ~200 | Unit + integration + adversarial + edge-case | ~90% |
+| tensogram-core | ~283 | Unit + integration + adversarial + edge-case | ~90% |
 | tensogram-encodings | 47 | Unit | ~85% |
 | tensogram-cli | 12 | Unit | ~70% |
 | tensogram-ffi | (via C++ wrapper) | Indirect | — |
-| C++ wrapper | 105 | GoogleTest | — |
-| tensogram-python | 97 | pytest (parametrized) | ~88% |
-| tensogram-grib | 15 | Unit + integration | ~75% |
-| tensogram-xarray | 113 | pytest | ~97% |
-| **Total** | **~572** | | **90.5% (Rust)** |
+| C++ wrapper | 109 | GoogleTest | — |
+| tensogram-python | 226 | pytest (parametrized) | ~88% |
+| tensogram-grib | 17 | Integration | ~80% |
+| tensogram-xarray | 179 | pytest | ~98% |
+| tensogram-zarr | 204 | pytest | ~95% |
+| **Total** | **~1010** | | **90.5% (Rust)** |
 
 ## Affected Components
 
@@ -38,7 +39,7 @@ Repo: ecmwf/tensogram
 - Streaming mode: total_length=0, footer-based index
 - mmap-based file access: zero-copy scan + read
 - Async encode/decode paths (feature-gated): spawn_blocking for FFI calls
-- GRIB conversion: MARS key extraction, common/varying partitioning, grouping modes
+- GRIB conversion: MARS key extraction, per-object independent `base[i]` entries, grouping modes
 - xarray backend: lazy loading, N-D slicing, coordinate detection, multi-message merge
 
 ## Edge Cases
@@ -73,7 +74,7 @@ Repo: ecmwf/tensogram
 5 canonical `.tgm` files in `crates/tensogram-core/tests/golden/`:
 - `simple_f32.tgm` — single float32 object
 - `multi_object.tgm` — 3 dtypes: u8, i32, f64
-- `mars_metadata.tgm` — MARS keys in common/payload
+- `mars_metadata.tgm` — MARS keys in per-object `base` entries
 - `multi_message.tgm` — 3 independent messages
 - `hash_xxh3.tgm` — hash verification
 

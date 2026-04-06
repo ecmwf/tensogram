@@ -4,9 +4,9 @@ The scanner opens a ``.tgm`` file via ``tensogram.TensogramFile``, reads each
 message's metadata, and builds an index of per-object metadata dicts that
 downstream merge/split logic can consume.
 
-Per-object metadata is read from ``meta.payload[i]`` (primary) with
-``desc.params`` as fallback.  Message-level metadata comes from
-``meta.common`` and ``meta.extra``.
+Per-object metadata is read from ``meta.base[i]`` (with ``_reserved_``
+filtered out) and supplemented by ``desc.params`` as fallback.
+Message-level metadata comes from ``meta.extra``.
 """
 
 from __future__ import annotations
@@ -14,6 +14,12 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import Any
+
+
+# The ``_reserved_`` key in base entries is populated by the encoder
+# with tensor info (ndim, shape, strides, dtype).  It must be excluded
+# from application-level metadata used for grouping and variable naming.
+RESERVED_KEY = "_reserved_"
 
 
 @dataclass
@@ -26,8 +32,8 @@ class ObjectInfo:
     shape: tuple[int, ...]
     dtype: str
     descriptor: Any  # tensogram.DataObjectDescriptor
-    per_object_meta: dict[str, Any]  # from meta.payload[i] + desc.params
-    common_meta: dict[str, Any]  # from meta.common + meta.extra
+    per_object_meta: dict[str, Any]  # from meta.base[i] (filtered)
+    common_meta: dict[str, Any]  # from meta.extra
 
     @property
     def merged_meta(self) -> dict[str, Any]:
@@ -60,54 +66,46 @@ def _desc_params(desc: Any) -> dict[str, Any]:
     return {}
 
 
-# Keys auto-populated by the encoder into each payload entry.
-# These duplicate descriptor fields and should be excluded from
-# per-object metadata used for grouping and variable naming.
-AUTO_PAYLOAD_KEYS = frozenset({"ndim", "shape", "strides", "dtype"})
+def _base_entry_from_meta(meta: Any, obj_index: int) -> dict[str, Any]:
+    """Extract per-object metadata from ``meta.base[obj_index]``.
 
-
-def _payload_from_meta(meta: Any, obj_index: int) -> dict[str, Any]:
-    """Extract per-object metadata from meta.payload[obj_index].
-
-    Auto-populated keys (ndim, shape, strides, dtype) are filtered out.
+    The ``_reserved_`` key is filtered out since it contains
+    encoder-populated tensor info (ndim, shape, strides, dtype).
     """
-    payload = getattr(meta, "payload", None)
-    if payload and isinstance(payload, list) and obj_index < len(payload):
-        p = payload[obj_index]
-        if isinstance(p, dict):
-            return {k: v for k, v in p.items() if k not in AUTO_PAYLOAD_KEYS}
+    base = getattr(meta, "base", None)
+    if base and isinstance(base, list) and obj_index < len(base):
+        entry = base[obj_index]
+        if isinstance(entry, dict):
+            return {k: v for k, v in entry.items() if k != RESERVED_KEY}
     return {}
 
 
 def _merge_per_object_meta(meta: Any, obj_index: int, desc: Any) -> dict[str, Any]:
-    """Build per-object metadata by merging payload + descriptor params.
+    """Build per-object metadata from base entry + descriptor params.
 
-    Payload takes priority; descriptor params fill in any missing keys.
+    Base entry takes priority; descriptor params fill in any missing keys.
     """
-    result = _payload_from_meta(meta, obj_index)
+    result = _base_entry_from_meta(meta, obj_index)
     for k, v in _desc_params(desc).items():
         if k not in result:
             result[k] = v
     return result
 
 
-def _common_from_meta(meta: Any) -> dict[str, Any]:
-    """Extract message-level metadata from meta.common + meta.extra."""
-    common: dict[str, Any] = {}
-    c = getattr(meta, "common", None)
-    if c and isinstance(c, dict):
-        common.update(c)
+def _extra_from_meta(meta: Any) -> dict[str, Any]:
+    """Extract message-level metadata from ``meta.extra``."""
+    result: dict[str, Any] = {}
     extra = getattr(meta, "extra", None)
     if extra and isinstance(extra, dict):
-        common.update(extra)
-    return common
+        result.update(extra)
+    return result
 
 
 def scan_file(file_path: str) -> FileIndex:
     """Scan a ``.tgm`` file and return a :class:`FileIndex`.
 
     Decodes each message to get descriptors, per-object metadata
-    (from ``meta.payload`` and ``desc.params``), and common metadata.
+    (from ``meta.base`` and ``desc.params``), and extra metadata.
     """
     import tensogram
 
@@ -119,7 +117,7 @@ def scan_file(file_path: str) -> FileIndex:
         for msg_idx in range(n_messages):
             raw = f.read_message(msg_idx)
             meta = tensogram.decode_metadata(raw)
-            common = _common_from_meta(meta)
+            extra = _extra_from_meta(meta)
 
             # Decode descriptors only (no payload decode).
             _, descriptors = tensogram.decode_descriptors(raw)
@@ -135,7 +133,7 @@ def scan_file(file_path: str) -> FileIndex:
                     dtype=desc.dtype,
                     descriptor=desc,
                     per_object_meta=per_obj,
-                    common_meta=dict(common),
+                    common_meta=dict(extra),
                 )
                 index.objects.append(info)
 
@@ -147,7 +145,7 @@ def scan_message(raw_msg: bytes) -> list[ObjectInfo]:
     import tensogram
 
     meta = tensogram.decode_metadata(raw_msg)
-    common = _common_from_meta(meta)
+    extra = _extra_from_meta(meta)
 
     _, descriptors = tensogram.decode_descriptors(raw_msg)
 
@@ -163,7 +161,7 @@ def scan_message(raw_msg: bytes) -> list[ObjectInfo]:
             dtype=desc.dtype,
             descriptor=desc,
             per_object_meta=per_obj,
-            common_meta=dict(common),
+            common_meta=dict(extra),
         )
         result.append(info)
 

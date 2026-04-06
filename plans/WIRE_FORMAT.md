@@ -100,15 +100,16 @@ Either a header or a footer metadata frame must always be present, ie Messages c
 ## Metadata Frame
 
 Whether in the Header or Footer, the metadata frame uniquely identifies the message.
-Each metadata CBOR block contains the following mandatory sub-objects:
- - 'common' holds metadata that is common to all data objects in the message. this may contain internal namespaces for managing different vocabularies.
- - 'payload' holds a list of metadata per data object. the index of the list matches the order in the message, can be used to assert the data obj count. this may contain internal namespaces that should match 'common'.
- - 'reserved' is set aside for internals of the message handling and support future features. Inside it contains:
+Each metadata CBOR block contains the following sub-objects:
+ - 'version' (required) wire format version, currently 2.
+ - 'base' holds an array of metadata maps, one per data object. Each entry holds ALL structured metadata for that object independently — no tracking of commonalities. The encoder auto-populates `_reserved_.tensor` (ndim, shape, strides, dtype) in each entry.
+ - '_reserved_' is set aside for internals of the library. Client code can read but MUST NOT write — the encoder validates this. Inside it contains:
     - 'encoder' describes the library that encoded the message. contains:
         - 'name', 'tensogram' for this one
         - 'version', software version
     - 'time' date-time in UTC zulu of time of encoding
     - 'uuid' UUID RFC 4122 generated at time of encoding, useful for provenance and tracking.
+ - '_extra_' client-writable catch-all for ad-hoc message-level annotations. Any key not recognised by the library is preserved here on round-trip.
 
 ## Footer
 
@@ -162,16 +163,15 @@ A Preceder Metadata Frame (type 8) optionally precedes a Data Object Frame, carr
 - Preceders are optional per-object: some objects in a message may have a preceder while others do not.
 
 **CBOR structure:** Uses the same GlobalMetadata CBOR format as header/footer metadata frames, with:
-- `common`: empty (not relevant for per-object metadata)
-- `payload`: a single-entry array containing one metadata map for the next data object
-- `reserved`: empty
-- `extra`: empty
+- `base`: a single-entry array containing one metadata map for the next data object
+- `_reserved_`: empty
+- `_extra_`: empty
 
 Example CBOR:
 ```
 {
   "version": 2,
-  "payload": [
+  "base": [
     {
       "mars": {"param": "2t", "levtype": "sfc"},
       "units": "K"
@@ -180,10 +180,10 @@ Example CBOR:
 }
 ```
 
-**Merge semantics on decode:** When a decoder encounters both a Preceder and a footer metadata frame with `payload[i]` for the same object index:
+**Merge semantics on decode:** When a decoder encounters both a Preceder and a footer metadata frame with `base[i]` for the same object index:
 - Keys from the Preceder override keys from the footer on conflict (preceder wins).
-- Keys present only in the footer (e.g., auto-populated `ndim`, `shape`, `strides`, `dtype`) are preserved.
-- The decoder presents a unified `GlobalMetadata.payload` to the consumer; the preceder/footer distinction is transparent.
+- Keys present only in the footer (e.g., auto-populated `_reserved_.tensor` with ndim, shape, strides, dtype) are preserved.
+- The decoder presents a unified `GlobalMetadata.base` to the consumer; the preceder/footer distinction is transparent.
 
 **Preamble flag:** Bit 6 (`PRECEDER_METADATA`) in the preamble flags indicates that at least one Preceder Metadata Frame is present. In streaming mode, this flag is always set. In buffered mode, it is set only when preceders are explicitly emitted.
 

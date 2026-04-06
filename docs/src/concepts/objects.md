@@ -24,11 +24,10 @@ DataObjectDescriptor {
     filter: "shuffle",             // or "none"
     compression: "szip",           // or "none", "zstd", "lz4", etc.
 
-    // ── Flexible parameters ──
-    params: BTreeMap::from([       // encoding params + per-object metadata
+    // ── Flexible parameters (encoding only) ──
+    params: BTreeMap::from([       // encoding params only
         ("reference_value", 230.5),
         ("bits_per_value", 16),
-        ("mars", { "param": "2t" }),
     ]),
 
     // ── Integrity ──
@@ -99,6 +98,6 @@ block-beta
     B["Object 1\nLand mask\nuint8 · 721×1440\nencoding: none"]:1
 ```
 
-Both objects live in the same message and share the same `GlobalMetadata` (forecast date, step, MARS keys). Each object has its own `DataObjectDescriptor` embedded in its frame, so they can use completely different encoding pipelines.
+Both objects live in the same message. Each object has its own `DataObjectDescriptor` embedded in its frame and its own entry in `GlobalMetadata.base` holding all MARS keys for that object. They can use completely different encoding pipelines.
 
 > **Edge case:** The number of `DataObjectDescriptor` entries and the data slices passed to `encode()` must be equal. The encoder returns an error if they do not match.

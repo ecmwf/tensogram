@@ -1,6 +1,6 @@
 # Metadata Value Types
 
-All Tensogram metadata — whether in [`GlobalMetadata`](cbor-metadata.md#globalmetadata), the `common` / `payload` / `reserved` sections, or per-object `params` — is stored as CBOR. This page describes which value types are valid, which are forbidden, and why.
+All Tensogram metadata — whether in [`GlobalMetadata`](cbor-metadata.md#globalmetadata), the `base` / `_reserved_` / `_extra_` sections, or per-object `params` — is stored as CBOR. This page describes which value types are valid, which are forbidden, and why.
 
 ## Allowed Types
 
@@ -30,38 +30,33 @@ The following CBOR types are **not** allowed in Tensogram metadata:
 | **half-precision floats** (f16) | Not supported by many JSON bridges; use `f64` |
 | **non-string map keys** | Integer or binary keys are non-canonical and not searchable |
 
-## The `payload` Section
+## The `base` Section
 
-The `payload` section of `GlobalMetadata` is a CBOR **array of maps** — one entry per data object. The encoder inserts `ndim`, `shape`, `strides`, and `dtype` into each entry when you call `encode()` or `StreamingEncoder::finish()` — these structural keys are authoritative and always overwritten. Any other keys the application placed in a payload entry before encoding (e.g. per-object MARS keys) are preserved:
+The `base` section of `GlobalMetadata` is a CBOR **array of maps** — one entry per data object. Each entry holds ALL structured metadata for that object independently. The encoder auto-populates `_reserved_.tensor` (with ndim, shape, strides, dtype) in each entry when you call `encode()` or `StreamingEncoder::finish()`. Any other keys the application placed in a base entry before encoding (e.g. per-object MARS keys) are preserved:
 
 ```json
 {
   "version": 2,
-  "common": {
-    "mars": { "class": "od", "type": "fc", "grid": "O1280" }
-  },
-  "payload": [
+  "base": [
     {
-      "ndim": 2,
-      "shape": [721, 1440],
-      "strides": [1440, 1],
-      "dtype": "float64",
-      "mars": { "param": "2t", "levtype": "sfc" }
+      "mars": { "class": "od", "type": "fc", "grid": "O1280", "param": "2t", "levtype": "sfc" },
+      "_reserved_": {
+        "tensor": { "ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float64" }
+      }
     },
     {
-      "ndim": 1,
-      "shape": [137],
-      "strides": [1],
-      "dtype": "float64",
-      "mars": { "param": "lnsp", "levtype": "ml" }
+      "mars": { "class": "od", "type": "fc", "grid": "O1280", "param": "lnsp", "levtype": "ml" },
+      "_reserved_": {
+        "tensor": { "ndim": 1, "shape": [137], "strides": [1], "dtype": "float64" }
+      }
     }
   ]
 }
 ```
 
-Each entry mirrors the corresponding `DataObjectDescriptor` shape fields. MARS keys that are **shared** across all objects (e.g. `class`, `type`, `grid`) live under `common["mars"]`, while MARS keys that **vary** per object (e.g. `param`, `levtype`) live under each `payload[i]["mars"]`. The GRIB key `gridType` is stored as `"grid"` in the mars namespace.
+Each entry is fully self-contained — all MARS keys for that object appear in its entry. There is no separate "common" section for shared keys. If you need to extract commonalities (e.g. for display), use the `compute_common()` utility in software after decoding.
 
-> **Note:** `payload` describes the *collection* of objects. Individual tensor encoding details (encoding pipeline, hash) remain in each object's own `DataObjectDescriptor`. The `DataObjectDescriptor.params` field is reserved for encoding parameters only — it no longer carries MARS keys.
+> **Note:** `base` describes the *collection* of objects at the message level. Individual tensor encoding details (encoding pipeline, hash) remain in each object's own `DataObjectDescriptor`. The `DataObjectDescriptor.params` field is reserved for encoding parameters only — it does not carry MARS keys.
 
 ## Practical Guidance
 

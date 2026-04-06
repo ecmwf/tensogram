@@ -59,15 +59,18 @@ With `-j`, each message is a JSON object:
 {
   "message": 0,
   "metadata": {
-    "version": 1,
-    "mars": {"class": "od", "type": "fc", "date": "20260401", "step": 0},
-    "objects": [
-      {"type": "ntensor", "ndim": 2, "shape": [721, 1440], "dtype": "float32"}
-    ],
-    "payload": [
-      {"encoding": "none", "hash": {"type": "xxh3", "value": "a3f0..."}}
+    "version": 2,
+    "base": [
+      {
+        "mars": {"class": "od", "type": "fc", "date": "20260401", "step": 0, "param": "2t"},
+        "_reserved_": {"tensor": {"ndim": 2, "shape": [721, 1440], "dtype": "float32"}}
+      }
     ]
-  }
+  },
+  "objects": [
+    {"type": "ntensor", "ndim": 2, "shape": [721, 1440], "dtype": "float32",
+     "encoding": "none", "hash": {"type": "xxh3", "value": "a3f0..."}}
+  ]
 }
 ```
 

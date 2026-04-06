@@ -3,8 +3,9 @@
 All fixtures create temporary ``.tgm`` files with known data using the
 tensogram Python bindings.
 
-Per-object metadata is stored as extra keys in the descriptor dict
-(accessible via ``desc.params`` after decode).
+Per-object metadata is stored in ``base`` entries (one dict per object).
+Extra keys in the descriptor dict are accessible via ``desc.params``
+after decode.
 """
 
 from __future__ import annotations
@@ -38,6 +39,11 @@ def _make_desc(
     }
 
 
+def _make_base_entry(**fields: Any) -> dict[str, Any]:
+    """Build a per-object base entry from keyword arguments."""
+    return dict(fields)
+
+
 # ---------------------------------------------------------------------------
 # Single-message fixtures
 # ---------------------------------------------------------------------------
@@ -65,17 +71,23 @@ def simple_data() -> np.ndarray:
 def tgm_with_coords(tmp_path: Path) -> Path:
     """Message with 3 objects: lat array, lon array, temperature field.
 
-    Per-object metadata (name) is stored in descriptor extra keys -> desc.params.
+    Per-object metadata (name) is stored in base entries.
     """
     lat = np.linspace(-90, 90, 5, dtype=np.float64)
     lon = np.linspace(0, 360, 8, endpoint=False, dtype=np.float64)
     temp = np.random.default_rng(42).random((5, 8), dtype=np.float32).astype(np.float32)
 
-    meta = _make_meta()
+    meta = _make_meta(
+        base=[
+            _make_base_entry(name="latitude"),
+            _make_base_entry(name="longitude"),
+            _make_base_entry(name="temperature"),
+        ],
+    )
     descs = [
-        _make_desc([5], dtype="float64", name="latitude"),
-        _make_desc([8], dtype="float64", name="longitude"),
-        _make_desc([5, 8], dtype="float32", name="temperature"),
+        _make_desc([5], dtype="float64"),
+        _make_desc([8], dtype="float64"),
+        _make_desc([5, 8], dtype="float32"),
     ]
     path = tmp_path / "with_coords.tgm"
     with tensogram.TensogramFile.create(str(path)) as f:
@@ -96,15 +108,20 @@ def coord_arrays() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 def tgm_with_mars(tmp_path: Path) -> Path:
     """Message with 2 objects using MARS-style metadata.
 
-    MARS keys are stored in descriptor extra keys -> desc.params.
+    MARS keys are stored in base entries.
     """
     t2m = np.ones((3, 4), dtype=np.float32) * 273.15
     u10 = np.ones((3, 4), dtype=np.float32) * 5.0
 
-    meta = _make_meta()
+    meta = _make_meta(
+        base=[
+            _make_base_entry(mars={"param": "2t", "levtype": "sfc"}),
+            _make_base_entry(mars={"param": "10u", "levtype": "sfc"}),
+        ],
+    )
     descs = [
-        _make_desc([3, 4], mars={"param": "2t", "levtype": "sfc"}),
-        _make_desc([3, 4], mars={"param": "10u", "levtype": "sfc"}),
+        _make_desc([3, 4]),
+        _make_desc([3, 4]),
     ]
     path = tmp_path / "mars.tgm"
     with tensogram.TensogramFile.create(str(path)) as f:
@@ -122,7 +139,7 @@ def multi_msg_tgm(tmp_path: Path) -> Path:
     """File with 4 messages, each with 1 object [3,4].
 
     Metadata varies on: param (2t, 10u) x date (20260401, 20260402).
-    Per-object metadata stored in descriptor extra keys -> desc.params.
+    Per-object metadata stored in base entries.
     """
     path = tmp_path / "multi.tgm"
     rng = np.random.default_rng(99)
@@ -131,11 +148,12 @@ def multi_msg_tgm(tmp_path: Path) -> Path:
         for param in ["2t", "10u"]:
             for date in ["20260401", "20260402"]:
                 data = rng.random((3, 4), dtype=np.float32).astype(np.float32)
-                meta = _make_meta()
-                desc = _make_desc(
-                    [3, 4],
-                    mars={"param": param, "date": date},
+                meta = _make_meta(
+                    base=[
+                        _make_base_entry(mars={"param": param, "date": date}),
+                    ],
                 )
+                desc = _make_desc([3, 4])
                 f.append(meta, [(desc, data)])
 
     return path
@@ -153,22 +171,22 @@ def heterogeneous_tgm(tmp_path: Path) -> Path:
     with tensogram.TensogramFile.create(str(path)) as f:
         # Message 0
         f.append(
-            _make_meta(),
-            [(_make_desc([3, 4], name="temp"), np.ones((3, 4), dtype=np.float32))],
+            _make_meta(base=[_make_base_entry(name="temp")]),
+            [(_make_desc([3, 4]), np.ones((3, 4), dtype=np.float32))],
         )
 
         # Message 1
         f.append(
-            _make_meta(),
-            [(_make_desc([3, 4], name="wind"), np.ones((3, 4), dtype=np.float32) * 2)],
+            _make_meta(base=[_make_base_entry(name="wind")]),
+            [(_make_desc([3, 4]), np.ones((3, 4), dtype=np.float32) * 2)],
         )
 
         # Message 2 -- different shape and dtype
         f.append(
-            _make_meta(),
+            _make_meta(base=[_make_base_entry(name="counts")]),
             [
                 (
-                    _make_desc([5], dtype="int32", name="counts"),
+                    _make_desc([5], dtype="int32"),
                     np.array([1, 2, 3, 4, 5], dtype=np.int32),
                 )
             ],

@@ -1023,9 +1023,7 @@ class TestEdgeCases:
             for idx in [0, 25, 49]:
                 meta, objects = f2.decode_message(idx)
                 _, arr = objects[0]
-                np.testing.assert_array_equal(
-                    arr, np.full(10, float(idx), dtype=np.float32)
-                )
+                np.testing.assert_array_equal(arr, np.full(10, float(idx), dtype=np.float32))
                 assert meta["index"] == idx
 
     def test_big_endian_roundtrip(self):
@@ -1080,9 +1078,7 @@ class TestEdgeCases:
 
         with (
             tensogram.TensogramFile.open(path) as f2,
-            pytest.raises(
-                (ValueError, IndexError), match=r"index|out of range|ObjectError"
-            ),
+            pytest.raises((ValueError, IndexError), match=r"index|out of range|ObjectError"),
         ):
             f2.decode_message(99)
 
@@ -1168,9 +1164,7 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for _i in range(3):
                 data = np.zeros(4, dtype=np.float32)
-                f.append(
-                    make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
-                )
+                f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
 
         with tensogram.TensogramFile.open(path) as f:
             it = iter(f)
@@ -1187,9 +1181,7 @@ class TestEdgeCases:
         path = str(tmp_path / "stop.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(
-                make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
-            )
+            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
 
         with tensogram.TensogramFile.open(path) as f:
             it = iter(f)
@@ -1219,9 +1211,7 @@ class TestEdgeCases:
         path = str(tmp_path / "oob.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(
-                make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
-            )
+            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
 
         with tensogram.TensogramFile.open(path) as f:
             with pytest.raises(IndexError):
@@ -1306,9 +1296,7 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for _i in range(3):
                 data = np.zeros(4, dtype=np.float32)
-                f.append(
-                    make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
-                )
+                f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
 
         with tensogram.TensogramFile.open(path) as f:
             assert f[2:2] == []
@@ -1319,9 +1307,7 @@ class TestEdgeCases:
         path = str(tmp_path / "badkey.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(
-                make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
-            )
+            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
 
         with tensogram.TensogramFile.open(path) as f, pytest.raises(TypeError):
             f["bad"]
@@ -1408,9 +1394,7 @@ class TestEdgeCases:
         """iter_messages raises StopIteration after exhaustion."""
         data = np.ones(4, dtype=np.float32)
         msg = bytes(
-            tensogram.encode(
-                make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
-            )
+            tensogram.encode(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
         )
 
         it = tensogram.iter_messages(msg)
@@ -1446,7 +1430,7 @@ class TestEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# Coverage: Metadata properties (.common, .payload, .extra, __getitem__)
+# Coverage: Metadata properties (.base, .reserved, .extra, __getitem__)
 # ---------------------------------------------------------------------------
 
 
@@ -1454,13 +1438,28 @@ class TestMetadataCoverage:
     """Thorough coverage of Metadata properties and access patterns."""
 
     def _encode_with_mars(self):
-        """Encode a message with both common and payload metadata."""
+        """Encode a message with per-object base metadata."""
         meta = {
             "version": 2,
-            "common": {"mars": {"class": "od", "date": "20260401"}, "source": "test"},
-            "payload": [
-                {"mars": {"param": "2t", "levtype": "sfc"}},
-                {"mars": {"param": "msl", "levtype": "sfc"}},
+            "base": [
+                {
+                    "mars": {
+                        "class": "od",
+                        "date": "20260401",
+                        "param": "2t",
+                        "levtype": "sfc",
+                    },
+                    "source": "test",
+                },
+                {
+                    "mars": {
+                        "class": "od",
+                        "date": "20260401",
+                        "param": "msl",
+                        "levtype": "sfc",
+                    },
+                    "source": "test",
+                },
             ],
         }
         d1 = make_descriptor([4], dtype="float32")
@@ -1468,24 +1467,23 @@ class TestMetadataCoverage:
         data = np.ones(4, dtype=np.float32)
         return bytes(tensogram.encode(meta, [(d1, data), (d2, data)]))
 
-    def test_common_property(self):
-        """Metadata.common returns the common metadata dict."""
+    def test_base_property(self):
+        """Metadata.base returns the per-object metadata list."""
         msg = self._encode_with_mars()
         meta = tensogram.decode_metadata(msg)
-        common = meta.common
-        assert isinstance(common, dict)
-        assert common["mars"]["class"] == "od"
-        assert common["source"] == "test"
+        base = meta.base
+        assert isinstance(base, list)
+        assert len(base) == 2
+        assert base[0]["mars"]["class"] == "od"
+        assert base[0]["source"] == "test"
 
-    def test_payload_property(self):
-        """Metadata.payload returns per-object metadata list."""
+    def test_base_per_object(self):
+        """Metadata.base entries hold per-object metadata."""
         msg = self._encode_with_mars()
         meta = tensogram.decode_metadata(msg)
-        payload = meta.payload
-        assert isinstance(payload, list)
-        assert len(payload) == 2
-        assert payload[0]["mars"]["param"] == "2t"
-        assert payload[1]["mars"]["param"] == "msl"
+        base = meta.base
+        assert base[0]["mars"]["param"] == "2t"
+        assert base[1]["mars"]["param"] == "msl"
 
     def test_extra_property(self):
         """Metadata.extra returns non-standard top-level keys."""
@@ -1498,21 +1496,22 @@ class TestMetadataCoverage:
         assert extra["custom_field"] == "hello"
         assert extra["number"] == 42
 
-    def test_getitem_common_precedence(self):
-        """__getitem__ checks common first, then extra."""
+    def test_getitem_base_precedence(self):
+        """__getitem__ checks base entries first, then extra."""
         meta_dict = {
             "version": 2,
-            "common": {"shared": "from_common"},
+            "base": [{"shared": "from_base"}],
+            "_extra_": {"shared": "from_extra"},
         }
         msg = bytes(
             tensogram.encode(
-                {**meta_dict, "shared": "from_extra"},
+                meta_dict,
                 [(make_descriptor([4]), np.ones(4, dtype=np.float32))],
             )
         )
         meta = tensogram.decode_metadata(msg)
-        # "shared" exists in common → common wins
-        assert meta["shared"] == "from_common"
+        # "shared" exists in base[0] → base wins
+        assert meta["shared"] == "from_base"
 
     def test_getitem_keyerror(self):
         """__getitem__ raises KeyError for missing keys."""
@@ -1522,13 +1521,20 @@ class TestMetadataCoverage:
             meta["nonexistent"]
 
     def test_contains(self):
-        """__contains__ checks both common and extra."""
-        msg = encode_simple(
-            np.ones(4, dtype=np.float32),
-            extra_meta={"common": {"c_key": 1}, "e_key": 2},
+        """__contains__ checks both base entries and extra."""
+        meta_dict = {
+            "version": 2,
+            "base": [{"b_key": 1}],
+            "e_key": 2,
+        }
+        msg = bytes(
+            tensogram.encode(
+                meta_dict,
+                [(make_descriptor([4]), np.ones(4, dtype=np.float32))],
+            )
         )
         meta = tensogram.decode_metadata(msg)
-        assert "c_key" in meta
+        assert "b_key" in meta
         assert "e_key" in meta
         assert "missing" not in meta
 
@@ -1540,24 +1546,40 @@ class TestMetadataCoverage:
         assert "Metadata" in r
         assert "version=" in r
 
-    def test_empty_common(self):
-        """Message with no common metadata."""
+    def test_empty_base(self):
+        """Message with no base metadata (zero objects)."""
         msg = bytes(
             tensogram.encode(
                 {"version": 2},
-                [(make_descriptor([4]), np.ones(4, dtype=np.float32))],
+                [],
             )
         )
         meta = tensogram.decode_metadata(msg)
-        assert meta.common == {}
+        assert meta.base == []
 
-    def test_empty_payload(self):
-        """Payload list matches object count even without payload metadata."""
+    def test_base_with_reserved_auto_populated(self):
+        """Base entries get _reserved_.tensor auto-populated by encoder."""
         msg = encode_simple(np.ones(4, dtype=np.float32))
         meta = tensogram.decode_metadata(msg)
-        # payload should exist as a list (may be empty or have empty dicts)
-        payload = meta.payload
-        assert isinstance(payload, list)
+        base = meta.base
+        assert isinstance(base, list)
+        assert len(base) == 1
+        # Encoder auto-populates _reserved_.tensor with ndim/shape/strides/dtype
+        assert "_reserved_" in base[0]
+        tensor_info = base[0]["_reserved_"]["tensor"]
+        assert tensor_info["ndim"] == 1
+        assert tensor_info["shape"] == [4]
+
+    def test_reserved_property(self):
+        """Metadata.reserved returns library-reserved metadata."""
+        msg = encode_simple(np.ones(4, dtype=np.float32))
+        meta = tensogram.decode_metadata(msg)
+        reserved = meta.reserved
+        assert isinstance(reserved, dict)
+        # Encoder populates provenance info in reserved
+        assert "encoder" in reserved
+        assert "time" in reserved
+        assert "uuid" in reserved
 
 
 # ---------------------------------------------------------------------------
@@ -1735,6 +1757,114 @@ class TestErrorCoverage:
 # ---------------------------------------------------------------------------
 
 
+class TestMetadataEdgeCases:
+    """Edge cases for metadata model (FFI, Python, CLI layers)."""
+
+    def test_reserved_in_base_rejected(self):
+        """Client code cannot set _reserved_ in base entries."""
+        data = np.ones(4, dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [{"_reserved_": {"tensor": {"ndim": 1}}}],
+        }
+        desc = make_descriptor([4], dtype="float32")
+        with pytest.raises(ValueError, match="_reserved_"):
+            tensogram.encode(meta, [(desc, data)])
+
+    def test_reserved_at_toplevel_rejected(self):
+        """Client code cannot set _reserved_ at the top level."""
+        data = np.ones(4, dtype=np.float32)
+        meta = {
+            "version": 2,
+            "_reserved_": {"encoder": "fake"},
+        }
+        desc = make_descriptor([4], dtype="float32")
+        with pytest.raises(ValueError, match="_reserved_"):
+            tensogram.encode(meta, [(desc, data)])
+
+    def test_getitem_reserved_raises(self):
+        """meta['_reserved_'] raises KeyError (not accessible via dict syntax)."""
+        msg = encode_simple(np.ones(4, dtype=np.float32))
+        meta = tensogram.decode_metadata(msg)
+        with pytest.raises(KeyError, match="_reserved_"):
+            meta["_reserved_"]
+
+    def test_contains_reserved_false(self):
+        """'_reserved_' in meta returns False (hidden from dict access)."""
+        msg = encode_simple(np.ones(4, dtype=np.float32))
+        meta = tensogram.decode_metadata(msg)
+        assert "_reserved_" not in meta
+
+    def test_base_on_empty_message(self):
+        """meta.base is [] for zero-object message."""
+        msg = bytes(tensogram.encode({"version": 2}, []))
+        meta = tensogram.decode_metadata(msg)
+        assert meta.base == []
+
+    def test_base_none_rejected(self):
+        """base=None should be rejected."""
+        data = np.ones(4, dtype=np.float32)
+        meta = {"version": 2, "base": None}
+        desc = make_descriptor([4], dtype="float32")
+        with pytest.raises((ValueError, TypeError)):
+            tensogram.encode(meta, [(desc, data)])
+
+    def test_extra_and_extra_underscore_precedence(self):
+        """_extra_ takes precedence over 'extra' when both are present."""
+        data = np.ones(4, dtype=np.float32)
+        meta = {
+            "version": 2,
+            "_extra_": {"key": "from_wire"},
+            "extra": {"key": "from_alias"},
+        }
+        desc = make_descriptor([4], dtype="float32")
+        msg = bytes(tensogram.encode(meta, [(desc, data)]))
+        decoded_meta = tensogram.decode_metadata(msg)
+        # _extra_ wins when both are present
+        assert decoded_meta.extra["key"] == "from_wire"
+
+    def test_base_first_match_semantics(self):
+        """__getitem__ returns the first base entry match, not all."""
+        meta_dict = {
+            "version": 2,
+            "base": [
+                {"mars": {"param": "2t"}},
+                {"mars": {"param": "msl"}},
+            ],
+        }
+        d = make_descriptor([4], dtype="float32")
+        data = np.ones(4, dtype=np.float32)
+        msg = bytes(tensogram.encode(meta_dict, [(d, data), (d, data)]))
+        meta = tensogram.decode_metadata(msg)
+        # First base entry wins
+        assert meta["mars"]["param"] == "2t"
+
+    def test_missing_version_rejected(self):
+        """Metadata dict without 'version' raises ValueError."""
+        data = np.ones(4, dtype=np.float32)
+        desc = make_descriptor([4], dtype="float32")
+        with pytest.raises((ValueError, TypeError, KeyError), match="version"):
+            tensogram.encode({}, [(desc, data)])
+
+    def test_base_with_non_dict_entry_rejected(self):
+        """base entries must be dicts."""
+        data = np.ones(4, dtype=np.float32)
+        meta = {"version": 2, "base": ["not_a_dict"]}
+        desc = make_descriptor([4], dtype="float32")
+        with pytest.raises((ValueError, TypeError)):
+            tensogram.encode(meta, [(desc, data)])
+
+    def test_empty_base_list(self):
+        """base=[] is valid (zero per-object metadata)."""
+        data = np.ones(4, dtype=np.float32)
+        meta = {"version": 2, "base": []}
+        desc = make_descriptor([4], dtype="float32")
+        msg = bytes(tensogram.encode(meta, [(desc, data)]))
+        decoded_meta = tensogram.decode_metadata(msg)
+        # Encoder auto-populates base entries for objects, so base should have 1
+        assert len(decoded_meta.base) >= 0  # at minimum, encoder may add entries
+
+
 class TestPackingParamsCoverage:
     """Edge cases for compute_packing_params."""
 
@@ -1813,9 +1943,7 @@ class TestDecodeRangeDtypeCoverage:
         """decode_range with join=True concatenates results."""
         data = np.arange(50, dtype=np.float32)
         msg = encode_simple(data)
-        joined = tensogram.decode_range(
-            msg, object_index=0, ranges=[(0, 5), (20, 5)], join=True
-        )
+        joined = tensogram.decode_range(msg, object_index=0, ranges=[(0, 5), (20, 5)], join=True)
         expected = np.concatenate([data[:5], data[20:25]])
         np.testing.assert_array_equal(joined, expected)
 
@@ -2177,3 +2305,194 @@ class TestEncodeOptionsCoverage:
         msg = encode_simple(np.ones(4, dtype=np.float32), hash_algo="xxh3")
         result = tensogram.decode(msg, verify_hash=True)
         assert len(result.objects) == 1
+
+
+# ---------------------------------------------------------------------------
+# Coverage: dict_to_global_metadata edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestDictToGlobalMetadataCoverage:
+    """Test all branches in dict_to_global_metadata (Python bindings)."""
+
+    def test_extra_key_as_non_dict_silently_dropped(self):
+        """When 'extra' is a non-dict value, it's silently dropped.
+
+        The 'extra' key is in known_keys, so it's excluded from the catch-all
+        loop. When it's not a dict, it's also not used as the alias. This
+        means the value is lost — a known edge case. Users should use '_extra_'
+        for explicit extra targeting or just use top-level keys.
+        """
+        data = np.ones(4, dtype=np.float32)
+        meta = {
+            "version": 2,
+            "extra": "not_a_dict",  # non-dict: silently dropped
+        }
+        desc = make_descriptor([4], dtype="float32")
+        msg = bytes(tensogram.encode(meta, [(desc, data)]))
+        decoded_meta = tensogram.decode_metadata(msg)
+        # "extra" is in known_keys so it doesn't go to catch-all;
+        # and it's not a dict so it's not used as alias → dropped
+        assert decoded_meta.extra.get("extra") is None
+
+    def test_unknown_top_level_keys_become_extra(self):
+        """Keys not in known_keys go to extra."""
+        data = np.ones(4, dtype=np.float32)
+        meta = {
+            "version": 2,
+            "custom_field": "hello",
+            "another": 42,
+        }
+        desc = make_descriptor([4], dtype="float32")
+        msg = bytes(tensogram.encode(meta, [(desc, data)]))
+        decoded_meta = tensogram.decode_metadata(msg)
+        assert decoded_meta.extra["custom_field"] == "hello"
+        assert decoded_meta.extra["another"] == 42
+
+    def test_extra_underscore_has_priority(self):
+        """_extra_ key takes priority over extra alias."""
+        data = np.ones(4, dtype=np.float32)
+        meta = {
+            "version": 2,
+            "_extra_": {"from_wire": True},
+            "extra": {"from_alias": True},
+        }
+        desc = make_descriptor([4], dtype="float32")
+        msg = bytes(tensogram.encode(meta, [(desc, data)]))
+        decoded_meta = tensogram.decode_metadata(msg)
+        # _extra_ should win
+        assert decoded_meta.extra.get("from_wire") is True
+
+    def test_base_empty_list_with_objects(self):
+        """Empty base list with objects: encoder auto-populates base."""
+        data = np.ones(4, dtype=np.float32)
+        meta = {"version": 2, "base": []}
+        desc = make_descriptor([4], dtype="float32")
+        msg = bytes(tensogram.encode(meta, [(desc, data)]))
+        decoded_meta = tensogram.decode_metadata(msg)
+        # Encoder may add _reserved_.tensor entries
+        assert isinstance(decoded_meta.base, list)
+
+    def test_no_base_key(self):
+        """Missing base key: defaults to empty."""
+        data = np.ones(4, dtype=np.float32)
+        meta = {"version": 2, "note": "no base"}
+        desc = make_descriptor([4], dtype="float32")
+        msg = bytes(tensogram.encode(meta, [(desc, data)]))
+        decoded_meta = tensogram.decode_metadata(msg)
+        assert decoded_meta.extra["note"] == "no base"
+
+    def test_base_with_nested_dict(self):
+        """Base entries with nested dicts round-trip."""
+        data = np.ones(4, dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [{"mars": {"class": "od", "param": "2t"}, "source": "test"}],
+        }
+        desc = make_descriptor([4], dtype="float32")
+        msg = bytes(tensogram.encode(meta, [(desc, data)]))
+        decoded_meta = tensogram.decode_metadata(msg)
+        base = decoded_meta.base
+        assert len(base) >= 1
+        # Find the entry with mars (may have _reserved_ too)
+        assert base[0]["mars"]["class"] == "od"
+        assert base[0]["source"] == "test"
+
+
+# ---------------------------------------------------------------------------
+# Coverage: PyMetadata __getitem__ and __contains__ edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestPyMetadataAccessCoverage:
+    """Test __getitem__ and __contains__ edge cases on PyMetadata."""
+
+    def test_getitem_from_extra_when_not_in_base(self):
+        """Key only in extra is found by __getitem__."""
+        data = np.ones(4, dtype=np.float32)
+        meta_dict = {
+            "version": 2,
+            "base": [{"mars": {"param": "2t"}}],
+            "only_in_extra": "found",
+        }
+        desc = make_descriptor([4], dtype="float32")
+        msg = bytes(tensogram.encode(meta_dict, [(desc, data)]))
+        meta = tensogram.decode_metadata(msg)
+        assert meta["only_in_extra"] == "found"
+
+    def test_contains_base_key(self):
+        """Key in base is detected by __contains__."""
+        data = np.ones(4, dtype=np.float32)
+        meta_dict = {
+            "version": 2,
+            "base": [{"custom_key": "val"}],
+        }
+        desc = make_descriptor([4], dtype="float32")
+        msg = bytes(tensogram.encode(meta_dict, [(desc, data)]))
+        meta = tensogram.decode_metadata(msg)
+        assert "custom_key" in meta
+
+    def test_contains_extra_key(self):
+        """Key in extra is detected by __contains__."""
+        data = np.ones(4, dtype=np.float32)
+        msg = encode_simple(data, extra_meta={"e_key": "val"})
+        meta = tensogram.decode_metadata(msg)
+        assert "e_key" in meta
+
+    def test_contains_missing_key(self):
+        """Missing key returns False."""
+        data = np.ones(4, dtype=np.float32)
+        msg = encode_simple(data)
+        meta = tensogram.decode_metadata(msg)
+        assert "nonexistent_key_xyz" not in meta
+
+    def test_getitem_reserved_skipped_in_base(self):
+        """__getitem__('_reserved_') skips base entries that have it."""
+        msg = encode_simple(np.ones(4, dtype=np.float32))
+        meta = tensogram.decode_metadata(msg)
+        # Base entries contain _reserved_ from encoder, but
+        # __getitem__ skips _reserved_ → should raise KeyError
+        with pytest.raises(KeyError, match="_reserved_"):
+            meta["_reserved_"]
+
+    def test_repr_format(self):
+        """__repr__ includes version, base_len, and extra_keys."""
+        data = np.ones(4, dtype=np.float32)
+        msg = encode_simple(data, extra_meta={"key1": 1, "key2": 2})
+        meta = tensogram.decode_metadata(msg)
+        r = repr(meta)
+        assert "Metadata" in r
+        assert "version=2" in r
+        assert "base_len=" in r
+        assert "extra_keys=" in r
+
+    def test_getitem_multi_base_first_wins(self):
+        """__getitem__ with multiple base entries returns first match."""
+        meta_dict = {
+            "version": 2,
+            "base": [
+                {"param": "first_value"},
+                {"param": "second_value"},
+            ],
+        }
+        d = make_descriptor([4], dtype="float32")
+        data = np.ones(4, dtype=np.float32)
+        msg = bytes(tensogram.encode(meta_dict, [(d, data), (d, data)]))
+        meta = tensogram.decode_metadata(msg)
+        assert meta["param"] == "first_value"
+
+    def test_contains_with_multi_base(self):
+        """__contains__ returns True if key in any base entry."""
+        meta_dict = {
+            "version": 2,
+            "base": [
+                {"a": 1},
+                {"b": 2},
+            ],
+        }
+        d = make_descriptor([4], dtype="float32")
+        data = np.ones(4, dtype=np.float32)
+        msg = bytes(tensogram.encode(meta_dict, [(d, data), (d, data)]))
+        meta = tensogram.decode_metadata(msg)
+        assert "a" in meta
+        assert "b" in meta

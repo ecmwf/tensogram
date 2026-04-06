@@ -113,10 +113,10 @@ mod tests {
         let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
         let meta = tensogram_core::decode_metadata(&msg).unwrap();
-        // With all_keys, common should contain "grib" key
+        // With all_keys, base[0] should contain "grib" key
         assert!(
-            meta.common.contains_key("grib"),
-            "all_keys should produce grib namespace in common"
+            meta.base.iter().any(|entry| entry.contains_key("grib")),
+            "all_keys should produce grib namespace in base entries"
         );
     }
 
@@ -185,8 +185,8 @@ mod tests {
         let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
         let meta = tensogram_core::decode_metadata(&msg).unwrap();
-        assert!(meta.common.contains_key("grib"));
-        assert!(meta.common.contains_key("mars"));
+        assert!(meta.base.iter().any(|e| e.contains_key("grib")));
+        assert!(meta.base.iter().any(|e| e.contains_key("mars")));
     }
 
     #[test]

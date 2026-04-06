@@ -41,6 +41,7 @@ Frame types:
 | 5 | Footer Hash Frame | Footer |
 | 6 | Footer Index Frame | Footer |
 | 7 | Footer Metadata Frame | Footer |
+| 8 | Preceder Metadata Frame | Body (before a Data Object) |
 
 Padding between frames is allowed (from `ENDF` to the next `FR` marker) for 64-bit memory alignment.
 
@@ -102,8 +103,7 @@ A message with no data object frames is valid. It contains only the Preamble, a 
 ```rust
 let metadata = GlobalMetadata {
     version: 2,
-    extra: BTreeMap::new(),
-..Default::default()
+    ..Default::default()
 };
 let msg = encode(&metadata, &[], &EncodeOptions::default()).unwrap();
 ```

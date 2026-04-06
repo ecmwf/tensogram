@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use tensogram_core::{decode, encode, DecodeOptions, EncodeOptions, TensogramFile};
+use tensogram_core::{decode, encode, DecodeOptions, EncodeOptions, TensogramFile, RESERVED_KEY};
 
 /// Reshuffle frames inside messages: move footer frames to header position.
 ///
@@ -16,7 +16,13 @@ pub fn run(input: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>
 
     for i in 0..count {
         let msg = file.read_message(i)?;
-        let (meta, objects) = decode(&msg, &DecodeOptions::default())?;
+        let (mut meta, objects) = decode(&msg, &DecodeOptions::default())?;
+
+        // Clear reserved fields — the encoder will regenerate them.
+        meta.reserved.clear();
+        for entry in &mut meta.base {
+            entry.remove(RESERVED_KEY);
+        }
 
         let refs: Vec<_> = objects.iter().map(|(d, b)| (d, b.as_slice())).collect();
 

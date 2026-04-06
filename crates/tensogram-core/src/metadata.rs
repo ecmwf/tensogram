@@ -1,5 +1,10 @@
+use std::collections::BTreeMap;
+
 use crate::error::{Result, TensogramError};
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashFrame, IndexFrame};
+
+/// Key reserved for library-managed metadata (ndim/shape/strides/dtype/provenance).
+pub const RESERVED_KEY: &str = "_reserved_";
 
 /// Serialize global metadata to deterministic CBOR bytes (RFC 8949 Section 4.2).
 pub fn global_metadata_to_cbor(metadata: &GlobalMetadata) -> Result<Vec<u8>> {
@@ -214,7 +219,99 @@ pub fn cbor_to_hash_frame(cbor_bytes: &[u8]) -> Result<HashFrame> {
     })
 }
 
+// ── Common-key extraction ────────────────────────────────────────────────────
+
+/// Extract keys common to ALL base entries.
+///
+/// Returns `(common_keys, remaining_per_object_entries)` where:
+/// - `common_keys`: keys present in ALL entries with identical CBOR values
+/// - `remaining`: per-object entries with only the varying keys
+///
+/// The `_reserved_` key is excluded from common computation (it's library-managed
+/// and varies per object due to ndim/shape/strides/dtype).
+///
+/// Edge cases:
+/// - 0 entries: returns (empty, empty vec)
+/// - 1 entry: all keys (except `_reserved_`) are common, remaining is empty
+///
+/// **NaN handling:** CBOR `Float(NaN)` values use IEEE 754 equality
+/// (`NaN != NaN`), so a key whose value is NaN in all entries will NOT
+/// be classified as common.  This is conservative — no data is lost,
+/// the key simply appears per-object rather than in the common set.
+pub fn compute_common(
+    base: &[BTreeMap<String, ciborium::Value>],
+) -> (
+    BTreeMap<String, ciborium::Value>,
+    Vec<BTreeMap<String, ciborium::Value>>,
+) {
+    if base.is_empty() {
+        return (BTreeMap::new(), Vec::new());
+    }
+
+    let first = &base[0];
+    let mut common = BTreeMap::new();
+
+    // Candidate keys come from the first entry (minus _reserved_).
+    // A key is common only if every other entry has the same key with the same value.
+    // Note: uses cbor_values_equal() for NaN-safe float comparison.
+    for (key, value) in first {
+        if key == RESERVED_KEY {
+            continue;
+        }
+        let is_common = base[1..]
+            .iter()
+            .all(|entry| entry.get(key).is_some_and(|v| cbor_values_equal(v, value)));
+        if is_common {
+            common.insert(key.clone(), value.clone());
+        }
+    }
+
+    // Build per-object remaining entries: everything that isn't common or _reserved_.
+    let remaining = base
+        .iter()
+        .map(|entry| {
+            entry
+                .iter()
+                .filter(|(k, _)| *k != RESERVED_KEY && !common.contains_key(*k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .collect();
+
+    (common, remaining)
+}
+
 // ── CBOR helpers ─────────────────────────────────────────────────────────────
+
+/// NaN-safe equality for CBOR values.
+///
+/// Standard `PartialEq` for `ciborium::Value` derives from `f64::eq`,
+/// so `Float(NaN) != Float(NaN)`.  This function compares floats
+/// bitwise (via `to_bits`) so NaN values with identical bit patterns
+/// are considered equal — matching RFC 8949 deterministic encoding
+/// where the canonical NaN bit pattern is fixed.
+fn cbor_values_equal(a: &ciborium::Value, b: &ciborium::Value) -> bool {
+    use ciborium::Value;
+    match (a, b) {
+        (Value::Float(fa), Value::Float(fb)) => fa.to_bits() == fb.to_bits(),
+        (Value::Array(aa), Value::Array(ab)) => {
+            aa.len() == ab.len()
+                && aa
+                    .iter()
+                    .zip(ab.iter())
+                    .all(|(x, y)| cbor_values_equal(x, y))
+        }
+        (Value::Map(ma), Value::Map(mb)) => {
+            ma.len() == mb.len()
+                && ma.iter().zip(mb.iter()).all(|((ka, va), (kb, vb))| {
+                    cbor_values_equal(ka, kb) && cbor_values_equal(va, vb)
+                })
+        }
+        (Value::Tag(ta, va), Value::Tag(tb, vb)) => ta == tb && cbor_values_equal(va, vb),
+        // All other variants: delegate to standard PartialEq
+        _ => a == b,
+    }
+}
 
 fn value_to_bytes(value: &ciborium::Value) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
@@ -341,19 +438,18 @@ mod tests {
         mars.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
         mars.insert("type".to_string(), ciborium::Value::Text("fc".to_string()));
 
-        let mut extra = BTreeMap::new();
-        extra.insert(
-            "mars".to_string(),
-            ciborium::Value::Map(
-                mars.into_iter()
-                    .map(|(k, v)| (ciborium::Value::Text(k), v))
-                    .collect(),
-            ),
+        let mars_value = ciborium::Value::Map(
+            mars.into_iter()
+                .map(|(k, v)| (ciborium::Value::Text(k), v))
+                .collect(),
         );
+
+        let mut base_entry = BTreeMap::new();
+        base_entry.insert("mars".to_string(), mars_value);
 
         GlobalMetadata {
             version: 2,
-            extra,
+            base: vec![base_entry],
             ..Default::default()
         }
     }
@@ -380,7 +476,8 @@ mod tests {
         let bytes = global_metadata_to_cbor(&meta).unwrap();
         let decoded = cbor_to_global_metadata(&bytes).unwrap();
         assert_eq!(decoded.version, 2);
-        assert!(decoded.extra.contains_key("mars"));
+        assert_eq!(decoded.base.len(), 1);
+        assert!(decoded.base[0].contains_key("mars"));
     }
 
     #[test]
@@ -435,14 +532,11 @@ mod tests {
 
     #[test]
     fn test_empty_global_metadata() {
-        let meta = GlobalMetadata {
-            version: 2,
-            extra: BTreeMap::new(),
-            ..Default::default()
-        };
+        let meta = GlobalMetadata::default();
         let bytes = global_metadata_to_cbor(&meta).unwrap();
         let decoded = cbor_to_global_metadata(&bytes).unwrap();
         assert_eq!(decoded.version, 2);
+        assert!(decoded.base.is_empty());
         assert!(decoded.extra.is_empty());
     }
 
@@ -528,21 +622,21 @@ mod tests {
     #[test]
     fn test_encoding_determinism_across_key_insertion_orders() {
         // Insert keys in two different orders, verify same CBOR output
-        let mut extra1 = BTreeMap::new();
-        extra1.insert("zebra".to_string(), ciborium::Value::Integer(1.into()));
-        extra1.insert("apple".to_string(), ciborium::Value::Integer(2.into()));
+        let mut base1 = BTreeMap::new();
+        base1.insert("zebra".to_string(), ciborium::Value::Integer(1.into()));
+        base1.insert("apple".to_string(), ciborium::Value::Integer(2.into()));
         let meta1 = GlobalMetadata {
             version: 2,
-            extra: extra1,
+            base: vec![base1],
             ..Default::default()
         };
 
-        let mut extra2 = BTreeMap::new();
-        extra2.insert("apple".to_string(), ciborium::Value::Integer(2.into()));
-        extra2.insert("zebra".to_string(), ciborium::Value::Integer(1.into()));
+        let mut base2 = BTreeMap::new();
+        base2.insert("apple".to_string(), ciborium::Value::Integer(2.into()));
+        base2.insert("zebra".to_string(), ciborium::Value::Integer(1.into()));
         let meta2 = GlobalMetadata {
             version: 2,
-            extra: extra2,
+            base: vec![base2],
             ..Default::default()
         };
 
@@ -552,5 +646,397 @@ mod tests {
             bytes1, bytes2,
             "CBOR output must be independent of insertion order"
         );
+    }
+
+    // ── compute_common tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_compute_common_empty() {
+        let (common, remaining) = compute_common(&[]);
+        assert!(common.is_empty());
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn test_compute_common_single_entry() {
+        let mut entry = BTreeMap::new();
+        entry.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+        entry.insert("_reserved_".to_string(), ciborium::Value::Integer(1.into()));
+
+        let (common, remaining) = compute_common(&[entry]);
+        assert_eq!(common.len(), 1); // only "class", _reserved_ excluded
+        assert!(common.contains_key("class"));
+        assert!(!common.contains_key("_reserved_"));
+        assert_eq!(remaining.len(), 1);
+        assert!(remaining[0].is_empty());
+    }
+
+    #[test]
+    fn test_compute_common_all_identical() {
+        let mut e1 = BTreeMap::new();
+        e1.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+        e1.insert(
+            "date".to_string(),
+            ciborium::Value::Text("20260401".to_string()),
+        );
+        let e2 = e1.clone();
+
+        let (common, remaining) = compute_common(&[e1, e2]);
+        assert_eq!(common.len(), 2);
+        assert!(remaining[0].is_empty());
+        assert!(remaining[1].is_empty());
+    }
+
+    #[test]
+    fn test_compute_common_one_varying() {
+        let mut e1 = BTreeMap::new();
+        e1.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+        e1.insert("param".to_string(), ciborium::Value::Text("2t".to_string()));
+
+        let mut e2 = BTreeMap::new();
+        e2.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+        e2.insert(
+            "param".to_string(),
+            ciborium::Value::Text("msl".to_string()),
+        );
+
+        let (common, remaining) = compute_common(&[e1, e2]);
+        assert_eq!(common.len(), 1); // only "class"
+        assert!(common.contains_key("class"));
+        assert_eq!(remaining[0].len(), 1); // "param"
+        assert_eq!(remaining[1].len(), 1); // "param"
+    }
+
+    #[test]
+    fn test_compute_common_reserved_excluded() {
+        let mut e1 = BTreeMap::new();
+        e1.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+        e1.insert("_reserved_".to_string(), ciborium::Value::Map(vec![]));
+        let mut e2 = BTreeMap::new();
+        e2.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+        e2.insert("_reserved_".to_string(), ciborium::Value::Map(vec![]));
+
+        let (common, remaining) = compute_common(&[e1, e2]);
+        assert!(common.contains_key("class"));
+        assert!(!common.contains_key("_reserved_"));
+        // _reserved_ excluded from remaining too
+        assert!(remaining[0].is_empty());
+        assert!(remaining[1].is_empty());
+    }
+
+    #[test]
+    fn test_compute_common_key_missing_in_some_entries() {
+        // Key present in first entry but absent in second => not common
+        let mut e1 = BTreeMap::new();
+        e1.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+        e1.insert(
+            "extra".to_string(),
+            ciborium::Value::Text("only_here".to_string()),
+        );
+
+        let mut e2 = BTreeMap::new();
+        e2.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+
+        let (common, remaining) = compute_common(&[e1, e2]);
+        assert_eq!(common.len(), 1);
+        assert!(common.contains_key("class"));
+        assert_eq!(remaining[0].len(), 1); // "extra" is per-object for e1
+        assert!(remaining[1].is_empty()); // e2 has nothing left
+    }
+
+    #[test]
+    fn test_compute_common_three_entries() {
+        let mut e1 = BTreeMap::new();
+        e1.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+        e1.insert("step".to_string(), ciborium::Value::Integer(0.into()));
+
+        let mut e2 = BTreeMap::new();
+        e2.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+        e2.insert("step".to_string(), ciborium::Value::Integer(6.into()));
+
+        let mut e3 = BTreeMap::new();
+        e3.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+        e3.insert("step".to_string(), ciborium::Value::Integer(12.into()));
+
+        let (common, remaining) = compute_common(&[e1, e2, e3]);
+        assert_eq!(common.len(), 1); // "class"
+        assert!(common.contains_key("class"));
+        // Each remaining has "step"
+        assert_eq!(remaining[0].len(), 1);
+        assert_eq!(remaining[1].len(), 1);
+        assert_eq!(remaining[2].len(), 1);
+    }
+
+    #[test]
+    fn test_compute_common_nan_values_treated_as_equal() {
+        // NaN values with identical bit patterns should be treated as common
+        let mut e1 = BTreeMap::new();
+        e1.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+        e1.insert("fill".to_string(), ciborium::Value::Float(f64::NAN));
+
+        let mut e2 = BTreeMap::new();
+        e2.insert("class".to_string(), ciborium::Value::Text("od".to_string()));
+        e2.insert("fill".to_string(), ciborium::Value::Float(f64::NAN));
+
+        let (common, remaining) = compute_common(&[e1, e2]);
+        // Both "class" and "fill" should be common (NaN-safe comparison)
+        assert_eq!(common.len(), 2);
+        assert!(common.contains_key("class"));
+        assert!(common.contains_key("fill"));
+        assert!(remaining[0].is_empty());
+        assert!(remaining[1].is_empty());
+    }
+
+    #[test]
+    fn test_compute_common_nested_maps_with_nan() {
+        // Nested CBOR maps containing NaN should still compare correctly
+        let make_entry = || {
+            let nested = ciborium::Value::Map(vec![(
+                ciborium::Value::Text("fill_value".to_string()),
+                ciborium::Value::Float(f64::NAN),
+            )]);
+            let mut e = BTreeMap::new();
+            e.insert("params".to_string(), nested);
+            e
+        };
+
+        let (common, remaining) = compute_common(&[make_entry(), make_entry()]);
+        assert_eq!(common.len(), 1);
+        assert!(common.contains_key("params"));
+        assert!(remaining[0].is_empty());
+        assert!(remaining[1].is_empty());
+    }
+
+    #[test]
+    fn test_cbor_values_equal_basic() {
+        use super::cbor_values_equal;
+
+        // NaN == NaN (bitwise)
+        assert!(cbor_values_equal(
+            &ciborium::Value::Float(f64::NAN),
+            &ciborium::Value::Float(f64::NAN)
+        ));
+
+        // Normal floats
+        assert!(cbor_values_equal(
+            &ciborium::Value::Float(1.5),
+            &ciborium::Value::Float(1.5)
+        ));
+        assert!(!cbor_values_equal(
+            &ciborium::Value::Float(1.5),
+            &ciborium::Value::Float(2.5)
+        ));
+
+        // Mixed types
+        assert!(!cbor_values_equal(
+            &ciborium::Value::Float(1.0),
+            &ciborium::Value::Integer(1.into())
+        ));
+
+        // Text
+        assert!(cbor_values_equal(
+            &ciborium::Value::Text("a".to_string()),
+            &ciborium::Value::Text("a".to_string())
+        ));
+    }
+
+    // ── Edge case: compute_common with different key sets ────────────────
+
+    #[test]
+    fn test_compute_common_different_key_sets() {
+        // Entry 0 has "a", "b"; entry 1 has "b", "c".
+        // Only "b" can be common if values match.
+        let mut e1 = BTreeMap::new();
+        e1.insert("a".to_string(), ciborium::Value::Integer(1.into()));
+        e1.insert("b".to_string(), ciborium::Value::Text("shared".to_string()));
+
+        let mut e2 = BTreeMap::new();
+        e2.insert("b".to_string(), ciborium::Value::Text("shared".to_string()));
+        e2.insert("c".to_string(), ciborium::Value::Integer(3.into()));
+
+        let (common, remaining) = compute_common(&[e1, e2]);
+        assert_eq!(common.len(), 1);
+        assert!(common.contains_key("b"));
+        // Note: "c" is NOT considered as a common candidate because
+        // compute_common only examines keys from the first entry.
+        // "a" is in remaining[0], "c" is in remaining[1].
+        assert_eq!(remaining[0].len(), 1); // "a"
+        assert!(remaining[0].contains_key("a"));
+        assert_eq!(remaining[1].len(), 1); // "c"
+        assert!(remaining[1].contains_key("c"));
+    }
+
+    #[test]
+    fn test_compute_common_key_in_later_entry_only() {
+        // Key "z" present in entry 1 only, not in entry 0 — never a common candidate.
+        let mut e1 = BTreeMap::new();
+        e1.insert("a".to_string(), ciborium::Value::Integer(1.into()));
+
+        let mut e2 = BTreeMap::new();
+        e2.insert("a".to_string(), ciborium::Value::Integer(1.into()));
+        e2.insert("z".to_string(), ciborium::Value::Integer(99.into()));
+
+        let (common, remaining) = compute_common(&[e1, e2]);
+        assert_eq!(common.len(), 1);
+        assert!(common.contains_key("a"));
+        // "z" only in entry 1's remaining
+        assert!(remaining[0].is_empty());
+        assert_eq!(remaining[1].len(), 1);
+        assert!(remaining[1].contains_key("z"));
+    }
+
+    // ── cbor_values_equal edge cases ────────────────────────────────────
+
+    #[test]
+    fn test_cbor_values_equal_booleans() {
+        use super::cbor_values_equal;
+        assert!(cbor_values_equal(
+            &ciborium::Value::Bool(true),
+            &ciborium::Value::Bool(true)
+        ));
+        assert!(!cbor_values_equal(
+            &ciborium::Value::Bool(true),
+            &ciborium::Value::Bool(false)
+        ));
+    }
+
+    #[test]
+    fn test_cbor_values_equal_bytes() {
+        use super::cbor_values_equal;
+        assert!(cbor_values_equal(
+            &ciborium::Value::Bytes(vec![1, 2, 3]),
+            &ciborium::Value::Bytes(vec![1, 2, 3])
+        ));
+        assert!(!cbor_values_equal(
+            &ciborium::Value::Bytes(vec![1, 2, 3]),
+            &ciborium::Value::Bytes(vec![1, 2, 4])
+        ));
+    }
+
+    #[test]
+    fn test_cbor_values_equal_arrays_different_lengths() {
+        use super::cbor_values_equal;
+        let a = ciborium::Value::Array(vec![ciborium::Value::Integer(1.into())]);
+        let b = ciborium::Value::Array(vec![
+            ciborium::Value::Integer(1.into()),
+            ciborium::Value::Integer(2.into()),
+        ]);
+        assert!(!cbor_values_equal(&a, &b));
+    }
+
+    #[test]
+    fn test_cbor_values_equal_nested_arrays_with_nan() {
+        use super::cbor_values_equal;
+        let a = ciborium::Value::Array(vec![
+            ciborium::Value::Float(f64::NAN),
+            ciborium::Value::Integer(1.into()),
+        ]);
+        let b = ciborium::Value::Array(vec![
+            ciborium::Value::Float(f64::NAN),
+            ciborium::Value::Integer(1.into()),
+        ]);
+        assert!(cbor_values_equal(&a, &b));
+    }
+
+    #[test]
+    fn test_cbor_values_equal_maps_different_lengths() {
+        use super::cbor_values_equal;
+        let a = ciborium::Value::Map(vec![(
+            ciborium::Value::Text("a".to_string()),
+            ciborium::Value::Integer(1.into()),
+        )]);
+        let b = ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Text("a".to_string()),
+                ciborium::Value::Integer(1.into()),
+            ),
+            (
+                ciborium::Value::Text("b".to_string()),
+                ciborium::Value::Integer(2.into()),
+            ),
+        ]);
+        assert!(!cbor_values_equal(&a, &b));
+    }
+
+    #[test]
+    fn test_cbor_values_equal_tags() {
+        use super::cbor_values_equal;
+        let a = ciborium::Value::Tag(1, Box::new(ciborium::Value::Integer(42.into())));
+        let b = ciborium::Value::Tag(1, Box::new(ciborium::Value::Integer(42.into())));
+        assert!(cbor_values_equal(&a, &b));
+
+        let c = ciborium::Value::Tag(2, Box::new(ciborium::Value::Integer(42.into())));
+        assert!(!cbor_values_equal(&a, &c));
+
+        let d = ciborium::Value::Tag(1, Box::new(ciborium::Value::Integer(99.into())));
+        assert!(!cbor_values_equal(&a, &d));
+    }
+
+    #[test]
+    fn test_cbor_values_equal_null() {
+        use super::cbor_values_equal;
+        assert!(cbor_values_equal(
+            &ciborium::Value::Null,
+            &ciborium::Value::Null
+        ));
+        assert!(!cbor_values_equal(
+            &ciborium::Value::Null,
+            &ciborium::Value::Bool(false)
+        ));
+    }
+
+    #[test]
+    fn test_cbor_values_equal_tags_with_nan_inside() {
+        use super::cbor_values_equal;
+        let a = ciborium::Value::Tag(1, Box::new(ciborium::Value::Float(f64::NAN)));
+        let b = ciborium::Value::Tag(1, Box::new(ciborium::Value::Float(f64::NAN)));
+        assert!(cbor_values_equal(&a, &b));
+    }
+
+    #[test]
+    fn test_compute_common_cbor_maps_with_different_key_order() {
+        // CBOR Maps with same content but different key ordering should be
+        // considered equal because cbor_values_equal compares element-by-element
+        // after canonicalization by BTreeMap (CBOR maps are compared positionally).
+        // But here we use ciborium::Value::Map which preserves insertion order.
+        // Two maps with same keys/values in different order: NOT equal by the
+        // current positional comparison (this is correct — CBOR canonical encoding
+        // ensures all maps are sorted, so different-order maps from a canonical
+        // encoder can't happen).
+        let map1 = ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Text("a".to_string()),
+                ciborium::Value::Integer(1.into()),
+            ),
+            (
+                ciborium::Value::Text("b".to_string()),
+                ciborium::Value::Integer(2.into()),
+            ),
+        ]);
+        let map2 = ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Text("b".to_string()),
+                ciborium::Value::Integer(2.into()),
+            ),
+            (
+                ciborium::Value::Text("a".to_string()),
+                ciborium::Value::Integer(1.into()),
+            ),
+        ]);
+        // With the current implementation, positional comparison means different
+        // key orders are NOT equal.
+        let mut e1 = BTreeMap::new();
+        e1.insert("data".to_string(), map1);
+        let mut e2 = BTreeMap::new();
+        e2.insert("data".to_string(), map2);
+
+        let (common, remaining) = compute_common(&[e1, e2]);
+        // "data" will NOT be common because the maps differ positionally.
+        // This is the expected behavior: canonical encoding ensures maps are
+        // always in sorted order, so this scenario only arises with
+        // non-canonical input.
+        assert!(common.is_empty());
+        assert_eq!(remaining[0].len(), 1);
+        assert_eq!(remaining[1].len(), 1);
     }
 }

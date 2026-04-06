@@ -21,7 +21,7 @@ pub use file::TensogramFile;
 pub use framing::{scan, scan_file};
 pub use hash::{compute_hash, verify_hash, HashAlgorithm};
 pub use iter::{messages, objects, objects_metadata, FileMessageIter, MessageIter, ObjectIter};
-pub use metadata::verify_canonical_cbor;
+pub use metadata::{compute_common, verify_canonical_cbor, RESERVED_KEY};
 pub use streaming::StreamingEncoder;
 pub use types::{
     ByteOrder, DataObjectDescriptor, DecodedObject, GlobalMetadata, HashDescriptor, HashFrame,

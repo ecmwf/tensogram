@@ -11,90 +11,147 @@ All CBOR maps use **deterministic encoding** with canonical key ordering per RFC
 
 ## GlobalMetadata
 
-The global metadata frame contains a single CBOR map. The only required key is `version`; everything else is application-defined.
+The global metadata frame contains a single CBOR map. The only required key is `version`; everything else is optional.
 
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
 | `version` | uint | Yes | Format version. Currently `2` |
-| `common` | map | No | Keys shared across all objects (e.g. origin, date) |
-| `payload` | array of maps | No | Auto-populated by encoder — one entry per data object |
-| `reserved` | map | No | Reserved for future use; preserved on round-trip |
-| *any other key* | any | No | Application metadata (e.g., `"mars"`, `"source"`, `"timestamp"`) |
+| `base` | array of maps | No | Per-object metadata — one entry per data object, each entry holds ALL metadata for that object independently |
+| `_reserved_` | map | No | Library internals (provenance: encoder, time, uuid). Client code MUST NOT write to this. |
+| `_extra_` | map | No | Client-writable catch-all for ad-hoc message-level annotations |
+| *any unknown key* | any | No | Silently ignored on decode (forward compatibility) |
 
-Unlike v1, the global metadata does **not** contain a top-level `objects` array of full descriptors. Each data object is self-describing via its own per-frame descriptor (see below). However, the encoder automatically populates `payload` as a CBOR array of maps — one entry per data object — so readers can discover object layout from the global frame alone.
+Each data object is self-describing via its own per-frame descriptor (see below). The `base` array provides per-object metadata at the message level so readers can discover object metadata from the global frame alone, without opening each data object frame.
 
-### Payload Array
+### The `base` Array
 
-The `payload` array is written by the encoder. Each entry is a CBOR map containing auto-populated keys (`ndim`, `shape`, `strides`, `dtype`) plus any pre-existing keys the application set before encoding:
+The `base` array is one entry per data object. Each entry is a CBOR map holding ALL structured metadata for that object. The encoder auto-populates `_reserved_.tensor` (containing `ndim`, `shape`, `strides`, `dtype`) in each entry. Application keys (e.g. `"mars"`) are preserved:
 
 ```json
 {
-  "payload": [
-    { "ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float64" },
+  "base": [
     {
-      "ndim": 1, "shape": [137], "strides": [1], "dtype": "float64",
-      "mars": { "param": "lnsp" }
+      "mars": { "class": "od", "stream": "oper", "param": "2t", "date": "20260404" },
+      "_reserved_": {
+        "tensor": { "ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float32" }
+      }
+    },
+    {
+      "mars": { "class": "od", "stream": "oper", "param": "10u", "date": "20260404" },
+      "_reserved_": {
+        "tensor": { "ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float32" }
+      }
     }
   ]
 }
 ```
 
-Each element corresponds to one data object in order. The encoder inserts `ndim`/`shape`/`strides`/`dtype` into each entry (overwriting those keys if already present). Application keys such as `"mars"` are preserved. Per-object MARS keys that **vary** across objects (e.g. `param`) are stored under `payload[i]["mars"]`, while MARS keys **shared** by all objects live under `common["mars"]`.
+Each entry corresponds to one data object in order. Entries are **independent** — there is no tracking of which keys are common across objects. If you need to extract commonalities (e.g. for display or merge operations), use the `compute_common()` utility in software after decoding.
+
+> **Key difference from earlier versions:** There is no `common`/`payload` split. Every `base[i]` entry is self-contained. MARS keys that are shared across all objects (e.g. `class`, `stream`, `date`) are simply repeated in each entry.
+
+### The `_reserved_` Section
+
+The `_reserved_` section at the message level holds library-managed provenance information. Client code can read these values but **must not write to `_reserved_`** — the encoder validates this and rejects messages where client code has written to it.
+
+```json
+{
+  "_reserved_": {
+    "encoder": { "name": "tensogram", "version": "0.6.0" },
+    "time": "2026-04-06T12:00:00Z",
+    "uuid": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+Within each `base[i]` entry, the encoder also auto-populates `_reserved_.tensor`:
+
+```json
+{
+  "_reserved_": {
+    "tensor": {
+      "ndim": 2,
+      "shape": [721, 1440],
+      "strides": [1440, 1],
+      "dtype": "float32"
+    }
+  }
+}
+```
+
+### The `_extra_` Section
+
+The `_extra_` section is a client-writable catch-all for ad-hoc message-level annotations:
+
+```json
+{
+  "_extra_": {
+    "source": "ifs-cycle49r2",
+    "experiment_tag": "alpha-run-003"
+  }
+}
+```
 
 ### Example GlobalMetadata
+
+A complete example with two data objects (temperature and wind fields):
 
 ```json
 {
   "version": 2,
-  "common": {
-    "mars": {
-      "class": "od",
-      "stream": "oper",
-      "expver": "0001",
-      "date": "20260404",
-      "time": "0000",
-      "step": "0",
-      "levtype": "sfc",
-      "grid": "regular_ll"
-    }
-  },
-  "payload": [
+  "base": [
     {
-      "ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float32",
-      "mars": { "param": "2t" }
+      "mars": {
+        "class": "od", "stream": "oper", "expver": "0001",
+        "date": "20260404", "time": "0000", "step": "0",
+        "levtype": "sfc", "grid": "regular_ll", "param": "2t"
+      },
+      "_reserved_": {
+        "tensor": { "ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float32" }
+      }
     },
     {
-      "ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float32",
-      "mars": { "param": "10u" }
+      "mars": {
+        "class": "od", "stream": "oper", "expver": "0001",
+        "date": "20260404", "time": "0000", "step": "0",
+        "levtype": "sfc", "grid": "regular_ll", "param": "10u"
+      },
+      "_reserved_": {
+        "tensor": { "ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float32" }
+      }
     }
   ],
-  "source": "ifs-cycle49r2"
+  "_reserved_": {
+    "encoder": { "name": "tensogram", "version": "0.6.0" },
+    "time": "2026-04-06T12:00:00Z",
+    "uuid": "550e8400-e29b-41d4-a716-446655440000"
+  },
+  "_extra_": {
+    "source": "ifs-cycle49r2"
+  }
 }
 ```
 
-Keys identical across every object (`class`, `stream`, `date`, `levtype`, `grid`, etc.) go in `common["mars"]`. Keys that **differ** per object (here only `param`) go in each `payload` entry's `"mars"` map. The GRIB key `gridType` is stored as `"grid"` in the mars namespace.
+Each `base[i]` entry is fully self-contained. The only key that varies between the two entries above is `param`. All other MARS keys are repeated — this is by design. Commonalities can be computed in software via `compute_common()` when needed.
 
 ### Optional: Full GRIB Namespace Keys
 
-When the GRIB converter runs with `preserve_all_keys` (CLI: `--all-keys`), all non-mars ecCodes namespace keys are stored under a `"grib"` sub-object with the same common/varying partitioning:
+When the GRIB converter runs with `preserve_all_keys` (CLI: `--all-keys`), all non-mars ecCodes namespace keys are stored under a `"grib"` sub-object within each `base[i]` entry:
 
 ```json
 {
-  "common": {
-    "mars": { "class": "od", "grid": "regular_ll", "..." : "..." },
-    "grib": {
-      "geography": { "Ni": 1440, "Nj": 721, "gridType": "regular_ll" },
-      "time":      { "dataDate": 20260404, "dataTime": 0 },
-      "ls":        { "edition": 2, "centre": "ecmf", "packingType": "grid_ccsds" }
-    }
-  },
-  "payload": [
+  "base": [
     {
-      "ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float64",
-      "mars": { "param": 167 },
+      "mars": { "class": "od", "grid": "regular_ll", "param": "2t", "..." : "..." },
       "grib": {
+        "geography": { "Ni": 1440, "Nj": 721, "gridType": "regular_ll" },
+        "time":      { "dataDate": 20260404, "dataTime": 0 },
+        "ls":        { "edition": 2, "centre": "ecmf", "packingType": "grid_ccsds" },
         "parameter":  { "paramId": 167, "shortName": "2t", "units": "K" },
         "statistics": { "max": 311.03, "min": 212.84, "avg": 277.6 }
+      },
+      "_reserved_": {
+        "tensor": { "ndim": 2, "shape": [721, 1440], "strides": [1440, 1], "dtype": "float64" }
       }
     }
   ]
@@ -109,7 +166,7 @@ Each data object frame contains its own CBOR descriptor. This descriptor fully d
 
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
-| `obj_type` | text | Yes | Object type, e.g. `"ntensor"` |
+| `type` | text | Yes | Object type, e.g. `"ntensor"` (Rust field: `obj_type`) |
 | `ndim` | uint | Yes | Number of dimensions |
 | `shape` | array of uint | Yes | Size of each dimension |
 | `strides` | array of uint | Yes | Element stride per dimension |
@@ -130,7 +187,7 @@ Here is what a descriptor might look like for a global temperature field at 0.25
 
 ```json
 {
-  "obj_type": "ntensor",
+  "type": "ntensor",
   "ndim": 2,
   "shape": [721, 1440],
   "strides": [1440, 1],
@@ -151,7 +208,7 @@ Here is what a descriptor might look like for a global temperature field at 0.25
 }
 ```
 
-The `params` field in `DataObjectDescriptor` is for encoding parameters only (e.g. `reference_value`, `bits_per_value`). MARS keys and other application metadata are stored in the global metadata — shared keys in `common["mars"]` and per-object keys in `payload[i]["mars"]`.
+The `params` field in `DataObjectDescriptor` is for encoding parameters only (e.g. `reference_value`, `bits_per_value`). MARS keys and other application metadata are stored in the global metadata `base[i]["mars"]`.
 
 ### Encoding Parameters (simple_packing)
 
