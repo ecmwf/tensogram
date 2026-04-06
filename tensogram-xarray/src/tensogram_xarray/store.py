@@ -7,6 +7,7 @@ lazy-loaded data backed by :class:`TensogramBackendArray`.
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Sequence
 from typing import Any
@@ -89,7 +90,7 @@ class TensogramDataStore:
         verify_hash: bool = False,
         range_threshold: float = 0.5,
     ):
-        self.file_path = file_path
+        self.file_path = os.path.abspath(file_path)
         self.msg_index = msg_index
         self.dim_names = dim_names
         self.variable_key = variable_key

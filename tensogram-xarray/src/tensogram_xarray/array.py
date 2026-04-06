@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 from itertools import product as iterproduct
 from typing import Any
@@ -194,7 +195,9 @@ class TensogramBackendArray(BackendArray):
         range_threshold: float = DEFAULT_RANGE_THRESHOLD,
         lock: threading.Lock | None = None,
     ):
-        self.file_path = file_path
+        # Resolve to absolute path so dask workers with different CWDs
+        # can still find the file after pickle/unpickle.
+        self.file_path = os.path.abspath(file_path)
         self.msg_index = msg_index
         self.obj_index = obj_index
         self.shape = shape
@@ -349,12 +352,15 @@ class StackedBackendArray(BackendArray):
             backing = self._arrays[flat_idx]
             inner_data = backing._raw_indexing_method(inner_key)
 
-            # Unravel flat_pos into N-D output position.
-            out_idx = []
+            # Unravel flat_pos into N-D output position (row-major / C order).
+            # iterproduct iterates in row-major order (rightmost index varies
+            # fastest), so unraveling must go right-to-left.
+            out_idx: list[int] = []
             remainder = flat_pos
-            for size in outer_out_shape:
+            for size in reversed(outer_out_shape):
                 out_idx.append(remainder % size)
                 remainder //= size
+            out_idx.reverse()
             result[tuple(out_idx)] = inner_data
 
         # Apply outer slicing to produce correct output shape.

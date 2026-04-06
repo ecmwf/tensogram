@@ -11,6 +11,7 @@ Per-object metadata is read from ``meta.payload[i]`` (primary) with
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -110,6 +111,7 @@ def scan_file(file_path: str) -> FileIndex:
     """
     import tensogram
 
+    file_path = os.path.abspath(file_path)
     index = FileIndex(file_path=file_path)
 
     with tensogram.TensogramFile.open(file_path) as f:

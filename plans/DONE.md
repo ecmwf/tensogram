@@ -124,15 +124,15 @@ Tested indirectly via C++ wrapper (105 tests).
 ### C++ (5 examples, C++ wrapper API)
 01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 file_api, 05 iterators
 
-### Python (8 examples)
-01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 multi_object, 05 file_api, 06 hash_and_errors, 07 iterators, 08 xarray_integration
+### Python (9 examples)
+01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 multi_object, 05 file_api, 06 hash_and_errors, 07 iterators, 08 xarray_integration, 09 dask_distributed
 
 ## Documentation (mdbook)
 
 - `docs/` — mdbook source
 - Introduction, Concepts (messages, metadata, objects, pipeline)
 - Wire Format (message layout, CBOR schema, dtypes)
-- Developer Guide (quickstart, encoding, decoding, file API, iterators)
+- Developer Guide (quickstart, encoding, decoding, file API, iterators, xarray integration, dask integration)
 - Encodings (simple_packing, shuffle, compression)
 - CLI Reference (all subcommands)
 - GRIB conversion overview + MARS key mapping
