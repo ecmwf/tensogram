@@ -109,7 +109,7 @@ impl GribHandle {
         };
         if h.is_null() {
             Err(BenchmarkError(
-                "codes_grib_handle_new_from_message_copy returned null".to_string(),
+                "codes_handle_new_from_message_copy returned null".to_string(),
             ))
         } else {
             Ok(GribHandle(h))
@@ -174,7 +174,7 @@ impl GribHandle {
         }
     }
 
-    /// Return the raw GRIB message bytes (zero-copy view).
+    /// Copy the raw GRIB message bytes into an owned buffer.
     fn message_bytes(&self) -> Result<Vec<u8>, BenchmarkError> {
         let mut ptr: *const c_void = std::ptr::null();
         let mut size: usize = 0;
@@ -366,6 +366,9 @@ pub fn run_grib_comparison_results(
     if num_points == 0 {
         return Err(BenchmarkError("num_points must be > 0".to_string()));
     }
+    if iterations == 0 {
+        return Err(BenchmarkError("iterations must be > 0".to_string()));
+    }
 
     eprintln!("Generating {num_points} weather-like float64 values (seed={seed})...");
     let values = generate_weather_field(num_points, seed);
@@ -374,65 +377,56 @@ pub fn run_grib_comparison_results(
     let mut results = Vec::new();
     let bits = 24;
 
-    // ── ecCodes CCSDS (reference) ─────────────────────────────────────────────
+    /// Collect a benchmark result, logging progress and handling errors
+    /// without aborting the full run.
+    fn collect(
+        name: &str,
+        result: Result<BenchmarkResult, BenchmarkError>,
+        original_bytes: usize,
+        out: &mut Vec<BenchmarkResult>,
+    ) {
+        match result {
+            Ok(mut r) => {
+                r.name = name.to_string();
+                eprintln!(" done ({:.1} ms encode)", r.encode_ms);
+                out.push(r);
+            }
+            Err(e) => {
+                eprintln!(" FAILED: {e}");
+                out.push(BenchmarkResult {
+                    name: format!("{name} [ERROR]"),
+                    encode_ms: 0.0,
+                    decode_ms: 0.0,
+                    compressed_bytes: 0,
+                    original_bytes,
+                });
+            }
+        }
+    }
+
     eprint!("  eccodes grid_ccsds (24-bit)...");
-    match time_grib(&values, "grid_ccsds", bits, iterations, original_bytes) {
-        Ok(mut r) => {
-            r.name = "eccodes grid_ccsds".to_string();
-            eprintln!(" done ({:.1} ms encode)", r.encode_ms);
-            results.push(r);
-        }
-        Err(e) => {
-            eprintln!(" FAILED: {e}");
-            results.push(BenchmarkResult {
-                name: "eccodes grid_ccsds [ERROR]".to_string(),
-                encode_ms: 0.0,
-                decode_ms: 0.0,
-                compressed_bytes: 0,
-                original_bytes,
-            });
-        }
-    }
+    collect(
+        "eccodes grid_ccsds",
+        time_grib(&values, "grid_ccsds", bits, iterations, original_bytes),
+        original_bytes,
+        &mut results,
+    );
 
-    // ── ecCodes simple packing ────────────────────────────────────────────────
     eprint!("  eccodes grid_simple (24-bit)...");
-    match time_grib(&values, "grid_simple", bits, iterations, original_bytes) {
-        Ok(mut r) => {
-            r.name = "eccodes grid_simple".to_string();
-            eprintln!(" done ({:.1} ms encode)", r.encode_ms);
-            results.push(r);
-        }
-        Err(e) => {
-            eprintln!(" FAILED: {e}");
-            results.push(BenchmarkResult {
-                name: "eccodes grid_simple [ERROR]".to_string(),
-                encode_ms: 0.0,
-                decode_ms: 0.0,
-                compressed_bytes: 0,
-                original_bytes,
-            });
-        }
-    }
+    collect(
+        "eccodes grid_simple",
+        time_grib(&values, "grid_simple", bits, iterations, original_bytes),
+        original_bytes,
+        &mut results,
+    );
 
-    // ── Tensogram simple_packing(24) + szip ───────────────────────────────────
     eprint!("  tensogram sp(24)+szip...");
-    match time_tensogram_sp_szip(&values, bits as u32, iterations, original_bytes) {
-        Ok(mut r) => {
-            r.name = "tensogram sp(24)+szip".to_string();
-            eprintln!(" done ({:.1} ms encode)", r.encode_ms);
-            results.push(r);
-        }
-        Err(e) => {
-            eprintln!(" FAILED: {e}");
-            results.push(BenchmarkResult {
-                name: "tensogram sp(24)+szip [ERROR]".to_string(),
-                encode_ms: 0.0,
-                decode_ms: 0.0,
-                compressed_bytes: 0,
-                original_bytes,
-            });
-        }
-    }
+    collect(
+        "tensogram sp(24)+szip",
+        time_tensogram_sp_szip(&values, bits as u32, iterations, original_bytes),
+        original_bytes,
+        &mut results,
+    );
 
     Ok(results)
 }

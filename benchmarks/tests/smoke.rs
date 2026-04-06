@@ -171,6 +171,12 @@ fn test_codec_matrix_zero_points_returns_err() {
 }
 
 #[test]
+fn test_codec_matrix_zero_iterations_returns_err() {
+    let result = run_codec_matrix_results(100, 0, 42);
+    assert!(result.is_err(), "iterations=0 must return Err");
+}
+
+#[test]
 fn test_codec_matrix_non_aligned_points() {
     // 501 is not a multiple of 4.  The codec matrix rounds up internally
     // so that szip cases never fail due to alignment.
@@ -194,6 +200,14 @@ fn test_grib_comparison_zero_points_returns_err() {
     use tensogram_benchmarks::grib_comparison::run_grib_comparison_results;
     let result = run_grib_comparison_results(0, 1, 42);
     assert!(result.is_err(), "num_points=0 must return Err");
+}
+
+#[cfg(feature = "eccodes")]
+#[test]
+fn test_grib_comparison_zero_iterations_returns_err() {
+    use tensogram_benchmarks::grib_comparison::run_grib_comparison_results;
+    let result = run_grib_comparison_results(100, 0, 42);
+    assert!(result.is_err(), "iterations=0 must return Err");
 }
 
 #[cfg(feature = "eccodes")]

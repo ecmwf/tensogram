@@ -54,8 +54,6 @@ fn try_pkg_config() -> bool {
                     println!("cargo:rustc-link-lib=dylib={lib}");
                 }
             }
-            // Also get just the library names if not covered above.
-            println!("cargo:rustc-link-lib=dylib=eccodes");
             true
         }
         _ => false,

@@ -1,6 +1,5 @@
 // Tensogram benchmark library.
 //
-// Each module is populated as benchmark components are implemented.
 // The `run_*` functions are the public entry points called by the binaries.
 
 pub mod codec_matrix;
