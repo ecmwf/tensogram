@@ -10,6 +10,11 @@
 - CRITICAL: Always prefer the LSP tool over Grep/Read for code navigation. 
     - Use it to find definitions, references, and workspace symbols.
 
+- IMPORTANT: Don't worry about breaking compatibility or being backwards compatible.
+    - neither for the API nor for the Wire Format
+    - FTM this software has not been make public yet and there is no system using it. 
+    - Keep the code simple.
+
 - IMPORTANT: when planing and before you do any work:
   - always mention how you would verify that work
   - include TDD tests in your plan
