@@ -39,7 +39,7 @@ cargo run --release -p tensogram-benchmarks --bin codec-matrix -- \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--num-points` | 16 000 000 | Number of float64 values to encode; when szip cases are enabled, rounded up to a multiple of 4 (up to 3 extra values) for alignment |
+| `--num-points` | 16 000 000 | Number of float64 values to encode; always rounded up to the next multiple of 4 (up to 3 extra values) for szip alignment |
 | `--iterations` | 5 | Timed iterations per combo (median reported) |
 | `--seed` | 42 | PRNG seed for deterministic data generation |
 
