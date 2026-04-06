@@ -142,11 +142,11 @@ crates/
 ├── tensogram-ffi/        C FFI layer
 ├── tensogram-grib/       GRIB converter (ecCodes, excluded from default build)
 └── tensogram-python/     Python bindings (PyO3, excluded from default build)
-tensogram-xarray/         xarray backend engine (pip install)
-tensogram-zarr/           Zarr v3 store backend (pip install)
+tensogram-xarray/         xarray backend engine (Python package)
+tensogram-zarr/           Zarr v3 store backend (Python package)
 examples/{rust,cpp,python}/
 docs/                     mdBook documentation
-.github/workflows/ci.yml  CI matrix (Rust, Python, C++, xarray, zarr, docs)
+.github/workflows/ci.yml  CI matrix (Rust, Python, C++, GRIB, xarray, zarr, docs)
 ```
 
 ## Copyright and License

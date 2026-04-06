@@ -2,9 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - '**'
   pull_request:
-    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -101,7 +105,7 @@ jobs:
           uv venv .venv
           source .venv/bin/activate
           uv pip install maturin pytest numpy
-          cd crates/tensogram-python && maturin develop && cd ../.. 
+          cd crates/tensogram-python && maturin develop && cd ../..
 
       - name: Install and test xarray
         run: |

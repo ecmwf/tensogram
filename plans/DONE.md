@@ -5,7 +5,7 @@
 
 ## Summary
 
-- **Version:** 0.5.1
+- **Version:** 0.5.0
 - **Workspace:** 5 default crates + 2 optional (Python, GRIB) + 2 separate packages (xarray, zarr)
 - **Tests:** 888 total (283 Rust + 200 Python + 124 xarray + 172 Zarr + 109 C++)
 - **Quality:** 0 clippy warnings, 90.5% Rust line coverage
