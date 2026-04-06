@@ -161,8 +161,9 @@ TEST(MetadataTest, MetadataNumObjects) {
     auto encoded = test_helpers::encode_simple_f32(values);
     auto meta = tensogram::decode_metadata(encoded.data(), encoded.size());
     // num_objects() returns base.len() from the global metadata CBOR.
-    // Simple encoding JSON has no "base" key, so base is empty → 0.
-    EXPECT_EQ(meta.num_objects(), 0u);
+    // The encoder auto-populates base[i] with _reserved_.tensor for each
+    // object, so a single-object message has base.len() == 1.
+    EXPECT_EQ(meta.num_objects(), 1u);
 }
 
 // ---------------------------------------------------------------------------
