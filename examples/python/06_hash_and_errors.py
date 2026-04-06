@@ -76,9 +76,7 @@ except Exception as e:
 # NaN in compute_packing_params
 nan_data = np.array([1.0, float("nan"), 3.0])
 try:
-    tensogram.compute_packing_params(
-        nan_data, bits_per_value=16, decimal_scale_factor=0
-    )
+    tensogram.compute_packing_params(nan_data, bits_per_value=16, decimal_scale_factor=0)
 except ValueError as e:
     print(f"  NaN rejected: {type(e).__name__}")
 

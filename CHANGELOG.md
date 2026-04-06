@@ -14,15 +14,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   - `StackedBackendArray` for lazy hypercube composition
   - Ratio-based `range_threshold` heuristic (default 0.5) for partial vs full decode
   - 113 tests, 97% line coverage
+- **tensogram-zarr** — Zarr v3 Store backend for `.tgm` files
+  - Read/write/append modes via `TensogramStore`
+  - `zarr.open_group(store=TensogramStore.open_tgm("file.tgm"))` for standard Zarr API access
+  - 14 numeric dtypes mapped bidirectionally (TGM <-> Zarr v3 <-> NumPy)
+  - Variable naming from MARS metadata with dedup and sanitization
+  - Byte-range support (RangeByteRequest, OffsetByteRequest, SuffixByteRequest)
+  - 172 tests
+- **Python iterator protocol** — `TensogramFile` now supports standard Python iteration
+  - `for msg in file:` iterates all messages (owns independent file handle, free-threaded safe)
+  - `file[i]`, `file[-1]` — index by position (negative indexing)
+  - `file[1:10:2]` — slice returns list of Message namedtuples
+  - `iter_messages(buf)` — iterate decoded messages from a byte buffer
+  - `Message` namedtuple — `.metadata` and `.objects` fields, tuple unpacking
 - **`decode_descriptors(buf)`** — parse metadata + per-object descriptors without decoding payloads (Rust, Python, C, C++)
 - **`meta.common`** and **`meta.payload`** getters in Python bindings
 - **float16/bfloat16/complex** Python support — proper typed numpy arrays (`ml_dtypes.bfloat16` if installed)
 
 ### Changed
 - **`decode_range` API (BREAKING)** — now returns split results by default (one buffer per range). `join` parameter opts into concatenated output. Affects Rust, Python, C, and C++ APIs.
+- **`decode()` and `decode_message()`** now return `Message` namedtuple (supports both attribute access and tuple unpacking — backward compatible)
+
+### Fixed
+- Removed binary `.so` build artifact from Python package
+- Replaced `unwrap()` in FFI decode macro with proper error propagation
+- Fixed TOCTOU race condition in Python file iterator initialization
+- Python examples 01-03, 05-06 rewritten to use real API (were placeholder code)
 
 ### Stats
-- 572 total tests (257 Rust + 97 Python + 113 xarray + 105 C++)
+- 806 total tests (283 Rust + 118 Python + 124 xarray + 172 Zarr + 109 C++)
 
 ## [0.3.0] - 2026-04-04
 

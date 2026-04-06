@@ -108,8 +108,7 @@ def create_test_files(output_dir: Path) -> list[Path]:
             f.append({"version": 2}, objects)
 
         print(
-            f"  Created {path.name}: {len(objects)} objects "
-            f"({len(objects) - 2} levels + 2 coords)"
+            f"  Created {path.name}: {len(objects)} objects ({len(objects) - 2} levels + 2 coords)"
         )
 
     return paths
@@ -132,9 +131,7 @@ def open_as_dask_datasets(paths: list[Path]) -> list[xr.Dataset]:
         # variable_key="name" names each variable from the descriptor's
         # ``name`` field (e.g. "temperature_1000hPa").
         # chunks={} enables dask lazy loading with automatic chunking.
-        ds = xr.open_dataset(
-            str(path), engine="tensogram", variable_key="name", chunks={}
-        )
+        ds = xr.open_dataset(str(path), engine="tensogram", variable_key="name", chunks={})
         datasets.append(ds)
     return datasets
 
@@ -176,8 +173,7 @@ def compute_statistics(datasets: list[xr.Dataset]):
     missing = [v for v in temp_vars if v not in ds0.data_vars]
     if missing:
         raise KeyError(
-            f"Expected variables not found in dataset: {missing}. "
-            f"Available: {list(ds0.data_vars)}"
+            f"Expected variables not found in dataset: {missing}. Available: {list(ds0.data_vars)}"
         )
     print(f"\n── Temperature variables per file: {len(temp_vars)} ──")
     for v in temp_vars:
@@ -196,8 +192,7 @@ def compute_statistics(datasets: list[xr.Dataset]):
         missing_in_ds = [v for v in temp_vars if v not in ds_vars]
         if missing_in_ds:
             raise KeyError(
-                f"Dataset {i} is missing variables: {missing_in_ds}. "
-                f"Available: {sorted(ds_vars)}"
+                f"Dataset {i} is missing variables: {missing_in_ds}. Available: {sorted(ds_vars)}"
             )
 
     all_timesteps = []
@@ -239,14 +234,10 @@ def compute_statistics(datasets: list[xr.Dataset]):
     # Single compute() call executes all pending operations
     lm, ls, lmn, lmx = dask.compute(level_means, level_stds, level_mins, level_maxs)
 
-    print(
-        f"  {'Level (hPa)':>12s}  {'Mean':>8s}  {'Std':>8s}  {'Min':>8s}  {'Max':>8s}"
-    )
+    print(f"  {'Level (hPa)':>12s}  {'Mean':>8s}  {'Std':>8s}  {'Min':>8s}  {'Max':>8s}")
     print(f"  {'─' * 12}  {'─' * 8}  {'─' * 8}  {'─' * 8}  {'─' * 8}")
     for i, level_hpa in enumerate(LEVEL_VALUES):
-        print(
-            f"  {level_hpa:>12d}  {lm[i]:8.2f}  {ls[i]:8.2f}  {lmn[i]:8.2f}  {lmx[i]:8.2f}"
-        )
+        print(f"  {level_hpa:>12d}  {lm[i]:8.2f}  {ls[i]:8.2f}  {lmn[i]:8.2f}  {lmx[i]:8.2f}")
 
     return full_4d
 
@@ -316,16 +307,11 @@ def main():
         tmp_path = Path(tmp)
 
         # 1. Create test files
-        print(
-            f"\n1. Creating {NTIMES} files x {NLEVELS} levels "
-            f"({NLAT}x{NLON} grid each)..."
-        )
+        print(f"\n1. Creating {NTIMES} files x {NLEVELS} levels ({NLAT}x{NLON} grid each)...")
         paths = create_test_files(tmp_path)
 
         # 2. Open lazily with dask
-        print(
-            "\n2. Opening files with dask lazy-loading (engine='tensogram', chunks={})..."
-        )
+        print("\n2. Opening files with dask lazy-loading (engine='tensogram', chunks={})...")
         datasets = open_as_dask_datasets(paths)
         print(f"  Opened {len(datasets)} datasets (all lazy -- no data loaded)")
 

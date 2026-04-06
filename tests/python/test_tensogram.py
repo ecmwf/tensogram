@@ -1186,8 +1186,9 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for i in range(5):
                 data = np.full(8, float(i), dtype=np.float32)
-                f.append(make_global_meta(2, index=i),
-                         [(make_descriptor([8], dtype="float32"), data)])
+                f.append(
+                    make_global_meta(2, index=i), [(make_descriptor([8], dtype="float32"), data)]
+                )
 
         with tensogram.TensogramFile.open(path) as f:
             assert f[0].metadata["index"] == 0
@@ -1214,8 +1215,9 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for i in range(5):
                 data = np.full(8, float(i), dtype=np.float32)
-                f.append(make_global_meta(2, index=i),
-                         [(make_descriptor([8], dtype="float32"), data)])
+                f.append(
+                    make_global_meta(2, index=i), [(make_descriptor([8], dtype="float32"), data)]
+                )
 
         with tensogram.TensogramFile.open(path) as f:
             result = f[1:3]
@@ -1232,8 +1234,9 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for i in range(6):
                 data = np.full(4, float(i), dtype=np.float32)
-                f.append(make_global_meta(2, index=i),
-                         [(make_descriptor([4], dtype="float32"), data)])
+                f.append(
+                    make_global_meta(2, index=i), [(make_descriptor([4], dtype="float32"), data)]
+                )
 
         with tensogram.TensogramFile.open(path) as f:
             result = f[::2]
@@ -1247,8 +1250,9 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for i in range(5):
                 data = np.full(4, float(i), dtype=np.float32)
-                f.append(make_global_meta(2, index=i),
-                         [(make_descriptor([4], dtype="float32"), data)])
+                f.append(
+                    make_global_meta(2, index=i), [(make_descriptor([4], dtype="float32"), data)]
+                )
 
         with tensogram.TensogramFile.open(path) as f:
             result = f[-2:]
@@ -1262,8 +1266,9 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for i in range(4):
                 data = np.full(4, float(i), dtype=np.float32)
-                f.append(make_global_meta(2, index=i),
-                         [(make_descriptor([4], dtype="float32"), data)])
+                f.append(
+                    make_global_meta(2, index=i), [(make_descriptor([4], dtype="float32"), data)]
+                )
 
         with tensogram.TensogramFile.open(path) as f:
             result = f[::-1]
@@ -1310,8 +1315,9 @@ class TestEdgeCases:
         path = str(tmp_path / "msg.tgm")
         data = np.ones(4, dtype=np.float32)
         with tensogram.TensogramFile.create(path) as f:
-            f.append(make_global_meta(2, tag="test"),
-                     [(make_descriptor([4], dtype="float32"), data)])
+            f.append(
+                make_global_meta(2, tag="test"), [(make_descriptor([4], dtype="float32"), data)]
+            )
 
         with tensogram.TensogramFile.open(path) as f:
             # decode_message
@@ -1372,8 +1378,9 @@ class TestEdgeCases:
     def test_iter_messages_stops(self):
         """iter_messages raises StopIteration after exhaustion."""
         data = np.ones(4, dtype=np.float32)
-        msg = bytes(tensogram.encode(
-            make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]))
+        msg = bytes(
+            tensogram.encode(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+        )
 
         it = tensogram.iter_messages(msg)
         next(it)

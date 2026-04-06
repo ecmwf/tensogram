@@ -21,9 +21,7 @@ print(f"  range: [{temps.min():.2f}, {temps.max():.2f}]")
 #
 # compute_packing_params() determines the reference_value and scale factors
 # needed to quantise the data into the requested number of bits.
-params = tensogram.compute_packing_params(
-    temps, bits_per_value=16, decimal_scale_factor=0
-)
+params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
 
 print(f"\nPacking params (16 bpv):")
 print(f"  reference_value      = {params['reference_value']:.6f}")
@@ -61,9 +59,7 @@ temps_with_nan = temps.copy()
 temps_with_nan[42] = np.nan
 
 try:
-    tensogram.compute_packing_params(
-        temps_with_nan, bits_per_value=16, decimal_scale_factor=0
-    )
+    tensogram.compute_packing_params(temps_with_nan, bits_per_value=16, decimal_scale_factor=0)
     raise AssertionError("expected ValueError")
 except ValueError as e:
     print(f"\nNaN rejected: {e}")
@@ -72,9 +68,7 @@ except ValueError as e:
 #
 # All-same values: range = 0. Packs correctly; all values decode to reference.
 constant = np.full(100, 273.15, dtype=np.float64)
-params_c = tensogram.compute_packing_params(
-    constant, bits_per_value=16, decimal_scale_factor=0
-)
+params_c = tensogram.compute_packing_params(constant, bits_per_value=16, decimal_scale_factor=0)
 desc_c = {
     "type": "ntensor",
     "shape": [100],

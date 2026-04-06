@@ -436,11 +436,13 @@ impl PyTensogramFile {
     ///             desc, arr = objects[0]
     ///             print(arr.shape)
     fn __iter__(&mut self) -> PyResult<PyFileIter> {
-        let count = self.file.message_count().map_err(to_py_err)?;
         // Open an independent file handle so the iterator owns its state.
         // Safe under free-threaded Python (no shared mutable borrows).
         let path = self.file.path().to_path_buf();
-        let iter_file = TensogramFile::open(&path).map_err(to_py_err)?;
+        let mut iter_file = TensogramFile::open(&path).map_err(to_py_err)?;
+        // Read count from the *iterator's* handle to avoid TOCTOU race
+        // if the file is modified between open() and first next() call.
+        let count = iter_file.message_count().map_err(to_py_err)?;
         Ok(PyFileIter {
             file: iter_file,
             index: 0,
@@ -457,7 +459,11 @@ impl PyTensogramFile {
         let count = self.file.message_count().map_err(to_py_err)?;
 
         if let Ok(index) = key.extract::<isize>() {
-            let idx = if index < 0 { count as isize + index } else { index };
+            let idx = if index < 0 {
+                count as isize + index
+            } else {
+                index
+            };
             if idx < 0 || idx >= count as isize {
                 return Err(pyo3::exceptions::PyIndexError::new_err(format!(
                     "message index {index} out of range for file with {count} messages"
@@ -470,9 +476,7 @@ impl PyTensogramFile {
             let indices = slice.indices(count as isize)?;
             let mut items: Vec<PyObject> = Vec::with_capacity(indices.slicelength as usize);
             let mut i = indices.start;
-            while (indices.step > 0 && i < indices.stop)
-                || (indices.step < 0 && i > indices.stop)
-            {
+            while (indices.step > 0 && i < indices.stop) || (indices.step < 0 && i > indices.stop) {
                 items.push(self.decode_message(py, i as usize, None)?);
                 i += indices.step;
             }
@@ -530,9 +534,7 @@ impl PyFileIter {
         }
         let i = self.index;
         self.index += 1;
-        let options = DecodeOptions {
-            verify_hash: false,
-        };
+        let options = DecodeOptions { verify_hash: false };
         let (global_meta, data_objects) =
             self.file.decode_message(i, &options).map_err(to_py_err)?;
         let result_list = data_objects_to_python(py, &data_objects)?;
@@ -717,9 +719,15 @@ fn py_scan(buf: &[u8]) -> Vec<(usize, usize)> {
 
 /// Iterate over messages in a byte buffer.
 ///
+/// Iterate over messages in a byte buffer.
+///
 /// Scans for message boundaries, then decodes each message on demand.
 /// Equivalent to calling :func:`scan` then :func:`decode` on each entry,
 /// but more convenient.
+///
+/// **Note:** The iterator copies the entire buffer into its own memory.
+/// For large files (> 100 MB), prefer ``TensogramFile.open()`` for
+/// stream-based iteration without the full buffer copy.
 ///
 /// Args:
 ///     buf: bytes containing one or more wire-format messages.
@@ -1155,7 +1163,9 @@ fn compute_strides(shape: &[u64]) -> Vec<u64> {
 // for each numeric dtype.
 //
 // `chunks_exact(N)` guarantees each chunk is exactly N bytes, so
-// `try_into().unwrap()` on the chunk→fixed-array conversion is safe.
+// `try_into()` on the chunk→fixed-array conversion cannot fail.
+// We still propagate as `PyValueError` instead of panicking because
+// this code sits behind the FFI boundary (`panic = "abort"`).
 // ---------------------------------------------------------------------------
 
 /// Decode raw bytes into a flat Vec<$T> by reinterpreting via from_ne_bytes.
@@ -1171,8 +1181,13 @@ macro_rules! decode_ne_vec {
         }
         $bytes
             .chunks_exact($width)
-            .map(|c| <$T>::from_ne_bytes(c.try_into().unwrap()))
-            .collect::<Vec<$T>>()
+            .map(|c| -> Result<$T, PyErr> {
+                let arr: [u8; $width] = c
+                    .try_into()
+                    .map_err(|_| PyValueError::new_err("internal: chunk size mismatch"))?;
+                Ok(<$T>::from_ne_bytes(arr))
+            })
+            .collect::<Result<Vec<$T>, PyErr>>()?
     }};
 }
 

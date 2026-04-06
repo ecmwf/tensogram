@@ -66,8 +66,10 @@ def demo_iteration(path):
     with tensogram.TensogramFile.open(path) as f:
         for meta, objects in f:
             desc, arr = objects[0]
-            print(f"  step={meta['step']}, shape={arr.shape}, "
-                  f"dtype={desc.dtype}, val={arr[0, 0]:.1f}")
+            print(
+                f"  step={meta['step']}, shape={arr.shape}, "
+                f"dtype={desc.dtype}, val={arr[0, 0]:.1f}"
+            )
 
 
 def demo_indexing(path):
@@ -96,15 +98,18 @@ def demo_multi_object(path):
         temperature = np.random.rand(3, 3).astype(np.float32)
         humidity = np.random.rand(3, 3).astype(np.float32)
         meta = {"version": 2, "source": "sensor"}
-        f.append(meta, [
-            ({"type": "ndarray", "shape": [3, 3], "dtype": "float32"}, temperature),
-            ({"type": "ndarray", "shape": [3, 3], "dtype": "float32"}, humidity),
-        ])
+        f.append(
+            meta,
+            [
+                ({"type": "ndarray", "shape": [3, 3], "dtype": "float32"}, temperature),
+                ({"type": "ndarray", "shape": [3, 3], "dtype": "float32"}, humidity),
+            ],
+        )
 
     with tensogram.TensogramFile.open(path) as f:
         meta, objects = f[0]
         print(f"  message has {len(objects)} objects:")
-        for i, (desc, arr) in enumerate(objects):
+        for i, (_desc, arr) in enumerate(objects):
             print(f"    object {i}: shape={arr.shape}, mean={arr.mean():.4f}")
 
 
