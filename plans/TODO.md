@@ -37,11 +37,7 @@ For speculative ideas, see `IDEAS.md`.
 
 - [x] ~~CI matrix~~ → `.github/workflows/ci.yml` — Rust (ubuntu+macos), Python (3.12+3.13, ubuntu+macos), xarray, zarr, C++ (ubuntu+macos), docs. GRIB gated on ecCodes.
 
-- [ ] *change-to-uv*
-  - change to use uv to manage python environements and the dependencies
-  - update all the python builds on CI
-  - update all the python tests
-  - always try first to find if uv is installed in the system and use that
+- [x] ~~*change-to-uv*~~ → `uv venv` + `uv pip install` everywhere; CI uses `astral-sh/setup-uv@v5`; legacy `ci.yaml` removed; all docs and CONTRIBUTING.md updated
 
 ## Tests and Examples
 

@@ -502,7 +502,8 @@ ds = xr.open_dataset("file.tgm", engine="tensogram", range_threshold=0.9)
 ## Installation
 
 ```bash
-pip install tensogram-xarray
+uv venv .venv && source .venv/bin/activate   # if not already in a virtualenv
+uv pip install tensogram-xarray
 ```
 
 This pulls in `tensogram` and `xarray` as dependencies.  The xarray backend
@@ -517,7 +518,8 @@ True
 For dask support:
 
 ```bash
-pip install "tensogram-xarray[dask]"
+source .venv/bin/activate   # if not already in the virtualenv
+uv pip install "tensogram-xarray[dask]"
 ```
 
 ---

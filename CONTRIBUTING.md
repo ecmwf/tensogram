@@ -6,7 +6,7 @@ Thank you for your interest in contributing. This guide will get you from zero t
 
 - **Rust 1.75+** (`rustup install stable`)
 - **C compiler** (for libaec, zfp, blosc2 FFI dependencies)
-- Optional: Python 3.9+ and `maturin` for Python bindings
+- Optional: Python 3.9+ and `uv` for Python bindings (`pip install uv` or https://docs.astral.sh/uv/getting-started/installation/)
 - Optional: mdbook for documentation (`cargo install mdbook`)
 
 ## Quick Setup
@@ -128,10 +128,25 @@ Golden binary files in `tests/golden/` are checked into the repo. If the wire fo
 The Python crate is excluded from the default workspace build because it requires a Python interpreter and linker:
 
 ```bash
-cd crates/tensogram-python
-maturin develop          # Build and install into current venv
-python -m pytest         # Run Python tests (if any)
+# First time: create a virtual environment
+uv venv .venv
+source .venv/bin/activate
+uv pip install maturin numpy pytest ruff
+
+# Build and install the Rust extension into the active venv
+cd crates/tensogram-python && maturin develop && cd ../..
+
+# Run core Python tests
+python -m pytest tests/python/ -v
+
+# Optional: install and test xarray/zarr backends
+uv pip install -e "tensogram-xarray/[dask]"
+python -m pytest tensogram-xarray/tests/ -v
+uv pip install -e tensogram-zarr/
+python -m pytest tensogram-zarr/tests/ -v
 ```
+
+> If `uv` is not available, substitute `python -m venv .venv` and `pip install` for the virtualenv and install steps above.
 
 ## C/C++ Bindings
 

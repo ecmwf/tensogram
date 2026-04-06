@@ -192,6 +192,13 @@ Tested indirectly via C++ wrapper (105 tests).
 - Documentation: `docs/src/guide/zarr-backend.md` with mermaid diagram, edge cases section, error handling table
 - Example: `examples/python/08_zarr_backend.py`
 
+## CI / Build Tooling
+
+- `astral-sh/setup-uv@v5` in all Python CI jobs (`python`, `python-packages`)
+- All Python envs now use `uv venv .venv` + `uv pip install` (replaces `python -m venv` + `pip install`)
+- Legacy `ci.yaml` removed; single authoritative `ci.yml` remains
+- Local dev instructions updated in `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`, `docs/`, `examples/python/README.md`
+
 ## Dependencies
 
 - ciborium 0.2, serde 1, thiserror 2, xxhash-rust 0.8

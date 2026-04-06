@@ -5,7 +5,8 @@ The `tensogram-zarr` package implements a [Zarr v3 Store](https://zarr.readthedo
 ## Installation
 
 ```bash
-pip install tensogram-zarr
+uv venv .venv && source .venv/bin/activate   # if not already in a virtualenv
+uv pip install tensogram-zarr
 ```
 
 Requires `zarr >= 3.0`, `tensogram`, and `numpy`.

@@ -105,10 +105,13 @@ This project contains Rust, Python, C and C++ code
 - Test: `cargo test --workspace`
 
 ## Python
-- Build: `source .venv/bin/activate && maturin develop` (from `crates/tensogram-python/`)
+- Setup (first time): `uv venv .venv && source .venv/bin/activate && uv pip install maturin numpy pytest ruff`
+- Build: `source .venv/bin/activate && cd crates/tensogram-python && maturin develop`
 - Lint: `ruff check --config crates/tensogram-python/pyproject.toml tests/python/`
 - Format: `ruff format --config crates/tensogram-python/pyproject.toml tests/python/`
 - Test: `source .venv/bin/activate && python -m pytest tests/python/ -v`
+- xarray tests: `source .venv/bin/activate && uv pip install -e "tensogram-xarray/[dask]" && python -m pytest tensogram-xarray/tests/ -v`
+- zarr tests: `source .venv/bin/activate && uv pip install -e tensogram-zarr/ && python -m pytest tensogram-zarr/tests/ -v`
 
 # Version control
 - Git project in github.com/ecmwf/tensogram

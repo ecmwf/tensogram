@@ -104,18 +104,19 @@ ctest --test-dir build --output-on-failure  # run C++ tests
 ```
 See `examples/cpp/` for encode/decode, metadata, file API, and iterator examples.
 
-**Python bindings** (PyO3 + maturin):
+**Python bindings** (PyO3 + maturin, requires [uv](https://docs.astral.sh/uv/getting-started/installation/)):
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install maturin numpy
+uv venv .venv && source .venv/bin/activate
+uv pip install maturin numpy
 cd crates/tensogram-python && maturin develop
 python -m pytest tests/python/ -v              # 200 tests
 ```
 
 **xarray + Zarr backends:**
 ```bash
-pip install -e "tensogram-xarray/[dask]"       # 124 tests
-pip install -e tensogram-zarr/                  # 172 tests
+source .venv/bin/activate                      # activate venv from above step
+uv pip install -e "tensogram-xarray/[dask]"    # 124 tests
+uv pip install -e tensogram-zarr/              # 172 tests
 ```
 
 **GRIB conversion** (requires [ecCodes](https://confluence.ecmwf.int/display/ECC)):
@@ -142,11 +143,11 @@ crates/
 ├── tensogram-ffi/        C FFI layer
 ├── tensogram-grib/       GRIB converter (ecCodes, excluded from default build)
 └── tensogram-python/     Python bindings (PyO3, excluded from default build)
-tensogram-xarray/         xarray backend engine (pip install)
-tensogram-zarr/           Zarr v3 store backend (pip install)
+tensogram-xarray/         xarray backend engine (Python package)
+tensogram-zarr/           Zarr v3 store backend (Python package)
 examples/{rust,cpp,python}/
 docs/                     mdBook documentation
-.github/workflows/ci.yml  CI matrix (Rust, Python, C++, xarray, zarr, docs)
+.github/workflows/ci.yml  CI matrix (Rust, Python, C++, GRIB, xarray, zarr, docs)
 ```
 
 ## Copyright and License
