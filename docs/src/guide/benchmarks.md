@@ -154,6 +154,50 @@ flowchart LR
     Enc --> |decode_pipeline| Dec[f64 values]
 ```
 
+## Edge cases and limitations
+
+### Input validation
+
+Both benchmarks reject `num_points = 0` and `iterations = 0` with an `Err` return
+(no panic). These are caught before any data generation or pipeline calls.
+
+### Szip alignment padding
+
+The codec matrix rounds `num_points` up to the next multiple of 4 (by at most 3
+extra values) before running. This is required because libaec promotes 24-bit
+samples to 4-byte containers, so the packed byte count must be a multiple of 4.
+The padding values come from the same PRNG sequence, so the rounding has no effect
+on the overall benchmark character. The title line and `original_bytes` field both
+reflect the actual (padded) count.
+
+### Compression expansion
+
+Some compressors (especially LZ4 on raw f64 bytes) may produce output *larger*
+than the input (`Ratio > 100%`). This is expected and reported accurately — the
+`none+none` baseline itself is simply a memcpy and always shows 100.00%.
+
+### Very small data sizes
+
+With `--num-points 1` the codec matrix rounds to 4 values. All 24 combinations
+succeed at this size, but absolute timing values are dominated by per-call overhead
+rather than actual compression throughput. Use ≥ 10 000 points for meaningful
+relative comparisons.
+
+### PRNG determinism
+
+The SplitMix64 PRNG is fully deterministic for a given seed, but the weather field
+generator uses `f64::sin()` / `f64::cos()` whose implementations may differ across
+platforms or libm versions. Timing comparisons are therefore only valid within the
+same build environment. Size-based metrics (`Ratio %`, `Size KiB`) are
+platform-independent.
+
+### GRIB grid factorization
+
+For prime `num_points`, the GRIB benchmark creates a degenerate 1 × N grid.
+ecCodes handles this correctly, but it differs from the typical nearly-square grids
+used in production. For representative GRIB benchmarks, use composite sizes
+(e.g. 10 000 000 = 2500 × 4000).
+
 ## Reproducibility
 
 All benchmarks use a deterministic PRNG (SplitMix64) seeded by `--seed`. The same

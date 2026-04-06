@@ -366,4 +366,70 @@ mod tests {
         let mut s: [u64; 0] = [];
         assert_eq!(median_ns(&mut s), 0);
     }
+
+    #[test]
+    fn test_median_ns_large_values() {
+        // Two u64::MAX values — the u128 addition must not overflow.
+        let mut s = [u64::MAX, u64::MAX];
+        let m = median_ns(&mut s);
+        assert_eq!(m, u64::MAX);
+    }
+
+    #[test]
+    fn test_median_ns_two_elements() {
+        let mut s = [10u64, 20];
+        // (10+20)/2 = 15
+        assert_eq!(median_ns(&mut s), 15);
+    }
+
+    #[test]
+    fn test_ns_to_ms() {
+        assert!((ns_to_ms(1_000_000) - 1.0).abs() < f64::EPSILON);
+        assert!((ns_to_ms(0) - 0.0).abs() < f64::EPSILON);
+        assert!((ns_to_ms(500_000) - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_size_kib() {
+        let r = BenchmarkResult {
+            name: "x".to_string(),
+            encode_ms: 1.0,
+            decode_ms: 1.0,
+            compressed_bytes: 2048,
+            original_bytes: 4096,
+        };
+        assert!((r.size_kib() - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_ratio_above_100() {
+        // Compression expansion: compressed > original (e.g. LZ4 on random data).
+        let r = BenchmarkResult {
+            name: "x".to_string(),
+            encode_ms: 1.0,
+            decode_ms: 1.0,
+            compressed_bytes: 10000,
+            original_bytes: 8000,
+        };
+        let ratio = r.ratio_pct();
+        assert!((ratio - 125.0).abs() < 0.001, "expected 125%, got {ratio}");
+    }
+
+    #[test]
+    fn test_format_table_empty_results() {
+        let table = format_table(&[], "ref", "Empty");
+        // Must not panic. Header and separator should still appear.
+        assert!(table.contains("Combo"), "header missing for empty table");
+        assert!(table.contains("Empty"), "title missing for empty table");
+    }
+
+    #[test]
+    fn test_format_table_vs_ref_values() {
+        let results = make_results();
+        let table = format_table(&results, "none+none", "Test");
+        // Reference row should show 1.00x for both vs-ref columns.
+        assert!(table.contains("1.00x"), "reference row must show 1.00x");
+        // sp(24)+szip: encode 10.0 / 0.5 = 20.00x
+        assert!(table.contains("20.00x"), "expected 20.00x vs-ref encode");
+    }
 }

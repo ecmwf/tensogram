@@ -192,6 +192,74 @@ fn test_codec_matrix_non_aligned_points() {
     }
 }
 
+#[test]
+fn test_codec_matrix_single_point() {
+    // num_points=1 rounds to 4. All 24 codecs should handle tiny data.
+    let results =
+        run_codec_matrix_results(1, 1, 42).expect("num_points=1 must succeed (rounded to 4)");
+    assert_eq!(results.len(), 24, "expected 24 results");
+    for r in &results {
+        assert!(
+            !r.name.contains("[ERROR]"),
+            "unexpected error for tiny data in '{}'",
+            r.name
+        );
+    }
+    // original_bytes should be 4 * 8 = 32 (padded to 4 values).
+    assert_eq!(
+        results[0].original_bytes, 32,
+        "expected 32 bytes for 4 f64 values"
+    );
+}
+
+#[test]
+fn test_codec_matrix_padded_original_bytes() {
+    // 501 rounds to 504. original_bytes = 504 * 8 = 4032.
+    let results = run_codec_matrix_results(501, 1, 42).expect("must succeed");
+    assert_eq!(
+        results[0].original_bytes,
+        504 * 8,
+        "original_bytes must reflect padded count (504 × 8)"
+    );
+}
+
+#[test]
+fn test_codec_matrix_error_message_content() {
+    let err = run_codec_matrix_results(0, 1, 42).unwrap_err();
+    assert!(
+        err.to_string().contains("num_points"),
+        "error message should mention 'num_points': got '{err}'"
+    );
+
+    let err = run_codec_matrix_results(100, 0, 42).unwrap_err();
+    assert!(
+        err.to_string().contains("iterations"),
+        "error message should mention 'iterations': got '{err}'"
+    );
+}
+
+// ── lib.rs entry points ──────────────────────────────────────────────────────
+
+#[test]
+fn test_run_codec_matrix_prints_table() {
+    // Just verify the top-level entry point doesn't panic.
+    tensogram_benchmarks::run_codec_matrix(100, 1, 42).expect("run_codec_matrix must not error");
+}
+
+#[test]
+fn test_benchmark_error_display() {
+    use tensogram_benchmarks::BenchmarkError;
+    let e = BenchmarkError("test error".to_string());
+    assert_eq!(format!("{e}"), "test error");
+}
+
+#[test]
+fn test_benchmark_error_from_string() {
+    use tensogram_benchmarks::BenchmarkError;
+    let e: BenchmarkError = String::from("from string").into();
+    assert_eq!(e.0, "from string");
+}
+
 // ── grib_comparison (eccodes feature-gated) ──────────────────────────────────
 
 #[cfg(feature = "eccodes")]

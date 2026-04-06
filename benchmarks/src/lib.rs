@@ -34,8 +34,12 @@ pub fn run_codec_matrix(
 ) -> Result<(), BenchmarkError> {
     let results = codec_matrix::run_codec_matrix_results(num_points, iterations, seed)?;
 
+    // Derive actual count from results: original_bytes / 8 bytes per f64.
+    // This reflects the rounded-up value (num_points may have been padded to
+    // the next multiple of 4 for szip alignment).
+    let actual_count = results.first().map_or(num_points, |r| r.original_bytes / 8);
     let title = format!(
-        "Tensogram Codec Matrix ({num_points} float64 values, {iterations} iterations, median)"
+        "Tensogram Codec Matrix ({actual_count} float64 values, {iterations} iterations, median)"
     );
     report::print_table(&results, "none+none", &title);
     Ok(())

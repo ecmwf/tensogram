@@ -136,4 +136,44 @@ mod tests {
             assert!((240.0..=320.0).contains(val), "out of range: {val}");
         }
     }
+
+    #[test]
+    fn test_single_point() {
+        // num_points=1: ncols=1, nrows=1, sin(0)=0, cos(0)=1 → base + noise.
+        let v = generate_weather_field(1, 42);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].is_finite());
+        // sin(0)=0 so signal is 0, value ≈ 280.0 ± 0.1.
+        assert!(
+            (279.8..=280.2).contains(&v[0]),
+            "expected ≈280 K, got {}",
+            v[0]
+        );
+    }
+
+    #[test]
+    fn test_extreme_seeds() {
+        // Seed 0 and u64::MAX must produce valid, finite, in-range values.
+        for seed in [0u64, u64::MAX] {
+            let v = generate_weather_field(100, seed);
+            assert_eq!(v.len(), 100);
+            for (i, &val) in v.iter().enumerate() {
+                assert!(val.is_finite(), "seed={seed} index={i}: non-finite {val}");
+                assert!(
+                    (240.0..=320.0).contains(&val),
+                    "seed={seed} index={i}: out of range {val}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_prng_range() {
+        // Verify the PRNG's next_f64() stays in [0.0, 1.0).
+        let mut rng = SplitMix64::new(12345);
+        for _ in 0..10_000 {
+            let f = rng.next_f64();
+            assert!((0.0..1.0).contains(&f), "next_f64 out of [0,1): {f}");
+        }
+    }
 }
