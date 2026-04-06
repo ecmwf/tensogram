@@ -518,6 +518,7 @@ True
 For dask support:
 
 ```bash
+source .venv/bin/activate   # if not already in the virtualenv
 uv pip install "tensogram-xarray[dask]"
 ```
 

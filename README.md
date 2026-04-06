@@ -104,7 +104,7 @@ ctest --test-dir build --output-on-failure  # run C++ tests
 ```
 See `examples/cpp/` for encode/decode, metadata, file API, and iterator examples.
 
-**Python bindings** (PyO3 + maturin):
+**Python bindings** (PyO3 + maturin, requires [uv](https://docs.astral.sh/uv/getting-started/installation/)):
 ```bash
 uv venv .venv && source .venv/bin/activate
 uv pip install maturin numpy
@@ -114,6 +114,7 @@ python -m pytest tests/python/ -v              # 200 tests
 
 **xarray + Zarr backends:**
 ```bash
+source .venv/bin/activate                      # activate venv from above step
 uv pip install -e "tensogram-xarray/[dask]"    # 124 tests
 uv pip install -e tensogram-zarr/              # 172 tests
 ```

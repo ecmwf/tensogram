@@ -5,8 +5,9 @@
 ```bash
 uv venv .venv && source .venv/bin/activate   # if not already in a virtualenv
 uv pip install tensogram          # once published to PyPI
-# or
-maturin develop                   # build from source (from crates/tensogram-python/)
+# or, build from source:
+uv pip install maturin numpy      # install build dependencies
+cd crates/tensogram-python && maturin develop && cd ../..
 ```
 
 For the xarray and dask examples (08, 09), also install:
