@@ -5,7 +5,7 @@
 
 ## Summary
 
-- **Version:** 0.5.0
+- **Version:** 0.5.1
 - **Workspace:** 5 default crates + 2 optional (Python, GRIB) + 2 separate packages (xarray, zarr)
 - **Tests:** 888 total (283 Rust + 200 Python + 124 xarray + 172 Zarr + 109 C++)
 - **Quality:** 0 clippy warnings, 90.5% Rust line coverage
@@ -191,6 +191,13 @@ Tested indirectly via C++ wrapper (105 tests).
 - 0 ruff lint warnings
 - Documentation: `docs/src/guide/zarr-backend.md` with mermaid diagram, edge cases section, error handling table
 - Example: `examples/python/08_zarr_backend.py`
+
+## CI / Build Tooling
+
+- `astral-sh/setup-uv@v5` in all Python CI jobs (`python`, `python-packages`)
+- All Python envs now use `uv venv .venv` + `uv pip install` (replaces `python -m venv` + `pip install`)
+- Legacy `ci.yaml` removed; single authoritative `ci.yml` remains
+- Local dev instructions updated in `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`, `docs/`, `examples/python/README.md`
 
 ## Dependencies
 

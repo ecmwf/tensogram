@@ -285,7 +285,8 @@ serialise file I/O.  This means:
 For dask support, install the optional dependency:
 
 ```bash
-pip install "tensogram-xarray[dask]"
+uv venv .venv && source .venv/bin/activate   # if not already in a virtualenv
+uv pip install "tensogram-xarray[dask]"
 ```
 
 This pulls in `dask[array]` alongside `tensogram` and `xarray`.

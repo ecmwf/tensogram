@@ -106,16 +106,16 @@ See `examples/cpp/` for encode/decode, metadata, file API, and iterator examples
 
 **Python bindings** (PyO3 + maturin):
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install maturin numpy
+uv venv .venv && source .venv/bin/activate
+uv pip install maturin numpy
 cd crates/tensogram-python && maturin develop
 python -m pytest tests/python/ -v              # 200 tests
 ```
 
 **xarray + Zarr backends:**
 ```bash
-pip install -e "tensogram-xarray/[dask]"       # 124 tests
-pip install -e tensogram-zarr/                  # 172 tests
+uv pip install -e "tensogram-xarray/[dask]"    # 124 tests
+uv pip install -e tensogram-zarr/              # 172 tests
 ```
 
 **GRIB conversion** (requires [ecCodes](https://confluence.ecmwf.int/display/ECC)):
