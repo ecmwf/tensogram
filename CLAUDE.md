@@ -63,6 +63,15 @@
     - make a summary and push your changes to update the PR
     - continue iterating untill all recomentations and issue were addressed
 
+- NOTE: When user asks for 'make release' execute:
+    - check all changes are commited and pushed upstream
+    - final check everything builds, all languages and all tests pass
+    - all examples in all languages Rust, Python and C++ compile and run
+    - all docs build
+    - if any of the above fails STOP and prompt the user for action
+    - otherwise bump VERSION, git tag, push to upstream
+    - make a Github release
+
 # Design & Purpose
 
 - README.md -- entry level generic information
