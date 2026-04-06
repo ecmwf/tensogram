@@ -97,6 +97,7 @@ pub fn run(
             // Re-encode with no hash computation, preserving the original hash field.
             let options = EncodeOptions {
                 hash_algorithm: None,
+                ..Default::default()
             };
             let encoded = encode(&global_meta, &descriptor_refs, &options)?;
             out.write_all(&encoded)?;

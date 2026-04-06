@@ -10,8 +10,10 @@ random access by index, and low-level scan.
 
 import pathlib
 import tempfile
+
 import numpy as np
 import tensogram
+
 
 def make_field(param: str, step: int) -> tuple:
     """Return (Metadata, ndarray) for one forecast field."""

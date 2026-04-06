@@ -21,12 +21,20 @@ use tensogram_encodings::simple_packing::SimplePackingParams;
 pub struct EncodeOptions {
     /// Hash algorithm to use for payload integrity. None = no hashing.
     pub hash_algorithm: Option<HashAlgorithm>,
+    /// Reserved for future buffered-mode preceder support.
+    ///
+    /// Currently, setting this to `true` in buffered mode (`encode()`)
+    /// returns an error — use [`StreamingEncoder::write_preceder`](crate::streaming::StreamingEncoder::write_preceder) instead.
+    /// The streaming encoder ignores this field; it emits preceders only
+    /// when `write_preceder()` is called explicitly.
+    pub emit_preceders: bool,
 }
 
 impl Default for EncodeOptions {
     fn default() -> Self {
         Self {
             hash_algorithm: Some(HashAlgorithm::Xxh3),
+            emit_preceders: false,
         }
     }
 }
@@ -79,6 +87,14 @@ pub fn encode(
     descriptors: &[(&DataObjectDescriptor, &[u8])],
     options: &EncodeOptions,
 ) -> Result<Vec<u8>> {
+    // Buffered encode does not support emit_preceders — use StreamingEncoder
+    // with write_preceder() instead.
+    if options.emit_preceders {
+        return Err(TensogramError::Encoding(
+            "emit_preceders is not supported in buffered mode; use StreamingEncoder::write_preceder() instead".to_string(),
+        ));
+    }
+
     let mut encoded_objects = Vec::with_capacity(descriptors.len());
 
     for (desc, data) in descriptors {

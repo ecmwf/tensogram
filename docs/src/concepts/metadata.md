@@ -122,6 +122,23 @@ The `payload` section of `GlobalMetadata` is a **CBOR array of maps** — one en
 
 This lets readers discover the shape, type, and per-object metadata of every object by reading only the global metadata frame — without opening each data object frame. MARS keys shared across all objects live in `common["mars"]`, while varying keys go in each payload entry. The per-object `DataObjectDescriptor` still carries the full encoding pipeline.
 
+## Preceder Metadata Frames
+
+In streaming mode, per-object metadata is normally only available in the footer metadata frame (written after all objects). A **Preceder Metadata Frame** (frame type 8) allows producers to send per-object metadata *before* the data object, without waiting for the footer.
+
+A preceder carries a `GlobalMetadata` CBOR with `common` empty and a single-entry `payload` array for the next data object:
+
+```json
+{
+  "version": 2,
+  "payload": [{"mars": {"param": "2t"}, "units": "K"}]
+}
+```
+
+**Merge rule:** On decode, preceder keys override footer `payload[i]` keys on conflict. Structural keys auto-populated by the encoder (`ndim`, `shape`, `strides`, `dtype`) are preserved from the footer when absent from the preceder. The consumer sees a unified `GlobalMetadata.payload` — the preceder/footer distinction is transparent.
+
+Use `StreamingEncoder::write_preceder()` before `write_object()` to emit a preceder frame. Preceders are optional per-object: some objects may have them, others may not.
+
 ## Value Type Rules
 
 Keys must be **text strings**. Values must be JSON-compatible CBOR types: string, integer, float, boolean, null, array, or map. Byte strings, CBOR tags, undefined, and half-precision floats are not allowed. See [Metadata Value Types](../format/metadata-values.md) for the full rules and rationale.

@@ -389,6 +389,10 @@ print(ds["object_0"])
 mean = ds["object_0"].mean().compute()
 ```
 
+> **See also:** [Dask Integration](dask-integration.md) for a complete
+> walkthrough with distributed computation, performance tuning, and
+> a runnable 4-D tensor example.
+
 ### When Partial Reads Are Used
 
 The backend inspects each data object's encoding pipeline to determine

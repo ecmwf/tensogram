@@ -16,8 +16,9 @@ NOTE: Requires building tensogram-python first:
     cd crates/tensogram-python && maturin develop
 """
 
-import tempfile
 import os
+import tempfile
+
 import numpy as np
 
 # Uncomment after building with maturin:

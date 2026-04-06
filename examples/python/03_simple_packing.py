@@ -79,7 +79,7 @@ temps_with_nan[42] = np.nan
 
 try:
     sp.compute_params(temps_with_nan, bits_per_value=16)
-    assert False, "expected ValueError"
+    raise AssertionError("expected ValueError")
 except ValueError as e:
     print(f"\nNaN rejected: {e}")
 

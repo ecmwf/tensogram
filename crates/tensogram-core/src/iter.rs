@@ -275,6 +275,7 @@ mod tests {
             &[(&desc, &data)],
             &EncodeOptions {
                 hash_algorithm: None,
+                ..Default::default()
             },
         )
         .unwrap()
@@ -348,6 +349,7 @@ mod tests {
             &[],
             &EncodeOptions {
                 hash_algorithm: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -381,6 +383,7 @@ mod tests {
             &[(&desc0, data0.as_slice()), (&desc1, data1.as_slice())],
             &EncodeOptions {
                 hash_algorithm: None,
+                ..Default::default()
             },
         )
         .unwrap();
