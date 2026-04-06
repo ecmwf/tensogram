@@ -125,3 +125,162 @@ mod hex {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn make_meta(extra: BTreeMap<String, ciborium::Value>) -> GlobalMetadata {
+        GlobalMetadata {
+            version: 2,
+            extra,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn table_row_basic() {
+        let mut extra = BTreeMap::new();
+        extra.insert("param".to_string(), ciborium::Value::Text("2t".to_string()));
+        let meta = make_meta(extra);
+        let row = format_table_row(&meta, &["version", "param"]);
+        assert!(row.contains("2"));
+        assert!(row.contains("2t"));
+    }
+
+    #[test]
+    fn table_row_missing_key() {
+        let meta = make_meta(BTreeMap::new());
+        let row = format_table_row(&meta, &["missing"]);
+        assert!(row.contains("N/A"));
+    }
+
+    #[test]
+    fn json_full() {
+        let mut extra = BTreeMap::new();
+        extra.insert("key".to_string(), ciborium::Value::Text("val".to_string()));
+        let meta = make_meta(extra);
+        let json = format_json::<String>(&meta, None, None);
+        assert!(json.contains("\"version\": 2"));
+        assert!(json.contains("\"key\": \"val\""));
+    }
+
+    #[test]
+    fn json_filtered_keys() {
+        let mut extra = BTreeMap::new();
+        extra.insert("a".to_string(), ciborium::Value::Text("1".to_string()));
+        extra.insert("b".to_string(), ciborium::Value::Text("2".to_string()));
+        let meta = make_meta(extra);
+        let json = format_json(&meta, Some(&["a"]), None);
+        assert!(json.contains("\"a\""));
+        assert!(!json.contains("\"b\""));
+    }
+
+    #[test]
+    fn json_with_objects() {
+        let meta = make_meta(BTreeMap::new());
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".into(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: tensogram_core::Dtype::Float32,
+            byte_order: tensogram_core::ByteOrder::Big,
+            encoding: "none".into(),
+            filter: "none".into(),
+            compression: "none".into(),
+            params: Default::default(),
+            hash: None,
+        };
+        let objects = vec![(desc, vec![0u8; 16])];
+        let json = format_json::<String>(&meta, None, Some(&objects));
+        assert!(json.contains("\"objects\""));
+        assert!(json.contains("ntensor"));
+        assert!(json.contains("float32"));
+    }
+
+    #[test]
+    fn format_json_value_text() {
+        let val = ciborium::Value::Text("hello".to_string());
+        assert_eq!(format_json_value(&val), "\"hello\"");
+    }
+
+    #[test]
+    fn format_json_value_integer() {
+        let val = ciborium::Value::Integer(42.into());
+        assert_eq!(format_json_value(&val), "42");
+    }
+
+    #[test]
+    fn format_json_value_float() {
+        let val = ciborium::Value::Float(3.5);
+        assert_eq!(format_json_value(&val), "3.5");
+    }
+
+    #[test]
+    fn format_json_value_bool() {
+        assert_eq!(format_json_value(&ciborium::Value::Bool(true)), "true");
+    }
+
+    #[test]
+    fn format_json_value_null() {
+        assert_eq!(format_json_value(&ciborium::Value::Null), "null");
+    }
+
+    #[test]
+    fn format_json_value_array() {
+        let val = ciborium::Value::Array(vec![
+            ciborium::Value::Integer(1.into()),
+            ciborium::Value::Integer(2.into()),
+        ]);
+        assert_eq!(format_json_value(&val), "[1,2]");
+    }
+
+    #[test]
+    fn format_json_value_map() {
+        let val = ciborium::Value::Map(vec![(
+            ciborium::Value::Text("k".to_string()),
+            ciborium::Value::Text("v".to_string()),
+        )]);
+        let s = format_json_value(&val);
+        assert!(s.contains("\"k\""));
+        assert!(s.contains("\"v\""));
+    }
+
+    #[test]
+    fn format_json_value_bytes() {
+        let val = ciborium::Value::Bytes(vec![0xde, 0xad]);
+        assert_eq!(format_json_value(&val), "\"dead\"");
+    }
+
+    #[test]
+    fn format_json_value_tag() {
+        let val = ciborium::Value::Tag(1, Box::new(ciborium::Value::Text("inner".to_string())));
+        assert_eq!(format_json_value(&val), "\"inner\"");
+    }
+
+    #[test]
+    fn hex_encode() {
+        assert_eq!(hex::encode(&[0x00, 0xff, 0x42]), "00ff42");
+        assert_eq!(hex::encode(&[]), "");
+    }
+
+    #[test]
+    fn format_json_value_nan() {
+        // NaN is not representable in JSON, should produce null
+        let val = ciborium::Value::Float(f64::NAN);
+        assert_eq!(format_json_value(&val), "null");
+    }
+
+    #[test]
+    fn cbor_map_non_text_key() {
+        // Non-text keys get Debug-formatted
+        let val = ciborium::Value::Map(vec![(
+            ciborium::Value::Integer(42.into()),
+            ciborium::Value::Text("val".to_string()),
+        )]);
+        let s = format_json_value(&val);
+        assert!(s.contains("val"));
+    }
+}

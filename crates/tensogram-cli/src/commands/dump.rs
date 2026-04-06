@@ -63,3 +63,74 @@ pub fn run(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use tensogram_core::{ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata};
+
+    fn make_test_file(dir: &std::path::Path) -> PathBuf {
+        let path = dir.join("dump_test.tgm");
+        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".into(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".into(),
+            filter: "none".into(),
+            compression: "none".into(),
+            params: Default::default(),
+            hash: None,
+        };
+        let data = vec![0u8; 16];
+        let mut extra = BTreeMap::new();
+        extra.insert("param".to_string(), ciborium::Value::Text("2t".to_string()));
+        let meta = GlobalMetadata {
+            version: 2,
+            extra,
+            ..Default::default()
+        };
+        f.append(&meta, &[(&desc, &data)], &EncodeOptions::default())
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn dump_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path());
+        run(&[path], None, None, false).unwrap();
+    }
+
+    #[test]
+    fn dump_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path());
+        run(&[path], None, None, true).unwrap();
+    }
+
+    #[test]
+    fn dump_with_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path());
+        run(&[path], None, Some("param"), true).unwrap();
+    }
+
+    #[test]
+    fn dump_with_where() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path());
+        run(&[path], Some("param=2t"), None, false).unwrap();
+    }
+
+    #[test]
+    fn dump_where_no_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path());
+        run(&[path], Some("param=xxx"), None, false).unwrap();
+    }
+}

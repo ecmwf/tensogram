@@ -47,3 +47,75 @@ pub fn run(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use tensogram_core::{ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata};
+
+    fn make_test_file(dir: &std::path::Path) -> PathBuf {
+        let path = dir.join("get_test.tgm");
+        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".into(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".into(),
+            filter: "none".into(),
+            compression: "none".into(),
+            params: Default::default(),
+            hash: None,
+        };
+        let data = vec![0u8; 16];
+        let mut extra = BTreeMap::new();
+        extra.insert("param".to_string(), ciborium::Value::Text("2t".to_string()));
+        let meta = GlobalMetadata {
+            version: 2,
+            extra,
+            ..Default::default()
+        };
+        f.append(&meta, &[(&desc, &data)], &EncodeOptions::default())
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn get_existing_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path());
+        run(&[path], None, "param").unwrap();
+    }
+
+    #[test]
+    fn get_missing_key_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path());
+        assert!(run(&[path], None, "nonexistent").is_err());
+    }
+
+    #[test]
+    fn get_multiple_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path());
+        run(&[path], None, "version,param").unwrap();
+    }
+
+    #[test]
+    fn get_with_where() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path());
+        run(&[path], Some("param=2t"), "param").unwrap();
+    }
+
+    #[test]
+    fn get_where_filters_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path());
+        // No messages match → no output, no error
+        run(&[path], Some("param=xxx"), "param").unwrap();
+    }
+}
