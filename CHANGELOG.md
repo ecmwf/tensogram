@@ -3,6 +3,25 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.0] - 2026-04-06
+
+### Added
+- **Project logo** — centered at top of README with badge
+- **82 new Python coverage tests** — metadata properties, error paths, descriptor coverage,
+  decode_range across all 10 dtypes, file slice edge cases, concurrent iterators,
+  iter_messages edges, Message unpacking across all 5 decode paths, scan edges,
+  big-endian round-trips
+
+### Fixed
+- Replaced `unwrap()` in FFI decode macro with `Result` propagation (panic=abort safety)
+- Fixed TOCTOU race condition in Python file iterator initialization
+- Added buffer copy warning to `iter_messages()` docstring
+- Python examples 01-03, 05-06 rewritten to use real API
+- Removed binary `.so` build artifact, added `*.so` to `.gitignore`
+
+### Stats
+- 888 total tests (283 Rust + 200 Python + 124 xarray + 172 Zarr + 109 C++)
+
 ## [0.4.0] - 2026-04-05
 
 ### Added
