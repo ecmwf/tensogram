@@ -38,11 +38,7 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Optimisation
  
-- [ ] *minimise-mem-alloc*: 
-  - Tensogram should minimise large mem allocations or decoding of data where possible. 
-  - Decoding of actual data into tensors should be delayed until absolutely necessary (when data actually access for caller usage). 
-  - Use the metadata for dims sizes and shapes to prepare lazy objects where necessary.
-  - ensure this is reflected in the docs and as a strategic design choice in DESIGN.md
+- [x] ~~minimise-mem-alloc~~ → documented in DESIGN.md "Memory Strategy" section. Pipeline uses `Cow` for zero-copy when no encoding/filter/compression. Metadata-only ops never touch payloads. xarray/zarr use lazy loading.
 
 ## Code Quality
 

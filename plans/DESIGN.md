@@ -214,6 +214,40 @@ Producers must not assume receivers support encodings, filters, or compressions 
 - **PyO3 + maturin** — Python bindings
 - **cbindgen** — C header generation
 
+## Memory Strategy
+
+Tensogram minimises large memory allocations as a strategic design choice.
+Decoding of actual data into tensors is delayed until absolutely necessary.
+
+### Current Allocation Patterns
+
+| Operation | Allocation Strategy |
+|-----------|-------------------|
+| `decode()` | Decodes all objects into owned `Vec<u8>`. Pipeline uses `Cow<[u8]>` — zero-copy when encoding=none, filter=none, compression=none. |
+| `decode_metadata()` | Parses only the CBOR metadata frame. Does not touch payload bytes. |
+| `decode_descriptors()` | Reads metadata + per-object CBOR descriptors. No payload decode. |
+| `decode_object()` | Decodes a single object by index. Other objects' payloads are skipped. |
+| `decode_range()` | Decodes a sub-range of a single object. Avoids full payload decode when possible. |
+| `scan()` / `scan_file()` | Scans message boundaries by reading only magic/terminator bytes. O(1) per message. |
+| `TensogramFile::read_message()` | Reads raw bytes for one message. |
+| `TensogramFile::open()` | Reads file metadata only. Message data stays on disk. |
+| Mmap (`feature = "mmap"`) | Memory-mapped I/O — no buffer allocation for file contents. OS pages in on demand. |
+| `iter_messages()` | Copies the input buffer. For large files, use `TensogramFile` iteration instead. |
+| Streaming encoder | Writes frames directly to the output. No full-message buffer. |
+
+### xarray / Zarr Lazy Loading
+
+- **xarray backend**: `BackendArray` wraps tensogram decode. Data is read lazily on `.values` access, not at `open_dataset()` time. Slice-to-range mapping converts N-D array slices to flat byte ranges for partial decode.
+- **Zarr backend**: `TensogramStore` maps Zarr array chunks to tensogram messages. Chunk data is decoded on demand.
+
+### Design Rules
+
+1. **Metadata-only operations** (`decode_metadata`, `decode_descriptors`, `scan`) must never touch payload bytes.
+2. **Partial decode** (`decode_object`, `decode_range`) must skip non-requested objects.
+3. **Pipeline zero-copy**: when no encoding, filtering, or compression is applied, the decode pipeline borrows the input buffer via `Cow::Borrowed` rather than allocating.
+4. **Streaming encode** must never buffer the full message — each object frame is written immediately.
+5. **File iteration** opens an independent file handle per iterator — no shared mutable state.
+
 ## Distribution
 
 - **Rust crate:** crates.io or ECMWF internal registry
