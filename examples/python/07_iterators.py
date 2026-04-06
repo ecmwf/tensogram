@@ -1,16 +1,26 @@
-"""Example 07 — Iterator APIs (Python)
+"""Example 07 — Iterators and Indexing
 
-Tensogram Python bindings provide iterator protocols for ergonomic traversal:
+All decode functions return Message namedtuples with .metadata and .objects:
 
-    for msg in tensogram.TensogramFile.open("data.tgm"):
-        for tensor in msg:
-            value = tensor[i, j, k]
+    msg = file[0]
+    msg.metadata              # Metadata object
+    msg.objects               # list[(DataObjectDescriptor, ndarray)]
+    meta, objects = msg       # tuple unpacking also works
 
-This example demonstrates:
-  1. File iteration — for msg in file: ...
-  2. Object iteration — for tensor in msg: ...
-  3. N-dimensional indexing — tensor[i, j, k]
-  4. Buffer iteration — iter_messages(buf)
+TensogramFile supports standard Python iteration and indexing:
+
+    for msg in file:                  # iterate all messages
+    msg = file[i]                     # single message by index
+    msg = file[-1]                    # negative indexing
+    subset = file[10:20]              # slice a range
+    subset = file[::5]               # every 5th message
+
+For raw byte buffers (pipes, network streams):
+
+    for msg in tensogram.iter_messages(buf):
+        ...
+
+This example also shows multi-object messages (multiple arrays per message).
 
 NOTE: Requires building tensogram-python first:
     cd crates/tensogram-python && maturin develop
@@ -20,98 +30,110 @@ import os
 import tempfile
 
 import numpy as np
+import tensogram
 
-# Uncomment after building with maturin:
-# import tensogram
+
+def create_test_file(path, n=5):
+    """Write n messages, each with a 4x4 grid, to a .tgm file."""
+    with tensogram.TensogramFile.create(path) as f:
+        for i in range(n):
+            data = np.full((4, 4), float(i), dtype=np.float32)
+            meta = {"version": 2, "step": i, "time": i * 0.1}
+            desc = {"type": "ndarray", "shape": [4, 4], "dtype": "float32"}
+            f.append(meta, [(desc, data)])
+    print(f"Created {path} with {n} messages")
+
+
+def demo_iteration(path):
+    """Iterate over all messages with a for loop."""
+    print("\n--- for meta, objects in file ---")
+    with tensogram.TensogramFile.open(path) as f:
+        for meta, objects in f:
+            desc, arr = objects[0]
+            print(f"  step={meta['step']}, shape={arr.shape}, "
+                  f"dtype={desc.dtype}, val={arr[0, 0]:.1f}")
+
+
+def demo_indexing(path):
+    """Access messages by index and slice."""
+    print("\n--- file[i] and file[start:stop:step] ---")
+    with tensogram.TensogramFile.open(path) as f:
+        # Single index
+        meta, _ = f[0]
+        print(f"  f[0]:    step={meta['step']}")
+        meta, _ = f[-1]
+        print(f"  f[-1]:   step={meta['step']}")
+
+        # Slicing
+        steps = [m["step"] for m, _ in f[1:4]]
+        print(f"  f[1:4]:  steps={steps}")
+        steps = [m["step"] for m, _ in f[::2]]
+        print(f"  f[::2]:  steps={steps}")
+        steps = [m["step"] for m, _ in f[::-1]]
+        print(f"  f[::-1]: steps={steps}")
+
+
+def demo_multi_object(path):
+    """Iterate over objects within a single multi-object message."""
+    print("\n--- multi-object messages ---")
+    with tensogram.TensogramFile.create(path) as f:
+        temperature = np.random.rand(3, 3).astype(np.float32)
+        humidity = np.random.rand(3, 3).astype(np.float32)
+        meta = {"version": 2, "source": "sensor"}
+        f.append(meta, [
+            ({"type": "ndarray", "shape": [3, 3], "dtype": "float32"}, temperature),
+            ({"type": "ndarray", "shape": [3, 3], "dtype": "float32"}, humidity),
+        ])
+
+    with tensogram.TensogramFile.open(path) as f:
+        meta, objects = f[0]
+        print(f"  message has {len(objects)} objects:")
+        for i, (desc, arr) in enumerate(objects):
+            print(f"    object {i}: shape={arr.shape}, mean={arr.mean():.4f}")
+
+
+def demo_buffer_iteration():
+    """Iterate over messages in raw bytes using iter_messages()."""
+    print("\n--- tensogram.iter_messages(buf) ---")
+
+    # Encode three messages into raw bytes
+    msgs = []
+    for i in range(3):
+        data = np.full(8, float(i), dtype=np.float32)
+        meta = {"version": 2, "step": i}
+        desc = {"type": "ndarray", "shape": [8], "dtype": "float32"}
+        msgs.append(bytes(tensogram.encode(meta, [(desc, data)])))
+
+    buf = b"".join(msgs)
+    print(f"  buffer: {len(buf)} bytes, {len(msgs)} messages")
+
+    for meta, objects in tensogram.iter_messages(buf):
+        _, arr = objects[0]
+        print(f"    step={meta['step']}, arr[:3]={arr[:3]}")
+
+
+def demo_len_and_iter(path):
+    """Use len() and manual iterator control."""
+    print("\n--- len() and iter() ---")
+    with tensogram.TensogramFile.open(path) as f:
+        print(f"  len(f) = {len(f)}")
+        it = iter(f)
+        print(f"  len(iter) = {len(it)}")
+        meta, _ = next(it)
+        print(f"  next(it): step={meta['step']}, remaining={len(it)}")
+
 
 def main():
-    """
-    The iterator API is designed for this natural pattern:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "test.tgm")
+        create_test_file(path, n=5)
+        demo_iteration(path)
+        demo_indexing(path)
+        demo_multi_object(os.path.join(tmpdir, "multi.tgm"))
+        demo_buffer_iteration()
+        demo_len_and_iter(path)
 
-        f = tensogram.TensogramFile.open("forecast.tgm")
-        for msg in f:                     # yields Message objects
-            print(msg.metadata)           # lazy metadata decode
-            for tensor in msg:            # yields Tensor objects
-                print(tensor.shape)       # shape, dtype, ndim
-                val = tensor[0, 1, 2]     # N-d indexing → scalar
-
-    Buffer-based iteration works similarly:
-
-        buf = open("data.tgm", "rb").read()
-        for msg in tensogram.iter_messages(buf):
-            for tensor in msg:
-                data = tensor.to_numpy()  # full numpy array
-    """
-
-    print("=== Python iterator API design ===")
-    print()
-    print("File iteration:")
-    print('  f = tensogram.TensogramFile.open("data.tgm")')
-    print("  for msg in f:")
-    print("      print(len(msg))          # number of objects")
-    print("      for tensor in msg:")
-    print("          print(tensor.shape)  # e.g. (721, 1440)")
-    print("          print(tensor.dtype)  # e.g. float32")
-    print("          val = tensor[0, 0]   # scalar indexing")
-    print()
-    print("Buffer iteration:")
-    print("  for msg in tensogram.iter_messages(buf):")
-    print("      for tensor in msg:")
-    print("          arr = tensor.to_numpy()")
-    print()
-
-    # The following shows what the API will look like once
-    # tensogram-python is built with `maturin develop`:
-    #
-    # import tensogram
-    #
-    # # Encode a few test messages
-    # messages = []
-    # for i in range(3):
-    #     meta = {
-    #         "version": 1,
-    #         "objects": [{
-    #             "type": "ntensor",
-    #             "ndim": 2,
-    #             "shape": [4, 4],
-    #             "strides": [4, 1],
-    #             "dtype": "float32",
-    #         }],
-    #         "payload": [{
-    #             "byte_order": "little",
-    #             "encoding": "none",
-    #             "filter": "none",
-    #             "compression": "none",
-    #         }],
-    #     }
-    #     data = np.zeros((4, 4), dtype=np.float32)
-    #     messages.append(tensogram.encode(meta, [data.tobytes()]))
-    #
-    # # Write to a temp file
-    # with tempfile.NamedTemporaryFile(suffix=".tgm", delete=False) as tmp:
-    #     for msg in messages:
-    #         tmp.write(msg)
-    #     path = tmp.name
-    #
-    # # Iterate over file
-    # f = tensogram.TensogramFile.open(path)
-    # for msg in f:
-    #     print(f"  Message with {len(msg)} objects")
-    #     for tensor in msg:
-    #         print(f"    shape={tensor.shape}  dtype={tensor.dtype}")
-    #         print(f"    tensor[0,0] = {tensor[0, 0]}")
-    #
-    # # Iterate over buffer
-    # buf = open(path, "rb").read()
-    # for msg in tensogram.iter_messages(buf):
-    #     for tensor in msg:
-    #         arr = tensor.to_numpy()
-    #         print(f"    array shape: {arr.shape}")
-    #
-    # os.unlink(path)
-
-    print("Iterator example complete.")
-    print("Build with: cd crates/tensogram-python && maturin develop")
+    print("\nDone.")
 
 
 if __name__ == "__main__":
