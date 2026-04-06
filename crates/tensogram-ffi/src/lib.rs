@@ -34,7 +34,7 @@ use std::slice;
 use tensogram_core::{
     decode, decode_metadata, decode_object, decode_range, encode, scan, DataObjectDescriptor,
     DecodeOptions, EncodeOptions, GlobalMetadata, HashAlgorithm, StreamingEncoder, TensogramError,
-    TensogramFile,
+    TensogramFile, RESERVED_KEY,
 };
 
 // ---------------------------------------------------------------------------
@@ -180,6 +180,9 @@ struct EncodeJson {
     version: u16,
     #[serde(default)]
     descriptors: Vec<DataObjectDescriptor>,
+    /// Per-object metadata array (one entry per data object).
+    #[serde(default)]
+    base: Vec<BTreeMap<String, serde_json::Value>>,
     /// All remaining top-level keys become `GlobalMetadata::extra`.
     #[serde(flatten)]
     extra: BTreeMap<String, serde_json::Value>,
@@ -215,18 +218,34 @@ fn json_to_cbor(v: serde_json::Value) -> ciborium::Value {
 /// Parse the flat JSON blob into a `GlobalMetadata` and a list of
 /// `DataObjectDescriptor`s.
 ///
-/// The `"version"` and `"descriptors"` keys are consumed; all remaining keys
-/// are forwarded into `GlobalMetadata::extra` as CBOR values.
+/// The `"version"`, `"descriptors"`, and `"base"` keys are consumed; all
+/// remaining keys are forwarded into `GlobalMetadata::extra` as CBOR values.
 fn parse_encode_json(
     json_str: &str,
 ) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>), String> {
     let parsed: EncodeJson = serde_json::from_str(json_str)
         .map_err(|e| format!("failed to parse metadata JSON: {e}"))?;
 
-    // "descriptors" is a known key we pull out; everything else in `extra` goes
-    // into GlobalMetadata::extra as CBOR. The serde(flatten) on EncodeJson
-    // will capture unknown fields there, but "descriptors" itself is already
-    // pulled into the dedicated field and NOT included in extra.
+    let cbor_base: Vec<BTreeMap<String, ciborium::Value>> = parsed
+        .base
+        .into_iter()
+        .map(|entry| {
+            entry
+                .into_iter()
+                .map(|(k, v)| (k, json_to_cbor(v)))
+                .collect()
+        })
+        .collect();
+
+    // Validate: no _reserved_ keys in base entries (library-managed namespace)
+    for (i, entry) in cbor_base.iter().enumerate() {
+        if entry.contains_key(RESERVED_KEY) {
+            return Err(format!(
+                "base[{i}] must not contain '{RESERVED_KEY}' key — the encoder populates it"
+            ));
+        }
+    }
+
     let cbor_extra: BTreeMap<String, ciborium::Value> = parsed
         .extra
         .into_iter()
@@ -235,6 +254,7 @@ fn parse_encode_json(
 
     let global_metadata = GlobalMetadata {
         version: parsed.version,
+        base: cbor_base,
         extra: cbor_extra,
         ..Default::default()
     };
@@ -1060,15 +1080,13 @@ pub extern "C" fn tgm_metadata_version(meta: *const TgmMetadata) -> u64 {
 
 /// Returns the number of objects described in the global metadata.
 ///
-/// In wire format v2, `GlobalMetadata` does not embed per-object descriptors,
-/// so this function always returns 0. Use `tgm_message_num_objects` on a
-/// decoded `TgmMessage` to get the actual object count.
+/// Returns the length of the `base` array, which has one entry per data object.
 #[no_mangle]
 pub extern "C" fn tgm_metadata_num_objects(meta: *const TgmMetadata) -> usize {
     if meta.is_null() {
         return 0;
     }
-    0
+    unsafe { (*meta).global_metadata.base.len() }
 }
 
 /// Look up a string value by dot-notation key (e.g. "mars.class").
@@ -1437,36 +1455,92 @@ pub extern "C" fn tgm_file_close(file: *mut TgmFile) {
 // Metadata key lookup helpers
 // ---------------------------------------------------------------------------
 
+/// Look up a CBOR value by dot-notation key with arbitrary nesting depth.
+///
+/// Supports `"key"`, `"ns.field"`, `"grib.geography.Ni"`, etc.
+/// Search order: `base[i]` (skip `_reserved_`, first match) → `extra`.
 fn lookup_cbor_value<'a>(
     global_metadata: &'a GlobalMetadata,
     key: &str,
 ) -> Option<&'a ciborium::Value> {
+    if key.is_empty() {
+        return None;
+    }
     let parts: Vec<&str> = key.split('.').collect();
 
-    if parts.len() == 1 {
-        match parts[0] {
-            "version" => return None, // use tgm_metadata_version instead
-            k => return global_metadata.extra.get(k),
-        }
+    if parts.is_empty() || parts[0].is_empty() {
+        return None;
+    }
+    if parts[0] == "version" {
+        return None; // use tgm_metadata_version instead
     }
 
-    if parts.len() == 2 {
-        let (ns, field) = (parts[0], parts[1]);
-        if let Some(ciborium::Value::Map(entries)) = global_metadata.extra.get(ns) {
-            for (k, v) in entries {
-                if let ciborium::Value::Text(k_str) = k {
-                    if k_str == field {
-                        return Some(v);
-                    }
-                }
+    // Explicit _extra_ or extra prefix targets the extra map directly
+    if parts[0] == "_extra_" || parts[0] == "extra" {
+        if parts.len() > 1 {
+            return resolve_in_btree(&global_metadata.extra, &parts[1..]);
+        }
+        return None;
+    }
+
+    // Search base entries (skip _reserved_ key within each entry)
+    for entry in &global_metadata.base {
+        if let Some(val) = resolve_in_btree_skip_reserved(entry, &parts) {
+            return Some(val);
+        }
+    }
+    // Fall back to extra
+    resolve_in_btree(&global_metadata.extra, &parts)
+}
+
+/// Walk a dot-path in a BTreeMap, skipping `_reserved_` keys at the first level.
+fn resolve_in_btree_skip_reserved<'a>(
+    map: &'a BTreeMap<String, ciborium::Value>,
+    parts: &[&str],
+) -> Option<&'a ciborium::Value> {
+    let (first, rest) = parts.split_first()?;
+    if *first == RESERVED_KEY {
+        return None;
+    }
+    let value = map.get(*first)?;
+    resolve_cbor_path(value, rest)
+}
+
+/// Walk a dot-path in a BTreeMap (no _reserved_ filtering).
+fn resolve_in_btree<'a>(
+    map: &'a BTreeMap<String, ciborium::Value>,
+    parts: &[&str],
+) -> Option<&'a ciborium::Value> {
+    let (first, rest) = parts.split_first()?;
+    let value = map.get(*first)?;
+    resolve_cbor_path(value, rest)
+}
+
+/// Recursively walk remaining path segments into a CBOR value.
+///
+/// When no segments remain, returns the current value.
+/// When segments remain, the current value must be a `Map` to navigate further.
+fn resolve_cbor_path<'a>(
+    value: &'a ciborium::Value,
+    remaining: &[&str],
+) -> Option<&'a ciborium::Value> {
+    if remaining.is_empty() {
+        return Some(value);
+    }
+    if let ciborium::Value::Map(entries) = value {
+        for (k, v) in entries {
+            if matches!(k, ciborium::Value::Text(s) if s == remaining[0]) {
+                return resolve_cbor_path(v, &remaining[1..]);
             }
         }
     }
-
     None
 }
 
 fn lookup_string_key(global_metadata: &GlobalMetadata, key: &str) -> Option<String> {
+    if key.is_empty() {
+        return None;
+    }
     if key == "version" {
         return Some(global_metadata.version.to_string());
     }
@@ -1491,7 +1565,7 @@ fn lookup_int_key(global_metadata: &GlobalMetadata, key: &str) -> Option<i64> {
     lookup_cbor_value(global_metadata, key).and_then(|v| match v {
         ciborium::Value::Integer(i) => {
             let n: i128 = (*i).into();
-            Some(n as i64)
+            i64::try_from(n).ok()
         }
         _ => None,
     })
@@ -1502,6 +1576,8 @@ fn lookup_float_key(global_metadata: &GlobalMetadata, key: &str) -> Option<f64> 
         ciborium::Value::Float(f) => Some(*f),
         ciborium::Value::Integer(i) => {
             let n: i128 = (*i).into();
+            // i128 → f64 may lose precision for very large integers, but this
+            // is the expected behavior for a float accessor on an integer value.
             Some(n as f64)
         }
         _ => None,
@@ -1854,6 +1930,422 @@ pub extern "C" fn tgm_error_string(err: TgmError) -> *const c_char {
 // Hash utilities
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Unit tests for metadata lookup helpers and JSON parsing
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn make_meta(
+        base: Vec<BTreeMap<String, ciborium::Value>>,
+        extra: BTreeMap<String, ciborium::Value>,
+    ) -> GlobalMetadata {
+        GlobalMetadata {
+            version: 2,
+            base,
+            extra,
+            ..Default::default()
+        }
+    }
+
+    // ── lookup_cbor_value ─────────────────────────────────────────────
+
+    #[test]
+    fn lookup_cbor_empty_key() {
+        let meta = make_meta(vec![], BTreeMap::new());
+        assert!(lookup_cbor_value(&meta, "").is_none());
+    }
+
+    #[test]
+    fn lookup_cbor_dot_only() {
+        let meta = make_meta(vec![], BTreeMap::new());
+        assert!(lookup_cbor_value(&meta, ".").is_none());
+    }
+
+    #[test]
+    fn lookup_cbor_version_returns_none() {
+        // version is handled by tgm_metadata_version, not lookup_cbor_value
+        let meta = make_meta(vec![], BTreeMap::new());
+        assert!(lookup_cbor_value(&meta, "version").is_none());
+    }
+
+    #[test]
+    fn lookup_cbor_base_match() {
+        let mut entry = BTreeMap::new();
+        entry.insert("centre".into(), ciborium::Value::Text("ecmwf".into()));
+        let meta = make_meta(vec![entry], BTreeMap::new());
+        let val = lookup_cbor_value(&meta, "centre");
+        assert!(matches!(val, Some(ciborium::Value::Text(s)) if s == "ecmwf"));
+    }
+
+    #[test]
+    fn lookup_cbor_extra_fallback() {
+        // Key not in base → found in extra
+        let mut extra = BTreeMap::new();
+        extra.insert("source".into(), ciborium::Value::Text("test".into()));
+        let meta = make_meta(vec![], extra);
+        let val = lookup_cbor_value(&meta, "source");
+        assert!(matches!(val, Some(ciborium::Value::Text(s)) if s == "test"));
+    }
+
+    #[test]
+    fn lookup_cbor_no_match() {
+        let meta = make_meta(vec![], BTreeMap::new());
+        assert!(lookup_cbor_value(&meta, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn lookup_cbor_reserved_skipped() {
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            "_reserved_".into(),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("tensor".into()),
+                ciborium::Value::Text("internal".into()),
+            )]),
+        );
+        entry.insert("param".into(), ciborium::Value::Text("2t".into()));
+        let meta = make_meta(vec![entry], BTreeMap::new());
+        // _reserved_ path should be skipped
+        assert!(lookup_cbor_value(&meta, "_reserved_.tensor").is_none());
+        // Regular key should still be found
+        assert!(lookup_cbor_value(&meta, "param").is_some());
+    }
+
+    #[test]
+    fn lookup_cbor_extra_prefix() {
+        let mut extra = BTreeMap::new();
+        extra.insert("custom".into(), ciborium::Value::Text("val".into()));
+        let meta = make_meta(vec![], extra);
+        // _extra_.custom should resolve directly in extra
+        let val = lookup_cbor_value(&meta, "_extra_.custom");
+        assert!(matches!(val, Some(ciborium::Value::Text(s)) if s == "val"));
+    }
+
+    #[test]
+    fn lookup_cbor_extra_alias_prefix() {
+        let mut extra = BTreeMap::new();
+        extra.insert("custom".into(), ciborium::Value::Text("val".into()));
+        let meta = make_meta(vec![], extra);
+        // extra.custom should also resolve in extra
+        let val = lookup_cbor_value(&meta, "extra.custom");
+        assert!(matches!(val, Some(ciborium::Value::Text(s)) if s == "val"));
+    }
+
+    #[test]
+    fn lookup_cbor_extra_prefix_alone_returns_none() {
+        let meta = make_meta(vec![], BTreeMap::new());
+        // Bare "_extra_" without subkey returns None
+        assert!(lookup_cbor_value(&meta, "_extra_").is_none());
+        assert!(lookup_cbor_value(&meta, "extra").is_none());
+    }
+
+    #[test]
+    fn lookup_cbor_base_wins_over_extra() {
+        let mut entry = BTreeMap::new();
+        entry.insert("shared".into(), ciborium::Value::Text("from_base".into()));
+        let mut extra = BTreeMap::new();
+        extra.insert("shared".into(), ciborium::Value::Text("from_extra".into()));
+        let meta = make_meta(vec![entry], extra);
+        let val = lookup_cbor_value(&meta, "shared");
+        assert!(matches!(val, Some(ciborium::Value::Text(s)) if s == "from_base"));
+    }
+
+    #[test]
+    fn lookup_cbor_deeply_nested() {
+        let e_val = ciborium::Value::Map(vec![(
+            ciborium::Value::Text("e".into()),
+            ciborium::Value::Text("deep".into()),
+        )]);
+        let d_val = ciborium::Value::Map(vec![(ciborium::Value::Text("d".into()), e_val)]);
+        let c_val = ciborium::Value::Map(vec![(ciborium::Value::Text("c".into()), d_val)]);
+        let b_val = ciborium::Value::Map(vec![(ciborium::Value::Text("b".into()), c_val)]);
+        let mut entry = BTreeMap::new();
+        entry.insert("a".into(), b_val);
+        let meta = make_meta(vec![entry], BTreeMap::new());
+        let val = lookup_cbor_value(&meta, "a.b.c.d.e");
+        assert!(matches!(val, Some(ciborium::Value::Text(s)) if s == "deep"));
+    }
+
+    #[test]
+    fn lookup_cbor_multi_base_first_match() {
+        let mut entry0 = BTreeMap::new();
+        entry0.insert("param".into(), ciborium::Value::Text("2t".into()));
+        let mut entry1 = BTreeMap::new();
+        entry1.insert("param".into(), ciborium::Value::Text("msl".into()));
+        let meta = make_meta(vec![entry0, entry1], BTreeMap::new());
+        let val = lookup_cbor_value(&meta, "param");
+        assert!(matches!(val, Some(ciborium::Value::Text(s)) if s == "2t"));
+    }
+
+    // ── resolve_cbor_path ─────────────────────────────────────────────
+
+    #[test]
+    fn resolve_cbor_path_empty_remaining() {
+        let value = ciborium::Value::Text("hello".into());
+        assert_eq!(resolve_cbor_path(&value, &[]), Some(&value));
+    }
+
+    #[test]
+    fn resolve_cbor_path_non_map_with_remaining() {
+        let value = ciborium::Value::Text("hello".into());
+        assert!(resolve_cbor_path(&value, &["key"]).is_none());
+    }
+
+    #[test]
+    fn resolve_cbor_path_map_missing_key() {
+        let value = ciborium::Value::Map(vec![(
+            ciborium::Value::Text("a".into()),
+            ciborium::Value::Text("b".into()),
+        )]);
+        assert!(resolve_cbor_path(&value, &["missing"]).is_none());
+    }
+
+    // ── lookup_string_key ──
+
+    #[test]
+    fn lookup_string_key_version() {
+        let meta = make_meta(vec![], BTreeMap::new());
+        assert_eq!(lookup_string_key(&meta, "version"), Some("2".into()));
+    }
+
+    #[test]
+    fn lookup_string_key_empty() {
+        let meta = make_meta(vec![], BTreeMap::new());
+        assert!(lookup_string_key(&meta, "").is_none());
+    }
+
+    #[test]
+    fn lookup_string_key_integer_value() {
+        let mut entry = BTreeMap::new();
+        entry.insert("count".into(), ciborium::Value::Integer(42.into()));
+        let meta = make_meta(vec![entry], BTreeMap::new());
+        assert_eq!(lookup_string_key(&meta, "count"), Some("42".into()));
+    }
+
+    #[test]
+    fn lookup_string_key_float_value() {
+        let mut extra = BTreeMap::new();
+        extra.insert("temperature".into(), ciborium::Value::Float(98.6));
+        let meta = make_meta(vec![], extra);
+        assert_eq!(lookup_string_key(&meta, "temperature"), Some("98.6".into()));
+    }
+
+    #[test]
+    fn lookup_string_key_bool_value() {
+        let mut extra = BTreeMap::new();
+        extra.insert("flag".into(), ciborium::Value::Bool(true));
+        let meta = make_meta(vec![], extra);
+        assert_eq!(lookup_string_key(&meta, "flag"), Some("true".into()));
+    }
+
+    #[test]
+    fn lookup_string_key_null_returns_none() {
+        let mut extra = BTreeMap::new();
+        extra.insert("nothing".into(), ciborium::Value::Null);
+        let meta = make_meta(vec![], extra);
+        // Null is not a string/int/float/bool, so returns None
+        assert!(lookup_string_key(&meta, "nothing").is_none());
+    }
+
+    // ── lookup_int_key ──
+
+    #[test]
+    fn lookup_int_key_version() {
+        let meta = make_meta(vec![], BTreeMap::new());
+        assert_eq!(lookup_int_key(&meta, "version"), Some(2));
+    }
+
+    #[test]
+    fn lookup_int_key_non_integer() {
+        let mut extra = BTreeMap::new();
+        extra.insert("str".into(), ciborium::Value::Text("not_int".into()));
+        let meta = make_meta(vec![], extra);
+        assert!(lookup_int_key(&meta, "str").is_none());
+    }
+
+    // ── lookup_float_key ──
+
+    #[test]
+    fn lookup_float_key_float() {
+        let mut extra = BTreeMap::new();
+        extra.insert("val".into(), ciborium::Value::Float(98.6));
+        let meta = make_meta(vec![], extra);
+        assert_eq!(lookup_float_key(&meta, "val"), Some(98.6));
+    }
+
+    #[test]
+    fn lookup_float_key_integer_coercion() {
+        let mut extra = BTreeMap::new();
+        extra.insert("count".into(), ciborium::Value::Integer(42.into()));
+        let meta = make_meta(vec![], extra);
+        assert_eq!(lookup_float_key(&meta, "count"), Some(42.0));
+    }
+
+    #[test]
+    fn lookup_float_key_non_numeric() {
+        let mut extra = BTreeMap::new();
+        extra.insert("str".into(), ciborium::Value::Text("hello".into()));
+        let meta = make_meta(vec![], extra);
+        assert!(lookup_float_key(&meta, "str").is_none());
+    }
+
+    // ── parse_encode_json ──
+
+    #[test]
+    fn parse_encode_json_with_base() {
+        let json = r#"{"version":2,"base":[{"mars":{"param":"2t"}}],"descriptors":[]}"#;
+        let (gm, descs) = parse_encode_json(json).unwrap();
+        assert_eq!(gm.version, 2);
+        assert_eq!(gm.base.len(), 1);
+        assert!(gm.base[0].contains_key("mars"));
+        assert!(descs.is_empty());
+    }
+
+    #[test]
+    fn parse_encode_json_without_base() {
+        let json = r#"{"version":2,"descriptors":[]}"#;
+        let (gm, _) = parse_encode_json(json).unwrap();
+        assert!(gm.base.is_empty());
+    }
+
+    #[test]
+    fn parse_encode_json_reserved_in_base_rejected() {
+        let json = r#"{"version":2,"base":[{"_reserved_":{"tensor":{}}}],"descriptors":[]}"#;
+        let result = parse_encode_json(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("_reserved_"));
+    }
+
+    #[test]
+    fn parse_encode_json_extra_keys() {
+        let json = r#"{"version":2,"descriptors":[],"source":"test","count":42}"#;
+        let (gm, _) = parse_encode_json(json).unwrap();
+        assert!(gm.extra.contains_key("source"));
+        assert!(gm.extra.contains_key("count"));
+    }
+
+    // ── parse_streaming_metadata_json ──
+
+    #[test]
+    fn parse_streaming_json_with_base() {
+        let json = r#"{"version":2,"base":[{"mars":{"param":"2t"}}]}"#;
+        let gm = parse_streaming_metadata_json(json).unwrap();
+        assert_eq!(gm.version, 2);
+        assert_eq!(gm.base.len(), 1);
+    }
+
+    #[test]
+    fn parse_streaming_json_reserved_rejected() {
+        let json = r#"{"version":2,"base":[{"_reserved_":{"tensor":{}}}]}"#;
+        let result = parse_streaming_metadata_json(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("_reserved_"));
+    }
+
+    #[test]
+    fn parse_streaming_json_no_base() {
+        let json = r#"{"version":2,"source":"stream"}"#;
+        let gm = parse_streaming_metadata_json(json).unwrap();
+        assert!(gm.base.is_empty());
+        assert!(gm.extra.contains_key("source"));
+    }
+
+    #[test]
+    fn parse_streaming_json_invalid_json() {
+        assert!(parse_streaming_metadata_json("not json").is_err());
+    }
+
+    #[test]
+    fn parse_encode_json_invalid_json() {
+        assert!(parse_encode_json("not json").is_err());
+    }
+
+    // ── json_to_cbor ──
+
+    #[test]
+    fn json_to_cbor_null() {
+        assert_eq!(json_to_cbor(serde_json::Value::Null), ciborium::Value::Null);
+    }
+
+    #[test]
+    fn json_to_cbor_bool() {
+        assert_eq!(
+            json_to_cbor(serde_json::Value::Bool(true)),
+            ciborium::Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn json_to_cbor_integer() {
+        let val = serde_json::json!(42);
+        let cbor = json_to_cbor(val);
+        assert!(matches!(cbor, ciborium::Value::Integer(_)));
+    }
+
+    #[test]
+    fn json_to_cbor_float() {
+        let val = serde_json::json!(98.6);
+        let cbor = json_to_cbor(val);
+        assert!(matches!(cbor, ciborium::Value::Float(_)));
+    }
+
+    #[test]
+    fn json_to_cbor_string() {
+        let val = serde_json::json!("hello");
+        let cbor = json_to_cbor(val);
+        assert!(matches!(cbor, ciborium::Value::Text(s) if s == "hello"));
+    }
+
+    #[test]
+    fn json_to_cbor_array() {
+        let val = serde_json::json!([1, 2, 3]);
+        let cbor = json_to_cbor(val);
+        assert!(matches!(cbor, ciborium::Value::Array(_)));
+    }
+
+    #[test]
+    fn json_to_cbor_object() {
+        let val = serde_json::json!({"key": "value"});
+        let cbor = json_to_cbor(val);
+        assert!(matches!(cbor, ciborium::Value::Map(_)));
+    }
+
+    #[test]
+    fn json_to_cbor_u64_fallback_to_float() {
+        // A number that is not i64 but is u64 → falls back to float
+        // (JSON numbers outside i64 range)
+        let val = serde_json::json!(18446744073709551615u64);
+        let cbor = json_to_cbor(val);
+        // This should be either Integer or Float depending on serde_json parsing
+        assert!(!matches!(cbor, ciborium::Value::Null));
+    }
+
+    // ── resolve helpers ──
+
+    #[test]
+    fn resolve_in_btree_skip_reserved_blocks_reserved() {
+        let mut map = BTreeMap::new();
+        map.insert("_reserved_".into(), ciborium::Value::Text("secret".into()));
+        assert!(resolve_in_btree_skip_reserved(&map, &["_reserved_"]).is_none());
+    }
+
+    #[test]
+    fn resolve_in_btree_empty_parts() {
+        let map = BTreeMap::new();
+        assert!(resolve_in_btree(&map, &[]).is_none());
+    }
+
+    #[test]
+    fn resolve_in_btree_skip_reserved_empty_parts() {
+        let map = BTreeMap::new();
+        assert!(resolve_in_btree_skip_reserved(&map, &[]).is_none());
+    }
+}
+
 /// Compute a hash of the given data.
 /// Returns `TGM_ERROR_OK` on success, fills `out` with a `tgm_bytes_t`
 /// containing the hex-encoded hash string (NOT null-terminated).
@@ -1913,10 +2405,12 @@ pub struct TgmStreamingEncoder {
     inner: Option<StreamingEncoder<std::io::BufWriter<std::fs::File>>>,
 }
 
-/// JSON used for streaming encoder creation — version + optional extra keys.
+/// JSON used for streaming encoder creation — version + optional extra/base keys.
 #[derive(serde::Deserialize)]
 struct StreamingEncodeJson {
     version: u16,
+    #[serde(default)]
+    base: Vec<BTreeMap<String, serde_json::Value>>,
     #[serde(flatten)]
     extra: BTreeMap<String, serde_json::Value>,
 }
@@ -1926,6 +2420,26 @@ fn parse_streaming_metadata_json(json_str: &str) -> Result<GlobalMetadata, Strin
     let parsed: StreamingEncodeJson = serde_json::from_str(json_str)
         .map_err(|e| format!("failed to parse metadata JSON: {e}"))?;
 
+    let cbor_base: Vec<BTreeMap<String, ciborium::Value>> = parsed
+        .base
+        .into_iter()
+        .map(|entry| {
+            entry
+                .into_iter()
+                .map(|(k, v)| (k, json_to_cbor(v)))
+                .collect()
+        })
+        .collect();
+
+    // Validate: no _reserved_ keys in base entries (library-managed namespace)
+    for (i, entry) in cbor_base.iter().enumerate() {
+        if entry.contains_key(RESERVED_KEY) {
+            return Err(format!(
+                "base[{i}] must not contain '{RESERVED_KEY}' key — the encoder populates it"
+            ));
+        }
+    }
+
     let cbor_extra: BTreeMap<String, ciborium::Value> = parsed
         .extra
         .into_iter()
@@ -1934,6 +2448,7 @@ fn parse_streaming_metadata_json(json_str: &str) -> Result<GlobalMetadata, Strin
 
     Ok(GlobalMetadata {
         version: parsed.version,
+        base: cbor_base,
         extra: cbor_extra,
         ..Default::default()
     })

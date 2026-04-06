@@ -120,7 +120,7 @@ lat = np.linspace(-90, 90, 5, dtype=np.float64)
 lon = np.linspace(0, 360, 8, endpoint=False, dtype=np.float64)
 temp = np.random.default_rng(42).random((5, 8)).astype(np.float32)
 
-meta = {"version": 2, "payload": [
+meta = {"version": 2, "base": [
     {"name": "latitude"},
     {"name": "longitude"},
     {"name": "temperature"},
@@ -194,10 +194,9 @@ t2m = np.ones((3, 4), dtype=np.float32) * 273.15
 u10 = np.ones((3, 4), dtype=np.float32) * 5.0
 
 meta = {"version": 2,
-    "common": {"mars": {"class": "od", "date": "20260401", "type": "fc"}},
-    "payload": [
-        {"mars": {"param": "2t", "levtype": "sfc"}},
-        {"mars": {"param": "10u", "levtype": "sfc"}},
+    "base": [
+        {"mars": {"class": "od", "date": "20260401", "type": "fc", "param": "2t", "levtype": "sfc"}},
+        {"mars": {"class": "od", "date": "20260401", "type": "fc", "param": "10u", "levtype": "sfc"}},
     ],
 }
 
@@ -224,8 +223,7 @@ with tensogram.TensogramFile.create("mars.tgm") as f:
 >>> list(ds.data_vars)
 ['2t', '10u']
 >>> ds.attrs
-{'mars': {'class': 'od', 'date': '20260401', 'type': 'fc'},
- 'tensogram_version': 2}
+{'tensogram_version': 2}
 ```
 
 The `variable_key` supports dotted paths: `"mars.param"` navigates into
@@ -249,7 +247,7 @@ with tensogram.TensogramFile.create("multi.tgm") as f:
         for date in ["20260401", "20260402"]:
             data = rng.random((3, 4), dtype=np.float32).astype(np.float32)
             meta = {"version": 2,
-                    "payload": [{"mars": {"param": param, "date": date}}]}
+                    "base": [{"mars": {"param": param, "date": date}}]}
             desc = {"type": "ntensor", "shape": [3, 4], "dtype": "float32",
                     "byte_order": "little", "encoding": "none",
                     "filter": "none", "compression": "none"}
@@ -292,17 +290,17 @@ them into compatible groups.
 ```python
 with tensogram.TensogramFile.create("hetero.tgm") as f:
     # Message 0: 2D float32 temperature field
-    f.append({"version": 2, "payload": [{"name": "temp"}]},
+    f.append({"version": 2, "base": [{"name": "temp"}]},
              [({"type": "ntensor", "shape": [3, 4], "dtype": "float32", ...},
                np.ones((3, 4), dtype=np.float32))])
 
     # Message 1: 2D float32 wind field (same shape -- compatible)
-    f.append({"version": 2, "payload": [{"name": "wind"}]},
+    f.append({"version": 2, "base": [{"name": "wind"}]},
              [({"type": "ntensor", "shape": [3, 4], "dtype": "float32", ...},
                np.ones((3, 4), dtype=np.float32) * 2)])
 
     # Message 2: 1D int32 counts (different shape AND dtype -- incompatible)
-    f.append({"version": 2, "payload": [{"name": "counts"}]},
+    f.append({"version": 2, "base": [{"name": "counts"}]},
              [({"type": "ntensor", "shape": [5], "dtype": "int32", ...},
                np.array([1, 2, 3, 4, 5], dtype=np.int32))])
 ```

@@ -188,7 +188,7 @@ use std::io::Write;
 let mut f = std::fs::OpenOptions::new().append(true).open("forecast.tgm")?;
 
 let global = GlobalMetadata { version: 2, ..Default::default() };
-let message = encode(global, &[(&desc, &data)], &EncodeOptions::default())?;
+let message = encode(&global, &[(&desc, &data)], &EncodeOptions::default())?;
 f.write_all(&message)?;
 ```
 

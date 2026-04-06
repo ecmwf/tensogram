@@ -176,7 +176,13 @@ fn main() {
     };
 
     if let Err(e) = result {
+        // Show the full error chain so nested causes are visible.
         eprintln!("error: {e}");
+        let mut source = e.source();
+        while let Some(cause) = source {
+            eprintln!("  caused by: {cause}");
+            source = cause.source();
+        }
         process::exit(1);
     }
 }

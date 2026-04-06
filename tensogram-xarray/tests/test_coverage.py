@@ -18,7 +18,6 @@ import numpy as np
 import pytest
 import tensogram
 import xarray as xr
-
 from tensogram_xarray.array import (
     _is_contiguous_slice,
     _nd_slice_to_flat_ranges,
@@ -93,22 +92,19 @@ class TestStoreCoverage:
         store = TensogramDataStore(path)
         store.close()  # should not raise
 
-    def test_auto_payload_keys_filtered(self, tmp_path: Path):
-        """ndim/shape/strides/dtype from payload don't appear in var attrs."""
+    def test_reserved_key_filtered(self, tmp_path: Path):
+        """_reserved_ key from base entries doesn't appear in var attrs."""
         data = np.ones((3,), dtype=np.float32)
-        path = str(tmp_path / "payload_filter.tgm")
-        meta = {"version": 2, "payload": [{"mars": {"param": "2t"}}]}
+        path = str(tmp_path / "base_filter.tgm")
+        meta = {"version": 2, "base": [{"mars": {"param": "2t"}}]}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([3]), data)])
 
         store = TensogramDataStore(path, variable_key="mars.param")
         ds = store.build_dataset()
         var = ds["2t"]
-        # Auto-populated keys should be filtered
-        assert "ndim" not in var.attrs
-        assert "shape" not in var.attrs
-        assert "strides" not in var.attrs
-        assert "dtype" not in var.attrs
+        # _reserved_ key should be filtered
+        assert "_reserved_" not in var.attrs
         # But user key should be present
         assert "mars" in var.attrs
 
@@ -236,12 +232,11 @@ class TestScannerCoverage:
         assert objects[0].shape == (3,)
         assert objects[1].shape == (5,)
 
-    def test_scan_file_with_common_metadata(self, tmp_path: Path):
-        """scan_file reads common metadata into ObjectInfo.common_meta."""
-        # line 78, 86, 89: common metadata path
-        path = str(tmp_path / "common.tgm")
+    def test_scan_file_with_extra_metadata(self, tmp_path: Path):
+        """scan_file reads extra metadata into ObjectInfo.common_meta."""
+        path = str(tmp_path / "extra.tgm")
         data = np.ones((2,), dtype=np.float32)
-        meta = {"version": 2, "common": {"source": "ecmwf"}}
+        meta = {"version": 2, "source": "ecmwf"}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([2]), data)])
 
@@ -801,7 +796,7 @@ class TestScannerDescParamsFallback:
         assert idx.objects[0].per_object_meta.get("custom_key") == "hello"
 
     def test_extra_in_common_meta(self, tmp_path: Path):
-        """meta.extra keys appear in common_meta (line 102)."""
+        """meta.extra keys appear in common_meta."""
         data = np.ones((2,), dtype=np.float32)
         path = str(tmp_path / "extra.tgm")
         meta = {"version": 2, "experiment": "test99"}
@@ -825,3 +820,429 @@ class TestStoreMetaExtra:
 
         ds = xr.open_dataset(path, engine="tensogram")
         assert ds.attrs.get("custom_attr") == "present"
+
+
+# ---------------------------------------------------------------------------
+# Coverage pass 2: scanner.py unit-level helpers
+# ---------------------------------------------------------------------------
+
+
+class TestScannerHelpers:
+    """Cover scanner.py helpers at the unit level."""
+
+    def test_base_entry_from_meta_non_dict_entry(self):
+        """_base_entry_from_meta returns {} when base[i] is not a dict."""
+        from tensogram_xarray.scanner import _base_entry_from_meta
+
+        class FakeMeta:
+            base = ["not_a_dict", {"key": "val"}]
+
+        # index 0 is a string, not a dict -> should return {}
+        assert _base_entry_from_meta(FakeMeta(), 0) == {}
+        # index 1 is a dict -> should return filtered copy
+        assert _base_entry_from_meta(FakeMeta(), 1) == {"key": "val"}
+
+    def test_base_entry_from_meta_no_base(self):
+        """_base_entry_from_meta returns {} when meta has no base attribute."""
+        from tensogram_xarray.scanner import _base_entry_from_meta
+
+        class FakeMeta:
+            pass
+
+        assert _base_entry_from_meta(FakeMeta(), 0) == {}
+
+    def test_base_entry_from_meta_base_not_list(self):
+        """_base_entry_from_meta returns {} when base is not a list."""
+        from tensogram_xarray.scanner import _base_entry_from_meta
+
+        class FakeMeta:
+            base = "not a list"
+
+        assert _base_entry_from_meta(FakeMeta(), 0) == {}
+
+    def test_base_entry_from_meta_reserved_filtered(self):
+        """_base_entry_from_meta filters out _reserved_ key."""
+        from tensogram_xarray.scanner import _base_entry_from_meta
+
+        class FakeMeta:
+            base = [{"mars": {"param": "2t"}, "_reserved_": {"tensor": {}}}]
+
+        result = _base_entry_from_meta(FakeMeta(), 0)
+        assert "_reserved_" not in result
+        assert "mars" in result
+
+    def test_extra_from_meta_empty_extra(self):
+        """_extra_from_meta returns {} when extra is empty dict."""
+        from tensogram_xarray.scanner import _extra_from_meta
+
+        class FakeMeta:
+            extra = {}
+
+        assert _extra_from_meta(FakeMeta()) == {}
+
+    def test_extra_from_meta_none_extra(self):
+        """_extra_from_meta returns {} when extra is None."""
+        from tensogram_xarray.scanner import _extra_from_meta
+
+        class FakeMeta:
+            extra = None
+
+        assert _extra_from_meta(FakeMeta()) == {}
+
+    def test_extra_from_meta_no_attr(self):
+        """_extra_from_meta returns {} when meta has no extra attribute."""
+        from tensogram_xarray.scanner import _extra_from_meta
+
+        class FakeMeta:
+            pass
+
+        assert _extra_from_meta(FakeMeta()) == {}
+
+    def test_extra_from_meta_non_dict(self):
+        """_extra_from_meta returns {} when extra is not a dict."""
+        from tensogram_xarray.scanner import _extra_from_meta
+
+        class FakeMeta:
+            extra = [1, 2, 3]
+
+        assert _extra_from_meta(FakeMeta()) == {}
+
+    def test_desc_params_none(self):
+        """_desc_params returns {} when desc.params is None."""
+        from tensogram_xarray.scanner import _desc_params
+
+        class FakeDesc:
+            params = None
+
+        assert _desc_params(FakeDesc()) == {}
+
+    def test_desc_params_non_dict(self):
+        """_desc_params returns {} when desc.params is not a dict."""
+        from tensogram_xarray.scanner import _desc_params
+
+        class FakeDesc:
+            params = "not_a_dict"
+
+        assert _desc_params(FakeDesc()) == {}
+
+    def test_desc_params_no_attr(self):
+        """_desc_params returns {} when desc has no params attribute."""
+        from tensogram_xarray.scanner import _desc_params
+
+        class FakeDesc:
+            pass
+
+        assert _desc_params(FakeDesc()) == {}
+
+    def test_desc_params_valid(self):
+        """_desc_params returns a copy of the dict when valid."""
+        from tensogram_xarray.scanner import _desc_params
+
+        class FakeDesc:
+            params = {"custom": "value", "count": 42}
+
+        result = _desc_params(FakeDesc())
+        assert result == {"custom": "value", "count": 42}
+        # Should be a copy, not the same object
+        assert result is not FakeDesc.params
+
+    def test_merge_per_object_meta_base_wins(self):
+        """_merge_per_object_meta: base entry takes priority over desc.params."""
+        from tensogram_xarray.scanner import _merge_per_object_meta
+
+        class FakeMeta:
+            base = [{"key": "from_base", "shared": "base_val"}]
+
+        class FakeDesc:
+            params = {"shared": "desc_val", "extra": "desc_only"}
+
+        result = _merge_per_object_meta(FakeMeta(), 0, FakeDesc())
+        assert result["key"] == "from_base"
+        assert result["shared"] == "base_val"  # base wins
+        assert result["extra"] == "desc_only"  # desc fills gap
+
+
+# ---------------------------------------------------------------------------
+# Coverage pass 2: store.py per-object meta edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestStorePerObjectMetaEdges:
+    """Cover store.py _get_per_object_meta edge paths."""
+
+    def test_base_is_none(self, tmp_path):
+        """_get_per_object_meta handles base=None gracefully."""
+        from unittest.mock import MagicMock
+
+        data = np.ones((3,), dtype=np.float32)
+        path = str(tmp_path / "base_none.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append({"version": 2}, [(_desc([3]), data)])
+
+        store = TensogramDataStore(path)
+        # Replace _meta with a mock where base is None
+        mock = MagicMock()
+        mock.base = None
+        mock.extra = {}
+        mock.version = 2
+        store._meta = mock
+
+        result = store._get_per_object_meta(0, store._descriptors[0])
+        assert isinstance(result, dict)
+
+    def test_desc_params_supplement_in_store(self, tmp_path):
+        """desc.params supplements missing base keys in store."""
+        data = np.ones((3,), dtype=np.float32)
+        path = str(tmp_path / "desc_sup.tgm")
+        # base has mars but desc has custom_key
+        meta = {"version": 2, "base": [{"mars": {"param": "2t"}}]}
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([3], extra_key="from_desc"), data)])
+
+        store = TensogramDataStore(path)
+        result = store._get_per_object_meta(0, store._descriptors[0])
+        # mars from base, extra_key from desc.params
+        assert "mars" in result
+        assert result.get("extra_key") == "from_desc"
+
+
+# ---------------------------------------------------------------------------
+# Coverage pass 2: mapping.py edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestMappingEdges:
+    """Cover xarray mapping.py edge cases."""
+
+    def test_resolve_dotted_empty_dict_intermediate(self):
+        """_resolve_dotted returns None when an intermediate is empty dict."""
+        from tensogram_xarray.mapping import _resolve_dotted
+
+        assert _resolve_dotted({}, "a.b") is None
+
+    def test_resolve_dotted_none_intermediate(self):
+        """_resolve_dotted returns None when a key maps to None."""
+        from tensogram_xarray.mapping import _resolve_dotted
+
+        assert _resolve_dotted({"a": None}, "a.b") is None
+
+    def test_resolve_dotted_non_dict_intermediate(self):
+        """_resolve_dotted returns None when intermediate is not a dict."""
+        from tensogram_xarray.mapping import _resolve_dotted
+
+        assert _resolve_dotted({"a": 42}, "a.b") is None
+
+    def test_resolve_variable_name_empty_meta(self):
+        """resolve_variable_name with empty meta falls back to generic."""
+        from tensogram_xarray.mapping import resolve_variable_name
+
+        assert resolve_variable_name(7, {}, "mars.param") == "object_7"
+
+    def test_resolve_variable_name_value_is_int(self):
+        """Numeric metadata values are stringified."""
+        from tensogram_xarray.mapping import resolve_variable_name
+
+        meta = {"mars": {"param": 500}}
+        assert resolve_variable_name(0, meta, "mars.param") == "500"
+
+
+# ---------------------------------------------------------------------------
+# Coverage pass 2: backend.py open_dataset with merge_objects=True empty
+# ---------------------------------------------------------------------------
+
+
+class TestBackendMergeObjectsEmpty:
+    """Cover backend.py merge_objects returning xr.Dataset() for empty."""
+
+    def test_merge_objects_empty_returns_dataset(self, tmp_path):
+        """merge_objects=True on empty file returns xr.Dataset()."""
+        import tensogram
+
+        path = str(tmp_path / "meta_only.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append({"version": 2, "signal": "start"}, [])
+
+        ds = xr.open_dataset(path, engine="tensogram", merge_objects=True)
+        assert isinstance(ds, xr.Dataset)
+        assert len(ds.data_vars) == 0
+
+
+# ---------------------------------------------------------------------------
+# Coverage pass 2: merge.py _resolve_dims generic fallback naming
+# ---------------------------------------------------------------------------
+
+
+class TestMergeResolveDimsGeneric:
+    """Cover merge.py _resolve_dims fallback to dim_N naming."""
+
+    def test_generic_dims_use_len_dims(self, tmp_path):
+        """Generic dim names use dim_{len(dims)} which is the accumulated count."""
+        from tensogram_xarray.merge import _resolve_dims
+
+        # No coord vars -> all dims are generic
+        dims = _resolve_dims((3, 4, 5), None, {})
+        assert dims == ("dim_0", "dim_1", "dim_2")
+
+    def test_mixed_coord_and_generic(self):
+        """When only some axes match coords, others get generic names."""
+        from tensogram_xarray.merge import _resolve_dims
+
+        coord_vars = {"latitude": xr.Variable(("latitude",), np.zeros(3))}
+        dims = _resolve_dims((3, 7), None, coord_vars)
+        assert dims[0] == "latitude"
+        assert dims[1] == "dim_1"
+
+
+# ---------------------------------------------------------------------------
+# Coverage pass 2: array.py _supports_range_decode edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestSupportsRangeDecodeEdges:
+    """Cover array.py _supports_range_decode edge paths."""
+
+    def test_zfp_non_fixed_rate_not_supported(self):
+        """zfp with non-fixed_rate mode does not support range decode."""
+        from tensogram_xarray.array import _supports_range_decode
+
+        class FakeDesc:
+            compression = "zfp"
+            filter = "none"
+            params = {"zfp_mode": "fixed_accuracy"}
+
+        assert _supports_range_decode(FakeDesc()) is False
+
+    def test_zfp_fixed_rate_supported(self):
+        """zfp with fixed_rate mode supports range decode."""
+        from tensogram_xarray.array import _supports_range_decode
+
+        class FakeDesc:
+            compression = "zfp"
+            filter = "none"
+            params = {"zfp_mode": "fixed_rate"}
+
+        assert _supports_range_decode(FakeDesc()) is True
+
+    def test_zfp_no_params_not_supported(self):
+        """zfp with no params does not support range decode."""
+        from tensogram_xarray.array import _supports_range_decode
+
+        class FakeDesc:
+            compression = "zfp"
+            filter = "none"
+            params = None
+
+        assert _supports_range_decode(FakeDesc()) is False
+
+    def test_shuffle_blocks_range_decode(self):
+        """shuffle filter blocks range decode regardless of compressor."""
+        from tensogram_xarray.array import _supports_range_decode
+
+        class FakeDesc:
+            compression = "none"
+            filter = "shuffle"
+            params = {}
+
+        assert _supports_range_decode(FakeDesc()) is False
+
+    def test_unknown_compressor_not_supported(self):
+        """Unknown compressor does not support range decode."""
+        from tensogram_xarray.array import _supports_range_decode
+
+        class FakeDesc:
+            compression = "zstd"
+            filter = "none"
+            params = {}
+
+        assert _supports_range_decode(FakeDesc()) is False
+
+    def test_szip_supported(self):
+        """szip supports range decode."""
+        from tensogram_xarray.array import _supports_range_decode
+
+        class FakeDesc:
+            compression = "szip"
+            filter = "none"
+            params = {}
+
+        assert _supports_range_decode(FakeDesc()) is True
+
+
+# ---------------------------------------------------------------------------
+# Coverage pass 2: scanner.py scan_message with extra metadata
+# ---------------------------------------------------------------------------
+
+
+class TestScanMessageWithExtra:
+    """Cover scan_message extracting extra metadata."""
+
+    def test_scan_message_extra_in_common_meta(self):
+        """scan_message reads extra metadata into ObjectInfo.common_meta."""
+        data = np.ones((3,), dtype=np.float32)
+        meta = {"version": 2, "experiment": "test99"}
+        msg = bytes(tensogram.encode(meta, [(_desc([3]), data)]))
+
+        objects = scan_message(msg)
+        assert len(objects) == 1
+        assert objects[0].common_meta.get("experiment") == "test99"
+
+    def test_scan_message_no_extra(self):
+        """scan_message with no extra returns empty common_meta."""
+        data = np.ones((3,), dtype=np.float32)
+        msg = bytes(tensogram.encode({"version": 2}, [(_desc([3]), data)]))
+
+        objects = scan_message(msg)
+        assert len(objects) == 1
+        assert objects[0].common_meta == {}
+
+
+# ---------------------------------------------------------------------------
+# Coverage pass 2: store.py _resolve_dims_for_var all branches
+# ---------------------------------------------------------------------------
+
+
+class TestResolveDimsForVar:
+    """Cover TensogramDataStore._resolve_dims_for_var branches."""
+
+    def test_with_explicit_dim_names(self, tmp_path):
+        """User-provided dim_names used directly."""
+        data = np.ones((3, 4), dtype=np.float32)
+        path = str(tmp_path / "dims.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append({"version": 2}, [(_desc([3, 4]), data)])
+
+        store = TensogramDataStore(path, dim_names=["row", "col"])
+        ds = store.build_dataset()
+        var = ds["object_0"]
+        assert var.dims == ("row", "col")
+
+    def test_size_matching_against_coords(self, tmp_path):
+        """Dim names matched from coord vars by size."""
+        lat = np.linspace(-90, 90, 3, dtype=np.float64)
+        lon = np.linspace(0, 360, 4, endpoint=False, dtype=np.float64)
+        data = np.ones((3, 4), dtype=np.float32)
+
+        meta = {
+            "version": 2,
+            "base": [
+                {"name": "latitude"},
+                {"name": "longitude"},
+                {"name": "field"},
+            ],
+        }
+        path = str(tmp_path / "sz_match.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([3], dtype="float64"), lat),
+                    (_desc([4], dtype="float64"), lon),
+                    (_desc([3, 4]), data),
+                ],
+            )
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        # With the priority chain, base[2]["name"] = "field" is used.
+        dims = ds["field"].dims
+        assert "latitude" in dims
+        assert "longitude" in dims

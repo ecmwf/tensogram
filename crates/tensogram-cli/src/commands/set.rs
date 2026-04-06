@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use tensogram_core::{
     decode, decode_metadata, encode, DataObjectDescriptor, DecodeOptions, EncodeOptions,
-    GlobalMetadata, TensogramFile,
+    GlobalMetadata, TensogramFile, RESERVED_KEY,
 };
 
 use crate::filter;
@@ -54,27 +54,35 @@ pub fn run(
         })
         .collect::<Result<Vec<_>, String>>()?;
 
-    // Validate no immutable keys
+    // Validate no immutable keys and no _reserved_ writes
     for (key, _) in &mutations {
         let leaf = key.split('.').next_back().unwrap_or(key);
         if IMMUTABLE_KEYS.contains(&leaf) {
             return Err(format!("cannot modify immutable key: {key}").into());
         }
+        // Reject any attempt to write to _reserved_ (library-managed namespace)
+        let first_segment = key.split('.').next().unwrap_or(key);
+        if first_segment == RESERVED_KEY {
+            return Err(format!(
+                "cannot modify '{RESERVED_KEY}' — this namespace is managed by the library"
+            )
+            .into());
+        }
     }
 
     let mut in_file = TensogramFile::open(input)?;
     let mut out = std::fs::File::create(output)?;
-    #[allow(deprecated)]
-    let messages = in_file.messages()?;
+    let count = in_file.message_count()?;
 
-    for msg in &messages {
-        let metadata = decode_metadata(msg)?;
+    for i in 0..count {
+        let msg = in_file.read_message(i)?;
+        let metadata = decode_metadata(&msg)?;
         let should_modify = clause
             .as_ref()
             .is_none_or(|c| filter::matches(&metadata, c));
 
         if should_modify {
-            let (mut global_meta, mut objects) = decode(msg, &DecodeOptions::default())?;
+            let (mut global_meta, mut objects) = decode(&msg, &DecodeOptions::default())?;
 
             // Preserve original hashes per object before any re-encoding
             let original_hashes: Vec<_> =
@@ -87,6 +95,12 @@ pub fn run(
             // Restore hashes so re-encoding without hash computation preserves integrity
             for ((desc, _), original_hash) in objects.iter_mut().zip(original_hashes) {
                 desc.hash = original_hash;
+            }
+
+            // Clear reserved fields — the encoder will regenerate them.
+            global_meta.reserved.clear();
+            for entry in &mut global_meta.base {
+                entry.remove(RESERVED_KEY);
             }
 
             let descriptor_refs: Vec<(&DataObjectDescriptor, &[u8])> = objects
@@ -103,17 +117,19 @@ pub fn run(
             out.write_all(&encoded)?;
         } else {
             // Pass through unchanged — reuse the already-open output handle.
-            out.write_all(msg)?;
+            out.write_all(&msg)?;
         }
     }
 
     Ok(())
 }
 
-/// Apply a key=value mutation to either global metadata or a per-object descriptor.
+/// Apply a key=value mutation to either base entries, extra metadata, or
+/// per-object descriptors.
 ///
 /// Key paths:
-/// - `"key"` or `"ns.key"` → mutate global metadata extra map
+/// - `"key"` or `"ns.key"` → mutate ALL `base[i]` entries (skip `_reserved_`)
+/// - `"extra.key"` → mutate `GlobalMetadata::extra`
 /// - `"objects.N.key"` or `"objects.N.ns.key"` → mutate object descriptor params
 fn apply_mutation(
     global_meta: &mut GlobalMetadata,
@@ -134,8 +150,29 @@ fn apply_mutation(
             .get_mut(index)
             .ok_or_else(|| format!("object index out of range in key: {key}"))?;
         insert_nested_value(&mut desc.params, &parts[2..], value)
+    } else if parts[0] == "extra" || parts[0] == "_extra_" {
+        // Explicit extra.key or _extra_.key targeting
+        if parts.len() < 2 {
+            return Err(format!("invalid extra key: {key} (expected extra.key)"));
+        }
+        insert_nested_value(&mut global_meta.extra, &parts[1..], value)
     } else {
-        insert_nested_value(&mut global_meta.extra, &parts, value)
+        // Default: mutate all base entries
+        if global_meta.base.is_empty() {
+            if objects.is_empty() {
+                // Zero-object message: put key in extra instead
+                // (base entries must align with descriptor count)
+                return insert_nested_value(&mut global_meta.extra, &parts, value);
+            }
+            // Has objects but no base entries — create one per object
+            for _ in 0..objects.len() {
+                global_meta.base.push(BTreeMap::new());
+            }
+        }
+        for entry in &mut global_meta.base {
+            insert_nested_value(entry, &parts, value)?;
+        }
+        Ok(())
     }
 }
 
@@ -262,7 +299,8 @@ mod tests {
         // Verify version is accessible from global metadata
         assert_eq!(original.version, 2);
 
-        run(&input, &output, "source=new", None).unwrap();
+        // Use "extra.source=new" to target the extra map where source lives
+        run(&input, &output, "extra.source=new", None).unwrap();
 
         let updated = decode_metadata(&std::fs::read(&output).unwrap()).unwrap();
         assert_eq!(
@@ -305,23 +343,31 @@ mod tests {
         buf.extend_from_slice(&msg2);
         std::fs::write(&input, buf).unwrap();
 
-        // Set source=modified only for param=2t
+        // Set source=modified only for param=2t (goes into base entries)
         run(&input, &output, "source=modified", Some("param=2t")).unwrap();
 
         let mut f = TensogramFile::open(&output).unwrap();
         assert_eq!(f.message_count().unwrap(), 2);
 
-        // First message should be modified
+        // First message should be modified — source is in base[0]
         let m0 = f.read_message(0).unwrap();
         let meta0 = decode_metadata(&m0).unwrap();
-        assert_eq!(
-            meta0.extra.get("source"),
-            Some(&ciborium::Value::Text("modified".to_string()))
+        assert!(
+            meta0
+                .base
+                .iter()
+                .any(|entry| entry.get("source")
+                    == Some(&ciborium::Value::Text("modified".to_string()))),
+            "expected source=modified in base entries"
         );
 
         // Second message should be unchanged
         let m1 = f.read_message(1).unwrap();
         let meta1_out = decode_metadata(&m1).unwrap();
+        assert!(meta1_out
+            .base
+            .iter()
+            .all(|entry| entry.get("source").is_none()));
         assert_eq!(meta1_out.extra.get("source"), None);
     }
 
@@ -339,8 +385,9 @@ mod tests {
         run(&input, &output, "mars.class=od", None).unwrap();
 
         let updated = decode_metadata(&std::fs::read(&output).unwrap()).unwrap();
-        // mars.class should exist nested under extra["mars"]["class"]
-        let mars = updated.extra.get("mars").unwrap();
+        // mars.class should exist nested under base[0]["mars"]["class"]
+        assert!(!updated.base.is_empty(), "base should have entries");
+        let mars = updated.base[0].get("mars").unwrap();
         if let ciborium::Value::Map(entries) = mars {
             let class_entry = entries
                 .iter()
@@ -385,5 +432,101 @@ mod tests {
 
         // Object index 99 doesn't exist
         assert!(run(&input, &output, "objects.99.key=val", None).is_err());
+    }
+
+    #[test]
+    fn set_reserved_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let meta = make_global_meta();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        // _reserved_ namespace must be rejected
+        assert!(run(&input, &output, "_reserved_.tensor.ndim=5", None).is_err());
+    }
+
+    #[test]
+    fn set_extra_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let mut meta = make_global_meta();
+        meta.extra
+            .insert("old".into(), ciborium::Value::Text("val".into()));
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        // "extra.custom" should write to the extra map
+        run(&input, &output, "extra.custom=hello", None).unwrap();
+        let updated = decode_metadata(&std::fs::read(&output).unwrap()).unwrap();
+        assert_eq!(
+            updated.extra.get("custom"),
+            Some(&ciborium::Value::Text("hello".into()))
+        );
+    }
+
+    #[test]
+    fn set_extra_wire_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let meta = make_global_meta();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        // "_extra_.custom" should also write to the extra map
+        run(&input, &output, "_extra_.custom=world", None).unwrap();
+        let updated = decode_metadata(&std::fs::read(&output).unwrap()).unwrap();
+        assert_eq!(
+            updated.extra.get("custom"),
+            Some(&ciborium::Value::Text("world".into()))
+        );
+    }
+
+    #[test]
+    fn set_immutable_key_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let output = dir.path().join("out.tgm");
+        let data = vec![0u8; 16];
+        let desc = make_descriptor();
+        let meta = make_global_meta();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        // Immutable keys must be rejected
+        assert!(run(&input, &output, "shape=broken", None).is_err());
+        assert!(run(&input, &output, "dtype=broken", None).is_err());
+    }
+
+    #[test]
+    fn set_on_zero_object_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tgm");
+        let output = dir.path().join("out.tgm");
+        let meta = make_global_meta();
+        // Zero-object message
+        let encoded = encode(&meta, &[], &EncodeOptions::default()).unwrap();
+        std::fs::write(&input, encoded).unwrap();
+
+        // Setting a key on a zero-object message redirects to _extra_
+        // (base entries must align 1:1 with objects)
+        run(&input, &output, "mars.param=2t", None).unwrap();
+        let updated = decode_metadata(&std::fs::read(&output).unwrap()).unwrap();
+        // base is empty because there are no objects
+        assert!(updated.base.is_empty());
+        // the key should be in extra instead
+        assert!(
+            updated.extra.contains_key("mars"),
+            "mars key should be in extra for zero-object message"
+        );
     }
 }

@@ -6,14 +6,14 @@ This page covers the `encode()` function and `EncodeOptions` in detail.
 
 ```rust
 pub fn encode(
-    global_metadata: GlobalMetadata,
-    objects: &[(&DataObjectDescriptor, &[u8])],
+    global_metadata: &GlobalMetadata,
+    descriptors: &[(&DataObjectDescriptor, &[u8])],
     options: &EncodeOptions,
 ) -> Result<Vec<u8>>
 ```
 
-- `global_metadata` — message-level metadata (version, extra fields)
-- `objects` — a slice of `(descriptor, data)` pairs, one per object
+- `global_metadata` — reference to message-level metadata (version, base entries, `_extra_` fields)
+- `descriptors` — a slice of `(descriptor, data)` pairs, one per object
 - `options` — controls hash algorithm
 
 Returns a complete, self-contained message as a `Vec<u8>`.
@@ -51,7 +51,7 @@ For each object, in order:
 2. **Run the encoding pipeline** — applies encoding, filter, compression from the object's `DataObjectDescriptor`
 3. **Hash** — if `hash_algorithm` is set, computes and stores the hash in the descriptor
 4. **Serialize CBOR** — encodes the `GlobalMetadata` and all `DataObjectDescriptor`s to canonical CBOR
-5. **Frame** — assembles magic, header, CBOR block, OBJS/payload/OBJE blocks, terminator
+5. **Frame** — assembles preamble, header frames (metadata/index/hash), data object frames, and postamble
 
 ## Encoding with Simple Packing
 
@@ -99,7 +99,7 @@ Then encode as normal, passing the original raw bytes (as f64 bytes):
 let raw: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
 let global = GlobalMetadata { version: 2, ..Default::default() };
-let message = encode(global, &[(&desc, &raw)], &EncodeOptions::default())?;
+let message = encode(&global, &[(&desc, &raw)], &EncodeOptions::default())?;
 ```
 
 The encoder applies simple_packing internally. The payload stored in the message is the packed bits, not the original f64 bytes.
@@ -112,7 +112,7 @@ Pass multiple `(descriptor, data)` pairs:
 let global = GlobalMetadata { version: 2, ..Default::default() };
 
 let message = encode(
-    global,
+    &global,
     &[(&spectrum_desc, &spectrum_data), (&mask_desc, &land_mask_data)],
     &EncodeOptions::default(),
 )?;

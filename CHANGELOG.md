@@ -3,6 +3,22 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.0] - 2026-04-06
+
+### Changed (BREAKING)
+- **Metadata major refactor** — `GlobalMetadata` fields `common` and `payload` removed; replaced by `base` (per-object metadata array where each entry is independent and self-contained)
+- **CBOR key renames** — `reserved` → `_reserved_`, `extra` → `_extra_` on the wire
+- **Python API** — `meta.common` and `meta.payload` replaced by `meta.base` and `meta.reserved`; `meta.extra` now maps to `_extra_` in CBOR
+- Auto-populated tensor metadata (ndim/shape/strides/dtype) now lives under `base[i]["_reserved_"]["tensor"]`
+
+### Added
+- `compute_common()` utility for extracting shared keys from `base` entries in software
+- Encoder validates that client code does not write to `_reserved_` at any level
+- Preceder Metadata Frames (type 8) for streaming per-object metadata
+
+### Stats
+- 1008 total tests (283 Rust + 226 Python + 181 xarray + 204 Zarr + 105 C++ + 7 GRIB new + 2 streamer)
+
 ## [0.5.0] - 2026-04-06
 
 ### Added
@@ -47,7 +63,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   - `iter_messages(buf)` — iterate decoded messages from a byte buffer
   - `Message` namedtuple — `.metadata` and `.objects` fields, tuple unpacking
 - **`decode_descriptors(buf)`** — parse metadata + per-object descriptors without decoding payloads (Rust, Python, C, C++)
-- **`meta.common`** and **`meta.payload`** getters in Python bindings
+- **`meta.base`**, **`meta.reserved`**, and **`meta.extra`** getters in Python bindings
 - **float16/bfloat16/complex** Python support — proper typed numpy arrays (`ml_dtypes.bfloat16` if installed)
 
 ### Changed

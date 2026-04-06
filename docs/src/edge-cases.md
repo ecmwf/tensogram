@@ -148,7 +148,7 @@ If `reference_value` is NaN or Infinity, encoding fails immediately with a clear
 
 ## Duplicate CBOR Keys
 
-Duplicate keys at the same level in a CBOR map are never accepted. The library uses canonical CBOR (RFC 8949 §4.2) which inherently rejects duplicate keys. Same-name keys at different nesting levels are acceptable: `common["foo"]` and `reserved["foo"]` are distinct keys.
+Duplicate keys at the same level in a CBOR map are never accepted. The library uses canonical CBOR (RFC 8949 §4.2) which inherently rejects duplicate keys. Same-name keys at different nesting levels are acceptable: `base[0]["foo"]` and `_extra_["foo"]` are distinct keys.
 
 ## Unknown Hash Algorithm on Decode
 
@@ -166,8 +166,8 @@ The decoder validates PrecederMetadata frames strictly:
 |-----------|-----------|---------|
 | Consecutive preceders without DataObject | `Framing` | "PrecederMetadata must be followed by a DataObject frame, got {type}" |
 | Dangling preceder (no DataObject follows) | `Framing` | "dangling PrecederMetadata: no DataObject frame followed" |
-| Payload has 0 or 2+ entries | `Metadata` | "PrecederMetadata payload must have exactly 1 entry, got {n}" |
-| Metadata payload entries > data objects | `Metadata` | "metadata payload has {n} entries but message contains {m} objects" |
+| Base has 0 or 2+ entries | `Metadata` | "PrecederMetadata base must have exactly 1 entry, got {n}" |
+| Metadata base entries > data objects | `Metadata` | "metadata base has {n} entries but message contains {m} objects" |
 
 On the encoder side:
 - `StreamingEncoder::write_preceder()` errors if called twice without an intervening `write_object()`.
@@ -183,3 +183,473 @@ cat 1.tgm 2.tgm > all.tgm
 ```
 
 The resulting file is valid. `scan()` and `TensogramFile` will find all messages from both source files.
+
+## xarray Layer Edge Cases
+
+### meta.base Out-of-Range
+
+If a message has more data objects than `meta.base` entries (e.g. 3 objects but `base` has only 1 entry), the xarray layer logs a warning and treats the missing base entries as empty dicts. The objects are still decoded — they just have no per-object metadata attributes.
+
+This can happen when a message is encoded with an incomplete `base` array, or when objects are appended to a message without updating `base`. The warning helps diagnose silent metadata loss:
+
+```
+WARNING: meta.base has 1 entries but object index 2 requested;
+         per-object metadata will be empty for this object
+```
+
+### Empty or Missing base Attribute
+
+A message with `base: []` or no `base` key at all is valid. All objects get empty per-object metadata and are named `object_0`, `object_1`, etc. The `_reserved_` key (auto-populated by the encoder in each base entry) is always filtered out — it never appears in user-facing variable attributes.
+
+### Variable Naming with Dot Paths
+
+When `variable_key="mars.param"` is used, the `resolve_variable_name()` function traverses the nested dict path. If any segment is missing, the function falls back to the generic `object_<index>` name. The `obj_index` used is the object's position in the message (not its position among data variables), so a file with objects 0 (coord), 1 (data), 2 (data) would produce names like `"object_1"` and `"object_2"` for the data variables.
+
+### Coordinate Name Case Insensitivity
+
+Coordinate detection (`detect_coords`) is case-insensitive: `"LATITUDE"`, `"Lat"`, and `"latitude"` all match the known coordinate name `"latitude"`. The canonical dimension name is always lowercase (e.g. `"latitude"`, not `"LATITUDE"`).
+
+### Ambiguous Dimension Size Matching
+
+When two coordinate arrays have the same size (e.g. latitude with 5 points and depth with 5 points), the dimension resolution assigns the first matching coord to the first axis that matches the size, and the second to the next axis. If the data variable is 2D [5, 5], one axis gets `"latitude"` and the other gets `"depth"`. When no coord has the matching size, the axis gets a generic `"dim_N"` name.
+
+### Multi-Message Merge with Different Keys
+
+When `open_datasets()` merges multiple messages, objects whose base entries have different key sets are handled as follows:
+- Keys present in all objects with identical values become Dataset attributes (constant).
+- Keys present in all objects with varying values become outer dimensions (if they form a hypercube) or separate variables.
+- Keys present in some objects but not others are treated as varying with `None` for missing entries.
+
+### _reserved_ Filtering Consistency
+
+The `_reserved_` key is filtered at every access point:
+- `TensogramDataStore._get_per_object_meta()` (store.py)
+- `_base_entry_from_meta()` (scanner.py)
+- `_filter_reserved()` (zarr store.py)
+
+This ensures the encoder's auto-populated tensor info (ndim, shape, strides, dtype) never leaks into user-facing metadata.
+
+## Zarr Layer Edge Cases
+
+### Group Attributes from meta.extra
+
+Group-level attributes in the root `zarr.json` come from `meta.extra` (message-level annotations). If `meta.extra` is empty or absent, the group `zarr.json` only contains internal attributes (`_tensogram_version`, `_tensogram_variables`).
+
+### Per-Array Attributes from meta.base[i]
+
+Per-array attributes come from `meta.base[i]` with the `_reserved_` key filtered out. Descriptor encoding params are stored under `_tensogram_params` to avoid namespace collisions.
+
+### Variable Name Resolution — No Extra Fallback
+
+Variable names are resolved exclusively from `per_object_meta` (from `meta.base[i]`). The `common_meta` (from `meta.extra`) is **not** searched for variable naming. This prevents all objects in a message from sharing the same name when a name key exists only at the message level.
+
+This is consistent across both xarray and zarr layers.
+
+### Zarr Metadata Key Collision
+
+If a base entry has keys like `"zarr"`, `"chunks"`, or `"shape"`, they go into the Zarr array's `attributes` dict — not the top-level metadata. There is no collision with Zarr's own `shape`, `chunk_grid`, etc. fields.
+
+### Write Path: _reserved_ Filtering
+
+When writing through `TensogramStore`, user-set array attributes are written into `base[i]` entries. The `_reserved_` key is explicitly filtered from these entries to prevent collision with the encoder's auto-populated `_reserved_.tensor` info.
+
+### Write Path: Group Attributes
+
+Group attributes set via Zarr become unknown top-level keys in GlobalMetadata, which the encoder preserves as `_extra_`. On re-read, they appear in `meta.extra`. Internal keys (starting with `_tensogram_`) and reserved structural keys (`version`, `base`, `_extra_`, `_reserved_`) are excluded.
+
+### Empty TGM File
+
+A `.tgm` file with zero messages produces a root group `zarr.json` with no arrays. A message with zero data objects produces a root group with the message's extra metadata but no arrays.
+
+### Variable Name Deduplication
+
+When multiple objects resolve to the same name, suffixes `_1`, `_2`, etc. are appended. For example, three objects named `"x"` become `"x"`, `"x_1"`, `"x_2"`.
+
+### Variable Name Sanitization
+
+Slashes and backslashes in resolved variable names are replaced with underscores to prevent spurious directory nesting in the Zarr virtual key space. Empty names are replaced with `"_"`.
+
+## GRIB Converter Edge Cases
+
+### Single GRIB to base[0] Has ALL MARS Keys
+
+In `OneToOne` mode, each GRIB message becomes one Tensogram message. All MARS namespace keys (plus `gridType` as `"grid"`) go into `base[0]["mars"]`. When `--all-keys` is enabled, non-MARS namespace keys (geography, time, vertical, parameter, statistics) go into `base[0]["grib"]`.
+
+### MergeAll with N Fields
+
+In `MergeAll` mode, N GRIB fields become one Tensogram message with N data objects. Each `base[i]` holds ALL metadata for that object independently — there is no common/varying partitioning at encode time. This means metadata keys are duplicated across base entries.
+
+**Performance note:** With 1000 GRIB fields, this means 1000 copies of common keys (class, type, stream, expver, date, time, etc.). This is by design — the wire format prioritizes simplicity and independent object access over byte savings. Use `tensogram_core::compute_common()` at display/merge time to extract shared keys.
+
+### Different Grid Types in MergeAll
+
+GRIB fields with different grid types (e.g. `regular_ll` and `reduced_gg`) can be merged into the same Tensogram message. Each `base[i]["mars"]["grid"]` independently records its grid type. Downstream consumers (xarray, zarr) must handle the structural differences (e.g. different shapes).
+
+### GRIB Shape from Ni/Nj
+
+The shape is derived from ecCodes `Ni` and `Nj` keys (row-major: [Nj, Ni]). If either is zero or missing (e.g. reduced Gaussian grids), the shape falls back to `[numberOfPoints]` (1-D).
+
+### Empty params in DataObjectDescriptor
+
+GRIB-converted data objects have empty `desc.params` — all metadata lives in `base[i]["mars"]` and `base[i]["grib"]`, not in the per-object descriptor. This is by design: the descriptor carries only what's needed to decode the payload (shape, dtype, encoding pipeline).
+
+## Metadata Model Edge Cases (base / _reserved_ / _extra_)
+
+The v2 metadata model has three sections: `base` (per-object), `_reserved_` (library internals), and `_extra_` (client annotations). These create several non-obvious edge cases.
+
+### _reserved_ is Protected
+
+Client code **must not** set `_reserved_` in any context:
+- Python: `tensogram.encode({"version": 2, "_reserved_": {...}})` raises `ValueError`.
+- Python: `encode({"version": 2, "base": [{"_reserved_": {...}}]})` raises `ValueError`.
+- FFI: JSON with `"base": [{"_reserved_": {...}}]` returns `TgmError::Metadata`.
+- CLI: `set -s _reserved_.tensor.ndim=5` returns an error.
+
+The encoder auto-populates `_reserved_.tensor` in each base entry (ndim, shape, strides, dtype) and `_reserved_` at the message level (encoder, time, uuid).
+
+### Metadata Lookup Semantics (base first-match)
+
+All lookup functions (`__getitem__` in Python, `tgm_metadata_get_string` in FFI, `lookup_key` in CLI) use first-match semantics:
+
+1. Search `base[0]`, then `base[1]`, ..., skipping the `_reserved_` key within each entry.
+2. If not found in any base entry, search `_extra_`.
+3. If not found → `None` (FFI/CLI) or `KeyError` (Python).
+
+**Implication:** If `base[0]` has `mars.param=2t` and `base[1]` has `mars.param=msl`, lookups return `"2t"` (the first match). This is message-level lookup, not per-object.
+
+### _reserved_ is Hidden from Dict Access
+
+- `meta["_reserved_"]` → `KeyError` (Python). The key is skipped during base entry iteration.
+- `"_reserved_" in meta` → `False`.
+- `tgm_metadata_get_string(meta, "_reserved_.tensor")` → `NULL` (FFI). The path is blocked.
+- To read `_reserved_` data, use `meta.reserved` (Python) or read the base entry directly via `meta.base[i]["_reserved_"]`.
+
+### Explicit _extra_ / extra Prefix
+
+The CLI and FFI support explicit `_extra_.key` or `extra.key` prefixes to target the `_extra_` map directly, bypassing the base search:
+
+```bash
+# CLI: write to _extra_ map
+tensogram set -s "extra.custom=value" input.tgm output.tgm
+tensogram set -s "_extra_.custom=value" input.tgm output.tgm
+
+# CLI: read from _extra_ map
+tensogram get -p "_extra_.custom" input.tgm
+```
+
+Without the prefix, `set` writes to all base entries. With the prefix, it writes to `_extra_` specifically.
+
+### Empty Key String
+
+An empty key `""` returns `None` (FFI/CLI) or raises `KeyError` (Python). This is not an error — it simply finds no match.
+
+### base vs Descriptor Count
+
+The `base` array length should match the number of data objects. The encoder auto-extends base entries (adding `_reserved_.tensor`) for each object. If the user provides fewer base entries than objects, the encoder creates entries for the missing ones. If the user provides more base entries than objects, the encoder returns an error.
+
+### tgm_metadata_num_objects (FFI)
+
+`tgm_metadata_num_objects()` returns `base.len()`, which is the number of per-object metadata entries. After encoding, this matches the actual data object count because the encoder populates one base entry per object.
+
+### set Command on Zero-Object Messages
+
+The CLI `set` command redirects mutations to `_extra_` when the message has zero data objects. This is because base entries must align 1:1 with descriptors, and a zero-object message has no descriptors.
+
+### Both _extra_ and extra in Python Dict
+
+When both `"_extra_"` and `"extra"` are present in a Python metadata dict, `_extra_` takes precedence (it's the wire-format name). The `"extra"` key is treated as a convenience alias and only used if `"_extra_"` is absent.
+
+### Filter Matching with Multi-Object Messages
+
+CLI where-clause filters (`-w mars.param=2t`) match at the **message** level. If `base[0]` has `mars.param=2t` and `base[1]` has `mars.param=msl`, the filter matches `"2t"` (first base entry match). To filter by per-object values, split the message first.
+
+### Split Preserves Per-Object Metadata
+
+When splitting a multi-object message, the CLI `split` command assigns each object its own base entry from the original message. The `_reserved_` key is stripped from each entry (the encoder regenerates it). Extra metadata is copied to all split messages.
+
+### Merge Concatenates Base Arrays
+
+When merging messages, the CLI `merge` command concatenates all base arrays. The merge strategy (`first`/`last`/`error`) only applies to `_extra_` key conflicts. The `_reserved_` section is cleared and regenerated by the encoder.
+
+### Deeply Nested Paths
+
+Dot-notation paths support arbitrary nesting depth: `grib.geography.Ni`, `a.b.c.d.e`. The recursive resolver walks through CBOR Map values at each level. If a non-Map value is encountered before the path is fully resolved, the lookup returns `None`.
+
+### JSON Output Structure
+
+CLI `dump -j` and `ls -j` output uses the wire-format structure:
+
+```json
+{
+  "version": 2,
+  "base": [{"mars": {"param": "2t"}, "_reserved_": {"tensor": {"ndim": 1}}}],
+  "extra": {"custom": "value"}
+}
+```
+
+The `_reserved_` keys within base entries are included in JSON output for transparency.
+
+---
+
+## Metadata Refactor: Detailed Edge Cases
+
+The following edge cases were identified during systematic review of the Rust core crate (`tensogram-core`) after the metadata refactor.
+
+### base Array Count Validation
+
+| Scenario | Behaviour |
+|----------|-----------|
+| `base.len() < descriptors.len()` | Auto-extended with empty entries. `_reserved_.tensor` is inserted in each. |
+| `base.len() == descriptors.len()` | Normal path. Pre-existing application keys preserved. |
+| `base.len() > descriptors.len()` | **Error**: "metadata base has N entries but only M descriptors provided; extra base entries would be discarded". |
+
+**Rationale:** Silently truncating excess base entries would lose user data. Auto-extending is safe because the library adds `_reserved_.tensor` to each new entry.
+
+### `_reserved_.tensor` After Encode
+
+After encoding, each `base[i]["_reserved_"]["tensor"]` always contains exactly four keys:
+
+| Key | Value | Example |
+|-----|-------|---------|
+| `ndim` | CBOR integer | `0` for scalar, `2` for matrix |
+| `shape` | CBOR array of integers | `[]` for scalar, `[10, 20]` for matrix |
+| `strides` | CBOR array of integers | `[]` for scalar, `[20, 1]` for matrix |
+| `dtype` | CBOR text | `"float32"`, `"int64"`, etc. |
+
+For scalar tensors (`ndim: 0`), `shape` and `strides` are empty arrays `[]`.
+
+### Preceder `_reserved_` Protection
+
+**Encoder side:** `StreamingEncoder::write_preceder()` rejects any metadata map containing a `_reserved_` key. Error: "client code must not write '_reserved_' in preceder metadata".
+
+**Decoder side:** When the decoder encounters a `_reserved_` key in a preceder's `base[0]`, it **strips** the key rather than rejecting the message. This is permissive — the data may come from a non-standard producer. The encoder-populated `_reserved_.tensor` from the footer metadata is preserved.
+
+**Merge order in `finish()`:** Footer metadata is populated first (`_reserved_.tensor`), then preceder payloads are merged on top. Since the decoder strips `_reserved_` from preceders, there is no risk of preceder `_reserved_` clobbering the encoder's `_reserved_.tensor`.
+
+### Backward Compatibility with Old CBOR Keys
+
+| Old key | Behaviour on decode |
+|---------|---------------------|
+| `"common"` (v2 pre-refactor) | Silently ignored (unknown CBOR key). |
+| `"payload"` (v2 pre-refactor) | Silently ignored. |
+| `"reserved"` (old name) | Silently ignored — only `"_reserved_"` is recognized. |
+| Both `"reserved"` and `"_reserved_"` | Only `"_reserved_"` is captured; `"reserved"` is ignored. |
+
+`GlobalMetadata` does not use `#[serde(deny_unknown_fields)]`, so serde drops unrecognized keys.
+
+### compute_common() Key Selection
+
+`compute_common()` only examines keys from the **first** base entry as candidates for common keys. Keys present in later entries but absent from the first entry are never promoted to common.
+
+Example: if entry 0 has keys `{a, b}` and entry 1 has `{b, c}`, only `b` is a candidate (and becomes common if values match). Key `c` appears only in entry 1's remaining set.
+
+### compute_common() NaN Handling
+
+CBOR `Float(NaN)` values with identical bit patterns are treated as equal by `cbor_values_equal()`, using `f64::to_bits()` comparison. This means NaN values are classified as common when all entries share the same NaN bit pattern. Standard CBOR equality (`PartialEq`) would fail because `NaN != NaN`.
+
+### compute_common() CBOR Map Ordering
+
+`cbor_values_equal()` compares CBOR maps positionally (entry-by-entry). Two maps with the same keys and values in different order are NOT equal. This is correct because canonical CBOR encoding ensures all maps are always sorted — different-order maps can only arise from non-canonical input.
+
+### Shape Product Overflow
+
+All shape-product computations use `checked_mul` to detect overflow. This applies to `encode()`, `decode()`, `ObjectIter::next()`, and `decode_range()`. If the product overflows `u64`, a `TensogramError::Metadata("shape product overflow")` is returned. No silent wraparound.
+
+### `_extra_` Scope Independence
+
+`_extra_` is message-level, while `base[i]` entries are per-object. Keys with the same name can exist in both:
+
+```rust
+meta.base[0].insert("mars".into(), ...);  // per-object
+meta.extra.insert("mars".into(), ...);     // message-level
+// Both preserved after encode/decode round-trip
+```
+
+### Empty `_extra_` in CBOR
+
+An empty `_extra_` map is omitted from CBOR output via `skip_serializing_if = "BTreeMap::is_empty"`. On decode, a missing `_extra_` key is deserialized as an empty `BTreeMap`. Round-trips correctly.
+
+### Deeply Nested `_reserved_` in base Entries
+
+Only the **top-level** `_reserved_` key in `base[i]` is rejected by the encoder. Deeply nested `_reserved_` keys (like `{"foo": {"_reserved_": ...}}`) are allowed and preserved. The encoder only checks `entry.contains_key("_reserved_")`.
+
+### CLI `set` on Zero-Object Messages
+
+When `tensogram set` modifies a zero-object message, keys that would normally go into `base` are redirected to `_extra_` instead (since `base` entries must align 1:1 with data objects, and there are none).
+
+---
+
+## Error Handling Reference
+
+This section documents all error types, how they propagate across languages, and what messages users can expect.
+
+### TensogramError Variants (Rust)
+
+The core library defines seven error variants in `TensogramError`:
+
+| Variant | When it occurs | Example message |
+|---------|---------------|-----------------|
+| `Framing(String)` | Invalid wire format — magic bytes, postamble, frame ordering | `"buffer too short (12 bytes, need >= 24)"` |
+| `Metadata(String)` | Metadata validation failures — version, base count, CBOR parse | `"metadata base has 3 entries but only 2 descriptors provided"` |
+| `Encoding(String)` | Encoding pipeline errors — simple_packing NaN, bit-width | `"NaN value at index 42"` |
+| `Compression(String)` | Compression/decompression failures — codec errors, range access | `"RangeNotSupported: zstd does not support partial decode"` |
+| `Object(String)` | Per-object errors — index out of range, shape overflow | `"object index 99 out of range (num_objects=2)"` |
+| `Io(io::Error)` | File system errors — open, read, write, seek | `"data.tgm: No such file or directory"` |
+| `HashMismatch { expected, actual }` | Integrity check failure | `"hash mismatch: expected=abc123, actual=def456"` |
+
+### Python Exception Mapping
+
+The Python bindings convert `TensogramError` to Python exceptions:
+
+| Rust variant | Python exception | Prefix in message |
+|-------------|-----------------|-------------------|
+| `Framing` | `ValueError` | `FramingError:` |
+| `Metadata` | `ValueError` | `MetadataError:` |
+| `Encoding` | `ValueError` | `EncodingError:` |
+| `Compression` | `ValueError` | `CompressionError:` |
+| `Object` | `ValueError` | `ObjectError:` |
+| `Io` | `IOError` | *(raw io message)* |
+| `HashMismatch` | `RuntimeError` | `HashMismatch:` |
+
+Additional Python-side exceptions:
+
+| Function | Exception | Condition |
+|----------|-----------|-----------|
+| `encode()` | `ValueError` | Missing `version` key, `_reserved_` in dict, unknown dtype |
+| `decode()` | `ValueError` | Corrupted buffer, invalid CBOR |
+| `Metadata.__getitem__()` | `KeyError` | Key not found in base or extra |
+| `Metadata.__getitem__("_reserved_")` | `KeyError` | `_reserved_` is always hidden from dict access |
+| `TensogramFile.__getitem__()` | `IndexError` | Message index out of range |
+| `TensogramFile.__getitem__()` | `TypeError` | Non-integer, non-slice index |
+| `compute_packing_params()` | `ValueError` | NaN in input array |
+| `encode(hash="sha256")` | `ValueError` | `"unknown hash: sha256"` |
+
+**Example: handling errors in Python:**
+
+```python
+import tensogram
+
+# File not found
+try:
+    with tensogram.TensogramFile.open("missing.tgm") as f:
+        pass
+except IOError as e:
+    print(f"File error: {e}")
+    # → "File error: file not found: missing.tgm"
+
+# Corrupted buffer
+try:
+    tensogram.decode(b"garbage")
+except ValueError as e:
+    print(f"Decode error: {e}")
+    # → "Decode error: FramingError: buffer too short ..."
+
+# Hash verification failure
+try:
+    meta, objects = tensogram.decode(buf, verify_hash=True)
+except RuntimeError as e:
+    print(f"Integrity error: {e}")
+    # → "Integrity error: HashMismatch: expected=..., actual=..."
+
+# Missing metadata key
+meta, objects = tensogram.decode(buf)
+try:
+    val = meta["nonexistent"]
+except KeyError:
+    print("Key not found")
+
+# Index out of range
+with tensogram.TensogramFile.open("data.tgm") as f:
+    try:
+        msg = f[999]
+    except IndexError as e:
+        print(f"Index error: {e}")
+        # → "message index 999 out of range for file with 2 messages"
+```
+
+### CLI Error Handling
+
+All CLI commands:
+- Print errors to stderr with `error:` prefix
+- Show the full error chain (nested causes)
+- Exit with code 1 on any error
+- Exit with code 0 on success
+
+**Common CLI error scenarios:**
+
+```bash
+# File not found
+$ tensogram ls nonexistent.tgm
+error: file not found: nonexistent.tgm
+
+# Invalid where clause
+$ tensogram ls -w "bad-clause" data.tgm
+error: invalid where clause: invalid where-clause: bad-clause (expected key=value or key!=value)
+
+# Missing key in strict get
+$ tensogram get -p "nonexistent" data.tgm
+error: key not found: nonexistent
+
+# Protected namespace
+$ tensogram set -s "_reserved_.tensor.ndim=5" input.tgm output.tgm
+error: cannot modify '_reserved_' — this namespace is managed by the library
+
+# Immutable descriptor key
+$ tensogram set -s "shape=broken" input.tgm output.tgm
+error: cannot modify immutable key: shape
+
+# Merge conflict with error strategy
+$ tensogram merge --strategy error a.tgm b.tgm -o merged.tgm
+error: conflicting values for key 'param' (use --strategy first or last to resolve)
+
+# Invalid merge strategy
+$ tensogram merge --strategy unknown a.tgm b.tgm -o merged.tgm
+error: unknown merge strategy 'unknown': expected first, last, or error
+
+# Message index out of range (via file.read_message)
+$ tensogram dump corrupt.tgm
+error: framing error: buffer too short ...
+```
+
+### xarray Backend Error Handling
+
+| Scenario | Behaviour |
+|----------|-----------|
+| File not found | `IOError` from `tensogram.TensogramFile.open()` |
+| Corrupt file | `ValueError` from `tensogram.decode_descriptors()` |
+| `message_index` out of range | `ValueError` from `TensogramFile.read_message()` |
+| `message_index < 0` | `ValueError("message_index must be >= 0, got -1")` |
+| `meta.base` shorter than objects | Warning logged; missing entries treated as empty dicts |
+| Unsupported dtype | `TypeError("unsupported tensogram dtype ...")` |
+| `dim_names` count mismatch | `ValueError("dim_names has N entries but tensor has M dimensions")` |
+| `decode_range` failure | Warning logged; falls back to full `decode_object()` |
+| File with zero messages + `merge_objects=True` | Returns empty `xr.Dataset()` |
+
+### Zarr Store Error Handling
+
+| Scenario | Behaviour |
+|----------|-----------|
+| File not found | `OSError("failed to open TGM file ...")` wrapping the original error |
+| Corrupt message | `ValueError("failed to decode message ...")` wrapping the original error |
+| Failed object decode | `ValueError("failed to decode object N ...")` wrapping the original error |
+| `message_index` out of range | `IndexError("message_index N out of range (file has M message(s))")` |
+| `message_index < 0` | `ValueError("message_index must be >= 0, got -1")` |
+| Invalid mode | `ValueError("invalid mode 'x'; expected 'r', 'w', or 'a'")` |
+| Empty path | `ValueError("path must be a non-empty string, got ''")` |
+| Store already open | `ValueError("store is already open")` |
+| Write to read-only store | Raises from Zarr base class |
+| Flush failure during exception | Warning logged; original exception preserved |
+| Unsupported dtype on write | `ValueError("unsupported dtype for variable ...")` |
+| Chunk size mismatch on write | `ValueError("chunk data for 'var': expected N bytes ... got M")` |
+| Multiple chunks per variable | `ValueError("variable 'var' has N chunk keys; TensogramStore only supports single-chunk arrays")` |
+| Unsupported `ByteRequest` type | `TypeError("unsupported ByteRequest type: ...")` |
+| Zero messages in file | Root group zarr.json with empty attributes; no arrays |
+
+### IO Error Path Context
+
+All file I/O errors include the file path in the error message. This applies to:
+- `TensogramFile::open()` — `"file not found: /path/to/file.tgm"`
+- `TensogramFile::create()` — `"cannot create /path/to/file.tgm: Permission denied"`
+- Internal re-opens (scan, read, append) — `"/path/to/file.tgm: No such file or directory"`
+
+This ensures that when errors propagate through multiple layers (e.g. Rust → Python → xarray), the original file path is always visible in the error message.

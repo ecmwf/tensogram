@@ -139,7 +139,12 @@ pub fn decode_range(
         }
     }
 
-    let num_elements = usize::try_from(desc.shape.iter().product::<u64>())
+    let shape_product = desc
+        .shape
+        .iter()
+        .try_fold(1u64, |acc, &x| acc.checked_mul(x))
+        .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
+    let num_elements = usize::try_from(shape_product)
         .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
     let config = build_pipeline_config(desc, num_elements, desc.dtype)?;
 
@@ -174,7 +179,12 @@ fn decode_single_object(
         }
     }
 
-    let num_elements = usize::try_from(desc.shape.iter().product::<u64>())
+    let shape_product = desc
+        .shape
+        .iter()
+        .try_fold(1u64, |acc, &x| acc.checked_mul(x))
+        .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
+    let num_elements = usize::try_from(shape_product)
         .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
     let config = build_pipeline_config(desc, num_elements, desc.dtype)?;
     let decoded = pipeline::decode_pipeline(payload_bytes, &config)

@@ -25,20 +25,44 @@ def create_sample_tgm(path: str) -> None:
 
     meta = {
         "version": 2,
-        "common": {
-            "mars": {
-                "class": "od",
-                "type": "fc",
-                "stream": "oper",
-                "date": "20260401",
-                "time": "1200",
+        "source": "ifs-cycle49r1",
+        "base": [
+            {
+                "mars": {
+                    "class": "od",
+                    "type": "fc",
+                    "stream": "oper",
+                    "date": "20260401",
+                    "time": "1200",
+                    "param": "2t",
+                    "levtype": "sfc",
+                },
+                "units": "K",
             },
-            "source": "ifs-cycle49r1",
-        },
-        "payload": [
-            {"mars": {"param": "2t", "levtype": "sfc"}, "units": "K"},
-            {"mars": {"param": "sp", "levtype": "pl"}, "units": "hPa"},
-            {"mars": {"param": "q", "levtype": "sfc"}, "units": "kg/kg"},
+            {
+                "mars": {
+                    "class": "od",
+                    "type": "fc",
+                    "stream": "oper",
+                    "date": "20260401",
+                    "time": "1200",
+                    "param": "sp",
+                    "levtype": "pl",
+                },
+                "units": "hPa",
+            },
+            {
+                "mars": {
+                    "class": "od",
+                    "type": "fc",
+                    "stream": "oper",
+                    "date": "20260401",
+                    "time": "1200",
+                    "param": "q",
+                    "levtype": "sfc",
+                },
+                "units": "kg/kg",
+            },
         ],
     }
     descs_and_data = [
@@ -142,7 +166,7 @@ def write_with_zarr(path: str) -> None:
         meta, objects = f.decode_message(0)
         _desc, arr = objects[0]
         print(f"Verified: shape={arr.shape}, matches={np.array_equal(arr, data)}")
-        print(f"Metadata: {meta.common}")
+        print(f"Metadata extra: {meta.extra}")
 
 
 def main():

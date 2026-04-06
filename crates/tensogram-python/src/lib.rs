@@ -13,7 +13,7 @@ use pyo3::types::{PyBytes, PyDict, PyList};
 use tensogram_core::{
     decode, decode_descriptors, decode_metadata, decode_object, decode_range, encode, scan,
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
-    HashAlgorithm, TensogramError, TensogramFile,
+    HashAlgorithm, TensogramError, TensogramFile, RESERVED_KEY,
 };
 
 // ---------------------------------------------------------------------------
@@ -216,13 +216,14 @@ impl PyDataObjectDescriptor {
 //
 // Python name kept as "Metadata" for backward compatibility with callers that
 // already do `tensogram.Metadata`. Internals now use GlobalMetadata (v2).
-// The `objects` and `payload` attributes are gone; per-object info lives on
-// each DataObjectDescriptor returned alongside the decoded bytes.
+// Per-object metadata lives in `base[i]`, with `_reserved_.tensor` auto-populated
+// by the encoder. Client-writable message-level metadata goes in `extra`.
 // ---------------------------------------------------------------------------
 
 /// Message-level metadata.
 ///
-/// Access version via ``meta.version`` and extra keys via dict syntax:
+/// Access version via ``meta.version``, per-object metadata via ``meta.base``,
+/// and extra keys via dict syntax:
 /// ``meta["mars"]``, ``"mars" in meta``, ``meta.extra``.
 #[pyclass(name = "Metadata")]
 #[derive(Clone)]
@@ -237,19 +238,13 @@ impl PyMetadata {
         self.inner.version
     }
 
-    /// Message-level common metadata (shared across all objects).
+    /// Per-object metadata list.  ``meta.base[i]`` is a dict of
+    /// ALL metadata for the *i*-th data object.
     #[getter]
-    fn common(&self, py: Python<'_>) -> PyResult<PyObject> {
-        extra_to_py(py, &self.inner.common)
-    }
-
-    /// Per-object metadata list.  ``meta.payload[i]`` is a dict of
-    /// metadata for the *i*-th data object.
-    #[getter]
-    fn payload(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn base(&self, py: Python<'_>) -> PyResult<PyObject> {
         let items: Vec<PyObject> = self
             .inner
-            .payload
+            .base
             .iter()
             .map(|m| extra_to_py(py, m))
             .collect::<PyResult<Vec<_>>>()?;
@@ -257,6 +252,13 @@ impl PyMetadata {
         Ok(list.into_any().unbind())
     }
 
+    /// Library-reserved metadata (read-only — provenance info).
+    #[getter]
+    fn reserved(&self, py: Python<'_>) -> PyResult<PyObject> {
+        extra_to_py(py, &self.inner.reserved)
+    }
+
+    /// Client-writable extra metadata (message-level annotations).
     #[getter]
     fn extra(&self, py: Python<'_>) -> PyResult<PyObject> {
         extra_to_py(py, &self.inner.extra)
@@ -264,12 +266,20 @@ impl PyMetadata {
 
     /// Dictionary-style access: ``meta["key"]``.
     ///
-    /// Checks ``common`` first, then ``extra``.  Raises ``KeyError`` if
-    /// the key is not found in either.
+    /// Searches ``base`` entries first (first match, skipping ``_reserved_``
+    /// keys within each entry), then ``extra``.  Raises ``KeyError`` if the
+    /// key is not found.
     fn __getitem__(&self, py: Python<'_>, key: &str) -> PyResult<PyObject> {
-        if let Some(v) = self.inner.common.get(key) {
-            return cbor_to_py(py, v);
+        // Search base entries (skip the "_reserved_" key within each entry)
+        for entry in &self.inner.base {
+            if key == RESERVED_KEY {
+                continue;
+            }
+            if let Some(v) = entry.get(key) {
+                return cbor_to_py(py, v);
+            }
         }
+        // Then search extra
         match self.inner.extra.get(key) {
             Some(v) => cbor_to_py(py, v),
             None => Err(pyo3::exceptions::PyKeyError::new_err(key.to_string())),
@@ -278,15 +288,21 @@ impl PyMetadata {
 
     /// Membership test: ``"key" in meta``.
     fn __contains__(&self, key: &str) -> bool {
-        self.inner.common.contains_key(key) || self.inner.extra.contains_key(key)
+        if key != RESERVED_KEY {
+            for entry in &self.inner.base {
+                if entry.contains_key(key) {
+                    return true;
+                }
+            }
+        }
+        self.inner.extra.contains_key(key)
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "Metadata(version={}, common_keys={:?}, payload_len={}, extra_keys={:?})",
+            "Metadata(version={}, base_len={}, extra_keys={:?})",
             self.inner.version,
-            self.inner.common.keys().collect::<Vec<_>>(),
-            self.inner.payload.len(),
+            self.inner.base.len(),
             self.inner.extra.keys().collect::<Vec<_>>()
         )
     }
@@ -719,8 +735,6 @@ fn py_scan(buf: &[u8]) -> Vec<(usize, usize)> {
 
 /// Iterate over messages in a byte buffer.
 ///
-/// Iterate over messages in a byte buffer.
-///
 /// Scans for message boundaries, then decodes each message on demand.
 /// Equivalent to calling :func:`scan` then :func:`decode` on each entry,
 /// but more convenient.
@@ -972,7 +986,7 @@ fn data_objects_to_python(
 /// Build a GlobalMetadata from a Python dict.
 ///
 /// Required key: `version` (int).
-/// Optional keys: `common` (dict), `payload` (list of dicts), `reserved` (dict).
+/// Optional keys: `base` (list of dicts), `_extra_` or `extra` (dict).
 /// All other keys → `extra`.
 fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata> {
     let version: u16 = dict
@@ -980,32 +994,53 @@ fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata>
         .ok_or_else(|| PyValueError::new_err("missing 'version'"))?
         .extract()?;
 
-    let common = match dict.get_item("common")? {
-        Some(v) => py_dict_to_btree(&v)?,
-        None => BTreeMap::new(),
-    };
-
-    let payload = match dict.get_item("payload")? {
+    let base = match dict.get_item("base")? {
         Some(v) => {
             let list = v
                 .downcast::<PyList>()
-                .map_err(|_| PyValueError::new_err("'payload' must be a list of dicts"))?;
+                .map_err(|_| PyValueError::new_err("'base' must be a list of dicts"))?;
             let mut entries = Vec::with_capacity(list.len());
             for item in list.iter() {
-                entries.push(py_dict_to_btree(&item)?);
+                let entry = py_dict_to_btree(&item)?;
+                // Validate: no _reserved_ keys in base entries
+                if entry.contains_key(RESERVED_KEY) {
+                    return Err(PyValueError::new_err(format!(
+                        "base entries must not contain '{RESERVED_KEY}' key — the encoder populates it",
+                    )));
+                }
+                entries.push(entry);
             }
             entries
         }
         None => Vec::new(),
     };
 
-    let reserved = match dict.get_item("reserved")? {
+    // Accept both "_extra_" (wire name) and "extra" (convenience alias)
+    let explicit_extra = match dict.get_item("_extra_")? {
         Some(v) => py_dict_to_btree(&v)?,
-        None => BTreeMap::new(),
+        None => match dict.get_item("extra")? {
+            Some(v) => {
+                if v.downcast::<PyDict>().is_ok() {
+                    py_dict_to_btree(&v)?
+                } else {
+                    return Err(PyValueError::new_err(
+                        "'extra' must be a dict when provided as a convenience alias for '_extra_'",
+                    ));
+                }
+            }
+            None => BTreeMap::new(),
+        },
     };
 
-    let known_keys = ["version", "common", "payload", "reserved"];
-    let mut extra = BTreeMap::new();
+    // Reject explicit _reserved_ — library-managed, encoder populates it
+    if dict.get_item(RESERVED_KEY)?.is_some() {
+        return Err(PyValueError::new_err(format!(
+            "'{RESERVED_KEY}' must not be set by client code — the encoder populates it",
+        )));
+    }
+
+    let known_keys = ["version", "base", "_extra_", "extra", RESERVED_KEY];
+    let mut extra = explicit_extra;
     for (k, v) in dict.iter() {
         let key: String = k.extract()?;
         if !known_keys.contains(&key.as_str()) {
@@ -1015,9 +1050,8 @@ fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata>
 
     Ok(GlobalMetadata {
         version,
-        common,
-        payload,
-        reserved,
+        base,
+        reserved: BTreeMap::new(),
         extra,
     })
 }

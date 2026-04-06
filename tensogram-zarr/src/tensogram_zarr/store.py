@@ -360,12 +360,13 @@ class TensogramStore(ZarrStore):
             ) from exc
 
         # Determine variable names, deduplicating and sanitizing
+        base = meta.base if hasattr(meta, "base") else []
         names: list[str] = []
         name_counts: dict[str, int] = {}
         for i, _desc in enumerate(descriptors):
-            per_obj = meta.payload[i] if i < len(meta.payload) else {}
-            common = meta.common if hasattr(meta, "common") else {}
-            raw_name = resolve_variable_name(i, per_obj, common, self._variable_key)
+            per_obj = _filter_reserved(base[i]) if i < len(base) else {}
+            extra = meta.extra if hasattr(meta, "extra") else {}
+            raw_name = resolve_variable_name(i, per_obj, extra, self._variable_key)
             name = _sanitize_key_segment(raw_name)
             # Deduplicate
             if name in name_counts:
@@ -383,7 +384,7 @@ class TensogramStore(ZarrStore):
 
         # Per-array zarr.json + chunk data
         for i, (desc, name) in enumerate(zip(descriptors, names, strict=True)):
-            per_obj = meta.payload[i] if i < len(meta.payload) else {}
+            per_obj = _filter_reserved(base[i]) if i < len(base) else {}
             array_meta = build_array_zarr_json(desc, per_obj)
             self._keys[f"{name}/zarr.json"] = serialize_zarr_json(array_meta)
 
@@ -410,13 +411,21 @@ class TensogramStore(ZarrStore):
         """Assemble buffered data into a TGM message and write to file."""
         import tensogram
 
-        # Build global metadata from group attributes
+        # Build global metadata from group attributes.
+        # In the new metadata model, message-level annotations go into
+        # ``extra`` (any unknown top-level keys), and per-object metadata
+        # goes into ``base`` (list of dicts, one per object).
         global_meta: dict[str, Any] = {"version": 2}
+        # Reserved top-level keys that must not be overwritten by group attrs.
+        _reserved_top = {"version", "base", "_extra_", "extra", "_reserved_"}
         clean_attrs = {
-            k: v for k, v in self._write_group_attrs.items() if not k.startswith("_tensogram_")
+            k: v
+            for k, v in self._write_group_attrs.items()
+            if not k.startswith("_tensogram_") and k not in _reserved_top
         }
         if clean_attrs:
-            global_meta["common"] = clean_attrs
+            # Put message-level metadata as extra (unknown keys at top level)
+            global_meta.update(clean_attrs)
 
         # Collect arrays ordered by name
         array_names = sorted(self._write_arrays.keys())
@@ -425,7 +434,7 @@ class TensogramStore(ZarrStore):
             return
 
         descriptors_and_data: list[tuple[dict[str, Any], np.ndarray | bytes]] = []
-        payload_entries: list[dict[str, Any]] = []
+        base_entries: list[dict[str, Any]] = []
 
         for var_name in array_names:
             zarr_meta = self._write_arrays[var_name]
@@ -473,17 +482,19 @@ class TensogramStore(ZarrStore):
 
             descriptors_and_data.append((desc_dict, arr))
 
-            payload_entry: dict[str, Any] = {}
+            base_entry: dict[str, Any] = {}
             if parsed.get("attrs"):
-                payload_entry.update(parsed["attrs"])
-            payload_entries.append(payload_entry)
+                # Filter out _reserved_ — the encoder auto-populates it
+                # and user-set values would collide.
+                base_entry.update({k: v for k, v in parsed["attrs"].items() if k != "_reserved_"})
+            base_entries.append(base_entry)
 
         if not descriptors_and_data:
             _log.warning("flush to %r produced no data (all arrays skipped)", self._path)
             return
 
-        if payload_entries:
-            global_meta["payload"] = payload_entries
+        if base_entries:
+            global_meta["base"] = base_entries
 
         if self._mode == "a":
             with tensogram.TensogramFile.open(self._path) as f:
@@ -498,6 +509,13 @@ class TensogramStore(ZarrStore):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _filter_reserved(entry: dict) -> dict:
+    """Return a base entry dict with the ``_reserved_`` key removed."""
+    if not isinstance(entry, dict):
+        return {}
+    return {k: v for k, v in entry.items() if k != "_reserved_"}
 
 
 def _apply_byte_range(data: bytes, byte_range: ByteRequest) -> bytes:

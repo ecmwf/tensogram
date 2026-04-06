@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use tensogram_core::GlobalMetadata;
+use tensogram_core::{GlobalMetadata, RESERVED_KEY};
 
 /// A parsed where-clause filter.
 #[derive(Debug)]
@@ -42,29 +42,55 @@ pub fn parse_where(input: &str) -> Result<WhereClause, String> {
 /// Look up a dot-notation key in global metadata, returning the FIRST matching value.
 ///
 /// Supports arbitrary nesting depth:
-///   - `version` → struct field, then `common`, then `extra`
-///   - `mars.param` → `common["mars"]["param"]`, …
-///   - `grib.geography.Ni` → `common["grib"]["geography"]["Ni"]`, …
+///   - `version` → struct field
+///   - `mars.param` → `base[i]["mars"]["param"]`, …
+///   - `grib.geography.Ni` → `base[i]["grib"]["geography"]["Ni"]`, …
 ///   - `a.b.c.d.e` → walks as many nested CBOR maps as needed
 ///
-/// Search order: `common` → `payload[i]` (first match) → `extra`.
+/// Search order: `base[i]` (skip `_reserved_` key, first match across entries) → `extra`.
 pub fn lookup_key(metadata: &GlobalMetadata, key: &str) -> Option<String> {
+    if key.is_empty() {
+        return None;
+    }
     let parts: Vec<&str> = key.split('.').collect();
+
+    if parts.is_empty() || parts[0].is_empty() {
+        return None;
+    }
 
     if parts == ["version"] {
         return Some(metadata.version.to_string());
     }
 
-    // Search: common → payload entries → extra
-    if let Some(val) = resolve_path_in_btree(&metadata.common, &parts) {
-        return Some(val);
+    // Explicit _extra_.key prefix targets the extra map directly
+    if parts[0] == "_extra_" || parts[0] == "extra" {
+        if parts.len() > 1 {
+            return resolve_path_in_btree(&metadata.extra, &parts[1..]);
+        }
+        return None;
     }
-    for entry in &metadata.payload {
-        if let Some(val) = resolve_path_in_btree(entry, &parts) {
+
+    // Search base entries (skip _reserved_ key within each entry)
+    for entry in &metadata.base {
+        if let Some(val) = resolve_path_in_btree_skip_reserved(entry, &parts) {
             return Some(val);
         }
     }
+    // Fall back to extra
     resolve_path_in_btree(&metadata.extra, &parts)
+}
+
+/// Walk a dot-path starting from a `BTreeMap` root, skipping `_reserved_` keys.
+fn resolve_path_in_btree_skip_reserved(
+    map: &BTreeMap<String, ciborium::Value>,
+    parts: &[&str],
+) -> Option<String> {
+    let (first, rest) = parts.split_first()?;
+    if *first == RESERVED_KEY {
+        return None;
+    }
+    let value = map.get(*first)?;
+    resolve_in_cbor(value, rest)
 }
 
 /// Walk a dot-path starting from a `BTreeMap` root.
@@ -154,11 +180,11 @@ mod tests {
 
     #[test]
     fn test_lookup_depth_1() {
-        let mut common = BTreeMap::new();
-        common.insert("centre".into(), Value::Text("ecmwf".into()));
+        let mut entry = BTreeMap::new();
+        entry.insert("centre".into(), Value::Text("ecmwf".into()));
         let meta = GlobalMetadata {
             version: 2,
-            common,
+            base: vec![entry],
             ..Default::default()
         };
         assert_eq!(lookup_key(&meta, "centre"), Some("ecmwf".into()));
@@ -170,11 +196,11 @@ mod tests {
             Value::Text("param".into()),
             Value::Text("2t".into()),
         )]);
-        let mut common = BTreeMap::new();
-        common.insert("mars".into(), mars);
+        let mut entry = BTreeMap::new();
+        entry.insert("mars".into(), mars);
         let meta = GlobalMetadata {
             version: 2,
-            common,
+            base: vec![entry],
             ..Default::default()
         };
         assert_eq!(lookup_key(&meta, "mars.param"), Some("2t".into()));
@@ -187,11 +213,11 @@ mod tests {
             Value::Integer(1440.into()),
         )]);
         let grib = Value::Map(vec![(Value::Text("geography".into()), geo)]);
-        let mut common = BTreeMap::new();
-        common.insert("grib".into(), grib);
+        let mut entry = BTreeMap::new();
+        entry.insert("grib".into(), grib);
         let meta = GlobalMetadata {
             version: 2,
-            common,
+            base: vec![entry],
             ..Default::default()
         };
         assert_eq!(lookup_key(&meta, "grib.geography.Ni"), Some("1440".into()));
@@ -204,8 +230,8 @@ mod tests {
     }
 
     #[test]
-    fn test_lookup_payload_fallback() {
-        // Key in payload[0], not in common.
+    fn test_lookup_base_entry_fallback() {
+        // Key in base[0]
         let mars = Value::Map(vec![(
             Value::Text("param".into()),
             Value::Text("lsm".into()),
@@ -214,9 +240,306 @@ mod tests {
         entry.insert("mars".into(), mars);
         let meta = GlobalMetadata {
             version: 2,
-            payload: vec![entry],
+            base: vec![entry],
             ..Default::default()
         };
         assert_eq!(lookup_key(&meta, "mars.param"), Some("lsm".into()));
+    }
+
+    #[test]
+    fn test_lookup_skips_reserved() {
+        // _reserved_ key should be skipped during lookup
+        let mut entry = BTreeMap::new();
+        entry.insert(
+            "_reserved_".into(),
+            Value::Map(vec![(
+                Value::Text("tensor".into()),
+                Value::Text("internal".into()),
+            )]),
+        );
+        entry.insert("param".into(), Value::Text("2t".into()));
+        let meta = GlobalMetadata {
+            version: 2,
+            base: vec![entry],
+            ..Default::default()
+        };
+        // Should find param but not _reserved_
+        assert_eq!(lookup_key(&meta, "param"), Some("2t".into()));
+        assert_eq!(lookup_key(&meta, "_reserved_.tensor"), None);
+    }
+
+    // ── Edge case tests ──
+
+    #[test]
+    fn test_lookup_empty_key() {
+        let meta = GlobalMetadata::default();
+        assert_eq!(lookup_key(&meta, ""), None);
+    }
+
+    #[test]
+    fn test_lookup_dot_only() {
+        let meta = GlobalMetadata::default();
+        assert_eq!(lookup_key(&meta, "."), None);
+    }
+
+    #[test]
+    fn test_lookup_base_first_match() {
+        // base[0] has mars.param=2t, base[1] has mars.param=msl
+        // Should return first match: 2t
+        let mars0 = Value::Map(vec![(
+            Value::Text("param".into()),
+            Value::Text("2t".into()),
+        )]);
+        let mars1 = Value::Map(vec![(
+            Value::Text("param".into()),
+            Value::Text("msl".into()),
+        )]);
+        let mut entry0 = BTreeMap::new();
+        entry0.insert("mars".into(), mars0);
+        let mut entry1 = BTreeMap::new();
+        entry1.insert("mars".into(), mars1);
+        let meta = GlobalMetadata {
+            version: 2,
+            base: vec![entry0, entry1],
+            ..Default::default()
+        };
+        assert_eq!(lookup_key(&meta, "mars.param"), Some("2t".into()));
+    }
+
+    #[test]
+    fn test_lookup_base_wins_over_extra() {
+        let mut entry = BTreeMap::new();
+        entry.insert("shared".into(), Value::Text("from_base".into()));
+        let mut extra = BTreeMap::new();
+        extra.insert("shared".into(), Value::Text("from_extra".into()));
+        let meta = GlobalMetadata {
+            version: 2,
+            base: vec![entry],
+            extra,
+            ..Default::default()
+        };
+        // base should win (first-match order)
+        assert_eq!(lookup_key(&meta, "shared"), Some("from_base".into()));
+    }
+
+    #[test]
+    fn test_lookup_extra_prefix() {
+        let mut extra = BTreeMap::new();
+        extra.insert("custom".into(), Value::Text("val".into()));
+        let meta = GlobalMetadata {
+            version: 2,
+            extra,
+            ..Default::default()
+        };
+        // Explicit _extra_.custom prefix should resolve in extra
+        assert_eq!(lookup_key(&meta, "_extra_.custom"), Some("val".into()));
+        // Same with "extra." prefix
+        assert_eq!(lookup_key(&meta, "extra.custom"), Some("val".into()));
+    }
+
+    #[test]
+    fn test_lookup_deeply_nested() {
+        // a.b.c.d.e
+        let e_val = Value::Map(vec![(Value::Text("e".into()), Value::Text("deep".into()))]);
+        let d_val = Value::Map(vec![(Value::Text("d".into()), e_val)]);
+        let c_val = Value::Map(vec![(Value::Text("c".into()), d_val)]);
+        let b_val = Value::Map(vec![(Value::Text("b".into()), c_val)]);
+        let mut entry = BTreeMap::new();
+        entry.insert("a".into(), b_val);
+        let meta = GlobalMetadata {
+            version: 2,
+            base: vec![entry],
+            ..Default::default()
+        };
+        assert_eq!(lookup_key(&meta, "a.b.c.d.e"), Some("deep".into()));
+        // a.b.c.d is a Map — resolve_in_cbor stringifies it via Debug
+        assert!(lookup_key(&meta, "a.b.c.d").is_some());
+    }
+
+    #[test]
+    fn test_lookup_base_partial_match() {
+        // base[0] has mars.param but base[1] doesn't have mars at all
+        let mars = Value::Map(vec![(
+            Value::Text("param".into()),
+            Value::Text("2t".into()),
+        )]);
+        let mut entry0 = BTreeMap::new();
+        entry0.insert("mars".into(), mars);
+        let mut entry1 = BTreeMap::new();
+        entry1.insert("other".into(), Value::Text("val".into()));
+        let meta = GlobalMetadata {
+            version: 2,
+            base: vec![entry0, entry1],
+            ..Default::default()
+        };
+        // Returns 2t from entry0, entry1 is skipped (no "mars" key)
+        assert_eq!(lookup_key(&meta, "mars.param"), Some("2t".into()));
+    }
+
+    #[test]
+    fn test_matches_missing_key_eq_fails() {
+        let clause = parse_where("nonexistent=val").unwrap();
+        let meta = GlobalMetadata::default();
+        assert!(!matches(&meta, &clause));
+    }
+
+    #[test]
+    fn test_matches_missing_key_neq_passes() {
+        let clause = parse_where("nonexistent!=val").unwrap();
+        let meta = GlobalMetadata::default();
+        assert!(matches(&meta, &clause));
+    }
+
+    #[test]
+    fn test_matches_multi_base_first_match() {
+        // Filter matches on first-match from base entries
+        let mut entry0 = BTreeMap::new();
+        entry0.insert("param".into(), Value::Text("2t".into()));
+        let mut entry1 = BTreeMap::new();
+        entry1.insert("param".into(), Value::Text("msl".into()));
+        let meta = GlobalMetadata {
+            version: 2,
+            base: vec![entry0, entry1],
+            ..Default::default()
+        };
+        let clause = parse_where("param=2t").unwrap();
+        // First match is "2t" → matches
+        assert!(matches(&meta, &clause));
+        let clause_msl = parse_where("param=msl").unwrap();
+        // First match is "2t" not "msl" → doesn't match
+        assert!(!matches(&meta, &clause_msl));
+    }
+
+    // ── Additional coverage: OR separator and != ──
+
+    #[test]
+    fn test_parse_eq_or_separator() {
+        let clause = parse_where("param=2t/msl/10u").unwrap();
+        assert_eq!(clause.op, FilterOp::Eq);
+        assert_eq!(clause.values, vec!["2t", "msl", "10u"]);
+    }
+
+    #[test]
+    fn test_parse_neq_or_separator() {
+        let clause = parse_where("class!=od/rd").unwrap();
+        assert_eq!(clause.op, FilterOp::NotEq);
+        assert_eq!(clause.values, vec!["od", "rd"]);
+    }
+
+    #[test]
+    fn test_matches_eq_or_any_match() {
+        let mut entry = BTreeMap::new();
+        entry.insert("param".into(), Value::Text("msl".into()));
+        let meta = GlobalMetadata {
+            version: 2,
+            base: vec![entry],
+            ..Default::default()
+        };
+        let clause = parse_where("param=2t/msl/10u").unwrap();
+        // "msl" is one of the OR values → matches
+        assert!(matches(&meta, &clause));
+    }
+
+    #[test]
+    fn test_matches_eq_or_no_match() {
+        let mut entry = BTreeMap::new();
+        entry.insert("param".into(), Value::Text("sp".into()));
+        let meta = GlobalMetadata {
+            version: 2,
+            base: vec![entry],
+            ..Default::default()
+        };
+        let clause = parse_where("param=2t/msl/10u").unwrap();
+        // "sp" not in OR values → no match
+        assert!(!matches(&meta, &clause));
+    }
+
+    #[test]
+    fn test_matches_neq_or_all_different() {
+        let mut entry = BTreeMap::new();
+        entry.insert("class".into(), Value::Text("ea".into()));
+        let meta = GlobalMetadata {
+            version: 2,
+            base: vec![entry],
+            ..Default::default()
+        };
+        let clause = parse_where("class!=od/rd").unwrap();
+        // "ea" != "od" AND "ea" != "rd" → matches
+        assert!(matches(&meta, &clause));
+    }
+
+    #[test]
+    fn test_matches_neq_or_one_matches() {
+        let mut entry = BTreeMap::new();
+        entry.insert("class".into(), Value::Text("od".into()));
+        let meta = GlobalMetadata {
+            version: 2,
+            base: vec![entry],
+            ..Default::default()
+        };
+        let clause = parse_where("class!=od/rd").unwrap();
+        // "od" == "od" so NotEq fails (all values must differ)
+        assert!(!matches(&meta, &clause));
+    }
+
+    #[test]
+    fn test_lookup_version() {
+        let meta = GlobalMetadata {
+            version: 2,
+            ..Default::default()
+        };
+        assert_eq!(lookup_key(&meta, "version"), Some("2".into()));
+    }
+
+    #[test]
+    fn test_matches_version_eq() {
+        let meta = GlobalMetadata {
+            version: 2,
+            ..Default::default()
+        };
+        let clause = parse_where("version=2").unwrap();
+        assert!(matches(&meta, &clause));
+        let clause_wrong = parse_where("version=1").unwrap();
+        assert!(!matches(&meta, &clause_wrong));
+    }
+
+    #[test]
+    fn test_matches_version_neq() {
+        let meta = GlobalMetadata {
+            version: 2,
+            ..Default::default()
+        };
+        let clause = parse_where("version!=1").unwrap();
+        assert!(matches(&meta, &clause));
+        let clause_same = parse_where("version!=2").unwrap();
+        assert!(!matches(&meta, &clause_same));
+    }
+
+    #[test]
+    fn test_lookup_extra_only() {
+        // Key only in extra, no base entries
+        let mut extra = BTreeMap::new();
+        extra.insert("source".into(), Value::Text("test".into()));
+        let meta = GlobalMetadata {
+            version: 2,
+            extra,
+            ..Default::default()
+        };
+        assert_eq!(lookup_key(&meta, "source"), Some("test".into()));
+    }
+
+    #[test]
+    fn test_lookup_extra_prefix_no_subkey() {
+        // Bare "_extra_" without subkey
+        let meta = GlobalMetadata::default();
+        assert_eq!(lookup_key(&meta, "_extra_"), None);
+        assert_eq!(lookup_key(&meta, "extra"), None);
+    }
+
+    #[test]
+    fn test_cbor_value_to_string_types() {
+        assert_eq!(cbor_value_to_string(&Value::Null), "null");
+        assert_eq!(cbor_value_to_string(&Value::Bool(false)), "false");
+        assert_eq!(cbor_value_to_string(&Value::Float(2.5)), "2.5");
     }
 }

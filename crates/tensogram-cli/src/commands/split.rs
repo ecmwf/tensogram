@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use tensogram_core::{decode, encode, DecodeOptions, EncodeOptions, TensogramFile};
+use tensogram_core::{decode, encode, DecodeOptions, EncodeOptions, TensogramFile, RESERVED_KEY};
 
 /// Split a multi-object message into separate single-object messages.
 ///
@@ -30,14 +30,18 @@ pub fn run(input: &Path, output_template: &str) -> Result<(), Box<dyn std::error
         for (idx, (desc, data)) in objects.iter().enumerate() {
             let out_name = expand_index(output_template, total_written);
 
-            // Extract the payload entry specific to this object so that
+            // Extract the base entry specific to this object so that
             // per-object metadata (e.g. mars keys) is preserved in the split.
             let mut split_meta = meta.clone();
-            split_meta.payload = if idx < meta.payload.len() {
-                vec![meta.payload[idx].clone()]
+            split_meta.base = if idx < meta.base.len() {
+                let mut entry = meta.base[idx].clone();
+                entry.remove(RESERVED_KEY); // encoder will regenerate
+                vec![entry]
             } else {
                 vec![]
             };
+            // Clear reserved — the encoder will regenerate it.
+            split_meta.reserved.clear();
 
             let encoded = encode(
                 &split_meta,
@@ -161,5 +165,104 @@ mod tests {
         run(&input, &template).unwrap();
         assert!(dir.path().join("out_0000.tgm").exists());
         assert!(dir.path().join("out_0001.tgm").exists());
+    }
+
+    #[test]
+    fn split_single_object_passthrough() {
+        // Single-object message should pass through as-is
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("single.tgm");
+        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".into(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".into(),
+            filter: "none".into(),
+            compression: "none".into(),
+            params: Default::default(),
+            hash: None,
+        };
+        let data = vec![0u8; 16];
+        let meta = GlobalMetadata {
+            version: 2,
+            ..Default::default()
+        };
+        f.append(&meta, &[(&desc, &data)], &EncodeOptions::default())
+            .unwrap();
+        drop(f);
+
+        let template = format!("{}/split_[index].tgm", dir.path().display());
+        run(&path, &template).unwrap();
+        assert!(dir.path().join("split_0000.tgm").exists());
+        // Should NOT have a second file
+        assert!(!dir.path().join("split_0001.tgm").exists());
+
+        // Verify the single file has 1 object
+        let mut f = tensogram_core::TensogramFile::open(dir.path().join("split_0000.tgm")).unwrap();
+        let msg = f.read_message(0).unwrap();
+        let (_, objs) =
+            tensogram_core::decode(&msg, &tensogram_core::DecodeOptions::default()).unwrap();
+        assert_eq!(objs.len(), 1);
+    }
+
+    #[test]
+    fn split_preserves_per_object_base_metadata() {
+        // Multi-object message with per-object base metadata
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("split_meta.tgm");
+        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".into(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".into(),
+            filter: "none".into(),
+            compression: "none".into(),
+            params: Default::default(),
+            hash: None,
+        };
+        let data = vec![0u8; 16];
+        let mut base0 = std::collections::BTreeMap::new();
+        base0.insert("param".into(), ciborium::Value::Text("2t".into()));
+        let mut base1 = std::collections::BTreeMap::new();
+        base1.insert("param".into(), ciborium::Value::Text("msl".into()));
+        let meta = GlobalMetadata {
+            version: 2,
+            base: vec![base0, base1],
+            ..Default::default()
+        };
+        f.append(
+            &meta,
+            &[(&desc, &data), (&desc, &data)],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        drop(f);
+
+        let template = format!("{}/split_meta_[index].tgm", dir.path().display());
+        run(&path, &template).unwrap();
+
+        // Verify first split has param=2t
+        let msg0 = std::fs::read(dir.path().join("split_meta_0000.tgm")).unwrap();
+        let meta0 = tensogram_core::decode_metadata(&msg0).unwrap();
+        assert!(meta0
+            .base
+            .iter()
+            .any(|e| e.get("param") == Some(&ciborium::Value::Text("2t".into()))));
+
+        // Verify second split has param=msl
+        let msg1 = std::fs::read(dir.path().join("split_meta_0001.tgm")).unwrap();
+        let meta1 = tensogram_core::decode_metadata(&msg1).unwrap();
+        assert!(meta1
+            .base
+            .iter()
+            .any(|e| e.get("param") == Some(&ciborium::Value::Text("msl".into()))));
     }
 }

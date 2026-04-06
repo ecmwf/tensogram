@@ -121,7 +121,7 @@ At 16 bits, the error is smaller than any practical sensor precision.
 ## Full Integration Example
 
 ```rust
-use tensogram_core::{encode, decode, Metadata, ObjectDescriptor, PayloadDescriptor,
+use tensogram_core::{encode, decode, GlobalMetadata, DataObjectDescriptor,
                      ByteOrder, Dtype, EncodeOptions, DecodeOptions};
 use tensogram_encodings::simple_packing;
 use ciborium::Value;
@@ -134,7 +134,7 @@ let raw: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 // Compute packing parameters
 let params = simple_packing::compute_params(&values, 16, 0).unwrap();
 
-// Build payload descriptor with packing params
+// Build descriptor with packing params
 let mut p = BTreeMap::new();
 p.insert("reference_value".into(), Value::Float(params.reference_value));
 p.insert("binary_scale_factor".into(),
@@ -144,32 +144,27 @@ p.insert("decimal_scale_factor".into(),
 p.insert("bits_per_value".into(),
     Value::Integer((params.bits_per_value as i64).into()));
 
-let metadata = Metadata {
-    version: 1,
-    objects: vec![ObjectDescriptor {
-        obj_type: "ntensor".into(),
-        ndim: 1,
-        shape: vec![1000],
-        strides: vec![1],
-        dtype: Dtype::Float64,
-        extra: BTreeMap::new(),
-    }],
-    payload: vec![PayloadDescriptor {
-        byte_order: ByteOrder::Big,
-        encoding: "simple_packing".into(),
-        filter: "none".into(),
-        compression: "none".into(),
-        params: p,
-        hash: None,
-    }],
-    extra: BTreeMap::new(),
+let desc = DataObjectDescriptor {
+    obj_type: "ntensor".into(),
+    ndim: 1,
+    shape: vec![1000],
+    strides: vec![1],
+    dtype: Dtype::Float64,
+    byte_order: ByteOrder::Big,
+    encoding: "simple_packing".into(),
+    filter: "none".into(),
+    compression: "none".into(),
+    params: p,
+    hash: None,
 };
 
-let msg = encode(&metadata, &[&raw], &EncodeOptions::default()).unwrap();
+let global = GlobalMetadata { version: 2, ..Default::default() };
+
+let msg = encode(&global, &[(&desc, &raw)], &EncodeOptions::default()).unwrap();
 println!("Packed size: {} bytes (was {} bytes)", msg.len(), raw.len());
 
 let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
-let decoded: Vec<f64> = objects[0].chunks_exact(8)
+let decoded: Vec<f64> = objects[0].1.chunks_exact(8)
     .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
     .collect();
 

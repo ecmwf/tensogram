@@ -246,8 +246,8 @@ TEST(StreamingTest, PrecederRoundTrip) {
     }
 
     // Open and decode — verify data survives the preceder + data object path.
-    // (Preceder metadata merges into GlobalMetadata.payload[0] on the Rust side;
-    // the C++ metadata API currently doesn't expose payload entries directly.)
+    // (Preceder metadata merges into base[0] on the Rust side;
+    // the C++ metadata API accesses per-object keys via base entries.)
     auto f = tensogram::file::open(tmp.path);
     auto msg = f.decode_message(0);
     EXPECT_EQ(msg.num_objects(), 1u);

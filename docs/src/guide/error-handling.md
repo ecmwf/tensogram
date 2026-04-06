@@ -29,7 +29,14 @@ Input data + metadata dict
   ├─ Unknown dtype string ────────► Metadata error
   ├─ Unknown byte_order ──────────► Metadata error
   ├─ Data size ≠ shape × dtype ───► Metadata error
+  ├─ Shape product overflow ──────► Metadata error
   ├─ NaN in simple_packing ───────► Encoding error
+  ├─ Inf reference_value ─────────► Metadata error
+  ├─ Client wrote _reserved_ ─────► Metadata error (message or base[i])
+  ├─ base.len() > descriptors ────► Metadata error (extra entries would be lost)
+  ├─ emit_preceders in buffered ──► Encoding error (use StreamingEncoder)
+  ├─ Param out of range (i32/u32) ► Metadata error (zstd_level, szip_rsi, etc.)
+  ├─ Unknown compression codec ───► Encoding error
   ├─ Compression codec failure ───► Compression error
   └─ File I/O failure ────────────► I/O error
 ```
@@ -41,8 +48,16 @@ Raw bytes
   │
   ├─ No magic bytes / truncated ──► Framing error
   ├─ Bad frame type codes ────────► Framing error
+  ├─ Frame total_length overflow ─► Framing error
+  ├─ Frame ordering violation ────► Framing error (header→data→footer)
+  ├─ cbor_offset out of range ────► Framing error
   ├─ CBOR parse failure ──────────► Metadata error
+  ├─ Preceder base ≠ 1 entry ─────► Metadata error
+  ├─ Dangling preceder (no obj) ──► Framing error
+  ├─ Consecutive preceders ────────► Framing error
+  ├─ base.len() > object count ───► Metadata error
   ├─ Object index out of range ───► Object error
+  ├─ Shape product overflow ──────► Metadata error
   ├─ Decompression failure ───────► Compression error
   ├─ Decoding pipeline failure ───► Encoding error
   └─ Hash verification mismatch ──► HashMismatch error
@@ -61,6 +76,39 @@ TensogramFile.decode_message(index)
   │
   ├─ Index out of range ──────────► Object error / IndexError
   └─ Corrupt message at offset ───► Framing error
+```
+
+### Streaming Encoder
+
+```
+StreamingEncoder
+  │
+  ├─ write_preceder(_reserved_) ──► Metadata error
+  ├─ write_preceder twice ─────────► Framing error (no intervening write_object)
+  ├─ finish() with pending prec ──► Framing error (dangling preceder)
+  ├─ write_object invalid shape ──► Metadata error
+  ├─ Encoding pipeline failure ───► Encoding error
+  └─ I/O write failure ───────────► I/O error
+```
+
+### CLI Operations
+
+```
+set command
+  │
+  ├─ Immutable key (shape, dtype) ► Error (cannot modify structural key)
+  ├─ _reserved_ namespace ────────► Error (library-managed)
+  └─ Invalid object index ────────► Error (out of range)
+
+merge command
+  │
+  ├─ No input files ──────────────► Error
+  ├─ Invalid strategy name ───────► Error
+  └─ Conflicting keys (error mode) ► Error (use first/last to resolve)
+
+split command
+  │
+  └─ Single-object: pass through; multi-object: split per-object base metadata
 ```
 
 ## Language-Specific Patterns
@@ -186,3 +234,28 @@ extreme scale factors — filter them before packing.
 
 `TensogramFile.open()` raises **OSError** (Python), **io\_error** (C++),
 or returns `TGM_ERROR_IO` (C) for any file system failure.
+
+### Unknown Hash Algorithm (Forward Compatibility)
+
+When the decoder encounters a hash algorithm string it doesn't recognize
+(e.g. a future `"sha256"` hash), it logs a warning via `tracing::warn!`
+and **skips** verification rather than failing. This ensures forward
+compatibility: older decoders can still read messages produced by newer
+encoders that use new hash algorithms.
+
+## No-Panic Guarantee
+
+All Rust library code in `tensogram-core`, `tensogram-encodings`, and
+`tensogram-ffi` is free from `panic!()`, `unwrap()`, `expect()`, `todo!()`,
+and `unimplemented!()` in non-test code paths. The library guarantees:
+
+- All fallible operations return `Result<T, TensogramError>`.
+- Integer arithmetic uses checked operations (`checked_mul`, `try_from`)
+  to prevent overflow and truncation.
+- `u64 → usize` conversions use `usize::try_from()` to prevent truncation
+  on 32-bit platforms.
+- Array indexing is guarded by prior bounds checks.
+- FFI boundary code returns error codes instead of panicking, and uses
+  `unwrap_or_default()` only for `CString::new()` (interior null fallback).
+- The scan functions (`scan`, `scan_file`) tolerate truncation of
+  `total_length as usize` because the subsequent bounds check catches it.

@@ -160,9 +160,10 @@ TEST(MetadataTest, MetadataNumObjects) {
     std::vector<float> values = {1.0f};
     auto encoded = test_helpers::encode_simple_f32(values);
     auto meta = tensogram::decode_metadata(encoded.data(), encoded.size());
-    // In v2, metadata-only decode does not embed per-object descriptors
-    // so num_objects returns 0 (documented behavior).
-    EXPECT_EQ(meta.num_objects(), 0u);
+    // num_objects() returns base.len() from the global metadata CBOR.
+    // The encoder auto-populates base[i] with _reserved_.tensor for each
+    // object, so a single-object message has base.len() == 1.
+    EXPECT_EQ(meta.num_objects(), 1u);
 }
 
 // ---------------------------------------------------------------------------

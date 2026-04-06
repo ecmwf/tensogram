@@ -46,35 +46,46 @@ pub struct DataObjectDescriptor {
 
 /// Global message metadata (carried in header/footer metadata frames).
 ///
-/// The metadata frame CBOR has four sections:
-/// - `common`: keys shared across all objects (e.g. `"mars": {…}`)
-/// - `payload`: per-object metadata array — one entry per data object,
-///   auto-populated with `ndim`/`shape`/`strides`/`dtype` by the encoder
-/// - `reserved`: reserved for future use, must be preserved on round-trip
-/// - `extra`: all other top-level keys (backwards compatibility)
+/// The metadata frame CBOR has three named sections plus `version`:
+/// - `base`: per-object metadata array — one entry per data object, each
+///   entry holds ALL structured metadata for that object independently.
+///   The encoder auto-populates `_reserved_.tensor` (ndim/shape/strides/dtype)
+///   in each entry.
+/// - `_reserved_`: library internals (provenance: encoder info, time, uuid).
+///   Client code can read but MUST NOT write — the encoder validates this.
+/// - `_extra_`: client-writable catch-all for ad-hoc message-level annotations.
+///
+/// Unknown CBOR keys at the top level are silently ignored on decode.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalMetadata {
     pub version: u16,
 
-    /// Common metadata shared across all objects in the message.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub common: BTreeMap<String, ciborium::Value>,
-
-    /// Per-object metadata — one entry per data object in the message.
+    /// Per-object metadata array.  Each entry holds ALL structured metadata
+    /// for that data object.  Entries are independent — no tracking of what
+    /// is common across objects.
     ///
-    /// The encoder auto-populates `ndim`, `shape`, `strides`, `dtype` in each
-    /// entry.  Application code may pre-populate additional keys (e.g.
-    /// `"mars": {…}`) before encoding; the encoder merges its fields in.
+    /// The encoder auto-populates `_reserved_.tensor` (with ndim, shape,
+    /// strides, dtype) in each entry.  Application code may pre-populate
+    /// additional keys (e.g. `"mars": {…}`) before encoding; the encoder
+    /// preserves them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub payload: Vec<BTreeMap<String, ciborium::Value>>,
+    pub base: Vec<BTreeMap<String, ciborium::Value>>,
 
-    /// Reserved for future use — must be preserved on round-trip.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// Library internals — provenance info (encoder, time, uuid).
+    /// Client code can read but MUST NOT write; the encoder overwrites this.
+    #[serde(
+        rename = "_reserved_",
+        default,
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
     pub reserved: BTreeMap<String, ciborium::Value>,
 
-    /// All other top-level keys not covered by `common`/`payload`/`reserved`.
-    /// Provides backwards compatibility with older messages.
-    #[serde(flatten)]
+    /// Client-writable catch-all for ad-hoc message-level annotations.
+    #[serde(
+        rename = "_extra_",
+        default,
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
     pub extra: BTreeMap<String, ciborium::Value>,
 }
 
@@ -100,8 +111,7 @@ impl Default for GlobalMetadata {
     fn default() -> Self {
         Self {
             version: 2,
-            common: BTreeMap::new(),
-            payload: Vec::new(),
+            base: Vec::new(),
             reserved: BTreeMap::new(),
             extra: BTreeMap::new(),
         }

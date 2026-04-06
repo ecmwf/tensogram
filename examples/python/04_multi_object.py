@@ -17,15 +17,34 @@ spectrum = np.random.default_rng(0).random((nlat, nlon, nfreq), dtype=np.float32
 mask = np.zeros((nlat, nlon), dtype=np.uint8)
 mask[::2] = 1  # alternate rows are land
 
-# -- Metadata: shared context + per-object descriptors -------------------------
+# -- Metadata: per-object metadata in `base` -----------------------------------
+#
+# Each base entry holds ALL metadata for that object independently.
+# Shared keys (class, date, step, type) are repeated in each entry —
+# the library does not track what is common vs varying.
 metadata = {
     "version": 2,
-    "common": {
-        "mars": {"class": "od", "date": "20260401", "step": 6, "type": "fc"},
-    },
-    "payload": [
-        {"mars": {"param": "wave_spectra", "levtype": "sfc"}},
-        {"mars": {"param": "lsm", "levtype": "sfc"}},
+    "base": [
+        {
+            "mars": {
+                "class": "od",
+                "date": "20260401",
+                "step": 6,
+                "type": "fc",
+                "param": "wave_spectra",
+                "levtype": "sfc",
+            }
+        },
+        {
+            "mars": {
+                "class": "od",
+                "date": "20260401",
+                "step": 6,
+                "type": "fc",
+                "param": "lsm",
+                "levtype": "sfc",
+            }
+        },
     ],
 }
 

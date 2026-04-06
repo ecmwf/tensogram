@@ -136,7 +136,7 @@ The CBOR descriptor fully describes the data object: its type, shape, strides, d
 
 ## Preceder Metadata Frame
 
-A Preceder Metadata Frame (type 8) optionally appears immediately before a Data Object Frame. It carries per-object metadata for the following data object, using the same GlobalMetadata CBOR format but with `common` empty and a single-entry `payload` array.
+A Preceder Metadata Frame (type 8) optionally appears immediately before a Data Object Frame. It carries per-object metadata for the following data object, using the same GlobalMetadata CBOR format but with a single-entry `base` array.
 
 **Use case:** Streaming producers that do not know ahead of time when the message will end can emit per-object metadata early via preceders, rather than waiting for the footer.
 
@@ -151,11 +151,11 @@ A Preceder Metadata Frame (type 8) optionally appears immediately before a Data 
 ```cbor
 {
   "version": 2,
-  "payload": [{"mars": {"param": "2t"}, "units": "K"}]
+  "base": [{"mars": {"param": "2t"}, "units": "K"}]
 }
 ```
 
-**Merge on decode:** Preceder keys override footer `payload[i]` keys on conflict. Footer-only keys (e.g., auto-populated `ndim`, `shape`) are preserved. The consumer sees a unified `GlobalMetadata.payload` — the preceder/footer distinction is transparent.
+**Merge on decode:** Preceder keys override footer `base[i]` keys on conflict. Footer-only keys (e.g., auto-populated `_reserved_.tensor` with ndim, shape, strides, dtype) are preserved. The consumer sees a unified `GlobalMetadata.base` — the preceder/footer distinction is transparent.
 
 ## Postamble (16 bytes)
 

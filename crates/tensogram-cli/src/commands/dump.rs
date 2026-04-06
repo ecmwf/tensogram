@@ -22,12 +22,13 @@ pub fn run(
 
     for path in files {
         let mut file = TensogramFile::open(path)?;
-        #[allow(deprecated)]
-        let messages = file.messages()?;
+        let count = file.message_count()?;
 
-        for (i, msg) in messages.iter().enumerate() {
+        for i in 0..count {
+            let msg = file.read_message(i)?;
+
             // Decode metadata first for cheap filtering
-            let metadata = decode_metadata(msg)?;
+            let metadata = decode_metadata(&msg)?;
 
             if let Some(ref clause) = clause {
                 if !filter::matches(&metadata, clause) {
@@ -36,7 +37,7 @@ pub fn run(
             }
 
             // Decode full message to access per-object descriptors
-            let (global_meta, objects) = decode(msg, &DecodeOptions::default())?;
+            let (global_meta, objects) = decode(&msg, &DecodeOptions::default())?;
 
             if json {
                 println!(
@@ -53,8 +54,17 @@ pub fn run(
                         desc.obj_type, desc.dtype, desc.shape
                     );
                 }
-                for (key, value) in &global_meta.extra {
-                    println!("  {key}: {}", output::format_json_value(value));
+                for (j, entry) in global_meta.base.iter().enumerate() {
+                    println!("  base[{j}]:");
+                    for (key, value) in entry {
+                        println!("    {key}: {}", output::format_json_value(value));
+                    }
+                }
+                if !global_meta.extra.is_empty() {
+                    println!("  extra:");
+                    for (key, value) in &global_meta.extra {
+                        println!("    {key}: {}", output::format_json_value(value));
+                    }
                 }
                 println!();
             }

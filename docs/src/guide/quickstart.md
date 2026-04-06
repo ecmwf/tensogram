@@ -31,8 +31,7 @@ fn main() {
     // 2. Describe the tensor
     let global = GlobalMetadata {
         version: 2,
-        extra: BTreeMap::new(),
-    ..Default::default()
+        ..Default::default()
     };
 
     let desc = DataObjectDescriptor {
@@ -50,7 +49,7 @@ fn main() {
     };
 
     // 3. Encode — produces a self-contained message
-    let message = encode(global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let message = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     println!("Encoded {} bytes", message.len());
 
@@ -69,25 +68,27 @@ fn main() {
 
 ## Add MARS Metadata
 
-Real messages need application-layer metadata so downstream tools know what the data represents:
+Real messages need application-layer metadata so downstream tools know what the data represents. Per-object metadata goes into the `base` array — one entry per data object:
 
 ```rust
 use ciborium::Value;
 
-// Build mars namespace: mars.class = "od", mars.param = "2t"
+// Build mars namespace for the object: mars.class = "od", mars.param = "2t"
 let mars_map = vec![
     (Value::Text("class".into()), Value::Text("od".into())),
     (Value::Text("date".into()),  Value::Text("20260401".into())),
     (Value::Text("step".into()),  Value::Integer(6.into())),
     (Value::Text("type".into()),  Value::Text("fc".into())),
+    (Value::Text("param".into()), Value::Text("2t".into())),
 ];
 
-let mut extra = BTreeMap::new();
-extra.insert("mars".to_string(), Value::Map(mars_map));
+let mut entry = BTreeMap::new();
+entry.insert("mars".to_string(), Value::Map(mars_map));
 
 let global = GlobalMetadata {
     version: 2,
-    extra, // message-level MARS keys here
+    base: vec![entry], // one entry per data object
+    ..Default::default()
 };
 
 let desc = DataObjectDescriptor {

@@ -138,7 +138,19 @@ impl Iterator for ObjectIter {
             }
         }
 
-        let num_elements = match usize::try_from(desc.shape.iter().product::<u64>()) {
+        let shape_product = match desc
+            .shape
+            .iter()
+            .try_fold(1u64, |acc, &x| acc.checked_mul(x))
+        {
+            Some(p) => p,
+            None => {
+                return Some(Err(crate::error::TensogramError::Metadata(
+                    "shape product overflow".to_string(),
+                )))
+            }
+        };
+        let num_elements = match usize::try_from(shape_product) {
             Ok(n) => n,
             Err(_) => {
                 return Some(Err(crate::error::TensogramError::Metadata(

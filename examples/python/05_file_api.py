@@ -18,11 +18,17 @@ def make_field(param: str, step: int):
     """Return (metadata_dict, descriptor_dict, data) for one forecast field."""
     metadata = {
         "version": 2,
-        "common": {
-            "mars": {"class": "od", "date": "20260401", "step": step, "type": "fc"},
-        },
-        "payload": [
-            {"mars": {"param": param, "levtype": "sfc"}},
+        "base": [
+            {
+                "mars": {
+                    "class": "od",
+                    "date": "20260401",
+                    "step": step,
+                    "type": "fc",
+                    "param": param,
+                    "levtype": "sfc",
+                },
+            },
         ],
     }
     descriptor = {
@@ -65,8 +71,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
         print("\nRandom access:")
         for idx in [0, 3, 7]:
             msg = f.decode_message(idx)
-            param = msg.metadata.payload[0]["mars"]["param"]
-            step = msg.metadata.common["mars"]["step"]
+            param = msg.metadata.base[0]["mars"]["param"]
+            step = msg.metadata.base[0]["mars"]["step"]
             desc, arr = msg.objects[0]
             print(f"  [{idx}] param={param:<5}  step={step}  shape={arr.shape}")
 
@@ -77,8 +83,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
         # Iterate all messages using for loop (PR #11 feature)
         print("\nAll messages:")
         for i, (meta, objects) in enumerate(f):
-            param = meta.payload[0]["mars"]["param"]
-            step = meta.common["mars"]["step"]
+            param = meta.base[0]["mars"]["param"]
+            step = meta.base[0]["mars"]["step"]
             desc, arr = objects[0]
             print(f"  [{i}] param={param:<5}  step={step}  dtype={arr.dtype}")
 
@@ -86,8 +92,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
         first = f[0]
         last = f[-1]
         subset = f[::2]
-        print(f"\nf[0]: param={first.metadata.payload[0]['mars']['param']}")
-        print(f"f[-1]: param={last.metadata.payload[0]['mars']['param']}")
+        print(f"\nf[0]: param={first.metadata.base[0]['mars']['param']}")
+        print(f"f[-1]: param={last.metadata.base[0]['mars']['param']}")
         print(f"f[::2]: {len(subset)} messages")
 
         # messages() — all raw buffers
@@ -102,12 +108,12 @@ with tempfile.TemporaryDirectory() as tmpdir:
     # Decode message 3 from the raw buffer
     start, length = offsets[3]
     meta3 = tensogram.decode_metadata(buf[start : start + length])
-    print(f"  message[3]: param={meta3.payload[0]['mars']['param']}")
+    print(f"  message[3]: param={meta3.base[0]['mars']['param']}")
 
     # Buffer iteration (PR #11 feature)
     print("\niter_messages() on raw bytes:")
     for msg in tensogram.iter_messages(buf):
         desc, arr = msg.objects[0]
-        print(f"  param={msg.metadata.payload[0]['mars']['param']}  shape={arr.shape}")
+        print(f"  param={msg.metadata.base[0]['mars']['param']}  shape={arr.shape}")
 
 print("\nFile API example complete.")

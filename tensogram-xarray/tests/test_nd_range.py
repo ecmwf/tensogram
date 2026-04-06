@@ -8,7 +8,6 @@ import numpy as np
 import pytest
 import tensogram
 import xarray as xr
-
 from tensogram_xarray.array import (
     DEFAULT_RANGE_THRESHOLD,
     _nd_slice_to_flat_ranges,

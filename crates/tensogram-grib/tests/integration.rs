@@ -31,11 +31,16 @@ fn cbor_map_get<'a>(map: &'a CborValue, key: &str) -> Option<&'a CborValue> {
     }
 }
 
-/// Extract the `common["mars"]` sub-map from global metadata.
-fn get_common_mars(meta: &tensogram_core::GlobalMetadata) -> &CborValue {
-    meta.common
+/// Extract the `base[0]["mars"]` sub-map from global metadata.
+///
+/// For single-object messages, base[0] holds all metadata.
+/// For multi-object messages with identical mars keys, we look at base[0].
+fn get_mars_from_base(meta: &tensogram_core::GlobalMetadata) -> &CborValue {
+    meta.base
+        .first()
+        .expect("base must have at least one entry")
         .get("mars")
-        .expect("common must contain 'mars' key")
+        .expect("base[0] must contain 'mars' key")
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -54,8 +59,8 @@ fn test_lsm_convert() {
     let (meta, objects) = decode(&messages[0], &decode_opts()).expect("decode");
     assert_eq!(objects.len(), 1, "one data object");
 
-    // MARS keys should be under common["mars"].
-    let mars = get_common_mars(&meta);
+    // MARS keys should be under base[0]["mars"].
+    let mars = get_mars_from_base(&meta);
     assert!(cbor_map_get(mars, "class").is_some(), "missing mars.class");
     assert!(cbor_map_get(mars, "type").is_some(), "missing mars.type");
     assert!(
@@ -140,7 +145,7 @@ fn test_q_pl_convert() {
     assert_eq!(objects.len(), 1);
 
     // Should have pressure-level related keys under mars.
-    let mars = get_common_mars(&meta);
+    let mars = get_mars_from_base(&meta);
     let has_level =
         cbor_map_get(mars, "levelist").is_some() || cbor_map_get(mars, "level").is_some();
     assert!(has_level, "missing level key for pressure-level data");
@@ -185,8 +190,8 @@ fn test_t_pl_round_trip() {
 // ──────────────────────────────────────────────────────────────────────
 
 /// MergeAll with 2 GRIB files (lsm + 2t) concatenated -> 1 Tensogram
-/// message with 2 objects. Common mars keys in common["mars"], varying
-/// in payload[i]["mars"].
+/// message with 2 objects. Each `base[i]` holds ALL metadata for that
+/// object independently.
 #[test]
 fn test_multi_merge() {
     let combined = make_combined_grib(&["lsm.grib2", "2t.grib2"]);
@@ -201,30 +206,28 @@ fn test_multi_merge() {
     let (meta, objects) = decode(&messages[0], &decode_opts()).expect("decode");
     assert_eq!(objects.len(), 2, "2 GRIB messages -> 2 data objects");
 
-    // Common mars keys should be shared (class, type, stream, date, etc.).
-    let mars = get_common_mars(&meta);
-    assert!(
-        cbor_map_get(mars, "class").is_some(),
-        "'class' should be in common mars"
-    );
+    // base should have 2 entries (one per object)
+    assert_eq!(meta.base.len(), 2, "base should have 2 entries");
 
-    // Per-object payload entries should have varying mars keys.
-    assert_eq!(meta.payload.len(), 2, "payload should have 2 entries");
+    // Each base entry should have mars keys.
+    for (i, entry) in meta.base.iter().enumerate() {
+        assert!(entry.contains_key("mars"), "base[{i}] must have mars");
+    }
 
-    // At least one entry should have per-object mars keys (param differs).
-    let has_varying_mars = meta.payload.iter().any(|entry| entry.contains_key("mars"));
-    assert!(
-        has_varying_mars,
-        "payload entries should carry varying mars keys"
-    );
-
-    // Both entries should have auto-populated ndim/shape/strides/dtype.
-    for (i, entry) in meta.payload.iter().enumerate() {
-        assert!(entry.contains_key("ndim"), "payload[{}] must have ndim", i);
+    // Both entries should have auto-populated _reserved_.tensor.
+    for (i, entry) in meta.base.iter().enumerate() {
         assert!(
-            entry.contains_key("dtype"),
-            "payload[{}] must have dtype",
-            i
+            entry.contains_key("_reserved_"),
+            "base[{i}] must have _reserved_"
+        );
+    }
+
+    // mars.class should be present in both (shared across lsm + 2t).
+    for (i, entry) in meta.base.iter().enumerate() {
+        let mars = entry.get("mars").expect("mars key");
+        assert!(
+            cbor_map_get(mars, "class").is_some(),
+            "base[{i}] mars.class should be present"
         );
     }
 }
@@ -248,10 +251,10 @@ fn test_multi_split() {
     for (i, msg_bytes) in messages.iter().enumerate() {
         let (meta, objects) = decode(msg_bytes, &decode_opts()).expect("decode");
         assert_eq!(objects.len(), 1, "message {} has 1 object", i);
-        // Each message should have all MARS keys in common["mars"].
+        // Each message should have all MARS keys in base[0]["mars"].
         assert!(
-            meta.common.contains_key("mars"),
-            "message {} common must have mars",
+            meta.base.first().is_some_and(|e| e.contains_key("mars")),
+            "message {} base[0] must have mars",
             i
         );
     }
@@ -261,37 +264,42 @@ fn test_multi_split() {
 // 7. test_payload_objects_metadata
 // ──────────────────────────────────────────────────────────────────────
 
-/// Verify payload entries have ndim, shape, strides, dtype, and mars.grid.
+/// Verify base entries have _reserved_.tensor (ndim, shape, strides, dtype)
+/// and mars.grid.
 #[test]
-fn test_payload_objects_metadata() {
+fn test_base_entry_metadata() {
     let path = testdata().join("2t.grib2");
     let opts = ConvertOptions::default();
     let messages = convert_grib_file(&path, &opts).expect("convert 2t.grib2");
 
     let (meta, _) = decode(&messages[0], &decode_opts()).expect("decode");
 
-    // payload should have one entry.
-    assert_eq!(meta.payload.len(), 1, "single object -> one payload entry");
+    // base should have one entry.
+    assert_eq!(meta.base.len(), 1, "single object -> one base entry");
 
-    let entry = &meta.payload[0];
+    let entry = &meta.base[0];
 
-    // Required auto-populated fields: ndim, shape, strides, dtype.
-    assert!(entry.contains_key("ndim"), "must have ndim");
-    assert!(entry.contains_key("shape"), "must have shape");
-    assert!(entry.contains_key("strides"), "must have strides");
+    // _reserved_.tensor should have ndim, shape, strides, dtype.
+    let reserved = entry.get("_reserved_").expect("must have _reserved_");
+    let tensor = cbor_map_get(reserved, "tensor").expect("must have tensor");
+    assert!(cbor_map_get(tensor, "ndim").is_some(), "must have ndim");
+    assert!(cbor_map_get(tensor, "shape").is_some(), "must have shape");
+    assert!(
+        cbor_map_get(tensor, "strides").is_some(),
+        "must have strides"
+    );
     assert_eq!(
-        entry.get("dtype"),
+        cbor_map_get(tensor, "dtype"),
         Some(&CborValue::Text("float64".to_string())),
         "dtype should be 'float64'"
     );
 
-    // For a single-object message, all mars keys (including grid) are in
-    // common["mars"], not in payload[0]["mars"]. Verify grid is in common.
-    let mars = get_common_mars(&meta);
+    // All mars keys (including grid) are in base[0]["mars"].
+    let mars = get_mars_from_base(&meta);
     assert_eq!(
         cbor_map_get(mars, "grid"),
         Some(&CborValue::Text("regular_ll".to_string())),
-        "common mars.grid should be 'regular_ll'"
+        "mars.grid should be 'regular_ll'"
     );
 }
 
@@ -299,7 +307,7 @@ fn test_payload_objects_metadata() {
 // 8. test_all_keys_single_object
 // ──────────────────────────────────────────────────────────────────────
 
-/// With `preserve_all_keys`, common["grib"] should contain namespace sub-maps.
+/// With `preserve_all_keys`, base[0]["grib"] should contain namespace sub-maps.
 #[test]
 fn test_all_keys_single_object() {
     let path = testdata().join("2t.grib2");
@@ -311,14 +319,15 @@ fn test_all_keys_single_object() {
 
     let (meta, _) = decode(&messages[0], &decode_opts()).expect("decode");
 
-    // mars keys still in common["mars"]
-    assert!(meta.common.contains_key("mars"), "must have mars");
+    let entry = &meta.base[0];
 
-    // grib namespace keys in common["grib"]
-    let grib = meta
-        .common
+    // mars keys in base[0]["mars"]
+    assert!(entry.contains_key("mars"), "must have mars");
+
+    // grib namespace keys in base[0]["grib"]
+    let grib = entry
         .get("grib")
-        .expect("common must contain 'grib' when preserve_all_keys is on");
+        .expect("base[0] must contain 'grib' when preserve_all_keys is on");
 
     // grib should be a map of namespace maps
     let grib_map = match grib {
@@ -353,8 +362,8 @@ fn test_all_keys_single_object() {
 // 9. test_all_keys_multi_merge
 // ──────────────────────────────────────────────────────────────────────
 
-/// With `preserve_all_keys` and MergeAll, grib namespace keys partition
-/// into common["grib"] (shared) and payload[i]["grib"] (varying).
+/// With `preserve_all_keys` and MergeAll, each `base[i]` holds all grib
+/// namespace keys for that object independently.
 #[test]
 fn test_all_keys_multi_merge() {
     let combined = make_combined_grib(&["lsm.grib2", "2t.grib2"]);
@@ -368,36 +377,25 @@ fn test_all_keys_multi_merge() {
     let (meta, objects) = decode(&messages[0], &decode_opts()).expect("decode");
     assert_eq!(objects.len(), 2);
 
-    // Common grib keys should be present (e.g. geography is identical).
-    assert!(
-        meta.common.contains_key("grib"),
-        "merged common must have grib"
-    );
-    let grib = &meta.common["grib"];
-    assert!(
-        cbor_map_get(grib, "geography").is_some(),
-        "geography should be common (same grid)"
-    );
+    // Each base entry should have grib keys.
+    for (i, entry) in meta.base.iter().enumerate() {
+        assert!(entry.contains_key("grib"), "base[{i}] must have grib");
+        // geography should be present in each entry (same grid for both).
+        let grib = entry.get("grib").unwrap();
+        assert!(
+            cbor_map_get(grib, "geography").is_some(),
+            "base[{i}] grib.geography should be present"
+        );
+    }
 
-    // Varying grib keys should be in payload entries.
-    // parameter.shortName differs (lsm vs 2t), so parameter should appear
-    // in at least one payload entry's grib map.
-    let has_varying_grib = meta.payload.iter().any(|e| e.contains_key("grib"));
-    assert!(
-        has_varying_grib,
-        "payload entries should have varying grib keys"
-    );
-
-    // Statistics always varies per object.
-    let has_statistics_in_payload = meta.payload.iter().any(|e| {
-        e.get("grib")
-            .and_then(|g| cbor_map_get(g, "statistics"))
-            .is_some()
-    });
-    assert!(
-        has_statistics_in_payload,
-        "statistics should be per-object (always varies)"
-    );
+    // parameter namespace should be in each entry (shortName differs).
+    for (i, entry) in meta.base.iter().enumerate() {
+        let grib = entry.get("grib").unwrap();
+        assert!(
+            cbor_map_get(grib, "parameter").is_some(),
+            "base[{i}] grib.parameter should be present"
+        );
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -413,15 +411,13 @@ fn test_all_keys_off_no_grib() {
 
     let (meta, _) = decode(&messages[0], &decode_opts()).expect("decode");
 
+    let entry = &meta.base[0];
     assert!(
-        !meta.common.contains_key("grib"),
+        !entry.contains_key("grib"),
         "default options must not produce 'grib' key"
     );
     // mars should still be there
-    assert!(
-        meta.common.contains_key("mars"),
-        "mars must always be present"
-    );
+    assert!(entry.contains_key("mars"), "mars must always be present");
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -438,4 +434,222 @@ fn make_combined_grib(filenames: &[&str]) -> tempfile::NamedTempFile {
     }
     combined.flush().expect("flush");
     combined
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 11. test_one_to_one_preserve_all_keys
+// ──────────────────────────────────────────────────────────────────────
+
+/// OneToOne with preserve_all_keys: each single-object message has both
+/// mars and grib keys in base[0].
+#[test]
+fn test_one_to_one_preserve_all_keys() {
+    let path = testdata().join("2t.grib2");
+    let opts = ConvertOptions {
+        grouping: Grouping::OneToOne,
+        preserve_all_keys: true,
+        ..ConvertOptions::default()
+    };
+    let messages = convert_grib_file(&path, &opts).expect("convert 2t.grib2 one-to-one all-keys");
+
+    assert_eq!(messages.len(), 1, "single GRIB -> single Tensogram message");
+
+    let (meta, objects) = decode(&messages[0], &decode_opts()).expect("decode");
+    assert_eq!(objects.len(), 1);
+    assert_eq!(meta.base.len(), 1);
+
+    let entry = &meta.base[0];
+    assert!(entry.contains_key("mars"), "base[0] must have mars");
+    assert!(
+        entry.contains_key("grib"),
+        "base[0] must have grib with preserve_all_keys"
+    );
+
+    // grib should contain geography namespace at minimum
+    let grib = entry.get("grib").unwrap();
+    assert!(
+        cbor_map_get(grib, "geography").is_some(),
+        "grib.geography must be present"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 12. test_one_to_one_no_preserve_all_keys
+// ──────────────────────────────────────────────────────────────────────
+
+/// OneToOne without preserve_all_keys: base[0] has mars but NOT grib.
+#[test]
+fn test_one_to_one_no_preserve_all_keys() {
+    let path = testdata().join("lsm.grib2");
+    let opts = ConvertOptions {
+        grouping: Grouping::OneToOne,
+        preserve_all_keys: false,
+        ..ConvertOptions::default()
+    };
+    let messages = convert_grib_file(&path, &opts).expect("convert lsm.grib2 one-to-one");
+
+    assert_eq!(messages.len(), 1);
+
+    let (meta, _) = decode(&messages[0], &decode_opts()).expect("decode");
+    let entry = &meta.base[0];
+    assert!(entry.contains_key("mars"), "mars must be present");
+    assert!(
+        !entry.contains_key("grib"),
+        "grib must NOT be present without preserve_all_keys"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 13. test_merge_all_independent_base_entries
+// ──────────────────────────────────────────────────────────────────────
+
+/// Verify each base[i] is self-contained with ALL metadata for that object.
+/// With 2 GRIB messages, base[0] and base[1] should each have mars keys
+/// independently (not referencing a common section).
+#[test]
+fn test_merge_all_independent_base_entries() {
+    let combined = make_combined_grib(&["lsm.grib2", "2t.grib2"]);
+    let opts = ConvertOptions::default();
+    let messages = convert_grib_file(combined.path(), &opts).expect("convert merged");
+
+    let (meta, _) = decode(&messages[0], &decode_opts()).expect("decode");
+    assert_eq!(meta.base.len(), 2);
+
+    // Both base entries must independently have "mars" with "class" key
+    for (i, entry) in meta.base.iter().enumerate() {
+        let mars = entry
+            .get("mars")
+            .expect(&format!("base[{i}] must have mars"));
+        assert!(
+            cbor_map_get(mars, "class").is_some(),
+            "base[{i}] mars.class must be independently present"
+        );
+        assert!(
+            cbor_map_get(mars, "grid").is_some(),
+            "base[{i}] mars.grid must be independently present"
+        );
+    }
+
+    // The two entries can have different param values
+    let mars0 = meta.base[0].get("mars").unwrap();
+    let mars1 = meta.base[1].get("mars").unwrap();
+    let param0 = cbor_map_get(mars0, "param").or(cbor_map_get(mars0, "shortName"));
+    let param1 = cbor_map_get(mars1, "param").or(cbor_map_get(mars1, "shortName"));
+    // lsm and 2t should have different param identifiers
+    assert_ne!(
+        param0, param1,
+        "lsm and 2t should have different parameter identification"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 14. test_one_to_one_multi_grib_messages
+// ──────────────────────────────────────────────────────────────────────
+
+/// OneToOne with 4 different GRIB files -> 4 independent Tensogram messages.
+#[test]
+fn test_one_to_one_multi_grib_messages() {
+    let combined = make_combined_grib(&["lsm.grib2", "2t.grib2", "q_150.grib2", "t_600.grib2"]);
+    let opts = ConvertOptions {
+        grouping: Grouping::OneToOne,
+        ..ConvertOptions::default()
+    };
+    let messages = convert_grib_file(combined.path(), &opts).expect("convert 4 GRIBs");
+
+    assert_eq!(messages.len(), 4, "OneToOne with 4 GRIBs -> 4 messages");
+
+    for (i, msg_bytes) in messages.iter().enumerate() {
+        let (meta, objects) = decode(msg_bytes, &decode_opts()).expect("decode");
+        assert_eq!(objects.len(), 1, "message {i} has 1 object");
+        assert_eq!(meta.base.len(), 1, "message {i} has 1 base entry");
+
+        let entry = &meta.base[0];
+        assert!(
+            entry.contains_key("mars"),
+            "message {i} base[0] must have mars"
+        );
+        assert!(
+            entry.contains_key("_reserved_"),
+            "message {i} base[0] must have _reserved_"
+        );
+
+        // Verify tensor info in _reserved_
+        let reserved = entry.get("_reserved_").unwrap();
+        let tensor = cbor_map_get(reserved, "tensor").expect("must have tensor");
+        assert!(
+            cbor_map_get(tensor, "ndim").is_some(),
+            "message {i} must have ndim"
+        );
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 15. test_merge_all_preserve_all_keys_multi
+// ──────────────────────────────────────────────────────────────────────
+
+/// MergeAll + preserve_all_keys with 4 GRIB messages -> 1 Tensogram
+/// message with 4 data objects, each base[i] has both mars and grib.
+#[test]
+fn test_merge_all_preserve_all_keys_multi() {
+    let combined = make_combined_grib(&["lsm.grib2", "2t.grib2", "q_150.grib2", "t_600.grib2"]);
+    let opts = ConvertOptions {
+        grouping: Grouping::MergeAll,
+        preserve_all_keys: true,
+        ..ConvertOptions::default()
+    };
+    let messages = convert_grib_file(combined.path(), &opts).expect("convert 4 GRIBs merged");
+
+    assert_eq!(messages.len(), 1);
+
+    let (meta, objects) = decode(&messages[0], &decode_opts()).expect("decode");
+    assert_eq!(objects.len(), 4, "4 GRIB -> 4 data objects");
+    assert_eq!(meta.base.len(), 4, "4 base entries");
+
+    for (i, entry) in meta.base.iter().enumerate() {
+        assert!(entry.contains_key("mars"), "base[{i}] must have mars");
+        assert!(entry.contains_key("grib"), "base[{i}] must have grib");
+        assert!(
+            entry.contains_key("_reserved_"),
+            "base[{i}] must have _reserved_"
+        );
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 16. test_build_data_object_strides
+// ──────────────────────────────────────────────────────────────────────
+
+/// Verify that build_data_object computes correct row-major strides for
+/// the 2D GRIB grids.
+#[test]
+fn test_2d_strides_correct() {
+    let path = testdata().join("2t.grib2");
+    let opts = ConvertOptions::default();
+    let messages = convert_grib_file(&path, &opts).expect("convert");
+
+    let (_, objects) = decode(&messages[0], &decode_opts()).expect("decode");
+    let (desc, _) = &objects[0];
+
+    // 2D grid: [nj=721, ni=1440], strides should be [1440, 1]
+    assert_eq!(desc.shape, vec![721, 1440]);
+    assert_eq!(desc.strides, vec![1440, 1]);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// 17. test_empty_grib_file_error
+// ──────────────────────────────────────────────────────────────────────
+
+/// An empty file (no GRIB messages) should return GribError::NoMessages.
+#[test]
+fn test_empty_grib_file_error() {
+    use std::io::Write;
+    let mut empty = tempfile::NamedTempFile::new().expect("create temp file");
+    // Write some garbage that isn't a GRIB message
+    empty.write_all(b"not a grib file").expect("write");
+    empty.flush().expect("flush");
+
+    let opts = ConvertOptions::default();
+    let result = convert_grib_file(empty.path(), &opts);
+    // ecCodes should find no messages or return an error
+    assert!(result.is_err(), "empty/invalid GRIB file should fail");
 }

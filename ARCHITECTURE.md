@@ -93,7 +93,7 @@ A message is a self-contained binary blob:
 
 Each frame starts with `FR` (2 bytes) and ends with `ENDF` (4 bytes). The preamble opens with `TENSOGRM` (8 bytes), the postamble closes with `39277777` (8 bytes).
 
-Frame types: HeaderMetadata(1), HeaderIndex(2), HeaderHash(3), DataObject(4), FooterHash(5), FooterIndex(6), FooterMetadata(7).
+Frame types: HeaderMetadata(1), HeaderIndex(2), HeaderHash(3), DataObject(4), FooterHash(5), FooterIndex(6), FooterMetadata(7), PrecederMetadata(8).
 
 The decoder enforces ordering: header frames first, then data objects, then footer frames.
 
@@ -152,10 +152,14 @@ cargo build -p tensogram-core --no-default-features --features mmap
 
 ## Testing
 
-167+ tests across the workspace:
+1,008 tests across the workspace:
 
 - Unit tests in `#[cfg(test)]` modules alongside the code
 - Integration tests in `crates/tensogram-core/tests/` (round-trips, adversarial inputs, golden files)
+- Python tests in `tests/python/` (226 pytest tests with parametrized dtypes)
+- xarray backend tests in `tensogram-xarray/tests/` (181 tests, ~98% coverage)
+- Zarr backend tests in `tensogram-zarr/tests/` (204 tests, ~95% coverage)
+- C++ wrapper tests via GoogleTest (105 tests across 10 files)
 - Golden binary files in `tests/golden/` for cross-language verification
 - Feature-gated tests for `mmap` and `async` behind `#[cfg(feature = "...")]`
 

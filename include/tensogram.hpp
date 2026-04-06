@@ -404,8 +404,10 @@ private:
 
 /// RAII wrapper for message-level (global) metadata.
 ///
-/// Provides dot-notation key lookup for string, integer, and float values
-/// stored in the CBOR metadata map.  Move-only (copy is deleted).
+/// Provides dot-notation key lookup for string, integer, and float values.
+/// The lookup searches per-object `base` entries first (skipping internal
+/// `_reserved_` keys), then the message-level `extra` section.
+/// Move-only (copy is deleted).
 class metadata {
 public:
     metadata(metadata&&) noexcept = default;
@@ -420,13 +422,15 @@ public:
 
     /// Number of objects described in this metadata.
     ///
-    /// @note In wire-format v2, metadata-only decoding does not embed
-    ///       per-object descriptors, so this always returns 0.  Use
-    ///       message::num_objects() on a fully decoded message instead.
+    /// Returns the length of the `base` array in the global metadata.
+    /// If the encoding JSON did not include a `"base"` key, this returns 0.
+    /// Use message::num_objects() for a count that always reflects the
+    /// number of decoded data objects in the message.
     [[nodiscard]] std::size_t num_objects() const { return tgm_metadata_num_objects(handle_.get()); }
 
     /// Look up a string value by dot-notation key (e.g. "mars.class").
     ///
+    /// Searches `base` entries first, then `extra`.
     /// @return The value as a string, or "" if not found.
     [[nodiscard]] std::string get_string(std::string_view key) const {
         const std::string k(key);
@@ -436,6 +440,7 @@ public:
 
     /// Look up an integer value by dot-notation key.
     ///
+    /// Searches `base` entries first, then `extra`.
     /// @return The value, or @p default_val if not found.
     [[nodiscard]] std::int64_t get_int(std::string_view key, std::int64_t default_val = 0) const {
         const std::string k(key);
@@ -444,6 +449,7 @@ public:
 
     /// Look up a floating-point value by dot-notation key.
     ///
+    /// Searches `base` entries first, then `extra`.
     /// @return The value, or @p default_val if not found.
     [[nodiscard]] double get_float(std::string_view key, double default_val = 0.0) const {
         const std::string k(key);
@@ -803,8 +809,10 @@ private:
 
 /// Encode a Tensogram message from JSON metadata and raw data slices.
 ///
-/// @param metadata_json  JSON with "version", "descriptors", and optional
-///                       extra keys (e.g. "mars").
+/// @param metadata_json  JSON with "version", "descriptors", optional "base"
+///                       (list of per-object metadata dicts), and optional
+///                       extra keys (e.g. "mars") which become message-level
+///                       annotations in the `_extra_` CBOR section.
 /// @param objects        Vector of (pointer, length) pairs — one per
 ///                       descriptor entry.
 /// @param opts           Encoding options (hash algorithm, etc.).
@@ -835,6 +843,7 @@ private:
 }
 
 /// Decode only the global metadata (no payload bytes are read).
+/// The returned metadata contains `base` entries and `extra` keys.
 [[nodiscard]] inline metadata decode_metadata(const std::uint8_t* buf, std::size_t len)
 {
     tgm_metadata_t* raw = nullptr;

@@ -7,6 +7,7 @@ lazy-loaded data backed by :class:`TensogramBackendArray`.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from collections.abc import Sequence
@@ -19,7 +20,9 @@ from xarray.core import indexing
 from tensogram_xarray.array import TensogramBackendArray, _supports_range_decode
 from tensogram_xarray.coords import detect_coords
 from tensogram_xarray.mapping import resolve_dim_names, resolve_variable_name
-from tensogram_xarray.scanner import AUTO_PAYLOAD_KEYS
+from tensogram_xarray.scanner import RESERVED_KEY
+
+logger = logging.getLogger(__name__)
 
 # Map tensogram dtype strings to numpy dtypes.
 try:
@@ -117,13 +120,9 @@ class TensogramDataStore:
     def _get_common_meta(self) -> dict[str, Any]:
         """Extract message-level metadata for Dataset attributes.
 
-        Reads from ``meta.common`` (primary) and ``meta.extra`` (additional
-        non-standard keys).
+        Reads from ``meta.extra`` (message-level annotations).
         """
         attrs: dict[str, Any] = {}
-        common = getattr(self._meta, "common", None)
-        if common and isinstance(common, dict):
-            attrs.update(common)
         extra = getattr(self._meta, "extra", None)
         if extra and isinstance(extra, dict):
             attrs.update(extra)
@@ -133,20 +132,30 @@ class TensogramDataStore:
     def _get_per_object_meta(self, obj_index: int, desc: Any) -> dict[str, Any]:
         """Extract per-object metadata.
 
-        Reads from ``meta.payload[obj_index]`` (primary), then merges in
+        Reads from ``meta.base[obj_index]`` (primary), filtering out the
+        ``_reserved_`` key (encoder-populated tensor info).  Then merges in
         ``desc.params`` (fallback for extra keys in the descriptor dict).
-        Auto-populated keys (``ndim``, ``shape``, ``strides``, ``dtype``)
-        are filtered out since they duplicate the descriptor.
+
+        If ``obj_index`` is out of range (fewer base entries than objects),
+        a warning is logged and the base entry is treated as empty.
         """
         meta: dict[str, Any] = {}
-        # Primary source: meta.payload[i]
-        payload = getattr(self._meta, "payload", None)
-        if payload and isinstance(payload, list) and obj_index < len(payload):
-            p = payload[obj_index]
-            if isinstance(p, dict):
-                for k, v in p.items():
-                    if k not in AUTO_PAYLOAD_KEYS:
-                        meta[k] = v
+        # Primary source: meta.base[i]
+        base = getattr(self._meta, "base", None)
+        if base is not None and isinstance(base, list):
+            if obj_index < len(base):
+                entry = base[obj_index]
+                if isinstance(entry, dict):
+                    for k, v in entry.items():
+                        if k != RESERVED_KEY:
+                            meta[k] = v
+            else:
+                logger.warning(
+                    "meta.base has %d entries but object index %d requested; "
+                    "per-object metadata will be empty for this object",
+                    len(base),
+                    obj_index,
+                )
         # Fallback/supplement: desc.params (extra descriptor keys)
         params = getattr(desc, "params", None)
         if params and isinstance(params, dict):

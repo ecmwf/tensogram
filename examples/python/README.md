@@ -31,7 +31,7 @@ uv pip install -e tensogram-zarr/
 | File | Topic |
 |------|-------|
 | `01_encode_decode.py` | Basic encode/decode round-trip |
-| `02_mars_metadata.py` | MARS-style metadata in common and payload |
+| `02_mars_metadata.py` | MARS-style metadata in per-object `base` entries |
 | `03_simple_packing.py` | Simple-packing encoding for integer quantization |
 | `04_multi_object.py` | Multi-object messages, `decode_object`, `decode_range` |
 | `05_file_api.py` | `TensogramFile` for multi-message `.tgm` files |
@@ -72,16 +72,16 @@ tensogram.Message (namedtuple)
     # tuple unpacking: meta, objects = msg
 
 tensogram.Metadata
-    .version -> int
-    .common  -> dict              # message-level common metadata
-    .payload -> list[dict]        # per-object metadata (one dict per object)
-    .extra   -> dict              # non-standard top-level keys
-    ["key"]  -> value             # dict-style access (checks common, then extra)
+    .version  -> int
+    .base     -> list[dict]       # per-object metadata (one dict per object, independent entries)
+    .reserved -> dict             # library internals (_reserved_ in CBOR, read-only)
+    .extra    -> dict             # client-writable annotations (_extra_ in CBOR)
+    ["key"]   -> value            # dict-style access (checks base entries, then extra)
 
 tensogram.DataObjectDescriptor
     .obj_type, .ndim, .shape, .strides, .dtype
     .byte_order, .encoding, .filter, .compression
-    .params -> dict               # extra descriptor keys (user metadata)
+    .params -> dict               # encoding parameters (e.g. reference_value, bits_per_value)
     .hash   -> dict | None
 ```
 

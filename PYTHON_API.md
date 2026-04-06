@@ -7,7 +7,7 @@
 | Class | Purpose | Key Attributes |
 |-------|---------|-----------------|
 | **`Message`** | Decoded message (namedtuple) | `.metadata`, `.objects`, tuple unpacking |
-| **`Metadata`** | Global message metadata | `.version`, `.extra`, `.common`, `.payload`, `[key]` |
+| **`Metadata`** | Global message metadata | `.version`, `.base`, `.reserved`, `.extra`, `[key]` |
 | **`DataObjectDescriptor`** | Tensor descriptor (shape, dtype, encoding) | `.shape`, `.dtype`, `.encoding`, `.params`, `.compression` |
 | **`TensogramFile`** | File I/O API | `.open()`, `.create()`, `.append()`, `.decode_message()` |
 
@@ -61,9 +61,9 @@ int8, int16, int32, int64, uint8, uint16, uint32, uint64, bitmask
 
 **Optional:**
 - `"strides"` (list[int]): Computed if omitted
-- `"byte_order"` (str): "big" (default) or "little"
+- `"byte_order"` (str): "little" (default) or "big"
 - `"encoding"` (str): "none" (default), "simple_packing", etc.
-- `"filter"` (str): "none" (default), "delta", etc.
+- `"filter"` (str): "none" (default), "shuffle", etc.
 - `"compression"` (str): "none" (default), "zstd", etc.
 - Any other keys → stored in `.params` dict
 
@@ -75,7 +75,7 @@ import numpy as np
 import tensogram
 
 data = np.array([1, 2, 3], dtype=np.float32)
-meta = {"version": 1}
+meta = {"version": 2}
 desc = {"type": "ntensor", "shape": [3], "dtype": "float32"}
 
 msg = tensogram.encode(meta, [(desc, data)])
@@ -86,7 +86,7 @@ meta_out, objs_out = tensogram.decode(msg)
 ```python
 # Write
 with tensogram.TensogramFile.create("data.tgm") as f:
-    f.append({"version": 1}, [(descriptor, data)])
+    f.append({"version": 2}, [(descriptor, data)])
 
 # Read
 with tensogram.TensogramFile.open("data.tgm") as f:
@@ -100,9 +100,9 @@ with tensogram.TensogramFile.open("data.tgm") as f:
 meta, _ = tensogram.decode(message)
 print(meta.version)
 print(meta['custom_key'])  # KeyError if missing
-print(meta.extra)          # All extra fields
-print(meta.common)         # Common metadata dict
-print(meta.payload)        # Per-object metadata list
+print(meta.extra)          # Message-level annotations (_extra_ in CBOR)
+print(meta.base)           # Per-object metadata list (independent entries)
+print(meta.reserved)       # Library internals (_reserved_ in CBOR)
 ```
 
 **Hash verification:**

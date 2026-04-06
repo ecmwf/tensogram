@@ -1,13 +1,13 @@
-# Tensogram — Current Implementation Status (v0.5.0)
+# Tensogram — Current Implementation Status (v0.6.0)
 
 > For historical release notes, see `../CHANGELOG.md`.
 > For planned features, see `TODO.md`. For ideas, see `IDEAS.md`.
 
 ## Summary
 
-- **Version:** 0.5.0
+- **Version:** 0.6.0
 - **Workspace:** 6 default crates + 2 optional (Python, GRIB) + 2 separate packages (xarray, zarr)
-- **Tests:** 897 total (292 Rust + 200 Python + 124 xarray + 172 Zarr + 109 C++)
+- **Tests:** 1008 total (283 Rust + 226 Python + 181 xarray + 204 Zarr + 105 C++ + 7 GRIB new + 2 streamer)
 - **Quality:** 0 clippy warnings, 90.5% Rust line coverage
 
 ## tensogram-benchmarks
@@ -31,10 +31,10 @@ Unit, integration, adversarial, and edge-case tests.
 - `wire.rs` — v2 frame-based wire format: Preamble (24B), FrameHeader (16B), Postamble (16B), FrameType enum (incl. PrecederMetadata type 8), MessageFlags (incl. bit 6 PRECEDER_METADATA), DataObjectFlags
 - `framing.rs` — `encode_message()` with two-pass index construction, `decode_message()`, `scan()` for multi-message buffers. Decomposed into 5 focused helpers.
 - `metadata.rs` — Deterministic CBOR encoding for GlobalMetadata, DataObjectDescriptor, IndexFrame, HashFrame (three-step: serialize → canonicalize → write). `verify_canonical_cbor()` utility.
-- `types.rs` — `GlobalMetadata` (version, common, payload, reserved, extra), `DataObjectDescriptor`, `IndexFrame`, `HashFrame`
+- `types.rs` — `GlobalMetadata` (version, base, `_reserved_`, `_extra_`), `DataObjectDescriptor`, `IndexFrame`, `HashFrame`
 - `dtype.rs` — All 15 dtypes (float16/32/64, bfloat16, complex64/128, int/uint 8-64, bitmask)
 - `hash.rs` — xxh3 hashing + verification (xxh3 only)
-- `encode.rs` — Full encode pipeline: validate → build pipeline config → encode per object → hash → assemble frames. Auto-populates payload entries.
+- `encode.rs` — Full encode pipeline: validate → build pipeline config → encode per object → hash → assemble frames. Auto-populates `base[i]._reserved_.tensor` entries. Validates that client code does not write to `_reserved_`.
 - `decode.rs` — `decode()`, `decode_metadata()`, `decode_object()`, `decode_range()` (split results by default, `join` parameter)
 - `file.rs` — `TensogramFile`: open, create, lazy scan, append, seek-based random access
 - `iter.rs` — `MessageIter` (zero-copy buffer), `ObjectIter` (lazy per-object decode), `FileMessageIter` (seek-based file), `objects_metadata()` (descriptor-only)
@@ -98,7 +98,7 @@ Tested indirectly via C++ wrapper (105 tests).
 
 ## tensogram-python (PyO3)
 
-97 pytest tests.
+226 pytest tests.
 
 - Full Python API with NumPy integration
 - `encode()`, `decode()`, `decode_metadata()`, `decode_object()`, `decode_range()`, `scan()`
@@ -108,7 +108,7 @@ Tested indirectly via C++ wrapper (105 tests).
   - `for msg in file:` — iterate all messages (owns independent file handle, free-threaded safe)
   - `file[i]`, `file[-1]` — index by position (negative indexing)
   - `file[1:10:2]` — slice returns list of Message namedtuples
-- `Metadata` with `version`, `common`, `payload`, dict-style access
+- `Metadata` with `version`, `base`, `_reserved_`, `_extra_`, dict-style access
 - `DataObjectDescriptor` with all tensor + encoding fields
 - All 10 numeric numpy dtypes + float16/bfloat16/complex support
 - Zero-copy for u8/i8, safe i128→i64 bounds check
@@ -116,17 +116,17 @@ Tested indirectly via C++ wrapper (105 tests).
 
 ## tensogram-grib
 
-15 tests (5 unit + 10 integration).
+17 tests (0 unit + 17 integration).
 
 - `convert_grib_file()` via ecCodes, extracts ~40 MARS keys dynamically
 - Grouping modes: `OneToOne`, `MergeAll`
-- Key partitioning: identical → `common["mars"]`, varying → `payload[i]["mars"]`
-- `preserve_all_keys` option: 6 additional ecCodes namespaces under `grib` sub-object
+- All MARS keys stored in each `base[i]["mars"]` entry independently (no common/varying partitioning)
+- `preserve_all_keys` option: 6 additional ecCodes namespaces under `grib` sub-object in each `base[i]` entry
 - 4 real ECMWF opendata GRIB test fixtures (IFS 0.25° operational)
 
 ## tensogram-xarray
 
-113 tests, 97% coverage. Separate pure-Python package.
+181 tests, ~98% coverage. Separate pure-Python package.
 
 - xarray backend engine: `engine="tensogram"` for `xr.open_dataset()`
 - `TensogramBackendArray` — lazy loading with N-D random-access slice mapping
@@ -143,8 +143,8 @@ Tested indirectly via C++ wrapper (105 tests).
 ### C++ (5 examples, C++ wrapper API)
 01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 file_api, 05 iterators
 
-### Python (9 examples)
-01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 multi_object, 05 file_api, 06 hash_and_errors, 07 iterators, 08 xarray_integration, 09 dask_distributed
+### Python (11 examples)
+01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 multi_object, 05 file_api, 06 hash_and_errors, 07 iterators, 08 xarray_integration, 08 zarr_backend, 09 dask_distributed, 09 streaming_consumer
 
 ## Documentation (mdbook)
 
@@ -169,13 +169,13 @@ Tested indirectly via C++ wrapper (105 tests).
 - `TensogramStore` — implements `zarr.abc.store.Store` ABC with full async interface
 - **Read path**: scans `.tgm` file, builds virtual Zarr key space, serves `get()` from decoded objects
   - Each TGM data object → one Zarr array with single chunk (chunk_shape = array_shape)
-  - Root `zarr.json` synthesized from `GlobalMetadata` (common + extra → attributes)
+  - Root `zarr.json` synthesized from `GlobalMetadata` (`_extra_` → attributes)
   - Per-array `zarr.json` synthesized from `DataObjectDescriptor` (shape, dtype, encoding metadata)
   - Chunk keys use correct Zarr v3 multi-dimensional format (`c/0/0` for 2D, `c/0/0/0` for 3D)
   - Variable naming from metadata (`mars.param`, `name`, `param`) with deduplication suffix
   - Byte-range support: `RangeByteRequest`, `OffsetByteRequest`, `SuffixByteRequest`
 - **Write path**: buffers chunk data in memory, assembles into TGM message on `close()`
-  - Group attributes → `GlobalMetadata.common`
+  - Group attributes → `GlobalMetadata._extra_`
   - Array metadata → `DataObjectDescriptor` with dtype/shape/encoding params
   - Supports `mode="w"` (create) and `mode="a"` (append)
 - **Listing**: `list()`, `list_prefix()`, `list_dir()` — full async generators over virtual key space
@@ -201,7 +201,7 @@ Tested indirectly via C++ wrapper (105 tests).
   - `delete("zarr.json")` now clears `_write_group_attrs` to prevent stale state on flush
   - Replaced deprecated `ndarray.newbyteorder()` with `.view(dtype.newbyteorder())` for NumPy 2.x compatibility
 - **Edge case coverage**: 34 edge case tests (invalid mode, negative index, slash names, triple duplicates, zero-object messages, chunk key shapes 0D-5D, byte range boundaries, fill values, lifecycle double-open/close, dotted_get paths)
-- 172 tests: 43 mapping + 16 store read + 4 store write + 12 round-trip + 16 Zarr integration + 34 edge cases + 47 coverage gap tests
+- 204 tests: 43 mapping + 16 store read + 4 store write + 12 round-trip + 16 Zarr integration + 39 edge cases + 74 coverage gap tests
 - 0 ruff lint warnings
 - Documentation: `docs/src/guide/zarr-backend.md` with mermaid diagram, edge cases section, error handling table
 - Example: `examples/python/08_zarr_backend.py`
@@ -212,6 +212,32 @@ Tested indirectly via C++ wrapper (105 tests).
 - All Python envs now use `uv venv .venv` + `uv pip install` (replaces `python -m venv` + `pip install`)
 - Legacy `ci.yaml` removed; single authoritative `ci.yml` remains
 - Local dev instructions updated in `CLAUDE.md`, `README.md`, `CONTRIBUTING.md`, `docs/`, `examples/python/README.md`
+
+## Metadata Major Refactor (v0.6.0)
+
+- **Removed** `common` (shared metadata) and `payload` (per-object metadata array) from `GlobalMetadata`
+- **Added** `base` — per-object metadata array where each entry holds ALL metadata for that object independently, no tracking of commonalities
+- **Renamed** `reserved` → `_reserved_` in CBOR (library internals: encoder, time, uuid)
+- **Renamed** `extra` → `_extra_` in CBOR (client-writable catch-all for message-level annotations)
+- Auto-populated keys (ndim/shape/strides/dtype) now live under `base[i]["_reserved_"]["tensor"]` instead of directly in `payload[i]`
+- **Added** `compute_common()` utility that extracts common keys from base entries when needed (e.g. for display or merge)
+- Commonalities are computed in software, not encoded in the wire format
+- Encoder validates that client code does not write to `_reserved_` at any level
+- All documentation updated to reflect new metadata structure
+
+## Error Handling Review (post-refactor)
+
+Comprehensive audit of all Rust library code:
+
+- **No panics**: confirmed zero `unwrap()`, `expect()`, `panic!()`, `todo!()`, `unimplemented!()` in non-test library code across all crates
+- **Integer overflow**: all `as usize` casts on `total_length` (u64) replaced with `usize::try_from()` + proper error propagation in decode paths; scan paths use `as usize` with subsequent bounds checks (truncation is harmless)
+- **Truncation**: `zstd_level` and `blosc2_clevel` i64→i32 casts replaced with `i32::try_from()` + error propagation
+- **cbor_offset validation**: added bounds check in `decode_data_object_frame` ensuring offset is within `[FRAME_HEADER_SIZE, cbor_offset_pos]`
+- **Buffer underflow**: added `checked_sub()` for `buf.len() - POSTAMBLE_SIZE` in streaming-mode decode to prevent underflow on short buffers
+- **Logging**: `eprintln!` in `hash.rs` for unknown hash algorithms replaced with `tracing::warn!` for consistency
+- **Comments**: added safety comments on all `as` casts and array indexing in `wire.rs` read helpers, `civil_from_days` doe cast, and `get_f64_param` precision note
+- **Error messages**: all errors include what went wrong, where, and relevant values (expected vs actual)
+- **Documentation**: `docs/src/guide/error-handling.md` updated with all metadata-refactor error paths (encoding, decoding, streaming, CLI), no-panic guarantee section
 
 ## Dependencies
 

@@ -27,15 +27,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .flat_map(|i| (i as f32 * 0.001).to_be_bytes())
         .collect();
 
+    // ── Per-object metadata → base[0] ───────────────────────────────────────
+    // Each base entry holds ALL metadata for one object independently.
+    // Shared keys (class, date, step, type) are repeated in each entry.
     let obj0_mars = Value::Map(vec![
+        (Value::Text("class".into()), Value::Text("od".into())),
+        (Value::Text("date".into()), Value::Text("20260401".into())),
+        (Value::Text("step".into()), Value::Integer(6.into())),
+        (Value::Text("type".into()), Value::Text("fc".into())),
         (
             Value::Text("param".into()),
             Value::Text("wave_spectra".into()),
         ),
         (Value::Text("levtype".into()), Value::Text("sfc".into())),
     ]);
-    let mut obj0_payload = BTreeMap::new();
-    obj0_payload.insert("mars".to_string(), obj0_mars);
+    let mut obj0_base = BTreeMap::new();
+    obj0_base.insert("mars".to_string(), obj0_mars);
 
     // ── Object 1: land/sea mask (uint8, lat × lon) ────────────────────────────
     let mask: Vec<u8> = (0..(nlat * nlon))
@@ -43,21 +50,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     let obj1_mars = Value::Map(vec![
-        (Value::Text("param".into()), Value::Text("lsm".into())),
-        (Value::Text("levtype".into()), Value::Text("sfc".into())),
-    ]);
-    let mut obj1_payload = BTreeMap::new();
-    obj1_payload.insert("mars".to_string(), obj1_mars);
-
-    // ── Shared forecast context → common["mars"] ──────────────────────────────
-    let mars_common = Value::Map(vec![
         (Value::Text("class".into()), Value::Text("od".into())),
         (Value::Text("date".into()), Value::Text("20260401".into())),
         (Value::Text("step".into()), Value::Integer(6.into())),
         (Value::Text("type".into()), Value::Text("fc".into())),
+        (Value::Text("param".into()), Value::Text("lsm".into())),
+        (Value::Text("levtype".into()), Value::Text("sfc".into())),
     ]);
-    let mut common = BTreeMap::new();
-    common.insert("mars".to_string(), mars_common);
+    let mut obj1_base = BTreeMap::new();
+    obj1_base.insert("mars".to_string(), obj1_mars);
 
     // ── Descriptors: one per object ───────────────────────────────────────────
     //
@@ -95,8 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let global_meta = GlobalMetadata {
         version: 2,
-        common,
-        payload: vec![obj0_payload, obj1_payload],
+        base: vec![obj0_base, obj1_base],
         ..Default::default()
     };
 
