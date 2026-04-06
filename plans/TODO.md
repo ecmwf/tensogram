@@ -30,7 +30,7 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Builds
 
-- [ ] CI matrix for all three language test suites on every commit (partially done — Rust, Python, C++ run but GRIB tests gated on ecCodes availability)
+- [x] ~~CI matrix~~ → `.github/workflows/ci.yml` — Rust (ubuntu+macos), Python (3.12+3.13, ubuntu+macos), xarray, zarr, C++ (ubuntu+macos), docs. GRIB gated on ecCodes.
 
 ## Tests and Examples
 
