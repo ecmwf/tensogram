@@ -7,14 +7,14 @@
 
 - **Version:** 0.4.0
 - **Workspace:** 5 default crates + 2 optional (Python, GRIB) + 1 separate package (xarray)
-- **Tests:** 572 total (257 Rust + 97 Python + 113 xarray + 105 C++)
+- **Tests:** 601 total (279 Rust + 97 Python + 113 xarray + 109 C++ + 3 golden)
 - **Quality:** 0 clippy warnings, 90.5% Rust line coverage
 
 ## tensogram-core
 
 Unit, integration, adversarial, and edge-case tests.
 
-- `wire.rs` — v2 frame-based wire format: Preamble (24B), FrameHeader (16B), Postamble (16B), FrameType enum, MessageFlags, DataObjectFlags
+- `wire.rs` — v2 frame-based wire format: Preamble (24B), FrameHeader (16B), Postamble (16B), FrameType enum (incl. PrecederMetadata type 8), MessageFlags (incl. bit 6 PRECEDER_METADATA), DataObjectFlags
 - `framing.rs` — `encode_message()` with two-pass index construction, `decode_message()`, `scan()` for multi-message buffers. Decomposed into 5 focused helpers.
 - `metadata.rs` — Deterministic CBOR encoding for GlobalMetadata, DataObjectDescriptor, IndexFrame, HashFrame (three-step: serialize → canonicalize → write). `verify_canonical_cbor()` utility.
 - `types.rs` — `GlobalMetadata` (version, common, payload, reserved, extra), `DataObjectDescriptor`, `IndexFrame`, `HashFrame`
@@ -24,7 +24,7 @@ Unit, integration, adversarial, and edge-case tests.
 - `decode.rs` — `decode()`, `decode_metadata()`, `decode_object()`, `decode_range()` (split results by default, `join` parameter)
 - `file.rs` — `TensogramFile`: open, create, lazy scan, append, seek-based random access
 - `iter.rs` — `MessageIter` (zero-copy buffer), `ObjectIter` (lazy per-object decode), `FileMessageIter` (seek-based file), `objects_metadata()` (descriptor-only)
-- `streaming.rs` — `StreamingEncoder<W: Write>`: progressive encode, footer hash/index, no buffering
+- `streaming.rs` — `StreamingEncoder<W: Write>`: progressive encode, footer hash/index, no buffering, `write_preceder()` for per-object streaming metadata
 - Feature gates: `mmap` (memmap2 zero-copy), `async` (tokio spawn_blocking)
 - `DecodePhase` enum for frame ordering validation
 
@@ -65,7 +65,7 @@ Tested indirectly via C++ wrapper (105 tests).
 - Error codes: `TGM_ERROR_OK` through `TGM_ERROR_END_OF_ITER`
 - Thread-local error messages via `tgm_last_error()`
 - Iterator API: `tgm_buffer_iter_*`, `tgm_file_iter_*`, `tgm_object_iter_*`
-- Streaming encoder: `tgm_streaming_encoder_create/write/count/finish/free`
+- Streaming encoder: `tgm_streaming_encoder_create/write/write_preceder/count/finish/free`
 - Auto-generated `tensogram.h` (~544 lines) via cbindgen
 - Panic safety: `panic = "abort"` in both release and dev profiles
 - Vec capacity UB fixed (shrink_to_fit before forget), null pointer validation

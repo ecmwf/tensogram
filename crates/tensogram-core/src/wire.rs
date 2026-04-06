@@ -33,6 +33,10 @@ pub enum FrameType {
     FooterHash = 5,
     FooterIndex = 6,
     FooterMetadata = 7,
+    /// Per-object metadata frame that immediately precedes a DataObject frame.
+    /// Carries a GlobalMetadata CBOR with `common` empty and a single-entry
+    /// `payload` array containing metadata for the next data object.
+    PrecederMetadata = 8,
 }
 
 impl FrameType {
@@ -45,6 +49,7 @@ impl FrameType {
             5 => Ok(FrameType::FooterHash),
             6 => Ok(FrameType::FooterIndex),
             7 => Ok(FrameType::FooterMetadata),
+            8 => Ok(FrameType::PrecederMetadata),
             _ => Err(TensogramError::Framing(format!("unknown frame type: {v}"))),
         }
     }
@@ -63,6 +68,8 @@ impl MessageFlags {
     pub const FOOTER_INDEX: u16 = 1 << 3;
     pub const HEADER_HASHES: u16 = 1 << 4;
     pub const FOOTER_HASHES: u16 = 1 << 5;
+    /// At least one PrecederMetadata frame is present in the data objects section.
+    pub const PRECEDER_METADATA: u16 = 1 << 6;
 
     pub fn new(bits: u16) -> Self {
         Self(bits)
@@ -324,8 +331,9 @@ mod tests {
         assert_eq!(FrameType::from_u16(1).unwrap(), FrameType::HeaderMetadata);
         assert_eq!(FrameType::from_u16(4).unwrap(), FrameType::DataObject);
         assert_eq!(FrameType::from_u16(7).unwrap(), FrameType::FooterMetadata);
+        assert_eq!(FrameType::from_u16(8).unwrap(), FrameType::PrecederMetadata);
         assert!(FrameType::from_u16(0).is_err());
-        assert!(FrameType::from_u16(8).is_err());
+        assert!(FrameType::from_u16(9).is_err());
     }
 
     #[test]
@@ -340,6 +348,35 @@ mod tests {
 
         flags.set(MessageFlags::FOOTER_INDEX);
         assert!(flags.has(MessageFlags::FOOTER_INDEX));
+    }
+
+    #[test]
+    fn test_preceder_metadata_flag() {
+        let mut flags = MessageFlags::default();
+        assert!(!flags.has(MessageFlags::PRECEDER_METADATA));
+
+        flags.set(MessageFlags::PRECEDER_METADATA);
+        assert!(flags.has(MessageFlags::PRECEDER_METADATA));
+        assert_eq!(flags.bits() & (1 << 6), 1 << 6);
+    }
+
+    #[test]
+    fn test_preceder_metadata_frame_header_round_trip() {
+        let fh = FrameHeader {
+            frame_type: FrameType::PrecederMetadata,
+            version: 1,
+            flags: 0,
+            total_length: 256,
+        };
+        let mut buf = Vec::new();
+        fh.write_to(&mut buf);
+        assert_eq!(buf.len(), FRAME_HEADER_SIZE);
+
+        let parsed = FrameHeader::read_from(&buf).unwrap();
+        assert_eq!(parsed.frame_type, FrameType::PrecederMetadata);
+        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.flags, 0);
+        assert_eq!(parsed.total_length, 256);
     }
 
     #[test]

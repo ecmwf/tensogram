@@ -16,6 +16,7 @@ Each frame is always identified by a start marker ASCII 'FR' and a uint16 that d
 5 - FOOTER HASH FRAME
 6 - FOOTER INDEX FRAME
 7 - FOOTER METADATA FRAME
+8 - PRECEDER METADATA FRAME
 
 ```
 FRAME (16 bytes)
@@ -53,8 +54,11 @@ Here is the overall message format:
 ├──────────────────────────────────────────────────────────────┤
 │  HEADER HASH FRAME CBOR [count, hash_type, hashes] (optional)│
 ├──────────────────────────────────────────────────────────────┤
+│  PRECEDER METADATA FRAME (for object 0, optional)            │
 │  DATA OBJECT FRAME  header + payload + footer  (object 0)    │
+│  PRECEDER METADATA FRAME (for object 1, optional)            │
 │  DATA OBJECT FRAME  header + payload + footer  (object 1)    │
+│  DATA OBJECT FRAME  header + payload + footer  (object 2)    │
 │  ...                (any number of objects)                  │
 ├──────────────────────────────────────────────────────────────┤
 │  FOOTER HASH FRAME CBOR [count, hash_type, hashes] (optional)│
@@ -83,12 +87,13 @@ Offset  Size    Field
 ```
 
 The flags in the message header preamble will indicate if the optional frames exist:
-- Header Metadata Frame
-- Footer Metadata Frame
-- Header Index Frame
-- Footer Index Frame
-- Header Hashes Frame
-- Footer Hashes Frame
+- Bit 0: Header Metadata Frame
+- Bit 1: Footer Metadata Frame
+- Bit 2: Header Index Frame
+- Bit 3: Footer Index Frame
+- Bit 4: Header Hashes Frame
+- Bit 5: Footer Hashes Frame
+- Bit 6: Preceder Metadata Frames present
 
 Either a header or a footer metadata frame must always be present, ie Messages cannot be without metadata. Indexes and hashes, in header and footer are optional, but highly encouraged to always have 1 of them. Default is to add them, in the header encoding in a single buffer or default in the footer if encoding while streaming.
 
@@ -145,6 +150,42 @@ Offset  Size    Field
 │  DATA OBJ FOOTER CBOR offset (uint64) + end_magic 'ENDF'     │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+## Preceder Metadata Frame
+
+A Preceder Metadata Frame (type 8) optionally precedes a Data Object Frame, carrying per-object metadata for the immediately following data object. This is primarily useful for streaming producers that may not know ahead of time when to send the footer and want to associate per-object metadata early.
+
+**Ordering rules:**
+- A Preceder Metadata Frame belongs in the data objects phase (same phase as DataObject frames).
+- It MUST be followed by exactly one DataObject frame. Two consecutive Preceder frames without an intervening DataObject are invalid.
+- A Preceder frame not followed by a DataObject (e.g., at end of stream or before a footer) is invalid.
+- Preceders are optional per-object: some objects in a message may have a preceder while others do not.
+
+**CBOR structure:** Uses the same GlobalMetadata CBOR format as header/footer metadata frames, with:
+- `common`: empty (not relevant for per-object metadata)
+- `payload`: a single-entry array containing one metadata map for the next data object
+- `reserved`: empty
+- `extra`: empty
+
+Example CBOR:
+```
+{
+  "version": 2,
+  "payload": [
+    {
+      "mars": {"param": "2t", "levtype": "sfc"},
+      "units": "K"
+    }
+  ]
+}
+```
+
+**Merge semantics on decode:** When a decoder encounters both a Preceder and a footer metadata frame with `payload[i]` for the same object index:
+- Keys from the Preceder override keys from the footer on conflict (preceder wins).
+- Keys present only in the footer (e.g., auto-populated `ndim`, `shape`, `strides`, `dtype`) are preserved.
+- The decoder presents a unified `GlobalMetadata.payload` to the consumer; the preceder/footer distinction is transparent.
+
+**Preamble flag:** Bit 6 (`PRECEDER_METADATA`) in the preamble flags indicates that at least one Preceder Metadata Frame is present. In streaming mode, this flag is always set. In buffered mode, it is set only when preceders are explicitly emitted.
 
 ## Operations
 ### Stored-file reader (seekable, random access)

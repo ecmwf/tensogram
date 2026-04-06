@@ -755,6 +755,18 @@ public:
     streaming_encoder(const streaming_encoder&) = delete;
     streaming_encoder& operator=(const streaming_encoder&) = delete;
 
+    /// Write a PrecederMetadata frame for the next data object.
+    ///
+    /// @p metadata_json is a JSON object with per-object metadata keys
+    /// (e.g. `{"mars":{"param":"2t"}, "units":"K"}`).
+    ///
+    /// Must be followed by exactly one write_object() call before
+    /// another write_preceder() or finish().
+    void write_preceder(const std::string& metadata_json) {
+        detail::check(tgm_streaming_encoder_write_preceder(
+            handle_.get(), metadata_json.c_str()));
+    }
+
     /// Write a single data object.
     void write_object(const std::string& descriptor_json,
                       const std::uint8_t* data, std::size_t len) {

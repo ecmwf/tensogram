@@ -511,6 +511,19 @@ tgm_error tgm_streaming_encoder_create(const char *path,
                                        tgm_streaming_encoder_t **out);
 
 /**
+ * Write a PrecederMetadata frame for the next data object.
+ *
+ * `metadata_json` is a JSON object with per-object metadata keys
+ * (e.g. `{"mars": {"param": "2t"}, "units": "K"}`).  The keys
+ * become `payload[0]` in a GlobalMetadata CBOR with empty `common`.
+ *
+ * Must be followed by exactly one `tgm_streaming_encoder_write` call
+ * before another preceder or `tgm_streaming_encoder_finish`.
+ */
+tgm_error tgm_streaming_encoder_write_preceder(tgm_streaming_encoder_t *enc,
+                                               const char *metadata_json);
+
+/**
  * Write a single data object to the streaming encoder.
  *
  * `descriptor_json` is a JSON object with the descriptor fields

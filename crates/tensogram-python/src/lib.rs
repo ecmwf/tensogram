@@ -648,7 +648,10 @@ fn make_encode_options(hash: Option<&str>) -> PyResult<EncodeOptions> {
         Some("xxh3") => Some(HashAlgorithm::Xxh3),
         Some(other) => return Err(PyValueError::new_err(format!("unknown hash: {other}"))),
     };
-    Ok(EncodeOptions { hash_algorithm })
+    Ok(EncodeOptions {
+        hash_algorithm,
+        ..Default::default()
+    })
 }
 
 /// Extract a list of (descriptor, raw_bytes) pairs from a Python list of
