@@ -468,7 +468,7 @@ impl PyTensogramFile {
 
         if let Ok(slice) = key.downcast::<pyo3::types::PySlice>() {
             let indices = slice.indices(count as isize)?;
-            let mut items: Vec<PyObject> = Vec::new();
+            let mut items: Vec<PyObject> = Vec::with_capacity(indices.slicelength as usize);
             let mut i = indices.start;
             while (indices.step > 0 && i < indices.stop)
                 || (indices.step < 0 && i > indices.stop)
@@ -479,13 +479,24 @@ impl PyTensogramFile {
             return Ok(PyList::new(py, items)?.into_any().unbind());
         }
 
-        Err(PyValueError::new_err("index must be an integer or slice"))
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "indices must be integers or slices",
+        ))
     }
 }
 
 /// Construct a ``Message(metadata, objects)`` namedtuple.
+///
+/// The Message class is cached after first lookup to avoid repeated
+/// import + getattr on every decode call.
 fn pack_message(py: Python<'_>, meta: PyMetadata, objects: PyObject) -> PyResult<PyObject> {
-    let msg_type = py.import("tensogram")?.getattr("Message")?;
+    use pyo3::sync::GILOnceCell;
+    static MESSAGE_TYPE: GILOnceCell<PyObject> = GILOnceCell::new();
+    let msg_type = MESSAGE_TYPE
+        .get_or_try_init::<_, PyErr>(py, || {
+            Ok(py.import("tensogram")?.getattr("Message")?.unbind())
+        })?
+        .bind(py);
     let meta_obj = meta.into_pyobject(py)?.into_any();
     let objs_obj = objects.bind(py).clone().into_any();
     Ok(msg_type.call1((meta_obj, objs_obj))?.unbind())

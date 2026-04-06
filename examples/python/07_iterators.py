@@ -3,10 +3,11 @@
 decode(), decode_message(), file iteration, and iter_messages() return Message
 namedtuples with .metadata and .objects:
 
-    msg = file[0]
-    msg.metadata              # Metadata object
-    msg.objects               # list[(DataObjectDescriptor, ndarray)]
-    meta, objects = msg       # tuple unpacking also works
+    with tensogram.TensogramFile.open("data.tgm") as f:
+        msg = f[0]
+        msg.metadata          # Metadata object
+        msg.objects           # list[(DataObjectDescriptor, ndarray)]
+        meta, objects = msg   # tuple unpacking also works
 
 TensogramFile supports standard Python iteration and indexing:
 

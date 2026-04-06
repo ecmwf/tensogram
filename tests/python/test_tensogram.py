@@ -1290,7 +1290,7 @@ class TestEdgeCases:
             data = np.ones(4, dtype=np.float32)
             f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
 
-        with tensogram.TensogramFile.open(path) as f, pytest.raises((TypeError, ValueError)):
+        with tensogram.TensogramFile.open(path) as f, pytest.raises(TypeError):
             f["bad"]
 
     # ── Message namedtuple ──
