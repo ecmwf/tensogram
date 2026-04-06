@@ -33,3 +33,56 @@ pub fn run(input: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tensogram_core::{
+        decode, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
+        GlobalMetadata,
+    };
+
+    fn make_test_file(dir: &std::path::Path) -> std::path::PathBuf {
+        let path = dir.join("reshuffle_input.tgm");
+        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".into(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".into(),
+            filter: "none".into(),
+            compression: "none".into(),
+            params: Default::default(),
+            hash: None,
+        };
+        let data = vec![0u8; 16];
+        let meta = GlobalMetadata {
+            version: 2,
+            ..Default::default()
+        };
+        f.append(&meta, &[(&desc, &data)], &EncodeOptions::default())
+            .unwrap();
+        f.append(&meta, &[(&desc, &data)], &EncodeOptions::default())
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn reshuffle_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = make_test_file(dir.path());
+        let output = dir.path().join("reshuffled.tgm");
+        run(&input, &output).unwrap();
+
+        // Verify output is valid and has same content
+        let mut f = tensogram_core::TensogramFile::open(&output).unwrap();
+        assert_eq!(f.message_count().unwrap(), 2);
+        let msg = f.read_message(0).unwrap();
+        let (meta, objs) = decode(&msg, &DecodeOptions::default()).unwrap();
+        assert_eq!(meta.version, 2);
+        assert_eq!(objs.len(), 1);
+    }
+}

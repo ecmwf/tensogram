@@ -212,4 +212,70 @@ mod tests {
     fn parse_strategy_invalid() {
         assert!(MergeStrategy::parse("unknown").is_err());
     }
+
+    // ── Integration tests ──
+
+    fn make_test_file(dir: &std::path::Path, name: &str, param: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let desc = tensogram_core::DataObjectDescriptor {
+            obj_type: "ntensor".into(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: tensogram_core::Dtype::Float32,
+            byte_order: tensogram_core::ByteOrder::Big,
+            encoding: "none".into(),
+            filter: "none".into(),
+            compression: "none".into(),
+            params: Default::default(),
+            hash: None,
+        };
+        let data = vec![0u8; 16];
+        let mut extra = BTreeMap::new();
+        extra.insert(
+            "param".to_string(),
+            ciborium::Value::Text(param.to_string()),
+        );
+        let meta = tensogram_core::GlobalMetadata {
+            version: 2,
+            extra,
+            ..Default::default()
+        };
+        f.append(
+            &meta,
+            &[(&desc, &data)],
+            &tensogram_core::EncodeOptions::default(),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn merge_run_first_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = make_test_file(dir.path(), "a.tgm", "2t");
+        let b = make_test_file(dir.path(), "b.tgm", "msl");
+        let out = dir.path().join("merged.tgm");
+        run(&[a, b], &out, "first").unwrap();
+        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        assert_eq!(f.message_count().unwrap(), 1); // merged into 1 message
+    }
+
+    #[test]
+    fn merge_run_last_strategy() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = make_test_file(dir.path(), "a.tgm", "2t");
+        let b = make_test_file(dir.path(), "b.tgm", "msl");
+        let out = dir.path().join("merged.tgm");
+        run(&[a, b], &out, "last").unwrap();
+    }
+
+    #[test]
+    fn merge_run_no_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("merged.tgm");
+        let empty: Vec<std::path::PathBuf> = vec![];
+        assert!(run(&empty, &out, "first").is_err());
+    }
 }
