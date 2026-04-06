@@ -34,9 +34,7 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Tests and Examples
 
-- [ ] *consumer-side-streaming*:
-  - please ensure there is python example in examples/  showing how to decode a stream, from downloading from a https file (you may need to moc the server) and decode the tensogram stream as it arrives without any large memory buffer allocation containing the whole tensogram message. At the recieving end, it should create xarray datasets locally in memory as the data object frames arrive. 
-  - Check that internally this indeed to parses the data objects as they arrive (we assume we can cope with a single data object at a time in memory) and transform them to xarray. This is possible because in streaming we insert the PRECEDER METADATA FRAME.
+- [x] ~~consumer-side-streaming~~ → `examples/python/09_streaming_consumer.py` — mock HTTP server, chunked download, progressive scan+decode, xarray Dataset assembly
 
 ## Optimisation
  
