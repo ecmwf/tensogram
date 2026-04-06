@@ -22,3 +22,57 @@ pub fn run(files: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tensogram_core::{ByteOrder, DataObjectDescriptor, EncodeOptions, GlobalMetadata};
+
+    fn make_test_file(dir: &std::path::Path, n_messages: usize) -> PathBuf {
+        let path = dir.join("test.tgm");
+        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".into(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: tensogram_core::Dtype::Float32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".into(),
+            filter: "none".into(),
+            compression: "none".into(),
+            params: Default::default(),
+            hash: None,
+        };
+        let data = vec![0u8; 16]; // 4 × f32
+        let meta = GlobalMetadata {
+            version: 2,
+            ..Default::default()
+        };
+        for _ in 0..n_messages {
+            f.append(&meta, &[(&desc, &data)], &EncodeOptions::default())
+                .unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn info_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path(), 3);
+        run(&[path]).unwrap();
+    }
+
+    #[test]
+    fn info_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path(), 0);
+        run(&[path]).unwrap();
+    }
+
+    #[test]
+    fn info_missing_file() {
+        let result = run(&[PathBuf::from("/nonexistent.tgm")]);
+        assert!(result.is_err());
+    }
+}

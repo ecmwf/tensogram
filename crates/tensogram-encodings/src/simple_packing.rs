@@ -392,4 +392,181 @@ mod tests {
         };
         assert!(encode(&values, &params).is_err());
     }
+
+    // ── Coverage: edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn test_compute_params_nan_detection() {
+        let values = vec![1.0, f64::NAN, 3.0];
+        let result = compute_params(&values, 16, 0);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PackingError::NanValue(idx) => assert_eq!(idx, 1),
+            other => panic!("expected NanValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compute_params_nan_at_start() {
+        let values = vec![f64::NAN, 1.0, 2.0];
+        match compute_params(&values, 16, 0).unwrap_err() {
+            PackingError::NanValue(idx) => assert_eq!(idx, 0),
+            other => panic!("expected NanValue(0), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compute_params_empty_array() {
+        let params = compute_params(&[], 8, 0).unwrap();
+        assert_eq!(params.reference_value, 0.0);
+        assert_eq!(params.binary_scale_factor, 0);
+    }
+
+    #[test]
+    fn test_compute_params_zero_bits() {
+        let params = compute_params(&[1.5, 2.5], 0, 0).unwrap();
+        assert_eq!(params.bits_per_value, 0);
+        assert_eq!(params.reference_value, 1.5);
+    }
+
+    #[test]
+    fn test_compute_params_bpv_too_large() {
+        match compute_params(&[1.0], 65, 0).unwrap_err() {
+            PackingError::BitsPerValueTooLarge(bpv) => assert_eq!(bpv, 65),
+            other => panic!("expected BitsPerValueTooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compute_params_constant_field() {
+        // All values identical → range = 0
+        let params = compute_params(&[42.0; 100], 16, 0).unwrap();
+        assert_eq!(params.binary_scale_factor, 0);
+        assert!((params.reference_value - 42.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_compute_params_64_bit() {
+        // bits_per_value = 64 → uses u64::MAX branch
+        let params = compute_params(&[0.0, 1e18], 64, 0).unwrap();
+        assert_eq!(params.bits_per_value, 64);
+    }
+
+    #[test]
+    fn test_encode_zero_bits() {
+        let params = SimplePackingParams {
+            reference_value: 5.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 0,
+        };
+        let encoded = encode(&[5.0, 5.0, 5.0], &params).unwrap();
+        assert!(encoded.is_empty());
+    }
+
+    #[test]
+    fn test_decode_zero_bits() {
+        let params = SimplePackingParams {
+            reference_value: 7.5,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 0,
+        };
+        let decoded = decode(&[], 5, &params).unwrap();
+        assert_eq!(decoded.len(), 5);
+        for v in &decoded {
+            assert!((v - 7.5).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_decode_insufficient_data() {
+        let params = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 8,
+        };
+        // Need 100 bytes for 100 values at 8 bpv, provide only 10
+        match decode(&[0u8; 10], 100, &params).unwrap_err() {
+            PackingError::InsufficientData { expected, actual } => {
+                assert_eq!(expected, 100);
+                assert_eq!(actual, 10);
+            }
+            other => panic!("expected InsufficientData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_decode_range_zero_bits() {
+        let params = SimplePackingParams {
+            reference_value: 3.125,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 0,
+        };
+        // decode_range(packed, bit_offset, num_values, params)
+        let decoded = decode_range(&[], 0, 3, &params).unwrap();
+        assert_eq!(decoded.len(), 3);
+        for v in &decoded {
+            assert!((v - 3.125).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_decode_range_insufficient_data() {
+        let params = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 16,
+        };
+        // decode_range(packed, bit_offset, num_values, params)
+        // bit_offset=80, num_values=3, bpv=16 → need (80+48)/8 = 16 bytes, provide 8
+        match decode_range(&[0u8; 8], 80, 3, &params).unwrap_err() {
+            PackingError::InsufficientData { .. } => {}
+            other => panic!("expected InsufficientData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_encode_bpv_too_large() {
+        let params = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 65,
+        };
+        assert!(encode(&[1.0], &params).is_err());
+    }
+
+    #[test]
+    fn test_decode_bpv_too_large() {
+        let params = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 65,
+        };
+        assert!(decode(&[0u8; 16], 1, &params).is_err());
+    }
+
+    #[test]
+    fn test_decode_range_bpv_too_large() {
+        let params = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 65,
+        };
+        assert!(decode_range(&[0u8; 16], 0, 1, &params).is_err());
+    }
+
+    #[test]
+    fn test_write_read_bits_zero() {
+        // write_bits and read_bits with 0 bits should be no-ops
+        let mut buf = vec![0u8; 4];
+        write_bits(&mut buf, 0, 0, 0);
+        assert_eq!(read_bits(&buf, 0, 0), 0);
+    }
 }

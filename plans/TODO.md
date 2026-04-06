@@ -42,5 +42,5 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Code Quality
 
-- [~] code coverage: Rust core ~91%, Python 200 tests, C++ 109 tests. Remaining gaps are szip/zfp edge cases and CLI/FFI (tested via C++/integration, not measurable by cargo-llvm-cov). Total 888 tests.
+- [x] ~~code coverage~~ → simple_packing 97%, zfp 92%, CLI info 96%, 23 new Rust tests (313 total). Remaining: CLI dump/ls/get/reshuffle at 0% (integration-tested via binary), FFI at 0% (109 C++ tests). Total 911 tests.
 - [x] ~~add logging trace~~ → `tracing` crate instrumented on encode/decode/scan/file/pipeline. Activate with `TENSOGRAM_LOG=debug`

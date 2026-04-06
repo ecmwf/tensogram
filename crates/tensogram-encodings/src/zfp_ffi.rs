@@ -237,4 +237,51 @@ mod tests {
         assert_eq!(partial.len(), 200);
         assert_eq!(&partial[..], &full[100..300]);
     }
+
+    // ── Coverage: edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn zfp_compress_empty() {
+        let mode = ZfpMode::FixedRate { rate: 16.0 };
+        let result = zfp_compress_f64(&[], &mode).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn zfp_decompress_empty() {
+        let mode = ZfpMode::FixedRate { rate: 16.0 };
+        let result = zfp_decompress_f64(&[], 0, &mode).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn zfp_range_exceeds_total() {
+        let values = smooth_data(128);
+        let mode = ZfpMode::FixedRate { rate: 16.0 };
+        let compressed = zfp_compress_f64(&values, &mode).unwrap();
+        // Request range beyond total values
+        let result = zfp_decompress_range_f64(&compressed, values.len(), &mode, 100, 100);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn zfp_accuracy_mode_roundtrip() {
+        let values = smooth_data(256);
+        let mode = ZfpMode::FixedAccuracy { tolerance: 0.01 };
+        let compressed = zfp_compress_f64(&values, &mode).unwrap();
+        let decoded = zfp_decompress_f64(&compressed, values.len(), &mode).unwrap();
+        assert_eq!(decoded.len(), values.len());
+        for (orig, dec) in values.iter().zip(decoded.iter()) {
+            assert!((orig - dec).abs() <= 0.01);
+        }
+    }
+
+    #[test]
+    fn zfp_precision_mode_roundtrip() {
+        let values = smooth_data(256);
+        let mode = ZfpMode::FixedPrecision { precision: 32 };
+        let compressed = zfp_compress_f64(&values, &mode).unwrap();
+        let decoded = zfp_decompress_f64(&compressed, values.len(), &mode).unwrap();
+        assert_eq!(decoded.len(), values.len());
+    }
 }
