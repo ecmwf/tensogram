@@ -86,7 +86,8 @@ impl Drop for GribHandle {
 impl GribHandle {
     /// Create a handle from an ecCodes sample template by name.
     fn from_samples(name: &str) -> Result<Self, BenchmarkError> {
-        let name_c = CString::new(name).map_err(|e| BenchmarkError(e.to_string()))?;
+        let name_c = CString::new(name)
+            .map_err(|e| BenchmarkError(format!("invalid sample name '{name}': {e}")))?;
         let h =
             unsafe { codes_grib_handle_new_from_samples(std::ptr::null_mut(), name_c.as_ptr()) };
         if h.is_null() {
@@ -118,7 +119,8 @@ impl GribHandle {
     }
 
     fn set_long(&self, key: &str, val: i64) -> Result<(), BenchmarkError> {
-        let key_c = CString::new(key).map_err(|e| BenchmarkError(e.to_string()))?;
+        let key_c =
+            CString::new(key).map_err(|e| BenchmarkError(format!("invalid key '{key}': {e}")))?;
         let rc = unsafe { codes_set_long(self.0, key_c.as_ptr(), val as c_long) };
         if rc != 0 {
             Err(BenchmarkError(format!(
@@ -130,8 +132,10 @@ impl GribHandle {
     }
 
     fn set_string(&self, key: &str, val: &str) -> Result<(), BenchmarkError> {
-        let key_c = CString::new(key).map_err(|e| BenchmarkError(e.to_string()))?;
-        let val_c = CString::new(val).map_err(|e| BenchmarkError(e.to_string()))?;
+        let key_c =
+            CString::new(key).map_err(|e| BenchmarkError(format!("invalid key '{key}': {e}")))?;
+        let val_c = CString::new(val)
+            .map_err(|e| BenchmarkError(format!("invalid value '{val}' for key '{key}': {e}")))?;
         let mut len = val.len() + 1;
         let rc = unsafe { codes_set_string(self.0, key_c.as_ptr(), val_c.as_ptr(), &mut len) };
         if rc != 0 {
@@ -145,7 +149,10 @@ impl GribHandle {
 
     /// Encode (pack) `vals` into this GRIB message.  This is the timed operation.
     fn set_values(&self, vals: &[f64]) -> Result<(), BenchmarkError> {
-        let key_c = CString::new("values").map_err(|e| BenchmarkError(e.to_string()))?;
+        // "values" is a static ASCII string — CString::new cannot fail here,
+        // but we propagate the error for consistency.
+        let key_c = CString::new("values")
+            .map_err(|e| BenchmarkError(format!("invalid key 'values': {e}")))?;
         let rc =
             unsafe { codes_set_double_array(self.0, key_c.as_ptr(), vals.as_ptr(), vals.len()) };
         if rc != 0 {
@@ -160,7 +167,8 @@ impl GribHandle {
 
     /// Decode (unpack) values from this GRIB message.  This is the timed operation.
     fn get_values(&self, n: usize) -> Result<Vec<f64>, BenchmarkError> {
-        let key_c = CString::new("values").map_err(|e| BenchmarkError(e.to_string()))?;
+        let key_c = CString::new("values")
+            .map_err(|e| BenchmarkError(format!("invalid key 'values': {e}")))?;
         let mut buf = vec![0.0f64; n];
         let mut len = n;
         let rc =

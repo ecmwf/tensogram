@@ -198,6 +198,32 @@ ecCodes handles this correctly, but it differs from the typical nearly-square gr
 used in production. For representative GRIB benchmarks, use composite sizes
 (e.g. 10 000 000 = 2500 × 4000).
 
+## Error handling
+
+All benchmark functions return `Result<_, BenchmarkError>` — no panics, no
+`unwrap()` in library code. Errors propagate to the binary entry point, which
+prints them to stderr and exits with code 1.
+
+### Error paths
+
+| Source | When | Message |
+|--------|------|---------|
+| Input validation | `num_points = 0` | `"num_points must be > 0"` |
+| Input validation | `iterations = 0` | `"iterations must be > 0"` |
+| `compute_params` | All values identical (zero range) | `"sp(24) params: ..."` with inner error |
+| `encode_pipeline` | Codec failure (e.g. unsupported config) | Pipeline error description |
+| `decode_pipeline` | Corrupted or truncated encoded data | Pipeline error description |
+| ecCodes C API | `codes_set_long` returns non-zero | `"codes_set_long(key, val) returned rc"` |
+| ecCodes C API | Handle creation returns null | `"codes_grib_handle_new_from_samples(GRIB2) returned null; check ECCODES_SAMPLES_PATH..."` |
+| CString conversion | Key/value contains interior NUL byte | `"invalid key 'name': nul byte found..."` |
+
+### Graceful degradation
+
+In the codec matrix benchmark, if a single combination fails (e.g. a codec is
+unavailable at runtime), the error is logged to stderr and an `[ERROR]` row
+appears in the output table with zero times and zero size. The remaining
+combinations continue to run. The GRIB comparison benchmark uses the same pattern.
+
 ## Reproducibility
 
 All benchmarks use a deterministic PRNG (SplitMix64) seeded by `--seed`. The same
