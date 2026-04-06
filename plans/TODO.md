@@ -20,13 +20,13 @@ For speculative ideas, see `IDEAS.md`.
 
 - [ ] *metadata-major-refactor*:
   - currently 'extra' is the serde catch-all for forward/backward compatibility. It ensures any CBOR key in a message survives round-trip even if the decoder doesn't know about it. In practice, most structured metadata currently should go into common (shared) or payload (per-object), with extra used only for ad-hoc annotations or unknown keys.
-  - refactor to remove 'common' and 'payload' from metadata objects. all structured will go into a single 'base' map.
-  - 'base' becomes an array per data object. all entries are independent.
-  - commonalities are computed in software after decoding cbor and only if requested or needed for algorithmic purposes (like merges and splits).
-  - namespaces still exist but not hardcoded and used for semantics.
+  - refactor to remove 'common' and 'payload' from metadata objects. all structured keys will go into a single 'base' map.
+  - 'base' becomes an array per data object. all entries are independent. no tracking of what is common.
+  - commonalities should only be computed in software after decoding cbor and only if requested or needed for algorithmic purposes (like merges and splits).
+  - namespaces still exist but not hardcoded. essentially 'base'
   - only special maps that remain are:
-    - '_reserved_' formerly 'reserved', used for internals of the library
-    - '_extra_' formerly 'extra', continues to serve as a catch-all
+    - '_reserved_' formerly 'reserved', used for internals of the library. client caller code cannot write to it, just read from.
+    - '_extra_' formerly 'extra', continues to serve as a catch-all that clients can write to and read from.
   - make all this explicity and updated in the docs/ and wire format.
 
 ## Documentation
