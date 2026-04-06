@@ -24,7 +24,8 @@ serde_json = "1"
 libaec-sys = "0.1"
 zstd = "0.13"
 lz4_flex = "0.11"
-blosc2 = { version = "0.2", default-features = false }
+blosc2 = { version = "0.2", default-features = false, features = ["zstd", "zlib"] }
+blosc2-sys = { package = "blosc2-rs-sys", version = "0.1" }
 zfp-sys-cc = "0.2"
 sz3 = "0.4"
 

@@ -1,8 +1,23 @@
+use std::sync::Once;
+
 use blosc2::chunk::SChunk;
 use blosc2::{CParams, CompressAlgo, DParams};
 
 use super::{CompressResult, CompressionError, Compressor};
 use crate::pipeline::Blosc2Codec;
+
+/// Ensure the blosc2 C library is initialized.
+///
+/// Workaround: the `blosc2` crate (v0.2.2) calls `blosc2_init()` inside
+/// `SChunk::new()` but not `SChunk::from_buffer()`. Decode-only processes
+/// that never compress will hit an uninitialized library and fail.
+fn ensure_blosc2_init() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        // SAFETY: blosc2_init() has no preconditions and is safe to call multiple times.
+        unsafe { blosc2_sys::blosc2_init() };
+    });
+}
 
 fn map_err(e: blosc2::Error) -> CompressionError {
     CompressionError::Blosc2(format!("{e:?}"))
@@ -13,10 +28,8 @@ fn codec_to_algo(codec: &Blosc2Codec) -> CompressAlgo {
         Blosc2Codec::Blosclz => CompressAlgo::Blosclz,
         Blosc2Codec::Lz4 => CompressAlgo::Lz4,
         Blosc2Codec::Lz4hc => CompressAlgo::Lz4hc,
-        // Zlib and Zstd require cargo features on the blosc2 crate.
-        // Fall back to blosclz if the feature is not enabled.
-        Blosc2Codec::Zlib => CompressAlgo::Blosclz,
-        Blosc2Codec::Zstd => CompressAlgo::Blosclz,
+        Blosc2Codec::Zlib => CompressAlgo::Zlib,
+        Blosc2Codec::Zstd => CompressAlgo::Zstd,
     }
 }
 
@@ -28,9 +41,11 @@ pub struct Blosc2Compressor {
 
 impl Compressor for Blosc2Compressor {
     fn compress(&self, data: &[u8]) -> Result<CompressResult, CompressionError> {
+        ensure_blosc2_init();
+        let algo = codec_to_algo(&self.codec);
         let mut cparams = CParams::default();
         cparams
-            .compressor(codec_to_algo(&self.codec))
+            .compressor(algo)
             .clevel(self.clevel as u32)
             .typesize(self.typesize)
             .map_err(map_err)?;
@@ -46,6 +61,7 @@ impl Compressor for Blosc2Compressor {
     }
 
     fn decompress(&self, data: &[u8], _expected_size: usize) -> Result<Vec<u8>, CompressionError> {
+        ensure_blosc2_init();
         let schunk = SChunk::from_buffer(data.into()).map_err(map_err)?;
         let num_items = schunk.items_num();
         if num_items == 0 {
@@ -61,6 +77,7 @@ impl Compressor for Blosc2Compressor {
         byte_pos: usize,
         byte_size: usize,
     ) -> Result<Vec<u8>, CompressionError> {
+        ensure_blosc2_init();
         let schunk = SChunk::from_buffer(data.into()).map_err(map_err)?;
         let ts = schunk.typesize();
         if ts == 0 {
@@ -135,5 +152,56 @@ mod tests {
             .unwrap();
         assert_eq!(partial.len(), 500);
         assert_eq!(&partial[..], &data[200..700]);
+    }
+
+    #[test]
+    fn blosc2_round_trip_zstd() {
+        let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+        let compressor = Blosc2Compressor {
+            codec: Blosc2Codec::Zstd,
+            clevel: 3,
+            typesize: 1,
+        };
+        let result = compressor.compress(&data).unwrap();
+        let decompressed = compressor.decompress(&result.data, data.len()).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    fn blosc2_round_trip_zlib() {
+        let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+        let compressor = Blosc2Compressor {
+            codec: Blosc2Codec::Zlib,
+            clevel: 5,
+            typesize: 1,
+        };
+        let result = compressor.compress(&data).unwrap();
+        let decompressed = compressor.decompress(&result.data, data.len()).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    /// Regression guard for the decompress path.
+    ///
+    /// The real bug (missing blosc2_init in decode-only processes) cannot be
+    /// fully reproduced in a unit test because blosc2_init is global state —
+    /// once called by compress(), it stays initialized. This test still guards
+    /// against regressions in the decompress wiring itself.
+    #[test]
+    fn blosc2_decompress_path() {
+        let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+        let compressor = Blosc2Compressor {
+            codec: Blosc2Codec::Lz4,
+            clevel: 5,
+            typesize: 1,
+        };
+        let compressed = compressor.compress(&data).unwrap().data;
+
+        let decoder = Blosc2Compressor {
+            codec: Blosc2Codec::Lz4,
+            clevel: 0,
+            typesize: 1,
+        };
+        let decompressed = decoder.decompress(&compressed, data.len()).unwrap();
+        assert_eq!(decompressed, data);
     }
 }

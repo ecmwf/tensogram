@@ -31,6 +31,7 @@
 - [Iterators](guide/iterators.md)
 - [C++ API](guide/cpp-api.md)
 - [xarray Integration](guide/xarray-integration.md)
+- [Dask Integration](guide/dask-integration.md)
 
 ---
 
