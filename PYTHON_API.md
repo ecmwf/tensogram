@@ -6,6 +6,7 @@
 
 | Class | Purpose | Key Attributes |
 |-------|---------|-----------------|
+| **`Message`** | Decoded message (namedtuple) | `.metadata`, `.objects`, tuple unpacking |
 | **`Metadata`** | Global message metadata | `.version`, `.extra`, `.common`, `.payload`, `[key]` |
 | **`DataObjectDescriptor`** | Tensor descriptor (shape, dtype, encoding) | `.shape`, `.dtype`, `.encoding`, `.params`, `.compression` |
 | **`TensogramFile`** | File I/O API | `.open()`, `.create()`, `.append()`, `.decode_message()` |
@@ -20,6 +21,7 @@
 | **`decode_object`** | `decode_object(buf, index, verify_hash=False)` | `(Metadata, DataObjectDescriptor, array)` |
 | **`decode_range`** | `decode_range(buf, object_index, ranges, join=False, verify_hash=False)` | `list[ndarray] \| ndarray` |
 | **`scan`** | `scan(buf)` | `list[(offset, length)]` |
+| **`iter_messages`** | `iter_messages(buf, verify_hash=False)` | `MessageIter` |
 | **`compute_packing_params`** | `compute_packing_params(values, bits_per_value, decimal_scale_factor)` | `dict` |
 
 ### TensogramFile Methods
@@ -35,6 +37,12 @@ file.append(global_meta_dict, descriptors_and_data, hash="xxh3")
 file.decode_message(index, verify_hash=False) → (Metadata, list)
 file.read_message(index) → bytes
 file.messages() → list[bytes]
+
+# Iteration, indexing, slicing
+for meta, objects in file: ...        # iterate all messages
+meta, objects = file[i]               # index (supports negative)
+subset = file[1:10:2]                # slice → list of (meta, objects)
+len(file)                             # message count
 ```
 
 ### Supported dtypes

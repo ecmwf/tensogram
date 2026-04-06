@@ -88,7 +88,12 @@ Tested indirectly via C++ wrapper (105 tests).
 
 - Full Python API with NumPy integration
 - `encode()`, `decode()`, `decode_metadata()`, `decode_object()`, `decode_range()`, `scan()`
+- `iter_messages()` — iterate decoded messages from a byte buffer
+- `Message` namedtuple — `.metadata` and `.objects` attribute access, tuple unpacking
 - `TensogramFile` with context manager, `len()`, iterator
+  - `for msg in file:` — iterate all messages (owns independent file handle, free-threaded safe)
+  - `file[i]`, `file[-1]` — index by position (negative indexing)
+  - `file[1:10:2]` — slice returns list of Message namedtuples
 - `Metadata` with `version`, `common`, `payload`, dict-style access
 - `DataObjectDescriptor` with all tensor + encoding fields
 - All 10 numeric numpy dtypes + float16/bfloat16/complex support

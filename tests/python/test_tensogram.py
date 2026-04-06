@@ -1153,7 +1153,7 @@ class TestEdgeCases:
         """Iterator __len__ tracks remaining messages."""
         path = str(tmp_path / "len.tgm")
         with tensogram.TensogramFile.create(path) as f:
-            for i in range(3):
+            for _i in range(3):
                 data = np.zeros(4, dtype=np.float32)
                 f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
 
@@ -1190,14 +1190,10 @@ class TestEdgeCases:
                          [(make_descriptor([8], dtype="float32"), data)])
 
         with tensogram.TensogramFile.open(path) as f:
-            meta, objects = f[0]
-            assert meta["index"] == 0
-            meta, objects = f[4]
-            assert meta["index"] == 4
-            meta, objects = f[-1]
-            assert meta["index"] == 4
-            meta, objects = f[-5]
-            assert meta["index"] == 0
+            assert f[0].metadata["index"] == 0
+            assert f[4].metadata["index"] == 4
+            assert f[-1].metadata["index"] == 4
+            assert f[-5].metadata["index"] == 0
 
     def test_file_getitem_out_of_range(self, tmp_path):
         """file[bad_index] raises IndexError."""
@@ -1279,7 +1275,7 @@ class TestEdgeCases:
         """file[2:2] returns an empty list."""
         path = str(tmp_path / "empty_slice.tgm")
         with tensogram.TensogramFile.create(path) as f:
-            for i in range(3):
+            for _i in range(3):
                 data = np.zeros(4, dtype=np.float32)
                 f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
 
@@ -1294,9 +1290,8 @@ class TestEdgeCases:
             data = np.ones(4, dtype=np.float32)
             f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
 
-        with tensogram.TensogramFile.open(path) as f:
-            with pytest.raises((TypeError, ValueError)):
-                f["bad"]
+        with tensogram.TensogramFile.open(path) as f, pytest.raises((TypeError, ValueError)):
+            f["bad"]
 
     # ── Message namedtuple ──
 

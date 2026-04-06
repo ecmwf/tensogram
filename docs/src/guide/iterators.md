@@ -202,25 +202,35 @@ for (const auto& obj : msg) {
 
 ## Python API
 
-The Python bindings support the iterator protocol natively:
+`TensogramFile` supports iteration, indexing, and slicing:
 
 ```python
 import tensogram
 
-# File iteration
-f = tensogram.TensogramFile.open("forecast.tgm")
-for msg in f:
-    print(f"Message with {len(msg)} objects")
-    for tensor in msg:
-        print(f"  shape={tensor.shape}  dtype={tensor.dtype}")
-        val = tensor[0, 0]  # N-d indexing
+# Iterate all messages
+with tensogram.TensogramFile.open("forecast.tgm") as f:
+    for meta, objects in f:
+        for desc, arr in objects:
+            print(f"  shape={arr.shape}  dtype={desc.dtype}")
+
+# Index and slice
+with tensogram.TensogramFile.open("forecast.tgm") as f:
+    meta, objects = f[0]        # first message
+    meta, objects = f[-1]       # last message
+    subset = f[10:20]           # range of messages
+    every_5th = f[::5]          # strided access
 
 # Buffer iteration
 buf = open("data.tgm", "rb").read()
-for msg in tensogram.iter_messages(buf):
-    for tensor in msg:
-        arr = tensor.to_numpy()
+for meta, objects in tensogram.iter_messages(buf):
+    desc, arr = objects[0]
+    print(f"  shape={arr.shape}")
 ```
+
+All decode functions return `Message` namedtuples with `.metadata` and `.objects` fields.
+Tuple unpacking (`meta, objects = msg`) also works. `TensogramFile` supports `len(f)` and context manager (`with`).
+
+**Thread safety:** iterators own independent file handles and buffer copies — no shared mutable state. Safe under free-threaded Python (PEP 703, no GIL).
 
 ## Edge cases
 

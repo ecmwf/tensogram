@@ -44,6 +44,20 @@ def create_test_file(path, n=5):
     print(f"Created {path} with {n} messages")
 
 
+def demo_message_access(path):
+    """Show both attribute access and tuple unpacking."""
+    print("\n--- Message namedtuple ---")
+    with tensogram.TensogramFile.open(path) as f:
+        # Attribute access
+        msg = f[0]
+        print(f"  msg.metadata['step'] = {msg.metadata['step']}")
+        print(f"  msg.objects[0] shape = {msg.objects[0][1].shape}")
+
+        # Tuple unpacking (same data, different style)
+        meta, objects = f[0]
+        print(f"  unpacked: step={meta['step']}, shape={objects[0][1].shape}")
+
+
 def demo_iteration(path):
     """Iterate over all messages with a for loop."""
     print("\n--- for meta, objects in file ---")
@@ -107,9 +121,9 @@ def demo_buffer_iteration():
     buf = b"".join(msgs)
     print(f"  buffer: {len(buf)} bytes, {len(msgs)} messages")
 
-    for meta, objects in tensogram.iter_messages(buf):
-        _, arr = objects[0]
-        print(f"    step={meta['step']}, arr[:3]={arr[:3]}")
+    for msg in tensogram.iter_messages(buf):
+        _, arr = msg.objects[0]
+        print(f"    step={msg.metadata['step']}, arr[:3]={arr[:3]}")
 
 
 def demo_len_and_iter(path):
@@ -127,6 +141,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmpdir:
         path = os.path.join(tmpdir, "test.tgm")
         create_test_file(path, n=5)
+        demo_message_access(path)
         demo_iteration(path)
         demo_indexing(path)
         demo_multi_object(os.path.join(tmpdir, "multi.tgm"))
