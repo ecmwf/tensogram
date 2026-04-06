@@ -11,7 +11,7 @@ For speculative ideas, see `IDEAS.md`.
 
 - [x] ~~`tensogram merge` strategies~~ → `--strategy first|last|error` flag added to CLI merge command
 
-- [ ] `tensogram convert-netcdf`:
+- [ ] *tensogram-convert-netcdf*:
   - research about netcdf and CF conventions
   - implement a similar tool to convert-grib to convert netcdf's to tensogram (one-way only)
   - add an option to try to map CF convention
@@ -52,6 +52,8 @@ For speculative ideas, see `IDEAS.md`.
 - [x] ~~minimise-mem-alloc~~ → documented in DESIGN.md "Memory Strategy" section. Pipeline uses `Cow` for zero-copy when no encoding/filter/compression. Metadata-only ops never touch payloads. xarray/zarr use lazy loading.
 
 - [ ] *add-benchmarks*:
+  - think about how we could have a series of benchmarks in the repo that could be used to iterate development and reliably improve the performance of the software library.
+  - make proposals of how this could be achieved. iterate with the user ideas.
   - create a benchmarks/ dir where multiple benchmarks for this library will be added
   - the benchmarks should always report against a reference.
   - add a benchmark that compares encoding large runtime auto-generated entries (10M float64 packed to 24 bit) to GRIB (feature gated by eccodes) using grib_ccsds packing and comparing it with the simple_packing (also 24 bit) + szip compression by tensogram. eccodes implementation is the reference.
