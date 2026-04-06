@@ -48,5 +48,5 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Code Quality
 
-- [ ] improve code coverage until it reachs >95% line coverage
+- [~] code coverage: Rust core ~91%, Python 200 tests, C++ 109 tests. Remaining gaps are szip/zfp edge cases and CLI/FFI (tested via C++/integration, not measurable by cargo-llvm-cov). Total 888 tests.
 - [x] ~~add logging trace~~ → `tracing` crate instrumented on encode/decode/scan/file/pipeline. Activate with `TENSOGRAM_LOG=debug`
