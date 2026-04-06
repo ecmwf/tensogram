@@ -360,7 +360,7 @@ impl PyTensogramFile {
             .map_err(to_py_err)
     }
 
-    /// Decode message at *index* → ``(Metadata, list[(DataObjectDescriptor, ndarray)])``.
+    /// Decode message at *index* → ``Message(metadata, objects)``.
     ///
     /// Set *verify_hash* to ``True`` to verify payload integrity (default ``False``).
     #[pyo3(signature = (index, verify_hash=None))]
@@ -369,7 +369,7 @@ impl PyTensogramFile {
         py: Python<'_>,
         index: usize,
         verify_hash: Option<bool>,
-    ) -> PyResult<(PyMetadata, PyObject)> {
+    ) -> PyResult<PyObject> {
         let options = DecodeOptions {
             verify_hash: verify_hash.unwrap_or(false),
         };
@@ -378,7 +378,7 @@ impl PyTensogramFile {
             .decode_message(index, &options)
             .map_err(to_py_err)?;
         let result_list = data_objects_to_python(py, &data_objects)?;
-        Ok((PyMetadata { inner: global_meta }, result_list))
+        pack_message(py, PyMetadata { inner: global_meta }, result_list)
     }
 
     /// Raw wire-format bytes for the message at *index*.
@@ -423,6 +423,126 @@ impl PyTensogramFile {
     fn __len__(&mut self) -> PyResult<usize> {
         self.file.message_count().map_err(to_py_err)
     }
+
+    /// Iterate over all messages in the file.
+    ///
+    /// Yields ``Message(metadata, objects)`` namedtuples,
+    /// one per message, in file order.
+    ///
+    /// Example::
+    ///
+    ///     with tensogram.TensogramFile.open("data.tgm") as f:
+    ///         for meta, objects in f:
+    ///             desc, arr = objects[0]
+    ///             print(arr.shape)
+    fn __iter__(&mut self) -> PyResult<PyFileIter> {
+        let count = self.file.message_count().map_err(to_py_err)?;
+        // Open an independent file handle so the iterator owns its state.
+        // Safe under free-threaded Python (no shared mutable borrows).
+        let path = self.file.path().to_path_buf();
+        let iter_file = TensogramFile::open(&path).map_err(to_py_err)?;
+        Ok(PyFileIter {
+            file: iter_file,
+            index: 0,
+            count,
+        })
+    }
+
+    /// Index or slice messages.
+    ///
+    /// - ``file[i]`` returns ``(Metadata, list[(desc, ndarray)])``
+    /// - ``file[-1]`` returns the last message
+    /// - ``file[1:4]`` returns a list of decoded messages
+    fn __getitem__(&mut self, py: Python<'_>, key: &Bound<'_, pyo3::PyAny>) -> PyResult<PyObject> {
+        let count = self.file.message_count().map_err(to_py_err)?;
+
+        if let Ok(index) = key.extract::<isize>() {
+            let idx = if index < 0 { count as isize + index } else { index };
+            if idx < 0 || idx >= count as isize {
+                return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                    "message index {index} out of range for file with {count} messages"
+                )));
+            }
+            return self.decode_message(py, idx as usize, None);
+        }
+
+        if let Ok(slice) = key.downcast::<pyo3::types::PySlice>() {
+            let indices = slice.indices(count as isize)?;
+            let mut items: Vec<PyObject> = Vec::new();
+            let mut i = indices.start;
+            while (indices.step > 0 && i < indices.stop)
+                || (indices.step < 0 && i > indices.stop)
+            {
+                items.push(self.decode_message(py, i as usize, None)?);
+                i += indices.step;
+            }
+            return Ok(PyList::new(py, items)?.into_any().unbind());
+        }
+
+        Err(PyValueError::new_err("index must be an integer or slice"))
+    }
+}
+
+/// Construct a ``Message(metadata, objects)`` namedtuple.
+fn pack_message(py: Python<'_>, meta: PyMetadata, objects: PyObject) -> PyResult<PyObject> {
+    let msg_type = py.import("tensogram")?.getattr("Message")?;
+    let meta_obj = meta.into_pyobject(py)?.into_any();
+    let objs_obj = objects.bind(py).clone().into_any();
+    Ok(msg_type.call1((meta_obj, objs_obj))?.unbind())
+}
+
+// ---------------------------------------------------------------------------
+// File iterator
+// ---------------------------------------------------------------------------
+
+/// Iterator over messages in a TensogramFile.
+///
+/// Owns an independent file handle — safe under free-threaded Python.
+/// Yields ``Message(metadata, objects)`` namedtuples.
+/// Created by ``iter(file)`` or ``for msg in file:``.
+#[pyclass(name = "TensogramFileIter")]
+struct PyFileIter {
+    file: TensogramFile,
+    index: usize,
+    count: usize,
+}
+
+#[pymethods]
+impl PyFileIter {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        if self.index >= self.count {
+            return Ok(None);
+        }
+        let i = self.index;
+        self.index += 1;
+        let options = DecodeOptions {
+            verify_hash: false,
+        };
+        let (global_meta, data_objects) =
+            self.file.decode_message(i, &options).map_err(to_py_err)?;
+        let result_list = data_objects_to_python(py, &data_objects)?;
+        Ok(Some(pack_message(
+            py,
+            PyMetadata { inner: global_meta },
+            result_list,
+        )?))
+    }
+
+    fn __len__(&self) -> usize {
+        self.count.saturating_sub(self.index)
+    }
+
+    fn __repr__(&self) -> String {
+        let remaining = self.count.saturating_sub(self.index);
+        format!(
+            "TensogramFileIter(position={}, remaining={})",
+            self.index, remaining
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -461,11 +581,11 @@ fn py_encode<'py>(
 /// Set *verify_hash* to ``True`` to verify payload integrity.
 #[pyfunction]
 #[pyo3(name = "decode", signature = (buf, verify_hash=false))]
-fn py_decode(py: Python<'_>, buf: &[u8], verify_hash: bool) -> PyResult<(PyMetadata, PyObject)> {
+fn py_decode(py: Python<'_>, buf: &[u8], verify_hash: bool) -> PyResult<PyObject> {
     let options = DecodeOptions { verify_hash };
     let (global_meta, data_objects) = decode(buf, &options).map_err(to_py_err)?;
     let result_list = data_objects_to_python(py, &data_objects)?;
-    Ok((PyMetadata { inner: global_meta }, result_list))
+    pack_message(py, PyMetadata { inner: global_meta }, result_list)
 }
 
 /// Decode only metadata (no payload decompression).
@@ -584,6 +704,85 @@ fn py_scan(buf: &[u8]) -> Vec<(usize, usize)> {
     scan(buf)
 }
 
+/// Iterate over messages in a byte buffer.
+///
+/// Scans for message boundaries, then decodes each message on demand.
+/// Equivalent to calling :func:`scan` then :func:`decode` on each entry,
+/// but more convenient.
+///
+/// Args:
+///     buf: bytes containing one or more wire-format messages.
+///     verify_hash: verify payload hashes during decode (default ``False``).
+///
+/// Yields:
+///     ``Message(metadata, objects)`` namedtuples per message.
+///
+/// Example::
+///
+///     buf = open("data.tgm", "rb").read()
+///     for msg in tensogram.iter_messages(buf):
+///         desc, arr = msg.objects[0]
+#[pyfunction]
+#[pyo3(name = "iter_messages", signature = (buf, verify_hash=false))]
+fn py_iter_messages(buf: &[u8], verify_hash: bool) -> PyBufferIter {
+    let offsets = scan(buf);
+    PyBufferIter {
+        buf: buf.to_vec(),
+        offsets,
+        index: 0,
+        verify_hash,
+    }
+}
+
+/// Iterator over messages in a byte buffer.
+///
+/// Created by :func:`iter_messages`. Owns a copy of the buffer.
+#[pyclass(name = "MessageIter")]
+struct PyBufferIter {
+    buf: Vec<u8>,
+    offsets: Vec<(usize, usize)>,
+    index: usize,
+    verify_hash: bool,
+}
+
+#[pymethods]
+impl PyBufferIter {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        if self.index >= self.offsets.len() {
+            return Ok(None);
+        }
+        let (offset, length) = self.offsets[self.index];
+        self.index += 1;
+        let msg_bytes = &self.buf[offset..offset + length];
+        let options = DecodeOptions {
+            verify_hash: self.verify_hash,
+        };
+        let (global_meta, data_objects) = decode(msg_bytes, &options).map_err(to_py_err)?;
+        let result_list = data_objects_to_python(py, &data_objects)?;
+        Ok(Some(pack_message(
+            py,
+            PyMetadata { inner: global_meta },
+            result_list,
+        )?))
+    }
+
+    fn __len__(&self) -> usize {
+        self.offsets.len().saturating_sub(self.index)
+    }
+
+    fn __repr__(&self) -> String {
+        let remaining = self.offsets.len().saturating_sub(self.index);
+        format!(
+            "MessageIter(position={}, remaining={})",
+            self.index, remaining
+        )
+    }
+}
+
 /// Compute simple-packing parameters for a float64 array.
 ///
 /// Args:
@@ -631,10 +830,13 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_decode_object, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode_range, m)?)?;
     m.add_function(wrap_pyfunction!(py_scan, m)?)?;
+    m.add_function(wrap_pyfunction!(py_iter_messages, m)?)?;
     m.add_function(wrap_pyfunction!(compute_packing_params, m)?)?;
     m.add_class::<PyMetadata>()?;
     m.add_class::<PyDataObjectDescriptor>()?;
     m.add_class::<PyTensogramFile>()?;
+    m.add_class::<PyFileIter>()?;
+    m.add_class::<PyBufferIter>()?;
     Ok(())
 }
 

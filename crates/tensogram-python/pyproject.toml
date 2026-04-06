@@ -13,6 +13,7 @@ dev = ["pytest>=7.0", "ruff>=0.15"]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+python-source = "python"
 
 [tool.ruff]
 line-length = 99
