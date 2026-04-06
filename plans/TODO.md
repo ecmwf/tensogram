@@ -9,7 +9,7 @@ For speculative ideas, see `IDEAS.md`.
 
 ## CLI
 
-- [ ] `tensogram merge` — merge common metadata from multiple files (currently first-takes-precedence; should support configurable merge strategies)
+- [x] ~~`tensogram merge` strategies~~ → `--strategy first|last|error` flag added to CLI merge command
 
 ## Metadata
 

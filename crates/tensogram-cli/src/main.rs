@@ -75,6 +75,12 @@ enum Commands {
         /// Output file
         #[arg(short = 'o', long)]
         output: PathBuf,
+        /// Merge strategy for conflicting metadata keys:
+        /// first (default) — first value wins,
+        /// last — last value wins,
+        /// error — fail on conflict
+        #[arg(short = 's', long, default_value = "first")]
+        strategy: String,
     },
     /// Split multi-object messages into separate single-object files
     Split {
@@ -153,7 +159,11 @@ fn main() {
             input,
             output,
         } => commands::copy::run(&input, &output, where_clause.as_deref()),
-        Commands::Merge { inputs, output } => commands::merge::run(&inputs, &output),
+        Commands::Merge {
+            inputs,
+            output,
+            strategy,
+        } => commands::merge::run(&inputs, &output, &strategy),
         Commands::Split { input, output } => commands::split::run(&input, &output),
         Commands::Reshuffle { input, output } => commands::reshuffle::run(&input, &output),
         #[cfg(feature = "grib")]
