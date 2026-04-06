@@ -18,7 +18,7 @@ Repo: ecmwf/tensogram
 
 5. **Self-contained data objects** — each data object frame carries its own CBOR DataObjectDescriptor alongside the binary-encoded payload. No external index is needed to decode an individual object.
 
-6. **Minimal unnecessary memory copies** — zero-copy where possible (mmap, buffer iterators), streaming encode without full-message buffering.
+6. **Minimise memory allocations** — Tensogram should minimise large memory allocations or unnecessary decoding of data where possible. Decoding of actual data into tensors should be delayed until absolutely necessary (when data is actually accessed for caller usage). Use the metadata for dims, sizes, and shapes to prepare lazy objects where necessary. Zero-copy where possible (mmap, buffer iterators), streaming encode without full-message buffering. See the [Memory Strategy](#memory-strategy) section below for the concrete implementation of this premise.
 
 ## Approach Decision
 
