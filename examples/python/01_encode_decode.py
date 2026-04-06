@@ -4,7 +4,7 @@ Example 01 — Basic encode / decode round-trip (Python)
 NOTE: Requires tensogram Python bindings (not yet implemented).
       This file documents the intended API.
 
-Encodes a 100×200 float32 temperature grid into a Tensogram message,
+Encodes a 100x200 float32 temperature grid into a Tensogram message,
 then decodes it back, recovering a numpy array with identical values.
 """
 

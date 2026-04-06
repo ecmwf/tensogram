@@ -89,7 +89,8 @@ for i, d in enumerate(descriptors):
 # Extract elements [100 .. 149] of the flattened spectrum array.
 # Default: returns a list of arrays (one per range).
 parts = tensogram.decode_range(message, object_index=0, ranges=[(100, 50)])
-assert isinstance(parts, list) and len(parts) == 1
+assert isinstance(parts, list)
+assert len(parts) == 1
 expected = spectrum.ravel()[100:150]
 np.testing.assert_array_equal(parts[0], expected)
 print(

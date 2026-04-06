@@ -20,10 +20,9 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-import xarray as xr
-
 import tensogram
-import tensogram_xarray  # noqa: F401 -- registers the engine via entry_points
+import tensogram_xarray
+import xarray as xr
 
 
 def _desc(shape, dtype="float32", **extra):

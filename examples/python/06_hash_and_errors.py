@@ -11,12 +11,12 @@ exception hierarchy for common error conditions.
 import numpy as np
 import tensogram
 from tensogram import (
-    TensogramError,
-    FramingError,
-    MetadataError,
     EncodingError,
+    FramingError,
     HashMismatchError,
+    MetadataError,
     ObjectError,
+    TensogramError,
 )
 
 data = np.ones(100, dtype=np.float32)
@@ -56,7 +56,7 @@ corrupted[objs_pos + 10] ^= 0xFF
 
 try:
     tensogram.decode(bytes(corrupted), verify_hash=True)
-    assert False, "should have raised"
+    raise AssertionError("should have raised")
 except HashMismatchError as e:
     print(f"\nCorruption detected: {e}")
     print(f"  expected: {e.expected[:16]}...")
@@ -80,6 +80,7 @@ except ObjectError as e:
 
 # EncodingError — NaN in simple_packing
 import tensogram.simple_packing as sp
+
 nan_data = np.array([1.0, float("nan"), 3.0])
 try:
     sp.compute_params(nan_data, bits_per_value=16)

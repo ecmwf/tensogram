@@ -250,7 +250,14 @@ impl<W: Write> StreamingEncoder<W> {
             let mut enriched_meta = self.global_meta.clone();
             populate_payload_entries(&mut enriched_meta.payload, &self.completed_objects);
 
-            // Merge preceder payloads into footer metadata (preceder wins)
+            // Merge preceder payloads into footer metadata (preceder wins).
+            // preceder_payloads is aligned 1:1 with completed_objects by
+            // write_preceder/write_object bookkeeping, so the lengths must match.
+            debug_assert_eq!(
+                self.preceder_payloads.len(),
+                self.completed_objects.len(),
+                "preceder_payloads out of sync with completed_objects"
+            );
             for (i, prec) in self.preceder_payloads.iter().enumerate() {
                 if let Some(prec_map) = prec {
                     if i < enriched_meta.payload.len() {
