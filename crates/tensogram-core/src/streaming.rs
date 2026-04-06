@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 use crate::encode::{
-    build_pipeline_config, populate_payload_entries, validate_object, EncodeOptions,
+    build_pipeline_config, populate_payload_entries, populate_reserved_provenance, validate_object,
+    EncodeOptions,
 };
 use crate::error::{Result, TensogramError};
 use crate::framing::EncodedObject;
@@ -249,6 +250,7 @@ impl<W: Write> StreamingEncoder<W> {
         {
             let mut enriched_meta = self.global_meta.clone();
             populate_payload_entries(&mut enriched_meta.payload, &self.completed_objects);
+            populate_reserved_provenance(&mut enriched_meta.reserved);
 
             // Merge preceder payloads into footer metadata (preceder wins).
             // preceder_payloads is aligned 1:1 with completed_objects by

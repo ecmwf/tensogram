@@ -1112,12 +1112,21 @@ class TestEdgeCases:
         assert params["decimal_scale_factor"] == 2
         assert params["bits_per_value"] == 16
 
-    def test_encode_decode_preserves_wire_bytes(self):
-        """Encoding the same data twice produces identical wire bytes."""
+    def test_encode_decode_preserves_data(self):
+        """Encoding the same data twice produces structurally identical output.
+
+        Wire bytes differ per-encode due to provenance (UUID, timestamp),
+        but the decoded metadata and payload must be identical.
+        """
         data = np.arange(20, dtype=np.float32)
         msg1 = encode_simple(data, hash_algo=None, extra_meta={"key": "val"})
         msg2 = encode_simple(data, hash_algo=None, extra_meta={"key": "val"})
-        assert msg1 == msg2
+
+        m1 = tensogram.decode(msg1)
+        m2 = tensogram.decode(msg2)
+        assert m1.metadata.version == m2.metadata.version
+        assert m1.metadata["key"] == m2.metadata["key"]
+        np.testing.assert_array_equal(m1.objects[0][1], m2.objects[0][1])
 
     # ── File iteration ──
 

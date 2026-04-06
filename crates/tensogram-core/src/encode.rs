@@ -145,6 +145,7 @@ pub fn encode(
     // overwritten by the encoder to match the actual encoded objects.
     let mut enriched_meta = global_metadata.clone();
     populate_payload_entries(&mut enriched_meta.payload, &encoded_objects);
+    populate_reserved_provenance(&mut enriched_meta.reserved);
 
     framing::encode_message(&enriched_meta, &encoded_objects)
 }
@@ -191,6 +192,72 @@ pub(crate) fn populate_payload_entries(
             ciborium::Value::Text(desc.dtype.to_string()),
         );
     }
+}
+
+/// Populate the `reserved` section with provenance fields as specified in
+/// `WIRE_FORMAT.md`:
+///
+/// - `encoder.name` — `"tensogram"`
+/// - `encoder.version` — library version at encode time
+/// - `time` — UTC ISO 8601 timestamp
+/// - `uuid` — RFC 4122 v4 UUID
+///
+/// Pre-existing keys in `reserved` are preserved; only these four are
+/// set (or overwritten).
+pub(crate) fn populate_reserved_provenance(reserved: &mut BTreeMap<String, ciborium::Value>) {
+    use ciborium::Value;
+    use std::time::SystemTime;
+
+    // encoder.name + encoder.version
+    let version_str = env!("CARGO_PKG_VERSION");
+    let encoder_map = Value::Map(vec![
+        (
+            Value::Text("name".to_string()),
+            Value::Text("tensogram".to_string()),
+        ),
+        (
+            Value::Text("version".to_string()),
+            Value::Text(version_str.to_string()),
+        ),
+    ]);
+    reserved.insert("encoder".to_string(), encoder_map);
+
+    // time — ISO 8601 UTC
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    // Simple UTC format: YYYY-MM-DDThh:mm:ssZ
+    // We compute from epoch seconds to avoid adding a datetime crate.
+    let days = secs / 86400;
+    let day_secs = secs % 86400;
+    let hours = day_secs / 3600;
+    let minutes = (day_secs % 3600) / 60;
+    let seconds = day_secs % 60;
+    // Civil date from days since 1970-01-01 (Howard Hinnant algorithm)
+    let (y, m, d) = civil_from_days(days as i64);
+    let timestamp = format!("{y:04}-{m:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}Z");
+    reserved.insert("time".to_string(), Value::Text(timestamp));
+
+    // uuid — RFC 4122 v4
+    let id = uuid::Uuid::new_v4();
+    reserved.insert("uuid".to_string(), Value::Text(id.to_string()));
+}
+
+/// Convert days since 1970-01-01 to (year, month, day).
+/// Howard Hinnant's algorithm (public domain).
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 pub(crate) fn build_pipeline_config(

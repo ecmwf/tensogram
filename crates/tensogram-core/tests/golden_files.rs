@@ -177,17 +177,53 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
 
 #[test]
 fn test_golden_files_are_deterministic() {
-    // Verify that encoding in memory produces bytes identical to the committed files.
-    // No disk writes — safe to run in parallel with all other tests.
+    // Structural comparison: decode both committed and freshly-generated
+    // messages and compare metadata + payload data. Byte-exact comparison
+    // is not possible because provenance fields (uuid, time) are
+    // nondeterministic.
+    use tensogram_core::decode::{decode, DecodeOptions};
+
     let dir = golden_dir();
+    let decode_opts = DecodeOptions::default();
+
     for (filename, generated) in generate_golden_bytes() {
         let committed = std::fs::read(dir.join(filename))
             .unwrap_or_else(|e| panic!("golden file {filename} missing from repo: {e}"));
+
+        // Multi-message files: compare message count via scan
+        let committed_entries = tensogram_core::scan(&committed);
+        let generated_entries = tensogram_core::scan(&generated);
+
         assert_eq!(
-            committed, generated,
-            "golden file {filename} is stale — regenerate with: \
-             cargo test -p tensogram-core --test golden_files -- --ignored regenerate"
+            committed_entries.len(),
+            generated_entries.len(),
+            "golden file {filename}: message count mismatch"
         );
+
+        for (i, (&(c_off, c_len), &(g_off, g_len))) in committed_entries
+            .iter()
+            .zip(generated_entries.iter())
+            .enumerate()
+        {
+            let c_msg = &committed[c_off..c_off + c_len];
+            let g_msg = &generated[g_off..g_off + g_len];
+
+            let (c_meta, c_objs) = decode(c_msg, &decode_opts)
+                .unwrap_or_else(|e| panic!("{filename}[{i}] committed decode: {e}"));
+            let (g_meta, g_objs) = decode(g_msg, &decode_opts)
+                .unwrap_or_else(|e| panic!("{filename}[{i}] generated decode: {e}"));
+
+            assert_eq!(c_meta.version, g_meta.version, "{filename}[{i}] version");
+            assert_eq!(c_meta.common, g_meta.common, "{filename}[{i}] common");
+            assert_eq!(c_meta.extra, g_meta.extra, "{filename}[{i}] extra");
+            assert_eq!(c_objs.len(), g_objs.len(), "{filename}[{i}] object count");
+
+            for (j, (c_obj, g_obj)) in c_objs.iter().zip(g_objs.iter()).enumerate() {
+                assert_eq!(c_obj.0.dtype, g_obj.0.dtype, "{filename}[{i}][{j}] dtype");
+                assert_eq!(c_obj.0.shape, g_obj.0.shape, "{filename}[{i}][{j}] shape");
+                assert_eq!(c_obj.1, g_obj.1, "{filename}[{i}][{j}] payload data");
+            }
+        }
     }
 }
 

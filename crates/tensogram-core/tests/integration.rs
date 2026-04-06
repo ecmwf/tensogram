@@ -1330,7 +1330,25 @@ fn test_metadata_common_payload_reserved_round_trip() {
         decoded_meta.payload[0].contains_key("dtype"),
         "encoder must auto-populate dtype"
     );
-    assert_eq!(decoded_meta.reserved, reserved);
+    // User-supplied reserved keys must be preserved.
+    assert_eq!(
+        decoded_meta.reserved.get("future_field"),
+        reserved.get("future_field"),
+        "user-supplied reserved keys must survive round-trip"
+    );
+    // Provenance fields auto-populated by the encoder.
+    assert!(
+        decoded_meta.reserved.contains_key("encoder"),
+        "reserved must contain encoder provenance"
+    );
+    assert!(
+        decoded_meta.reserved.contains_key("time"),
+        "reserved must contain time provenance"
+    );
+    assert!(
+        decoded_meta.reserved.contains_key("uuid"),
+        "reserved must contain uuid provenance"
+    );
     assert!(decoded_meta.extra.is_empty());
 }
 
@@ -1370,7 +1388,11 @@ fn test_metadata_empty_sections_not_serialized() {
         decoded_meta.payload[0].contains_key("ndim"),
         "encoder must auto-populate ndim"
     );
-    assert!(decoded_meta.reserved.is_empty());
+    // Reserved is no longer empty — encoder populates provenance.
+    assert!(
+        decoded_meta.reserved.contains_key("encoder"),
+        "reserved must contain encoder provenance"
+    );
     assert!(decoded_meta.extra.contains_key("mars"));
 }
 

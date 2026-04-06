@@ -5,12 +5,7 @@ For speculative ideas, see `IDEAS.md`.
 
 ## API
 
-- [ ] Populate `reserved` metadata field with provenance information, generated when creating a new msg:
-  - `reserved.encoder.name` — library name (`"tensogram"`)
-  - `reserved.encoder.version` — library version at encode time
-  - `reserved.time` — UTC timestamp of encoding
-  - `reserved.uuid` — RFC 4122 UUID for provenance tracking (per msg)
-  (Specified in WIRE_FORMAT.md, not yet implemented in code)
+- [x] ~~Populate `reserved` metadata field with provenance information~~ → `encode.rs:populate_reserved_provenance()`
 
 ## CLI
 
