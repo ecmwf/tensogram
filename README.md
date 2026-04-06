@@ -1,11 +1,21 @@
-# Tensogram
+<p align="center">
+  <img src="logo.png" alt="Tensogram" width="200">
+</p>
 
-[![Static Badge](https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity/emerging_badge.svg)](https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity#emerging)
+<h1 align="center">Tensogram</h1>
+
+<p align="center">
+  <em>A fast, efficient 'telegram' for multidimensional tensors</em>
+</p>
+
+<p align="center">
+  <a href="https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity#emerging">
+    <img src="https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity/emerging_badge.svg" alt="Emerging">
+  </a>
+</p>
 
 > [!IMPORTANT]
 > This software is **Emerging** and subject to ECMWF's guidelines on [Software Maturity](https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity).
-
-Tensogram is a fast, efficient *'telegram'* for multidimensional tensors. ⏩[NxM]⏩
 
 A library to encode and decode binary N-Tensor scientific data with semantic metadata close to the data, in a serialisable format that can be sent over the network, encoded into in-memory buffers and decoded with zero-copy.
 
