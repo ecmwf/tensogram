@@ -28,8 +28,10 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
+      # Skip --all-features to avoid tensogram-grib which requires ecCodes.
+      # The workspace excludes tensogram-python and tensogram-grib by default.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Build
         run: cargo build --workspace
@@ -54,22 +56,30 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Install Python dependencies
-        run: pip install maturin pytest numpy ruff
+      - name: Create virtualenv and install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install maturin pytest numpy ruff
 
       - name: Build Python bindings
-        working-directory: crates/tensogram-python
-        run: maturin develop
+        run: |
+          source .venv/bin/activate
+          cd crates/tensogram-python && maturin develop
 
       - name: Lint
-        run: ruff check --config crates/tensogram-python/pyproject.toml tests/python/
+        run: |
+          source .venv/bin/activate
+          ruff check --config crates/tensogram-python/pyproject.toml tests/python/
 
       - name: Test
-        run: python -m pytest tests/python/ -v
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/python/ -v
 
   # ── Python packages: xarray + zarr ───────────────────────────────────
   python-packages:
-    name: Python packages (${{ matrix.package }})
+    name: Python packages
     runs-on: ubuntu-latest
     needs: python
     steps:
@@ -80,22 +90,24 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install base
+      - name: Create virtualenv and install base
         run: |
+          python -m venv .venv
+          source .venv/bin/activate
           pip install maturin pytest numpy
           cd crates/tensogram-python && maturin develop && cd ../..
 
-      - name: Install xarray package
-        run: pip install -e "tensogram-xarray/[dask]"
+      - name: Install and test xarray
+        run: |
+          source .venv/bin/activate
+          pip install -e "tensogram-xarray/[dask]"
+          python -m pytest tensogram-xarray/tests/ -v
 
-      - name: Test xarray
-        run: python -m pytest tensogram-xarray/tests/ -v
-
-      - name: Install zarr package
-        run: pip install -e tensogram-zarr/
-
-      - name: Test zarr
-        run: python -m pytest tensogram-zarr/tests/ -v
+      - name: Install and test zarr
+        run: |
+          source .venv/bin/activate
+          pip install -e tensogram-zarr/
+          python -m pytest tensogram-zarr/tests/ -v
 
   # ── C++: build + test ────────────────────────────────────────────────
   cpp:
@@ -128,8 +140,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install mdbook
-        run: cargo install mdbook --locked
+      - name: Install mdbook + preprocessors
+        run: |
+          cargo install mdbook --locked
+          cargo install mdbook-mermaid --locked
       - name: Build docs
         working-directory: docs
         run: mdbook build
