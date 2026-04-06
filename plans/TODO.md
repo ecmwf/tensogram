@@ -30,4 +30,4 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Code Quality
 
-- [ ] Reach 95% test coverage (currently 90.5%)
+- [ ] Reach 95% line coverage (currently 90.5%)

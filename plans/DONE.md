@@ -66,7 +66,7 @@ Tested indirectly via C++ wrapper (105 tests).
 - Thread-local error messages via `tgm_last_error()`
 - Iterator API: `tgm_buffer_iter_*`, `tgm_file_iter_*`, `tgm_object_iter_*`
 - Streaming encoder: `tgm_streaming_encoder_create/write/count/finish/free`
-- Auto-generated `tensogram.h` (543 lines) via cbindgen
+- Auto-generated `tensogram.h` (~544 lines) via cbindgen
 - Panic safety: `panic = "abort"` in both release and dev profiles
 - Vec capacity UB fixed (shrink_to_fit before forget), null pointer validation
 
@@ -141,7 +141,7 @@ Tested indirectly via C++ wrapper (105 tests).
 
 ## Golden Test Files
 
-5 canonical `.tgm` files in `tests/golden/`:
+5 canonical `.tgm` files in `crates/tensogram-core/tests/golden/`:
 - `simple_f32.tgm`, `multi_object.tgm`, `mars_metadata.tgm`, `multi_message.tgm`, `hash_xxh3.tgm`
 - Byte-for-byte deterministic, verified by all 3 languages
 

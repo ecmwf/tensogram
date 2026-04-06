@@ -94,8 +94,8 @@ Either a header or a footer metadata frame must always be present, ie Messages c
 
 ## Metadata Frame
 
-Irrespective of position, Header or Footer, the metadata frame uniquely identifies the message.
-Each metadata CBOR contains a mandatory sub-objects:
+Whether in the Header or Footer, the metadata frame uniquely identifies the message.
+Each metadata CBOR block contains the following mandatory sub-objects:
  - 'common' holds metadata that is common to all data objects in the message. this may contain internal namespaces for managing different vocabularies.
  - 'payload' holds a list of metadata per data object. the index of the list matches the order in the message, can be used to assert the data obj count. this may contain internal namespaces that should match 'common'.
  - 'reserved' is set aside for internals of the message handling and support future features. Inside it contains:
