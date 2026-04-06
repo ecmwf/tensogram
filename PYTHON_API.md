@@ -16,7 +16,7 @@
 | Function | Signature | Returns |
 |----------|-----------|---------|
 | **`encode`** | `encode(meta, descriptors_and_data, hash="xxh3")` | `bytes` |
-| **`decode`** | `decode(buf, verify_hash=False)` | `(Metadata, list)` |
+| **`decode`** | `decode(buf, verify_hash=False)` | `Message` |
 | **`decode_metadata`** | `decode_metadata(buf)` | `Metadata` |
 | **`decode_object`** | `decode_object(buf, index, verify_hash=False)` | `(Metadata, DataObjectDescriptor, array)` |
 | **`decode_range`** | `decode_range(buf, object_index, ranges, join=False, verify_hash=False)` | `list[ndarray] \| ndarray` |
@@ -34,14 +34,14 @@ TensogramFile.create(path: str) → TensogramFile
 # Instance
 file.message_count() → int
 file.append(global_meta_dict, descriptors_and_data, hash="xxh3")
-file.decode_message(index, verify_hash=False) → (Metadata, list)
+file.decode_message(index, verify_hash=False) → Message
 file.read_message(index) → bytes
 file.messages() → list[bytes]
 
 # Iteration, indexing, slicing
 for meta, objects in file: ...        # iterate all messages
 meta, objects = file[i]               # index (supports negative)
-subset = file[1:10:2]                # slice → list of (meta, objects)
+subset = file[1:10:2]                # slice → list[Message]
 len(file)                             # message count
 ```
 

@@ -1,6 +1,7 @@
 """Example 07 — Iterators and Indexing
 
-All decode functions return Message namedtuples with .metadata and .objects:
+decode(), decode_message(), file iteration, and iter_messages() return Message
+namedtuples with .metadata and .objects:
 
     msg = file[0]
     msg.metadata              # Metadata object

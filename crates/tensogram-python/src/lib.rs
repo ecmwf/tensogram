@@ -450,9 +450,9 @@ impl PyTensogramFile {
 
     /// Index or slice messages.
     ///
-    /// - ``file[i]`` returns ``(Metadata, list[(desc, ndarray)])``
+    /// - ``file[i]`` returns ``Message(metadata, objects)``
     /// - ``file[-1]`` returns the last message
-    /// - ``file[1:4]`` returns a list of decoded messages
+    /// - ``file[1:4]`` returns ``list[Message]``
     fn __getitem__(&mut self, py: Python<'_>, key: &Bound<'_, pyo3::PyAny>) -> PyResult<PyObject> {
         let count = self.file.message_count().map_err(to_py_err)?;
 
@@ -576,7 +576,7 @@ fn py_encode<'py>(
     Ok(PyBytes::new(py, &msg))
 }
 
-/// Decode a wire-format message → ``(Metadata, list[(DataObjectDescriptor, ndarray)])``.
+/// Decode a wire-format message → ``Message(metadata, objects)``.
 ///
 /// Set *verify_hash* to ``True`` to verify payload integrity.
 #[pyfunction]

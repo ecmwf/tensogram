@@ -7,7 +7,9 @@ from .tensogram import *  # noqa: F401, F403
 Message = namedtuple("Message", ["metadata", "objects"])
 """Decoded message with named fields.
 
-All decode functions and iterators return ``Message`` namedtuples::
+Returned by ``decode()``, ``decode_message()``, file iteration, and
+``iter_messages()``::
+
 
     msg = tensogram.decode(buf)
     msg.metadata          # Metadata object

@@ -227,7 +227,7 @@ for meta, objects in tensogram.iter_messages(buf):
     print(f"  shape={arr.shape}")
 ```
 
-All decode functions return `Message` namedtuples with `.metadata` and `.objects` fields.
+`decode()`, `decode_message()`, file iteration, and `iter_messages()` return `Message` namedtuples with `.metadata` and `.objects` fields.
 Tuple unpacking (`meta, objects = msg`) also works. `TensogramFile` supports `len(f)` and context manager (`with`).
 
 **Thread safety:** iterators own independent file handles and buffer copies — no shared mutable state. Safe under free-threaded Python (PEP 703, no GIL).
