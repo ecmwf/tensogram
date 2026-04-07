@@ -78,16 +78,18 @@ pub(crate) fn validate_object(desc: &DataObjectDescriptor, data_len: usize) -> R
     Ok(())
 }
 
-/// Encode a complete Tensogram message.
-///
-/// `global_metadata` is the message-level metadata (version, MARS keys, etc.).
-/// `descriptors` is a list of (DataObjectDescriptor, raw_data) pairs.
-/// Returns the complete wire-format message.
-#[tracing::instrument(skip(global_metadata, descriptors, options), fields(objects = descriptors.len()))]
-pub fn encode(
+#[derive(Debug, Clone, Copy)]
+enum EncodeMode {
+    Raw,
+    #[allow(dead_code)] // Will be fully wired in Task 2
+    PreEncoded,
+}
+
+fn encode_inner(
     global_metadata: &GlobalMetadata,
     descriptors: &[(&DataObjectDescriptor, &[u8])],
     options: &EncodeOptions,
+    mode: EncodeMode,
 ) -> Result<Vec<u8>> {
     // Buffered encode does not support emit_preceders — use StreamingEncoder
     // with write_preceder() instead.
@@ -112,8 +114,13 @@ pub fn encode(
         let dtype = desc.dtype;
 
         let config = build_pipeline_config(desc, num_elements, dtype)?;
-        let result = pipeline::encode_pipeline(data, &config)
-            .map_err(|e| TensogramError::Encoding(e.to_string()))?;
+        // For Raw: run the full encoding pipeline.
+        // For PreEncoded: data bytes are already encoded — pipeline call is a
+        // placeholder that will be replaced in Task 2.
+        let result = match mode {
+            EncodeMode::Raw | EncodeMode::PreEncoded => pipeline::encode_pipeline(data, &config)
+                .map_err(|e| TensogramError::Encoding(e.to_string()))?,
+        };
 
         // Build the final descriptor with computed fields
         let mut final_desc = (*desc).clone();
@@ -168,6 +175,20 @@ pub fn encode(
     populate_reserved_provenance(&mut enriched_meta.reserved);
 
     framing::encode_message(&enriched_meta, &encoded_objects)
+}
+
+/// Encode a complete Tensogram message.
+///
+/// `global_metadata` is the message-level metadata (version, MARS keys, etc.).
+/// `descriptors` is a list of (DataObjectDescriptor, raw_data) pairs.
+/// Returns the complete wire-format message.
+#[tracing::instrument(skip(global_metadata, descriptors, options), fields(objects = descriptors.len()))]
+pub fn encode(
+    global_metadata: &GlobalMetadata,
+    descriptors: &[(&DataObjectDescriptor, &[u8])],
+    options: &EncodeOptions,
+) -> Result<Vec<u8>> {
+    encode_inner(global_metadata, descriptors, options, EncodeMode::Raw)
 }
 
 /// Validate that the caller hasn't written to `_reserved_` at any level.
