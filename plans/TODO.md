@@ -5,11 +5,7 @@ For speculative ideas, see `IDEAS.md`.
 
 ## API
 
-- [ ] *api-pre-encoded*:
-  - add API for caller to pass pre encoded buffer and other details of compression
-  - this is and advanced usability function, rarely needed except when caller code has access to alternative, possibly more optmised, for encoding (eg a GPU kernel).
-  - research ecmwf/eccodes has a similar api function
-  - for complex encoders (eg szip) the caller may need to pass complex information, for example the RSI blocks (if wanting to enable the decode_range functionality)
+- [x] ~~api-pre-encoded~~ → `encode.rs:encode_pre_encoded()` + bindings (Python, C FFI, C++) + `docs/src/guide/encode-pre-encoded.md` + benchmarks + examples
 
 - [x] ~~Populate `reserved` metadata field with provenance information~~ → `encode.rs:populate_reserved_provenance()`
 
