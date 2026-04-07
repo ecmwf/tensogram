@@ -1,84 +1,150 @@
 # Benchmark Results
 
-This page is a snapshot of benchmark results recorded on a specific machine at a specific date.
-For methodology, flag descriptions, and how to re-run the benchmarks yourself, see [Benchmarks](benchmarks.md).
+This page is a snapshot of benchmark results recorded on a specific machine.
+For methodology, flags, and how to re-run, see [Benchmarks](benchmarks.md).
 
-> **Note:** Absolute timing values (`Encode (ms)`, `Decode (ms)`, `vs Ref` columns) are
-> machine-specific and will differ on other hardware. The `Ratio (%)` and `Size (KiB)` columns
-> are derived from compressed byte counts and are portable across machines.
+> **Note:** Timing and throughput are machine-specific. Compression ratios,
+> sizes, and fidelity metrics are determined by the codec and are reproducible.
 
 ## Run metadata
 
 | Field | Value |
 |-------|-------|
-| **Date** | 2026-04-07 |
+| **Date** | 2026-04-08 |
 | **Tensogram version** | 0.6.0 |
-| **Machine** | MacBook Pro (Mac16,1) |
-| **Chip** | Apple M4, 10 cores (4 Performance + 6 Efficiency) |
-| **Memory** | 16 GB |
-| **OS** | macOS 26.3.1 (Build 25D2128) |
-| **Rust** | rustc 1.94.1 (e408947bf 2026-03-25) |
-| **ecCodes** | 2.46.0 (Homebrew) |
+| **CPU** | Intel Core i9-10850K @ 3.60 GHz, 10 cores / 20 threads |
+| **OS** | Linux 6.19.10 (CachyOS) x86_64 |
+| **Rust** | rustc 1.94.0 |
+| **ecCodes** | 2.46.0 |
+| **Methodology** | 10 timed iterations, 3 warmup, median reported |
 
 ## Codec Matrix
 
-**Command:**
-```
-cargo run --release -p tensogram-benchmarks --bin codec-matrix \
-    -- --num-points 16000000 --iterations 5 --seed 42
-```
+16 million float64 values (122 MiB). The test data is a synthetic temperature-like
+field with values in the range 250–310.
 
-**Results** (24 combinations, 16 000 000 float64 values, 5 iterations, median):
+#### How fidelity is measured
 
-```
-Tensogram Codec Matrix (16000000 float64 values, 5 iterations, median)
-Reference: none+none
+After each encode→decode round-trip, the decoded values are compared to the
+original. Three error norms are reported, all absolute in the same units as
+the input:
 
- Combo                  | Encode (ms) | Decode (ms) | Ratio (%) | Size (KiB) | vs Ref Enc | vs Ref Dec
-------------------------+--------------+--------------+------------+-------------+-------------+-------------
- none+none [REF]        |       3.075 |       4.825 |    100.00 |   125000.0 |      1.00x |      1.00x
- none+zstd(3)           |     124.317 |     110.565 |     90.30 |   112870.0 |     40.42x |     22.91x
- none+lz4               |      14.860 |      17.728 |    100.39 |   125490.2 |      4.83x |      3.67x
- none+blosc2(blosclz)   |      51.608 |       8.807 |     75.22 |    94023.5 |     16.78x |      1.83x
- none+szip(32)          |      62.116 |     230.228 |    100.96 |   126202.8 |     20.20x |     47.71x
- sp(16)+none            |      28.108 |      28.126 |     25.00 |    31250.0 |      9.14x |      5.83x
- sp(16)+zstd(3)         |      62.453 |      46.609 |     24.35 |    30437.5 |     20.31x |      9.66x
- sp(16)+lz4             |      30.858 |      30.103 |     25.10 |    31372.6 |     10.03x |      6.24x
- sp(16)+blosc2(blosclz) |     116.136 |      42.672 |     20.28 |    25354.9 |     37.76x |      8.84x
- sp(16)+szip            |      50.469 |      90.414 |     25.39 |    31736.8 |     16.41x |     18.74x
- sp(24)+none            |      33.928 |      31.987 |     37.50 |    46875.0 |     11.03x |      6.63x
- sp(24)+zstd(3)         |      76.825 |      51.890 |     37.18 |    46477.1 |     24.98x |     10.75x
- sp(24)+lz4             |      37.208 |      33.731 |     37.65 |    47058.8 |     12.10x |      6.99x
- sp(24)+blosc2(blosclz) |     137.165 |      55.272 |     32.78 |    40980.9 |     44.60x |     11.45x
- sp(24)+szip            |      53.804 |     112.939 |     28.49 |    35614.0 |     17.49x |     23.40x
- sp(32)+none            |      40.802 |      36.103 |     50.00 |    62500.0 |     13.27x |      7.48x
- sp(32)+zstd(3)         |     115.953 |      54.272 |     49.81 |    62264.9 |     37.70x |     11.25x
- sp(32)+lz4             |      45.954 |      41.120 |     50.20 |    62745.1 |     14.94x |      8.52x
- sp(32)+blosc2(blosclz) |     139.815 |      52.611 |     45.29 |    56606.8 |     45.46x |     10.90x
- sp(32)+szip            |      72.659 |     151.333 |     50.49 |    63109.1 |     23.63x |     31.36x
- none+zfp(rate=16)      |     214.038 |     296.643 |     25.00 |    31250.0 |     69.60x |     61.47x
- none+zfp(rate=24)      |     246.089 |     470.858 |     37.50 |    46875.0 |     80.02x |     97.58x
- none+zfp(rate=32)      |     282.528 |     593.183 |     50.00 |    62500.0 |     91.87x |    122.93x
- none+sz3(abs=0.01)     |     133.714 |     142.765 |      6.46 |     8069.4 |     43.48x |     29.59x
-```
+- **Linf** — the largest error for any single value. Answers: *"what is the
+  worst case?"*
+- **L1** — the average error across all values. Answers: *"how far off are
+  values on average?"*
+- **L2 (RMSE)** — root mean square error. Like L1 but penalizes large outliers
+  more heavily. Answers: *"how large are the typical errors, weighted toward
+  the worst ones?"*
+
+For lossless codecs all three are zero.
+
+### Lossless compressors on raw floats
+
+No encoding step — raw 64-bit floats compressed directly. Decoded values are
+bit-identical to the original.
+
+| Method | Enc (ms) | Dec (ms) | Enc MB/s | Dec MB/s | Ratio | Size (MiB) |
+|--------|----------|----------|----------|----------|-------|------------|
+| no compression **[REF]** | 35.2 | 35.0 | 3466 | 3489 | 100% | 122.1 |
+| zstd level 3 | 178.9 | 113.8 | 682 | 1073 | 90.3% | 110.2 |
+| LZ4 | 41.5 | 37.5 | 2942 | 3251 | 100.4% | 122.5 |
+| Blosc2 | 160.6 | 63.9 | 760 | 1912 | 75.2% | 91.8 |
+| szip | 186.4 | 316.5 | 655 | 386 | 100.9% | 123.2 |
+
+Raw 64-bit floats have high entropy, so most lossless compressors cannot reduce
+their size. LZ4 and szip slightly expand the data. Blosc2 is the exception — its
+byte-shuffle step exposes compressible patterns (75%).
+
+### SimplePacking (quantization) + lossless compressors
+
+Values are quantized to N bits, then compressed. Fidelity depends only on the
+bit width, not on the compressor — see the fidelity table below.
+
+| Method | Enc (ms) | Dec (ms) | Enc MB/s | Dec MB/s | Ratio | Size (MiB) |
+|--------|----------|----------|----------|----------|-------|------------|
+| 16-bit only | 88.7 | 73.3 | 1376 | 1665 | 25.0% | 30.5 |
+| 16-bit + zstd | 138.6 | 87.6 | 881 | 1393 | 24.4% | 29.7 |
+| 16-bit + LZ4 | 98.9 | 74.4 | 1234 | 1640 | 25.1% | 30.6 |
+| 16-bit + Blosc2 | 221.3 | 91.9 | 552 | 1329 | 20.3% | 24.8 |
+| 16-bit + szip | 158.6 | 187.8 | 770 | 650 | 14.6% | 17.8 |
+| 24-bit only | 99.9 | 78.3 | 1222 | 1560 | 37.5% | 45.8 |
+| 24-bit + zstd | 170.8 | 102.5 | 715 | 1191 | 37.2% | 45.4 |
+| 24-bit + LZ4 | 117.0 | 91.8 | 1044 | 1329 | 37.7% | 46.0 |
+| 24-bit + Blosc2 | 265.2 | 135.9 | 460 | 898 | 32.8% | 40.0 |
+| 24-bit + szip | 191.8 | 230.1 | 637 | 531 | 27.2% | 33.2 |
+| 32-bit only | 99.3 | 73.4 | 1229 | 1664 | 50.0% | 61.0 |
+| 32-bit + zstd | 192.6 | 100.0 | 634 | 1221 | 49.8% | 60.8 |
+| 32-bit + LZ4 | 121.7 | 91.8 | 1003 | 1330 | 50.2% | 61.3 |
+| 32-bit + Blosc2 | 279.5 | 124.0 | 437 | 985 | 45.3% | 55.3 |
+| 32-bit + szip | 203.2 | 268.6 | 601 | 455 | 39.7% | 48.4 |
+
+#### Fidelity by bit width
+
+| Bit width | Linf (max abs) | L1 (mean abs) | L2 (RMSE) |
+|-----------|----------------|---------------|-----------|
+| 16 bits | 4.9 × 10⁻⁴ | 2.4 × 10⁻⁴ | 2.8 × 10⁻⁴ |
+| 24 bits | 1.9 × 10⁻⁶ | 9.5 × 10⁻⁷ | 1.1 × 10⁻⁶ |
+| 32 bits | 7.5 × 10⁻⁹ | 3.7 × 10⁻⁹ | 4.3 × 10⁻⁹ |
+
+For context: with input values around 280, a Linf of 1.9 × 10⁻⁶ means the worst-case
+relative error at 24 bits is roughly 7 parts per billion.
+
+### Lossy floating-point compressors
+
+These operate directly on raw f64 bytes without quantization.
+
+| Method | Enc (ms) | Dec (ms) | Enc MB/s | Dec MB/s | Ratio | Size (MiB) |
+|--------|----------|----------|----------|----------|-------|------------|
+| ZFP rate 16 | 493.5 | 507.3 | 247 | 241 | 25.0% | 30.5 |
+| ZFP rate 24 | 621.8 | 743.4 | 196 | 164 | 37.5% | 45.8 |
+| ZFP rate 32 | 717.5 | 920.0 | 170 | 133 | 50.0% | 61.0 |
+| SZ3 abs 0.01 | 464.1 | 276.2 | 263 | 442 | 6.5% | 7.9 |
+
+#### Fidelity by lossy codec
+
+| Method | Linf (max abs) | L1 (mean abs) | L2 (RMSE) |
+|--------|----------------|---------------|-----------|
+| ZFP rate 16 | 1.3 × 10⁻² | 1.6 × 10⁻³ | 2.0 × 10⁻³ |
+| ZFP rate 24 | 5.6 × 10⁻⁵ | 6.1 × 10⁻⁶ | 7.9 × 10⁻⁶ |
+| ZFP rate 32 | 1.9 × 10⁻⁷ | 2.4 × 10⁻⁸ | 3.1 × 10⁻⁸ |
+| SZ3 abs 0.01 | 1.0 × 10⁻² | 5.0 × 10⁻³ | 5.8 × 10⁻³ |
+
+### Notable observations
+
+- **16-bit + szip** achieves the best compression ratio (14.6%) among the
+  SimplePacking combinations.
+- **SZ3** achieves the smallest output overall (6.5%) with a max error of 0.01.
+  If your application tolerates that error bound, this gives the best compression
+  in this benchmark.
+- In this benchmark, higher ZFP rates gave proportionally smaller errors.
+  ZFP fixed-rate modes always hit their target ratio exactly (25% / 37.5% / 50%).
 
 ## GRIB Comparison
 
-**Command:**
-```
-cargo run --release -p tensogram-benchmarks --bin grib-comparison --features eccodes \
-    -- --num-points 10000000 --iterations 5 --seed 42
-```
+[GRIB](https://en.wikipedia.org/wiki/GRIB) is the standard binary format used in
+operational weather forecasting. The most widely used GRIB encoder is
+[ecCodes](https://confluence.ecmwf.int/display/ECC) from ECMWF.
 
-**Results** (10 000 000 float64 values, 24-bit packing, 5 iterations, median):
+This benchmark compares Tensogram's 24-bit SimplePacking + szip against ecCodes'
+built-in packing methods on the same data. Both sides are timed end-to-end: from a
+float64 array to serialized compressed bytes (encode), and back (decode).
 
-```
-GRIB vs Tensogram Comparison (10000000 float64 values, 24 bit, 5 iterations)
-Reference: eccodes grid_ccsds
+10 million float64 values (76 MiB), 24-bit packing. Different dataset size from the
+codec matrix above.
 
- Combo                    | Encode (ms) | Decode (ms) | Ratio (%) | Size (KiB) | vs Ref Enc | vs Ref Dec
---------------------------+--------------+--------------+------------+-------------+-------------+-------------
- eccodes grid_ccsds [REF] |      45.559 |      83.248 |     27.20 |    21247.1 |      1.00x |      1.00x
- eccodes grid_simple      |      30.993 |       7.678 |     37.50 |    29297.0 |      0.68x |      0.09x
- tensogram sp(24)+szip    |      36.137 |      72.323 |     28.49 |    22258.8 |      0.79x |      0.87x
-```
+| Method | Enc (ms) | Dec (ms) | Enc MB/s | Dec MB/s | Ratio | Size (MiB) |
+|--------|----------|----------|----------|----------|-------|------------|
+| ecCodes CCSDS **[REF]** | 84.7 | 139.1 | 900 | 549 | 27.2% | 20.7 |
+| ecCodes simple packing | 67.0 | 39.0 | 1139 | 1954 | 37.5% | 28.6 |
+| Tensogram 24-bit + szip | 114.2 | 136.5 | 668 | 559 | 27.4% | 20.9 |
+
+All three methods produce identical fidelity: Linf = 1.9 × 10⁻⁶,
+L1 = 9.5 × 10⁻⁷, L2 = 1.1 × 10⁻⁶.
+
+### Notable observations
+
+- **Tensogram and ecCodes CCSDS achieve nearly identical compression** (27.4% vs 27.2%)
+  and identical fidelity at 24 bits.
+- **Tensogram encode is 1.3× slower** (114 vs 85 ms); decode is slightly faster (137 vs 139 ms).
+- **ecCodes simple packing** decodes fastest (39 ms) but produces a larger file (37.5% vs 27%).

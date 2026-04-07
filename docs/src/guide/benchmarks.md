@@ -1,26 +1,14 @@
 # Benchmarks
 
-The `benchmarks/` crate provides reproducible, tabular performance comparisons for
-all encoding/compression pipeline combinations. It lives in the repository and can
-be re-run at any time to measure the effect of changes to the core encoding paths.
-
-## Design Rationale
-
-The benchmark suite is a standalone binary rather than a Criterion harness for two
-reasons:
-
-1. **Custom reporting** — the TODO spec requires formatted comparison tables with
-   compression ratios, sizes in KiB, and reference-relative speedup factors. Criterion
-   is purpose-built for statistical regression detection (mean ± stddev), not tabular
-   multi-metric comparison.
-2. **Zero extra dependencies** — a standalone binary with `std::time::Instant` adds
-   no compilation overhead to the workspace and is fully controlled.
+Tensogram ships with a benchmark suite that measures all encoding and compression
+combinations on synthetic data. It produces tabular comparisons of speed, compressed
+size, and decode fidelity. The benchmarks can be re-run at any time to measure the
+effect of changes.
 
 ## Codec Matrix Benchmark
 
-Runs all valid encoder × compressor × bit-width combinations on 16 million synthetic
-float64 values and reports encode time, decode time, compressed size, and compression
-ratio against the `none+none` baseline.
+Tests all valid encoder × compressor × bit-width combinations on 16 million
+synthetic float64 values.
 
 ### Quick start
 
@@ -33,61 +21,62 @@ Override parameters with CLI flags:
 ```bash
 cargo run --release -p tensogram-benchmarks --bin codec-matrix -- \
     --num-points 16000000 \
-    --iterations 5 \
+    --iterations 10 \
+    --warmup 3 \
     --seed 42
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--num-points` | 16 000 000 | Number of float64 values to encode; always rounded up to the next multiple of 4 (up to 3 extra values) for szip alignment |
-| `--iterations` | 5 | Timed iterations per combo (median reported) |
+| `--num-points` | 16 000 000 | Number of float64 values to encode |
+| `--iterations` | 10 | Timed iterations per combination (median reported) |
+| `--warmup` | 3 | Warm-up iterations (discarded) |
 | `--seed` | 42 | PRNG seed for deterministic data generation |
 
 ### Combinations measured
 
 | Group | Description | Count |
 |-------|-------------|-------|
-| Baseline | `none+none` (raw f64 bytes, no compression) | 1 |
-| Raw + lossless | `none+{zstd,lz4,blosc2,szip}` | 4 |
-| SimplePacking + lossless | `sp(B)+{none,zstd,lz4,blosc2,szip}` at B=16, 24, 32 bits | 15 |
-| Lossy float | `none+zfp(rate=16/24/32)`, `none+sz3(abs=0.01)` | 4 |
+| Baseline | No encoding, no compression | 1 |
+| Lossless compressors | Raw floats compressed with zstd, LZ4, Blosc2, or szip | 4 |
+| SimplePacking + lossless | Quantized to 16, 24, or 32 bits, then compressed with each of the above (or no compressor) | 15 |
+| Lossy codecs | ZFP (fixed rate 16/24/32) and SZ3 (absolute error 0.01) | 4 |
 | **Total** | | **24** |
 
-### Example output
+For actual results, see [Benchmark Results](benchmark-results.md).
 
-```
-Tensogram Codec Matrix (16000000 float64 values, 5 iterations, median)
-Reference: none+none
+### How to read the results
 
- Combo                  | Encode (ms) | Decode (ms) | Ratio (%) | Size (KiB) | vs Ref Enc | vs Ref Dec
-------------------------+-------------+-------------+-----------+------------+------------+-----------
- none+none [REF]        |       4.123 |       3.891 |    100.00 |  125000.0  |      1.00x |      1.00x
- none+zstd(3)           |     312.456 |      52.100 |     72.30 |   90375.0  |     75.79x |     13.39x
- none+lz4               |      58.234 |       8.100 |     98.20 |  122750.0  |     14.12x |      2.08x
- sp(16)+none            |      95.200 |     185.400 |     25.00 |   31250.0  |     23.09x |     47.65x
- sp(24)+szip            |      70.100 |     175.200 |     28.50 |   35625.0  |     17.00x |     45.03x
- none+zfp(rate=24)      |      52.300 |     155.100 |     37.50 |   46875.0  |     12.69x |     39.86x
- ...
-```
+The results page splits each benchmark into a **performance table** (timing,
+throughput, compressed size) and a **fidelity table** (error norms for lossy codecs).
 
-### Interpreting the output
+| Column | Meaning | Better is |
+|--------|---------|-----------|
+| **Method** | Encoder + compressor. E.g. "24-bit + szip" means values are quantized to 24 bits then compressed with szip. **[REF]** marks the baseline. | — |
+| **Enc / Dec (ms)** | Median encode / decode time. | Lower |
+| **Enc / Dec MB/s** | Throughput: uncompressed size ÷ median time. | Higher |
+| **Ratio** | Compressed size as percentage of original. 25% = compressed to ¼. Above 100% means the codec expanded the data. | Lower |
+| **Size (MiB)** | Compressed output size. | — |
+| **Linf** | Max absolute error (worst single value). | Smaller |
+| **L1** | Mean absolute error (average drift). | Smaller |
+| **L2** | Root mean square error (penalizes outliers). | Smaller |
 
-| Column | Meaning |
-|--------|---------|
-| `Encode (ms)` | Median time to compress the payload (wall clock, unloaded machine) |
-| `Decode (ms)` | Median time to decompress the payload |
-| `Ratio (%)` | `compressed_bytes / original_bytes × 100` — lower is better |
-| `Size (KiB)` | Compressed payload size |
-| `vs Ref Enc` | `this_encode_ms / reference_encode_ms` — values > 1.00× are slower than the reference |
-| `vs Ref Dec` | Same for decode |
+For lossless codecs all three error norms are zero.
+Errors are absolute, in the same units as the input data.
 
-The reference (`none+none`) is the throughput of copying raw float64 bytes through the
-pipeline without any encoding or compression. It sets the baseline latency floor.
+**Quick rules of thumb:**
+- If you need exact data back, use one of the lossless codecs.
+- If you can tolerate some loss, compare Ratio vs error norms for your use case.
+- Throughput (MB/s) is the most useful speed metric — it accounts for data size and
+  lets you compare across different payload sizes.
 
 ## GRIB Comparison Benchmark
 
-Compares ecCodes CCSDS packing (`grid_ccsds`, 24 bit) — the operational reference —
-against Tensogram `simple_packing(24)+szip` on 10 million float64 values.
+Compares Tensogram's 24-bit SimplePacking + szip against
+[ecCodes](https://confluence.ecmwf.int/display/ECC) (ECMWF's operational GRIB
+encoder) on 10 million float64 values. Both sides are timed symmetrically:
+encoding measures the full path from a float64 array to compressed bytes, and
+decoding measures the reverse.
 
 ### Requirements
 
@@ -103,7 +92,8 @@ cargo run --release -p tensogram-benchmarks --bin grib-comparison --features ecc
 ```bash
 cargo run --release -p tensogram-benchmarks --bin grib-comparison --features eccodes -- \
     --num-points 10000000 \
-    --iterations 5 \
+    --iterations 10 \
+    --warmup 3 \
     --seed 42
 ```
 
@@ -111,133 +101,76 @@ cargo run --release -p tensogram-benchmarks --bin grib-comparison --features ecc
 
 | Method | Description |
 |--------|-------------|
-| `eccodes grid_ccsds` **(reference)** | ecCodes CCSDS packing (CCSDS 121.0-B-3 via libaec) |
-| `eccodes grid_simple` | ecCodes simple packing (GRIB grid_simple, same bit depth) |
-| `tensogram sp(24)+szip` | Tensogram SimplePacking(24) + szip (same algorithm, different framing) |
+| ecCodes CCSDS **(reference)** | CCSDS packing — the standard used in operational weather data distribution |
+| ecCodes simple packing | Basic fixed-bit-width packing without entropy coding |
+| Tensogram 24-bit + szip | Tensogram's SimplePacking at 24 bits followed by szip entropy coding |
 
-### Timing model
-
-- **GRIB encode**: time of `codes_set_double_array("values", ...)` — the quantisation and packing call.
-- **GRIB decode**: time to create a handle from raw GRIB bytes + `codes_get_double_array("values", ...)`.
-- **Tensogram encode/decode**: `encode_pipeline` / `decode_pipeline` on the packed bit stream.
-
-### Example output
-
-```
-GRIB vs Tensogram Comparison (10000000 float64 values, 24 bit, 5 iterations)
-Reference: eccodes grid_ccsds
-
- Combo                    | Encode (ms) | Decode (ms) | Ratio (%) | Size (KiB)  | vs Ref Enc | vs Ref Dec
---------------------------+-------------+-------------+-----------+-------------+------------+-----------
- eccodes grid_ccsds [REF] |     312.000 |     245.000 |     37.50 |   36621.1   |      1.00x |      1.00x
- eccodes grid_simple      |     180.000 |     120.000 |     37.50 |   36621.1   |      0.58x |      0.49x
- tensogram sp(24)+szip    |     210.000 |     160.000 |     28.57 |   27915.1   |      0.67x |      0.65x
-```
+For actual results, see [Benchmark Results](benchmark-results.md).
 
 ## Benchmark pipeline flow
 
 ```mermaid
-flowchart LR
-    subgraph datagen
-        G[generate_weather_field\nnumpoints × f64]
-    end
-    subgraph timing
-        W[warm-up\n1 iteration\ndiscarded]
-        T[timed iterations\nmedian taken]
-    end
-    subgraph report
-        R[format_table\nreference comparison\nASCII table]
-    end
+flowchart TD
+    G[Generate weather field] --> W[Warm-up iterations]
+    W --> T[Timed iterations]
+    T --> E[Encode]
+    E --> D[Decode]
+    D --> T
+    T --> F[Fidelity check]
+    F --> R[Print report]
 
-    G --> W --> T --> R
-    T --> |encode_pipeline| Enc[compressed bytes]
-    Enc --> |decode_pipeline| Dec[f64 values]
+    style G fill:#e8f4e8
+    style T fill:#e8e8f4
+    style F fill:#f4e8e8
 ```
 
-## Edge cases and limitations
+Each timed iteration runs a full encode → decode cycle. After all iterations
+complete, the last decoded output is compared against the original to produce
+the fidelity metrics.
 
-### Input validation
-
-Both benchmarks reject `num_points = 0` and `iterations = 0` with an `Err` return
-(no panic). These are caught before any data generation or pipeline calls.
-
-### Szip alignment padding
-
-The codec matrix rounds `num_points` up to the next multiple of 4 (by at most 3
-extra values) before running. This is required because libaec promotes 24-bit
-samples to 4-byte containers, so the packed byte count must be a multiple of 4.
-The padding values come from the same PRNG sequence, so the rounding has no effect
-on the overall benchmark character. The title line and `original_bytes` field both
-reflect the actual (padded) count.
+## Things to know
 
 ### Compression expansion
 
-Some compressors (especially LZ4 on raw f64 bytes) may produce output *larger*
-than the input (`Ratio > 100%`). This is expected and reported accurately — the
-`none+none` baseline itself is simply a memcpy and always shows 100.00%.
+Some compressors (especially LZ4 on raw 64-bit floats) may produce output *larger*
+than the input (Ratio > 100%). This is normal — high-entropy data can't always be
+compressed. The baseline row is a raw copy and always shows 100%.
 
-### Very small data sizes
+### Szip alignment
 
-With `--num-points 1` the codec matrix rounds to 4 values. All 24 combinations
-succeed at this size, but absolute timing values are dominated by per-call overhead
-rather than actual compression throughput. Use ≥ 10 000 points for meaningful
-relative comparisons.
+The codec matrix may round `num_points` up by 1–3 values for szip block alignment.
+This only matters for very small inputs.
 
-### PRNG determinism
+### Small data sizes
 
-The SplitMix64 PRNG is fully deterministic for a given seed, but the weather field
-generator uses `f64::sin()` / `f64::cos()` whose implementations may differ across
-platforms or libm versions. Timing comparisons are therefore only valid within the
-same build environment. Size-based metrics (`Ratio %`, `Size KiB`) are
-platform-independent.
+With `--num-points 1`, timing is dominated by per-call overhead rather than
+compression throughput. Use ≥ 10 000 points for meaningful comparisons.
 
-### GRIB grid factorization
+### GRIB grid shape
 
-For prime `num_points`, the GRIB benchmark creates a degenerate 1 × N grid.
-ecCodes handles this correctly, but it differs from the typical nearly-square grids
-used in production. For representative GRIB benchmarks, use composite sizes
-(e.g. 10 000 000 = 2500 × 4000).
+For prime `num_points`, the GRIB benchmark creates a 1 × N grid (not a realistic
+near-square grid). Use composite sizes for representative results
+(e.g. `--num-points 10000000`).
 
-## Error handling
+### Reproducibility
 
-All benchmark functions return `Result<_, BenchmarkError>` — no panics, no
-`unwrap()` in library code. Errors propagate to the binary entry point, which
-prints them to stderr and exits with code 1.
+The data generator is deterministic for a given `--seed`, so repeated runs on the
+same machine produce comparable timing. Compression ratios, sizes, and fidelity
+are reproducible across machines. Timing and throughput are not.
 
-### Error paths
+### Error handling
 
-| Source | When | Message |
-|--------|------|---------|
-| Input validation | `num_points = 0` | `"num_points must be > 0"` |
-| Input validation | `iterations = 0` | `"iterations must be > 0"` |
-| `compute_params` | All values identical (zero range) | `"sp(24) params: ..."` with inner error |
-| `encode_pipeline` | Codec failure (e.g. unsupported config) | Pipeline error description |
-| `decode_pipeline` | Corrupted or truncated encoded data | Pipeline error description |
-| ecCodes C API | `codes_set_long` returns non-zero | `"codes_set_long(key, val) returned rc"` |
-| ecCodes C API | Handle creation returns null | `"codes_grib_handle_new_from_samples(GRIB2) returned null; check ECCODES_SAMPLES_PATH..."` |
-| CString conversion | Key/value contains interior NUL byte | `"invalid key 'name': nul byte found..."` |
-
-### Graceful degradation
-
-In the codec matrix benchmark, if a single combination fails (e.g. a codec is
-unavailable at runtime), the error is logged to stderr and an `[ERROR]` row
-appears in the output table with zero times and zero size. The remaining
-combinations continue to run. The GRIB comparison benchmark uses the same pattern.
-
-## Reproducibility
-
-All benchmarks use a deterministic PRNG (SplitMix64) seeded by `--seed`. The same
-seed on the same machine produces identical data and therefore comparable timing
-across runs. For cross-machine comparisons, use the `Ratio (%)` and `Size (KiB)`
-columns (size-independent) rather than absolute millisecond values.
+If a single codec fails, the benchmark logs the error and continues with the
+remaining combinations. The summary line reports how many succeeded and failed.
+The CLI exits with code 1 if any combination failed.
 
 ## Running in CI
 
-For fast CI validation, pass `--num-points 10000 --iterations 1`:
+For fast CI validation, pass `--num-points 10000 --iterations 1 --warmup 1`:
 
 ```bash
 cargo run -p tensogram-benchmarks --bin codec-matrix -- \
-    --num-points 10000 --iterations 1
+    --num-points 10000 --iterations 1 --warmup 1
 ```
 
 The smoke test suite (`cargo test -p tensogram-benchmarks`) uses 500–1000 points
