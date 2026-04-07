@@ -14,7 +14,7 @@
 ///   Then compile manually (or add to your CMakeLists.txt):
 ///   g++ -std=c++17 -I include -I crates/tensogram-ffi \
 ///       examples/cpp/11_encode_pre_encoded.cpp \
-///       -L target/release -l tensogram_ffi \
+///       -L target/release -ltensogram_ffi \
 ///       -framework CoreFoundation -framework Security \
 ///       -framework SystemConfiguration -lc++ -lm \
 ///       -o build/example_11

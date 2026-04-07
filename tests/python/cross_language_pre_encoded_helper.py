@@ -17,7 +17,7 @@ import tensogram
 def main() -> None:
     # Same deterministic input as the Rust driver.
     values = np.array([200.0 + i * 0.125 for i in range(1024)], dtype=np.float64)
-    raw_bytes = values.tobytes()  # little-endian on ARM Mac
+    raw_bytes = values.astype("<f8", copy=False).tobytes()  # explicit little-endian
 
     global_meta = {"version": 2}
     descriptor = {

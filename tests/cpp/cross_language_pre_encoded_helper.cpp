@@ -46,9 +46,16 @@ int main() {
         values[i] = 200.0 + static_cast<double>(i) * 0.125;
     }
 
-    // Raw LE bytes (double is already LE on ARM Mac and x86).
-    auto* raw_bytes = reinterpret_cast<const std::uint8_t*>(values.data());
-    std::size_t raw_len = N * sizeof(double);
+    // Serialize to little-endian bytes regardless of host endianness.
+    std::vector<std::uint8_t> raw_bytes(N * sizeof(double));
+    for (int i = 0; i < N; ++i) {
+        std::uint64_t bits;
+        std::memcpy(&bits, &values[i], sizeof(double));
+        for (int j = 0; j < 8; ++j) {
+            raw_bytes[i * 8 + j] = static_cast<std::uint8_t>(bits >> (j * 8));
+        }
+    }
+    std::size_t raw_len = raw_bytes.size();
 
     // Build descriptor JSON for encoding="none" (raw pass-through).
     std::string json =
@@ -57,7 +64,7 @@ int main() {
         R"("encoding":"none","filter":"none","compression":"none"}]})";
 
     std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
-        {raw_bytes, raw_len}
+        {raw_bytes.data(), raw_len}
     };
 
     auto wire = tensogram::encode_pre_encoded(json, objects);

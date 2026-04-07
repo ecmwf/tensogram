@@ -957,15 +957,16 @@ impl PyStreamingEncoder {
     fn write_object_pre_encoded(
         &mut self,
         descriptor: &Bound<'_, PyDict>,
-        data: &Bound<'_, PyBytes>,
+        data: &Bound<'_, pyo3::PyAny>,
     ) -> PyResult<()> {
         let desc = dict_to_data_object_descriptor(descriptor)?;
+        let bytes = data.extract::<Vec<u8>>()?;
         let inner = self
             .inner
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
         inner
-            .write_object_pre_encoded(&desc, data.as_bytes())
+            .write_object_pre_encoded(&desc, &bytes)
             .map_err(to_py_err)
     }
 

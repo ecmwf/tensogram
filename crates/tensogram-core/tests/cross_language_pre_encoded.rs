@@ -138,8 +138,24 @@ fn cpp_sha256() -> Result<String, String> {
         ));
     }
 
-    let output = std::process::Command::new(&helper)
-        .env("DYLD_LIBRARY_PATH", root.join("target/release"))
+    let library_dir = root.join("target/release");
+    let append_library_dir = |var_name: &str| -> Result<std::ffi::OsString, String> {
+        let mut paths = vec![library_dir.clone()];
+        if let Some(existing) = std::env::var_os(var_name) {
+            paths.extend(std::env::split_paths(&existing));
+        }
+        std::env::join_paths(paths)
+            .map_err(|e| format!("Failed to construct {var_name} for C++ helper: {e}"))
+    };
+
+    let mut command = std::process::Command::new(&helper);
+    command.env(
+        "DYLD_LIBRARY_PATH",
+        append_library_dir("DYLD_LIBRARY_PATH")?,
+    );
+    command.env("LD_LIBRARY_PATH", append_library_dir("LD_LIBRARY_PATH")?);
+
+    let output = command
         .output()
         .map_err(|e| format!("Failed to spawn C++ helper: {e}"))?;
 

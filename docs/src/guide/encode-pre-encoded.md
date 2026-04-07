@@ -175,8 +175,10 @@ library does NOT validate or flip byte order. The bytes must be in the byte
 order declared in the descriptor's `byte_order` field.
 
 For example, if `byte_order="big"` and `encoding="none"`, the caller must
-provide big-endian bytes. The decoder will interpret them according to the
-declared byte order.
+provide big-endian bytes. On decode, the payload bytes are returned **verbatim**
+for `encoding="none"`; callers and language bindings that interpret those bytes
+as numeric values must use the declared `byte_order` (or byteswap as needed)
+rather than assuming native endianness.
 
 When using other encodings (`simple_packing`, etc.), byte order is handled
 by the encoding/decoding pipeline, so the `byte_order` field describes the
