@@ -40,18 +40,18 @@ static std::string sha256_hex(const std::uint8_t* data, std::size_t len) {
 
 int main() {
     // Same deterministic input as the Rust driver: 1024 float64 values.
-    constexpr int N = 1024;
+    constexpr std::size_t N = 1024;
     std::vector<double> values(N);
-    for (int i = 0; i < N; ++i) {
+    for (std::size_t i = 0; i < N; ++i) {
         values[i] = 200.0 + static_cast<double>(i) * 0.125;
     }
 
     // Serialize to little-endian bytes regardless of host endianness.
     std::vector<std::uint8_t> raw_bytes(N * sizeof(double));
-    for (int i = 0; i < N; ++i) {
+    for (std::size_t i = 0; i < N; ++i) {
         std::uint64_t bits;
         std::memcpy(&bits, &values[i], sizeof(double));
-        for (int j = 0; j < 8; ++j) {
+        for (std::size_t j = 0; j < 8; ++j) {
             raw_bytes[i * 8 + j] = static_cast<std::uint8_t>(bits >> (j * 8));
         }
     }

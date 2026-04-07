@@ -960,14 +960,21 @@ impl PyStreamingEncoder {
         data: &Bound<'_, pyo3::PyAny>,
     ) -> PyResult<()> {
         let desc = dict_to_data_object_descriptor(descriptor)?;
-        let bytes = data.extract::<Vec<u8>>()?;
         let inner = self
             .inner
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
-        inner
-            .write_object_pre_encoded(&desc, &bytes)
-            .map_err(to_py_err)
+        // Zero-copy fast path for PyBytes; fall back to extract for bytearray / memoryview.
+        if let Ok(py_bytes) = data.downcast::<PyBytes>() {
+            inner
+                .write_object_pre_encoded(&desc, py_bytes.as_bytes())
+                .map_err(to_py_err)
+        } else {
+            let bytes = data.extract::<Vec<u8>>()?;
+            inner
+                .write_object_pre_encoded(&desc, &bytes)
+                .map_err(to_py_err)
+        }
     }
 
     /// Finalize the stream and return the complete wire-format ``bytes``.
