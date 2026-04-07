@@ -10,10 +10,12 @@ path = "src/main.rs"
 [features]
 default = []
 grib = ["dep:tensogram-grib"]
+netcdf = ["dep:tensogram-netcdf"]
 
 [dependencies]
 tensogram-core = { path = "../tensogram-core" }
 tensogram-grib = { path = "../tensogram-grib", optional = true }
+tensogram-netcdf = { path = "../tensogram-netcdf", optional = true }
 ciborium.workspace = true
 clap.workspace = true
 serde_json.workspace = true
