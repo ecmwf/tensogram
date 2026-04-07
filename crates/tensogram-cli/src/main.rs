@@ -3,6 +3,8 @@ use std::process;
 
 use clap::{Parser, Subcommand};
 
+use encoding_args::PipelineArgs;
+
 mod commands;
 mod encoding_args;
 mod filter;
@@ -114,6 +116,8 @@ enum Commands {
         /// Preserve all GRIB namespace keys under a "grib" sub-object
         #[arg(long)]
         all_keys: bool,
+        #[command(flatten)]
+        pipeline: PipelineArgs,
     },
 }
 
@@ -173,7 +177,8 @@ fn main() {
             output,
             split,
             all_keys,
-        } => commands::convert_grib::run(&inputs, output.as_deref(), split, all_keys),
+            pipeline,
+        } => commands::convert_grib::run(&inputs, output.as_deref(), split, all_keys, &pipeline),
     };
 
     if let Err(e) = result {
