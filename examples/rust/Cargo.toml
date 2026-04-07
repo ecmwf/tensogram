@@ -1,5 +1,5 @@
 [package]
-name = "tensogram-examples"
+name = "tensogram-rust-examples"
 version = "0.6.0"
 edition = "2021"
 publish = false
@@ -39,6 +39,10 @@ path = "src/bin/08_decode_variants.rs"
 [[bin]]
 name = "09_file_api"
 path = "src/bin/09_file_api.rs"
+
+[[bin]]
+name = "11_encode_pre_encoded"
+path = "src/bin/11_encode_pre_encoded.rs"
 
 [dependencies]
 tensogram-core = { path = "../../crates/tensogram-core" }
