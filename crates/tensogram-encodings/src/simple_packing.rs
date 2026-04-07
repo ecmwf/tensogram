@@ -8,6 +8,11 @@ pub enum PackingError {
     BitsPerValueTooLarge(u32),
     #[error("insufficient data: expected at least {expected} bytes, got {actual}")]
     InsufficientData { expected: usize, actual: usize },
+    #[error("output size overflow: {num_values} values × {bytes_per_value} bytes")]
+    OutputSizeOverflow {
+        num_values: usize,
+        bytes_per_value: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -27,10 +32,6 @@ pub fn compute_params(
         return Err(PackingError::BitsPerValueTooLarge(bits_per_value));
     }
 
-    if let Some(i) = values.iter().position(|v| v.is_nan()) {
-        return Err(PackingError::NanValue(i));
-    }
-
     if values.is_empty() || bits_per_value == 0 {
         let reference_value = values.first().copied().unwrap_or(0.0);
         return Ok(SimplePackingParams {
@@ -41,11 +42,21 @@ pub fn compute_params(
         });
     }
 
-    let d_scale = 10f64.powi(decimal_scale_factor);
+    let mut min_val = f64::INFINITY;
+    let mut max_val = f64::NEG_INFINITY;
+    for (i, &v) in values.iter().enumerate() {
+        if v.is_nan() {
+            return Err(PackingError::NanValue(i));
+        }
+        if v < min_val {
+            min_val = v;
+        }
+        if v > max_val {
+            max_val = v;
+        }
+    }
 
-    // Scale values by decimal factor
-    let min_val = values.iter().copied().fold(f64::INFINITY, f64::min);
-    let max_val = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let d_scale = 10f64.powi(decimal_scale_factor);
 
     let reference_value = min_val;
     let range = (max_val - min_val) * d_scale;
@@ -72,47 +83,106 @@ pub fn compute_params(
 }
 
 /// Encode f64 values to packed integer bytes (MSB-first bit packing).
-/// Rejects NaN inputs.
+///
 pub fn encode(values: &[f64], params: &SimplePackingParams) -> Result<Vec<u8>, PackingError> {
     if params.bits_per_value > 64 {
         return Err(PackingError::BitsPerValueTooLarge(params.bits_per_value));
     }
-
     if let Some(i) = values.iter().position(|v| v.is_nan()) {
         return Err(PackingError::NanValue(i));
     }
-
-    // bits_per_value == 0: constant field, empty payload
     if params.bits_per_value == 0 {
         return Ok(Vec::new());
     }
 
     let bpv = params.bits_per_value;
-    let d_factor = 10f64.powi(params.decimal_scale_factor);
-    let e_factor = 2f64.powi(params.binary_scale_factor);
-
-    // Pack values to integers
-    // Forward: packed_int = round((value - reference_value) * 10^D / 2^E)
+    // packed_int = round((value - ref) * 10^D / 2^E)
+    //            = round((value - ref) * scale)
+    let scale = 10f64.powi(params.decimal_scale_factor) * 2f64.powi(-params.binary_scale_factor);
+    let refv = params.reference_value;
     let max_packed: u64 = if bpv >= 64 {
         u64::MAX
     } else {
         (1u64 << bpv) - 1
     };
 
-    let total_bits = values.len() as u64 * bpv as u64;
+    match bpv {
+        8 => encode_aligned::<1>(values, refv, scale, max_packed),
+        16 => encode_aligned::<2>(values, refv, scale, max_packed),
+        24 => encode_aligned::<3>(values, refv, scale, max_packed),
+        32 => encode_aligned::<4>(values, refv, scale, max_packed),
+        _ => encode_generic(values, refv, scale, max_packed, bpv),
+    }
+}
+
+fn encode_aligned<const N: usize>(
+    values: &[f64],
+    refv: f64,
+    scale: f64,
+    max_packed: u64,
+) -> Result<Vec<u8>, PackingError> {
+    let len = values
+        .len()
+        .checked_mul(N)
+        .ok_or(PackingError::OutputSizeOverflow {
+            num_values: values.len(),
+            bytes_per_value: N,
+        })?;
+    let mut out = vec![0u8; len];
+
+    for (chunk, &v) in out.chunks_exact_mut(N).zip(values) {
+        // Saturating f64→u64 cast handles negative values (→ 0).
+        // u64::min handles the rare +1 overshoot from rounding.
+        let q = (((v - refv) * scale).round() as u64).min(max_packed);
+        match N {
+            1 => {
+                chunk[0] = q as u8;
+            }
+            2 => {
+                chunk[0] = (q >> 8) as u8;
+                chunk[1] = q as u8;
+            }
+            3 => {
+                chunk[0] = (q >> 16) as u8;
+                chunk[1] = (q >> 8) as u8;
+                chunk[2] = q as u8;
+            }
+            4 => {
+                chunk[0] = (q >> 24) as u8;
+                chunk[1] = (q >> 16) as u8;
+                chunk[2] = (q >> 8) as u8;
+                chunk[3] = q as u8;
+            }
+            _ => unreachable!(),
+        }
+    }
+    Ok(out)
+}
+
+fn encode_generic(
+    values: &[f64],
+    refv: f64,
+    scale: f64,
+    max_packed: u64,
+    bpv: u32,
+) -> Result<Vec<u8>, PackingError> {
+    let total_bits =
+        (values.len() as u64)
+            .checked_mul(bpv as u64)
+            .ok_or(PackingError::OutputSizeOverflow {
+                num_values: values.len(),
+                bytes_per_value: (bpv as usize).div_ceil(8),
+            })?;
     let total_bytes =
-        usize::try_from(total_bits.div_ceil(8)).map_err(|_| PackingError::InsufficientData {
-            expected: usize::MAX,
-            actual: 0,
+        usize::try_from(total_bits.div_ceil(8)).map_err(|_| PackingError::OutputSizeOverflow {
+            num_values: values.len(),
+            bytes_per_value: (bpv as usize).div_ceil(8),
         })?;
     let mut output = vec![0u8; total_bytes];
 
     let mut bit_pos: u64 = 0;
     for &value in values {
-        let scaled = (value - params.reference_value) * d_factor / e_factor;
-        let packed = scaled.round().max(0.0).min(max_packed as f64) as u64;
-
-        // Write `bpv` bits at bit_pos, MSB-first
+        let packed = (((value - refv) * scale).round() as u64).min(max_packed);
         write_bits(&mut output, bit_pos, packed, bpv);
         bit_pos += bpv as u64;
     }
@@ -130,7 +200,6 @@ pub fn decode(
         return Err(PackingError::BitsPerValueTooLarge(params.bits_per_value));
     }
 
-    // bits_per_value == 0: all values equal reference_value
     if params.bits_per_value == 0 {
         return Ok(vec![params.reference_value; num_values]);
     }
@@ -145,21 +214,62 @@ pub fn decode(
         });
     }
 
-    let d_factor = 10f64.powi(-params.decimal_scale_factor);
-    let e_factor = 2f64.powi(params.binary_scale_factor);
+    let refv = params.reference_value;
+    // value = ref + 2^E * 10^(-D) * packed_int = ref + inv_scale * packed_int
+    let inv_scale =
+        2f64.powi(params.binary_scale_factor) * 10f64.powi(-params.decimal_scale_factor);
 
+    match bpv {
+        8 => Ok(decode_aligned::<1>(packed, num_values, refv, inv_scale)),
+        16 => Ok(decode_aligned::<2>(packed, num_values, refv, inv_scale)),
+        24 => Ok(decode_aligned::<3>(packed, num_values, refv, inv_scale)),
+        32 => Ok(decode_aligned::<4>(packed, num_values, refv, inv_scale)),
+        _ => Ok(decode_generic(packed, num_values, refv, inv_scale, bpv)),
+    }
+}
+
+fn decode_aligned<const N: usize>(
+    packed: &[u8],
+    num_values: usize,
+    refv: f64,
+    inv_scale: f64,
+) -> Vec<f64> {
+    let mut values = Vec::with_capacity(num_values);
+
+    for chunk in packed[..num_values * N].chunks_exact(N) {
+        let packed_int: u64 = match N {
+            1 => chunk[0] as u64,
+            2 => ((chunk[0] as u64) << 8) | chunk[1] as u64,
+            3 => ((chunk[0] as u64) << 16) | ((chunk[1] as u64) << 8) | chunk[2] as u64,
+            4 => {
+                ((chunk[0] as u64) << 24)
+                    | ((chunk[1] as u64) << 16)
+                    | ((chunk[2] as u64) << 8)
+                    | chunk[3] as u64
+            }
+            _ => unreachable!(),
+        };
+        values.push(refv + inv_scale * packed_int as f64);
+    }
+    values
+}
+
+fn decode_generic(
+    packed: &[u8],
+    num_values: usize,
+    refv: f64,
+    inv_scale: f64,
+    bpv: u32,
+) -> Vec<f64> {
     let mut values = Vec::with_capacity(num_values);
     let mut bit_pos: u64 = 0;
 
     for _ in 0..num_values {
         let packed_int = read_bits(packed, bit_pos, bpv);
-        // Reverse: value = reference_value + 2^E * 10^(-D) * packed_int
-        let value = params.reference_value + e_factor * d_factor * packed_int as f64;
-        values.push(value);
+        values.push(refv + inv_scale * packed_int as f64);
         bit_pos += bpv as u64;
     }
-
-    Ok(values)
+    values
 }
 
 /// Decode a range of packed values starting at an arbitrary bit offset.
@@ -213,11 +323,40 @@ fn write_bits(buf: &mut [u8], bit_offset: u64, value: u64, nbits: u32) {
     if nbits == 0 {
         return;
     }
+
+    if bit_offset.is_multiple_of(8) {
+        let idx = (bit_offset / 8) as usize;
+        match nbits {
+            8 => {
+                buf[idx] = value as u8;
+                return;
+            }
+            16 => {
+                buf[idx] = (value >> 8) as u8;
+                buf[idx + 1] = value as u8;
+                return;
+            }
+            24 => {
+                buf[idx] = (value >> 16) as u8;
+                buf[idx + 1] = (value >> 8) as u8;
+                buf[idx + 2] = value as u8;
+                return;
+            }
+            32 => {
+                buf[idx] = (value >> 24) as u8;
+                buf[idx + 1] = (value >> 16) as u8;
+                buf[idx + 2] = (value >> 8) as u8;
+                buf[idx + 3] = value as u8;
+                return;
+            }
+            _ => {}
+        }
+    }
+
     let mut remaining = nbits;
     let mut pos = bit_offset as usize;
     let mut val = value;
 
-    // Bits available in the first byte
     let first_avail = 8 - (pos % 8);
     if remaining <= first_avail as u32 {
         // Entire value fits in one byte
@@ -325,7 +464,16 @@ mod tests {
     }
 
     #[test]
-    fn test_nan_rejection() {
+    fn test_nan_rejection_in_compute_params() {
+        let values = vec![1.0, f64::NAN, 3.0];
+        assert!(matches!(
+            compute_params(&values, 16, 0),
+            Err(PackingError::NanValue(1))
+        ));
+    }
+
+    #[test]
+    fn test_nan_rejection_in_encode() {
         let values = vec![1.0, f64::NAN, 3.0];
         let params = SimplePackingParams {
             reference_value: 0.0,
