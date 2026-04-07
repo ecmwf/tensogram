@@ -54,11 +54,7 @@ For speculative ideas, see `IDEAS.md`.
   - add a benchmark that compares encoding large runtime auto-generated entries (10M float64 packed to 24 bit) to GRIB (feature gated by eccodes) using grib_ccsds packing and comparing it with the simple_packing (also 24 bit) + szip compression by tensogram. eccodes implementation is the reference.
   - add a benchmark that compares all combinations of encoders + compressors. none+none is the reference. include the speed of compression (ms), decompression (ms), and the rate compression (in % and KiB). Use large runtime auto-generated entries of 16M points starting in float64. Vary also the packing to 16, 24 and 32 bits.
 
-- [ ] *record-benchmark-results*:
-  - build and run all benchmarks
-  - make a static page with results from the benchmarks
-  - insert in docs/ with a marked date of running, version and the details of the machine where it ran (this localhost).
-  - build the docs and fix any issues
+- [x] ~~*record-benchmark-results*~~ → `docs/src/guide/benchmark-results.md` — ran both benchmarks (codec-matrix 24 combos, grib-comparison 3 methods) on Apple M4 / macOS 26.3.1 / Rust 1.94.1 / ecCodes 2.46.0; results page added to docs with date, version, machine metadata; `mdbook build` passes.
 
 ## Code Quality
 

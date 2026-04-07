@@ -34,6 +34,7 @@
 - [Dask Integration](guide/dask-integration.md)
 - [Zarr v3 Backend](guide/zarr-backend.md)
 - [Benchmarks](guide/benchmarks.md)
+- [Benchmark Results](guide/benchmark-results.md)
 
 ---
 

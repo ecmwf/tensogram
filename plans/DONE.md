@@ -239,6 +239,19 @@ Comprehensive audit of all Rust library code:
 - **Error messages**: all errors include what went wrong, where, and relevant values (expected vs actual)
 - **Documentation**: `docs/src/guide/error-handling.md` updated with all metadata-refactor error paths (encoding, decoding, streaming, CLI), no-panic guarantee section
 
+## record-benchmark-results (2026-04-07, v0.6.0)
+
+Ran both benchmark binaries on this machine and published results as a static docs page.
+
+- **Machine**: MacBook Pro (Mac16,1), Apple M4 10-core (4P+6E), 16 GB, macOS 26.3.1
+- **Rust**: 1.94.1 (e408947bf 2026-03-25)
+- **ecCodes**: 2.46.0 (Homebrew)
+- **Codec matrix**: 24 encoder×compressor×bit-width combos on 16M float64 values, 5 iterations, seed 42 — all 24 combos succeeded, no `[ERROR]` rows
+- **GRIB comparison**: 3 methods (eccodes grid_ccsds, eccodes grid_simple, tensogram sp(24)+szip) on 10M float64 values, 24-bit, 5 iterations, seed 42
+- **New file**: `docs/src/guide/benchmark-results.md` — metadata table, exact commands, verbatim output tables, portability note
+- **Updated**: `docs/src/SUMMARY.md` — added `[Benchmark Results](guide/benchmark-results.md)` after `[Benchmarks]`
+- **Docs build**: `mdbook build` passes with no errors or warnings
+
 ## Dependencies
 
 - ciborium 0.2, serde 1, thiserror 2, xxhash-rust 0.8
