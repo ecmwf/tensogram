@@ -11,9 +11,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
 use tensogram_core::{
-    decode, decode_descriptors, decode_metadata, decode_object, decode_range, encode, scan,
-    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
-    HashAlgorithm, TensogramError, TensogramFile, RESERVED_KEY,
+    decode, decode_descriptors, decode_metadata, decode_object, decode_range, encode,
+    encode_pre_encoded, scan, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
+    GlobalMetadata, HashAlgorithm, StreamingEncoder, TensogramError, TensogramFile, RESERVED_KEY,
 };
 
 // ---------------------------------------------------------------------------
@@ -605,6 +605,43 @@ fn py_encode<'py>(
     Ok(PyBytes::new(py, &msg))
 }
 
+/// Encode already-encoded payloads into a Tensogram wire-format message.
+///
+/// Unlike :func:`encode`, this function does **not** run the encoding pipeline
+/// (encoding/filter/compression/szip).  Each *data* element must be a
+/// ``bytes`` object already carrying the encoded payload that matches the
+/// descriptor's declared ``encoding`` / ``filter`` / ``compression`` and any
+/// codec-specific ``params`` (e.g. ``szip_block_offsets``).  The library still
+/// computes and stamps the payload hash.
+///
+/// Args:
+///     global_meta_dict: ``{"version": 2, ...}`` with any extra keys.
+///     descriptors_and_data: list of ``(descriptor_dict, bytes)`` pairs.  The
+///         second element of each pair **must** be a ``bytes``-like object —
+///         numpy arrays are rejected because pre-encoded payloads are
+///         already in their final wire form.
+///     hash: ``"xxh3"`` (default) or ``None`` to skip integrity hashing.
+///
+/// Returns:
+///     ``bytes`` — the complete wire-format message.
+#[pyfunction]
+#[pyo3(name = "encode_pre_encoded", signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3")))]
+fn py_encode_pre_encoded<'py>(
+    py: Python<'py>,
+    global_meta_dict: &Bound<'_, PyDict>,
+    descriptors_and_data: &Bound<'_, PyList>,
+    hash: Option<&str>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let global_meta = dict_to_global_metadata(global_meta_dict)?;
+    let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
+    let refs: Vec<(&DataObjectDescriptor, &[u8])> =
+        pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
+
+    let options = make_encode_options(hash)?;
+    let msg = encode_pre_encoded(&global_meta, &refs, &options).map_err(to_py_err)?;
+    Ok(PyBytes::new(py, &msg))
+}
+
 /// Decode a wire-format message → ``Message(metadata, objects)``.
 ///
 /// Set *verify_hash* to ``True`` to verify payload integrity.
@@ -851,12 +888,108 @@ fn compute_packing_params(
 }
 
 // ---------------------------------------------------------------------------
+// PyStreamingEncoder — wraps StreamingEncoder<Vec<u8>>
+// ---------------------------------------------------------------------------
+
+/// Progressive, frame-at-a-time encoder backed by an in-memory ``bytes`` buffer.
+///
+/// Unlike :func:`encode`, which builds a complete message in one shot, the
+/// streaming encoder writes each object frame as soon as
+/// :meth:`write_object` (or :meth:`write_object_pre_encoded`) is called.
+/// Call :meth:`finish` to flush the footer frames + postamble and retrieve the
+/// complete wire-format message.
+///
+/// Example::
+///
+///     enc = tensogram.StreamingEncoder({"version": 2})
+///     enc.write_object({"type": "ntensor", "shape": [4], "dtype": "float32"},
+///                      np.ones(4, dtype=np.float32))
+///     msg = enc.finish()
+#[pyclass(name = "StreamingEncoder")]
+struct PyStreamingEncoder {
+    inner: Option<StreamingEncoder<Vec<u8>>>,
+}
+
+#[pymethods]
+impl PyStreamingEncoder {
+    /// Begin a new streaming message.
+    ///
+    /// Args:
+    ///     global_meta_dict: ``{"version": 2, ...}`` with any extra keys.
+    ///     hash: ``"xxh3"`` (default) or ``None`` to skip integrity hashing.
+    #[new]
+    #[pyo3(signature = (global_meta_dict, hash=Some("xxh3")))]
+    fn new(global_meta_dict: &Bound<'_, PyDict>, hash: Option<&str>) -> PyResult<Self> {
+        let global_meta = dict_to_global_metadata(global_meta_dict)?;
+        let options = make_encode_options(hash)?;
+        let inner = StreamingEncoder::new(Vec::new(), &global_meta, &options).map_err(to_py_err)?;
+        Ok(Self { inner: Some(inner) })
+    }
+
+    /// Encode and write a single data object frame.
+    ///
+    /// Args:
+    ///     descriptor: dict with ``type``/``shape``/``dtype`` plus encoding
+    ///         pipeline fields (``encoding``, ``filter``, ``compression``,
+    ///         ``params``, etc.).
+    ///     data: numpy array or ``bytes``-like object carrying the raw
+    ///         native-endian payload to encode.
+    fn write_object(
+        &mut self,
+        descriptor: &Bound<'_, PyDict>,
+        data: &Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<()> {
+        let desc = dict_to_data_object_descriptor(descriptor)?;
+        let bytes = extract_single_data_item(data)?;
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
+        inner.write_object(&desc, &bytes).map_err(to_py_err)
+    }
+
+    /// Write a pre-encoded data object frame directly (no pipeline).
+    ///
+    /// ``data`` must already contain the encoded payload matching the
+    /// descriptor's ``encoding`` / ``filter`` / ``compression`` / ``params``
+    /// (e.g. ``szip_block_offsets`` as a ``list[int]``).  The library still
+    /// computes and stamps the payload hash.
+    fn write_object_pre_encoded(
+        &mut self,
+        descriptor: &Bound<'_, PyDict>,
+        data: &Bound<'_, PyBytes>,
+    ) -> PyResult<()> {
+        let desc = dict_to_data_object_descriptor(descriptor)?;
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
+        inner
+            .write_object_pre_encoded(&desc, data.as_bytes())
+            .map_err(to_py_err)
+    }
+
+    /// Finalize the stream and return the complete wire-format ``bytes``.
+    ///
+    /// Subsequent calls on this encoder raise ``RuntimeError``.
+    fn finish<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let inner = self
+            .inner
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
+        let buf = inner.finish().map_err(to_py_err)?;
+        Ok(PyBytes::new(py, &buf))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Module definition
 // ---------------------------------------------------------------------------
 
 #[pymodule]
 fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_encode, m)?)?;
+    m.add_function(wrap_pyfunction!(py_encode_pre_encoded, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode_metadata, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode_descriptors, m)?)?;
@@ -870,6 +1003,7 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTensogramFile>()?;
     m.add_class::<PyFileIter>()?;
     m.add_class::<PyBufferIter>()?;
+    m.add_class::<PyStreamingEncoder>()?;
     Ok(())
 }
 
