@@ -236,7 +236,7 @@ The `params` field in `DataObjectDescriptor` is for encoding parameters only (e.
 | `szip_rsi` | uint | Reference sample interval |
 | `szip_block_size` | uint | Block size (typically 8 or 16) |
 | `szip_flags` | uint | AEC encoding flags |
-| `szip_block_offsets` | array of uint | Bit offsets of RSI block boundaries (computed during encoding) |
+| `szip_block_offsets` | array of uint | Bit offsets of RSI block boundaries (computed by the library or provided via `encode_pre_encoded`, see [Pre-encoded Payloads](../guide/encode-pre-encoded.md)) |
 
 **zstd:**
 
