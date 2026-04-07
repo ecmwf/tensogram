@@ -10,6 +10,30 @@ use tensogram_core::{encode, Dtype, EncodeOptions};
 use crate::error::GribError;
 use crate::metadata::{extract_all_namespace_keys, extract_mars_keys, GribKeySet};
 
+/// Encoding/filter/compression configuration for data objects.
+///
+/// Defaults to all "none" — the same behaviour as before this field was added.
+#[derive(Debug, Clone)]
+pub struct DataPipeline {
+    pub encoding: String,
+    pub bits: Option<u32>,
+    pub filter: String,
+    pub compression: String,
+    pub compression_level: Option<i32>,
+}
+
+impl Default for DataPipeline {
+    fn default() -> Self {
+        Self {
+            encoding: "none".to_string(),
+            bits: None,
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            compression_level: None,
+        }
+    }
+}
+
 /// Options for GRIB → Tensogram conversion.
 #[derive(Debug, Clone)]
 pub struct ConvertOptions {
@@ -22,6 +46,9 @@ pub struct ConvertOptions {
     /// sub-object.  MARS keys always go in `"mars"` regardless of this flag.
     /// Default: `false`.
     pub preserve_all_keys: bool,
+    /// Encoding/filter/compression pipeline for data objects.
+    /// Defaults to all "none" (uncompressed raw float64).
+    pub pipeline: DataPipeline,
 }
 
 /// How to group input GRIB messages.
@@ -41,6 +68,7 @@ impl Default for ConvertOptions {
             grouping: Grouping::MergeAll,
             encode_options: EncodeOptions::default(),
             preserve_all_keys: false,
+            pipeline: DataPipeline::default(),
         }
     }
 }

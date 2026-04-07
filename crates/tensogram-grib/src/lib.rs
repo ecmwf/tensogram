@@ -15,5 +15,5 @@ pub mod converter;
 pub mod error;
 pub mod metadata;
 
-pub use converter::{convert_grib_file, ConvertOptions, Grouping};
+pub use converter::{convert_grib_file, ConvertOptions, DataPipeline, Grouping};
 pub use error::GribError;
