@@ -55,9 +55,10 @@ For speculative ideas, see `IDEAS.md`.
   - add a benchmark that compares all combinations of encoders + compressors. none+none is the reference. include the speed of compression (ms), decompression (ms), and the rate compression (in % and KiB). Use large runtime auto-generated entries of 16M points starting in float64. Vary also the packing to 16, 24 and 32 bits.
 
 - [ ] *record-benchmark-results*:
-  - run all benchmarks
+  - build and run all benchmarks
   - make a static page with results from the benchmarks
   - insert in docs/ with a marked date of running, version and the details of the machine where it ran (this localhost).
+  - build the docs and fix any issues
 
 ## Code Quality
 
