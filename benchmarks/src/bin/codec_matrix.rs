@@ -1,24 +1,23 @@
 use clap::Parser;
 
-/// Benchmark all encoder × compressor × bit-width combinations.
-///
-/// Runs the full tensogram encoding pipeline for every valid combination,
-/// measuring encode/decode throughput and compressed size against the
-/// `none+none` baseline.
 #[derive(Parser, Debug)]
 #[command(
     name = "codec-matrix",
-    about = "Benchmark all encoder × compressor × bit-width combinations"
+    about = "Benchmark all encoder \u{d7} compressor \u{d7} bit-width combinations"
 )]
 struct Args {
     /// Number of float64 values to encode per benchmark run.
-    /// Always rounded up to the next multiple of 4 (at most 3 extra values) for szip alignment.
+    /// Rounded up to the next multiple of 4 for szip alignment.
     #[arg(long, default_value = "16000000")]
     num_points: usize,
 
-    /// Number of timed iterations (median is reported).
-    #[arg(long, default_value = "5")]
+    /// Number of timed iterations (median reported).
+    #[arg(long, default_value = "10")]
     iterations: usize,
+
+    /// Number of warm-up iterations (discarded).
+    #[arg(long, default_value = "3")]
+    warmup: usize,
 
     /// Random seed for deterministic data generation.
     #[arg(long, default_value = "42")]
@@ -27,8 +26,17 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    match tensogram_benchmarks::run_codec_matrix(args.num_points, args.iterations, args.seed) {
-        Ok(()) => {}
+    match tensogram_benchmarks::run_codec_matrix(
+        args.num_points,
+        args.iterations,
+        args.warmup,
+        args.seed,
+    ) {
+        Ok(run) => {
+            if !run.all_passed() {
+                std::process::exit(1);
+            }
+        }
         Err(e) => {
             eprintln!("Error: {e}");
             std::process::exit(1);

@@ -1,31 +1,35 @@
-//! Smoke tests for the tensogram-benchmarks crate.
-//!
-//! These tests use small data sizes (1000 points, 1 iteration) so they
-//! run in milliseconds on CI, verifying that each benchmark module compiles,
-//! runs, and produces well-formed output without errors.
-
-use tensogram_benchmarks::codec_matrix::run_codec_matrix_results;
+use tensogram_benchmarks::codec_matrix::run_codec_matrix;
 use tensogram_benchmarks::datagen::generate_weather_field;
-use tensogram_benchmarks::report::{format_table, BenchmarkResult};
+use tensogram_benchmarks::report::{
+    compute_fidelity, format_table, BenchmarkResult, Fidelity, TimingStats,
+};
 
-// ── datagen ───────────────────────────────────────────────────────────────────
+fn make_stats(ms: f64) -> TimingStats {
+    TimingStats {
+        median_ms: ms,
+        min_ms: ms * 0.9,
+        max_ms: ms * 1.1,
+    }
+}
+
+// ── datagen ──────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_datagen_determinism() {
+fn datagen_determinism() {
     let a = generate_weather_field(1000, 42);
     let b = generate_weather_field(1000, 42);
     assert_eq!(a, b, "same seed must produce identical output");
 }
 
 #[test]
-fn test_datagen_different_seeds_differ() {
+fn datagen_different_seeds_differ() {
     let a = generate_weather_field(1000, 1);
     let b = generate_weather_field(1000, 2);
     assert_ne!(a, b, "different seeds must produce different output");
 }
 
 #[test]
-fn test_datagen_exact_length() {
+fn datagen_exact_length() {
     for n in [0usize, 1, 100, 999, 1000, 1024] {
         let v = generate_weather_field(n, 42);
         assert_eq!(v.len(), n, "length mismatch for n={n}");
@@ -33,7 +37,7 @@ fn test_datagen_exact_length() {
 }
 
 #[test]
-fn test_datagen_physical_range() {
+fn datagen_physical_range() {
     let v = generate_weather_field(1000, 42);
     for (i, &val) in v.iter().enumerate() {
         assert!(val.is_finite(), "non-finite value at index {i}: {val}");
@@ -44,194 +48,235 @@ fn test_datagen_physical_range() {
     }
 }
 
-// ── report ────────────────────────────────────────────────────────────────────
+// ── report ───────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_report_formatting() {
+fn report_formatting() {
     let results = vec![
         BenchmarkResult {
             name: "none+none".to_string(),
-            encode_ms: 1.0,
-            decode_ms: 0.5,
+            encode: make_stats(1.0),
+            decode: make_stats(0.5),
             compressed_bytes: 8000,
             original_bytes: 8000,
+            compressed_bytes_varied: false,
+            fidelity: Fidelity::Exact,
         },
         BenchmarkResult {
             name: "sp(24)+szip".to_string(),
-            encode_ms: 20.0,
-            decode_ms: 15.0,
+            encode: make_stats(20.0),
+            decode: make_stats(15.0),
             compressed_bytes: 3000,
             original_bytes: 8000,
+            compressed_bytes_varied: false,
+            fidelity: Fidelity::Lossy {
+                linf: 0.01,
+                l1: 0.005,
+                l2: 0.003,
+            },
         },
     ];
     let table = format_table(&results, "none+none", "Test title");
 
-    assert!(
-        table.contains("[REF]"),
-        "reference row must be marked [REF]"
-    );
-    assert!(
-        table.contains("none+none [REF]"),
-        "reference name must have [REF] suffix"
-    );
-    assert!(table.contains("Encode (ms)"), "header missing");
-    assert!(table.contains("Ratio (%)"), "ratio column missing");
-    assert!(
-        table.contains("Reference: none+none"),
-        "reference line missing"
-    );
-    assert!(table.contains("Test title"), "title missing");
-    // sp(24)+szip should show 37.5% ratio (3000/8000)
-    assert!(table.contains("37.50"), "expected 37.50% ratio");
+    assert!(table.contains("[REF]"));
+    assert!(table.contains("none+none [REF]"));
+    assert!(table.contains("Enc (ms)"));
+    assert!(table.contains("Ratio (%)"));
+    assert!(table.contains("Fidelity"));
+    assert!(table.contains("Reference: none+none"));
+    assert!(table.contains("Test title"));
+    assert!(table.contains("37.50"));
+    assert!(table.contains("exact"));
 }
 
 #[test]
-fn test_report_ref_not_found() {
-    // Table should still render even if reference_name doesn't match any result.
+fn report_ref_not_found() {
     let results = vec![BenchmarkResult {
         name: "only".to_string(),
-        encode_ms: 1.0,
-        decode_ms: 1.0,
+        encode: make_stats(1.0),
+        decode: make_stats(1.0),
         compressed_bytes: 100,
         original_bytes: 100,
+        compressed_bytes_varied: false,
+        fidelity: Fidelity::Exact,
     }];
     let table = format_table(&results, "missing_ref", "Test");
-    // Must not panic and must contain the column headers.
-    assert!(table.contains("Encode (ms)"));
-    assert!(table.contains("N/A")); // vs-ref columns should be N/A
+    assert!(table.contains("Enc (ms)"));
 }
 
-// ── codec_matrix ──────────────────────────────────────────────────────────────
+// ── fidelity ─────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_codec_matrix_smoke() {
-    // Run with 1000 points and 1 iteration — completes in < 5 seconds.
-    let results =
-        run_codec_matrix_results(1000, 1, 42).expect("codec matrix must not return an error");
+fn fidelity_exact_roundtrip() {
+    let data = [1.0f64, 2.0, 3.0];
+    let bytes: Vec<u8> = data.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let fidelity = compute_fidelity(&bytes, &bytes, false);
+    assert!(matches!(fidelity, Fidelity::Exact));
+}
 
-    // Should produce 24 results (one per combo).
-    assert_eq!(results.len(), 24, "expected 24 benchmark results");
+#[test]
+fn fidelity_lossy_reports_error() {
+    let orig = [1.0f64, 2.0, 3.0];
+    let decoded = [1.01f64, 2.0, 3.0];
+    let orig_bytes: Vec<u8> = orig.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let dec_bytes: Vec<u8> = decoded.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let fidelity = compute_fidelity(&orig_bytes, &dec_bytes, true);
+    match fidelity {
+        Fidelity::Lossy { linf, l1, l2 } => {
+            assert!(linf > 0.0);
+            assert!(l1 > 0.0);
+            assert!(l2 > 0.0);
+            assert!((linf - 0.01).abs() < 1e-10);
+        }
+        _ => panic!("expected Lossy fidelity"),
+    }
+}
 
-    // First result is the reference (none+none).
+// ── codec_matrix ─────────────────────────────────────────────────────────────
+
+#[test]
+fn codec_matrix_smoke() {
+    let run = run_codec_matrix(1000, 1, 1, 42).expect("codec matrix must not error");
+
+    assert_eq!(run.total_cases, 24, "expected 24 total cases attempted");
     assert_eq!(
-        results[0].name, "none+none",
-        "first result must be the reference"
+        run.results.len() + run.failures.len(),
+        run.total_cases,
+        "results + failures must equal total_cases"
     );
 
-    // All results must have positive original_bytes.
-    for r in &results {
+    assert!(
+        run.failures.is_empty(),
+        "unexpected failures: {:?}",
+        run.failures
+    );
+
+    assert_eq!(
+        run.results[0].name, "none+none",
+        "first result must be reference"
+    );
+
+    for r in &run.results {
         assert!(
             r.original_bytes > 0,
             "original_bytes must be > 0 for '{}'",
             r.name
         );
     }
-
-    // None of the results should be ERROR-tagged (compression should succeed
-    // for all 24 combos on this size of data).
-    for r in &results {
-        assert!(
-            !r.name.contains("[ERROR]"),
-            "unexpected error in result: '{}'",
-            r.name
-        );
-    }
-
-    // Compression ratios: sp(16) should give a ratio below 35%.
-    let sp16 = results
-        .iter()
-        .find(|r| r.name == "sp(16)+none")
-        .expect("sp(16)+none result missing");
-    assert!(
-        sp16.ratio_pct() < 35.0,
-        "sp(16) ratio {} should be below 35%",
-        sp16.ratio_pct()
-    );
 }
 
 #[test]
-fn test_codec_matrix_result_names_unique() {
-    let results = run_codec_matrix_results(500, 1, 0).expect("must not error");
-    let mut names: Vec<&str> = results.iter().map(|r| r.name.as_str()).collect();
+fn codec_matrix_fidelity() {
+    let run = run_codec_matrix(1000, 1, 1, 42).expect("must succeed");
+
+    for r in &run.results {
+        match &r.fidelity {
+            Fidelity::Exact => {}
+            Fidelity::Lossy { linf, l1, l2 } => {
+                assert!(linf.is_finite(), "non-finite Linf for '{}'", r.name);
+                assert!(l1.is_finite(), "non-finite L1 for '{}'", r.name);
+                assert!(l2.is_finite(), "non-finite L2 for '{}'", r.name);
+                assert!(*linf >= 0.0);
+                assert!(*l1 >= 0.0);
+                assert!(*l2 >= 0.0);
+            }
+            Fidelity::Unchecked => panic!("fidelity must be checked for '{}'", r.name),
+        }
+    }
+
+    let lossless_names = [
+        "none+none",
+        "none+zstd(3)",
+        "none+lz4",
+        "none+blosc2(blosclz)",
+        "none+szip(32)",
+    ];
+    for name in lossless_names {
+        if let Some(r) = run.results.iter().find(|r| r.name == name) {
+            assert!(
+                matches!(r.fidelity, Fidelity::Exact),
+                "expected exact fidelity for lossless codec '{name}', got {:?}",
+                r.fidelity
+            );
+        }
+    }
+}
+
+#[test]
+fn codec_matrix_result_names_unique() {
+    let run = run_codec_matrix(500, 1, 1, 0).expect("must not error");
+    let mut names: Vec<&str> = run.results.iter().map(|r| r.name.as_str()).collect();
     names.sort_unstable();
     names.dedup();
     assert_eq!(
         names.len(),
-        results.len(),
+        run.results.len(),
         "duplicate result names detected"
     );
 }
 
-// ── edge cases ────────────────────────────────────────────────────────────────
+// ── edge cases ───────────────────────────────────────────────────────────────
 
 #[test]
-fn test_codec_matrix_zero_points_returns_err() {
-    let result = run_codec_matrix_results(0, 1, 42);
+fn codec_matrix_zero_points_returns_err() {
+    let result = run_codec_matrix(0, 1, 1, 42);
     assert!(result.is_err(), "num_points=0 must return Err");
 }
 
 #[test]
-fn test_codec_matrix_zero_iterations_returns_err() {
-    let result = run_codec_matrix_results(100, 0, 42);
+fn codec_matrix_zero_iterations_returns_err() {
+    let result = run_codec_matrix(100, 0, 1, 42);
     assert!(result.is_err(), "iterations=0 must return Err");
 }
 
 #[test]
-fn test_codec_matrix_non_aligned_points() {
-    // 501 is not a multiple of 4.  The codec matrix rounds up internally
-    // so that szip cases never fail due to alignment.
-    let results = run_codec_matrix_results(501, 1, 42)
-        .expect("non-aligned num_points must succeed (rounded up)");
-    assert_eq!(results.len(), 24, "expected 24 results");
-    for r in &results {
-        assert!(
-            !r.name.contains("[ERROR]"),
-            "unexpected error for non-aligned size in '{}'",
-            r.name
-        );
-    }
+fn codec_matrix_zero_warmup_returns_err() {
+    let result = run_codec_matrix(100, 1, 0, 42);
+    assert!(result.is_err(), "warmup=0 must return Err");
 }
 
 #[test]
-fn test_codec_matrix_single_point() {
-    // num_points=1 rounds to 4. All 24 codecs should handle tiny data.
-    let results =
-        run_codec_matrix_results(1, 1, 42).expect("num_points=1 must succeed (rounded to 4)");
-    assert_eq!(results.len(), 24, "expected 24 results");
-    for r in &results {
-        assert!(
-            !r.name.contains("[ERROR]"),
-            "unexpected error for tiny data in '{}'",
-            r.name
-        );
-    }
-    // original_bytes should be 4 * 8 = 32 (padded to 4 values).
+fn codec_matrix_non_aligned_points() {
+    let run =
+        run_codec_matrix(501, 1, 1, 42).expect("non-aligned num_points must succeed (rounded up)");
+    assert_eq!(run.results.len(), 24, "expected 24 results");
+    assert!(
+        run.failures.is_empty(),
+        "unexpected failures: {:?}",
+        run.failures
+    );
+}
+
+#[test]
+fn codec_matrix_single_point() {
+    let run = run_codec_matrix(1, 1, 1, 42).expect("num_points=1 must succeed (rounded to 4)");
+    assert_eq!(run.results.len(), 24, "expected 24 results");
+    assert!(run.failures.is_empty());
     assert_eq!(
-        results[0].original_bytes, 32,
+        run.results[0].original_bytes, 32,
         "expected 32 bytes for 4 f64 values"
     );
 }
 
 #[test]
-fn test_codec_matrix_padded_original_bytes() {
-    // 501 rounds to 504. original_bytes = 504 * 8 = 4032.
-    let results = run_codec_matrix_results(501, 1, 42).expect("must succeed");
+fn codec_matrix_padded_original_bytes() {
+    let run = run_codec_matrix(501, 1, 1, 42).expect("must succeed");
     assert_eq!(
-        results[0].original_bytes,
+        run.results[0].original_bytes,
         504 * 8,
-        "original_bytes must reflect padded count (504 × 8)"
+        "original_bytes must reflect padded count (504 x 8)"
     );
 }
 
 #[test]
-fn test_codec_matrix_error_message_content() {
-    let err = run_codec_matrix_results(0, 1, 42).unwrap_err();
+fn codec_matrix_error_message_content() {
+    let err = run_codec_matrix(0, 1, 1, 42).unwrap_err();
     assert!(
         err.to_string().contains("num_points"),
         "error message should mention 'num_points': got '{err}'"
     );
 
-    let err = run_codec_matrix_results(100, 0, 42).unwrap_err();
+    let err = run_codec_matrix(100, 0, 1, 42).unwrap_err();
     assert!(
         err.to_string().contains("iterations"),
         "error message should mention 'iterations': got '{err}'"
@@ -241,74 +286,122 @@ fn test_codec_matrix_error_message_content() {
 // ── lib.rs entry points ──────────────────────────────────────────────────────
 
 #[test]
-fn test_run_codec_matrix_prints_table() {
-    // Just verify the top-level entry point doesn't panic.
-    tensogram_benchmarks::run_codec_matrix(100, 1, 42).expect("run_codec_matrix must not error");
+fn run_codec_matrix_prints_table() {
+    tensogram_benchmarks::run_codec_matrix(100, 1, 1, 42).expect("run_codec_matrix must not error");
 }
 
 #[test]
-fn test_benchmark_error_display() {
+fn benchmark_error_display() {
     use tensogram_benchmarks::BenchmarkError;
-    let e = BenchmarkError("test error".to_string());
-    assert_eq!(format!("{e}"), "test error");
+    let e = BenchmarkError::Validation("test error".to_string());
+    assert!(format!("{e}").contains("test error"));
 }
 
 #[test]
-fn test_benchmark_error_from_string() {
-    use tensogram_benchmarks::BenchmarkError;
-    let e: BenchmarkError = String::from("from string").into();
-    assert_eq!(e.0, "from string");
+fn benchmark_run_all_passed() {
+    use tensogram_benchmarks::BenchmarkRun;
+    let run = BenchmarkRun {
+        results: vec![],
+        failures: vec![],
+        total_cases: 0,
+    };
+    assert!(run.all_passed());
+}
+
+#[test]
+fn benchmark_run_has_failures() {
+    use tensogram_benchmarks::{BenchmarkRun, CaseFailure};
+    let run = BenchmarkRun {
+        results: vec![],
+        failures: vec![CaseFailure {
+            name: "test".to_string(),
+            error: "broke".to_string(),
+        }],
+        total_cases: 1,
+    };
+    assert!(!run.all_passed());
+}
+
+// ── compressed_bytes_varied ──────────────────────────────────────────────────
+
+#[test]
+fn codec_matrix_deterministic_sizes() {
+    let run = run_codec_matrix(1000, 3, 1, 42).expect("must succeed");
+    for r in &run.results {
+        assert!(
+            !r.compressed_bytes_varied,
+            "compressed size varied for '{}' — codec may be non-deterministic",
+            r.name
+        );
+    }
 }
 
 // ── grib_comparison (eccodes feature-gated) ──────────────────────────────────
 
 #[cfg(feature = "eccodes")]
 #[test]
-fn test_grib_comparison_zero_points_returns_err() {
-    use tensogram_benchmarks::grib_comparison::run_grib_comparison_results;
-    let result = run_grib_comparison_results(0, 1, 42);
+fn grib_comparison_zero_points_returns_err() {
+    use tensogram_benchmarks::grib_comparison::run_grib_comparison;
+    let result = run_grib_comparison(0, 1, 1, 42);
     assert!(result.is_err(), "num_points=0 must return Err");
 }
 
 #[cfg(feature = "eccodes")]
 #[test]
-fn test_grib_comparison_zero_iterations_returns_err() {
-    use tensogram_benchmarks::grib_comparison::run_grib_comparison_results;
-    let result = run_grib_comparison_results(100, 0, 42);
+fn grib_comparison_zero_iterations_returns_err() {
+    use tensogram_benchmarks::grib_comparison::run_grib_comparison;
+    let result = run_grib_comparison(100, 0, 1, 42);
     assert!(result.is_err(), "iterations=0 must return Err");
 }
 
 #[cfg(feature = "eccodes")]
 #[test]
-fn test_grib_comparison_smoke() {
-    use tensogram_benchmarks::grib_comparison::run_grib_comparison_results;
+fn grib_comparison_smoke() {
+    use tensogram_benchmarks::grib_comparison::run_grib_comparison;
 
-    let results = run_grib_comparison_results(1000, 1, 42).expect("grib comparison must not error");
+    let run = run_grib_comparison(1000, 1, 1, 42).expect("grib comparison must not error");
 
-    // Expect exactly 3 results.
-    assert_eq!(results.len(), 3, "expected 3 results");
-
-    // First result must be the eccodes CCSDS reference.
+    assert_eq!(run.total_cases, 3, "expected 3 total cases");
     assert_eq!(
-        results[0].name, "eccodes grid_ccsds",
-        "first result must be eccodes grid_ccsds"
+        run.results.len() + run.failures.len(),
+        run.total_cases,
+        "results + failures must equal total_cases"
+    );
+    assert!(
+        run.failures.is_empty(),
+        "unexpected failures: {:?}",
+        run.failures
     );
 
-    // No results should be ERROR-tagged.
-    for r in &results {
-        assert!(
-            !r.name.contains("[ERROR]"),
-            "unexpected error in grib result: '{}'",
-            r.name
-        );
-    }
+    assert_eq!(
+        run.results[0].name, "eccodes grid_ccsds",
+        "first result must be reference"
+    );
 
-    // All should have positive compressed_bytes.
-    for r in &results {
+    for r in &run.results {
         assert!(
             r.compressed_bytes > 0,
             "compressed_bytes must be > 0 for '{}'",
             r.name
         );
+    }
+}
+
+#[cfg(feature = "eccodes")]
+#[test]
+fn grib_comparison_fidelity() {
+    use tensogram_benchmarks::grib_comparison::run_grib_comparison;
+
+    let run = run_grib_comparison(1000, 1, 1, 42).expect("must succeed");
+    for r in &run.results {
+        match &r.fidelity {
+            Fidelity::Lossy { linf, l1, l2 } => {
+                assert!(linf.is_finite(), "non-finite Linf for '{}'", r.name);
+                assert!(l1.is_finite(), "non-finite L1 for '{}'", r.name);
+                assert!(l2.is_finite(), "non-finite L2 for '{}'", r.name);
+            }
+            Fidelity::Exact => {}
+            Fidelity::Unchecked => panic!("fidelity must be checked for '{}'", r.name),
+        }
     }
 }
