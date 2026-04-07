@@ -21,11 +21,11 @@ using test_helpers::TempFile;
 // Helpers
 // -----------------------------------------------------------------------
 
-/// Build a v2 JSON metadata+descriptor string for a 1-D encoding=none message.
-static std::string encoding_none_json(std::size_t count,
-                                      const std::string& dtype = "float32",
-                                      const std::string& byte_order = "little") {
-    return R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[)" +
+/// Build a bare descriptor JSON for a 1-D encoding=none object (no envelope).
+static std::string descriptor_json(std::size_t count,
+                                   const std::string& dtype = "float32",
+                                   const std::string& byte_order = "little") {
+    return R"({"type":"ndarray","ndim":1,"shape":[)" +
            std::to_string(count) +
            R"(],"strides":[)" +
            std::to_string(dtype == "float64" ? 8
@@ -35,7 +35,14 @@ static std::string encoding_none_json(std::size_t count,
                           : 4) +
            R"(],"dtype":")" + dtype +
            R"(","byte_order":")" + byte_order +
-           R"(","encoding":"none","filter":"none","compression":"none"}]})";
+           R"(","encoding":"none","filter":"none","compression":"none"})";
+}
+
+/// Build a v2 JSON metadata+descriptor string for a 1-D encoding=none message.
+static std::string encoding_none_json(std::size_t count,
+                                      const std::string& dtype = "float32",
+                                      const std::string& byte_order = "little") {
+    return R"({"version":2,"descriptors":[)" + descriptor_json(count, dtype, byte_order) + R"(]})";
 }
 
 /// Build a v2 JSON string for simple_packing.
@@ -332,4 +339,144 @@ TEST(EncodePreEncodedTest, HashIsRecomputed) {
     tensogram::decode_options opts;
     opts.verify_hash = true;
     EXPECT_NO_THROW(tensogram::decode(encoded.data(), encoded.size(), opts));
+}
+
+// -----------------------------------------------------------------------
+// Additional edge-case tests
+// -----------------------------------------------------------------------
+
+TEST(EncodePreEncodedTest, MalformedJsonDescriptor) {
+    std::string json = R"({"version":2,"descriptors":[MALFORMED_JSON]})";
+    std::vector<float> values = {1.0f, 2.0f};
+    std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
+        {reinterpret_cast<const std::uint8_t*>(values.data()),
+         values.size() * sizeof(float)}
+    };
+    EXPECT_ANY_THROW(tensogram::encode_pre_encoded(json, objects));
+}
+
+TEST(EncodePreEncodedTest, EmptyJsonDescriptor) {
+    std::string json = R"({})";
+    std::vector<float> values = {1.0f};
+    std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
+        {reinterpret_cast<const std::uint8_t*>(values.data()),
+         values.size() * sizeof(float)}
+    };
+    EXPECT_ANY_THROW(tensogram::encode_pre_encoded(json, objects));
+}
+
+TEST(EncodePreEncodedTest, DataSizeMismatch) {
+    // encoding=none, shape=[10] float32 = 40 bytes expected, but pass only 20.
+    std::string json = encoding_none_json(10, "float32");
+    std::vector<std::uint8_t> short_data(20, 0);
+    std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
+        {short_data.data(), short_data.size()}
+    };
+    EXPECT_ANY_THROW(tensogram::encode_pre_encoded(json, objects));
+}
+
+TEST(EncodePreEncodedTest, RoundTrip2D) {
+    // 2D array [2, 3] of float32 (24 bytes)
+    std::string json =
+        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":2,"shape":[2,3],)"
+        R"("strides":[12,4],"dtype":"float32","byte_order":"little",)"
+        R"("encoding":"none","filter":"none","compression":"none"}]})";
+
+    std::vector<float> values = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+    std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
+        {reinterpret_cast<const std::uint8_t*>(values.data()),
+         values.size() * sizeof(float)}
+    };
+
+    auto encoded = tensogram::encode_pre_encoded(json, objects);
+    ASSERT_FALSE(encoded.empty());
+
+    auto msg = tensogram::decode(encoded.data(), encoded.size());
+    ASSERT_EQ(msg.num_objects(), 1u);
+
+    auto obj = msg.object(0);
+    EXPECT_EQ(obj.element_count<float>(), 6u);
+    const float* p = obj.data_as<float>();
+    EXPECT_FLOAT_EQ(p[0], 1.0f);
+    EXPECT_FLOAT_EQ(p[5], 6.0f);
+}
+
+TEST(EncodePreEncodedTest, StreamingPreEncodedOnly) {
+    // Streaming encoder with ONLY pre-encoded writes (no write_object).
+    TempFile tmp;
+    std::string meta = R"({"version":2})";
+
+    {
+        tensogram::streaming_encoder enc(tmp.path, meta);
+
+        std::vector<float> a = {10.0f, 20.0f, 30.0f, 40.0f};
+        std::string desc_a = descriptor_json(a.size());
+
+        enc.write_object_pre_encoded(desc_a,
+                                     reinterpret_cast<const std::uint8_t*>(a.data()),
+                                     a.size() * sizeof(float));
+        enc.finish();
+    }
+
+    auto f = tensogram::file::open(tmp.path);
+    ASSERT_EQ(f.message_count(), 1u);
+    auto msg = f.decode_message(0);
+    ASSERT_EQ(msg.num_objects(), 1u);
+
+    auto obj = msg.object(0);
+    EXPECT_EQ(obj.element_count<float>(), 4u);
+    const float* p = obj.data_as<float>();
+    EXPECT_FLOAT_EQ(p[0], 10.0f);
+    EXPECT_FLOAT_EQ(p[3], 40.0f);
+}
+
+TEST(EncodePreEncodedTest, StreamingMultiplePreEncoded) {
+    // Streaming encoder with multiple pre-encoded objects.
+    TempFile tmp;
+    std::string meta = R"({"version":2})";
+
+    {
+        tensogram::streaming_encoder enc(tmp.path, meta);
+
+        std::vector<float> a = {1.0f, 2.0f};
+        std::vector<double> b = {100.0, 200.0, 300.0};
+
+        std::string desc_a = descriptor_json(a.size(), "float32");
+        std::string desc_b = descriptor_json(b.size(), "float64");
+
+        enc.write_object_pre_encoded(desc_a,
+                                     reinterpret_cast<const std::uint8_t*>(a.data()),
+                                     a.size() * sizeof(float));
+        enc.write_object_pre_encoded(desc_b,
+                                     reinterpret_cast<const std::uint8_t*>(b.data()),
+                                     b.size() * sizeof(double));
+        enc.finish();
+    }
+
+    auto f = tensogram::file::open(tmp.path);
+    ASSERT_EQ(f.message_count(), 1u);
+    auto msg = f.decode_message(0);
+    ASSERT_EQ(msg.num_objects(), 2u);
+
+    auto obj0 = msg.object(0);
+    EXPECT_EQ(obj0.element_count<float>(), 2u);
+    EXPECT_FLOAT_EQ(obj0.data_as<float>()[0], 1.0f);
+
+    auto obj1 = msg.object(1);
+    EXPECT_EQ(obj1.element_count<double>(), 3u);
+    EXPECT_DOUBLE_EQ(obj1.data_as<double>()[2], 300.0);
+}
+
+TEST(EncodePreEncodedTest, SingleElement) {
+    // Single-element array.
+    std::string json = encoding_none_json(1, "float32");
+    float val = 42.0f;
+    std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
+        {reinterpret_cast<const std::uint8_t*>(&val), sizeof(float)}
+    };
+
+    auto encoded = tensogram::encode_pre_encoded(json, objects);
+    auto msg = tensogram::decode(encoded.data(), encoded.size());
+    ASSERT_EQ(msg.num_objects(), 1u);
+    EXPECT_FLOAT_EQ(msg.object(0).data_as<float>()[0], 42.0f);
 }

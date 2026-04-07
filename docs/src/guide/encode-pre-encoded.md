@@ -168,6 +168,76 @@ flowchart LR
 
 The pre-encoded path skips the pipeline entirely. The wire format is identical.
 
+## Byte order responsibility
+
+When using `encoding="none"`, the caller's bytes are stored **verbatim** — the
+library does NOT validate or flip byte order. The bytes must be in the byte
+order declared in the descriptor's `byte_order` field.
+
+For example, if `byte_order="big"` and `encoding="none"`, the caller must
+provide big-endian bytes. The decoder will interpret them according to the
+declared byte order.
+
+When using other encodings (`simple_packing`, etc.), byte order is handled
+by the encoding/decoding pipeline, so the `byte_order` field describes the
+*decoded* output format.
+
+## Streaming API
+
+`StreamingEncoder::write_object_pre_encoded()` is the streaming counterpart of
+`encode_pre_encoded()`. It writes a single pre-encoded object to the stream.
+It can be interleaved freely with `write_object()` (normal encode) calls.
+
+### Rust
+```rust
+let mut enc = StreamingEncoder::new(output, &metadata, &options)?;
+enc.write_object_pre_encoded(&descriptor, &pre_encoded_bytes)?;
+enc.finish()?;
+```
+
+### Python
+```python
+enc = tensogram.StreamingEncoder({"version": 2})
+enc.write_object_pre_encoded(descriptor_dict, raw_bytes)
+msg = enc.finish()
+```
+
+### C++
+```cpp
+tensogram::streaming_encoder enc(path, metadata_json);
+enc.write_object_pre_encoded(descriptor_json, data_ptr, data_len);
+enc.finish();
+```
+
+## Error reference
+
+`encode_pre_encoded` can raise the following errors:
+
+| Error condition | Message contains |
+|---|---|
+| `obj_type` is empty | `"obj_type must not be empty"` |
+| `ndim` doesn't match `shape.len()` | `"ndim … does not match shape.len()"` |
+| `strides.len()` doesn't match `shape.len()` | `"strides.len() … does not match shape.len()"` |
+| `encoding="none"` and data size wrong | `"data_len … does not match expected … bytes"` |
+| `emit_preceders=true` in buffered mode | `"emit_preceders is not supported"` |
+| Caller set `_reserved_` in metadata | `"_reserved_"` |
+| `szip_block_offsets` not starting at 0 | `"first offset must be 0"` |
+| `szip_block_offsets` not strictly increasing | `"strictly increasing"` |
+| `szip_block_offsets` exceeds bit bound | `"exceeds … bit bound"` |
+| `szip_block_offsets` with non-szip compression | `"szip_block_offsets provided but compression"` |
+| Unknown encoding string | `"encoding"` |
+| Unknown dtype | `"unknown dtype"` |
+
+## Strides convention
+
+The library treats strides as **opaque metadata** — it only validates that
+`strides.len() == shape.len()`. The convention differs between language bindings:
+
+- **Rust** tests use **element strides** (e.g., `[1]` for 1D, `[5, 1]` for shape `[4, 5]`)
+- **C++** tests use **byte strides** (e.g., `[4]` for float32, `[12, 4]` for shape `[2, 3]` float32)
+
+Both conventions work correctly since the library does not interpret stride values.
+
 ## Cross-references
 
 - [Encoding](encoding.md) — the normal `encode()` API

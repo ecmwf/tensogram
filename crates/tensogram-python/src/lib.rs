@@ -1118,10 +1118,15 @@ fn extract_pre_encoded_pairs(
         let data_item = tuple.get_item(1)?;
         // Only accept bytes-like objects, not numpy arrays.
         let data = data_item.extract::<Vec<u8>>().map_err(|_| {
-            PyValueError::new_err(
-                "encode_pre_encoded requires bytes data, not numpy arrays — \
+            let type_name = data_item
+                .get_type()
+                .name()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|_| "<unknown>".to_string());
+            PyValueError::new_err(format!(
+                "encode_pre_encoded requires bytes data (got {type_name}) — \
                  the payload must already be in its final wire form",
-            )
+            ))
         })?;
         result.push((desc, data));
     }

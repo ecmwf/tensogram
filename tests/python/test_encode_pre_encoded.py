@@ -664,3 +664,158 @@ class TestEncodePreEncodedEdgeCases:
         _, objects = tensogram.decode(msg)
         desc_out = objects[0][0]
         assert desc_out.params["my_custom_key"] == "hello"
+
+
+# ---------------------------------------------------------------------------
+# Test: Additional edge cases for coverage
+# ---------------------------------------------------------------------------
+
+
+class TestEncodePreEncodedAdditionalEdgeCases:
+    """Additional edge cases for code coverage hardening."""
+
+    def test_bytearray_accepted(self):
+        """bytearray is accepted as data (PyO3 extracts Vec<u8> from it)."""
+        data = np.arange(8, dtype=np.float32)
+        raw = bytearray(data.tobytes())
+        desc = make_descriptor(shape=[8], dtype="float32", byte_order="little")
+        meta = make_global_meta(2)
+
+        msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw)]))
+        _, objects = tensogram.decode(msg)
+        _, decoded = objects[0]
+        np.testing.assert_array_equal(decoded, data)
+
+    def test_memoryview_accepted(self):
+        """memoryview is accepted as data (PyO3 extracts Vec<u8> from it)."""
+        data = np.arange(8, dtype=np.float32)
+        raw = memoryview(data.tobytes())
+        desc = make_descriptor(shape=[8], dtype="float32", byte_order="little")
+        meta = make_global_meta(2)
+
+        msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw)]))
+        _, objects = tensogram.decode(msg)
+        _, decoded = objects[0]
+        np.testing.assert_array_equal(decoded, data)
+
+    def test_empty_bytes_zero_element_shape(self):
+        """Empty bytes with shape=[0] succeeds."""
+        desc = make_descriptor(shape=[0], dtype="float32", byte_order="little")
+        meta = make_global_meta(2)
+
+        msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, b"")]))
+        _, objects = tensogram.decode(msg)
+        _, decoded = objects[0]
+        assert decoded.shape == (0,)
+        assert decoded.dtype == np.float32
+
+    def test_non_tuple_in_list_raises(self):
+        """Non-tuple element in the data list raises ValueError."""
+        meta = make_global_meta(2)
+        with pytest.raises((ValueError, TypeError)):
+            tensogram.encode_pre_encoded(meta, ["not a tuple"])
+
+    def test_non_dict_descriptor_raises(self):
+        """Non-dict as descriptor raises ValueError."""
+        meta = make_global_meta(2)
+        with pytest.raises((ValueError, TypeError)):
+            tensogram.encode_pre_encoded(meta, [("not_a_dict", b"\x00" * 4)])
+
+    def test_tuple_wrong_length_raises(self):
+        """Tuple with wrong length raises ValueError."""
+        meta = make_global_meta(2)
+        with pytest.raises((ValueError, TypeError)):
+            tensogram.encode_pre_encoded(meta, [({}, b"\x00", "extra")])
+
+    def test_rejects_numpy_with_type_in_error(self):
+        """encode_pre_encoded error message includes the rejected type name."""
+        arr = np.arange(10, dtype=np.float32)
+        desc = make_descriptor(shape=[10], dtype="float32", byte_order="little")
+        meta = make_global_meta(2)
+        with pytest.raises((ValueError, TypeError), match=r"ndarray|numpy|got"):
+            tensogram.encode_pre_encoded(meta, [(desc, arr)])
+
+    def test_rejects_int_data_with_type_in_error(self):
+        """Passing an int as data shows the type name in the error."""
+        desc = make_descriptor(shape=[1], dtype="float32", byte_order="little")
+        meta = make_global_meta(2)
+        with pytest.raises((ValueError, TypeError), match=r"int|got"):
+            tensogram.encode_pre_encoded(meta, [(desc, 42)])
+
+    def test_rejects_none_data_with_type_in_error(self):
+        """Passing None as data shows the type name in the error."""
+        desc = make_descriptor(shape=[1], dtype="float32", byte_order="little")
+        meta = make_global_meta(2)
+        with pytest.raises((ValueError, TypeError), match=r"None|got"):
+            tensogram.encode_pre_encoded(meta, [(desc, None)])
+
+    def test_single_element_roundtrip(self):
+        """Single-element array round-trips correctly."""
+        data = np.array([42.0], dtype=np.float32)
+        raw = data.tobytes()
+        desc = make_descriptor(shape=[1], dtype="float32", byte_order="little")
+        meta = make_global_meta(2)
+
+        msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw)]))
+        _, objects = tensogram.decode(msg)
+        _, decoded = objects[0]
+        np.testing.assert_array_equal(decoded, data)
+
+    def test_2d_array_roundtrip(self):
+        """2D array [3, 4] round-trips correctly."""
+        data = np.arange(12, dtype=np.float32).reshape(3, 4)
+        raw = data.tobytes()
+        desc = make_descriptor(shape=[3, 4], dtype="float32", byte_order="little")
+        # strides for row-major float32 2D
+        desc["strides"] = [16, 4]
+        meta = make_global_meta(2)
+
+        msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw)]))
+        _, objects = tensogram.decode(msg)
+        _, decoded = objects[0]
+        np.testing.assert_array_equal(decoded.reshape(3, 4), data)
+
+    def test_streaming_write_after_finish_raises(self):
+        """write_object_pre_encoded after finish() raises RuntimeError."""
+        meta = make_global_meta(2)
+        enc = tensogram.StreamingEncoder(meta)
+        enc.finish()
+        desc = make_descriptor(shape=[4], dtype="float32", byte_order="little")
+        with pytest.raises(RuntimeError, match="already finished"):
+            enc.write_object_pre_encoded(desc, b"\x00" * 16)
+
+    def test_streaming_pre_encoded_multiple_objects(self):
+        """StreamingEncoder with multiple pre-encoded writes."""
+        meta = make_global_meta(2)
+        enc = tensogram.StreamingEncoder(meta)
+
+        a = np.arange(5, dtype=np.float32)
+        b = np.arange(3, dtype=np.int32)
+
+        desc_a = make_descriptor(shape=[5], dtype="float32", byte_order="little")
+        desc_b = make_descriptor(shape=[3], dtype="int32", byte_order="little")
+
+        enc.write_object_pre_encoded(desc_a, a.tobytes())
+        enc.write_object_pre_encoded(desc_b, b.tobytes())
+
+        msg = bytes(enc.finish())
+        _, objects = tensogram.decode(msg)
+        assert len(objects) == 2
+        _, d_a = objects[0]
+        _, d_b = objects[1]
+        np.testing.assert_array_equal(d_a, a)
+        np.testing.assert_array_equal(d_b, b)
+
+    def test_encoding_none_size_mismatch_too_short(self):
+        """encoding=none with data too short raises ValueError."""
+        desc = make_descriptor(shape=[10], dtype="float32", byte_order="little")
+        meta = make_global_meta(2)
+        with pytest.raises(ValueError, match="does not match expected"):
+            tensogram.encode_pre_encoded(meta, [(desc, b"\x00" * 20)])
+
+    def test_encoding_none_size_mismatch_too_long(self):
+        """encoding=none with data too long raises ValueError."""
+        desc = make_descriptor(shape=[4], dtype="float32", byte_order="little")
+        meta = make_global_meta(2)
+        with pytest.raises(ValueError, match="does not match expected"):
+            tensogram.encode_pre_encoded(meta, [(desc, b"\x00" * 32)])

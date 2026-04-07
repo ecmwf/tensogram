@@ -848,3 +848,360 @@ fn test_streaming_mixed_mode_pre_encoded() {
     );
     assert_eq!(objects[2].1, data2, "object 2 raw payload mismatch");
 }
+
+// ── Additional edge-case tests ───────────────────────────────────────────────
+
+#[test]
+fn test_encode_pre_encoded_single_element() {
+    // Shape=[1]: single-element array round-trip.
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![1],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    };
+    let raw = 42.0f32.to_be_bytes().to_vec();
+    let meta = GlobalMetadata::default();
+    let msg = encode_pre_encoded(&meta, &[(&desc, &raw)], &EncodeOptions::default())
+        .expect("single element encode_pre_encoded");
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).expect("decode");
+    assert_eq!(objects.len(), 1);
+    assert_eq!(objects[0].0.shape, vec![1]);
+    let val = f32::from_be_bytes(objects[0].1[..4].try_into().unwrap());
+    assert!((val - 42.0).abs() < f32::EPSILON, "value mismatch: {val}");
+}
+
+#[test]
+fn test_encode_pre_encoded_2d_array() {
+    // 2D shape [3, 4] encoding=none round-trip.
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 2,
+        shape: vec![3, 4],
+        strides: vec![4, 1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    };
+    let values: Vec<f32> = (0..12).map(|i| i as f32 * 1.5).collect();
+    let raw = f32_to_be_bytes(&values);
+    let meta = GlobalMetadata::default();
+    let msg = encode_pre_encoded(&meta, &[(&desc, &raw)], &EncodeOptions::default())
+        .expect("2D encode_pre_encoded");
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).expect("decode");
+    assert_eq!(objects[0].0.shape, vec![3, 4]);
+    assert_eq!(objects[0].0.ndim, 2);
+    assert_eq!(objects[0].1, raw, "2D payload round-trip");
+}
+
+#[test]
+fn test_encode_pre_encoded_ndim0_scalar() {
+    // ndim=0 scalar: shape=[], strides=[].
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 0,
+        shape: vec![],
+        strides: vec![],
+        dtype: Dtype::Float64,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    };
+    // A scalar has shape product = 1 (empty product), so expected bytes = 1 * 8 = 8.
+    let raw = std::f64::consts::PI.to_be_bytes().to_vec();
+    let meta = GlobalMetadata::default();
+    let msg = encode_pre_encoded(&meta, &[(&desc, &raw)], &EncodeOptions::default())
+        .expect("scalar encode_pre_encoded");
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).expect("decode");
+    assert_eq!(objects[0].0.ndim, 0);
+    assert!(objects[0].0.shape.is_empty());
+    let val = f64::from_be_bytes(objects[0].1[..8].try_into().unwrap());
+    assert!((val - std::f64::consts::PI).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_encode_pre_encoded_rejects_empty_obj_type() {
+    let desc = DataObjectDescriptor {
+        obj_type: "".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    };
+    let raw = vec![0u8; 16];
+    let meta = GlobalMetadata::default();
+    let result = encode_pre_encoded(&meta, &[(&desc, &raw)], &EncodeOptions::default());
+    assert!(result.is_err(), "empty obj_type must be rejected");
+    let err = result.expect_err("err").to_string();
+    assert!(
+        err.contains("obj_type"),
+        "error should mention obj_type, got: {err}"
+    );
+}
+
+#[test]
+fn test_encode_pre_encoded_encoding_none_data_too_short() {
+    // encoding=none with data shorter than shape*dtype → rejected.
+    let desc = make_raw_desc(10, Dtype::Float32, "none", BTreeMap::new());
+    let raw = vec![0u8; 20]; // 20 bytes, need 40 for 10 × float32
+    let meta = GlobalMetadata::default();
+    let result = encode_pre_encoded(&meta, &[(&desc, &raw)], &EncodeOptions::default());
+    assert!(result.is_err(), "data too short must be rejected");
+    let err = result.expect_err("err").to_string();
+    assert!(
+        err.contains("does not match expected"),
+        "error should mention size mismatch, got: {err}"
+    );
+}
+
+#[test]
+fn test_encode_pre_encoded_encoding_none_data_too_long() {
+    // encoding=none with data longer than shape*dtype → rejected.
+    let desc = make_raw_desc(4, Dtype::Float32, "none", BTreeMap::new());
+    let raw = vec![0u8; 32]; // 32 bytes, need 16 for 4 × float32
+    let meta = GlobalMetadata::default();
+    let result = encode_pre_encoded(&meta, &[(&desc, &raw)], &EncodeOptions::default());
+    assert!(result.is_err(), "data too long must be rejected");
+    let err = result.expect_err("err").to_string();
+    assert!(
+        err.contains("does not match expected"),
+        "error should mention size mismatch, got: {err}"
+    );
+}
+
+#[cfg(feature = "szip")]
+#[test]
+fn test_encode_pre_encoded_szip_single_offset() {
+    // szip_block_offsets = [0] (single entry) should be accepted by encode.
+    // NOTE: we do NOT decode because the dummy payload is not valid szip data.
+    let p = simple_packing::SimplePackingParams {
+        reference_value: 0.0,
+        binary_scale_factor: 0,
+        decimal_scale_factor: 0,
+        bits_per_value: 16,
+    };
+    let mut desc = make_szip_simple_packing_desc(64, &p);
+    desc.params.insert(
+        "szip_block_offsets".to_string(),
+        ciborium::Value::Array(vec![ciborium::Value::Integer(0_i64.into())]),
+    );
+    let dummy = vec![0u8; 128]; // some payload bytes
+    let meta = GlobalMetadata::default();
+    let _msg = encode_pre_encoded(&meta, &[(&desc, &dummy)], &EncodeOptions::default())
+        .expect("single offset [0] must succeed");
+    // Encode succeeded — structural validation passed.
+}
+
+#[cfg(feature = "szip")]
+#[test]
+fn test_encode_pre_encoded_szip_offset_at_exact_bit_boundary() {
+    // Offset at exactly bytes_len * 8 should be accepted (boundary case).
+    // NOTE: we do NOT decode because the dummy payload is not valid szip data.
+    let p = simple_packing::SimplePackingParams {
+        reference_value: 0.0,
+        binary_scale_factor: 0,
+        decimal_scale_factor: 0,
+        bits_per_value: 16,
+    };
+    let dummy = vec![0u8; 32]; // 32 bytes = 256 bits
+    let mut desc = make_szip_simple_packing_desc(16, &p);
+    desc.params.insert(
+        "szip_block_offsets".to_string(),
+        ciborium::Value::Array(vec![
+            ciborium::Value::Integer(0_i64.into()),
+            ciborium::Value::Integer(128_i64.into()),
+            ciborium::Value::Integer(256_i64.into()), // exactly at boundary
+        ]),
+    );
+    let meta = GlobalMetadata::default();
+    let _msg = encode_pre_encoded(&meta, &[(&desc, &dummy)], &EncodeOptions::default())
+        .expect("offset at exact bit boundary must succeed");
+    // Encode succeeded — structural validation passed.
+}
+
+#[test]
+fn test_encode_pre_encoded_extra_params_survive() {
+    // Unknown params in the descriptor should survive round-trip.
+    let mut params = BTreeMap::new();
+    params.insert(
+        "custom_key".to_string(),
+        ciborium::Value::Text("custom_value".to_string()),
+    );
+    params.insert(
+        "numeric_param".to_string(),
+        ciborium::Value::Integer(42_i64.into()),
+    );
+    let desc = make_raw_desc(4, Dtype::Float32, "none", params);
+    let raw = vec![0u8; 16];
+    let meta = GlobalMetadata::default();
+    let msg = encode_pre_encoded(&meta, &[(&desc, &raw)], &EncodeOptions::default())
+        .expect("extra params must succeed");
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).expect("decode");
+    let out_params = &objects[0].0.params;
+    assert_eq!(
+        out_params.get("custom_key"),
+        Some(&ciborium::Value::Text("custom_value".to_string())),
+    );
+    assert_eq!(
+        out_params.get("numeric_param"),
+        Some(&ciborium::Value::Integer(42_i64.into())),
+    );
+}
+
+#[test]
+fn test_encode_pre_encoded_no_hash() {
+    // hash_algorithm=None: no hash in output.
+    let raw = vec![0u8; 16];
+    let desc = make_raw_desc(4, Dtype::Float32, "none", BTreeMap::new());
+    let meta = GlobalMetadata::default();
+    let opts = EncodeOptions {
+        hash_algorithm: None,
+        emit_preceders: false,
+    };
+    let msg = encode_pre_encoded(&meta, &[(&desc, &raw)], &opts)
+        .expect("encode_pre_encoded with no hash");
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).expect("decode");
+    assert!(objects[0].0.hash.is_none(), "hash must be None");
+}
+
+#[test]
+fn test_encode_pre_encoded_multiple_objects_different_dtypes() {
+    // Two objects with different dtypes in one message.
+    let desc_f32 = make_raw_desc(4, Dtype::Float32, "none", BTreeMap::new());
+    let desc_f64 = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![3],
+        strides: vec![1],
+        dtype: Dtype::Float64,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    };
+    let raw_f32 = vec![1u8; 16]; // 4 × float32
+    let raw_f64 = vec![2u8; 24]; // 3 × float64
+    let meta = GlobalMetadata::default();
+    let msg = encode_pre_encoded(
+        &meta,
+        &[(&desc_f32, &raw_f32[..]), (&desc_f64, &raw_f64[..])],
+        &EncodeOptions::default(),
+    )
+    .expect("multi-dtype encode_pre_encoded");
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).expect("decode");
+    assert_eq!(objects.len(), 2);
+    assert_eq!(objects[0].0.dtype, Dtype::Float32);
+    assert_eq!(objects[1].0.dtype, Dtype::Float64);
+    assert_eq!(objects[0].1, raw_f32);
+    assert_eq!(objects[1].1, raw_f64);
+}
+
+#[test]
+fn test_encode_pre_encoded_ndim_shape_mismatch_rejected() {
+    // ndim=2 but shape has 1 element → rejected.
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 2,
+        shape: vec![4],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    };
+    let raw = vec![0u8; 16];
+    let meta = GlobalMetadata::default();
+    let result = encode_pre_encoded(&meta, &[(&desc, &raw)], &EncodeOptions::default());
+    assert!(result.is_err(), "ndim/shape mismatch must be rejected");
+    let err = result.expect_err("err").to_string();
+    assert!(
+        err.contains("ndim") && err.contains("shape"),
+        "error should mention ndim/shape mismatch, got: {err}"
+    );
+}
+
+#[test]
+fn test_encode_pre_encoded_strides_shape_mismatch_rejected() {
+    // strides.len() != shape.len() → rejected.
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![1, 1], // wrong length
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    };
+    let raw = vec![0u8; 16];
+    let meta = GlobalMetadata::default();
+    let result = encode_pre_encoded(&meta, &[(&desc, &raw)], &EncodeOptions::default());
+    assert!(result.is_err(), "strides/shape mismatch must be rejected");
+    let err = result.expect_err("err").to_string();
+    assert!(
+        err.contains("strides") && err.contains("shape"),
+        "error should mention strides/shape mismatch, got: {err}"
+    );
+}
+
+#[test]
+fn test_streaming_pre_encoded_with_preceder() {
+    // Streaming: write_object_pre_encoded after writing a preceder.
+    let meta = GlobalMetadata::default();
+    let opts = EncodeOptions {
+        hash_algorithm: Some(tensogram_core::HashAlgorithm::Xxh3),
+        emit_preceders: true,
+    };
+
+    let desc = make_raw_desc(4, Dtype::Float32, "none", BTreeMap::new());
+    let raw = vec![42u8; 16]; // 4 × float32
+
+    let buf: Vec<u8> = Vec::new();
+    let mut enc = StreamingEncoder::new(buf, &meta, &opts).expect("create streaming encoder");
+
+    // Write a preceder (metadata-only, no data payload).
+    let preceder_meta: BTreeMap<String, ciborium::Value> = BTreeMap::new();
+    enc.write_preceder(preceder_meta).expect("write preceder");
+
+    // Then write the pre-encoded object
+    enc.write_object_pre_encoded(&desc, &raw)
+        .expect("write pre-encoded after preceder");
+
+    let result = enc.finish().expect("finish");
+    let (_, objects) = decode(&result, &DecodeOptions::default()).expect("decode");
+    // Preceder is transparent to decode — only the main object is returned.
+    assert_eq!(
+        objects.len(),
+        1,
+        "preceder + 1 pre-encoded object → 1 decoded"
+    );
+    assert_eq!(objects[0].1, raw);
+}
