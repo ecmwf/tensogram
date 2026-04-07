@@ -780,6 +780,26 @@ public:
             handle_.get(), descriptor_json.c_str(), data, len));
     }
 
+    /// Write a single pre-encoded data object.
+    ///
+    /// Like write_object(), but @p data must already be encoded according
+    /// to the descriptor's pipeline (`encoding` / `filter` / `compression`).
+    /// The library does not run the encoding pipeline — it validates the
+    /// descriptor's pipeline configuration and writes the bytes as-is.
+    /// The hash (if configured on the encoder) is recomputed over the
+    /// caller's bytes.
+    ///
+    /// For `szip` compression, the caller SHOULD include
+    /// `szip_block_offsets` (bit offsets) in the descriptor's params so
+    /// that `decode_range()` can locate compressed block boundaries.
+    /// Other pipeline params (e.g. `simple_packing` reference value,
+    /// scale factors) must also be present in the descriptor.
+    void write_object_pre_encoded(const std::string& descriptor_json,
+                                   const std::uint8_t* data, std::size_t len) {
+        detail::check(tgm_streaming_encoder_write_pre_encoded(
+            handle_.get(), descriptor_json.c_str(), data, len));
+    }
+
     /// Number of objects written so far.
     [[nodiscard]] std::size_t object_count() const {
         return tgm_streaming_encoder_count(handle_.get());
@@ -828,6 +848,53 @@ private:
     detail::check(tgm_encode(metadata_json.c_str(),
                               sg.ptrs.data(), sg.lens.data(), objects.size(),
                               hash, &bytes));
+    std::vector<std::uint8_t> result(bytes.data, bytes.data + bytes.len);
+    tgm_bytes_free(bytes);
+    return result;
+}
+
+/// Encode a Tensogram message from JSON metadata and pre-encoded payload bytes.
+///
+/// Like encode(), but each entry in @p objects must already be encoded
+/// according to the matching descriptor's `encoding` / `filter` /
+/// `compression` pipeline. The library does not run the encoding pipeline
+/// again — it writes the caller-provided bytes directly into the wire-format
+/// payload after validating that the descriptor's pipeline configuration
+/// is well-formed.
+///
+/// The library always recomputes the hash over the caller's bytes; any
+/// `hash` field embedded in the descriptor JSON is ignored and overwritten.
+///
+/// For `szip` compression, callers SHOULD include `szip_block_offsets`
+/// (bit offsets into the compressed payload) inside the matching
+/// descriptor's params so that `decode_range()` can locate szip block
+/// boundaries without rescanning the compressed stream. Other pipeline
+/// params (e.g. `simple_packing` reference value, scale factors) must
+/// also be present in the descriptor — they are not inferred from the
+/// bytes.
+///
+/// The resulting wire format is identical to what encode() produces — a
+/// decoder cannot distinguish the two sources.
+///
+/// @param metadata_json  Same JSON schema as encode() (`version`,
+///                       `descriptors`, optional `base`, plus arbitrary
+///                       extra top-level keys).
+/// @param objects        Vector of (pointer, length) pairs pointing at
+///                       already-encoded payload bytes — one per descriptor
+///                       entry.
+/// @param opts           Encoding options (hash algorithm, etc.).
+/// @return The encoded message as a byte vector.
+[[nodiscard]] inline std::vector<std::uint8_t> encode_pre_encoded(
+    const std::string& metadata_json,
+    const std::vector<std::pair<const std::uint8_t*, std::size_t>>& objects,
+    const encode_options& opts = {})
+{
+    detail::scatter_gather sg(objects);
+    const char* hash = opts.hash_algo.empty() ? nullptr : opts.hash_algo.c_str();
+    tgm_bytes_t bytes{};
+    detail::check(tgm_encode_pre_encoded(metadata_json.c_str(),
+                                          sg.ptrs.data(), sg.lens.data(),
+                                          objects.size(), hash, &bytes));
     std::vector<std::uint8_t> result(bytes.data, bytes.data + bytes.len);
     tgm_bytes_free(bytes);
     return result;
