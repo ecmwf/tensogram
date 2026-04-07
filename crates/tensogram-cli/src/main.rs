@@ -4,6 +4,7 @@ use std::process;
 use clap::{Parser, Subcommand};
 
 mod commands;
+mod encoding_args;
 mod filter;
 mod output;
 
