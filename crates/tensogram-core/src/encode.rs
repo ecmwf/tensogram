@@ -629,7 +629,7 @@ pub(crate) fn get_u64_param(params: &BTreeMap<String, ciborium::Value>, key: &st
     }
 }
 
-fn validate_szip_block_offsets(
+pub(crate) fn validate_szip_block_offsets(
     params: &BTreeMap<String, ciborium::Value>,
     encoded_bytes_len: usize,
 ) -> Result<()> {
@@ -712,7 +712,7 @@ fn validate_szip_block_offsets(
     Ok(())
 }
 
-fn validate_no_szip_offsets_for_non_szip(desc: &DataObjectDescriptor) -> Result<()> {
+pub(crate) fn validate_no_szip_offsets_for_non_szip(desc: &DataObjectDescriptor) -> Result<()> {
     if desc.compression != "szip" && desc.params.contains_key("szip_block_offsets") {
         return Err(TensogramError::Metadata(format!(
             "szip_block_offsets provided but compression is '{}', not 'szip'",

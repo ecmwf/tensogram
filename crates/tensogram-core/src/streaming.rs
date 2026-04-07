@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 use crate::encode::{
-    build_pipeline_config, populate_base_entries, populate_reserved_provenance, validate_object,
+    build_pipeline_config, populate_base_entries, populate_reserved_provenance,
+    validate_no_szip_offsets_for_non_szip, validate_object, validate_szip_block_offsets,
     EncodeOptions,
 };
 use crate::error::{Result, TensogramError};
@@ -123,12 +124,13 @@ impl<W: Write> StreamingEncoder<W> {
     ///
     /// The `metadata` map becomes `base[0]` in a `GlobalMetadata` CBOR
     /// wrapper.  Must be followed by exactly one
-    /// [`write_object`](Self::write_object) call before another
-    /// `write_preceder` or [`finish`](Self::finish).
+    /// [`write_object`](Self::write_object) or
+    /// [`write_object_pre_encoded`](Self::write_object_pre_encoded) call
+    /// before another `write_preceder` or [`finish`](Self::finish).
     pub fn write_preceder(&mut self, metadata: BTreeMap<String, ciborium::Value>) -> Result<()> {
         if self.pending_preceder {
             return Err(TensogramError::Framing(
-                "write_preceder called twice without an intervening write_object".to_string(),
+                "write_preceder called twice without an intervening write_object/write_object_pre_encoded".to_string(),
             ));
         }
 
@@ -232,6 +234,13 @@ impl<W: Write> StreamingEncoder<W> {
         // Validate descriptor pipeline configuration without encoding.
         build_pipeline_config(descriptor, num_elements, descriptor.dtype)?;
 
+        // Validate szip metadata — same checks as buffered encode_pre_encoded.
+        validate_no_szip_offsets_for_non_szip(descriptor)?;
+        if descriptor.compression == "szip" && descriptor.params.contains_key("szip_block_offsets")
+        {
+            validate_szip_block_offsets(&descriptor.params, pre_encoded_bytes.len())?;
+        }
+
         self.write_object_inner(descriptor.clone(), pre_encoded_bytes)
     }
 
@@ -300,7 +309,7 @@ impl<W: Write> StreamingEncoder<W> {
     pub fn finish(mut self) -> Result<W> {
         if self.pending_preceder {
             return Err(TensogramError::Framing(
-                "dangling PrecederMetadata: finish called without a following write_object"
+                "dangling PrecederMetadata: finish called without a following write_object/write_object_pre_encoded"
                     .to_string(),
             ));
         }

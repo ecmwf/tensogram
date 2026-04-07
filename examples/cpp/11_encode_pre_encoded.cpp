@@ -176,7 +176,7 @@ int main() {
         // Pre-encoded simple_packing object
         std::string desc_sp =
             R"({"type":"ndarray","ndim":1,"shape":[)" + std::to_string(N) +
-            R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
+R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
             R"("encoding":"simple_packing","filter":"none","compression":"none",)"
             R"("bits_per_value":)" + std::to_string(bits_per_value) +
             R"(,"reference_value":)" + std::string(ref_buf) +

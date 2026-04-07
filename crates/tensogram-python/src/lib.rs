@@ -633,7 +633,7 @@ fn py_encode_pre_encoded<'py>(
     hash: Option<&str>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let global_meta = dict_to_global_metadata(global_meta_dict)?;
-    let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
+    let pairs = extract_pre_encoded_pairs(descriptors_and_data)?;
     let refs: Vec<(&DataObjectDescriptor, &[u8])> =
         pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
@@ -1091,6 +1091,41 @@ fn extract_single_data_item(item: &Bound<'_, pyo3::PyAny>) -> PyResult<Vec<u8>> 
         return Ok(b);
     }
     Err(PyValueError::new_err("data must be a numpy array or bytes"))
+}
+
+/// Extract a list of (descriptor, raw_bytes) pairs for `encode_pre_encoded`.
+///
+/// Unlike [`extract_descriptor_data_pairs`] this function **only** accepts
+/// `bytes`-like objects as the data element — numpy arrays are rejected because
+/// pre-encoded payloads are already in their final wire form.
+fn extract_pre_encoded_pairs(
+    pairs_list: &Bound<'_, PyList>,
+) -> PyResult<Vec<(DataObjectDescriptor, Vec<u8>)>> {
+    let mut result = Vec::new();
+    for item in pairs_list.iter() {
+        let tuple = item.downcast::<pyo3::types::PyTuple>().map_err(|_| {
+            PyValueError::new_err("each element must be a (descriptor_dict, bytes) tuple")
+        })?;
+        if tuple.len() != 2 {
+            return Err(PyValueError::new_err(
+                "each element must be a (descriptor_dict, bytes) tuple of length 2",
+            ));
+        }
+        let desc_dict = tuple.get_item(0)?.downcast_into::<PyDict>().map_err(|_| {
+            PyValueError::new_err("first element of each pair must be a descriptor dict")
+        })?;
+        let desc = dict_to_data_object_descriptor(&desc_dict)?;
+        let data_item = tuple.get_item(1)?;
+        // Only accept bytes-like objects, not numpy arrays.
+        let data = data_item.extract::<Vec<u8>>().map_err(|_| {
+            PyValueError::new_err(
+                "encode_pre_encoded requires bytes data, not numpy arrays — \
+                 the payload must already be in its final wire form",
+            )
+        })?;
+        result.push((desc, data));
+    }
+    Ok(result)
 }
 
 /// Convert decoded data objects to a Python list of (descriptor, ndarray) tuples.
