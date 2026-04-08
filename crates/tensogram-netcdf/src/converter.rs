@@ -433,10 +433,17 @@ fn apply_pipeline(
                     ev.name, ev.dtype
                 );
             } else {
+                // chunks_exact(8) guarantees 8-byte chunks; the try_into
+                // can't fail but we avoid the .unwrap() anyway to keep
+                // the library panic-free by construction.
                 let values: Vec<f64> = ev
                     .data_bytes
                     .chunks_exact(8)
-                    .map(|b| f64::from_le_bytes(b.try_into().unwrap()))
+                    .map(|b| {
+                        let mut buf = [0u8; 8];
+                        buf.copy_from_slice(b);
+                        f64::from_le_bytes(buf)
+                    })
                     .collect();
 
                 let bits = pipeline.bits.unwrap_or(16);
