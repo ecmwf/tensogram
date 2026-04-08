@@ -1,18 +1,18 @@
-# Tensogram — Current Implementation Status (v0.7.0)
+# Tensogram — Current Implementation Status (v0.8.0)
 
 > For historical release notes, see `../CHANGELOG.md`.
 > For planned features, see `TODO.md`. For ideas, see `IDEAS.md`.
 
 ## Summary
 
-- **Version:** 0.7.0
+- **Version:** 0.8.0
 - **Workspace:** 6 default crates + 3 optional (Python, GRIB, **NetCDF**) + 2 separate packages (xarray, zarr)
 - **Tests:** 1050+ total (283+ Rust + 253 Python + 181 xarray + 204 Zarr + 117 C++ + 17 GRIB + 44 NetCDF integration + 5 CLI netcdf pipeline + 8 Python netcdf e2e)
 - **Quality:** 0 clippy warnings, 90.5% Rust line coverage
 
 ## tensogram-netcdf
 
-New optional crate for converting NetCDF → Tensogram (v0.7.0). Excluded
+New optional crate for converting NetCDF → Tensogram (v0.8.0). Excluded
 from the default workspace build because it requires `libnetcdf` at the
 OS level.
 

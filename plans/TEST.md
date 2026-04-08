@@ -4,7 +4,7 @@ Repo: ecmwf/tensogram
 
 > For release-by-release changes, see `../CHANGELOG.md`.
 
-## Test Coverage Summary (v0.7.0)
+## Test Coverage Summary (v0.8.0)
 
 | Component | Tests | Type | Coverage |
 |-----------|-------|------|----------|

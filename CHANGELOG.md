@@ -3,89 +3,127 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.7.0] - 2026-04-08
+## [0.8.0] - 2026-04-08
 
 ### Added
 - **`tensogram-netcdf` crate** — NetCDF → Tensogram converter supporting
-  NetCDF-3 classic and NetCDF-4 files via `libnetcdf`. Preserves all variable
-  and file attributes, unpacks `scale_factor` / `add_offset`, handles fill
-  values, and skips unsupported types with warnings.
-- **`tensogram convert-netcdf` CLI subcommand** — gated behind the `netcdf`
-  feature of `tensogram-cli`. Flags: `--output`, `--split-by {file,variable,record}`,
-  `--cf`, plus the shared encoding pipeline flags.
-- **Shared `PipelineArgs` CLI helper** — `--encoding`, `--bits`, `--filter`,
-  `--compression`, `--compression-level` are now available on **both**
-  `convert-grib` and `convert-netcdf`. Supported values: `simple_packing` +
-  `shuffle` + `zstd`/`lz4`/`blosc2`/`szip`.
-- **CF metadata mapping behind `--cf`** — curated 16-attribute allow-list
-  (standard_name, long_name, units, calendar, cell_methods, coordinates, axis,
-  positive, valid_min, valid_max, valid_range, bounds, grid_mapping,
-  ancillary_variables, flag_values, flag_meanings) stored under
+  NetCDF-3 classic and NetCDF-4 files via `libnetcdf`. Preserves all
+  variable and file attributes, unpacks `scale_factor` / `add_offset`,
+  handles fill values, and skips unsupported types with warnings.
+  Excluded from the default workspace build because it requires
+  `libnetcdf` at the OS level.
+- **`tensogram convert-netcdf` CLI subcommand** — gated behind a new
+  `netcdf` feature of `tensogram-cli`. Flags: `--output`,
+  `--split-by {file,variable,record}`, `--cf`, plus the shared
+  encoding pipeline flags. `--split-by=record` walks the unlimited
+  dimension and replicates static variables into every record message.
+- **Shared `tensogram_core::pipeline` module** — single source of truth
+  for `DataPipeline` and `apply_pipeline()`. Both `tensogram-grib` and
+  `tensogram-netcdf` re-export `DataPipeline` and delegate to the same
+  helper, so the `--encoding/--bits/--filter/--compression/--compression-level`
+  flags produce byte-identical descriptor fields on both converters.
+  Supported values: `simple_packing` + `shuffle` +
+  `zstd`/`lz4`/`blosc2`/`szip`.
+- **CF metadata mapping behind `--cf`** — curated 16-attribute
+  allow-list (`standard_name`, `long_name`, `units`, `calendar`,
+  `cell_methods`, `coordinates`, `axis`, `positive`, `valid_min`,
+  `valid_max`, `valid_range`, `bounds`, `grid_mapping`,
+  `ancillary_variables`, `flag_values`, `flag_meanings`) stored under
   `base[i]["cf"]`. Full verbose attribute dump still available under
-  `base[i]["netcdf"]`.
-- **mdBook docs** — `docs/src/guide/convert-netcdf.md` user guide and
-  `docs/src/reference/netcdf-cf-mapping.md` attribute reference, plus a
-  new "NetCDF Conversion" section in `SUMMARY.md`.
-- **Examples** — `examples/python/12_convert_netcdf.py` (CLI via subprocess)
-  and `examples/rust/src/bin/12_convert_netcdf.rs` (direct library API,
-  gated behind the new `netcdf` feature on the examples crate).
-- **Python end-to-end tests** — `tests/python/test_convert_netcdf.py` with
-  8 round-trip tests covering simple f64, packed int16, CF lifting,
-  split modes, zstd compression, and the record-split error path.
-- **CI `netcdf` job** — Ubuntu + macOS matrix running clippy + netcdf crate
-  tests + CLI tests + example build.
-- `simple_packing::encode_pipeline_f64()` — typed-input variant that avoids
-  the bytes→f64 round-trip allocation.
-- Benchmark fidelity validation: lossless paths checked for exact round-trip;
-  lossy paths report Linf, L1, and L2 (RMSE) norms.
-- Benchmark structured error handling: `BenchmarkError` enum, `BenchmarkRun`
-  struct, non-zero exit on failures.
-- `--warmup` flag (default 3) and raised default iteration count from 5 to 10.
-- Throughput (MB/s) reporting and compressed-size variability detection in
-  benchmarks.
-- Rewritten benchmark documentation with split tables (lossless /
-  SimplePacking / lossy), human-readable method names, sizes in MiB, and
-  fidelity norms explained.
+  `base[i]["netcdf"]` regardless.
+- **`convert-grib` now accepts the shared pipeline flags** —
+  previously they were parsed by clap but discarded. The new path
+  wires them through `build_data_object()` via the shared
+  `apply_pipeline` helper.
+- **mdBook docs** — new `docs/src/guide/convert-netcdf.md` user guide
+  and `docs/src/reference/netcdf-cf-mapping.md` CF attribute reference;
+  full converter error taxonomy added to
+  `docs/src/guide/error-handling.md`.
+- **Examples** — `examples/python/12_convert_netcdf.py` (CLI via
+  `subprocess`, the v1 pattern since the Python bindings do not
+  expose `convert_netcdf_file` directly) and
+  `examples/rust/src/bin/12_convert_netcdf.rs` (direct library API,
+  gated behind a new `netcdf` feature on the examples crate).
+- **Python end-to-end tests** — `tests/python/test_convert_netcdf.py`
+  with 8 round-trip tests covering simple f64, packed int16, CF
+  lifting, split modes, zstd compression, and the record-split error
+  path.
+- **CI `netcdf` job** — Ubuntu + macOS matrix running clippy + netcdf
+  crate tests + CLI tests + example build. `grib` job extended to the
+  same matrix for symmetry.
+- **Clap `PossibleValuesParser`** on `--encoding`, `--filter`, and
+  `--compression` — invalid values fail fast at arg-parse time with a
+  "did you mean?" suggestion instead of propagating into the
+  converter as an `InvalidData` error at run time.
+- **17 new `tensogram-core::pipeline` unit tests** covering every
+  encoding/filter/compression stage, default pass-through, NaN skip,
+  non-f64 skip, unknown-codec errors, and shuffle element-size
+  derivation for both raw and simple-packed payloads.
+- **Metadata module unit tests** — 24 unit tests in
+  `tensogram-netcdf/src/metadata.rs` exhaustively covering every
+  `AttributeValue` → `CborValue` mapping, including a regression
+  test for `u64` values above `i64::MAX` (ciborium's native
+  `From<u64>` path, avoiding wrap-around).
 
 ### Changed
-- **`convert-grib` accepts pipeline flags** — `--encoding`/`--bits`/`--filter`/
-  `--compression`/`--compression-level` now flow through to the emitted
-  `DataObjectDescriptor`. Default stays `none/none/none` so existing
-  `convert-grib` invocations produce byte-identical output.
-- **CI `grib` job** — extended from Ubuntu-only to a Ubuntu + macOS matrix
-  for symmetry with the new netcdf job. Also adds explicit
-  `cargo test -p tensogram-cli --features grib`.
-- **CI `python` job** — now installs libnetcdf/hdf5 + netCDF4 and runs the
-  new Python e2e tests against a feature-gated tensogram binary.
+- **`convert-grib` pipeline flags are now honoured** — before this
+  release the `--encoding`/`--bits`/`--filter`/`--compression` flags
+  were parsed and silently dropped. Default remains `none/none/none`
+  so existing `convert-grib` invocations produce byte-identical output.
+- **`DataPipeline` now lives in `tensogram-core::pipeline`** — re-exported from `tensogram_grib` and `tensogram_netcdf` so existing `use tensogram_{grib,netcdf}::DataPipeline` callers keep
+  compiling. The ~150 lines of previously-duplicated `apply_pipeline`
+  logic in the two converters are now a single helper.
+- **`tensogram-netcdf` panic-free audit** — zero `unwrap`/`expect`/
+  `panic!` in library code. `metadata::attr_value_to_cbor` gained
+  an exhaustive match over all 22 `netcdf::AttributeValue` variants
+  (no `Option` wrapper; match exhaustiveness catches upstream drift
+  at compile time).
+- **Warning-on-drop metadata reads** — `extract_var_attrs` /
+  `extract_cf_attrs` / `extract_global_attrs` now emit stderr
+  warnings when an attribute can't be read, instead of silently
+  dropping it.
+- **CI `python` job** — now installs libnetcdf/hdf5 + netCDF4 and
+  runs the new Python e2e tests against a feature-gated `tensogram`
+  binary.
+
+### Fixed
+- `tensogram-grib/tests/integration.rs` — replaced
+  `.expect(&format!(...))` with `.unwrap_or_else(|| panic!(...))` to
+  clear a pre-existing `clippy::expect_fun_call` lint that surfaced
+  under stricter review.
+
+### Stats
+- 69 `tensogram-netcdf` tests (44 integration + 24 unit + 1 doctest)
+- 124 `tensogram-cli` tests with `--features netcdf`
+- 17 new `tensogram-core::pipeline` unit tests
+- 8 Python end-to-end round-trip tests
+- 630 workspace tests, 271 Python tests, 124 C++ tests — all green
+- 95.54% region / 94.80% line coverage on `tensogram-netcdf`
+- 0 clippy warnings, 0 fmt diffs
+
+## [0.7.0] - 2026-04-08
+
+### Fixed
+- **szip 24-bit data corruption** — `AEC_DATA_3BYTE` is now auto-set in `effective_flags()` for 17-24 bit samples, so libaec reads 3-byte-packed data correctly. Decoded values previously had ±60 max error; now match quantization step (~1.9×10⁻⁶ at 24 bits).
+- **szip byte-order mismatch** — `AEC_DATA_MSB` is now set when the upstream encoding is `SimplePacking` (which produces MSB-first bytes). libaec's predictor now sees the correct byte significance order; compression ratio on 24-bit GRIB data now matches ecCodes (~27%).
+- **Benchmark `AEC_DATA_PREPROCESS` constant** — was 1 (`AEC_DATA_SIGNED`), now correctly 8. Benchmarks were running without the preprocessor step.
+
+### Added
+- `simple_packing::encode_pipeline_f64()` — typed-input variant that avoids the bytes→f64 round-trip allocation
+- Benchmark fidelity validation: lossless paths checked for exact round-trip; lossy paths report Linf, L1, and L2 (RMSE) norms
+- Benchmark structured error handling: `BenchmarkError` enum, `BenchmarkRun` struct, non-zero exit on failures
+- `--warmup` flag (default 3) and raised default iteration count from 5 to 10
+- Throughput (MB/s) reporting and compressed-size variability detection in benchmarks
+- Rewritten benchmark documentation with split tables (lossless / SimplePacking / lossy), human-readable method names, sizes in MiB, and fidelity norms explained
+
+### Changed
 - `simple_packing` encode is ~2.5× faster for typical SimplePacking cases:
   - Fused NaN + min + max into a single pass in `compute_params` (was 3 passes)
   - Precomputed `scale = 10^D × 2^(-E)` — eliminates per-value f64 division
   - Specialized `encode_aligned<N>` / `decode_aligned<N>` loops for 8/16/24/32-bit widths
   - Removed redundant NaN check from `encode()`
-- Benchmark methodology page cleaned of internal jargon — no Rust API names,
-  no C function signatures.
-- GRIB comparison timing is now symmetric end-to-end (both ecCodes and
-  Tensogram include parameter setup).
-
-### Fixed
-- **szip 24-bit data corruption** — `AEC_DATA_3BYTE` is now auto-set in
-  `effective_flags()` for 17-24 bit samples, so libaec reads 3-byte-packed
-  data correctly. Decoded values previously had ±60 max error; now match
-  quantization step (~1.9×10⁻⁶ at 24 bits).
-- **szip byte-order mismatch** — `AEC_DATA_MSB` is now set when the upstream
-  encoding is `SimplePacking` (which produces MSB-first bytes). libaec's
-  predictor now sees the correct byte significance order; compression ratio
-  on 24-bit GRIB data now matches ecCodes (~27%).
-- **Benchmark `AEC_DATA_PREPROCESS` constant** — was 1 (`AEC_DATA_SIGNED`),
-  now correctly 8. Benchmarks were running without the preprocessor step.
-
-### Stats
-- 68 tensogram-netcdf tests (44 integration + 23 unit + 1 doctest)
-- 124 tensogram-cli tests with `--features netcdf` (5 new for the pipeline)
-- 8 new Python end-to-end round-trip tests
-- 612 workspace tests, 271 Python tests, 124 C++ tests — all green
-- 95.54% region coverage / 94.80% line coverage on `tensogram-netcdf`
-- 0 clippy warnings, 0 fmt diffs
+- Benchmark methodology page cleaned of internal jargon — no Rust API names, no C function signatures
+- GRIB comparison timing is now symmetric end-to-end (both ecCodes and Tensogram include parameter setup)
 
 ## [0.6.0] - 2026-04-06
 
