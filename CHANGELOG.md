@@ -3,6 +3,55 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.0] - 2026-04-08
+
+### Added
+- **`tensogram-netcdf` crate** — NetCDF → Tensogram converter supporting
+  NetCDF-3 classic and NetCDF-4 files via `libnetcdf`. Preserves all variable
+  and file attributes, unpacks `scale_factor` / `add_offset`, handles fill
+  values, and skips unsupported types with warnings.
+- **`tensogram convert-netcdf` CLI subcommand** — gated behind the `netcdf`
+  feature of `tensogram-cli`. Flags: `--output`, `--split-by {file,variable,record}`,
+  `--cf`, plus the shared encoding pipeline flags.
+- **Shared `PipelineArgs` CLI helper** — `--encoding`, `--bits`, `--filter`,
+  `--compression`, `--compression-level` are now available on **both**
+  `convert-grib` and `convert-netcdf`. Supported values: `simple_packing` +
+  `shuffle` + `zstd`/`lz4`/`blosc2`/`szip`.
+- **CF metadata mapping behind `--cf`** — curated 16-attribute allow-list
+  (standard_name, long_name, units, calendar, cell_methods, coordinates, axis,
+  positive, valid_min, valid_max, valid_range, bounds, grid_mapping,
+  ancillary_variables, flag_values, flag_meanings) stored under
+  `base[i]["cf"]`. Full verbose attribute dump still available under
+  `base[i]["netcdf"]`.
+- **mdBook docs** — `docs/src/guide/convert-netcdf.md` user guide and
+  `docs/src/reference/netcdf-cf-mapping.md` attribute reference, plus a
+  new "NetCDF Conversion" section in `SUMMARY.md`.
+- **Examples** — `examples/python/12_convert_netcdf.py` (CLI via subprocess)
+  and `examples/rust/src/bin/12_convert_netcdf.rs` (direct library API,
+  gated behind the new `netcdf` feature on the examples crate).
+- **Python end-to-end tests** — `tests/python/test_convert_netcdf.py` with
+  8 round-trip tests covering simple f64, packed int16, CF lifting,
+  split modes, zstd compression, and the record-split error path.
+- **CI `netcdf` job** — Ubuntu + macOS matrix running clippy + netcdf crate
+  tests + CLI tests + example build.
+
+### Changed
+- **`convert-grib` accepts pipeline flags** — `--encoding`/`--bits`/`--filter`/
+  `--compression`/`--compression-level` now flow through to the emitted
+  `DataObjectDescriptor`. Default stays `none/none/none` so existing
+  `convert-grib` invocations produce byte-identical output.
+- **CI `grib` job** — extended from Ubuntu-only to a Ubuntu + macOS matrix
+  for symmetry with the new netcdf job. Also adds explicit
+  `cargo test -p tensogram-cli --features grib`.
+- **CI `python` job** — now installs libnetcdf/hdf5 + netCDF4 and runs the
+  new Python e2e tests against a feature-gated tensogram binary.
+
+### Stats
+- 34 tensogram-netcdf integration tests (13 new for the pipeline flags)
+- 124 tensogram-cli tests with `--features netcdf` (5 new for the pipeline)
+- 8 new Python end-to-end round-trip tests
+- 0 clippy warnings, 0 fmt diffs
+
 ## [0.6.0] - 2026-04-06
 
 ### Changed (BREAKING)

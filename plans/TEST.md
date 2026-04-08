@@ -4,20 +4,22 @@ Repo: ecmwf/tensogram
 
 > For release-by-release changes, see `../CHANGELOG.md`.
 
-## Test Coverage Summary (v0.6.0)
+## Test Coverage Summary (v0.7.0)
 
 | Component | Tests | Type | Coverage |
 |-----------|-------|------|----------|
 | tensogram-core | ~283 | Unit + integration + adversarial + edge-case | ~90% |
 | tensogram-encodings | 47 | Unit | ~85% |
-| tensogram-cli | 12 | Unit | ~70% |
+| tensogram-cli | 124 (with `--features netcdf`) | Unit + subprocess | ~70% |
 | tensogram-ffi | (via C++ wrapper) | Indirect | — |
 | C++ wrapper | 105 | GoogleTest | — |
 | tensogram-python | 226 | pytest (parametrized) | ~88% |
+| tensogram-python (netcdf e2e) | 8 | pytest (subprocess) | — |
 | tensogram-grib | 17 | Integration | ~80% |
+| tensogram-netcdf | 34 | Integration | — |
 | tensogram-xarray | 181 | pytest | ~98% |
 | tensogram-zarr | 204 | pytest | ~95% |
-| **Total** | **~1008** | | **90.5% (Rust)** |
+| **Total** | **~1050+** | | **90.5% (Rust)** |
 
 ## Affected Components
 
