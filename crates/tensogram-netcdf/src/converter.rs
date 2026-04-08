@@ -7,6 +7,7 @@ use netcdf::AttributeValue;
 
 use tensogram_core::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
 use tensogram_core::{encode, Dtype};
+use tensogram_encodings::simple_packing;
 
 use crate::error::NetcdfError;
 use crate::metadata::{attr_value_to_cbor, extract_cf_attrs, extract_var_attrs};
@@ -24,12 +25,52 @@ pub enum SplitBy {
     Record,
 }
 
+/// Encoding/filter/compression configuration for data objects.
+///
+/// Defaults to all "none" — produces uncompressed raw little-endian payloads
+/// identical to the previous behaviour. This struct is the library twin of
+/// `tensogram-cli::PipelineArgs` and mirrors `tensogram-grib::DataPipeline` so
+/// the two converters produce byte-identical pipeline configs given the same
+/// flags.
+#[derive(Debug, Clone)]
+pub struct DataPipeline {
+    /// Encoding stage: `"none"` (default) or `"simple_packing"`.
+    pub encoding: String,
+    /// Bits per value for `simple_packing`. Defaults to 16 when `None`.
+    pub bits: Option<u32>,
+    /// Filter stage: `"none"` (default) or `"shuffle"`.
+    pub filter: String,
+    /// Compression codec: `"none"` (default), `"zstd"`, `"lz4"`, `"blosc2"`,
+    /// or `"szip"`. (`"zfp"` and `"sz3"` need extra parameters and are not
+    /// exposed via this struct in v1 — pass-through users can build their
+    /// own descriptors.)
+    pub compression: String,
+    /// Optional compression level (used by `zstd` and `blosc2`; ignored by
+    /// other codecs).
+    pub compression_level: Option<i32>,
+}
+
+impl Default for DataPipeline {
+    fn default() -> Self {
+        Self {
+            encoding: "none".to_string(),
+            bits: None,
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            compression_level: None,
+        }
+    }
+}
+
 /// Options for NetCDF → Tensogram conversion.
 #[derive(Debug, Clone, Default)]
 pub struct ConvertOptions {
     pub split_by: SplitBy,
     pub encode_options: tensogram_core::EncodeOptions,
     pub cf: bool,
+    /// Encoding/filter/compression pipeline applied to every data object.
+    /// Defaults to all `"none"` (raw little-endian payload, no compression).
+    pub pipeline: DataPipeline,
 }
 
 /// Extracted data for one variable ready to encode.
@@ -82,8 +123,12 @@ pub fn convert_netcdf_file(
     }
 
     match options.split_by {
-        SplitBy::File => encode_as_one_message(&extracted, &options.encode_options),
-        SplitBy::Variable => encode_one_per_variable(&extracted, &options.encode_options),
+        SplitBy::File => {
+            encode_as_one_message(&extracted, &options.encode_options, &options.pipeline)
+        }
+        SplitBy::Variable => {
+            encode_one_per_variable(&extracted, &options.encode_options, &options.pipeline)
+        }
         SplitBy::Record => encode_by_record(path, options, &file_path_str),
     }
 }
@@ -321,7 +366,17 @@ fn extract_global_attrs(file: &netcdf::File) -> BTreeMap<String, CborValue> {
     map
 }
 
-fn build_descriptor(ev: &ExtractedVar) -> DataObjectDescriptor {
+/// Build a `DataObjectDescriptor` from an extracted variable, applying the
+/// requested encoding/filter/compression pipeline.
+///
+/// The raw `data_bytes` are passed to the Tensogram encoder unchanged — the
+/// encoder runs the pipeline (simple_packing → shuffle → compression) when
+/// the descriptor's `encoding`/`filter`/`compression` fields and `params`
+/// map ask for it.
+fn build_descriptor(
+    ev: &ExtractedVar,
+    pipeline: &DataPipeline,
+) -> Result<DataObjectDescriptor, NetcdfError> {
     let ndim = ev.shape.len() as u64;
     let mut strides = vec![0u64; ev.shape.len()];
     if !ev.shape.is_empty() {
@@ -330,7 +385,7 @@ fn build_descriptor(ev: &ExtractedVar) -> DataObjectDescriptor {
             strides[i] = strides[i + 1] * ev.shape[i + 1];
         }
     }
-    DataObjectDescriptor {
+    let mut desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
         ndim,
         shape: ev.shape.clone(),
@@ -342,12 +397,169 @@ fn build_descriptor(ev: &ExtractedVar) -> DataObjectDescriptor {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         hash: None,
+    };
+
+    apply_pipeline(&mut desc, ev, pipeline)?;
+    Ok(desc)
+}
+
+/// Apply the configured encoding/filter/compression pipeline to a descriptor.
+///
+/// Side effects: sets `desc.encoding`/`filter`/`compression` strings and
+/// inserts the matching parameters into `desc.params`. The raw payload is
+/// not touched — the Tensogram encoder runs the actual pipeline at
+/// `encode()` time using these descriptor fields.
+fn apply_pipeline(
+    desc: &mut DataObjectDescriptor,
+    ev: &ExtractedVar,
+    pipeline: &DataPipeline,
+) -> Result<(), NetcdfError> {
+    // ── Encoding stage ───────────────────────────────────────────────────
+    //
+    // simple_packing only operates on float64 payloads (it quantizes
+    // floating-point ranges into N-bit integers). Files commonly mix f64
+    // data variables with f32/i32 coordinate variables, so when the user
+    // passes `--encoding simple_packing` we apply the encoding only to
+    // float64 variables and pass the rest through unchanged. A short
+    // notice is written to stderr so the skip is observable.
+    let mut applied_simple_packing = false;
+    match pipeline.encoding.as_str() {
+        "none" => {}
+        "simple_packing" => {
+            if ev.dtype != Dtype::Float64 {
+                eprintln!(
+                    "warning: skipping simple_packing for variable '{}' \
+                     ({:?} is not float64)",
+                    ev.name, ev.dtype
+                );
+            } else {
+                let values: Vec<f64> = ev
+                    .data_bytes
+                    .chunks_exact(8)
+                    .map(|b| f64::from_le_bytes(b.try_into().unwrap()))
+                    .collect();
+
+                let bits = pipeline.bits.unwrap_or(16);
+                match simple_packing::compute_params(&values, bits, 0) {
+                    Ok(params) => {
+                        desc.encoding = "simple_packing".to_string();
+                        desc.params.insert(
+                            "reference_value".to_string(),
+                            CborValue::Float(params.reference_value),
+                        );
+                        desc.params.insert(
+                            "binary_scale_factor".to_string(),
+                            CborValue::Integer((params.binary_scale_factor as i64).into()),
+                        );
+                        desc.params.insert(
+                            "decimal_scale_factor".to_string(),
+                            CborValue::Integer((params.decimal_scale_factor as i64).into()),
+                        );
+                        desc.params.insert(
+                            "bits_per_value".to_string(),
+                            CborValue::Integer((params.bits_per_value as i64).into()),
+                        );
+                        applied_simple_packing = true;
+                    }
+                    Err(e) => {
+                        // Common cause: NaN values from unpacked fill_value.
+                        // simple_packing rejects NaN; the variable falls back
+                        // to encoding="none" so the conversion still succeeds.
+                        eprintln!(
+                            "warning: skipping simple_packing for variable '{}': {e}",
+                            ev.name
+                        );
+                    }
+                }
+            }
+        }
+        other => {
+            return Err(NetcdfError::InvalidData(format!(
+                "unknown encoding '{other}'; expected 'none' or 'simple_packing'"
+            )));
+        }
     }
+
+    // ── Filter stage ────────────────────────────────────────────────────
+    match pipeline.filter.as_str() {
+        "none" => {}
+        "shuffle" => {
+            desc.filter = "shuffle".to_string();
+            // shuffle is run AFTER encoding by the pipeline, so the
+            // element size is the *post-encoding* byte width:
+            //   - simple_packing applied → ⌈bpv/8⌉
+            //   - otherwise → native dtype byte width
+            let element_size = if applied_simple_packing {
+                let bpv = pipeline.bits.unwrap_or(16) as usize;
+                bpv.div_ceil(8).max(1)
+            } else {
+                ev.dtype.byte_width()
+            };
+            desc.params.insert(
+                "shuffle_element_size".to_string(),
+                CborValue::Integer((element_size as i64).into()),
+            );
+        }
+        other => {
+            return Err(NetcdfError::InvalidData(format!(
+                "unknown filter '{other}'; expected 'none' or 'shuffle'"
+            )));
+        }
+    }
+
+    // ── Compression stage ───────────────────────────────────────────────
+    match pipeline.compression.as_str() {
+        "none" => {}
+        "zstd" => {
+            desc.compression = "zstd".to_string();
+            let level = pipeline.compression_level.unwrap_or(3);
+            desc.params.insert(
+                "zstd_level".to_string(),
+                CborValue::Integer((level as i64).into()),
+            );
+        }
+        "lz4" => {
+            desc.compression = "lz4".to_string();
+        }
+        "blosc2" => {
+            desc.compression = "blosc2".to_string();
+            let clevel = pipeline.compression_level.unwrap_or(5);
+            desc.params.insert(
+                "blosc2_clevel".to_string(),
+                CborValue::Integer((clevel as i64).into()),
+            );
+            // Default sub-codec — users wanting a different one should
+            // pass through `convert_netcdf_file()` and set params manually.
+            desc.params.insert(
+                "blosc2_codec".to_string(),
+                CborValue::Text("lz4".to_string()),
+            );
+        }
+        "szip" => {
+            desc.compression = "szip".to_string();
+            // Sensible szip defaults consistent with the rest of the
+            // codebase (see crates/tensogram-core tests + examples).
+            desc.params
+                .insert("szip_rsi".to_string(), CborValue::Integer(128.into()));
+            desc.params
+                .insert("szip_block_size".to_string(), CborValue::Integer(16.into()));
+            desc.params
+                .insert("szip_flags".to_string(), CborValue::Integer(8.into()));
+        }
+        other => {
+            return Err(NetcdfError::InvalidData(format!(
+                "unknown compression '{other}'; expected one of: none, zstd, lz4, blosc2, szip"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn encode_as_one_message(
     extracted: &[ExtractedVar],
     encode_options: &tensogram_core::EncodeOptions,
+    pipeline: &DataPipeline,
 ) -> Result<Vec<Vec<u8>>, NetcdfError> {
     let base: Vec<BTreeMap<String, CborValue>> =
         extracted.iter().map(|ev| ev.base_entry.clone()).collect();
@@ -360,8 +572,8 @@ fn encode_as_one_message(
 
     let descriptors_and_data: Vec<(DataObjectDescriptor, &[u8])> = extracted
         .iter()
-        .map(|ev| (build_descriptor(ev), ev.data_bytes.as_slice()))
-        .collect();
+        .map(|ev| Ok((build_descriptor(ev, pipeline)?, ev.data_bytes.as_slice())))
+        .collect::<Result<Vec<_>, NetcdfError>>()?;
 
     let refs: Vec<(&DataObjectDescriptor, &[u8])> =
         descriptors_and_data.iter().map(|(d, b)| (d, *b)).collect();
@@ -375,6 +587,7 @@ fn encode_as_one_message(
 fn encode_one_per_variable(
     extracted: &[ExtractedVar],
     encode_options: &tensogram_core::EncodeOptions,
+    pipeline: &DataPipeline,
 ) -> Result<Vec<Vec<u8>>, NetcdfError> {
     let mut results = Vec::with_capacity(extracted.len());
 
@@ -385,7 +598,7 @@ fn encode_one_per_variable(
             ..Default::default()
         };
 
-        let desc = build_descriptor(ev);
+        let desc = build_descriptor(ev, pipeline)?;
         let encoded = encode(
             &global_meta,
             &[(&desc, ev.data_bytes.as_slice())],
@@ -465,7 +678,8 @@ fn encode_by_record(
         }
 
         if !extracted.is_empty() {
-            let msgs = encode_as_one_message(&extracted, &options.encode_options)?;
+            let msgs =
+                encode_as_one_message(&extracted, &options.encode_options, &options.pipeline)?;
             results.extend(msgs);
         }
     }

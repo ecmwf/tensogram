@@ -7,7 +7,7 @@
 // Access descriptor via .0, data bytes via .1
 
 use tensogram_core::{decode, DecodeOptions, Dtype};
-use tensogram_netcdf::{convert_netcdf_file, ConvertOptions, NetcdfError, SplitBy};
+use tensogram_netcdf::{convert_netcdf_file, ConvertOptions, DataPipeline, NetcdfError, SplitBy};
 
 fn testdata(name: &str) -> std::path::PathBuf {
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -457,5 +457,330 @@ fn unlimited_time_static_var_included_in_record_split() {
     assert!(
         has_mask,
         "static variable 'mask' should appear in each record message"
+    );
+}
+
+// ── Task 13b: --encoding/--filter/--compression pipeline flags ────────────────
+
+#[test]
+fn default_pipeline_stays_none() {
+    // Regression test: ConvertOptions::default() must produce raw uncompressed
+    // descriptors so the previous 21 tests stay byte-identical.
+    let path = testdata("simple_2d.nc");
+    let msgs = convert_netcdf_file(&path, &ConvertOptions::default()).unwrap();
+    let (_, objects) = decode_first(&msgs);
+    assert_eq!(objects[0].0.encoding, "none");
+    assert_eq!(objects[0].0.filter, "none");
+    assert_eq!(objects[0].0.compression, "none");
+    assert!(
+        objects[0].0.params.is_empty(),
+        "default pipeline must not insert any params"
+    );
+}
+
+#[test]
+fn simple_2d_with_simple_packing_24bit() {
+    let path = testdata("simple_2d.nc");
+    let opts = ConvertOptions {
+        pipeline: DataPipeline {
+            encoding: "simple_packing".to_string(),
+            bits: Some(24),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
+    let (_, objects) = decode_first(&msgs);
+    assert_eq!(objects[0].0.encoding, "simple_packing");
+    let bpv = objects[0]
+        .0
+        .params
+        .get("bits_per_value")
+        .expect("bits_per_value param");
+    if let ciborium::Value::Integer(i) = bpv {
+        let n: i128 = (*i).into();
+        assert_eq!(n, 24, "bits_per_value should be 24");
+    } else {
+        panic!("bits_per_value should be an integer");
+    }
+    // simple_packing also requires reference_value, binary_scale_factor,
+    // decimal_scale_factor — verify they're present.
+    assert!(objects[0].0.params.contains_key("reference_value"));
+    assert!(objects[0].0.params.contains_key("binary_scale_factor"));
+    assert!(objects[0].0.params.contains_key("decimal_scale_factor"));
+}
+
+#[test]
+fn simple_2d_with_shuffle_plus_zstd() {
+    let path = testdata("simple_2d.nc");
+    let opts = ConvertOptions {
+        pipeline: DataPipeline {
+            filter: "shuffle".to_string(),
+            compression: "zstd".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
+    let (_, objects) = decode_first(&msgs);
+    assert_eq!(objects[0].0.filter, "shuffle");
+    assert_eq!(objects[0].0.compression, "zstd");
+
+    // shuffle_element_size should be 8 for raw float64 data.
+    let element_size = objects[0]
+        .0
+        .params
+        .get("shuffle_element_size")
+        .expect("shuffle_element_size param");
+    if let ciborium::Value::Integer(i) = element_size {
+        let n: i128 = (*i).into();
+        assert_eq!(n, 8);
+    } else {
+        panic!("shuffle_element_size should be an integer");
+    }
+
+    // Default zstd_level = 3.
+    let level = objects[0]
+        .0
+        .params
+        .get("zstd_level")
+        .expect("zstd_level param");
+    if let ciborium::Value::Integer(i) = level {
+        let n: i128 = (*i).into();
+        assert_eq!(n, 3);
+    } else {
+        panic!("zstd_level should be an integer");
+    }
+}
+
+#[test]
+fn simple_2d_with_zstd_custom_level() {
+    let path = testdata("simple_2d.nc");
+    let opts = ConvertOptions {
+        pipeline: DataPipeline {
+            compression: "zstd".to_string(),
+            compression_level: Some(7),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
+    let (_, objects) = decode_first(&msgs);
+    let level = objects[0]
+        .0
+        .params
+        .get("zstd_level")
+        .expect("zstd_level param");
+    if let ciborium::Value::Integer(i) = level {
+        let n: i128 = (*i).into();
+        assert_eq!(n, 7);
+    } else {
+        panic!("zstd_level should be an integer");
+    }
+}
+
+#[test]
+fn simple_2d_with_lz4_compression() {
+    let path = testdata("simple_2d.nc");
+    let opts = ConvertOptions {
+        pipeline: DataPipeline {
+            compression: "lz4".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
+    let (_, objects) = decode_first(&msgs);
+    assert_eq!(objects[0].0.compression, "lz4");
+}
+
+#[test]
+fn simple_2d_with_szip_compression() {
+    // szip only supports ≤32-bit samples, so it must be combined with
+    // simple_packing or shuffle (both reduce the per-sample bit width).
+    // Here we use simple_packing 16-bit which puts bits_per_sample at 16.
+    let path = testdata("simple_2d.nc");
+    let opts = ConvertOptions {
+        pipeline: DataPipeline {
+            encoding: "simple_packing".to_string(),
+            bits: Some(16),
+            compression: "szip".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
+    let (_, objects) = decode_first(&msgs);
+    assert_eq!(objects[0].0.compression, "szip");
+    assert!(objects[0].0.params.contains_key("szip_rsi"));
+    assert!(objects[0].0.params.contains_key("szip_block_size"));
+    assert!(objects[0].0.params.contains_key("szip_flags"));
+}
+
+#[test]
+fn simple_2d_with_shuffle_szip_combo() {
+    // Alternative szip path: shuffle reduces bits_per_sample to 8.
+    let path = testdata("simple_2d.nc");
+    let opts = ConvertOptions {
+        pipeline: DataPipeline {
+            filter: "shuffle".to_string(),
+            compression: "szip".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
+    let (_, objects) = decode_first(&msgs);
+    assert_eq!(objects[0].0.filter, "shuffle");
+    assert_eq!(objects[0].0.compression, "szip");
+}
+
+#[test]
+fn simple_2d_with_blosc2_compression() {
+    let path = testdata("simple_2d.nc");
+    let opts = ConvertOptions {
+        pipeline: DataPipeline {
+            compression: "blosc2".to_string(),
+            compression_level: Some(9),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
+    let (_, objects) = decode_first(&msgs);
+    assert_eq!(objects[0].0.compression, "blosc2");
+    let clevel = objects[0]
+        .0
+        .params
+        .get("blosc2_clevel")
+        .expect("blosc2_clevel param");
+    if let ciborium::Value::Integer(i) = clevel {
+        let n: i128 = (*i).into();
+        assert_eq!(n, 9);
+    } else {
+        panic!("blosc2_clevel should be an integer");
+    }
+}
+
+#[test]
+fn unknown_compression_errors() {
+    let path = testdata("simple_2d.nc");
+    let opts = ConvertOptions {
+        pipeline: DataPipeline {
+            compression: "bogus".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let result = convert_netcdf_file(&path, &opts);
+    assert!(result.is_err(), "unknown compression should error");
+    let err = result.unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("bogus"),
+        "error should mention 'bogus', got: {msg}"
+    );
+}
+
+#[test]
+fn unknown_encoding_errors() {
+    let path = testdata("simple_2d.nc");
+    let opts = ConvertOptions {
+        pipeline: DataPipeline {
+            encoding: "magic_packing".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let result = convert_netcdf_file(&path, &opts);
+    assert!(result.is_err(), "unknown encoding should error");
+    let msg = format!("{}", result.unwrap_err());
+    assert!(msg.contains("magic_packing"));
+}
+
+#[test]
+fn unknown_filter_errors() {
+    let path = testdata("simple_2d.nc");
+    let opts = ConvertOptions {
+        pipeline: DataPipeline {
+            filter: "wibble".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let result = convert_netcdf_file(&path, &opts);
+    assert!(result.is_err(), "unknown filter should error");
+    let msg = format!("{}", result.unwrap_err());
+    assert!(msg.contains("wibble"));
+}
+
+#[test]
+fn simple_packing_skips_non_f64_variables() {
+    // multi_dtype.nc has int8/u16/f32/f64 variables. simple_packing should
+    // be applied to f64 only and silently passed through (with a stderr
+    // warning) for the others — the file conversion as a whole succeeds.
+    let path = testdata("multi_dtype.nc");
+    let opts = ConvertOptions {
+        pipeline: DataPipeline {
+            encoding: "simple_packing".to_string(),
+            bits: Some(16),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
+    let (meta, objects) = decode_first(&msgs);
+
+    // Find the "f64" variable and verify it has simple_packing.
+    // Find an integer variable and verify it does NOT.
+    let mut saw_packed_f64 = false;
+    let mut saw_unpacked_int = false;
+    for (i, obj) in objects.iter().enumerate() {
+        let name = match meta.base[i].get("name") {
+            Some(ciborium::Value::Text(s)) => s.as_str(),
+            _ => continue,
+        };
+        if name == "f64" {
+            assert_eq!(
+                obj.0.encoding, "simple_packing",
+                "f64 variable should be simple_packed"
+            );
+            saw_packed_f64 = true;
+        } else if name == "i32" || name == "i16" || name == "i8" {
+            assert_eq!(
+                obj.0.encoding, "none",
+                "{name} (non-f64) should NOT be simple_packed"
+            );
+            saw_unpacked_int = true;
+        }
+    }
+    assert!(saw_packed_f64, "should have seen the f64 variable");
+    assert!(saw_unpacked_int, "should have seen an int variable");
+}
+
+#[test]
+fn pipeline_round_trip_zstd_decodes_back_to_input() {
+    // simple_2d.nc has 5×4 = 20 f64 values. Encode with zstd and decode
+    // back — the recovered bytes must be byte-identical to the default
+    // (no-pipeline) output.
+    let path = testdata("simple_2d.nc");
+
+    let baseline = convert_netcdf_file(&path, &ConvertOptions::default()).unwrap();
+    let (_, baseline_objects) = decode_first(&baseline);
+    let baseline_bytes = baseline_objects[0].1.clone();
+
+    let zstd_opts = ConvertOptions {
+        pipeline: DataPipeline {
+            compression: "zstd".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let zstd_msgs = convert_netcdf_file(&path, &zstd_opts).unwrap();
+    let (_, zstd_objects) = decode_first(&zstd_msgs);
+
+    assert_eq!(
+        zstd_objects[0].1, baseline_bytes,
+        "zstd round-trip should recover the original payload bytes exactly"
     );
 }

@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use tensogram_netcdf::{convert_netcdf_file, ConvertOptions, SplitBy};
+use tensogram_netcdf::{convert_netcdf_file, ConvertOptions, DataPipeline, SplitBy};
 
 use crate::encoding_args::PipelineArgs;
 
@@ -32,12 +32,14 @@ pub fn run(
         split_by,
         cf,
         encode_options: tensogram_core::EncodeOptions::default(),
+        pipeline: DataPipeline {
+            encoding: pipeline.encoding.clone(),
+            bits: pipeline.bits,
+            filter: pipeline.filter.clone(),
+            compression: pipeline.compression.clone(),
+            compression_level: pipeline.compression_level,
+        },
     };
-
-    // pipeline args are accepted for API symmetry with convert-grib but
-    // tensogram-netcdf's ConvertOptions does not yet expose a pipeline field.
-    // The flags are parsed and validated by clap; we just ignore them for now.
-    let _ = pipeline;
 
     let mut all_messages = Vec::new();
 
@@ -274,5 +276,122 @@ mod tests {
         .unwrap();
         let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
         assert!(f.message_count().unwrap() >= 1);
+    }
+
+    // ── Task 13b: pipeline flags reach the descriptor ────────────────────
+
+    fn pipeline_with(
+        encoding: &str,
+        bits: Option<u32>,
+        filter: &str,
+        compression: &str,
+    ) -> PipelineArgs {
+        PipelineArgs {
+            encoding: encoding.to_string(),
+            bits,
+            filter: filter.to_string(),
+            compression: compression.to_string(),
+            compression_level: None,
+        }
+    }
+
+    fn first_descriptor_fields(out: &std::path::Path) -> (String, String, String) {
+        let mut f = tensogram_core::TensogramFile::open(out).unwrap();
+        let msg = f.read_message(0).unwrap();
+        let (_, objects) =
+            tensogram_core::decode(&msg, &tensogram_core::DecodeOptions::default()).unwrap();
+        let desc = &objects[0].0;
+        (
+            desc.encoding.clone(),
+            desc.filter.clone(),
+            desc.compression.clone(),
+        )
+    }
+
+    #[test]
+    fn convert_with_simple_packing_flag() {
+        // simple_2d.nc has a single float64 variable, so simple_packing
+        // applies cleanly without per-variable mixing.
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("packed.tgm");
+        run(
+            &[testdata("simple_2d.nc")],
+            Some(out.to_str().unwrap()),
+            "file",
+            false,
+            &pipeline_with("simple_packing", Some(24), "none", "none"),
+        )
+        .unwrap();
+        let (encoding, _, _) = first_descriptor_fields(&out);
+        assert_eq!(encoding, "simple_packing");
+    }
+
+    #[test]
+    fn convert_with_zstd_compression() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("zstd.tgm");
+        run(
+            &[testdata("simple_2d.nc")],
+            Some(out.to_str().unwrap()),
+            "file",
+            false,
+            &pipeline_with("none", None, "none", "zstd"),
+        )
+        .unwrap();
+        let (_, _, compression) = first_descriptor_fields(&out);
+        assert_eq!(compression, "zstd");
+    }
+
+    #[test]
+    fn convert_with_shuffle_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("shuf.tgm");
+        run(
+            &[testdata("simple_2d.nc")],
+            Some(out.to_str().unwrap()),
+            "file",
+            false,
+            &pipeline_with("none", None, "shuffle", "none"),
+        )
+        .unwrap();
+        let (_, filter, _) = first_descriptor_fields(&out);
+        assert_eq!(filter, "shuffle");
+    }
+
+    #[test]
+    fn convert_unknown_compression_errors_cleanly() {
+        let result = run(
+            &[testdata("simple_2d.nc")],
+            None,
+            "file",
+            false,
+            &pipeline_with("none", None, "none", "bogus"),
+        );
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("bogus"),
+            "error should mention 'bogus', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn convert_default_pipeline_produces_none_compression() {
+        // Regression: omitting all pipeline flags must not silently
+        // change the descriptor away from none/none/none.
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("default.tgm");
+        run(
+            &[testdata("simple_2d.nc")],
+            Some(out.to_str().unwrap()),
+            "file",
+            false,
+            &default_pipeline(),
+        )
+        .unwrap();
+        let (encoding, filter, compression) = first_descriptor_fields(&out);
+        assert_eq!(encoding, "none");
+        assert_eq!(filter, "none");
+        assert_eq!(compression, "none");
     }
 }

@@ -26,5 +26,5 @@ pub mod converter;
 pub mod error;
 pub mod metadata;
 
-pub use converter::{convert_netcdf_file, ConvertOptions, SplitBy};
+pub use converter::{convert_netcdf_file, ConvertOptions, DataPipeline, SplitBy};
 pub use error::NetcdfError;
