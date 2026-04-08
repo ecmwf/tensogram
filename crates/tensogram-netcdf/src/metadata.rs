@@ -71,12 +71,10 @@ pub(crate) fn attr_value_to_cbor(val: &AttributeValue) -> CborValue {
         AttributeValue::Longlongs(v) => {
             CborValue::Array(v.iter().map(|i| CborValue::Integer((*i).into())).collect())
         }
-        AttributeValue::Ulonglong(i) => CborValue::Integer((*i as i128).into()),
-        AttributeValue::Ulonglongs(v) => CborValue::Array(
-            v.iter()
-                .map(|i| CborValue::Integer((*i as i128).into()))
-                .collect(),
-        ),
+        AttributeValue::Ulonglong(i) => CborValue::Integer((*i).into()),
+        AttributeValue::Ulonglongs(v) => {
+            CborValue::Array(v.iter().map(|i| CborValue::Integer((*i).into())).collect())
+        }
         AttributeValue::Schar(i) => CborValue::Integer((*i as i64).into()),
         AttributeValue::Schars(v) => CborValue::Array(
             v.iter()
@@ -319,7 +317,7 @@ mod tests {
         expect_int(&arr[2], i64::MIN);
     }
 
-    // ── Ulonglong (u64 → i64 via cast) ─────────────────────────────────
+    // ── Ulonglong (u64 — full range, no i64 wrap-around) ──────────────
     #[test]
     fn attr_value_to_cbor_ulonglong() {
         // Small u64 that fits in i64 round-trips cleanly.
@@ -330,16 +328,44 @@ mod tests {
     }
 
     #[test]
+    fn attr_value_to_cbor_ulonglong_above_i64_max() {
+        // Regression test: u64 values above i64::MAX must NOT wrap
+        // around into negatives. Ciborium's Integer has a native
+        // From<u64> impl that represents the full u64 range, so the
+        // conversion is now `(*i).into()` not `(*i as i64).into()`.
+        let large = (i64::MAX as u64) + 42;
+        let cbor = attr_value_to_cbor(&AttributeValue::Ulonglong(large));
+        match cbor {
+            CborValue::Integer(i) => {
+                let n: i128 = i.into();
+                assert_eq!(n, large as i128);
+                assert!(n > 0, "u64 > i64::MAX must not wrap to negative");
+            }
+            other => panic!("expected Integer, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn attr_value_to_cbor_ulonglongs() {
         let v = attr_value_to_cbor(&AttributeValue::Ulonglongs(vec![
             0_u64,
             42_u64,
             1_000_000_u64,
+            // Include a value above i64::MAX to pin the no-wrap
+            // behaviour at the array variant too.
+            u64::MAX,
         ]));
-        let arr = expect_array_len(&v, 3);
+        let arr = expect_array_len(&v, 4);
         expect_int(&arr[0], 0);
         expect_int(&arr[1], 42);
         expect_int(&arr[2], 1_000_000);
+        match &arr[3] {
+            CborValue::Integer(i) => {
+                let n: i128 = (*i).into();
+                assert_eq!(n, u64::MAX as i128);
+            }
+            other => panic!("expected Integer for u64::MAX, got {other:?}"),
+        }
     }
 
     // ── Schar (i8 → i64) ───────────────────────────────────────────────
