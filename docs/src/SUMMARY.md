@@ -68,6 +68,13 @@
 
 ---
 
+# NetCDF Conversion
+
+- [Overview](guide/convert-netcdf.md)
+- [CF Metadata Mapping](reference/netcdf-cf-mapping.md)
+
+---
+
 # Reference
 
 - [Error Handling](guide/error-handling.md)

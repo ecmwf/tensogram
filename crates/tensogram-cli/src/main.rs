@@ -3,7 +3,11 @@ use std::process;
 
 use clap::{Parser, Subcommand};
 
+#[cfg(any(feature = "grib", feature = "netcdf"))]
+use encoding_args::PipelineArgs;
+
 mod commands;
+mod encoding_args;
 mod filter;
 mod output;
 
@@ -113,6 +117,26 @@ enum Commands {
         /// Preserve all GRIB namespace keys under a "grib" sub-object
         #[arg(long)]
         all_keys: bool,
+        #[command(flatten)]
+        pipeline: PipelineArgs,
+    },
+    /// Convert NetCDF files to Tensogram format (requires libnetcdf)
+    #[cfg(feature = "netcdf")]
+    ConvertNetcdf {
+        /// Input NetCDF file(s)
+        #[arg(required = true)]
+        inputs: Vec<String>,
+        /// Output file (omit for stdout)
+        #[arg(short = 'o', long)]
+        output: Option<String>,
+        /// How to group variables into messages: file (default), variable, record
+        #[arg(long, default_value = "file")]
+        split_by: String,
+        /// Extract CF convention attributes into base[i]["cf"]
+        #[arg(long)]
+        cf: bool,
+        #[command(flatten)]
+        pipeline: PipelineArgs,
     },
 }
 
@@ -172,7 +196,16 @@ fn main() {
             output,
             split,
             all_keys,
-        } => commands::convert_grib::run(&inputs, output.as_deref(), split, all_keys),
+            pipeline,
+        } => commands::convert_grib::run(&inputs, output.as_deref(), split, all_keys, &pipeline),
+        #[cfg(feature = "netcdf")]
+        Commands::ConvertNetcdf {
+            inputs,
+            output,
+            split_by,
+            cf,
+            pipeline,
+        } => commands::convert_netcdf::run(&inputs, output.as_deref(), &split_by, cf, &pipeline),
     };
 
     if let Err(e) = result {

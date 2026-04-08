@@ -1,14 +1,16 @@
 use std::io::Write;
 use std::path::Path;
 
-use tensogram_grib::{convert_grib_file, ConvertOptions, Grouping};
+use tensogram_grib::{convert_grib_file, ConvertOptions, DataPipeline, Grouping};
 
-/// Convert GRIB messages to Tensogram format.
+use crate::encoding_args::PipelineArgs;
+
 pub fn run(
     inputs: &[impl AsRef<Path>],
     output: Option<&str>,
     split: bool,
     all_keys: bool,
+    pipeline: &PipelineArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if inputs.is_empty() {
         return Err("no input files specified".into());
@@ -23,6 +25,13 @@ pub fn run(
     let options = ConvertOptions {
         grouping,
         preserve_all_keys: all_keys,
+        pipeline: DataPipeline {
+            encoding: pipeline.encoding.clone(),
+            bits: pipeline.bits,
+            filter: pipeline.filter.clone(),
+            compression: pipeline.compression.clone(),
+            compression_level: pipeline.compression_level,
+        },
         ..Default::default()
     };
 
@@ -67,6 +76,10 @@ mod tests {
         path.to_str().unwrap().to_string()
     }
 
+    fn default_pipeline() -> PipelineArgs {
+        PipelineArgs::default()
+    }
+
     #[test]
     fn convert_single_grib_merge() {
         let dir = tempfile::tempdir().unwrap();
@@ -74,11 +87,11 @@ mod tests {
         run(
             &[testdata("2t.grib2")],
             Some(out.to_str().unwrap()),
-            false, // merge mode
-            false, // no all_keys
+            false,
+            false,
+            &default_pipeline(),
         )
         .unwrap();
-        // Verify output is valid tensogram
         let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
         assert!(f.message_count().unwrap() >= 1);
     }
@@ -90,8 +103,9 @@ mod tests {
         run(
             &[testdata("2t.grib2")],
             Some(out.to_str().unwrap()),
-            true, // split mode
+            true,
             false,
+            &default_pipeline(),
         )
         .unwrap();
         let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -106,14 +120,13 @@ mod tests {
             &[testdata("2t.grib2")],
             Some(out.to_str().unwrap()),
             false,
-            true, // all_keys enabled
+            true,
+            &default_pipeline(),
         )
         .unwrap();
-        // Verify grib namespace keys are in metadata
         let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
         let meta = tensogram_core::decode_metadata(&msg).unwrap();
-        // With all_keys, base[0] should contain "grib" key
         assert!(
             meta.base.iter().any(|entry| entry.contains_key("grib")),
             "all_keys should produce grib namespace in base entries"
@@ -129,9 +142,9 @@ mod tests {
             Some(out.to_str().unwrap()),
             false,
             false,
+            &default_pipeline(),
         )
         .unwrap();
-        // Each input GRIB file → 1 merged message, so 2 files → 2 messages
         let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
         assert!(
             f.message_count().unwrap() >= 2,
@@ -139,20 +152,21 @@ mod tests {
         );
     }
 
-    // Note: the stdout branch (output=None) is not unit-tested here because
-    // it writes binary Tensogram bytes to stdout, which bloats captured test
-    // output and makes failures noisy. The branch is trivial (write_all to
-    // stdout lock) and is exercised by the existing CI integration tests.
-
     #[test]
     fn convert_no_inputs_errors() {
         let empty: Vec<String> = vec![];
-        assert!(run(&empty, None, false, false).is_err());
+        assert!(run(&empty, None, false, false, &default_pipeline()).is_err());
     }
 
     #[test]
     fn convert_missing_file_errors() {
-        let result = run(&["/nonexistent.grib2".to_string()], None, false, false);
+        let result = run(
+            &["/nonexistent.grib2".to_string()],
+            None,
+            false,
+            false,
+            &default_pipeline(),
+        );
         assert!(result.is_err());
     }
 
@@ -165,6 +179,7 @@ mod tests {
             Some(out.to_str().unwrap()),
             false,
             false,
+            &default_pipeline(),
         )
         .unwrap();
         let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -178,8 +193,9 @@ mod tests {
         run(
             &[testdata("2t.grib2")],
             Some(out.to_str().unwrap()),
-            true, // split
-            true, // all_keys
+            true,
+            true,
+            &default_pipeline(),
         )
         .unwrap();
         let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -198,9 +214,9 @@ mod tests {
             Some(out.to_str().unwrap()),
             true,
             false,
+            &default_pipeline(),
         )
         .unwrap();
-        // Decode and verify data is f64 array with correct shape
         let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
         let (_, objects) =
@@ -208,7 +224,6 @@ mod tests {
         let (desc, data) = &objects[0];
         assert_eq!(desc.dtype, tensogram_core::Dtype::Float64);
         assert!(!data.is_empty());
-        // shape should be 2D [Nj, Ni] or 1D [N]
         assert!(!desc.shape.is_empty());
     }
 }

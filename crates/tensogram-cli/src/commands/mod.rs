@@ -1,5 +1,7 @@
 #[cfg(feature = "grib")]
 pub mod convert_grib;
+#[cfg(feature = "netcdf")]
+pub mod convert_netcdf;
 pub mod copy;
 pub mod dump;
 pub mod get;

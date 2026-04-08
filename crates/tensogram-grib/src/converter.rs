@@ -4,8 +4,9 @@ use std::path::Path;
 use ciborium::Value as CborValue;
 use eccodes::{CodesFile, FallibleIterator, KeyRead, ProductKind};
 
+use tensogram_core::pipeline::apply_pipeline;
 use tensogram_core::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
-use tensogram_core::{encode, Dtype, EncodeOptions};
+use tensogram_core::{encode, DataPipeline, Dtype, EncodeOptions};
 
 use crate::error::GribError;
 use crate::metadata::{extract_all_namespace_keys, extract_mars_keys, GribKeySet};
@@ -22,6 +23,9 @@ pub struct ConvertOptions {
     /// sub-object.  MARS keys always go in `"mars"` regardless of this flag.
     /// Default: `false`.
     pub preserve_all_keys: bool,
+    /// Encoding/filter/compression pipeline for data objects.
+    /// Defaults to all "none" (uncompressed raw float64).
+    pub pipeline: DataPipeline,
 }
 
 /// How to group input GRIB messages.
@@ -41,6 +45,7 @@ impl Default for ConvertOptions {
             grouping: Grouping::MergeAll,
             encode_options: EncodeOptions::default(),
             preserve_all_keys: false,
+            pipeline: DataPipeline::default(),
         }
     }
 }
@@ -115,8 +120,12 @@ pub fn convert_grib_file(path: &Path, options: &ConvertOptions) -> Result<Vec<Ve
     }
 
     match options.grouping {
-        Grouping::OneToOne => convert_one_to_one(&grib_messages, &options.encode_options),
-        Grouping::MergeAll => convert_merge_all(&grib_messages, &options.encode_options),
+        Grouping::OneToOne => {
+            convert_one_to_one(&grib_messages, &options.encode_options, &options.pipeline)
+        }
+        Grouping::MergeAll => {
+            convert_merge_all(&grib_messages, &options.encode_options, &options.pipeline)
+        }
     }
 }
 
@@ -126,6 +135,7 @@ pub fn convert_grib_file(path: &Path, options: &ConvertOptions) -> Result<Vec<Ve
 fn convert_one_to_one(
     messages: &[GribExtracted],
     encode_options: &EncodeOptions,
+    pipeline: &DataPipeline,
 ) -> Result<Vec<Vec<u8>>, GribError> {
     let mut results = Vec::with_capacity(messages.len());
 
@@ -146,7 +156,7 @@ fn convert_one_to_one(
             ..Default::default()
         };
 
-        let (desc, data_bytes) = build_data_object(&msg.values, &msg.shape);
+        let (desc, data_bytes) = build_data_object(&msg.values, &msg.shape, pipeline)?;
         let encoded = encode(&global_meta, &[(&desc, &data_bytes)], encode_options)
             .map_err(|e| GribError::Encode(e.to_string()))?;
 
@@ -163,6 +173,7 @@ fn convert_one_to_one(
 fn convert_merge_all(
     messages: &[GribExtracted],
     encode_options: &EncodeOptions,
+    pipeline: &DataPipeline,
 ) -> Result<Vec<Vec<u8>>, GribError> {
     // Build per-object base entries — each entry holds ALL metadata for that object.
     let base: Vec<BTreeMap<String, CborValue>> = messages
@@ -189,7 +200,7 @@ fn convert_merge_all(
 
     let mut descriptors_and_data = Vec::with_capacity(messages.len());
     for msg in messages {
-        let (desc, data_bytes) = build_data_object(&msg.values, &msg.shape);
+        let (desc, data_bytes) = build_data_object(&msg.values, &msg.shape, pipeline)?;
         descriptors_and_data.push((desc, data_bytes));
     }
 
@@ -225,14 +236,18 @@ fn nested_btree_to_cbor_map(map: &BTreeMap<String, BTreeMap<String, CborValue>>)
     )
 }
 
-/// Build a DataObjectDescriptor + raw f64 bytes from GRIB values.
+/// Build a `DataObjectDescriptor` + raw f64 bytes from GRIB values,
+/// applying the configured encoding/filter/compression pipeline via the
+/// shared [`tensogram_core::pipeline::apply_pipeline`] helper.
 ///
-/// Byte order is little-endian: ecCodes returns native f64 values which we
-/// serialize as LE bytes. The descriptor records this so decoders know.
-///
-/// `params` is empty — MARS keys are carried in `GlobalMetadata.base[i]["mars"]`,
-/// not in the descriptor.
-fn build_data_object(values: &[f64], shape: &[u64]) -> (DataObjectDescriptor, Vec<u8>) {
+/// Byte order is little-endian: ecCodes returns native f64 values which
+/// we serialize as LE bytes. MARS keys are carried in
+/// `GlobalMetadata.base[i]["mars"]`, not in the descriptor params.
+fn build_data_object(
+    values: &[f64],
+    shape: &[u64],
+    pipeline: &DataPipeline,
+) -> Result<(DataObjectDescriptor, Vec<u8>), GribError> {
     let ndim = shape.len() as u64;
     let mut strides = vec![0u64; shape.len()];
     if !shape.is_empty() {
@@ -242,7 +257,7 @@ fn build_data_object(values: &[f64], shape: &[u64]) -> (DataObjectDescriptor, Ve
         }
     }
 
-    let desc = DataObjectDescriptor {
+    let mut desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
         ndim,
         shape: shape.to_vec(),
@@ -256,7 +271,11 @@ fn build_data_object(values: &[f64], shape: &[u64]) -> (DataObjectDescriptor, Ve
         hash: None,
     };
 
-    let data_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    // GRIB data is always float64, so pass `Some(values)` — simple_packing
+    // is always applicable if the user requests it.
+    apply_pipeline(&mut desc, Some(values), pipeline, "GRIB message")
+        .map_err(GribError::InvalidData)?;
 
-    (desc, data_bytes)
+    let data_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    Ok((desc, data_bytes))
 }

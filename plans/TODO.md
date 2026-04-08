@@ -23,12 +23,16 @@ For speculative ideas, see `IDEAS.md`.
 
 - [x] ~~`tensogram merge` strategies~~ → `--strategy first|last|error` flag added to CLI merge command
 
-- [ ] *tensogram-convert-netcdf*:
-  - research about netcdf and CF conventions
-  - implement a similar tool to convert-grib to convert netcdf's to tensogram (one-way only)
-  - add an option --cf to try to map CF convention
-  - add options to control the encoding packing and compression, so the code unpacks to a large enough type then uses those options to pack into tensogram.
-  - also change the grib converter to provide same options to control encoding as netcdf
+- [x] ~~tensogram-convert-netcdf~~ → v0.7.0. New `crates/tensogram-netcdf/`
+  crate + `tensogram convert-netcdf` CLI (feature-gated behind `netcdf`);
+  NetCDF-3 classic + NetCDF-4 (HDF5) inputs; 10 native dtypes; packed
+  `scale_factor`/`add_offset` unpacked to f64; `--cf` lifts 16 CF
+  allow-list attributes into `base[i]["cf"]`; `--split-by
+  file|variable|record`; shared `PipelineArgs` (`--encoding/--bits/
+  --filter/--compression/--compression-level`) retrofitted onto BOTH
+  `convert-grib` and `convert-netcdf`; docs, Python + Rust examples,
+  Python e2e tests; Ubuntu+macOS CI via new `netcdf` job; `grib` CI
+  extended to macOS for symmetry.
 
 ## Multi-Language Support
 

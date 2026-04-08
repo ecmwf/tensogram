@@ -519,7 +519,7 @@ fn test_merge_all_independent_base_entries() {
     for (i, entry) in meta.base.iter().enumerate() {
         let mars = entry
             .get("mars")
-            .expect(&format!("base[{i}] must have mars"));
+            .unwrap_or_else(|| panic!("base[{i}] must have mars"));
         assert!(
             cbor_map_get(mars, "class").is_some(),
             "base[{i}] mars.class must be independently present"

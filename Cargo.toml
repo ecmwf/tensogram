@@ -13,6 +13,7 @@ members = [
 exclude = [
     "crates/tensogram-python",
     "crates/tensogram-grib",
+    "crates/tensogram-netcdf",
 ]
 
 [workspace.dependencies]

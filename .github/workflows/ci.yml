@@ -63,16 +63,29 @@ jobs:
         with:
           enable-cache: true
 
+      # libnetcdf is needed so the feature-gated tensogram-cli build
+      # for the convert-netcdf end-to-end tests succeeds.
+      - name: Install libnetcdf (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libnetcdf-dev libhdf5-dev
+
+      - name: Install libnetcdf (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install netcdf hdf5
+
       - name: Create virtualenv and install dependencies
         run: |
           uv venv .venv
           source .venv/bin/activate
-          uv pip install maturin pytest numpy ruff
+          uv pip install maturin pytest numpy ruff netCDF4
 
       - name: Build Python bindings
         run: |
           source .venv/bin/activate
           cd crates/tensogram-python && maturin develop
+
+      - name: Build tensogram CLI with netcdf feature
+        run: cargo build -p tensogram-cli --features netcdf
 
       - name: Lint
         run: |
@@ -120,18 +133,63 @@ jobs:
 
   # ── GRIB: build + test (requires ecCodes) ─────────────────────────────
   grib:
-    name: GRIB
-    runs-on: ubuntu-latest
+    name: GRIB (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install ecCodes library
+      - name: Install ecCodes library (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y libeccodes-dev
+
+      - name: Install ecCodes library (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install eccodes
 
       - name: Run GRIB tests
         run: cargo test --manifest-path crates/tensogram-grib/Cargo.toml -v
+
+      - name: Run CLI tests with grib feature
+        run: cargo test -p tensogram-cli --features grib -v
+
+  # ── NetCDF: build + test (requires libnetcdf) ─────────────────────────
+  netcdf:
+    name: NetCDF (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install libnetcdf (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libnetcdf-dev libhdf5-dev
+
+      - name: Install libnetcdf (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install netcdf hdf5
+
+      - name: Clippy NetCDF crate
+        run: cargo clippy --manifest-path crates/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
+
+      - name: Run NetCDF library tests
+        run: cargo test --manifest-path crates/tensogram-netcdf/Cargo.toml -v
+
+      - name: Run CLI tests with netcdf feature
+        run: cargo test -p tensogram-cli --features netcdf -v
+
+      - name: Build convert-netcdf rust example
+        run: cargo build -p tensogram-rust-examples --bin 12_convert_netcdf --features netcdf
 
   # ── C++: build + test ────────────────────────────────────────────────
   cpp:

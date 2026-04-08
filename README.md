@@ -33,7 +33,8 @@ Tensogram defines a network-transmissible binary message format, not a file form
 - **xarray backend** — `xr.open_dataset("file.tgm", engine="tensogram")` with lazy loading, coordinate auto-detection, and hypercube stacking via `open_datasets()`
 - **Zarr v3 store** — `zarr.open_group(store=TensogramStore.open_tgm("file.tgm"))` for standard Zarr API access with 14 bidirectionally-mapped dtypes
 - **GRIB conversion** — import GRIB data with MARS metadata preservation and configurable namespace extraction
-- **CLI** — `tensogram info/ls/dump/get/set/copy/merge/split/reshuffle/convert-grib` with `--strategy first|last|error` merge conflict resolution
+- **NetCDF conversion** — import NetCDF-3 and NetCDF-4 files with CF metadata lifting (`--cf`), packed data unpacking, and configurable encoding/compression pipeline shared with `convert-grib`
+- **CLI** — `tensogram info/ls/dump/get/set/copy/merge/split/reshuffle/convert-grib/convert-netcdf` with `--strategy first|last|error` merge conflict resolution
 - **Optional features** — `mmap` (zero-copy file reads), `async` (tokio I/O)
 
 ## Quick Start
@@ -125,6 +126,12 @@ cargo build -p tensogram-cli --features grib
 tensogram convert-grib forecast.grib -o forecast.tgm
 ```
 
+**NetCDF conversion** (requires [libnetcdf](https://www.unidata.ucar.edu/software/netcdf/)):
+```bash
+cargo build -p tensogram-cli --features netcdf
+tensogram convert-netcdf --cf --compression zstd forecast.nc -o forecast.tgm
+```
+
 ## Documentation
 
 - [mdbook docs](docs/) — full developer guide (`cd docs && mdbook build`)
@@ -142,6 +149,7 @@ crates/
 ├── tensogram-cli/        CLI binary (tensogram command)
 ├── tensogram-ffi/        C FFI layer
 ├── tensogram-grib/       GRIB converter (ecCodes, excluded from default build)
+├── tensogram-netcdf/     NetCDF converter (libnetcdf, excluded from default build)
 └── tensogram-python/     Python bindings (PyO3, excluded from default build)
 tensogram-xarray/         xarray backend engine (Python package)
 tensogram-zarr/           Zarr v3 store backend (Python package)

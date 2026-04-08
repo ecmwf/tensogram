@@ -7,6 +7,7 @@ pub mod framing;
 pub mod hash;
 pub mod iter;
 pub mod metadata;
+pub mod pipeline;
 pub mod streaming;
 pub mod types;
 pub mod wire;
@@ -22,6 +23,7 @@ pub use framing::{scan, scan_file};
 pub use hash::{compute_hash, verify_hash, HashAlgorithm};
 pub use iter::{messages, objects, objects_metadata, FileMessageIter, MessageIter, ObjectIter};
 pub use metadata::{compute_common, verify_canonical_cbor, RESERVED_KEY};
+pub use pipeline::{apply_pipeline, DataPipeline};
 pub use streaming::StreamingEncoder;
 pub use types::{
     ByteOrder, DataObjectDescriptor, DecodedObject, GlobalMetadata, HashDescriptor, HashFrame,

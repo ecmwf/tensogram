@@ -1,6 +1,6 @@
 [package]
 name = "tensogram-rust-examples"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 publish = false
 
@@ -44,8 +44,20 @@ path = "src/bin/09_file_api.rs"
 name = "11_encode_pre_encoded"
 path = "src/bin/11_encode_pre_encoded.rs"
 
+[[bin]]
+name = "12_convert_netcdf"
+path = "src/bin/12_convert_netcdf.rs"
+required-features = ["netcdf"]
+
+[features]
+default = []
+# Enables the 12_convert_netcdf example. Requires libnetcdf at the OS
+# level — see crates/tensogram-netcdf for installation instructions.
+netcdf = ["dep:tensogram-netcdf"]
+
 [dependencies]
 tensogram-core = { path = "../../crates/tensogram-core" }
 tensogram-encodings = { path = "../../crates/tensogram-encodings" }
+tensogram-netcdf = { path = "../../crates/tensogram-netcdf", optional = true }
 ciborium = "0.2"
 tempfile = "3"
