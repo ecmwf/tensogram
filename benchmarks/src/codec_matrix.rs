@@ -1,43 +1,35 @@
-//! Codec matrix benchmark — all encoder × compressor × bit-width combinations.
-//!
-//! Generates a synthetic weather field, runs every valid pipeline combination,
-//! and reports encode time, decode time, compressed size, and compression ratio
-//! against the `none+none` baseline.
-
 use std::time::Instant;
 
-use tensogram_encodings::pipeline::{decode_pipeline, encode_pipeline};
+use tensogram_encodings::pipeline::{decode_pipeline, encode_pipeline, encode_pipeline_f64};
 use tensogram_encodings::simple_packing::compute_params;
 use tensogram_encodings::{
     Blosc2Codec, ByteOrder, CompressionType, EncodingType, FilterType, PipelineConfig,
     Sz3ErrorBound, ZfpMode,
 };
 
+use crate::constants::AEC_DATA_PREPROCESS;
 use crate::datagen::generate_weather_field;
-use crate::report::{median_ns, ns_to_ms, BenchmarkResult};
-use crate::BenchmarkError;
+use crate::report::{compute_fidelity, compute_timing_stats, BenchmarkResult};
+use crate::{BenchmarkError, BenchmarkRun, CaseFailure};
 
-// AEC_DATA_PREPROCESS flag value (defined in libaec-sys as 1).
-// Using the raw constant avoids adding libaec-sys as a direct dependency.
-const AEC_DATA_PREPROCESS: u32 = 1;
+// ── Case descriptor ──────────────────────────────────────────────────────────
 
-// ── Case descriptor ───────────────────────────────────────────────────────────
-
-/// A single benchmark case: a pipeline configuration and a display name.
 struct Case {
     name: String,
     config: PipelineConfig,
+    /// For SimplePacking: bit width for re-deriving params each iteration.
+    sp_bits: Option<u32>,
+    is_lossy: bool,
 }
 
-// ── Config helpers ────────────────────────────────────────────────────────────
+// ── Config helpers ───────────────────────────────────────────────────────────
 
-/// Construct a benchmark case with the shared pipeline defaults
-/// (no filter, little-endian, f64).
 fn make_case(
     name: impl Into<String>,
     encoding: EncodingType,
     compression: CompressionType,
     num_values: usize,
+    is_lossy: bool,
 ) -> Case {
     Case {
         name: name.into(),
@@ -49,10 +41,11 @@ fn make_case(
             byte_order: ByteOrder::Little,
             dtype_byte_width: 8,
         },
+        sp_bits: None,
+        is_lossy,
     }
 }
 
-/// Construct a simple-packing case: compute packing params, then build the case.
 fn sp_case(
     bits: u32,
     compressor_name: &str,
@@ -61,43 +54,46 @@ fn sp_case(
     values: &[f64],
 ) -> Result<Case, BenchmarkError> {
     let params = compute_params(values, bits, 0)
-        .map_err(|e| BenchmarkError(format!("sp({bits}) params: {e}")))?;
-    Ok(make_case(
+        .map_err(|e| BenchmarkError::Pipeline(format!("sp({bits}) params: {e}")))?;
+    let mut case = make_case(
         format!("sp({bits})+{compressor_name}"),
         EncodingType::SimplePacking(params),
         compression,
         num_values,
-    ))
+        true,
+    );
+    case.sp_bits = Some(bits);
+    Ok(case)
 }
 
-// ── Case builder ──────────────────────────────────────────────────────────────
+// ── Case builder ─────────────────────────────────────────────────────────────
 
-/// Build all benchmark cases in display order.
-///
-/// The `none+none` case is always first — it serves as the reference.
 fn build_cases(n: usize, values: &[f64]) -> Result<Vec<Case>, BenchmarkError> {
     let mut c = Vec::with_capacity(24);
 
-    // ── Baseline ──────────────────────────────────────────────────────────────
+    // ── Baseline ─────────────────────────────────────────────────────────────
     c.push(make_case(
         "none+none",
         EncodingType::None,
         CompressionType::None,
         n,
+        false,
     ));
 
-    // ── Raw f64 + lossless compressors (no encoding) ──────────────────────────
+    // ── Raw f64 + lossless compressors ───────────────────────────────────────
     c.push(make_case(
         "none+zstd(3)",
         EncodingType::None,
         CompressionType::Zstd { level: 3 },
         n,
+        false,
     ));
     c.push(make_case(
         "none+lz4",
         EncodingType::None,
         CompressionType::Lz4,
         n,
+        false,
     ));
     c.push(make_case(
         "none+blosc2(blosclz)",
@@ -108,8 +104,8 @@ fn build_cases(n: usize, values: &[f64]) -> Result<Vec<Case>, BenchmarkError> {
             typesize: 8,
         },
         n,
+        false,
     ));
-    // libaec supports up to 32-bit samples; treat raw f64 bytes as two 32-bit samples each.
     c.push(make_case(
         "none+szip(32)",
         EncodingType::None,
@@ -120,9 +116,10 @@ fn build_cases(n: usize, values: &[f64]) -> Result<Vec<Case>, BenchmarkError> {
             bits_per_sample: 32,
         },
         n,
+        false,
     ));
 
-    // ── simple_packing at 16/24/32 bits + each lossless compressor ────────────
+    // ── simple_packing at 16/24/32 bits + each lossless compressor ───────────
     for bits in [16u32, 24, 32] {
         c.push(sp_case(bits, "none", CompressionType::None, n, values)?);
         c.push(sp_case(
@@ -161,7 +158,7 @@ fn build_cases(n: usize, values: &[f64]) -> Result<Vec<Case>, BenchmarkError> {
         )?);
     }
 
-    // ── Lossy floating-point compressors ──────────────────────────────────────
+    // ── Lossy floating-point compressors ─────────────────────────────────────
     for rate in [16.0f64, 24.0, 32.0] {
         c.push(make_case(
             format!("none+zfp(rate={rate})"),
@@ -170,6 +167,7 @@ fn build_cases(n: usize, values: &[f64]) -> Result<Vec<Case>, BenchmarkError> {
                 mode: ZfpMode::FixedRate { rate },
             },
             n,
+            true,
         ));
     }
     c.push(make_case(
@@ -179,117 +177,182 @@ fn build_cases(n: usize, values: &[f64]) -> Result<Vec<Case>, BenchmarkError> {
             error_bound: Sz3ErrorBound::Absolute(0.01),
         },
         n,
+        true,
     ));
 
     Ok(c)
 }
 
-// ── Timing ────────────────────────────────────────────────────────────────────
+// ── Timing ───────────────────────────────────────────────────────────────────
 
-/// Run one benchmark case: warm up, then time `iterations` encode+decode cycles.
-///
-/// Returns a `BenchmarkResult` with median encode/decode times.
 fn run_case(
     case: &Case,
     data_bytes: &[u8],
+    values: &[f64],
     original_bytes: usize,
     iterations: usize,
+    warmup: usize,
 ) -> Result<BenchmarkResult, BenchmarkError> {
-    let map_err = |e: tensogram_encodings::pipeline::PipelineError| -> BenchmarkError {
-        BenchmarkError(e.to_string())
+    // For SP cases, compute_params is included in the encode timing.
+    let build_config = |recompute_params: bool| -> Result<PipelineConfig, BenchmarkError> {
+        if let Some(bits) = case.sp_bits {
+            if recompute_params {
+                let params = compute_params(values, bits, 0)
+                    .map_err(|e| BenchmarkError::Pipeline(format!("sp({bits}) params: {e}")))?;
+                Ok(PipelineConfig {
+                    encoding: EncodingType::SimplePacking(params),
+                    filter: case.config.filter.clone(),
+                    compression: case.config.compression.clone(),
+                    num_values: case.config.num_values,
+                    byte_order: case.config.byte_order,
+                    dtype_byte_width: case.config.dtype_byte_width,
+                })
+            } else {
+                Ok(case.config.clone())
+            }
+        } else {
+            Ok(case.config.clone())
+        }
     };
 
-    // Warm-up iteration (result discarded).
-    let warm = encode_pipeline(data_bytes, &case.config).map_err(map_err)?;
-    drop(decode_pipeline(&warm.encoded_bytes, &case.config).map_err(map_err)?);
+    let use_f64_path = case.sp_bits.is_some();
+
+    for _ in 0..warmup {
+        let config = build_config(true)?;
+        let encoded = if use_f64_path {
+            encode_pipeline_f64(values, &config)?
+        } else {
+            encode_pipeline(data_bytes, &config)?
+        };
+        let _ = decode_pipeline(&encoded.encoded_bytes, &config)?;
+    }
 
     let mut encode_ns = Vec::with_capacity(iterations);
     let mut decode_ns = Vec::with_capacity(iterations);
-    let mut compressed_bytes = warm.encoded_bytes.len();
+    let mut compressed_sizes: Vec<usize> = Vec::with_capacity(iterations);
+    let mut last_decoded: Vec<u8> = Vec::new();
 
     for _ in 0..iterations {
         let t0 = Instant::now();
-        let result = encode_pipeline(data_bytes, &case.config).map_err(map_err)?;
+        let config = build_config(true)?;
+        let result = if use_f64_path {
+            encode_pipeline_f64(values, &config)?
+        } else {
+            encode_pipeline(data_bytes, &config)?
+        };
         encode_ns.push(t0.elapsed().as_nanos() as u64);
 
-        compressed_bytes = result.encoded_bytes.len();
+        compressed_sizes.push(result.encoded_bytes.len());
 
         let t0 = Instant::now();
-        drop(decode_pipeline(&result.encoded_bytes, &case.config).map_err(map_err)?);
+        let decoded = decode_pipeline(&result.encoded_bytes, &config)?;
         decode_ns.push(t0.elapsed().as_nanos() as u64);
+
+        last_decoded = decoded;
     }
+
+    let fidelity = compute_fidelity(data_bytes, &last_decoded, case.is_lossy);
+    if matches!(fidelity, crate::report::Fidelity::Unchecked) {
+        return Err(BenchmarkError::Pipeline(format!(
+            "fidelity could not be computed for '{}' (unexpected decode output length)",
+            case.name
+        )));
+    }
+    if !case.is_lossy && !matches!(fidelity, crate::report::Fidelity::Exact) {
+        return Err(BenchmarkError::Pipeline(format!(
+            "lossless case '{}' did not round-trip exactly: {fidelity:?}",
+            case.name
+        )));
+    }
+
+    let compressed_bytes = compressed_sizes
+        .last()
+        .copied()
+        .expect("iterations validated > 0");
+    let compressed_bytes_varied = compressed_sizes.windows(2).any(|w| w[0] != w[1]);
 
     Ok(BenchmarkResult {
         name: case.name.clone(),
-        encode_ms: ns_to_ms(median_ns(&mut encode_ns)),
-        decode_ms: ns_to_ms(median_ns(&mut decode_ns)),
+        encode: compute_timing_stats(&mut encode_ns),
+        decode: compute_timing_stats(&mut decode_ns),
         compressed_bytes,
         original_bytes,
+        compressed_bytes_varied,
+        fidelity,
     })
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── Public API ───────────────────────────────────────────────────────────────
 
-/// Run all codec matrix benchmarks and return results.
-///
-/// Results are ordered with `none+none` first (the reference row).
-/// Called by the binary entry point and by integration tests.
-///
-/// # Note on `num_points` padding
-/// The actual number of values encoded is rounded up to the next multiple of 4
-/// (by at most 3 values) for szip alignment. The reported sizes and the
-/// `original_bytes` field in each result reflect this padded count.
-pub fn run_codec_matrix_results(
+pub fn run_codec_matrix(
     num_points: usize,
     iterations: usize,
+    warmup: usize,
     seed: u64,
-) -> Result<Vec<BenchmarkResult>, BenchmarkError> {
+) -> Result<BenchmarkRun, BenchmarkError> {
     if num_points == 0 {
-        return Err(BenchmarkError("num_points must be > 0".to_string()));
+        return Err(BenchmarkError::Validation(
+            "num_points must be > 0".to_string(),
+        ));
     }
     if iterations == 0 {
-        return Err(BenchmarkError("iterations must be > 0".to_string()));
+        return Err(BenchmarkError::Validation(
+            "iterations must be > 0".to_string(),
+        ));
+    }
+    if warmup == 0 {
+        return Err(BenchmarkError::Validation("warmup must be > 0".to_string()));
     }
 
-    // Round up to the next multiple of 4 so szip cases work at any bit width.
-    // libaec promotes 24-bit samples to 4-byte containers, requiring the packed
-    // byte count to be a multiple of 4.  Padding by at most 3 values has no
-    // measurable impact on benchmark accuracy at production sizes.
+    // Round up to next multiple of 4 for szip alignment (at most 3 extra values).
     let num_points = num_points.next_multiple_of(4);
 
     eprintln!("Generating {num_points} weather-like float64 values (seed={seed})...");
     let values = generate_weather_field(num_points, seed);
-    // Little-endian bytes (native on x86/ARM64 — matches ZFP/SZ3 expectations).
     let data_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     let original_bytes = data_bytes.len();
 
     let cases = build_cases(num_points, &values)?;
+    let total_cases = cases.len();
     eprintln!(
-        "Running {} cases ({iterations} iterations each)...",
-        cases.len()
+        "Running {total_cases} cases ({warmup} warmup + {iterations} timed iterations each)..."
     );
 
-    let mut results = Vec::with_capacity(cases.len());
+    let mut results = Vec::with_capacity(total_cases);
+    let mut failures = Vec::new();
+
     for (i, case) in cases.iter().enumerate() {
-        eprint!("  [{:2}/{}] {:<35}", i + 1, cases.len(), &case.name);
-        match run_case(case, &data_bytes, original_bytes, iterations) {
+        eprint!("  [{:2}/{}] {:<35}", i + 1, total_cases, &case.name);
+        match run_case(
+            case,
+            &data_bytes,
+            &values,
+            original_bytes,
+            iterations,
+            warmup,
+        ) {
             Ok(r) => {
-                eprintln!(" done ({:.1} ms encode)", r.encode_ms);
+                eprintln!(
+                    " {:.1} ms enc, {:.1} ms dec, {:.1}%",
+                    r.encode.median_ms,
+                    r.decode.median_ms,
+                    r.ratio_pct()
+                );
                 results.push(r);
             }
             Err(e) => {
-                // Report failures without aborting the entire benchmark.
                 eprintln!(" FAILED: {e}");
-                results.push(BenchmarkResult {
-                    name: format!("{} [ERROR]", case.name),
-                    encode_ms: 0.0,
-                    decode_ms: 0.0,
-                    compressed_bytes: 0,
-                    original_bytes,
+                failures.push(CaseFailure {
+                    name: case.name.clone(),
+                    error: e.to_string(),
                 });
             }
         }
     }
 
-    Ok(results)
+    Ok(BenchmarkRun {
+        results,
+        failures,
+        total_cases,
+    })
 }

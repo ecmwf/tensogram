@@ -19,13 +19,30 @@ pub fn aec_compress(
     data: &[u8],
     params: &AecParams,
 ) -> Result<(Vec<u8>, Vec<u64>), CompressionError> {
+    aec_compress_impl(data, params, true)
+}
+
+pub fn aec_compress_no_offsets(
+    data: &[u8],
+    params: &AecParams,
+) -> Result<Vec<u8>, CompressionError> {
+    let (bytes, _) = aec_compress_impl(data, params, false)?;
+    Ok(bytes)
+}
+
+fn aec_compress_impl(
+    data: &[u8],
+    params: &AecParams,
+    track_offsets: bool,
+) -> Result<(Vec<u8>, Vec<u64>), CompressionError> {
     use libaec_sys::*;
 
     if data.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
 
-    let sample_bytes = sample_byte_width(params.bits_per_sample);
+    let flags = effective_flags(params);
+    let sample_bytes = sample_byte_width(params.bits_per_sample, flags);
     if !data.len().is_multiple_of(sample_bytes) {
         return Err(CompressionError::Szip(format!(
             "data length {} is not a multiple of sample byte width {}",
@@ -35,8 +52,8 @@ pub fn aec_compress(
     }
 
     let num_samples = data.len() / sample_bytes;
-    // Worst case: compressed could be slightly larger than input
     let out_capacity = data.len() + data.len() / 4 + 256;
+
     let mut out = vec![0u8; out_capacity];
 
     unsafe {
@@ -48,15 +65,16 @@ pub fn aec_compress(
         strm.bits_per_sample = params.bits_per_sample;
         strm.block_size = params.block_size;
         strm.rsi = params.rsi;
-        strm.flags = params.flags;
+        strm.flags = flags;
 
         check_aec(aec_encode_init(&mut strm), "aec_encode_init")?;
 
-        // Enable RSI offset tracking
-        check_aec(
-            aec_encode_enable_offsets(&mut strm),
-            "aec_encode_enable_offsets",
-        )?;
+        if track_offsets {
+            check_aec(
+                aec_encode_enable_offsets(&mut strm),
+                "aec_encode_enable_offsets",
+            )?;
+        }
 
         let rc = aec_encode(&mut strm, AEC_FLUSH as _);
         if rc != AEC_OK as _ {
@@ -68,40 +86,42 @@ pub fn aec_compress(
 
         let compressed_len = out.len() - strm.avail_out;
 
-        // Retrieve RSI block offsets (bit offsets)
-        let mut offset_count: usize = 0;
-        check_aec_cleanup(
-            aec_encode_count_offsets(&mut strm, &mut offset_count),
-            "aec_encode_count_offsets",
-            || {
-                aec_encode_end(&mut strm);
-            },
-        )?;
-
-        let mut offsets = vec![0usize; offset_count];
-        if offset_count > 0 {
+        let bit_offsets = if track_offsets {
+            let mut offset_count: usize = 0;
             check_aec_cleanup(
-                aec_encode_get_offsets(&mut strm, offsets.as_mut_ptr(), offset_count),
-                "aec_encode_get_offsets",
+                aec_encode_count_offsets(&mut strm, &mut offset_count),
+                "aec_encode_count_offsets",
                 || {
                     aec_encode_end(&mut strm);
                 },
             )?;
-        }
+
+            let mut offsets = vec![0usize; offset_count];
+            if offset_count > 0 {
+                check_aec_cleanup(
+                    aec_encode_get_offsets(&mut strm, offsets.as_mut_ptr(), offset_count),
+                    "aec_encode_get_offsets",
+                    || {
+                        aec_encode_end(&mut strm);
+                    },
+                )?;
+            }
+
+            let bit_offsets: Vec<u64> = offsets.iter().map(|&o| o as u64).collect();
+            let samples_per_rsi = params.rsi as usize * params.block_size as usize;
+            let num_rsi_blocks = num_samples.div_ceil(samples_per_rsi);
+            if bit_offsets.len() > num_rsi_blocks {
+                bit_offsets[..num_rsi_blocks].to_vec()
+            } else {
+                bit_offsets
+            }
+        } else {
+            Vec::new()
+        };
 
         aec_encode_end(&mut strm);
 
         out.truncate(compressed_len);
-        let bit_offsets: Vec<u64> = offsets.iter().map(|&o| o as u64).collect();
-        // Filter out trailing zeros for streams with fewer RSI blocks than reported
-        let samples_per_rsi = params.rsi as usize * params.block_size as usize;
-        let num_rsi_blocks = num_samples.div_ceil(samples_per_rsi);
-        let bit_offsets = if bit_offsets.len() > num_rsi_blocks {
-            bit_offsets[..num_rsi_blocks].to_vec()
-        } else {
-            bit_offsets
-        };
-
         Ok((out, bit_offsets))
     }
 }
@@ -118,6 +138,7 @@ pub fn aec_decompress(
         return Ok(Vec::new());
     }
 
+    let flags = effective_flags(params);
     let mut out = vec![0u8; expected_size];
 
     unsafe {
@@ -129,7 +150,7 @@ pub fn aec_decompress(
         strm.bits_per_sample = params.bits_per_sample;
         strm.block_size = params.block_size;
         strm.rsi = params.rsi;
-        strm.flags = params.flags;
+        strm.flags = flags;
 
         check_aec(aec_decode_init(&mut strm), "aec_decode_init")?;
 
@@ -171,6 +192,7 @@ pub fn aec_decompress_range(
         ));
     }
 
+    let flags = effective_flags(params);
     let mut out = vec![0u8; byte_size];
     let offsets_usize: Vec<usize> = block_offsets.iter().map(|&o| o as usize).collect();
 
@@ -183,7 +205,7 @@ pub fn aec_decompress_range(
         strm.bits_per_sample = params.bits_per_sample;
         strm.block_size = params.block_size;
         strm.rsi = params.rsi;
-        strm.flags = params.flags;
+        strm.flags = flags;
 
         check_aec(aec_decode_init(&mut strm), "aec_decode_init")?;
 
@@ -209,11 +231,19 @@ pub fn aec_decompress_range(
     }
 }
 
-/// Compute the byte width of a sample given bits_per_sample.
-/// 3-byte samples are promoted to 4 bytes (libaec convention).
-fn sample_byte_width(bits_per_sample: u32) -> usize {
+/// Ensure AEC_DATA_3BYTE is set for 17-24 bit samples so libaec reads
+/// 3-byte containers instead of defaulting to 4-byte.
+fn effective_flags(params: &AecParams) -> u32 {
+    let mut flags = params.flags;
+    if params.bits_per_sample > 16 && params.bits_per_sample <= 24 {
+        flags |= libaec_sys::AEC_DATA_3BYTE;
+    }
+    flags
+}
+
+fn sample_byte_width(bits_per_sample: u32, flags: u32) -> usize {
     let nbytes = (bits_per_sample as usize).div_ceil(8);
-    if nbytes == 3 {
+    if nbytes == 3 && flags & libaec_sys::AEC_DATA_3BYTE == 0 {
         4
     } else {
         nbytes
@@ -276,6 +306,22 @@ mod tests {
         let values: Vec<u16> = (0..2048).map(|i| (i * 7 % 65536) as u16).collect();
         let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
         let params = default_params(16);
+
+        let (compressed, offsets) = aec_compress(&data, &params).unwrap();
+        assert!(!compressed.is_empty());
+        assert!(!offsets.is_empty());
+
+        let decompressed = aec_decompress(&compressed, data.len(), &params).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    fn round_trip_u24_data() {
+        // 24-bit samples in 3-byte containers — requires AEC_DATA_3BYTE
+        // (automatically set by effective_flags for bits_per_sample 17-24).
+        let n = 4096;
+        let data: Vec<u8> = (0..n * 3).map(|i| (i % 256) as u8).collect();
+        let params = default_params(24);
 
         let (compressed, offsets) = aec_compress(&data, &params).unwrap();
         assert!(!compressed.is_empty());

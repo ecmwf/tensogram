@@ -152,12 +152,20 @@ fn build_compressor(
             block_size,
             flags,
             bits_per_sample,
-        } => Ok(Some(Box::new(SzipCompressor {
-            rsi: *rsi,
-            block_size: *block_size,
-            flags: *flags,
-            bits_per_sample: *bits_per_sample,
-        }))),
+        } => {
+            let mut szip_flags = *flags;
+            // simple_packing output is MSB-first; tell libaec so its predictor
+            // sees bytes in the correct significance order.
+            if matches!(config.encoding, EncodingType::SimplePacking(_)) {
+                szip_flags |= libaec_sys::AEC_DATA_MSB;
+            }
+            Ok(Some(Box::new(SzipCompressor {
+                rsi: *rsi,
+                block_size: *block_size,
+                flags: szip_flags,
+                bits_per_sample: *bits_per_sample,
+            })))
+        }
         #[cfg(feature = "zstd")]
         CompressionType::Zstd { level } => Ok(Some(Box::new(ZstdCompressor { level: *level }))),
         #[cfg(feature = "lz4")]
@@ -210,6 +218,44 @@ pub fn encode_pipeline(
     };
 
     // Step 3: Compression
+    match build_compressor(&config.compression, config)? {
+        None => Ok(PipelineResult {
+            encoded_bytes: filtered.into_owned(),
+            block_offsets: None,
+        }),
+        Some(compressor) => {
+            let CompressResult {
+                data: compressed,
+                block_offsets,
+            } = compressor.compress(&filtered)?;
+            Ok(PipelineResult {
+                encoded_bytes: compressed,
+                block_offsets,
+            })
+        }
+    }
+}
+
+/// Encode from f64 values directly, avoiding the bytes→f64 conversion overhead
+/// that `encode_pipeline` pays when the caller already has typed values.
+#[tracing::instrument(skip(values, config), fields(num_values = values.len(), encoding = %config.encoding))]
+pub fn encode_pipeline_f64(
+    values: &[f64],
+    config: &PipelineConfig,
+) -> Result<PipelineResult, PipelineError> {
+    let encoded: Cow<'_, [u8]> = match &config.encoding {
+        EncodingType::None => Cow::Owned(f64_to_bytes(values, config.byte_order)),
+        EncodingType::SimplePacking(params) => Cow::Owned(simple_packing::encode(values, params)?),
+    };
+
+    let filtered: Cow<'_, [u8]> = match &config.filter {
+        FilterType::None => encoded,
+        FilterType::Shuffle { element_size } => Cow::Owned(
+            shuffle::shuffle(&encoded, *element_size)
+                .map_err(|e| PipelineError::Shuffle(e.to_string()))?,
+        ),
+    };
+
     match build_compressor(&config.compression, config)? {
         None => Ok(PipelineResult {
             encoded_bytes: filtered.into_owned(),

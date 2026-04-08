@@ -12,17 +12,24 @@
 
 ## tensogram-benchmarks
 
-9 tests (8 smoke + 1 GRIB, gated on `eccodes` feature). Separate workspace crate.
+23 smoke tests + 36 unit tests (+ GRIB tests gated on `eccodes`). Separate workspace crate.
 
-- `datagen.rs` — Deterministic SplitMix64-based synthetic weather field generator
-  (smooth sinusoidal temperature field, base ≈ 280 K, amplitude ≈ 30 K, ±0.1 K noise).
-- `report.rs` — ASCII table formatter with reference-relative comparison columns
-  (`vs Ref Enc`, `vs Ref Dec`, `Ratio %`, `Size KiB`). `median_ns` helper for timing.
-- `codec_matrix.rs` — 24 pipeline combos: baseline + raw f64 + simple_packing × {none,zstd,lz4,blosc2,szip} × {16,24,32 bits} + ZFP (rate 16/24/32) + SZ3 (abs=0.01).
-- `grib_comparison.rs` — ecCodes CCSDS (`grid_ccsds`) vs `grid_simple` vs tensogram `sp(24)+szip`. Feature-gated by `eccodes`. Uses raw C API via `extern "C"` declarations.
-- Two binaries: `codec-matrix` (default) and `grib-comparison` (requires `--features eccodes`).
+- `constants.rs` — Shared `AEC_DATA_PREPROCESS` constant (value 8, fixed from incorrect value 1).
+- `datagen.rs` — Deterministic SplitMix64-based synthetic weather field generator.
+- `report.rs` — `BenchmarkResult` with `TimingStats` (median/min/max), `Fidelity` enum
+  (Exact, Lossy{linf, l1, l2}, Unchecked), throughput (MB/s), compressed-size
+  variability tracking. `compute_fidelity()` compares decoded output to original.
+- `codec_matrix.rs` — 24 pipeline combos. `compute_params` inside the timed encode loop
+  for SP cases. Uses `encode_pipeline_f64` to avoid bytes→f64 round-trip. Configurable
+  warm-up (default 3). Returns `BenchmarkRun` with separate `results` and `failures`.
+- `grib_comparison.rs` — Symmetric end-to-end timing. Uses `encode_pipeline_f64`.
+  Returns `BenchmarkRun`.
+- `lib.rs` — `BenchmarkError` enum (Validation, Pipeline), `CaseFailure`, `BenchmarkRun`
+  with `all_passed()`. Binaries exit non-zero on failures.
+- Two binaries: `codec-matrix` (default 10 iterations, 3 warmup) and `grib-comparison`
+  (requires `--features eccodes`). Both accept `--warmup` flag.
 - `build.rs` — links `libeccodes` via pkg-config or Homebrew fallback when `eccodes` feature is active.
-- Documentation: `docs/src/guide/benchmarks.md`.
+- Documentation: `docs/src/guide/benchmarks.md`, `docs/src/guide/benchmark-results.md`.
 
 ## tensogram-core
 
@@ -48,9 +55,10 @@ Unit, integration, adversarial, and edge-case tests.
 
 47 tests.
 
-- `simple_packing.rs` — GRIB-style lossy quantization, MSB-first bit packing, 0-64 bits, NaN rejection, `decode_range()` for arbitrary bit offsets
+- `simple_packing.rs` — GRIB-style lossy quantization, MSB-first bit packing, 0-64 bits, NaN rejection, `decode_range()` for arbitrary bit offsets. Optimized encode/decode: precomputed scale (no per-value division), specialized byte-aligned loops for 8/16/24/32 bits, fused NaN+min+max scan in `compute_params`.
 - `shuffle.rs` — Byte-level shuffle/unshuffle (HDF5-style)
-- `libaec.rs` — Safe Rust wrapper around libaec: `aec_compress()` with RSI block offset tracking, `aec_decompress()`, `aec_decompress_range()`
+- `libaec.rs` — Safe Rust wrapper around libaec: `aec_compress()` with optional RSI block offset tracking (`aec_compress_no_offsets`), `aec_decompress()`, `aec_decompress_range()`. Auto-sets `AEC_DATA_3BYTE` for 17-24 bit samples (fixes corruption bug). 
+- `pipeline.rs` — `encode_pipeline_f64()` variant for callers with typed f64 data (avoids bytes→f64 conversion). Auto-sets `AEC_DATA_MSB` for szip when encoding is SimplePacking (fixes byte-order mismatch so libaec's predictor sees most-significant bytes first; compression ratio now matches ecCodes at ~27% on 24-bit GRIB data — see `docs/src/guide/benchmark-results.md`).
 - `compression/` — `Compressor` trait + 6 implementations:
   - `szip.rs` — SzipCompressor (CCSDS 121.0-B-3, RSI block random access)
   - `zstd.rs` — ZstdCompressor (Zstandard, stream compressor)
