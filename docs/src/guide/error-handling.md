@@ -111,6 +111,83 @@ split command
   └─ Single-object: pass through; multi-object: split per-object base metadata
 ```
 
+### Converter Operations (convert-grib / convert-netcdf)
+
+Both converter crates (`tensogram-grib`, `tensogram-netcdf`) use typed
+error enums and never panic on invalid or exotic input. Anything the
+converter can't represent cleanly is either surfaced as a typed error
+or skipped with a `warning: …` line on stderr so the operator can see
+what was dropped.
+
+```
+tensogram-netcdf errors (crates/tensogram-netcdf/src/error.rs)
+  │
+  ├─ NetcdfError::Netcdf(netcdf::Error)
+  │     Low-level failure from libnetcdf — file missing, permission
+  │     denied, format error, truncated file, HDF5 error.
+  │
+  ├─ NetcdfError::NoVariables
+  │     Input file has zero supported numeric variables after skipping
+  │     char/string/compound/vlen. Empty files also hit this.
+  │
+  ├─ NetcdfError::NoUnlimitedDimension { file }
+  │     --split-by=record requested but the file has no unlimited
+  │     dimension. Contains the file path for diagnostics.
+  │
+  ├─ NetcdfError::UnsupportedType { name, reason }
+  │     Variable has a type we can't represent (e.g. compound,
+  │     enum, opaque, vlen). Currently only the char / string
+  │     variants hit this path — the other complex types are
+  │     downgraded to a stderr warning and skipped because they
+  │     frequently coexist with valid numeric variables.
+  │
+  ├─ NetcdfError::InvalidData(String)
+  │     Catch-all for:
+  │       - low-level read errors on a specific variable
+  │       - unknown --encoding / --filter / --compression names
+  │       - simple_packing compute_params failures on edge-case data
+  │       - extract_variable_record invariant violations (should be
+  │         unreachable; if it fires the converter is buggy)
+  │
+  ├─ NetcdfError::Encode(String)
+  │     tensogram-core rejected the pipeline. Common cause:
+  │     szip on raw f64 (bits_per_sample=64 exceeds libaec's
+  │     32-bit cap). Fix: add --filter shuffle or --encoding
+  │     simple_packing first.
+  │
+  └─ NetcdfError::Io(std::io::Error)
+        Reserved for future use — the current converter reads
+        through libnetcdf and writes through the CLI wrapper, so
+        stdlib I/O errors don't currently reach this variant.
+```
+
+Soft warnings (stderr, exit 0):
+
+```
+warning: {file}: sub-groups found; only root-group variables are converted
+warning: skipping variable '{name}': Char variables are not supported
+warning: skipping variable '{name}': complex type Compound(_) is not supported
+warning: skipping simple_packing for variable '{name}' (Float32 is not float64)
+warning: skipping simple_packing for variable '{name}': NaN value encountered at index N
+warning: variable '{name}': failed to read attribute '{attr}': {cause}
+warning: failed to read global attribute '{name}': {cause}
+```
+
+The last two are rare — they only fire on corrupt attribute values
+or unsupported upstream AttributeValue variants — but they surface
+instead of dropping data silently so operators can trace unexpected
+missing metadata.
+
+```
+tensogram-grib errors (crates/tensogram-grib/src/error.rs)
+  │
+  ├─ GribError::Eccodes(String) — ecCodes C library error
+  ├─ GribError::NoMessages — empty GRIB file
+  ├─ GribError::MissingKey — required MARS key absent
+  ├─ GribError::InvalidShape — grid dimension mismatch
+  └─ GribError::Encode — tensogram-core encode failure
+```
+
 ## Language-Specific Patterns
 
 ### Rust
@@ -234,6 +311,42 @@ extreme scale factors — filter them before packing.
 
 `TensogramFile.open()` raises **OSError** (Python), **io\_error** (C++),
 or returns `TGM_ERROR_IO` (C) for any file system failure.
+
+### NetCDF Converter — `--split-by=record` on Files Without Unlimited Dim
+
+`tensogram convert-netcdf --split-by record foo.nc` where `foo.nc` has
+no unlimited dimension hard-errors with
+`NetcdfError::NoUnlimitedDimension { file }` (exit code 1). The error
+message includes the path so the caller can identify which file in a
+multi-input batch triggered it.
+
+### NetCDF Converter — `simple_packing` on Mixed-dtype Files
+
+`--encoding simple_packing` is f64-only by design. Mixed files (a
+typical CF temperature file has `f32` lat/lon coordinates alongside
+`f64` data) are handled gracefully: non-f64 variables emit a stderr
+warning and pass through with `encoding="none"`, and the conversion
+overall succeeds. The same fallback fires when a specific f64
+variable contains NaN values (common with unpacked fill values) —
+`simple_packing::compute_params` rejects NaN, so that variable
+falls back to `encoding="none"` with a warning.
+
+### NetCDF Converter — Unknown Codec Name
+
+`--encoding foo`, `--filter bar`, `--compression baz` all hard-error
+with `NetcdfError::InvalidData` listing the expected values. The
+pre-validation fires inside `apply_pipeline` so the error surfaces
+immediately, before any data is read from disk.
+
+### NetCDF Converter — szip on Raw f64
+
+libaec szip caps at 32 bits per sample, but raw `f64` gives
+`bits_per_sample = 64`, so `--compression szip` on unencoded f64
+produces a low-level `aec_encode_init failed` error from
+`tensogram-core` wrapped in `NetcdfError::Encode`. Fix:
+
+- Combine with `--encoding simple_packing --bits N` (N ≤ 32), or
+- Combine with `--filter shuffle` (which makes the element size 8 bits).
 
 ### Unknown Hash Algorithm (Forward Compatibility)
 

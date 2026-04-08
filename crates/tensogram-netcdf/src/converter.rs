@@ -336,12 +336,20 @@ fn get_f64_attr(var: &netcdf::Variable<'_>, name: &str) -> Option<f64> {
     }
 }
 
+/// Extract every file-level (global) attribute as a CBOR map.
+///
+/// Mirrors [`metadata::extract_var_attrs`]: unreadable attributes
+/// produce a stderr warning rather than silently disappearing.
 fn extract_global_attrs(file: &netcdf::File) -> BTreeMap<String, CborValue> {
     let mut map = BTreeMap::new();
     for attr in file.attributes() {
-        if let Ok(val) = attr.value() {
-            if let Some(cbor) = attr_value_to_cbor(&val) {
-                map.insert(attr.name().to_string(), cbor);
+        let name = attr.name();
+        match attr.value() {
+            Ok(val) => {
+                map.insert(name.to_string(), attr_value_to_cbor(&val));
+            }
+            Err(e) => {
+                eprintln!("warning: failed to read global attribute '{name}': {e}");
             }
         }
     }
