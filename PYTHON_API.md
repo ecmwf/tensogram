@@ -10,12 +10,14 @@
 | **`Metadata`** | Global message metadata | `.version`, `.base`, `.reserved`, `.extra`, `[key]` |
 | **`DataObjectDescriptor`** | Tensor descriptor (shape, dtype, encoding) | `.shape`, `.dtype`, `.encoding`, `.params`, `.compression` |
 | **`TensogramFile`** | File I/O API | `.open()`, `.create()`, `.append()`, `.decode_message()` |
+| **`StreamingEncoder`** | Progressive encode to file | `.write_object()`, `.write_object_pre_encoded()`, `.finish()` |
 
 ### Module Functions
 
 | Function | Signature | Returns |
 |----------|-----------|---------|
 | **`encode`** | `encode(meta, descriptors_and_data, hash="xxh3")` | `bytes` |
+| **`encode_pre_encoded`** | `encode_pre_encoded(meta, descriptors_and_data, hash="xxh3")` | `bytes` |
 | **`decode`** | `decode(buf, verify_hash=False)` | `Message` |
 | **`decode_metadata`** | `decode_metadata(buf)` | `Metadata` |
 | **`decode_object`** | `decode_object(buf, index, verify_hash=False)` | `(Metadata, DataObjectDescriptor, array)` |

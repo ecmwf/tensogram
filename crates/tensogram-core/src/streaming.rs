@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 use crate::encode::{
-    build_pipeline_config, populate_base_entries, populate_reserved_provenance, validate_object,
+    build_pipeline_config, populate_base_entries, populate_reserved_provenance,
+    validate_no_szip_offsets_for_non_szip, validate_object, validate_szip_block_offsets,
     EncodeOptions,
 };
 use crate::error::{Result, TensogramError};
@@ -123,12 +124,13 @@ impl<W: Write> StreamingEncoder<W> {
     ///
     /// The `metadata` map becomes `base[0]` in a `GlobalMetadata` CBOR
     /// wrapper.  Must be followed by exactly one
-    /// [`write_object`](Self::write_object) call before another
-    /// `write_preceder` or [`finish`](Self::finish).
+    /// [`write_object`](Self::write_object) or
+    /// [`write_object_pre_encoded`](Self::write_object_pre_encoded) call
+    /// before another `write_preceder` or [`finish`](Self::finish).
     pub fn write_preceder(&mut self, metadata: BTreeMap<String, ciborium::Value>) -> Result<()> {
         if self.pending_preceder {
             return Err(TensogramError::Framing(
-                "write_preceder called twice without an intervening write_object".to_string(),
+                "write_preceder called twice without an intervening write_object/write_object_pre_encoded".to_string(),
             ));
         }
 
@@ -194,9 +196,67 @@ impl<W: Write> StreamingEncoder<W> {
             );
         }
 
+        self.write_object_inner(final_desc, &result.encoded_bytes)
+    }
+
+    /// Write a pre-encoded data object frame directly.
+    ///
+    /// Unlike [`write_object`](Self::write_object), this method does **not**
+    /// run the encoding pipeline — `pre_encoded_bytes` are written to the
+    /// stream as-is.  The descriptor must accurately describe the encoding
+    /// that was already applied (encoding, filter, compression, params) so
+    /// that decoders can reconstruct the original payload.
+    ///
+    /// This method participates in the same preceder consumption logic as
+    /// [`write_object`](Self::write_object) and can be freely intermixed
+    /// with it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the descriptor is invalid or the frame cannot be
+    /// written to the underlying writer.
+    #[tracing::instrument(skip(self, descriptor, pre_encoded_bytes))]
+    pub fn write_object_pre_encoded(
+        &mut self,
+        descriptor: &DataObjectDescriptor,
+        pre_encoded_bytes: &[u8],
+    ) -> Result<()> {
+        validate_object(descriptor, pre_encoded_bytes.len())?;
+
+        let shape_product = descriptor
+            .shape
+            .iter()
+            .try_fold(1u64, |acc, &x| acc.checked_mul(x))
+            .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
+        let num_elements = usize::try_from(shape_product)
+            .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
+
+        // Validate descriptor pipeline configuration without encoding.
+        build_pipeline_config(descriptor, num_elements, descriptor.dtype)?;
+
+        // Validate szip metadata — same checks as buffered encode_pre_encoded.
+        validate_no_szip_offsets_for_non_szip(descriptor)?;
+        if descriptor.compression == "szip" && descriptor.params.contains_key("szip_block_offsets")
+        {
+            validate_szip_block_offsets(&descriptor.params, pre_encoded_bytes.len())?;
+        }
+
+        self.write_object_inner(descriptor.clone(), pre_encoded_bytes)
+    }
+
+    /// Shared inner implementation for both [`write_object`](Self::write_object) and
+    /// [`write_object_pre_encoded`](Self::write_object_pre_encoded).
+    ///
+    /// Computes the hash, builds the data object frame, updates all bookkeeping,
+    /// consumes any pending preceder, and writes the frame to the stream.
+    fn write_object_inner(
+        &mut self,
+        mut final_desc: DataObjectDescriptor,
+        encoded_bytes: &[u8],
+    ) -> Result<()> {
         // Compute hash
         let hash_entry = if let Some(algorithm) = self.hash_algorithm {
-            let hash_value = compute_hash(&result.encoded_bytes, algorithm);
+            let hash_value = compute_hash(encoded_bytes, algorithm);
             let hash_type = algorithm.as_str().to_string();
             let entry = Some((hash_type.clone(), hash_value.clone()));
             final_desc.hash = Some(HashDescriptor {
@@ -210,11 +270,11 @@ impl<W: Write> StreamingEncoder<W> {
 
         // Build the data object frame bytes
         let frame_bytes =
-            crate::framing::encode_data_object_frame(&final_desc, &result.encoded_bytes, false)?;
+            crate::framing::encode_data_object_frame(&final_desc, encoded_bytes, false)?;
 
         // Record offset before writing
         self.object_offsets.push(self.bytes_written);
-        self.object_lengths.push(result.encoded_bytes.len() as u64);
+        self.object_lengths.push(encoded_bytes.len() as u64);
         self.hash_entries.push(hash_entry);
         // Retain only the descriptor for footer metadata population.
         // The encoded payload has already been written to the stream;
@@ -249,7 +309,7 @@ impl<W: Write> StreamingEncoder<W> {
     pub fn finish(mut self) -> Result<W> {
         if self.pending_preceder {
             return Err(TensogramError::Framing(
-                "dangling PrecederMetadata: finish called without a following write_object"
+                "dangling PrecederMetadata: finish called without a following write_object/write_object_pre_encoded"
                     .to_string(),
             ));
         }
@@ -939,6 +999,74 @@ mod tests {
                 "rogue key from preceder's _reserved_ should have been stripped"
             );
         }
+    }
+
+    // ── write_object_pre_encoded tests ───────────────────────────────────
+
+    #[test]
+    fn test_streaming_mixed_mode_pre_encoded() {
+        // write_object (raw), write_object_pre_encoded, write_object (raw) — decode all 3.
+        let meta = GlobalMetadata::default();
+
+        let desc0 = make_descriptor(vec![4]);
+        let desc2 = make_descriptor(vec![6]);
+        // Pre-encoded object: encoding="none" so pre-encoded bytes == raw bytes.
+        let desc1 = make_descriptor(vec![5]);
+
+        let data0 = vec![1u8; 4 * 4];
+        let pre_encoded1 = vec![2u8; 5 * 4]; // treated as already-encoded
+        let data2 = vec![3u8; 6 * 4];
+
+        let buf = Vec::new();
+        let mut enc = StreamingEncoder::new(buf, &meta, &EncodeOptions::default()).unwrap();
+        enc.write_object(&desc0, &data0).unwrap();
+        enc.write_object_pre_encoded(&desc1, &pre_encoded1).unwrap();
+        enc.write_object(&desc2, &data2).unwrap();
+        assert_eq!(enc.object_count(), 3);
+        let result = enc.finish().unwrap();
+
+        let (_, objects) = decode(&result, &DecodeOptions::default()).unwrap();
+        assert_eq!(objects.len(), 3);
+        // Don't compare raw message bytes (provenance is non-deterministic).
+        // Compare decoded payloads.
+        assert_eq!(objects[0].1, data0, "object 0 payload mismatch");
+        assert_eq!(objects[1].1, pre_encoded1, "object 1 payload mismatch");
+        assert_eq!(objects[2].1, data2, "object 2 payload mismatch");
+    }
+
+    #[test]
+    fn test_streaming_preceder_then_pre_encoded() {
+        // write_preceder followed by write_object_pre_encoded — preceder metadata
+        // should appear in base[0] after decode.
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4]);
+        let pre_encoded = vec![42u8; 4 * 4];
+
+        let mut prec = BTreeMap::new();
+        prec.insert(
+            "mars".to_string(),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("param".to_string()),
+                ciborium::Value::Text("2t".to_string()),
+            )]),
+        );
+
+        let buf = Vec::new();
+        let mut enc = StreamingEncoder::new(buf, &meta, &EncodeOptions::default()).unwrap();
+        enc.write_preceder(prec).unwrap();
+        enc.write_object_pre_encoded(&desc, &pre_encoded).unwrap();
+        let result = enc.finish().unwrap();
+
+        let (decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
+        assert_eq!(objects.len(), 1);
+        // Payload must round-trip correctly.
+        assert_eq!(objects[0].1, pre_encoded, "pre-encoded payload mismatch");
+        // Preceder mars key should be in base[0].
+        let mars = decoded_meta.base[0].get("mars");
+        assert!(
+            mars.is_some(),
+            "mars key from preceder should be in base[0]"
+        );
     }
 
     #[test]

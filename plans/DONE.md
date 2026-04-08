@@ -7,7 +7,7 @@
 
 - **Version:** 0.6.0
 - **Workspace:** 6 default crates + 2 optional (Python, GRIB) + 2 separate packages (xarray, zarr)
-- **Tests:** 1008 total (283 Rust + 226 Python + 181 xarray + 204 Zarr + 105 C++ + 7 GRIB new + 2 streamer)
+- **Tests:** 1008+ total (283+ Rust + 245 Python + 181 xarray + 204 Zarr + 117 C++ + 7 GRIB new + 2 streamer)
 - **Quality:** 0 clippy warnings, 90.5% Rust line coverage
 
 ## tensogram-benchmarks
@@ -35,6 +35,8 @@ Unit, integration, adversarial, and edge-case tests.
 - `dtype.rs` — All 15 dtypes (float16/32/64, bfloat16, complex64/128, int/uint 8-64, bitmask)
 - `hash.rs` — xxh3 hashing + verification (xxh3 only)
 - `encode.rs` — Full encode pipeline: validate → build pipeline config → encode per object → hash → assemble frames. Auto-populates `base[i]._reserved_.tensor` entries. Validates that client code does not write to `_reserved_`.
+  - `encode_pre_encoded()` — Bypass the encoding pipeline for already-encoded payloads. Accepts pre-packed bytes with a descriptor declaring encoding/filter/compression. Validates object structure (shape, dtype, szip block offsets) but skips the pipeline. Available across all bindings: Rust, Python, C FFI, C++.
+  - `StreamingEncoder::write_object_pre_encoded()` — Streaming variant for progressive encode of pre-encoded objects.
 - `decode.rs` — `decode()`, `decode_metadata()`, `decode_object()`, `decode_range()` (split results by default, `join` parameter)
 - `file.rs` — `TensogramFile`: open, create, lazy scan, append, seek-based random access
 - `iter.rs` — `MessageIter` (zero-copy buffer), `ObjectIter` (lazy per-object decode), `FileMessageIter` (seek-based file), `objects_metadata()` (descriptor-only)
@@ -79,17 +81,19 @@ Tested indirectly via C++ wrapper (105 tests).
 - Error codes: `TGM_ERROR_OK` through `TGM_ERROR_END_OF_ITER`
 - Thread-local error messages via `tgm_last_error()`
 - Iterator API: `tgm_buffer_iter_*`, `tgm_file_iter_*`, `tgm_object_iter_*`
-- Streaming encoder: `tgm_streaming_encoder_create/write/write_preceder/count/finish/free`
+- Streaming encoder: `tgm_streaming_encoder_create/write/write_preceder/write_pre_encoded/count/finish/free`
 - Auto-generated `tensogram.h` (~544 lines) via cbindgen
 - Panic safety: `panic = "abort"` in both release and dev profiles
 - Vec capacity UB fixed (shrink_to_fit before forget), null pointer validation
 
 ## C++ Wrapper
 
-105 GoogleTest tests across 10 files.
+117 GoogleTest tests across 11 files.
 
 - `include/tensogram.hpp` — single-header C++17 wrapper (~934 lines)
 - RAII classes: `message`, `metadata`, `file`, `buffer_iterator`, `file_iterator`, `object_iterator`, `streaming_encoder`
+- `encode_pre_encoded()` — free function for already-encoded payloads
+- `streaming_encoder::write_object_pre_encoded()` — streaming variant
 - Typed exception hierarchy: `error` → `framing_error`, `metadata_error`, etc.
 - `decoded_object` view with `data_as<T>()`, `element_count<T>()`
 - Range-based for via `message::iterator`
@@ -102,6 +106,8 @@ Tested indirectly via C++ wrapper (105 tests).
 
 - Full Python API with NumPy integration
 - `encode()`, `decode()`, `decode_metadata()`, `decode_object()`, `decode_range()`, `scan()`
+- `encode_pre_encoded()` — bypass pipeline for already-encoded payloads (bytes input, not numpy arrays)
+- `StreamingEncoder` — progressive encode to file with `write_object()` and `write_object_pre_encoded()`
 - `iter_messages()` — iterate decoded messages from a byte buffer
 - `Message` namedtuple — `.metadata` and `.objects` attribute access, tuple unpacking
 - `TensogramFile` with context manager, `len()`, iterator
@@ -137,14 +143,14 @@ Tested indirectly via C++ wrapper (105 tests).
 
 ## Examples
 
-### Rust (11 runnable, workspace member)
-01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 shuffle_filter, 05 multi_object, 06 hash_verification, 07 scan_buffer, 08 decode_variants, 09 file_api, 10 iterators, 11 streaming
+### Rust (12 runnable, workspace member)
+01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 shuffle_filter, 05 multi_object, 06 hash_verification, 07 scan_buffer, 08 decode_variants, 09 file_api, 10 iterators, 11 streaming, 11 encode_pre_encoded
 
-### C++ (5 examples, C++ wrapper API)
-01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 file_api, 05 iterators
+### C++ (6 examples, C++ wrapper API)
+01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 file_api, 05 iterators, 11 encode_pre_encoded
 
-### Python (11 examples)
-01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 multi_object, 05 file_api, 06 hash_and_errors, 07 iterators, 08 xarray_integration, 08 zarr_backend, 09 dask_distributed, 09 streaming_consumer
+### Python (12 examples)
+01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 multi_object, 05 file_api, 06 hash_and_errors, 07 iterators, 08 xarray_integration, 08 zarr_backend, 09 dask_distributed, 09 streaming_consumer, 11 encode_pre_encoded
 
 ## Documentation (mdbook)
 

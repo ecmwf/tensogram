@@ -12,6 +12,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Auto-populated tensor metadata (ndim/shape/strides/dtype) now lives under `base[i]["_reserved_"]["tensor"]`
 
 ### Added
+- `encode_pre_encoded()` API for advanced callers (e.g., GPU pipelines) across Rust, Python, C FFI, and C++ — bypasses the encoding pipeline for already-encoded payloads
+- `StreamingEncoder::write_object_pre_encoded()` for streaming pre-encoded objects
 - `compute_common()` utility for extracting shared keys from `base` entries in software
 - Encoder validates that client code does not write to `_reserved_` at any level
 - Preceder Metadata Frames (type 8) for streaming per-object metadata

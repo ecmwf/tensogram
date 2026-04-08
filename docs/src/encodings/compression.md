@@ -40,7 +40,7 @@ pub trait Compressor {
 
 Szip implements CCSDS 121.0-B-3, a lossless compressor designed for scientific data. It works on integer data and exploits the block structure of packed values.
 
-**Random access**: Szip records RSI (Reference Sample Interval) block boundaries during encoding. These offsets are stored in metadata as `szip_block_offsets`, enabling seek-to-block partial decode via `decompress_range`.
+**Random access**: Szip records RSI (Reference Sample Interval) block boundaries during encoding. These offsets are stored in metadata as `szip_block_offsets`, enabling seek-to-block partial decode via `decompress_range`. When using `encode_pre_encoded`, the caller must provide these bit-precise block offsets themselves to enable random access (see [Pre-encoded Payloads](../guide/encode-pre-encoded.md)).
 
 | Parameter | Type | Description |
 |---|---|---|

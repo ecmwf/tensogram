@@ -36,7 +36,7 @@ flowchart TD
     style Decode fill:#fce4ec,stroke:#c62828,color:#c62828
 ```
 
-Each stage is **independently configurable per object** via fields in the `DataObjectDescriptor`. Set a stage to `"none"` to skip it.
+Each stage is **independently configurable per object** via fields in the `DataObjectDescriptor`. Set a stage to `"none"` to skip it. For callers with already-encoded payloads, a pipeline-bypass option exists via `encode_pre_encoded` (see [Pre-encoded Payloads](../guide/encode-pre-encoded.md)).
 
 ## Stage 1: Encoding
 

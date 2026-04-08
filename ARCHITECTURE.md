@@ -75,6 +75,7 @@ src/
 ├── types.rs      GlobalMetadata, DataObjectDescriptor, IndexFrame, HashFrame
 ├── dtype.rs      15 data types (float16..complex128, bitmask)
 ├── encode.rs     Full encode pipeline: validate, build config, encode per object, hash, assemble
+│                 encode_pre_encoded: bypass pipeline for already-encoded payloads
 ├── decode.rs     decode, decode_metadata, decode_object, decode_range
 ├── file.rs       TensogramFile: open, create, append, scan, mmap, async variants
 ├── iter.rs       MessageIter (zero-copy), ObjectIter (lazy decode), FileMessageIter (seek-based)
