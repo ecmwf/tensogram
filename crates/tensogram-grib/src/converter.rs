@@ -4,36 +4,12 @@ use std::path::Path;
 use ciborium::Value as CborValue;
 use eccodes::{CodesFile, FallibleIterator, KeyRead, ProductKind};
 
+use tensogram_core::pipeline::apply_pipeline;
 use tensogram_core::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
-use tensogram_core::{encode, Dtype, EncodeOptions};
-use tensogram_encodings::simple_packing;
+use tensogram_core::{encode, DataPipeline, Dtype, EncodeOptions};
 
 use crate::error::GribError;
 use crate::metadata::{extract_all_namespace_keys, extract_mars_keys, GribKeySet};
-
-/// Encoding/filter/compression configuration for data objects.
-///
-/// Defaults to all "none" — the same behaviour as before this field was added.
-#[derive(Debug, Clone)]
-pub struct DataPipeline {
-    pub encoding: String,
-    pub bits: Option<u32>,
-    pub filter: String,
-    pub compression: String,
-    pub compression_level: Option<i32>,
-}
-
-impl Default for DataPipeline {
-    fn default() -> Self {
-        Self {
-            encoding: "none".to_string(),
-            bits: None,
-            filter: "none".to_string(),
-            compression: "none".to_string(),
-            compression_level: None,
-        }
-    }
-}
 
 /// Options for GRIB → Tensogram conversion.
 #[derive(Debug, Clone)]
@@ -260,14 +236,13 @@ fn nested_btree_to_cbor_map(map: &BTreeMap<String, BTreeMap<String, CborValue>>)
     )
 }
 
-/// Build a DataObjectDescriptor + raw f64 bytes from GRIB values, applying the
-/// configured encoding/filter/compression pipeline.
+/// Build a `DataObjectDescriptor` + raw f64 bytes from GRIB values,
+/// applying the configured encoding/filter/compression pipeline via the
+/// shared [`tensogram_core::pipeline::apply_pipeline`] helper.
 ///
-/// Byte order is little-endian: ecCodes returns native f64 values which we
-/// serialize as LE bytes. The descriptor records this so decoders know.
-///
-/// `params` carries any pipeline-specific parameters (simple_packing coefficients,
-/// zstd level, etc.); MARS keys are in `GlobalMetadata.base[i]["mars"]`.
+/// Byte order is little-endian: ecCodes returns native f64 values which
+/// we serialize as LE bytes. MARS keys are carried in
+/// `GlobalMetadata.base[i]["mars"]`, not in the descriptor params.
 fn build_data_object(
     values: &[f64],
     shape: &[u64],
@@ -296,125 +271,11 @@ fn build_data_object(
         hash: None,
     };
 
-    apply_pipeline(&mut desc, values, pipeline)?;
+    // GRIB data is always float64, so pass `Some(values)` — simple_packing
+    // is always applicable if the user requests it.
+    apply_pipeline(&mut desc, Some(values), pipeline, "GRIB message")
+        .map_err(GribError::InvalidData)?;
 
     let data_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     Ok((desc, data_bytes))
-}
-
-/// Apply the configured encoding/filter/compression pipeline to a GRIB descriptor.
-///
-/// GRIB data is always `Vec<f64>` so `simple_packing` is always applicable.
-/// NaN values (unusual in GRIB but possible) cause `simple_packing` to fall
-/// back to `encoding="none"` with a warning rather than aborting.
-fn apply_pipeline(
-    desc: &mut DataObjectDescriptor,
-    values: &[f64],
-    pipeline: &DataPipeline,
-) -> Result<(), GribError> {
-    // ── Encoding stage ─────────────────────────────────────────────────
-    let mut applied_simple_packing = false;
-    match pipeline.encoding.as_str() {
-        "none" => {}
-        "simple_packing" => {
-            let bits = pipeline.bits.unwrap_or(16);
-            match simple_packing::compute_params(values, bits, 0) {
-                Ok(params) => {
-                    desc.encoding = "simple_packing".to_string();
-                    desc.params.insert(
-                        "reference_value".to_string(),
-                        CborValue::Float(params.reference_value),
-                    );
-                    desc.params.insert(
-                        "binary_scale_factor".to_string(),
-                        CborValue::Integer((params.binary_scale_factor as i64).into()),
-                    );
-                    desc.params.insert(
-                        "decimal_scale_factor".to_string(),
-                        CborValue::Integer((params.decimal_scale_factor as i64).into()),
-                    );
-                    desc.params.insert(
-                        "bits_per_value".to_string(),
-                        CborValue::Integer((params.bits_per_value as i64).into()),
-                    );
-                    applied_simple_packing = true;
-                }
-                Err(e) => {
-                    eprintln!("warning: skipping simple_packing for GRIB message: {e}");
-                }
-            }
-        }
-        other => {
-            return Err(GribError::InvalidData(format!(
-                "unknown encoding '{other}'; expected 'none' or 'simple_packing'"
-            )));
-        }
-    }
-
-    // ── Filter stage ──────────────────────────────────────────────────
-    match pipeline.filter.as_str() {
-        "none" => {}
-        "shuffle" => {
-            desc.filter = "shuffle".to_string();
-            let element_size = if applied_simple_packing {
-                let bpv = pipeline.bits.unwrap_or(16) as usize;
-                bpv.div_ceil(8).max(1)
-            } else {
-                8 // f64 = 8 bytes
-            };
-            desc.params.insert(
-                "shuffle_element_size".to_string(),
-                CborValue::Integer((element_size as i64).into()),
-            );
-        }
-        other => {
-            return Err(GribError::InvalidData(format!(
-                "unknown filter '{other}'; expected 'none' or 'shuffle'"
-            )));
-        }
-    }
-
-    // ── Compression stage ──────────────────────────────────────────────
-    match pipeline.compression.as_str() {
-        "none" => {}
-        "zstd" => {
-            desc.compression = "zstd".to_string();
-            let level = pipeline.compression_level.unwrap_or(3);
-            desc.params.insert(
-                "zstd_level".to_string(),
-                CborValue::Integer((level as i64).into()),
-            );
-        }
-        "lz4" => {
-            desc.compression = "lz4".to_string();
-        }
-        "blosc2" => {
-            desc.compression = "blosc2".to_string();
-            let clevel = pipeline.compression_level.unwrap_or(5);
-            desc.params.insert(
-                "blosc2_clevel".to_string(),
-                CborValue::Integer((clevel as i64).into()),
-            );
-            desc.params.insert(
-                "blosc2_codec".to_string(),
-                CborValue::Text("lz4".to_string()),
-            );
-        }
-        "szip" => {
-            desc.compression = "szip".to_string();
-            desc.params
-                .insert("szip_rsi".to_string(), CborValue::Integer(128.into()));
-            desc.params
-                .insert("szip_block_size".to_string(), CborValue::Integer(16.into()));
-            desc.params
-                .insert("szip_flags".to_string(), CborValue::Integer(8.into()));
-        }
-        other => {
-            return Err(GribError::InvalidData(format!(
-                "unknown compression '{other}'; expected one of: none, zstd, lz4, blosc2, szip"
-            )));
-        }
-    }
-
-    Ok(())
 }

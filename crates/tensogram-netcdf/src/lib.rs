@@ -26,5 +26,10 @@ pub mod converter;
 pub mod error;
 pub mod metadata;
 
-pub use converter::{convert_netcdf_file, ConvertOptions, DataPipeline, SplitBy};
+pub use converter::{convert_netcdf_file, ConvertOptions, SplitBy};
 pub use error::NetcdfError;
+// `DataPipeline` lives in `tensogram-core::pipeline` — both GRIB and
+// NetCDF converters share the same type so they cannot drift. Re-export
+// it here so existing `use tensogram_netcdf::DataPipeline` callers keep
+// compiling.
+pub use tensogram_core::DataPipeline;

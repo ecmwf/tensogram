@@ -262,6 +262,12 @@ let messages = convert_netcdf_file(Path::new("forecast.nc"), &options)?;
 // messages: Vec<Vec<u8>> — each element is a complete wire-format message
 ```
 
+**Note:** `DataPipeline` is defined in `tensogram_core::pipeline` and
+re-exported from both `tensogram_netcdf` and `tensogram_grib`. The
+underlying `apply_pipeline` helper is the same for both converters,
+guaranteeing that `convert-grib` and `convert-netcdf` produce
+byte-identical descriptor fields for equivalent flag combinations.
+
 ## See also
 
 - [GRIB Conversion](../grib/overview.md) — sister converter with the same

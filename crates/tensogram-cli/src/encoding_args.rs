@@ -3,10 +3,20 @@ use clap::Args;
 /// Encoding/filter/compression flags shared by all converter commands.
 ///
 /// Use `#[command(flatten)]` to embed these in a converter's argument struct.
+///
+/// Every flag that accepts a fixed set of values uses clap's
+/// `PossibleValuesParser` so invalid values fail at argument-parse time
+/// with a helpful "did you mean?" suggestion, rather than propagating
+/// into the converter as an `InvalidData` error at run time.
 #[derive(Debug, Clone, Args)]
 pub struct PipelineArgs {
     /// Encoding to apply before storage: none (default) or simple_packing.
-    #[arg(long, default_value = "none", value_name = "ENC")]
+    #[arg(
+        long,
+        default_value = "none",
+        value_name = "ENC",
+        value_parser = clap::builder::PossibleValuesParser::new(["none", "simple_packing"])
+    )]
     pub encoding: String,
 
     /// Bits per value for simple_packing encoding (default: 16 when omitted).
@@ -14,7 +24,12 @@ pub struct PipelineArgs {
     pub bits: Option<u32>,
 
     /// Byte-shuffle filter: none (default) or shuffle.
-    #[arg(long, default_value = "none", value_name = "FILTER")]
+    #[arg(
+        long,
+        default_value = "none",
+        value_name = "FILTER",
+        value_parser = clap::builder::PossibleValuesParser::new(["none", "shuffle"])
+    )]
     pub filter: String,
 
     /// Compression codec: none (default), szip, zstd, lz4, or blosc2.
