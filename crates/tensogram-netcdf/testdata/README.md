@@ -14,8 +14,8 @@ python verify.py             # should print "All fixtures verified."
 ```
 
 Pinned dependency versions used to generate the committed fixtures:
-- netCDF4 1.7.4
-- numpy 2.4.4
+- netCDF4 1.7.1
+- numpy 1.26.4
 
 **CI does NOT run `generate.py`.** The `.nc` files are binary artifacts committed to the repo.
 

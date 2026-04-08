@@ -9,7 +9,7 @@ pub struct PipelineArgs {
     #[arg(long, default_value = "none", value_name = "ENC")]
     pub encoding: String,
 
-    /// Bits per value for simple_packing encoding (default: auto-compute from data range).
+    /// Bits per value for simple_packing encoding (default: 16 when omitted).
     #[arg(long, value_name = "N")]
     pub bits: Option<u32>,
 
@@ -17,9 +17,20 @@ pub struct PipelineArgs {
     #[arg(long, default_value = "none", value_name = "FILTER")]
     pub filter: String,
 
-    /// Compression codec: none (default), szip, zstd, lz4, blosc2, zfp, sz3.
+    /// Compression codec: none (default), szip, zstd, lz4, or blosc2.
     /// Codec must be compiled in; otherwise an error is returned at conversion time.
-    #[arg(long, default_value = "none", value_name = "CODEC")]
+    #[arg(
+        long,
+        default_value = "none",
+        value_name = "CODEC",
+        value_parser = clap::builder::PossibleValuesParser::new([
+            "none",
+            "szip",
+            "zstd",
+            "lz4",
+            "blosc2",
+        ])
+    )]
     pub compression: String,
 
     /// Compression level (used by zstd and blosc2; ignored by other codecs).

@@ -7,7 +7,7 @@
 
 - **Version:** 0.7.0
 - **Workspace:** 6 default crates + 3 optional (Python, GRIB, **NetCDF**) + 2 separate packages (xarray, zarr)
-- **Tests:** 1050+ total (283+ Rust + 253 Python + 181 xarray + 204 Zarr + 117 C++ + 17 GRIB + 34 NetCDF integration + 5 CLI netcdf pipeline + 8 Python netcdf e2e)
+- **Tests:** 1050+ total (283+ Rust + 253 Python + 181 xarray + 204 Zarr + 117 C++ + 17 GRIB + 44 NetCDF integration + 5 CLI netcdf pipeline + 8 Python netcdf e2e)
 - **Quality:** 0 clippy warnings, 90.5% Rust line coverage
 
 ## tensogram-netcdf
@@ -42,8 +42,8 @@ OS level.
   is f64-only and skipped (with warning) for non-f64 and NaN-containing
   variables so mixed files convert cleanly.
 - **Tests:**
-  - 34 library integration tests in `crates/tensogram-netcdf/tests/integration.rs`
-    (21 baseline + 13 new for the pipeline plumbing).
+  - 44 library integration tests in `crates/tensogram-netcdf/tests/integration.rs`
+    (21 baseline + 13 pipeline plumbing + 10 new coverage tests).
   - 5 CLI tests under `crates/tensogram-cli/src/commands/convert_netcdf.rs`
     for pipeline flag plumbing and error paths.
   - 8 Python end-to-end round-trip tests in

@@ -16,7 +16,7 @@ Repo: ecmwf/tensogram
 | tensogram-python | 226 | pytest (parametrized) | ~88% |
 | tensogram-python (netcdf e2e) | 8 | pytest (subprocess) | — |
 | tensogram-grib | 17 | Integration | ~80% |
-| tensogram-netcdf | 34 | Integration | — |
+| tensogram-netcdf | 44 | Integration | — |
 | tensogram-xarray | 181 | pytest | ~98% |
 | tensogram-zarr | 204 | pytest | ~95% |
 | **Total** | **~1050+** | | **90.5% (Rust)** |

@@ -97,11 +97,6 @@ jobs:
           source .venv/bin/activate
           python -m pytest tests/python/ -v
 
-      - name: NetCDF end-to-end tests
-        run: |
-          source .venv/bin/activate
-          python -m pytest tests/python/test_convert_netcdf.py -v
-
   # ── Python packages: xarray + zarr ───────────────────────────────────
   python-packages:
     name: Python packages

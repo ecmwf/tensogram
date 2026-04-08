@@ -71,10 +71,10 @@ pub(crate) fn attr_value_to_cbor(val: &AttributeValue) -> CborValue {
         AttributeValue::Longlongs(v) => {
             CborValue::Array(v.iter().map(|i| CborValue::Integer((*i).into())).collect())
         }
-        AttributeValue::Ulonglong(i) => CborValue::Integer((*i as i64).into()),
+        AttributeValue::Ulonglong(i) => CborValue::Integer((*i as i128).into()),
         AttributeValue::Ulonglongs(v) => CborValue::Array(
             v.iter()
-                .map(|i| CborValue::Integer((*i as i64).into()))
+                .map(|i| CborValue::Integer((*i as i128).into()))
                 .collect(),
         ),
         AttributeValue::Schar(i) => CborValue::Integer((*i as i64).into()),
