@@ -9,6 +9,13 @@ For speculative ideas, see `IDEAS.md`.
 
 - [x] ~~Populate `reserved` metadata field with provenance information~~ → `encode.rs:populate_reserved_provenance()`
 
+- [ ] **caller-endianess**:
+  - the Docs in byte-order section clarify that payload bytes are returned **verbatim** for `encoding="none"` and callers must interpret/byteswap according to `byte_order`.
+  - review the code and plan for the data to ALWAYS be returned to the user in the endianess of the local execution environment so user does not have to byte-swap. the library does it for him.
+  - add an option to the API to return the message endianess if the user wants exactly as it was coded internally. Note this should be rare.
+  - apply this to all interfaces in all languages
+  - document it thouroughly. users should not need to know in what endianess the data was encoded.
+
 ## CLI
 
 - [x] ~~`tensogram merge` strategies~~ → `--strategy first|last|error` flag added to CLI merge command
@@ -24,6 +31,15 @@ For speculative ideas, see `IDEAS.md`.
   Python e2e tests; Ubuntu+macOS CI via new `netcdf` job; `grib` CI
   extended to macOS for symmetry.
 
+## Multi-Language Support
+
+  - [ ] **wasm-decoder**:
+    - aim is to enable the usage of tensogram as the comms message format for a remote web visualiser of scientific data (eg earth science data)
+    - research about wasm in particular decoding streams of messages with data
+    - limited implementation in wasm of the decode API and decode pipelines
+    - support a limited amount of compressors - limit to what is available as packages
+    - if no package available for szip, implement it outright  
+   
 ## Metadata
 
 - [x] ~~metadata-major-refactor~~ → v0.6.0. Removed `common`/`payload`, added `base` (per-object independent entries), renamed `reserved` → `_reserved_`, `extra` → `_extra_`. Auto-populated keys under `base[i]._reserved_.tensor`. Added `compute_common()` utility. All docs updated.

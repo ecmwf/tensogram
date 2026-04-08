@@ -34,6 +34,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   split modes, zstd compression, and the record-split error path.
 - **CI `netcdf` job** — Ubuntu + macOS matrix running clippy + netcdf crate
   tests + CLI tests + example build.
+- `simple_packing::encode_pipeline_f64()` — typed-input variant that avoids
+  the bytes→f64 round-trip allocation.
+- Benchmark fidelity validation: lossless paths checked for exact round-trip;
+  lossy paths report Linf, L1, and L2 (RMSE) norms.
+- Benchmark structured error handling: `BenchmarkError` enum, `BenchmarkRun`
+  struct, non-zero exit on failures.
+- `--warmup` flag (default 3) and raised default iteration count from 5 to 10.
+- Throughput (MB/s) reporting and compressed-size variability detection in
+  benchmarks.
+- Rewritten benchmark documentation with split tables (lossless /
+  SimplePacking / lossy), human-readable method names, sizes in MiB, and
+  fidelity norms explained.
 
 ### Changed
 - **`convert-grib` accepts pipeline flags** — `--encoding`/`--bits`/`--filter`/
@@ -45,11 +57,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `cargo test -p tensogram-cli --features grib`.
 - **CI `python` job** — now installs libnetcdf/hdf5 + netCDF4 and runs the
   new Python e2e tests against a feature-gated tensogram binary.
+- `simple_packing` encode is ~2.5× faster for typical SimplePacking cases:
+  - Fused NaN + min + max into a single pass in `compute_params` (was 3 passes)
+  - Precomputed `scale = 10^D × 2^(-E)` — eliminates per-value f64 division
+  - Specialized `encode_aligned<N>` / `decode_aligned<N>` loops for 8/16/24/32-bit widths
+  - Removed redundant NaN check from `encode()`
+- Benchmark methodology page cleaned of internal jargon — no Rust API names,
+  no C function signatures.
+- GRIB comparison timing is now symmetric end-to-end (both ecCodes and
+  Tensogram include parameter setup).
+
+### Fixed
+- **szip 24-bit data corruption** — `AEC_DATA_3BYTE` is now auto-set in
+  `effective_flags()` for 17-24 bit samples, so libaec reads 3-byte-packed
+  data correctly. Decoded values previously had ±60 max error; now match
+  quantization step (~1.9×10⁻⁶ at 24 bits).
+- **szip byte-order mismatch** — `AEC_DATA_MSB` is now set when the upstream
+  encoding is `SimplePacking` (which produces MSB-first bytes). libaec's
+  predictor now sees the correct byte significance order; compression ratio
+  on 24-bit GRIB data now matches ecCodes (~27%).
+- **Benchmark `AEC_DATA_PREPROCESS` constant** — was 1 (`AEC_DATA_SIGNED`),
+  now correctly 8. Benchmarks were running without the preprocessor step.
 
 ### Stats
-- 34 tensogram-netcdf integration tests (13 new for the pipeline flags)
+- 68 tensogram-netcdf tests (44 integration + 23 unit + 1 doctest)
 - 124 tensogram-cli tests with `--features netcdf` (5 new for the pipeline)
 - 8 new Python end-to-end round-trip tests
+- 612 workspace tests, 271 Python tests, 124 C++ tests — all green
+- 95.54% region coverage / 94.80% line coverage on `tensogram-netcdf`
 - 0 clippy warnings, 0 fmt diffs
 
 ## [0.6.0] - 2026-04-06
