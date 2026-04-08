@@ -39,10 +39,12 @@ pub fn compute_timing_stats(samples: &mut [u64]) -> TimingStats {
         };
     }
     samples.sort_unstable();
+    // Safe: emptiness is guarded above, so both first and last element exist.
+    let last_idx = samples.len() - 1;
     TimingStats {
         median_ms: ns_to_ms(median_of_sorted(samples)),
         min_ms: ns_to_ms(samples[0]),
-        max_ms: ns_to_ms(*samples.last().unwrap()),
+        max_ms: ns_to_ms(samples[last_idx]),
     }
 }
 

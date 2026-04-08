@@ -56,7 +56,7 @@ Unit, integration, adversarial, and edge-case tests.
 - `simple_packing.rs` — GRIB-style lossy quantization, MSB-first bit packing, 0-64 bits, NaN rejection, `decode_range()` for arbitrary bit offsets. Optimized encode/decode: precomputed scale (no per-value division), specialized byte-aligned loops for 8/16/24/32 bits, fused NaN+min+max scan in `compute_params`.
 - `shuffle.rs` — Byte-level shuffle/unshuffle (HDF5-style)
 - `libaec.rs` — Safe Rust wrapper around libaec: `aec_compress()` with optional RSI block offset tracking (`aec_compress_no_offsets`), `aec_decompress()`, `aec_decompress_range()`. Auto-sets `AEC_DATA_3BYTE` for 17-24 bit samples (fixes corruption bug). 
-- `pipeline.rs` — `encode_pipeline_f64()` variant for callers with typed f64 data (avoids bytes→f64 conversion). Auto-sets `AEC_DATA_MSB` for szip when encoding is SimplePacking (fixes byte-order mismatch, improved compression ratio from 38% to 27%).
+- `pipeline.rs` — `encode_pipeline_f64()` variant for callers with typed f64 data (avoids bytes→f64 conversion). Auto-sets `AEC_DATA_MSB` for szip when encoding is SimplePacking (fixes byte-order mismatch so libaec's predictor sees most-significant bytes first; compression ratio now matches ecCodes at ~27% on 24-bit GRIB data — see `docs/src/guide/benchmark-results.md`).
 - `compression/` — `Compressor` trait + 6 implementations:
   - `szip.rs` — SzipCompressor (CCSDS 121.0-B-3, RSI block random access)
   - `zstd.rs` — ZstdCompressor (Zstandard, stream compressor)
