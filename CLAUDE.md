@@ -16,8 +16,12 @@
     - Keep the code simple.
 
 - IMPORTANT: when planing and before you do any work:
-  - always mention how you would verify that work
+  - ALWAYS mention how you would verify and validate that work is correct
   - include TDD tests in your plan
+  - take a behaviour driven approach
+  - you are very much ENCOURAGED to ask questions to get the design correct
+  - ALWAYS seek clarifications to sort out ambiguities
+  - ALWAYS provide a summary of the Design and implementation Plan
 
 - IMPORTANT: when you build code and new features:
   - ALWAYS document those features in docs/

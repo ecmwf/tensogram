@@ -1,6 +1,9 @@
 # Features Decided to Implement
 
 Accepted features that are planned but not yet implemented.
+They should contain some notes about the intended aims and direction of implementation.
+Code Agents are very much encouraged to ask questions to get the design correct, seeking also  clarifications and sorting out ambiguities.
+
 For speculative ideas, see `IDEAS.md`.
 
 ## API
