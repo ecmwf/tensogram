@@ -165,14 +165,10 @@ pub fn convert_netcdf_file(
     for var in file.variables() {
         let var_name = var.name();
         let vartype = var.vartype();
-
-        match extract_variable(&var, &var_name, &vartype, options, &global_attrs) {
-            Ok(ev) => extracted.push(ev),
-            Err(NetcdfError::UnsupportedType { name, reason }) => {
-                eprintln!("warning: skipping variable '{name}': {reason}");
-            }
-            Err(e) => return Err(e),
-        }
+        push_extracted_or_warn(
+            extract_variable(&var, &var_name, &vartype, options, &global_attrs),
+            &mut extracted,
+        )?;
     }
 
     if extracted.is_empty() {
@@ -197,24 +193,7 @@ fn extract_variable(
     options: &ConvertOptions,
     global_attrs: &BTreeMap<String, CborValue>,
 ) -> Result<ExtractedVar, NetcdfError> {
-    match vartype {
-        NcVariableType::Char | NcVariableType::String => {
-            return Err(NetcdfError::UnsupportedType {
-                name: var_name.to_string(),
-                reason: format!("{vartype:?} variables are not supported"),
-            });
-        }
-        NcVariableType::Compound(_)
-        | NcVariableType::Opaque(_)
-        | NcVariableType::Enum(_)
-        | NcVariableType::Vlen(_) => {
-            return Err(NetcdfError::UnsupportedType {
-                name: var_name.to_string(),
-                reason: format!("complex type {vartype:?} is not supported"),
-            });
-        }
-        _ => {}
-    }
+    reject_unsupported_vartype(var_name, vartype)?;
 
     let dims = var.dimensions();
     let shape: Vec<u64> = dims.iter().map(|d| d.len() as u64).collect();
@@ -263,6 +242,54 @@ fn build_full_extents(dims: &[netcdf::Dimension<'_>]) -> Vec<netcdf::Extent> {
             count: d.len(),
         })
         .collect()
+}
+
+/// Reject NetCDF variable types that have no clean tensor representation.
+///
+/// `Char` and `String` carry text data that can't be flattened into a
+/// numeric byte payload. `Compound`, `Opaque`, `Enum`, and `Vlen` are
+/// NetCDF-4 user-defined types whose layout is implementation-defined
+/// — supporting them is intentionally out of scope for v1.
+///
+/// Both `extract_variable` and `extract_variable_record` call this as
+/// the first thing they do; the caller catches `UnsupportedType` and
+/// downgrades it to a stderr warning + skip.
+fn reject_unsupported_vartype(var_name: &str, vartype: &NcVariableType) -> Result<(), NetcdfError> {
+    match vartype {
+        NcVariableType::Char | NcVariableType::String => Err(NetcdfError::UnsupportedType {
+            name: var_name.to_string(),
+            reason: format!("{vartype:?} variables are not supported"),
+        }),
+        NcVariableType::Compound(_)
+        | NcVariableType::Opaque(_)
+        | NcVariableType::Enum(_)
+        | NcVariableType::Vlen(_) => Err(NetcdfError::UnsupportedType {
+            name: var_name.to_string(),
+            reason: format!("complex type {vartype:?} is not supported"),
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Append a freshly extracted variable to the working list, or downgrade
+/// `UnsupportedType` errors to a stderr warning. Any other error type is
+/// propagated to the caller. This dedupes the three nearly-identical
+/// match blocks in `convert_netcdf_file` and `encode_by_record`.
+fn push_extracted_or_warn(
+    result: Result<ExtractedVar, NetcdfError>,
+    extracted: &mut Vec<ExtractedVar>,
+) -> Result<(), NetcdfError> {
+    match result {
+        Ok(ev) => {
+            extracted.push(ev);
+            Ok(())
+        }
+        Err(NetcdfError::UnsupportedType { name, reason }) => {
+            eprintln!("warning: skipping variable '{name}': {reason}");
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Read all values as `f64`, apply CF-style unpacking
@@ -622,31 +649,25 @@ fn encode_by_record(
             let has_unlimited = dims.iter().any(|d| d.name() == unlimited_name);
 
             if !has_unlimited {
-                match extract_variable(&var, &var_name, &vartype, options, &global_attrs) {
-                    Ok(ev) => extracted.push(ev),
-                    Err(NetcdfError::UnsupportedType { name, reason }) => {
-                        eprintln!("warning: skipping variable '{name}': {reason}");
-                    }
-                    Err(e) => return Err(e),
-                }
+                push_extracted_or_warn(
+                    extract_variable(&var, &var_name, &vartype, options, &global_attrs),
+                    &mut extracted,
+                )?;
                 continue;
             }
 
-            match extract_variable_record(
-                &var,
-                &var_name,
-                &vartype,
-                options,
-                &global_attrs,
-                record_idx,
-                &unlimited_name,
-            ) {
-                Ok(ev) => extracted.push(ev),
-                Err(NetcdfError::UnsupportedType { name, reason }) => {
-                    eprintln!("warning: skipping variable '{name}': {reason}");
-                }
-                Err(e) => return Err(e),
-            }
+            push_extracted_or_warn(
+                extract_variable_record(
+                    &var,
+                    &var_name,
+                    &vartype,
+                    options,
+                    &global_attrs,
+                    record_idx,
+                    &unlimited_name,
+                ),
+                &mut extracted,
+            )?;
         }
 
         if !extracted.is_empty() {
@@ -668,24 +689,7 @@ fn extract_variable_record(
     record_idx: usize,
     unlimited_name: &str,
 ) -> Result<ExtractedVar, NetcdfError> {
-    match vartype {
-        NcVariableType::Char | NcVariableType::String => {
-            return Err(NetcdfError::UnsupportedType {
-                name: var_name.to_string(),
-                reason: format!("{vartype:?} variables are not supported"),
-            });
-        }
-        NcVariableType::Compound(_)
-        | NcVariableType::Opaque(_)
-        | NcVariableType::Enum(_)
-        | NcVariableType::Vlen(_) => {
-            return Err(NetcdfError::UnsupportedType {
-                name: var_name.to_string(),
-                reason: format!("complex type {vartype:?} is not supported"),
-            });
-        }
-        _ => {}
-    }
+    reject_unsupported_vartype(var_name, vartype)?;
 
     let dims = var.dimensions();
     let shape: Vec<u64> = dims

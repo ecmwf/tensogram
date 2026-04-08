@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Verify all 8 test fixtures are present and have expected structure."""
+"""Verify all test fixtures are present and have expected structure.
+
+8 baseline fixtures (Tasks 6-12) + 6 coverage fixtures (v0.7.0).
+"""
 
 import os
 import sys
@@ -81,6 +84,64 @@ def verify(outdir: str) -> bool:
             assert len(ds.variables) == 0
             assert ds.title == "Empty fixture"
 
+    # ── Coverage fixtures (v0.7.0) ───────────────────────────────────
+
+    def check_record_multi_dtype(path: str) -> None:
+        with nc.Dataset(path) as ds:
+            assert ds.dimensions["time"].isunlimited()
+            for name in (
+                "v_i8",
+                "v_u8",
+                "v_i16",
+                "v_u16",
+                "v_i32",
+                "v_u32",
+                "v_i64",
+                "v_u64",
+                "v_f32",
+                "v_f64",
+            ):
+                assert name in ds.variables, f"missing {name}"
+
+    def check_attr_type_variants(path: str) -> None:
+        with nc.Dataset(path) as ds:
+            # Disable auto-scale so we inspect the raw attribute types.
+            for v in ds.variables.values():
+                v.set_auto_scale(False)
+                v.set_auto_mask(False)
+            for name in (
+                "scaled_float",
+                "scaled_int",
+                "scaled_short",
+                "scaled_longlong",
+                "with_missing",
+                "string_scale",
+            ):
+                assert name in ds.variables
+
+    def check_empty_unlimited(path: str) -> None:
+        with nc.Dataset(path) as ds:
+            assert ds.dimensions["time"].isunlimited()
+            assert ds.dimensions["time"].size == 0
+
+    def check_complex_types(path: str) -> None:
+        with nc.Dataset(path) as ds:
+            assert "value" in ds.variables
+            assert "status" in ds.variables
+
+    def check_complex_types_unlimited(path: str) -> None:
+        with nc.Dataset(path) as ds:
+            assert ds.dimensions["time"].isunlimited()
+            assert "value" in ds.variables
+            assert "state" in ds.variables
+            assert ds.title == "Complex-type unlimited fixture"
+
+    def check_record_with_char(path: str) -> None:
+        with nc.Dataset(path) as ds:
+            assert ds.dimensions["time"].isunlimited()
+            assert "values" in ds.variables
+            assert "labels" in ds.variables
+
     check("simple_2d.nc", check_simple_2d)
     check("cf_temperature.nc", check_cf_temperature)
     check("multi_var.nc", check_multi_var)
@@ -89,6 +150,12 @@ def verify(outdir: str) -> bool:
     check("nc4_groups.nc", check_nc4_groups)
     check("nc3_classic.nc", check_nc3_classic)
     check("empty_file.nc", check_empty_file)
+    check("record_multi_dtype.nc", check_record_multi_dtype)
+    check("attr_type_variants.nc", check_attr_type_variants)
+    check("empty_unlimited.nc", check_empty_unlimited)
+    check("complex_types.nc", check_complex_types)
+    check("complex_types_unlimited.nc", check_complex_types_unlimited)
+    check("record_with_char.nc", check_record_with_char)
 
     return ok
 
