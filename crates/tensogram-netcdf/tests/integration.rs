@@ -784,3 +784,345 @@ fn pipeline_round_trip_zstd_decodes_back_to_input() {
         "zstd round-trip should recover the original payload bytes exactly"
     );
 }
+
+#[test]
+fn simple_packing_plus_shuffle_uses_post_encoding_element_size() {
+    // Combining simple_packing + shuffle exercises the branch in
+    // apply_pipeline that computes shuffle_element_size from the
+    // post-encoding byte width (⌈bpv/8⌉), not the native dtype width.
+    let path = testdata("simple_2d.nc");
+    let opts = ConvertOptions {
+        pipeline: DataPipeline {
+            encoding: "simple_packing".to_string(),
+            bits: Some(16),
+            filter: "shuffle".to_string(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
+    let (_, objects) = decode_first(&msgs);
+    assert_eq!(objects[0].0.encoding, "simple_packing");
+    assert_eq!(objects[0].0.filter, "shuffle");
+
+    // With bits=16, element_size should be ⌈16/8⌉ = 2, not the native
+    // f64 width of 8.
+    let element_size = objects[0]
+        .0
+        .params
+        .get("shuffle_element_size")
+        .expect("shuffle_element_size");
+    if let ciborium::Value::Integer(i) = element_size {
+        let n: i128 = (*i).into();
+        assert_eq!(n, 2, "element_size should be ⌈16/8⌉ = 2 post-pack");
+    } else {
+        panic!("shuffle_element_size should be integer");
+    }
+}
+
+// ── Code coverage pass: exercise every read_native_extents dtype arm ──
+//
+// record_multi_dtype.nc has one variable of every supported numeric
+// dtype along the unlimited `time` dimension. Record-split mode then
+// forces the converter to hit each arm of `read_native_extents`.
+
+#[test]
+fn record_multi_dtype_covers_all_read_native_extents_arms() {
+    let path = testdata("record_multi_dtype.nc");
+    let opts = ConvertOptions {
+        split_by: SplitBy::Record,
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
+    // 3 records → 3 messages.
+    assert_eq!(msgs.len(), 3, "record_multi_dtype has 3 timesteps");
+
+    // Inspect the first message: we expect one object per dtype
+    // variable (10 dtypes) plus nothing for the time coord (which
+    // itself IS the unlimited variable, so it's not sliced per-record
+    // but included). Actually the time variable has time dim so it's
+    // sliced too — but it's scalar per record (index-selected), so
+    // it may show up with ndim=0.
+    let (meta, objects) = decode_first(&msgs);
+    let names: Vec<String> = meta
+        .base
+        .iter()
+        .filter_map(|e| {
+            e.get("name").and_then(|v| {
+                if let ciborium::Value::Text(s) = v {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+
+    // Verify each dtype variable is present and has the expected Tensogram dtype.
+    let mut by_name = std::collections::HashMap::new();
+    for (i, obj) in objects.iter().enumerate() {
+        if let Some(name) = names.get(i) {
+            by_name.insert(name.clone(), obj.0.dtype);
+        }
+    }
+    assert_eq!(by_name.get("v_i8"), Some(&Dtype::Int8));
+    assert_eq!(by_name.get("v_u8"), Some(&Dtype::Uint8));
+    assert_eq!(by_name.get("v_i16"), Some(&Dtype::Int16));
+    assert_eq!(by_name.get("v_u16"), Some(&Dtype::Uint16));
+    assert_eq!(by_name.get("v_i32"), Some(&Dtype::Int32));
+    assert_eq!(by_name.get("v_u32"), Some(&Dtype::Uint32));
+    assert_eq!(by_name.get("v_i64"), Some(&Dtype::Int64));
+    assert_eq!(by_name.get("v_u64"), Some(&Dtype::Uint64));
+    assert_eq!(by_name.get("v_f32"), Some(&Dtype::Float32));
+    assert_eq!(by_name.get("v_f64"), Some(&Dtype::Float64));
+}
+
+// ── Code coverage pass: get_f64_attr non-Double arms ─────────────────
+//
+// attr_type_variants.nc has scaled variables whose scale_factor /
+// add_offset attributes are stored as Float / Int / Short / Longlong
+// (instead of the usual Double). Converting the file runs each of
+// those through read_and_unpack → get_f64_attr, covering the
+// AttributeValue::Float/Int/Short/Longlong arms.
+
+#[test]
+fn attr_type_variants_all_unpack_to_f64() {
+    let path = testdata("attr_type_variants.nc");
+    let msgs = convert_netcdf_file(&path, &ConvertOptions::default()).unwrap();
+    let (meta, objects) = decode_first(&msgs);
+
+    // Every variable in the fixture has scale_factor → all should be
+    // unpacked to Float64.
+    let mut by_name = std::collections::HashMap::new();
+    for (i, obj) in objects.iter().enumerate() {
+        if let Some(ciborium::Value::Text(name)) = meta.base[i].get("name") {
+            by_name.insert(name.clone(), obj.0.dtype);
+        }
+    }
+    assert_eq!(by_name.get("scaled_float"), Some(&Dtype::Float64));
+    assert_eq!(by_name.get("scaled_int"), Some(&Dtype::Float64));
+    assert_eq!(by_name.get("scaled_short"), Some(&Dtype::Float64));
+    assert_eq!(by_name.get("scaled_longlong"), Some(&Dtype::Float64));
+    assert_eq!(by_name.get("with_missing"), Some(&Dtype::Float64));
+}
+
+#[test]
+fn attr_type_variants_string_scale_factor_returns_raw_data() {
+    // `string_scale` has scale_factor="non_numeric" — a Str attribute
+    // that get_f64_attr can't convert. The fallback `_ => None` arm
+    // fires and read_and_unpack still runs (because attribute "exists")
+    // but with all Option<f64>s = None, so values pass through unchanged.
+    let path = testdata("attr_type_variants.nc");
+    let msgs = convert_netcdf_file(&path, &ConvertOptions::default()).unwrap();
+    let (meta, objects) = decode_first(&msgs);
+
+    let idx = meta
+        .base
+        .iter()
+        .position(|e| e.get("name") == Some(&ciborium::Value::Text("string_scale".to_string())))
+        .expect("string_scale variable");
+    let data = &objects[idx].1;
+    // read_and_unpack promotes the i16 values to f64 even though the
+    // scale_factor is string — verify the values are [1.0, 2.0, 3.0, 4.0].
+    let floats: Vec<f64> = data
+        .chunks_exact(8)
+        .map(|b| f64::from_le_bytes(b.try_into().unwrap()))
+        .collect();
+    assert_eq!(floats, vec![1.0, 2.0, 3.0, 4.0]);
+}
+
+#[test]
+fn empty_unlimited_record_split_returns_no_messages() {
+    // empty_unlimited.nc has an unlimited dim with zero records.
+    // The converter's record-split path should return Ok(vec![])
+    // early without trying to iterate any records.
+    let path = testdata("empty_unlimited.nc");
+    let opts = ConvertOptions {
+        split_by: SplitBy::Record,
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
+    assert_eq!(
+        msgs.len(),
+        0,
+        "zero-record file should produce zero messages"
+    );
+}
+
+#[test]
+fn complex_types_unlimited_skipped_in_record_split() {
+    // complex_types_unlimited.nc has value(time,n) float + state(time,n)
+    // enum. Record-split calls extract_variable_record on both; the
+    // enum hits the Compound/Opaque/Enum/Vlen rejection and is skipped
+    // with a warning while value is converted normally.
+    let path = testdata("complex_types_unlimited.nc");
+    let opts = ConvertOptions {
+        split_by: SplitBy::Record,
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
+    // time dim has 2 values → 2 messages.
+    assert_eq!(msgs.len(), 2);
+
+    for msg in &msgs {
+        let (meta, _) = decode(msg, &DecodeOptions::default()).unwrap();
+        let names: Vec<String> = meta
+            .base
+            .iter()
+            .filter_map(|e| {
+                e.get("name").and_then(|v| {
+                    if let ciborium::Value::Text(s) = v {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        assert!(names.contains(&"value".to_string()));
+        assert!(
+            !names.contains(&"state".to_string()),
+            "enum variable 'state' should be skipped in record split"
+        );
+    }
+}
+
+#[test]
+fn complex_types_are_skipped_with_warning() {
+    // complex_types.nc has one regular float variable `value` and
+    // one enum-typed variable `status`. The enum variable should
+    // be skipped with a warning (triggering the Compound/Opaque/
+    // Enum/Vlen rejection arm), while `value` should convert
+    // normally — so the overall conversion succeeds.
+    let path = testdata("complex_types.nc");
+    let msgs = convert_netcdf_file(&path, &ConvertOptions::default()).unwrap();
+    let (meta, objects) = decode_first(&msgs);
+
+    let names: Vec<String> = meta
+        .base
+        .iter()
+        .filter_map(|e| {
+            e.get("name").and_then(|v| {
+                if let ciborium::Value::Text(s) = v {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+
+    assert!(names.contains(&"value".to_string()));
+    assert!(
+        !names.contains(&"status".to_string()),
+        "enum variable 'status' should be skipped"
+    );
+    assert_eq!(objects.len(), 1);
+}
+
+#[test]
+fn record_with_char_skips_char_variable() {
+    // record_with_char.nc has a values(time,n) numeric variable AND
+    // a labels(time,strlen) char variable sharing the unlimited dim.
+    // Record-split should skip the char variable (with a warning)
+    // and still produce one message per record for values.
+    let path = testdata("record_with_char.nc");
+    let opts = ConvertOptions {
+        split_by: SplitBy::Record,
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
+    // time dim has 2 values → 2 messages.
+    assert_eq!(msgs.len(), 2);
+
+    // Each message should have `values` but NOT `labels`.
+    for msg in &msgs {
+        let (meta, _) = decode(msg, &DecodeOptions::default()).unwrap();
+        let names: Vec<String> = meta
+            .base
+            .iter()
+            .filter_map(|e| {
+                e.get("name").and_then(|v| {
+                    if let ciborium::Value::Text(s) = v {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        assert!(names.contains(&"values".to_string()));
+        assert!(
+            !names.contains(&"labels".to_string()),
+            "char variable 'labels' should be skipped in record split"
+        );
+    }
+}
+
+#[test]
+fn attr_type_variants_missing_value_replaced_with_nan() {
+    // `with_missing` has `missing_value=-1`; the converter reads it as
+    // f64 -1.0, matches the fill sentinel, and writes NaN at those
+    // positions. This explicitly exercises the NaN-substitution
+    // branch in read_and_unpack.
+    let path = testdata("attr_type_variants.nc");
+    let msgs = convert_netcdf_file(&path, &ConvertOptions::default()).unwrap();
+    let (meta, objects) = decode_first(&msgs);
+
+    let idx = meta
+        .base
+        .iter()
+        .position(|e| e.get("name") == Some(&ciborium::Value::Text("with_missing".to_string())))
+        .expect("with_missing variable");
+    let data = &objects[idx].1;
+    let floats: Vec<f64> = data
+        .chunks_exact(8)
+        .map(|b| f64::from_le_bytes(b.try_into().unwrap()))
+        .collect();
+    let nan_count = floats.iter().filter(|v| v.is_nan()).count();
+    assert_eq!(
+        nan_count, 2,
+        "with_missing has 2 sentinel values → 2 NaNs, got {nan_count} in {floats:?}"
+    );
+    // The non-sentinel positions should have been scaled by
+    // scale_factor=1.0 → unchanged.
+    assert!(floats.contains(&5.0));
+    assert!(floats.contains(&10.0));
+}
+
+#[test]
+fn record_multi_dtype_records_are_independent() {
+    // Record-split should produce one self-contained message per
+    // record, not share state across records.
+    let path = testdata("record_multi_dtype.nc");
+    let opts = ConvertOptions {
+        split_by: SplitBy::Record,
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
+    assert_eq!(msgs.len(), 3);
+
+    // Every message should contain the same set of variables.
+    let mut last_names: Option<Vec<String>> = None;
+    for msg in &msgs {
+        let (meta, _) = decode(msg, &DecodeOptions::default()).unwrap();
+        let mut names: Vec<String> = meta
+            .base
+            .iter()
+            .filter_map(|e| {
+                e.get("name").and_then(|v| {
+                    if let ciborium::Value::Text(s) = v {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        names.sort();
+        match &last_names {
+            Some(prev) => assert_eq!(&names, prev, "each record should have same var set"),
+            None => last_names = Some(names),
+        }
+    }
+}

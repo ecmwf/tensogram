@@ -140,3 +140,266 @@ pub(crate) fn extract_cf_attrs(var: &netcdf::Variable<'_>) -> BTreeMap<String, C
     }
     map
 }
+
+// ── Unit tests ──────────────────────────────────────────────────────────────
+//
+// Exhaustively cover every `AttributeValue` → `CborValue` mapping so the
+// match in `attr_value_to_cbor` never silently diverges from the netcdf
+// crate's variants. These tests don't need fixture files because
+// `AttributeValue` is a public enum with ordinary constructors.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expect_text(val: &CborValue, want: &str) {
+        match val {
+            CborValue::Text(s) => assert_eq!(s, want),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    fn expect_float(val: &CborValue, want: f64) {
+        match val {
+            CborValue::Float(f) => assert!((*f - want).abs() < 1e-12, "expected {want}, got {f}"),
+            other => panic!("expected Float, got {other:?}"),
+        }
+    }
+
+    fn expect_int(val: &CborValue, want: i64) {
+        match val {
+            CborValue::Integer(i) => {
+                let n: i128 = (*i).into();
+                assert_eq!(n, want as i128);
+            }
+            other => panic!("expected Integer, got {other:?}"),
+        }
+    }
+
+    fn expect_array_len(val: &CborValue, want: usize) -> &Vec<CborValue> {
+        match val {
+            CborValue::Array(arr) => {
+                assert_eq!(arr.len(), want);
+                arr
+            }
+            other => panic!("expected Array, got {other:?}"),
+        }
+    }
+
+    // ── String variants ────────────────────────────────────────────────
+    #[test]
+    fn attr_value_to_cbor_str() {
+        expect_text(
+            &attr_value_to_cbor(&AttributeValue::Str("K".to_string())),
+            "K",
+        );
+    }
+
+    #[test]
+    fn attr_value_to_cbor_strs() {
+        let v = attr_value_to_cbor(&AttributeValue::Strs(vec![
+            "a".to_string(),
+            "bb".to_string(),
+        ]));
+        let arr = expect_array_len(&v, 2);
+        expect_text(&arr[0], "a");
+        expect_text(&arr[1], "bb");
+    }
+
+    // ── Double (f64) ───────────────────────────────────────────────────
+    #[test]
+    fn attr_value_to_cbor_double() {
+        expect_float(&attr_value_to_cbor(&AttributeValue::Double(273.15)), 273.15);
+    }
+
+    #[test]
+    fn attr_value_to_cbor_doubles() {
+        let v = attr_value_to_cbor(&AttributeValue::Doubles(vec![1.0, -2.5, 3.75]));
+        let arr = expect_array_len(&v, 3);
+        expect_float(&arr[0], 1.0);
+        expect_float(&arr[1], -2.5);
+        expect_float(&arr[2], 3.75);
+    }
+
+    // ── Float (f32 → f64) ──────────────────────────────────────────────
+    #[test]
+    fn attr_value_to_cbor_float() {
+        expect_float(&attr_value_to_cbor(&AttributeValue::Float(2.5_f32)), 2.5);
+    }
+
+    #[test]
+    fn attr_value_to_cbor_floats() {
+        let v = attr_value_to_cbor(&AttributeValue::Floats(vec![1.0_f32, 2.0_f32]));
+        let arr = expect_array_len(&v, 2);
+        expect_float(&arr[0], 1.0);
+        expect_float(&arr[1], 2.0);
+    }
+
+    // ── Int (i32 → i64) ────────────────────────────────────────────────
+    #[test]
+    fn attr_value_to_cbor_int() {
+        expect_int(&attr_value_to_cbor(&AttributeValue::Int(-42_i32)), -42);
+    }
+
+    #[test]
+    fn attr_value_to_cbor_ints() {
+        let v = attr_value_to_cbor(&AttributeValue::Ints(vec![1_i32, -1_i32, 999_i32]));
+        let arr = expect_array_len(&v, 3);
+        expect_int(&arr[0], 1);
+        expect_int(&arr[1], -1);
+        expect_int(&arr[2], 999);
+    }
+
+    // ── Short (i16 → i64) ──────────────────────────────────────────────
+    #[test]
+    fn attr_value_to_cbor_short() {
+        expect_int(
+            &attr_value_to_cbor(&AttributeValue::Short(-32768_i16)),
+            -32768,
+        );
+    }
+
+    #[test]
+    fn attr_value_to_cbor_shorts() {
+        let v = attr_value_to_cbor(&AttributeValue::Shorts(vec![0_i16, -1_i16]));
+        let arr = expect_array_len(&v, 2);
+        expect_int(&arr[0], 0);
+        expect_int(&arr[1], -1);
+    }
+
+    // ── Ushort (u16 → i64) ─────────────────────────────────────────────
+    #[test]
+    fn attr_value_to_cbor_ushort() {
+        expect_int(
+            &attr_value_to_cbor(&AttributeValue::Ushort(65535_u16)),
+            65535,
+        );
+    }
+
+    #[test]
+    fn attr_value_to_cbor_ushorts() {
+        let v = attr_value_to_cbor(&AttributeValue::Ushorts(vec![1_u16, 65535_u16]));
+        let arr = expect_array_len(&v, 2);
+        expect_int(&arr[0], 1);
+        expect_int(&arr[1], 65535);
+    }
+
+    // ── Uint (u32 → i64) ───────────────────────────────────────────────
+    #[test]
+    fn attr_value_to_cbor_uint() {
+        expect_int(
+            &attr_value_to_cbor(&AttributeValue::Uint(4_000_000_000_u32)),
+            4_000_000_000,
+        );
+    }
+
+    #[test]
+    fn attr_value_to_cbor_uints() {
+        let v = attr_value_to_cbor(&AttributeValue::Uints(vec![0_u32, 1_000_000_u32]));
+        let arr = expect_array_len(&v, 2);
+        expect_int(&arr[0], 0);
+        expect_int(&arr[1], 1_000_000);
+    }
+
+    // ── Longlong (i64) ─────────────────────────────────────────────────
+    #[test]
+    fn attr_value_to_cbor_longlong() {
+        expect_int(
+            &attr_value_to_cbor(&AttributeValue::Longlong(i64::MIN)),
+            i64::MIN,
+        );
+    }
+
+    #[test]
+    fn attr_value_to_cbor_longlongs() {
+        let v = attr_value_to_cbor(&AttributeValue::Longlongs(vec![0_i64, i64::MAX, i64::MIN]));
+        let arr = expect_array_len(&v, 3);
+        expect_int(&arr[0], 0);
+        expect_int(&arr[1], i64::MAX);
+        expect_int(&arr[2], i64::MIN);
+    }
+
+    // ── Ulonglong (u64 → i64 via cast) ─────────────────────────────────
+    #[test]
+    fn attr_value_to_cbor_ulonglong() {
+        // Small u64 that fits in i64 round-trips cleanly.
+        expect_int(
+            &attr_value_to_cbor(&AttributeValue::Ulonglong(12345_u64)),
+            12345,
+        );
+    }
+
+    #[test]
+    fn attr_value_to_cbor_ulonglongs() {
+        let v = attr_value_to_cbor(&AttributeValue::Ulonglongs(vec![
+            0_u64,
+            42_u64,
+            1_000_000_u64,
+        ]));
+        let arr = expect_array_len(&v, 3);
+        expect_int(&arr[0], 0);
+        expect_int(&arr[1], 42);
+        expect_int(&arr[2], 1_000_000);
+    }
+
+    // ── Schar (i8 → i64) ───────────────────────────────────────────────
+    #[test]
+    fn attr_value_to_cbor_schar() {
+        expect_int(&attr_value_to_cbor(&AttributeValue::Schar(-128_i8)), -128);
+    }
+
+    #[test]
+    fn attr_value_to_cbor_schars() {
+        let v = attr_value_to_cbor(&AttributeValue::Schars(vec![-1_i8, 0_i8, 127_i8]));
+        let arr = expect_array_len(&v, 3);
+        expect_int(&arr[0], -1);
+        expect_int(&arr[1], 0);
+        expect_int(&arr[2], 127);
+    }
+
+    // ── Uchar (u8 → i64) ───────────────────────────────────────────────
+    #[test]
+    fn attr_value_to_cbor_uchar() {
+        expect_int(&attr_value_to_cbor(&AttributeValue::Uchar(255_u8)), 255);
+    }
+
+    #[test]
+    fn attr_value_to_cbor_uchars() {
+        let v = attr_value_to_cbor(&AttributeValue::Uchars(vec![0_u8, 128_u8, 255_u8]));
+        let arr = expect_array_len(&v, 3);
+        expect_int(&arr[0], 0);
+        expect_int(&arr[1], 128);
+        expect_int(&arr[2], 255);
+    }
+
+    // ── CF allow-list membership ───────────────────────────────────────
+
+    #[test]
+    fn cf_attributes_contains_all_16() {
+        // Guard against accidental deletions / renames of the allow-list.
+        assert_eq!(CF_ATTRIBUTES.len(), 16);
+        for expected in &[
+            "standard_name",
+            "long_name",
+            "units",
+            "calendar",
+            "cell_methods",
+            "coordinates",
+            "axis",
+            "positive",
+            "valid_min",
+            "valid_max",
+            "valid_range",
+            "bounds",
+            "grid_mapping",
+            "ancillary_variables",
+            "flag_values",
+            "flag_meanings",
+        ] {
+            assert!(
+                CF_ATTRIBUTES.contains(expected),
+                "CF_ATTRIBUTES should contain '{expected}'"
+            );
+        }
+    }
+}

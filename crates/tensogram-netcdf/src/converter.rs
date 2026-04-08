@@ -167,8 +167,7 @@ pub fn convert_netcdf_file(
         let vartype = var.vartype();
 
         match extract_variable(&var, &var_name, &vartype, options, &global_attrs) {
-            Ok(Some(ev)) => extracted.push(ev),
-            Ok(None) => {}
+            Ok(ev) => extracted.push(ev),
             Err(NetcdfError::UnsupportedType { name, reason }) => {
                 eprintln!("warning: skipping variable '{name}': {reason}");
             }
@@ -197,7 +196,7 @@ fn extract_variable(
     vartype: &NcVariableType,
     options: &ConvertOptions,
     global_attrs: &BTreeMap<String, CborValue>,
-) -> Result<Option<ExtractedVar>, NetcdfError> {
+) -> Result<ExtractedVar, NetcdfError> {
     match vartype {
         NcVariableType::Char | NcVariableType::String => {
             return Err(NetcdfError::UnsupportedType {
@@ -227,7 +226,10 @@ fn extract_variable(
     let (dtype, data_bytes) = if needs_unpack {
         read_and_unpack(var, var_name)?
     } else {
-        read_native(var, var_name, vartype)?
+        // Build full-range extents so we can funnel through the same
+        // `read_native_extents` helper as the record-split path.
+        let full_extents = build_full_extents(dims);
+        read_native_extents(var, var_name, vartype, &full_extents)?
     };
 
     let mut netcdf_meta = extract_var_attrs(var);
@@ -239,53 +241,28 @@ fn extract_variable(
     let cf_meta = options.cf.then(|| extract_cf_attrs(var));
     let base_entry = build_base_entry(var_name, &netcdf_meta, cf_meta.as_ref());
 
-    Ok(Some(ExtractedVar {
+    Ok(ExtractedVar {
         name: var_name.to_string(),
         dtype,
         shape,
         data_bytes,
         base_entry,
-    }))
+    })
 }
 
-fn read_native(
-    var: &netcdf::Variable<'_>,
-    var_name: &str,
-    vartype: &NcVariableType,
-) -> Result<(Dtype, Vec<u8>), NetcdfError> {
-    macro_rules! read_all {
-        ($t:ty, $dtype:expr) => {{
-            let vals: Vec<$t> = var
-                .get_values(..)
-                .map_err(|e| NetcdfError::InvalidData(format!("reading '{var_name}': {e}")))?;
-            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Ok(($dtype, bytes))
-        }};
-    }
-
-    match vartype {
-        NcVariableType::Int(IntType::I8) => read_all!(i8, Dtype::Int8),
-        NcVariableType::Int(IntType::U8) => {
-            // Uint8 is special: get_values<u8>() already returns
-            // Vec<u8>, no re-byteification needed.
-            let vals: Vec<u8> = var
-                .get_values(..)
-                .map_err(|e| NetcdfError::InvalidData(format!("reading '{var_name}': {e}")))?;
-            Ok((Dtype::Uint8, vals))
-        }
-        NcVariableType::Int(IntType::I16) => read_all!(i16, Dtype::Int16),
-        NcVariableType::Int(IntType::U16) => read_all!(u16, Dtype::Uint16),
-        NcVariableType::Int(IntType::I32) => read_all!(i32, Dtype::Int32),
-        NcVariableType::Int(IntType::U32) => read_all!(u32, Dtype::Uint32),
-        NcVariableType::Int(IntType::I64) => read_all!(i64, Dtype::Int64),
-        NcVariableType::Int(IntType::U64) => read_all!(u64, Dtype::Uint64),
-        NcVariableType::Float(FloatType::F32) => read_all!(f32, Dtype::Float32),
-        NcVariableType::Float(FloatType::F64) => read_all!(f64, Dtype::Float64),
-        _ => Err(NetcdfError::UnsupportedType {
-            name: var_name.to_string(),
-            reason: format!("unhandled type {vartype:?}"),
-        }),
-    }
+/// Build full-range `Extent::SliceCount` values — one per dimension —
+/// that together cover every element of a variable. This is the
+/// explicit equivalent of passing `..` to `netcdf::Variable::get_values`
+/// and lets us funnel both the file-wide read and the record-split
+/// read through a single [`read_native_extents`] implementation.
+fn build_full_extents(dims: &[netcdf::Dimension<'_>]) -> Vec<netcdf::Extent> {
+    dims.iter()
+        .map(|d| netcdf::Extent::SliceCount {
+            start: 0,
+            stride: 1,
+            count: d.len(),
+        })
+        .collect()
 }
 
 /// Read all values as `f64`, apply CF-style unpacking
@@ -646,8 +623,7 @@ fn encode_by_record(
 
             if !has_unlimited {
                 match extract_variable(&var, &var_name, &vartype, options, &global_attrs) {
-                    Ok(Some(ev)) => extracted.push(ev),
-                    Ok(None) => {}
+                    Ok(ev) => extracted.push(ev),
                     Err(NetcdfError::UnsupportedType { name, reason }) => {
                         eprintln!("warning: skipping variable '{name}': {reason}");
                     }
@@ -665,8 +641,7 @@ fn encode_by_record(
                 record_idx,
                 &unlimited_name,
             ) {
-                Ok(Some(ev)) => extracted.push(ev),
-                Ok(None) => {}
+                Ok(ev) => extracted.push(ev),
                 Err(NetcdfError::UnsupportedType { name, reason }) => {
                     eprintln!("warning: skipping variable '{name}': {reason}");
                 }
@@ -692,7 +667,7 @@ fn extract_variable_record(
     global_attrs: &BTreeMap<String, CborValue>,
     record_idx: usize,
     unlimited_name: &str,
-) -> Result<Option<ExtractedVar>, NetcdfError> {
+) -> Result<ExtractedVar, NetcdfError> {
     match vartype {
         NcVariableType::Char | NcVariableType::String => {
             return Err(NetcdfError::UnsupportedType {
@@ -750,13 +725,13 @@ fn extract_variable_record(
     let cf_meta = options.cf.then(|| extract_cf_attrs(var));
     let base_entry = build_base_entry(var_name, &netcdf_meta, cf_meta.as_ref());
 
-    Ok(Some(ExtractedVar {
+    Ok(ExtractedVar {
         name: var_name.to_string(),
         dtype,
         shape,
         data_bytes,
         base_entry,
-    }))
+    })
 }
 
 fn build_record_extents(
