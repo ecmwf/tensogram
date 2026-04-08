@@ -40,6 +40,8 @@ uv pip install -e tensogram-zarr/
 | `08_xarray_integration.py` | Opening `.tgm` files as xarray Datasets |
 | `08_zarr_backend.py` | Reading and writing `.tgm` files through Zarr v3 |
 | `09_dask_distributed.py` | Dask distributed computing over 4-D tensors |
+| `11_encode_pre_encoded.py` | Pre-encoded data API for already-framed payloads |
+| `12_convert_netcdf.py` | Convert NetCDF → Tensogram via the CLI (uses `netCDF4` + `subprocess`) |
 
 ## Module Structure
 
