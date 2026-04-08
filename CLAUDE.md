@@ -74,7 +74,8 @@
     - all examples in all languages Rust, Python and C++ compile and run
     - all docs build
     - if any of the above fails STOP and prompt the user for action
-    - otherwise bump VERSION, git tag, push to upstream
+    - otherwise, proceed by check the latest version upstream and in VERSION file
+    - if needed, bump in VERSION file, commit and tag then push to upstream
     - make a Github release
 
 # Design & Purpose

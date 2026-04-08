@@ -78,16 +78,17 @@ pub(crate) fn validate_object(desc: &DataObjectDescriptor, data_len: usize) -> R
     Ok(())
 }
 
-/// Encode a complete Tensogram message.
-///
-/// `global_metadata` is the message-level metadata (version, MARS keys, etc.).
-/// `descriptors` is a list of (DataObjectDescriptor, raw_data) pairs.
-/// Returns the complete wire-format message.
-#[tracing::instrument(skip(global_metadata, descriptors, options), fields(objects = descriptors.len()))]
-pub fn encode(
+#[derive(Debug, Clone, Copy)]
+enum EncodeMode {
+    Raw,
+    PreEncoded,
+}
+
+fn encode_inner(
     global_metadata: &GlobalMetadata,
     descriptors: &[(&DataObjectDescriptor, &[u8])],
     options: &EncodeOptions,
+    mode: EncodeMode,
 ) -> Result<Vec<u8>> {
     // Buffered encode does not support emit_preceders — use StreamingEncoder
     // with write_preceder() instead.
@@ -112,28 +113,46 @@ pub fn encode(
         let dtype = desc.dtype;
 
         let config = build_pipeline_config(desc, num_elements, dtype)?;
-        let result = pipeline::encode_pipeline(data, &config)
-            .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
         // Build the final descriptor with computed fields
         let mut final_desc = (*desc).clone();
 
-        // Store szip block offsets if produced
-        if let Some(offsets) = &result.block_offsets {
-            final_desc.params.insert(
-                "szip_block_offsets".to_string(),
-                ciborium::Value::Array(
-                    offsets
-                        .iter()
-                        .map(|&o| ciborium::Value::Integer(o.into()))
-                        .collect(),
-                ),
-            );
-        }
+        let encoded_payload: Vec<u8> = match mode {
+            EncodeMode::Raw => {
+                // Run the full encoding pipeline.
+                let result = pipeline::encode_pipeline(data, &config)
+                    .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
-        // Compute hash
+                // Store szip block offsets if produced
+                if let Some(offsets) = &result.block_offsets {
+                    final_desc.params.insert(
+                        "szip_block_offsets".to_string(),
+                        ciborium::Value::Array(
+                            offsets
+                                .iter()
+                                .map(|&o| ciborium::Value::Integer(o.into()))
+                                .collect(),
+                        ),
+                    );
+                }
+
+                result.encoded_bytes
+            }
+            EncodeMode::PreEncoded => {
+                // Caller's bytes are already encoded — use them directly.
+                // build_pipeline_config() was already called above for
+                // defense-in-depth validation of encoding/compression params.
+                validate_no_szip_offsets_for_non_szip(desc)?;
+                if desc.compression == "szip" && desc.params.contains_key("szip_block_offsets") {
+                    validate_szip_block_offsets(&desc.params, data.len())?;
+                }
+                data.to_vec()
+            }
+        };
+
+        // Compute hash over encoded payload (overwrites any caller-supplied hash)
         if let Some(algorithm) = options.hash_algorithm {
-            let hash_value = compute_hash(&result.encoded_bytes, algorithm);
+            let hash_value = compute_hash(&encoded_payload, algorithm);
             final_desc.hash = Some(HashDescriptor {
                 hash_type: algorithm.as_str().to_string(),
                 value: hash_value,
@@ -142,7 +161,7 @@ pub fn encode(
 
         encoded_objects.push(EncodedObject {
             descriptor: final_desc,
-            encoded_payload: result.encoded_bytes,
+            encoded_payload,
         });
     }
 
@@ -168,6 +187,46 @@ pub fn encode(
     populate_reserved_provenance(&mut enriched_meta.reserved);
 
     framing::encode_message(&enriched_meta, &encoded_objects)
+}
+
+/// Encode a complete Tensogram message.
+///
+/// `global_metadata` is the message-level metadata (version, MARS keys, etc.).
+/// `descriptors` is a list of (DataObjectDescriptor, raw_data) pairs.
+/// Returns the complete wire-format message.
+#[tracing::instrument(skip(global_metadata, descriptors, options), fields(objects = descriptors.len()))]
+pub fn encode(
+    global_metadata: &GlobalMetadata,
+    descriptors: &[(&DataObjectDescriptor, &[u8])],
+    options: &EncodeOptions,
+) -> Result<Vec<u8>> {
+    encode_inner(global_metadata, descriptors, options, EncodeMode::Raw)
+}
+
+/// Encode a pre-encoded Tensogram message where callers supply already-encoded bytes.
+///
+/// Use this when the payload bytes have already been encoded/compressed by an external
+/// pipeline. The library will:
+/// - Validate object descriptors (shape, dtype, etc.)
+/// - Validate encoding/compression params via `build_pipeline_config()` (defense-in-depth)
+/// - Use the caller's bytes directly as the encoded payload (no pipeline call)
+/// - Compute a fresh xxh3 hash over the caller's bytes (overwrites any caller-supplied hash)
+/// - Preserve caller-supplied `szip_block_offsets` in descriptor params
+///
+/// Callers must NOT set `emit_preceders = true` — use `StreamingEncoder::write_preceder()`
+/// for streaming preceder support.
+#[tracing::instrument(name = "encode_pre_encoded", skip_all, fields(num_objects = descriptors.len()))]
+pub fn encode_pre_encoded(
+    global_metadata: &GlobalMetadata,
+    descriptors: &[(&DataObjectDescriptor, &[u8])],
+    options: &EncodeOptions,
+) -> Result<Vec<u8>> {
+    encode_inner(
+        global_metadata,
+        descriptors,
+        options,
+        EncodeMode::PreEncoded,
+    )
 }
 
 /// Validate that the caller hasn't written to `_reserved_` at any level.
@@ -568,6 +627,99 @@ pub(crate) fn get_u64_param(params: &BTreeMap<String, ciborium::Value>, key: &st
             "missing required parameter: {key}"
         ))),
     }
+}
+
+pub(crate) fn validate_szip_block_offsets(
+    params: &BTreeMap<String, ciborium::Value>,
+    encoded_bytes_len: usize,
+) -> Result<()> {
+    let value = params.get("szip_block_offsets").ok_or_else(|| {
+        TensogramError::Metadata(
+            "missing required parameter: szip_block_offsets for szip compression".to_string(),
+        )
+    })?;
+
+    let offsets = match value {
+        ciborium::Value::Array(arr) => arr,
+        other => {
+            return Err(TensogramError::Metadata(format!(
+                "szip_block_offsets must be an array, got {other:?}"
+            )));
+        }
+    };
+
+    if offsets.is_empty() {
+        return Err(TensogramError::Metadata(
+            "szip_block_offsets must not be empty; first offset must be 0".to_string(),
+        ));
+    }
+
+    let bit_bound = encoded_bytes_len.checked_mul(8).ok_or_else(|| {
+        TensogramError::Metadata(format!(
+            "encoded byte length {encoded_bytes_len} overflows bit-bound calculation"
+        ))
+    })?;
+    let bit_bound_u64 = u64::try_from(bit_bound).map_err(|_| {
+        TensogramError::Metadata(format!(
+            "bit-bound {bit_bound} derived from {encoded_bytes_len} bytes does not fit in u64"
+        ))
+    })?;
+
+    let mut parsed_offsets = Vec::with_capacity(offsets.len());
+    for (idx, item) in offsets.iter().enumerate() {
+        let offset = match item {
+            ciborium::Value::Integer(i) => {
+                let n: i128 = (*i).into();
+                u64::try_from(n).map_err(|_| {
+                    TensogramError::Metadata(format!(
+                        "szip_block_offsets[{idx}] = {n} out of u64 range"
+                    ))
+                })?
+            }
+            other => {
+                return Err(TensogramError::Metadata(format!(
+                    "szip_block_offsets[{idx}] must be an integer, got {other:?}"
+                )));
+            }
+        };
+
+        if offset > bit_bound_u64 {
+            return Err(TensogramError::Metadata(format!(
+                "szip_block_offsets[{idx}] = {offset} exceeds bit bound {bit_bound_u64} (encoded_bytes_len = {encoded_bytes_len} bytes, {bit_bound_u64} bits)"
+            )));
+        }
+
+        if idx == 0 {
+            if offset != 0 {
+                return Err(TensogramError::Metadata(format!(
+                    "szip_block_offsets[0] must be 0, got {offset}"
+                )));
+            }
+        } else {
+            let prev = parsed_offsets[idx - 1];
+            if offset <= prev {
+                return Err(TensogramError::Metadata(format!(
+                    "szip_block_offsets must be strictly increasing: szip_block_offsets[{}] = {}, szip_block_offsets[{idx}] = {offset}",
+                    idx - 1,
+                    prev
+                )));
+            }
+        }
+
+        parsed_offsets.push(offset);
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_no_szip_offsets_for_non_szip(desc: &DataObjectDescriptor) -> Result<()> {
+    if desc.compression != "szip" && desc.params.contains_key("szip_block_offsets") {
+        return Err(TensogramError::Metadata(format!(
+            "szip_block_offsets provided but compression is '{}', not 'szip'",
+            desc.compression
+        )));
+    }
+    Ok(())
 }
 
 // ── Edge case tests ─────────────────────────────────────────────────────────
@@ -1309,5 +1461,273 @@ mod tests {
         let decoded: GlobalMetadata = crate::metadata::cbor_to_global_metadata(&bytes).unwrap();
         assert!(decoded.reserved.contains_key("encoder"));
         assert!(!decoded.reserved.contains_key("old"));
+    }
+
+    // ── Category 8: encode_pre_encoded smoke tests ───────────────────────
+
+    /// Roundtrip: encode raw bytes via encode(), then re-encode the exact same
+    /// payload bytes via encode_pre_encoded(). Both decoded payloads must be
+    /// byte-identical. We compare payload bytes, NOT raw wire messages (provenance
+    /// UUIDs make raw message equality impossible).
+    #[test]
+    fn test_encode_pre_encoded_roundtrip_simple_packing() {
+        // Use encoding="none" (raw float32) for maximum portability — no feature flags needed.
+        let desc = make_descriptor(vec![4]);
+        let raw_data: Vec<u8> = vec![0u8; 4 * 4]; // 4 float32 values, all-zero
+
+        let meta = GlobalMetadata::default();
+        let options = EncodeOptions::default();
+
+        // Step 1: encode normally
+        let msg1 = encode(&meta, &[(&desc, raw_data.as_slice())], &options).unwrap();
+
+        // Step 2: decode to get the encoded payload bytes + descriptor
+        let (_, objects1) = decode(&msg1, &DecodeOptions::default()).unwrap();
+        let (decoded_desc1, decoded_payload1) = &objects1[0];
+
+        // Step 3: re-encode the same bytes via encode_pre_encoded
+        let msg2 = encode_pre_encoded(
+            &meta,
+            &[(&decoded_desc1.clone(), decoded_payload1.as_slice())],
+            &options,
+        )
+        .unwrap();
+
+        // Step 4: decode the second message
+        let (_, objects2) = decode(&msg2, &DecodeOptions::default()).unwrap();
+        let (_, decoded_payload2) = &objects2[0];
+
+        // Payloads must be identical — same bytes, same encoding
+        // (raw wire messages differ due to non-deterministic provenance UUIDs)
+        assert_eq!(
+            decoded_payload1, decoded_payload2,
+            "decoded payloads should be equal after encode/re-encode roundtrip"
+        );
+    }
+
+    /// emit_preceders=true must be rejected by encode_pre_encoded (buffered mode).
+    #[test]
+    fn test_encode_pre_encoded_rejects_emit_preceders() {
+        let desc = make_descriptor(vec![2]);
+        let data = vec![0u8; 8];
+        let meta = GlobalMetadata::default();
+        let options = EncodeOptions {
+            emit_preceders: true,
+            ..Default::default()
+        };
+        let result = encode_pre_encoded(&meta, &[(&desc, data.as_slice())], &options);
+        assert!(
+            result.is_err(),
+            "encode_pre_encoded with emit_preceders=true should fail"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("emit_preceders"),
+            "error should mention emit_preceders: {err}"
+        );
+    }
+
+    /// Caller-supplied hash in descriptor must be overwritten by the library-computed hash.
+    #[test]
+    fn test_encode_pre_encoded_overwrites_caller_hash() {
+        let mut desc = make_descriptor(vec![2]);
+        // Plant garbage hash in descriptor
+        desc.hash = Some(HashDescriptor {
+            hash_type: "xxh3".to_string(),
+            value: "deadbeefdeadbeef".to_string(),
+        });
+
+        let data = vec![0xAB_u8; 8]; // non-trivial payload bytes
+        let meta = GlobalMetadata::default();
+        let options = EncodeOptions::default(); // includes xxh3 hashing
+
+        let msg = encode_pre_encoded(&meta, &[(&desc, data.as_slice())], &options).unwrap();
+        let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+        let (decoded_desc, decoded_payload) = &objects[0];
+
+        // Library should have computed a fresh hash
+        let computed_hash = match options.hash_algorithm {
+            Some(algorithm) => compute_hash(decoded_payload, algorithm),
+            None => panic!("expected hash algorithm"),
+        };
+
+        let stored_hash = decoded_desc
+            .hash
+            .as_ref()
+            .expect("hash should be present in decoded descriptor")
+            .value
+            .clone();
+
+        assert_ne!(
+            stored_hash, "deadbeefdeadbeef",
+            "caller's garbage hash must be overwritten"
+        );
+        assert_eq!(
+            stored_hash, computed_hash,
+            "library-computed hash must match hash over decoded payload"
+        );
+    }
+
+    #[test]
+    fn test_validate_szip_block_offsets_happy_path() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Array(vec![0u64, 100, 200].into_iter().map(|n| n.into()).collect()),
+        );
+
+        assert!(validate_szip_block_offsets(&params, 100).is_ok());
+    }
+
+    #[test]
+    fn test_validate_szip_block_offsets_missing_key() {
+        let params = BTreeMap::new();
+
+        let err = validate_szip_block_offsets(&params, 100)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("missing") && err.contains("szip_block_offsets"),
+            "error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_szip_block_offsets_not_array() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Integer(0.into()),
+        );
+
+        let err = validate_szip_block_offsets(&params, 100)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("array") && err.contains("szip_block_offsets"),
+            "error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_szip_block_offsets_non_integer_element() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Array(vec![
+                ciborium::Value::Integer(0.into()),
+                ciborium::Value::Text("x".to_string()),
+            ]),
+        );
+
+        let err = validate_szip_block_offsets(&params, 100)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("integer") && err.contains("szip_block_offsets"),
+            "error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_szip_block_offsets_nonzero_first() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Array(vec![5u64, 100, 200].into_iter().map(|n| n.into()).collect()),
+        );
+
+        let err = validate_szip_block_offsets(&params, 100)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("must be 0") && err.contains("got 5"),
+            "error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_szip_block_offsets_non_monotonic() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Array(vec![0u64, 100, 50].into_iter().map(|n| n.into()).collect()),
+        );
+
+        let err = validate_szip_block_offsets(&params, 100)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("increasing") || err.contains("monotonic"),
+            "error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_szip_block_offsets_offset_beyond_bound() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Array(vec![0u64, 100, 801].into_iter().map(|n| n.into()).collect()),
+        );
+
+        let err = validate_szip_block_offsets(&params, 100)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("800") && err.contains("801"), "error: {err}");
+    }
+
+    #[test]
+    fn test_validate_no_szip_offsets_for_non_szip_rejects() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Array(vec![0u64, 1].into_iter().map(|n| n.into()).collect()),
+        );
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "zstd".to_string(),
+            params,
+            hash: None,
+        };
+
+        let err = validate_no_szip_offsets_for_non_szip(&desc)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("szip_block_offsets") && err.contains("zstd"),
+            "error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_no_szip_offsets_for_non_szip_allows_szip() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Array(vec![0u64, 1].into_iter().map(|n| n.into()).collect()),
+        );
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![1],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "szip".to_string(),
+            params,
+            hash: None,
+        };
+
+        assert!(validate_no_szip_offsets_for_non_szip(&desc).is_ok());
     }
 }

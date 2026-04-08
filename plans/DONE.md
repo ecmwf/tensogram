@@ -7,22 +7,29 @@
 
 - **Version:** 0.6.0
 - **Workspace:** 6 default crates + 2 optional (Python, GRIB) + 2 separate packages (xarray, zarr)
-- **Tests:** 1008 total (283 Rust + 226 Python + 181 xarray + 204 Zarr + 105 C++ + 7 GRIB new + 2 streamer)
+- **Tests:** 1008+ total (283+ Rust + 245 Python + 181 xarray + 204 Zarr + 117 C++ + 7 GRIB new + 2 streamer)
 - **Quality:** 0 clippy warnings, 90.5% Rust line coverage
 
 ## tensogram-benchmarks
 
-9 tests (8 smoke + 1 GRIB, gated on `eccodes` feature). Separate workspace crate.
+23 smoke tests + 36 unit tests (+ GRIB tests gated on `eccodes`). Separate workspace crate.
 
-- `datagen.rs` — Deterministic SplitMix64-based synthetic weather field generator
-  (smooth sinusoidal temperature field, base ≈ 280 K, amplitude ≈ 30 K, ±0.1 K noise).
-- `report.rs` — ASCII table formatter with reference-relative comparison columns
-  (`vs Ref Enc`, `vs Ref Dec`, `Ratio %`, `Size KiB`). `median_ns` helper for timing.
-- `codec_matrix.rs` — 24 pipeline combos: baseline + raw f64 + simple_packing × {none,zstd,lz4,blosc2,szip} × {16,24,32 bits} + ZFP (rate 16/24/32) + SZ3 (abs=0.01).
-- `grib_comparison.rs` — ecCodes CCSDS (`grid_ccsds`) vs `grid_simple` vs tensogram `sp(24)+szip`. Feature-gated by `eccodes`. Uses raw C API via `extern "C"` declarations.
-- Two binaries: `codec-matrix` (default) and `grib-comparison` (requires `--features eccodes`).
+- `constants.rs` — Shared `AEC_DATA_PREPROCESS` constant (value 8, fixed from incorrect value 1).
+- `datagen.rs` — Deterministic SplitMix64-based synthetic weather field generator.
+- `report.rs` — `BenchmarkResult` with `TimingStats` (median/min/max), `Fidelity` enum
+  (Exact, Lossy{linf, l1, l2}, Unchecked), throughput (MB/s), compressed-size
+  variability tracking. `compute_fidelity()` compares decoded output to original.
+- `codec_matrix.rs` — 24 pipeline combos. `compute_params` inside the timed encode loop
+  for SP cases. Uses `encode_pipeline_f64` to avoid bytes→f64 round-trip. Configurable
+  warm-up (default 3). Returns `BenchmarkRun` with separate `results` and `failures`.
+- `grib_comparison.rs` — Symmetric end-to-end timing. Uses `encode_pipeline_f64`.
+  Returns `BenchmarkRun`.
+- `lib.rs` — `BenchmarkError` enum (Validation, Pipeline), `CaseFailure`, `BenchmarkRun`
+  with `all_passed()`. Binaries exit non-zero on failures.
+- Two binaries: `codec-matrix` (default 10 iterations, 3 warmup) and `grib-comparison`
+  (requires `--features eccodes`). Both accept `--warmup` flag.
 - `build.rs` — links `libeccodes` via pkg-config or Homebrew fallback when `eccodes` feature is active.
-- Documentation: `docs/src/guide/benchmarks.md`.
+- Documentation: `docs/src/guide/benchmarks.md`, `docs/src/guide/benchmark-results.md`.
 
 ## tensogram-core
 
@@ -35,6 +42,8 @@ Unit, integration, adversarial, and edge-case tests.
 - `dtype.rs` — All 15 dtypes (float16/32/64, bfloat16, complex64/128, int/uint 8-64, bitmask)
 - `hash.rs` — xxh3 hashing + verification (xxh3 only)
 - `encode.rs` — Full encode pipeline: validate → build pipeline config → encode per object → hash → assemble frames. Auto-populates `base[i]._reserved_.tensor` entries. Validates that client code does not write to `_reserved_`.
+  - `encode_pre_encoded()` — Bypass the encoding pipeline for already-encoded payloads. Accepts pre-packed bytes with a descriptor declaring encoding/filter/compression. Validates object structure (shape, dtype, szip block offsets) but skips the pipeline. Available across all bindings: Rust, Python, C FFI, C++.
+  - `StreamingEncoder::write_object_pre_encoded()` — Streaming variant for progressive encode of pre-encoded objects.
 - `decode.rs` — `decode()`, `decode_metadata()`, `decode_object()`, `decode_range()` (split results by default, `join` parameter)
 - `file.rs` — `TensogramFile`: open, create, lazy scan, append, seek-based random access
 - `iter.rs` — `MessageIter` (zero-copy buffer), `ObjectIter` (lazy per-object decode), `FileMessageIter` (seek-based file), `objects_metadata()` (descriptor-only)
@@ -46,9 +55,10 @@ Unit, integration, adversarial, and edge-case tests.
 
 47 tests.
 
-- `simple_packing.rs` — GRIB-style lossy quantization, MSB-first bit packing, 0-64 bits, NaN rejection, `decode_range()` for arbitrary bit offsets
+- `simple_packing.rs` — GRIB-style lossy quantization, MSB-first bit packing, 0-64 bits, NaN rejection, `decode_range()` for arbitrary bit offsets. Optimized encode/decode: precomputed scale (no per-value division), specialized byte-aligned loops for 8/16/24/32 bits, fused NaN+min+max scan in `compute_params`.
 - `shuffle.rs` — Byte-level shuffle/unshuffle (HDF5-style)
-- `libaec.rs` — Safe Rust wrapper around libaec: `aec_compress()` with RSI block offset tracking, `aec_decompress()`, `aec_decompress_range()`
+- `libaec.rs` — Safe Rust wrapper around libaec: `aec_compress()` with optional RSI block offset tracking (`aec_compress_no_offsets`), `aec_decompress()`, `aec_decompress_range()`. Auto-sets `AEC_DATA_3BYTE` for 17-24 bit samples (fixes corruption bug). 
+- `pipeline.rs` — `encode_pipeline_f64()` variant for callers with typed f64 data (avoids bytes→f64 conversion). Auto-sets `AEC_DATA_MSB` for szip when encoding is SimplePacking (fixes byte-order mismatch so libaec's predictor sees most-significant bytes first; compression ratio now matches ecCodes at ~27% on 24-bit GRIB data — see `docs/src/guide/benchmark-results.md`).
 - `compression/` — `Compressor` trait + 6 implementations:
   - `szip.rs` — SzipCompressor (CCSDS 121.0-B-3, RSI block random access)
   - `zstd.rs` — ZstdCompressor (Zstandard, stream compressor)
@@ -79,17 +89,19 @@ Tested indirectly via C++ wrapper (105 tests).
 - Error codes: `TGM_ERROR_OK` through `TGM_ERROR_END_OF_ITER`
 - Thread-local error messages via `tgm_last_error()`
 - Iterator API: `tgm_buffer_iter_*`, `tgm_file_iter_*`, `tgm_object_iter_*`
-- Streaming encoder: `tgm_streaming_encoder_create/write/write_preceder/count/finish/free`
+- Streaming encoder: `tgm_streaming_encoder_create/write/write_preceder/write_pre_encoded/count/finish/free`
 - Auto-generated `tensogram.h` (~544 lines) via cbindgen
 - Panic safety: `panic = "abort"` in both release and dev profiles
 - Vec capacity UB fixed (shrink_to_fit before forget), null pointer validation
 
 ## C++ Wrapper
 
-105 GoogleTest tests across 10 files.
+117 GoogleTest tests across 11 files.
 
 - `include/tensogram.hpp` — single-header C++17 wrapper (~934 lines)
 - RAII classes: `message`, `metadata`, `file`, `buffer_iterator`, `file_iterator`, `object_iterator`, `streaming_encoder`
+- `encode_pre_encoded()` — free function for already-encoded payloads
+- `streaming_encoder::write_object_pre_encoded()` — streaming variant
 - Typed exception hierarchy: `error` → `framing_error`, `metadata_error`, etc.
 - `decoded_object` view with `data_as<T>()`, `element_count<T>()`
 - Range-based for via `message::iterator`
@@ -102,6 +114,8 @@ Tested indirectly via C++ wrapper (105 tests).
 
 - Full Python API with NumPy integration
 - `encode()`, `decode()`, `decode_metadata()`, `decode_object()`, `decode_range()`, `scan()`
+- `encode_pre_encoded()` — bypass pipeline for already-encoded payloads (bytes input, not numpy arrays)
+- `StreamingEncoder` — progressive encode to file with `write_object()` and `write_object_pre_encoded()`
 - `iter_messages()` — iterate decoded messages from a byte buffer
 - `Message` namedtuple — `.metadata` and `.objects` attribute access, tuple unpacking
 - `TensogramFile` with context manager, `len()`, iterator
@@ -137,14 +151,14 @@ Tested indirectly via C++ wrapper (105 tests).
 
 ## Examples
 
-### Rust (11 runnable, workspace member)
-01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 shuffle_filter, 05 multi_object, 06 hash_verification, 07 scan_buffer, 08 decode_variants, 09 file_api, 10 iterators, 11 streaming
+### Rust (12 runnable, workspace member)
+01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 shuffle_filter, 05 multi_object, 06 hash_verification, 07 scan_buffer, 08 decode_variants, 09 file_api, 10 iterators, 11 streaming, 11 encode_pre_encoded
 
-### C++ (5 examples, C++ wrapper API)
-01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 file_api, 05 iterators
+### C++ (6 examples, C++ wrapper API)
+01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 file_api, 05 iterators, 11 encode_pre_encoded
 
-### Python (11 examples)
-01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 multi_object, 05 file_api, 06 hash_and_errors, 07 iterators, 08 xarray_integration, 08 zarr_backend, 09 dask_distributed, 09 streaming_consumer
+### Python (12 examples)
+01 encode_decode, 02 mars_metadata, 03 simple_packing, 04 multi_object, 05 file_api, 06 hash_and_errors, 07 iterators, 08 xarray_integration, 08 zarr_backend, 09 dask_distributed, 09 streaming_consumer, 11 encode_pre_encoded
 
 ## Documentation (mdbook)
 
@@ -238,6 +252,19 @@ Comprehensive audit of all Rust library code:
 - **Comments**: added safety comments on all `as` casts and array indexing in `wire.rs` read helpers, `civil_from_days` doe cast, and `get_f64_param` precision note
 - **Error messages**: all errors include what went wrong, where, and relevant values (expected vs actual)
 - **Documentation**: `docs/src/guide/error-handling.md` updated with all metadata-refactor error paths (encoding, decoding, streaming, CLI), no-panic guarantee section
+
+## record-benchmark-results (2026-04-07, v0.6.0)
+
+Ran both benchmark binaries on this machine and published results as a static docs page.
+
+- **Machine**: MacBook Pro (Mac16,1), Apple M4 10-core (4P+6E), 16 GB, macOS 26.3.1
+- **Rust**: 1.94.1 (e408947bf 2026-03-25)
+- **ecCodes**: 2.46.0 (Homebrew)
+- **Codec matrix**: 24 encoder×compressor×bit-width combos on 16M float64 values, 5 iterations, seed 42 — all 24 combos succeeded, no `[ERROR]` rows
+- **GRIB comparison**: 3 methods (eccodes grid_ccsds, eccodes grid_simple, tensogram sp(24)+szip) on 10M float64 values, 24-bit, 5 iterations, seed 42
+- **New file**: `docs/src/guide/benchmark-results.md` — metadata table, exact commands, verbatim output tables, portability note
+- **Updated**: `docs/src/SUMMARY.md` — added `[Benchmark Results](guide/benchmark-results.md)` after `[Benchmarks]`
+- **Docs build**: `mdbook build` passes with no errors or warnings
 
 ## Dependencies
 

@@ -14,6 +14,10 @@ name = "grib-comparison"
 path = "src/bin/grib_comparison.rs"
 required-features = ["eccodes"]
 
+[[bench]]
+name = "encode_pre_encoded"
+harness = false
+
 [lib]
 name = "tensogram_benchmarks"
 path = "src/lib.rs"
@@ -24,6 +28,11 @@ eccodes = ["dep:eccodes", "dep:eccodes-sys"]
 
 [dependencies]
 tensogram-encodings = { path = "../crates/tensogram-encodings" }
+tensogram-core = { path = "../crates/tensogram-core" }
+ciborium = { workspace = true }
 clap = { workspace = true }
 eccodes = { version = "0.14", default-features = false, optional = true }
 eccodes-sys = { version = "0.7", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }

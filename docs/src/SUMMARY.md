@@ -26,6 +26,7 @@
 
 - [Quick Start](guide/quickstart.md)
 - [Encoding Data](guide/encoding.md)
+- [Pre-Encoded Data API (Advanced)](guide/encode-pre-encoded.md)
 - [Decoding Data](guide/decoding.md)
 - [Working with Files](guide/file-api.md)
 - [Iterators](guide/iterators.md)
@@ -34,6 +35,7 @@
 - [Dask Integration](guide/dask-integration.md)
 - [Zarr v3 Backend](guide/zarr-backend.md)
 - [Benchmarks](guide/benchmarks.md)
+- [Benchmark Results](guide/benchmark-results.md)
 
 ---
 

@@ -15,7 +15,7 @@ pub use decode::{
     decode, decode_descriptors, decode_metadata, decode_object, decode_range, DecodeOptions,
 };
 pub use dtype::Dtype;
-pub use encode::{encode, EncodeOptions};
+pub use encode::{encode, encode_pre_encoded, EncodeOptions};
 pub use error::{Result, TensogramError};
 pub use file::TensogramFile;
 pub use framing::{scan, scan_file};

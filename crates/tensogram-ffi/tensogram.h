@@ -117,6 +117,44 @@ tgm_error tgm_encode(const char *metadata_json,
                      tgm_bytes_t *out);
 
 /**
+ * Encode a Tensogram message from JSON metadata and pre-encoded payload bytes.
+ *
+ * Like `tgm_encode`, but each `data_ptrs[i]` slice must already be encoded
+ * according to the matching descriptor's `encoding` / `filter` / `compression`
+ * pipeline. The library does not run the encoding pipeline again — it writes
+ * the caller-provided bytes directly into the wire-format payload after
+ * validating that the descriptor's pipeline configuration is well-formed.
+ *
+ * `metadata_json`: same flat JSON schema as `tgm_encode` (`version`,
+ *   `descriptors`, optional `base`, plus arbitrary extra top-level keys).
+ *
+ * `data_ptrs` / `data_lens`: arrays of length `num_objects` pointing at
+ *   already-encoded payload bytes (one entry per descriptor).
+ *
+ * `hash_algo`: null-terminated string ("xxh3") or NULL for no hash. The
+ *   library always recomputes the hash over the caller's bytes; any
+ *   `hash` field embedded in the descriptor JSON is ignored and overwritten.
+ *
+ * Notes for compression-aware decoding:
+ * - For `szip` compression, callers SHOULD include `szip_block_offsets`
+ *   (a list of bit offsets into the compressed payload) inside the
+ *   matching descriptor's params so that `tgm_decode_range` can locate
+ *   szip block boundaries without rescanning the compressed stream.
+ * - Other pipeline params (e.g. `simple_packing` reference value, scale
+ *   factors) must also be present in the descriptor — they are not
+ *   inferred from the bytes.
+ *
+ * On success returns `TgmError::Ok` and fills `out` with the encoded message.
+ * The caller must free `out` with `tgm_bytes_free`.
+ */
+tgm_error tgm_encode_pre_encoded(const char *metadata_json,
+                                 const uint8_t *const *data_ptrs,
+                                 const size_t *data_lens,
+                                 size_t num_objects,
+                                 const char *hash_algo,
+                                 tgm_bytes_t *out);
+
+/**
  * Decode a complete message (global metadata + all object payloads).
  *
  * `buf` / `buf_len`: the wire-format message bytes.
@@ -532,6 +570,32 @@ tgm_error tgm_streaming_encoder_write(tgm_streaming_encoder_t *enc,
                                       const char *descriptor_json,
                                       const uint8_t *data,
                                       size_t data_len);
+
+/**
+ * Write a single pre-encoded data object to the streaming encoder.
+ *
+ * Like `tgm_streaming_encoder_write`, but `data` must already be encoded
+ * according to the descriptor's pipeline (`encoding` / `filter` /
+ * `compression`). The library does not run the encoding pipeline — it
+ * validates the descriptor's pipeline configuration and writes the bytes
+ * as-is into a data object frame. The hash (if configured on the encoder)
+ * is recomputed over the caller's bytes.
+ *
+ * `descriptor_json`: same JSON schema as `tgm_streaming_encoder_write`.
+ *
+ * For `szip` compression, callers SHOULD include `szip_block_offsets`
+ * (bit offsets, not byte offsets) in the descriptor's params so that
+ * `tgm_decode_range` can locate compressed block boundaries later.
+ * Other pipeline params (e.g. `simple_packing` reference value, scale
+ * factors) must also be present in the descriptor.
+ *
+ * Any `hash` field embedded in the descriptor JSON is ignored — the
+ * library always recomputes the hash from the caller's bytes.
+ */
+tgm_error tgm_streaming_encoder_write_pre_encoded(tgm_streaming_encoder_t *enc,
+                                                  const char *descriptor_json,
+                                                  const uint8_t *data,
+                                                  size_t data_len);
 
 /**
  * Return the number of objects written so far.

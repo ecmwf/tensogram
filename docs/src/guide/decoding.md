@@ -127,6 +127,8 @@ print(arr.shape)          # (75,)
 > `(offset, count)` pairs that `decode_range` expects, so you rarely need to
 > compute flattened offsets by hand when working through xarray.
 
+> **Pre-encoded messages:** Messages produced via `encode_pre_encoded` only support `decode_range` if the caller provided the necessary bit-precise `szip_block_offsets` (see [Pre-encoded Payloads](./encode-pre-encoded.md)).
+
 > **Edge case:** `decode_range` works with all encoding+compression combinations that support random access: uncompressed data, `simple_packing` (bit extraction), `szip` (RSI block seeking), `blosc2` (chunk access), and `zfp` fixed-rate mode. It returns an error for the `shuffle` filter (byte rearrangement breaks contiguous sample ranges) and for stream compressors (`zstd`, `lz4`, `sz3`) that don't support partial decode.
 
 ## DecodeOptions

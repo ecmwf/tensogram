@@ -5,11 +5,7 @@ For speculative ideas, see `IDEAS.md`.
 
 ## API
 
-- [ ] *api-pre-encoded*:
-  - add API for caller to pass pre encoded buffer and other details of compression
-  - this is and advanced usability function, rarely needed except when caller code has access to alternative, possibly more optmised, for encoding (eg a GPU kernel).
-  - research ecmwf/eccodes has a similar api function
-  - for complex encoders (eg szip) the caller may need to pass complex information, for example the RSI blocks (if wanting to enable the decode_range functionality)
+- [x] ~~api-pre-encoded~~ → `encode.rs:encode_pre_encoded()` + bindings (Python, C FFI, C++) + `docs/src/guide/encode-pre-encoded.md` + benchmarks + examples
 
 - [x] ~~Populate `reserved` metadata field with provenance information~~ → `encode.rs:populate_reserved_provenance()`
 
@@ -51,13 +47,10 @@ For speculative ideas, see `IDEAS.md`.
   - make proposals of how this could be achieved. iterate with the user ideas.
   - create a benchmarks/ dir where multiple benchmarks for this library will be added
   - the benchmarks should always report against a reference.
-  - add a benchmark that compares encoding large runtime auto-generated entries (10M float64 packed to 24 bit) to GRIB (feature gated by eccodes) using grib_ccsds packing and comparing it with the simple_packing (also 24 bit) + szip compression by tensogram. eccodes implementation is the reference.
+  - add a benchmark that compares encoding large runtime auto-generated entries (10M float64 packed to 24 bit) to GRIB (feature gated by eccodes) using grid_ccsds packing and comparing it with the simple_packing (also 24 bit) + szip compression by tensogram. eccodes implementation is the reference.
   - add a benchmark that compares all combinations of encoders + compressors. none+none is the reference. include the speed of compression (ms), decompression (ms), and the rate compression (in % and KiB). Use large runtime auto-generated entries of 16M points starting in float64. Vary also the packing to 16, 24 and 32 bits.
 
-- [ ] *record-benchmark-results*:
-  - run all benchmarks
-  - make a static page with results from the benchmarks
-  - insert in docs/ with a marked date of running, version and the details of the machine where it ran (this localhost).
+- [x] ~~*record-benchmark-results*~~ → `docs/src/guide/benchmark-results.md` — ran both benchmarks (codec-matrix 24 combos, grib-comparison 3 methods) on Apple M4 / macOS 26.3.1 / Rust 1.94.1 / ecCodes 2.46.0; results page added to docs with date, version, machine metadata; `mdbook build` passes.
 
 ## Code Quality
 

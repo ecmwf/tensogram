@@ -32,9 +32,9 @@ use std::ptr;
 use std::slice;
 
 use tensogram_core::{
-    decode, decode_metadata, decode_object, decode_range, encode, scan, DataObjectDescriptor,
-    DecodeOptions, EncodeOptions, GlobalMetadata, HashAlgorithm, StreamingEncoder, TensogramError,
-    TensogramFile, RESERVED_KEY,
+    decode, decode_metadata, decode_object, decode_range, encode, encode_pre_encoded, scan,
+    DataObjectDescriptor, DecodeOptions, EncodeOptions, GlobalMetadata, HashAlgorithm,
+    StreamingEncoder, TensogramError, TensogramFile, RESERVED_KEY,
 };
 
 // ---------------------------------------------------------------------------
@@ -508,6 +508,96 @@ pub extern "C" fn tgm_encode(
         .collect();
 
     match encode(&parsed.global_metadata, &pairs, &parsed.options) {
+        Ok(bytes) => {
+            // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
+            let mut bytes = bytes.into_boxed_slice().into_vec();
+            let result = TgmBytes {
+                data: bytes.as_mut_ptr(),
+                len: bytes.len(),
+            };
+            std::mem::forget(bytes); // ownership transferred to C
+            unsafe {
+                *out = result;
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
+/// Encode a Tensogram message from JSON metadata and pre-encoded payload bytes.
+///
+/// Like `tgm_encode`, but each `data_ptrs[i]` slice must already be encoded
+/// according to the matching descriptor's `encoding` / `filter` / `compression`
+/// pipeline. The library does not run the encoding pipeline again — it writes
+/// the caller-provided bytes directly into the wire-format payload after
+/// validating that the descriptor's pipeline configuration is well-formed.
+///
+/// `metadata_json`: same flat JSON schema as `tgm_encode` (`version`,
+///   `descriptors`, optional `base`, plus arbitrary extra top-level keys).
+///
+/// `data_ptrs` / `data_lens`: arrays of length `num_objects` pointing at
+///   already-encoded payload bytes (one entry per descriptor).
+///
+/// `hash_algo`: null-terminated string ("xxh3") or NULL for no hash. The
+///   library always recomputes the hash over the caller's bytes; any
+///   `hash` field embedded in the descriptor JSON is ignored and overwritten.
+///
+/// Notes for compression-aware decoding:
+/// - For `szip` compression, callers SHOULD include `szip_block_offsets`
+///   (a list of bit offsets into the compressed payload) inside the
+///   matching descriptor's params so that `tgm_decode_range` can locate
+///   szip block boundaries without rescanning the compressed stream.
+/// - Other pipeline params (e.g. `simple_packing` reference value, scale
+///   factors) must also be present in the descriptor — they are not
+///   inferred from the bytes.
+///
+/// On success returns `TgmError::Ok` and fills `out` with the encoded message.
+/// The caller must free `out` with `tgm_bytes_free`.
+#[no_mangle]
+pub extern "C" fn tgm_encode_pre_encoded(
+    metadata_json: *const c_char,
+    data_ptrs: *const *const u8,
+    data_lens: *const usize,
+    num_objects: usize,
+    hash_algo: *const c_char,
+    out: *mut TgmBytes,
+) -> TgmError {
+    if metadata_json.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let json_str = match unsafe { CStr::from_ptr(metadata_json) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in metadata_json: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+
+    let parsed = match unsafe {
+        parse_encode_args(json_str, data_ptrs, data_lens, num_objects, hash_algo)
+    } {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            set_last_error(&msg);
+            return code;
+        }
+    };
+
+    // Build (descriptor, pre-encoded data) pairs for the pre-encoded API.
+    let pairs: Vec<(&DataObjectDescriptor, &[u8])> = parsed
+        .descriptors
+        .iter()
+        .zip(parsed.data_slices.iter())
+        .map(|(d, s)| (d, *s))
+        .collect();
+
+    match encode_pre_encoded(&parsed.global_metadata, &pairs, &parsed.options) {
         Ok(bytes) => {
             // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
             let mut bytes = bytes.into_boxed_slice().into_vec();
@@ -2643,6 +2733,71 @@ pub extern "C" fn tgm_streaming_encoder_write(
 
     match encoder.inner.as_mut() {
         Some(inner) => match inner.write_object(&descriptor, data_slice) {
+            Ok(()) => TgmError::Ok,
+            Err(e) => {
+                set_last_error(&e.to_string());
+                to_error_code(&e)
+            }
+        },
+        None => {
+            set_last_error("streaming encoder already finished");
+            TgmError::InvalidArg
+        }
+    }
+}
+
+/// Write a single pre-encoded data object to the streaming encoder.
+///
+/// Like `tgm_streaming_encoder_write`, but `data` must already be encoded
+/// according to the descriptor's pipeline (`encoding` / `filter` /
+/// `compression`). The library does not run the encoding pipeline — it
+/// validates the descriptor's pipeline configuration and writes the bytes
+/// as-is into a data object frame. The hash (if configured on the encoder)
+/// is recomputed over the caller's bytes.
+///
+/// `descriptor_json`: same JSON schema as `tgm_streaming_encoder_write`.
+///
+/// For `szip` compression, callers SHOULD include `szip_block_offsets`
+/// (bit offsets, not byte offsets) in the descriptor's params so that
+/// `tgm_decode_range` can locate compressed block boundaries later.
+/// Other pipeline params (e.g. `simple_packing` reference value, scale
+/// factors) must also be present in the descriptor.
+///
+/// Any `hash` field embedded in the descriptor JSON is ignored — the
+/// library always recomputes the hash from the caller's bytes.
+#[no_mangle]
+pub extern "C" fn tgm_streaming_encoder_write_pre_encoded(
+    enc: *mut TgmStreamingEncoder,
+    descriptor_json: *const c_char,
+    data: *const u8,
+    data_len: usize,
+) -> TgmError {
+    if enc.is_null() || descriptor_json.is_null() || data.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let json_str = match unsafe { CStr::from_ptr(descriptor_json) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in descriptor_json: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+
+    let descriptor: DataObjectDescriptor = match serde_json::from_str(json_str) {
+        Ok(d) => d,
+        Err(e) => {
+            set_last_error(&format!("failed to parse descriptor JSON: {e}"));
+            return TgmError::Metadata;
+        }
+    };
+
+    let data_slice = unsafe { slice::from_raw_parts(data, data_len) };
+    let encoder = unsafe { &mut *enc };
+
+    match encoder.inner.as_mut() {
+        Some(inner) => match inner.write_object_pre_encoded(&descriptor, data_slice) {
             Ok(()) => TgmError::Ok,
             Err(e) => {
                 set_last_error(&e.to_string());

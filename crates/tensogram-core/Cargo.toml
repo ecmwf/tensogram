@@ -29,3 +29,4 @@ tokio = { version = "1", features = ["fs", "rt"], optional = true }
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+sha2 = "0.10"
