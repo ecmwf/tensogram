@@ -65,8 +65,14 @@ impl Default for DataPipeline {
 /// Options for NetCDF → Tensogram conversion.
 #[derive(Debug, Clone, Default)]
 pub struct ConvertOptions {
+    /// How to group variables into Tensogram messages. See [`SplitBy`].
     pub split_by: SplitBy,
+    /// Encode-side knobs passed verbatim to `tensogram_core::encode`.
+    /// Most callers can leave this at `Default`.
     pub encode_options: tensogram_core::EncodeOptions,
+    /// When `true`, lift the 16 allow-listed CF attributes into
+    /// `base[i]["cf"]`. The full attribute dump is always available
+    /// under `base[i]["netcdf"]` regardless.
     pub cf: bool,
     /// Encoding/filter/compression pipeline applied to every data object.
     /// Defaults to all `"none"` (raw little-endian payload, no compression).
@@ -75,7 +81,6 @@ pub struct ConvertOptions {
 
 /// Extracted data for one variable ready to encode.
 struct ExtractedVar {
-    #[allow(dead_code)]
     name: String,
     dtype: Dtype,
     shape: Vec<u64>,
@@ -83,7 +88,60 @@ struct ExtractedVar {
     base_entry: BTreeMap<String, CborValue>,
 }
 
+/// Wrap a `BTreeMap<String, CborValue>` into a `CborValue::Map` by
+/// cloning every key/value into the CBOR key shape. This is the
+/// one-liner for the "turn a Rust string map into a CBOR map" pattern
+/// that used to appear inline at four call sites.
+fn cbor_map_from(map: &BTreeMap<String, CborValue>) -> CborValue {
+    CborValue::Map(
+        map.iter()
+            .map(|(k, v)| (CborValue::Text(k.clone()), v.clone()))
+            .collect(),
+    )
+}
+
+/// Build the `base[i]` entry for one variable: always contains `name`,
+/// gains a `netcdf` sub-map when any attributes were extracted, and
+/// gains a `cf` sub-map when CF extraction is enabled and at least one
+/// allow-listed attribute is present.
+fn build_base_entry(
+    var_name: &str,
+    netcdf_meta: &BTreeMap<String, CborValue>,
+    cf_meta: Option<&BTreeMap<String, CborValue>>,
+) -> BTreeMap<String, CborValue> {
+    let mut base_entry: BTreeMap<String, CborValue> = BTreeMap::new();
+    base_entry.insert("name".to_string(), CborValue::Text(var_name.to_string()));
+
+    if !netcdf_meta.is_empty() {
+        base_entry.insert("netcdf".to_string(), cbor_map_from(netcdf_meta));
+    }
+
+    if let Some(cf) = cf_meta {
+        if !cf.is_empty() {
+            base_entry.insert("cf".to_string(), cbor_map_from(cf));
+        }
+    }
+
+    base_entry
+}
+
 /// Convert all variables from a NetCDF file into Tensogram wire bytes.
+///
+/// # Errors
+///
+/// - [`NetcdfError::Netcdf`] if the file cannot be opened or a read fails.
+/// - [`NetcdfError::NoVariables`] if the root group has no supported
+///   numeric variables (char/string/compound/vlen are silently skipped
+///   with a warning — this error fires only when *every* variable is
+///   unsupported).
+/// - [`NetcdfError::NoUnlimitedDimension`] if `split_by = Record` is
+///   requested on a file without an unlimited dimension.
+/// - [`NetcdfError::InvalidData`] on unknown pipeline codec names,
+///   `simple_packing` `compute_params` failures (rare — usually
+///   all-NaN data, which is already filtered), or low-level read
+///   errors in record-split mode.
+/// - [`NetcdfError::Encode`] if the underlying Tensogram encoder rejects
+///   the configured pipeline (e.g. `szip` on >32-bit samples).
 pub fn convert_netcdf_file(
     path: &Path,
     options: &ConvertOptions,
@@ -175,46 +233,11 @@ fn extract_variable(
     let mut netcdf_meta = extract_var_attrs(var);
 
     if !global_attrs.is_empty() {
-        netcdf_meta.insert(
-            "_global".to_string(),
-            CborValue::Map(
-                global_attrs
-                    .iter()
-                    .map(|(k, v)| (CborValue::Text(k.clone()), v.clone()))
-                    .collect(),
-            ),
-        );
+        netcdf_meta.insert("_global".to_string(), cbor_map_from(global_attrs));
     }
 
-    let mut base_entry: BTreeMap<String, CborValue> = BTreeMap::new();
-    base_entry.insert("name".to_string(), CborValue::Text(var_name.to_string()));
-
-    if !netcdf_meta.is_empty() {
-        base_entry.insert(
-            "netcdf".to_string(),
-            CborValue::Map(
-                netcdf_meta
-                    .iter()
-                    .map(|(k, v)| (CborValue::Text(k.clone()), v.clone()))
-                    .collect(),
-            ),
-        );
-    }
-
-    if options.cf {
-        let cf_meta = extract_cf_attrs(var);
-        if !cf_meta.is_empty() {
-            base_entry.insert(
-                "cf".to_string(),
-                CborValue::Map(
-                    cf_meta
-                        .iter()
-                        .map(|(k, v)| (CborValue::Text(k.clone()), v.clone()))
-                        .collect(),
-                ),
-            );
-        }
-    }
+    let cf_meta = options.cf.then(|| extract_cf_attrs(var));
+    let base_entry = build_base_entry(var_name, &netcdf_meta, cf_meta.as_ref());
 
     Ok(Some(ExtractedVar {
         name: var_name.to_string(),
@@ -230,76 +253,34 @@ fn read_native(
     var_name: &str,
     vartype: &NcVariableType,
 ) -> Result<(Dtype, Vec<u8>), NetcdfError> {
-    match vartype {
-        NcVariableType::Int(IntType::I8) => {
-            let vals: Vec<i8> = var
+    macro_rules! read_all {
+        ($t:ty, $dtype:expr) => {{
+            let vals: Vec<$t> = var
                 .get_values(..)
                 .map_err(|e| NetcdfError::InvalidData(format!("reading '{var_name}': {e}")))?;
             let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Ok((Dtype::Int8, bytes))
-        }
+            Ok(($dtype, bytes))
+        }};
+    }
+
+    match vartype {
+        NcVariableType::Int(IntType::I8) => read_all!(i8, Dtype::Int8),
         NcVariableType::Int(IntType::U8) => {
+            // Uint8 is special: get_values<u8>() already returns
+            // Vec<u8>, no re-byteification needed.
             let vals: Vec<u8> = var
                 .get_values(..)
                 .map_err(|e| NetcdfError::InvalidData(format!("reading '{var_name}': {e}")))?;
             Ok((Dtype::Uint8, vals))
         }
-        NcVariableType::Int(IntType::I16) => {
-            let vals: Vec<i16> = var
-                .get_values(..)
-                .map_err(|e| NetcdfError::InvalidData(format!("reading '{var_name}': {e}")))?;
-            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Ok((Dtype::Int16, bytes))
-        }
-        NcVariableType::Int(IntType::U16) => {
-            let vals: Vec<u16> = var
-                .get_values(..)
-                .map_err(|e| NetcdfError::InvalidData(format!("reading '{var_name}': {e}")))?;
-            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Ok((Dtype::Uint16, bytes))
-        }
-        NcVariableType::Int(IntType::I32) => {
-            let vals: Vec<i32> = var
-                .get_values(..)
-                .map_err(|e| NetcdfError::InvalidData(format!("reading '{var_name}': {e}")))?;
-            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Ok((Dtype::Int32, bytes))
-        }
-        NcVariableType::Int(IntType::U32) => {
-            let vals: Vec<u32> = var
-                .get_values(..)
-                .map_err(|e| NetcdfError::InvalidData(format!("reading '{var_name}': {e}")))?;
-            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Ok((Dtype::Uint32, bytes))
-        }
-        NcVariableType::Int(IntType::I64) => {
-            let vals: Vec<i64> = var
-                .get_values(..)
-                .map_err(|e| NetcdfError::InvalidData(format!("reading '{var_name}': {e}")))?;
-            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Ok((Dtype::Int64, bytes))
-        }
-        NcVariableType::Int(IntType::U64) => {
-            let vals: Vec<u64> = var
-                .get_values(..)
-                .map_err(|e| NetcdfError::InvalidData(format!("reading '{var_name}': {e}")))?;
-            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Ok((Dtype::Uint64, bytes))
-        }
-        NcVariableType::Float(FloatType::F32) => {
-            let vals: Vec<f32> = var
-                .get_values(..)
-                .map_err(|e| NetcdfError::InvalidData(format!("reading '{var_name}': {e}")))?;
-            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Ok((Dtype::Float32, bytes))
-        }
-        NcVariableType::Float(FloatType::F64) => {
-            let vals: Vec<f64> = var
-                .get_values(..)
-                .map_err(|e| NetcdfError::InvalidData(format!("reading '{var_name}': {e}")))?;
-            let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Ok((Dtype::Float64, bytes))
-        }
+        NcVariableType::Int(IntType::I16) => read_all!(i16, Dtype::Int16),
+        NcVariableType::Int(IntType::U16) => read_all!(u16, Dtype::Uint16),
+        NcVariableType::Int(IntType::I32) => read_all!(i32, Dtype::Int32),
+        NcVariableType::Int(IntType::U32) => read_all!(u32, Dtype::Uint32),
+        NcVariableType::Int(IntType::I64) => read_all!(i64, Dtype::Int64),
+        NcVariableType::Int(IntType::U64) => read_all!(u64, Dtype::Uint64),
+        NcVariableType::Float(FloatType::F32) => read_all!(f32, Dtype::Float32),
+        NcVariableType::Float(FloatType::F64) => read_all!(f64, Dtype::Float64),
         _ => Err(NetcdfError::UnsupportedType {
             name: var_name.to_string(),
             reason: format!("unhandled type {vartype:?}"),
@@ -307,13 +288,16 @@ fn read_native(
     }
 }
 
+/// Read all values as `f64`, apply CF-style unpacking
+/// (`scale_factor` / `add_offset`), and replace fill values with NaN.
+/// Output is always `Dtype::Float64` regardless of the on-disk dtype.
 fn read_and_unpack(
     var: &netcdf::Variable<'_>,
     var_name: &str,
 ) -> Result<(Dtype, Vec<u8>), NetcdfError> {
     let scale_factor = get_f64_attr(var, "scale_factor");
     let add_offset = get_f64_attr(var, "add_offset");
-    let fill_value = get_f64_attr(var, "missing_value").or_else(|| get_fill_value_as_f64(var));
+    let fill_value = get_f64_attr(var, "missing_value").or_else(|| get_f64_attr(var, "_FillValue"));
 
     let mut vals: Vec<f64> = var.get_values(..).map_err(|e| {
         NetcdfError::InvalidData(format!("reading '{var_name}' for unpacking: {e}"))
@@ -338,6 +322,8 @@ fn read_and_unpack(
     Ok((Dtype::Float64, bytes))
 }
 
+/// Read a NetCDF variable attribute as an `f64`, coercing any numeric
+/// scalar type. Returns `None` if the attribute is missing or non-numeric.
 fn get_f64_attr(var: &netcdf::Variable<'_>, name: &str) -> Option<f64> {
     let attr = var.attribute(name)?;
     match attr.value().ok()? {
@@ -348,10 +334,6 @@ fn get_f64_attr(var: &netcdf::Variable<'_>, name: &str) -> Option<f64> {
         AttributeValue::Longlong(v) => Some(v as f64),
         _ => None,
     }
-}
-
-fn get_fill_value_as_f64(var: &netcdf::Variable<'_>) -> Option<f64> {
-    get_f64_attr(var, "_FillValue")
 }
 
 fn extract_global_attrs(file: &netcdf::File) -> BTreeMap<String, CborValue> {
@@ -729,10 +711,19 @@ fn extract_variable_record(
         .map(|d| d.len() as u64)
         .collect();
 
+    // Invariant: encode_by_record only calls us with variables that
+    // actually have the unlimited dimension in their dim list. If a
+    // future caller violates that we'd rather get a clear error than
+    // silently read from position 0.
     let unlimited_pos = dims
         .iter()
         .position(|d| d.name() == unlimited_name)
-        .unwrap_or(0);
+        .ok_or_else(|| {
+            NetcdfError::InvalidData(format!(
+                "extract_variable_record: variable '{var_name}' has no dimension \
+                 matching unlimited '{unlimited_name}'"
+            ))
+        })?;
 
     let extents = build_record_extents(dims, unlimited_pos, record_idx);
 
@@ -745,46 +736,11 @@ fn extract_variable_record(
     );
 
     if !global_attrs.is_empty() {
-        netcdf_meta.insert(
-            "_global".to_string(),
-            CborValue::Map(
-                global_attrs
-                    .iter()
-                    .map(|(k, v)| (CborValue::Text(k.clone()), v.clone()))
-                    .collect(),
-            ),
-        );
+        netcdf_meta.insert("_global".to_string(), cbor_map_from(global_attrs));
     }
 
-    let mut base_entry: BTreeMap<String, CborValue> = BTreeMap::new();
-    base_entry.insert("name".to_string(), CborValue::Text(var_name.to_string()));
-
-    if !netcdf_meta.is_empty() {
-        base_entry.insert(
-            "netcdf".to_string(),
-            CborValue::Map(
-                netcdf_meta
-                    .iter()
-                    .map(|(k, v)| (CborValue::Text(k.clone()), v.clone()))
-                    .collect(),
-            ),
-        );
-    }
-
-    if options.cf {
-        let cf_meta = extract_cf_attrs(var);
-        if !cf_meta.is_empty() {
-            base_entry.insert(
-                "cf".to_string(),
-                CborValue::Map(
-                    cf_meta
-                        .iter()
-                        .map(|(k, v)| (CborValue::Text(k.clone()), v.clone()))
-                        .collect(),
-                ),
-            );
-        }
-    }
+    let cf_meta = options.cf.then(|| extract_cf_attrs(var));
+    let base_entry = build_base_entry(var_name, &netcdf_meta, cf_meta.as_ref());
 
     Ok(Some(ExtractedVar {
         name: var_name.to_string(),
