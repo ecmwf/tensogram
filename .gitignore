@@ -5,7 +5,7 @@
 *.dylib.dSYM/
 **/target
 /build/
-Cargo.lock
+
 /docs/book
 **/.venv
 **/.ruff_cache
