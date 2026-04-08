@@ -68,3 +68,9 @@ let messages = convert_grib_file(Path::new("forecast.grib"), &options)?;
 ## Scope
 
 Currently only GRIB → Tensogram conversion is supported. Tensogram → GRIB is out of scope.
+
+## See also
+
+- [NetCDF Conversion](../guide/convert-netcdf.md) — sister converter for
+  NetCDF files; shares the `--encoding`/`--bits`/`--filter`/`--compression`
+  pipeline flags with `convert-grib`.
