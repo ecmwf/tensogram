@@ -47,6 +47,16 @@ For speculative ideas, see `IDEAS.md`.
 
 - [x] ~~metadata-major-refactor~~ → v0.6.0. Removed `common`/`payload`, added `base` (per-object independent entries), renamed `reserved` → `_reserved_`, `extra` → `_extra_`. Auto-populated keys under `base[i]._reserved_.tensor`. Added `compute_common()` utility. All docs updated.
 
+## Integration with other software
+
+- [ ] **earthkit-data-integration**:
+    - data loader inside earthkit-data
+    - research the code of ecmwf/earthkit-data on github, latest verison.
+    - develop a loader for earthkit-data to load tensogram data
+    - support loading files and streaming 
+    - support decoding and encoding
+    - add this code to the tensogram-xarray module, such that the earthkit extension can use to export to xarray
+
 ## Documentation
 
 - [x] ~~Document all error paths in docs/ (error handling reference page)~~ → `docs/src/guide/error-handling.md`

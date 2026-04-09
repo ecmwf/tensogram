@@ -563,6 +563,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
+name = "hdf5-metno-sys"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b546cf84b629a51ea1e68c783b37ce2045c80f3d56e4ba1d2d882cfba0364738"
+dependencies = [
+ "libc",
+ "libloading",
+ "parking_lot",
+ "pkg-config",
+ "regex",
+ "serde",
+ "serde_derive",
+ "winreg",
+]
+
+[[package]]
 name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -698,10 +714,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "libz-sys"
+version = "1.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc3a226e576f50782b3305c5ccf458698f92798987f551c6a02efe8276721e22"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "lock_api"
+version = "0.4.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
+dependencies = [
+ "scopeguard",
+]
 
 [[package]]
 name = "log"
@@ -747,6 +784,30 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "netcdf"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "032d47fcd93a63a21232184aabfd202e1e50116d31bbd382580503308887d0f9"
+dependencies = [
+ "bitflags",
+ "libc",
+ "netcdf-sys",
+ "semver",
+]
+
+[[package]]
+name = "netcdf-sys"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "596486b4ae6f128b4c0c62343fe9459946e6bf40e830d7dfb5fe82fbbf024f65"
+dependencies = [
+ "hdf5-metno-sys",
+ "libz-sys",
+ "parking_lot",
+ "semver",
+]
 
 [[package]]
 name = "nom"
@@ -804,6 +865,29 @@ name = "oorandom"
 version = "11.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
+
+[[package]]
+name = "parking_lot"
+version = "0.12.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
+dependencies = [
+ "lock_api",
+ "parking_lot_core",
+]
+
+[[package]]
+name = "parking_lot_core"
+version = "0.9.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "redox_syscall",
+ "smallvec",
+ "windows-link",
+]
 
 [[package]]
 name = "pin-project-lite"
@@ -906,6 +990,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_syscall"
+version = "0.5.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
 name = "regex"
 version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -973,6 +1066,12 @@ checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
 ]
+
+[[package]]
+name = "scopeguard"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "semver"
@@ -1118,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-benchmarks"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ciborium",
  "clap",
@@ -1131,7 +1230,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ciborium",
  "clap",
@@ -1139,13 +1238,14 @@ dependencies = [
  "tempfile",
  "tensogram-core",
  "tensogram-grib",
+ "tensogram-netcdf",
  "tracing",
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "tensogram-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ciborium",
  "memmap2",
@@ -1162,7 +1262,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-encodings"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blosc2",
  "blosc2-rs-sys",
@@ -1178,7 +1278,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-ffi"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "cbindgen",
  "ciborium",
@@ -1190,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-grib"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ciborium",
  "eccodes",
@@ -1200,13 +1300,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tensogram-netcdf"
+version = "0.8.0"
+dependencies = [
+ "ciborium",
+ "netcdf",
+ "tensogram-core",
+ "tensogram-encodings",
+ "thiserror",
+]
+
+[[package]]
 name = "tensogram-rust-examples"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ciborium",
  "tempfile",
  "tensogram-core",
  "tensogram-encodings",
+ "tensogram-netcdf",
 ]
 
 [[package]]
@@ -1420,6 +1532,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
+name = "vcpkg"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1573,6 +1691,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winreg"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
+dependencies = [
+ "cfg-if",
+ "serde",
+ "windows-sys",
 ]
 
 [[package]]
