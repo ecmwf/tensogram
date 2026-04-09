@@ -460,7 +460,29 @@ pub(crate) fn validate_structure<'a>(
                             continue;
                         }
                     };
-                    let abs_cbor_offset = pos + cbor_offset;
+                    let abs_cbor_offset = match pos.checked_add(cbor_offset) {
+                        Some(v) => v,
+                        None => {
+                            issues.push(err(
+                                IssueCode::CborOffsetInvalid,
+                                ValidationLevel::Structure,
+                                Some(obj_idx),
+                                Some(pos),
+                                format!(
+                                    "data object cbor_offset {} overflows at offset {pos}",
+                                    cbor_offset
+                                ),
+                            ));
+                            obj_idx += 1;
+                            let aligned = frame_end.saturating_add(7) & !7;
+                            pos = if aligned <= msg_end {
+                                aligned
+                            } else {
+                                frame_end
+                            };
+                            continue;
+                        }
+                    };
 
                     if cbor_offset < FRAME_HEADER_SIZE || abs_cbor_offset > cbor_offset_pos {
                         issues.push(err(

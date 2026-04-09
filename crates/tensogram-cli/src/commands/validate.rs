@@ -119,8 +119,13 @@ fn print_human(path: &Path, report: &FileValidationReport) {
             .count();
         let file_issue_count = report.file_issues.len();
         let total_problems = msg_errors + file_issue_count;
+        let err_label = if total_problems == 1 {
+            "error"
+        } else {
+            "errors"
+        };
         eprintln!(
-            "{}: FAILED ({} errors, {} messages, {} objects)",
+            "{}: FAILED ({} {err_label}, {} messages, {} objects)",
             path.display(),
             total_problems,
             msg_count,
