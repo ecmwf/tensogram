@@ -72,6 +72,19 @@ For speculative ideas, see `IDEAS.md`.
 - [x] ~~consumer-side-streaming~~ → `examples/python/09_streaming_consumer.py` — mock HTTP server, chunked download, progressive scan+decode, xarray Dataset assembly
 
 ## Optimisation
+
+- [ ] **multi-threaded-coding-pipeline**:
+  - add multi-threaded support for the encoding and decoding pipelines
+  - this should always be an option controled by the caller, off by default, similar to the hash check
+  - caller can control how many threads are spawn simultaneously
+  - option can be integer such that:
+    - 0 means off
+    - 1 means spawn a singe thread and execute the pipeline there
+    - N means spawn that many and parallelise where possible
+  - parallelisation can be done in 2 ways:
+    - async coding of data objects simultaneously
+    - sync coding of a single data object using multiple threads, where the algorithms are parallelisable.
+  - when on, consider the theads as a pool of workers, and the main thread as a broker of the work
  
 - [x] ~~minimise-mem-alloc~~ → documented in DESIGN.md "Memory Strategy" section. Pipeline uses `Cow` for zero-copy when no encoding/filter/compression. Metadata-only ops never touch payloads. xarray/zarr use lazy loading.
 
