@@ -245,7 +245,14 @@ fn main() {
     };
 
     if let Err(e) = result {
-        // Show the full error chain so nested causes are visible.
+        // ValidationFailed is a clean exit — the validate command already
+        // printed its own FAILED output, so just set exit code 1.
+        if e.downcast_ref::<commands::validate::ValidationFailed>()
+            .is_some()
+        {
+            process::exit(1);
+        }
+        // Other errors: show the full error chain.
         eprintln!("error: {e}");
         let mut source = e.source();
         while let Some(cause) = source {

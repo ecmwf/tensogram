@@ -13,7 +13,7 @@ pub(crate) fn validate_metadata(
     check_canonical: bool,
 ) {
     let mut global_meta: Option<GlobalMetadata> = None;
-    let mut meta_base_len_before_normalization: Option<usize> = None;
+    let mut meta_base_len: Option<usize> = None;
 
     for (ft, payload) in &walk.meta_frames {
         match ft {
@@ -31,7 +31,7 @@ pub(crate) fn validate_metadata(
                 }
                 match metadata::cbor_to_global_metadata(payload) {
                     Ok(meta) => {
-                        meta_base_len_before_normalization = Some(meta.base.len());
+                        meta_base_len = Some(meta.base.len());
                         global_meta = Some(meta);
                     }
                     Err(e) => {
@@ -191,7 +191,7 @@ pub(crate) fn validate_metadata(
 
     // base.len() vs object count (before normalization)
     let obj_count = walk.data_objects.len();
-    if let Some(base_len) = meta_base_len_before_normalization {
+    if let Some(base_len) = meta_base_len {
         if base_len > obj_count {
             issues.push(err(
                 IssueCode::BaseCountExceedsObjects,
