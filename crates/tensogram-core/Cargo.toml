@@ -27,6 +27,7 @@ memmap2 = { version = "0.9", optional = true }
 tokio = { version = "1", features = ["fs", "rt"], optional = true }
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 sha2 = "0.10"

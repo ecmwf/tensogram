@@ -1234,6 +1234,7 @@ version = "0.8.0"
 dependencies = [
  "ciborium",
  "clap",
+ "serde",
  "serde_json",
  "tempfile",
  "tensogram-core",
@@ -1250,6 +1251,7 @@ dependencies = [
  "ciborium",
  "memmap2",
  "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "tensogram-encodings",
