@@ -134,8 +134,8 @@ pub enum CompressionType {
 /// When only one feature is enabled the backend field is ignored — the
 /// available implementation is always used.
 ///
-/// The default is resolved once from the `TENSOGRAM_SZIP_BACKEND` and
-/// `TENSOGRAM_ZSTD_BACKEND` environment variables (values: `ffi` or `pure`).
+/// The default is resolved once from the `TENSOGRAM_COMPRESSION_BACKEND`
+/// environment variable (values: `ffi` or `pure`).
 /// On `wasm32` the default is always `Pure`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressionBackend {
@@ -155,9 +155,8 @@ impl Default for CompressionBackend {
 
 /// Resolve the default compression backend from environment variables.
 ///
-/// - `TENSOGRAM_SZIP_BACKEND=pure|ffi` and `TENSOGRAM_ZSTD_BACKEND=pure|ffi`
-///   override the default.  A single `TENSOGRAM_COMPRESSION_BACKEND` sets
-///   both when the codec-specific variable is absent.
+/// - `TENSOGRAM_COMPRESSION_BACKEND=pure|ffi` overrides the default for
+///   both szip and zstd.
 /// - On `wasm32` the default is always `Pure` (FFI backends cannot exist).
 /// - On native the default is `Ffi` (faster, battle-tested).
 pub fn default_compression_backend() -> CompressionBackend {

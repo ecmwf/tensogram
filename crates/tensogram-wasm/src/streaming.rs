@@ -195,6 +195,12 @@ impl StreamingDecoder {
             ..Default::default()
         };
 
+        // Track the furthest byte position we've successfully processed.
+        // `msg_end` values are relative to `remaining` (= buffer[consumed..]),
+        // so we record the max end seen and advance `consumed` by that amount
+        // once at the end.
+        let mut furthest = 0usize;
+
         for (msg_start, msg_len) in positions {
             let msg_end = msg_start + msg_len;
 
@@ -228,8 +234,10 @@ impl StreamingDecoder {
                 }
             }
 
-            self.consumed += msg_end;
+            furthest = msg_end;
         }
+
+        self.consumed += furthest;
     }
 }
 
