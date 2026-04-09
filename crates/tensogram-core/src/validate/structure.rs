@@ -37,8 +37,13 @@ pub(crate) struct FrameWalkResult<'a> {
 }
 
 /// Walk the raw bytes of a message, collecting structural issues.
-/// Returns the walk result (for reuse by Level 2/3) or None if structure
-/// is too broken to continue.
+///
+/// Returns `Some(FrameWalkResult)` when a frame walk can be performed, even
+/// if structural issues were recorded along the way (e.g. early loop exit).
+/// Returns `None` only for unrecoverable early failures (bad magic, bad
+/// preamble, bad postamble) that prevent the walk from starting at all.
+/// The caller uses `hash_verified = false` when any errors exist to avoid
+/// claiming verification on partial walks.
 pub(crate) fn validate_structure<'a>(
     buf: &'a [u8],
     issues: &mut Vec<ValidationIssue>,
@@ -518,7 +523,7 @@ pub(crate) fn validate_structure<'a>(
                                     }
                                     Err(_) => {
                                         issues.push(err(
-                                            IssueCode::DescriptorCborParseFailed,
+                                            IssueCode::CborBeforeBoundaryUnknown,
                                             ValidationLevel::Structure,
                                             Some(obj_idx),
                                             Some(pos),
@@ -533,7 +538,7 @@ pub(crate) fn validate_structure<'a>(
                                     // Skip this object; Level 2/3 can't work with
                                     // unreliable slices.
                                     issues.push(err(
-                                        IssueCode::DescriptorCborParseFailed,
+                                        IssueCode::CborBeforeBoundaryUnknown,
                                         ValidationLevel::Structure,
                                         Some(obj_idx),
                                         Some(pos),
