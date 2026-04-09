@@ -71,6 +71,12 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
         }
     }
 
+    // hash_verified must only be true for a fully clean validation.
+    // If any level reported an error, force it to false.
+    if issues.iter().any(|i| i.severity == IssueSeverity::Error) {
+        hash_verified = false;
+    }
+
     ValidationReport {
         issues,
         object_count,
