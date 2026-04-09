@@ -93,6 +93,25 @@ pub enum IssueCode {
     InfDetected,
 }
 
+/// Per-object validation context, populated incrementally across levels.
+///
+/// Level 1 fills `payload` and `frame_offset`.
+/// Level 2 fills `descriptor`.
+/// Level 3 fills `decoded` for non-raw objects.
+/// Level 4 reuses `decoded` or scans `payload` in-place for raw objects.
+pub(crate) struct ObjectContext<'a> {
+    /// Parsed descriptor (filled by Level 2).
+    pub descriptor: Option<crate::types::DataObjectDescriptor>,
+    /// Raw CBOR bytes for the descriptor.
+    pub cbor_bytes: &'a [u8],
+    /// Encoded payload bytes (from Level 1 frame walk).
+    pub payload: &'a [u8],
+    /// Byte offset of the data object frame within the message.
+    pub frame_offset: usize,
+    /// Decoded payload bytes (filled by Level 3 for non-raw objects).
+    pub decoded: Option<Vec<u8>>,
+}
+
 /// A single validation finding.
 #[derive(Debug, Clone, Serialize)]
 pub struct ValidationIssue {

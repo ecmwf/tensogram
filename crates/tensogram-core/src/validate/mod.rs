@@ -4,6 +4,7 @@
 //! `validate_file()` for checking all messages in a `.tgm` file, including
 //! detection of truncated or garbage bytes between messages.
 
+mod fidelity;
 mod integrity;
 mod metadata;
 mod structure;
@@ -29,7 +30,7 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
     let report_structure = !options.checksum_only;
     let run_metadata = options.max_level >= ValidationLevel::Metadata && !options.checksum_only;
     let run_integrity = options.max_level >= ValidationLevel::Integrity;
-    let _run_fidelity = options.max_level >= ValidationLevel::Fidelity && !options.checksum_only;
+    let run_fidelity = options.max_level >= ValidationLevel::Fidelity && !options.checksum_only;
     let check_canonical = options.check_canonical;
 
     // Level 1: Structure — always run to extract frame payloads.
@@ -55,14 +56,32 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
     if let Some(ref walk) = walk {
         object_count = walk.data_objects.len();
 
-        // Level 2: Metadata
+        // Build per-object contexts from the frame walk result
+        let mut objects: Vec<ObjectContext<'_>> = walk
+            .data_objects
+            .iter()
+            .map(|(cbor_bytes, payload, frame_offset)| ObjectContext {
+                descriptor: None,
+                cbor_bytes,
+                payload,
+                frame_offset: *frame_offset,
+                decoded: None,
+            })
+            .collect();
+
+        // Level 2: Metadata — parses and caches descriptors
         if run_metadata {
-            validate_metadata(walk, &mut issues, check_canonical);
+            validate_metadata(walk, &mut objects, &mut issues, check_canonical);
         }
 
-        // Level 3: Integrity
+        // Level 3: Integrity — hash verification + decode pipeline (caches decoded bytes)
         if run_integrity {
-            hash_verified = validate_integrity(walk, &mut issues);
+            hash_verified = validate_integrity(walk, &mut objects, &mut issues);
+        }
+
+        // Level 4: Fidelity — full decode check, NaN/Inf scan
+        if run_fidelity {
+            fidelity::validate_fidelity(&mut objects, &mut issues);
         }
     }
 

@@ -60,6 +60,7 @@ fn check_hash(
 
 pub(crate) fn validate_integrity(
     walk: &FrameWalkResult<'_>,
+    objects: &mut [ObjectContext<'_>],
     issues: &mut Vec<ValidationIssue>,
 ) -> bool {
     let mut all_verified = true;
@@ -87,23 +88,29 @@ pub(crate) fn validate_integrity(
         }
     }
 
-    for (i, (cbor_bytes, payload, _offset)) in walk.data_objects.iter().enumerate() {
-        let desc = metadata::cbor_to_object_descriptor(cbor_bytes).ok();
-
-        if desc.is_none() {
-            issues.push(err(
-                IssueCode::HashVerificationError,
-                ValidationLevel::Integrity,
-                Some(i),
-                None,
-                "failed to parse descriptor, falling back to hash frame".to_string(),
-            ));
+    for (i, obj) in objects.iter_mut().enumerate() {
+        // If Level 2 didn't run or descriptor parse failed, try parsing now
+        if obj.descriptor.is_none() {
+            match metadata::cbor_to_object_descriptor(obj.cbor_bytes) {
+                Ok(d) => {
+                    obj.descriptor = Some(d);
+                }
+                Err(e) => {
+                    issues.push(err(
+                        IssueCode::HashVerificationError,
+                        ValidationLevel::Integrity,
+                        Some(i),
+                        None,
+                        format!("failed to parse descriptor, falling back to hash frame: {e}"),
+                    ));
+                }
+            }
         }
 
         // Hash verification: prefer per-object descriptor hash, fall back to hash frame
-        let result = if let Some(h) = desc.as_ref().and_then(|d| d.hash.as_ref()) {
+        let result = if let Some(h) = obj.descriptor.as_ref().and_then(|d| d.hash.as_ref()) {
             any_checked = true;
-            check_hash(payload, h, i, issues)
+            check_hash(obj.payload, h, i, issues)
         } else if let Some(ref hf) = hash_frame {
             if i < hf.hashes.len() {
                 any_checked = true;
@@ -111,7 +118,7 @@ pub(crate) fn validate_integrity(
                     hash_type: hf.hash_type.clone(),
                     value: hf.hashes[i].clone(),
                 };
-                check_hash(payload, &h, i, issues)
+                check_hash(obj.payload, &h, i, issues)
             } else {
                 issues.push(warn(
                     IssueCode::NoHashAvailable,
@@ -140,9 +147,8 @@ pub(crate) fn validate_integrity(
         }
 
         // Decompression check (requires parsed descriptor)
-        // Note: decode_pipeline allocates the full decoded buffer. A future
-        // optimization could add a discard/sink mode to avoid this.
-        if let Some(ref desc) = desc {
+        // Cache decoded bytes in ObjectContext for Level 4 reuse.
+        if let Some(ref desc) = obj.descriptor {
             if desc.compression != "none" || desc.encoding != "none" || desc.filter != "none" {
                 let shape_product = desc
                     .shape
@@ -170,16 +176,22 @@ pub(crate) fn validate_integrity(
                 if let Some(num_elements) = num_elements {
                     match build_pipeline_config(desc, num_elements, desc.dtype) {
                         Ok(config) => {
-                            if let Err(e) = tensogram_encodings::pipeline::decode_pipeline(
-                                payload, &config, false,
+                            match tensogram_encodings::pipeline::decode_pipeline(
+                                obj.payload, &config, false,
                             ) {
-                                issues.push(err(
-                                    IssueCode::DecodePipelineFailed,
-                                    ValidationLevel::Integrity,
-                                    Some(i),
-                                    None,
-                                    format!("decode pipeline failed: {e}"),
-                                ));
+                                Ok(decoded) => {
+                                    obj.decode_state = DecodeState::Decoded(decoded);
+                                }
+                                Err(e) => {
+                                    obj.decode_state = DecodeState::DecodeFailed;
+                                    issues.push(err(
+                                        IssueCode::DecodePipelineFailed,
+                                        ValidationLevel::Integrity,
+                                        Some(i),
+                                        None,
+                                        format!("decode pipeline failed: {e}"),
+                                    ));
+                                }
                             }
                         }
                         Err(e) => {
@@ -194,7 +206,7 @@ pub(crate) fn validate_integrity(
                     }
                 }
             }
-        } // if let Some(desc)
+        }
     }
 
     any_checked && all_verified
