@@ -56,6 +56,7 @@ pub(crate) fn validate_fidelity(
                             ) {
                                 Ok(decoded_bytes) => {
                                     obj.decode_state = DecodeState::Decoded(decoded_bytes);
+                                    // Safe: just set to Decoded above
                                     let DecodeState::Decoded(b) = &obj.decode_state else {
                                         continue;
                                     };
