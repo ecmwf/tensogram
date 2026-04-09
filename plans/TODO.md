@@ -120,14 +120,11 @@ For speculative ideas, see `IDEAS.md`.
   - Index offset validation: verifies offsets point to actual data object frame positions.
   - 35 tests (25 core + 10 CLI). Docs at `docs/src/cli/validate.md`.
 
-- [ ] **tensogram-validate PR 2** — Level 4 fidelity + encode.rs cleanup:
-  - Add `fidelity.rs` module to `validate/` with Level 4 checks.
-  - Level 4 (Fidelity, `--full`): full decode of each object succeeds, NaN/Inf in decoded float arrays are **errors** (not warnings). NaN/Inf break numerical computations in the encoding pipeline (e.g. packing reference_value). A future extension could use a reserved preamble flag to opt into NaN support with a bitmask companion object, but until there's a concrete use case, NaN/Inf are rejected.
-  - Note: lossy error-budget verification is NOT feasible from .tgm alone (wire format stores encoded payload, not original values). Accepted scope reduction.
-  - Add `--full` flag to CLI (mutually exclusive with existing mode flags).
-  - Convert 12 `panic!()` calls in encode.rs test functions to proper `assert!`/`assert_eq!` with descriptive messages. Note: these are test-only assertions, not runtime validation panics — the original "proper error returns" request is already satisfied by the production code.
-  - Add missing test coverage: NaN/Inf policy tests, full-mode decode failures, mixed batch results with exit-code assertions.
-  - Add `IssueCode` variants for Level 4: `DecodeObjectFailed`, `NanDetected`, `InfDetected`.
+- [x] **tensogram-validate PR 2** — Level 4 fidelity + API refactor:
+  - Refactored `ValidateMode` enum into composable `ValidateOptions { max_level, check_canonical, checksum_only }`. `--canonical` now combinable with `--full`/`--quick`.
+  - Added `ObjectContext` for shared per-object state: Level 2 caches descriptors, Level 3 caches decoded bytes, Level 4 reuses both. No duplicate parsing or decoding.
+  - Level 4 (Fidelity, `--full`): full decode, decoded-size check, NaN/Inf scan for Float16/Bfloat16/Float32/Float64/Complex64/Complex128. NaN/Inf are errors. Reports element index and component (real/imag).
+  - Dropped encode.rs panic cleanup (test-only assertions, not meaningful to convert).
 
 - [ ] **tensogram-validate PR 3** — Python + FFI bindings + examples:
   - Python: `tensogram.validate(buf, level="default") -> dict` and `tensogram.validate_file(path, level="default") -> list[dict]` via PyO3.

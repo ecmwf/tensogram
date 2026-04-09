@@ -10,13 +10,14 @@ tensogram validate [OPTIONS] <FILES>...
 
 ## Validation Levels
 
-The command runs up to three validation levels:
+The command runs up to four validation levels:
 
 | Level | Name | What it checks |
 |-------|------|---------------|
 | 1 | **Structure** | Magic bytes, frame headers, ENDF markers, total_length, postamble, frame ordering, preceder legality, preamble flags vs observed frames |
 | 2 | **Metadata** | CBOR parses correctly, required keys present (`_reserved_.tensor`, dtype, shape, strides), encoding/filter/compression types recognized, object count consistency, shape/strides/ndim consistency |
 | 3 | **Integrity** | xxh3 hash in descriptor/hash-frame matches recomputed hash, compressed payloads decompress without error |
+| 4 | **Fidelity** | Full decode succeeds, decoded size matches shape/dtype, NaN/Inf in float arrays are errors |
 
 ## Modes
 
@@ -25,9 +26,9 @@ The command runs up to three validation levels:
 | default | 1–3 | Structure + metadata + integrity |
 | quick | 1 | Structure only, no payloads |
 | checksum | 3 | Hash check (structural errors still reported) |
-| canonical | 1–3 | Default + RFC 8949 CBOR key ordering |
+| full | 1–4 | All levels including fidelity (NaN/Inf check) |
 
-The mode flags (`--quick`, `--checksum`, `--canonical`) are mutually exclusive.
+Level selectors (`--quick`, `--checksum`, `--full`) are mutually exclusive. `--canonical` is independent and can be combined with any level selector.
 
 ## Options
 
@@ -137,6 +138,12 @@ tensogram validate --quick *.tgm
 
 # Verify checksums only
 tensogram validate --checksum archive/*.tgm
+
+# Full validation including NaN/Inf detection (levels 1-4)
+tensogram validate --full output.tgm
+
+# Full validation with canonical CBOR check
+tensogram validate --full --canonical output.tgm
 
 # Check canonical CBOR encoding
 tensogram validate --canonical output.tgm
