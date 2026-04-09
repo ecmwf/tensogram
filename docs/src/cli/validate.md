@@ -30,10 +30,14 @@ The command runs up to four validation levels:
 
 Level selectors (`--quick`, `--checksum`, `--full`) are mutually exclusive. `--canonical` is independent and can be combined with any level selector.
 
-## Options
+## All flags
 
 | Flag | Description |
 |------|-------------|
+| `--quick` | Structure only (level 1) |
+| `--checksum` | Hash verification only (level 3, no decompression) |
+| `--full` | All levels including fidelity (levels 1-4) |
+| `--canonical` | Check RFC 8949 CBOR key ordering (combinable with any level) |
 | `--json` | Machine-parseable JSON output |
 
 ## Output

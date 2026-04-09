@@ -58,10 +58,13 @@ fn check_hash(
     }
 }
 
+/// `checksum_only`: skip decompression check, only verify hashes.
+/// `cache_decoded`: retain decoded bytes in ObjectContext for Level 4 reuse.
 pub(crate) fn validate_integrity(
     walk: &FrameWalkResult<'_>,
     objects: &mut [ObjectContext<'_>],
     issues: &mut Vec<ValidationIssue>,
+    checksum_only: bool,
     cache_decoded: bool,
 ) -> bool {
     let mut all_verified = true;
@@ -147,72 +150,76 @@ pub(crate) fn validate_integrity(
             all_verified = false;
         }
 
-        // Decompression check (requires parsed descriptor)
-        // Cache decoded bytes in ObjectContext for Level 4 reuse.
-        if let Some(ref desc) = obj.descriptor {
-            if desc.compression != "none" || desc.encoding != "none" || desc.filter != "none" {
-                let shape_product = desc
-                    .shape
-                    .iter()
-                    .try_fold(1u64, |acc, &x| acc.checked_mul(x));
-                let num_elements = match shape_product {
-                    Some(product) => match usize::try_from(product) {
-                        Ok(n) => Some(n),
-                        Err(_) => {
-                            issues.push(err(
-                                IssueCode::PipelineConfigFailed,
-                                ValidationLevel::Integrity,
-                                Some(i),
-                                None,
-                                format!("shape product {} does not fit in usize", product),
-                            ));
+        // Decompression check (requires parsed descriptor, skipped in checksum-only mode)
+        if !checksum_only {
+            if let Some(ref desc) = obj.descriptor {
+                if desc.compression != "none" || desc.encoding != "none" || desc.filter != "none" {
+                    let shape_product = desc
+                        .shape
+                        .iter()
+                        .try_fold(1u64, |acc, &x| acc.checked_mul(x));
+                    let num_elements = match shape_product {
+                        Some(product) => match usize::try_from(product) {
+                            Ok(n) => Some(n),
+                            Err(_) => {
+                                obj.decode_state = DecodeState::DecodeFailed;
+                                issues.push(err(
+                                    IssueCode::PipelineConfigFailed,
+                                    ValidationLevel::Integrity,
+                                    Some(i),
+                                    None,
+                                    format!("shape product {} does not fit in usize", product),
+                                ));
+                                None
+                            }
+                        },
+                        None => {
+                            // Shape overflow already reported at Level 2
+                            obj.decode_state = DecodeState::DecodeFailed;
                             None
                         }
-                    },
-                    None => {
-                        // Shape overflow already reported at Level 2
-                        None
-                    }
-                };
-                if let Some(num_elements) = num_elements {
-                    match build_pipeline_config(desc, num_elements, desc.dtype) {
-                        Ok(config) => {
-                            match tensogram_encodings::pipeline::decode_pipeline(
-                                obj.payload,
-                                &config,
-                                false,
-                            ) {
-                                Ok(decoded) => {
-                                    if cache_decoded {
-                                        obj.decode_state = DecodeState::Decoded(decoded);
+                    };
+                    if let Some(num_elements) = num_elements {
+                        match build_pipeline_config(desc, num_elements, desc.dtype) {
+                            Ok(config) => {
+                                match tensogram_encodings::pipeline::decode_pipeline(
+                                    obj.payload,
+                                    &config,
+                                    false,
+                                ) {
+                                    Ok(decoded) => {
+                                        if cache_decoded {
+                                            obj.decode_state = DecodeState::Decoded(decoded);
+                                        }
+                                        // else: drop decoded bytes immediately
                                     }
-                                    // else: drop decoded bytes immediately
-                                }
-                                Err(e) => {
-                                    obj.decode_state = DecodeState::DecodeFailed;
-                                    issues.push(err(
-                                        IssueCode::DecodePipelineFailed,
-                                        ValidationLevel::Integrity,
-                                        Some(i),
-                                        None,
-                                        format!("decode pipeline failed: {e}"),
-                                    ));
+                                    Err(e) => {
+                                        obj.decode_state = DecodeState::DecodeFailed;
+                                        issues.push(err(
+                                            IssueCode::DecodePipelineFailed,
+                                            ValidationLevel::Integrity,
+                                            Some(i),
+                                            None,
+                                            format!("decode pipeline failed: {e}"),
+                                        ));
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            issues.push(err(
-                                IssueCode::PipelineConfigFailed,
-                                ValidationLevel::Integrity,
-                                Some(i),
-                                None,
-                                format!("cannot build pipeline config: {e}"),
-                            ));
+                            Err(e) => {
+                                obj.decode_state = DecodeState::DecodeFailed;
+                                issues.push(err(
+                                    IssueCode::PipelineConfigFailed,
+                                    ValidationLevel::Integrity,
+                                    Some(i),
+                                    None,
+                                    format!("cannot build pipeline config: {e}"),
+                                ));
+                            }
                         }
                     }
                 }
             }
-        }
+        } // if !checksum_only
     }
 
     any_checked && all_verified

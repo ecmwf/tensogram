@@ -84,7 +84,13 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
 
         // Level 3: Integrity — hash verification + decode pipeline (caches decoded bytes)
         if run_integrity {
-            hash_verified = validate_integrity(walk, &mut objects, &mut issues, run_fidelity);
+            hash_verified = validate_integrity(
+                walk,
+                &mut objects,
+                &mut issues,
+                options.checksum_only,
+                run_fidelity,
+            );
         }
 
         // Level 4: Fidelity — full decode check, NaN/Inf scan
