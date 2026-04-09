@@ -170,9 +170,9 @@ pub(crate) fn validate_integrity(
                 if let Some(num_elements) = num_elements {
                     match build_pipeline_config(desc, num_elements, desc.dtype) {
                         Ok(config) => {
-                            if let Err(e) =
-                                tensogram_encodings::pipeline::decode_pipeline(payload, &config)
-                            {
+                            if let Err(e) = tensogram_encodings::pipeline::decode_pipeline(
+                                payload, &config, false,
+                            ) {
                                 issues.push(err(
                                     IssueCode::DecodePipelineFailed,
                                     ValidationLevel::Integrity,
