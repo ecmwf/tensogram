@@ -52,28 +52,39 @@ bad.tgm: FAILED - message 2, object 5: hash mismatch (expected a3f7..., got 91c2
 ### JSON (`--json`)
 
 ```json
-{
-  "file": "file.tgm",
-  "status": "ok",
-  "messages": 3,
-  "objects": 47,
-  "hash_verified": true,
-  "issues": []
-}
+[
+  {
+    "file": "file.tgm",
+    "status": "ok",
+    "messages": 3,
+    "objects": 47,
+    "hash_verified": true,
+    "file_issues": [],
+    "message_reports": [
+      {
+        "issues": [],
+        "object_count": 47,
+        "hash_verified": true
+      }
+    ]
+  }
+]
 ```
 
-On failure, issues contain:
+On failure, issues within `message_reports[i].issues` contain:
 
 ```json
 {
+  "code": "hash_mismatch",
   "level": "integrity",
   "severity": "error",
-  "message_index": 2,
   "object_index": 5,
   "byte_offset": null,
-  "description": "hash mismatch (expected a3f7..., got 91c2...)"
+  "description": "object 5: hash mismatch (expected a3f7..., got 91c2...)"
 }
 ```
+
+Issue codes are stable snake_case strings (e.g. `hash_mismatch`, `invalid_magic`, `buffer_too_short`) suitable for machine parsing.
 
 ## Exit Code
 

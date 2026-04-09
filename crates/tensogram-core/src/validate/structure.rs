@@ -387,7 +387,6 @@ pub(crate) fn validate_structure<'a>(
         }
 
         // Extract payloads for Level 2/3 reuse
-        let frame_start = pos;
         match fh.frame_type {
             FrameType::DataObject => {
                 let cbor_offset_pos = endf_offset - 8;
@@ -442,7 +441,7 @@ pub(crate) fn validate_structure<'a>(
                                 }
                             }
                         };
-                        data_objects.push((cbor_slice.to_vec(), payload_slice, frame_start));
+                        data_objects.push((cbor_slice.to_vec(), payload_slice, pos));
                     }
                 }
                 obj_idx += 1;

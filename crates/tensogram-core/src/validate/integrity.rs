@@ -13,7 +13,7 @@ use super::types::*;
 /// Result of a single hash check.
 enum HashCheckResult {
     Verified,
-    UnknownAlgorithm,
+    Skipped,
     Failed,
 }
 
@@ -35,7 +35,7 @@ fn check_hash(
                 h.hash_type
             ),
         ));
-        return HashCheckResult::UnknownAlgorithm;
+        return HashCheckResult::Skipped;
     }
     match hash::verify_hash(payload, h) {
         Ok(()) => HashCheckResult::Verified,
@@ -109,7 +109,7 @@ pub(crate) fn validate_integrity(
                     format!("object {i}: no hash available, cannot verify integrity"),
                 ));
                 all_verified = false;
-                HashCheckResult::UnknownAlgorithm
+                HashCheckResult::Skipped
             }
         } else {
             issues.push(warn(
@@ -120,7 +120,7 @@ pub(crate) fn validate_integrity(
                 format!("object {i}: no hash available, cannot verify integrity"),
             ));
             all_verified = false;
-            HashCheckResult::UnknownAlgorithm
+            HashCheckResult::Skipped
         };
 
         if !matches!(result, HashCheckResult::Verified) {
