@@ -82,11 +82,11 @@ fn print_human(path: &Path, report: &FileValidationReport) {
             hash_note,
         );
     } else {
-        // Print per-message issues
+        // Print per-message issues (1-based for human output)
         for (i, msg_report) in report.messages.iter().enumerate() {
             for issue in &msg_report.issues {
                 let obj_note = match issue.object_index {
-                    Some(idx) => format!(", object {idx}"),
+                    Some(idx) => format!(", object {}", idx + 1),
                     None => String::new(),
                 };
                 let prefix = match issue.severity {
@@ -98,8 +98,9 @@ fn print_human(path: &Path, report: &FileValidationReport) {
                     None => String::new(),
                 };
                 eprintln!(
-                    "{}: {prefix} — message {i}{obj_note}: {}{offset_note}",
+                    "{}: {prefix} — message {}{obj_note}: {}{offset_note}",
                     path.display(),
+                    i + 1,
                     issue.description,
                 );
             }
@@ -110,8 +111,7 @@ fn print_human(path: &Path, report: &FileValidationReport) {
             .iter()
             .flat_map(|r| &r.issues)
             .filter(|i| i.severity == IssueSeverity::Error)
-            .count()
-            + report.file_issues.len();
+            .count();
         eprintln!(
             "{}: FAILED ({} errors, {} messages, {} objects)",
             path.display(),

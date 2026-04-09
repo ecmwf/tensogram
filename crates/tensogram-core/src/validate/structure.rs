@@ -129,20 +129,33 @@ pub(crate) fn validate_structure<'a>(
         let pa_offset = total - POSTAMBLE_SIZE;
         match Postamble::read_from(&buf[pa_offset..]) {
             Ok(pa) => {
-                let ffo = pa.first_footer_offset as usize;
-                if ffo < PREAMBLE_SIZE || ffo > pa_offset {
+                let ffo = usize::try_from(pa.first_footer_offset).ok();
+                if let Some(ffo_val) = ffo {
+                    if ffo_val < PREAMBLE_SIZE || ffo_val > pa_offset {
+                        issues.push(err(
+                            IssueCode::FooterOffsetOutOfRange,
+                            ValidationLevel::Structure,
+                            None,
+                            Some(pa_offset),
+                            format!(
+                                "first_footer_offset {} out of range [{PREAMBLE_SIZE}, {pa_offset}]",
+                                ffo_val
+                            ),
+                        ));
+                    }
+                } else {
                     issues.push(err(
                         IssueCode::FooterOffsetOutOfRange,
                         ValidationLevel::Structure,
                         None,
                         Some(pa_offset),
                         format!(
-                            "first_footer_offset {} out of range [{PREAMBLE_SIZE}, {pa_offset}]",
-                            ffo
+                            "first_footer_offset {} does not fit in usize",
+                            pa.first_footer_offset
                         ),
                     ));
                 }
-                (pa_offset, Some(ffo))
+                (pa_offset, ffo)
             }
             Err(e) => {
                 issues.push(err(
@@ -170,20 +183,33 @@ pub(crate) fn validate_structure<'a>(
         let pa_offset = buf.len() - POSTAMBLE_SIZE;
         match Postamble::read_from(&buf[pa_offset..]) {
             Ok(pa) => {
-                let ffo = pa.first_footer_offset as usize;
-                if ffo < PREAMBLE_SIZE || ffo > pa_offset {
+                let ffo = usize::try_from(pa.first_footer_offset).ok();
+                if let Some(ffo_val) = ffo {
+                    if ffo_val < PREAMBLE_SIZE || ffo_val > pa_offset {
+                        issues.push(err(
+                            IssueCode::FooterOffsetOutOfRange,
+                            ValidationLevel::Structure,
+                            None,
+                            Some(pa_offset),
+                            format!(
+                                "first_footer_offset {} out of range [{PREAMBLE_SIZE}, {pa_offset}]",
+                                ffo_val
+                            ),
+                        ));
+                    }
+                } else {
                     issues.push(err(
                         IssueCode::FooterOffsetOutOfRange,
                         ValidationLevel::Structure,
                         None,
                         Some(pa_offset),
                         format!(
-                            "first_footer_offset {} out of range [{PREAMBLE_SIZE}, {pa_offset}]",
-                            ffo
+                            "first_footer_offset {} does not fit in usize",
+                            pa.first_footer_offset
                         ),
                     ));
                 }
-                (pa_offset, Some(ffo))
+                (pa_offset, ffo)
             }
             Err(_) => {
                 issues.push(err(
@@ -402,7 +428,29 @@ pub(crate) fn validate_structure<'a>(
                     ));
                 } else {
                     let cbor_offset_raw = wire::read_u64_be(buf, cbor_offset_pos);
-                    let cbor_offset = cbor_offset_raw as usize;
+                    let cbor_offset = match usize::try_from(cbor_offset_raw) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            issues.push(err(
+                                IssueCode::CborOffsetInvalid,
+                                ValidationLevel::Structure,
+                                Some(obj_idx),
+                                Some(pos),
+                                format!(
+                                    "data object cbor_offset {} does not fit in usize at offset {pos}",
+                                    cbor_offset_raw
+                                ),
+                            ));
+                            obj_idx += 1;
+                            let aligned = frame_end.saturating_add(7) & !7;
+                            pos = if aligned <= msg_end {
+                                aligned
+                            } else {
+                                frame_end
+                            };
+                            continue;
+                        }
+                    };
                     let abs_cbor_offset = pos + cbor_offset;
 
                     if cbor_offset < FRAME_HEADER_SIZE || abs_cbor_offset > cbor_offset_pos {

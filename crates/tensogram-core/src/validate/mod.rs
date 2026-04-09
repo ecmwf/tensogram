@@ -88,23 +88,16 @@ pub fn validate_file(
 ) -> std::io::Result<FileValidationReport> {
     use std::io::{Read, Seek, SeekFrom};
 
-    let file_len = std::fs::metadata(path)?.len() as usize; // 32-bit truncation is acceptable: scan_file handles offsets as usize
+    let file_len = usize::try_from(std::fs::metadata(path)?.len()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file size does not fit into usize",
+        )
+    })?;
     let mut file = std::fs::File::open(path)?;
 
-    let scan_result = crate::framing::scan_file(&mut file);
-    let offsets = match scan_result {
-        Ok(o) => o,
-        Err(_) => {
-            file.seek(SeekFrom::Start(0))?;
-            let mut buf = Vec::new();
-            file.read_to_end(&mut buf)?;
-            let report = validate_message(&buf, options);
-            return Ok(FileValidationReport {
-                file_issues: Vec::new(),
-                messages: vec![report],
-            });
-        }
-    };
+    let offsets = crate::framing::scan_file(&mut file)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
     let mut file_issues = Vec::new();
     let mut messages = Vec::new();

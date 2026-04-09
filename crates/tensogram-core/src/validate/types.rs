@@ -160,6 +160,11 @@ pub struct FileValidationReport {
 }
 
 impl FileValidationReport {
+    /// Returns true when there are no file-level issues and all messages pass.
+    ///
+    /// File-level issues (gaps, trailing bytes) are treated as failures because
+    /// they indicate the file is not well-formed — even though individual
+    /// messages within it may be valid.
     pub fn is_ok(&self) -> bool {
         self.file_issues.is_empty() && self.messages.iter().all(|r| r.is_ok())
     }

@@ -115,14 +115,15 @@ These are reported as file-level warnings.
 The same validation is available programmatically:
 
 ```rust
-use tensogram_core::{validate_message, validate_file, ValidateOptions, ValidateMode};
+use std::path::Path;
+use tensogram_core::{validate_message, validate_file, ValidateOptions};
 
 // Validate a single message buffer
 let report = validate_message(&bytes, &ValidateOptions::default());
 assert!(report.is_ok());
 
 // Validate a file
-let file_report = validate_file("data.tgm".as_ref(), &ValidateOptions::default())?;
+let file_report = validate_file(Path::new("data.tgm"), &ValidateOptions::default())?;
 println!("{} messages, {} objects", file_report.messages.len(), file_report.total_objects());
 ```
 

@@ -133,31 +133,51 @@ pub(crate) fn validate_integrity(
                 .shape
                 .iter()
                 .try_fold(1u64, |acc, &x| acc.checked_mul(x));
-            if let Some(product) = shape_product {
-                if let Ok(num_elements) = usize::try_from(product) {
-                    match build_pipeline_config(&desc, num_elements, desc.dtype) {
-                        Ok(config) => {
-                            if let Err(e) =
-                                tensogram_encodings::pipeline::decode_pipeline(payload, &config)
-                            {
-                                issues.push(err(
-                                    IssueCode::DecodePipelineFailed,
-                                    ValidationLevel::Integrity,
-                                    Some(i),
-                                    None,
-                                    format!("object {i}: decode pipeline failed: {e}"),
-                                ));
-                            }
-                        }
-                        Err(e) => {
+            let num_elements = match shape_product {
+                Some(product) => match usize::try_from(product) {
+                    Ok(n) => Some(n),
+                    Err(_) => {
+                        issues.push(err(
+                            IssueCode::PipelineConfigFailed,
+                            ValidationLevel::Integrity,
+                            Some(i),
+                            None,
+                            format!(
+                                "object {i}: shape product {} does not fit in usize",
+                                product
+                            ),
+                        ));
+                        None
+                    }
+                },
+                None => {
+                    // Shape overflow already reported at Level 2
+                    None
+                }
+            };
+            if let Some(num_elements) = num_elements {
+                match build_pipeline_config(&desc, num_elements, desc.dtype) {
+                    Ok(config) => {
+                        if let Err(e) =
+                            tensogram_encodings::pipeline::decode_pipeline(payload, &config)
+                        {
                             issues.push(err(
-                                IssueCode::PipelineConfigFailed,
+                                IssueCode::DecodePipelineFailed,
                                 ValidationLevel::Integrity,
                                 Some(i),
                                 None,
-                                format!("object {i}: cannot build pipeline config: {e}"),
+                                format!("object {i}: decode pipeline failed: {e}"),
                             ));
                         }
+                    }
+                    Err(e) => {
+                        issues.push(err(
+                            IssueCode::PipelineConfigFailed,
+                            ValidationLevel::Integrity,
+                            Some(i),
+                            None,
+                            format!("object {i}: cannot build pipeline config: {e}"),
+                        ));
                     }
                 }
             }
