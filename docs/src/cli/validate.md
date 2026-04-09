@@ -24,7 +24,7 @@ The command runs up to three validation levels:
 |------|-----------|----------|
 | *(none)* | 1, 2, 3 | Default: full structural + metadata + integrity check |
 | `--quick` | 1 only | Fast structural check without touching payloads |
-| `--checksum` | 3 only | Hash verification only (still parses structure internally) |
+| `--checksum` | 3 (+ structural errors) | Hash verification; structural errors still reported |
 | `--canonical` | 1, 2, 3 + canonical CBOR | Also checks RFC 8949 deterministic key ordering |
 
 The mode flags (`--quick`, `--checksum`, `--canonical`) are mutually exclusive.
