@@ -169,7 +169,7 @@ pub(crate) fn validate_integrity(
                                     IssueCode::PipelineConfigFailed,
                                     ValidationLevel::Integrity,
                                     Some(i),
-                                    None,
+                                    Some(obj.frame_offset),
                                     format!("shape product {} does not fit in usize", product),
                                 ));
                                 None
@@ -193,7 +193,6 @@ pub(crate) fn validate_integrity(
                                         if cache_decoded {
                                             obj.decode_state = DecodeState::Decoded(decoded);
                                         }
-                                        // else: drop decoded bytes immediately
                                     }
                                     Err(e) => {
                                         obj.decode_state = DecodeState::DecodeFailed;
@@ -201,7 +200,7 @@ pub(crate) fn validate_integrity(
                                             IssueCode::DecodePipelineFailed,
                                             ValidationLevel::Integrity,
                                             Some(i),
-                                            None,
+                                            Some(obj.frame_offset),
                                             format!("decode pipeline failed: {e}"),
                                         ));
                                     }
@@ -213,7 +212,7 @@ pub(crate) fn validate_integrity(
                                     IssueCode::PipelineConfigFailed,
                                     ValidationLevel::Integrity,
                                     Some(i),
-                                    None,
+                                    Some(obj.frame_offset),
                                     format!("cannot build pipeline config: {e}"),
                                 ));
                             }

@@ -31,7 +31,10 @@ pub(crate) fn validate_fidelity(
                     // Raw object: payload is the decoded bytes
                     obj.payload
                 } else {
-                    // Non-raw object — Level 3 didn't run, decode now
+                    // Non-raw object — Level 3 didn't run, decode now.
+                    // Currently unreachable via validate_message (Fidelity implies
+                    // Integrity which decodes all non-raw objects), but kept as a
+                    // safety net for direct API callers.
                     let shape_product = desc
                         .shape
                         .iter()
