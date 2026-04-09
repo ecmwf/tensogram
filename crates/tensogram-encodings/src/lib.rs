@@ -8,7 +8,8 @@ pub mod simple_packing;
 pub mod zfp_ffi;
 
 pub use pipeline::{
-    ByteOrder, CompressionType, EncodingType, FilterType, PipelineConfig, PipelineResult,
+    ByteOrder, CompressionBackend, CompressionType, EncodingType, FilterType, PipelineConfig,
+    PipelineResult,
 };
 
 #[cfg(feature = "blosc2")]

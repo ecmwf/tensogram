@@ -239,7 +239,10 @@ fn test_hash_verification_passes() {
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Decode with hash verification enabled
-    let options = DecodeOptions { verify_hash: true };
+    let options = DecodeOptions {
+        verify_hash: true,
+        ..Default::default()
+    };
     let (_, objects) = decode(&encoded, &options).unwrap();
     assert_eq!(objects[0].1, data);
 }
@@ -265,7 +268,10 @@ fn test_hash_verification_fails_on_corruption() {
     let payload_byte = frame_start + 16;
     encoded[payload_byte] ^= 0xFF;
 
-    let options = DecodeOptions { verify_hash: true };
+    let options = DecodeOptions {
+        verify_hash: true,
+        ..Default::default()
+    };
     let result = decode(&encoded, &options);
     assert!(
         result.is_err(),
@@ -1184,7 +1190,10 @@ fn test_szip_hash_verification() {
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Should pass with hash verification
-    let options = DecodeOptions { verify_hash: true };
+    let options = DecodeOptions {
+        verify_hash: true,
+        ..Default::default()
+    };
     let (_, objects) = decode(&encoded, &options).unwrap();
     assert_eq!(objects[0].1.len(), 2048 * 8);
 }

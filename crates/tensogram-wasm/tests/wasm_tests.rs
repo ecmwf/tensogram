@@ -92,6 +92,7 @@ fn encode_native_no_hash(
         &tensogram_core::EncodeOptions {
             hash_algorithm: None,
             emit_preceders: false,
+            ..Default::default()
         },
     )
     .unwrap()

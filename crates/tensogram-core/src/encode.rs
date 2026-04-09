@@ -29,6 +29,14 @@ pub struct EncodeOptions {
     /// The streaming encoder ignores this field; it emits preceders only
     /// when `write_preceder()` is called explicitly.
     pub emit_preceders: bool,
+    /// Which backend to use for szip / zstd when both FFI and pure-Rust
+    /// implementations are compiled in.
+    ///
+    /// Defaults to `Ffi` on native (faster, battle-tested) and `Pure` on
+    /// `wasm32` (FFI cannot exist).  Override with
+    /// `TENSOGRAM_COMPRESSION_BACKEND=pure` env variable, or set this
+    /// field explicitly.
+    pub compression_backend: pipeline::CompressionBackend,
 }
 
 impl Default for EncodeOptions {
@@ -36,6 +44,7 @@ impl Default for EncodeOptions {
         Self {
             hash_algorithm: Some(HashAlgorithm::Xxh3),
             emit_preceders: false,
+            compression_backend: pipeline::CompressionBackend::default(),
         }
     }
 }
@@ -382,6 +391,21 @@ pub(crate) fn build_pipeline_config(
     num_values: usize,
     dtype: Dtype,
 ) -> Result<PipelineConfig> {
+    build_pipeline_config_with_backend(
+        desc,
+        num_values,
+        dtype,
+        pipeline::CompressionBackend::default(),
+    )
+}
+
+/// Build a pipeline config with an explicit compression backend override.
+pub(crate) fn build_pipeline_config_with_backend(
+    desc: &DataObjectDescriptor,
+    num_values: usize,
+    dtype: Dtype,
+    compression_backend: pipeline::CompressionBackend,
+) -> Result<PipelineConfig> {
     let encoding = match desc.encoding.as_str() {
         "none" => EncodingType::None,
         "simple_packing" => {
@@ -557,6 +581,7 @@ pub(crate) fn build_pipeline_config(
         num_values,
         byte_order: desc.byte_order,
         dtype_byte_width: dtype.byte_width(),
+        compression_backend,
     })
 }
 

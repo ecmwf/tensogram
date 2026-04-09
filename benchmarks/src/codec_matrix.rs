@@ -40,6 +40,7 @@ fn make_case(
             num_values,
             byte_order: ByteOrder::Little,
             dtype_byte_width: 8,
+            compression_backend: Default::default(),
         },
         sp_bits: None,
         is_lossy,
@@ -206,6 +207,7 @@ fn run_case(
                     num_values: case.config.num_values,
                     byte_order: case.config.byte_order,
                     dtype_byte_width: case.config.dtype_byte_width,
+                    compression_backend: case.config.compression_backend,
                 })
             } else {
                 Ok(case.config.clone())

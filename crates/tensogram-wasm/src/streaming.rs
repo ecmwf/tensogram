@@ -195,7 +195,10 @@ impl StreamingDecoder {
             let msg_bytes = &remaining[msg_start..msg_end];
 
             // Decode the full message
-            let options = core::DecodeOptions { verify_hash: false };
+            let options = core::DecodeOptions {
+                verify_hash: false,
+                ..Default::default()
+            };
 
             match core::decode(msg_bytes, &options) {
                 Ok((metadata, objects)) => {

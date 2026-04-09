@@ -32,6 +32,7 @@ use wasm_bindgen::prelude::*;
 pub fn decode(buf: &[u8], verify_hash: Option<bool>) -> Result<DecodedMessage, JsError> {
     let options = DecodeOptions {
         verify_hash: verify_hash.unwrap_or(false),
+        ..Default::default()
     };
     let (metadata, objects) = core::decode(buf, &options).map_err(js_err)?;
     Ok(DecodedMessage { metadata, objects })
@@ -60,6 +61,7 @@ pub fn decode_object(
 ) -> Result<DecodedMessage, JsError> {
     let options = DecodeOptions {
         verify_hash: verify_hash.unwrap_or(false),
+        ..Default::default()
     };
     let (metadata, descriptor, data) = core::decode_object(buf, index, &options).map_err(js_err)?;
     Ok(DecodedMessage {
@@ -131,6 +133,7 @@ pub fn encode(
             None
         },
         emit_preceders: false,
+        ..Default::default()
     };
 
     let pairs: Vec<(&core::DataObjectDescriptor, &[u8])> = descriptors

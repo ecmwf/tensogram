@@ -358,7 +358,10 @@ fn test_golden_hash_xxh3() {
     let data = std::fs::read(golden_dir().join("hash_xxh3.tgm")).unwrap();
 
     // Decode with hash verification
-    let opts = DecodeOptions { verify_hash: true };
+    let opts = DecodeOptions {
+        verify_hash: true,
+        ..Default::default()
+    };
     let (meta, objects) = decode::decode(&data, &opts).unwrap();
     assert_eq!(meta.version, 2);
     assert_eq!(objects.len(), 1);

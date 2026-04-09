@@ -1,4 +1,4 @@
-use crate::encode::build_pipeline_config;
+use crate::encode::build_pipeline_config_with_backend;
 use crate::error::{Result, TensogramError};
 use crate::framing;
 use crate::hash;
@@ -38,6 +38,9 @@ fn extract_block_offsets(
 pub struct DecodeOptions {
     /// Whether to verify payload hashes during decode.
     pub verify_hash: bool,
+    /// Which backend to use for szip / zstd when both FFI and pure-Rust
+    /// implementations are compiled in.
+    pub compression_backend: pipeline::CompressionBackend,
 }
 
 /// Decode all objects from a message buffer.
@@ -48,7 +51,12 @@ pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Ve
 
     let mut data_objects = Vec::with_capacity(msg.objects.len());
     for (desc, payload_bytes, _offset) in &msg.objects {
-        let decoded = decode_single_object(desc, payload_bytes, options)?;
+        let decoded = decode_single_object_with_backend(
+            desc,
+            payload_bytes,
+            options,
+            options.compression_backend,
+        )?;
         data_objects.push((desc.clone(), decoded));
     }
 
@@ -91,7 +99,12 @@ pub fn decode_object(
     }
 
     let (desc, payload_bytes, _) = &msg.objects[index];
-    let decoded = decode_single_object(desc, payload_bytes, options)?;
+    let decoded = decode_single_object_with_backend(
+        desc,
+        payload_bytes,
+        options,
+        options.compression_backend,
+    )?;
 
     Ok((msg.global_metadata, desc.clone(), decoded))
 }
@@ -146,7 +159,12 @@ pub fn decode_range(
         .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
     let num_elements = usize::try_from(shape_product)
         .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
-    let config = build_pipeline_config(desc, num_elements, desc.dtype)?;
+    let config = build_pipeline_config_with_backend(
+        desc,
+        num_elements,
+        desc.dtype,
+        options.compression_backend,
+    )?;
 
     let block_offsets = if desc.compression == "szip" {
         extract_block_offsets(&desc.params)?
@@ -168,10 +186,11 @@ pub fn decode_range(
 }
 
 /// Decode a single object through the full pipeline.
-fn decode_single_object(
+fn decode_single_object_with_backend(
     desc: &DataObjectDescriptor,
     payload_bytes: &[u8],
     options: &DecodeOptions,
+    backend: pipeline::CompressionBackend,
 ) -> Result<Vec<u8>> {
     if options.verify_hash {
         if let Some(ref hash_desc) = desc.hash {
@@ -186,7 +205,7 @@ fn decode_single_object(
         .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
     let num_elements = usize::try_from(shape_product)
         .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
-    let config = build_pipeline_config(desc, num_elements, desc.dtype)?;
+    let config = build_pipeline_config_with_backend(desc, num_elements, desc.dtype, backend)?;
     let decoded = pipeline::decode_pipeline(payload_bytes, &config)
         .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 

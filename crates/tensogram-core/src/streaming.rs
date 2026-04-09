@@ -528,22 +528,35 @@ mod tests {
         let desc = make_descriptor(vec![4]);
         let data = vec![42u8; 4 * 4];
         let options = EncodeOptions {
+            compression_backend: Default::default(),
             hash_algorithm: Some(HashAlgorithm::Xxh3),
             emit_preceders: false,
         };
 
         // Buffered encode
         let buffered = encode(&meta, &[(&desc, &data)], &options).unwrap();
-        let (buf_meta, buf_objects) =
-            decode(&buffered, &DecodeOptions { verify_hash: true }).unwrap();
+        let (buf_meta, buf_objects) = decode(
+            &buffered,
+            &DecodeOptions {
+                verify_hash: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // Streaming encode
         let buf = Vec::new();
         let mut enc = StreamingEncoder::new(buf, &meta, &options).unwrap();
         enc.write_object(&desc, &data).unwrap();
         let streamed = enc.finish().unwrap();
-        let (str_meta, str_objects) =
-            decode(&streamed, &DecodeOptions { verify_hash: true }).unwrap();
+        let (str_meta, str_objects) = decode(
+            &streamed,
+            &DecodeOptions {
+                verify_hash: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // Data must match (wire bytes may differ due to header vs footer layout)
         assert_eq!(buf_meta.version, str_meta.version);
@@ -564,6 +577,7 @@ mod tests {
         let desc = make_descriptor(vec![4]);
         let data = vec![42u8; 4 * 4];
         let options = EncodeOptions {
+            compression_backend: Default::default(),
             hash_algorithm: Some(HashAlgorithm::Xxh3),
             emit_preceders: false,
         };
@@ -574,7 +588,10 @@ mod tests {
         let result = enc.finish().unwrap();
 
         // Verify hash passes
-        let verify_opts = DecodeOptions { verify_hash: true };
+        let verify_opts = DecodeOptions {
+            verify_hash: true,
+            ..Default::default()
+        };
         let (_, objects) = decode(&result, &verify_opts).unwrap();
         assert!(objects[0].0.hash.is_some());
     }
@@ -583,6 +600,7 @@ mod tests {
     fn streaming_no_objects() {
         let meta = GlobalMetadata::default();
         let options = EncodeOptions {
+            compression_backend: Default::default(),
             hash_algorithm: None,
             emit_preceders: false,
         };

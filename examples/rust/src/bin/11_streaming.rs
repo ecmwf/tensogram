@@ -77,7 +77,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Streaming encode complete: {} bytes", message.len());
 
     // ── 2. Decode the streamed message ──────────────────────────────────────
-    let (decoded_meta, objects) = decode(&message, &DecodeOptions { verify_hash: true })?;
+    let (decoded_meta, objects) = decode(
+        &message,
+        &DecodeOptions {
+            verify_hash: true,
+            ..Default::default()
+        },
+    )?;
     println!(
         "\nDecoded: version={}, {} objects",
         decoded_meta.version,

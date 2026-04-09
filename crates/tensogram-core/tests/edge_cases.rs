@@ -365,7 +365,14 @@ fn unknown_hash_algorithm_skips_verification() {
     let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Decode normally works
-    let (_, objects) = decode(&encoded, &DecodeOptions { verify_hash: true }).unwrap();
+    let (_, objects) = decode(
+        &encoded,
+        &DecodeOptions {
+            verify_hash: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(objects[0].0.hash.is_some());
 
     // Now manually craft a message with an unknown hash algorithm by
@@ -582,7 +589,13 @@ fn verify_hash_true_on_unhashed_message_succeeds() {
     };
     let encoded = encode(&meta, &[(&desc, &data)], &options).unwrap();
     // verify_hash: true should silently skip if no hash present
-    let result = decode(&encoded, &DecodeOptions { verify_hash: true });
+    let result = decode(
+        &encoded,
+        &DecodeOptions {
+            verify_hash: true,
+            ..Default::default()
+        },
+    );
     assert!(result.is_ok());
 }
 
@@ -1493,8 +1506,16 @@ fn decode_range_with_hash_verification() {
     let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Range decode with hash verification
-    let result =
-        decode_range(&encoded, 0, &[(0, 5)], &DecodeOptions { verify_hash: true }).unwrap();
+    let result = decode_range(
+        &encoded,
+        0,
+        &[(0, 5)],
+        &DecodeOptions {
+            verify_hash: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     // One range requested → one result part
     assert_eq!(result.len(), 1, "expected 1 part for 1 range");
     // Total bytes: 5 elements * 4 bytes each = 20
@@ -1610,7 +1631,10 @@ fn preceder_with_hash_verification() {
     let result = enc.finish().unwrap();
 
     // Decode with hash verification — should pass
-    let verify_opts = decode::DecodeOptions { verify_hash: true };
+    let verify_opts = decode::DecodeOptions {
+        verify_hash: true,
+        ..Default::default()
+    };
     let (decoded_meta, objects) = decode(&result, &verify_opts).unwrap();
     assert!(objects[0].0.hash.is_some());
     assert!(decoded_meta.base[0].contains_key("mars"));

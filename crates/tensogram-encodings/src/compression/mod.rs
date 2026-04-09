@@ -15,12 +15,9 @@ mod zstd;
 #[cfg(feature = "zstd-pure")]
 mod zstd_pure;
 
-// Mutual exclusion guards — exactly one backend per codec
-#[cfg(all(feature = "szip", feature = "szip-pure"))]
-compile_error!("features 'szip' and 'szip-pure' are mutually exclusive — choose one");
-
-#[cfg(all(feature = "zstd", feature = "zstd-pure"))]
-compile_error!("features 'zstd' and 'zstd-pure' are mutually exclusive — choose one");
+// Both FFI and pure-Rust backends can be compiled together; the caller
+// selects which one to use at runtime via `CompressionBackend` in the
+// `PipelineConfig`.  See `pipeline::build_compressor()`.
 
 #[cfg(feature = "blosc2")]
 pub use self::blosc2::Blosc2Compressor;

@@ -310,6 +310,7 @@ fn time_tensogram_sp_szip(
             num_values: num_points,
             byte_order: ByteOrder::Little,
             dtype_byte_width: 8,
+            compression_backend: Default::default(),
         })
     };
 

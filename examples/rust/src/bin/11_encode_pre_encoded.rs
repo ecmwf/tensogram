@@ -74,6 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         num_values: values.len(),
         byte_order: ByteOrder::Big,
         dtype_byte_width: 8,
+        compression_backend: Default::default(),
     };
     let packed = pipeline::encode_pipeline(&raw_bytes, &config)?;
     let packed_bytes = packed.encoded_bytes;

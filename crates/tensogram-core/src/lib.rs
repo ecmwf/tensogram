@@ -25,6 +25,7 @@ pub use iter::{messages, objects, objects_metadata, FileMessageIter, MessageIter
 pub use metadata::{compute_common, verify_canonical_cbor, RESERVED_KEY};
 pub use pipeline::{apply_pipeline, DataPipeline};
 pub use streaming::StreamingEncoder;
+pub use tensogram_encodings::pipeline::CompressionBackend;
 pub use types::{
     ByteOrder, DataObjectDescriptor, DecodedObject, GlobalMetadata, HashDescriptor, HashFrame,
     IndexFrame,
