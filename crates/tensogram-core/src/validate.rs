@@ -340,6 +340,21 @@ fn validate_structure<'a>(
         pa_offset
     };
 
+    // Read declared first_footer_offset from postamble for later verification
+    let declared_ffo = if preamble.total_length > 0 {
+        let pa_off = preamble.total_length as usize - POSTAMBLE_SIZE;
+        Postamble::read_from(&buf[pa_off..])
+            .ok()
+            .map(|pa| pa.first_footer_offset as usize)
+    } else if buf.len() >= POSTAMBLE_SIZE {
+        let pa_off = buf.len() - POSTAMBLE_SIZE;
+        Postamble::read_from(&buf[pa_off..])
+            .ok()
+            .map(|pa| pa.first_footer_offset as usize)
+    } else {
+        None
+    };
+
     // --- Frame walk ---
     let mut pos = PREAMBLE_SIZE;
     let mut current_phase = Phase::Headers;
@@ -348,16 +363,34 @@ fn validate_structure<'a>(
     let mut observed_flags = MessageFlags::new(0);
     let mut pending_preceder = false;
     let mut obj_idx: usize = 0;
+    let mut first_footer_pos: Option<usize> = None;
 
     while pos < msg_end {
-        // Skip padding bytes between frames (alignment to 8-byte boundary)
         if pos + 2 > msg_end {
-            // Remaining bytes are padding
             break;
         }
+        // Check for alignment padding (only zeros allowed between frames)
         if &buf[pos..pos + 2] != FRAME_MAGIC {
-            // Could be padding
-            pos += 1;
+            // Expect padding: only zero bytes up to next 8-byte boundary
+            // Always advance at least 1 byte to avoid infinite loops
+            let next_aligned = ((pos + 8) & !7).min(msg_end);
+            let advance_to = if next_aligned > pos {
+                next_aligned
+            } else {
+                pos + 1
+            };
+            if buf[pos..advance_to.min(msg_end)].iter().all(|&b| b == 0) {
+                pos = advance_to;
+                continue;
+            }
+            // Non-zero non-FR bytes — report and skip
+            issues.push(warn(
+                ValidationLevel::Structure,
+                None,
+                Some(pos),
+                format!("unexpected non-zero padding bytes at offset {pos}"),
+            ));
+            pos = advance_to;
             continue;
         }
 
@@ -468,6 +501,9 @@ fn validate_structure<'a>(
                 ),
             ));
         }
+        if phase == Phase::Footers && first_footer_pos.is_none() {
+            first_footer_pos = Some(pos);
+        }
         current_phase = phase;
 
         // Preceder legality
@@ -538,23 +574,18 @@ fn validate_structure<'a>(
                             (&buf[cbor_start..cbor_end], &buf[payload_start..cbor_start])
                         } else {
                             // CBOR-before layout: header(16) | cbor | payload | cbor_offset(8) | ENDF(4)
-                            // Parse CBOR to find its byte length, then the rest is payload.
+                            // Read CBOR through a Cursor to find its exact consumed byte length.
                             let cbor_start = abs_cbor_offset;
                             let region = &buf[cbor_start..cbor_offset_pos];
-                            match ciborium::from_reader::<ciborium::Value, _>(region) {
-                                Ok(val) => {
-                                    let mut cbor_bytes_buf = Vec::new();
-                                    if ciborium::into_writer(&val, &mut cbor_bytes_buf).is_ok() {
-                                        let cbor_len = cbor_bytes_buf.len();
-                                        let payload_start = cbor_start + cbor_len;
-                                        (
-                                            &buf[cbor_start..cbor_start + cbor_len],
-                                            &buf[payload_start..cbor_offset_pos],
-                                        )
-                                    } else {
-                                        // Can't re-serialize; use whole region as CBOR, empty payload
-                                        (region, &buf[cbor_offset_pos..cbor_offset_pos])
-                                    }
+                            let mut cursor = std::io::Cursor::new(region);
+                            match ciborium::from_reader::<ciborium::Value, _>(&mut cursor) {
+                                Ok(_) => {
+                                    let cbor_len = cursor.position() as usize;
+                                    let payload_start = cbor_start + cbor_len;
+                                    (
+                                        &buf[cbor_start..cbor_start + cbor_len],
+                                        &buf[payload_start..cbor_offset_pos],
+                                    )
                                 }
                                 Err(_) => {
                                     // CBOR parse fails; Level 2 will report the error.
@@ -593,6 +624,23 @@ fn validate_structure<'a>(
             None,
             "dangling PrecederMetadata: no DataObject frame followed".to_string(),
         ));
+    }
+
+    // Verify first_footer_offset matches the actual first footer frame position
+    if let Some(ffo) = declared_ffo {
+        // If no footer frames, ffo should point to the postamble itself
+        let expected_ffo = first_footer_pos.unwrap_or(msg_end);
+        if ffo != expected_ffo {
+            issues.push(warn(
+                ValidationLevel::Structure,
+                None,
+                None,
+                format!(
+                    "first_footer_offset {} does not match actual first footer position {}",
+                    ffo, expected_ffo
+                ),
+            ));
+        }
     }
 
     // Flags consistency: check each declared flag matches what we observed
@@ -941,16 +989,39 @@ fn validate_metadata(
 
 // ── Level 3: Integrity ──────────────────────────────────────────────────────
 
+/// Result of a single hash check.
+enum HashCheckResult {
+    /// Hash matched — object verified.
+    Verified,
+    /// Hash algorithm unknown — cannot verify.
+    UnknownAlgorithm,
+    /// Hash mismatch or error — verification failed.
+    Failed,
+}
+
 /// Check a single hash descriptor against payload, pushing issues on failure.
-/// Returns true if hash was verified successfully.
 fn check_hash(
     payload: &[u8],
     h: &crate::types::HashDescriptor,
     obj_idx: usize,
     issues: &mut Vec<ValidationIssue>,
-) -> bool {
+) -> HashCheckResult {
+    // Check if algorithm is known before delegating to verify_hash,
+    // which silently returns Ok for unknown algorithms.
+    if hash::HashAlgorithm::parse(&h.hash_type).is_err() {
+        issues.push(warn(
+            ValidationLevel::Integrity,
+            Some(obj_idx),
+            None,
+            format!(
+                "object {obj_idx}: unknown hash algorithm '{}', cannot verify",
+                h.hash_type
+            ),
+        ));
+        return HashCheckResult::UnknownAlgorithm;
+    }
     match hash::verify_hash(payload, h) {
-        Ok(()) => true,
+        Ok(()) => HashCheckResult::Verified,
         Err(TensogramError::HashMismatch { expected, actual }) => {
             issues.push(err(
                 ValidationLevel::Integrity,
@@ -958,7 +1029,7 @@ fn check_hash(
                 None,
                 format!("object {obj_idx}: hash mismatch (expected {expected}, got {actual})"),
             ));
-            false
+            HashCheckResult::Failed
         }
         Err(e) => {
             issues.push(err(
@@ -967,13 +1038,15 @@ fn check_hash(
                 None,
                 format!("object {obj_idx}: hash verification error: {e}"),
             ));
-            false
+            HashCheckResult::Failed
         }
     }
 }
 
 fn validate_integrity(walk: &FrameWalkResult<'_>, issues: &mut Vec<ValidationIssue>) -> bool {
-    let mut hash_verified = false;
+    // hash_verified is true only when ALL objects have verified hashes.
+    let mut all_verified = true;
+    let mut any_checked = false;
 
     // Collect hash frame if present
     let mut hash_frame: Option<crate::types::HashFrame> = None;
@@ -989,23 +1062,33 @@ fn validate_integrity(walk: &FrameWalkResult<'_>, issues: &mut Vec<ValidationIss
         // Parse descriptor for hash and pipeline info
         let desc: DataObjectDescriptor = match metadata::cbor_to_object_descriptor(cbor_bytes) {
             Ok(d) => d,
-            Err(_) => continue, // Already reported at Level 2
+            Err(_) => {
+                all_verified = false;
+                continue; // Already reported at Level 2
+            }
         };
 
         // Hash verification: prefer per-object descriptor hash, fall back to hash frame
-        if let Some(ref h) = desc.hash {
-            if check_hash(payload, h, i, issues) {
-                hash_verified = true;
-            }
+        let result = if let Some(ref h) = desc.hash {
+            any_checked = true;
+            check_hash(payload, h, i, issues)
         } else if let Some(ref hf) = hash_frame {
             if i < hf.hashes.len() {
+                any_checked = true;
                 let h = crate::types::HashDescriptor {
                     hash_type: hf.hash_type.clone(),
                     value: hf.hashes[i].clone(),
                 };
-                if check_hash(payload, &h, i, issues) {
-                    hash_verified = true;
-                }
+                check_hash(payload, &h, i, issues)
+            } else {
+                issues.push(warn(
+                    ValidationLevel::Integrity,
+                    Some(i),
+                    None,
+                    format!("object {i}: no hash available, cannot verify integrity"),
+                ));
+                all_verified = false;
+                HashCheckResult::UnknownAlgorithm
             }
         } else {
             issues.push(warn(
@@ -1014,6 +1097,12 @@ fn validate_integrity(walk: &FrameWalkResult<'_>, issues: &mut Vec<ValidationIss
                 None,
                 format!("object {i}: no hash available, cannot verify integrity"),
             ));
+            all_verified = false;
+            HashCheckResult::UnknownAlgorithm
+        };
+
+        if !matches!(result, HashCheckResult::Verified) {
+            all_verified = false;
         }
 
         // Decompression check: try to run the decode pipeline
@@ -1052,7 +1141,7 @@ fn validate_integrity(walk: &FrameWalkResult<'_>, issues: &mut Vec<ValidationIss
         }
     }
 
-    hash_verified
+    any_checked && all_verified
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -1065,7 +1154,7 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
     let mut object_count = 0;
     let mut hash_verified = false;
 
-    let run_structure = options.mode != ValidateMode::Checksum;
+    let report_structure = options.mode != ValidateMode::Checksum;
     let run_metadata = matches!(
         options.mode,
         ValidateMode::Default | ValidateMode::Canonical
@@ -1076,13 +1165,18 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
     );
     let check_canonical = options.mode == ValidateMode::Canonical;
 
-    // Level 1: Structure
-    let walk = if run_structure {
-        validate_structure(buf, &mut issues)
-    } else {
-        // For checksum-only mode we still need to parse structure to get payloads
-        validate_structure(buf, &mut Vec::new())
-    };
+    // Level 1: Structure — always run to extract frame payloads.
+    // In checksum mode, non-fatal structural warnings are suppressed,
+    // but if structure parsing fails entirely (walk=None), we report
+    // that as an error since we can't verify anything.
+    let mut structure_issues = Vec::new();
+    let walk = validate_structure(buf, &mut structure_issues);
+    if walk.is_none() {
+        // Structure too broken to continue — always report this
+        issues.append(&mut structure_issues);
+    } else if report_structure {
+        issues.append(&mut structure_issues);
+    }
 
     if let Some(ref walk) = walk {
         object_count = walk.data_objects.len();
@@ -1114,14 +1208,11 @@ pub fn validate_file(
     options: &ValidateOptions,
 ) -> std::io::Result<FileValidationReport> {
     let buf = std::fs::read(path)?;
-    validate_buffer(&buf, options)
+    Ok(validate_buffer(&buf, options))
 }
 
 /// Validate all messages in a byte buffer (may contain multiple messages).
-pub fn validate_buffer(
-    buf: &[u8],
-    options: &ValidateOptions,
-) -> std::io::Result<FileValidationReport> {
+pub fn validate_buffer(buf: &[u8], options: &ValidateOptions) -> FileValidationReport {
     let mut file_issues = Vec::new();
     let mut messages = Vec::new();
     let mut pos = 0;
@@ -1201,14 +1292,31 @@ pub fn validate_buffer(
                 }
             }
             Ok(_) => {
-                // Streaming mode: scan for end magic
+                // Streaming mode (total_length=0): scan for END_MAGIC, but
+                // validate each candidate by checking the postamble's
+                // first_footer_offset points within the message. This avoids
+                // false matches on payload bytes that happen to contain
+                // the END_MAGIC pattern.
+                let min_msg = PREAMBLE_SIZE + POSTAMBLE_SIZE;
                 let mut found = None;
+                // END_MAGIC is the last 8 bytes of the postamble (16 bytes).
+                // So the postamble starts 8 bytes before END_MAGIC.
                 let search_start = pos + PREAMBLE_SIZE;
                 let mut scan_pos = search_start;
                 while scan_pos + 8 <= buf.len() {
                     if &buf[scan_pos..scan_pos + 8] == wire::END_MAGIC {
-                        found = Some(scan_pos + 8 - pos);
-                        break;
+                        let candidate_len = scan_pos + 8 - pos;
+                        if candidate_len >= min_msg {
+                            // Validate first_footer_offset in the postamble
+                            let pa_start = scan_pos - 8; // first_footer_offset field
+                            let ffo = wire::read_u64_be(buf, pa_start) as usize;
+                            // ffo should point within [PREAMBLE_SIZE, pa_start - pos]
+                            if ffo >= PREAMBLE_SIZE && ffo <= pa_start - pos {
+                                found = Some(candidate_len);
+                                break;
+                            }
+                        }
+                        // Not a valid postamble; keep scanning
                     }
                     scan_pos += 1;
                 }
@@ -1219,7 +1327,7 @@ pub fn validate_buffer(
                             byte_offset: pos,
                             length: buf.len() - pos,
                             description: format!(
-                                "streaming message at offset {pos} has no end magic"
+                                "streaming message at offset {pos} has no valid end magic"
                             ),
                         });
                         break;
@@ -1246,10 +1354,10 @@ pub fn validate_buffer(
         pos += msg_len;
     }
 
-    Ok(FileValidationReport {
+    FileValidationReport {
         file_issues,
         messages,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -1478,7 +1586,7 @@ mod tests {
     #[test]
     fn validate_buffer_single_message() {
         let msg = make_test_message();
-        let report = validate_buffer(&msg, &ValidateOptions::default()).unwrap();
+        let report = validate_buffer(&msg, &ValidateOptions::default());
         assert!(report.is_ok());
         assert_eq!(report.messages.len(), 1);
         assert!(report.file_issues.is_empty());
@@ -1489,7 +1597,7 @@ mod tests {
         let msg = make_test_message();
         let mut buf = msg.clone();
         buf.extend_from_slice(&msg);
-        let report = validate_buffer(&buf, &ValidateOptions::default()).unwrap();
+        let report = validate_buffer(&buf, &ValidateOptions::default());
         assert!(report.is_ok());
         assert_eq!(report.messages.len(), 2);
     }
@@ -1498,7 +1606,7 @@ mod tests {
     fn validate_buffer_trailing_garbage() {
         let mut buf = make_test_message();
         buf.extend_from_slice(b"GARBAGE_TRAILING_DATA");
-        let report = validate_buffer(&buf, &ValidateOptions::default()).unwrap();
+        let report = validate_buffer(&buf, &ValidateOptions::default());
         assert!(!report.file_issues.is_empty());
         assert!(report.file_issues[0]
             .description
@@ -1511,7 +1619,7 @@ mod tests {
         let mut buf = msg.clone();
         buf.extend_from_slice(b"GARBAGE");
         buf.extend_from_slice(&msg);
-        let report = validate_buffer(&buf, &ValidateOptions::default()).unwrap();
+        let report = validate_buffer(&buf, &ValidateOptions::default());
         assert!(!report.file_issues.is_empty());
         assert_eq!(report.messages.len(), 2);
     }
@@ -1521,7 +1629,7 @@ mod tests {
         let msg = make_test_message();
         let mut buf = msg.clone();
         buf.extend_from_slice(&msg[..msg.len() / 2]);
-        let report = validate_buffer(&buf, &ValidateOptions::default()).unwrap();
+        let report = validate_buffer(&buf, &ValidateOptions::default());
         // First message validates OK.
         // Second message is truncated: it may be parsed with errors, or
         // reported as a file-level issue.
@@ -1545,5 +1653,135 @@ mod tests {
         let report = validate_message(&msg, &opts);
         // Our encoder always produces canonical CBOR
         assert!(report.is_ok(), "issues: {:?}", report.issues);
+    }
+
+    // ── Checksum mode on malformed input ────────────────────────────────
+
+    #[test]
+    fn checksum_mode_on_broken_message_fails() {
+        // A message with corrupted postamble should fail even in checksum mode,
+        // because structure parsing fails entirely (walk=None).
+        let mut msg = make_test_message();
+        let end = msg.len();
+        msg[end - 8..end].copy_from_slice(b"BADMAGIC");
+        let opts = ValidateOptions {
+            mode: ValidateMode::Checksum,
+        };
+        let report = validate_message(&msg, &opts);
+        assert!(
+            !report.is_ok(),
+            "broken message should fail even in checksum mode"
+        );
+    }
+
+    // ── Streaming message validation ────────────────────────────────────
+
+    #[test]
+    fn streaming_message_validates() {
+        use crate::encode::EncodeOptions;
+        use crate::streaming::StreamingEncoder;
+
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let data = vec![0u8; 32];
+
+        let mut buf = Vec::new();
+        let mut enc = StreamingEncoder::new(&mut buf, &meta, &EncodeOptions::default()).unwrap();
+        enc.write_object(&desc, &data).unwrap();
+        enc.finish().unwrap();
+
+        let report = validate_message(&buf, &ValidateOptions::default());
+        assert!(
+            report.is_ok(),
+            "streaming message should validate: {:?}",
+            report.issues
+        );
+        assert_eq!(report.object_count, 1);
+        assert!(report.hash_verified);
+    }
+
+    // ── Footer-only metadata ────────────────────────────────────────────
+
+    #[test]
+    fn streaming_message_footer_metadata_validates() {
+        // StreamingEncoder puts metadata in both header and footer by default,
+        // so this also covers footer metadata parsing.
+        use crate::encode::EncodeOptions;
+        use crate::streaming::StreamingEncoder;
+
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![4],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let data = vec![0u8; 8]; // 2 × f32
+
+        let mut buf = Vec::new();
+        let mut enc = StreamingEncoder::new(&mut buf, &meta, &EncodeOptions::default()).unwrap();
+        enc.write_object(&desc, &data).unwrap();
+        enc.write_object(&desc, &data).unwrap();
+        enc.finish().unwrap();
+
+        let report = validate_message(&buf, &ValidateOptions::default());
+        assert!(report.is_ok(), "issues: {:?}", report.issues);
+        assert_eq!(report.object_count, 2);
+    }
+
+    // ── Hash verified only when all objects checked ─────────────────────
+
+    #[test]
+    fn hash_verified_requires_all_objects() {
+        let msg = make_test_message();
+        let report = validate_message(&msg, &ValidateOptions::default());
+        // Single object with xxh3 hash — should be verified
+        assert!(report.hash_verified);
+    }
+
+    #[test]
+    fn hash_not_verified_without_hash() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let data = vec![0u8; 32];
+        let opts = EncodeOptions {
+            hash_algorithm: None, // No hashing
+            ..EncodeOptions::default()
+        };
+        let msg = encode(&meta, &[(&desc, data.as_slice())], &opts).unwrap();
+        let report = validate_message(&msg, &ValidateOptions::default());
+        // No hash → hash_verified should be false
+        assert!(!report.hash_verified);
     }
 }

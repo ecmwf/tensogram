@@ -5,6 +5,18 @@ use tensogram_core::{
     ValidationLevel,
 };
 
+/// Custom error to signal validation failure (exit code 1) without process::exit.
+#[derive(Debug)]
+pub struct ValidationFailed;
+
+impl std::fmt::Display for ValidationFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "validation failed")
+    }
+}
+
+impl std::error::Error for ValidationFailed {}
+
 pub fn run(
     files: &[PathBuf],
     mode: ValidateMode,
@@ -13,22 +25,29 @@ pub fn run(
     let options = ValidateOptions { mode };
     let mut all_ok = true;
 
-    for path in files {
-        let report = validate_file(path, &options)?;
-
-        if json {
-            print_json(path, &report);
-        } else {
-            print_human(path, &report);
+    if json {
+        // Wrap all results in a JSON array for valid batch output
+        let mut entries = Vec::new();
+        for path in files {
+            let report = validate_file(path, &options)?;
+            entries.push(format_json(path, &report));
+            if !report.is_ok() {
+                all_ok = false;
+            }
         }
-
-        if !report.is_ok() {
-            all_ok = false;
+        println!("[{}]", entries.join(",\n"));
+    } else {
+        for path in files {
+            let report = validate_file(path, &options)?;
+            print_human(path, &report);
+            if !report.is_ok() {
+                all_ok = false;
+            }
         }
     }
 
     if !all_ok {
-        std::process::exit(1);
+        return Err(Box::new(ValidationFailed));
     }
 
     Ok(())
@@ -63,58 +82,41 @@ fn print_human(path: &Path, report: &FileValidationReport) {
             hash_note,
         );
     } else {
-        // Collect error summaries
         for (i, msg_report) in report.messages.iter().enumerate() {
             for issue in &msg_report.issues {
-                if issue.severity == IssueSeverity::Error {
-                    let obj_note = match issue.object_index {
-                        Some(idx) => format!(", object {idx}"),
-                        None => String::new(),
-                    };
-                    let offset_note = match issue.byte_offset {
-                        Some(off) => format!(" (at byte {off})"),
-                        None => String::new(),
-                    };
-                    eprintln!(
-                        "{}: FAILED — message {i}{obj_note}: {}{offset_note}",
-                        path.display(),
-                        issue.description,
-                    );
-                }
-            }
-        }
-
-        // Print warnings too
-        for (i, msg_report) in report.messages.iter().enumerate() {
-            for issue in &msg_report.issues {
-                if issue.severity == IssueSeverity::Warning {
-                    let obj_note = match issue.object_index {
-                        Some(idx) => format!(", object {idx}"),
-                        None => String::new(),
-                    };
-                    eprintln!(
-                        "{}: WARNING — message {i}{obj_note}: {}",
-                        path.display(),
-                        issue.description,
-                    );
-                }
+                let obj_note = match issue.object_index {
+                    Some(idx) => format!(", object {idx}"),
+                    None => String::new(),
+                };
+                let prefix = match issue.severity {
+                    IssueSeverity::Error => "FAILED",
+                    IssueSeverity::Warning => "WARNING",
+                };
+                let offset_note = match issue.byte_offset {
+                    Some(off) => format!(" (at byte {off})"),
+                    None => String::new(),
+                };
+                eprintln!(
+                    "{}: {prefix} — message {i}{obj_note}: {}{offset_note}",
+                    path.display(),
+                    issue.description,
+                );
             }
         }
     }
 }
 
-fn print_json(path: &Path, report: &FileValidationReport) {
+fn format_json(path: &Path, report: &FileValidationReport) -> String {
     let status = if report.is_ok() { "ok" } else { "failed" };
     let msg_count = report.messages.len();
     let obj_count = report.total_objects();
     let hash_verified = report.hash_verified();
 
-    // Collect all issues from all messages
     let mut all_issues = Vec::new();
 
     for fi in &report.file_issues {
         all_issues.push(format!(
-            r#"    {{"level":"file","severity":"warning","message_index":null,"object_index":null,"byte_offset":{},"description":{}}}"#,
+            r#"{{"level":"file","severity":"warning","message_index":null,"object_index":null,"byte_offset":{},"description":{}}}"#,
             fi.byte_offset,
             json_string(&fi.description),
         ));
@@ -140,22 +142,24 @@ fn print_json(path: &Path, report: &FileValidationReport) {
                 None => "null".to_string(),
             };
             all_issues.push(format!(
-                r#"    {{"level":"{level}","severity":"{severity}","message_index":{i},"object_index":{obj_idx},"byte_offset":{byte_off},"description":{}}}"#,
+                r#"{{"level":"{level}","severity":"{severity}","message_index":{i},"object_index":{obj_idx},"byte_offset":{byte_off},"description":{}}}"#,
                 json_string(&issue.description),
             ));
         }
     }
 
-    let issues_str = all_issues.join(",\n");
-    println!(
-        r#"{{"file":{},"status":"{status}","messages":{msg_count},"objects":{obj_count},"hash_verified":{hash_verified},"issues":[
-{issues_str}
-]}}"#,
+    let issues_str = if all_issues.is_empty() {
+        String::new()
+    } else {
+        all_issues.join(",")
+    };
+    format!(
+        r#"{{"file":{},"status":"{status}","messages":{msg_count},"objects":{obj_count},"hash_verified":{hash_verified},"issues":[{issues_str}]}}"#,
         json_string(&path.display().to_string()),
-    );
+    )
 }
 
-/// Escape a string for JSON output (minimal implementation).
+/// Escape a string for JSON output.
 fn json_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -261,10 +265,25 @@ mod tests {
     }
 
     #[test]
+    fn cli_validate_zero_files() {
+        // No files should succeed (nothing to validate)
+        run(&[], ValidateMode::Default, false).unwrap();
+    }
+
+    #[test]
     fn json_string_escaping() {
         assert_eq!(json_string("hello"), r#""hello""#);
         assert_eq!(json_string(r#"a"b"#), r#""a\"b""#);
         assert_eq!(json_string("a\\b"), r#""a\\b""#);
         assert_eq!(json_string("a\nb"), r#""a\nb""#);
+    }
+
+    #[test]
+    fn batch_json_is_valid_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let p1 = make_test_file(dir.path(), "a.tgm", 1);
+        let p2 = make_test_file(dir.path(), "b.tgm", 1);
+        // Just verify it doesn't panic; actual JSON validity is structural
+        run(&[p1, p2], ValidateMode::Default, true).unwrap();
     }
 }

@@ -123,11 +123,12 @@ enum Commands {
     /// Validate .tgm files for correctness and integrity
     Validate {
         /// Paths to .tgm files
+        #[arg(required = true)]
         files: Vec<PathBuf>,
         /// Quick mode: structure only (level 1)
         #[arg(long, group = "vmode")]
         quick: bool,
-        /// Full default mode: levels 1-3 (this is the default)
+        /// Checksum only: hash verification (level 3)
         #[arg(long, group = "vmode")]
         checksum: bool,
         /// Canonical mode: levels 1-3 plus canonical CBOR check
