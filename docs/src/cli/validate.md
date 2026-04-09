@@ -20,12 +20,12 @@ The command runs up to three validation levels:
 
 ## Modes
 
-| Flag | Levels run | Use case |
-|------|-----------|----------|
-| *(none)* | 1, 2, 3 | Default: full structural + metadata + integrity check |
-| `--quick` | 1 only | Fast structural check without touching payloads |
-| `--checksum` | 3 (+ structural errors) | Hash verification; structural errors still reported |
-| `--canonical` | 1, 2, 3 + canonical CBOR | Also checks RFC 8949 deterministic key ordering |
+| Mode | Levels | Description |
+|------|--------|-------------|
+| default | 1–3 | Structure + metadata + integrity |
+| quick | 1 | Structure only, no payloads |
+| checksum | 3 | Hash check (structural errors still reported) |
+| canonical | 1–3 | Default + RFC 8949 CBOR key ordering |
 
 The mode flags (`--quick`, `--checksum`, `--canonical`) are mutually exclusive.
 
