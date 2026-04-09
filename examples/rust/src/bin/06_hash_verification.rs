@@ -22,7 +22,7 @@ fn make_descriptor() -> DataObjectDescriptor {
         shape: vec![100],
         strides: vec![1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -57,7 +57,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("xxh3 hash: {}:{}", hash.hash_type, hash.value);
 
         // Verify on decode — this is where the hash is checked
-        let verify_opts = DecodeOptions { verify_hash: true };
+        let verify_opts = DecodeOptions {
+            verify_hash: true,
+            ..Default::default()
+        };
         decode(&message, &verify_opts)?;
         println!("xxh3 verification: PASS");
     }
@@ -74,7 +77,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert!(objects[0].0.hash.is_none());
 
         // verify_hash: true on a message without a hash is silently skipped
-        let verify_opts = DecodeOptions { verify_hash: true };
+        let verify_opts = DecodeOptions {
+            verify_hash: true,
+            ..Default::default()
+        };
         decode(&message, &verify_opts)?;
         println!("\nNo-hash message decoded with verify_hash=true: silently skipped (OK)");
     }
@@ -90,7 +96,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mid = message.len() / 2;
         corrupted[mid] ^= 0xFF; // flip a byte in the middle of the message
 
-        let verify_opts = DecodeOptions { verify_hash: true };
+        let verify_opts = DecodeOptions {
+            verify_hash: true,
+            ..Default::default()
+        };
         let result = decode(&corrupted, &verify_opts);
 
         match result {

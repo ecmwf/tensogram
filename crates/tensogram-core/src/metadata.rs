@@ -461,7 +461,7 @@ mod tests {
             shape: vec![10, 20],
             strides: vec![20, 1],
             dtype: Dtype::Float32,
-            byte_order: ByteOrder::Big,
+            byte_order: ByteOrder::native(),
             encoding: "none".to_string(),
             filter: "none".to_string(),
             compression: "none".to_string(),

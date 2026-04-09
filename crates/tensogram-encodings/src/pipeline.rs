@@ -25,6 +25,45 @@ pub enum ByteOrder {
     Little,
 }
 
+impl ByteOrder {
+    /// Returns the byte order of the platform this code was compiled for.
+    #[inline]
+    pub fn native() -> Self {
+        #[cfg(target_endian = "little")]
+        {
+            ByteOrder::Little
+        }
+        #[cfg(target_endian = "big")]
+        {
+            ByteOrder::Big
+        }
+    }
+}
+
+/// Reverse bytes within each `unit_size`-byte chunk of `data`, converting
+/// between big-endian and little-endian representations in place.
+///
+/// No-op when `unit_size <= 1` (single-byte types have no byte order).
+/// Returns an error if `data.len()` is not a multiple of `unit_size`.
+/// For complex types, pass the scalar component size (e.g. 4 for complex64)
+/// so that each float32 component is swapped independently.
+pub fn byteswap(data: &mut [u8], unit_size: usize) -> Result<(), PipelineError> {
+    if unit_size <= 1 {
+        return Ok(());
+    }
+    if !data.len().is_multiple_of(unit_size) {
+        return Err(PipelineError::Range(format!(
+            "byteswap: data length {} is not a multiple of unit_size {}",
+            data.len(),
+            unit_size,
+        )));
+    }
+    for chunk in data.chunks_exact_mut(unit_size) {
+        chunk.reverse();
+    }
+    Ok(())
+}
+
 #[derive(Debug, Error)]
 pub enum PipelineError {
     #[error("encoding error: {0}")]
@@ -131,6 +170,11 @@ pub struct PipelineConfig {
     pub num_values: usize,
     pub byte_order: ByteOrder,
     pub dtype_byte_width: usize,
+    /// The size of the fundamental scalar component for byte-order swapping.
+    /// Equal to `dtype_byte_width` for simple types.  For complex types the
+    /// swap must operate on each float component independently, so this is
+    /// half of `dtype_byte_width` (e.g. 4 for complex64, 8 for complex128).
+    pub swap_unit_size: usize,
 }
 
 pub struct PipelineResult {
@@ -184,11 +228,13 @@ fn build_compressor(
         CompressionType::Zfp { mode } => Ok(Some(Box::new(ZfpCompressor {
             mode: mode.clone(),
             num_values: config.num_values,
+            byte_order: config.byte_order,
         }))),
         #[cfg(feature = "sz3")]
         CompressionType::Sz3 { error_bound } => Ok(Some(Box::new(Sz3Compressor {
             error_bound: error_bound.clone(),
             num_values: config.num_values,
+            byte_order: config.byte_order,
         }))),
     }
 }
@@ -274,9 +320,18 @@ pub fn encode_pipeline_f64(
     }
 }
 
-/// Full reverse pipeline: decompress → unshuffle → decode
+/// Full reverse pipeline: decompress → unshuffle → decode → native byteswap.
+///
+/// When `native_byte_order` is true (the default at the API level), the
+/// output bytes are converted to the caller's native byte order so that a
+/// simple `reinterpret_cast` or `from_ne_bytes` produces correct values.
+/// When false, bytes are returned in the message's declared wire byte order.
 #[tracing::instrument(skip(encoded, config), fields(encoded_len = encoded.len()))]
-pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8>, PipelineError> {
+pub fn decode_pipeline(
+    encoded: &[u8],
+    config: &PipelineConfig,
+    native_byte_order: bool,
+) -> Result<Vec<u8>, PipelineError> {
     // Step 1: Decompress — Cow avoids cloning when no compression
     let decompressed: Cow<'_, [u8]> = match build_compressor(&config.compression, config)? {
         None => Cow::Borrowed(encoded),
@@ -295,14 +350,34 @@ pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8
         ),
     };
 
-    // Step 3: Decode
-    let decoded = match &config.encoding {
+    // Determine the target byte order for the output.  When the caller
+    // requests native byte order, simple_packing can write directly in
+    // native (avoiding a redundant write + swap).
+    let target_byte_order = if native_byte_order {
+        ByteOrder::native()
+    } else {
+        config.byte_order
+    };
+
+    // Step 3: Decode encoding
+    let mut decoded = match &config.encoding {
         EncodingType::None => unfiltered.into_owned(),
         EncodingType::SimplePacking(params) => {
+            // simple_packing decodes to Vec<f64> in-register values (no byte
+            // order) then serialises directly to the target byte order.
             let values = simple_packing::decode(&unfiltered, config.num_values, params)?;
-            f64_to_bytes(&values, config.byte_order)
+            f64_to_bytes(&values, target_byte_order)
         }
     };
+
+    // Step 4: Native-endian byteswap for encoding=none.
+    // (simple_packing already wrote in target_byte_order above.)
+    if native_byte_order
+        && matches!(config.encoding, EncodingType::None)
+        && config.byte_order != ByteOrder::native()
+    {
+        byteswap(&mut decoded, config.swap_unit_size)?;
+    }
 
     Ok(decoded)
 }
@@ -314,12 +389,16 @@ pub fn decode_pipeline(encoded: &[u8], config: &PipelineConfig) -> Result<Vec<u8
 ///
 /// `sample_offset` and `sample_count` are in logical element units.
 /// `block_offsets` are block boundary offsets from encoding (compressor-specific).
+///
+/// When `native_byte_order` is true, the output bytes are in the caller's
+/// native byte order.
 pub fn decode_range_pipeline(
     encoded: &[u8],
     config: &PipelineConfig,
     block_offsets: &[u64],
     sample_offset: u64,
     sample_count: u64,
+    native_byte_order: bool,
 ) -> Result<Vec<u8>, PipelineError> {
     if matches!(config.filter, FilterType::Shuffle { .. }) {
         return Err(PipelineError::Shuffle(
@@ -367,9 +446,21 @@ pub fn decode_range_pipeline(
         }
     };
 
+    let target_byte_order = if native_byte_order {
+        ByteOrder::native()
+    } else {
+        config.byte_order
+    };
+
     // Phase 3: Decode encoding from decompressed bytes
     match &config.encoding {
-        EncodingType::None => Ok(decompressed),
+        EncodingType::None => {
+            let mut result = decompressed;
+            if native_byte_order && config.byte_order != ByteOrder::native() {
+                byteswap(&mut result, config.swap_unit_size)?;
+            }
+            Ok(result)
+        }
         EncodingType::SimplePacking(params) => {
             let values = simple_packing::decode_range(
                 &decompressed,
@@ -377,7 +468,7 @@ pub fn decode_range_pipeline(
                 sample_count as usize,
                 params,
             )?;
-            Ok(f64_to_bytes(&values, config.byte_order))
+            Ok(f64_to_bytes(&values, target_byte_order))
         }
     }
 }
@@ -430,10 +521,11 @@ mod tests {
             num_values: 1,
             byte_order: ByteOrder::Little,
             dtype_byte_width: 8,
+            swap_unit_size: 8,
         };
         let result = encode_pipeline(&data, &config).unwrap();
         assert_eq!(result.encoded_bytes, data);
-        let decoded = decode_pipeline(&result.encoded_bytes, &config).unwrap();
+        let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
         assert_eq!(decoded, data);
     }
 
@@ -450,10 +542,11 @@ mod tests {
             num_values: values.len(),
             byte_order: ByteOrder::Little,
             dtype_byte_width: 8,
+            swap_unit_size: 8,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
-        let decoded = decode_pipeline(&result.encoded_bytes, &config).unwrap();
+        let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
         let decoded_values = bytes_to_f64(&decoded, ByteOrder::Little);
 
         for (orig, dec) in values.iter().zip(decoded_values.iter()) {
@@ -471,11 +564,12 @@ mod tests {
             num_values: 4,
             byte_order: ByteOrder::Little,
             dtype_byte_width: 4,
+            swap_unit_size: 4,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
         assert_ne!(result.encoded_bytes, data); // shuffled should differ
-        let decoded = decode_pipeline(&result.encoded_bytes, &config).unwrap();
+        let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
         assert_eq!(decoded, data);
     }
 
@@ -495,12 +589,245 @@ mod tests {
             num_values: 2048,
             byte_order: ByteOrder::Little,
             dtype_byte_width: 1,
+            swap_unit_size: 1,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
         assert!(result.block_offsets.is_some());
 
-        let decoded = decode_pipeline(&result.encoded_bytes, &config).unwrap();
+        let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
         assert_eq!(decoded, data);
+    }
+
+    // -----------------------------------------------------------------------
+    // byteswap utility tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_byteswap_noop_for_single_byte() {
+        let mut data = vec![1, 2, 3, 4];
+        let original = data.clone();
+        byteswap(&mut data, 1).unwrap();
+        assert_eq!(data, original);
+        byteswap(&mut data, 0).unwrap();
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_byteswap_2_bytes() {
+        let mut data = vec![0xAA, 0xBB, 0xCC, 0xDD];
+        byteswap(&mut data, 2).unwrap();
+        assert_eq!(data, vec![0xBB, 0xAA, 0xDD, 0xCC]);
+    }
+
+    #[test]
+    fn test_byteswap_4_bytes() {
+        let mut data = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        byteswap(&mut data, 4).unwrap();
+        assert_eq!(data, vec![4, 3, 2, 1, 8, 7, 6, 5]);
+    }
+
+    #[test]
+    fn test_byteswap_8_bytes() {
+        let mut data: Vec<u8> = (1..=16).collect();
+        byteswap(&mut data, 8).unwrap();
+        assert_eq!(
+            data,
+            vec![8, 7, 6, 5, 4, 3, 2, 1, 16, 15, 14, 13, 12, 11, 10, 9]
+        );
+    }
+
+    #[test]
+    fn test_byteswap_round_trip() {
+        let original = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        let mut data = original.clone();
+        byteswap(&mut data, 4).unwrap();
+        assert_ne!(data, original);
+        byteswap(&mut data, 4).unwrap();
+        assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_byteswap_misaligned_returns_error() {
+        let mut data = vec![1, 2, 3, 4, 5]; // 5 bytes, not a multiple of 4
+        let result = byteswap(&mut data, 4);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Native byte-order decode tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_decode_native_byte_order_encoding_none() {
+        // Encode as big-endian float32 on a (likely) little-endian machine.
+        let value: f32 = 42.0;
+        let be_bytes = value.to_be_bytes();
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: 1,
+            byte_order: ByteOrder::Big,
+            dtype_byte_width: 4,
+            swap_unit_size: 4,
+        };
+
+        let result = encode_pipeline(&be_bytes, &config).unwrap();
+
+        // Decode with native_byte_order=true: should get native-endian bytes.
+        let native_decoded = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
+        let ne_value = f32::from_ne_bytes(native_decoded[..4].try_into().unwrap());
+        assert_eq!(ne_value, value);
+
+        // Decode with native_byte_order=false: should get big-endian bytes.
+        let wire_decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
+        let be_value = f32::from_be_bytes(wire_decoded[..4].try_into().unwrap());
+        assert_eq!(be_value, value);
+    }
+
+    #[test]
+    fn test_decode_native_byte_order_simple_packing() {
+        let values: Vec<f64> = vec![100.0, 200.0, 300.0, 400.0];
+        // Encode with big-endian byte order.
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+        let params = simple_packing::compute_params(&values, 24, 0).unwrap();
+
+        let config = PipelineConfig {
+            encoding: EncodingType::SimplePacking(params),
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: values.len(),
+            byte_order: ByteOrder::Big,
+            dtype_byte_width: 8,
+            swap_unit_size: 8,
+        };
+
+        let result = encode_pipeline(&data, &config).unwrap();
+
+        // Decode with native_byte_order=true: result should be native f64.
+        let native_decoded = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
+        let decoded_values: Vec<f64> = native_decoded
+            .chunks_exact(8)
+            .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        for (orig, dec) in values.iter().zip(decoded_values.iter()) {
+            assert!((orig - dec).abs() < 1.0, "orig={orig}, dec={dec}");
+        }
+
+        // Decode with native_byte_order=false: result should be big-endian f64.
+        let wire_decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
+        let wire_values: Vec<f64> = wire_decoded
+            .chunks_exact(8)
+            .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+            .collect();
+        for (orig, dec) in values.iter().zip(wire_values.iter()) {
+            assert!((orig - dec).abs() < 1.0, "orig={orig}, dec={dec}");
+        }
+    }
+
+    #[test]
+    fn test_native_byte_order_same_as_wire_is_noop() {
+        // When wire byte order == native, native_byte_order=true/false should
+        // produce identical output (no swap needed either way).
+        let values: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: values.len(),
+            byte_order: ByteOrder::native(),
+            dtype_byte_width: 4,
+            swap_unit_size: 4,
+        };
+
+        let result = encode_pipeline(&data, &config).unwrap();
+        let native_decoded = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
+        let wire_decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
+        assert_eq!(native_decoded, wire_decoded);
+    }
+
+    #[test]
+    fn test_decode_native_byte_order_2byte_dtype() {
+        // int16 / uint16 / float16 — 2-byte swap unit.
+        let value: u16 = 0x0102;
+        let be_bytes = value.to_be_bytes();
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: 1,
+            byte_order: ByteOrder::Big,
+            dtype_byte_width: 2,
+            swap_unit_size: 2,
+        };
+        let result = encode_pipeline(&be_bytes, &config).unwrap();
+        let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
+        assert_eq!(u16::from_ne_bytes(native[..2].try_into().unwrap()), value);
+    }
+
+    #[test]
+    fn test_decode_native_byte_order_8byte_dtype() {
+        // float64 / int64 / uint64 — 8-byte swap unit.
+        let value: f64 = std::f64::consts::E;
+        let be_bytes = value.to_be_bytes();
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: 1,
+            byte_order: ByteOrder::Big,
+            dtype_byte_width: 8,
+            swap_unit_size: 8,
+        };
+        let result = encode_pipeline(&be_bytes, &config).unwrap();
+        let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
+        assert_eq!(f64::from_ne_bytes(native[..8].try_into().unwrap()), value);
+    }
+
+    #[test]
+    fn test_decode_native_byte_order_complex64() {
+        // complex64 = two float32 — swap_unit_size=4, dtype_byte_width=8.
+        // Each 4-byte component must be swapped independently.
+        let real: f32 = 1.5;
+        let imag: f32 = 2.5;
+        let mut be_bytes = Vec::new();
+        be_bytes.extend_from_slice(&real.to_be_bytes());
+        be_bytes.extend_from_slice(&imag.to_be_bytes());
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: 1,
+            byte_order: ByteOrder::Big,
+            dtype_byte_width: 8,
+            swap_unit_size: 4, // complex64: swap each float32 component
+        };
+        let result = encode_pipeline(&be_bytes, &config).unwrap();
+        let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
+        let decoded_real = f32::from_ne_bytes(native[0..4].try_into().unwrap());
+        let decoded_imag = f32::from_ne_bytes(native[4..8].try_into().unwrap());
+        assert_eq!(decoded_real, real);
+        assert_eq!(decoded_imag, imag);
+    }
+
+    #[test]
+    fn test_decode_native_byte_order_uint8_noop() {
+        // uint8 / int8 — swap_unit_size=1, byteswap should be a no-op.
+        let data = vec![1u8, 2, 3, 4, 5];
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: 5,
+            byte_order: ByteOrder::Big, // cross-endian, but 1-byte → no-op
+            dtype_byte_width: 1,
+            swap_unit_size: 1,
+        };
+        let result = encode_pipeline(&data, &config).unwrap();
+        let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
+        assert_eq!(native, data); // no swap for single-byte types
     }
 }

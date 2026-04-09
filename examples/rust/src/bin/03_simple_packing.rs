@@ -27,8 +27,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let values: Vec<f64> = (0..n).map(|i| 249.15 + (i as f64) * 0.1).collect();
 
     // encode() expects raw bytes. simple_packing always operates on f64.
-    // Use big-endian bytes to match byte_order: ByteOrder::Big below.
-    let raw_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    // Use native-endian bytes to match byte_order: ByteOrder::native() below.
+    let raw_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
     println!("Source: {} f64 values  raw={} bytes", n, raw_bytes.len());
     println!("  range: [{:.2}, {:.2}]", values[0], values[n - 1]);
@@ -75,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         shape: vec![n as u64],
         strides: vec![1],
         dtype: Dtype::Float64, // source dtype
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "simple_packing".to_string(), // ← key change
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -117,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let decoded: Vec<f64> = objects[0]
         .1
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
 
     // ── 6. Measure precision loss ──────────────────────────────────────────────

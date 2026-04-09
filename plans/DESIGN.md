@@ -158,7 +158,11 @@ Each data object specifies an independent pipeline: **encode → filter → comp
 
 ### Per-Object Byte Order
 
-Each data object specifies `byte_order` (`big` or `little`), allowing clients to write native endianness without byte-flipping. Framing fields remain big-endian (network byte order). Default convention: `big`.
+Each data object specifies `byte_order` (`big` or `little`) in the wire format, declaring the endianness of the stored payload bytes. Framing fields remain big-endian (network byte order).
+
+**On decode**, the library **automatically converts decoded bytes to the caller's native byte order** by default (`native_byte_order: true` in `DecodeOptions`). Callers never need to inspect `byte_order` or manually byteswap — they can use `from_ne_bytes()`, `data_as<T>()`, or numpy arrays directly. The `native_byte_order: false` opt-out returns raw wire-order bytes for zero-copy forwarding.
+
+**On encode**, callers provide data in their native byte order. The `byte_order` field in the descriptor should match the byte order of the provided bytes (defaults to native in Python bindings).
 
 ### Deterministic CBOR
 

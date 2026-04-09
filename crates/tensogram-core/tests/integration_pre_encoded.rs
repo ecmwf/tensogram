@@ -438,7 +438,7 @@ fn test_encode_pre_encoded_with_szip_decode_range() {
     let full_payload = &full_objects[0].1;
     let full_values: Vec<f64> = full_payload
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().expect("8 bytes")))
+        .map(|c| f64::from_ne_bytes(c.try_into().expect("8 bytes")))
         .collect();
     assert_eq!(full_values.len(), 4096);
 
@@ -448,7 +448,7 @@ fn test_encode_pre_encoded_with_szip_decode_range() {
     assert_eq!(parts.len(), 1, "one range → one part");
     let part_values: Vec<f64> = parts[0]
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().expect("8 bytes")))
+        .map(|c| f64::from_ne_bytes(c.try_into().expect("8 bytes")))
         .collect();
     assert_eq!(part_values.len(), 500);
 
@@ -874,7 +874,7 @@ fn test_encode_pre_encoded_single_element() {
     let (_, objects) = decode(&msg, &DecodeOptions::default()).expect("decode");
     assert_eq!(objects.len(), 1);
     assert_eq!(objects[0].0.shape, vec![1]);
-    let val = f32::from_be_bytes(objects[0].1[..4].try_into().unwrap());
+    let val = f32::from_ne_bytes(objects[0].1[..4].try_into().unwrap());
     assert!((val - 42.0).abs() < f32::EPSILON, "value mismatch: {val}");
 }
 
@@ -902,7 +902,14 @@ fn test_encode_pre_encoded_2d_array() {
     let (_, objects) = decode(&msg, &DecodeOptions::default()).expect("decode");
     assert_eq!(objects[0].0.shape, vec![3, 4]);
     assert_eq!(objects[0].0.ndim, 2);
-    assert_eq!(objects[0].1, raw, "2D payload round-trip");
+    // Decoded bytes are in native byte order (byteswapped from the
+    // big-endian wire format).  Verify the values match, not raw bytes.
+    let decoded_values: Vec<f32> = objects[0]
+        .1
+        .chunks_exact(4)
+        .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+        .collect();
+    assert_eq!(decoded_values, values, "2D payload round-trip values");
 }
 
 #[test]
@@ -929,7 +936,7 @@ fn test_encode_pre_encoded_ndim0_scalar() {
     let (_, objects) = decode(&msg, &DecodeOptions::default()).expect("decode");
     assert_eq!(objects[0].0.ndim, 0);
     assert!(objects[0].0.shape.is_empty());
-    let val = f64::from_be_bytes(objects[0].1[..8].try_into().unwrap());
+    let val = f64::from_ne_bytes(objects[0].1[..8].try_into().unwrap());
     assert!((val - std::f64::consts::PI).abs() < f64::EPSILON);
 }
 

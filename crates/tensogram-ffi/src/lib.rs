@@ -634,6 +634,7 @@ pub extern "C" fn tgm_decode(
     buf: *const u8,
     buf_len: usize,
     verify_hash: i32,
+    native_byte_order: i32,
     out: *mut *mut TgmMessage,
 ) -> TgmError {
     if buf.is_null() || out.is_null() {
@@ -644,6 +645,7 @@ pub extern "C" fn tgm_decode(
     let data = unsafe { slice::from_raw_parts(buf, buf_len) };
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
+        native_byte_order: native_byte_order != 0,
     };
 
     match decode(data, &options) {
@@ -715,6 +717,7 @@ pub extern "C" fn tgm_decode_object(
     buf_len: usize,
     index: usize,
     verify_hash: i32,
+    native_byte_order: i32,
     out: *mut *mut TgmMessage,
 ) -> TgmError {
     if buf.is_null() || out.is_null() {
@@ -725,6 +728,7 @@ pub extern "C" fn tgm_decode_object(
     let data = unsafe { slice::from_raw_parts(buf, buf_len) };
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
+        native_byte_order: native_byte_order != 0,
     };
 
     match decode_object(data, index, &options) {
@@ -776,6 +780,7 @@ pub extern "C" fn tgm_decode_range(
     ranges_counts: *const u64,
     num_ranges: usize,
     verify_hash: i32,
+    native_byte_order: i32,
     join: i32,
     out: *mut TgmBytes,
     out_count: *mut usize,
@@ -792,6 +797,7 @@ pub extern "C" fn tgm_decode_range(
     let data = unsafe { slice::from_raw_parts(buf, buf_len) };
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
+        native_byte_order: native_byte_order != 0,
     };
 
     let ranges: Vec<(u64, u64)> = if num_ranges == 0 {
@@ -1360,6 +1366,7 @@ pub extern "C" fn tgm_file_decode_message(
     file: *mut TgmFile,
     index: usize,
     verify_hash: i32,
+    native_byte_order: i32,
     out: *mut *mut TgmMessage,
 ) -> TgmError {
     if file.is_null() || out.is_null() {
@@ -1370,6 +1377,7 @@ pub extern "C" fn tgm_file_decode_message(
     let f = unsafe { &mut (*file).file };
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
+        native_byte_order: native_byte_order != 0,
     };
 
     match f.decode_message(index, &options) {
@@ -1898,6 +1906,7 @@ pub extern "C" fn tgm_object_iter_create(
     buf: *const u8,
     buf_len: usize,
     verify_hash: i32,
+    native_byte_order: i32,
     out: *mut *mut TgmObjectIter,
 ) -> TgmError {
     if buf.is_null() || out.is_null() {
@@ -1907,6 +1916,7 @@ pub extern "C" fn tgm_object_iter_create(
     let data = unsafe { slice::from_raw_parts(buf, buf_len) };
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
+        native_byte_order: native_byte_order != 0,
     };
 
     // Parse global metadata from the message header so we can attach it to

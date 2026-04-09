@@ -30,7 +30,7 @@ fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
         shape,
         strides,
         dtype,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -122,7 +122,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── decode_object() with hash verification ─────────────────────────────────
     {
-        let verify_opts = DecodeOptions { verify_hash: true };
+        let verify_opts = DecodeOptions {
+            verify_hash: true,
+            ..Default::default()
+        };
         let (_meta, _desc0, obj0) = decode_object(&message, 0, &verify_opts)?;
         println!("\ndecode_object(index=0, verify_hash=true):");
         println!("  {} bytes, hash OK", obj0.len());

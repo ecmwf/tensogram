@@ -34,10 +34,24 @@ fn extract_block_offsets(
 }
 
 /// Options for decoding.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DecodeOptions {
     /// Whether to verify payload hashes during decode.
     pub verify_hash: bool,
+    /// When true (the default), decoded payloads are converted to the
+    /// caller's native byte order regardless of the wire byte order declared
+    /// in the descriptor.  Set to false to receive bytes in the message's
+    /// declared wire byte order (rare — useful for zero-copy forwarding).
+    pub native_byte_order: bool,
+}
+
+impl Default for DecodeOptions {
+    fn default() -> Self {
+        Self {
+            verify_hash: false,
+            native_byte_order: true,
+        }
+    }
 }
 
 /// Decode all objects from a message buffer.
@@ -156,11 +170,17 @@ pub fn decode_range(
 
     let mut results = Vec::with_capacity(ranges.len());
     for &(offset, count) in ranges {
-        let range_bytes =
-            pipeline::decode_range_pipeline(payload_bytes, &config, &block_offsets, offset, count)
-                .map_err(|e| {
-                    TensogramError::Encoding(format!("range (offset={offset}, count={count}): {e}"))
-                })?;
+        let range_bytes = pipeline::decode_range_pipeline(
+            payload_bytes,
+            &config,
+            &block_offsets,
+            offset,
+            count,
+            options.native_byte_order,
+        )
+        .map_err(|e| {
+            TensogramError::Encoding(format!("range (offset={offset}, count={count}): {e}"))
+        })?;
         results.push(range_bytes);
     }
 
@@ -187,7 +207,7 @@ fn decode_single_object(
     let num_elements = usize::try_from(shape_product)
         .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
     let config = build_pipeline_config(desc, num_elements, desc.dtype)?;
-    let decoded = pipeline::decode_pipeline(payload_bytes, &config)
+    let decoded = pipeline::decode_pipeline(payload_bytes, &config, options.native_byte_order)
         .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
     Ok(decoded)

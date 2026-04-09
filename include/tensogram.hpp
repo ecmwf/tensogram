@@ -176,6 +176,10 @@ struct encode_options {
 struct decode_options {
     /// When true, payload hashes are verified during decode.
     bool verify_hash = false;
+    /// When true (the default), decoded payloads are converted to the
+    /// caller's native byte order.  Set to false to receive bytes in the
+    /// message's declared wire byte order.
+    bool native_byte_order = true;
 };
 
 // ============================================================
@@ -527,7 +531,8 @@ public:
                            const decode_options& opts = {}) {
         tgm_message_t* raw = nullptr;
         detail::check(tgm_file_decode_message(
-            handle_.get(), index, opts.verify_hash ? 1 : 0, &raw));
+            handle_.get(), index, opts.verify_hash ? 1 : 0,
+            opts.native_byte_order ? 1 : 0, &raw));
         return message(raw);
     }
 
@@ -695,7 +700,8 @@ public:
                     const decode_options& opts = {}) {
         tgm_object_iter_t* raw = nullptr;
         detail::check(tgm_object_iter_create(
-            buf, len, opts.verify_hash ? 1 : 0, &raw));
+            buf, len, opts.verify_hash ? 1 : 0,
+            opts.native_byte_order ? 1 : 0, &raw));
         handle_.reset(raw);
     }
 
@@ -906,7 +912,8 @@ private:
                       const decode_options& opts)
 {
     tgm_message_t* raw = nullptr;
-    detail::check(tgm_decode(buf, len, opts.verify_hash ? 1 : 0, &raw));
+    detail::check(tgm_decode(buf, len, opts.verify_hash ? 1 : 0,
+                              opts.native_byte_order ? 1 : 0, &raw));
     return message(raw);
 }
 
@@ -925,7 +932,8 @@ private:
 {
     tgm_message_t* raw = nullptr;
     detail::check(tgm_decode_object(buf, len, index,
-                                     opts.verify_hash ? 1 : 0, &raw));
+                                     opts.verify_hash ? 1 : 0,
+                                     opts.native_byte_order ? 1 : 0, &raw));
     return message(raw);
 }
 
@@ -948,6 +956,7 @@ private:
     detail::check(tgm_decode_range(buf, len, object_index,
                                     offsets.data(), counts.data(), ranges.size(),
                                     opts.verify_hash ? 1 : 0,
+                                    opts.native_byte_order ? 1 : 0,
                                     0, bufs.data(), &out_count));
     if (out_count > ranges.size()) {
         for (std::size_t i = 0; i < ranges.size(); ++i) {
@@ -983,6 +992,7 @@ private:
     detail::check(tgm_decode_range(buf, len, object_index,
                                     offsets.data(), counts.data(), ranges.size(),
                                     opts.verify_hash ? 1 : 0,
+                                    opts.native_byte_order ? 1 : 0,
                                     1, &bytes, &out_count));
     if (out_count != 1) {
         tgm_bytes_free(bytes);

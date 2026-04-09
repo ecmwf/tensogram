@@ -85,7 +85,12 @@ pub fn run(
 
         for i in 0..count {
             let msg = file.read_message(i)?;
-            let (meta, objects) = decode(&msg, &DecodeOptions::default())?;
+            // Wire byte order: preserve original byte layout for re-encoding.
+            let wire_opts = DecodeOptions {
+                native_byte_order: false,
+                ..Default::default()
+            };
+            let (meta, objects) = decode(&msg, &wire_opts)?;
 
             match &mut merged_meta {
                 None => merged_meta = Some(meta),

@@ -12,12 +12,7 @@ For speculative ideas, see `IDEAS.md`.
 
 - [x] ~~Populate `reserved` metadata field with provenance information~~ → `encode.rs:populate_reserved_provenance()`
 
-- [ ] **caller-endianess**:
-  - the Docs in byte-order section clarify that payload bytes are returned **verbatim** for `encoding="none"` and callers must interpret/byteswap according to `byte_order`.
-  - review the code and plan for the data to ALWAYS be returned to the user in the endianess of the local execution environment so user does not have to byte-swap. the library does it for him.
-  - add an option to the API to return the message endianess if the user wants exactly as it was coded internally. Note this should be rare.
-  - apply this to all interfaces in all languages
-  - document it thouroughly. users should not need to know in what endianess the data was encoded.
+- [x] ~~caller-endianess~~ (caller endianness) → Decoded data is now always returned in the caller's native byte order by default. `DecodeOptions.native_byte_order` (default `true`) controls this across all interfaces: Rust, Python, C FFI, C++. ZFP/SZ3 lossy codecs made byte-order-aware for uniform pipeline behaviour. Zarr read-path byteswap workaround removed. `Dtype::swap_unit_size()` handles complex types correctly. Documentation updated.
 
 ## CLI
 
