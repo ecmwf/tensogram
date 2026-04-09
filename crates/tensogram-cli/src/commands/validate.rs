@@ -68,6 +68,34 @@ fn print_human(path: &Path, report: &FileValidationReport) {
         );
     }
 
+    // Print all issues: errors + warnings in failure mode, warnings only in OK mode
+    let is_ok = report.is_ok();
+    for (i, msg_report) in report.messages.iter().enumerate() {
+        for issue in &msg_report.issues {
+            if is_ok && issue.severity != IssueSeverity::Warning {
+                continue;
+            }
+            let obj_note = match issue.object_index {
+                Some(idx) => format!(", object {}", idx + 1),
+                None => String::new(),
+            };
+            let prefix = match issue.severity {
+                IssueSeverity::Error => "FAILED",
+                IssueSeverity::Warning => "WARNING",
+            };
+            let offset_note = match issue.byte_offset {
+                Some(off) => format!(" (at byte {off})"),
+                None => String::new(),
+            };
+            eprintln!(
+                "{}: {prefix} — message {}{obj_note}: {}{offset_note}",
+                path.display(),
+                i + 1,
+                issue.description,
+            );
+        }
+    }
+
     if report.is_ok() {
         let hash_note = if report.hash_verified() {
             ", hash verified"
@@ -82,29 +110,6 @@ fn print_human(path: &Path, report: &FileValidationReport) {
             hash_note,
         );
     } else {
-        // Print per-message issues (1-based for human output)
-        for (i, msg_report) in report.messages.iter().enumerate() {
-            for issue in &msg_report.issues {
-                let obj_note = match issue.object_index {
-                    Some(idx) => format!(", object {}", idx + 1),
-                    None => String::new(),
-                };
-                let prefix = match issue.severity {
-                    IssueSeverity::Error => "FAILED",
-                    IssueSeverity::Warning => "WARNING",
-                };
-                let offset_note = match issue.byte_offset {
-                    Some(off) => format!(" (at byte {off})"),
-                    None => String::new(),
-                };
-                eprintln!(
-                    "{}: {prefix} — message {}{obj_note}: {}{offset_note}",
-                    path.display(),
-                    i + 1,
-                    issue.description,
-                );
-            }
-        }
         // Final summary line
         let msg_errors: usize = report
             .messages

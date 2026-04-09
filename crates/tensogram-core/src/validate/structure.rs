@@ -236,6 +236,15 @@ pub(crate) fn validate_structure<'a>(
 
     while pos < msg_end {
         if pos + 2 > msg_end {
+            if buf[pos..msg_end].iter().any(|&b| b != 0) {
+                issues.push(warn(
+                    IssueCode::NonZeroPadding,
+                    ValidationLevel::Structure,
+                    None,
+                    Some(pos),
+                    format!("unexpected non-zero padding bytes at offset {pos}"),
+                ));
+            }
             break;
         }
         // Check for alignment padding (only zeros allowed between frames)
@@ -380,7 +389,7 @@ pub(crate) fn validate_structure<'a>(
         if phase == Phase::Footers && first_footer_pos.is_none() {
             first_footer_pos = Some(pos);
         }
-        current_phase = phase;
+        current_phase = current_phase.max(phase);
 
         // Preceder legality
         if pending_preceder && fh.frame_type != FrameType::DataObject {
