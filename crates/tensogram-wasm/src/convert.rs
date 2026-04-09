@@ -1,7 +1,8 @@
 //! Conversion utilities between tensogram-core types and JS values.
 //!
 //! Uses `serde-wasm-bindgen` for metadata (CBOR → JS objects) and
-//! manual `js_sys` typed array views for zero-copy tensor data.
+//! `wasm_bindgen::memory()` + byte offsets for zero-copy TypedArray
+//! views that avoid forming misaligned Rust references.
 
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -12,6 +13,9 @@ pub(crate) fn to_js<T: Serialize>(val: &T) -> Result<JsValue, JsError> {
 }
 
 /// Create a zero-copy `Float32Array` view into a byte slice living in WASM memory.
+///
+/// Uses `wasm_bindgen::memory()` + byte offset to construct the view without
+/// forming a `&[f32]` reference, avoiding any alignment UB.
 ///
 /// # Safety
 ///
@@ -29,24 +33,22 @@ pub(crate) fn view_as_f32(data: &[u8]) -> Result<js_sys::Float32Array, JsError> 
     if data.is_empty() {
         return Ok(js_sys::Float32Array::new_with_length(0));
     }
-    // Safety: `data` comes from Vec<u8> payloads returned by tensogram_core::decode().
-    // On wasm32, the global allocator (dlmalloc) returns pointers aligned to ≥ 8 bytes
-    // for any non-trivial allocation, satisfying f32's 4-byte alignment requirement.
-    // The WASM spec also permits unaligned memory access, so this is safe in practice.
-    // The view is valid for the lifetime of the caller's data; it points directly into
-    // WASM linear memory and is invalidated if that memory grows.
-    let f32_slice =
-        unsafe { std::slice::from_raw_parts(data.as_ptr() as *const f32, data.len() / 4) };
-    Ok(unsafe { js_sys::Float32Array::view(f32_slice) })
+    let byte_offset = data.as_ptr() as u32;
+    let length = (data.len() / 4) as u32;
+    let memory = wasm_bindgen::memory().unchecked_into::<js_sys::WebAssembly::Memory>();
+    Ok(js_sys::Float32Array::new_with_byte_offset_and_length(
+        &memory.buffer(),
+        byte_offset,
+        length,
+    ))
 }
 
 /// Create a zero-copy `Float64Array` view.
 ///
 /// # Safety
 ///
-/// Same alignment rationale as [`view_as_f32`]: the allocator guarantees
-/// ≥ 8-byte alignment for non-trivial allocations, satisfying f64's
-/// 8-byte requirement.  The view is invalidated if WASM memory grows.
+/// Same rationale as [`view_as_f32`]: uses byte offsets into WASM memory,
+/// no misaligned Rust references are formed.  Invalidated if WASM memory grows.
 pub(crate) fn view_as_f64(data: &[u8]) -> Result<js_sys::Float64Array, JsError> {
     if data.len() % 8 != 0 {
         return Err(JsError::new(&format!(
@@ -57,18 +59,22 @@ pub(crate) fn view_as_f64(data: &[u8]) -> Result<js_sys::Float64Array, JsError> 
     if data.is_empty() {
         return Ok(js_sys::Float64Array::new_with_length(0));
     }
-    let f64_slice =
-        unsafe { std::slice::from_raw_parts(data.as_ptr() as *const f64, data.len() / 8) };
-    Ok(unsafe { js_sys::Float64Array::view(f64_slice) })
+    let byte_offset = data.as_ptr() as u32;
+    let length = (data.len() / 8) as u32;
+    let memory = wasm_bindgen::memory().unchecked_into::<js_sys::WebAssembly::Memory>();
+    Ok(js_sys::Float64Array::new_with_byte_offset_and_length(
+        &memory.buffer(),
+        byte_offset,
+        length,
+    ))
 }
 
 /// Create a zero-copy `Int32Array` view.
 ///
 /// # Safety
 ///
-/// Same alignment rationale as [`view_as_f32`]: the allocator guarantees
-/// ≥ 8-byte alignment, satisfying i32's 4-byte requirement.  The view is
-/// invalidated if WASM memory grows.
+/// Same rationale as [`view_as_f32`]: uses byte offsets into WASM memory,
+/// no misaligned Rust references are formed.  Invalidated if WASM memory grows.
 pub(crate) fn view_as_i32(data: &[u8]) -> Result<js_sys::Int32Array, JsError> {
     if data.len() % 4 != 0 {
         return Err(JsError::new(&format!(
@@ -79,9 +85,14 @@ pub(crate) fn view_as_i32(data: &[u8]) -> Result<js_sys::Int32Array, JsError> {
     if data.is_empty() {
         return Ok(js_sys::Int32Array::new_with_length(0));
     }
-    let i32_slice =
-        unsafe { std::slice::from_raw_parts(data.as_ptr() as *const i32, data.len() / 4) };
-    Ok(unsafe { js_sys::Int32Array::view(i32_slice) })
+    let byte_offset = data.as_ptr() as u32;
+    let length = (data.len() / 4) as u32;
+    let memory = wasm_bindgen::memory().unchecked_into::<js_sys::WebAssembly::Memory>();
+    Ok(js_sys::Int32Array::new_with_byte_offset_and_length(
+        &memory.buffer(),
+        byte_offset,
+        length,
+    ))
 }
 
 /// Create a zero-copy `Uint8Array` view.

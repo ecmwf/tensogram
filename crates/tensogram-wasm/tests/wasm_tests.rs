@@ -991,7 +991,7 @@ fn streaming_single_message() {
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
-    decoder.feed(&msg);
+    decoder.feed(&msg).unwrap();
 
     assert!(decoder.has_metadata());
     assert_eq!(decoder.pending_count(), 1);
@@ -1012,7 +1012,7 @@ fn streaming_chunked_feed() {
     // Feed in small chunks
     let chunk_size = 16;
     for chunk in msg.chunks(chunk_size) {
-        decoder.feed(chunk);
+        decoder.feed(chunk).unwrap();
     }
 
     assert_eq!(decoder.pending_count(), 1);
@@ -1030,7 +1030,7 @@ fn streaming_byte_by_byte_feed() {
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
 
     for &byte in &msg {
-        decoder.feed(&[byte]);
+        decoder.feed(&[byte]).unwrap();
     }
 
     assert_eq!(decoder.pending_count(), 1);
@@ -1050,7 +1050,7 @@ fn streaming_multi_message() {
     multi.extend_from_slice(&msg2);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
-    decoder.feed(&multi);
+    decoder.feed(&multi).unwrap();
 
     assert_eq!(decoder.pending_count(), 2);
 
@@ -1075,7 +1075,7 @@ fn streaming_multi_object_message() {
     );
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
-    decoder.feed(&msg);
+    decoder.feed(&msg).unwrap();
 
     assert_eq!(decoder.pending_count(), 2);
 
@@ -1094,14 +1094,14 @@ fn streaming_incomplete_message_no_output() {
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
     // Feed only half the message
-    decoder.feed(&msg[..msg.len() / 2]);
+    decoder.feed(&msg[..msg.len() / 2]).unwrap();
 
     assert_eq!(decoder.pending_count(), 0);
     assert!(decoder.next_frame().is_none());
     assert!(!decoder.has_metadata());
 
     // Feed the rest
-    decoder.feed(&msg[msg.len() / 2..]);
+    decoder.feed(&msg[msg.len() / 2..]).unwrap();
     assert_eq!(decoder.pending_count(), 1);
     assert!(decoder.has_metadata());
 }
@@ -1113,7 +1113,7 @@ fn streaming_reset_clears_state() {
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
-    decoder.feed(&msg);
+    decoder.feed(&msg).unwrap();
     assert_eq!(decoder.pending_count(), 1);
 
     decoder.reset();
@@ -1133,13 +1133,13 @@ fn streaming_reset_then_reuse() {
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
 
     // First use
-    decoder.feed(&msg1);
+    decoder.feed(&msg1).unwrap();
     assert_eq!(decoder.pending_count(), 1);
     let _ = decoder.next_frame();
 
     // Reset and reuse
     decoder.reset();
-    decoder.feed(&msg2);
+    decoder.feed(&msg2).unwrap();
     assert_eq!(decoder.pending_count(), 1);
 
     let frame = decoder.next_frame().unwrap();
@@ -1149,7 +1149,7 @@ fn streaming_reset_then_reuse() {
 #[wasm_bindgen_test]
 fn streaming_empty_feed_is_noop() {
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
-    decoder.feed(&[]);
+    decoder.feed(&[]).unwrap();
     assert_eq!(decoder.pending_count(), 0);
     assert!(!decoder.has_metadata());
     assert_eq!(decoder.buffered_bytes(), 0);
@@ -1158,7 +1158,7 @@ fn streaming_empty_feed_is_noop() {
 #[wasm_bindgen_test]
 fn streaming_garbage_feed_produces_no_frames() {
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
-    decoder.feed(b"this is not tensogram data at all and is quite long");
+    decoder.feed(b"this is not tensogram data at all and is quite long").unwrap();
     assert_eq!(decoder.pending_count(), 0);
 }
 
@@ -1173,7 +1173,7 @@ fn streaming_with_lz4_compressed_message() {
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
-    decoder.feed(&msg);
+    decoder.feed(&msg).unwrap();
 
     assert_eq!(decoder.pending_count(), 1);
     let frame = decoder.next_frame().unwrap();
@@ -1202,7 +1202,7 @@ fn streaming_metadata_accessor() {
     assert!(meta_before.is_null());
 
     // After feeding:
-    decoder.feed(&msg);
+    decoder.feed(&msg).unwrap();
     let meta_after = decoder.metadata().unwrap();
     assert!(meta_after.is_object());
 }
@@ -1499,7 +1499,7 @@ fn streaming_frame_data_matches_direct_decode() {
 
     // Streaming decode
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
-    decoder.feed(&msg);
+    decoder.feed(&msg).unwrap();
     let frame = decoder.next_frame().unwrap();
     let stream_bytes: Vec<u8> = frame.data_u8().unwrap().to_vec();
 
@@ -1521,7 +1521,7 @@ fn streaming_frame_descriptor_matches_direct() {
         .into();
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
-    decoder.feed(&msg);
+    decoder.feed(&msg).unwrap();
     let frame = decoder.next_frame().unwrap();
     let stream_desc: String = js_sys::JSON::stringify(&frame.descriptor().unwrap())
         .unwrap()
@@ -1542,7 +1542,7 @@ fn streaming_frame_typed_views_correct() {
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
-    decoder.feed(&msg);
+    decoder.feed(&msg).unwrap();
     let frame = decoder.next_frame().unwrap();
 
     let f32_view = frame.data_f32().unwrap();
@@ -1574,7 +1574,7 @@ fn streaming_frame_base_entry_available() {
     let msg = encode_native_no_hash(&meta, &[(&desc, &[42u8])]);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
-    decoder.feed(&msg);
+    decoder.feed(&msg).unwrap();
     let frame = decoder.next_frame().unwrap();
 
     // base_entry should be available and be an object (not null)
@@ -1610,7 +1610,7 @@ fn streaming_multi_object_base_entries() {
     let msg = encode_native_no_hash(&meta, &[(&desc0, &p0), (&desc1, &p1)]);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
-    decoder.feed(&msg);
+    decoder.feed(&msg).unwrap();
 
     assert_eq!(decoder.pending_count(), 2);
 
@@ -1862,14 +1862,14 @@ fn streaming_interleaved_feed_and_consume() {
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
 
     // Feed first message, consume it
-    decoder.feed(&msg1);
+    decoder.feed(&msg1).unwrap();
     assert_eq!(decoder.pending_count(), 1);
     let frame1 = decoder.next_frame().unwrap();
     assert_eq!(frame1.byte_length(), 8);
     assert_eq!(decoder.pending_count(), 0);
 
     // Feed second message, consume it
-    decoder.feed(&msg2);
+    decoder.feed(&msg2).unwrap();
     assert_eq!(decoder.pending_count(), 1);
     let frame2 = decoder.next_frame().unwrap();
     assert_eq!(frame2.byte_length(), 8);
@@ -1886,7 +1886,7 @@ fn streaming_five_messages_sequential() {
     }
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
-    decoder.feed(&all_bytes);
+    decoder.feed(&all_bytes).unwrap();
     assert_eq!(decoder.pending_count(), 5);
 
     for _ in 0..5 {
@@ -1906,11 +1906,11 @@ fn streaming_buffered_bytes_tracks_correctly() {
 
     // Feed partial data
     let half = msg.len() / 2;
-    decoder.feed(&msg[..half]);
+    decoder.feed(&msg[..half]).unwrap();
     assert!(decoder.buffered_bytes() > 0, "should have buffered data");
 
     // Feed the rest
-    decoder.feed(&msg[half..]);
+    decoder.feed(&msg[half..]).unwrap();
     // After decoding, buffered bytes should be consumed
     // (the exact value depends on implementation, but pending count should be 1)
     assert_eq!(decoder.pending_count(), 1);

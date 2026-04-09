@@ -12,7 +12,7 @@
 //!   if (done) break;
 //!   decoder.feed(value);
 //!   let frame;
-//!   while ((frame = decoder.next_frame()) !== null) {
+//!   while ((frame = decoder.next_frame())) {
 //!     const data = frame.data_f32();
 //!     renderToCanvas(frame.descriptor().shape, data);
 //!     frame.free();
@@ -93,13 +93,22 @@ impl StreamingDecoder {
                 new_size, self.max_buffer
             )));
         }
+        // Compact before extending so the actual Vec length (and WASM memory)
+        // stays close to the logical limit instead of growing by `consumed`.
+        if self.consumed > 0 {
+            self.buffer.drain(..self.consumed);
+            self.consumed = 0;
+        }
         self.buffer.extend_from_slice(chunk);
         self.last_decode_error = None; // clear previous error
         self.try_decode_messages();
         Ok(())
     }
 
-    /// Pull the next decoded data object frame, or null if none ready.
+    /// Pull the next decoded data object frame, or `undefined` if none ready.
+    ///
+    /// In JavaScript, `wasm-bindgen` maps Rust `None` to `undefined`.
+    /// Use a truthiness check: `while ((frame = decoder.next_frame()))`.
     pub fn next_frame(&mut self) -> Option<DecodedFrame> {
         self.ready_frames.pop_front()
     }
@@ -171,34 +180,29 @@ impl StreamingDecoder {
             self.consumed,
             self.buffer.len()
         );
-        loop {
-            let remaining = &self.buffer[self.consumed..];
-            if remaining.is_empty() {
-                break;
-            }
 
-            // Try to scan for a complete message in the remaining bytes
-            let positions = core::scan(remaining);
+        let remaining = &self.buffer[self.consumed..];
+        if remaining.is_empty() {
+            return;
+        }
 
-            if positions.is_empty() {
-                break;
-            }
+        // Scan once for ALL complete messages in the remaining buffer.
+        // This is O(n) instead of re-scanning after each decoded message.
+        let positions = core::scan(remaining);
 
-            // Decode the first complete message found
-            let (msg_start, msg_len) = positions[0];
+        let options = core::DecodeOptions {
+            verify_hash: false,
+            ..Default::default()
+        };
+
+        for (msg_start, msg_len) in positions {
             let msg_end = msg_start + msg_len;
 
             if msg_end > remaining.len() {
-                break; // Incomplete message — wait for more data
+                break; // Incomplete trailing message — wait for more data
             }
 
             let msg_bytes = &remaining[msg_start..msg_end];
-
-            // Decode the full message
-            let options = core::DecodeOptions {
-                verify_hash: false,
-                ..Default::default()
-            };
 
             match core::decode(msg_bytes, &options) {
                 Ok((metadata, objects)) => {
@@ -225,12 +229,6 @@ impl StreamingDecoder {
             }
 
             self.consumed += msg_end;
-
-            // Compact buffer if we've consumed a lot
-            if self.consumed > 1024 * 1024 {
-                self.buffer = self.buffer[self.consumed..].to_vec();
-                self.consumed = 0;
-            }
         }
     }
 }

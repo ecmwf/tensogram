@@ -143,7 +143,10 @@ pub fn encode(
         .collect();
     let encoded = core::encode(&metadata, &pairs, &options).map_err(js_err)?;
 
-    Ok(view_as_u8(&encoded).into())
+    // Return a JS-owned copy.  We must not use view_as_u8 here because
+    // `encoded` is a local Vec that will be dropped when this function
+    // returns — a view into it would be a dangling pointer.
+    Ok(js_sys::Uint8Array::from(encoded.as_slice()))
 }
 
 // ── DecodedMessage handle ────────────────────────────────────────────────────
@@ -249,16 +252,41 @@ fn js_err(e: core::TensogramError) -> JsError {
 
 /// Extract raw bytes from any supported TypedArray by viewing its ArrayBuffer.
 ///
+/// Correctly respects `byteOffset` and `byteLength` so that subarrays /
+/// views only yield the intended region (no data leak from the underlying
+/// ArrayBuffer).
+///
 /// Returns `None` if `val` is not a recognised TypedArray type.
 fn typed_array_to_bytes(val: &JsValue) -> Option<Vec<u8>> {
     if let Some(arr) = val.dyn_ref::<js_sys::Uint8Array>() {
         Some(arr.to_vec())
     } else if let Some(arr) = val.dyn_ref::<js_sys::Float32Array>() {
-        Some(js_sys::Uint8Array::new(&arr.buffer()).to_vec())
+        Some(
+            js_sys::Uint8Array::new_with_byte_offset_and_length(
+                &arr.buffer(),
+                arr.byte_offset(),
+                arr.byte_length(),
+            )
+            .to_vec(),
+        )
     } else if let Some(arr) = val.dyn_ref::<js_sys::Float64Array>() {
-        Some(js_sys::Uint8Array::new(&arr.buffer()).to_vec())
+        Some(
+            js_sys::Uint8Array::new_with_byte_offset_and_length(
+                &arr.buffer(),
+                arr.byte_offset(),
+                arr.byte_length(),
+            )
+            .to_vec(),
+        )
     } else if let Some(arr) = val.dyn_ref::<js_sys::Int32Array>() {
-        Some(js_sys::Uint8Array::new(&arr.buffer()).to_vec())
+        Some(
+            js_sys::Uint8Array::new_with_byte_offset_and_length(
+                &arr.buffer(),
+                arr.byte_offset(),
+                arr.byte_length(),
+            )
+            .to_vec(),
+        )
     } else {
         None
     }

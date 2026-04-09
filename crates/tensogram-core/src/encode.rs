@@ -342,26 +342,28 @@ pub(crate) fn populate_reserved_provenance(reserved: &mut BTreeMap<String, cibor
     reserved.insert("encoder".to_string(), encoder_map);
 
     // time — ISO 8601 UTC
-    // On wasm32-unknown-unknown, SystemTime::now() panics. Use a fallback.
+    // On wasm32-unknown-unknown, SystemTime::now() panics. Skip the `time`
+    // field entirely rather than encoding a misleading epoch-0 timestamp.
+    // Callers can set a timestamp via `_extra_` if needed.
     #[cfg(not(target_arch = "wasm32"))]
-    let secs = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    #[cfg(target_arch = "wasm32")]
-    let secs = 0u64; // WASM: timestamp omitted (callers can set via _extra_)
+    {
+        let secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
 
-    // Simple UTC format: YYYY-MM-DDThh:mm:ssZ
-    // We compute from epoch seconds to avoid adding a datetime crate.
-    let days = secs / 86400;
-    let day_secs = secs % 86400;
-    let hours = day_secs / 3600;
-    let minutes = (day_secs % 3600) / 60;
-    let seconds = day_secs % 60;
-    // Civil date from days since 1970-01-01 (Howard Hinnant algorithm)
-    let (y, m, d) = civil_from_days(days as i64);
-    let timestamp = format!("{y:04}-{m:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}Z");
-    reserved.insert("time".to_string(), Value::Text(timestamp));
+        // Simple UTC format: YYYY-MM-DDThh:mm:ssZ
+        // We compute from epoch seconds to avoid adding a datetime crate.
+        let days = secs / 86400;
+        let day_secs = secs % 86400;
+        let hours = day_secs / 3600;
+        let minutes = (day_secs % 3600) / 60;
+        let seconds = day_secs % 60;
+        // Civil date from days since 1970-01-01 (Howard Hinnant algorithm)
+        let (y, m, d) = civil_from_days(days as i64);
+        let timestamp = format!("{y:04}-{m:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}Z");
+        reserved.insert("time".to_string(), Value::Text(timestamp));
+    }
 
     // uuid — RFC 4122 v4
     let id = uuid::Uuid::new_v4();
