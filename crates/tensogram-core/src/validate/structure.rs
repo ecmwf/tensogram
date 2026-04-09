@@ -171,6 +171,18 @@ pub(crate) fn validate_structure<'a>(
         match Postamble::read_from(&buf[pa_offset..]) {
             Ok(pa) => {
                 let ffo = pa.first_footer_offset as usize;
+                if ffo < PREAMBLE_SIZE || ffo > pa_offset {
+                    issues.push(err(
+                        IssueCode::FooterOffsetOutOfRange,
+                        ValidationLevel::Structure,
+                        None,
+                        Some(pa_offset),
+                        format!(
+                            "first_footer_offset {} out of range [{PREAMBLE_SIZE}, {pa_offset}]",
+                            ffo
+                        ),
+                    ));
+                }
                 (pa_offset, Some(ffo))
             }
             Err(_) => {
@@ -298,15 +310,15 @@ pub(crate) fn validate_structure<'a>(
                 break;
             }
         };
-        if frame_end > msg_end.saturating_add(POSTAMBLE_SIZE) {
+        // Frames must end before the postamble (msg_end is the byte after the last frame region)
+        if frame_end > msg_end {
             issues.push(err(
                 IssueCode::FrameExceedsMessage,
                 ValidationLevel::Structure,
                 None,
                 Some(pos),
                 format!(
-                    "frame at offset {pos} extends beyond message (frame_end={frame_end}, msg_end={})",
-                    msg_end + POSTAMBLE_SIZE
+                    "frame at offset {pos} extends into postamble (frame_end={frame_end}, postamble_start={msg_end})",
                 ),
             ));
             break;
@@ -443,12 +455,11 @@ pub(crate) fn validate_structure<'a>(
         }
 
         // Advance past frame (with alignment padding to 8-byte boundary)
-        let consumed = frame_end;
-        let aligned = consumed.saturating_add(7) & !7;
-        pos = if aligned <= msg_end.saturating_add(POSTAMBLE_SIZE) {
+        let aligned = frame_end.saturating_add(7) & !7;
+        pos = if aligned <= msg_end {
             aligned
         } else {
-            consumed
+            frame_end
         };
     }
 
