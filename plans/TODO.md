@@ -67,6 +67,24 @@ For speculative ideas, see `IDEAS.md`.
 - [x] ~~consumer-side-streaming~~ → `examples/python/09_streaming_consumer.py` — mock HTTP server, chunked download, progressive scan+decode, xarray Dataset assembly
 
 ## Optimisation
+
+- [ ] **multi-threaded-coding-pipeline**:
+  - add multi-threaded support for the encoding and decoding pipelines
+  - this should always be an option controled by the caller, off by default, similar to the hash check
+  - caller can control how many threads are spawn simultaneously
+  - option can be integer such that:
+    - 0 means off
+    - 1 means spawn a singe thread and execute the pipeline there
+    - N means spawn that many and parallelise where possible
+  - parallelisation can be done in 2 ways:
+    - async coding of data objects simultaneously
+    - sync coding of a single data object using multiple threads, where the algorithms are parallelisable.
+  - when on, consider the theads as a pool of workers, and the main thread as a broker of the work
+
+- [ ] **hash-while-encoding**:
+  - explore a possible optimisation to compute the xxhash while the encoding is happening
+  - this would save a second pass through the buffer
+  - analyse if this makes sense and if it brings a benefit
  
 - [x] ~~minimise-mem-alloc~~ → documented in DESIGN.md "Memory Strategy" section. Pipeline uses `Cow` for zero-copy when no encoding/filter/compression. Metadata-only ops never touch payloads. xarray/zarr use lazy loading.
 
@@ -82,19 +100,34 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Validation
 
-- [ ] **tensogram-validate**:
-  - add a `validate` CLI subcommand that checks whether a `.tgm` file is well-formed and intact without using the data. Like `grib_check` or `h5check`.
-  - implement 4 validation levels, selectable by flag:
-    - **Level 1 — Structure** (`--quick`): verify magic bytes (`TENSOGRM` preamble, `39277777` postamble), frame headers parse with valid types and lengths within file bounds, no overlapping or gap frames, index frame present and points to valid offsets, total message length matches actual data.
-    - **Level 2 — Metadata** (included in default): CBOR parses without error and is canonical (deterministic key ordering), required keys present (`_reserved_.tensor.shape`, `dtype`, etc.), dtype is one of the 15 supported types, encoding and compression types are recognized, object count matches number of data object frames, shape/strides/dtype are internally consistent.
-    - **Level 3 — Integrity** (included in default): xxh3 hash in hash frame matches recomputed hash over data payloads, each compressed payload decompresses without error (no value interpretation needed).
-    - **Level 4 — Fidelity** (`--full`): full decode of each object succeeds, no NaN/Inf in decoded float arrays, for lossy codecs with error-budget metadata: actual error within declared tolerance.
-  - CLI interface: `tensogram validate file.tgm` (levels 1-3 by default), `--quick` (level 1 only), `--full` (levels 1-4), `--checksum` (level 3 only), `--json` (machine-parseable output). Batch mode: `tensogram validate data/*.tgm`.
-  - output format: `file.tgm: OK (3 messages, 47 objects, hash verified)` or `bad.tgm: FAILED — hash mismatch in message 2 (expected a3f7..., got 91c2...)`. Exit code 0 if all pass, 1 if any fail.
-  - most building blocks already exist: `scan()` validates framing, `decode_metadata()` validates CBOR, hash verification exists in decode path, full decode exists. The work is wiring these into a CLI command with precise error reporting (which frame, which byte offset, what's wrong).
-  - add a `validate_message(data, options) -> Vec<ValidationIssue>` function in tensogram-core as the library-level API. The CLI subcommand calls this.
-  - also as part of this work: convert the 12 panics in `encode.rs` metadata validation to proper error returns. These are the same validation checks that `validate` needs.
-  - tests: unit tests for each validation level, test with truncated files, corrupted hashes, invalid CBOR, wrong magic bytes, batch mode, JSON output, and that valid files pass all 4 levels.
+- [x] **tensogram-validate PR 1** — core library API + CLI (Levels 1-3):
+  - `validate_message(buf, options) -> ValidationReport` and `validate_file(path, options)` in tensogram-core.
+  - Level 1 (Structure): raw byte walking — magic, preamble, frame headers/ENDF, total_length, postamble, first_footer_offset, frame ordering, preceder legality, preamble flags vs observed, overflow-safe arithmetic.
+  - Level 2 (Metadata): raw CBOR parsing from frame payloads (before decode_message normalization), required keys, dtype/encoding/filter/compression recognized, shape/strides/ndim consistency, index/hash frame consistency.
+  - Level 3 (Integrity): xxh3 hash verification (descriptor + hash frame fallback), decode pipeline execution for compressed objects. Unknown hash algorithms produce warnings. `hash_verified` only true when ALL objects verified.
+  - CLI: `tensogram validate [--quick|--checksum|--canonical] [--json] <files>`, mutually exclusive modes, batch JSON array output, exit code 0/1.
+  - File-level validation: detects garbage bytes, truncated messages, trailing data between messages. Streaming message scan validates postamble candidates.
+  - Canonical CBOR check opt-in via `--canonical` flag (warnings, not errors).
+  - Modular architecture: `validate/types.rs` (types + `IssueCode` enum), `validate/structure.rs`, `validate/metadata.rs`, `validate/integrity.rs`, `validate/mod.rs` (public API).
+  - Stable machine-readable `IssueCode` enum with serde serialization. CLI JSON output via serde_json (not hand-built).
+  - Streaming file validation via `scan_file` + per-message reads (O(1 message) memory).
+  - Index offset validation: verifies offsets point to actual data object frame positions.
+  - 35 tests (25 core + 10 CLI). Docs at `docs/src/cli/validate.md`.
+
+- [ ] **tensogram-validate PR 2** — Level 4 fidelity + encode.rs cleanup:
+  - Add `fidelity.rs` module to `validate/` with Level 4 checks.
+  - Level 4 (Fidelity, `--full`): full decode of each object succeeds, NaN/Inf in decoded float arrays are **errors** (not warnings). NaN/Inf break numerical computations in the encoding pipeline (e.g. packing reference_value). A future extension could use a reserved preamble flag to opt into NaN support with a bitmask companion object, but until there's a concrete use case, NaN/Inf are rejected.
+  - Note: lossy error-budget verification is NOT feasible from .tgm alone (wire format stores encoded payload, not original values). Accepted scope reduction.
+  - Add `--full` flag to CLI (mutually exclusive with existing mode flags).
+  - Convert 12 `panic!()` calls in encode.rs test functions to proper `assert!`/`assert_eq!` with descriptive messages. Note: these are test-only assertions, not runtime validation panics — the original "proper error returns" request is already satisfied by the production code.
+  - Add missing test coverage: NaN/Inf policy tests, full-mode decode failures, mixed batch results with exit-code assertions.
+  - Add `IssueCode` variants for Level 4: `DecodeObjectFailed`, `NanDetected`, `InfDetected`.
+
+- [ ] **tensogram-validate PR 3** — Python + FFI bindings + examples:
+  - Python: `tensogram.validate(buf, level="default") -> dict` and `tensogram.validate_file(path, level="default") -> list[dict]` via PyO3.
+  - C FFI: `tgm_validate(buf, len, level, *out) -> tgm_error` and `tgm_validate_file(path, level, *out) -> tgm_error` returning JSON via `TgmBytes` out-parameter (matches existing ABI pattern).
+  - Examples in `examples/python/` and `examples/rust/`.
+  - Python tests in `tests/python/`.
 
 ## Remote Access
 

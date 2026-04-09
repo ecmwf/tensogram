@@ -208,34 +208,34 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
 
     let cbor_after = fh.flags & DataObjectFlags::CBOR_AFTER_PAYLOAD != 0;
 
-    let (cbor_slice, payload_slice) = if cbor_after {
+    let (descriptor, payload_slice) = if cbor_after {
         // Layout: header(16) | payload | cbor | cbor_offset(8) | ENDF(4)
         let payload_start = FRAME_HEADER_SIZE;
         let cbor_start = cbor_offset;
         let cbor_end = cbor_offset_pos;
-        let payload_end = cbor_start;
-        (&buf[cbor_start..cbor_end], &buf[payload_start..payload_end])
+        let cbor_slice = &buf[cbor_start..cbor_end];
+        let desc = metadata::cbor_to_object_descriptor(cbor_slice)?;
+        (desc, &buf[payload_start..cbor_start])
     } else {
         // Layout: header(16) | cbor | payload | cbor_offset(8) | ENDF(4)
+        // Use Cursor to measure exact consumed CBOR bytes on the wire.
+        // Re-serialization would produce different lengths for non-canonical CBOR.
         let cbor_start = cbor_offset;
-        // Parse CBOR to find where it ends (self-delimiting)
-        let cbor_value: ciborium::Value = ciborium::from_reader(&buf[cbor_start..cbor_offset_pos])
-            .map_err(|e| {
-                TensogramError::Metadata(format!("failed to parse object descriptor CBOR: {e}"))
-            })?;
-        let cbor_bytes = {
-            let mut tmp = Vec::new();
-            ciborium::into_writer(&cbor_value, &mut tmp)
-                .map_err(|e| TensogramError::Metadata(format!("failed to re-encode CBOR: {e}")))?;
-            tmp
-        };
-        let cbor_end = cbor_start + cbor_bytes.len();
-        let payload_start = cbor_end;
-        let payload_end = cbor_offset_pos;
-        (&buf[cbor_start..cbor_end], &buf[payload_start..payload_end])
+        let region = &buf[cbor_start..cbor_offset_pos];
+        let mut cursor = std::io::Cursor::new(region);
+        let cbor_value: ciborium::Value = ciborium::from_reader(&mut cursor).map_err(|e| {
+            TensogramError::Metadata(format!("failed to parse object descriptor CBOR: {e}"))
+        })?;
+        let cbor_len = usize::try_from(cursor.position()).map_err(|_| {
+            TensogramError::Metadata("CBOR descriptor length overflows usize".to_string())
+        })?;
+        let payload_start = cbor_start + cbor_len;
+        // Deserialize directly from parsed Value — avoids a second CBOR parse
+        let desc: DataObjectDescriptor = cbor_value.deserialized().map_err(|e| {
+            TensogramError::Metadata(format!("failed to deserialize descriptor: {e}"))
+        })?;
+        (desc, &buf[payload_start..cbor_offset_pos])
     };
-
-    let descriptor = metadata::cbor_to_object_descriptor(cbor_slice)?;
 
     // Bytes consumed, including padding
     let mut consumed = frame_total;
