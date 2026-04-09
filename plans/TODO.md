@@ -116,9 +116,8 @@ For speculative ideas, see `IDEAS.md`.
 
 - [ ] **tensogram-validate PR 2** — Level 4 fidelity + encode.rs cleanup:
   - Add `fidelity.rs` module to `validate/` with Level 4 checks.
-  - Level 4 (Fidelity, `--full`): full decode of each object succeeds, NaN/Inf in float arrays reported as warnings (not errors — scientific data may legitimately contain them).
+  - Level 4 (Fidelity, `--full`): full decode of each object succeeds, NaN/Inf in decoded float arrays are **errors** (not warnings). NaN/Inf break numerical computations in the encoding pipeline (e.g. packing reference_value). A future extension could use a reserved preamble flag to opt into NaN support with a bitmask companion object, but until there's a concrete use case, NaN/Inf are rejected.
   - Note: lossy error-budget verification is NOT feasible from .tgm alone (wire format stores encoded payload, not original values). Accepted scope reduction.
-  - NaN/Inf as warnings (not errors) is an accepted spec change — scientific data legitimately contains them.
   - Add `--full` flag to CLI (mutually exclusive with existing mode flags).
   - Convert 12 `panic!()` calls in encode.rs test functions to proper `assert!`/`assert_eq!` with descriptive messages. Note: these are test-only assertions, not runtime validation panics — the original "proper error returns" request is already satisfied by the production code.
   - Add missing test coverage: NaN/Inf policy tests, full-mode decode failures, mixed batch results with exit-code assertions.

@@ -12,6 +12,9 @@ Ideas for possible future implementation. Do not implement these yet.
 
 - it should support transforming this data to xarray in earthkit-data
 
+- NaN handling:
+    - [ ] NaN bitmask companion object: use a reserved preamble flag to signal that a data object has NaN values, with a succeeding bitmask data object marking NaN positions. This avoids NaN in the float payload (which breaks packing) while preserving missing-value semantics. Needs a concrete use case before implementing.
+
 - Optimisations:
     - [ ] SIMD payload alignment: optional padding for 16/32/64-byte aligned payloads. 
 
