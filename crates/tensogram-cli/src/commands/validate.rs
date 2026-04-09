@@ -283,4 +283,37 @@ mod tests {
         let p2 = make_test_file(dir.path(), "b.tgm", 1);
         run(&[p1, p2], &default_opts(), true).unwrap();
     }
+
+    fn full_opts() -> ValidateOptions {
+        ValidateOptions {
+            max_level: tensogram_core::ValidationLevel::Fidelity,
+            ..default_opts()
+        }
+    }
+
+    #[test]
+    fn cli_validate_full_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path(), "full.tgm", 1);
+        run(&[path], &full_opts(), false).unwrap();
+    }
+
+    #[test]
+    fn cli_validate_full_canonical() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path(), "full_canonical.tgm", 1);
+        let opts = ValidateOptions {
+            max_level: tensogram_core::ValidationLevel::Fidelity,
+            check_canonical: true,
+            ..default_opts()
+        };
+        run(&[path], &opts, false).unwrap();
+    }
+
+    #[test]
+    fn cli_validate_full_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path(), "full_json.tgm", 1);
+        run(&[path], &full_opts(), true).unwrap();
+    }
 }

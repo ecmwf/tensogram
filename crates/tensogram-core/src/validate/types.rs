@@ -93,12 +93,22 @@ pub enum IssueCode {
     InfDetected,
 }
 
+/// State of decode pipeline execution for a data object.
+pub(crate) enum DecodeState {
+    /// Not yet attempted.
+    NotDecoded,
+    /// Successfully decoded.
+    Decoded(Vec<u8>),
+    /// Decode was attempted and failed — Level 4 should skip.
+    DecodeFailed,
+}
+
 /// Per-object validation context, populated incrementally across levels.
 ///
 /// Level 1 fills `payload` and `frame_offset`.
 /// Level 2 fills `descriptor`.
-/// Level 3 fills `decoded` for non-raw objects.
-/// Level 4 reuses `decoded` or scans `payload` in-place for raw objects.
+/// Level 3 fills `decode_state` for non-raw objects.
+/// Level 4 reuses decoded bytes or scans `payload` in-place for raw objects.
 pub(crate) struct ObjectContext<'a> {
     /// Parsed descriptor (filled by Level 2).
     pub descriptor: Option<crate::types::DataObjectDescriptor>,
@@ -108,8 +118,8 @@ pub(crate) struct ObjectContext<'a> {
     pub payload: &'a [u8],
     /// Byte offset of the data object frame within the message.
     pub frame_offset: usize,
-    /// Decoded payload bytes (filled by Level 3 for non-raw objects).
-    pub decoded: Option<Vec<u8>>,
+    /// Decode pipeline state (filled by Level 3, reused by Level 4).
+    pub decode_state: DecodeState,
 }
 
 /// A single validation finding.

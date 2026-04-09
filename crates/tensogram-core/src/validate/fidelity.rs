@@ -22,84 +22,115 @@ pub(crate) fn validate_fidelity(
             None => continue, // Already reported at Level 2
         };
 
-        // Get decoded bytes: reuse Level 3 cache, or use raw payload for raw objects
-        let decoded: &[u8] = if let Some(ref decoded) = obj.decoded {
-            decoded
-        } else if desc.encoding == "none" && desc.filter == "none" && desc.compression == "none" {
-            // Raw object: payload is the decoded bytes
-            obj.payload
-        } else {
-            // Non-raw object without cached decode — run decode pipeline now
-            let shape_product = desc
-                .shape
-                .iter()
-                .try_fold(1u64, |acc, &x| acc.checked_mul(x));
-            let num_elements = match shape_product.and_then(|p| usize::try_from(p).ok()) {
-                Some(n) => n,
-                None => {
-                    issues.push(err(
-                        IssueCode::DecodeObjectFailed,
-                        ValidationLevel::Fidelity,
-                        Some(i),
-                        Some(obj.frame_offset),
-                        "cannot compute element count from shape".to_string(),
-                    ));
-                    continue;
-                }
-            };
-            match build_pipeline_config(desc, num_elements, desc.dtype) {
-                Ok(config) => {
-                    match tensogram_encodings::pipeline::decode_pipeline(obj.payload, &config, false) {
-                        Ok(decoded_bytes) => {
-                            obj.decoded = Some(decoded_bytes);
-                            obj.decoded.as_ref().unwrap()
-                        }
-                        Err(e) => {
+        // Get decoded bytes: reuse Level 3 cache, scan raw payload in-place, or decode now
+        let decoded: &[u8] = match &obj.decode_state {
+            DecodeState::Decoded(bytes) => bytes,
+            DecodeState::DecodeFailed => continue, // Already reported at Level 3
+            DecodeState::NotDecoded => {
+                if desc.encoding == "none" && desc.filter == "none" && desc.compression == "none" {
+                    // Raw object: payload is the decoded bytes
+                    obj.payload
+                } else {
+                    // Non-raw object — Level 3 didn't run, decode now
+                    let shape_product = desc
+                        .shape
+                        .iter()
+                        .try_fold(1u64, |acc, &x| acc.checked_mul(x));
+                    let num_elements = match shape_product.and_then(|p| usize::try_from(p).ok()) {
+                        Some(n) => n,
+                        None => {
                             issues.push(err(
                                 IssueCode::DecodeObjectFailed,
                                 ValidationLevel::Fidelity,
                                 Some(i),
                                 Some(obj.frame_offset),
-                                format!("full decode failed: {e}"),
+                                "cannot compute element count from shape".to_string(),
+                            ));
+                            continue;
+                        }
+                    };
+                    match build_pipeline_config(desc, num_elements, desc.dtype) {
+                        Ok(config) => {
+                            match tensogram_encodings::pipeline::decode_pipeline(
+                                obj.payload, &config, false,
+                            ) {
+                                Ok(decoded_bytes) => {
+                                    obj.decode_state = DecodeState::Decoded(decoded_bytes);
+                                    let DecodeState::Decoded(b) = &obj.decode_state else {
+                                        continue;
+                                    };
+                                    b
+                                }
+                                Err(e) => {
+                                    obj.decode_state = DecodeState::DecodeFailed;
+                                    issues.push(err(
+                                        IssueCode::DecodeObjectFailed,
+                                        ValidationLevel::Fidelity,
+                                        Some(i),
+                                        Some(obj.frame_offset),
+                                        format!("full decode failed: {e}"),
+                                    ));
+                                    continue;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            obj.decode_state = DecodeState::DecodeFailed;
+                            issues.push(err(
+                                IssueCode::DecodeObjectFailed,
+                                ValidationLevel::Fidelity,
+                                Some(i),
+                                Some(obj.frame_offset),
+                                format!("cannot build pipeline config: {e}"),
                             ));
                             continue;
                         }
                     }
                 }
-                Err(e) => {
-                    issues.push(err(
-                        IssueCode::DecodeObjectFailed,
-                        ValidationLevel::Fidelity,
-                        Some(i),
-                        Some(obj.frame_offset),
-                        format!("cannot build pipeline config: {e}"),
-                    ));
-                    continue;
-                }
             }
         };
 
-        // Decoded-size check
-        let byte_width = desc.dtype.byte_width();
-        let expected_size = if desc.dtype == Dtype::Bitmask {
-            let product = desc
-                .shape
-                .iter()
-                .try_fold(1u64, |acc, &x| acc.checked_mul(x))
-                .unwrap_or(0);
-            product.div_ceil(8) as usize
-        } else if byte_width > 0 {
-            let product = desc
-                .shape
-                .iter()
-                .try_fold(1u64, |acc, &x| acc.checked_mul(x))
-                .unwrap_or(0);
-            (product as usize).saturating_mul(byte_width)
-        } else {
-            0
+        // Decoded-size check (unconditional, including size 0)
+        let shape_product = desc
+            .shape
+            .iter()
+            .try_fold(1u64, |acc, &x| acc.checked_mul(x));
+        let expected_size = match shape_product {
+            Some(product) => {
+                if desc.dtype == Dtype::Bitmask {
+                    usize::try_from(product.div_ceil(8)).ok()
+                } else {
+                    usize::try_from(product)
+                        .ok()
+                        .and_then(|p| p.checked_mul(desc.dtype.byte_width()))
+                }
+            }
+            None => {
+                issues.push(err(
+                    IssueCode::DecodedSizeMismatch,
+                    ValidationLevel::Fidelity,
+                    Some(i),
+                    Some(obj.frame_offset),
+                    "shape product overflows, cannot verify decoded size".to_string(),
+                ));
+                continue;
+            }
+        };
+        let expected_size = match expected_size {
+            Some(s) => s,
+            None => {
+                issues.push(err(
+                    IssueCode::DecodedSizeMismatch,
+                    ValidationLevel::Fidelity,
+                    Some(i),
+                    Some(obj.frame_offset),
+                    "expected decoded size overflows usize".to_string(),
+                ));
+                continue;
+            }
         };
 
-        if expected_size > 0 && decoded.len() != expected_size {
+        if decoded.len() != expected_size {
             issues.push(err(
                 IssueCode::DecodedSizeMismatch,
                 ValidationLevel::Fidelity,
