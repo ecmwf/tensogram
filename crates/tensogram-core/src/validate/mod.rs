@@ -740,4 +740,20 @@ mod tests {
             report.issues
         );
     }
+
+    // ── Zero-object message ─────────────────────────────────────────────
+
+    #[test]
+    fn zero_object_message_validates() {
+        let meta = GlobalMetadata::default();
+        let opts = EncodeOptions {
+            hash_algorithm: None,
+            ..EncodeOptions::default()
+        };
+        let msg = encode(&meta, &[], &opts).unwrap();
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(report.is_ok(), "issues: {:?}", report.issues);
+        assert_eq!(report.object_count, 0);
+        assert!(!report.hash_verified); // no objects → nothing to verify
+    }
 }
