@@ -81,7 +81,7 @@ pub fn validate_file(
 ) -> std::io::Result<FileValidationReport> {
     use std::io::{Read, Seek, SeekFrom};
 
-    let file_len = std::fs::metadata(path)?.len() as usize;
+    let file_len = std::fs::metadata(path)?.len() as usize; // 32-bit truncation is acceptable: scan_file handles offsets as usize
     let mut file = std::fs::File::open(path)?;
 
     let scan_result = crate::framing::scan_file(&mut file);

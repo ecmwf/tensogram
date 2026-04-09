@@ -15,21 +15,21 @@
 New `validate` subcommand and library API for checking `.tgm` file
 correctness and integrity without consuming the data.
 
-- `crates/tensogram-core/src/validate.rs` — library API with three
-  validation levels: Structure (raw byte walking), Metadata (CBOR +
-  required keys + descriptor consistency), Integrity (xxh3 hash +
-  decompression check). Public types: `ValidateMode`, `ValidateOptions`,
-  `ValidationReport`, `FileValidationReport`, `ValidationIssue`,
-  `IssueSeverity`, `ValidationLevel`.
-- `validate_message(buf, options)` — validate a single message buffer.
-- `validate_file(path, options)` — validate all messages in a file,
-  detecting truncated messages and garbage bytes between messages.
+- Modular architecture in `crates/tensogram-core/src/validate/`:
+  `types.rs` (public types + `IssueCode` enum), `structure.rs`
+  (Level 1 raw byte walking), `metadata.rs` (Level 2 CBOR +
+  descriptor checks), `integrity.rs` (Level 3 hash + decompression),
+  `mod.rs` (public API entry points).
+- `validate_message(buf, options) -> ValidationReport` — single message.
+- `validate_file(path, options)` — streaming I/O, one message at a time.
+- `validate_buffer(buf, options)` — in-memory multi-message validation.
+- Stable `IssueCode` enum (~40 codes) with serde serialization.
 - CLI: `tensogram validate [--quick|--checksum|--canonical] [--json] <files>`
-  with mutually exclusive mode flags, batch mode, exit code 0/1.
-- 17 unit tests in tensogram-core, 8 CLI tests.
+  with mutually exclusive mode flags, serde_json batch array output,
+  exit code 0/1.
+- 25 unit tests in tensogram-core, 10 CLI tests.
 - Docs: `docs/src/cli/validate.md`.
-- Remaining work (PR 2): Level 4 Fidelity (full decode + NaN/Inf
-  warnings), encode.rs test panic cleanup.
+- Remaining work (PR 2): Level 4 Fidelity + `--full` flag.
 - Remaining work (PR 3): Python bindings, C FFI, examples.
 
 ## tensogram-netcdf

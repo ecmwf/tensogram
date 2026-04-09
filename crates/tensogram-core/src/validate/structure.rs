@@ -87,7 +87,8 @@ pub(crate) fn validate_structure<'a>(
     };
 
     // --- Total length / postamble ---
-    let msg_end = if preamble.total_length > 0 {
+    // Parse postamble once, capture both msg_end and first_footer_offset.
+    let (msg_end, declared_ffo) = if preamble.total_length > 0 {
         let total = match usize::try_from(preamble.total_length) {
             Ok(t) => t,
             Err(_) => {
@@ -125,7 +126,6 @@ pub(crate) fn validate_structure<'a>(
             ));
             return None;
         }
-        // Validate postamble
         let pa_offset = total - POSTAMBLE_SIZE;
         match Postamble::read_from(&buf[pa_offset..]) {
             Ok(pa) => {
@@ -142,6 +142,7 @@ pub(crate) fn validate_structure<'a>(
                         ),
                     ));
                 }
+                (pa_offset, Some(ffo))
             }
             Err(e) => {
                 issues.push(err(
@@ -154,7 +155,6 @@ pub(crate) fn validate_structure<'a>(
                 return None;
             }
         }
-        total - POSTAMBLE_SIZE
     } else {
         // Streaming mode: postamble at end of buffer
         if buf.len() < POSTAMBLE_SIZE {
@@ -168,32 +168,22 @@ pub(crate) fn validate_structure<'a>(
             return None;
         }
         let pa_offset = buf.len() - POSTAMBLE_SIZE;
-        if Postamble::read_from(&buf[pa_offset..]).is_err() {
-            issues.push(err(
-                IssueCode::PostambleInvalid,
-                ValidationLevel::Structure,
-                None,
-                Some(pa_offset),
-                "missing or invalid postamble in streaming message".to_string(),
-            ));
-            return None;
+        match Postamble::read_from(&buf[pa_offset..]) {
+            Ok(pa) => {
+                let ffo = pa.first_footer_offset as usize;
+                (pa_offset, Some(ffo))
+            }
+            Err(_) => {
+                issues.push(err(
+                    IssueCode::PostambleInvalid,
+                    ValidationLevel::Structure,
+                    None,
+                    Some(pa_offset),
+                    "missing or invalid postamble in streaming message".to_string(),
+                ));
+                return None;
+            }
         }
-        pa_offset
-    };
-
-    // Read declared first_footer_offset for later verification
-    let declared_ffo = if preamble.total_length > 0 {
-        let pa_off = preamble.total_length as usize - POSTAMBLE_SIZE;
-        Postamble::read_from(&buf[pa_off..])
-            .ok()
-            .map(|pa| pa.first_footer_offset as usize)
-    } else if buf.len() >= POSTAMBLE_SIZE {
-        let pa_off = buf.len() - POSTAMBLE_SIZE;
-        Postamble::read_from(&buf[pa_off..])
-            .ok()
-            .map(|pa| pa.first_footer_offset as usize)
-    } else {
-        None
     };
 
     // --- Frame walk ---
