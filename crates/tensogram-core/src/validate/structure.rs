@@ -547,6 +547,16 @@ pub(crate) fn validate_structure<'a>(
         // Advance past frame (with alignment padding to 8-byte boundary)
         let aligned = frame_end.saturating_add(7) & !7;
         pos = if aligned <= msg_end {
+            // Check alignment padding bytes are zero
+            if buf[frame_end..aligned].iter().any(|&b| b != 0) {
+                issues.push(warn(
+                    IssueCode::NonZeroPadding,
+                    ValidationLevel::Structure,
+                    None,
+                    Some(frame_end),
+                    format!("non-zero alignment padding after frame at offset {frame_end}"),
+                ));
+            }
             aligned
         } else {
             frame_end
