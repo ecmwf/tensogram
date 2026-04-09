@@ -93,13 +93,15 @@ pub(crate) fn validate_integrity(
     }
 
     for (i, obj) in objects.iter_mut().enumerate() {
-        // If Level 2 didn't run or descriptor parse failed, try parsing now
-        if obj.descriptor.is_none() {
+        // If Level 2 didn't run, try parsing the descriptor now.
+        // If Level 2 already tried and failed, skip (don't re-parse or duplicate errors).
+        if obj.descriptor.is_none() && !obj.descriptor_failed {
             match metadata::cbor_to_object_descriptor(obj.cbor_bytes) {
                 Ok(d) => {
                     obj.descriptor = Some(d);
                 }
                 Err(e) => {
+                    obj.descriptor_failed = true;
                     issues.push(err(
                         IssueCode::HashVerificationError,
                         ValidationLevel::Integrity,

@@ -224,6 +224,7 @@ pub(crate) fn validate_metadata(
         let desc = match metadata::cbor_to_object_descriptor(obj.cbor_bytes) {
             Ok(d) => d,
             Err(e) => {
+                obj.descriptor_failed = true;
                 issues.push(err(
                     IssueCode::DescriptorCborParseFailed,
                     ValidationLevel::Metadata,

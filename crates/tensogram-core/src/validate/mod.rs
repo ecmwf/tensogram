@@ -70,6 +70,7 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
             .iter()
             .map(|(cbor_bytes, payload, frame_offset)| ObjectContext {
                 descriptor: None,
+                descriptor_failed: false,
                 cbor_bytes,
                 payload,
                 frame_offset: *frame_offset,

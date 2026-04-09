@@ -112,6 +112,8 @@ pub(crate) enum DecodeState {
 pub(crate) struct ObjectContext<'a> {
     /// Parsed descriptor (filled by Level 2).
     pub descriptor: Option<crate::types::DataObjectDescriptor>,
+    /// True if descriptor parse was attempted and failed (prevents Level 3 retry).
+    pub descriptor_failed: bool,
     /// Raw CBOR bytes for the descriptor.
     pub cbor_bytes: &'a [u8],
     /// Encoded payload bytes (from Level 1 frame walk).
