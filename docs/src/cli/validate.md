@@ -46,7 +46,8 @@ file.tgm: OK (3 messages, 47 objects, hash verified)
 On failure:
 
 ```
-bad.tgm: FAILED - message 2, object 5: hash mismatch (expected a3f7..., got 91c2...) (at byte 4096)
+bad.tgm: FAILED — message 2, object 5: hash mismatch (expected a3f7..., got 91c2...) (at byte 4096)
+bad.tgm: FAILED (1 errors, 3 messages, 47 objects)
 ```
 
 ### JSON (`--json`)
@@ -56,14 +57,14 @@ bad.tgm: FAILED - message 2, object 5: hash mismatch (expected a3f7..., got 91c2
   {
     "file": "file.tgm",
     "status": "ok",
-    "messages": 3,
-    "objects": 47,
+    "messages": 1,
+    "objects": 3,
     "hash_verified": true,
     "file_issues": [],
     "message_reports": [
       {
         "issues": [],
-        "object_count": 47,
+        "object_count": 3,
         "hash_verified": true
       }
     ]
