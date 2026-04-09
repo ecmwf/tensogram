@@ -202,32 +202,28 @@ pub struct PipelineResult {
 /// Build an szip compressor, dispatching between FFI and pure-Rust at runtime.
 #[cfg(any(feature = "szip", feature = "szip-pure"))]
 fn build_szip_compressor(
-    backend: CompressionBackend,
+    #[allow(unused_variables)] backend: CompressionBackend,
     rsi: u32,
     block_size: u32,
     flags: u32,
     bits_per_sample: u32,
 ) -> Box<dyn Compressor> {
+    // When both features are compiled in, dispatch at runtime.
     #[cfg(all(feature = "szip", feature = "szip-pure"))]
-    {
-        if matches!(backend, CompressionBackend::Pure) {
-            return Box::new(SzipPureCompressor {
-                rsi,
-                block_size,
-                flags,
-                bits_per_sample,
-            });
-        }
-        return Box::new(SzipCompressor {
+    if matches!(backend, CompressionBackend::Pure) {
+        return Box::new(SzipPureCompressor {
             rsi,
             block_size,
             flags,
             bits_per_sample,
         });
     }
-    #[cfg(all(feature = "szip", not(feature = "szip-pure")))]
+
+    // FFI path — used when szip feature is enabled and either:
+    // (a) both features compiled but backend is Ffi, or
+    // (b) only szip is compiled.
+    #[cfg(feature = "szip")]
     {
-        let _ = backend;
         Box::new(SzipCompressor {
             rsi,
             block_size,
@@ -235,9 +231,10 @@ fn build_szip_compressor(
             bits_per_sample,
         })
     }
+
+    // Pure-only path — used when only szip-pure is compiled (no FFI).
     #[cfg(all(feature = "szip-pure", not(feature = "szip")))]
     {
-        let _ = backend;
         Box::new(SzipPureCompressor {
             rsi,
             block_size,
@@ -249,22 +246,22 @@ fn build_szip_compressor(
 
 /// Build a zstd compressor, dispatching between FFI and pure-Rust at runtime.
 #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
-fn build_zstd_compressor(backend: CompressionBackend, level: i32) -> Box<dyn Compressor> {
+fn build_zstd_compressor(
+    #[allow(unused_variables)] backend: CompressionBackend,
+    level: i32,
+) -> Box<dyn Compressor> {
     #[cfg(all(feature = "zstd", feature = "zstd-pure"))]
-    {
-        if matches!(backend, CompressionBackend::Pure) {
-            return Box::new(ZstdPureCompressor { level });
-        }
-        return Box::new(ZstdCompressor { level });
+    if matches!(backend, CompressionBackend::Pure) {
+        return Box::new(ZstdPureCompressor { level });
     }
-    #[cfg(all(feature = "zstd", not(feature = "zstd-pure")))]
+
+    #[cfg(feature = "zstd")]
     {
-        let _ = backend;
         Box::new(ZstdCompressor { level })
     }
+
     #[cfg(all(feature = "zstd-pure", not(feature = "zstd")))]
     {
-        let _ = backend;
         Box::new(ZstdPureCompressor { level })
     }
 }
