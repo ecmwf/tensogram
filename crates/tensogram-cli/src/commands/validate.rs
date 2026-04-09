@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
 use tensogram_core::{
-    validate_file, FileValidationReport, IssueSeverity, ValidateMode, ValidateOptions,
-    ValidationLevel,
+    validate_file, FileIssue, FileValidationReport, IssueSeverity, ValidateMode, ValidateOptions,
+    ValidationReport,
 };
 
 /// Custom error to signal validation failure (exit code 1) without process::exit.
@@ -26,16 +27,15 @@ pub fn run(
     let mut all_ok = true;
 
     if json {
-        // Wrap all results in a JSON array for valid batch output
-        let mut entries = Vec::new();
+        let mut entries: Vec<JsonFileReport> = Vec::new();
         for path in files {
             let report = validate_file(path, &options)?;
-            entries.push(format_json(path, &report));
             if !report.is_ok() {
                 all_ok = false;
             }
+            entries.push(JsonFileReport::from_report(path, &report));
         }
-        println!("[{}]", entries.join(",\n"));
+        println!("{}", serde_json::to_string_pretty(&entries)?);
     } else {
         for path in files {
             let report = validate_file(path, &options)?;
@@ -104,7 +104,7 @@ fn print_human(path: &Path, report: &FileValidationReport) {
                 );
             }
         }
-        // Final summary line so failures are always visible
+        // Final summary line
         let error_count: usize = report
             .messages
             .iter()
@@ -122,76 +122,31 @@ fn print_human(path: &Path, report: &FileValidationReport) {
     }
 }
 
-fn format_json(path: &Path, report: &FileValidationReport) -> String {
-    let status = if report.is_ok() { "ok" } else { "failed" };
-    let msg_count = report.messages.len();
-    let obj_count = report.total_objects();
-    let hash_verified = report.hash_verified();
+// ── JSON output types (serde-driven) ────────────────────────────────────────
 
-    let mut all_issues = Vec::new();
-
-    for fi in &report.file_issues {
-        all_issues.push(format!(
-            r#"{{"level":"file","severity":"warning","message_index":null,"object_index":null,"byte_offset":{},"description":{}}}"#,
-            fi.byte_offset,
-            json_string(&fi.description),
-        ));
-    }
-
-    for (i, msg_report) in report.messages.iter().enumerate() {
-        for issue in &msg_report.issues {
-            let level = match issue.level {
-                ValidationLevel::Structure => "structure",
-                ValidationLevel::Metadata => "metadata",
-                ValidationLevel::Integrity => "integrity",
-            };
-            let severity = match issue.severity {
-                IssueSeverity::Error => "error",
-                IssueSeverity::Warning => "warning",
-            };
-            let obj_idx = match issue.object_index {
-                Some(idx) => idx.to_string(),
-                None => "null".to_string(),
-            };
-            let byte_off = match issue.byte_offset {
-                Some(off) => off.to_string(),
-                None => "null".to_string(),
-            };
-            all_issues.push(format!(
-                r#"{{"level":"{level}","severity":"{severity}","message_index":{i},"object_index":{obj_idx},"byte_offset":{byte_off},"description":{}}}"#,
-                json_string(&issue.description),
-            ));
-        }
-    }
-
-    let issues_str = if all_issues.is_empty() {
-        String::new()
-    } else {
-        all_issues.join(",")
-    };
-    format!(
-        r#"{{"file":{},"status":"{status}","messages":{msg_count},"objects":{obj_count},"hash_verified":{hash_verified},"issues":[{issues_str}]}}"#,
-        json_string(&path.display().to_string()),
-    )
+#[derive(Serialize)]
+struct JsonFileReport {
+    file: String,
+    status: &'static str,
+    messages: usize,
+    objects: usize,
+    hash_verified: bool,
+    file_issues: Vec<FileIssue>,
+    message_reports: Vec<ValidationReport>,
 }
 
-/// Escape a string for JSON output.
-fn json_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c < '\x20' => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
+impl JsonFileReport {
+    fn from_report(path: &Path, report: &FileValidationReport) -> Self {
+        Self {
+            file: path.display().to_string(),
+            status: if report.is_ok() { "ok" } else { "failed" },
+            messages: report.messages.len(),
+            objects: report.total_objects(),
+            hash_verified: report.hash_verified(),
+            file_issues: report.file_issues.clone(),
+            message_reports: report.messages.clone(),
         }
     }
-    out.push('"');
-    out
 }
 
 #[cfg(test)]
@@ -218,7 +173,7 @@ mod tests {
             params: Default::default(),
             hash: None,
         };
-        let data = vec![0u8; 32]; // 4 × f64
+        let data = vec![0u8; 32];
         let meta = GlobalMetadata::default();
         for _ in 0..n_messages {
             f.append(&meta, &[(&desc, &data)], &EncodeOptions::default())
@@ -282,16 +237,7 @@ mod tests {
 
     #[test]
     fn cli_validate_zero_files() {
-        // No files should succeed (nothing to validate)
         run(&[], ValidateMode::Default, false).unwrap();
-    }
-
-    #[test]
-    fn json_string_escaping() {
-        assert_eq!(json_string("hello"), r#""hello""#);
-        assert_eq!(json_string(r#"a"b"#), r#""a\"b""#);
-        assert_eq!(json_string("a\\b"), r#""a\\b""#);
-        assert_eq!(json_string("a\nb"), r#""a\nb""#);
     }
 
     #[test]
@@ -299,7 +245,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p1 = make_test_file(dir.path(), "a.tgm", 1);
         let p2 = make_test_file(dir.path(), "b.tgm", 1);
-        // Just verify it doesn't panic; actual JSON validity is structural
         run(&[p1, p2], ValidateMode::Default, true).unwrap();
     }
 }

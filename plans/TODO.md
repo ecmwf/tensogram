@@ -108,12 +108,21 @@ For speculative ideas, see `IDEAS.md`.
   - CLI: `tensogram validate [--quick|--checksum|--canonical] [--json] <files>`, mutually exclusive modes, batch JSON array output, exit code 0/1.
   - File-level validation: detects garbage bytes, truncated messages, trailing data between messages. Streaming message scan validates postamble candidates.
   - Canonical CBOR check opt-in via `--canonical` flag (warnings, not errors).
-  - 33 tests (23 core + 10 CLI). Docs at `docs/src/cli/validate.md`.
+  - Modular architecture: `validate/types.rs` (types + `IssueCode` enum), `validate/structure.rs`, `validate/metadata.rs`, `validate/integrity.rs`, `validate/mod.rs` (public API).
+  - Stable machine-readable `IssueCode` enum with serde serialization. CLI JSON output via serde_json (not hand-built).
+  - Streaming file validation via `scan_file` + per-message reads (O(1 message) memory).
+  - Index offset validation: verifies offsets point to actual data object frame positions.
+  - 35 tests (25 core + 10 CLI). Docs at `docs/src/cli/validate.md`.
 
 - [ ] **tensogram-validate PR 2** — Level 4 fidelity + encode.rs cleanup:
+  - Add `fidelity.rs` module to `validate/` with Level 4 checks.
   - Level 4 (Fidelity, `--full`): full decode of each object succeeds, NaN/Inf in float arrays reported as warnings (not errors — scientific data may legitimately contain them).
-  - Note: lossy error-budget verification is NOT feasible from .tgm alone (wire format stores encoded payload, not original values). Drop this from scope.
-  - Convert 12 `panic!()` calls in encode.rs test functions to proper `assert!`/`assert_eq!` with descriptive messages.
+  - Note: lossy error-budget verification is NOT feasible from .tgm alone (wire format stores encoded payload, not original values). Accepted scope reduction.
+  - NaN/Inf as warnings (not errors) is an accepted spec change — scientific data legitimately contains them.
+  - Add `--full` flag to CLI (mutually exclusive with existing mode flags).
+  - Convert 12 `panic!()` calls in encode.rs test functions to proper `assert!`/`assert_eq!` with descriptive messages. Note: these are test-only assertions, not runtime validation panics — the original "proper error returns" request is already satisfied by the production code.
+  - Add missing test coverage: NaN/Inf policy tests, full-mode decode failures, mixed batch results with exit-code assertions.
+  - Add `IssueCode` variants for Level 4: `DecodeObjectFailed`, `NanDetected`, `InfDetected`.
 
 - [ ] **tensogram-validate PR 3** — Python + FFI bindings + examples:
   - Python: `tensogram.validate(buf, level="default") -> dict` and `tensogram.validate_file(path, level="default") -> list[dict]` via PyO3.
