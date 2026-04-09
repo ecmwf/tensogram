@@ -1254,12 +1254,15 @@ mod tests {
         };
         let mut msg = encode(&meta, &[(&desc, data.as_slice())], &opts).unwrap();
 
-        // Patch: find CBOR encoding of shape [3] and change to [4].
-        // CBOR array(1) + uint(3) = 0x81 0x03. Change 0x03 to 0x04.
+        // Patch the data object descriptor's shape from [3] to [4] in the wire bytes.
+        // CBOR array(1) + uint(3) = 0x81 0x03. We search backward from the end
+        // to find the data object descriptor (last CBOR in the message before the
+        // postamble), avoiding any match in the metadata frame's _reserved_.tensor
+        // which encodes shape differently (as a CBOR array under a map key).
         let mut patched = false;
-        for i in 100..msg.len() {
-            if msg[i] == 0x81 && i + 1 < msg.len() && msg[i + 1] == 0x03 {
-                msg[i + 1] = 0x04;
+        for i in (0..msg.len() - 1).rev() {
+            if msg[i] == 0x81 && msg[i + 1] == 0x03 {
+                msg[i + 1] = 0x04; // shape [3] → [4]
                 patched = true;
                 break;
             }

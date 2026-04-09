@@ -47,7 +47,8 @@ this across all interfaces.
   - Raw objects scanned in-place without decode_pipeline
 - CLI: `--full` flag (mutually exclusive with `--quick`/`--checksum`),
   `--canonical` combinable with any level.
-- 20 new fidelity tests, 686 total workspace tests.
+- Comprehensive fidelity test suite covering all float dtypes, byte orders,
+  complex components, size mismatch, and mode combinations.
 
 ## tensogram validate (PR 1 of 3)
 
