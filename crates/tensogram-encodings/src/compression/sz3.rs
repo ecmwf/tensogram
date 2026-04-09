@@ -1,5 +1,5 @@
 use super::{CompressResult, CompressionError, Compressor};
-use crate::pipeline::Sz3ErrorBound;
+use crate::pipeline::{ByteOrder, Sz3ErrorBound};
 
 fn map_err(e: sz3::SZ3Error) -> CompressionError {
     CompressionError::Sz3(format!("{e:?}"))
@@ -20,11 +20,18 @@ fn to_sz3_bound(bound: &Sz3ErrorBound) -> sz3::ErrorBound {
 pub struct Sz3Compressor {
     pub error_bound: Sz3ErrorBound,
     pub num_values: usize,
+    /// Byte order to use when serialising decompressed f64 values back to
+    /// bytes.  Ensures decompressed output matches the wire byte order so
+    /// the pipeline's uniform native-endian byteswap step works for lossy
+    /// codecs the same as for lossless ones.
+    pub byte_order: ByteOrder,
 }
 
 impl Compressor for Sz3Compressor {
     fn compress(&self, data: &[u8]) -> Result<CompressResult, CompressionError> {
-        let values = bytes_to_f64(data)?;
+        // Compress side: input bytes are always in the caller's native byte
+        // order (per design: "always encode in the endianness of the caller").
+        let values = bytes_to_f64_native(data)?;
         let dimensioned = sz3::DimensionedData::<f64, _>::build(&values)
             .dim(values.len())
             .map_err(map_err)?
@@ -43,7 +50,9 @@ impl Compressor for Sz3Compressor {
     fn decompress(&self, data: &[u8], _expected_size: usize) -> Result<Vec<u8>, CompressionError> {
         let (_config, dimensioned) = sz3::decompress::<f64, _>(data).map_err(map_err)?;
         let values = dimensioned.into_data();
-        Ok(f64_to_bytes(&values))
+        // Write in the wire byte order so the pipeline's byteswap step can
+        // uniformly convert wire → native without special-casing lossy codecs.
+        Ok(f64_to_bytes(&values, self.byte_order))
     }
 
     fn decompress_range(
@@ -57,7 +66,9 @@ impl Compressor for Sz3Compressor {
     }
 }
 
-fn bytes_to_f64(data: &[u8]) -> Result<Vec<f64>, CompressionError> {
+/// Interpret raw bytes as native-endian f64 values (used on the compress side
+/// where the caller always provides native-endian data).
+fn bytes_to_f64_native(data: &[u8]) -> Result<Vec<f64>, CompressionError> {
     if !data.len().is_multiple_of(8) {
         return Err(CompressionError::Sz3(format!(
             "data length {} is not a multiple of 8",
@@ -74,8 +85,15 @@ fn bytes_to_f64(data: &[u8]) -> Result<Vec<f64>, CompressionError> {
         .collect())
 }
 
-fn f64_to_bytes(values: &[f64]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_ne_bytes()).collect()
+/// Serialise f64 values to bytes in the specified byte order.
+fn f64_to_bytes(values: &[f64], byte_order: ByteOrder) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|v| match byte_order {
+            ByteOrder::Big => v.to_be_bytes(),
+            ByteOrder::Little => v.to_le_bytes(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -96,6 +114,7 @@ mod tests {
         let compressor = Sz3Compressor {
             error_bound: Sz3ErrorBound::Absolute(tol),
             num_values: 512,
+            byte_order: ByteOrder::native(),
         };
 
         let result = compressor.compress(&data).unwrap();
@@ -125,6 +144,7 @@ mod tests {
         let compressor = Sz3Compressor {
             error_bound: Sz3ErrorBound::Absolute(1e-4),
             num_values: 100,
+            byte_order: ByteOrder::native(),
         };
         let result = compressor.decompress_range(&[0], &[], 0, 1);
         assert!(matches!(result, Err(CompressionError::RangeNotSupported)));

@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Object 0: wave spectrum (float32, lat × lon × freq) ──────────────────
     let spectrum: Vec<u8> = (0..(nlat * nlon * nfreq))
-        .flat_map(|i| (i as f32 * 0.001).to_be_bytes())
+        .flat_map(|i| (i as f32 * 0.001).to_ne_bytes())
         .collect();
 
     // ── Per-object metadata → base[0] ───────────────────────────────────────
@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         shape: vec![nlat as u64, nlon as u64, nfreq as u64],
         strides: vec![(nlon * nfreq) as u64, nfreq as u64, 1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -86,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         shape: vec![nlat as u64, nlon as u64],
         strides: vec![nlon as u64, 1],
         dtype: Dtype::Uint8,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),

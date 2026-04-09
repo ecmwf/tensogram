@@ -82,7 +82,12 @@ pub fn run(
             .is_none_or(|c| filter::matches(&metadata, c));
 
         if should_modify {
-            let (mut global_meta, mut objects) = decode(&msg, &DecodeOptions::default())?;
+            // Wire byte order: preserve original byte layout for re-encoding.
+            let wire_opts = DecodeOptions {
+                native_byte_order: false,
+                ..Default::default()
+            };
+            let (mut global_meta, mut objects) = decode(&msg, &wire_opts)?;
 
             // Preserve original hashes per object before any re-encoding
             let original_hashes: Vec<_> =

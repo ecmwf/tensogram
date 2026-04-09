@@ -254,9 +254,10 @@ fn test_golden_simple_f32() {
     // Verify payload values
     let bytes = &objects[0].1;
     assert_eq!(bytes.len(), 16); // 4 * 4 bytes
+                                 // Decoded bytes are in native byte order (native_byte_order=true default).
     let values: Vec<f32> = bytes
         .chunks_exact(4)
-        .map(|c| f32::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
         .collect();
     assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0]);
 }
@@ -276,10 +277,11 @@ fn test_golden_multi_object() {
     // Int64 [3]
     assert_eq!(objects[1].0.dtype, Dtype::Int64);
     assert_eq!(objects[1].0.shape, vec![3]);
+    // Decoded bytes are in native byte order.
     let i64_values: Vec<i64> = objects[1]
         .1
         .chunks_exact(8)
-        .map(|c| i64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| i64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
     assert_eq!(i64_values, vec![100, -200, 300]);
 
@@ -338,17 +340,18 @@ fn test_golden_multi_message() {
     )
     .unwrap();
 
+    // Decoded bytes are in native byte order.
     let vals1: Vec<f32> = obj1[0]
         .1
         .chunks_exact(4)
-        .map(|c| f32::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
         .collect();
     assert_eq!(vals1, vec![1.0, 2.0]);
 
     let vals2: Vec<f32> = obj2[0]
         .1
         .chunks_exact(4)
-        .map(|c| f32::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
         .collect();
     assert_eq!(vals2, vec![3.0, 4.0]);
 }
@@ -358,7 +361,10 @@ fn test_golden_hash_xxh3() {
     let data = std::fs::read(golden_dir().join("hash_xxh3.tgm")).unwrap();
 
     // Decode with hash verification
-    let opts = DecodeOptions { verify_hash: true };
+    let opts = DecodeOptions {
+        verify_hash: true,
+        ..Default::default()
+    };
     let (meta, objects) = decode::decode(&data, &opts).unwrap();
     assert_eq!(meta.version, 2);
     assert_eq!(objects.len(), 1);

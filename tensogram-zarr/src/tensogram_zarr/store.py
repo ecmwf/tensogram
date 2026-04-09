@@ -395,11 +395,9 @@ class TensogramStore(ZarrStore):
                     f"failed to decode object {i} ({name!r}) "
                     f"in message {self._message_index} of {self._path!r}: {exc}"
                 ) from exc
-            # Store as little-endian raw bytes (matching the bytes codec).
-            # Use .view() instead of the deprecated ndarray.newbyteorder()
-            # (removed in NumPy 2.x).
-            if arr.dtype.byteorder == ">" or (arr.dtype.byteorder == "=" and _native_is_big()):
-                arr = arr.byteswap().view(arr.dtype.newbyteorder("<"))
+            # The tensogram decode API returns data in native byte order
+            # (native_byte_order=True by default), so no manual byteswap
+            # is needed here.
             chunk_key = _chunk_key_for_shape(desc.shape)
             self._keys[f"{name}/{chunk_key}"] = arr.tobytes()
 

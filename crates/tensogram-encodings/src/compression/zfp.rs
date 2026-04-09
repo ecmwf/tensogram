@@ -1,5 +1,5 @@
 use super::{CompressResult, CompressionError, Compressor};
-use crate::pipeline::ZfpMode;
+use crate::pipeline::{ByteOrder, ZfpMode};
 use crate::zfp_ffi;
 
 /// ZFP compressor for floating-point data.
@@ -13,11 +13,19 @@ use crate::zfp_ffi;
 pub struct ZfpCompressor {
     pub mode: ZfpMode,
     pub num_values: usize,
+    /// Byte order to use when serialising decompressed f64 values back to
+    /// bytes.  This ensures the decompressed output matches the wire byte
+    /// order declared in the descriptor, so the pipeline's uniform
+    /// native-endian byteswap step works identically for lossy and
+    /// lossless codecs.
+    pub byte_order: ByteOrder,
 }
 
 impl Compressor for ZfpCompressor {
     fn compress(&self, data: &[u8]) -> Result<CompressResult, CompressionError> {
-        let values = bytes_to_f64(data)?;
+        // Compress side: input bytes are always in the caller's native byte
+        // order (per design: "always encode in the endianness of the caller").
+        let values = bytes_to_f64_native(data)?;
         let compressed = zfp_ffi::zfp_compress_f64(&values, &self.mode)?;
         Ok(CompressResult {
             data: compressed,
@@ -27,7 +35,9 @@ impl Compressor for ZfpCompressor {
 
     fn decompress(&self, data: &[u8], _expected_size: usize) -> Result<Vec<u8>, CompressionError> {
         let values = zfp_ffi::zfp_decompress_f64(data, self.num_values, &self.mode)?;
-        Ok(f64_to_bytes(&values))
+        // Write in the wire byte order so the pipeline's byteswap step can
+        // uniformly convert wire → native without special-casing lossy codecs.
+        Ok(f64_to_bytes(&values, self.byte_order))
     }
 
     fn decompress_range(
@@ -49,11 +59,13 @@ impl Compressor for ZfpCompressor {
             sample_count,
         )?;
 
-        Ok(f64_to_bytes(&values))
+        Ok(f64_to_bytes(&values, self.byte_order))
     }
 }
 
-fn bytes_to_f64(data: &[u8]) -> Result<Vec<f64>, CompressionError> {
+/// Interpret raw bytes as native-endian f64 values (used on the compress side
+/// where the caller always provides native-endian data).
+fn bytes_to_f64_native(data: &[u8]) -> Result<Vec<f64>, CompressionError> {
     if !data.len().is_multiple_of(8) {
         return Err(CompressionError::Zfp(format!(
             "data length {} is not a multiple of 8",
@@ -70,8 +82,15 @@ fn bytes_to_f64(data: &[u8]) -> Result<Vec<f64>, CompressionError> {
         .collect())
 }
 
-fn f64_to_bytes(values: &[f64]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_ne_bytes()).collect()
+/// Serialise f64 values to bytes in the specified byte order.
+fn f64_to_bytes(values: &[f64], byte_order: ByteOrder) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|v| match byte_order {
+            ByteOrder::Big => v.to_be_bytes(),
+            ByteOrder::Little => v.to_le_bytes(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -91,6 +110,7 @@ mod tests {
         let compressor = ZfpCompressor {
             mode: ZfpMode::FixedRate { rate: 16.0 },
             num_values: 512,
+            byte_order: ByteOrder::native(),
         };
 
         let result = compressor.compress(&data).unwrap();
@@ -104,6 +124,7 @@ mod tests {
         let compressor = ZfpCompressor {
             mode: ZfpMode::FixedRate { rate: 16.0 },
             num_values: 512,
+            byte_order: ByteOrder::native(),
         };
 
         let result = compressor.compress(&data).unwrap();

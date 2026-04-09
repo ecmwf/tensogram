@@ -135,21 +135,58 @@ print(arr.shape)          # (75,)
 
 ```rust
 pub struct DecodeOptions {
-    /// If true, verify the hash of each decoded payload. Returns an error on mismatch.
+    /// If true, verify the hash of each decoded payload.
     pub verify_hash: bool,
+    /// When true (the default), decoded payloads are converted to the
+    /// caller's native byte order. Set to false to receive bytes in the
+    /// message's declared wire byte order.
+    pub native_byte_order: bool,
 }
 
 impl Default for DecodeOptions {
     fn default() -> Self {
-        Self { verify_hash: false }
+        Self { verify_hash: false, native_byte_order: true }
     }
 }
 ```
 
+### Native byte order (default)
+
+By default, all decoded data is returned in the caller's **native byte order** — the library handles any necessary byte-swapping automatically. You never need to check `byte_order` or call `.byteswap()`:
+
+```rust
+let (_, objects) = decode(&message, &DecodeOptions::default())?;
+let floats: Vec<f32> = objects[0].1
+    .chunks_exact(4)
+    .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+    .collect();
+```
+
+In Python, numpy arrays are always directly usable:
+
+```python
+_, objects = tensogram.decode(msg)
+arr = objects[0][1]   # numpy array — values are correct, no byteswap needed
+```
+
+This applies to all decode functions (`decode`, `decode_object`, `decode_range`), all encodings (`none`, `simple_packing`), all compression codecs, and all language bindings (Rust, Python, C, C++).
+
+### Wire byte order (opt-in)
+
+Set `native_byte_order: false` to receive the raw bytes in the message's declared wire byte order. This is useful for zero-copy forwarding or when you need the exact on-wire representation:
+
+```rust
+let opts = DecodeOptions { native_byte_order: false, ..Default::default() };
+let (_, objects) = decode(&message, &opts)?;
+// objects[0].1 is in the descriptor's declared byte_order (e.g. big-endian)
+```
+
+### Hash verification
+
 Hash verification is opt-in. Enable it when data integrity is critical:
 
 ```rust
-let options = DecodeOptions { verify_hash: true };
+let options = DecodeOptions { verify_hash: true, ..Default::default() };
 let result = decode(&message, &options);
 // Returns Err(TensogramError::HashMismatch { expected, actual }) if corrupted
 ```
@@ -158,11 +195,10 @@ let result = decode(&message, &options);
 
 ## Working with the Decoded Bytes
 
-The decoded bytes are in the **logical dtype** of the object. For example, a float32 object returns 4 bytes per element in native endianness after decoding. Cast them the same way you would any raw buffer:
+Decoded bytes are in native byte order (with the default `DecodeOptions`). Cast them as native:
 
 ```rust
-// objects[0] is a (DataObjectDescriptor, Vec<u8>) for a float32 tensor
-let (ref desc, ref data) = objects[0];
+// float32 object → use from_ne_bytes
 let floats: Vec<f32> = data
     .chunks_exact(4)
     .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
@@ -172,8 +208,7 @@ let floats: Vec<f32> = data
 For simple_packing decoded data, the output is always **f64** bytes (8 bytes per element), regardless of the original dtype stored in the descriptor:
 
 ```rust
-// simple_packing always decodes to f64
-let (ref _desc, ref data) = objects[0];
+// simple_packing always decodes to f64, in native byte order
 let values: Vec<f64> = data
     .chunks_exact(8)
     .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))

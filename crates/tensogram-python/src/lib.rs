@@ -379,15 +379,18 @@ impl PyTensogramFile {
     /// Decode message at *index* → ``Message(metadata, objects)``.
     ///
     /// Set *verify_hash* to ``True`` to verify payload integrity (default ``False``).
-    #[pyo3(signature = (index, verify_hash=None))]
+    /// Set *native_byte_order* to ``False`` to get wire-order bytes (default ``True``).
+    #[pyo3(signature = (index, verify_hash=None, native_byte_order=true))]
     fn decode_message(
         &mut self,
         py: Python<'_>,
         index: usize,
         verify_hash: Option<bool>,
+        native_byte_order: bool,
     ) -> PyResult<PyObject> {
         let options = DecodeOptions {
             verify_hash: verify_hash.unwrap_or(false),
+            native_byte_order,
         };
         let (global_meta, data_objects) = self
             .file
@@ -485,7 +488,7 @@ impl PyTensogramFile {
                     "message index {index} out of range for file with {count} messages"
                 )));
             }
-            return self.decode_message(py, idx as usize, None);
+            return self.decode_message(py, idx as usize, None, true);
         }
 
         if let Ok(slice) = key.downcast::<pyo3::types::PySlice>() {
@@ -493,7 +496,7 @@ impl PyTensogramFile {
             let mut items: Vec<PyObject> = Vec::with_capacity(indices.slicelength as usize);
             let mut i = indices.start;
             while (indices.step > 0 && i < indices.stop) || (indices.step < 0 && i > indices.stop) {
-                items.push(self.decode_message(py, i as usize, None)?);
+                items.push(self.decode_message(py, i as usize, None, true)?);
                 i += indices.step;
             }
             return Ok(PyList::new(py, items)?.into_any().unbind());
@@ -550,7 +553,7 @@ impl PyFileIter {
         }
         let i = self.index;
         self.index += 1;
-        let options = DecodeOptions { verify_hash: false };
+        let options = DecodeOptions::default();
         let (global_meta, data_objects) =
             self.file.decode_message(i, &options).map_err(to_py_err)?;
         let result_list = data_objects_to_python(py, &data_objects)?;
@@ -646,9 +649,17 @@ fn py_encode_pre_encoded<'py>(
 ///
 /// Set *verify_hash* to ``True`` to verify payload integrity.
 #[pyfunction]
-#[pyo3(name = "decode", signature = (buf, verify_hash=false))]
-fn py_decode(py: Python<'_>, buf: &[u8], verify_hash: bool) -> PyResult<PyObject> {
-    let options = DecodeOptions { verify_hash };
+#[pyo3(name = "decode", signature = (buf, verify_hash=false, native_byte_order=true))]
+fn py_decode(
+    py: Python<'_>,
+    buf: &[u8],
+    verify_hash: bool,
+    native_byte_order: bool,
+) -> PyResult<PyObject> {
+    let options = DecodeOptions {
+        verify_hash,
+        native_byte_order,
+    };
     let (global_meta, data_objects) = decode(buf, &options).map_err(to_py_err)?;
     let result_list = data_objects_to_python(py, &data_objects)?;
     pack_message(py, PyMetadata { inner: global_meta }, result_list)
@@ -690,14 +701,18 @@ fn py_decode_descriptors(py: Python<'_>, buf: &[u8]) -> PyResult<(PyMetadata, Py
 /// Only the header and the requested object's payload are read.
 /// Raises ``ValueError`` if *index* is out of range.
 #[pyfunction]
-#[pyo3(name = "decode_object", signature = (buf, index, verify_hash=false))]
+#[pyo3(name = "decode_object", signature = (buf, index, verify_hash=false, native_byte_order=true))]
 fn py_decode_object(
     py: Python<'_>,
     buf: &[u8],
     index: usize,
     verify_hash: bool,
+    native_byte_order: bool,
 ) -> PyResult<(PyMetadata, PyDataObjectDescriptor, PyObject)> {
-    let options = DecodeOptions { verify_hash };
+    let options = DecodeOptions {
+        verify_hash,
+        native_byte_order,
+    };
     let (global_meta, desc, obj_bytes) = decode_object(buf, index, &options).map_err(to_py_err)?;
     let arr = bytes_to_numpy(py, &desc, &obj_bytes)?;
     Ok((
@@ -722,7 +737,7 @@ fn py_decode_object(
 /// Returns:
 ///     ``list[ndarray]`` (default) or ``ndarray`` (when ``join=True``).
 #[pyfunction]
-#[pyo3(name = "decode_range", signature = (buf, object_index, ranges, join=false, verify_hash=false))]
+#[pyo3(name = "decode_range", signature = (buf, object_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
 fn py_decode_range(
     py: Python<'_>,
     buf: &[u8],
@@ -730,8 +745,12 @@ fn py_decode_range(
     ranges: Vec<(u64, u64)>,
     join: bool,
     verify_hash: bool,
+    native_byte_order: bool,
 ) -> PyResult<PyObject> {
-    let options = DecodeOptions { verify_hash };
+    let options = DecodeOptions {
+        verify_hash,
+        native_byte_order,
+    };
     let parts = decode_range(buf, object_index, &ranges, &options).map_err(to_py_err)?;
 
     // Look up the dtype from descriptors only — no payload decode.
@@ -830,6 +849,7 @@ impl PyBufferIter {
         let msg_bytes = &self.buf[offset..offset + length];
         let options = DecodeOptions {
             verify_hash: self.verify_hash,
+            ..Default::default()
         };
         let (global_meta, data_objects) = decode(msg_bytes, &options).map_err(to_py_err)?;
         let result_list = data_objects_to_python(py, &data_objects)?;
@@ -1290,7 +1310,7 @@ fn dict_to_data_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<DataObje
     let dtype = parse_dtype(&dtype_str)?;
 
     let byte_order = match dict.get_item("byte_order")? {
-        None => ByteOrder::Little,
+        None => ByteOrder::native(),
         Some(v) => match v.extract::<String>()?.as_str() {
             "little" => ByteOrder::Little,
             "big" => ByteOrder::Big,

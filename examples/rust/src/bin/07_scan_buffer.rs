@@ -38,7 +38,7 @@ fn make_message(param: &str, step: i64) -> Vec<u8> {
         shape: vec![10],
         strides: vec![1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),

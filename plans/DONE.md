@@ -3,6 +3,26 @@
 > For historical release notes, see `../CHANGELOG.md`.
 > For planned features, see `TODO.md`. For ideas, see `IDEAS.md`.
 
+## caller-endianess (completed)
+
+Decoded data is now always returned in the caller's native byte order by
+default. The `DecodeOptions.native_byte_order` field (default `true`) controls
+this across all interfaces.
+
+**Changes across 43 files, 1060+ lines added:**
+
+| Component | What changed |
+|-----------|-------------|
+| `tensogram-encodings` | `ByteOrder::native()`, `byteswap()`, `PipelineConfig.swap_unit_size`, `decode_pipeline`/`decode_range_pipeline` gain `native_byte_order` param, ZFP/SZ3 made byte-order-aware |
+| `tensogram-core` | `Dtype::swap_unit_size()`, `DecodeOptions.native_byte_order`, threaded through all decode paths + iterators |
+| `tensogram-python` | `native_byte_order=True` on `decode()`, `decode_object()`, `decode_range()`, `TensogramFile.decode_message()`. Default `byte_order` → native |
+| `tensogram-ffi` | `native_byte_order` param on all 5 decode functions |
+| C++ wrapper | `decode_options.native_byte_order` threaded to all decode + iterator calls |
+| `tensogram-zarr` | Read-path manual byteswap workaround removed |
+| CLI | `reshuffle`, `merge`, `split`, `set` use `native_byte_order=false` to preserve wire layout on re-encode |
+| Tests | 15+ new tests for byteswap, cross-endian, complex types, wire opt-out, ZFP cross-endian, decode_range cross-endian |
+| Docs | `decoding.md`, `encode-pre-encoded.md`, `DESIGN.md` updated |
+
 ## Summary
 
 - **Version:** 0.8.0

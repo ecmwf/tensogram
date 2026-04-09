@@ -164,7 +164,11 @@ impl Iterator for ObjectIter {
             Err(e) => return Some(Err(e)),
         };
 
-        let decoded = match tensogram_encodings::pipeline::decode_pipeline(payload_bytes, &config) {
+        let decoded = match tensogram_encodings::pipeline::decode_pipeline(
+            payload_bytes,
+            &config,
+            self.options.native_byte_order,
+        ) {
             Ok(d) => d,
             Err(e) => return Some(Err(crate::error::TensogramError::Encoding(e.to_string()))),
         };

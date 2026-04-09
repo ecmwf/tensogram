@@ -15,7 +15,7 @@ fn make_float32_descriptor(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescri
         shape,
         strides,
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -59,7 +59,7 @@ fn make_mars_pair(shape: Vec<u64>, param: &str) -> (GlobalMetadata, DataObjectDe
         shape,
         strides,
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -120,7 +120,7 @@ fn test_multi_object_message() {
         shape: vec![4, 5],
         strides: strides1,
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -183,7 +183,7 @@ fn test_decode_single_object_by_index() {
         shape: vec![2],
         strides: vec![1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -196,7 +196,7 @@ fn test_decode_single_object_by_index() {
         shape: vec![3],
         strides: vec![1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -239,7 +239,10 @@ fn test_hash_verification_passes() {
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Decode with hash verification enabled
-    let options = DecodeOptions { verify_hash: true };
+    let options = DecodeOptions {
+        verify_hash: true,
+        ..Default::default()
+    };
     let (_, objects) = decode(&encoded, &options).unwrap();
     assert_eq!(objects[0].1, data);
 }
@@ -265,7 +268,10 @@ fn test_hash_verification_fails_on_corruption() {
     let payload_byte = frame_start + 16;
     encoded[payload_byte] ^= 0xFF;
 
-    let options = DecodeOptions { verify_hash: true };
+    let options = DecodeOptions {
+        verify_hash: true,
+        ..Default::default()
+    };
     let result = decode(&encoded, &options);
     assert!(
         result.is_err(),
@@ -276,7 +282,7 @@ fn test_hash_verification_fails_on_corruption() {
 #[test]
 fn test_simple_packing_round_trip() {
     let values: Vec<f64> = (0..100).map(|i| 250.0 + i as f64 * 0.1).collect();
-    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
     let params = tensogram_encodings::simple_packing::compute_params(&values, 16, 0).unwrap();
 
@@ -309,7 +315,7 @@ fn test_simple_packing_round_trip() {
         shape: vec![100],
         strides: vec![1],
         dtype: Dtype::Float64,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "simple_packing".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -324,7 +330,7 @@ fn test_simple_packing_round_trip() {
     let decoded_values: Vec<f64> = objects[0]
         .1
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
 
     assert_eq!(decoded_values.len(), 100);
@@ -355,7 +361,7 @@ fn test_shuffle_round_trip() {
         shape: vec![10],
         strides: vec![1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "shuffle".to_string(),
         compression: "none".to_string(),
@@ -445,7 +451,7 @@ fn test_decode_range_shuffle_rejected() {
         shape: vec![10],
         strides: vec![1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "shuffle".to_string(),
         compression: "none".to_string(),
@@ -517,7 +523,7 @@ fn test_validate_object_overflow() {
         shape: vec![u64::MAX, 2],
         strides: vec![2, 1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -532,6 +538,9 @@ fn test_validate_object_overflow() {
 
 #[test]
 fn test_cross_endian_round_trip() {
+    // Encode the same float values with different wire byte orders.
+    // With native_byte_order=true (default), both should decode to
+    // identical native-endian bytes.
     let values: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 0.5).collect();
 
     let params = tensogram_encodings::simple_packing::compute_params(&values, 16, 0).unwrap();
@@ -576,24 +585,22 @@ fn test_cross_endian_round_trip() {
     };
 
     let encoded_be = encode(&global, &[(&be_desc, &be_data)], &EncodeOptions::default()).unwrap();
-    let (_, objects_be) = decode(&encoded_be, &DecodeOptions::default()).unwrap();
 
+    // Default decode: native byte order
+    let (_, objects_be) = decode(&encoded_be, &DecodeOptions::default()).unwrap();
     let decoded_be_values: Vec<f64> = objects_be[0]
         .1
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
-
-    assert_eq!(decoded_be_values.len(), 50);
     for (orig, dec) in values.iter().zip(decoded_be_values.iter()) {
         assert!(
             (orig - dec).abs() < 0.01,
-            "BE round-trip: orig={orig}, dec={dec}"
+            "BE→native round-trip: orig={orig}, dec={dec}"
         );
     }
 
     let le_data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-
     let le_desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
         ndim: 1,
@@ -610,25 +617,121 @@ fn test_cross_endian_round_trip() {
 
     let encoded_le = encode(&global, &[(&le_desc, &le_data)], &EncodeOptions::default()).unwrap();
     let (_, objects_le) = decode(&encoded_le, &DecodeOptions::default()).unwrap();
-
     let decoded_le_values: Vec<f64> = objects_le[0]
         .1
         .chunks_exact(8)
-        .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
-
-    assert_eq!(decoded_le_values.len(), 50);
     for (orig, dec) in values.iter().zip(decoded_le_values.iter()) {
         assert!(
             (orig - dec).abs() < 0.01,
-            "LE round-trip: orig={orig}, dec={dec}"
+            "LE→native round-trip: orig={orig}, dec={dec}"
         );
     }
 
-    assert_ne!(
+    // Both decode to native byte order → decoded bytes should be equal.
+    assert_eq!(
         objects_be[0].1, objects_le[0].1,
-        "BE and LE decoded bytes should differ"
+        "BE and LE should both decode to identical native-endian bytes"
     );
+
+    // With native_byte_order=false, the wire byte orders are preserved,
+    // so the two outputs should differ.
+    let wire_opts = DecodeOptions {
+        native_byte_order: false,
+        ..Default::default()
+    };
+    let (_, wire_be) = decode(&encoded_be, &wire_opts).unwrap();
+    let (_, wire_le) = decode(&encoded_le, &wire_opts).unwrap();
+    assert_ne!(
+        wire_be[0].1, wire_le[0].1,
+        "wire-order BE and LE bytes should differ"
+    );
+}
+
+// ── decode_range with cross-endian + native_byte_order ───────────────────────
+
+#[test]
+fn test_decode_range_cross_endian_native() {
+    // Encode float32 data with byte_order=Big, then decode_range with
+    // native_byte_order=true (default).  The returned bytes should be
+    // in native byte order.
+    let values: Vec<f32> = (0..20).map(|i| i as f32 * 1.5).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+
+    let global = GlobalMetadata {
+        version: 2,
+        extra: BTreeMap::new(),
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![20],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    };
+
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    // decode_range elements 5..10 (5 elements)
+    let parts = decode_range(&encoded, 0, &[(5, 5)], &DecodeOptions::default()).unwrap();
+    let part_values: Vec<f32> = parts[0]
+        .chunks_exact(4)
+        .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+        .collect();
+    assert_eq!(part_values.len(), 5);
+    for (orig, dec) in values[5..10].iter().zip(part_values.iter()) {
+        assert_eq!(*orig, *dec, "cross-endian decode_range mismatch");
+    }
+}
+
+#[test]
+fn test_decode_range_wire_byte_order_opt_out() {
+    // decode_range with native_byte_order=false should return wire-order bytes.
+    let values: Vec<f32> = (0..20).map(|i| i as f32 * 1.5).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+
+    let global = GlobalMetadata {
+        version: 2,
+        extra: BTreeMap::new(),
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![20],
+        strides: vec![1],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        hash: None,
+    };
+
+    let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    let wire_opts = DecodeOptions {
+        native_byte_order: false,
+        ..Default::default()
+    };
+    let parts = decode_range(&encoded, 0, &[(5, 5)], &wire_opts).unwrap();
+    // Wire bytes should be big-endian
+    let wire_values: Vec<f32> = parts[0]
+        .chunks_exact(4)
+        .map(|c| f32::from_be_bytes(c.try_into().unwrap()))
+        .collect();
+    for (orig, dec) in values[5..10].iter().zip(wire_values.iter()) {
+        assert_eq!(*orig, *dec, "wire-order decode_range mismatch");
+    }
 }
 
 #[test]
@@ -665,7 +768,7 @@ fn test_simple_packing_rejects_non_f64() {
         shape: vec![10],
         strides: vec![1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "simple_packing".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -699,7 +802,7 @@ fn test_validate_ndim_mismatch() {
         shape: vec![4, 5],
         strides: vec![5, 1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -740,7 +843,7 @@ fn test_param_out_of_bounds() {
         shape: vec![4],
         strides: vec![1],
         dtype: Dtype::Float64,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "simple_packing".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -803,7 +906,7 @@ fn make_szip_packing_pair(
         shape: vec![num_values],
         strides: vec![1],
         dtype: Dtype::Float64,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "simple_packing".to_string(),
         filter: "none".to_string(),
         compression: "szip".to_string(),
@@ -837,7 +940,7 @@ fn make_szip_raw_pair(num_values: u64, dtype: Dtype) -> (GlobalMetadata, DataObj
         shape: vec![num_values],
         strides: vec![1],
         dtype,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "szip".to_string(),
@@ -850,7 +953,7 @@ fn make_szip_raw_pair(num_values: u64, dtype: Dtype) -> (GlobalMetadata, DataObj
 #[test]
 fn test_szip_simple_packing_round_trip() {
     let values: Vec<f64> = (0..4096).map(|i| 250.0 + i as f64 * 0.1).collect();
-    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
     let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
     let (global, desc) = make_szip_packing_pair(4096, &packing);
@@ -864,7 +967,7 @@ fn test_szip_simple_packing_round_trip() {
     let decoded_values: Vec<f64> = objects_meta[0]
         .1
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
 
     assert_eq!(decoded_values.len(), 4096);
@@ -876,7 +979,7 @@ fn test_szip_simple_packing_round_trip() {
 #[test]
 fn test_szip_simple_packing_decode_range_vs_full() {
     let values: Vec<f64> = (0..4096).map(|i| 100.0 + i as f64 * 0.5).collect();
-    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
     let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
     let (global, desc) = make_szip_packing_pair(4096, &packing);
@@ -888,7 +991,7 @@ fn test_szip_simple_packing_decode_range_vs_full() {
     let full_values: Vec<f64> = objects[0]
         .1
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
 
     // Partial decode: elements 100..600 (500 elements)
@@ -901,7 +1004,7 @@ fn test_szip_simple_packing_decode_range_vs_full() {
     let partial_bytes: Vec<u8> = partial_parts.into_iter().flatten().collect();
     let partial_values: Vec<f64> = partial_bytes
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
 
     assert_eq!(partial_values.len(), 500);
@@ -916,7 +1019,7 @@ fn test_szip_simple_packing_decode_range_vs_full() {
 #[test]
 fn test_szip_simple_packing_decode_range_first_elements() {
     let values: Vec<f64> = (0..4096).map(|i| i as f64).collect();
-    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
     let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
     let (global, desc) = make_szip_packing_pair(4096, &packing);
@@ -927,7 +1030,7 @@ fn test_szip_simple_packing_decode_range_first_elements() {
     let full_values: Vec<f64> = objects[0]
         .1
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
 
     // First 10 elements
@@ -937,7 +1040,7 @@ fn test_szip_simple_packing_decode_range_first_elements() {
     let partial_bytes: Vec<u8> = partial_parts.into_iter().flatten().collect();
     let partial_values: Vec<f64> = partial_bytes
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
 
     assert_eq!(partial_values.len(), 10);
@@ -952,7 +1055,7 @@ fn test_szip_simple_packing_decode_range_first_elements() {
 #[test]
 fn test_szip_simple_packing_decode_range_last_elements() {
     let values: Vec<f64> = (0..4096).map(|i| i as f64 * 3.125).collect();
-    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
     let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
     let (global, desc) = make_szip_packing_pair(4096, &packing);
@@ -963,7 +1066,7 @@ fn test_szip_simple_packing_decode_range_last_elements() {
     let full_values: Vec<f64> = objects[0]
         .1
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
 
     // Last 50 elements
@@ -974,7 +1077,7 @@ fn test_szip_simple_packing_decode_range_last_elements() {
     let partial_bytes: Vec<u8> = partial_parts.into_iter().flatten().collect();
     let partial_values: Vec<f64> = partial_bytes
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
 
     assert_eq!(partial_values.len(), 50);
@@ -1026,7 +1129,7 @@ fn test_szip_shuffle_round_trip() {
         shape: vec![1024],
         strides: vec![1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "shuffle".to_string(),
         compression: "szip".to_string(),
@@ -1069,7 +1172,7 @@ fn test_szip_shuffle_decode_range_rejected() {
         shape: vec![1024],
         strides: vec![1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "shuffle".to_string(),
         compression: "szip".to_string(),
@@ -1118,7 +1221,7 @@ fn test_szip_multi_object_mixed_compression() {
         ciborium::Value::Integer(8_i64.into()),
     );
 
-    let packed_data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let packed_data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
     let global = GlobalMetadata {
         version: 2,
@@ -1131,7 +1234,7 @@ fn test_szip_multi_object_mixed_compression() {
         shape: vec![10],
         strides: vec![1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -1144,7 +1247,7 @@ fn test_szip_multi_object_mixed_compression() {
         shape: vec![2048],
         strides: vec![1],
         dtype: Dtype::Float64,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "simple_packing".to_string(),
         filter: "none".to_string(),
         compression: "szip".to_string(),
@@ -1166,7 +1269,7 @@ fn test_szip_multi_object_mixed_compression() {
     let decoded_values: Vec<f64> = objects[1]
         .1
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
     for (orig, dec) in values.iter().zip(decoded_values.iter()) {
         assert!((orig - dec).abs() < 0.01);
@@ -1176,7 +1279,7 @@ fn test_szip_multi_object_mixed_compression() {
 #[test]
 fn test_szip_hash_verification() {
     let values: Vec<f64> = (0..2048).map(|i| i as f64).collect();
-    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
     let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
     let (global, desc) = make_szip_packing_pair(2048, &packing);
@@ -1184,7 +1287,10 @@ fn test_szip_hash_verification() {
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Should pass with hash verification
-    let options = DecodeOptions { verify_hash: true };
+    let options = DecodeOptions {
+        verify_hash: true,
+        ..Default::default()
+    };
     let (_, objects) = decode(&encoded, &options).unwrap();
     assert_eq!(objects[0].1.len(), 2048 * 8);
 }
@@ -1192,7 +1298,7 @@ fn test_szip_hash_verification() {
 #[test]
 fn test_szip_decode_range_multiple_ranges() {
     let values: Vec<f64> = (0..4096).map(|i| i as f64 * 2.5).collect();
-    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
     let packing = simple_packing::compute_params(&values, 16, 0).unwrap();
     let (global, desc) = make_szip_packing_pair(4096, &packing);
@@ -1203,7 +1309,7 @@ fn test_szip_decode_range_multiple_ranges() {
     let full_values: Vec<f64> = objects[0]
         .1
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
 
     // Two disjoint ranges: [10..20) and [3000..3050)
@@ -1225,7 +1331,7 @@ fn test_szip_decode_range_multiple_ranges() {
     // Verify part 0 values match range [10..20)
     let part0_values: Vec<f64> = partial_parts[0]
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
     for (full, partial) in full_values[10..20].iter().zip(part0_values.iter()) {
         assert!((full - partial).abs() < 1e-10);
@@ -1234,7 +1340,7 @@ fn test_szip_decode_range_multiple_ranges() {
     // Verify part 1 values match range [3000..3050)
     let part1_values: Vec<f64> = partial_parts[1]
         .chunks_exact(8)
-        .map(|c| f64::from_be_bytes(c.try_into().unwrap()))
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
     for (full, partial) in full_values[3000..3050].iter().zip(part1_values.iter()) {
         assert!((full - partial).abs() < 1e-10);
@@ -1258,7 +1364,7 @@ fn test_validate_empty_obj_type() {
         shape: vec![4],
         strides: vec![1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),

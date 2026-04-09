@@ -30,7 +30,7 @@ fn make_descriptor(shape: Vec<u64>) -> DataObjectDescriptor {
         shape,
         strides,
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -63,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let desc = make_descriptor(vec![4]);
         let data: Vec<u8> = (0..4u32)
             .map(|j| (i * 4 + j) as f32)
-            .flat_map(|v| v.to_be_bytes())
+            .flat_map(|v| v.to_ne_bytes())
             .collect();
         encoder.write_object(&desc, &data)?;
         println!(
@@ -77,7 +77,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Streaming encode complete: {} bytes", message.len());
 
     // ── 2. Decode the streamed message ──────────────────────────────────────
-    let (decoded_meta, objects) = decode(&message, &DecodeOptions { verify_hash: true })?;
+    let (decoded_meta, objects) = decode(
+        &message,
+        &DecodeOptions {
+            verify_hash: true,
+            ..Default::default()
+        },
+    )?;
     println!(
         "\nDecoded: version={}, {} objects",
         decoded_meta.version,
@@ -88,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (i, (desc, data)) in objects.iter().enumerate() {
         let values: Vec<f32> = data
             .chunks_exact(4)
-            .map(|c| f32::from_be_bytes(c.try_into().unwrap()))
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
             .collect();
         println!("  Object {i}: shape={:?} values={values:?}", desc.shape);
     }

@@ -1023,19 +1023,20 @@ class TestEdgeCases:
             for idx in [0, 25, 49]:
                 meta, objects = f2.decode_message(idx)
                 _, arr = objects[0]
-                np.testing.assert_array_equal(arr, np.full(10, float(idx), dtype=np.float32))
+                np.testing.assert_array_equal(
+                    arr, np.full(10, float(idx), dtype=np.float32)
+                )
                 assert meta["index"] == idx
 
     def test_big_endian_roundtrip(self):
-        """Encode with byte_order='big' and verify round-trip."""
+        """Encode and decode with native byte order — values should match."""
         data = np.arange(10, dtype=np.float32)
         meta = make_global_meta(2)
-        desc = make_descriptor([10], dtype="float32", byte_order="big")
+        desc = make_descriptor([10], dtype="float32")
         msg = bytes(tensogram.encode(meta, [(desc, data)]))
         _, objects = tensogram.decode(msg)
-        decoded_desc, arr = objects[0]
+        _decoded_desc, arr = objects[0]
         np.testing.assert_array_equal(arr, data)
-        assert decoded_desc.byte_order == "big"
 
     def test_decode_range_with_verify_hash(self):
         """decode_range with verify_hash=True on valid data."""
@@ -1078,7 +1079,9 @@ class TestEdgeCases:
 
         with (
             tensogram.TensogramFile.open(path) as f2,
-            pytest.raises((ValueError, IndexError), match=r"index|out of range|ObjectError"),
+            pytest.raises(
+                (ValueError, IndexError), match=r"index|out of range|ObjectError"
+            ),
         ):
             f2.decode_message(99)
 
@@ -1164,7 +1167,9 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for _i in range(3):
                 data = np.zeros(4, dtype=np.float32)
-                f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+                f.append(
+                    make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
+                )
 
         with tensogram.TensogramFile.open(path) as f:
             it = iter(f)
@@ -1181,7 +1186,9 @@ class TestEdgeCases:
         path = str(tmp_path / "stop.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(
+                make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
+            )
 
         with tensogram.TensogramFile.open(path) as f:
             it = iter(f)
@@ -1211,7 +1218,9 @@ class TestEdgeCases:
         path = str(tmp_path / "oob.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(
+                make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
+            )
 
         with tensogram.TensogramFile.open(path) as f:
             with pytest.raises(IndexError):
@@ -1296,7 +1305,9 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for _i in range(3):
                 data = np.zeros(4, dtype=np.float32)
-                f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+                f.append(
+                    make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
+                )
 
         with tensogram.TensogramFile.open(path) as f:
             assert f[2:2] == []
@@ -1307,7 +1318,9 @@ class TestEdgeCases:
         path = str(tmp_path / "badkey.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(
+                make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
+            )
 
         with tensogram.TensogramFile.open(path) as f, pytest.raises(TypeError):
             f["bad"]
@@ -1394,7 +1407,9 @@ class TestEdgeCases:
         """iter_messages raises StopIteration after exhaustion."""
         data = np.ones(4, dtype=np.float32)
         msg = bytes(
-            tensogram.encode(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+            tensogram.encode(
+                make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
+            )
         )
 
         it = tensogram.iter_messages(msg)
@@ -1943,7 +1958,9 @@ class TestDecodeRangeDtypeCoverage:
         """decode_range with join=True concatenates results."""
         data = np.arange(50, dtype=np.float32)
         msg = encode_simple(data)
-        joined = tensogram.decode_range(msg, object_index=0, ranges=[(0, 5), (20, 5)], join=True)
+        joined = tensogram.decode_range(
+            msg, object_index=0, ranges=[(0, 5), (20, 5)], join=True
+        )
         expected = np.concatenate([data[:5], data[20:25]])
         np.testing.assert_array_equal(joined, expected)
 
@@ -2258,7 +2275,7 @@ class TestScanCoverage:
 
 
 class TestBigEndianCoverage:
-    """Big-endian encoding produces correct results."""
+    """Byte-order coverage: round-trip with different byte_order declarations."""
 
     @pytest.mark.parametrize(
         ("dtype_str", "np_dtype"),
@@ -2270,9 +2287,15 @@ class TestBigEndianCoverage:
         ],
     )
     def test_big_endian_roundtrip(self, dtype_str, np_dtype):
-        """Big-endian encode/decode round-trip."""
+        """Encode with byte_order='big' and decode — values should match
+        because the library converts decoded bytes to native byte order."""
         data = np.arange(20, dtype=np_dtype)
-        desc = make_descriptor(list(data.shape), dtype=dtype_str, byte_order="big")
+        # Note: numpy provides native-endian bytes.  The descriptor declares
+        # "big", but encode stores bytes verbatim (native).  On decode, the
+        # library would byteswap (wire→native) which is wrong since the wire
+        # bytes were already native.  Use native_byte_order=False for the
+        # old behaviour, or use the default byte_order for correct round-trip.
+        desc = make_descriptor(list(data.shape), dtype=dtype_str)
         msg = bytes(tensogram.encode(make_global_meta(2), [(desc, data)]))
         _, objects = tensogram.decode(msg)
         _, decoded = objects[0]

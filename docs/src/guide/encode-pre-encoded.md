@@ -168,21 +168,19 @@ flowchart LR
 
 The pre-encoded path skips the pipeline entirely. The wire format is identical.
 
-## Byte order responsibility
+## Byte order
 
 When using `encoding="none"`, the caller's bytes are stored **verbatim** — the
-library does NOT validate or flip byte order. The bytes must be in the byte
-order declared in the descriptor's `byte_order` field.
+library does NOT validate or flip byte order on encode. The bytes must be in
+the byte order declared in the descriptor's `byte_order` field.
 
 For example, if `byte_order="big"` and `encoding="none"`, the caller must
-provide big-endian bytes. On decode, the payload bytes are returned **verbatim**
-for `encoding="none"`; callers and language bindings that interpret those bytes
-as numeric values must use the declared `byte_order` (or byteswap as needed)
-rather than assuming native endianness.
+provide big-endian bytes.
 
-When using other encodings (`simple_packing`, etc.), byte order is handled
-by the encoding/decoding pipeline, so the `byte_order` field describes the
-*decoded* output format.
+On decode, the library **automatically converts to native byte order** by
+default (`native_byte_order=true`). Callers can use `from_ne_bytes()` or
+`data_as<T>()` directly without worrying about which byte order was used on
+the wire. Set `native_byte_order=false` to get the raw wire-order bytes.
 
 ## Streaming API
 
