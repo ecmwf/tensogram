@@ -28,10 +28,12 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
     let mut hash_verified = false;
 
     let report_structure = !options.checksum_only;
-    let run_metadata = options.max_level >= ValidationLevel::Metadata && !options.checksum_only;
+    let check_canonical = options.check_canonical;
+    // Canonical checks require metadata level to parse CBOR
+    let run_metadata = (options.max_level >= ValidationLevel::Metadata && !options.checksum_only)
+        || check_canonical;
     let run_integrity = options.max_level >= ValidationLevel::Integrity;
     let run_fidelity = options.max_level >= ValidationLevel::Fidelity && !options.checksum_only;
-    let check_canonical = options.check_canonical;
 
     // Level 1: Structure — always run to extract frame payloads.
     // In checksum mode, non-fatal structural warnings are suppressed,
