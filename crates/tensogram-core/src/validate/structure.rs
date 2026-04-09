@@ -508,14 +508,26 @@ pub(crate) fn validate_structure<'a>(
                             let region = &buf[cbor_start..cbor_offset_pos];
                             let mut cursor = std::io::Cursor::new(region);
                             match ciborium::from_reader::<ciborium::Value, _>(&mut cursor) {
-                                Ok(_) => {
-                                    let cbor_len = cursor.position() as usize;
-                                    let payload_start = cbor_start + cbor_len;
-                                    Some((
-                                        &buf[cbor_start..cbor_start + cbor_len],
-                                        &buf[payload_start..cbor_offset_pos],
-                                    ))
-                                }
+                                Ok(_) => match usize::try_from(cursor.position()) {
+                                    Ok(cbor_len) => {
+                                        let payload_start = cbor_start + cbor_len;
+                                        Some((
+                                            &buf[cbor_start..cbor_start + cbor_len],
+                                            &buf[payload_start..cbor_offset_pos],
+                                        ))
+                                    }
+                                    Err(_) => {
+                                        issues.push(err(
+                                            IssueCode::DescriptorCborParseFailed,
+                                            ValidationLevel::Structure,
+                                            Some(obj_idx),
+                                            Some(pos),
+                                            "CBOR-before descriptor length does not fit in usize"
+                                                .to_string(),
+                                        ));
+                                        None
+                                    }
+                                },
                                 Err(_) => {
                                     // CBOR parse fails — payload boundary unknown.
                                     // Skip this object; Level 2/3 can't work with
