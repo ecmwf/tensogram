@@ -35,7 +35,7 @@ Level selectors (`--quick`, `--checksum`, `--full`) are mutually exclusive. `--c
 | Flag | Description |
 |------|-------------|
 | `--quick` | Structure only (level 1) |
-| `--checksum` | Hash verification only (level 3, no decompression) |
+| `--checksum` | Hash verification (structural errors still reported, no decompression) |
 | `--full` | All levels including fidelity (levels 1-4) |
 | `--canonical` | Check RFC 8949 CBOR key ordering (combinable with any level) |
 | `--json` | Machine-parseable JSON output |
