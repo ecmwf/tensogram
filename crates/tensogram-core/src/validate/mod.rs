@@ -127,14 +127,16 @@ pub fn validate_file(
     }
 
     if expected_pos < file_len {
+        let trailing_len = file_len - expected_pos;
+        let desc = if messages.is_empty() {
+            format!("{trailing_len} bytes with no valid messages")
+        } else {
+            format!("{trailing_len} trailing bytes after last message at offset {expected_pos}")
+        };
         file_issues.push(FileIssue {
             byte_offset: expected_pos,
-            length: file_len - expected_pos,
-            description: format!(
-                "{} trailing bytes after last message at offset {}",
-                file_len - expected_pos,
-                expected_pos
-            ),
+            length: trailing_len,
+            description: desc,
         });
     }
 
@@ -175,14 +177,16 @@ pub fn validate_buffer(buf: &[u8], options: &ValidateOptions) -> FileValidationR
     }
 
     if expected_pos < buf.len() {
+        let trailing_len = buf.len() - expected_pos;
+        let desc = if messages.is_empty() {
+            format!("{trailing_len} bytes with no valid messages")
+        } else {
+            format!("{trailing_len} trailing bytes after last message at offset {expected_pos}")
+        };
         file_issues.push(FileIssue {
             byte_offset: expected_pos,
-            length: buf.len() - expected_pos,
-            description: format!(
-                "{} trailing bytes after last message at offset {}",
-                buf.len() - expected_pos,
-                expected_pos
-            ),
+            length: trailing_len,
+            description: desc,
         });
     }
 
@@ -594,5 +598,73 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"object_count\":1"));
         assert!(json.contains("\"hash_verified\":true"));
+    }
+
+    // ── Regression tests for pass 3-4 fixes ─────────────────────────────
+
+    #[test]
+    fn validate_buffer_garbage_only() {
+        let buf = b"this is not a tensogram file at all";
+        let report = validate_buffer(buf, &ValidateOptions::default());
+        assert!(report.messages.is_empty());
+        assert!(!report.file_issues.is_empty());
+        assert!(
+            report.file_issues[0]
+                .description
+                .contains("no valid messages"),
+            "got: {}",
+            report.file_issues[0].description,
+        );
+    }
+
+    #[test]
+    fn validate_buffer_empty() {
+        let report = validate_buffer(&[], &ValidateOptions::default());
+        assert!(report.messages.is_empty());
+        assert!(report.file_issues.is_empty());
+        assert!(report.is_ok());
+    }
+
+    #[test]
+    fn streaming_ffo_out_of_range_reported() {
+        // Build a streaming message and corrupt first_footer_offset in the postamble
+        use crate::streaming::StreamingEncoder;
+
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let data = vec![0u8; 16];
+
+        let mut buf = Vec::new();
+        let mut enc = StreamingEncoder::new(&mut buf, &meta, &EncodeOptions::default()).unwrap();
+        enc.write_object(&desc, &data).unwrap();
+        enc.finish().unwrap();
+
+        // Corrupt the first_footer_offset (8 bytes before end magic)
+        let pa_start = buf.len() - 16;
+        let bad_ffo: u64 = 0; // 0 < PREAMBLE_SIZE, so out of range
+        buf[pa_start..pa_start + 8].copy_from_slice(&bad_ffo.to_be_bytes());
+
+        let report = validate_message(&buf, &ValidateOptions::default());
+        let has_ffo_error = report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::FooterOffsetOutOfRange);
+        assert!(
+            has_ffo_error,
+            "expected FooterOffsetOutOfRange, got: {:?}",
+            report.issues
+        );
     }
 }
