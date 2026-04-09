@@ -177,7 +177,9 @@ pub(crate) fn validate_integrity(
                     match build_pipeline_config(desc, num_elements, desc.dtype) {
                         Ok(config) => {
                             match tensogram_encodings::pipeline::decode_pipeline(
-                                obj.payload, &config, false,
+                                obj.payload,
+                                &config,
+                                false,
                             ) {
                                 Ok(decoded) => {
                                     obj.decode_state = DecodeState::Decoded(decoded);
