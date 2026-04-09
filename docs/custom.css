@@ -13,3 +13,7 @@
     width: min(220px, 45vw);
     height: auto;
 }
+
+html.introduction-page .menu-title {
+    visibility: hidden;
+}

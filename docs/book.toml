@@ -9,4 +9,4 @@ command = "mdbook-mermaid"
 
 [output.html]
 additional-css = ["custom.css"]
-additional-js = ["mermaid.min.js", "mermaid-init.js"]
+additional-js = ["mermaid.min.js", "mermaid-init.js", "hide-menu-title.js"]
