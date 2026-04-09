@@ -497,11 +497,11 @@ pub(crate) fn validate_structure<'a>(
                         ));
                     } else {
                         let cbor_after = fh.flags & DataObjectFlags::CBOR_AFTER_PAYLOAD != 0;
-                        let (cbor_slice, payload_slice) = if cbor_after {
+                        let slices = if cbor_after {
                             let payload_start = pos + FRAME_HEADER_SIZE;
                             let cbor_start = abs_cbor_offset;
                             let cbor_end = cbor_offset_pos;
-                            (&buf[cbor_start..cbor_end], &buf[payload_start..cbor_start])
+                            Some((&buf[cbor_start..cbor_end], &buf[payload_start..cbor_start]))
                         } else {
                             // CBOR-before: read through Cursor to find exact CBOR length
                             let cbor_start = abs_cbor_offset;
@@ -511,18 +511,29 @@ pub(crate) fn validate_structure<'a>(
                                 Ok(_) => {
                                     let cbor_len = cursor.position() as usize;
                                     let payload_start = cbor_start + cbor_len;
-                                    (
+                                    Some((
                                         &buf[cbor_start..cbor_start + cbor_len],
                                         &buf[payload_start..cbor_offset_pos],
-                                    )
+                                    ))
                                 }
                                 Err(_) => {
-                                    // CBOR parse fails; Level 2 will report.
-                                    (region, &buf[cbor_offset_pos..cbor_offset_pos])
+                                    // CBOR parse fails — payload boundary unknown.
+                                    // Skip this object; Level 2/3 can't work with
+                                    // unreliable slices.
+                                    issues.push(err(
+                                        IssueCode::DescriptorCborParseFailed,
+                                        ValidationLevel::Structure,
+                                        Some(obj_idx),
+                                        Some(pos),
+                                        "CBOR-before descriptor parse failed, cannot determine payload boundary".to_string(),
+                                    ));
+                                    None
                                 }
                             }
                         };
-                        data_objects.push((cbor_slice, payload_slice, pos));
+                        if let Some((cbor_slice, payload_slice)) = slices {
+                            data_objects.push((cbor_slice, payload_slice, pos));
+                        }
                     }
                 }
                 obj_idx += 1;
