@@ -76,7 +76,7 @@ pub(crate) fn validate_integrity(
                 Err(e) => {
                     all_verified = false;
                     issues.push(err(
-                        IssueCode::HashVerificationError,
+                        IssueCode::HashFrameCborParseFailed,
                         ValidationLevel::Integrity,
                         None,
                         None,

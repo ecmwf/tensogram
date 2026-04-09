@@ -47,7 +47,7 @@ On failure:
 
 ```
 bad.tgm: FAILED — message 2, object 5: hash mismatch (expected a3f7..., got 91c2...)
-bad.tgm: FAILED (1 error, 1 messages, 3 objects)
+bad.tgm: FAILED (1 error, 1 message, 3 objects)
 ```
 
 ### JSON (`--json`)
