@@ -310,6 +310,7 @@ fn time_tensogram_sp_szip(
             num_values: num_points,
             byte_order: ByteOrder::Little,
             dtype_byte_width: 8,
+            swap_unit_size: 8, // f64
             compression_backend: Default::default(),
         })
     };
@@ -317,7 +318,7 @@ fn time_tensogram_sp_szip(
     for _ in 0..warmup {
         let config = build_config(values)?;
         let encoded = encode_pipeline_f64(values, &config)?;
-        let _ = decode_pipeline(&encoded.encoded_bytes, &config)?;
+        let _ = decode_pipeline(&encoded.encoded_bytes, &config, false)?;
     }
 
     let mut encode_ns = Vec::with_capacity(iterations);
@@ -334,7 +335,7 @@ fn time_tensogram_sp_szip(
         compressed_sizes.push(result.encoded_bytes.len());
 
         let t0 = Instant::now();
-        let decoded = decode_pipeline(&result.encoded_bytes, &config)?;
+        let decoded = decode_pipeline(&result.encoded_bytes, &config, false)?;
         decode_ns.push(t0.elapsed().as_nanos() as u64);
 
         last_decoded = decoded;

@@ -16,7 +16,14 @@ pub fn run(input: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>
 
     for i in 0..count {
         let msg = file.read_message(i)?;
-        let (mut meta, objects) = decode(&msg, &DecodeOptions::default())?;
+        // Use wire byte order to preserve the original byte layout when
+        // re-encoding — native_byte_order=true would byteswap the payload
+        // but leave the descriptor's byte_order unchanged, creating a mismatch.
+        let wire_opts = DecodeOptions {
+            native_byte_order: false,
+            ..Default::default()
+        };
+        let (mut meta, objects) = decode(&msg, &wire_opts)?;
 
         // Clear reserved fields — the encoder will regenerate them.
         meta.reserved.clear();

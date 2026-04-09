@@ -1,3 +1,7 @@
+<div class="landing-logo">
+  <img src="images/logo.png" alt="Tensogram logo" />
+</div>
+
 # Introduction
 
 Tensogram is a binary message format for **N-dimensional scientific tensors** — the kind of data that appears in weather forecasting, climate modelling, and machine learning pipelines. Think of it as a modern, flexible replacement for GRIB: it carries its own metadata, supports arbitrary tensor dimensions, and is fast to encode and decode.

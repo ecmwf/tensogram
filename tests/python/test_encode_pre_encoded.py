@@ -125,7 +125,9 @@ class TestEncodePreEncodedSimplePacking:
         temps = np.linspace(249.15, 349.05, n, dtype=np.float64)
 
         # Compute packing parameters via the library helper
-        params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
+        params = tensogram.compute_packing_params(
+            temps, bits_per_value=16, decimal_scale_factor=0
+        )
         ref_val = params["reference_value"]
         bsf = params["binary_scale_factor"]
         dsf = params["decimal_scale_factor"]
@@ -162,7 +164,9 @@ class TestEncodePreEncodedSimplePacking:
         """Pre-encoded simple_packing produces same decoded payload as encode()."""
         n = 500
         temps = np.linspace(200.0, 300.0, n, dtype=np.float64)
-        params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
+        params = tensogram.compute_packing_params(
+            temps, bits_per_value=16, decimal_scale_factor=0
+        )
 
         desc = make_descriptor(
             shape=[n],
@@ -214,7 +218,9 @@ class TestEncodePreEncodedSzip:
         """
         n = 10000
         temps = np.linspace(200.0, 300.0, n, dtype=np.float64)
-        params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
+        params = tensogram.compute_packing_params(
+            temps, bits_per_value=16, decimal_scale_factor=0
+        )
 
         desc_szip = make_descriptor(
             shape=[n],
@@ -281,7 +287,9 @@ class TestEncodePreEncodedSzip:
         """Non-monotonic szip_block_offsets must be rejected."""
         n = 100
         temps = np.linspace(200.0, 300.0, n, dtype=np.float64)
-        params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
+        params = tensogram.compute_packing_params(
+            temps, bits_per_value=16, decimal_scale_factor=0
+        )
         packed = simple_pack_python(
             temps,
             params["reference_value"],
@@ -302,14 +310,18 @@ class TestEncodePreEncodedSzip:
             **params,
         )
         meta = make_global_meta(2)
-        with pytest.raises(ValueError, match="szip_block_offsets must be strictly increasing"):
+        with pytest.raises(
+            ValueError, match="szip_block_offsets must be strictly increasing"
+        ):
             tensogram.encode_pre_encoded(meta, [(desc, packed)])
 
     def test_szip_block_offsets_with_non_szip_rejected(self):
         """szip_block_offsets with non-szip compression must be rejected."""
         n = 100
         temps = np.linspace(200.0, 300.0, n, dtype=np.float64)
-        params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
+        params = tensogram.compute_packing_params(
+            temps, bits_per_value=16, decimal_scale_factor=0
+        )
         packed = simple_pack_python(
             temps,
             params["reference_value"],
@@ -327,7 +339,9 @@ class TestEncodePreEncodedSzip:
             **params,
         )
         meta = make_global_meta(2)
-        with pytest.raises(ValueError, match="szip_block_offsets provided but compression"):
+        with pytest.raises(
+            ValueError, match="szip_block_offsets provided but compression"
+        ):
             tensogram.encode_pre_encoded(meta, [(desc, packed)])
 
 
@@ -608,14 +622,13 @@ class TestEncodePreEncodedEdgeCases:
         assert desc_out.hash is None
 
     def test_big_endian_encoding_none(self):
-        """Big-endian encoding=none pre-encoded: decode returns raw bytes as-is.
+        """Big-endian encoding=none pre-encoded: decode converts to native.
 
         When ``encoding=none`` is used with ``byte_order=big``, the library
-        stores the payload bytes verbatim.  The Python decoder currently
-        returns bytes in native (little-endian) interpretation, so the
-        caller is responsible for byte-swapping.  This test verifies the
-        bytes survive the round-trip (content preserved), even though the
-        numpy dtype interpretation needs manual swapping.
+        stores the payload bytes verbatim.  On decode, with the default
+        ``native_byte_order=True``, the library automatically converts
+        from big-endian to native byte order so the caller gets correct
+        values without manual byte-swapping.
         """
         data = np.arange(10, dtype=np.float32)
         # Big-endian bytes: swap byte order
@@ -632,8 +645,46 @@ class TestEncodePreEncodedEdgeCases:
         _, objects = tensogram.decode(msg)
         _, decoded = objects[0]
 
-        # The raw bytes survive — manually swap to verify content
-        swapped = decoded.byteswap()
+        # Library converts to native byte order — values match directly.
+        np.testing.assert_array_equal(decoded, data)
+
+    def test_big_endian_wire_byte_order_opt_out(self):
+        """native_byte_order=False returns raw wire-order (big-endian) bytes."""
+        data = np.arange(10, dtype=np.float32)
+        raw_be = data.byteswap().tobytes()
+
+        desc = make_descriptor(
+            shape=[10],
+            dtype="float32",
+            byte_order="big",
+        )
+        meta = make_global_meta(2)
+        msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw_be)]))
+
+        # native_byte_order=False: get raw wire bytes (big-endian)
+        _, objects = tensogram.decode(msg, native_byte_order=False)
+        _, decoded_wire = objects[0]
+
+        # Wire bytes should be big-endian — manually swap to verify content
+        swapped = decoded_wire.byteswap()
+        np.testing.assert_array_equal(swapped, data)
+
+    def test_native_byte_order_on_decode_object(self):
+        """native_byte_order parameter works on decode_object too."""
+        data = np.arange(5, dtype=np.float32)
+        raw_be = data.byteswap().tobytes()
+
+        desc = make_descriptor(shape=[5], dtype="float32", byte_order="big")
+        meta = make_global_meta(2)
+        msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw_be)]))
+
+        # native=True (default): values match
+        _, _, decoded_native = tensogram.decode_object(msg, 0)
+        np.testing.assert_array_equal(decoded_native, data)
+
+        # native=False: raw wire bytes
+        _, _, decoded_wire = tensogram.decode_object(msg, 0, native_byte_order=False)
+        swapped = decoded_wire.byteswap()
         np.testing.assert_array_equal(swapped, data)
 
     def test_metadata_preserved(self):

@@ -372,6 +372,7 @@ pub(crate) fn populate_reserved_provenance(reserved: &mut BTreeMap<String, cibor
 
 /// Convert days since 1970-01-01 to (year, month, day).
 /// Howard Hinnant's algorithm (public domain).
+#[cfg(not(target_arch = "wasm32"))]
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
@@ -583,6 +584,7 @@ pub(crate) fn build_pipeline_config_with_backend(
         num_values,
         byte_order: desc.byte_order,
         dtype_byte_width: dtype.byte_width(),
+        swap_unit_size: dtype.swap_unit_size(),
         compression_backend,
     })
 }
@@ -778,7 +780,7 @@ mod tests {
             shape,
             strides,
             dtype: Dtype::Float32,
-            byte_order: ByteOrder::Big,
+            byte_order: ByteOrder::native(),
             encoding: "none".to_string(),
             filter: "none".to_string(),
             compression: "none".to_string(),
@@ -1040,7 +1042,7 @@ mod tests {
             shape: vec![],
             strides: vec![],
             dtype: Dtype::Float32,
-            byte_order: ByteOrder::Big,
+            byte_order: ByteOrder::native(),
             encoding: "none".to_string(),
             filter: "none".to_string(),
             compression: "none".to_string(),
@@ -1325,7 +1327,7 @@ mod tests {
                 shape: vec![num_elements],
                 strides: vec![1],
                 dtype,
-                byte_order: ByteOrder::Big,
+                byte_order: ByteOrder::native(),
                 encoding: "none".to_string(),
                 filter: "none".to_string(),
                 compression: "none".to_string(),
@@ -1723,7 +1725,7 @@ mod tests {
             shape: vec![2],
             strides: vec![1],
             dtype: Dtype::Float32,
-            byte_order: ByteOrder::Big,
+            byte_order: ByteOrder::native(),
             encoding: "none".to_string(),
             filter: "none".to_string(),
             compression: "zstd".to_string(),
@@ -1753,7 +1755,7 @@ mod tests {
             shape: vec![2],
             strides: vec![1],
             dtype: Dtype::Float32,
-            byte_order: ByteOrder::Big,
+            byte_order: ByteOrder::native(),
             encoding: "none".to_string(),
             filter: "none".to_string(),
             compression: "szip".to_string(),

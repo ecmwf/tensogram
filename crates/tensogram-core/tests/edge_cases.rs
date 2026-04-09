@@ -32,7 +32,7 @@ fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
         shape,
         strides,
         dtype,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -69,6 +69,28 @@ fn dtype_byte_width_all_variants() {
     assert_eq!(Dtype::Uint32.byte_width(), 4);
     assert_eq!(Dtype::Uint64.byte_width(), 8);
     assert_eq!(Dtype::Bitmask.byte_width(), 0);
+}
+
+#[test]
+fn dtype_swap_unit_size_all_variants() {
+    // Simple types: swap_unit_size == byte_width
+    assert_eq!(Dtype::Float16.swap_unit_size(), 2);
+    assert_eq!(Dtype::Bfloat16.swap_unit_size(), 2);
+    assert_eq!(Dtype::Float32.swap_unit_size(), 4);
+    assert_eq!(Dtype::Float64.swap_unit_size(), 8);
+    assert_eq!(Dtype::Int8.swap_unit_size(), 1);
+    assert_eq!(Dtype::Int16.swap_unit_size(), 2);
+    assert_eq!(Dtype::Int32.swap_unit_size(), 4);
+    assert_eq!(Dtype::Int64.swap_unit_size(), 8);
+    assert_eq!(Dtype::Uint8.swap_unit_size(), 1);
+    assert_eq!(Dtype::Uint16.swap_unit_size(), 2);
+    assert_eq!(Dtype::Uint32.swap_unit_size(), 4);
+    assert_eq!(Dtype::Uint64.swap_unit_size(), 8);
+    // Complex types: swap each scalar component independently
+    assert_eq!(Dtype::Complex64.swap_unit_size(), 4); // two float32
+    assert_eq!(Dtype::Complex128.swap_unit_size(), 8); // two float64
+                                                       // Bitmask: no swap
+    assert_eq!(Dtype::Bitmask.swap_unit_size(), 0);
 }
 
 #[test]
@@ -1006,7 +1028,7 @@ fn make_compressed_descriptor(
         shape,
         strides,
         dtype,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: compression.to_string(),
@@ -1105,6 +1127,58 @@ fn zfp_fixed_rate_roundtrip() {
     let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
     // ZFP is lossy, so we just check it decodes without error and has the right size
     assert_eq!(objects[0].1.len(), 800);
+}
+
+#[test]
+fn zfp_cross_endian_decode_produces_native_bytes() {
+    // ZFP with byte_order=Big: the compressor always reads input as native
+    // (per design: "always encode in the endianness of the caller"), so we
+    // provide native-endian bytes.  The descriptor declares byte_order=Big,
+    // which tells the ZFP decompressor to write output in big-endian.  The
+    // pipeline's byteswap step then converts to native.  This exercises the
+    // full cross-endian ZFP path.
+    let values: Vec<f64> = (0..100).map(|i| (i as f64) * 0.5).collect();
+    let ne_data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+
+    let mut params = BTreeMap::new();
+    params.insert(
+        "zfp_mode".to_string(),
+        ciborium::Value::Text("fixed_rate".to_string()),
+    );
+    params.insert("zfp_rate".to_string(), ciborium::Value::Float(32.0));
+
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![100],
+        strides: vec![1],
+        dtype: Dtype::Float64,
+        byte_order: ByteOrder::Big,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "zfp".to_string(),
+        params,
+        hash: None,
+    };
+
+    let meta = make_global_meta();
+    let encoded = encode(&meta, &[(&desc, &ne_data)], &EncodeOptions::default()).unwrap();
+    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
+
+    // Decoded bytes should be native-endian.  Interpret with from_ne_bytes.
+    let decoded_values: Vec<f64> = objects[0]
+        .1
+        .chunks_exact(8)
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+        .collect();
+    assert_eq!(decoded_values.len(), 100);
+    // ZFP at rate=32 should be very close to the original.
+    for (orig, dec) in values.iter().zip(decoded_values.iter()) {
+        assert!(
+            (orig - dec).abs() < 0.1,
+            "ZFP cross-endian: orig={orig}, dec={dec}"
+        );
+    }
 }
 
 #[test]

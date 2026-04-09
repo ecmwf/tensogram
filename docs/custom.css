@@ -2,3 +2,18 @@
     display: flex;
     justify-content: center;
 }
+
+.landing-logo {
+    display: flex;
+    justify-content: center;
+    margin: 0 0 2rem;
+}
+
+.landing-logo img {
+    width: min(220px, 45vw);
+    height: auto;
+}
+
+html.introduction-page .menu-title {
+    visibility: hidden;
+}

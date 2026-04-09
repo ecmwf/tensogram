@@ -37,6 +37,9 @@ const AEC_DATA_PREPROCESS: u32 = 8;
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
+/// Default descriptor uses **little-endian** — the native byte order of wasm32.
+/// With `native_byte_order: true` (the decode default), decoded bytes are
+/// swapped to native order, so LE round-trips are byte-identical.
 fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
     let strides = if shape.is_empty() {
         vec![]
@@ -53,7 +56,7 @@ fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
         shape,
         strides,
         dtype,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::Little,
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -62,9 +65,9 @@ fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
     }
 }
 
-fn make_descriptor_le(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
+fn make_descriptor_be(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
     DataObjectDescriptor {
-        byte_order: ByteOrder::Little,
+        byte_order: ByteOrder::Big,
         ..make_descriptor(shape, dtype)
     }
 }
@@ -98,34 +101,24 @@ fn encode_native_no_hash(
     .unwrap()
 }
 
-/// Build a payload of big-endian f32 values.
-fn f32_be_payload(values: &[f32]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_be_bytes()).collect()
-}
-
-/// Build a payload of little-endian f32 values.
-fn f32_le_payload(values: &[f32]) -> Vec<u8> {
+/// Build a payload of little-endian f32 values (wasm32 native order).
+fn f32_payload(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-
-/// Build a payload of big-endian f64 values.
-fn f64_be_payload(values: &[f64]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_be_bytes()).collect()
 }
 
 /// Build a payload of little-endian f64 values.
-fn f64_le_payload(values: &[f64]) -> Vec<u8> {
+fn f64_payload(values: &[f64]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
-/// Build a payload of big-endian i32 values.
-fn i32_be_payload(values: &[i32]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_be_bytes()).collect()
+/// Build a payload of little-endian i32 values.
+fn i32_payload(values: &[i32]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
-/// Build a payload of big-endian i64 values.
-fn i64_be_payload(values: &[i64]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_be_bytes()).collect()
+/// Build a payload of little-endian i64 values.
+fn i64_payload(values: &[i64]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -135,7 +128,7 @@ fn i64_be_payload(values: &[i64]) -> Vec<u8> {
 #[wasm_bindgen_test]
 fn golden_simple_f32_decode() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -156,8 +149,8 @@ fn golden_multi_object_decode() {
     let desc_i64 = make_descriptor(vec![3], Dtype::Int64);
     let desc_u8 = make_descriptor(vec![5], Dtype::Uint8);
 
-    let payload_f32 = f32_be_payload(&[1.5, 2.5]);
-    let payload_i64 = i64_be_payload(&[100, -200, 300]);
+    let payload_f32 = f32_payload(&[1.5, 2.5]);
+    let payload_i64 = i64_payload(&[100, -200, 300]);
     let payload_u8 = vec![10u8, 20, 30, 40, 50];
 
     let msg = encode_native(
@@ -198,7 +191,7 @@ fn golden_mars_metadata_decode() {
         ..Default::default()
     };
     let desc = make_descriptor(vec![2, 3], Dtype::Float64);
-    let payload = f64_be_payload(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let payload = f64_payload(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     let msg = encode_native(&meta, &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -216,7 +209,7 @@ fn golden_2d_tensor_f32_decode() {
     // 3x4 matrix stored row-major big-endian
     let desc = make_descriptor(vec![3, 4], Dtype::Float32);
     let values: Vec<f32> = (0..12).map(|i| i as f32 * 0.5).collect();
-    let payload = f32_be_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -231,7 +224,7 @@ fn golden_3d_tensor_f64_decode() {
     // 2x3x4 = 24 elements
     let desc = make_descriptor(vec![2, 3, 4], Dtype::Float64);
     let values: Vec<f64> = (0..24).map(|i| i as f64 * 1.1).collect();
-    let payload = f64_be_payload(&values);
+    let payload = f64_payload(&values);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -247,7 +240,7 @@ fn golden_3d_tensor_f64_decode() {
 fn round_trip_f32_no_compression() {
     let desc = make_descriptor(vec![8], Dtype::Float32);
     let values: Vec<f32> = (0..8).map(|i| i as f32 * 1.5).collect();
-    let payload = f32_be_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -260,7 +253,7 @@ fn round_trip_f32_no_compression() {
 fn round_trip_f64_no_compression() {
     let desc = make_descriptor(vec![4], Dtype::Float64);
     let values = [3.14159f64, 2.71828, 1.41421, 0.0];
-    let payload = f64_be_payload(&values);
+    let payload = f64_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -294,7 +287,7 @@ fn round_trip_i8() {
 fn round_trip_i32() {
     let desc = make_descriptor(vec![8], Dtype::Int32);
     let values: Vec<i32> = vec![i32::MIN, -1000, -1, 0, 1, 1000, i32::MAX - 1, i32::MAX];
-    let payload = i32_be_payload(&values);
+    let payload = i32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -306,7 +299,7 @@ fn round_trip_i32() {
 fn round_trip_i64() {
     let desc = make_descriptor(vec![4], Dtype::Int64);
     let values = [i64::MIN, 0i64, i64::MAX / 2, i64::MAX];
-    let payload = i64_be_payload(&values);
+    let payload = i64_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -318,7 +311,7 @@ fn round_trip_i64() {
 fn round_trip_u16() {
     let desc = make_descriptor(vec![4], Dtype::Uint16);
     let values: Vec<u16> = vec![0, 255, 65534, 65535];
-    let payload: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -330,7 +323,7 @@ fn round_trip_u16() {
 fn round_trip_u32() {
     let desc = make_descriptor(vec![4], Dtype::Uint32);
     let values: Vec<u32> = vec![0, 1, u32::MAX - 1, u32::MAX];
-    let payload: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -342,7 +335,7 @@ fn round_trip_u32() {
 fn round_trip_u64() {
     let desc = make_descriptor(vec![3], Dtype::Uint64);
     let values: Vec<u64> = vec![0, u64::MAX / 2, u64::MAX];
-    let payload: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -354,7 +347,7 @@ fn round_trip_u64() {
 fn round_trip_i16() {
     let desc = make_descriptor(vec![4], Dtype::Int16);
     let values: Vec<i16> = vec![i16::MIN, -1, 0, i16::MAX];
-    let payload: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -365,7 +358,7 @@ fn round_trip_i16() {
 #[wasm_bindgen_test]
 fn round_trip_with_hash_verification() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
     // Decode with hash verification enabled
@@ -385,7 +378,7 @@ fn round_trip_lz4_compression() {
         ..make_descriptor(vec![1024], Dtype::Float32)
     };
     let values: Vec<f32> = (0..1024).map(|i| (i as f32).sin()).collect();
-    let payload = f32_be_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -401,7 +394,7 @@ fn round_trip_lz4_large() {
         ..make_descriptor(vec![65536], Dtype::Float32)
     };
     let values: Vec<f32> = (0..65536).map(|i| (i as f32 * 0.001).cos()).collect();
-    let payload = f32_be_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -430,7 +423,7 @@ fn round_trip_lz4_f64() {
         ..make_descriptor(vec![2048], Dtype::Float64)
     };
     let values: Vec<f64> = (0..2048).map(|i| (i as f64 * 0.1).sin()).collect();
-    let payload = f64_be_payload(&values);
+    let payload = f64_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -446,7 +439,7 @@ fn round_trip_lz4_constant_data() {
         ..make_descriptor(vec![8192], Dtype::Float32)
     };
     let values = vec![42.0f32; 8192];
-    let payload = f32_be_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -461,7 +454,7 @@ fn round_trip_lz4_with_hash_verification() {
         ..make_descriptor(vec![512], Dtype::Float32)
     };
     let values: Vec<f32> = (0..512).map(|i| i as f32).collect();
-    let payload = f32_be_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
     // Decode with hash verification — verifies hash is computed over compressed bytes
@@ -556,7 +549,7 @@ fn round_trip_zstd_pure_f32() {
         ..make_descriptor(vec![2048], Dtype::Float32)
     };
     let values: Vec<f32> = (0..2048).map(|i| (i as f32).sin()).collect();
-    let payload = f32_be_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -579,7 +572,7 @@ fn round_trip_shuffle_plus_lz4() {
         ..make_descriptor(vec![2048], Dtype::Float32)
     };
     let values: Vec<f32> = (0..2048).map(|i| (i as f32 * 0.01).sin()).collect();
-    let payload = f32_be_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -602,7 +595,7 @@ fn round_trip_shuffle_plus_zstd_pure() {
         ..make_descriptor(vec![2048], Dtype::Float32)
     };
     let values: Vec<f32> = (0..2048).map(|i| (i as f32 * 0.01).cos()).collect();
-    let payload = f32_be_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -616,9 +609,9 @@ fn round_trip_shuffle_plus_zstd_pure() {
 
 #[wasm_bindgen_test]
 fn zero_copy_f32_view_values_correct() {
-    let desc = make_descriptor_le(vec![4], Dtype::Float32);
+    let desc = make_descriptor(vec![4], Dtype::Float32);
     let values = [1.0f32, 2.0, 3.0, 4.0];
-    let payload = f32_le_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -633,9 +626,9 @@ fn zero_copy_f32_view_values_correct() {
 
 #[wasm_bindgen_test]
 fn zero_copy_f64_view_values_correct() {
-    let desc = make_descriptor_le(vec![3], Dtype::Float64);
+    let desc = make_descriptor(vec![3], Dtype::Float64);
     let values = [3.14f64, 2.718, 1.414];
-    let payload = f64_le_payload(&values);
+    let payload = f64_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -649,7 +642,7 @@ fn zero_copy_f64_view_values_correct() {
 
 #[wasm_bindgen_test]
 fn zero_copy_i32_view_values_correct() {
-    let desc = make_descriptor_le(vec![4], Dtype::Int32);
+    let desc = make_descriptor(vec![4], Dtype::Int32);
     let values = [-100i32, 0, 42, i32::MAX];
     let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
@@ -666,8 +659,8 @@ fn zero_copy_i32_view_values_correct() {
 
 #[wasm_bindgen_test]
 fn safe_copy_f32_survives_independently() {
-    let desc = make_descriptor_le(vec![2], Dtype::Float32);
-    let payload = f32_le_payload(&[42.0, 99.0]);
+    let desc = make_descriptor(vec![2], Dtype::Float32);
+    let payload = f32_payload(&[42.0, 99.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -709,7 +702,7 @@ fn f32_view_on_5_byte_payload_errors() {
 fn f64_view_on_4_byte_payload_errors() {
     // 4 bytes is a valid f32 but not f64
     let desc = make_descriptor(vec![1], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0]);
+    let payload = f32_payload(&[1.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -777,8 +770,8 @@ fn decode_metadata_does_not_require_large_payload() {
 fn decode_object_by_index() {
     let desc0 = make_descriptor(vec![2], Dtype::Float32);
     let desc1 = make_descriptor(vec![3], Dtype::Float32);
-    let payload0 = f32_be_payload(&[1.0, 2.0]);
-    let payload1 = f32_be_payload(&[10.0, 20.0, 30.0]);
+    let payload0 = f32_payload(&[1.0, 2.0]);
+    let payload1 = f32_payload(&[10.0, 20.0, 30.0]);
     let msg = encode_native_no_hash(
         &default_metadata(),
         &[(&desc0, &payload0), (&desc1, &payload1)],
@@ -794,8 +787,8 @@ fn decode_object_by_index() {
 fn decode_object_first_index() {
     let desc0 = make_descriptor(vec![2], Dtype::Float32);
     let desc1 = make_descriptor(vec![3], Dtype::Float64);
-    let payload0 = f32_be_payload(&[1.0, 2.0]);
-    let payload1 = f64_be_payload(&[10.0, 20.0, 30.0]);
+    let payload0 = f32_payload(&[1.0, 2.0]);
+    let payload1 = f64_payload(&[10.0, 20.0, 30.0]);
     let msg = encode_native_no_hash(
         &default_metadata(),
         &[(&desc0, &payload0), (&desc1, &payload1)],
@@ -822,7 +815,7 @@ fn decode_object_out_of_range_returns_error() {
 #[wasm_bindgen_test]
 fn decode_object_with_hash_verification() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode_object(&msg, 0, Some(true)).unwrap();
@@ -838,8 +831,8 @@ fn decode_object_with_hash_verification() {
 #[wasm_bindgen_test]
 fn scan_multi_message() {
     let desc = make_descriptor(vec![2], Dtype::Float32);
-    let payload1 = f32_be_payload(&[1.0, 2.0]);
-    let payload2 = f32_be_payload(&[3.0, 4.0]);
+    let payload1 = f32_payload(&[1.0, 2.0]);
+    let payload2 = f32_payload(&[3.0, 4.0]);
     let msg1 = encode_native_no_hash(&default_metadata(), &[(&desc, &payload1)]);
     let msg2 = encode_native_no_hash(&default_metadata(), &[(&desc, &payload2)]);
 
@@ -987,7 +980,7 @@ fn decode_object_corrupt_returns_error() {
 #[wasm_bindgen_test]
 fn streaming_single_message() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
@@ -1004,7 +997,7 @@ fn streaming_single_message() {
 #[wasm_bindgen_test]
 fn streaming_chunked_feed() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
@@ -1024,7 +1017,7 @@ fn streaming_chunked_feed() {
 fn streaming_byte_by_byte_feed() {
     // Extreme case: feed one byte at a time
     let desc = make_descriptor(vec![2], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0]);
+    let payload = f32_payload(&[1.0, 2.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
@@ -1041,8 +1034,8 @@ fn streaming_byte_by_byte_feed() {
 #[wasm_bindgen_test]
 fn streaming_multi_message() {
     let desc = make_descriptor(vec![2], Dtype::Float32);
-    let payload1 = f32_be_payload(&[1.0, 2.0]);
-    let payload2 = f32_be_payload(&[3.0, 4.0]);
+    let payload1 = f32_payload(&[1.0, 2.0]);
+    let payload2 = f32_payload(&[3.0, 4.0]);
     let msg1 = encode_native_no_hash(&default_metadata(), &[(&desc, &payload1)]);
     let msg2 = encode_native_no_hash(&default_metadata(), &[(&desc, &payload2)]);
 
@@ -1125,8 +1118,8 @@ fn streaming_reset_clears_state() {
 #[wasm_bindgen_test]
 fn streaming_reset_then_reuse() {
     let desc = make_descriptor(vec![2], Dtype::Float32);
-    let payload1 = f32_be_payload(&[1.0, 2.0]);
-    let payload2 = f32_be_payload(&[3.0, 4.0]);
+    let payload1 = f32_payload(&[1.0, 2.0]);
+    let payload2 = f32_payload(&[3.0, 4.0]);
     let msg1 = encode_native_no_hash(&default_metadata(), &[(&desc, &payload1)]);
     let msg2 = encode_native_no_hash(&default_metadata(), &[(&desc, &payload2)]);
 
@@ -1158,7 +1151,9 @@ fn streaming_empty_feed_is_noop() {
 #[wasm_bindgen_test]
 fn streaming_garbage_feed_produces_no_frames() {
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
-    decoder.feed(b"this is not tensogram data at all and is quite long").unwrap();
+    decoder
+        .feed(b"this is not tensogram data at all and is quite long")
+        .unwrap();
     assert_eq!(decoder.pending_count(), 0);
 }
 
@@ -1169,7 +1164,7 @@ fn streaming_with_lz4_compressed_message() {
         ..make_descriptor(vec![1024], Dtype::Float32)
     };
     let values: Vec<f32> = (0..1024).map(|i| i as f32).collect();
-    let payload = f32_be_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
@@ -1236,7 +1231,7 @@ fn decode_scalar_tensor() {
         params: BTreeMap::new(),
         hash: None,
     };
-    let payload = 42.0f64.to_be_bytes().to_vec();
+    let payload = 42.0f64.to_le_bytes().to_vec();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -1247,7 +1242,7 @@ fn decode_scalar_tensor() {
 #[wasm_bindgen_test]
 fn decode_single_element_tensor() {
     let desc = make_descriptor(vec![1], Dtype::Float32);
-    let payload = f32_be_payload(&[99.5]);
+    let payload = f32_payload(&[99.5]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -1345,9 +1340,9 @@ fn decode_mixed_dtype_objects() {
     let desc_i32 = make_descriptor(vec![2], Dtype::Int32);
     let desc_u8 = make_descriptor(vec![4], Dtype::Uint8);
 
-    let p_f32 = f32_be_payload(&[1.0, 2.0]);
-    let p_f64 = f64_be_payload(&[3.0, 4.0]);
-    let p_i32 = i32_be_payload(&[-1, 42]);
+    let p_f32 = f32_payload(&[1.0, 2.0]);
+    let p_f64 = f64_payload(&[3.0, 4.0]);
+    let p_i32 = i32_payload(&[-1, 42]);
     let p_u8 = vec![10u8, 20, 30, 40];
 
     let msg = encode_native_no_hash(
@@ -1373,7 +1368,7 @@ fn decode_high_dimensional_tensor() {
     // 5D tensor: 2x2x2x2x2 = 32 elements
     let desc = make_descriptor(vec![2, 2, 2, 2, 2], Dtype::Float32);
     let values: Vec<f32> = (0..32).map(|i| i as f32).collect();
-    let payload = f32_be_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -1488,9 +1483,9 @@ fn api_metadata_version_field_accessible() {
 
 #[wasm_bindgen_test]
 fn streaming_frame_data_matches_direct_decode() {
-    let desc = make_descriptor_le(vec![4], Dtype::Float32);
+    let desc = make_descriptor(vec![4], Dtype::Float32);
     let values = [1.0f32, 2.0, 3.0, 4.0];
-    let payload = f32_le_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     // Direct decode
@@ -1536,9 +1531,9 @@ fn streaming_frame_descriptor_matches_direct() {
 #[wasm_bindgen_test]
 fn streaming_frame_typed_views_correct() {
     // Verify f32 typed view values from streaming match expected
-    let desc = make_descriptor_le(vec![3], Dtype::Float32);
+    let desc = make_descriptor(vec![3], Dtype::Float32);
     let values = [10.0f32, 20.0, 30.0];
-    let payload = f32_le_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
@@ -1604,8 +1599,8 @@ fn streaming_multi_object_base_entries() {
 
     let desc0 = make_descriptor(vec![2], Dtype::Float32);
     let desc1 = make_descriptor(vec![3], Dtype::Float32);
-    let p0 = f32_be_payload(&[1.0, 2.0]);
-    let p1 = f32_be_payload(&[3.0, 4.0, 5.0]);
+    let p0 = f32_payload(&[1.0, 2.0]);
+    let p1 = f32_payload(&[3.0, 4.0, 5.0]);
 
     let msg = encode_native_no_hash(&meta, &[(&desc0, &p0), (&desc1, &p1)]);
 
@@ -1629,7 +1624,7 @@ fn streaming_multi_object_base_entries() {
 #[wasm_bindgen_test]
 fn decode_hash_disabled_succeeds_on_hashed_message() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
     // Decode without hash verification — should succeed
@@ -1640,7 +1635,7 @@ fn decode_hash_disabled_succeeds_on_hashed_message() {
 #[wasm_bindgen_test]
 fn decode_hash_enabled_on_unhashed_message_succeeds() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     // Encode without hash
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
@@ -1723,7 +1718,7 @@ fn metadata_deep_nested_mars_keys() {
         ..Default::default()
     };
     let desc = make_descriptor(vec![10], Dtype::Float32);
-    let payload = f32_be_payload(&vec![0.0f32; 10]);
+    let payload = f32_payload(&vec![0.0f32; 10]);
     let msg = encode_native_no_hash(&meta, &[(&desc, &payload)]);
 
     // Just verify it decodes without error — metadata fidelity
@@ -1742,7 +1737,7 @@ fn metadata_empty_base_array() {
         ..Default::default()
     };
     let desc = make_descriptor(vec![2], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0]);
+    let payload = f32_payload(&[1.0, 2.0]);
     let msg = encode_native_no_hash(&meta, &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -1758,7 +1753,7 @@ fn encode_is_deterministic() {
     // Provenance includes a random UUID, so full message bytes differ.
     // Verify the *data payload* round-trips identically each time.
     let desc = make_descriptor(vec![4], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
 
     let msg1 = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
     let msg2 = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
@@ -1775,7 +1770,7 @@ fn encode_is_deterministic() {
 #[wasm_bindgen_test]
 fn decode_is_deterministic() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded1 = tensogram_wasm::decode(&msg, None).unwrap();
@@ -1795,7 +1790,7 @@ fn decode_100k_element_f32() {
     let n = 100_000;
     let desc = make_descriptor(vec![n as u64], Dtype::Float32);
     let values: Vec<f32> = (0..n).map(|i| (i as f32 * 0.001).sin()).collect();
-    let payload = f32_be_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -1811,7 +1806,7 @@ fn round_trip_lz4_100k_elements() {
         ..make_descriptor(vec![n as u64], Dtype::Float32)
     };
     let values: Vec<f32> = (0..n).map(|i| (i as f32 * 0.001).cos()).collect();
-    let payload = f32_be_payload(&values);
+    let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -1827,7 +1822,7 @@ fn round_trip_lz4_100k_elements() {
 fn decode_then_reencode_produces_same_data() {
     let desc = make_descriptor(vec![8], Dtype::Float32);
     let values: Vec<f32> = (0..8).map(|i| i as f32 * 2.5).collect();
-    let original_payload = f32_be_payload(&values);
+    let original_payload = f32_payload(&values);
     let msg1 = encode_native_no_hash(&default_metadata(), &[(&desc, &original_payload)]);
 
     // Decode
@@ -1854,8 +1849,8 @@ fn decode_then_reencode_produces_same_data() {
 #[wasm_bindgen_test]
 fn streaming_interleaved_feed_and_consume() {
     let desc = make_descriptor(vec![2], Dtype::Float32);
-    let payload1 = f32_be_payload(&[1.0, 2.0]);
-    let payload2 = f32_be_payload(&[3.0, 4.0]);
+    let payload1 = f32_payload(&[1.0, 2.0]);
+    let payload2 = f32_payload(&[3.0, 4.0]);
     let msg1 = encode_native_no_hash(&default_metadata(), &[(&desc, &payload1)]);
     let msg2 = encode_native_no_hash(&default_metadata(), &[(&desc, &payload2)]);
 
@@ -1899,7 +1894,7 @@ fn streaming_five_messages_sequential() {
 #[wasm_bindgen_test]
 fn streaming_buffered_bytes_tracks_correctly() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
@@ -1921,9 +1916,27 @@ fn streaming_buffered_bytes_tracks_correctly() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[wasm_bindgen_test]
-fn round_trip_big_endian_f32() {
+fn round_trip_big_endian_f32_decoded_to_native() {
+    // Encode in BE — decode should auto-swap to native (LE) order.
+    // Verify via Float32Array that the *values* are correct.
+    let desc = make_descriptor_be(vec![4], Dtype::Float32);
+    let payload: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
+        .iter()
+        .flat_map(|v| v.to_be_bytes())
+        .collect();
+    let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
+
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
+    let view = decoded.object_data_f32(0).unwrap();
+    assert_eq!(view.get_index(0), 1.0);
+    assert_eq!(view.get_index(3), 4.0);
+}
+
+#[wasm_bindgen_test]
+fn round_trip_little_endian_f32_bytes_identical() {
+    // Encode in LE (native) — raw bytes should round-trip identically.
     let desc = make_descriptor(vec![4], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -1932,31 +1945,24 @@ fn round_trip_big_endian_f32() {
 }
 
 #[wasm_bindgen_test]
-fn round_trip_little_endian_f32() {
-    let desc = make_descriptor_le(vec![4], Dtype::Float32);
-    let payload = f32_le_payload(&[1.0, 2.0, 3.0, 4.0]);
+fn round_trip_big_endian_f64_decoded_to_native() {
+    let desc = make_descriptor_be(vec![3], Dtype::Float64);
+    let payload: Vec<u8> = [1.1f64, 2.2, 3.3]
+        .iter()
+        .flat_map(|v| v.to_be_bytes())
+        .collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
-    let raw: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
-    assert_eq!(raw, payload);
+    let view = decoded.object_data_f64(0).unwrap();
+    assert_eq!(view.get_index(0), 1.1);
+    assert_eq!(view.get_index(2), 3.3);
 }
 
 #[wasm_bindgen_test]
-fn round_trip_big_endian_f64() {
+fn round_trip_little_endian_f64_bytes_identical() {
     let desc = make_descriptor(vec![3], Dtype::Float64);
-    let payload = f64_be_payload(&[1.1, 2.2, 3.3]);
-    let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
-
-    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
-    let raw: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
-    assert_eq!(raw, payload);
-}
-
-#[wasm_bindgen_test]
-fn round_trip_little_endian_f64() {
-    let desc = make_descriptor_le(vec![3], Dtype::Float64);
-    let payload = f64_le_payload(&[1.1, 2.2, 3.3]);
+    let payload = f64_payload(&[1.1, 2.2, 3.3]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -1978,7 +1984,7 @@ fn streaming_no_error_initially() {
 #[wasm_bindgen_test]
 fn streaming_last_error_cleared_on_feed() {
     let desc = make_descriptor(vec![2], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0]);
+    let payload = f32_payload(&[1.0, 2.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
@@ -2171,7 +2177,7 @@ fn streaming_valid_after_garbage_in_same_feed() {
 fn encode_no_hash_round_trips() {
     // Exercises the hash=false branch of the encode pipeline
     let desc = make_descriptor(vec![4], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
@@ -2181,7 +2187,7 @@ fn encode_no_hash_round_trips() {
 fn encode_with_hash_round_trips() {
     // Exercises the hash=true branch
     let desc = make_descriptor(vec![4], Dtype::Float32);
-    let payload = f32_be_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
     let decoded = tensogram_wasm::decode(&msg, Some(true)).unwrap();
     assert_eq!(decoded.object_count(), 1);
@@ -2191,9 +2197,9 @@ fn encode_with_hash_round_trips() {
 
 #[wasm_bindgen_test]
 fn streaming_frame_f64_view() {
-    let desc = make_descriptor_le(vec![3], Dtype::Float64);
+    let desc = make_descriptor(vec![3], Dtype::Float64);
     let values = [1.1f64, 2.2, 3.3];
-    let payload = f64_le_payload(&values);
+    let payload = f64_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let mut decoder = tensogram_wasm::StreamingDecoder::new();
@@ -2208,7 +2214,7 @@ fn streaming_frame_f64_view() {
 
 #[wasm_bindgen_test]
 fn streaming_frame_i32_view() {
-    let desc = make_descriptor_le(vec![2], Dtype::Int32);
+    let desc = make_descriptor(vec![2], Dtype::Int32);
     let values = [-42i32, 99];
     let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
@@ -2306,7 +2312,7 @@ fn round_trip_szip_pure_16bit() {
     };
     // 2048 u16 samples in big-endian
     let payload: Vec<u8> = (0..2048u16)
-        .flat_map(|i| (i.wrapping_mul(7)).to_be_bytes())
+        .flat_map(|i| (i.wrapping_mul(7)).to_le_bytes())
         .collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -2367,10 +2373,10 @@ fn object_descriptor_oob_returns_error() {
 fn compressed_data_f64_view_correct() {
     let desc = DataObjectDescriptor {
         compression: "lz4".to_string(),
-        ..make_descriptor_le(vec![3], Dtype::Float64)
+        ..make_descriptor(vec![3], Dtype::Float64)
     };
     let values = [1.5f64, 2.5, 3.5];
-    let payload = f64_le_payload(&values);
+    let payload = f64_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let decoded = tensogram_wasm::decode(&msg, None).unwrap();
@@ -2383,7 +2389,7 @@ fn compressed_data_f64_view_correct() {
 fn compressed_data_i32_view_correct() {
     let desc = DataObjectDescriptor {
         compression: "lz4".to_string(),
-        ..make_descriptor_le(vec![4], Dtype::Int32)
+        ..make_descriptor(vec![4], Dtype::Int32)
     };
     let values = [-10i32, 0, 10, 20];
     let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();

@@ -247,7 +247,7 @@ TEST(EdgeCaseTest, Uint64RoundTrip) {
 // ---------------------------------------------------------------------------
 
 TEST(EdgeCaseTest, BigEndianRoundTrip) {
-    // Encode as big-endian. The data bytes should be stored as-is.
+    // Encode as big-endian.  Decode returns native-endian by default.
     std::string json = R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[2],"strides":[4],"dtype":"float32","byte_order":"big","encoding":"none","filter":"none","compression":"none"}]})";
 
     // Provide big-endian bytes for 1.0f and 2.0f
@@ -265,8 +265,10 @@ TEST(EdgeCaseTest, BigEndianRoundTrip) {
 
     EXPECT_EQ(obj.byte_order_string(), "big");
     EXPECT_EQ(obj.data_size(), sizeof(be_data));
-    // Raw bytes should round-trip exactly
-    EXPECT_EQ(std::memcmp(obj.data(), be_data, sizeof(be_data)), 0);
+    // Decoded bytes are in native byte order — verify the float values.
+    auto* floats = obj.data_as<float>();
+    EXPECT_FLOAT_EQ(floats[0], 1.0f);
+    EXPECT_FLOAT_EQ(floats[1], 2.0f);
 }
 
 // ---------------------------------------------------------------------------

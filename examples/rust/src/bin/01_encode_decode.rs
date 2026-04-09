@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         shape: shape.clone(),
         strides,
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),    // exact copy, no quantization
         filter: "none".to_string(),      // no byte rearrangement
         compression: "none".to_string(), // no compression
@@ -49,11 +49,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // In production this would come from a model output buffer.
     // Here we generate 100×200 = 20,000 float32 values and serialize them
-    // as big-endian bytes to match the byte_order above.
+    // as native-endian bytes to match the byte_order above.
     let raw_bytes: Vec<u8> = (0u32..20_000)
         .flat_map(|i| {
             let value = 273.15f32 + (i as f32) * 0.001;
-            value.to_be_bytes() // big-endian, matching byte_order above
+            value.to_ne_bytes() // native-endian, matching byte_order above
         })
         .collect();
 

@@ -163,7 +163,11 @@ tgm_error tgm_encode_pre_encoded(const char *metadata_json,
  * On success, fills `out` with a `TgmMessage` handle.
  * Free with `tgm_message_free`.
  */
-tgm_error tgm_decode(const uint8_t *buf, size_t buf_len, int32_t verify_hash, tgm_message_t **out);
+tgm_error tgm_decode(const uint8_t *buf,
+                     size_t buf_len,
+                     int32_t verify_hash,
+                     int32_t native_byte_order,
+                     tgm_message_t **out);
 
 /**
  * Decode only the global metadata (no payload bytes are read).
@@ -180,6 +184,7 @@ tgm_error tgm_decode_object(const uint8_t *buf,
                             size_t buf_len,
                             size_t index,
                             int32_t verify_hash,
+                            int32_t native_byte_order,
                             tgm_message_t **out);
 
 /**
@@ -203,6 +208,7 @@ tgm_error tgm_decode_range(const uint8_t *buf,
                            const uint64_t *ranges_counts,
                            size_t num_ranges,
                            int32_t verify_hash,
+                           int32_t native_byte_order,
                            int32_t join,
                            tgm_bytes_t *out,
                            size_t *out_count);
@@ -384,6 +390,7 @@ tgm_error tgm_file_message_count(tgm_file_t *file, size_t *out_count);
 tgm_error tgm_file_decode_message(tgm_file_t *file,
                                   size_t index,
                                   int32_t verify_hash,
+                                  int32_t native_byte_order,
                                   tgm_message_t **out);
 
 /**
@@ -492,6 +499,7 @@ void tgm_file_iter_free(tgm_file_iter_t *iter);
 tgm_error tgm_object_iter_create(const uint8_t *buf,
                                  size_t buf_len,
                                  int32_t verify_hash,
+                                 int32_t native_byte_order,
                                  tgm_object_iter_t **out);
 
 /**

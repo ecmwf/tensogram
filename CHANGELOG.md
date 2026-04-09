@@ -3,6 +3,34 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+- **Native byte-order decode** — decoded payloads are now returned in the
+  caller's native byte order by default.  `DecodeOptions.native_byte_order`
+  (default `true`) controls this across all interfaces: Rust, Python, C FFI,
+  C++.  Users never need to inspect `byte_order` or manually byteswap; a
+  simple `from_ne_bytes()` or `data_as<T>()` is always correct.
+  Set `native_byte_order=false` to get the raw wire-order bytes.
+- `Dtype::swap_unit_size()` — returns the swap granularity for each dtype
+  (handles complex64/complex128 correctly by swapping each scalar component).
+- `ByteOrder::native()` — compile-time detection of the platform's byte order.
+- `byteswap()` utility — public in-place byte reversal by element width.
+
+### Changed
+- ZFP and SZ3 lossy compressors are now byte-order-aware: decompressed output
+  is written in the wire byte order declared in the descriptor, making the
+  pipeline's native-endian conversion step uniform across all codecs.
+- Python `byte_order` default changed from `"little"` to native (compile-time).
+- C FFI decode functions (`tgm_decode`, `tgm_decode_object`, `tgm_decode_range`,
+  `tgm_file_decode_message`, `tgm_object_iter_create`) gain a
+  `native_byte_order` parameter.
+- CLI `reshuffle`, `merge`, `split`, `set` commands use wire byte order
+  on decode to preserve byte layout when re-encoding.
+
+### Removed
+- Zarr store read-path manual byteswap workaround — no longer needed.
+
 ## [0.8.0] - 2026-04-08
 
 ### Added

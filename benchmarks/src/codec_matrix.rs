@@ -40,6 +40,7 @@ fn make_case(
             num_values,
             byte_order: ByteOrder::Little,
             dtype_byte_width: 8,
+            swap_unit_size: 8, // f64
             compression_backend: Default::default(),
         },
         sp_bits: None,
@@ -207,6 +208,7 @@ fn run_case(
                     num_values: case.config.num_values,
                     byte_order: case.config.byte_order,
                     dtype_byte_width: case.config.dtype_byte_width,
+                    swap_unit_size: case.config.swap_unit_size,
                     compression_backend: case.config.compression_backend,
                 })
             } else {
@@ -226,7 +228,7 @@ fn run_case(
         } else {
             encode_pipeline(data_bytes, &config)?
         };
-        let _ = decode_pipeline(&encoded.encoded_bytes, &config)?;
+        let _ = decode_pipeline(&encoded.encoded_bytes, &config, false)?;
     }
 
     let mut encode_ns = Vec::with_capacity(iterations);
@@ -247,7 +249,7 @@ fn run_case(
         compressed_sizes.push(result.encoded_bytes.len());
 
         let t0 = Instant::now();
-        let decoded = decode_pipeline(&result.encoded_bytes, &config)?;
+        let decoded = decode_pipeline(&result.encoded_bytes, &config, false)?;
         decode_ns.push(t0.elapsed().as_nanos() as u64);
 
         last_decoded = decoded;

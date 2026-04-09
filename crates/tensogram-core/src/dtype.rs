@@ -36,6 +36,21 @@ impl Dtype {
             Dtype::Bitmask => 0,
         }
     }
+
+    /// Returns the size of the fundamental scalar component for byte-order
+    /// swapping.  Equal to [`byte_width`](Self::byte_width) for simple
+    /// types.  For complex types each float component must be swapped
+    /// independently, so this returns half of `byte_width` (4 for
+    /// `complex64`, 8 for `complex128`).  Returns 0 for bitmask (no swap).
+    pub fn swap_unit_size(&self) -> usize {
+        match self {
+            // complex64 = two float32 → swap each 4-byte component
+            Dtype::Complex64 => 4,
+            // complex128 = two float64 → swap each 8-byte component
+            Dtype::Complex128 => 8,
+            _ => self.byte_width(),
+        }
+    }
 }
 
 impl std::fmt::Display for Dtype {

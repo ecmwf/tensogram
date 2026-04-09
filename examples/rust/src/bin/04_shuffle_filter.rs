@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── 1. Source data: 256 float32 values ───────────────────────────────────
     let n = 256usize;
     let values: Vec<f32> = (0..n).map(|i| 1000.0f32 + i as f32 * 0.5).collect();
-    let raw_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let raw_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
     println!("Source: {} float32 values = {} bytes", n, raw_bytes.len());
 
@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         shape: vec![n as u64],
         strides: vec![1],
         dtype: Dtype::Float32,
-        byte_order: ByteOrder::Big,
+        byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "shuffle".to_string(), // ← shuffle is the filter stage
         compression: "none".to_string(),

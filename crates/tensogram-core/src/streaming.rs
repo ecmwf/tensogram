@@ -473,7 +473,7 @@ mod tests {
             shape,
             strides,
             dtype: Dtype::Float32,
-            byte_order: ByteOrder::Big,
+            byte_order: ByteOrder::native(),
             encoding: "none".to_string(),
             filter: "none".to_string(),
             compression: "none".to_string(),
