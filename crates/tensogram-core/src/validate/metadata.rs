@@ -144,7 +144,7 @@ pub(crate) fn validate_metadata(
             if check_canonical {
                 if let Err(e) = metadata::verify_canonical_cbor(payload) {
                     issues.push(warn(
-                        IssueCode::MetadataCborNonCanonical,
+                        IssueCode::PrecederCborNonCanonical,
                         ValidationLevel::Metadata,
                         None,
                         None,

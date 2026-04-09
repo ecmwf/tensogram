@@ -73,6 +73,7 @@ pub enum IssueCode {
     HashFrameCborParseFailed,
     HashFrameCountMismatch,
     PrecederCborParseFailed,
+    PrecederCborNonCanonical,
     PrecederBaseCountWrong,
     BaseCountExceedsObjects,
     DescriptorCborParseFailed,
