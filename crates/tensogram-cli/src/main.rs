@@ -126,13 +126,16 @@ enum Commands {
         #[arg(required = true)]
         files: Vec<PathBuf>,
         /// Quick mode: structure only (level 1)
-        #[arg(long, group = "vmode")]
+        #[arg(long, group = "vlevel")]
         quick: bool,
         /// Checksum only: hash verification (level 3)
-        #[arg(long, group = "vmode")]
+        #[arg(long, group = "vlevel")]
         checksum: bool,
-        /// Canonical mode: levels 1-3 plus canonical CBOR check
-        #[arg(long, group = "vmode")]
+        /// Full mode: all levels including fidelity (levels 1-4)
+        #[arg(long, group = "vlevel")]
+        full: bool,
+        /// Check RFC 8949 canonical CBOR key ordering (combinable with any level)
+        #[arg(long)]
         canonical: bool,
         /// Machine-parseable JSON output
         #[arg(long)]
@@ -212,19 +215,23 @@ fn main() {
             files,
             quick,
             checksum,
+            full,
             canonical,
             json,
         } => {
-            let mode = if quick {
-                tensogram_core::ValidateMode::Quick
-            } else if checksum {
-                tensogram_core::ValidateMode::Checksum
-            } else if canonical {
-                tensogram_core::ValidateMode::Canonical
+            let max_level = if quick {
+                tensogram_core::ValidationLevel::Structure
+            } else if full {
+                tensogram_core::ValidationLevel::Fidelity
             } else {
-                tensogram_core::ValidateMode::Default
+                tensogram_core::ValidationLevel::Integrity
             };
-            commands::validate::run(&files, mode, json)
+            let options = tensogram_core::ValidateOptions {
+                max_level,
+                check_canonical: canonical,
+                checksum_only: checksum,
+            };
+            commands::validate::run(&files, &options, json)
         }
         #[cfg(feature = "grib")]
         Commands::ConvertGrib {

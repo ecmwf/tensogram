@@ -12,19 +12,8 @@ pub enum ValidationLevel {
     Metadata = 2,
     /// Level 3: hash verification, decompression without value interpretation.
     Integrity = 3,
-}
-
-/// How to run validation — selects which levels are included.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValidateMode {
-    /// Level 1 only (--quick).
-    Quick,
-    /// Levels 1–3 (default).
-    Default,
-    /// Level 3 only (--checksum).
-    Checksum,
-    /// Levels 1–3 plus opt-in canonical CBOR check.
-    Canonical,
+    /// Level 4: full decode, NaN/Inf detection, decoded-size check.
+    Fidelity = 4,
 }
 
 /// Severity of a validation finding.
@@ -96,6 +85,12 @@ pub enum IssueCode {
     NoHashAvailable,
     DecodePipelineFailed,
     PipelineConfigFailed,
+
+    // ── Level 4: Fidelity ──
+    DecodeObjectFailed,
+    DecodedSizeMismatch,
+    NanDetected,
+    InfDetected,
 }
 
 /// A single validation finding.
@@ -114,15 +109,26 @@ pub struct ValidationIssue {
 }
 
 /// Options passed to `validate_message`.
+///
+/// Composable: `max_level` selects how deep to validate, `check_canonical`
+/// adds CBOR ordering checks, `checksum_only` limits to hash verification.
 #[derive(Debug, Clone)]
 pub struct ValidateOptions {
-    pub mode: ValidateMode,
+    /// Highest validation level to run (levels 1..=max_level).
+    pub max_level: ValidationLevel,
+    /// Check RFC 8949 deterministic CBOR key ordering (opt-in).
+    pub check_canonical: bool,
+    /// Checksum-only mode: run Level 3 hash verification, suppress
+    /// structural warnings (errors still reported).
+    pub checksum_only: bool,
 }
 
 impl Default for ValidateOptions {
     fn default() -> Self {
         Self {
-            mode: ValidateMode::Default,
+            max_level: ValidationLevel::Integrity,
+            check_canonical: false,
+            checksum_only: false,
         }
     }
 }

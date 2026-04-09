@@ -26,16 +26,11 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
     let mut object_count = 0;
     let mut hash_verified = false;
 
-    let report_structure = options.mode != ValidateMode::Checksum;
-    let run_metadata = matches!(
-        options.mode,
-        ValidateMode::Default | ValidateMode::Canonical
-    );
-    let run_integrity = matches!(
-        options.mode,
-        ValidateMode::Default | ValidateMode::Checksum | ValidateMode::Canonical
-    );
-    let check_canonical = options.mode == ValidateMode::Canonical;
+    let report_structure = !options.checksum_only;
+    let run_metadata = options.max_level >= ValidationLevel::Metadata && !options.checksum_only;
+    let run_integrity = options.max_level >= ValidationLevel::Integrity;
+    let _run_fidelity = options.max_level >= ValidationLevel::Fidelity && !options.checksum_only;
+    let check_canonical = options.check_canonical;
 
     // Level 1: Structure — always run to extract frame payloads.
     // In checksum mode, non-fatal structural warnings are suppressed,
@@ -423,7 +418,8 @@ mod tests {
     fn quick_mode_skips_metadata_and_integrity() {
         let msg = make_test_message();
         let opts = ValidateOptions {
-            mode: ValidateMode::Quick,
+            max_level: ValidationLevel::Structure,
+            ..ValidateOptions::default()
         };
         let report = validate_message(&msg, &opts);
         assert!(report.is_ok());
@@ -434,7 +430,8 @@ mod tests {
     fn checksum_mode_verifies_hash() {
         let msg = make_test_message();
         let opts = ValidateOptions {
-            mode: ValidateMode::Checksum,
+            checksum_only: true,
+            ..ValidateOptions::default()
         };
         let report = validate_message(&msg, &opts);
         assert!(report.is_ok());
@@ -447,7 +444,8 @@ mod tests {
         let end = msg.len();
         msg[end - 8..end].copy_from_slice(b"BADMAGIC");
         let opts = ValidateOptions {
-            mode: ValidateMode::Checksum,
+            checksum_only: true,
+            ..ValidateOptions::default()
         };
         let report = validate_message(&msg, &opts);
         assert!(
@@ -458,20 +456,13 @@ mod tests {
 
     #[test]
     fn checksum_mode_catches_structural_errors() {
-        // Corrupt the metadata CBOR so structure succeeds (walk=Some) but
-        // metadata has no objects. Checksum mode should surface the structural
-        // error that prevents integrity verification.
         let mut msg = make_test_message();
-        // Corrupt the first frame's CBOR payload — this makes the metadata
-        // frame unreadable, which propagates as a metadata-level error.
-        // But we need a *structural* error. Instead, corrupt the total_length
-        // to be larger than actual — this is a structural error.
-        // Set total_length to actual + 100
         let actual_len = msg.len() as u64;
         let bad_len = actual_len + 100;
         msg[16..24].copy_from_slice(&bad_len.to_be_bytes());
         let opts = ValidateOptions {
-            mode: ValidateMode::Checksum,
+            checksum_only: true,
+            ..ValidateOptions::default()
         };
         let report = validate_message(&msg, &opts);
         let has_error = report
@@ -489,7 +480,8 @@ mod tests {
     fn canonical_mode_on_valid_message() {
         let msg = make_test_message();
         let opts = ValidateOptions {
-            mode: ValidateMode::Canonical,
+            check_canonical: true,
+            ..ValidateOptions::default()
         };
         let report = validate_message(&msg, &opts);
         assert!(report.is_ok(), "issues: {:?}", report.issues);
