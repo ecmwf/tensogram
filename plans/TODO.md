@@ -85,6 +85,11 @@ For speculative ideas, see `IDEAS.md`.
     - async coding of data objects simultaneously
     - sync coding of a single data object using multiple threads, where the algorithms are parallelisable.
   - when on, consider the theads as a pool of workers, and the main thread as a broker of the work
+
+- [ ] **hash-while-encoding**:
+  - explore a possible optimisation to compute the xxhash while the encoding is happening
+  - this would save a second pass through the buffer
+  - analyse if this makes sense and if it brings a benefit
  
 - [x] ~~minimise-mem-alloc~~ → documented in DESIGN.md "Memory Strategy" section. Pipeline uses `Cow` for zero-copy when no encoding/filter/compression. Metadata-only ops never touch payloads. xarray/zarr use lazy loading.
 

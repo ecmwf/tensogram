@@ -70,7 +70,8 @@
     - fix code and address the raised issues
     - update the docs/
     - make a summary and push your changes to update the PR
-    - continue iterating untill all recomentations and issue were addressed
+    - poll to wait for the CI to finish running
+    - continue iterating until all recomentations and issues were addressed
 
 - NOTE: When user asks for 'make release' execute:
     - check all changes are commited and pushed upstream
