@@ -766,4 +766,395 @@ mod tests {
         assert_eq!(report.object_count, 0);
         assert!(!report.hash_verified); // no objects → nothing to verify
     }
+
+    // ── Level 4: Fidelity tests ─────────────────────────────────────────
+
+    fn full_opts() -> ValidateOptions {
+        ValidateOptions {
+            max_level: ValidationLevel::Fidelity,
+            ..ValidateOptions::default()
+        }
+    }
+
+    fn make_float64_message(values: &[f64]) -> Vec<u8> {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![values.len() as u64],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+        encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap()
+    }
+
+    fn make_float32_message_le(values: &[f32]) -> Vec<u8> {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![values.len() as u64],
+            strides: vec![4],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Little,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn full_mode_valid_float64_passes() {
+        let msg = make_float64_message(&[1.0, 2.0, 3.0, 4.0]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(report.is_ok(), "issues: {:?}", report.issues);
+    }
+
+    #[test]
+    fn full_mode_nan_float64_detected() {
+        let msg = make_float64_message(&[1.0, f64::NAN, 3.0]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        let nan_issue = report
+            .issues
+            .iter()
+            .find(|i| i.code == IssueCode::NanDetected);
+        assert!(
+            nan_issue.is_some(),
+            "expected NanDetected, got: {:?}",
+            report.issues
+        );
+        assert!(nan_issue.unwrap().description.contains("element 1"));
+    }
+
+    #[test]
+    fn full_mode_inf_float64_detected() {
+        let msg = make_float64_message(&[1.0, 2.0, f64::INFINITY]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        let inf_issue = report
+            .issues
+            .iter()
+            .find(|i| i.code == IssueCode::InfDetected);
+        assert!(
+            inf_issue.is_some(),
+            "expected InfDetected, got: {:?}",
+            report.issues
+        );
+        assert!(inf_issue.unwrap().description.contains("element 2"));
+    }
+
+    #[test]
+    fn full_mode_neg_inf_detected() {
+        let msg = make_float64_message(&[f64::NEG_INFINITY, 1.0]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::InfDetected));
+    }
+
+    #[test]
+    fn full_mode_float32_le_nan_detected() {
+        let msg = make_float32_message_le(&[1.0, f32::NAN, 3.0]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::NanDetected));
+    }
+
+    #[test]
+    fn full_mode_float32_le_inf_detected() {
+        let msg = make_float32_message_le(&[f32::INFINITY]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::InfDetected));
+    }
+
+    #[test]
+    fn full_mode_integer_passes() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![4],
+            dtype: Dtype::Int32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let data = vec![0u8; 16]; // 4 × i32
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &full_opts());
+        assert!(
+            report.is_ok(),
+            "integer should pass fidelity: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn full_mode_hash_verified_false_on_nan() {
+        let msg = make_float64_message(&[f64::NAN]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(
+            !report.hash_verified,
+            "hash_verified should be false when NaN detected"
+        );
+    }
+
+    #[test]
+    fn full_mode_float16_nan() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![2],
+            dtype: Dtype::Float16,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        // Float16: exponent=0x1F (all 1s), mantissa=1 => NaN
+        // Bit pattern: 0_11111_0000000001 = 0x7C01
+        let mut data = vec![0u8; 4]; // 2 × f16
+        data[0..2].copy_from_slice(&0x0000u16.to_be_bytes()); // valid zero
+        data[2..4].copy_from_slice(&0x7C01u16.to_be_bytes()); // NaN
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        let nan = report
+            .issues
+            .iter()
+            .find(|i| i.code == IssueCode::NanDetected);
+        assert!(
+            nan.is_some(),
+            "expected float16 NaN, got: {:?}",
+            report.issues
+        );
+        assert!(nan.unwrap().description.contains("element 1"));
+    }
+
+    #[test]
+    fn full_mode_float16_inf() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![1],
+            strides: vec![2],
+            dtype: Dtype::Float16,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        // Float16 Inf: exponent=0x1F, mantissa=0 => 0x7C00
+        let data = 0x7C00u16.to_be_bytes().to_vec();
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::InfDetected));
+    }
+
+    #[test]
+    fn full_mode_bfloat16_nan() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![1],
+            strides: vec![2],
+            dtype: Dtype::Bfloat16,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        // BFloat16 NaN: exponent=0xFF, mantissa≠0
+        // sign(1) + exp(8) + mantissa(7): 0_11111111_0000001 = 0x7F81
+        let data = 0x7F81u16.to_be_bytes().to_vec();
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::NanDetected));
+    }
+
+    #[test]
+    fn full_mode_complex64_real_nan() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![1],
+            strides: vec![8],
+            dtype: Dtype::Complex64,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        // Complex64: [NaN real, 0.0 imag]
+        let mut data = Vec::new();
+        data.extend_from_slice(&f32::NAN.to_be_bytes());
+        data.extend_from_slice(&0.0f32.to_be_bytes());
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        let nan = report
+            .issues
+            .iter()
+            .find(|i| i.code == IssueCode::NanDetected);
+        assert!(nan.is_some());
+        assert!(nan.unwrap().description.contains("real component"));
+    }
+
+    #[test]
+    fn full_mode_complex128_imag_inf() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![1],
+            strides: vec![16],
+            dtype: Dtype::Complex128,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        // Complex128: [1.0 real, Inf imag]
+        let mut data = Vec::new();
+        data.extend_from_slice(&1.0f64.to_be_bytes());
+        data.extend_from_slice(&f64::INFINITY.to_be_bytes());
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        let inf = report
+            .issues
+            .iter()
+            .find(|i| i.code == IssueCode::InfDetected);
+        assert!(inf.is_some());
+        assert!(inf.unwrap().description.contains("imaginary component"));
+    }
+
+    #[test]
+    fn full_mode_with_canonical() {
+        let msg = make_test_message();
+        let opts = ValidateOptions {
+            max_level: ValidationLevel::Fidelity,
+            check_canonical: true,
+            ..ValidateOptions::default()
+        };
+        let report = validate_message(&msg, &opts);
+        assert!(
+            report.is_ok(),
+            "full+canonical should pass: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn full_mode_json_serialization() {
+        let msg = make_float64_message(&[f64::NAN]);
+        let report = validate_message(&msg, &full_opts());
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"nan_detected\""));
+        assert!(json.contains("\"fidelity\""));
+    }
+
+    #[test]
+    fn default_mode_skips_fidelity() {
+        // Default mode (Integrity) should NOT run fidelity checks
+        let msg = make_float64_message(&[f64::NAN]);
+        let report = validate_message(&msg, &ValidateOptions::default());
+        // NaN should not be detected at default level
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::NanDetected),
+            "default mode should not run fidelity: {:?}",
+            report.issues
+        );
+    }
 }
