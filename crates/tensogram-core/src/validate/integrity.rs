@@ -4,7 +4,6 @@ use crate::encode::build_pipeline_config;
 use crate::error::TensogramError;
 use crate::hash;
 use crate::metadata;
-use crate::types::DataObjectDescriptor;
 use crate::wire::FrameType;
 
 use super::structure::FrameWalkResult;
@@ -89,23 +88,20 @@ pub(crate) fn validate_integrity(
     }
 
     for (i, (cbor_bytes, payload, _offset)) in walk.data_objects.iter().enumerate() {
-        let desc: DataObjectDescriptor = match metadata::cbor_to_object_descriptor(cbor_bytes) {
-            Ok(d) => d,
-            Err(e) => {
-                all_verified = false;
-                issues.push(err(
-                    IssueCode::HashVerificationError,
-                    ValidationLevel::Integrity,
-                    Some(i),
-                    None,
-                    format!("failed to parse descriptor, cannot verify: {e}"),
-                ));
-                continue;
-            }
-        };
+        let desc = metadata::cbor_to_object_descriptor(cbor_bytes).ok();
+
+        if desc.is_none() {
+            issues.push(err(
+                IssueCode::HashVerificationError,
+                ValidationLevel::Integrity,
+                Some(i),
+                None,
+                "failed to parse descriptor, falling back to hash frame".to_string(),
+            ));
+        }
 
         // Hash verification: prefer per-object descriptor hash, fall back to hash frame
-        let result = if let Some(ref h) = desc.hash {
+        let result = if let Some(h) = desc.as_ref().and_then(|d| d.hash.as_ref()) {
             any_checked = true;
             check_hash(payload, h, i, issues)
         } else if let Some(ref hf) = hash_frame {
@@ -143,58 +139,62 @@ pub(crate) fn validate_integrity(
             all_verified = false;
         }
 
-        // Decompression check
-        if desc.compression != "none" || desc.encoding != "none" || desc.filter != "none" {
-            let shape_product = desc
-                .shape
-                .iter()
-                .try_fold(1u64, |acc, &x| acc.checked_mul(x));
-            let num_elements = match shape_product {
-                Some(product) => match usize::try_from(product) {
-                    Ok(n) => Some(n),
-                    Err(_) => {
-                        issues.push(err(
-                            IssueCode::PipelineConfigFailed,
-                            ValidationLevel::Integrity,
-                            Some(i),
-                            None,
-                            format!("shape product {} does not fit in usize", product),
-                        ));
-                        None
-                    }
-                },
-                None => {
-                    // Shape overflow already reported at Level 2
-                    None
-                }
-            };
-            if let Some(num_elements) = num_elements {
-                match build_pipeline_config(&desc, num_elements, desc.dtype) {
-                    Ok(config) => {
-                        if let Err(e) =
-                            tensogram_encodings::pipeline::decode_pipeline(payload, &config)
-                        {
+        // Decompression check (requires parsed descriptor)
+        // Note: decode_pipeline allocates the full decoded buffer. A future
+        // optimization could add a discard/sink mode to avoid this.
+        if let Some(ref desc) = desc {
+            if desc.compression != "none" || desc.encoding != "none" || desc.filter != "none" {
+                let shape_product = desc
+                    .shape
+                    .iter()
+                    .try_fold(1u64, |acc, &x| acc.checked_mul(x));
+                let num_elements = match shape_product {
+                    Some(product) => match usize::try_from(product) {
+                        Ok(n) => Some(n),
+                        Err(_) => {
                             issues.push(err(
-                                IssueCode::DecodePipelineFailed,
+                                IssueCode::PipelineConfigFailed,
                                 ValidationLevel::Integrity,
                                 Some(i),
                                 None,
-                                format!("decode pipeline failed: {e}"),
+                                format!("shape product {} does not fit in usize", product),
+                            ));
+                            None
+                        }
+                    },
+                    None => {
+                        // Shape overflow already reported at Level 2
+                        None
+                    }
+                };
+                if let Some(num_elements) = num_elements {
+                    match build_pipeline_config(desc, num_elements, desc.dtype) {
+                        Ok(config) => {
+                            if let Err(e) =
+                                tensogram_encodings::pipeline::decode_pipeline(payload, &config)
+                            {
+                                issues.push(err(
+                                    IssueCode::DecodePipelineFailed,
+                                    ValidationLevel::Integrity,
+                                    Some(i),
+                                    None,
+                                    format!("decode pipeline failed: {e}"),
+                                ));
+                            }
+                        }
+                        Err(e) => {
+                            issues.push(err(
+                                IssueCode::PipelineConfigFailed,
+                                ValidationLevel::Integrity,
+                                Some(i),
+                                None,
+                                format!("cannot build pipeline config: {e}"),
                             ));
                         }
                     }
-                    Err(e) => {
-                        issues.push(err(
-                            IssueCode::PipelineConfigFailed,
-                            ValidationLevel::Integrity,
-                            Some(i),
-                            None,
-                            format!("cannot build pipeline config: {e}"),
-                        ));
-                    }
                 }
             }
-        }
+        } // if let Some(desc)
     }
 
     any_checked && all_verified
