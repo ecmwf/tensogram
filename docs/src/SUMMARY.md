@@ -58,6 +58,7 @@
 - [tensogram merge](cli/merge.md)
 - [tensogram split](cli/split.md)
 - [tensogram reshuffle](cli/reshuffle.md)
+- [tensogram validate](cli/validate.md)
 
 ---
 

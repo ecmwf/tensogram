@@ -120,6 +120,23 @@ enum Commands {
         #[command(flatten)]
         pipeline: PipelineArgs,
     },
+    /// Validate .tgm files for correctness and integrity
+    Validate {
+        /// Paths to .tgm files
+        files: Vec<PathBuf>,
+        /// Quick mode: structure only (level 1)
+        #[arg(long, group = "vmode")]
+        quick: bool,
+        /// Full default mode: levels 1-3 (this is the default)
+        #[arg(long, group = "vmode")]
+        checksum: bool,
+        /// Canonical mode: levels 1-3 plus canonical CBOR check
+        #[arg(long, group = "vmode")]
+        canonical: bool,
+        /// Machine-parseable JSON output
+        #[arg(long)]
+        json: bool,
+    },
     /// Convert NetCDF files to Tensogram format (requires libnetcdf)
     #[cfg(feature = "netcdf")]
     ConvertNetcdf {
@@ -190,6 +207,24 @@ fn main() {
         } => commands::merge::run(&inputs, &output, &strategy),
         Commands::Split { input, output } => commands::split::run(&input, &output),
         Commands::Reshuffle { input, output } => commands::reshuffle::run(&input, &output),
+        Commands::Validate {
+            files,
+            quick,
+            checksum,
+            canonical,
+            json,
+        } => {
+            let mode = if quick {
+                tensogram_core::ValidateMode::Quick
+            } else if checksum {
+                tensogram_core::ValidateMode::Checksum
+            } else if canonical {
+                tensogram_core::ValidateMode::Canonical
+            } else {
+                tensogram_core::ValidateMode::Default
+            };
+            commands::validate::run(&files, mode, json)
+        }
         #[cfg(feature = "grib")]
         Commands::ConvertGrib {
             inputs,

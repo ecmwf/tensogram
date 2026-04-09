@@ -11,3 +11,4 @@ pub mod merge;
 pub mod reshuffle;
 pub mod set;
 pub mod split;
+pub mod validate;

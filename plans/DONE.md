@@ -10,6 +10,28 @@
 - **Tests:** 1050+ total (283+ Rust + 253 Python + 181 xarray + 204 Zarr + 117 C++ + 17 GRIB + 44 NetCDF integration + 5 CLI netcdf pipeline + 8 Python netcdf e2e)
 - **Quality:** 0 clippy warnings, 90.5% Rust line coverage
 
+## tensogram validate (PR 1 of 3)
+
+New `validate` subcommand and library API for checking `.tgm` file
+correctness and integrity without consuming the data.
+
+- `crates/tensogram-core/src/validate.rs` — library API with three
+  validation levels: Structure (raw byte walking), Metadata (CBOR +
+  required keys + descriptor consistency), Integrity (xxh3 hash +
+  decompression check). Public types: `ValidateMode`, `ValidateOptions`,
+  `ValidationReport`, `FileValidationReport`, `ValidationIssue`,
+  `IssueSeverity`, `ValidationLevel`.
+- `validate_message(buf, options)` — validate a single message buffer.
+- `validate_file(path, options)` — validate all messages in a file,
+  detecting truncated messages and garbage bytes between messages.
+- CLI: `tensogram validate [--quick|--checksum|--canonical] [--json] <files>`
+  with mutually exclusive mode flags, batch mode, exit code 0/1.
+- 17 unit tests in tensogram-core, 8 CLI tests.
+- Docs: `docs/src/cli/validate.md`.
+- Remaining work (PR 2): Level 4 Fidelity (full decode + NaN/Inf
+  warnings), encode.rs test panic cleanup.
+- Remaining work (PR 3): Python bindings, C FFI, examples.
+
 ## tensogram-netcdf
 
 New optional crate for converting NetCDF → Tensogram (v0.8.0). Excluded

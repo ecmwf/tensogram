@@ -10,6 +10,7 @@ pub mod metadata;
 pub mod pipeline;
 pub mod streaming;
 pub mod types;
+pub mod validate;
 pub mod wire;
 
 pub use decode::{
@@ -28,5 +29,10 @@ pub use streaming::StreamingEncoder;
 pub use types::{
     ByteOrder, DataObjectDescriptor, DecodedObject, GlobalMetadata, HashDescriptor, HashFrame,
     IndexFrame,
+};
+pub use validate::{
+    validate_buffer, validate_file, validate_message, FileIssue, FileValidationReport,
+    IssueSeverity, ValidateMode, ValidateOptions, ValidationIssue, ValidationLevel,
+    ValidationReport,
 };
 pub use wire::{FrameType, MessageFlags};

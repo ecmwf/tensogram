@@ -100,7 +100,7 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Validation
 
-- [ ] **tensogram-validate**:
+- [x] **tensogram-validate** (PR 1: core + CLI, Levels 1-3) — PR 2 (Level 4 fidelity) and PR 3 (Python/FFI bindings) pending:
   - add a `validate` CLI subcommand that checks whether a `.tgm` file is well-formed and intact without using the data. Like `grib_check` or `h5check`.
   - implement 4 validation levels, selectable by flag:
     - **Level 1 — Structure** (`--quick`): verify magic bytes (`TENSOGRM` preamble, `39277777` postamble), frame headers parse with valid types and lengths within file bounds, no overlapping or gap frames, index frame present and points to valid offsets, total message length matches actual data.
