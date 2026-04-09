@@ -43,11 +43,18 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
     // that as an error since we can't verify anything.
     let mut structure_issues = Vec::new();
     let walk = validate_structure(buf, &mut structure_issues);
-    if walk.is_none() {
-        // Structure too broken to continue — always report this
+    if report_structure {
+        // Include all structure findings
         issues.append(&mut structure_issues);
-    } else if report_structure {
-        issues.append(&mut structure_issues);
+    } else {
+        // Checksum mode: suppress warnings but keep errors — structural
+        // errors (e.g. missing ENDF, broken frames) indicate the message
+        // can't be reliably verified.
+        issues.extend(
+            structure_issues
+                .into_iter()
+                .filter(|i| i.severity == IssueSeverity::Error),
+        );
     }
 
     if let Some(ref walk) = walk {
@@ -447,6 +454,35 @@ mod tests {
         assert!(
             !report.is_ok(),
             "broken message should fail even in checksum mode"
+        );
+    }
+
+    #[test]
+    fn checksum_mode_catches_structural_errors() {
+        // Corrupt the metadata CBOR so structure succeeds (walk=Some) but
+        // metadata has no objects. Checksum mode should surface the structural
+        // error that prevents integrity verification.
+        let mut msg = make_test_message();
+        // Corrupt the first frame's CBOR payload — this makes the metadata
+        // frame unreadable, which propagates as a metadata-level error.
+        // But we need a *structural* error. Instead, corrupt the total_length
+        // to be larger than actual — this is a structural error.
+        // Set total_length to actual + 100
+        let actual_len = msg.len() as u64;
+        let bad_len = actual_len + 100;
+        msg[16..24].copy_from_slice(&bad_len.to_be_bytes());
+        let opts = ValidateOptions {
+            mode: ValidateMode::Checksum,
+        };
+        let report = validate_message(&msg, &opts);
+        let has_error = report
+            .issues
+            .iter()
+            .any(|i| i.severity == IssueSeverity::Error);
+        assert!(
+            has_error,
+            "checksum mode should surface structural errors, got: {:?}",
+            report.issues
         );
     }
 
