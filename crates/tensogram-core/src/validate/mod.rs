@@ -84,7 +84,7 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
 
         // Level 3: Integrity — hash verification + decode pipeline (caches decoded bytes)
         if run_integrity {
-            hash_verified = validate_integrity(walk, &mut objects, &mut issues);
+            hash_verified = validate_integrity(walk, &mut objects, &mut issues, run_fidelity);
         }
 
         // Level 4: Fidelity — full decode check, NaN/Inf scan
@@ -1224,14 +1224,14 @@ mod tests {
 
     #[test]
     fn full_mode_decoded_size_mismatch() {
-        // Create a valid message, then validate with --full
-        // The encoder guarantees size matches, so we test via a raw object
-        // where we intentionally make shape say 4 elements but provide 3
+        // Encode a valid 3-element float32 message, then patch the shape
+        // in the wire bytes to claim 4 elements. This creates a mismatch
+        // between decoded payload size (12 bytes) and expected (16 bytes).
         let meta = GlobalMetadata::default();
         let desc = DataObjectDescriptor {
             obj_type: "ndarray".to_string(),
             ndim: 1,
-            shape: vec![4],
+            shape: vec![3],
             strides: vec![4],
             dtype: Dtype::Float32,
             byte_order: ByteOrder::Big,
@@ -1241,17 +1241,35 @@ mod tests {
             params: BTreeMap::new(),
             hash: None,
         };
-        // shape says 4 × float32 = 16 bytes, but we provide 12
-        // The encoder will reject this, so we need to test via validate_message
-        // on a hand-crafted buffer. For now, just verify the encoder rejects it.
-        let data = vec![0u8; 12];
-        let result = encode(
-            &meta,
-            &[(&desc, data.as_slice())],
-            &EncodeOptions::default(),
+        let data = vec![0u8; 12]; // 3 × f32, valid
+        let opts = EncodeOptions {
+            hash_algorithm: None,
+            ..EncodeOptions::default()
+        };
+        let mut msg = encode(&meta, &[(&desc, data.as_slice())], &opts).unwrap();
+
+        // Patch: find CBOR encoding of shape [3] and change to [4].
+        // CBOR array(1) + uint(3) = 0x81 0x03. Change 0x03 to 0x04.
+        let mut patched = false;
+        for i in 100..msg.len() {
+            if msg[i] == 0x81 && i + 1 < msg.len() && msg[i + 1] == 0x03 {
+                msg[i + 1] = 0x04;
+                patched = true;
+                break;
+            }
+        }
+        assert!(patched, "could not find shape [3] in encoded message");
+
+        let report = validate_message(&msg, &full_opts());
+        let has_mismatch = report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::DecodedSizeMismatch);
+        assert!(
+            has_mismatch,
+            "expected DecodedSizeMismatch, got: {:?}",
+            report.issues
         );
-        // Encoder should reject mismatched size
-        assert!(result.is_err(), "encoder should reject size mismatch");
     }
 
     #[test]

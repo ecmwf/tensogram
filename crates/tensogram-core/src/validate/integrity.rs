@@ -62,6 +62,7 @@ pub(crate) fn validate_integrity(
     walk: &FrameWalkResult<'_>,
     objects: &mut [ObjectContext<'_>],
     issues: &mut Vec<ValidationIssue>,
+    cache_decoded: bool,
 ) -> bool {
     let mut all_verified = true;
     let mut any_checked = false;
@@ -182,7 +183,10 @@ pub(crate) fn validate_integrity(
                                 false,
                             ) {
                                 Ok(decoded) => {
-                                    obj.decode_state = DecodeState::Decoded(decoded);
+                                    if cache_decoded {
+                                        obj.decode_state = DecodeState::Decoded(decoded);
+                                    }
+                                    // else: drop decoded bytes immediately
                                 }
                                 Err(e) => {
                                     obj.decode_state = DecodeState::DecodeFailed;
