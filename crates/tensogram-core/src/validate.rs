@@ -751,6 +751,23 @@ fn validate_metadata(
                                 ),
                             ));
                         }
+                        // Verify each index offset points to the actual data object
+                        for (j, &idx_offset) in idx.offsets.iter().enumerate() {
+                            if j < walk.data_objects.len() {
+                                let actual_offset = walk.data_objects[j].2;
+                                if idx_offset as usize != actual_offset {
+                                    issues.push(err(
+                                        ValidationLevel::Metadata,
+                                        Some(j),
+                                        None,
+                                        format!(
+                                            "index offset[{j}] = {} but actual data object frame at {}",
+                                            idx_offset, actual_offset
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
                         issues.push(err(
@@ -1201,157 +1218,123 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
 
 /// Validate all messages in a `.tgm` file.
 ///
-/// Scans the entire byte stream to detect truncated messages and
-/// garbage bytes between valid messages.
+/// Uses streaming I/O via `TensogramFile` — only one message is in memory
+/// at a time. Detects gaps and trailing bytes between messages.
 pub fn validate_file(
     path: &Path,
     options: &ValidateOptions,
 ) -> std::io::Result<FileValidationReport> {
-    let buf = std::fs::read(path)?;
-    Ok(validate_buffer(&buf, options))
+    use std::io::{Read, Seek, SeekFrom};
+
+    let file_len = std::fs::metadata(path)?.len() as usize;
+    let mut file = std::fs::File::open(path)?;
+
+    // Use scan_file to find message boundaries without loading the whole file
+    let scan_result = crate::framing::scan_file(&mut file);
+    let offsets = match scan_result {
+        Ok(o) => o,
+        Err(_) => {
+            // Scan failed entirely — try to validate as single message
+            file.seek(SeekFrom::Start(0))?;
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf)?;
+            let report = validate_message(&buf, options);
+            return Ok(FileValidationReport {
+                file_issues: Vec::new(),
+                messages: vec![report],
+            });
+        }
+    };
+
+    let mut file_issues = Vec::new();
+    let mut messages = Vec::new();
+    let mut expected_pos: usize = 0;
+
+    for (offset, length) in &offsets {
+        // Detect gap before this message
+        if *offset > expected_pos {
+            file_issues.push(FileIssue {
+                byte_offset: expected_pos,
+                length: offset - expected_pos,
+                description: format!(
+                    "{} unrecognized bytes at offset {}",
+                    offset - expected_pos,
+                    expected_pos
+                ),
+            });
+        }
+
+        // Read this message
+        file.seek(SeekFrom::Start(*offset as u64))?;
+        let mut msg_buf = vec![0u8; *length];
+        file.read_exact(&mut msg_buf)?;
+
+        let report = validate_message(&msg_buf, options);
+        messages.push(report);
+
+        expected_pos = offset + length;
+    }
+
+    // Detect trailing bytes after last message
+    if expected_pos < file_len {
+        file_issues.push(FileIssue {
+            byte_offset: expected_pos,
+            length: file_len - expected_pos,
+            description: format!(
+                "{} trailing bytes after last message at offset {}",
+                file_len - expected_pos,
+                expected_pos
+            ),
+        });
+    }
+
+    Ok(FileValidationReport {
+        file_issues,
+        messages,
+    })
 }
 
 /// Validate all messages in a byte buffer (may contain multiple messages).
+///
+/// For file-based validation prefer `validate_file()` which uses streaming I/O.
 pub fn validate_buffer(buf: &[u8], options: &ValidateOptions) -> FileValidationReport {
+    // Use scan() to find message boundaries (same logic as TensogramFile)
+    let offsets = crate::framing::scan(buf);
+
     let mut file_issues = Vec::new();
     let mut messages = Vec::new();
-    let mut pos = 0;
+    let mut expected_pos: usize = 0;
 
-    while pos < buf.len() {
-        // Look for TENSOGRM magic
-        if pos + MAGIC.len() > buf.len() {
-            // Trailing bytes too short to be a message
-            if pos < buf.len() {
-                file_issues.push(FileIssue {
-                    byte_offset: pos,
-                    length: buf.len() - pos,
-                    description: format!("{} trailing bytes after last message", buf.len() - pos),
-                });
-            }
-            break;
-        }
-
-        if &buf[pos..pos + MAGIC.len()] != MAGIC {
-            // Not a message start — scan forward
-            let gap_start = pos;
-            pos += 1;
-            while pos + MAGIC.len() <= buf.len() && &buf[pos..pos + MAGIC.len()] != MAGIC {
-                pos += 1;
-            }
+    for (offset, length) in &offsets {
+        if *offset > expected_pos {
             file_issues.push(FileIssue {
-                byte_offset: gap_start,
-                length: pos - gap_start,
+                byte_offset: expected_pos,
+                length: offset - expected_pos,
                 description: format!(
                     "{} unrecognized bytes at offset {}",
-                    pos - gap_start,
-                    gap_start
+                    offset - expected_pos,
+                    expected_pos
                 ),
             });
-            continue;
         }
 
-        // Try to determine message length
-        if pos + PREAMBLE_SIZE > buf.len() {
-            file_issues.push(FileIssue {
-                byte_offset: pos,
-                length: buf.len() - pos,
-                description: format!("truncated message preamble at offset {pos}"),
-            });
-            break;
-        }
-
-        let msg_buf = &buf[pos..];
-        let msg_len = match Preamble::read_from(msg_buf) {
-            Ok(preamble) if preamble.total_length > 0 => {
-                let Ok(total) = usize::try_from(preamble.total_length) else {
-                    file_issues.push(FileIssue {
-                        byte_offset: pos,
-                        length: PREAMBLE_SIZE,
-                        description: format!(
-                            "total_length {} overflows usize at offset {pos}",
-                            preamble.total_length
-                        ),
-                    });
-                    pos += 1;
-                    continue;
-                };
-                if pos + total > buf.len() {
-                    file_issues.push(FileIssue {
-                        byte_offset: pos,
-                        length: buf.len() - pos,
-                        description: format!(
-                            "truncated message at offset {pos}: total_length {} but only {} bytes remain",
-                            total,
-                            buf.len() - pos
-                        ),
-                    });
-                    // Still validate what we have
-                    buf.len() - pos
-                } else {
-                    total
-                }
-            }
-            Ok(_) => {
-                // Streaming mode (total_length=0): scan for END_MAGIC, but
-                // validate each candidate by checking the postamble's
-                // first_footer_offset points within the message. This avoids
-                // false matches on payload bytes that happen to contain
-                // the END_MAGIC pattern.
-                let min_msg = PREAMBLE_SIZE + POSTAMBLE_SIZE;
-                let mut found = None;
-                // END_MAGIC is the last 8 bytes of the postamble (16 bytes).
-                // So the postamble starts 8 bytes before END_MAGIC.
-                let search_start = pos + PREAMBLE_SIZE;
-                let mut scan_pos = search_start;
-                while scan_pos + 8 <= buf.len() {
-                    if &buf[scan_pos..scan_pos + 8] == wire::END_MAGIC {
-                        let candidate_len = scan_pos + 8 - pos;
-                        if candidate_len >= min_msg {
-                            // Validate first_footer_offset in the postamble
-                            let pa_start = scan_pos - 8; // first_footer_offset field
-                            let ffo = wire::read_u64_be(buf, pa_start) as usize;
-                            // ffo should point within [PREAMBLE_SIZE, pa_start - pos]
-                            if ffo >= PREAMBLE_SIZE && ffo <= pa_start - pos {
-                                found = Some(candidate_len);
-                                break;
-                            }
-                        }
-                        // Not a valid postamble; keep scanning
-                    }
-                    scan_pos += 1;
-                }
-                match found {
-                    Some(len) => len,
-                    None => {
-                        file_issues.push(FileIssue {
-                            byte_offset: pos,
-                            length: buf.len() - pos,
-                            description: format!(
-                                "streaming message at offset {pos} has no valid end magic"
-                            ),
-                        });
-                        break;
-                    }
-                }
-            }
-            Err(_) => {
-                // Bad preamble — already will be caught by validate_message
-                // Try to find next magic to delimit
-                let skip = 1;
-                file_issues.push(FileIssue {
-                    byte_offset: pos,
-                    length: skip,
-                    description: format!("invalid preamble at offset {pos}"),
-                });
-                pos += skip;
-                continue;
-            }
-        };
-
-        let msg_slice = &buf[pos..pos + msg_len];
+        let msg_slice = &buf[*offset..*offset + *length];
         let report = validate_message(msg_slice, options);
         messages.push(report);
-        pos += msg_len;
+
+        expected_pos = offset + length;
+    }
+
+    if expected_pos < buf.len() {
+        file_issues.push(FileIssue {
+            byte_offset: expected_pos,
+            length: buf.len() - expected_pos,
+            description: format!(
+                "{} trailing bytes after last message at offset {}",
+                buf.len() - expected_pos,
+                expected_pos
+            ),
+        });
     }
 
     FileValidationReport {
@@ -1608,9 +1591,14 @@ mod tests {
         buf.extend_from_slice(b"GARBAGE_TRAILING_DATA");
         let report = validate_buffer(&buf, &ValidateOptions::default());
         assert!(!report.file_issues.is_empty());
-        assert!(report.file_issues[0]
-            .description
-            .contains("unrecognized bytes"));
+        assert!(
+            report.file_issues[0].description.contains("trailing bytes")
+                || report.file_issues[0]
+                    .description
+                    .contains("unrecognized bytes"),
+            "got: {}",
+            report.file_issues[0].description,
+        );
     }
 
     #[test]

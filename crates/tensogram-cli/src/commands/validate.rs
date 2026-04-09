@@ -82,6 +82,7 @@ fn print_human(path: &Path, report: &FileValidationReport) {
             hash_note,
         );
     } else {
+        // Print per-message issues
         for (i, msg_report) in report.messages.iter().enumerate() {
             for issue in &msg_report.issues {
                 let obj_note = match issue.object_index {
@@ -103,6 +104,21 @@ fn print_human(path: &Path, report: &FileValidationReport) {
                 );
             }
         }
+        // Final summary line so failures are always visible
+        let error_count: usize = report
+            .messages
+            .iter()
+            .flat_map(|r| &r.issues)
+            .filter(|i| i.severity == IssueSeverity::Error)
+            .count()
+            + report.file_issues.len();
+        eprintln!(
+            "{}: FAILED ({} errors, {} messages, {} objects)",
+            path.display(),
+            error_count,
+            msg_count,
+            obj_count,
+        );
     }
 }
 
