@@ -6,10 +6,21 @@ mod lz4;
 mod sz3;
 #[cfg(feature = "szip")]
 mod szip;
+#[cfg(feature = "szip-pure")]
+mod szip_pure;
 #[cfg(feature = "zfp")]
 mod zfp;
 #[cfg(feature = "zstd")]
 mod zstd;
+#[cfg(feature = "zstd-pure")]
+mod zstd_pure;
+
+// Mutual exclusion guards — exactly one backend per codec
+#[cfg(all(feature = "szip", feature = "szip-pure"))]
+compile_error!("features 'szip' and 'szip-pure' are mutually exclusive — choose one");
+
+#[cfg(all(feature = "zstd", feature = "zstd-pure"))]
+compile_error!("features 'zstd' and 'zstd-pure' are mutually exclusive — choose one");
 
 #[cfg(feature = "blosc2")]
 pub use self::blosc2::Blosc2Compressor;
@@ -19,10 +30,14 @@ pub use self::lz4::Lz4Compressor;
 pub use self::sz3::Sz3Compressor;
 #[cfg(feature = "szip")]
 pub use self::szip::SzipCompressor;
+#[cfg(feature = "szip-pure")]
+pub use self::szip_pure::SzipPureCompressor;
 #[cfg(feature = "zfp")]
 pub use self::zfp::ZfpCompressor;
 #[cfg(feature = "zstd")]
 pub use self::zstd::ZstdCompressor;
+#[cfg(feature = "zstd-pure")]
+pub use self::zstd_pure::ZstdPureCompressor;
 
 use thiserror::Error;
 

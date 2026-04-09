@@ -36,12 +36,12 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Multi-Language Support
 
-  - [ ] **wasm-decoder**:
-    - aim is to enable the usage of tensogram as the comms message format for a remote web visualiser of scientific data (eg earth science data)
-    - research about wasm in particular decoding streams of messages with data
-    - limited implementation in wasm of the decode API and decode pipelines
-    - support a limited amount of compressors - limit to what is available as packages
-    - if no package available for szip, implement it outright  
+  - [x] ~~**wasm-decoder**~~ → v0.8.0. `crates/tensogram-wasm/` — full decode,
+    encode, scan, and streaming API via `wasm-bindgen`. Compressors: lz4,
+    szip (pure-Rust `tensogram-szip` crate, CCSDS 121.0-B-3), zstd (pure-Rust
+    `ruzstd`). 134 `wasm-bindgen-test` tests. `wasm-pack build --target web`.
+    StreamingDecoder with buffer limit, error visibility, and reset.
+    Zero-copy TypedArray views for f32/f64/i32/u8 with zero-length safety.
    
 ## Metadata
 

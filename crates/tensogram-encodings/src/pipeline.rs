@@ -8,10 +8,14 @@ use crate::compression::Lz4Compressor;
 use crate::compression::Sz3Compressor;
 #[cfg(feature = "szip")]
 use crate::compression::SzipCompressor;
+#[cfg(feature = "szip-pure")]
+use crate::compression::SzipPureCompressor;
 #[cfg(feature = "zfp")]
 use crate::compression::ZfpCompressor;
 #[cfg(feature = "zstd")]
 use crate::compression::ZstdCompressor;
+#[cfg(feature = "zstd-pure")]
+use crate::compression::ZstdPureCompressor;
 use crate::compression::{CompressResult, CompressionError, Compressor};
 use crate::shuffle;
 use crate::simple_packing::{self, PackingError, SimplePackingParams};
@@ -94,14 +98,14 @@ pub enum Sz3ErrorBound {
 #[derive(Debug, Clone)]
 pub enum CompressionType {
     None,
-    #[cfg(feature = "szip")]
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
     Szip {
         rsi: u32,
         block_size: u32,
         flags: u32,
         bits_per_sample: u32,
     },
-    #[cfg(feature = "zstd")]
+    #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
     Zstd {
         level: i32,
     },
@@ -146,7 +150,7 @@ fn build_compressor(
 ) -> Result<Option<Box<dyn Compressor>>, CompressionError> {
     match compression {
         CompressionType::None => Ok(None),
-        #[cfg(feature = "szip")]
+        #[cfg(any(feature = "szip", feature = "szip-pure"))]
         CompressionType::Szip {
             rsi,
             block_size,
@@ -154,20 +158,47 @@ fn build_compressor(
             bits_per_sample,
         } => {
             let mut szip_flags = *flags;
-            // simple_packing output is MSB-first; tell libaec so its predictor
-            // sees bytes in the correct significance order.
+            // simple_packing output is MSB-first; tell the szip codec so its
+            // predictor sees bytes in the correct significance order.
+            #[cfg(feature = "szip")]
             if matches!(config.encoding, EncodingType::SimplePacking(_)) {
                 szip_flags |= libaec_sys::AEC_DATA_MSB;
             }
-            Ok(Some(Box::new(SzipCompressor {
-                rsi: *rsi,
-                block_size: *block_size,
-                flags: szip_flags,
-                bits_per_sample: *bits_per_sample,
-            })))
+            #[cfg(feature = "szip-pure")]
+            if matches!(config.encoding, EncodingType::SimplePacking(_)) {
+                szip_flags |= tensogram_szip::AEC_DATA_MSB;
+            }
+
+            #[cfg(feature = "szip")]
+            {
+                Ok(Some(Box::new(SzipCompressor {
+                    rsi: *rsi,
+                    block_size: *block_size,
+                    flags: szip_flags,
+                    bits_per_sample: *bits_per_sample,
+                })))
+            }
+            #[cfg(feature = "szip-pure")]
+            {
+                Ok(Some(Box::new(SzipPureCompressor {
+                    rsi: *rsi,
+                    block_size: *block_size,
+                    flags: szip_flags,
+                    bits_per_sample: *bits_per_sample,
+                })))
+            }
         }
-        #[cfg(feature = "zstd")]
-        CompressionType::Zstd { level } => Ok(Some(Box::new(ZstdCompressor { level: *level }))),
+        #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
+        CompressionType::Zstd { level } => {
+            #[cfg(feature = "zstd")]
+            {
+                Ok(Some(Box::new(ZstdCompressor { level: *level })))
+            }
+            #[cfg(feature = "zstd-pure")]
+            {
+                Ok(Some(Box::new(ZstdPureCompressor { level: *level })))
+            }
+        }
         #[cfg(feature = "lz4")]
         CompressionType::Lz4 => Ok(Some(Box::new(Lz4Compressor))),
         #[cfg(feature = "blosc2")]
@@ -479,17 +510,23 @@ mod tests {
         assert_eq!(decoded, data);
     }
 
-    #[cfg(feature = "szip")]
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
     #[test]
     fn test_szip_round_trip_pipeline() {
         let data: Vec<u8> = (0..2048).map(|i| (i % 256) as u8).collect();
+
+        #[cfg(feature = "szip")]
+        let preprocess_flag = libaec_sys::AEC_DATA_PREPROCESS;
+        #[cfg(feature = "szip-pure")]
+        let preprocess_flag = tensogram_szip::AEC_DATA_PREPROCESS;
+
         let config = PipelineConfig {
             encoding: EncodingType::None,
             filter: FilterType::None,
             compression: CompressionType::Szip {
                 rsi: 128,
                 block_size: 16,
-                flags: libaec_sys::AEC_DATA_PREPROCESS,
+                flags: preprocess_flag,
                 bits_per_sample: 8,
             },
             num_values: 2048,

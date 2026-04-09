@@ -6,7 +6,9 @@ edition = "2021"
 [features]
 default = ["szip", "zstd", "lz4", "blosc2", "zfp", "sz3"]
 szip = ["dep:libaec-sys"]
+szip-pure = ["dep:tensogram-szip"]
 zstd = ["dep:zstd"]
+zstd-pure = ["dep:ruzstd"]
 lz4 = ["dep:lz4_flex"]
 blosc2 = ["dep:blosc2", "dep:blosc2-sys"]
 zfp = ["dep:zfp-sys-cc"]
@@ -17,7 +19,9 @@ thiserror.workspace = true
 serde.workspace = true
 tracing.workspace = true
 libaec-sys = { workspace = true, optional = true }
+tensogram-szip = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
+ruzstd = { workspace = true, optional = true }
 lz4_flex = { workspace = true, optional = true }
 blosc2 = { workspace = true, optional = true }
 blosc2-sys = { workspace = true, optional = true }

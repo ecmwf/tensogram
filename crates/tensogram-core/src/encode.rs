@@ -315,6 +315,7 @@ pub(crate) fn populate_base_entries(
 /// set (or overwritten).
 pub(crate) fn populate_reserved_provenance(reserved: &mut BTreeMap<String, ciborium::Value>) {
     use ciborium::Value;
+    #[cfg(not(target_arch = "wasm32"))]
     use std::time::SystemTime;
 
     // encoder.name + encoder.version
@@ -332,10 +333,15 @@ pub(crate) fn populate_reserved_provenance(reserved: &mut BTreeMap<String, cibor
     reserved.insert("encoder".to_string(), encoder_map);
 
     // time — ISO 8601 UTC
-    let now = SystemTime::now()
+    // On wasm32-unknown-unknown, SystemTime::now() panics. Use a fallback.
+    #[cfg(not(target_arch = "wasm32"))]
+    let secs = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
+        .unwrap_or_default()
+        .as_secs();
+    #[cfg(target_arch = "wasm32")]
+    let secs = 0u64; // WASM: timestamp omitted (callers can set via _extra_)
+
     // Simple UTC format: YYYY-MM-DDThh:mm:ssZ
     // We compute from epoch seconds to avoid adding a datetime crate.
     let days = secs / 86400;
@@ -411,7 +417,7 @@ pub(crate) fn build_pipeline_config(
 
     let compression = match desc.compression.as_str() {
         "none" => CompressionType::None,
-        #[cfg(feature = "szip")]
+        #[cfg(any(feature = "szip", feature = "szip-pure"))]
         "szip" => {
             let rsi = u32::try_from(get_u64_param(&desc.params, "szip_rsi")?)
                 .map_err(|_| TensogramError::Metadata("szip_rsi out of u32 range".to_string()))?;
@@ -433,7 +439,7 @@ pub(crate) fn build_pipeline_config(
                 bits_per_sample,
             }
         }
-        #[cfg(feature = "zstd")]
+        #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
         "zstd" => {
             let level_i64 = get_i64_param(&desc.params, "zstd_level").unwrap_or(3);
             let level = i32::try_from(level_i64).map_err(|_| {
