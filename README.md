@@ -2,8 +2,6 @@
   <img src="logo.png" alt="Tensogram" width="200">
 </p>
 
-<h1 align="center">Tensogram</h1>
-
 <p align="center">
   <em>A fast, efficient 'telegram' for multidimensional tensors</em>
 </p>
