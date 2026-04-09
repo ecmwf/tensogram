@@ -46,8 +46,8 @@ file.tgm: OK (3 messages, 47 objects, hash verified)
 On failure:
 
 ```
-bad.tgm: FAILED — message 2, object 5: hash mismatch (expected a3f7..., got 91c2...) (at byte 4096)
-bad.tgm: FAILED (1 errors, 3 messages, 47 objects)
+bad.tgm: FAILED — message 2, object 5: hash mismatch (expected a3f7..., got 91c2...)
+bad.tgm: FAILED (1 errors, 1 messages, 3 objects)
 ```
 
 ### JSON (`--json`)
@@ -72,16 +72,15 @@ bad.tgm: FAILED (1 errors, 3 messages, 47 objects)
 ]
 ```
 
-On failure, issues within `message_reports[i].issues` contain:
+On failure, issues within `message_reports[i].issues` contain (note: `object_index` is 0-based in JSON; absent fields are omitted, not null):
 
 ```json
 {
   "code": "hash_mismatch",
   "level": "integrity",
   "severity": "error",
-  "object_index": 5,
-  "byte_offset": null,
-  "description": "object 5: hash mismatch (expected a3f7..., got 91c2...)"
+  "object_index": 4,
+  "description": "hash mismatch (expected a3f7..., got 91c2...)"
 }
 ```
 
@@ -90,7 +89,7 @@ Issue codes are stable snake_case strings (e.g. `hash_mismatch`, `invalid_magic`
 ## Exit Code
 
 - `0` — all files pass validation
-- `1` — one or more files have errors
+- `1` — one or more files have errors or file-level issues
 
 ## Batch Mode
 
@@ -108,7 +107,7 @@ When validating a file with multiple messages, the command also detects:
 - Truncated messages at end of file
 - Trailing bytes after the last valid message
 
-These are reported as file-level warnings.
+These are reported as file-level issues and cause validation to fail (exit code 1).
 
 ## Library API
 

@@ -211,7 +211,7 @@ pub(crate) fn validate_metadata(
                     ValidationLevel::Metadata,
                     Some(i),
                     None,
-                    format!("object {i} descriptor CBOR is not canonical: {e}"),
+                    format!("descriptor CBOR is not canonical: {e}"),
                 ));
             }
         }
@@ -224,7 +224,7 @@ pub(crate) fn validate_metadata(
                     ValidationLevel::Metadata,
                     Some(i),
                     None,
-                    format!("object {i} descriptor CBOR parse failed: {e}"),
+                    format!("descriptor CBOR parse failed: {e}"),
                 ));
                 continue;
             }
@@ -236,11 +236,7 @@ pub(crate) fn validate_metadata(
                 ValidationLevel::Metadata,
                 Some(i),
                 None,
-                format!(
-                    "object {i}: ndim {} != shape.len() {}",
-                    desc.ndim,
-                    desc.shape.len()
-                ),
+                format!("ndim {} != shape.len() {}", desc.ndim, desc.shape.len()),
             ));
         }
         if desc.strides.len() != desc.shape.len() {
@@ -250,7 +246,7 @@ pub(crate) fn validate_metadata(
                 Some(i),
                 None,
                 format!(
-                    "object {i}: strides.len() {} != shape.len() {}",
+                    "strides.len() {} != shape.len() {}",
                     desc.strides.len(),
                     desc.shape.len()
                 ),
@@ -267,7 +263,7 @@ pub(crate) fn validate_metadata(
                 ValidationLevel::Metadata,
                 Some(i),
                 None,
-                format!("object {i}: shape product overflows u64"),
+                "shape product overflows u64".to_string(),
             ));
         }
 
@@ -277,7 +273,7 @@ pub(crate) fn validate_metadata(
                 ValidationLevel::Metadata,
                 Some(i),
                 None,
-                format!("object {i}: unknown encoding '{}'", desc.encoding),
+                format!("unknown encoding '{}'", desc.encoding),
             ));
         }
         if !matches!(desc.filter.as_str(), "none" | "shuffle") {
@@ -286,7 +282,7 @@ pub(crate) fn validate_metadata(
                 ValidationLevel::Metadata,
                 Some(i),
                 None,
-                format!("object {i}: unknown filter '{}'", desc.filter),
+                format!("unknown filter '{}'", desc.filter),
             ));
         }
         let known_compressions = ["none", "szip", "zstd", "lz4", "blosc2", "zfp", "sz3"];
@@ -296,7 +292,7 @@ pub(crate) fn validate_metadata(
                 ValidationLevel::Metadata,
                 Some(i),
                 None,
-                format!("object {i}: unknown compression '{}'", desc.compression),
+                format!("unknown compression '{}'", desc.compression),
             ));
         }
 
@@ -306,7 +302,7 @@ pub(crate) fn validate_metadata(
                 ValidationLevel::Metadata,
                 Some(i),
                 None,
-                format!("object {i}: obj_type is empty"),
+                "obj_type is empty".to_string(),
             ));
         }
     }
@@ -324,7 +320,7 @@ pub(crate) fn validate_metadata(
                         ValidationLevel::Metadata,
                         Some(i),
                         None,
-                        format!("object {i}: base[{i}]._reserved_ missing 'tensor' key"),
+                        "base._reserved_ missing 'tensor' key".to_string(),
                     ));
                 }
             } else {
@@ -333,7 +329,7 @@ pub(crate) fn validate_metadata(
                     ValidationLevel::Metadata,
                     Some(i),
                     None,
-                    format!("object {i}: base[{i}]._reserved_ is not a map"),
+                    "base._reserved_ is not a map".to_string(),
                 ));
             }
         }

@@ -32,8 +32,8 @@ fn frame_phase(ft: FrameType) -> Phase {
 pub(crate) struct FrameWalkResult<'a> {
     /// (frame_type, payload_bytes) for non-DataObject frames.
     pub meta_frames: Vec<(FrameType, &'a [u8])>,
-    /// (descriptor_cbor_bytes, payload_bytes, frame_start_offset) per data object.
-    pub data_objects: Vec<(Vec<u8>, &'a [u8], usize)>,
+    /// (descriptor_cbor_slice, payload_bytes, frame_start_offset) per data object.
+    pub data_objects: Vec<(&'a [u8], &'a [u8], usize)>,
 }
 
 /// Walk the raw bytes of a message, collecting structural issues.
@@ -228,7 +228,7 @@ pub(crate) fn validate_structure<'a>(
     let mut pos = PREAMBLE_SIZE;
     let mut current_phase = Phase::Headers;
     let mut meta_frames: Vec<(FrameType, &[u8])> = Vec::new();
-    let mut data_objects: Vec<(Vec<u8>, &[u8], usize)> = Vec::new();
+    let mut data_objects: Vec<(&[u8], &[u8], usize)> = Vec::new();
     let mut observed_flags = MessageFlags::new(0);
     let mut pending_preceder = false;
     let mut obj_idx: usize = 0;
@@ -491,7 +491,7 @@ pub(crate) fn validate_structure<'a>(
                                 }
                             }
                         };
-                        data_objects.push((cbor_slice.to_vec(), payload_slice, pos));
+                        data_objects.push((cbor_slice, payload_slice, pos));
                     }
                 }
                 obj_idx += 1;

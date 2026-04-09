@@ -106,16 +106,18 @@ fn print_human(path: &Path, report: &FileValidationReport) {
             }
         }
         // Final summary line
-        let error_count: usize = report
+        let msg_errors: usize = report
             .messages
             .iter()
             .flat_map(|r| &r.issues)
             .filter(|i| i.severity == IssueSeverity::Error)
             .count();
+        let file_issue_count = report.file_issues.len();
+        let total_problems = msg_errors + file_issue_count;
         eprintln!(
             "{}: FAILED ({} errors, {} messages, {} objects)",
             path.display(),
-            error_count,
+            total_problems,
             msg_count,
             obj_count,
         );

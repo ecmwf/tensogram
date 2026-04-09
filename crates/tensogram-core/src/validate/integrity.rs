@@ -30,10 +30,7 @@ fn check_hash(
             ValidationLevel::Integrity,
             Some(obj_idx),
             None,
-            format!(
-                "object {obj_idx}: unknown hash algorithm '{}', cannot verify",
-                h.hash_type
-            ),
+            format!("unknown hash algorithm '{}', cannot verify", h.hash_type),
         ));
         return HashCheckResult::Skipped;
     }
@@ -45,7 +42,7 @@ fn check_hash(
                 ValidationLevel::Integrity,
                 Some(obj_idx),
                 None,
-                format!("object {obj_idx}: hash mismatch (expected {expected}, got {actual})"),
+                format!("hash mismatch (expected {expected}, got {actual})"),
             ));
             HashCheckResult::Failed
         }
@@ -55,7 +52,7 @@ fn check_hash(
                 ValidationLevel::Integrity,
                 Some(obj_idx),
                 None,
-                format!("object {obj_idx}: hash verification error: {e}"),
+                format!("hash verification error: {e}"),
             ));
             HashCheckResult::Failed
         }
@@ -106,7 +103,7 @@ pub(crate) fn validate_integrity(
                     ValidationLevel::Integrity,
                     Some(i),
                     None,
-                    format!("object {i}: no hash available, cannot verify integrity"),
+                    "no hash available, cannot verify integrity".to_string(),
                 ));
                 all_verified = false;
                 HashCheckResult::Skipped
@@ -117,7 +114,7 @@ pub(crate) fn validate_integrity(
                 ValidationLevel::Integrity,
                 Some(i),
                 None,
-                format!("object {i}: no hash available, cannot verify integrity"),
+                "no hash available, cannot verify integrity".to_string(),
             ));
             all_verified = false;
             HashCheckResult::Skipped
@@ -142,10 +139,7 @@ pub(crate) fn validate_integrity(
                             ValidationLevel::Integrity,
                             Some(i),
                             None,
-                            format!(
-                                "object {i}: shape product {} does not fit in usize",
-                                product
-                            ),
+                            format!("shape product {} does not fit in usize", product),
                         ));
                         None
                     }
@@ -166,7 +160,7 @@ pub(crate) fn validate_integrity(
                                 ValidationLevel::Integrity,
                                 Some(i),
                                 None,
-                                format!("object {i}: decode pipeline failed: {e}"),
+                                format!("decode pipeline failed: {e}"),
                             ));
                         }
                     }
@@ -176,7 +170,7 @@ pub(crate) fn validate_integrity(
                             ValidationLevel::Integrity,
                             Some(i),
                             None,
-                            format!("object {i}: cannot build pipeline config: {e}"),
+                            format!("cannot build pipeline config: {e}"),
                         ));
                     }
                 }
