@@ -58,6 +58,12 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Builds
 
+- [ ] **restructure-repo**:
+  - mode the code to sub-folders with languages as names
+  - rust code in rust/crates/
+  - python code in ptyhon/
+  - keep examples/<lang> separate
+
 - [x] ~~CI matrix~~ → `.github/workflows/ci.yml` — Rust (ubuntu+macos), Python (3.12+3.13, ubuntu+macos), xarray, zarr, C++ (ubuntu+macos), docs. GRIB gated on ecCodes.
 
 - [x] ~~change-to-uv~~ → `uv venv` + `uv pip install` everywhere; CI uses `astral-sh/setup-uv@v5`; legacy `ci.yaml` removed; all docs and CONTRIBUTING.md updated
