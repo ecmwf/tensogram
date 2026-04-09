@@ -50,7 +50,8 @@ pub(crate) fn validate_metadata(
                 match metadata::cbor_to_index(payload) {
                     Ok(idx) => {
                         let obj_count = walk.data_objects.len();
-                        if idx.object_count as usize != obj_count {
+                        let indexed_count = usize::try_from(idx.object_count).unwrap_or(usize::MAX);
+                        if indexed_count != obj_count {
                             issues.push(err(
                                 IssueCode::IndexCountMismatch,
                                 ValidationLevel::Metadata,
@@ -79,7 +80,10 @@ pub(crate) fn validate_metadata(
                         for (j, &idx_offset) in idx.offsets.iter().enumerate() {
                             if j < walk.data_objects.len() {
                                 let actual_offset = walk.data_objects[j].2;
-                                if idx_offset as usize != actual_offset {
+                                let offset_matches = usize::try_from(idx_offset)
+                                    .map(|o| o == actual_offset)
+                                    .unwrap_or(false);
+                                if !offset_matches {
                                     issues.push(err(
                                         IssueCode::IndexOffsetMismatch,
                                         ValidationLevel::Metadata,
@@ -285,6 +289,9 @@ pub(crate) fn validate_metadata(
                 format!("unknown filter '{}'", desc.filter),
             ));
         }
+        // All codecs defined in the wire format, regardless of build features.
+        // Level 2 checks format validity; Level 3 catches unsupported codecs
+        // at decode time via PipelineConfigFailed.
         let known_compressions = ["none", "szip", "zstd", "lz4", "blosc2", "zfp", "sz3"];
         if !known_compressions.contains(&desc.compression.as_str()) {
             issues.push(err(

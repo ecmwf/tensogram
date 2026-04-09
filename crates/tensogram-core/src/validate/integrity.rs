@@ -70,8 +70,20 @@ pub(crate) fn validate_integrity(
     let mut hash_frame: Option<crate::types::HashFrame> = None;
     for (ft, payload) in &walk.meta_frames {
         if matches!(ft, FrameType::HeaderHash | FrameType::FooterHash) {
-            if let Ok(hf) = metadata::cbor_to_hash_frame(payload) {
-                hash_frame = Some(hf);
+            match metadata::cbor_to_hash_frame(payload) {
+                Ok(hf) => {
+                    hash_frame = Some(hf);
+                }
+                Err(e) => {
+                    all_verified = false;
+                    issues.push(err(
+                        IssueCode::HashVerificationError,
+                        ValidationLevel::Integrity,
+                        None,
+                        None,
+                        format!("failed to parse hash frame CBOR: {e}"),
+                    ));
+                }
             }
         }
     }
@@ -79,8 +91,15 @@ pub(crate) fn validate_integrity(
     for (i, (cbor_bytes, payload, _offset)) in walk.data_objects.iter().enumerate() {
         let desc: DataObjectDescriptor = match metadata::cbor_to_object_descriptor(cbor_bytes) {
             Ok(d) => d,
-            Err(_) => {
+            Err(e) => {
                 all_verified = false;
+                issues.push(err(
+                    IssueCode::HashVerificationError,
+                    ValidationLevel::Integrity,
+                    Some(i),
+                    None,
+                    format!("failed to parse descriptor, cannot verify: {e}"),
+                ));
                 continue;
             }
         };
