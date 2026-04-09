@@ -1028,7 +1028,7 @@ class TestEdgeCases:
                 )
                 assert meta["index"] == idx
 
-    def test_big_endian_roundtrip(self):
+    def test_native_endian_roundtrip(self):
         """Encode and decode with native byte order — values should match."""
         data = np.arange(10, dtype=np.float32)
         meta = make_global_meta(2)
@@ -2274,8 +2274,8 @@ class TestScanCoverage:
 # ---------------------------------------------------------------------------
 
 
-class TestBigEndianCoverage:
-    """Byte-order coverage: round-trip with different byte_order declarations."""
+class TestNativeEndianCoverage:
+    """Native byte-order round-trip coverage across dtypes."""
 
     @pytest.mark.parametrize(
         ("dtype_str", "np_dtype"),
@@ -2286,15 +2286,10 @@ class TestBigEndianCoverage:
             ("uint16", np.uint16),
         ],
     )
-    def test_big_endian_roundtrip(self, dtype_str, np_dtype):
-        """Encode with byte_order='big' and decode — values should match
-        because the library converts decoded bytes to native byte order."""
+    def test_native_endian_roundtrip(self, dtype_str, np_dtype):
+        """Encode and decode with native byte order — values should match
+        because the library returns decoded bytes in native byte order."""
         data = np.arange(20, dtype=np_dtype)
-        # Note: numpy provides native-endian bytes.  The descriptor declares
-        # "big", but encode stores bytes verbatim (native).  On decode, the
-        # library would byteswap (wire→native) which is wrong since the wire
-        # bytes were already native.  Use native_byte_order=False for the
-        # old behaviour, or use the default byte_order for correct round-trip.
         desc = make_descriptor(list(data.shape), dtype=dtype_str)
         msg = bytes(tensogram.encode(make_global_meta(2), [(desc, data)]))
         _, objects = tensogram.decode(msg)

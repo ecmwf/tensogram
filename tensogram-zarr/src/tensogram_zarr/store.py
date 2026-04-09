@@ -396,8 +396,11 @@ class TensogramStore(ZarrStore):
                     f"in message {self._message_index} of {self._path!r}: {exc}"
                 ) from exc
             # The tensogram decode API returns data in native byte order
-            # (native_byte_order=True by default), so no manual byteswap
-            # is needed here.
+            # (native_byte_order=True by default).  The Zarr bytes codec
+            # declares endian="little", so on big-endian platforms we still
+            # need to swap from native (big) to little to match the codec.
+            if arr.dtype.byteorder == ">" or (arr.dtype.byteorder == "=" and _native_is_big()):
+                arr = arr.byteswap().view(arr.dtype.newbyteorder("<"))
             chunk_key = _chunk_key_for_shape(desc.shape)
             self._keys[f"{name}/{chunk_key}"] = arr.tobytes()
 

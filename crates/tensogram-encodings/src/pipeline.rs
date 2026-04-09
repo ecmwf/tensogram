@@ -44,21 +44,24 @@ impl ByteOrder {
 /// between big-endian and little-endian representations in place.
 ///
 /// No-op when `unit_size <= 1` (single-byte types have no byte order).
+/// Returns an error if `data.len()` is not a multiple of `unit_size`.
 /// For complex types, pass the scalar component size (e.g. 4 for complex64)
 /// so that each float32 component is swapped independently.
-pub fn byteswap(data: &mut [u8], unit_size: usize) {
+pub fn byteswap(data: &mut [u8], unit_size: usize) -> Result<(), PipelineError> {
     if unit_size <= 1 {
-        return;
+        return Ok(());
     }
-    debug_assert!(
-        data.len().is_multiple_of(unit_size),
-        "byteswap: data length {} is not a multiple of unit_size {}",
-        data.len(),
-        unit_size,
-    );
+    if !data.len().is_multiple_of(unit_size) {
+        return Err(PipelineError::Range(format!(
+            "byteswap: data length {} is not a multiple of unit_size {}",
+            data.len(),
+            unit_size,
+        )));
+    }
     for chunk in data.chunks_exact_mut(unit_size) {
         chunk.reverse();
     }
+    Ok(())
 }
 
 #[derive(Debug, Error)]
@@ -373,7 +376,7 @@ pub fn decode_pipeline(
         && matches!(config.encoding, EncodingType::None)
         && config.byte_order != ByteOrder::native()
     {
-        byteswap(&mut decoded, config.swap_unit_size);
+        byteswap(&mut decoded, config.swap_unit_size)?;
     }
 
     Ok(decoded)
@@ -454,7 +457,7 @@ pub fn decode_range_pipeline(
         EncodingType::None => {
             let mut result = decompressed;
             if native_byte_order && config.byte_order != ByteOrder::native() {
-                byteswap(&mut result, config.swap_unit_size);
+                byteswap(&mut result, config.swap_unit_size)?;
             }
             Ok(result)
         }
@@ -604,30 +607,30 @@ mod tests {
     fn test_byteswap_noop_for_single_byte() {
         let mut data = vec![1, 2, 3, 4];
         let original = data.clone();
-        byteswap(&mut data, 1);
+        byteswap(&mut data, 1).unwrap();
         assert_eq!(data, original);
-        byteswap(&mut data, 0);
+        byteswap(&mut data, 0).unwrap();
         assert_eq!(data, original);
     }
 
     #[test]
     fn test_byteswap_2_bytes() {
         let mut data = vec![0xAA, 0xBB, 0xCC, 0xDD];
-        byteswap(&mut data, 2);
+        byteswap(&mut data, 2).unwrap();
         assert_eq!(data, vec![0xBB, 0xAA, 0xDD, 0xCC]);
     }
 
     #[test]
     fn test_byteswap_4_bytes() {
         let mut data = vec![1, 2, 3, 4, 5, 6, 7, 8];
-        byteswap(&mut data, 4);
+        byteswap(&mut data, 4).unwrap();
         assert_eq!(data, vec![4, 3, 2, 1, 8, 7, 6, 5]);
     }
 
     #[test]
     fn test_byteswap_8_bytes() {
         let mut data: Vec<u8> = (1..=16).collect();
-        byteswap(&mut data, 8);
+        byteswap(&mut data, 8).unwrap();
         assert_eq!(
             data,
             vec![8, 7, 6, 5, 4, 3, 2, 1, 16, 15, 14, 13, 12, 11, 10, 9]
@@ -638,10 +641,17 @@ mod tests {
     fn test_byteswap_round_trip() {
         let original = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
         let mut data = original.clone();
-        byteswap(&mut data, 4);
+        byteswap(&mut data, 4).unwrap();
         assert_ne!(data, original);
-        byteswap(&mut data, 4);
+        byteswap(&mut data, 4).unwrap();
         assert_eq!(data, original);
+    }
+
+    #[test]
+    fn test_byteswap_misaligned_returns_error() {
+        let mut data = vec![1, 2, 3, 4, 5]; // 5 bytes, not a multiple of 4
+        let result = byteswap(&mut data, 4);
+        assert!(result.is_err());
     }
 
     // -----------------------------------------------------------------------

@@ -25,6 +25,10 @@ impl Compressor for ZfpCompressor {
     fn compress(&self, data: &[u8]) -> Result<CompressResult, CompressionError> {
         // Compress side: input bytes are always in the caller's native byte
         // order (per design: "always encode in the endianness of the caller").
+        // This intentionally ignores `self.byte_order` — it only governs
+        // the decompress output format.  Using the declared byte_order here
+        // would produce garbage if the caller provides native-endian data
+        // (which is the contract for all encode paths).
         let values = bytes_to_f64_native(data)?;
         let compressed = zfp_ffi::zfp_compress_f64(&values, &self.mode)?;
         Ok(CompressResult {

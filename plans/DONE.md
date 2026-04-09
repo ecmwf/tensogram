@@ -3,7 +3,7 @@
 > For historical release notes, see `../CHANGELOG.md`.
 > For planned features, see `TODO.md`. For ideas, see `IDEAS.md`.
 
-## caller-endianess (completed)
+## caller-endianness (completed)
 
 Decoded data is now always returned in the caller's native byte order by
 default. The `DecodeOptions.native_byte_order` field (default `true`) controls
