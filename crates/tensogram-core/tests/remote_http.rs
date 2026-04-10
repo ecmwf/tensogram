@@ -162,8 +162,8 @@ impl MockServer {
 fn handle_request(
     req: Request<hyper::body::Incoming>,
     data: Arc<Vec<u8>>,
-    range_request_count: Arc<AtomicUsize>,
     request_count: Arc<AtomicUsize>,
+    range_request_count: Arc<AtomicUsize>,
 ) -> Result<Response<Full<Bytes>>, std::io::Error> {
     request_count.fetch_add(1, Ordering::SeqCst);
 
