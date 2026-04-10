@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.9.0] - 2026-04-10
 
 ### Added
 - **Native byte-order decode** — decoded payloads are now returned in the
@@ -16,6 +16,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   (handles complex64/complex128 correctly by swapping each scalar component).
 - `ByteOrder::native()` — compile-time detection of the platform's byte order.
 - `byteswap()` utility — public in-place byte reversal by element width.
+- **`tensogram validate`** — CLI command and library API for checking `.tgm`
+  file correctness (3 validation levels: structure, metadata, integrity).
+  Includes `--quick`, `--checksum`, `--canonical`, `--json` modes and
+  ~40 stable `IssueCode` variants with serde serialization.
+- **`tensogram-wasm`** — browser decoder via wasm-bindgen with zero-copy
+  TypedArray views, streaming decoder, and full encode/decode API.
+  Supports lz4, szip (pure-Rust), and zstd (pure-Rust) codecs.
+- **`tensogram-szip`** — pure-Rust CCSDS 121.0-B-3 AEC/SZIP codec
+  (encode, decode, range-decode). Drop-in replacement for libaec in
+  environments without C FFI (e.g., WebAssembly).
+- **Runtime compression backend dispatch** — szip and zstd can have both
+  FFI and pure-Rust backends compiled simultaneously. Selection via
+  `TENSOGRAM_COMPRESSION_BACKEND=pure` env var; WASM defaults to pure.
+- **WASM CI job** — `wasm-pack test --node` runs 134 wasm-bindgen tests
+  on every PR.
+- Comprehensive szip test suite: 154 tests including stress tests (all
+  bit widths 1-32), property-based tests (proptest), error path tests,
+  libaec parity tests, and FFI cross-checks.
 
 ### Changed
 - ZFP and SZ3 lossy compressors are now byte-order-aware: decompressed output

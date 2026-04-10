@@ -1,6 +1,6 @@
 [package]
 name = "tensogram-szip"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 description = "Pure-Rust CCSDS 121.0-B-3 Adaptive Entropy Coding (AEC/SZIP) — encode, decode, and range decode"
 
