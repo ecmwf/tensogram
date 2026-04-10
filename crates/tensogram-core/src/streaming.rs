@@ -44,7 +44,7 @@ pub struct StreamingEncoder<W: Write> {
     writer: W,
     /// Byte offsets of each data object frame from message start.
     object_offsets: Vec<u64>,
-    /// Encoded payload length of each data object frame.
+    /// Total byte length of each data object frame (FrameHeader + CBOR descriptor + encoded payload + ENDF).
     object_lengths: Vec<u64>,
     /// Per-object hash entries: (hash_type, hash_value).
     hash_entries: Vec<Option<(String, String)>>,
@@ -272,9 +272,8 @@ impl<W: Write> StreamingEncoder<W> {
         let frame_bytes =
             crate::framing::encode_data_object_frame(&final_desc, encoded_bytes, false)?;
 
-        // Record offset before writing
         self.object_offsets.push(self.bytes_written);
-        self.object_lengths.push(encoded_bytes.len() as u64);
+        self.object_lengths.push(frame_bytes.len() as u64);
         self.hash_entries.push(hash_entry);
         // Retain only the descriptor for footer metadata population.
         // The encoded payload has already been written to the stream;
