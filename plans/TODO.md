@@ -126,11 +126,12 @@ For speculative ideas, see `IDEAS.md`.
   - Level 4 (Fidelity, `--full`): full decode, decoded-size check, NaN/Inf scan for Float16/Bfloat16/Float32/Float64/Complex64/Complex128. NaN/Inf are errors. Reports element index and component (real/imag).
   - Dropped encode.rs panic cleanup (test-only assertions, not meaningful to convert).
 
-- [ ] **tensogram-validate PR 3** — Python + FFI bindings + examples:
-  - Python: `tensogram.validate(buf, level="default") -> dict` and `tensogram.validate_file(path, level="default") -> list[dict]` via PyO3.
-  - C FFI: `tgm_validate(buf, len, level, *out) -> tgm_error` and `tgm_validate_file(path, level, *out) -> tgm_error` returning JSON via `TgmBytes` out-parameter (matches existing ABI pattern).
-  - Examples in `examples/python/` and `examples/rust/`.
-  - Python tests in `tests/python/`.
+- [x] ~~**tensogram-validate PR 3**~~ — Python + FFI bindings + examples:
+  - Python: `tensogram.validate(buf, level="default") -> dict` and `tensogram.validate_file(path, level="default") -> dict` via PyO3.
+  - C FFI: `tgm_validate(buf, len, level, check_canonical, *out) -> tgm_error` and `tgm_validate_file(path, level, check_canonical, *out) -> tgm_error` returning JSON via `TgmBytes` out-parameter.
+  - C++ wrapper: `tensogram::validate()` and `tensogram::validate_file()` returning JSON strings.
+  - Examples in `examples/python/13_validate.py` and `examples/rust/src/bin/13_validate.rs`.
+  - 34 Python tests in `tests/python/test_validate.py`. 12 FFI unit tests. 11 C++ GoogleTest tests.
 
 ## Remote Access
 
