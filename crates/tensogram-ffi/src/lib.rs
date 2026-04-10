@@ -58,6 +58,7 @@ pub enum TgmError {
     InvalidArg = 8,
     /// Returned by `tgm_*_iter_next` when iteration is exhausted.
     EndOfIter = 9,
+    Remote = 10,
 }
 
 fn to_error_code(e: &TensogramError) -> TgmError {
@@ -69,7 +70,7 @@ fn to_error_code(e: &TensogramError) -> TgmError {
         TensogramError::Object(_) => TgmError::Object,
         TensogramError::Io(_) => TgmError::Io,
         TensogramError::HashMismatch { .. } => TgmError::HashMismatch,
-        TensogramError::Remote(_) => TgmError::Io,
+        TensogramError::Remote(_) => TgmError::Remote,
     }
 }
 
