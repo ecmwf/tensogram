@@ -225,12 +225,12 @@ impl RemoteBackend {
         // PR1 scope: only header-indexed (buffered) messages are supported.
         // Footer-indexed (streaming) messages will be added in a follow-up PR
         // once the StreamingEncoder index lengths are verified as frame lengths.
-        if flags.has(MessageFlags::HEADER_METADATA) {
+        if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX) {
             self.discover_header_layout(msg_idx)?;
         } else {
             return Err(TensogramError::Remote(
-                "remote access requires header-indexed messages; \
-                 footer-only (streaming) layout is not yet supported"
+                "remote access requires header-indexed messages (both HEADER_METADATA and \
+                 HEADER_INDEX flags); header-metadata-only and footer-only layouts are not supported"
                     .to_string(),
             ));
         }
@@ -303,6 +303,12 @@ impl RemoteBackend {
         if self.layouts[msg_idx].global_metadata.is_none() {
             return Err(TensogramError::Remote(
                 "header region did not contain a metadata frame".to_string(),
+            ));
+        }
+        if self.layouts[msg_idx].index.is_none() {
+            return Err(TensogramError::Remote(
+                "header region did not contain an index frame (header chunk may be too small)"
+                    .to_string(),
             ));
         }
 
