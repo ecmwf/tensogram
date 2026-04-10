@@ -9,6 +9,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 libaec-sys = { workspace = true }
+proptest = { workspace = true }
 
 [features]
 default = []

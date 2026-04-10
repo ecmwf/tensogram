@@ -3,7 +3,9 @@
 //!
 //! Run with: cargo test -p tensogram-szip --test ffi_crosscheck
 
-use tensogram_szip::{AecParams, AEC_DATA_MSB, AEC_DATA_PREPROCESS};
+use tensogram_szip::{
+    AecParams, AEC_DATA_MSB, AEC_DATA_PREPROCESS, AEC_DATA_SIGNED, AEC_NOT_ENFORCE,
+};
 
 // ── Helpers: libaec FFI wrappers ─────────────────────────────────────────────
 
@@ -322,4 +324,136 @@ fn crosscheck_range_decode_ffi_compressed() {
         tensogram_szip::aec_decompress_range(&compressed, &offsets, pos, size, &params).unwrap();
     assert_eq!(partial.len(), size);
     assert_eq!(&partial[..], &data[pos..pos + size]);
+}
+
+// ── Additional bit widths ───────────────────────────────────────────────────
+
+#[test]
+fn crosscheck_4bit_ramp() {
+    // 4-bit samples in 1-byte containers
+    let data: Vec<u8> = (0..1024).map(|i| (i % 16) as u8).collect();
+    let params = AecParams {
+        bits_per_sample: 4,
+        block_size: 16,
+        rsi: 128,
+        flags: AEC_DATA_PREPROCESS,
+    };
+    roundtrip_pure_to_ffi(&data, &params);
+    roundtrip_ffi_to_pure(&data, &params);
+}
+
+#[test]
+fn crosscheck_12bit_ramp() {
+    // 12-bit samples in 2-byte LE containers
+    let values: Vec<u16> = (0..1024).map(|i| (i * 3 % 4096) as u16).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let params = AecParams {
+        bits_per_sample: 12,
+        block_size: 16,
+        rsi: 128,
+        flags: AEC_DATA_PREPROCESS,
+    };
+    roundtrip_pure_to_ffi(&data, &params);
+    roundtrip_ffi_to_pure(&data, &params);
+}
+
+#[test]
+fn crosscheck_20bit_ramp() {
+    // 20-bit samples in 3-byte containers (auto AEC_DATA_3BYTE)
+    let params = AecParams {
+        bits_per_sample: 20,
+        block_size: 16,
+        rsi: 64,
+        flags: AEC_DATA_PREPROCESS,
+    };
+    let mask = (1u32 << 20) - 1;
+    let mut data = Vec::with_capacity(1024 * 3);
+    for i in 0..1024u32 {
+        let val = (i * 7) & mask;
+        data.push(val as u8);
+        data.push((val >> 8) as u8);
+        data.push((val >> 16) as u8);
+    }
+    roundtrip_pure_to_ffi(&data, &params);
+    roundtrip_ffi_to_pure(&data, &params);
+}
+
+#[test]
+fn crosscheck_28bit_ramp() {
+    // 28-bit samples in 4-byte LE containers
+    let mask = (1u32 << 28) - 1;
+    let values: Vec<u32> = (0..512).map(|i| (i * 97) & mask).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let params = AecParams {
+        bits_per_sample: 28,
+        block_size: 16,
+        rsi: 64,
+        flags: AEC_DATA_PREPROCESS,
+    };
+    roundtrip_pure_to_ffi(&data, &params);
+    roundtrip_ffi_to_pure(&data, &params);
+}
+
+// ── Signed data cross-checks ────────────────────────────────────────────────
+
+#[test]
+fn crosscheck_16bit_signed() {
+    // Signed 16-bit data with positive values in LE containers
+    let values: Vec<u16> = (0..1024).map(|i| (i % 32768) as u16).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let params = AecParams {
+        bits_per_sample: 16,
+        block_size: 16,
+        rsi: 128,
+        flags: AEC_DATA_PREPROCESS | AEC_DATA_SIGNED,
+    };
+    roundtrip_pure_to_ffi(&data, &params);
+    roundtrip_ffi_to_pure(&data, &params);
+}
+
+#[test]
+fn crosscheck_32bit_signed_ramp() {
+    // Signed 32-bit ramp (small positive values to avoid bitstream overflow bug)
+    let values: Vec<u32> = (0..1024).map(|i| i * 5).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let params = AecParams {
+        bits_per_sample: 32,
+        block_size: 16,
+        rsi: 128,
+        flags: AEC_DATA_PREPROCESS | AEC_DATA_SIGNED,
+    };
+    roundtrip_pure_to_ffi(&data, &params);
+    roundtrip_ffi_to_pure(&data, &params);
+}
+
+// ── Combined flags cross-check ──────────────────────────────────────────────
+
+#[test]
+fn crosscheck_preprocess_msb_signed() {
+    // 16-bit MSB signed
+    let values: Vec<u16> = (0..512).map(|i| (i % 16384) as u16).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let params = AecParams {
+        bits_per_sample: 16,
+        block_size: 16,
+        rsi: 64,
+        flags: AEC_DATA_PREPROCESS | AEC_DATA_MSB | AEC_DATA_SIGNED,
+    };
+    roundtrip_pure_to_ffi(&data, &params);
+    roundtrip_ffi_to_pure(&data, &params);
+}
+
+// ── NOT_ENFORCE cross-check ─────────────────────────────────────────────────
+
+#[test]
+fn crosscheck_not_enforce_block12() {
+    let data: Vec<u8> = (0..768).map(|i| (i % 256) as u8).collect();
+    let params = AecParams {
+        bits_per_sample: 8,
+        block_size: 12,
+        rsi: 64,
+        flags: AEC_DATA_PREPROCESS | AEC_NOT_ENFORCE,
+    };
+    roundtrip_pure_to_ffi(&data, &params);
+    roundtrip_ffi_to_pure(&data, &params);
 }

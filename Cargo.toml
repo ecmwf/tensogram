@@ -36,6 +36,7 @@ blosc2 = { version = "0.2", default-features = false, features = ["zstd", "zlib"
 blosc2-sys = { package = "blosc2-rs-sys", version = "0.1" }
 zfp-sys-cc = "0.2"
 sz3 = "0.4"
+proptest = "1"
 
 # Prevent panics from unwinding across the FFI boundary (undefined behaviour).
 # With panic = "abort", any panic terminates the process immediately.
