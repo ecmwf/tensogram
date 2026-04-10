@@ -60,6 +60,12 @@ fn check_hash(
 
 /// `checksum_only`: skip decompression check, only verify hashes.
 /// `cache_decoded`: retain decoded bytes in ObjectContext for Level 4 reuse.
+///
+/// **Memory note**: when `cache_decoded` is true (i.e. `--full`), decoded
+/// payloads are retained for all non-raw objects until Level 4 completes.
+/// Peak memory is proportional to the sum of decoded object sizes, not
+/// the message size. For very large tensors, consider validating objects
+/// individually or using `--checksum` for quick integrity checks.
 pub(crate) fn validate_integrity(
     walk: &FrameWalkResult<'_>,
     objects: &mut [ObjectContext<'_>],

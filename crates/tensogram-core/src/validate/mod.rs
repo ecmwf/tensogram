@@ -64,19 +64,24 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
     if let Some(ref walk) = walk {
         object_count = walk.data_objects.len();
 
-        // Build per-object contexts from the frame walk result
-        let mut objects: Vec<ObjectContext<'_>> = walk
-            .data_objects
-            .iter()
-            .map(|(cbor_bytes, payload, frame_offset)| ObjectContext {
-                descriptor: None,
-                descriptor_failed: false,
-                cbor_bytes,
-                payload,
-                frame_offset: *frame_offset,
-                decode_state: DecodeState::NotDecoded,
-            })
-            .collect();
+        // Build per-object contexts only when needed by metadata, integrity, or fidelity.
+        // In quick mode (without --canonical), we skip this allocation.
+        let needs_objects = run_metadata || run_integrity || run_fidelity || check_canonical;
+        let mut objects: Vec<ObjectContext<'_>> = if needs_objects {
+            walk.data_objects
+                .iter()
+                .map(|(cbor_bytes, payload, frame_offset)| ObjectContext {
+                    descriptor: None,
+                    descriptor_failed: false,
+                    cbor_bytes,
+                    payload,
+                    frame_offset: *frame_offset,
+                    decode_state: DecodeState::NotDecoded,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         // Level 2: Metadata — parses and caches descriptors
         if run_metadata {
