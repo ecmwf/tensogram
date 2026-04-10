@@ -3086,7 +3086,8 @@ fn parse_validate_options(
 ///   `"checksum"` (hash check, suppress structural warnings),
 ///   `"full"` (full decode + NaN/Inf scan). NULL defaults to `"default"`.
 /// `check_canonical`: non-zero to check RFC 8949 CBOR key ordering.
-/// `out`: receives a UTF-8 JSON string describing the validation report.
+/// `out`: receives UTF-8 JSON bytes describing the validation report.
+///   Not NUL-terminated — use `out->len` for the byte count.
 ///   Free with `tgm_bytes_free`.
 ///
 /// Returns `TGM_ERROR_OK` on success (even if the message has issues —
@@ -3151,7 +3152,8 @@ pub extern "C" fn tgm_validate(
 /// `path`: null-terminated UTF-8 path to the file.
 /// `level`: validation depth (same as `tgm_validate`). NULL = `"default"`.
 /// `check_canonical`: non-zero to check CBOR key ordering.
-/// `out`: receives a UTF-8 JSON string describing the file validation report.
+/// `out`: receives UTF-8 JSON bytes describing the file validation report.
+///   Not NUL-terminated — use `out->len` for the byte count.
 ///   Free with `tgm_bytes_free`.
 ///
 /// Returns `TGM_ERROR_OK` on success (issues are in the JSON).

@@ -101,7 +101,7 @@ TEST(ValidateFileTest, InvalidLevelThrows) {
 
 TEST(ValidateFileTest, EmptyFile) {
     TempFile tmp;
-    { std::ofstream ofs(tmp.path, std::ios::binary); }
+    { std::ofstream(tmp.path, std::ios::binary); }
     auto json = tensogram::validate_file(tmp.path.c_str());
     EXPECT_NE(json.find("\"messages\":[]"), std::string::npos);
 }
