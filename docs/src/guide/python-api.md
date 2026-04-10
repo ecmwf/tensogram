@@ -380,7 +380,7 @@ else:
 | Unsigned integer | `uint8`, `uint16`, `uint32`, `uint64` |
 | Special | `bitmask` |
 
-`bfloat16` is returned as `np.uint16` — convert with a bfloat16-aware library like `ml_dtypes`.
+`bfloat16` is returned as `ml_dtypes.bfloat16` when `ml_dtypes` is installed; otherwise it falls back to `np.uint16`.
 
 See [Data Types](../format/dtypes.md) for byte widths and wire-format details.
 
