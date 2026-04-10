@@ -18,7 +18,7 @@ use crate::framing;
 use crate::metadata;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, IndexFrame};
 use crate::wire::{
-    FrameHeader, FrameType, MessageFlags, Preamble, FRAME_END, FRAME_HEADER_SIZE, MAGIC,
+    FrameHeader, FrameType, MessageFlags, Preamble, END_MAGIC, FRAME_END, FRAME_HEADER_SIZE, MAGIC,
     POSTAMBLE_SIZE, PREAMBLE_SIZE,
 };
 
@@ -170,25 +170,30 @@ impl RemoteBackend {
         while pos + min_message_size <= self.file_size {
             let preamble_bytes = self.get_range(pos..pos + PREAMBLE_SIZE as u64)?;
             if &preamble_bytes[..MAGIC.len()] != MAGIC {
-                return Err(TensogramError::Remote(format!(
-                    "no TENSOGRM magic at offset {pos}"
-                )));
+                pos += 1;
+                continue;
             }
 
-            let preamble = Preamble::read_from(&preamble_bytes)?;
-            if preamble.total_length == 0 {
-                return Err(TensogramError::Remote(
-                    "streaming-mode messages (total_length=0) are not supported for remote access"
-                        .to_string(),
-                ));
-            }
+            let preamble = match Preamble::read_from(&preamble_bytes) {
+                Ok(p) => p,
+                Err(_) => {
+                    pos += 1;
+                    continue;
+                }
+            };
 
             let msg_len = preamble.total_length;
-            if pos + msg_len > self.file_size {
-                return Err(TensogramError::Remote(format!(
-                    "message at offset {pos} claims length {msg_len} but file is only {} bytes",
-                    self.file_size
-                )));
+            if msg_len == 0 || msg_len < min_message_size || pos + msg_len > self.file_size {
+                pos += 1;
+                continue;
+            }
+
+            let end_magic_offset = pos + msg_len - END_MAGIC.len() as u64;
+            let end_bytes =
+                self.get_range(end_magic_offset..end_magic_offset + END_MAGIC.len() as u64)?;
+            if &end_bytes[..] != END_MAGIC {
+                pos += 1;
+                continue;
             }
 
             self.layouts.push(MessageLayout {
@@ -382,20 +387,13 @@ impl RemoteBackend {
         let msg_offset = layout.offset;
 
         if let Some(ref index) = layout.index {
-            if obj_idx >= index.offsets.len() {
-                return Err(TensogramError::Object(format!(
-                    "object index {} out of range (count={})",
-                    obj_idx,
-                    index.offsets.len()
-                )));
-            }
+            Self::validate_index_access(index, obj_idx)?;
 
             let meta = layout
                 .global_metadata
                 .clone()
                 .ok_or_else(|| TensogramError::Remote("metadata not cached".to_string()))?;
 
-            // Fetch just this object's frame
             let frame_offset = msg_offset + index.offsets[obj_idx];
             let frame_length = index.lengths[obj_idx];
             let frame_bytes = self.get_range(frame_offset..frame_offset + frame_length)?;
@@ -412,12 +410,31 @@ impl RemoteBackend {
         }
     }
 
+    fn validate_index_access(index: &IndexFrame, obj_idx: usize) -> Result<()> {
+        if index.offsets.len() != index.lengths.len() {
+            return Err(TensogramError::Remote(format!(
+                "corrupt index: offsets.len()={} != lengths.len()={}",
+                index.offsets.len(),
+                index.lengths.len()
+            )));
+        }
+        if obj_idx >= index.offsets.len() {
+            return Err(TensogramError::Object(format!(
+                "object index {} out of range (count={})",
+                obj_idx,
+                index.offsets.len()
+            )));
+        }
+        Ok(())
+    }
+
     fn read_object_descriptor(
         &self,
         msg_offset: u64,
         index: &IndexFrame,
         obj_idx: usize,
     ) -> Result<DataObjectDescriptor> {
+        Self::validate_index_access(index, obj_idx)?;
         let frame_offset = msg_offset + index.offsets[obj_idx];
         let frame_length = index.lengths[obj_idx];
         let frame_bytes = self.get_range(frame_offset..frame_offset + frame_length)?;

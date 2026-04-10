@@ -192,16 +192,29 @@ fn handle_request(
 
 fn parse_range_header(header: &str, total: usize) -> Option<(usize, usize)> {
     let header = header.strip_prefix("bytes=")?;
+    if total == 0 {
+        return None;
+    }
     if let Some(suffix) = header.strip_prefix('-') {
         let n: usize = suffix.parse().ok()?;
+        if n == 0 {
+            return None;
+        }
         Some((total.saturating_sub(n), total))
     } else if let Some((start_s, end_s)) = header.split_once('-') {
         let start: usize = start_s.parse().ok()?;
+        if start >= total {
+            return None;
+        }
         if end_s.is_empty() {
             Some((start, total))
         } else {
             let end: usize = end_s.parse().ok()?;
-            Some((start, end + 1))
+            if end < start {
+                return None;
+            }
+            let end_clamped = end.min(total - 1) + 1;
+            Some((start, end_clamped))
         }
     } else {
         None
@@ -536,8 +549,8 @@ async fn test_remote_streaming_message_rejected() -> Result<(), Box<dyn Error>> 
         .ok_or_else(|| std::io::Error::other("expected error for streaming message"))?
         .to_string();
     assert!(
-        err.contains("streaming"),
-        "expected streaming error, got: {err}"
+        err.contains("no valid messages"),
+        "expected no-valid-messages error, got: {err}"
     );
     Ok(())
 }
