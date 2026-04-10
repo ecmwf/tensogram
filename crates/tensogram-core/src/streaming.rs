@@ -44,7 +44,7 @@ pub struct StreamingEncoder<W: Write> {
     writer: W,
     /// Byte offsets of each data object frame from message start.
     object_offsets: Vec<u64>,
-    /// Total byte length of each data object frame (FrameHeader + CBOR descriptor + encoded payload + ENDF).
+    /// Total byte length of each data object frame, excluding alignment padding.
     object_lengths: Vec<u64>,
     /// Per-object hash entries: (hash_type, hash_value).
     hash_entries: Vec<Option<(String, String)>>,

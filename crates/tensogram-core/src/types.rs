@@ -95,7 +95,7 @@ pub struct IndexFrame {
     pub object_count: u64,
     /// Byte offset of each data object frame from message start.
     pub offsets: Vec<u64>,
-    /// Total byte length of each data object frame (FrameHeader + CBOR descriptor + encoded payload + ENDF).
+    /// Total byte length of each data object frame, excluding alignment padding.
     pub lengths: Vec<u64>,
 }
 
