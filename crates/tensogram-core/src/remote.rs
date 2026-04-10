@@ -257,7 +257,9 @@ impl RemoteBackend {
     }
 
     fn parse_header_frames(&mut self, msg_idx: usize, buf: &[u8]) -> Result<()> {
+        let min_frame_size = FRAME_HEADER_SIZE + FRAME_END.len();
         let mut pos = PREAMBLE_SIZE;
+
         while pos + FRAME_HEADER_SIZE <= buf.len() {
             if &buf[pos..pos + 2] != b"FR" {
                 pos += 1;
@@ -266,29 +268,37 @@ impl RemoteBackend {
             let fh = FrameHeader::read_from(&buf[pos..])?;
             let frame_total = fh.total_length as usize;
 
+            if frame_total < min_frame_size {
+                return Err(TensogramError::Remote(format!(
+                    "frame total_length ({frame_total}) smaller than minimum ({min_frame_size})"
+                )));
+            }
             if pos + frame_total > buf.len() {
-                // Frame extends beyond our chunk — we'd need a bigger read.
-                // For now, this covers virtually all real-world files.
                 break;
             }
 
+            let frame_end = pos + frame_total;
+            if &buf[frame_end - FRAME_END.len()..frame_end] != FRAME_END {
+                return Err(TensogramError::Remote(
+                    "frame missing ENDF trailer".to_string(),
+                ));
+            }
+
+            let payload = &buf[pos + FRAME_HEADER_SIZE..frame_end - FRAME_END.len()];
+
             match fh.frame_type {
                 FrameType::HeaderMetadata => {
-                    let payload =
-                        &buf[pos + FRAME_HEADER_SIZE..pos + frame_total - FRAME_END.len()];
                     let meta = metadata::cbor_to_global_metadata(payload)?;
                     self.layouts[msg_idx].global_metadata = Some(meta);
                 }
                 FrameType::HeaderIndex => {
-                    let payload =
-                        &buf[pos + FRAME_HEADER_SIZE..pos + frame_total - FRAME_END.len()];
                     let idx = metadata::cbor_to_index(payload)?;
                     self.layouts[msg_idx].index = Some(idx);
                 }
                 FrameType::DataObject | FrameType::PrecederMetadata => {
-                    break; // Done with header frames
+                    break;
                 }
-                _ => {} // HeaderHash — skip
+                _ => {}
             }
 
             let aligned = (pos + frame_total + 7) & !7;
@@ -337,10 +347,8 @@ impl RemoteBackend {
         msg_idx: usize,
     ) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>)> {
         self.ensure_layout(msg_idx)?;
-        // Descriptors live inside each data object frame — we need to read
-        // each frame's CBOR descriptor without downloading the full payload.
-        // If we have an index, read each object frame's header region to get
-        // the descriptor. Otherwise fall back to full message decode.
+        // If we have an index, fetch each indexed object frame and extract
+        // the descriptor from it. Otherwise fall back to full message decode.
         let layout = &self.layouts[msg_idx];
         let msg_offset = layout.offset;
 

@@ -288,11 +288,11 @@ impl TensogramFile {
         crate::iter::FileMessageIter::new(path, offsets)
     }
 
-    pub fn path(&self) -> &Path {
+    pub fn path(&self) -> Option<&Path> {
         match &self.backend {
-            Backend::Local { path, .. } => path,
+            Backend::Local { path, .. } => Some(path),
             #[cfg(feature = "remote")]
-            Backend::Remote(_) => Path::new(""),
+            Backend::Remote(_) => None,
         }
     }
 
@@ -301,7 +301,13 @@ impl TensogramFile {
     }
 
     pub fn invalidate_offsets(&mut self) {
-        self.message_offsets = None;
+        match &self.backend {
+            Backend::Local { .. } => {
+                self.message_offsets = None;
+            }
+            #[cfg(feature = "remote")]
+            Backend::Remote(_) => {}
+        }
     }
 
     // ── Object-level access (efficient for remote) ───────────────────────
