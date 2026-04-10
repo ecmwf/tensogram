@@ -32,16 +32,21 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
-      # Skip --all-features to avoid tensogram-grib which requires ecCodes.
-      # The workspace excludes tensogram-python and tensogram-grib by default.
+      # Skip --all-features on workspace level to avoid tensogram-grib (requires ecCodes).
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Clippy (all features, core + FFI)
+        run: cargo clippy -p tensogram-core -p tensogram-ffi --all-targets --all-features -- -D warnings
 
       - name: Build
         run: cargo build --workspace
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Test (remote feature)
+        run: cargo test -p tensogram-core --features remote
 
   # ── Python: build bindings + test ────────────────────────────────────
   python:
