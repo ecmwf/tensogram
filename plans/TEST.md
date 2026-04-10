@@ -9,7 +9,9 @@ Repo: ecmwf/tensogram
 | Component | Tests | Type | Coverage |
 |-----------|-------|------|----------|
 | tensogram-core | ~283 | Unit + integration + adversarial + edge-case | ~90% |
-| tensogram-encodings | 47 | Unit | ~85% |
+| tensogram-encodings | 73 | Unit | ~90% |
+| tensogram-szip | 50 + 15 FFI | Unit + FFI cross-validation | ~95% |
+| tensogram-wasm | 134 | wasm-bindgen-test (Node.js) | ~95% |
 | tensogram-cli | 124 (with `--features netcdf`) | Unit + subprocess | ~70% |
 | tensogram-ffi | (via C++ wrapper) | Indirect | — |
 | C++ wrapper | 105 | GoogleTest | — |
@@ -19,12 +21,14 @@ Repo: ecmwf/tensogram
 | tensogram-netcdf | 44 | Integration | — |
 | tensogram-xarray | 181 | pytest | ~98% |
 | tensogram-zarr | 204 | pytest | ~95% |
-| **Total** | **~1050+** | | **90.5% (Rust)** |
+| **Total** | **~1250+** | | **~92% (Rust)** |
 
 ## Affected Components
 
 - tensogram-core: encode, decode, decode_metadata, decode_object, decode_range, scan, streaming, file, iterators
-- tensogram-encodings: simple_packing, shuffle filter, 6 compression codecs (szip, zstd, lz4, blosc2, zfp, sz3), pipeline dispatch
+- tensogram-encodings: simple_packing, shuffle filter, 6 compression codecs (szip, zstd, lz4, blosc2, zfp, sz3), pipeline dispatch; szip-pure and zstd-pure feature variants
+- tensogram-szip: pure-Rust AEC/SZIP encode/decode/range-decode, signed preprocessing, FFI cross-validation
+- tensogram-wasm: decode, decode_metadata, decode_object, scan, encode, StreamingDecoder, DecodedFrame, zero-copy TypedArray views
 - tensogram-ffi: C API opaque handles, typed getters, error codes, iterators, streaming encoder
 - tensogram-python: PyO3 bindings, NumPy round-trip, TensogramFile, metadata access
 - tensogram-cli: info, ls, dump, get, set, copy, merge, split, reshuffle, convert-grib

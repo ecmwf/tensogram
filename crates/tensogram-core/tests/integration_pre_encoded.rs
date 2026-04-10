@@ -545,6 +545,7 @@ fn test_encode_pre_encoded_rejects_emit_preceders() {
     let opts = EncodeOptions {
         hash_algorithm: Some(tensogram_core::HashAlgorithm::Xxh3),
         emit_preceders: true,
+        ..Default::default()
     };
     let result = encode_pre_encoded(&meta, &[(&desc, &raw)], &opts);
     assert!(result.is_err(), "emit_preceders=true must be rejected");
@@ -1084,6 +1085,7 @@ fn test_encode_pre_encoded_no_hash() {
     let opts = EncodeOptions {
         hash_algorithm: None,
         emit_preceders: false,
+        ..Default::default()
     };
     let msg = encode_pre_encoded(&meta, &[(&desc, &raw)], &opts)
         .expect("encode_pre_encoded with no hash");
@@ -1186,6 +1188,7 @@ fn test_streaming_pre_encoded_with_preceder() {
     let opts = EncodeOptions {
         hash_algorithm: Some(tensogram_core::HashAlgorithm::Xxh3),
         emit_preceders: true,
+        ..Default::default()
     };
 
     let desc = make_raw_desc(4, Dtype::Float32, "none", BTreeMap::new());

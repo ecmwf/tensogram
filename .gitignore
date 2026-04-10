@@ -4,6 +4,7 @@
 .coverage
 *.dylib.dSYM/
 **/target
+**/pkg
 /build/
 
 /docs/book

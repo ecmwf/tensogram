@@ -104,6 +104,36 @@ OS level.
   ubuntu+macos matrix for symmetry. The `python` job now installs
   libnetcdf and runs the new Python e2e tests.
 
+## tensogram-wasm (v0.8.0)
+
+WebAssembly bindings for browser-side decode, encode, scan, and streaming.
+Compiles to `wasm32-unknown-unknown` via `wasm-pack`.
+
+- **Crate:** `crates/tensogram-wasm/` — `lib.rs`, `convert.rs`, `streaming.rs`
+- **Supported compressors:** lz4, szip (pure-Rust via `tensogram-szip`), zstd
+  (pure-Rust via `ruzstd`). blosc2/zfp/sz3 return an error.
+- **Decode API:** `decode()`, `decode_metadata()`, `decode_object()`, `scan()`
+- **Encode API:** `encode()` — accepts `Uint8Array`, `Float32Array`,
+  `Float64Array`, `Int32Array` as data inputs
+- **DecodedMessage:** zero-copy TypedArray views (`object_data_f32/f64/i32/u8`)
+  and safe-copy variant (`object_data_copy_f32`); all views handle zero-length
+  payloads without UB
+- **StreamingDecoder:** progressive chunk feeding, `feed()` returns `Result`
+  (rejects oversized chunks), `last_error()` / `skipped_count()` for corrupt
+  message visibility, configurable `set_max_buffer()` (default 256 MiB),
+  `reset()`, `pending_count()`, `buffered_bytes()`
+- **DecodedFrame:** per-object streaming output with `data_f32/f64/i32/u8`,
+  `descriptor()`, `base_entry()`, `byte_length()`
+- **tensogram-szip:** pure-Rust CCSDS 121.0-B-3 AEC/SZIP codec — encode,
+  decode, range-decode; FFI cross-validated against libaec; signed
+  preprocessing fixed (overflow bug found and corrected by tests)
+- **Feature gates:** `szip-pure` and `zstd-pure` in `tensogram-encodings` and
+  `tensogram-core`; mutually exclusive with `szip` / `zstd` (C FFI) variants
+- **Tests:** 134 `wasm-bindgen-test` tests (run via `wasm-pack test --node`);
+  50 `tensogram-szip` unit tests + 15 FFI cross-validation tests
+- **Build:** `wasm-pack build crates/tensogram-wasm --target web`
+- **Test:** `wasm-pack test --node crates/tensogram-wasm`
+
 ## tensogram-benchmarks
 
 23 smoke tests + 36 unit tests (+ GRIB tests gated on `eccodes`). Separate workspace crate.

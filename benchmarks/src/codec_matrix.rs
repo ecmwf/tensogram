@@ -41,6 +41,7 @@ fn make_case(
             byte_order: ByteOrder::Little,
             dtype_byte_width: 8,
             swap_unit_size: 8, // f64
+            compression_backend: Default::default(),
         },
         sp_bits: None,
         is_lossy,
@@ -208,6 +209,7 @@ fn run_case(
                     byte_order: case.config.byte_order,
                     dtype_byte_width: case.config.dtype_byte_width,
                     swap_unit_size: case.config.swap_unit_size,
+                    compression_backend: case.config.compression_backend,
                 })
             } else {
                 Ok(case.config.clone())
