@@ -206,6 +206,7 @@ pub fn decode_range(
     Ok(results)
 }
 
+#[cfg(feature = "remote")]
 pub(crate) fn decode_single_object(
     desc: &DataObjectDescriptor,
     payload_bytes: &[u8],
