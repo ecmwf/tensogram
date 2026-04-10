@@ -37,6 +37,7 @@ fn to_py_err(e: TensogramError) -> PyErr {
         TensogramError::HashMismatch { expected, actual } => PyRuntimeError::new_err(format!(
             "HashMismatch: expected={expected}, actual={actual}"
         )),
+        TensogramError::Remote(msg) => PyIOError::new_err(format!("RemoteError: {msg}")),
     }
 }
 
