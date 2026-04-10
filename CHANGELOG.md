@@ -3,6 +3,39 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.9.1] - 2026-04-11
+
+### Added
+- **Python validation bindings** — `tensogram.validate(buf, level, check_canonical)`
+  and `tensogram.validate_file(path, level, check_canonical)` return plain dicts
+  with issues, object count, and hash verification status. Four validation levels:
+  quick (structure), default (integrity), checksum (hash-only), full (fidelity + NaN/Inf).
+- **C FFI validation bindings** — `tgm_validate()` and `tgm_validate_file()` return
+  JSON via `tgm_bytes_t` out-parameter, matching the existing ABI pattern. NULL level
+  defaults to "default"; NULL buf with buf_len=0 is valid for empty-buffer validation.
+- **C++ validation wrapper** — `tensogram::validate()` and `tensogram::validate_file()`
+  return JSON strings with typed exception mapping (`invalid_arg_error`, `io_error`,
+  `encoding_error`).
+- **Python API guide** — new `docs/src/guide/python-api.md` mdBook page covering
+  the full encoding pipeline (all compressors, filters, simple packing), decoding
+  (full, selective, range, scan, iter), file API, streaming encoder, validation,
+  error handling, and dtype reference.
+- **Validation examples** — `examples/python/13_validate.py` and
+  `examples/rust/src/bin/13_validate.rs`.
+- **34 Python validation tests** — all levels, canonical combos, hash/no-hash,
+  NaN/Inf detection, file edge cases (garbage, truncation, gaps).
+- **12 FFI validation tests** — option parsing + end-to-end (null guards, empty
+  buffer, invalid level, missing file).
+- **11 C++ GoogleTest validation tests** — wrapper→FFI→Rust chain, exception
+  mapping, all levels, file validation.
+
+### Changed
+- C header doc comments now use C enum names (`TGM_ERROR_OK` not `TgmError::Ok`).
+- `tgm_bytes_t` output documented as not NUL-terminated (use `out->len`).
+- `PYTHON_API.md` removed from repo root; replaced by mdBook guide page.
+- `bfloat16` doc updated: returned as `ml_dtypes.bfloat16` when available,
+  `np.uint16` fallback.
+
 ## [0.9.0] - 2026-04-10
 
 ### Added

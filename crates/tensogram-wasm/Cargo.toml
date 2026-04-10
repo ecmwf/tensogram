@@ -1,6 +1,6 @@
 [package]
 name = "tensogram-wasm"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
 description = "WebAssembly bindings for the Tensogram N-tensor message format"
 
