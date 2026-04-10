@@ -182,9 +182,10 @@ impl RemoteBackend {
             };
 
             let msg_len = preamble.total_length;
-            if msg_len == 0 || msg_len < min_message_size || pos + msg_len > self.file_size {
-                break;
-            }
+            let msg_end = match pos.checked_add(msg_len) {
+                Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
+                _ => break,
+            };
 
             self.layouts.push(MessageLayout {
                 offset: pos,
@@ -194,7 +195,7 @@ impl RemoteBackend {
                 global_metadata: None,
             });
 
-            pos += msg_len;
+            pos = msg_end;
         }
 
         if self.layouts.is_empty() {
@@ -261,18 +262,20 @@ impl RemoteBackend {
                 continue;
             }
             let fh = FrameHeader::read_from(&buf[pos..])?;
-            let frame_total = fh.total_length as usize;
+            let frame_total = usize::try_from(fh.total_length).map_err(|_| {
+                TensogramError::Remote("frame total_length does not fit in usize".to_string())
+            })?;
 
             if frame_total < min_frame_size {
                 return Err(TensogramError::Remote(format!(
                     "frame total_length ({frame_total}) smaller than minimum ({min_frame_size})"
                 )));
             }
-            if pos + frame_total > buf.len() {
-                break;
-            }
+            let frame_end = match pos.checked_add(frame_total) {
+                Some(end) if end <= buf.len() => end,
+                _ => break,
+            };
 
-            let frame_end = pos + frame_total;
             if &buf[frame_end - FRAME_END.len()..frame_end] != FRAME_END {
                 return Err(TensogramError::Remote(
                     "frame missing ENDF trailer".to_string(),
@@ -296,7 +299,7 @@ impl RemoteBackend {
                 _ => {}
             }
 
-            let aligned = (pos + frame_total + 7) & !7;
+            let aligned = (frame_end.saturating_add(7)) & !7;
             pos = aligned.min(buf.len());
         }
 

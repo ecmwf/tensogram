@@ -136,7 +136,7 @@ Remote access can return different `TensogramError` variants depending on the fa
 | Connection failure | `Remote` | Network unreachable, DNS failure, timeout |
 | File not found | `Remote` | HTTP 404, S3 NoSuchKey |
 | No valid messages | `Remote` | File contains only streaming (`total_length=0`) or corrupt messages |
-| Header-only required | `Remote` | Message has no header metadata flag |
+| Missing header index | `Remote` | Message lacks `HEADER_METADATA` or `HEADER_INDEX` flag |
 | Object index out of range | `Object` | `decode_object(i, j)` where `j >= object_count` |
 
 All errors are returned as `Result`. The library avoids panics, though thread creation failures and corrupt-index arithmetic edge cases may still panic in extreme conditions.
