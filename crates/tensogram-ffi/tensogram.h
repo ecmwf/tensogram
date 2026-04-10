@@ -623,4 +623,44 @@ tgm_error tgm_streaming_encoder_finish(tgm_streaming_encoder_t *enc);
  */
 void tgm_streaming_encoder_free(tgm_streaming_encoder_t *enc);
 
+/**
+ * Validate a single Tensogram message buffer.
+ *
+ * `buf` / `buf_len`: the wire-format message bytes (single message).
+ * `level`: validation depth — null-terminated C string:
+ *   `"quick"` (structure only), `"default"` (up to hash check),
+ *   `"checksum"` (hash check, suppress structural warnings),
+ *   `"full"` (full decode + NaN/Inf scan). NULL defaults to `"default"`.
+ * `check_canonical`: non-zero to check RFC 8949 CBOR key ordering.
+ * `out`: receives a UTF-8 JSON string describing the validation report.
+ *   Free with `tgm_bytes_free`.
+ *
+ * Returns `TgmError::Ok` on success (even if the message has issues —
+ * the issues are in the JSON report). Returns a non-Ok error code only
+ * for argument validation failures (null pointers, invalid level string).
+ */
+tgm_error tgm_validate(const uint8_t *buf,
+                       size_t buf_len,
+                       const char *level,
+                       int32_t check_canonical,
+                       tgm_bytes_t *out);
+
+/**
+ * Validate all messages in a `.tgm` file.
+ *
+ * `path`: null-terminated UTF-8 path to the file.
+ * `level`: validation depth (same as `tgm_validate`). NULL = `"default"`.
+ * `check_canonical`: non-zero to check CBOR key ordering.
+ * `out`: receives a UTF-8 JSON string describing the file validation report.
+ *   Free with `tgm_bytes_free`.
+ *
+ * Returns `TgmError::Ok` on success (issues are in the JSON).
+ * Returns `TgmError::Io` if the file cannot be opened or read.
+ * Returns `TgmError::InvalidArg` for null pointers or invalid level.
+ */
+tgm_error tgm_validate_file(const char *path,
+                            const char *level,
+                            int32_t check_canonical,
+                            tgm_bytes_t *out);
+
 #endif  /* TENSOGRAM_H */
