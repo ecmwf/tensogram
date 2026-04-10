@@ -4,6 +4,7 @@
 //! `validate_file()` for checking all messages in a `.tgm` file, including
 //! detection of truncated or garbage bytes between messages.
 
+mod fidelity;
 mod integrity;
 mod metadata;
 mod structure;
@@ -26,16 +27,19 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
     let mut object_count = 0;
     let mut hash_verified = false;
 
-    let report_structure = options.mode != ValidateMode::Checksum;
-    let run_metadata = matches!(
-        options.mode,
-        ValidateMode::Default | ValidateMode::Canonical
-    );
-    let run_integrity = matches!(
-        options.mode,
-        ValidateMode::Default | ValidateMode::Checksum | ValidateMode::Canonical
-    );
-    let check_canonical = options.mode == ValidateMode::Canonical;
+    // Normalize options: checksum_only implies at least Integrity level
+    let effective_max = if options.checksum_only {
+        options.max_level.max(ValidationLevel::Integrity)
+    } else {
+        options.max_level
+    };
+    let report_structure = !options.checksum_only;
+    let check_canonical = options.check_canonical;
+    // Canonical checks require metadata level to parse CBOR
+    let run_metadata =
+        (effective_max >= ValidationLevel::Metadata && !options.checksum_only) || check_canonical;
+    let run_integrity = effective_max >= ValidationLevel::Integrity;
+    let run_fidelity = effective_max >= ValidationLevel::Fidelity && !options.checksum_only;
 
     // Level 1: Structure — always run to extract frame payloads.
     // In checksum mode, non-fatal structural warnings are suppressed,
@@ -60,14 +64,44 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
     if let Some(ref walk) = walk {
         object_count = walk.data_objects.len();
 
-        // Level 2: Metadata
+        // Build per-object contexts only when needed by metadata, integrity, or fidelity.
+        // In quick mode (without --canonical), we skip this allocation.
+        let needs_objects = run_metadata || run_integrity || run_fidelity || check_canonical;
+        let mut objects: Vec<ObjectContext<'_>> = if needs_objects {
+            walk.data_objects
+                .iter()
+                .map(|(cbor_bytes, payload, frame_offset)| ObjectContext {
+                    descriptor: None,
+                    descriptor_failed: false,
+                    cbor_bytes,
+                    payload,
+                    frame_offset: *frame_offset,
+                    decode_state: DecodeState::NotDecoded,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Level 2: Metadata — parses and caches descriptors
         if run_metadata {
-            validate_metadata(walk, &mut issues, check_canonical);
+            validate_metadata(walk, &mut objects, &mut issues, check_canonical);
         }
 
-        // Level 3: Integrity
+        // Level 3: Integrity — hash verification + decode pipeline (caches decoded bytes)
         if run_integrity {
-            hash_verified = validate_integrity(walk, &mut issues);
+            hash_verified = validate_integrity(
+                walk,
+                &mut objects,
+                &mut issues,
+                options.checksum_only,
+                run_fidelity,
+            );
+        }
+
+        // Level 4: Fidelity — full decode check, NaN/Inf scan
+        if run_fidelity {
+            fidelity::validate_fidelity(&mut objects, &mut issues);
         }
     }
 
@@ -423,7 +457,8 @@ mod tests {
     fn quick_mode_skips_metadata_and_integrity() {
         let msg = make_test_message();
         let opts = ValidateOptions {
-            mode: ValidateMode::Quick,
+            max_level: ValidationLevel::Structure,
+            ..ValidateOptions::default()
         };
         let report = validate_message(&msg, &opts);
         assert!(report.is_ok());
@@ -434,7 +469,8 @@ mod tests {
     fn checksum_mode_verifies_hash() {
         let msg = make_test_message();
         let opts = ValidateOptions {
-            mode: ValidateMode::Checksum,
+            checksum_only: true,
+            ..ValidateOptions::default()
         };
         let report = validate_message(&msg, &opts);
         assert!(report.is_ok());
@@ -447,7 +483,8 @@ mod tests {
         let end = msg.len();
         msg[end - 8..end].copy_from_slice(b"BADMAGIC");
         let opts = ValidateOptions {
-            mode: ValidateMode::Checksum,
+            checksum_only: true,
+            ..ValidateOptions::default()
         };
         let report = validate_message(&msg, &opts);
         assert!(
@@ -458,20 +495,13 @@ mod tests {
 
     #[test]
     fn checksum_mode_catches_structural_errors() {
-        // Corrupt the metadata CBOR so structure succeeds (walk=Some) but
-        // metadata has no objects. Checksum mode should surface the structural
-        // error that prevents integrity verification.
         let mut msg = make_test_message();
-        // Corrupt the first frame's CBOR payload — this makes the metadata
-        // frame unreadable, which propagates as a metadata-level error.
-        // But we need a *structural* error. Instead, corrupt the total_length
-        // to be larger than actual — this is a structural error.
-        // Set total_length to actual + 100
         let actual_len = msg.len() as u64;
         let bad_len = actual_len + 100;
         msg[16..24].copy_from_slice(&bad_len.to_be_bytes());
         let opts = ValidateOptions {
-            mode: ValidateMode::Checksum,
+            checksum_only: true,
+            ..ValidateOptions::default()
         };
         let report = validate_message(&msg, &opts);
         let has_error = report
@@ -489,7 +519,8 @@ mod tests {
     fn canonical_mode_on_valid_message() {
         let msg = make_test_message();
         let opts = ValidateOptions {
-            mode: ValidateMode::Canonical,
+            check_canonical: true,
+            ..ValidateOptions::default()
         };
         let report = validate_message(&msg, &opts);
         assert!(report.is_ok(), "issues: {:?}", report.issues);
@@ -754,5 +785,519 @@ mod tests {
         assert!(report.is_ok(), "issues: {:?}", report.issues);
         assert_eq!(report.object_count, 0);
         assert!(!report.hash_verified); // no objects → nothing to verify
+    }
+
+    // ── Level 4: Fidelity tests ─────────────────────────────────────────
+
+    fn full_opts() -> ValidateOptions {
+        ValidateOptions {
+            max_level: ValidationLevel::Fidelity,
+            ..ValidateOptions::default()
+        }
+    }
+
+    fn make_float64_message(values: &[f64]) -> Vec<u8> {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![values.len() as u64],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+        encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap()
+    }
+
+    fn make_float32_message_le(values: &[f32]) -> Vec<u8> {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![values.len() as u64],
+            strides: vec![4],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Little,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn full_mode_valid_float64_passes() {
+        let msg = make_float64_message(&[1.0, 2.0, 3.0, 4.0]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(report.is_ok(), "issues: {:?}", report.issues);
+    }
+
+    #[test]
+    fn full_mode_nan_float64_detected() {
+        let msg = make_float64_message(&[1.0, f64::NAN, 3.0]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        let nan_issue = report
+            .issues
+            .iter()
+            .find(|i| i.code == IssueCode::NanDetected);
+        assert!(
+            nan_issue.is_some(),
+            "expected NanDetected, got: {:?}",
+            report.issues
+        );
+        assert!(nan_issue.unwrap().description.contains("element 1"));
+    }
+
+    #[test]
+    fn full_mode_inf_float64_detected() {
+        let msg = make_float64_message(&[1.0, 2.0, f64::INFINITY]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        let inf_issue = report
+            .issues
+            .iter()
+            .find(|i| i.code == IssueCode::InfDetected);
+        assert!(
+            inf_issue.is_some(),
+            "expected InfDetected, got: {:?}",
+            report.issues
+        );
+        assert!(inf_issue.unwrap().description.contains("element 2"));
+    }
+
+    #[test]
+    fn full_mode_neg_inf_detected() {
+        let msg = make_float64_message(&[f64::NEG_INFINITY, 1.0]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::InfDetected));
+    }
+
+    #[test]
+    fn full_mode_float32_le_nan_detected() {
+        let msg = make_float32_message_le(&[1.0, f32::NAN, 3.0]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::NanDetected));
+    }
+
+    #[test]
+    fn full_mode_float32_le_inf_detected() {
+        let msg = make_float32_message_le(&[f32::INFINITY]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::InfDetected));
+    }
+
+    #[test]
+    fn full_mode_integer_passes() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![4],
+            dtype: Dtype::Int32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let data = vec![0u8; 16]; // 4 × i32
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &full_opts());
+        assert!(
+            report.is_ok(),
+            "integer should pass fidelity: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn full_mode_hash_verified_false_on_nan() {
+        let msg = make_float64_message(&[f64::NAN]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(
+            !report.hash_verified,
+            "hash_verified should be false when NaN detected"
+        );
+    }
+
+    #[test]
+    fn full_mode_float16_nan() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![2],
+            dtype: Dtype::Float16,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        // Float16: exponent=0x1F (all 1s), mantissa=1 => NaN
+        // Bit pattern: 0_11111_0000000001 = 0x7C01
+        let mut data = vec![0u8; 4]; // 2 × f16
+        data[0..2].copy_from_slice(&0x0000u16.to_be_bytes()); // valid zero
+        data[2..4].copy_from_slice(&0x7C01u16.to_be_bytes()); // NaN
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        let nan = report
+            .issues
+            .iter()
+            .find(|i| i.code == IssueCode::NanDetected);
+        assert!(
+            nan.is_some(),
+            "expected float16 NaN, got: {:?}",
+            report.issues
+        );
+        assert!(nan.unwrap().description.contains("element 1"));
+    }
+
+    #[test]
+    fn full_mode_float16_inf() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![1],
+            strides: vec![2],
+            dtype: Dtype::Float16,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        // Float16 Inf: exponent=0x1F, mantissa=0 => 0x7C00
+        let data = 0x7C00u16.to_be_bytes().to_vec();
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::InfDetected));
+    }
+
+    #[test]
+    fn full_mode_bfloat16_nan() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![1],
+            strides: vec![2],
+            dtype: Dtype::Bfloat16,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        // BFloat16 NaN: exponent=0xFF, mantissa≠0
+        // sign(1) + exp(8) + mantissa(7): 0_11111111_0000001 = 0x7F81
+        let data = 0x7F81u16.to_be_bytes().to_vec();
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        assert!(report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::NanDetected));
+    }
+
+    #[test]
+    fn full_mode_complex64_real_nan() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![1],
+            strides: vec![8],
+            dtype: Dtype::Complex64,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        // Complex64: [NaN real, 0.0 imag]
+        let mut data = Vec::new();
+        data.extend_from_slice(&f32::NAN.to_be_bytes());
+        data.extend_from_slice(&0.0f32.to_be_bytes());
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        let nan = report
+            .issues
+            .iter()
+            .find(|i| i.code == IssueCode::NanDetected);
+        assert!(nan.is_some());
+        assert!(nan.unwrap().description.contains("real component"));
+    }
+
+    #[test]
+    fn full_mode_complex128_imag_inf() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![1],
+            strides: vec![16],
+            dtype: Dtype::Complex128,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        // Complex128: [1.0 real, Inf imag]
+        let mut data = Vec::new();
+        data.extend_from_slice(&1.0f64.to_be_bytes());
+        data.extend_from_slice(&f64::INFINITY.to_be_bytes());
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &full_opts());
+        assert!(!report.is_ok());
+        let inf = report
+            .issues
+            .iter()
+            .find(|i| i.code == IssueCode::InfDetected);
+        assert!(inf.is_some());
+        assert!(inf.unwrap().description.contains("imaginary component"));
+    }
+
+    #[test]
+    fn full_mode_with_canonical() {
+        let msg = make_test_message();
+        let opts = ValidateOptions {
+            max_level: ValidationLevel::Fidelity,
+            check_canonical: true,
+            ..ValidateOptions::default()
+        };
+        let report = validate_message(&msg, &opts);
+        assert!(
+            report.is_ok(),
+            "full+canonical should pass: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn full_mode_json_serialization() {
+        let msg = make_float64_message(&[f64::NAN]);
+        let report = validate_message(&msg, &full_opts());
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"nan_detected\""));
+        assert!(json.contains("\"fidelity\""));
+    }
+
+    #[test]
+    fn default_mode_skips_fidelity() {
+        // Default mode (Integrity) should NOT run fidelity checks
+        let msg = make_float64_message(&[f64::NAN]);
+        let report = validate_message(&msg, &ValidateOptions::default());
+        // NaN should not be detected at default level
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::NanDetected),
+            "default mode should not run fidelity: {:?}",
+            report.issues
+        );
+    }
+
+    // ── Review test gaps ────────────────────────────────────────────────
+
+    #[test]
+    fn full_mode_negative_zero_passes() {
+        let msg = make_float64_message(&[-0.0, 0.0, 1.0]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(
+            report.is_ok(),
+            "negative zero should pass: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn full_mode_subnormal_passes() {
+        // Smallest subnormal f64
+        let msg = make_float64_message(&[5e-324, 1.0]);
+        let report = validate_message(&msg, &full_opts());
+        assert!(
+            report.is_ok(),
+            "subnormals should pass: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn full_mode_zero_length_array() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![0],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let data: Vec<u8> = vec![];
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &full_opts());
+        assert!(
+            report.is_ok(),
+            "zero-length array should pass: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn full_mode_decoded_size_mismatch() {
+        // Encode a valid 3-element float32 message, then patch the shape
+        // in the wire bytes to claim 4 elements. This creates a mismatch
+        // between decoded payload size (12 bytes) and expected (16 bytes).
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![3],
+            strides: vec![4],
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let data = vec![0u8; 12]; // 3 × f32, valid
+        let opts = EncodeOptions {
+            hash_algorithm: None,
+            ..EncodeOptions::default()
+        };
+        let mut msg = encode(&meta, &[(&desc, data.as_slice())], &opts).unwrap();
+
+        // Patch the data object descriptor's shape from [3] to [4] in the wire bytes.
+        // CBOR array(1) + uint(3) = 0x81 0x03. We search backward from the end
+        // to find the data object descriptor (last CBOR in the message before the
+        // postamble), avoiding any match in the metadata frame's _reserved_.tensor
+        // which encodes shape differently (as a CBOR array under a map key).
+        let mut patched = false;
+        for i in (0..msg.len() - 1).rev() {
+            if msg[i] == 0x81 && msg[i + 1] == 0x03 {
+                msg[i + 1] = 0x04; // shape [3] → [4]
+                patched = true;
+                break;
+            }
+        }
+        assert!(patched, "could not find shape [3] in encoded message");
+
+        let report = validate_message(&msg, &full_opts());
+        let has_mismatch = report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::DecodedSizeMismatch);
+        assert!(
+            has_mismatch,
+            "expected DecodedSizeMismatch, got: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn quick_canonical_runs_metadata() {
+        // --quick --canonical should still parse metadata for canonical check
+        let msg = make_test_message();
+        let opts = ValidateOptions {
+            max_level: ValidationLevel::Structure,
+            check_canonical: true,
+            checksum_only: false,
+        };
+        let report = validate_message(&msg, &opts);
+        // Should pass (our encoder produces canonical CBOR)
+        assert!(report.is_ok(), "issues: {:?}", report.issues);
     }
 }

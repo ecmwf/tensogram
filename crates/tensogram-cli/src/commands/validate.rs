@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use tensogram_core::{
-    validate_file, FileIssue, FileValidationReport, IssueSeverity, ValidateMode, ValidateOptions,
+    validate_file, FileIssue, FileValidationReport, IssueSeverity, ValidateOptions,
     ValidationReport,
 };
 
@@ -20,16 +20,15 @@ impl std::error::Error for ValidationFailed {}
 
 pub fn run(
     files: &[PathBuf],
-    mode: ValidateMode,
+    options: &ValidateOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let options = ValidateOptions { mode };
     let mut all_ok = true;
 
     if json {
         let mut entries: Vec<JsonFileReport> = Vec::new();
         for path in files {
-            let report = validate_file(path, &options)?;
+            let report = validate_file(path, options)?;
             if !report.is_ok() {
                 all_ok = false;
             }
@@ -38,7 +37,7 @@ pub fn run(
         println!("{}", serde_json::to_string_pretty(&entries)?);
     } else {
         for path in files {
-            let report = validate_file(path, &options)?;
+            let report = validate_file(path, options)?;
             print_human(path, &report);
             if !report.is_ok() {
                 all_ok = false;
@@ -194,39 +193,64 @@ mod tests {
         path
     }
 
+    fn default_opts() -> ValidateOptions {
+        ValidateOptions::default()
+    }
+
+    fn quick_opts() -> ValidateOptions {
+        ValidateOptions {
+            max_level: tensogram_core::ValidationLevel::Structure,
+            ..default_opts()
+        }
+    }
+
+    fn checksum_opts() -> ValidateOptions {
+        ValidateOptions {
+            checksum_only: true,
+            ..default_opts()
+        }
+    }
+
+    fn canonical_opts() -> ValidateOptions {
+        ValidateOptions {
+            check_canonical: true,
+            ..default_opts()
+        }
+    }
+
     #[test]
     fn cli_validate_valid_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = make_test_file(dir.path(), "valid.tgm", 2);
-        run(&[path], ValidateMode::Default, false).unwrap();
+        run(&[path], &default_opts(), false).unwrap();
     }
 
     #[test]
     fn cli_validate_quick_mode() {
         let dir = tempfile::tempdir().unwrap();
         let path = make_test_file(dir.path(), "quick.tgm", 1);
-        run(&[path], ValidateMode::Quick, false).unwrap();
+        run(&[path], &quick_opts(), false).unwrap();
     }
 
     #[test]
     fn cli_validate_checksum_mode() {
         let dir = tempfile::tempdir().unwrap();
         let path = make_test_file(dir.path(), "checksum.tgm", 1);
-        run(&[path], ValidateMode::Checksum, false).unwrap();
+        run(&[path], &checksum_opts(), false).unwrap();
     }
 
     #[test]
     fn cli_validate_canonical_mode() {
         let dir = tempfile::tempdir().unwrap();
         let path = make_test_file(dir.path(), "canonical.tgm", 1);
-        run(&[path], ValidateMode::Canonical, false).unwrap();
+        run(&[path], &canonical_opts(), false).unwrap();
     }
 
     #[test]
     fn cli_validate_json_mode() {
         let dir = tempfile::tempdir().unwrap();
         let path = make_test_file(dir.path(), "json.tgm", 1);
-        run(&[path], ValidateMode::Default, true).unwrap();
+        run(&[path], &default_opts(), true).unwrap();
     }
 
     #[test]
@@ -234,14 +258,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p1 = make_test_file(dir.path(), "a.tgm", 1);
         let p2 = make_test_file(dir.path(), "b.tgm", 1);
-        run(&[p1, p2], ValidateMode::Default, false).unwrap();
+        run(&[p1, p2], &default_opts(), false).unwrap();
     }
 
     #[test]
     fn cli_validate_missing_file() {
         let result = run(
             &[PathBuf::from("/nonexistent/file.tgm")],
-            ValidateMode::Default,
+            &default_opts(),
             false,
         );
         assert!(result.is_err());
@@ -249,7 +273,7 @@ mod tests {
 
     #[test]
     fn cli_validate_zero_files() {
-        run(&[], ValidateMode::Default, false).unwrap();
+        run(&[], &default_opts(), false).unwrap();
     }
 
     #[test]
@@ -257,6 +281,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p1 = make_test_file(dir.path(), "a.tgm", 1);
         let p2 = make_test_file(dir.path(), "b.tgm", 1);
-        run(&[p1, p2], ValidateMode::Default, true).unwrap();
+        run(&[p1, p2], &default_opts(), true).unwrap();
+    }
+
+    fn full_opts() -> ValidateOptions {
+        ValidateOptions {
+            max_level: tensogram_core::ValidationLevel::Fidelity,
+            ..default_opts()
+        }
+    }
+
+    #[test]
+    fn cli_validate_full_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path(), "full.tgm", 1);
+        run(&[path], &full_opts(), false).unwrap();
+    }
+
+    #[test]
+    fn cli_validate_full_canonical() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path(), "full_canonical.tgm", 1);
+        let opts = ValidateOptions {
+            max_level: tensogram_core::ValidationLevel::Fidelity,
+            check_canonical: true,
+            ..default_opts()
+        };
+        run(&[path], &opts, false).unwrap();
+    }
+
+    #[test]
+    fn cli_validate_full_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = make_test_file(dir.path(), "full_json.tgm", 1);
+        run(&[path], &full_opts(), true).unwrap();
     }
 }

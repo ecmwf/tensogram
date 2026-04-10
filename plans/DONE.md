@@ -30,6 +30,26 @@ this across all interfaces.
 - **Tests:** 1050+ total (283+ Rust + 253 Python + 181 xarray + 204 Zarr + 117 C++ + 17 GRIB + 44 NetCDF integration + 5 CLI netcdf pipeline + 8 Python netcdf e2e)
 - **Quality:** 0 clippy warnings, 90.5% Rust line coverage
 
+## tensogram validate PR 2 — Level 4 fidelity + API refactor
+
+- Refactored `ValidateMode` enum into composable `ValidateOptions`
+  with `max_level`, `check_canonical`, `checksum_only` fields.
+  `--canonical` is now independent and combinable with any level.
+- Introduced `ObjectContext` for shared per-object state across
+  validation levels: Level 2 caches descriptors, Level 3 caches
+  decoded bytes, Level 4 reuses both. No duplicate work.
+- New `fidelity.rs` module with Level 4 checks:
+  - Full decode of each object (reuses Level 3 cache for non-raw)
+  - Decoded-size check: verify decoded bytes match shape * dtype width
+  - NaN/Inf scan for Float16, Bfloat16, Float32, Float64, Complex64,
+    Complex128 — all are errors (break encoding pipeline computations)
+  - Reports element index and component (real/imag) for complex types
+  - Raw objects scanned in-place without decode_pipeline
+- CLI: `--full` flag (mutually exclusive with `--quick`/`--checksum`),
+  `--canonical` combinable with any level.
+- Comprehensive fidelity test suite covering all float dtypes, byte orders,
+  complex components, size mismatch, and mode combinations.
+
 ## tensogram validate (PR 1 of 3)
 
 New `validate` subcommand and library API for checking `.tgm` file

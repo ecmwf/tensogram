@@ -12,19 +12,8 @@ pub enum ValidationLevel {
     Metadata = 2,
     /// Level 3: hash verification, decompression without value interpretation.
     Integrity = 3,
-}
-
-/// How to run validation — selects which levels are included.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValidateMode {
-    /// Level 1 only (--quick).
-    Quick,
-    /// Levels 1–3 (default).
-    Default,
-    /// Level 3 only (--checksum).
-    Checksum,
-    /// Levels 1–3 plus opt-in canonical CBOR check.
-    Canonical,
+    /// Level 4: full decode, NaN/Inf detection, decoded-size check.
+    Fidelity = 4,
 }
 
 /// Severity of a validation finding.
@@ -96,6 +85,43 @@ pub enum IssueCode {
     NoHashAvailable,
     DecodePipelineFailed,
     PipelineConfigFailed,
+
+    // ── Level 4: Fidelity ──
+    DecodeObjectFailed,
+    DecodedSizeMismatch,
+    NanDetected,
+    InfDetected,
+}
+
+/// State of decode pipeline execution for a data object.
+pub(crate) enum DecodeState {
+    /// Not yet attempted.
+    NotDecoded,
+    /// Successfully decoded.
+    Decoded(Vec<u8>),
+    /// Decode was attempted and failed — Level 4 should skip.
+    DecodeFailed,
+}
+
+/// Per-object validation context, populated incrementally across levels.
+///
+/// Level 1 fills `payload` and `frame_offset`.
+/// Level 2 fills `descriptor`.
+/// Level 3 fills `decode_state` for non-raw objects.
+/// Level 4 reuses decoded bytes or scans `payload` in-place for raw objects.
+pub(crate) struct ObjectContext<'a> {
+    /// Parsed descriptor (filled by Level 2).
+    pub descriptor: Option<crate::types::DataObjectDescriptor>,
+    /// True if descriptor parse was attempted and failed (prevents Level 3 retry).
+    pub descriptor_failed: bool,
+    /// Raw CBOR bytes for the descriptor.
+    pub cbor_bytes: &'a [u8],
+    /// Encoded payload bytes (from Level 1 frame walk).
+    pub payload: &'a [u8],
+    /// Byte offset of the data object frame within the message.
+    pub frame_offset: usize,
+    /// Decode pipeline state (filled by Level 3, reused by Level 4).
+    pub decode_state: DecodeState,
 }
 
 /// A single validation finding.
@@ -114,15 +140,26 @@ pub struct ValidationIssue {
 }
 
 /// Options passed to `validate_message`.
+///
+/// Composable: `max_level` selects how deep to validate, `check_canonical`
+/// adds CBOR ordering checks, `checksum_only` limits to hash verification.
 #[derive(Debug, Clone)]
 pub struct ValidateOptions {
-    pub mode: ValidateMode,
+    /// Highest validation level to run (levels 1..=max_level).
+    pub max_level: ValidationLevel,
+    /// Check RFC 8949 deterministic CBOR key ordering (opt-in).
+    pub check_canonical: bool,
+    /// Checksum-only mode: run Level 3 hash verification, suppress
+    /// structural warnings (errors still reported).
+    pub checksum_only: bool,
 }
 
 impl Default for ValidateOptions {
     fn default() -> Self {
         Self {
-            mode: ValidateMode::Default,
+            max_level: ValidationLevel::Integrity,
+            check_canonical: false,
+            checksum_only: false,
         }
     }
 }

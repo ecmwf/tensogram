@@ -33,7 +33,6 @@ pub use types::{
 };
 pub use validate::{
     validate_buffer, validate_file, validate_message, FileIssue, FileValidationReport, IssueCode,
-    IssueSeverity, ValidateMode, ValidateOptions, ValidationIssue, ValidationLevel,
-    ValidationReport,
+    IssueSeverity, ValidateOptions, ValidationIssue, ValidationLevel, ValidationReport,
 };
 pub use wire::{FrameType, MessageFlags};

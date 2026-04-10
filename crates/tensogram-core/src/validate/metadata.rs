@@ -1,7 +1,7 @@
 //! Level 2: Metadata validation — CBOR parsing and consistency checks.
 
 use crate::metadata;
-use crate::types::{DataObjectDescriptor, GlobalMetadata};
+use crate::types::GlobalMetadata;
 use crate::wire::FrameType;
 
 use super::structure::FrameWalkResult;
@@ -9,6 +9,7 @@ use super::types::*;
 
 pub(crate) fn validate_metadata(
     walk: &FrameWalkResult<'_>,
+    objects: &mut [ObjectContext<'_>],
     issues: &mut Vec<ValidationIssue>,
     check_canonical: bool,
 ) {
@@ -49,7 +50,7 @@ pub(crate) fn validate_metadata(
             FrameType::HeaderIndex | FrameType::FooterIndex => {
                 match metadata::cbor_to_index(payload) {
                     Ok(idx) => {
-                        let obj_count = walk.data_objects.len();
+                        let obj_count = objects.len();
                         let indexed_count = usize::try_from(idx.object_count).unwrap_or(usize::MAX);
                         if indexed_count != obj_count {
                             issues.push(err(
@@ -78,8 +79,8 @@ pub(crate) fn validate_metadata(
                         }
                         // Verify each index offset points to the actual data object
                         for (j, &idx_offset) in idx.offsets.iter().enumerate() {
-                            if j < walk.data_objects.len() {
-                                let actual_offset = walk.data_objects[j].2;
+                            if j < objects.len() {
+                                let actual_offset = objects[j].frame_offset;
                                 let offset_matches = usize::try_from(idx_offset)
                                     .map(|o| o == actual_offset)
                                     .unwrap_or(false);
@@ -112,7 +113,7 @@ pub(crate) fn validate_metadata(
             FrameType::HeaderHash | FrameType::FooterHash => {
                 match metadata::cbor_to_hash_frame(payload) {
                     Ok(hf) => {
-                        let obj_count = walk.data_objects.len();
+                        let obj_count = objects.len();
                         if hf.hashes.len() != obj_count {
                             issues.push(err(
                                 IssueCode::HashFrameCountMismatch,
@@ -189,8 +190,8 @@ pub(crate) fn validate_metadata(
         None => return,
     };
 
-    // base.len() vs object count (before normalization)
-    let obj_count = walk.data_objects.len();
+    // base.len() vs object count
+    let obj_count = objects.len();
     if let Some(base_len) = meta_base_len {
         if base_len > obj_count {
             issues.push(err(
@@ -206,10 +207,10 @@ pub(crate) fn validate_metadata(
         }
     }
 
-    // Per-object descriptor validation
-    for (i, (cbor_bytes, _payload, _offset)) in walk.data_objects.iter().enumerate() {
+    // Per-object descriptor validation — parse and cache in ObjectContext
+    for (i, obj) in objects.iter_mut().enumerate() {
         if check_canonical {
-            if let Err(e) = metadata::verify_canonical_cbor(cbor_bytes) {
+            if let Err(e) = metadata::verify_canonical_cbor(obj.cbor_bytes) {
                 issues.push(warn(
                     IssueCode::DescriptorCborNonCanonical,
                     ValidationLevel::Metadata,
@@ -220,9 +221,10 @@ pub(crate) fn validate_metadata(
             }
         }
 
-        let desc: DataObjectDescriptor = match metadata::cbor_to_object_descriptor(cbor_bytes) {
+        let desc = match metadata::cbor_to_object_descriptor(obj.cbor_bytes) {
             Ok(d) => d,
             Err(e) => {
+                obj.descriptor_failed = true;
                 issues.push(err(
                     IssueCode::DescriptorCborParseFailed,
                     ValidationLevel::Metadata,
@@ -312,6 +314,9 @@ pub(crate) fn validate_metadata(
                 "obj_type is empty".to_string(),
             ));
         }
+
+        // Cache the parsed descriptor for Level 3/4
+        obj.descriptor = Some(desc);
     }
 
     // Validate _reserved_.tensor in each base entry
