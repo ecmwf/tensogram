@@ -312,7 +312,7 @@ impl TensogramFile {
 
     // ── Object-level access (efficient for remote) ───────────────────────
 
-    pub fn file_decode_metadata(&mut self, msg_idx: usize) -> Result<GlobalMetadata> {
+    pub fn decode_metadata(&mut self, msg_idx: usize) -> Result<GlobalMetadata> {
         match &mut self.backend {
             #[cfg(feature = "remote")]
             Backend::Remote(remote) => remote.read_metadata(msg_idx),
@@ -323,7 +323,7 @@ impl TensogramFile {
         }
     }
 
-    pub fn file_decode_descriptors(
+    pub fn decode_descriptors(
         &mut self,
         msg_idx: usize,
     ) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>)> {
@@ -337,7 +337,7 @@ impl TensogramFile {
         }
     }
 
-    pub fn file_decode_object(
+    pub fn decode_object(
         &mut self,
         msg_idx: usize,
         obj_idx: usize,
@@ -571,7 +571,7 @@ mod tests {
             &EncodeOptions::default(),
         )?;
 
-        let decoded_meta = file.file_decode_metadata(0)?;
+        let decoded_meta = file.decode_metadata(0)?;
         assert_eq!(decoded_meta.version, 2);
         Ok(())
     }
@@ -591,7 +591,7 @@ mod tests {
             &EncodeOptions::default(),
         )?;
 
-        let (decoded_meta, descriptors) = file.file_decode_descriptors(0)?;
+        let (decoded_meta, descriptors) = file.decode_descriptors(0)?;
         assert_eq!(decoded_meta.version, 2);
         assert_eq!(descriptors.len(), 1);
         assert_eq!(descriptors[0].shape, vec![4]);
@@ -614,7 +614,7 @@ mod tests {
         )?;
 
         let (decoded_meta, decoded_desc, decoded_data) =
-            file.file_decode_object(0, 0, &DecodeOptions::default())?;
+            file.decode_object(0, 0, &DecodeOptions::default())?;
         assert_eq!(decoded_meta.version, 2);
         assert_eq!(decoded_desc.shape, vec![4]);
         assert_eq!(decoded_data, data);

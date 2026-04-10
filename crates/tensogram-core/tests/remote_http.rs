@@ -281,14 +281,14 @@ async fn test_remote_decode_message() -> Result<(), Box<dyn Error>> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_remote_file_decode_metadata() -> Result<(), Box<dyn Error>> {
+async fn test_remote_decode_metadata() -> Result<(), Box<dyn Error>> {
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
     let mut file = TensogramFile::open_source(server.url())?;
     server.reset_count();
 
-    let meta = file.file_decode_metadata(0)?;
+    let meta = file.decode_metadata(0)?;
     assert_eq!(meta.version, 2);
 
     // First metadata call triggers layout discovery (1 header chunk read).
@@ -300,7 +300,7 @@ async fn test_remote_file_decode_metadata() -> Result<(), Box<dyn Error>> {
     );
 
     server.reset_count();
-    let meta2 = file.file_decode_metadata(0)?;
+    let meta2 = file.decode_metadata(0)?;
     assert_eq!(meta2.version, 2);
     assert_eq!(
         server.request_count(),
@@ -311,12 +311,12 @@ async fn test_remote_file_decode_metadata() -> Result<(), Box<dyn Error>> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_remote_file_decode_descriptors() -> Result<(), Box<dyn Error>> {
+async fn test_remote_decode_descriptors() -> Result<(), Box<dyn Error>> {
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
     let mut file = TensogramFile::open_source(server.url())?;
-    let (meta, descriptors) = file.file_decode_descriptors(0)?;
+    let (meta, descriptors) = file.decode_descriptors(0)?;
     assert_eq!(meta.version, 2);
     assert_eq!(descriptors.len(), 1);
     assert_eq!(descriptors[0].shape, vec![4]);
@@ -324,7 +324,7 @@ async fn test_remote_file_decode_descriptors() -> Result<(), Box<dyn Error>> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_remote_file_decode_object() -> Result<(), Box<dyn Error>> {
+async fn test_remote_decode_object() -> Result<(), Box<dyn Error>> {
     let meta = make_global_meta();
     let desc = make_descriptor(vec![4]);
     let data = vec![42u8; 16];
@@ -335,7 +335,7 @@ async fn test_remote_file_decode_object() -> Result<(), Box<dyn Error>> {
     server.reset_count();
 
     let (decoded_meta, decoded_desc, decoded_data) =
-        file.file_decode_object(0, 0, &DecodeOptions::default())?;
+        file.decode_object(0, 0, &DecodeOptions::default())?;
     assert_eq!(decoded_meta.version, 2);
     assert_eq!(decoded_desc.shape, vec![4]);
     assert_eq!(decoded_data, data);
@@ -361,12 +361,12 @@ async fn test_remote_multi_object_decode_single() -> Result<(), Box<dyn Error>> 
     let mut file = TensogramFile::open_source(server.url())?;
 
     // Read only the second object
-    let (_, desc, data) = file.file_decode_object(0, 1, &DecodeOptions::default())?;
+    let (_, desc, data) = file.decode_object(0, 1, &DecodeOptions::default())?;
     assert_eq!(desc.shape, vec![8]);
     assert_eq!(data, vec![20u8; 32]);
 
     // Read the third object
-    let (_, desc, data) = file.file_decode_object(0, 2, &DecodeOptions::default())?;
+    let (_, desc, data) = file.decode_object(0, 2, &DecodeOptions::default())?;
     assert_eq!(desc.shape, vec![2]);
     assert_eq!(data, vec![30u8; 8]);
     Ok(())
@@ -380,7 +380,7 @@ async fn test_remote_multi_object_descriptors() -> Result<(), Box<dyn Error>> {
     let server = MockServer::start(msg).await?;
 
     let mut file = TensogramFile::open_source(server.url())?;
-    let (_, descriptors) = file.file_decode_descriptors(0)?;
+    let (_, descriptors) = file.decode_descriptors(0)?;
     assert_eq!(descriptors.len(), 2);
     assert_eq!(descriptors[0].shape, vec![4]);
     assert_eq!(descriptors[1].shape, vec![8]);
@@ -401,10 +401,10 @@ async fn test_remote_multi_message_file() -> Result<(), Box<dyn Error>> {
     let mut file = TensogramFile::open_source(server.url())?;
     assert_eq!(file.message_count()?, 2);
 
-    let meta0 = file.file_decode_metadata(0)?;
+    let meta0 = file.decode_metadata(0)?;
     assert_eq!(meta0.version, 2);
 
-    let (_, descs1) = file.file_decode_descriptors(1)?;
+    let (_, descs1) = file.decode_descriptors(1)?;
     assert_eq!(descs1[0].shape, vec![8]);
     Ok(())
 }
@@ -417,7 +417,7 @@ async fn test_remote_object_out_of_range() -> Result<(), Box<dyn Error>> {
     let server = MockServer::start(msg).await?;
 
     let mut file = TensogramFile::open_source(server.url())?;
-    let result = file.file_decode_object(0, 5, &DecodeOptions::default());
+    let result = file.decode_object(0, 5, &DecodeOptions::default());
     assert!(result.is_err());
     Ok(())
 }
@@ -434,7 +434,7 @@ async fn test_remote_request_count_header_indexed() -> Result<(), Box<dyn Error>
     let open_requests = server.request_count();
 
     server.reset_count();
-    let _ = file.file_decode_object(0, 0, &DecodeOptions::default())?;
+    let _ = file.decode_object(0, 0, &DecodeOptions::default())?;
     let object_requests = server.request_count();
     let range_requests = server.range_request_count();
 
@@ -461,13 +461,13 @@ async fn test_remote_repeated_object_reads_use_cache() -> Result<(), Box<dyn Err
     server.reset_count();
 
     // First object read
-    let _ = file.file_decode_object(0, 0, &DecodeOptions::default())?;
+    let _ = file.decode_object(0, 0, &DecodeOptions::default())?;
     let first_read_count = server.request_count();
 
     server.reset_count();
 
     // Second object read from same message — layout is cached
-    let _ = file.file_decode_object(0, 1, &DecodeOptions::default())?;
+    let _ = file.decode_object(0, 1, &DecodeOptions::default())?;
     let second_read_count = server.request_count();
 
     assert!(
@@ -495,7 +495,7 @@ async fn test_remote_matches_local_decode() -> Result<(), Box<dyn Error>> {
     // Remote decode
     let mut remote_file = TensogramFile::open_source(server.url())?;
     let (remote_meta, remote_desc, remote_data) =
-        remote_file.file_decode_object(0, 0, &DecodeOptions::default())?;
+        remote_file.decode_object(0, 0, &DecodeOptions::default())?;
 
     assert_eq!(local_meta.version, remote_meta.version);
     assert_eq!(local_objects[0].0.shape, remote_desc.shape);

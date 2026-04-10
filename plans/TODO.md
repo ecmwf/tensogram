@@ -139,7 +139,7 @@ For speculative ideas, see `IDEAS.md`.
   - `remote` feature gate with `object_store` 0.13 crate (S3, GCS, Azure, HTTP)
   - `Backend` enum (Local | Remote) inside `TensogramFile` — one public type
   - `remote.rs` module: URL scheme detection, `object_store::parse_url_opts`, range reads, per-message layout caching
-  - new public APIs: `open_source()`, `open_remote()`, `file_decode_metadata()`, `file_decode_descriptors()`, `file_decode_object()`, `is_remote()`, `source()`, `is_remote_url()`
+  - new public APIs: `open_source()`, `open_remote()`, `decode_metadata()`, `decode_descriptors()`, `decode_object()`, `is_remote()`, `source()`, `is_remote_url()`
   - scheme whitelist: `s3://`, `s3a://`, `gs://`, `az://`, `azure://`, `http://`, `https://`
   - sync bridge: `std::thread::scope` + per-call tokio runtime (avoids nested-runtime panics)
   - 17 tests with mock HTTP server: URL detection, open, metadata, descriptors, single-object decode, multi-object, multi-message, request-count verification, cache reuse, local-vs-remote match, streaming rejection, error cases
@@ -154,7 +154,7 @@ For speculative ideas, see `IDEAS.md`.
   - expose `open_source` / `open_remote` in Python: `tensogram.open("s3://bucket/file.tgm")`
   - xarray backend: accept remote URLs, pass `storage_options`, remove `os.path.abspath()` on URLs
   - zarr store: accept remote URLs
-  - switch xarray/zarr from `read_message()` to `file_decode_object()` for selective reads
+  - switch xarray/zarr from `read_message()` to `decode_object()` for selective reads
 
 ## Code Quality
 

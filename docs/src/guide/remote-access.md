@@ -69,13 +69,13 @@ Three methods provide selective access without downloading full messages:
 use tensogram_core::DecodeOptions;
 
 // Metadata only — triggers layout discovery on first call, then cached
-let meta = file.file_decode_metadata(0)?;
+let meta = file.decode_metadata(0)?;
 
 // Descriptors — fetches each object frame to extract its descriptor
-let (meta, descriptors) = file.file_decode_descriptors(0)?;
+let (meta, descriptors) = file.decode_descriptors(0)?;
 
 // Single object by index — fetches only the target object frame
-let (meta, desc, data) = file.file_decode_object(0, 2, &DecodeOptions::default())?;
+let (meta, desc, data) = file.decode_object(0, 2, &DecodeOptions::default())?;
 ```
 
 These methods also work on local files, where they read the full message and decode the requested parts.
@@ -87,10 +87,10 @@ For header-indexed files (the default for non-streaming writes):
 | Phase | Operation | HTTP Requests |
 |-------|-----------|:---:|
 | **Open** | `open_source` / `open_remote` | 1 HEAD + 1 GET per message (preamble read) |
-| **First access** | `file_decode_metadata(i)` | 1 GET (header chunk, discovers metadata + index) |
-| **Cached** | `file_decode_metadata(i)` again | 0 (served from cache) |
-| **Object read** | `file_decode_object(i, j)` | 1 GET per object (if layout already cached) |
-| **Descriptors** | `file_decode_descriptors(i)` | 1 GET per object in message |
+| **First access** | `decode_metadata(i)` | 1 GET (header chunk, discovers metadata + index) |
+| **Cached** | `decode_metadata(i)` again | 0 (served from cache) |
+| **Object read** | `decode_object(i, j)` | 1 GET per object (if layout already cached) |
+| **Descriptors** | `decode_descriptors(i)` | 1 GET per object in message |
 
 The layout (metadata + index) is discovered per-message on first access to that message, then cached. Subsequent calls reuse the cached layout.
 
@@ -107,7 +107,7 @@ sequenceDiagram
     TensogramFile->>ObjectStore: GET range 0..24 (preamble)
     Note right of TensogramFile: Discover message offsets
 
-    App->>TensogramFile: file_decode_object(0, 2)
+    App->>TensogramFile: decode_object(0, 2)
     TensogramFile->>ObjectStore: GET range 24..N (header chunk, up to 256KB)
     Note right of TensogramFile: First access: parse metadata + index, cache layout
     TensogramFile->>ObjectStore: GET range offset..offset+len (object frame 2)
@@ -137,15 +137,17 @@ Remote operations return `TensogramError::Remote` for transport-level failures:
 | File not found | HTTP 404, S3 NoSuchKey |
 | No valid messages | File contains only streaming (`total_length=0`) or corrupt messages |
 | Header-only required | Message has no header metadata flag |
-| Object index out of range | `file_decode_object(i, j)` where `j >= object_count` |
+| Object index out of range | `decode_object(i, j)` where `j >= object_count` |
 
-All errors are returned as `Result` — no panics in library code.
+All errors are returned as `Result`. The library avoids panics, though thread creation failures and corrupt-index arithmetic edge cases may still panic in extreme conditions.
 
 ## Limitations
 
 - **Header-indexed messages only.** Footer-indexed messages (produced by `StreamingEncoder`) are not yet supported remotely. Use buffered `encode()` for files destined for remote storage.
+- **Optimistic scan.** Remote message scanning validates preamble magic and `total_length` plausibility but does not verify end-of-message markers (unlike local scanning). A corrupt preamble with a plausible length will be accepted until a later read fails.
 - **Read-only.** Remote writes are not supported.
-- **Header probe size.** Layout discovery reads up to 256 KB of the header region. If the header metadata + index exceeds this (extremely rare), metadata may still be found but the index could be missing, causing object reads to fall back to downloading the full message.
+- **Header probe size.** Layout discovery reads a single chunk of up to 256 KB from the header region. If the metadata or index frame does not fit in this chunk, `decode_metadata()` will error (it does not retry with a larger read).
+- **HTTP server requirements.** The remote HTTP server must support `HEAD` requests (for file size) and `Range` request headers (for partial reads).
 - **Rust core only.** Python bindings, xarray backend, and zarr store do not yet support remote URLs. This will be added in a follow-up PR.
-- **`read_message()` and `decode_message()` download the full message** even for remote files. Use the `file_decode_*` methods for selective access.
+- **`read_message()` and `decode_message()` download the full message** even for remote files. Use `decode_metadata()`, `decode_descriptors()`, or `decode_object()` for selective access.
 - **Thread-per-request.** Each range request spawns a thread with a temporary tokio runtime. This is correct but not optimal for many small reads. A shared runtime will be added in a follow-up.

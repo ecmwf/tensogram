@@ -150,7 +150,7 @@ use tensogram_core::{TensogramFile, DecodeOptions};
 let mut file = TensogramFile::open_source("s3://bucket/forecast.tgm")?;
 
 // Fetch only the second object from message 0 — no full download
-let (meta, desc, data) = file.file_decode_object(0, 1, &DecodeOptions::default())?;
+let (meta, desc, data) = file.decode_object(0, 1, &DecodeOptions::default())?;
 ```
 
 Currently supports Rust core only (header-indexed files, read-only). Python and xarray integration will follow. See the [Remote Access](remote-access.md) guide for storage options, request budgets, and limitations.
