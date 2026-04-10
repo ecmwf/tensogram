@@ -29,6 +29,7 @@
 - [Pre-Encoded Data API (Advanced)](guide/encode-pre-encoded.md)
 - [Decoding Data](guide/decoding.md)
 - [Working with Files](guide/file-api.md)
+- [Remote Access (S3, GCS, Azure, HTTP)](guide/remote-access.md)
 - [Iterators](guide/iterators.md)
 - [Python API](guide/python-api.md)
 - [C++ API](guide/cpp-api.md)

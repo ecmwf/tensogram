@@ -135,20 +135,26 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Remote Access
 
-- [ ] **remote-object-store**:
-  - add the ability to open `.tgm` files on remote object stores (S3, GCS, Azure, HTTP) and read individual objects without downloading the whole file.
-  - the wire format already supports efficient remote access:
-    - header-indexed files (non-streaming): index is at the beginning, right after the preamble. A single range read gets metadata + index + all object offsets. One more range read fetches the target object. 2 HTTP requests total.
-    - footer-indexed files (streaming): the postamble (last 16 bytes) contains `first_footer_offset`. One small range read (last 16 bytes) finds the footer. One more fetches the footer (index + hashes). One more fetches the target object. 2-3 HTTP requests total.
-  - what's missing is the transport layer. `TensogramFile` currently only works with local paths via `std::fs::File` + `Seek`.
-  - implementation approach:
-    - add an async `ReadAt` trait (or use `object_store` crate's `ObjectStore` trait) supporting range reads: `read_range(offset, length) -> Bytes`
-    - implement for local files (existing, via seek+read), HTTP/HTTPS (range requests), S3 (via `object_store` or `opendal` crate)
-    - add `TensogramFile::open_remote(url)` that auto-detects the protocol
-    - the scan/index/decode logic already works with byte offsets — wire it to use range reads instead of seeking a local file
-    - expose in Python: `tensogram.open("s3://bucket/file.tgm")`
-    - expose in xarray: `xr.open_dataset("s3://bucket/file.tgm", engine="tensogram")`
-  - tests: unit tests with mock HTTP server returning range responses, read single object from remote file and verify data matches local decode, latency test measuring request count (should be 2 for header-indexed files), integration test with real S3 bucket (CI-optional), test both header-index and footer-index paths.
+- [x] **remote-object-store (PR1 — Rust core, header-indexed)**:
+  - `remote` feature gate with `object_store` 0.13 crate (S3, GCS, Azure, HTTP)
+  - `Backend` enum (Local | Remote) inside `TensogramFile` — one public type
+  - `remote.rs` module: URL scheme detection, `object_store::parse_url_opts`, range reads, per-message layout caching
+  - new public APIs: `open_source()`, `open_remote()`, `file_decode_metadata()`, `file_decode_descriptors()`, `file_decode_object()`, `is_remote()`, `source()`, `is_remote_url()`
+  - scheme whitelist: `s3://`, `s3a://`, `gs://`, `az://`, `azure://`, `http://`, `https://`
+  - sync bridge: `std::thread::scope` + per-call tokio runtime (avoids nested-runtime panics)
+  - 17 tests with mock HTTP server: URL detection, open, metadata, descriptors, single-object decode, multi-object, multi-message, request-count verification, cache reuse, local-vs-remote match, streaming rejection, error cases
+  - docs: `docs/src/guide/remote-access.md`, cross-reference from `file-api.md`
+  - scoped to header-indexed (buffered) messages only; read-only
+- [ ] **remote-object-store (PR2 — footer support + async + optimization)**:
+  - footer-indexed (streaming) message support — requires verifying `StreamingEncoder` index stores frame lengths not payload lengths
+  - native async path when both `remote` and `async` features enabled (avoid thread-per-request)
+  - shared tokio runtime instead of per-call runtime creation
+  - descriptor-only reads (currently fetches full object frame to extract descriptor)
+- [ ] **remote-object-store (PR3 — Python + xarray + zarr integration)**:
+  - expose `open_source` / `open_remote` in Python: `tensogram.open("s3://bucket/file.tgm")`
+  - xarray backend: accept remote URLs, pass `storage_options`, remove `os.path.abspath()` on URLs
+  - zarr store: accept remote URLs
+  - switch xarray/zarr from `read_message()` to `file_decode_object()` for selective reads
 
 ## Code Quality
 
