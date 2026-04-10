@@ -547,28 +547,122 @@ async fn test_remote_source_returns_url() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_remote_streaming_message_rejected() -> Result<(), Box<dyn Error>> {
-    // Build a streaming-mode message (total_length=0) by hand:
-    // just a minimal preamble with zero total_length + end magic
-    let mut fake_streaming = Vec::new();
-    fake_streaming.extend_from_slice(b"TENSOGRM"); // magic
-    fake_streaming.extend_from_slice(&2u16.to_be_bytes()); // version
-    fake_streaming.extend_from_slice(&0u16.to_be_bytes()); // flags
-    fake_streaming.extend_from_slice(&0u32.to_be_bytes()); // reserved
-    fake_streaming.extend_from_slice(&0u64.to_be_bytes()); // total_length=0 (streaming)
-                                                           // pad to min size and add end magic
-    fake_streaming.resize(100, 0);
-    fake_streaming.extend_from_slice(b"39277777");
+// ── Footer-indexed (streaming) message tests ─────────────────────────────────
 
-    let server = MockServer::start(fake_streaming).await?;
-    let err = TensogramFile::open_source(server.url())
-        .err()
-        .ok_or_else(|| std::io::Error::other("expected error for streaming message"))?
-        .to_string();
-    assert!(
-        err.contains("no valid messages"),
-        "expected no-valid-messages error, got: {err}"
-    );
+fn encode_streaming_message(shape: Vec<u64>, fill: u8) -> Result<Vec<u8>, std::io::Error> {
+    let meta = make_global_meta();
+    let desc = make_descriptor(shape.clone());
+    let num_bytes = shape.iter().product::<u64>() as usize * 4;
+    let data = vec![fill; num_bytes];
+    let buf = Vec::new();
+    let mut enc =
+        tensogram_core::streaming::StreamingEncoder::new(buf, &meta, &EncodeOptions::default())
+            .map_err(std::io::Error::other)?;
+    enc.write_object(&desc, &data)
+        .map_err(std::io::Error::other)?;
+    enc.finish().map_err(std::io::Error::other)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_remote_streaming_message_open_and_decode() -> Result<(), Box<dyn Error>> {
+    let msg = encode_streaming_message(vec![4], 42)?;
+    let server = MockServer::start(msg).await?;
+
+    let mut file = TensogramFile::open_source(server.url())?;
+    assert!(file.is_remote());
+    assert_eq!(file.message_count()?, 1);
+
+    let meta = file.decode_metadata(0)?;
+    assert_eq!(meta.version, 2);
+
+    let (_, desc, data) = file.decode_object(0, 0, &DecodeOptions::default())?;
+    assert_eq!(desc.shape, vec![4]);
+    assert_eq!(data, vec![42u8; 16]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_remote_streaming_matches_local_decode() -> Result<(), Box<dyn Error>> {
+    let msg = encode_streaming_message(vec![10], 99)?;
+    let server = MockServer::start(msg.clone()).await?;
+
+    let (local_meta, local_objects) =
+        tensogram_core::decode::decode(&msg, &DecodeOptions::default())?;
+
+    let mut remote_file = TensogramFile::open_source(server.url())?;
+    let (remote_meta, remote_desc, remote_data) =
+        remote_file.decode_object(0, 0, &DecodeOptions::default())?;
+
+    assert_eq!(local_meta.version, remote_meta.version);
+    assert_eq!(local_objects[0].0.shape, remote_desc.shape);
+    assert_eq!(local_objects[0].1, remote_data);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_remote_streaming_multi_object() -> Result<(), Box<dyn Error>> {
+    let meta = make_global_meta();
+    let desc1 = make_descriptor(vec![4]);
+    let desc2 = make_descriptor(vec![8]);
+    let data1 = vec![10u8; 16];
+    let data2 = vec![20u8; 32];
+
+    let buf = Vec::new();
+    let mut enc =
+        tensogram_core::streaming::StreamingEncoder::new(buf, &meta, &EncodeOptions::default())
+            .map_err(std::io::Error::other)?;
+    enc.write_object(&desc1, &data1)
+        .map_err(std::io::Error::other)?;
+    enc.write_object(&desc2, &data2)
+        .map_err(std::io::Error::other)?;
+    let msg = enc.finish().map_err(std::io::Error::other)?;
+
+    let server = MockServer::start(msg).await?;
+    let mut file = TensogramFile::open_source(server.url())?;
+
+    let (_, descs) = file.decode_descriptors(0)?;
+    assert_eq!(descs.len(), 2);
+    assert_eq!(descs[0].shape, vec![4]);
+    assert_eq!(descs[1].shape, vec![8]);
+
+    let (_, _, data) = file.decode_object(0, 1, &DecodeOptions::default())?;
+    assert_eq!(data, vec![20u8; 32]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_remote_mixed_buffered_then_streaming() -> Result<(), Box<dyn Error>> {
+    let buffered_msg = encode_test_message(vec![4], 10)?;
+    let streaming_msg = encode_streaming_message(vec![8], 20)?;
+
+    let mut combined = buffered_msg;
+    combined.extend_from_slice(&streaming_msg);
+
+    let server = MockServer::start(combined).await?;
+    let mut file = TensogramFile::open_source(server.url())?;
+    assert_eq!(file.message_count()?, 2);
+
+    let (_, _, data0) = file.decode_object(0, 0, &DecodeOptions::default())?;
+    assert_eq!(data0, vec![10u8; 16]);
+
+    let (_, _, data1) = file.decode_object(1, 0, &DecodeOptions::default())?;
+    assert_eq!(data1, vec![20u8; 32]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_remote_streaming_index_lengths_are_frame_lengths() -> Result<(), Box<dyn Error>> {
+    let msg = encode_streaming_message(vec![4], 42)?;
+    let server = MockServer::start(msg.clone()).await?;
+
+    let mut file = TensogramFile::open_source(server.url())?;
+    let (_, desc, data) = file.decode_object(0, 0, &DecodeOptions::default())?;
+    assert_eq!(desc.shape, vec![4]);
+    assert_eq!(data, vec![42u8; 16]);
+
+    let (local_meta, local_objects) =
+        tensogram_core::decode::decode(&msg, &DecodeOptions::default())?;
+    assert_eq!(local_objects[0].1, data);
+    assert_eq!(local_meta.version, 2);
     Ok(())
 }
