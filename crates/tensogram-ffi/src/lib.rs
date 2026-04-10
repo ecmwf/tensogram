@@ -1474,7 +1474,7 @@ pub extern "C" fn tgm_file_append_raw(
         Some(p) => p.to_path_buf(),
         None => {
             set_last_error("append_raw not supported on remote files");
-            return TgmError::Io;
+            return TgmError::Remote;
         }
     };
     let result = std::fs::OpenOptions::new()
