@@ -1469,10 +1469,17 @@ pub extern "C" fn tgm_file_append_raw(
 
     // Write raw bytes using std::fs
     use std::io::Write;
+    let path = match f.path() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            set_last_error("append_raw not supported on remote files");
+            return TgmError::Io;
+        }
+    };
     let result = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(f.path())
+        .open(&path)
         .and_then(|mut fh| fh.write_all(data));
 
     match result {

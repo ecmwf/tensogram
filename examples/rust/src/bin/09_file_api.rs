@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── 1. Create and append messages ─────────────────────────────────────────
     {
         let mut file = TensogramFile::create(&path)?;
-        println!("Created: {}", file.path().display());
+        println!("Created: {}", file.source());
 
         let params_steps = [
             ("2t", 0i64),

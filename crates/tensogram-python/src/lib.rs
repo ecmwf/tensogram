@@ -428,7 +428,7 @@ impl PyTensogramFile {
     }
 
     fn __repr__(&self) -> String {
-        format!("TensogramFile(path='{}')", self.file.path().display())
+        format!("TensogramFile(source='{}')", self.file.source())
     }
 
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -463,8 +463,10 @@ impl PyTensogramFile {
     fn __iter__(&mut self) -> PyResult<PyFileIter> {
         // Open an independent file handle so the iterator owns its state.
         // Safe under free-threaded Python (no shared mutable borrows).
-        let path = self.file.path().to_path_buf();
-        let mut iter_file = TensogramFile::open(&path).map_err(to_py_err)?;
+        let path = self.file.path().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("iteration not supported on remote files")
+        })?;
+        let mut iter_file = TensogramFile::open(path).map_err(to_py_err)?;
         // Read count from the *iterator's* handle to avoid TOCTOU race
         // if the file is modified between open() and first next() call.
         let count = iter_file.message_count().map_err(to_py_err)?;
