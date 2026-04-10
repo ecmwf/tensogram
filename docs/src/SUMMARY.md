@@ -30,6 +30,7 @@
 - [Decoding Data](guide/decoding.md)
 - [Working with Files](guide/file-api.md)
 - [Iterators](guide/iterators.md)
+- [Python API](guide/python-api.md)
 - [C++ API](guide/cpp-api.md)
 - [xarray Integration](guide/xarray-integration.md)
 - [Dask Integration](guide/dask-integration.md)

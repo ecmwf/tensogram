@@ -28,9 +28,13 @@
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use std::path::Path;
 use std::ptr;
 use std::slice;
 
+use tensogram_core::validate::{
+    validate_file as core_validate_file, validate_message, ValidateOptions, ValidationLevel,
+};
 use tensogram_core::{
     decode, decode_metadata, decode_object, decode_range, encode, encode_pre_encoded, scan,
     DataObjectDescriptor, DecodeOptions, EncodeOptions, GlobalMetadata, HashAlgorithm,
@@ -2449,6 +2453,163 @@ mod tests {
         let map = BTreeMap::new();
         assert!(resolve_in_btree_skip_reserved(&map, &[]).is_none());
     }
+
+    // ── validate FFI ──
+
+    #[test]
+    fn parse_validate_options_default() {
+        let opts = match super::parse_validate_options(ptr::null(), 0) {
+            Ok(opts) => opts,
+            Err((_code, msg)) => panic!("expected default options, got error: {msg}"),
+        };
+        assert_eq!(opts.max_level, ValidationLevel::Integrity);
+        assert!(!opts.check_canonical);
+        assert!(!opts.checksum_only);
+    }
+
+    #[test]
+    fn parse_validate_options_quick() {
+        let level = CString::new("quick").unwrap();
+        let opts = match super::parse_validate_options(level.as_ptr(), 0) {
+            Ok(opts) => opts,
+            Err((_code, msg)) => panic!("expected quick options, got error: {msg}"),
+        };
+        assert_eq!(opts.max_level, ValidationLevel::Structure);
+    }
+
+    #[test]
+    fn parse_validate_options_full_canonical() {
+        let level = CString::new("full").unwrap();
+        let opts = match super::parse_validate_options(level.as_ptr(), 1) {
+            Ok(opts) => opts,
+            Err((_code, msg)) => panic!("expected full options, got error: {msg}"),
+        };
+        assert_eq!(opts.max_level, ValidationLevel::Fidelity);
+        assert!(opts.check_canonical);
+    }
+
+    #[test]
+    fn parse_validate_options_unknown_level() {
+        let level = CString::new("bogus").unwrap();
+        let result = super::parse_validate_options(level.as_ptr(), 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_validate_options_checksum() {
+        let level = CString::new("checksum").unwrap();
+        let opts = match super::parse_validate_options(level.as_ptr(), 0) {
+            Ok(opts) => opts,
+            Err((_code, msg)) => panic!("expected checksum options, got error: {msg}"),
+        };
+        assert_eq!(opts.max_level, ValidationLevel::Integrity);
+        assert!(opts.checksum_only);
+    }
+
+    // ── tgm_validate end-to-end ──
+
+    fn encode_test_message() -> Vec<u8> {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![1],
+            dtype: tensogram_core::Dtype::Float32,
+            byte_order: tensogram_core::ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let data: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
+            .iter()
+            .flat_map(|v| v.to_ne_bytes())
+            .collect();
+        tensogram_core::encode(&meta, &[(&desc, data.as_slice())], &Default::default()).unwrap()
+    }
+
+    #[test]
+    fn tgm_validate_valid_message() {
+        let msg = encode_test_message();
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_validate(msg.as_ptr(), msg.len(), ptr::null(), 0, &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!out.data.is_null());
+        assert!(out.len > 0);
+        let json_str =
+            unsafe { std::str::from_utf8(std::slice::from_raw_parts(out.data, out.len)).unwrap() };
+        assert!(json_str.contains("\"issues\":[]"));
+        assert!(json_str.contains("\"object_count\":1"));
+        super::tgm_bytes_free(out);
+    }
+
+    #[test]
+    fn tgm_validate_empty_buffer() {
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_validate(ptr::null(), 0, ptr::null(), 0, &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        let json_str =
+            unsafe { std::str::from_utf8(std::slice::from_raw_parts(out.data, out.len)).unwrap() };
+        assert!(json_str.contains("\"buffer_too_short\""));
+        super::tgm_bytes_free(out);
+    }
+
+    #[test]
+    fn tgm_validate_invalid_level() {
+        let msg = encode_test_message();
+        let level = CString::new("bogus").unwrap();
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_validate(msg.as_ptr(), msg.len(), level.as_ptr(), 0, &mut out);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn tgm_validate_null_out() {
+        let msg = encode_test_message();
+        let err = super::tgm_validate(msg.as_ptr(), msg.len(), ptr::null(), 0, ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn tgm_validate_file_nonexistent() {
+        let path = CString::new("/nonexistent/path/to/file.tgm").unwrap();
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_validate_file(path.as_ptr(), ptr::null(), 0, &mut out);
+        assert!(matches!(err, super::TgmError::Io));
+    }
+
+    #[test]
+    fn tgm_validate_file_null_out() {
+        let path = CString::new("/tmp/dummy.tgm").unwrap();
+        let err = super::tgm_validate_file(path.as_ptr(), ptr::null(), 0, ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn tgm_validate_file_invalid_level() {
+        let path = CString::new("/tmp/dummy.tgm").unwrap();
+        let level = CString::new("bogus").unwrap();
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_validate_file(path.as_ptr(), level.as_ptr(), 0, &mut out);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
 }
 
 /// Compute a hash of the given data.
@@ -2872,6 +3033,185 @@ pub extern "C" fn tgm_streaming_encoder_free(enc: *mut TgmStreamingEncoder) {
     if !enc.is_null() {
         unsafe {
             drop(Box::from_raw(enc));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+/// Parse a C-string validation level into `ValidateOptions`.
+fn parse_validate_options(
+    level: *const c_char,
+    check_canonical: i32,
+) -> Result<ValidateOptions, (TgmError, String)> {
+    let level_str = if level.is_null() {
+        "default"
+    } else {
+        unsafe { CStr::from_ptr(level) }
+            .to_str()
+            .map_err(|_| (TgmError::InvalidArg, "invalid UTF-8 in level".to_string()))?
+    };
+
+    let (max_level, checksum_only) = match level_str {
+        "quick" => (ValidationLevel::Structure, false),
+        "default" => (ValidationLevel::Integrity, false),
+        "checksum" => (ValidationLevel::Integrity, true),
+        "full" => (ValidationLevel::Fidelity, false),
+        other => {
+            return Err((
+                TgmError::InvalidArg,
+                format!(
+                    "unknown validation level: '{}', expected one of: quick, default, checksum, full",
+                    other
+                ),
+            ));
+        }
+    };
+
+    Ok(ValidateOptions {
+        max_level,
+        check_canonical: check_canonical != 0,
+        checksum_only,
+    })
+}
+
+/// Validate a single Tensogram message buffer.
+///
+/// `buf` / `buf_len`: the wire-format message bytes (single message).
+///   `buf` may be NULL when `buf_len` is 0 (empty-buffer validation).
+/// `level`: validation depth — null-terminated C string:
+///   `"quick"` (structure only), `"default"` (up to hash check),
+///   `"checksum"` (hash check, suppress structural warnings),
+///   `"full"` (full decode + NaN/Inf scan). NULL defaults to `"default"`.
+/// `check_canonical`: non-zero to check RFC 8949 CBOR key ordering.
+/// `out`: receives UTF-8 JSON bytes describing the validation report.
+///   Not NUL-terminated — use `out->len` for the byte count.
+///   Free with `tgm_bytes_free`.
+///
+/// Returns `TGM_ERROR_OK` on success (even if the message has issues —
+/// the issues are in the JSON report). Returns `TGM_ERROR_INVALID_ARG`
+/// for argument validation failures (null pointers, invalid level string),
+/// or `TGM_ERROR_ENCODING` if JSON serialization of the report fails.
+#[no_mangle]
+pub extern "C" fn tgm_validate(
+    buf: *const u8,
+    buf_len: usize,
+    level: *const c_char,
+    check_canonical: i32,
+    out: *mut TgmBytes,
+) -> TgmError {
+    if out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    // Allow buf=NULL when buf_len=0 (empty-buffer validation).
+    if buf.is_null() && buf_len > 0 {
+        set_last_error("null buf with non-zero buf_len");
+        return TgmError::InvalidArg;
+    }
+
+    let options = match parse_validate_options(level, check_canonical) {
+        Ok(o) => o,
+        Err((code, msg)) => {
+            set_last_error(&msg);
+            return code;
+        }
+    };
+
+    let data = if buf.is_null() {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(buf, buf_len) }
+    };
+    let report = validate_message(data, &options);
+
+    match serde_json::to_vec(&report) {
+        Ok(json_bytes) => {
+            let mut json_bytes = json_bytes.into_boxed_slice().into_vec();
+            let result = TgmBytes {
+                data: json_bytes.as_mut_ptr(),
+                len: json_bytes.len(),
+            };
+            std::mem::forget(json_bytes);
+            unsafe {
+                *out = result;
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&format!("JSON serialization failed: {e}"));
+            TgmError::Encoding
+        }
+    }
+}
+
+/// Validate all messages in a `.tgm` file.
+///
+/// `path`: null-terminated UTF-8 path to the file.
+/// `level`: validation depth (same as `tgm_validate`). NULL = `"default"`.
+/// `check_canonical`: non-zero to check CBOR key ordering.
+/// `out`: receives UTF-8 JSON bytes describing the file validation report.
+///   Not NUL-terminated — use `out->len` for the byte count.
+///   Free with `tgm_bytes_free`.
+///
+/// Returns `TGM_ERROR_OK` on success (issues are in the JSON).
+/// Returns `TGM_ERROR_IO` if the file cannot be opened or read.
+/// Returns `TGM_ERROR_INVALID_ARG` for null pointers or invalid level.
+/// Returns `TGM_ERROR_ENCODING` if JSON serialization of the report fails.
+#[no_mangle]
+pub extern "C" fn tgm_validate_file(
+    path: *const c_char,
+    level: *const c_char,
+    check_canonical: i32,
+    out: *mut TgmBytes,
+) -> TgmError {
+    if path.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in path: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+
+    let options = match parse_validate_options(level, check_canonical) {
+        Ok(o) => o,
+        Err((code, msg)) => {
+            set_last_error(&msg);
+            return code;
+        }
+    };
+
+    let report = match core_validate_file(Path::new(path_str), &options) {
+        Ok(r) => r,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            return TgmError::Io;
+        }
+    };
+
+    match serde_json::to_vec(&report) {
+        Ok(json_bytes) => {
+            let mut json_bytes = json_bytes.into_boxed_slice().into_vec();
+            let result = TgmBytes {
+                data: json_bytes.as_mut_ptr(),
+                len: json_bytes.len(),
+            };
+            std::mem::forget(json_bytes);
+            unsafe {
+                *out = result;
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&format!("JSON serialization failed: {e}"));
+            TgmError::Encoding
         }
     }
 }

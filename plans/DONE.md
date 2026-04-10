@@ -30,6 +30,33 @@ this across all interfaces.
 - **Tests:** 1050+ total (283+ Rust + 253 Python + 181 xarray + 204 Zarr + 117 C++ + 17 GRIB + 44 NetCDF integration + 5 CLI netcdf pipeline + 8 Python netcdf e2e)
 - **Quality:** 0 clippy warnings, 90.5% Rust line coverage
 
+## tensogram validate PR 3 — Python + FFI bindings + examples
+
+- Python bindings via PyO3:
+  - `tensogram.validate(buf, level="default", check_canonical=False) -> dict`
+    validates a single message buffer. Returns `{"issues": [...], "object_count": int, "hash_verified": bool}`.
+  - `tensogram.validate_file(path, level="default", check_canonical=False) -> dict`
+    validates a `.tgm` file with streaming I/O. Returns `{"file_issues": [...], "messages": [...]}`.
+  - Level parameter: `"quick"` (structure), `"default"` (integrity), `"checksum"` (hash-only), `"full"` (fidelity+NaN/Inf).
+  - Reports serialized via `serde_json::to_value()` → recursive Python dict conversion.
+- C FFI bindings:
+  - `tgm_validate(buf, len, level, check_canonical, *out) -> tgm_error` — returns JSON via `TgmBytes`.
+  - `tgm_validate_file(path, level, check_canonical, *out) -> tgm_error` — returns JSON via `TgmBytes`.
+  - NULL level defaults to `"default"`. Invalid level returns `TGM_ERROR_INVALID_ARG`.
+- C++ wrapper (`include/tensogram.hpp`):
+  - `tensogram::validate(buf, len, level, check_canonical) -> std::string` (JSON).
+  - `tensogram::validate_file(path, level, check_canonical) -> std::string` (JSON).
+- Examples: `examples/python/13_validate.py`, `examples/rust/src/bin/13_validate.rs`.
+- 34 pytest tests in `tests/python/test_validate.py` covering all levels, canonical,
+  hash verification, NaN/Inf detection, file validation, edge cases (garbage-only,
+  garbage between messages, truncated messages, all level+canonical combos).
+- 11 C++ GoogleTest tests in `tests/cpp/test_validate.cpp` covering the C++ wrapper
+  chain (valid message, empty buffer, corrupted magic, all levels, exception mapping,
+  file validation, nonexistent file, empty file).
+- 12 FFI unit tests covering level option parsing plus end-to-end
+  `tgm_validate`/`tgm_validate_file` validation cases.
+- Documentation: `docs/src/guide/python-api.md` added to mdBook.
+
 ## tensogram validate PR 2 — Level 4 fidelity + API refactor
 
 - Refactored `ValidateMode` enum into composable `ValidateOptions`
@@ -70,7 +97,7 @@ correctness and integrity without consuming the data.
 - 25 unit tests in tensogram-core, 10 CLI tests.
 - Docs: `docs/src/cli/validate.md`.
 - Remaining work (PR 2): Level 4 Fidelity + `--full` flag.
-- Remaining work (PR 3): Python bindings, C FFI, examples.
+- PR 3 (Python + FFI bindings + examples): completed — see above.
 
 ## tensogram-netcdf
 

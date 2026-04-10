@@ -136,7 +136,7 @@ tensogram convert-netcdf --cf --compression zstd forecast.nc -o forecast.tgm
 - [Architecture](ARCHITECTURE.md) — crate structure and design decisions
 - [Contributing](CONTRIBUTING.md) — setup and workflow
 - [Changelog](CHANGELOG.md) — release history
-- [Python API](PYTHON_API.md) — quick reference for Python interface
+- [Python API](docs/src/guide/python-api.md) — encoding, decoding, file API, validation
 
 ## Repository Layout
 

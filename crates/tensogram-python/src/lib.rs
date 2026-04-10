@@ -4,12 +4,16 @@
 //! numpy integration. All tensor data crosses the boundary as numpy arrays.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use numpy::PyArrayMethods;
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
+use tensogram_core::validate::{
+    validate_file as core_validate_file, validate_message, ValidateOptions, ValidationLevel,
+};
 use tensogram_core::{
     decode, decode_descriptors, decode_metadata, decode_object, decode_range, encode,
     encode_pre_encoded, scan, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
@@ -1014,6 +1018,132 @@ impl PyStreamingEncoder {
     }
 }
 
+/// Parse a Python level string into ValidateOptions.
+fn parse_validate_options(level: &str, check_canonical: bool) -> PyResult<ValidateOptions> {
+    let (max_level, checksum_only) = match level {
+        "quick" => (ValidationLevel::Structure, false),
+        "default" => (ValidationLevel::Integrity, false),
+        "checksum" => (ValidationLevel::Integrity, true),
+        "full" => (ValidationLevel::Fidelity, false),
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown validation level: '{}', expected one of: quick, default, checksum, full",
+                other
+            )));
+        }
+    };
+    Ok(ValidateOptions {
+        max_level,
+        check_canonical,
+        checksum_only,
+    })
+}
+
+/// Convert a serde_json::Value to a Python object.
+fn json_value_to_py(py: Python<'_>, val: &serde_json::Value) -> PyResult<PyObject> {
+    match val {
+        serde_json::Value::Null => Ok(py.None()),
+        serde_json::Value::Bool(b) => Ok((*b).into_pyobject(py)?.to_owned().into_any().unbind()),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(i.into_pyobject(py)?.into_any().unbind())
+            } else if let Some(u) = n.as_u64() {
+                Ok(u.into_pyobject(py)?.into_any().unbind())
+            } else if let Some(f) = n.as_f64() {
+                Ok(f.into_pyobject(py)?.into_any().unbind())
+            } else {
+                Err(PyValueError::new_err(format!(
+                    "JSON number {n} cannot be represented as i64, u64, or f64"
+                )))
+            }
+        }
+        serde_json::Value::String(s) => Ok(s.into_pyobject(py)?.into_any().unbind()),
+        serde_json::Value::Array(arr) => {
+            let items: PyResult<Vec<PyObject>> =
+                arr.iter().map(|v| json_value_to_py(py, v)).collect();
+            let list = PyList::new(py, items?)?;
+            Ok(list.into_any().unbind())
+        }
+        serde_json::Value::Object(map) => {
+            let dict = PyDict::new(py);
+            for (k, v) in map {
+                dict.set_item(k, json_value_to_py(py, v)?)?;
+            }
+            Ok(dict.into_any().unbind())
+        }
+    }
+}
+
+/// Validate a single Tensogram message buffer.
+///
+/// Checks structural integrity, metadata correctness, hash verification,
+/// and optionally data fidelity (NaN/Inf detection) depending on the
+/// validation level.
+///
+/// Args:
+///     buf: Wire-format message bytes (a single message, not a file).
+///     level: Validation depth — ``"quick"`` (structure only),
+///         ``"default"`` (up to hash verification), ``"checksum"``
+///         (hash verification, suppress structural warnings),
+///         ``"full"`` (full decode + NaN/Inf scan).
+///     check_canonical: Check RFC 8949 deterministic CBOR key ordering.
+///
+/// Returns:
+///     A dict with keys ``"issues"`` (list of issue dicts), ``"object_count"``
+///     (int), and ``"hash_verified"`` (bool).  Each issue dict contains
+///     ``"code"``, ``"level"``, ``"severity"``, ``"description"``, and
+///     optionally ``"object_index"`` and ``"byte_offset"``.
+#[pyfunction]
+#[pyo3(name = "validate", signature = (buf, level="default", check_canonical=false))]
+fn py_validate(
+    py: Python<'_>,
+    buf: &[u8],
+    level: &str,
+    check_canonical: bool,
+) -> PyResult<PyObject> {
+    let options = parse_validate_options(level, check_canonical)?;
+    let report = validate_message(buf, &options);
+    let json_val = serde_json::to_value(&report)
+        .map_err(|e| PyValueError::new_err(format!("serialization error: {e}")))?;
+    json_value_to_py(py, &json_val)
+}
+
+/// Validate all messages in a ``.tgm`` file.
+///
+/// Uses streaming I/O — only one message is in memory at a time.
+/// Detects gaps, trailing bytes, and truncated messages between valid
+/// messages.
+///
+/// Args:
+///     path: Path to a ``.tgm`` file.
+///     level: Validation depth (same as :func:`validate`).
+///     check_canonical: Check RFC 8949 deterministic CBOR key ordering.
+///
+/// Returns:
+///     A dict with keys ``"file_issues"`` (list of file-level issue dicts)
+///     and ``"messages"`` (list of per-message validation report dicts).
+///     Each file-level issue has ``"byte_offset"``, ``"length"``, and
+///     ``"description"``.  Each message report has the same structure as
+///     the return value of :func:`validate`.
+///
+/// Raises:
+///     OSError: If the file cannot be opened or read.
+#[pyfunction]
+#[pyo3(name = "validate_file", signature = (path, level="default", check_canonical=false))]
+fn py_validate_file(
+    py: Python<'_>,
+    path: &str,
+    level: &str,
+    check_canonical: bool,
+) -> PyResult<PyObject> {
+    let options = parse_validate_options(level, check_canonical)?;
+    let report = core_validate_file(Path::new(path), &options)
+        .map_err(|e| PyIOError::new_err(format!("{e}")))?;
+    let json_val = serde_json::to_value(&report)
+        .map_err(|e| PyValueError::new_err(format!("serialization error: {e}")))?;
+    json_value_to_py(py, &json_val)
+}
+
 // ---------------------------------------------------------------------------
 // Module definition
 // ---------------------------------------------------------------------------
@@ -1029,6 +1159,8 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_decode_range, m)?)?;
     m.add_function(wrap_pyfunction!(py_scan, m)?)?;
     m.add_function(wrap_pyfunction!(py_iter_messages, m)?)?;
+    m.add_function(wrap_pyfunction!(py_validate, m)?)?;
+    m.add_function(wrap_pyfunction!(py_validate_file, m)?)?;
     m.add_function(wrap_pyfunction!(compute_packing_params, m)?)?;
     m.add_class::<PyMetadata>()?;
     m.add_class::<PyDataObjectDescriptor>()?;

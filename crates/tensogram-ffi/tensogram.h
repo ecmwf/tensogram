@@ -623,4 +623,49 @@ tgm_error tgm_streaming_encoder_finish(tgm_streaming_encoder_t *enc);
  */
 void tgm_streaming_encoder_free(tgm_streaming_encoder_t *enc);
 
+/**
+ * Validate a single Tensogram message buffer.
+ *
+ * `buf` / `buf_len`: the wire-format message bytes (single message).
+ *   `buf` may be NULL when `buf_len` is 0 (empty-buffer validation).
+ * `level`: validation depth — null-terminated C string:
+ *   `"quick"` (structure only), `"default"` (up to hash check),
+ *   `"checksum"` (hash check, suppress structural warnings),
+ *   `"full"` (full decode + NaN/Inf scan). NULL defaults to `"default"`.
+ * `check_canonical`: non-zero to check RFC 8949 CBOR key ordering.
+ * `out`: receives UTF-8 JSON bytes describing the validation report.
+ *   Not NUL-terminated — use `out->len` for the byte count.
+ *   Free with `tgm_bytes_free`.
+ *
+ * Returns `TGM_ERROR_OK` on success (even if the message has issues —
+ * the issues are in the JSON report). Returns `TGM_ERROR_INVALID_ARG`
+ * for argument validation failures (null pointers, invalid level string),
+ * or `TGM_ERROR_ENCODING` if JSON serialization of the report fails.
+ */
+tgm_error tgm_validate(const uint8_t *buf,
+                       size_t buf_len,
+                       const char *level,
+                       int32_t check_canonical,
+                       tgm_bytes_t *out);
+
+/**
+ * Validate all messages in a `.tgm` file.
+ *
+ * `path`: null-terminated UTF-8 path to the file.
+ * `level`: validation depth (same as `tgm_validate`). NULL = `"default"`.
+ * `check_canonical`: non-zero to check CBOR key ordering.
+ * `out`: receives UTF-8 JSON bytes describing the file validation report.
+ *   Not NUL-terminated — use `out->len` for the byte count.
+ *   Free with `tgm_bytes_free`.
+ *
+ * Returns `TGM_ERROR_OK` on success (issues are in the JSON).
+ * Returns `TGM_ERROR_IO` if the file cannot be opened or read.
+ * Returns `TGM_ERROR_INVALID_ARG` for null pointers or invalid level.
+ * Returns `TGM_ERROR_ENCODING` if JSON serialization of the report fails.
+ */
+tgm_error tgm_validate_file(const char *path,
+                            const char *level,
+                            int32_t check_canonical,
+                            tgm_bytes_t *out);
+
 #endif  /* TENSOGRAM_H */
