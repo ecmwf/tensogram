@@ -61,7 +61,7 @@ impl TensogramFile {
 
     /// Open a local file or remote URL.
     ///
-    /// Auto-detects remote URLs (s3://, gs://, az://, http://, https://)
+    /// Auto-detects remote URLs (s3://, s3a://, gs://, az://, azure://, http://, https://)
     /// when the `remote` feature is enabled; otherwise treats the source
     /// as a local path.
     pub fn open_source(source: impl AsRef<str>) -> Result<Self> {
