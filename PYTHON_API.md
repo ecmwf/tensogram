@@ -177,7 +177,7 @@ meta, objs = tensogram.decode(msg, verify_hash=True)
 ### Error Handling
 
 - `ValueError`: Invalid parameters, dtype errors, NaN in packing, unknown validation level
-- `OSError`: File I/O errors (including `FileNotFoundError` for missing paths)
+- `OSError`: File I/O errors, including missing paths
 - `RuntimeError`: Hash mismatch
 - `KeyError`: Missing metadata key
 

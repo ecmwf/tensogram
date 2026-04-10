@@ -53,7 +53,8 @@ this across all interfaces.
 - 11 C++ GoogleTest tests in `tests/cpp/test_validate.cpp` covering the C++ wrapper
   chain (valid message, empty buffer, corrupted magic, all levels, exception mapping,
   file validation, nonexistent file, empty file).
-- 4 FFI unit tests for level option parsing.
+- 12 FFI unit tests covering level option parsing plus end-to-end
+  `tgm_validate`/`tgm_validate_file` validation cases.
 - Documentation: `PYTHON_API.md` updated with validation API reference.
 
 ## tensogram validate PR 2 — Level 4 fidelity + API refactor
