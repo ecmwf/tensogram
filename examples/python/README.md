@@ -42,6 +42,7 @@ uv pip install -e tensogram-zarr/
 | `09_dask_distributed.py` | Dask distributed computing over 4-D tensors |
 | `11_encode_pre_encoded.py` | Pre-encoded data API for already-framed payloads |
 | `12_convert_netcdf.py` | Convert NetCDF → Tensogram via the CLI (uses `netCDF4` + `subprocess`) |
+| `13_validate.py` | Message and file validation at different levels |
 
 ## Module Structure
 
@@ -55,6 +56,8 @@ tensogram
 ├── scan(buf) -> list[tuple[int, int]]
 ├── iter_messages(buf, verify_hash=False) -> MessageIter
 ├── compute_packing_params(values, bits_per_value, decimal_scale_factor) -> dict
+├── validate(buf, level="default", check_canonical=False) -> dict
+├── validate_file(path, level="default", check_canonical=False) -> dict
 └── TensogramFile
     ├── open(path) -> TensogramFile
     ├── create(path) -> TensogramFile

@@ -65,6 +65,28 @@ try {
 }
 ```
 
+## Validation
+
+Two free functions validate messages and files, returning JSON strings:
+
+```cpp
+// Validate a single message buffer (default level)
+auto report = tensogram::validate(buf, len);
+
+// Full validation with canonical CBOR check
+auto full_report = tensogram::validate(buf, len, "full", /*check_canonical=*/true);
+
+// Validate a .tgm file
+auto file_report = tensogram::validate_file("data.tgm");
+auto file_full   = tensogram::validate_file("data.tgm", "full");
+```
+
+Validation levels: `"quick"`, `"default"`, `"checksum"`, `"full"`.
+
+The returned JSON contains `issues`, `object_count`, and `hash_verified` for single messages, or `file_issues` and `messages` for files. Parse with your preferred JSON library.
+
+An invalid level string or a missing file throws `tensogram::invalid_arg_error` or `tensogram::io_error` respectively. Validation issues (corrupted data, hash mismatches) are reported in the JSON — they do not throw.
+
 ## Iterators
 
 See [Iterators](iterators.md#c-api) for buffer, file, and object iterator usage.

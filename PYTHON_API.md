@@ -26,6 +26,64 @@
 | **`iter_messages`** | `iter_messages(buf, verify_hash=False)` | `MessageIter` |
 | **`compute_packing_params`** | `compute_packing_params(values, bits_per_value, decimal_scale_factor)` | `dict` |
 
+### Validation
+
+| Function | Signature | Returns |
+|----------|-----------|---------|
+| **`validate`** | `validate(buf, level="default", check_canonical=False)` | `dict` |
+| **`validate_file`** | `validate_file(path, level="default", check_canonical=False)` | `dict` |
+
+**Validation levels:**
+- `"quick"` — structure only (magic bytes, frame layout)
+- `"default"` — up to hash verification (recommended)
+- `"checksum"` — hash verification, suppress structural warnings
+- `"full"` — full decode + NaN/Inf scan
+
+**`validate()` return schema:**
+```python
+{
+    "issues": [                  # list of issue dicts (empty when valid)
+        {
+            "code": "hash_mismatch",       # stable issue code string
+            "level": "integrity",          # validation level that found it
+            "severity": "error",           # "error" or "warning"
+            "description": "...",          # human-readable message
+            "object_index": 0,             # optional — which object
+            "byte_offset": 1234,           # optional — byte position
+        }
+    ],
+    "object_count": 1,           # number of data objects in the message
+    "hash_verified": True,       # True if all hashes checked and matched
+}
+```
+
+**`validate_file()` return schema:**
+```python
+{
+    "file_issues": [             # file-level issues (gaps, trailing bytes)
+        {"byte_offset": 100, "length": 7, "description": "..."}
+    ],
+    "messages": [                # per-message validation reports
+        {"issues": [...], "object_count": 1, "hash_verified": True}
+    ],
+}
+```
+
+**Example:**
+```python
+report = tensogram.validate(msg)
+if report["issues"]:
+    for issue in report["issues"]:
+        print(f"[{issue['severity']}] {issue['code']}: {issue['description']}")
+else:
+    print(f"OK — {report['object_count']} objects, hash_verified={report['hash_verified']}")
+
+# File validation
+file_report = tensogram.validate_file("data.tgm")
+for msg_report in file_report["messages"]:
+    print(f"objects={msg_report['object_count']}, issues={len(msg_report['issues'])}")
+```
+
 ### TensogramFile Methods
 
 ```python
@@ -118,8 +176,8 @@ meta, objs = tensogram.decode(msg, verify_hash=True)
 
 ### Error Handling
 
-- `ValueError`: Invalid parameters, dtype errors, NaN in packing
-- `IOError`: File I/O errors
+- `ValueError`: Invalid parameters, dtype errors, NaN in packing, unknown validation level
+- `OSError`: File I/O errors (including `FileNotFoundError` for missing paths)
 - `RuntimeError`: Hash mismatch
 - `KeyError`: Missing metadata key
 
