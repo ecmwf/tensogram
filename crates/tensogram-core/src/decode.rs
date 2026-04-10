@@ -206,7 +206,14 @@ pub fn decode_range(
     Ok(results)
 }
 
-/// Decode a single object through the full pipeline.
+pub(crate) fn decode_single_object(
+    desc: &DataObjectDescriptor,
+    payload_bytes: &[u8],
+    options: &DecodeOptions,
+) -> Result<Vec<u8>> {
+    decode_single_object_with_backend(desc, payload_bytes, options, options.compression_backend)
+}
+
 fn decode_single_object_with_backend(
     desc: &DataObjectDescriptor,
     payload_bytes: &[u8],

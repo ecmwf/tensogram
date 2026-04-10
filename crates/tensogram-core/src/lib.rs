@@ -8,6 +8,8 @@ pub mod hash;
 pub mod iter;
 pub mod metadata;
 pub mod pipeline;
+#[cfg(feature = "remote")]
+pub mod remote;
 pub mod streaming;
 pub mod types;
 pub mod validate;
@@ -36,3 +38,6 @@ pub use validate::{
     IssueSeverity, ValidateOptions, ValidationIssue, ValidationLevel, ValidationReport,
 };
 pub use wire::{FrameType, MessageFlags};
+
+#[cfg(feature = "remote")]
+pub use remote::is_remote_url;
