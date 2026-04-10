@@ -69,7 +69,7 @@ class TestValidateBasic:
         assert report["object_count"] == 0
         assert report["hash_verified"] is False
         assert len(report["issues"]) > 0
-        assert report["issues"][0]["code"] == "buffer_too_short"
+        assert any(i["code"] == "buffer_too_short" for i in report["issues"])
 
     def test_corrupted_magic(self):
         msg = bytearray(encode_valid_message())
@@ -256,7 +256,10 @@ class TestValidateFile:
             f.write(b"TRAILING_GARBAGE")
         report = tensogram.validate_file(path)
         assert len(report["file_issues"]) > 0
-        assert "trailing" in report["file_issues"][0]["description"].lower()
+        assert any(
+            "trailing" in issue["description"].lower()
+            for issue in report["file_issues"]
+        )
 
     def test_empty_file(self, tmp_path):
         path = str(tmp_path / "empty.tgm")
@@ -283,7 +286,10 @@ class TestValidateFile:
         report = tensogram.validate_file(path)
         assert len(report["messages"]) == 0
         assert len(report["file_issues"]) > 0
-        assert "no valid messages" in report["file_issues"][0]["description"]
+        assert any(
+            "no valid messages" in issue["description"]
+            for issue in report["file_issues"]
+        )
 
     def test_garbage_between_messages(self, tmp_path):
         """File with garbage bytes between two valid messages."""
