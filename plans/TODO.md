@@ -145,8 +145,15 @@ For speculative ideas, see `IDEAS.md`.
   - 17 tests with mock HTTP server: URL detection, open, metadata, descriptors, single-object decode, multi-object, multi-message, request-count verification, cache reuse, local-vs-remote match, streaming rejection, error cases
   - docs: `docs/src/guide/remote-access.md`, cross-reference from `file-api.md`
   - scoped to header-indexed (buffered) messages only; read-only
-- [ ] **remote-object-store (PR2 — footer support + async + optimization)**:
-  - footer-indexed (streaming) message support — requires verifying `StreamingEncoder` index stores frame lengths not payload lengths
+- [x] **remote-object-store (PR2 — footer support)**:
+  - fixed `StreamingEncoder` to store frame lengths (not payload lengths) in `IndexFrame.lengths` — consistent with buffered encoder
+  - updated `IndexFrame.lengths` doc from "payload length" to "total frame length"
+  - `scan_messages` handles `total_length=0` (streaming) by assigning remaining file size
+  - added `discover_footer_layout` + `parse_footer_frames` to remote backend
+  - `ensure_layout` now accepts both header-indexed and footer-indexed messages
+  - streaming messages must be last in multi-message files
+  - 5 new tests: streaming open/decode, local parity, multi-object, mixed buffered+streaming, index lengths
+- [ ] **remote-object-store (PR2b — async + optimization, deferred)**:
   - native async path when both `remote` and `async` features enabled (avoid thread-per-request)
   - shared tokio runtime instead of per-call runtime creation
   - descriptor-only reads (currently fetches full object frame to extract descriptor)

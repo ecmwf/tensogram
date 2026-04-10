@@ -82,7 +82,7 @@ These methods also work on local files, where they read the full message and dec
 
 ## Request Budget
 
-For header-indexed files (the default for non-streaming writes):
+### Header-indexed files (buffered writes)
 
 | Phase | Operation | HTTP Requests |
 |-------|-----------|:---:|
@@ -92,7 +92,16 @@ For header-indexed files (the default for non-streaming writes):
 | **Object read** | `decode_object(i, j)` | 1 GET per object (if layout already cached) |
 | **Descriptors** | `decode_descriptors(i)` | 1 GET per object in message |
 
-The layout (metadata + index) is discovered per-message on first access to that message, then cached. Subsequent calls reuse the cached layout.
+### Footer-indexed files (streaming writes)
+
+| Phase | Operation | HTTP Requests |
+|-------|-----------|:---:|
+| **Open** | `open_source` / `open_remote` | 1 HEAD + 1 GET per message (preamble read) |
+| **First access** | `decode_metadata(i)` | 2 GETs (postamble + footer region) |
+| **Cached** | `decode_metadata(i)` again | 0 (served from cache) |
+| **Object read** | `decode_object(i, j)` | 1 GET per object (if layout already cached) |
+
+The layout (metadata + index) is discovered per-message on first access to that message, then cached. Subsequent calls reuse the cached layout. Streaming messages must be the last message in a multi-message file.
 
 ## How It Works
 
@@ -135,15 +144,15 @@ Remote access can return different `TensogramError` variants depending on the fa
 | Invalid URL | `Remote` | `open_source` / `open_remote` with a malformed URL |
 | Connection failure | `Remote` | Network unreachable, DNS failure, timeout |
 | File not found | `Remote` | HTTP 404, S3 NoSuchKey |
-| No valid messages | `Remote` | File contains only streaming (`total_length=0`) or corrupt messages |
-| Missing header index | `Remote` | Message lacks `HEADER_METADATA` or `HEADER_INDEX` flag |
+| No valid messages | `Remote` | File contains no parseable messages |
+| Unsupported layout | `Remote` | Message lacks both header-index and footer-index flags |
 | Object index out of range | `Object` | `decode_object(i, j)` where `j >= object_count` |
 
 All errors are returned as `Result`. The library avoids panics, though thread creation failures and corrupt-index arithmetic edge cases may still panic in extreme conditions.
 
 ## Limitations
 
-- **Header-indexed messages only.** Footer-indexed messages (produced by `StreamingEncoder`) are not yet supported remotely. Use buffered `encode()` for files destined for remote storage.
+- **Streaming messages must be last.** In multi-message files, streaming-encoded messages (`total_length=0`) must be the last message. The remote scanner assumes the streaming message extends to the end of the file.
 - **Optimistic scan.** Remote message scanning validates preamble magic and `total_length` plausibility but does not verify end-of-message markers (unlike local scanning). A corrupt preamble with a plausible length will be accepted until a later read fails.
 - **Read-only.** Remote writes are not supported.
 - **Header probe size.** Layout discovery reads a single chunk of up to 256 KB from the header region. If the metadata or index frame does not fit in this chunk, `decode_metadata()` will error (it does not retry with a larger read).
