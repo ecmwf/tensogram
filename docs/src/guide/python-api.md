@@ -307,9 +307,9 @@ file_report = tensogram.validate_file("data.tgm")
 | Level | Checks | `hash_verified` |
 |-------|--------|-----------------|
 | `"quick"` | Structure only: magic bytes, frame layout, lengths | always `False` |
-| `"default"` | + metadata (CBOR) + integrity (hash verification, decompression) | `True` if hash present and matches |
-| `"checksum"` | Hash verification only, structural warnings suppressed | `True` if hash matches |
-| `"full"` | + fidelity (full decode, decoded-size check, NaN/Inf scan) | `True` if hash matches |
+| `"default"` | + metadata (CBOR) + integrity (hash verification, decompression) | `True` only if hash succeeds and no errors |
+| `"checksum"` | Hash verification only, structural warnings suppressed | `True` only if hash succeeds and no errors |
+| `"full"` | + fidelity (full decode, decoded-size check, NaN/Inf scan) | `True` only if hash succeeds and no errors |
 
 ```python
 # Full validation with canonical CBOR key-order checking
@@ -333,7 +333,7 @@ report = tensogram.validate(msg, level="full", check_canonical=True)
         }
     ],
     "object_count": 1,
-    "hash_verified": True,
+    "hash_verified": False,
 }
 ```
 
