@@ -69,6 +69,7 @@ fn to_error_code(e: &TensogramError) -> TgmError {
         TensogramError::Object(_) => TgmError::Object,
         TensogramError::Io(_) => TgmError::Io,
         TensogramError::HashMismatch { .. } => TgmError::HashMismatch,
+        TensogramError::Remote(_) => TgmError::Io,
     }
 }
 
