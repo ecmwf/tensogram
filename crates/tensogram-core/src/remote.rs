@@ -217,7 +217,8 @@ impl RemoteBackend {
                 self.layouts.len()
             )));
         }
-        if self.layouts[msg_idx].global_metadata.is_some() {
+        if self.layouts[msg_idx].global_metadata.is_some() && self.layouts[msg_idx].index.is_some()
+        {
             return Ok(());
         }
 
