@@ -636,10 +636,10 @@ void tgm_streaming_encoder_free(tgm_streaming_encoder_t *enc);
  * `out`: receives a UTF-8 JSON string describing the validation report.
  *   Free with `tgm_bytes_free`.
  *
- * Returns `TgmError::Ok` on success (even if the message has issues —
- * the issues are in the JSON report). Returns `TgmError::InvalidArg`
+ * Returns `TGM_ERROR_OK` on success (even if the message has issues —
+ * the issues are in the JSON report). Returns `TGM_ERROR_INVALID_ARG`
  * for argument validation failures (null pointers, invalid level string),
- * or `TgmError::Encoding` if JSON serialization of the report fails.
+ * or `TGM_ERROR_ENCODING` if JSON serialization of the report fails.
  */
 tgm_error tgm_validate(const uint8_t *buf,
                        size_t buf_len,
@@ -656,10 +656,10 @@ tgm_error tgm_validate(const uint8_t *buf,
  * `out`: receives a UTF-8 JSON string describing the file validation report.
  *   Free with `tgm_bytes_free`.
  *
- * Returns `TgmError::Ok` on success (issues are in the JSON).
- * Returns `TgmError::Io` if the file cannot be opened or read.
- * Returns `TgmError::InvalidArg` for null pointers or invalid level.
- * Returns `TgmError::Encoding` if JSON serialization of the report fails.
+ * Returns `TGM_ERROR_OK` on success (issues are in the JSON).
+ * Returns `TGM_ERROR_IO` if the file cannot be opened or read.
+ * Returns `TGM_ERROR_INVALID_ARG` for null pointers or invalid level.
+ * Returns `TGM_ERROR_ENCODING` if JSON serialization of the report fails.
  */
 tgm_error tgm_validate_file(const char *path,
                             const char *level,

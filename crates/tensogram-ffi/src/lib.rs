@@ -3089,10 +3089,10 @@ fn parse_validate_options(
 /// `out`: receives a UTF-8 JSON string describing the validation report.
 ///   Free with `tgm_bytes_free`.
 ///
-/// Returns `TgmError::Ok` on success (even if the message has issues —
-/// the issues are in the JSON report). Returns `TgmError::InvalidArg`
+/// Returns `TGM_ERROR_OK` on success (even if the message has issues —
+/// the issues are in the JSON report). Returns `TGM_ERROR_INVALID_ARG`
 /// for argument validation failures (null pointers, invalid level string),
-/// or `TgmError::Encoding` if JSON serialization of the report fails.
+/// or `TGM_ERROR_ENCODING` if JSON serialization of the report fails.
 #[no_mangle]
 pub extern "C" fn tgm_validate(
     buf: *const u8,
@@ -3154,10 +3154,10 @@ pub extern "C" fn tgm_validate(
 /// `out`: receives a UTF-8 JSON string describing the file validation report.
 ///   Free with `tgm_bytes_free`.
 ///
-/// Returns `TgmError::Ok` on success (issues are in the JSON).
-/// Returns `TgmError::Io` if the file cannot be opened or read.
-/// Returns `TgmError::InvalidArg` for null pointers or invalid level.
-/// Returns `TgmError::Encoding` if JSON serialization of the report fails.
+/// Returns `TGM_ERROR_OK` on success (issues are in the JSON).
+/// Returns `TGM_ERROR_IO` if the file cannot be opened or read.
+/// Returns `TGM_ERROR_INVALID_ARG` for null pointers or invalid level.
+/// Returns `TGM_ERROR_ENCODING` if JSON serialization of the report fails.
 #[no_mangle]
 pub extern "C" fn tgm_validate_file(
     path: *const c_char,
