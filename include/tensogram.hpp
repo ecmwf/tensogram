@@ -1028,6 +1028,48 @@ private:
     return result;
 }
 
+/// Validate a single Tensogram message buffer.
+///
+/// Returns a JSON string describing the validation report.
+/// The report contains `issues`, `object_count`, and `hash_verified`.
+/// Even structurally broken messages produce a report (with errors in
+/// `issues`); only argument failures throw.
+///
+/// @param buf               Wire-format message bytes.
+/// @param len               Length of @p buf.
+/// @param level             "quick", "default", "checksum", or "full"
+///                          (default: "default").
+/// @param check_canonical   Check RFC 8949 CBOR key ordering.
+/// @return JSON string with validation report.
+[[nodiscard]] inline std::string validate(const std::uint8_t* buf, std::size_t len,
+                                          const char* level = "default",
+                                          bool check_canonical = false) {
+    tgm_bytes_t bytes{};
+    detail::check(tgm_validate(buf, len, level, check_canonical ? 1 : 0, &bytes));
+    std::string result(reinterpret_cast<const char*>(bytes.data), bytes.len);
+    tgm_bytes_free(bytes);
+    return result;
+}
+
+/// Validate all messages in a `.tgm` file.
+///
+/// Returns a JSON string with `file_issues` and `messages` arrays.
+///
+/// @param path              Path to the `.tgm` file.
+/// @param level             "quick", "default", "checksum", or "full"
+///                          (default: "default").
+/// @param check_canonical   Check CBOR key ordering.
+/// @return JSON string with file validation report.
+[[nodiscard]] inline std::string validate_file(const char* path,
+                                               const char* level = "default",
+                                               bool check_canonical = false) {
+    tgm_bytes_t bytes{};
+    detail::check(tgm_validate_file(path, level, check_canonical ? 1 : 0, &bytes));
+    std::string result(reinterpret_cast<const char*>(bytes.data), bytes.len);
+    tgm_bytes_free(bytes);
+    return result;
+}
+
 } // namespace tensogram
 
 #endif // TENSOGRAM_HPP
