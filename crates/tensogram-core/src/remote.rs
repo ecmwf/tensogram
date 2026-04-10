@@ -381,11 +381,16 @@ impl RemoteBackend {
                 .clone()
                 .ok_or_else(|| TensogramError::Remote("metadata not cached".to_string()))?;
 
+            let msg_length = layout.length;
             let mut descriptors = Vec::with_capacity(index.offsets.len());
             for i in 0..index.offsets.len() {
-                let frame_offset = msg_offset + index.offsets[i];
-                let frame_length = index.lengths[i];
-                let frame_bytes = self.get_range(frame_offset..frame_offset + frame_length)?;
+                let range = Self::checked_frame_range(
+                    msg_offset,
+                    msg_length,
+                    index.offsets[i],
+                    index.lengths[i],
+                )?;
+                let frame_bytes = self.get_range(range)?;
                 let (desc, _payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
                 descriptors.push(desc);
             }
@@ -415,9 +420,13 @@ impl RemoteBackend {
                 .clone()
                 .ok_or_else(|| TensogramError::Remote("metadata not cached".to_string()))?;
 
-            let frame_offset = msg_offset + index.offsets[obj_idx];
-            let frame_length = index.lengths[obj_idx];
-            let frame_bytes = self.get_range(frame_offset..frame_offset + frame_length)?;
+            let range = Self::checked_frame_range(
+                msg_offset,
+                layout.length,
+                index.offsets[obj_idx],
+                index.lengths[obj_idx],
+            )?;
+            let frame_bytes = self.get_range(range)?;
 
             let (desc, payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
 
@@ -447,5 +456,28 @@ impl RemoteBackend {
             )));
         }
         Ok(())
+    }
+
+    fn checked_frame_range(
+        msg_offset: u64,
+        msg_length: u64,
+        frame_offset_in_msg: u64,
+        frame_length: u64,
+    ) -> Result<Range<u64>> {
+        let start = msg_offset
+            .checked_add(frame_offset_in_msg)
+            .ok_or_else(|| TensogramError::Remote("frame offset overflow".to_string()))?;
+        let end = start
+            .checked_add(frame_length)
+            .ok_or_else(|| TensogramError::Remote("frame end overflow".to_string()))?;
+        let msg_end = msg_offset
+            .checked_add(msg_length)
+            .ok_or_else(|| TensogramError::Remote("message end overflow".to_string()))?;
+        if end > msg_end {
+            return Err(TensogramError::Remote(format!(
+                "indexed frame {start}..{end} exceeds message boundary {msg_end}"
+            )));
+        }
+        Ok(start..end)
     }
 }
