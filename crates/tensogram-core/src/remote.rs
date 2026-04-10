@@ -18,7 +18,7 @@ use crate::framing;
 use crate::metadata;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, IndexFrame};
 use crate::wire::{
-    FrameHeader, FrameType, MessageFlags, Preamble, END_MAGIC, FRAME_END, FRAME_HEADER_SIZE, MAGIC,
+    FrameHeader, FrameType, MessageFlags, Preamble, FRAME_END, FRAME_HEADER_SIZE, MAGIC,
     POSTAMBLE_SIZE, PREAMBLE_SIZE,
 };
 
@@ -164,36 +164,26 @@ impl RemoteBackend {
     // ── Message scanning ─────────────────────────────────────────────────
 
     fn scan_messages(&mut self) -> Result<()> {
-        let mut pos: u64 = 0;
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+        let mut pos: u64 = 0;
 
+        // Fast path: assume contiguous messages starting at offset 0.
+        // Each iteration: 1 GET for the preamble, then jump by total_length.
+        // Cost: 1 GET per message (not per byte).
         while pos + min_message_size <= self.file_size {
             let preamble_bytes = self.get_range(pos..pos + PREAMBLE_SIZE as u64)?;
             if &preamble_bytes[..MAGIC.len()] != MAGIC {
-                pos += 1;
-                continue;
+                break;
             }
 
             let preamble = match Preamble::read_from(&preamble_bytes) {
                 Ok(p) => p,
-                Err(_) => {
-                    pos += 1;
-                    continue;
-                }
+                Err(_) => break,
             };
 
             let msg_len = preamble.total_length;
             if msg_len == 0 || msg_len < min_message_size || pos + msg_len > self.file_size {
-                pos += 1;
-                continue;
-            }
-
-            let end_magic_offset = pos + msg_len - END_MAGIC.len() as u64;
-            let end_bytes =
-                self.get_range(end_magic_offset..end_magic_offset + END_MAGIC.len() as u64)?;
-            if &end_bytes[..] != END_MAGIC {
-                pos += 1;
-                continue;
+                break;
             }
 
             self.layouts.push(MessageLayout {
@@ -326,10 +316,24 @@ impl RemoteBackend {
         self.layouts.len()
     }
 
-    pub(crate) fn message_offsets(&self) -> Vec<(usize, usize)> {
+    pub(crate) fn message_offsets(&self) -> Result<Vec<(usize, usize)>> {
         self.layouts
             .iter()
-            .map(|l| (l.offset as usize, l.length as usize))
+            .map(|l| {
+                let offset = usize::try_from(l.offset).map_err(|_| {
+                    TensogramError::Remote(format!(
+                        "message offset {} does not fit in usize",
+                        l.offset
+                    ))
+                })?;
+                let length = usize::try_from(l.length).map_err(|_| {
+                    TensogramError::Remote(format!(
+                        "message length {} does not fit in usize",
+                        l.length
+                    ))
+                })?;
+                Ok((offset, length))
+            })
             .collect()
     }
 

@@ -416,7 +416,7 @@ async fn test_remote_request_count_header_indexed() -> Result<(), Box<dyn Error>
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    // Opening: HEAD + preamble read + header chunk = ~3 requests
+    // Opening scans message boundaries only (HEAD + preamble reads)
     let mut file = TensogramFile::open_source(server.url())?;
     let open_requests = server.request_count();
 

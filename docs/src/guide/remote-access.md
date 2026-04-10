@@ -86,7 +86,7 @@ For header-indexed files (the default for non-streaming writes):
 
 | Phase | Operation | HTTP Requests |
 |-------|-----------|:---:|
-| **Open** | `open_source` / `open_remote` | 1 HEAD + 1 GET per message (preamble scan) |
+| **Open** | `open_source` / `open_remote` | 1 HEAD + 1 GET per message (preamble read) |
 | **First access** | `file_decode_metadata(i)` | 1 GET (header chunk, discovers metadata + index) |
 | **Cached** | `file_decode_metadata(i)` again | 0 (served from cache) |
 | **Object read** | `file_decode_object(i, j)` | 1 GET per object (if layout already cached) |
@@ -135,7 +135,7 @@ Remote operations return `TensogramError::Remote` for transport-level failures:
 | Invalid URL | `open_source` / `open_remote` with a malformed URL |
 | Connection failure | Network unreachable, DNS failure, timeout |
 | File not found | HTTP 404, S3 NoSuchKey |
-| Streaming message | Message has `total_length=0` (footer-indexed) |
+| No valid messages | File contains only streaming (`total_length=0`) or corrupt messages |
 | Header-only required | Message has no header metadata flag |
 | Object index out of range | `file_decode_object(i, j)` where `j >= object_count` |
 

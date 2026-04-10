@@ -82,7 +82,7 @@ impl TensogramFile {
         storage_options: &std::collections::BTreeMap<String, String>,
     ) -> Result<Self> {
         let remote = crate::remote::RemoteBackend::open(source, storage_options)?;
-        let offsets = remote.message_offsets();
+        let offsets = remote.message_offsets()?;
         Ok(TensogramFile {
             backend: Backend::Remote(remote),
             message_offsets: Some(offsets),
