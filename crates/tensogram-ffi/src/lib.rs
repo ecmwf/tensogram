@@ -646,6 +646,7 @@ pub extern "C" fn tgm_decode(
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
         native_byte_order: native_byte_order != 0,
+        ..Default::default()
     };
 
     match decode(data, &options) {
@@ -729,6 +730,7 @@ pub extern "C" fn tgm_decode_object(
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
         native_byte_order: native_byte_order != 0,
+        ..Default::default()
     };
 
     match decode_object(data, index, &options) {
@@ -798,6 +800,7 @@ pub extern "C" fn tgm_decode_range(
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
         native_byte_order: native_byte_order != 0,
+        ..Default::default()
     };
 
     let ranges: Vec<(u64, u64)> = if num_ranges == 0 {
@@ -1378,6 +1381,7 @@ pub extern "C" fn tgm_file_decode_message(
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
         native_byte_order: native_byte_order != 0,
+        ..Default::default()
     };
 
     match f.decode_message(index, &options) {
@@ -1917,6 +1921,7 @@ pub extern "C" fn tgm_object_iter_create(
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
         native_byte_order: native_byte_order != 0,
+        ..Default::default()
     };
 
     // Parse global metadata from the message header so we can attach it to

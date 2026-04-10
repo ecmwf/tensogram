@@ -8,14 +8,19 @@ use crate::compression::Lz4Compressor;
 use crate::compression::Sz3Compressor;
 #[cfg(feature = "szip")]
 use crate::compression::SzipCompressor;
+#[cfg(feature = "szip-pure")]
+use crate::compression::SzipPureCompressor;
 #[cfg(feature = "zfp")]
 use crate::compression::ZfpCompressor;
 #[cfg(feature = "zstd")]
 use crate::compression::ZstdCompressor;
+#[cfg(feature = "zstd-pure")]
+use crate::compression::ZstdPureCompressor;
 use crate::compression::{CompressResult, CompressionError, Compressor};
 use crate::shuffle;
 use crate::simple_packing::{self, PackingError, SimplePackingParams};
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,14 +138,14 @@ pub enum Sz3ErrorBound {
 #[derive(Debug, Clone)]
 pub enum CompressionType {
     None,
-    #[cfg(feature = "szip")]
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
     Szip {
         rsi: u32,
         block_size: u32,
         flags: u32,
         bits_per_sample: u32,
     },
-    #[cfg(feature = "zstd")]
+    #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
     Zstd {
         level: i32,
     },
@@ -162,6 +167,59 @@ pub enum CompressionType {
     },
 }
 
+/// Selects which backend to use when both FFI and pure-Rust implementations
+/// are compiled in for the same codec (szip or zstd).
+///
+/// When only one feature is enabled the backend field is ignored — the
+/// available implementation is always used.
+///
+/// The default is resolved once from the `TENSOGRAM_COMPRESSION_BACKEND`
+/// environment variable (values: `ffi` or `pure`).
+/// On `wasm32` the default is always `Pure`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressionBackend {
+    /// Use the C FFI implementation (libaec for szip, libzstd for zstd).
+    /// Falls back to pure-Rust if the FFI feature is not compiled in.
+    Ffi,
+    /// Use the pure-Rust implementation (tensogram-szip, ruzstd).
+    /// Falls back to FFI if the pure feature is not compiled in.
+    Pure,
+}
+
+impl Default for CompressionBackend {
+    fn default() -> Self {
+        default_compression_backend()
+    }
+}
+
+/// Resolve the default compression backend from environment variables.
+///
+/// - `TENSOGRAM_COMPRESSION_BACKEND=pure|ffi` overrides the default for
+///   both szip and zstd.
+/// - On `wasm32` the default is always `Pure` (FFI backends cannot exist).
+/// - On native the default is `Ffi` (faster, battle-tested).
+pub fn default_compression_backend() -> CompressionBackend {
+    static DEFAULT: OnceLock<CompressionBackend> = OnceLock::new();
+    *DEFAULT.get_or_init(|| {
+        if cfg!(target_arch = "wasm32") {
+            return CompressionBackend::Pure;
+        }
+        // Check env — accept "pure" or "ffi" (case-insensitive)
+        if let Ok(val) = std::env::var("TENSOGRAM_COMPRESSION_BACKEND") {
+            return parse_backend(&val);
+        }
+        // Native default: prefer FFI
+        CompressionBackend::Ffi
+    })
+}
+
+fn parse_backend(val: &str) -> CompressionBackend {
+    match val.trim().to_ascii_lowercase().as_str() {
+        "pure" | "rust" => CompressionBackend::Pure,
+        _ => CompressionBackend::Ffi,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PipelineConfig {
     pub encoding: EncodingType,
@@ -175,6 +233,8 @@ pub struct PipelineConfig {
     /// swap must operate on each float component independently, so this is
     /// half of `dtype_byte_width` (e.g. 4 for complex64, 8 for complex128).
     pub swap_unit_size: usize,
+    /// Which backend to use for szip / zstd when both are compiled in.
+    pub compression_backend: CompressionBackend,
 }
 
 pub struct PipelineResult {
@@ -183,14 +243,85 @@ pub struct PipelineResult {
     pub block_offsets: Option<Vec<u64>>,
 }
 
+/// Build an szip compressor, dispatching between FFI and pure-Rust at runtime.
+#[cfg(any(feature = "szip", feature = "szip-pure"))]
+fn build_szip_compressor(
+    #[allow(unused_variables)] backend: CompressionBackend,
+    rsi: u32,
+    block_size: u32,
+    flags: u32,
+    bits_per_sample: u32,
+) -> Box<dyn Compressor> {
+    // When both features are compiled in, dispatch at runtime.
+    #[cfg(all(feature = "szip", feature = "szip-pure"))]
+    if matches!(backend, CompressionBackend::Pure) {
+        return Box::new(SzipPureCompressor {
+            rsi,
+            block_size,
+            flags,
+            bits_per_sample,
+        });
+    }
+
+    // FFI path — used when szip feature is enabled and either:
+    // (a) both features compiled but backend is Ffi, or
+    // (b) only szip is compiled.
+    #[cfg(feature = "szip")]
+    {
+        Box::new(SzipCompressor {
+            rsi,
+            block_size,
+            flags,
+            bits_per_sample,
+        })
+    }
+
+    // Pure-only path — used when only szip-pure is compiled (no FFI).
+    #[cfg(all(feature = "szip-pure", not(feature = "szip")))]
+    {
+        Box::new(SzipPureCompressor {
+            rsi,
+            block_size,
+            flags,
+            bits_per_sample,
+        })
+    }
+}
+
+/// Build a zstd compressor, dispatching between FFI and pure-Rust at runtime.
+#[cfg(any(feature = "zstd", feature = "zstd-pure"))]
+fn build_zstd_compressor(
+    #[allow(unused_variables)] backend: CompressionBackend,
+    level: i32,
+) -> Box<dyn Compressor> {
+    #[cfg(all(feature = "zstd", feature = "zstd-pure"))]
+    if matches!(backend, CompressionBackend::Pure) {
+        return Box::new(ZstdPureCompressor { level });
+    }
+
+    #[cfg(feature = "zstd")]
+    {
+        Box::new(ZstdCompressor { level })
+    }
+
+    #[cfg(all(feature = "zstd-pure", not(feature = "zstd")))]
+    {
+        Box::new(ZstdPureCompressor { level })
+    }
+}
+
 /// Build a boxed compressor from a CompressionType variant.
+///
+/// For szip and zstd, the `compression_backend` field in `PipelineConfig`
+/// selects between FFI and pure-Rust implementations at **runtime**.  When
+/// only one feature is compiled in, the backend field is ignored.
 fn build_compressor(
     compression: &CompressionType,
     #[allow(unused_variables)] config: &PipelineConfig,
 ) -> Result<Option<Box<dyn Compressor>>, CompressionError> {
     match compression {
         CompressionType::None => Ok(None),
-        #[cfg(feature = "szip")]
+        #[cfg(any(feature = "szip", feature = "szip-pure"))]
         CompressionType::Szip {
             rsi,
             block_size,
@@ -198,20 +329,31 @@ fn build_compressor(
             bits_per_sample,
         } => {
             let mut szip_flags = *flags;
-            // simple_packing output is MSB-first; tell libaec so its predictor
-            // sees bytes in the correct significance order.
+            // simple_packing output is MSB-first; tell the szip codec so its
+            // predictor sees bytes in the correct significance order.
+            // AEC_DATA_MSB = 4 in both libaec-sys and tensogram-szip.
             if matches!(config.encoding, EncodingType::SimplePacking(_)) {
-                szip_flags |= libaec_sys::AEC_DATA_MSB;
+                szip_flags |= 4; // AEC_DATA_MSB
             }
-            Ok(Some(Box::new(SzipCompressor {
-                rsi: *rsi,
-                block_size: *block_size,
-                flags: szip_flags,
-                bits_per_sample: *bits_per_sample,
-            })))
+
+            // Runtime backend selection.  The helper builds the right
+            // Box<dyn Compressor> based on what features are compiled in
+            // and what the caller requested.
+            let compressor: Box<dyn Compressor> = build_szip_compressor(
+                config.compression_backend,
+                *rsi,
+                *block_size,
+                szip_flags,
+                *bits_per_sample,
+            );
+            Ok(Some(compressor))
         }
-        #[cfg(feature = "zstd")]
-        CompressionType::Zstd { level } => Ok(Some(Box::new(ZstdCompressor { level: *level }))),
+        #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
+        CompressionType::Zstd { level } => {
+            let compressor: Box<dyn Compressor> =
+                build_zstd_compressor(config.compression_backend, *level);
+            Ok(Some(compressor))
+        }
         #[cfg(feature = "lz4")]
         CompressionType::Lz4 => Ok(Some(Box::new(Lz4Compressor))),
         #[cfg(feature = "blosc2")]
@@ -522,6 +664,7 @@ mod tests {
             byte_order: ByteOrder::Little,
             dtype_byte_width: 8,
             swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
         };
         let result = encode_pipeline(&data, &config).unwrap();
         assert_eq!(result.encoded_bytes, data);
@@ -543,6 +686,7 @@ mod tests {
             byte_order: ByteOrder::Little,
             dtype_byte_width: 8,
             swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -565,6 +709,7 @@ mod tests {
             byte_order: ByteOrder::Little,
             dtype_byte_width: 4,
             swap_unit_size: 4,
+            compression_backend: CompressionBackend::default(),
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -573,23 +718,28 @@ mod tests {
         assert_eq!(decoded, data);
     }
 
-    #[cfg(feature = "szip")]
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
     #[test]
     fn test_szip_round_trip_pipeline() {
         let data: Vec<u8> = (0..2048).map(|i| (i % 256) as u8).collect();
+
+        // AEC_DATA_PREPROCESS = 8 in both libaec-sys and tensogram-szip
+        let preprocess_flag = 8u32;
+
         let config = PipelineConfig {
             encoding: EncodingType::None,
             filter: FilterType::None,
             compression: CompressionType::Szip {
                 rsi: 128,
                 block_size: 16,
-                flags: libaec_sys::AEC_DATA_PREPROCESS,
+                flags: preprocess_flag,
                 bits_per_sample: 8,
             },
             num_values: 2048,
             byte_order: ByteOrder::Little,
             dtype_byte_width: 1,
             swap_unit_size: 1,
+            compression_backend: CompressionBackend::default(),
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -671,6 +821,7 @@ mod tests {
             byte_order: ByteOrder::Big,
             dtype_byte_width: 4,
             swap_unit_size: 4,
+            compression_backend: CompressionBackend::default(),
         };
 
         let result = encode_pipeline(&be_bytes, &config).unwrap();
@@ -701,6 +852,7 @@ mod tests {
             byte_order: ByteOrder::Big,
             dtype_byte_width: 8,
             swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -741,6 +893,7 @@ mod tests {
             byte_order: ByteOrder::native(),
             dtype_byte_width: 4,
             swap_unit_size: 4,
+            compression_backend: CompressionBackend::default(),
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -762,6 +915,7 @@ mod tests {
             byte_order: ByteOrder::Big,
             dtype_byte_width: 2,
             swap_unit_size: 2,
+            compression_backend: CompressionBackend::default(),
         };
         let result = encode_pipeline(&be_bytes, &config).unwrap();
         let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
@@ -781,6 +935,7 @@ mod tests {
             byte_order: ByteOrder::Big,
             dtype_byte_width: 8,
             swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
         };
         let result = encode_pipeline(&be_bytes, &config).unwrap();
         let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
@@ -804,6 +959,7 @@ mod tests {
             byte_order: ByteOrder::Big,
             dtype_byte_width: 8,
             swap_unit_size: 4, // complex64: swap each float32 component
+            compression_backend: CompressionBackend::default(),
         };
         let result = encode_pipeline(&be_bytes, &config).unwrap();
         let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
@@ -825,6 +981,7 @@ mod tests {
             byte_order: ByteOrder::Big, // cross-endian, but 1-byte → no-op
             dtype_byte_width: 1,
             swap_unit_size: 1,
+            compression_backend: CompressionBackend::default(),
         };
         let result = encode_pipeline(&data, &config).unwrap();
         let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();

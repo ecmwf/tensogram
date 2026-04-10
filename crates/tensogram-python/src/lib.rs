@@ -391,6 +391,7 @@ impl PyTensogramFile {
         let options = DecodeOptions {
             verify_hash: verify_hash.unwrap_or(false),
             native_byte_order,
+            ..Default::default()
         };
         let (global_meta, data_objects) = self
             .file
@@ -659,6 +660,7 @@ fn py_decode(
     let options = DecodeOptions {
         verify_hash,
         native_byte_order,
+        ..Default::default()
     };
     let (global_meta, data_objects) = decode(buf, &options).map_err(to_py_err)?;
     let result_list = data_objects_to_python(py, &data_objects)?;
@@ -712,6 +714,7 @@ fn py_decode_object(
     let options = DecodeOptions {
         verify_hash,
         native_byte_order,
+        ..Default::default()
     };
     let (global_meta, desc, obj_bytes) = decode_object(buf, index, &options).map_err(to_py_err)?;
     let arr = bytes_to_numpy(py, &desc, &obj_bytes)?;
@@ -750,6 +753,7 @@ fn py_decode_range(
     let options = DecodeOptions {
         verify_hash,
         native_byte_order,
+        ..Default::default()
     };
     let parts = decode_range(buf, object_index, &ranges, &options).map_err(to_py_err)?;
 

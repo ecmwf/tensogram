@@ -311,6 +311,7 @@ fn time_tensogram_sp_szip(
             byte_order: ByteOrder::Little,
             dtype_byte_width: 8,
             swap_unit_size: 8, // f64
+            compression_backend: Default::default(),
         })
     };
 

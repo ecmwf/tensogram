@@ -528,6 +528,7 @@ mod tests {
         let desc = make_descriptor(vec![4]);
         let data = vec![42u8; 4 * 4];
         let options = EncodeOptions {
+            compression_backend: Default::default(),
             hash_algorithm: Some(HashAlgorithm::Xxh3),
             emit_preceders: false,
         };
@@ -576,6 +577,7 @@ mod tests {
         let desc = make_descriptor(vec![4]);
         let data = vec![42u8; 4 * 4];
         let options = EncodeOptions {
+            compression_backend: Default::default(),
             hash_algorithm: Some(HashAlgorithm::Xxh3),
             emit_preceders: false,
         };
@@ -598,6 +600,7 @@ mod tests {
     fn streaming_no_objects() {
         let meta = GlobalMetadata::default();
         let options = EncodeOptions {
+            compression_backend: Default::default(),
             hash_algorithm: None,
             emit_preceders: false,
         };

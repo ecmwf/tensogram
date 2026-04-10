@@ -75,6 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         byte_order: ByteOrder::Big,
         dtype_byte_width: 8,
         swap_unit_size: 8, // f64
+        compression_backend: Default::default(),
     };
     let packed = pipeline::encode_pipeline(&raw_bytes, &config)?;
     let packed_bytes = packed.encoded_bytes;
@@ -87,7 +88,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let message = encode_pre_encoded(&meta, &[(&packed_desc, packed_bytes.as_slice())], &options)?;
 
     // 5. Decode the message and verify the round-trip.
-    let (decoded_meta, decoded_objects) = decode(&message, &DecodeOptions::default())?;
+    let (decoded_meta, decoded_objects) = decode(
+        &message,
+        &DecodeOptions {
+            native_byte_order: false,
+            ..DecodeOptions::default()
+        },
+    )?;
     let (decoded_desc, decoded_payload) = decoded_objects
         .first()
         .ok_or_else(|| std::io::Error::other("missing decoded object"))?;

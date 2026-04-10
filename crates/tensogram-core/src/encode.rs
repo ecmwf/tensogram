@@ -29,6 +29,14 @@ pub struct EncodeOptions {
     /// The streaming encoder ignores this field; it emits preceders only
     /// when `write_preceder()` is called explicitly.
     pub emit_preceders: bool,
+    /// Which backend to use for szip / zstd when both FFI and pure-Rust
+    /// implementations are compiled in.
+    ///
+    /// Defaults to `Ffi` on native (faster, battle-tested) and `Pure` on
+    /// `wasm32` (FFI cannot exist).  Override with
+    /// `TENSOGRAM_COMPRESSION_BACKEND=pure` env variable, or set this
+    /// field explicitly.
+    pub compression_backend: pipeline::CompressionBackend,
 }
 
 impl Default for EncodeOptions {
@@ -36,6 +44,7 @@ impl Default for EncodeOptions {
         Self {
             hash_algorithm: Some(HashAlgorithm::Xxh3),
             emit_preceders: false,
+            compression_backend: pipeline::CompressionBackend::default(),
         }
     }
 }
@@ -315,6 +324,7 @@ pub(crate) fn populate_base_entries(
 /// set (or overwritten).
 pub(crate) fn populate_reserved_provenance(reserved: &mut BTreeMap<String, ciborium::Value>) {
     use ciborium::Value;
+    #[cfg(not(target_arch = "wasm32"))]
     use std::time::SystemTime;
 
     // encoder.name + encoder.version
@@ -332,21 +342,28 @@ pub(crate) fn populate_reserved_provenance(reserved: &mut BTreeMap<String, cibor
     reserved.insert("encoder".to_string(), encoder_map);
 
     // time — ISO 8601 UTC
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    // Simple UTC format: YYYY-MM-DDThh:mm:ssZ
-    // We compute from epoch seconds to avoid adding a datetime crate.
-    let days = secs / 86400;
-    let day_secs = secs % 86400;
-    let hours = day_secs / 3600;
-    let minutes = (day_secs % 3600) / 60;
-    let seconds = day_secs % 60;
-    // Civil date from days since 1970-01-01 (Howard Hinnant algorithm)
-    let (y, m, d) = civil_from_days(days as i64);
-    let timestamp = format!("{y:04}-{m:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}Z");
-    reserved.insert("time".to_string(), Value::Text(timestamp));
+    // On wasm32-unknown-unknown, SystemTime::now() panics. Skip the `time`
+    // field entirely rather than encoding a misleading epoch-0 timestamp.
+    // Callers can set a timestamp via `_extra_` if needed.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Simple UTC format: YYYY-MM-DDThh:mm:ssZ
+        // We compute from epoch seconds to avoid adding a datetime crate.
+        let days = secs / 86400;
+        let day_secs = secs % 86400;
+        let hours = day_secs / 3600;
+        let minutes = (day_secs % 3600) / 60;
+        let seconds = day_secs % 60;
+        // Civil date from days since 1970-01-01 (Howard Hinnant algorithm)
+        let (y, m, d) = civil_from_days(days as i64);
+        let timestamp = format!("{y:04}-{m:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}Z");
+        reserved.insert("time".to_string(), Value::Text(timestamp));
+    }
 
     // uuid — RFC 4122 v4
     let id = uuid::Uuid::new_v4();
@@ -355,6 +372,7 @@ pub(crate) fn populate_reserved_provenance(reserved: &mut BTreeMap<String, cibor
 
 /// Convert days since 1970-01-01 to (year, month, day).
 /// Howard Hinnant's algorithm (public domain).
+#[cfg(not(target_arch = "wasm32"))]
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
@@ -375,6 +393,21 @@ pub(crate) fn build_pipeline_config(
     desc: &DataObjectDescriptor,
     num_values: usize,
     dtype: Dtype,
+) -> Result<PipelineConfig> {
+    build_pipeline_config_with_backend(
+        desc,
+        num_values,
+        dtype,
+        pipeline::CompressionBackend::default(),
+    )
+}
+
+/// Build a pipeline config with an explicit compression backend override.
+pub(crate) fn build_pipeline_config_with_backend(
+    desc: &DataObjectDescriptor,
+    num_values: usize,
+    dtype: Dtype,
+    compression_backend: pipeline::CompressionBackend,
 ) -> Result<PipelineConfig> {
     let encoding = match desc.encoding.as_str() {
         "none" => EncodingType::None,
@@ -411,7 +444,7 @@ pub(crate) fn build_pipeline_config(
 
     let compression = match desc.compression.as_str() {
         "none" => CompressionType::None,
-        #[cfg(feature = "szip")]
+        #[cfg(any(feature = "szip", feature = "szip-pure"))]
         "szip" => {
             let rsi = u32::try_from(get_u64_param(&desc.params, "szip_rsi")?)
                 .map_err(|_| TensogramError::Metadata("szip_rsi out of u32 range".to_string()))?;
@@ -433,7 +466,7 @@ pub(crate) fn build_pipeline_config(
                 bits_per_sample,
             }
         }
-        #[cfg(feature = "zstd")]
+        #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
         "zstd" => {
             let level_i64 = get_i64_param(&desc.params, "zstd_level").unwrap_or(3);
             let level = i32::try_from(level_i64).map_err(|_| {
@@ -552,6 +585,7 @@ pub(crate) fn build_pipeline_config(
         byte_order: desc.byte_order,
         dtype_byte_width: dtype.byte_width(),
         swap_unit_size: dtype.swap_unit_size(),
+        compression_backend,
     })
 }
 
