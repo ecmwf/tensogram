@@ -108,7 +108,7 @@ sequenceDiagram
     Note right of TensogramFile: Discover message offsets
 
     App->>TensogramFile: file_decode_object(0, 2)
-    TensogramFile->>ObjectStore: GET range 24..262168 (header chunk)
+    TensogramFile->>ObjectStore: GET range 24..N (header chunk, up to 256KB)
     Note right of TensogramFile: First access: parse metadata + index, cache layout
     TensogramFile->>ObjectStore: GET range offset..offset+len (object frame 2)
     TensogramFile-->>App: (metadata, descriptor, decoded_bytes)

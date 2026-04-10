@@ -338,7 +338,13 @@ impl RemoteBackend {
     }
 
     pub(crate) fn read_message(&self, msg_idx: usize) -> Result<Vec<u8>> {
-        let layout = &self.layouts[msg_idx];
+        let layout = self.layouts.get(msg_idx).ok_or_else(|| {
+            TensogramError::Framing(format!(
+                "message index {} out of range (count={})",
+                msg_idx,
+                self.layouts.len()
+            ))
+        })?;
         let bytes = self.get_range(layout.offset..layout.offset + layout.length)?;
         Ok(bytes.to_vec())
     }
@@ -362,6 +368,14 @@ impl RemoteBackend {
         let msg_offset = layout.offset;
 
         if let Some(ref index) = layout.index {
+            if index.offsets.len() != index.lengths.len() {
+                return Err(TensogramError::Remote(format!(
+                    "corrupt index: offsets.len()={} != lengths.len()={}",
+                    index.offsets.len(),
+                    index.lengths.len()
+                )));
+            }
+
             let meta = layout
                 .global_metadata
                 .clone()
@@ -369,7 +383,10 @@ impl RemoteBackend {
 
             let mut descriptors = Vec::with_capacity(index.offsets.len());
             for i in 0..index.offsets.len() {
-                let desc = self.read_object_descriptor(msg_offset, index, i)?;
+                let frame_offset = msg_offset + index.offsets[i];
+                let frame_length = index.lengths[i];
+                let frame_bytes = self.get_range(frame_offset..frame_offset + frame_length)?;
+                let (desc, _payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
                 descriptors.push(desc);
             }
             Ok((meta, descriptors))
@@ -430,20 +447,5 @@ impl RemoteBackend {
             )));
         }
         Ok(())
-    }
-
-    fn read_object_descriptor(
-        &self,
-        msg_offset: u64,
-        index: &IndexFrame,
-        obj_idx: usize,
-    ) -> Result<DataObjectDescriptor> {
-        Self::validate_index_access(index, obj_idx)?;
-        let frame_offset = msg_offset + index.offsets[obj_idx];
-        let frame_length = index.lengths[obj_idx];
-        let frame_bytes = self.get_range(frame_offset..frame_offset + frame_length)?;
-
-        let (desc, _payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
-        Ok(desc)
     }
 }
