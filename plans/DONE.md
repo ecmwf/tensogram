@@ -55,7 +55,7 @@ this across all interfaces.
   file validation, nonexistent file, empty file).
 - 12 FFI unit tests covering level option parsing plus end-to-end
   `tgm_validate`/`tgm_validate_file` validation cases.
-- Documentation: `PYTHON_API.md` updated with validation API reference.
+- Documentation: `docs/src/guide/python-api.md` added to mdBook.
 
 ## tensogram validate PR 2 — Level 4 fidelity + API refactor
 
