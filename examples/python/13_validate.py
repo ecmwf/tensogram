@@ -8,6 +8,7 @@ verification with NaN/Inf detection.
 
 # pyright: basic, reportAttributeAccessIssue=false, reportMissingTypeStubs=false
 
+import os
 import tempfile
 
 import numpy as np
@@ -70,28 +71,31 @@ def main():
 
     print("\n=== File validation ===\n")
 
-    with tempfile.NamedTemporaryFile(suffix=".tgm", delete=False) as tmp:
-        path = tmp.name
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "example.tgm")
 
-    with tensogram.TensogramFile.create(path) as f:
-        for i in range(3):
-            arr = np.random.randn(50).astype(np.float32)
-            desc = {"type": "ntensor", "shape": [50], "dtype": "float32"}
-            f.append({"version": 2, "base": [{"index": i}]}, [(desc, arr)])
+        with tensogram.TensogramFile.create(path) as f:
+            for i in range(3):
+                arr = np.random.randn(50).astype(np.float32)
+                desc = {"type": "ntensor", "shape": [50], "dtype": "float32"}
+                f.append({"version": 2, "base": [{"index": i}]}, [(desc, arr)])
 
-    report = tensogram.validate_file(path)
-    print(
-        f"File: {len(report['messages'])} messages, {len(report['file_issues'])} file-level issues"
-    )
-    for i, message_report in enumerate(report["messages"]):
-        status = (
-            "OK" if not message_report["issues"] else f"{len(message_report['issues'])} issues"
-        )
+        report = tensogram.validate_file(path)
         print(
-            f"  Message {i}: {status}, "
-            f"objects={message_report['object_count']}, "
-            f"hash_verified={message_report['hash_verified']}"
+            f"File: {len(report['messages'])} messages, "
+            f"{len(report['file_issues'])} file-level issues"
         )
+        for i, message_report in enumerate(report["messages"]):
+            status = (
+                "OK"
+                if not message_report["issues"]
+                else f"{len(message_report['issues'])} issues"
+            )
+            print(
+                f"  Message {i}: {status}, "
+                f"objects={message_report['object_count']}, "
+                f"hash_verified={message_report['hash_verified']}"
+            )
 
 
 if __name__ == "__main__":

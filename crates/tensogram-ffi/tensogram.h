@@ -627,6 +627,7 @@ void tgm_streaming_encoder_free(tgm_streaming_encoder_t *enc);
  * Validate a single Tensogram message buffer.
  *
  * `buf` / `buf_len`: the wire-format message bytes (single message).
+ *   `buf` may be NULL when `buf_len` is 0 (empty-buffer validation).
  * `level`: validation depth — null-terminated C string:
  *   `"quick"` (structure only), `"default"` (up to hash check),
  *   `"checksum"` (hash check, suppress structural warnings),
@@ -636,8 +637,9 @@ void tgm_streaming_encoder_free(tgm_streaming_encoder_t *enc);
  *   Free with `tgm_bytes_free`.
  *
  * Returns `TgmError::Ok` on success (even if the message has issues —
- * the issues are in the JSON report). Returns a non-Ok error code only
- * for argument validation failures (null pointers, invalid level string).
+ * the issues are in the JSON report). Returns `TgmError::InvalidArg`
+ * for argument validation failures (null pointers, invalid level string),
+ * or `TgmError::Encoding` if JSON serialization of the report fails.
  */
 tgm_error tgm_validate(const uint8_t *buf,
                        size_t buf_len,
@@ -657,6 +659,7 @@ tgm_error tgm_validate(const uint8_t *buf,
  * Returns `TgmError::Ok` on success (issues are in the JSON).
  * Returns `TgmError::Io` if the file cannot be opened or read.
  * Returns `TgmError::InvalidArg` for null pointers or invalid level.
+ * Returns `TgmError::Encoding` if JSON serialization of the report fails.
  */
 tgm_error tgm_validate_file(const char *path,
                             const char *level,

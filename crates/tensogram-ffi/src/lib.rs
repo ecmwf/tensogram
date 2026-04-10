@@ -3080,6 +3080,7 @@ fn parse_validate_options(
 /// Validate a single Tensogram message buffer.
 ///
 /// `buf` / `buf_len`: the wire-format message bytes (single message).
+///   `buf` may be NULL when `buf_len` is 0 (empty-buffer validation).
 /// `level`: validation depth — null-terminated C string:
 ///   `"quick"` (structure only), `"default"` (up to hash check),
 ///   `"checksum"` (hash check, suppress structural warnings),
@@ -3089,8 +3090,9 @@ fn parse_validate_options(
 ///   Free with `tgm_bytes_free`.
 ///
 /// Returns `TgmError::Ok` on success (even if the message has issues —
-/// the issues are in the JSON report). Returns a non-Ok error code only
-/// for argument validation failures (null pointers, invalid level string).
+/// the issues are in the JSON report). Returns `TgmError::InvalidArg`
+/// for argument validation failures (null pointers, invalid level string),
+/// or `TgmError::Encoding` if JSON serialization of the report fails.
 #[no_mangle]
 pub extern "C" fn tgm_validate(
     buf: *const u8,
@@ -3155,6 +3157,7 @@ pub extern "C" fn tgm_validate(
 /// Returns `TgmError::Ok` on success (issues are in the JSON).
 /// Returns `TgmError::Io` if the file cannot be opened or read.
 /// Returns `TgmError::InvalidArg` for null pointers or invalid level.
+/// Returns `TgmError::Encoding` if JSON serialization of the report fails.
 #[no_mangle]
 pub extern "C" fn tgm_validate_file(
     path: *const c_char,
