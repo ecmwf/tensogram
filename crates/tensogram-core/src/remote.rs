@@ -18,7 +18,7 @@ use crate::framing;
 use crate::metadata;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, IndexFrame};
 use crate::wire::{
-    FrameHeader, FrameType, MessageFlags, Preamble, FRAME_END, FRAME_HEADER_SIZE, MAGIC,
+    FrameHeader, FrameType, MessageFlags, Postamble, Preamble, FRAME_END, FRAME_HEADER_SIZE, MAGIC,
     POSTAMBLE_SIZE, PREAMBLE_SIZE,
 };
 
@@ -167,9 +167,6 @@ impl RemoteBackend {
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
         let mut pos: u64 = 0;
 
-        // Fast path: assume contiguous messages starting at offset 0.
-        // Each iteration: 1 GET for the preamble, then jump by total_length.
-        // Cost: 1 GET per message (not per byte).
         while pos + min_message_size <= self.file_size {
             let preamble_bytes = self.get_range(pos..pos + PREAMBLE_SIZE as u64)?;
             if &preamble_bytes[..MAGIC.len()] != MAGIC {
@@ -182,6 +179,25 @@ impl RemoteBackend {
             };
 
             let msg_len = preamble.total_length;
+
+            if msg_len == 0 {
+                // Streaming message: total_length=0 means the encoder didn't
+                // know the size upfront. The message extends to the end of
+                // the file (streaming messages must be the last in a file).
+                let remaining = self.file_size - pos;
+                if remaining < min_message_size {
+                    break;
+                }
+                self.layouts.push(MessageLayout {
+                    offset: pos,
+                    length: remaining,
+                    preamble,
+                    index: None,
+                    global_metadata: None,
+                });
+                break; // streaming message consumes the rest of the file
+            }
+
             let msg_end = match pos.checked_add(msg_len) {
                 Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
                 _ => break,
@@ -224,20 +240,49 @@ impl RemoteBackend {
 
         let flags = self.layouts[msg_idx].preamble.flags;
 
-        // PR1 scope: only header-indexed (buffered) messages are supported.
-        // Footer-indexed (streaming) messages will be added in a follow-up PR
-        // once the StreamingEncoder index lengths are verified as frame lengths.
         if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX) {
             self.discover_header_layout(msg_idx)?;
+        } else if flags.has(MessageFlags::FOOTER_METADATA) && flags.has(MessageFlags::FOOTER_INDEX)
+        {
+            self.discover_footer_layout(msg_idx)?;
         } else {
             return Err(TensogramError::Remote(
-                "remote access requires header-indexed messages (both HEADER_METADATA and \
-                 HEADER_INDEX flags); header-metadata-only and footer-only layouts are not supported"
-                    .to_string(),
+                "remote access requires header-indexed or footer-indexed messages".to_string(),
             ));
         }
 
         Ok(())
+    }
+
+    fn discover_footer_layout(&mut self, msg_idx: usize) -> Result<()> {
+        let msg_offset = self.layouts[msg_idx].offset;
+        let msg_len = self.layouts[msg_idx].length;
+
+        let pa_offset = msg_offset
+            .checked_add(msg_len)
+            .and_then(|end| end.checked_sub(POSTAMBLE_SIZE as u64))
+            .ok_or_else(|| TensogramError::Remote("postamble offset overflow".to_string()))?;
+        let pa_bytes = self.get_range(pa_offset..pa_offset + POSTAMBLE_SIZE as u64)?;
+        let postamble = Postamble::read_from(&pa_bytes)?;
+
+        if postamble.first_footer_offset < PREAMBLE_SIZE as u64 {
+            return Err(TensogramError::Remote(format!(
+                "first_footer_offset ({}) is before preamble end ({})",
+                postamble.first_footer_offset, PREAMBLE_SIZE
+            )));
+        }
+        let footer_start = msg_offset
+            .checked_add(postamble.first_footer_offset)
+            .ok_or_else(|| TensogramError::Remote("footer offset overflow".to_string()))?;
+        let footer_end = pa_offset;
+        if footer_start >= footer_end {
+            return Err(TensogramError::Remote(
+                "first_footer_offset points at or past postamble".to_string(),
+            ));
+        }
+        let footer_bytes = self.get_range(footer_start..footer_end)?;
+
+        self.parse_footer_frames(msg_idx, &footer_bytes)
     }
 
     fn discover_header_layout(&mut self, msg_idx: usize) -> Result<()> {
@@ -313,6 +358,70 @@ impl RemoteBackend {
             return Err(TensogramError::Remote(
                 "header region did not contain an index frame (header chunk may be too small)"
                     .to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn parse_footer_frames(&mut self, msg_idx: usize, buf: &[u8]) -> Result<()> {
+        let min_frame_size = FRAME_HEADER_SIZE + FRAME_END.len();
+        let mut pos = 0;
+
+        while pos + FRAME_HEADER_SIZE <= buf.len() {
+            if &buf[pos..pos + 2] != b"FR" {
+                pos += 1;
+                continue;
+            }
+            let fh = FrameHeader::read_from(&buf[pos..])?;
+            let frame_total = usize::try_from(fh.total_length).map_err(|_| {
+                TensogramError::Remote(
+                    "footer frame total_length does not fit in usize".to_string(),
+                )
+            })?;
+
+            if frame_total < min_frame_size {
+                return Err(TensogramError::Remote(format!(
+                    "footer frame total_length ({frame_total}) smaller than minimum ({min_frame_size})"
+                )));
+            }
+            let frame_end = match pos.checked_add(frame_total) {
+                Some(end) if end <= buf.len() => end,
+                _ => break,
+            };
+
+            if &buf[frame_end - FRAME_END.len()..frame_end] != FRAME_END {
+                return Err(TensogramError::Remote(
+                    "footer frame missing ENDF trailer".to_string(),
+                ));
+            }
+
+            let payload = &buf[pos + FRAME_HEADER_SIZE..frame_end - FRAME_END.len()];
+
+            match fh.frame_type {
+                FrameType::FooterMetadata => {
+                    let meta = metadata::cbor_to_global_metadata(payload)?;
+                    self.layouts[msg_idx].global_metadata = Some(meta);
+                }
+                FrameType::FooterIndex => {
+                    let idx = metadata::cbor_to_index(payload)?;
+                    self.layouts[msg_idx].index = Some(idx);
+                }
+                _ => {}
+            }
+
+            let aligned = (frame_end.saturating_add(7)) & !7;
+            pos = aligned.min(buf.len());
+        }
+
+        if self.layouts[msg_idx].global_metadata.is_none() {
+            return Err(TensogramError::Remote(
+                "footer region did not contain a metadata frame".to_string(),
+            ));
+        }
+        if self.layouts[msg_idx].index.is_none() {
+            return Err(TensogramError::Remote(
+                "footer region did not contain an index frame".to_string(),
             ));
         }
 
