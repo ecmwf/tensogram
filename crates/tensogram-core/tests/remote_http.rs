@@ -90,6 +90,7 @@ struct MockServer {
     #[allow(dead_code)]
     data: Arc<Vec<u8>>,
     request_count: Arc<AtomicUsize>,
+    range_request_count: Arc<AtomicUsize>,
     addr: SocketAddr,
 }
 
@@ -97,11 +98,13 @@ impl MockServer {
     async fn start(data: Vec<u8>) -> Result<Self, std::io::Error> {
         let data = Arc::new(data);
         let request_count = Arc::new(AtomicUsize::new(0));
+        let range_request_count = Arc::new(AtomicUsize::new(0));
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
 
         let data_clone = data.clone();
         let count_clone = request_count.clone();
+        let range_count_clone = range_request_count.clone();
 
         tokio::spawn(async move {
             loop {
@@ -112,6 +115,7 @@ impl MockServer {
                 let io = TokioIo::new(stream);
                 let data = data_clone.clone();
                 let count = count_clone.clone();
+                let range_count = range_count_clone.clone();
 
                 tokio::spawn(async move {
                     let _ = http1::Builder::new()
@@ -120,7 +124,8 @@ impl MockServer {
                             service_fn(move |req: Request<hyper::body::Incoming>| {
                                 let data = data.clone();
                                 let count = count.clone();
-                                async move { handle_request(req, data, count) }
+                                let range_count = range_count.clone();
+                                async move { handle_request(req, data, count, range_count) }
                             }),
                         )
                         .await;
@@ -131,6 +136,7 @@ impl MockServer {
         Ok(MockServer {
             data,
             request_count,
+            range_request_count,
             addr,
         })
     }
@@ -143,14 +149,20 @@ impl MockServer {
         self.request_count.load(Ordering::SeqCst)
     }
 
+    fn range_request_count(&self) -> usize {
+        self.range_request_count.load(Ordering::SeqCst)
+    }
+
     fn reset_count(&self) {
         self.request_count.store(0, Ordering::SeqCst);
+        self.range_request_count.store(0, Ordering::SeqCst);
     }
 }
 
 fn handle_request(
     req: Request<hyper::body::Incoming>,
     data: Arc<Vec<u8>>,
+    range_request_count: Arc<AtomicUsize>,
     request_count: Arc<AtomicUsize>,
 ) -> Result<Response<Full<Bytes>>, std::io::Error> {
     request_count.fetch_add(1, Ordering::SeqCst);
@@ -166,6 +178,7 @@ fn handle_request(
     }
 
     if let Some(range_header) = req.headers().get("Range") {
+        range_request_count.fetch_add(1, Ordering::SeqCst);
         let range_str = range_header.to_str().unwrap_or("");
         if let Some(byte_range) = parse_range_header(range_str, data.len()) {
             let slice = &data[byte_range.0..byte_range.1];
@@ -423,11 +436,16 @@ async fn test_remote_request_count_header_indexed() -> Result<(), Box<dyn Error>
     server.reset_count();
     let _ = file.file_decode_object(0, 0, &DecodeOptions::default())?;
     let object_requests = server.request_count();
+    let range_requests = server.range_request_count();
 
     // Layout discovery (1 header chunk) + object frame fetch (1) = at most 2
     assert!(
         object_requests <= 2,
         "expected <=2 requests for object read, got {object_requests} (open used {open_requests})"
+    );
+    assert!(
+        range_requests > 0,
+        "object read must use Range requests, not full GETs"
     );
     Ok(())
 }
