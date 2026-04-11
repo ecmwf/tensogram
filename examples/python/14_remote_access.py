@@ -45,6 +45,11 @@ def _make_range_handler(file_data: bytes):
                     start = int(parts[0])
                     end = int(parts[1]) + 1 if parts[1] else len(file_data)
                     end = min(end, len(file_data))
+                if start >= len(file_data) or start >= end:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{len(file_data)}")
+                    self.end_headers()
+                    return
                 chunk = file_data[start:end]
                 self.send_response(206)
                 self.send_header(
