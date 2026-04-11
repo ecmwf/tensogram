@@ -143,6 +143,8 @@ pub(crate) struct RemoteBackend {
     path: ObjectPath,
     file_size: u64,
     layouts: Vec<MessageLayout>,
+    next_scan_offset: u64,
+    scan_complete: bool,
 }
 
 impl std::fmt::Debug for RemoteBackend {
@@ -193,8 +195,15 @@ impl RemoteBackend {
             path,
             file_size,
             layouts: Vec::new(),
+            next_scan_offset: 0,
+            scan_complete: false,
         };
-        backend.scan_messages()?;
+        backend.scan_next()?;
+        if backend.layouts.is_empty() {
+            return Err(TensogramError::Remote(
+                "no valid messages found in remote file".to_string(),
+            ));
+        }
         Ok(backend)
     }
 
@@ -222,17 +231,120 @@ impl RemoteBackend {
 
     // ── Message scanning ─────────────────────────────────────────────────
 
-    fn scan_messages(&mut self) -> Result<()> {
+    fn scan_next(&mut self) -> Result<()> {
+        if self.scan_complete {
+            return Ok(());
+        }
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
-        let mut pos: u64 = 0;
+        let pos = self.next_scan_offset;
+
+        if pos + min_message_size > self.file_size {
+            self.scan_complete = true;
+            return Ok(());
+        }
+
+        let preamble_bytes = self.get_range(pos..pos + PREAMBLE_SIZE as u64)?;
+        if &preamble_bytes[..MAGIC.len()] != MAGIC {
+            self.scan_complete = true;
+            return Ok(());
+        }
+
+        let preamble = match Preamble::read_from(&preamble_bytes) {
+            Ok(p) => p,
+            Err(_) => {
+                self.scan_complete = true;
+                return Ok(());
+            }
+        };
+
+        let msg_len = preamble.total_length;
+
+        if msg_len == 0 {
+            let remaining = self.file_size - pos;
+            if remaining < min_message_size {
+                self.scan_complete = true;
+                return Ok(());
+            }
+            let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
+            let end_bytes =
+                self.get_range(end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64)?;
+            if &end_bytes[..] != crate::wire::END_MAGIC {
+                self.scan_complete = true;
+                return Ok(());
+            }
+            self.layouts.push(MessageLayout {
+                offset: pos,
+                length: remaining,
+                preamble,
+                index: None,
+                global_metadata: None,
+            });
+            self.scan_complete = true;
+            return Ok(());
+        }
+
+        let msg_end = match pos.checked_add(msg_len) {
+            Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
+            _ => {
+                self.scan_complete = true;
+                return Ok(());
+            }
+        };
+
+        self.layouts.push(MessageLayout {
+            offset: pos,
+            length: msg_len,
+            preamble,
+            index: None,
+            global_metadata: None,
+        });
+        self.next_scan_offset = msg_end;
+        Ok(())
+    }
+
+    fn ensure_message(&mut self, msg_idx: usize) -> Result<()> {
+        while msg_idx >= self.layouts.len() && !self.scan_complete {
+            self.scan_next()?;
+        }
+        if msg_idx >= self.layouts.len() {
+            return Err(TensogramError::Framing(format!(
+                "message index {} out of range (count={})",
+                msg_idx,
+                self.layouts.len()
+            )));
+        }
+        Ok(())
+    }
+
+    fn scan_all_chunked(&mut self) -> Result<()> {
+        if self.scan_complete {
+            return Ok(());
+        }
+        const SCAN_CHUNK: u64 = 4 * 1024 * 1024;
+        let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+
+        let mut pos = self.next_scan_offset;
+        let mut buf: Vec<u8> = Vec::new();
+        let mut buf_start: u64 = 0;
 
         while pos + min_message_size <= self.file_size {
-            let preamble_bytes = self.get_range(pos..pos + PREAMBLE_SIZE as u64)?;
-            if &preamble_bytes[..MAGIC.len()] != MAGIC {
-                break;
+            let need_end = pos + PREAMBLE_SIZE as u64;
+            if buf.is_empty() || pos < buf_start || need_end > buf_start + buf.len() as u64 {
+                let read_end = (pos + SCAN_CHUNK).min(self.file_size);
+                buf = self.get_range(pos..read_end)?.to_vec();
+                buf_start = pos;
             }
 
-            let preamble = match Preamble::read_from(&preamble_bytes) {
+            let off = (pos - buf_start) as usize;
+            if off + PREAMBLE_SIZE > buf.len() {
+                break;
+            }
+            let preamble_slice = &buf[off..off + PREAMBLE_SIZE];
+
+            if &preamble_slice[..MAGIC.len()] != MAGIC {
+                break;
+            }
+            let preamble = match Preamble::read_from(preamble_slice) {
                 Ok(p) => p,
                 Err(_) => break,
             };
@@ -240,15 +352,10 @@ impl RemoteBackend {
             let msg_len = preamble.total_length;
 
             if msg_len == 0 {
-                // Streaming message: total_length=0 means the encoder didn't
-                // know the size upfront. The message extends to the end of
-                // the file (streaming messages must be the last in a file).
                 let remaining = self.file_size - pos;
                 if remaining < min_message_size {
                     break;
                 }
-                // Validate END_MAGIC at the expected postamble position to
-                // reject files with trailing garbage after the message.
                 let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
                 let end_bytes = self.get_range(
                     end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64,
@@ -278,29 +385,18 @@ impl RemoteBackend {
                 index: None,
                 global_metadata: None,
             });
-
             pos = msg_end;
         }
 
-        if self.layouts.is_empty() {
-            return Err(TensogramError::Remote(
-                "no valid messages found in remote file".to_string(),
-            ));
-        }
-
+        self.next_scan_offset = pos;
+        self.scan_complete = true;
         Ok(())
     }
 
     // ── Layout discovery (metadata + index for a single message) ─────────
 
     fn ensure_layout(&mut self, msg_idx: usize) -> Result<()> {
-        if msg_idx >= self.layouts.len() {
-            return Err(TensogramError::Framing(format!(
-                "message index {} out of range (count={})",
-                msg_idx,
-                self.layouts.len()
-            )));
-        }
+        self.ensure_message(msg_idx)?;
         if self.layouts[msg_idx].global_metadata.is_some() && self.layouts[msg_idx].index.is_some()
         {
             return Ok(());
@@ -498,40 +594,14 @@ impl RemoteBackend {
 
     // ── Public API used by TensogramFile ─────────────────────────────────
 
-    #[allow(dead_code)]
-    pub(crate) fn message_count(&self) -> usize {
-        self.layouts.len()
+    pub(crate) fn message_count(&mut self) -> Result<usize> {
+        self.scan_all_chunked()?;
+        Ok(self.layouts.len())
     }
 
-    pub(crate) fn message_offsets(&self) -> Result<Vec<(usize, usize)>> {
-        self.layouts
-            .iter()
-            .map(|l| {
-                let offset = usize::try_from(l.offset).map_err(|_| {
-                    TensogramError::Remote(format!(
-                        "message offset {} does not fit in usize",
-                        l.offset
-                    ))
-                })?;
-                let length = usize::try_from(l.length).map_err(|_| {
-                    TensogramError::Remote(format!(
-                        "message length {} does not fit in usize",
-                        l.length
-                    ))
-                })?;
-                Ok((offset, length))
-            })
-            .collect()
-    }
-
-    pub(crate) fn read_message(&self, msg_idx: usize) -> Result<Vec<u8>> {
-        let layout = self.layouts.get(msg_idx).ok_or_else(|| {
-            TensogramError::Framing(format!(
-                "message index {} out of range (count={})",
-                msg_idx,
-                self.layouts.len()
-            ))
-        })?;
+    pub(crate) fn read_message(&mut self, msg_idx: usize) -> Result<Vec<u8>> {
+        self.ensure_message(msg_idx)?;
+        let layout = &self.layouts[msg_idx];
         let bytes = self.get_range(layout.offset..layout.offset + layout.length)?;
         Ok(bytes.to_vec())
     }
@@ -837,87 +907,94 @@ impl RemoteBackend {
             path,
             file_size,
             layouts: Vec::new(),
+            next_scan_offset: 0,
+            scan_complete: false,
         };
-        backend.scan_messages_async().await?;
-        Ok(backend)
-    }
-
-    async fn scan_messages_async(&mut self) -> Result<()> {
-        let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
-        let mut pos: u64 = 0;
-
-        while pos + min_message_size <= self.file_size {
-            let preamble_bytes = self
-                .get_range_async(pos..pos + PREAMBLE_SIZE as u64)
-                .await?;
-            if &preamble_bytes[..MAGIC.len()] != MAGIC {
-                break;
-            }
-
-            let preamble = match Preamble::read_from(&preamble_bytes) {
-                Ok(p) => p,
-                Err(_) => break,
-            };
-
-            let msg_len = preamble.total_length;
-
-            if msg_len == 0 {
-                let remaining = self.file_size - pos;
-                if remaining < min_message_size {
-                    break;
-                }
-                let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
-                let end_bytes = self
-                    .get_range_async(
-                        end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64,
-                    )
-                    .await?;
-                if &end_bytes[..] != crate::wire::END_MAGIC {
-                    break;
-                }
-                self.layouts.push(MessageLayout {
-                    offset: pos,
-                    length: remaining,
-                    preamble,
-                    index: None,
-                    global_metadata: None,
-                });
-                break;
-            }
-
-            let msg_end = match pos.checked_add(msg_len) {
-                Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
-                _ => break,
-            };
-
-            self.layouts.push(MessageLayout {
-                offset: pos,
-                length: msg_len,
-                preamble,
-                index: None,
-                global_metadata: None,
-            });
-
-            pos = msg_end;
-        }
-
-        if self.layouts.is_empty() {
+        backend.scan_next_async().await?;
+        if backend.layouts.is_empty() {
             return Err(TensogramError::Remote(
                 "no valid messages found in remote file".to_string(),
             ));
         }
+        Ok(backend)
+    }
 
+    async fn scan_next_async(&mut self) -> Result<()> {
+        if self.scan_complete {
+            return Ok(());
+        }
+        let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+        let pos = self.next_scan_offset;
+
+        if pos + min_message_size > self.file_size {
+            self.scan_complete = true;
+            return Ok(());
+        }
+
+        let preamble_bytes = self
+            .get_range_async(pos..pos + PREAMBLE_SIZE as u64)
+            .await?;
+        if &preamble_bytes[..MAGIC.len()] != MAGIC {
+            self.scan_complete = true;
+            return Ok(());
+        }
+
+        let preamble = match Preamble::read_from(&preamble_bytes) {
+            Ok(p) => p,
+            Err(_) => {
+                self.scan_complete = true;
+                return Ok(());
+            }
+        };
+
+        let msg_len = preamble.total_length;
+
+        if msg_len == 0 {
+            let remaining = self.file_size - pos;
+            if remaining < min_message_size {
+                self.scan_complete = true;
+                return Ok(());
+            }
+            let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
+            let end_bytes = self
+                .get_range_async(end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64)
+                .await?;
+            if &end_bytes[..] != crate::wire::END_MAGIC {
+                self.scan_complete = true;
+                return Ok(());
+            }
+            self.layouts.push(MessageLayout {
+                offset: pos,
+                length: remaining,
+                preamble,
+                index: None,
+                global_metadata: None,
+            });
+            self.scan_complete = true;
+            return Ok(());
+        }
+
+        let msg_end = match pos.checked_add(msg_len) {
+            Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
+            _ => {
+                self.scan_complete = true;
+                return Ok(());
+            }
+        };
+
+        self.layouts.push(MessageLayout {
+            offset: pos,
+            length: msg_len,
+            preamble,
+            index: None,
+            global_metadata: None,
+        });
+        self.next_scan_offset = msg_end;
         Ok(())
     }
 
     async fn ensure_layout_async(&mut self, msg_idx: usize) -> Result<()> {
-        if msg_idx >= self.layouts.len() {
-            return Err(TensogramError::Framing(format!(
-                "message index {} out of range (count={})",
-                msg_idx,
-                self.layouts.len()
-            )));
-        }
+        self.ensure_message_async(msg_idx).await?;
         if self.layouts[msg_idx].global_metadata.is_some() && self.layouts[msg_idx].index.is_some()
         {
             return Ok(());
@@ -980,14 +1057,23 @@ impl RemoteBackend {
         self.parse_footer_frames(msg_idx, &footer_bytes)
     }
 
-    pub(crate) async fn read_message_async(&self, msg_idx: usize) -> Result<Vec<u8>> {
-        let layout = self.layouts.get(msg_idx).ok_or_else(|| {
-            TensogramError::Framing(format!(
+    async fn ensure_message_async(&mut self, msg_idx: usize) -> Result<()> {
+        while msg_idx >= self.layouts.len() && !self.scan_complete {
+            self.scan_next_async().await?;
+        }
+        if msg_idx >= self.layouts.len() {
+            return Err(TensogramError::Framing(format!(
                 "message index {} out of range (count={})",
                 msg_idx,
                 self.layouts.len()
-            ))
-        })?;
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn read_message_async(&mut self, msg_idx: usize) -> Result<Vec<u8>> {
+        self.ensure_message_async(msg_idx).await?;
+        let layout = &self.layouts[msg_idx];
         let bytes = self
             .get_range_async(layout.offset..layout.offset + layout.length)
             .await?;

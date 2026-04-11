@@ -82,10 +82,9 @@ impl TensogramFile {
         storage_options: &std::collections::BTreeMap<String, String>,
     ) -> Result<Self> {
         let remote = crate::remote::RemoteBackend::open(source, storage_options)?;
-        let offsets = remote.message_offsets()?;
         Ok(TensogramFile {
             backend: Backend::Remote(remote),
-            message_offsets: Some(offsets),
+            message_offsets: None,
         })
     }
 
@@ -191,6 +190,10 @@ impl TensogramFile {
     // ── Public API ───────────────────────────────────────────────────────
 
     pub fn message_count(&mut self) -> Result<usize> {
+        #[cfg(feature = "remote")]
+        if let Backend::Remote(remote) = &mut self.backend {
+            return remote.message_count();
+        }
         self.ensure_scanned()?;
         Ok(self
             .message_offsets
@@ -223,12 +226,12 @@ impl TensogramFile {
     }
 
     pub fn read_message(&mut self, index: usize) -> Result<Vec<u8>> {
-        self.ensure_scanned()?;
-
         #[cfg(feature = "remote")]
-        if let Backend::Remote(remote) = &self.backend {
+        if let Backend::Remote(remote) = &mut self.backend {
             return remote.read_message(index);
         }
+
+        self.ensure_scanned()?;
 
         let (offset, length) = self.checked_offsets(index)?;
 
@@ -423,7 +426,7 @@ impl TensogramFile {
     #[cfg(feature = "async")]
     pub async fn read_message_async(&mut self, index: usize) -> Result<Vec<u8>> {
         #[cfg(feature = "remote")]
-        if let Backend::Remote(remote) = &self.backend {
+        if let Backend::Remote(remote) = &mut self.backend {
             return remote.read_message_async(index).await;
         }
 
@@ -482,10 +485,9 @@ impl TensogramFile {
         storage_options: &std::collections::BTreeMap<String, String>,
     ) -> Result<Self> {
         let remote = crate::remote::RemoteBackend::open_async(source, storage_options).await?;
-        let offsets = remote.message_offsets()?;
         Ok(TensogramFile {
             backend: Backend::Remote(remote),
-            message_offsets: Some(offsets),
+            message_offsets: None,
         })
     }
 
