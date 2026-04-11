@@ -379,26 +379,25 @@ class TensogramStore(ZarrStore):
         except Exception as exc:
             raise OSError(f"failed to open TGM file {self._path!r}: {exc}") from exc
 
-        msg_count = len(f)
-        if msg_count == 0:
-            self._keys["zarr.json"] = serialize_zarr_json(
-                {
-                    "zarr_format": 3,
-                    "node_type": "group",
-                    "attributes": {},
-                }
-            )
-            return
-
-        if self._message_index >= msg_count:
-            raise IndexError(
-                f"message_index {self._message_index} out of range "
-                f"(file has {msg_count} message(s))"
-            )
-
         if is_remote:
             self._scan_remote(f)
         else:
+            msg_count = len(f)
+            if msg_count == 0:
+                self._keys["zarr.json"] = serialize_zarr_json(
+                    {
+                        "zarr_format": 3,
+                        "node_type": "group",
+                        "attributes": {},
+                    }
+                )
+                return
+
+            if self._message_index >= msg_count:
+                raise IndexError(
+                    f"message_index {self._message_index} out of range "
+                    f"(file has {msg_count} message(s))"
+                )
             self._scan_local(f)
 
     def _scan_local(self, f: Any) -> None:
