@@ -155,17 +155,11 @@ For speculative ideas, see `IDEAS.md`.
   - native async path when both `remote` and `async` features enabled
   - shared tokio runtime instead of per-call runtime creation
   - descriptor-only reads (currently fetches full object frame)
-- [ ] **remote 5 — examples**:
-  - `examples/rust/` — remote open + selective object read from HTTP URL
-  - `examples/python/` — remote open, decode_object, xarray open_dataset with storage_options
-  - self-contained script that starts a local HTTP server serving a test `.tgm` file
-- [ ] **remote 6 — CI Python tests**:
-  - add `maturin develop` + `pytest tests/python/test_remote.py` to CI pipeline
-- [ ] **remote 7 — zarr lazy reads**:
-  - switch zarr `_scan_tgm_file()` from eager `read_message()` to lazy `file_decode_descriptors()` + per-chunk `file_decode_object()` in `get()`
-- [ ] **remote 8 — sub-object `decode_range()`**:
-  - add `TensogramFile::decode_range(msg_idx, obj_idx, ranges)` for byte-level range reads within a single object
-  - enables xarray partial-slice reads over remote
+- [ ] **remote 5 — polish (examples, CI, optimizations)**:
+  - examples: `examples/rust/` and `examples/python/` with self-contained HTTP server script
+  - CI: add `maturin develop` + `pytest tests/python/test_remote.py` to pipeline
+  - zarr lazy reads: switch `_scan_tgm_file()` from eager `read_message()` to lazy `file_decode_object()` per chunk
+  - remote `decode_range()`: byte-level range reads within a single object for xarray partial slices
 
 ## Free-Threaded Python
 
