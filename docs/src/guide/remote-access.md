@@ -103,7 +103,7 @@ use tensogram_core::DecodeOptions;
 // Metadata only — triggers layout discovery on first call, then cached
 let meta = file.decode_metadata(0)?;
 
-// Descriptors — fetches each object frame to extract its descriptor
+// Descriptors — reads only the descriptor data needed for each object
 let (meta, descriptors) = file.decode_descriptors(0)?;
 
 // Single object by index — fetches only the target object frame
