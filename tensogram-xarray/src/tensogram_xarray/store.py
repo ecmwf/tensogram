@@ -92,7 +92,7 @@ class TensogramDataStore:
         variable_key: str | None = None,
         verify_hash: bool = False,
         range_threshold: float = 0.5,
-        storage_options: dict[str, str] | None = None,
+        storage_options: dict[str, Any] | None = None,
     ):
         import tensogram
 
@@ -105,6 +105,7 @@ class TensogramDataStore:
         self.range_threshold = range_threshold
         self.storage_options = storage_options
         self._lock = threading.Lock()
+        self._backend_arrays: list[TensogramBackendArray] = []
 
         self._file = self._open_file()
         self._meta, self._descriptors = self._read_metadata()
@@ -213,6 +214,7 @@ class TensogramDataStore:
                 storage_options=self.storage_options,
                 shared_file=self._file,
             )
+            self._backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
 
             coord_dims = (dim_name,)
@@ -244,6 +246,7 @@ class TensogramDataStore:
                 storage_options=self.storage_options,
                 shared_file=self._file,
             )
+            self._backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
 
             var_attrs = dict(obj_metas[vi])
@@ -295,4 +298,7 @@ class TensogramDataStore:
         return tuple(dims)
 
     def close(self) -> None:
+        for arr in self._backend_arrays:
+            arr._shared_file = None
+        self._backend_arrays.clear()
         self._file = None

@@ -38,7 +38,7 @@ def open_datasets(
     variable_key: str | None = None,
     verify_hash: bool = False,
     range_threshold: float = 0.5,
-    storage_options: dict[str, str] | None = None,
+    storage_options: dict[str, Any] | None = None,
 ) -> list[xr.Dataset]:
     """Open a ``.tgm`` file, auto-grouping into compatible Datasets.
 
@@ -314,7 +314,7 @@ def _build_dataset_from_group(
     lock: threading.Lock,
     range_threshold: float = 0.5,
     verify_hash: bool = False,
-    storage_options: dict[str, str] | None = None,
+    storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
 ) -> xr.Dataset | None:
@@ -430,7 +430,7 @@ def _single_object_dataset(
     lock: threading.Lock,
     range_threshold: float = 0.5,
     verify_hash: bool = False,
-    storage_options: dict[str, str] | None = None,
+    storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
 ) -> xr.Dataset:
@@ -472,7 +472,7 @@ def _flat_group_dataset(
     lock: threading.Lock,
     range_threshold: float = 0.5,
     verify_hash: bool = False,
-    storage_options: dict[str, str] | None = None,
+    storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
 ) -> xr.Dataset:
@@ -517,7 +517,7 @@ def _hypercube_dataset(
     lock: threading.Lock,
     range_threshold: float = 0.5,
     verify_hash: bool = False,
-    storage_options: dict[str, str] | None = None,
+    storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
 ) -> xr.Dataset:
@@ -605,7 +605,7 @@ def _build_multi_variable_dataset(
     lock: threading.Lock,
     range_threshold: float = 0.5,
     verify_hash: bool = False,
-    storage_options: dict[str, str] | None = None,
+    storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
 ) -> xr.Dataset:

@@ -78,19 +78,19 @@ class TensogramStore(ZarrStore):
         mode: str = "r",
         message_index: int = 0,
         variable_key: str | None = None,
-        storage_options: dict[str, str] | None = None,
+        storage_options: dict[str, Any] | None = None,
     ) -> None:
+        if not isinstance(path, str) or not path:
+            raise ValueError(f"path must be a non-empty string, got {path!r}")
         if mode not in ("r", "w", "a"):
             raise ValueError(f"invalid mode {mode!r}; expected 'r', 'w', or 'a'")
+        if message_index < 0:
+            raise ValueError(f"message_index must be >= 0, got {message_index}")
         import tensogram
 
         is_remote = tensogram.is_remote_url(path)
         if is_remote and mode in ("w", "a"):
             raise ValueError(f"remote URLs do not support mode={mode!r}; use mode='r'")
-        if message_index < 0:
-            raise ValueError(f"message_index must be >= 0, got {message_index}")
-        if not isinstance(path, str) or not path:
-            raise ValueError(f"path must be a non-empty string, got {path!r}")
         read_only = mode == "r"
         super().__init__(read_only=read_only)
         self._path = path
@@ -120,7 +120,7 @@ class TensogramStore(ZarrStore):
         *,
         message_index: int = 0,
         variable_key: str | None = None,
-        storage_options: dict[str, str] | None = None,
+        storage_options: dict[str, Any] | None = None,
     ) -> TensogramStore:
         """Open a ``.tgm`` file as a read-only Zarr store (synchronous).
 

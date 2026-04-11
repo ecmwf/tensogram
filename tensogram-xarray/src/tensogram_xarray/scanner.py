@@ -102,7 +102,7 @@ def _extra_from_meta(meta: Any) -> dict[str, Any]:
 
 def scan_file(
     file_path: str,
-    storage_options: dict[str, str] | None = None,
+    storage_options: dict[str, Any] | None = None,
 ) -> FileIndex:
     """Scan a ``.tgm`` file and return a :class:`FileIndex`.
 

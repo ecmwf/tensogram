@@ -195,7 +195,7 @@ class TensogramBackendArray(BackendArray):
         verify_hash: bool = False,
         range_threshold: float = DEFAULT_RANGE_THRESHOLD,
         lock: threading.Lock | None = None,
-        storage_options: dict[str, str] | None = None,
+        storage_options: dict[str, Any] | None = None,
         shared_file: Any | None = None,
     ):
         import tensogram

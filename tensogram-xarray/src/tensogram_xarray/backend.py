@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable, Sequence
+from typing import Any
 
 import xarray as xr
 from xarray.backends import BackendEntrypoint
@@ -48,7 +49,7 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
         merge_objects: bool = False,
         verify_hash: bool = False,
         range_threshold: float = 0.5,
-        storage_options: dict[str, str] | None = None,
+        storage_options: dict[str, Any] | None = None,
     ) -> xr.Dataset:
         """Open a single tensogram message as an :class:`xr.Dataset`.
 
