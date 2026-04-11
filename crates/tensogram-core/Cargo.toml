@@ -7,7 +7,7 @@ edition = "2021"
 default = ["szip", "zstd", "lz4", "blosc2", "zfp", "sz3"]
 mmap = ["dep:memmap2"]
 async = ["dep:tokio"]
-remote = ["dep:object_store", "dep:url", "dep:bytes", "dep:tokio"]
+remote = ["dep:object_store", "dep:url", "dep:bytes", "dep:tokio", "tokio/rt-multi-thread"]
 # Compression feature gates — forwarded to tensogram-encodings
 szip = ["tensogram-encodings/szip"]
 szip-pure = ["tensogram-encodings/szip-pure"]

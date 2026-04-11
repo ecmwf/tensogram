@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use object_store::path::Path as ObjectPath;
@@ -18,37 +18,83 @@ use crate::framing;
 use crate::metadata;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, IndexFrame};
 use crate::wire::{
-    FrameHeader, FrameType, MessageFlags, Postamble, Preamble, FRAME_END, FRAME_HEADER_SIZE, MAGIC,
-    POSTAMBLE_SIZE, PREAMBLE_SIZE,
+    DataObjectFlags, FrameHeader, FrameType, MessageFlags, Postamble, Preamble,
+    DATA_OBJECT_FOOTER_SIZE, FRAME_END, FRAME_HEADER_SIZE, MAGIC, POSTAMBLE_SIZE, PREAMBLE_SIZE,
 };
 
 // ── URL scheme detection ─────────────────────────────────────────────────────
 
 const REMOTE_SCHEMES: &[&str] = &["s3", "s3a", "gs", "az", "azure", "http", "https"];
 
-/// Run an async operation synchronously, safe from nested-runtime panics.
+// ── Shared tokio runtime ─────────────────────────────────────────────────────
+
+/// Process-wide shared tokio runtime for remote I/O.
 ///
-/// Spawns a dedicated thread with a fresh single-threaded tokio runtime.
-/// This allows `TensogramFile` sync methods to work regardless of whether
-/// the caller is already inside an async context (e.g. Python event loop,
-/// `#[tokio::test]`).
-fn block_on_thread<T, F, Fut>(store: Arc<dyn ObjectStore>, f: F) -> Result<T>
+/// Wrapped in `Result` so that `get_or_init` (which runs the closure
+/// exactly once, no races) can cache a build failure without panicking.
+static SHARED_RUNTIME: OnceLock<std::result::Result<tokio::runtime::Runtime, String>> =
+    OnceLock::new();
+
+fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
+    SHARED_RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .thread_name("tensogram-remote-io")
+                .build()
+                .map_err(|e| format!("tokio runtime: {e}"))
+        })
+        .as_ref()
+        .map_err(|e| TensogramError::Remote(e.clone()))
+}
+
+/// Run an async operation synchronously using the shared runtime.
+///
+/// Two strategies based on the calling context:
+///
+/// - **Not in async context** (Python, CLI): direct `handle.block_on()`,
+///   no extra thread creation.
+/// - **Inside async context** (`#[tokio::test]`, server handler): spawns a
+///   scoped thread that calls `handle.block_on()` to avoid blocking a
+///   tokio worker or triggering a nested-runtime panic.
+///
+/// In both cases the shared runtime's event loop and connection pool
+/// are reused, eliminating the per-call runtime creation overhead of
+/// the old `block_on_thread` pattern.
+fn block_on_shared<T, Fut>(future: Fut) -> Result<T>
 where
     T: Send,
-    F: FnOnce(Arc<dyn ObjectStore>) -> Fut + Send,
-    Fut: std::future::Future<Output = std::result::Result<T, object_store::Error>>,
+    Fut: std::future::Future<Output = std::result::Result<T, object_store::Error>> + Send,
 {
+    let rt = shared_runtime()?;
+
+    if tokio::runtime::Handle::try_current().is_err() {
+        // Fast path: not in an async context — drive the future directly.
+        return rt
+            .handle()
+            .block_on(future)
+            .map_err(|e| TensogramError::Remote(e.to_string()));
+    }
+
+    // In an async context: block_on would panic, so use a scoped thread.
+    // The shared runtime's worker threads still handle I/O; this thread
+    // just parks until the future completes.
+    let handle = rt.handle().clone();
     std::thread::scope(|s| {
-        s.spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| TensogramError::Remote(format!("tokio runtime: {e}")))?;
-            rt.block_on(f(store))
-                .map_err(|e| TensogramError::Remote(e.to_string()))
-        })
-        .join()
-        .unwrap_or_else(|_| Err(TensogramError::Remote("I/O thread panicked".to_string())))
+        match s
+            .spawn(|| {
+                handle
+                    .block_on(future)
+                    .map_err(|e| TensogramError::Remote(e.to_string()))
+            })
+            .join()
+        {
+            Ok(result) => result,
+            Err(_) => Err(TensogramError::Remote(
+                "remote I/O thread panicked".to_string(),
+            )),
+        }
     })
 }
 
@@ -116,10 +162,9 @@ impl RemoteBackend {
 
         let store: Arc<dyn ObjectStore> = Arc::from(store);
 
-        let meta = block_on_thread(store.clone(), |s| {
-            let path = path.clone();
-            async move { s.head(&path).await }
-        })?;
+        let head_store = store.clone();
+        let head_path = path.clone();
+        let meta = block_on_shared(async move { head_store.head(&head_path).await })?;
 
         let file_size = meta.size as u64;
         if file_size < (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64 {
@@ -142,21 +187,21 @@ impl RemoteBackend {
     // ── Range reads ──────────────────────────────────────────────────────
 
     fn get_range(&self, range: Range<u64>) -> Result<Bytes> {
+        let store = self.store.clone();
         let path = self.path.clone();
-        block_on_thread(self.store.clone(), move |s| async move {
-            s.get_range(&path, range).await
-        })
+        block_on_shared(async move { store.get_range(&path, range).await })
     }
 
     #[allow(dead_code)]
     fn get_suffix(&self, nbytes: u64) -> Result<Bytes> {
+        let store = self.store.clone();
         let path = self.path.clone();
-        block_on_thread(self.store.clone(), move |s| async move {
+        block_on_shared(async move {
             let opts = GetOptions {
                 range: Some(GetRange::Suffix(nbytes)),
                 ..Default::default()
             };
-            let result = s.get_opts(&path, opts).await?;
+            let result = store.get_opts(&path, opts).await?;
             result.bytes().await
         })
     }
@@ -490,8 +535,6 @@ impl RemoteBackend {
         msg_idx: usize,
     ) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>)> {
         self.ensure_layout(msg_idx)?;
-        // If we have an index, fetch each indexed object frame and extract
-        // the descriptor from it. Otherwise fall back to full message decode.
         let layout = &self.layouts[msg_idx];
         let msg_offset = layout.offset;
 
@@ -512,21 +555,102 @@ impl RemoteBackend {
             let msg_length = layout.length;
             let mut descriptors = Vec::with_capacity(index.offsets.len());
             for i in 0..index.offsets.len() {
-                let range = Self::checked_frame_range(
+                let desc = self.read_descriptor_only(
                     msg_offset,
                     msg_length,
                     index.offsets[i],
                     index.lengths[i],
                 )?;
-                let frame_bytes = self.get_range(range)?;
-                let (desc, _payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
                 descriptors.push(desc);
             }
             Ok((meta, descriptors))
         } else {
-            // No index — fall back to full message download
             let msg_bytes = self.read_message(msg_idx)?;
             crate::decode::decode_descriptors(&msg_bytes)
+        }
+    }
+
+    /// Read only the CBOR descriptor from a data object frame, without
+    /// downloading the full payload.
+    ///
+    /// For frames below `DESCRIPTOR_PREFIX_THRESHOLD` bytes, falls back
+    /// to reading the entire frame (fewer round-trips).  For large frames,
+    /// reads just the header, footer, and CBOR region — typically < 10 KB
+    /// even when the payload is hundreds of megabytes.
+    fn read_descriptor_only(
+        &self,
+        msg_offset: u64,
+        msg_length: u64,
+        frame_offset_in_msg: u64,
+        frame_length: u64,
+    ) -> Result<DataObjectDescriptor> {
+        const DESCRIPTOR_PREFIX_THRESHOLD: u64 = 64 * 1024;
+
+        let range =
+            Self::checked_frame_range(msg_offset, msg_length, frame_offset_in_msg, frame_length)?;
+
+        if frame_length <= DESCRIPTOR_PREFIX_THRESHOLD {
+            let frame_bytes = self.get_range(range.clone())?;
+            let (desc, _payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
+            return Ok(desc);
+        }
+
+        let frame_start = range.start;
+        let frame_end = range.end;
+
+        let header_bytes = self.get_range(frame_start..frame_start + FRAME_HEADER_SIZE as u64)?;
+        let fh = FrameHeader::read_from(&header_bytes)?;
+
+        let footer_start = frame_end - DATA_OBJECT_FOOTER_SIZE as u64;
+        let footer_bytes = self.get_range(footer_start..frame_end)?;
+
+        if footer_bytes.len() < DATA_OBJECT_FOOTER_SIZE {
+            return Err(TensogramError::Remote("frame footer too short".to_string()));
+        }
+        if &footer_bytes[8..] != FRAME_END {
+            return Err(TensogramError::Remote(
+                "frame missing ENDF trailer".to_string(),
+            ));
+        }
+
+        let cbor_offset = u64::from_be_bytes(
+            footer_bytes[..8]
+                .try_into()
+                .map_err(|_| TensogramError::Remote("footer cbor_offset truncated".to_string()))?,
+        );
+
+        let cbor_after = fh.flags & DataObjectFlags::CBOR_AFTER_PAYLOAD != 0;
+
+        if cbor_after {
+            let cbor_start = frame_start + cbor_offset;
+            let cbor_end = footer_start;
+            if cbor_start >= cbor_end {
+                return Err(TensogramError::Remote(
+                    "cbor_offset points at or past footer".to_string(),
+                ));
+            }
+            let cbor_bytes = self.get_range(cbor_start..cbor_end)?;
+            metadata::cbor_to_object_descriptor(&cbor_bytes)
+        } else {
+            let cbor_start = frame_start + cbor_offset;
+            if cbor_start >= footer_start {
+                return Err(TensogramError::Remote(
+                    "cbor_offset beyond frame body".to_string(),
+                ));
+            }
+            let max_cbor_len = footer_start - cbor_start;
+            let mut prefix_size: u64 = 8192;
+            loop {
+                let read_end = (cbor_start + prefix_size).min(footer_start);
+                let prefix_bytes = self.get_range(cbor_start..read_end)?;
+                match metadata::cbor_to_object_descriptor(&prefix_bytes) {
+                    Ok(desc) => return Ok(desc),
+                    Err(_) if prefix_size < max_cbor_len => {
+                        prefix_size = (prefix_size * 2).min(max_cbor_len);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
         }
     }
 
@@ -607,5 +731,373 @@ impl RemoteBackend {
             )));
         }
         Ok(start..end)
+    }
+}
+
+// ── Native async path (remote + async) ───────────────────────────────────────
+
+#[cfg(feature = "async")]
+impl RemoteBackend {
+    async fn get_range_async(&self, range: Range<u64>) -> Result<Bytes> {
+        self.store
+            .get_range(&self.path, range)
+            .await
+            .map_err(|e| TensogramError::Remote(e.to_string()))
+    }
+
+    pub(crate) async fn open_async(
+        source: &str,
+        storage_options: &BTreeMap<String, String>,
+    ) -> Result<Self> {
+        let url = Url::parse(source)
+            .map_err(|e| TensogramError::Remote(format!("invalid URL '{source}': {e}")))?;
+
+        let mut opts: Vec<(String, String)> = storage_options
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if url.scheme() == "http" && !opts.iter().any(|(k, _)| k == "allow_http") {
+            opts.push(("allow_http".to_string(), "true".to_string()));
+        }
+        let (store, path) = object_store::parse_url_opts(&url, opts)
+            .map_err(|e| TensogramError::Remote(format!("cannot open '{source}': {e}")))?;
+
+        let store: Arc<dyn ObjectStore> = Arc::from(store);
+        let meta = store
+            .head(&path)
+            .await
+            .map_err(|e| TensogramError::Remote(e.to_string()))?;
+
+        let file_size = meta.size as u64;
+        if file_size < (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64 {
+            return Err(TensogramError::Remote(format!(
+                "remote file too small ({file_size} bytes)"
+            )));
+        }
+
+        let mut backend = RemoteBackend {
+            source_url: source.to_string(),
+            store,
+            path,
+            file_size,
+            layouts: Vec::new(),
+        };
+        backend.scan_messages_async().await?;
+        Ok(backend)
+    }
+
+    async fn scan_messages_async(&mut self) -> Result<()> {
+        let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+        let mut pos: u64 = 0;
+
+        while pos + min_message_size <= self.file_size {
+            let preamble_bytes = self
+                .get_range_async(pos..pos + PREAMBLE_SIZE as u64)
+                .await?;
+            if &preamble_bytes[..MAGIC.len()] != MAGIC {
+                break;
+            }
+
+            let preamble = match Preamble::read_from(&preamble_bytes) {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+
+            let msg_len = preamble.total_length;
+
+            if msg_len == 0 {
+                let remaining = self.file_size - pos;
+                if remaining < min_message_size {
+                    break;
+                }
+                let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
+                let end_bytes = self
+                    .get_range_async(
+                        end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64,
+                    )
+                    .await?;
+                if &end_bytes[..] != crate::wire::END_MAGIC {
+                    break;
+                }
+                self.layouts.push(MessageLayout {
+                    offset: pos,
+                    length: remaining,
+                    preamble,
+                    index: None,
+                    global_metadata: None,
+                });
+                break;
+            }
+
+            let msg_end = match pos.checked_add(msg_len) {
+                Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
+                _ => break,
+            };
+
+            self.layouts.push(MessageLayout {
+                offset: pos,
+                length: msg_len,
+                preamble,
+                index: None,
+                global_metadata: None,
+            });
+
+            pos = msg_end;
+        }
+
+        if self.layouts.is_empty() {
+            return Err(TensogramError::Remote(
+                "no valid messages found in remote file".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_layout_async(&mut self, msg_idx: usize) -> Result<()> {
+        if msg_idx >= self.layouts.len() {
+            return Err(TensogramError::Framing(format!(
+                "message index {} out of range (count={})",
+                msg_idx,
+                self.layouts.len()
+            )));
+        }
+        if self.layouts[msg_idx].global_metadata.is_some() && self.layouts[msg_idx].index.is_some()
+        {
+            return Ok(());
+        }
+
+        let flags = self.layouts[msg_idx].preamble.flags;
+
+        if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX) {
+            self.discover_header_layout_async(msg_idx).await?;
+        } else if flags.has(MessageFlags::FOOTER_METADATA) && flags.has(MessageFlags::FOOTER_INDEX)
+        {
+            self.discover_footer_layout_async(msg_idx).await?;
+        } else {
+            return Err(TensogramError::Remote(
+                "remote access requires header-indexed or footer-indexed messages".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn discover_header_layout_async(&mut self, msg_idx: usize) -> Result<()> {
+        let msg_offset = self.layouts[msg_idx].offset;
+        let msg_len = self.layouts[msg_idx].length;
+        let chunk_size = msg_len.min(256 * 1024);
+        let header_bytes = self
+            .get_range_async(msg_offset..msg_offset + chunk_size)
+            .await?;
+        self.parse_header_frames(msg_idx, &header_bytes)
+    }
+
+    async fn discover_footer_layout_async(&mut self, msg_idx: usize) -> Result<()> {
+        let msg_offset = self.layouts[msg_idx].offset;
+        let msg_len = self.layouts[msg_idx].length;
+        let pa_offset = msg_offset
+            .checked_add(msg_len)
+            .and_then(|end| end.checked_sub(POSTAMBLE_SIZE as u64))
+            .ok_or_else(|| TensogramError::Remote("postamble offset overflow".to_string()))?;
+        let pa_bytes = self
+            .get_range_async(pa_offset..pa_offset + POSTAMBLE_SIZE as u64)
+            .await?;
+        let postamble = Postamble::read_from(&pa_bytes)?;
+
+        if postamble.first_footer_offset < PREAMBLE_SIZE as u64 {
+            return Err(TensogramError::Remote(format!(
+                "first_footer_offset ({}) is before preamble end ({})",
+                postamble.first_footer_offset, PREAMBLE_SIZE
+            )));
+        }
+        let footer_start = msg_offset
+            .checked_add(postamble.first_footer_offset)
+            .ok_or_else(|| TensogramError::Remote("footer offset overflow".to_string()))?;
+        let footer_end = pa_offset;
+        if footer_start >= footer_end {
+            return Err(TensogramError::Remote(
+                "first_footer_offset points at or past postamble".to_string(),
+            ));
+        }
+        let footer_bytes = self.get_range_async(footer_start..footer_end).await?;
+        self.parse_footer_frames(msg_idx, &footer_bytes)
+    }
+
+    pub(crate) async fn read_message_async(&self, msg_idx: usize) -> Result<Vec<u8>> {
+        let layout = self.layouts.get(msg_idx).ok_or_else(|| {
+            TensogramError::Framing(format!(
+                "message index {} out of range (count={})",
+                msg_idx,
+                self.layouts.len()
+            ))
+        })?;
+        let bytes = self
+            .get_range_async(layout.offset..layout.offset + layout.length)
+            .await?;
+        Ok(bytes.to_vec())
+    }
+
+    pub(crate) async fn read_metadata_async(&mut self, msg_idx: usize) -> Result<GlobalMetadata> {
+        self.ensure_layout_async(msg_idx).await?;
+        self.layouts[msg_idx]
+            .global_metadata
+            .clone()
+            .ok_or_else(|| TensogramError::Remote("metadata not found".to_string()))
+    }
+
+    pub(crate) async fn read_descriptors_async(
+        &mut self,
+        msg_idx: usize,
+    ) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>)> {
+        self.ensure_layout_async(msg_idx).await?;
+        let layout = &self.layouts[msg_idx];
+        let msg_offset = layout.offset;
+
+        if let Some(ref index) = layout.index {
+            if index.offsets.len() != index.lengths.len() {
+                return Err(TensogramError::Remote(format!(
+                    "corrupt index: offsets.len()={} != lengths.len()={}",
+                    index.offsets.len(),
+                    index.lengths.len()
+                )));
+            }
+
+            let meta = layout
+                .global_metadata
+                .clone()
+                .ok_or_else(|| TensogramError::Remote("metadata not cached".to_string()))?;
+
+            let msg_length = layout.length;
+            let mut descriptors = Vec::with_capacity(index.offsets.len());
+            for i in 0..index.offsets.len() {
+                let desc = self
+                    .read_descriptor_only_async(
+                        msg_offset,
+                        msg_length,
+                        index.offsets[i],
+                        index.lengths[i],
+                    )
+                    .await?;
+                descriptors.push(desc);
+            }
+            Ok((meta, descriptors))
+        } else {
+            let msg_bytes = self.read_message_async(msg_idx).await?;
+            crate::decode::decode_descriptors(&msg_bytes)
+        }
+    }
+
+    async fn read_descriptor_only_async(
+        &self,
+        msg_offset: u64,
+        msg_length: u64,
+        frame_offset_in_msg: u64,
+        frame_length: u64,
+    ) -> Result<DataObjectDescriptor> {
+        const DESCRIPTOR_PREFIX_THRESHOLD: u64 = 64 * 1024;
+
+        let range =
+            Self::checked_frame_range(msg_offset, msg_length, frame_offset_in_msg, frame_length)?;
+
+        if frame_length <= DESCRIPTOR_PREFIX_THRESHOLD {
+            let frame_bytes = self.get_range_async(range.clone()).await?;
+            let (desc, _payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
+            return Ok(desc);
+        }
+
+        let frame_start = range.start;
+        let frame_end = range.end;
+
+        let header_bytes = self
+            .get_range_async(frame_start..frame_start + FRAME_HEADER_SIZE as u64)
+            .await?;
+        let fh = FrameHeader::read_from(&header_bytes)?;
+
+        let footer_start = frame_end - DATA_OBJECT_FOOTER_SIZE as u64;
+        let footer_bytes = self.get_range_async(footer_start..frame_end).await?;
+
+        if footer_bytes.len() < DATA_OBJECT_FOOTER_SIZE {
+            return Err(TensogramError::Remote("frame footer too short".to_string()));
+        }
+        if &footer_bytes[8..] != FRAME_END {
+            return Err(TensogramError::Remote(
+                "frame missing ENDF trailer".to_string(),
+            ));
+        }
+
+        let cbor_offset = u64::from_be_bytes(
+            footer_bytes[..8]
+                .try_into()
+                .map_err(|_| TensogramError::Remote("footer cbor_offset truncated".to_string()))?,
+        );
+
+        let cbor_after = fh.flags & DataObjectFlags::CBOR_AFTER_PAYLOAD != 0;
+
+        if cbor_after {
+            let cbor_start = frame_start + cbor_offset;
+            let cbor_end = footer_start;
+            if cbor_start >= cbor_end {
+                return Err(TensogramError::Remote(
+                    "cbor_offset points at or past footer".to_string(),
+                ));
+            }
+            let cbor_bytes = self.get_range_async(cbor_start..cbor_end).await?;
+            metadata::cbor_to_object_descriptor(&cbor_bytes)
+        } else {
+            let cbor_start = frame_start + cbor_offset;
+            if cbor_start >= footer_start {
+                return Err(TensogramError::Remote(
+                    "cbor_offset beyond frame body".to_string(),
+                ));
+            }
+            let max_cbor_len = footer_start - cbor_start;
+            let mut prefix_size: u64 = 8192;
+            loop {
+                let read_end = (cbor_start + prefix_size).min(footer_start);
+                let prefix_bytes = self.get_range_async(cbor_start..read_end).await?;
+                match metadata::cbor_to_object_descriptor(&prefix_bytes) {
+                    Ok(desc) => return Ok(desc),
+                    Err(_) if prefix_size < max_cbor_len => {
+                        prefix_size = (prefix_size * 2).min(max_cbor_len);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn read_object_async(
+        &mut self,
+        msg_idx: usize,
+        obj_idx: usize,
+        options: &DecodeOptions,
+    ) -> Result<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)> {
+        self.ensure_layout_async(msg_idx).await?;
+        let layout = &self.layouts[msg_idx];
+        let msg_offset = layout.offset;
+
+        if let Some(ref index) = layout.index {
+            Self::validate_index_access(index, obj_idx)?;
+
+            let meta = layout
+                .global_metadata
+                .clone()
+                .ok_or_else(|| TensogramError::Remote("metadata not cached".to_string()))?;
+
+            let range = Self::checked_frame_range(
+                msg_offset,
+                layout.length,
+                index.offsets[obj_idx],
+                index.lengths[obj_idx],
+            )?;
+            let frame_bytes = self.get_range_async(range).await?;
+            let (desc, payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
+            let decoded = crate::decode::decode_single_object(&desc, payload, options)?;
+            Ok((meta, desc, decoded))
+        } else {
+            let msg_bytes = self.read_message_async(msg_idx).await?;
+            crate::decode::decode_object(&msg_bytes, obj_idx, options)
+        }
     }
 }
