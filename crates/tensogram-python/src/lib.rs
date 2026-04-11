@@ -411,8 +411,7 @@ impl PyTensogramFile {
             pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
         let options = make_encode_options(hash)?;
-        self.file
-            .append(&global_meta, &refs, &options)
+        py.allow_threads(|| self.file.append(&global_meta, &refs, &options))
             .map_err(to_py_err)
     }
 
@@ -595,7 +594,9 @@ impl PyTensogramFile {
     /// - ``file[-1]`` returns the last message
     /// - ``file[1:4]`` returns ``list[Message]``
     fn __getitem__(&mut self, py: Python<'_>, key: &Bound<'_, pyo3::PyAny>) -> PyResult<PyObject> {
-        let count = self.file.message_count().map_err(to_py_err)?;
+        let count = py
+            .allow_threads(|| self.file.message_count())
+            .map_err(to_py_err)?;
 
         if let Ok(index) = key.extract::<isize>() {
             let idx = if index < 0 {
@@ -674,8 +675,9 @@ impl PyFileIter {
         let i = self.index;
         self.index += 1;
         let options = DecodeOptions::default();
-        let (global_meta, data_objects) =
-            self.file.decode_message(i, &options).map_err(to_py_err)?;
+        let (global_meta, data_objects) = py
+            .allow_threads(|| self.file.decode_message(i, &options))
+            .map_err(to_py_err)?;
         let result_list = data_objects_to_python(py, &data_objects)?;
         Ok(Some(pack_message(
             py,
