@@ -176,6 +176,10 @@ For speculative ideas, see `IDEAS.md`.
   - native async path when both `remote` and `async` features enabled (avoid thread-per-request)
   - shared tokio runtime instead of per-call runtime creation
   - descriptor-only reads (currently fetches full object frame to extract descriptor)
+- [ ] **remote examples**:
+  - `examples/rust/src/bin/` — remote open + selective object read from HTTP URL
+  - `examples/python/` — remote open, decode_object, xarray open_dataset with storage_options
+  - include a script that starts a local HTTP server serving a test `.tgm` file so examples are self-contained and runnable
 - [ ] **CI: Python remote tests**:
   - add `maturin develop` + `pytest tests/python/test_remote.py` to CI pipeline
   - requires Python environment with `maturin`, `numpy`, `pytest` in CI
