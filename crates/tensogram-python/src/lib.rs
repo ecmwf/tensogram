@@ -336,14 +336,21 @@ struct PyTensogramFile {
 #[pymethods]
 impl PyTensogramFile {
     #[staticmethod]
-    fn open(source: &str) -> PyResult<Self> {
-        let file = TensogramFile::open_source(source).map_err(to_py_err)?;
+    fn open(py: Python<'_>, source: &str) -> PyResult<Self> {
+        let source = source.to_string();
+        let file = py
+            .allow_threads(|| TensogramFile::open_source(&source))
+            .map_err(to_py_err)?;
         Ok(PyTensogramFile { file })
     }
 
     #[staticmethod]
     #[pyo3(signature = (source, storage_options=None))]
-    fn open_remote(source: &str, storage_options: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+    fn open_remote(
+        py: Python<'_>,
+        source: &str,
+        storage_options: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Self> {
         let opts = match storage_options {
             Some(dict) => {
                 let mut map = BTreeMap::new();
@@ -362,7 +369,10 @@ impl PyTensogramFile {
             }
             None => BTreeMap::new(),
         };
-        let file = TensogramFile::open_remote(source, &opts).map_err(to_py_err)?;
+        let source = source.to_string();
+        let file = py
+            .allow_threads(|| TensogramFile::open_remote(&source, &opts))
+            .map_err(to_py_err)?;
         Ok(PyTensogramFile { file })
     }
 
@@ -374,8 +384,9 @@ impl PyTensogramFile {
     }
 
     /// Number of valid messages in the file.
-    fn message_count(&mut self) -> PyResult<usize> {
-        self.file.message_count().map_err(to_py_err)
+    fn message_count(&mut self, py: Python<'_>) -> PyResult<usize> {
+        py.allow_threads(|| self.file.message_count())
+            .map_err(to_py_err)
     }
 
     /// Append one message.
@@ -422,16 +433,17 @@ impl PyTensogramFile {
             native_byte_order,
             ..Default::default()
         };
-        let (global_meta, data_objects) = self
-            .file
-            .decode_message(index, &options)
+        let (global_meta, data_objects) = py
+            .allow_threads(|| self.file.decode_message(index, &options))
             .map_err(to_py_err)?;
         let result_list = data_objects_to_python(py, &data_objects)?;
         pack_message(py, PyMetadata { inner: global_meta }, result_list)
     }
 
     fn file_decode_metadata(&mut self, py: Python<'_>, msg_index: usize) -> PyResult<PyObject> {
-        let meta = self.file.decode_metadata(msg_index).map_err(to_py_err)?;
+        let meta = py
+            .allow_threads(|| self.file.decode_metadata(msg_index))
+            .map_err(to_py_err)?;
         Ok(PyMetadata { inner: meta }
             .into_pyobject(py)?
             .into_any()
@@ -439,7 +451,9 @@ impl PyTensogramFile {
     }
 
     fn file_decode_descriptors(&mut self, py: Python<'_>, msg_index: usize) -> PyResult<PyObject> {
-        let (meta, descriptors) = self.file.decode_descriptors(msg_index).map_err(to_py_err)?;
+        let (meta, descriptors) = py
+            .allow_threads(|| self.file.decode_descriptors(msg_index))
+            .map_err(to_py_err)?;
         let desc_list: Vec<PyObject> = descriptors
             .iter()
             .map(|d| {
@@ -469,9 +483,8 @@ impl PyTensogramFile {
             native_byte_order,
             ..Default::default()
         };
-        let (meta, desc, data) = self
-            .file
-            .decode_object(msg_index, obj_index, &options)
+        let (meta, desc, data) = py
+            .allow_threads(|| self.file.decode_object(msg_index, obj_index, &options))
             .map_err(to_py_err)?;
         let arr = bytes_to_numpy(py, &desc, &data)?;
         let py_desc = PyDataObjectDescriptor {
@@ -501,7 +514,9 @@ impl PyTensogramFile {
         py: Python<'py>,
         index: usize,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = self.file.read_message(index).map_err(to_py_err)?;
+        let bytes = py
+            .allow_threads(|| self.file.read_message(index))
+            .map_err(to_py_err)?;
         Ok(PyBytes::new(py, &bytes))
     }
 
