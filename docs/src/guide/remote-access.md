@@ -183,7 +183,53 @@ Remote access can return different `TensogramError` variants depending on the fa
 | Unsupported layout | `Remote` | Message lacks both header-index and footer-index flags |
 | Object index out of range | `Object` | `decode_object(i, j)` where `j >= object_count` |
 
-All errors are returned as `Result`. The library avoids panics; thread creation failures are the only remaining theoretical panic path.
+All errors are returned as `Result`. The library avoids panics.
+
+## Shared Runtime
+
+Remote I/O uses a process-wide shared tokio runtime (multi-thread, 2 workers) created on first use. All `RemoteBackend` instances share the same runtime, so TCP connection pools and DNS caches are reused across calls.
+
+When the sync API (`decode_object`, `decode_metadata`, etc.) is called from within an existing async context (e.g. `#[tokio::test]`), the library detects this and spawns a scoped thread to avoid nested-runtime panics. When called from a non-async context (Python, CLI), the runtime is driven directly with no extra thread creation.
+
+## Async API
+
+The `async` feature enables async methods for decode, read, and metadata extraction. These work for both local and remote files:
+
+```rust
+use tensogram_core::{TensogramFile, DecodeOptions};
+
+// Async decode methods (feature = "async")
+let meta = file.decode_metadata_async(0).await?;
+let (meta, descs) = file.decode_descriptors_async(0).await?;
+let (meta, desc, data) = file.decode_object_async(0, 0, &DecodeOptions::default()).await?;
+let msg = file.read_message_async(0).await?;
+```
+
+When both `remote` and `async` features are enabled, async open methods are also available:
+
+```rust
+// Async open (auto-detects local vs remote) — requires remote + async
+let mut file = TensogramFile::open_source_async("s3://bucket/forecast.tgm").await?;
+
+// Async open with explicit storage options
+let mut file = TensogramFile::open_remote_async(
+    "s3://bucket/forecast.tgm",
+    &opts,
+).await?;
+```
+
+For remote backends, async methods directly `await` object store operations, bypassing the sync bridge entirely. For local backends, they use `spawn_blocking` for file I/O.
+
+```toml
+[dependencies]
+tensogram-core = { path = "...", features = ["remote", "async"] }
+```
+
+## Descriptor-Only Reads
+
+`decode_descriptors()` fetches only the CBOR descriptor from each data object frame, not the full payload. For large objects (hundreds of MB), this avoids downloading the entire frame just to extract a few hundred bytes of metadata.
+
+For frames smaller than 64 KB, the full frame is read in a single request (fewer round-trips). For larger frames, the library reads only the frame header (16 bytes), footer (12 bytes), and the CBOR descriptor region.
 
 ## Limitations
 
@@ -194,4 +240,4 @@ All errors are returned as `Result`. The library avoids panics; thread creation 
 - **HTTP server requirements.** The remote HTTP server must support `HEAD` requests (for file size) and `Range` request headers (for partial reads).
 - **`read_message()` and `decode_message()` download the full message** even for remote files. Use `decode_metadata()`, `decode_descriptors()`, or `decode_object()` for selective access.
 - **Zarr remote reads are eager.** The zarr store downloads the full message at open time. For large messages with many objects, this can be slow over remote stores.
-- **Thread-per-request.** Each range request spawns a thread with a temporary tokio runtime. This is correct but not optimal for many small reads. A shared runtime will be added in a follow-up.
+- **Sequential async access.** Async methods take `&mut self`, so a single file handle cannot serve concurrent async reads. Open separate handles for parallelism.

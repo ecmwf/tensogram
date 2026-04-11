@@ -151,10 +151,13 @@ For speculative ideas, see `IDEAS.md`.
   - xarray: `storage_options` threaded through all 5 modules, remote reads use file-level APIs
   - zarr: `storage_options`, remote writes rejected early
   - 12 Python tests with mock HTTP server
-- [ ] **remote 4 — async + shared runtime**:
-  - native async path when both `remote` and `async` features enabled
-  - shared tokio runtime instead of per-call runtime creation
-  - descriptor-only reads (currently fetches full object frame)
+- [x] **remote 4 — async + shared runtime**:
+  - shared `OnceLock<Runtime>` replaces per-call `block_on_thread` (thread + runtime per I/O call)
+  - `block_on_shared`: direct `handle.block_on()` when not in async context, scoped thread fallback when in async context
+  - native async methods when both `remote` and `async` features enabled: `open_source_async`, `open_remote_async`, `decode_metadata_async`, `decode_descriptors_async`, `decode_object_async`, `read_message_async` (remote-aware)
+  - descriptor-only reads: `read_descriptor_only` fetches only CBOR prefix for large frames (> 64 KB), full frame for small ones
+  - `rt-multi-thread` tokio feature gated to `remote` only
+  - 7 new tests (concurrent reads, sync context, descriptor parity, async open/decode/descriptors/streaming/parity/errors)
 - [ ] **remote 5 — polish (examples, CI, optimizations)**:
   - examples: `examples/rust/` and `examples/python/` with self-contained HTTP server script
   - CI: add `maturin develop` + `pytest tests/python/test_remote.py` to pipeline
