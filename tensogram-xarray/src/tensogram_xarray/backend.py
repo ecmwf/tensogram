@@ -48,6 +48,7 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
         merge_objects: bool = False,
         verify_hash: bool = False,
         range_threshold: float = 0.5,
+        storage_options: dict[str, str] | None = None,
     ) -> xr.Dataset:
         """Open a single tensogram message as an :class:`xr.Dataset`.
 
@@ -96,6 +97,7 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
                 variable_key=variable_key,
                 verify_hash=verify_hash,
                 range_threshold=range_threshold,
+                storage_options=storage_options,
             )
             if not datasets:
                 return xr.Dataset()
@@ -108,6 +110,7 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
             variable_key=variable_key,
             verify_hash=verify_hash,
             range_threshold=range_threshold,
+            storage_options=storage_options,
         )
 
         drop_set = set(drop_variables) if drop_variables else None

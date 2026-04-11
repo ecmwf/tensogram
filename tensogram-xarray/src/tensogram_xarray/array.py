@@ -194,10 +194,11 @@ class TensogramBackendArray(BackendArray):
         verify_hash: bool = False,
         range_threshold: float = DEFAULT_RANGE_THRESHOLD,
         lock: threading.Lock | None = None,
+        storage_options: dict[str, str] | None = None,
+        shared_file: Any | None = None,
     ):
-        # Resolve to absolute path so dask workers with different CWDs
-        # can still find the file after pickle/unpickle.
-        self.file_path = os.path.abspath(file_path)
+        self._is_remote = "://" in file_path
+        self.file_path = file_path if self._is_remote else os.path.abspath(file_path)
         self.msg_index = msg_index
         self.obj_index = obj_index
         self.shape = shape
@@ -206,17 +207,21 @@ class TensogramBackendArray(BackendArray):
         self.verify_hash = verify_hash
         self.range_threshold = range_threshold
         self.lock = lock or threading.Lock()
+        self.storage_options = storage_options
+        self._shared_file = shared_file
 
     # -- pickle support (no open handles stored) ----------------------------
 
     def __getstate__(self) -> dict:
         state = self.__dict__.copy()
-        state["lock"] = None  # locks are not picklable
+        state["lock"] = None
+        state["_shared_file"] = None
         return state
 
     def __setstate__(self, state: dict) -> None:
         self.__dict__.update(state)
         self.lock = threading.Lock()
+        self._shared_file = None
 
     # -- BackendArray interface ---------------------------------------------
 
@@ -228,16 +233,31 @@ class TensogramBackendArray(BackendArray):
             self._raw_indexing_method,
         )
 
+    def _get_file(self):
+        if self._shared_file is not None:
+            return self._shared_file
+        import tensogram
+
+        if self.storage_options:
+            return tensogram.TensogramFile.open_remote(self.file_path, self.storage_options)
+        return tensogram.TensogramFile.open(self.file_path)
+
     def _raw_indexing_method(self, key: tuple) -> np.ndarray:
-        """Thread-safe read from the tensogram file."""
         import tensogram
 
         with self.lock:
-            with tensogram.TensogramFile.open(self.file_path) as f:
-                raw_msg = f.read_message(self.msg_index)
+            f = self._get_file()
 
-            # Try partial decode for contiguous slices when random access
-            # is available and the requested fraction is below threshold.
+            if self._is_remote:
+                result = f.file_decode_object(
+                    self.msg_index,
+                    self.obj_index,
+                    verify_hash=self.verify_hash,
+                )
+                return np.asarray(result["data"][key])
+
+            raw_msg = f.read_message(self.msg_index)
+
             if self.supports_range and _is_contiguous_slice(key):
                 try:
                     flat_ranges, out_shape = _nd_slice_to_flat_ranges(self.shape, key)
@@ -265,7 +285,6 @@ class TensogramBackendArray(BackendArray):
                         exc,
                     )
 
-            # Full object decode + in-memory slice.
             _meta, _desc, arr = tensogram.decode_object(
                 raw_msg,
                 self.obj_index,

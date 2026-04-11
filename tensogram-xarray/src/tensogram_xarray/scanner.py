@@ -100,7 +100,10 @@ def _extra_from_meta(meta: Any) -> dict[str, Any]:
     return result
 
 
-def scan_file(file_path: str) -> FileIndex:
+def scan_file(
+    file_path: str,
+    storage_options: dict[str, str] | None = None,
+) -> FileIndex:
     """Scan a ``.tgm`` file and return a :class:`FileIndex`.
 
     Decodes each message to get descriptors, per-object metadata
@@ -108,18 +111,28 @@ def scan_file(file_path: str) -> FileIndex:
     """
     import tensogram
 
-    file_path = os.path.abspath(file_path)
-    index = FileIndex(file_path=file_path)
+    is_remote = "://" in file_path
+    resolved = file_path if is_remote else os.path.abspath(file_path)
+    index = FileIndex(file_path=resolved)
 
-    with tensogram.TensogramFile.open(file_path) as f:
+    if storage_options:
+        f = tensogram.TensogramFile.open_remote(resolved, storage_options)
+    else:
+        f = tensogram.TensogramFile.open(resolved)
+
+    with f:
         n_messages = len(f)
         for msg_idx in range(n_messages):
-            raw = f.read_message(msg_idx)
-            meta = tensogram.decode_metadata(raw)
-            extra = _extra_from_meta(meta)
+            if is_remote:
+                result = f.file_decode_descriptors(msg_idx)
+                meta = result["metadata"]
+                descriptors = result["descriptors"]
+            else:
+                raw = f.read_message(msg_idx)
+                meta = tensogram.decode_metadata(raw)
+                _, descriptors = tensogram.decode_descriptors(raw)
 
-            # Decode descriptors only (no payload decode).
-            _, descriptors = tensogram.decode_descriptors(raw)
+            extra = _extra_from_meta(meta)
 
             for obj_idx, desc in enumerate(descriptors):
                 per_obj = _merge_per_object_meta(meta, obj_idx, desc)
