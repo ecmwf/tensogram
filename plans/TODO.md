@@ -172,10 +172,19 @@ For speculative ideas, see `IDEAS.md`.
   - replace `GILOnceCell` with `std::sync::OnceLock` where applicable
   - test with Python 3.13+ free-threaded build (`python3.13t`)
   - enables true parallel `decode_object()` calls from multiple threads on the same file handle
-- [ ] **remote-object-store (PR2b — async + optimization, deferred)**:
+- [ ] **remote-object-store (PR2b — async + optimization)**:
   - native async path when both `remote` and `async` features enabled (avoid thread-per-request)
   - shared tokio runtime instead of per-call runtime creation
   - descriptor-only reads (currently fetches full object frame to extract descriptor)
+- [ ] **CI: Python remote tests**:
+  - add `maturin develop` + `pytest tests/python/test_remote.py` to CI pipeline
+  - requires Python environment with `maturin`, `numpy`, `pytest` in CI
+- [ ] **zarr lazy remote reads**:
+  - current zarr store downloads full message at open via `read_message()` — defeats remote range-read benefits
+  - switch `_scan_tgm_file()` to use file-level `file_decode_descriptors()` for metadata and lazy `file_decode_object()` per chunk in `get()` instead of eagerly materializing all objects
+- [ ] **remote sub-object `decode_range()`**:
+  - add `TensogramFile::decode_range(msg_idx, obj_idx, ranges)` that does byte-level range reads for partial slices within a single object
+  - enables xarray partial-slice reads over remote (currently falls back to full object download)
 
 ## Code Quality
 
