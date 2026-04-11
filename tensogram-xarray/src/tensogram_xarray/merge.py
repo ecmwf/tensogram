@@ -75,11 +75,7 @@ def open_datasets(
     is_remote = tensogram.is_remote_url(path)
     shared_file = None
     if is_remote:
-        shared_file = (
-            tensogram.TensogramFile.open_remote(path, storage_options or {})
-            if storage_options or is_remote
-            else tensogram.TensogramFile.open(path)
-        )
+        shared_file = tensogram.TensogramFile.open_remote(path, storage_options or {})
 
     all_metas = [o.merged_meta for o in file_index.objects]
     coord_indices, var_indices, coord_dim_map = detect_coords(all_metas)

@@ -46,7 +46,9 @@ def _make_handler(file_data: bytes):
                     return
                 chunk = data[start:end]
                 self.send_response(206)
-                self.send_header("Content-Range", f"bytes {start}-{end - 1}/{len(data)}")
+                self.send_header(
+                    "Content-Range", f"bytes {start}-{end - 1}/{len(data)}"
+                )
                 self.send_header("Content-Length", str(len(chunk)))
                 self.end_headers()
                 self.wfile.write(chunk)
@@ -225,7 +227,7 @@ class TestPythonRemoteErrors:
             def __str__(self):
                 raise RuntimeError("cannot convert")
 
-        with pytest.raises(Exception, match="convertible to string"):
+        with pytest.raises(ValueError, match="convertible to string"):
             tensogram.TensogramFile.open_remote(url, {"key": Unconvertible()})
 
     def test_iteration_not_supported_on_remote(self, serve_tgm_bytes):
