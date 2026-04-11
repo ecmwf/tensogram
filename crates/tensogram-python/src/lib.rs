@@ -335,10 +335,30 @@ struct PyTensogramFile {
 
 #[pymethods]
 impl PyTensogramFile {
-    /// Open an existing file for reading.
     #[staticmethod]
-    fn open(path: &str) -> PyResult<Self> {
-        let file = TensogramFile::open(path).map_err(to_py_err)?;
+    fn open(source: &str) -> PyResult<Self> {
+        let file = TensogramFile::open_source(source).map_err(to_py_err)?;
+        Ok(PyTensogramFile { file })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (source, storage_options=None))]
+    fn open_remote(source: &str, storage_options: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+        let opts = match storage_options {
+            Some(dict) => {
+                let mut map = BTreeMap::new();
+                for (k, v) in dict.iter() {
+                    let key: String = k.extract()?;
+                    let val: String = v
+                        .extract::<String>()
+                        .unwrap_or_else(|_| v.str().map(|s| s.to_string()).unwrap_or_default());
+                    map.insert(key, val);
+                }
+                map
+            }
+            None => BTreeMap::new(),
+        };
+        let file = TensogramFile::open_remote(source, &opts).map_err(to_py_err)?;
         Ok(PyTensogramFile { file })
     }
 
@@ -404,6 +424,71 @@ impl PyTensogramFile {
             .map_err(to_py_err)?;
         let result_list = data_objects_to_python(py, &data_objects)?;
         pack_message(py, PyMetadata { inner: global_meta }, result_list)
+    }
+
+    fn file_decode_metadata(&mut self, py: Python<'_>, msg_index: usize) -> PyResult<PyObject> {
+        let meta = self.file.decode_metadata(msg_index).map_err(to_py_err)?;
+        Ok(PyMetadata { inner: meta }
+            .into_pyobject(py)?
+            .into_any()
+            .unbind())
+    }
+
+    fn file_decode_descriptors(&mut self, py: Python<'_>, msg_index: usize) -> PyResult<PyObject> {
+        let (meta, descriptors) = self.file.decode_descriptors(msg_index).map_err(to_py_err)?;
+        let desc_list: Vec<PyObject> = descriptors
+            .iter()
+            .map(|d| {
+                Ok(PyDataObjectDescriptor { inner: d.clone() }
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind())
+            })
+            .collect::<PyResult<_>>()?;
+        let result = PyDict::new(py);
+        result.set_item("metadata", PyMetadata { inner: meta }.into_pyobject(py)?)?;
+        result.set_item("descriptors", PyList::new(py, desc_list)?)?;
+        Ok(result.into_any().unbind())
+    }
+
+    #[pyo3(signature = (msg_index, obj_index, verify_hash=false, native_byte_order=true))]
+    fn file_decode_object(
+        &mut self,
+        py: Python<'_>,
+        msg_index: usize,
+        obj_index: usize,
+        verify_hash: bool,
+        native_byte_order: bool,
+    ) -> PyResult<PyObject> {
+        let options = DecodeOptions {
+            verify_hash,
+            native_byte_order,
+            ..Default::default()
+        };
+        let (meta, desc, data) = self
+            .file
+            .decode_object(msg_index, obj_index, &options)
+            .map_err(to_py_err)?;
+        let arr = bytes_to_numpy(py, &desc, &data)?;
+        let py_desc = PyDataObjectDescriptor {
+            inner: desc.clone(),
+        }
+        .into_pyobject(py)?
+        .into_any()
+        .unbind();
+        let result = PyDict::new(py);
+        result.set_item("metadata", PyMetadata { inner: meta }.into_pyobject(py)?)?;
+        result.set_item("descriptor", py_desc)?;
+        result.set_item("data", arr)?;
+        Ok(result.into_any().unbind())
+    }
+
+    fn is_remote(&self) -> bool {
+        self.file.is_remote()
+    }
+
+    fn source(&self) -> String {
+        self.file.source()
     }
 
     /// Raw wire-format bytes for the message at *index*.

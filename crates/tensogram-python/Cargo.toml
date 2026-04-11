@@ -8,7 +8,7 @@ name = "tensogram"
 crate-type = ["cdylib"]
 
 [dependencies]
-tensogram-core = { path = "../tensogram-core" }
+tensogram-core = { path = "../tensogram-core", features = ["remote"] }
 tensogram-encodings = { path = "../tensogram-encodings" }
 pyo3 = { version = "0.25", features = ["extension-module"] }
 numpy = "0.25"
