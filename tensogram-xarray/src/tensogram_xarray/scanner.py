@@ -115,8 +115,8 @@ def scan_file(
     resolved = file_path if is_remote else os.path.abspath(file_path)
     index = FileIndex(file_path=resolved)
 
-    if storage_options:
-        f = tensogram.TensogramFile.open_remote(resolved, storage_options)
+    if is_remote:
+        f = tensogram.TensogramFile.open_remote(resolved, storage_options or {})
     else:
         f = tensogram.TensogramFile.open(resolved)
 

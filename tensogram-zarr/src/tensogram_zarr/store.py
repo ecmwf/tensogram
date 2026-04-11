@@ -340,8 +340,8 @@ class TensogramStore(ZarrStore):
         import tensogram
 
         try:
-            if self._storage_options:
-                f = tensogram.TensogramFile.open_remote(self._path, self._storage_options)
+            if "://" in self._path:
+                f = tensogram.TensogramFile.open_remote(self._path, self._storage_options or {})
             else:
                 f = tensogram.TensogramFile.open(self._path)
         except Exception as exc:

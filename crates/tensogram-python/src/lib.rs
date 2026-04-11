@@ -349,9 +349,13 @@ impl PyTensogramFile {
                 let mut map = BTreeMap::new();
                 for (k, v) in dict.iter() {
                     let key: String = k.extract()?;
-                    let val: String = v
-                        .extract::<String>()
-                        .unwrap_or_else(|_| v.str().map(|s| s.to_string()).unwrap_or_default());
+                    let val: String = v.extract::<String>().or_else(|_| {
+                        v.str()
+                            .map(|s| s.to_string())
+                            .map_err(|_| PyValueError::new_err(format!(
+                                "storage_options value for key '{key}' must be convertible to string"
+                            )))
+                    })?;
                     map.insert(key, val);
                 }
                 map

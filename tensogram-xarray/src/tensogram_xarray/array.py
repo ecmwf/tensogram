@@ -238,8 +238,8 @@ class TensogramBackendArray(BackendArray):
             return self._shared_file
         import tensogram
 
-        if self.storage_options:
-            return tensogram.TensogramFile.open_remote(self.file_path, self.storage_options)
+        if self._is_remote:
+            return tensogram.TensogramFile.open_remote(self.file_path, self.storage_options or {})
         return tensogram.TensogramFile.open(self.file_path)
 
     def _raw_indexing_method(self, key: tuple) -> np.ndarray:

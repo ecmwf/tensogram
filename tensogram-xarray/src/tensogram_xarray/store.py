@@ -110,8 +110,8 @@ class TensogramDataStore:
     def _open_file(self) -> Any:
         import tensogram
 
-        if self.storage_options:
-            return tensogram.TensogramFile.open_remote(self.file_path, self.storage_options)
+        if self._is_remote:
+            return tensogram.TensogramFile.open_remote(self.file_path, self.storage_options or {})
         return tensogram.TensogramFile.open(self.file_path)
 
     def _read_metadata(self) -> tuple[Any, list]:
@@ -293,4 +293,4 @@ class TensogramDataStore:
         return tuple(dims)
 
     def close(self) -> None:
-        """No-op: no persistent resources to release."""
+        self._file = None
