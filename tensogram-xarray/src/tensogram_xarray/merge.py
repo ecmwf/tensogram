@@ -152,6 +152,10 @@ def open_datasets(
                         arr = arr.array
                     if isinstance(arr, TensogramBackendArray):
                         arr._shared_file = None
+                    elif isinstance(arr, StackedBackendArray):
+                        for inner in arr._arrays:
+                            if isinstance(inner, TensogramBackendArray):
+                                inner._shared_file = None
             shared_file = None
 
         for ds in datasets:
