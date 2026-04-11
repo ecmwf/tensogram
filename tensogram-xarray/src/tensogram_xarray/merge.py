@@ -138,7 +138,19 @@ def open_datasets(
         if ds is not None:
             datasets.append(ds)
 
-    return datasets if datasets else [xr.Dataset(coords=coord_vars, attrs={"source": path})]
+    if not datasets:
+        datasets = [xr.Dataset(coords=coord_vars, attrs={"source": path})]
+
+    if shared_file is not None:
+
+        def _close_shared():
+            nonlocal shared_file
+            shared_file = None
+
+        for ds in datasets:
+            ds.set_close(_close_shared)
+
+    return datasets
 
 
 # ---------------------------------------------------------------------------

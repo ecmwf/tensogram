@@ -266,39 +266,35 @@ class TensogramBackendArray(BackendArray):
 
         raw_msg = f.read_message(self.msg_index)
 
-            if self.supports_range and _is_contiguous_slice(key):
-                try:
-                    flat_ranges, out_shape = _nd_slice_to_flat_ranges(self.shape, key)
-                    total_requested = sum(c for _, c in flat_ranges)
-                    total_elements = math.prod(self.shape)
+        if self.supports_range and _is_contiguous_slice(key):
+            try:
+                flat_ranges, out_shape = _nd_slice_to_flat_ranges(self.shape, key)
+                total_requested = sum(c for _, c in flat_ranges)
+                total_elements = math.prod(self.shape)
 
-                    if (
-                        total_elements > 0
-                        and total_requested / total_elements <= self.range_threshold
-                    ):
-                        arr = tensogram.decode_range(
-                            raw_msg,
-                            object_index=self.obj_index,
-                            ranges=flat_ranges,
-                            join=True,
-                        )
-                        return np.asarray(arr).reshape(out_shape)
-                except (ValueError, RuntimeError, OSError) as exc:
-                    logger.debug(
-                        "decode_range failed for %s msg=%d obj=%d, "
-                        "falling back to full decode: %s",
-                        self.file_path,
-                        self.msg_index,
-                        self.obj_index,
-                        exc,
+                if total_elements > 0 and total_requested / total_elements <= self.range_threshold:
+                    arr = tensogram.decode_range(
+                        raw_msg,
+                        object_index=self.obj_index,
+                        ranges=flat_ranges,
+                        join=True,
                     )
+                    return np.asarray(arr).reshape(out_shape)
+            except (ValueError, RuntimeError, OSError) as exc:
+                logger.debug(
+                    "decode_range failed for %s msg=%d obj=%d, falling back to full decode: %s",
+                    self.file_path,
+                    self.msg_index,
+                    self.obj_index,
+                    exc,
+                )
 
-            _meta, _desc, arr = tensogram.decode_object(
-                raw_msg,
-                self.obj_index,
-                verify_hash=self.verify_hash,
-            )
-            return np.asarray(arr[key])
+        _meta, _desc, arr = tensogram.decode_object(
+            raw_msg,
+            self.obj_index,
+            verify_hash=self.verify_hash,
+        )
+        return np.asarray(arr[key])
 
 
 # ---------------------------------------------------------------------------
