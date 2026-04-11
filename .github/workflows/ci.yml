@@ -48,6 +48,9 @@ jobs:
       - name: Test (remote feature)
         run: cargo test -p tensogram-core --features remote
 
+      - name: Test (remote + async features)
+        run: cargo test -p tensogram-core --features "remote,async"
+
   # ── Python: build bindings + test ────────────────────────────────────
   python:
     name: Python (${{ matrix.os }}, ${{ matrix.python }})
