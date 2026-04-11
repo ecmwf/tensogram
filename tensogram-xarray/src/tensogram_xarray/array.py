@@ -256,16 +256,6 @@ class TensogramBackendArray(BackendArray):
                 return self._read_from_file(f, key, tensogram)
 
     def _read_from_file(self, f, key: tuple, tensogram) -> np.ndarray:
-        if self._is_remote:
-            result = f.file_decode_object(
-                self.msg_index,
-                self.obj_index,
-                verify_hash=self.verify_hash,
-            )
-            return np.asarray(result["data"][key])
-
-        raw_msg = f.read_message(self.msg_index)
-
         if self.supports_range and _is_contiguous_slice(key):
             try:
                 flat_ranges, out_shape = _nd_slice_to_flat_ranges(self.shape, key)
@@ -273,9 +263,9 @@ class TensogramBackendArray(BackendArray):
                 total_elements = math.prod(self.shape)
 
                 if total_elements > 0 and total_requested / total_elements <= self.range_threshold:
-                    arr = tensogram.decode_range(
-                        raw_msg,
-                        object_index=self.obj_index,
+                    arr = f.file_decode_range(
+                        self.msg_index,
+                        obj_index=self.obj_index,
                         ranges=flat_ranges,
                         join=True,
                     )
@@ -289,6 +279,15 @@ class TensogramBackendArray(BackendArray):
                     exc,
                 )
 
+        if self._is_remote:
+            result = f.file_decode_object(
+                self.msg_index,
+                self.obj_index,
+                verify_hash=self.verify_hash,
+            )
+            return np.asarray(result["data"][key])
+
+        raw_msg = f.read_message(self.msg_index)
         _meta, _desc, arr = tensogram.decode_object(
             raw_msg,
             self.obj_index,

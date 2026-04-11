@@ -499,6 +499,55 @@ impl PyTensogramFile {
         Ok(result.into_any().unbind())
     }
 
+    #[pyo3(signature = (msg_index, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
+    fn file_decode_range(
+        &mut self,
+        py: Python<'_>,
+        msg_index: usize,
+        obj_index: usize,
+        ranges: Vec<(u64, u64)>,
+        join: bool,
+        verify_hash: bool,
+        native_byte_order: bool,
+    ) -> PyResult<PyObject> {
+        let options = DecodeOptions {
+            verify_hash,
+            native_byte_order,
+            ..Default::default()
+        };
+
+        let parts = py
+            .allow_threads(|| {
+                self.file
+                    .decode_range(msg_index, obj_index, &ranges, &options)
+            })
+            .map_err(to_py_err)?;
+
+        let (_, descs) = py
+            .allow_threads(|| self.file.decode_descriptors(msg_index))
+            .map_err(to_py_err)?;
+        let desc = descs.get(obj_index).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "object_index {obj_index} out of range (num_objects={})",
+                descs.len()
+            ))
+        })?;
+
+        if join {
+            let total_bytes: Vec<u8> = parts.into_iter().flatten().collect();
+            let total_elements: u64 = ranges.iter().map(|(_, c)| c).sum();
+            raw_bytes_to_numpy_flat(py, desc.dtype, &total_bytes, total_elements as usize)
+        } else {
+            let mut arrays = Vec::with_capacity(parts.len());
+            for (part, &(_, count)) in parts.iter().zip(ranges.iter()) {
+                let arr = raw_bytes_to_numpy_flat(py, desc.dtype, part, count as usize)?;
+                arrays.push(arr);
+            }
+            let list = pyo3::types::PyList::new(py, arrays)?;
+            Ok(list.into_any().unbind())
+        }
+    }
+
     fn is_remote(&self) -> bool {
         self.file.is_remote()
     }
