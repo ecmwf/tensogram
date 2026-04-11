@@ -157,11 +157,14 @@ For speculative ideas, see `IDEAS.md`.
   - native async path when both `remote` and `async` features enabled (avoid thread-per-request)
   - shared tokio runtime instead of per-call runtime creation
   - descriptor-only reads (currently fetches full object frame to extract descriptor)
-- [ ] **remote-object-store (PR3 — Python + xarray + zarr integration)**:
-  - expose `open_source` / `open_remote` in Python: `tensogram.open("s3://bucket/file.tgm")`
-  - xarray backend: accept remote URLs, pass `storage_options`, remove `os.path.abspath()` on URLs
-  - zarr store: accept remote URLs
-  - switch xarray/zarr from `read_message()` to `decode_object()` for selective reads
+- [x] **remote-object-store (PR3 — Python + xarray + zarr integration)**:
+  - Python `TensogramFile.open()` now auto-detects remote URLs via `open_source()`
+  - added `TensogramFile.open_remote(source, storage_options)` for explicit options
+  - added file-level Python APIs: `file_decode_metadata()`, `file_decode_descriptors()`, `file_decode_object()`, `is_remote()`, `source()`
+  - enabled `remote` feature in `tensogram-python/Cargo.toml`
+  - xarray: `storage_options` threaded through backend.py, store.py, array.py, scanner.py, merge.py
+  - xarray: `os.path.abspath()` skipped for remote URLs; remote reads use file-level APIs
+  - zarr: `storage_options` added to `TensogramStore` and `open_tgm()`; remote writes rejected early
 
 ## Code Quality
 

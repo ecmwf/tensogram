@@ -158,6 +158,6 @@ All errors are returned as `Result`. The library avoids panics; thread creation 
 - **Read-only.** Remote writes are not supported.
 - **Header probe size.** Layout discovery reads a single chunk of up to 256 KB from the header region. If the metadata or index frame does not fit in this chunk, `decode_metadata()` will error (it does not retry with a larger read).
 - **HTTP server requirements.** The remote HTTP server must support `HEAD` requests (for file size) and `Range` request headers (for partial reads).
-- **Rust core only.** Python bindings, xarray backend, and zarr store do not yet support remote URLs. This will be added in a follow-up PR.
+- **Python/xarray/zarr supported.** `tensogram.TensogramFile.open()` auto-detects remote URLs. xarray accepts `storage_options` via `xr.open_dataset(url, engine="tensogram", storage_options={...})`. Zarr supports `TensogramStore.open_tgm(url, storage_options={...})` in read-only mode.
 - **`read_message()` and `decode_message()` download the full message** even for remote files. Use `decode_metadata()`, `decode_descriptors()`, or `decode_object()` for selective access.
 - **Thread-per-request.** Each range request spawns a thread with a temporary tokio runtime. This is correct but not optimal for many small reads. A shared runtime will be added in a follow-up.
