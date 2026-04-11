@@ -523,7 +523,9 @@ impl PyTensogramFile {
     /// All raw message bytes as a list of ``bytes`` objects.
     fn messages<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         #[allow(deprecated)]
-        let msgs = self.file.messages().map_err(to_py_err)?;
+        let msgs = py
+            .allow_threads(|| self.file.messages())
+            .map_err(to_py_err)?;
         let items: Vec<PyObject> = msgs
             .iter()
             .map(|m| PyBytes::new(py, m).into_any().unbind())

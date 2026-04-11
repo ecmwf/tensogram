@@ -16,56 +16,60 @@ import tensogram
 # ---------------------------------------------------------------------------
 
 
-class RangeHTTPHandler(http.server.BaseHTTPRequestHandler):
-    """Serves a single file with HEAD and Range request support."""
+def _make_handler(file_data: bytes):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            pass
 
-    file_data: bytes = b""
-
-    def log_message(self, fmt, *args):
-        pass
-
-    def do_HEAD(self):
-        self.send_response(200)
-        self.send_header("Content-Length", str(len(self.file_data)))
-        self.send_header("Accept-Ranges", "bytes")
-        self.end_headers()
-
-    def do_GET(self):
-        data = self.file_data
-        range_header = self.headers.get("Range")
-        if range_header and range_header.startswith("bytes="):
-            range_spec = range_header[6:]
-            if range_spec.startswith("-"):
-                suffix = int(range_spec[1:])
-                start = max(0, len(data) - suffix)
-                end = len(data)
-            else:
-                parts = range_spec.split("-")
-                start = int(parts[0])
-                end = int(parts[1]) + 1 if parts[1] else len(data)
-                end = min(end, len(data))
-
-            chunk = data[start:end]
-            self.send_response(206)
-            self.send_header("Content-Range", f"bytes {start}-{end - 1}/{len(data)}")
-            self.send_header("Content-Length", str(len(chunk)))
-            self.end_headers()
-            self.wfile.write(chunk)
-        else:
+        def do_HEAD(self):
             self.send_response(200)
-            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Length", str(len(file_data)))
+            self.send_header("Accept-Ranges", "bytes")
             self.end_headers()
-            self.wfile.write(data)
+
+        def do_GET(self):
+            data = file_data
+            range_header = self.headers.get("Range")
+            if range_header and range_header.startswith("bytes="):
+                range_spec = range_header[6:]
+                if range_spec.startswith("-"):
+                    suffix = int(range_spec[1:])
+                    start = max(0, len(data) - suffix)
+                    end = len(data)
+                else:
+                    parts = range_spec.split("-")
+                    start = int(parts[0])
+                    end = int(parts[1]) + 1 if parts[1] else len(data)
+                    end = min(end, len(data))
+                if start >= len(data):
+                    self.send_response(416)
+                    self.end_headers()
+                    return
+                chunk = data[start:end]
+                self.send_response(206)
+                self.send_header(
+                    "Content-Range", f"bytes {start}-{end - 1}/{len(data)}"
+                )
+                self.send_header("Content-Length", str(len(chunk)))
+                self.end_headers()
+                self.wfile.write(chunk)
+            else:
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+    return Handler
 
 
 @pytest.fixture
 def serve_tgm_bytes():
-    """Fixture that starts a mock HTTP server for a given bytes payload."""
+    """Fixture that starts a mock HTTP server for given bytes, isolated per call."""
     servers = []
 
     def _serve(data: bytes) -> str:
-        RangeHTTPHandler.file_data = data
-        server = http.server.HTTPServer(("127.0.0.1", 0), RangeHTTPHandler)
+        handler = _make_handler(data)
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         port = server.server_address[1]
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
