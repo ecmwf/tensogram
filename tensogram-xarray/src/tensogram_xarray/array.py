@@ -249,17 +249,22 @@ class TensogramBackendArray(BackendArray):
         import tensogram
 
         with self.lock:
-            f = self._get_file()
+            if self._shared_file is not None:
+                return self._read_from_file(self._shared_file, key, tensogram)
 
-            if self._is_remote:
-                result = f.file_decode_object(
-                    self.msg_index,
-                    self.obj_index,
-                    verify_hash=self.verify_hash,
-                )
-                return np.asarray(result["data"][key])
+            with self._get_file() as f:
+                return self._read_from_file(f, key, tensogram)
 
-            raw_msg = f.read_message(self.msg_index)
+    def _read_from_file(self, f, key: tuple, tensogram) -> np.ndarray:
+        if self._is_remote:
+            result = f.file_decode_object(
+                self.msg_index,
+                self.obj_index,
+                verify_hash=self.verify_hash,
+            )
+            return np.asarray(result["data"][key])
+
+        raw_msg = f.read_message(self.msg_index)
 
             if self.supports_range and _is_contiguous_slice(key):
                 try:
