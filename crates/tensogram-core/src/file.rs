@@ -397,6 +397,11 @@ impl TensogramFile {
 
     #[cfg(feature = "async")]
     pub async fn read_message_async(&mut self, index: usize) -> Result<Vec<u8>> {
+        #[cfg(feature = "remote")]
+        if let Backend::Remote(remote) = &self.backend {
+            return remote.read_message_async(index).await;
+        }
+
         if self.message_offsets.is_none() {
             let p = self.local_path()?.clone();
             let offsets = tokio::task::spawn_blocking(move || {
@@ -422,10 +427,6 @@ impl TensogramFile {
         .map_err(|e| TensogramError::Io(std::io::Error::other(e)))?
     }
 
-    /// Decode a specific message asynchronously.
-    ///
-    /// Both I/O and CPU-intensive decode run on blocking threads
-    /// because the encoding pipeline may call FFI (libaec, zfp, blosc2).
     #[cfg(feature = "async")]
     pub async fn decode_message_async(
         &mut self,
@@ -435,6 +436,78 @@ impl TensogramFile {
         let msg = self.read_message_async(index).await?;
         let opts = options.clone();
         tokio::task::spawn_blocking(move || decode::decode(&msg, &opts))
+            .await
+            .map_err(|e| TensogramError::Io(std::io::Error::other(e)))?
+    }
+
+    #[cfg(all(feature = "remote", feature = "async"))]
+    pub async fn open_source_async(source: impl AsRef<str>) -> Result<Self> {
+        let source = source.as_ref();
+
+        if crate::remote::is_remote_url(source) {
+            return Self::open_remote_async(source, &std::collections::BTreeMap::new()).await;
+        }
+
+        Self::open_async(source).await
+    }
+
+    #[cfg(all(feature = "remote", feature = "async"))]
+    pub async fn open_remote_async(
+        source: &str,
+        storage_options: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Self> {
+        let remote = crate::remote::RemoteBackend::open_async(source, storage_options).await?;
+        let offsets = remote.message_offsets()?;
+        Ok(TensogramFile {
+            backend: Backend::Remote(remote),
+            message_offsets: Some(offsets),
+        })
+    }
+
+    #[cfg(feature = "async")]
+    pub async fn decode_metadata_async(&mut self, msg_idx: usize) -> Result<GlobalMetadata> {
+        #[cfg(feature = "remote")]
+        if let Backend::Remote(remote) = &mut self.backend {
+            return remote.read_metadata_async(msg_idx).await;
+        }
+
+        let msg = self.read_message_async(msg_idx).await?;
+        tokio::task::spawn_blocking(move || decode::decode_metadata(&msg))
+            .await
+            .map_err(|e| TensogramError::Io(std::io::Error::other(e)))?
+    }
+
+    #[cfg(feature = "async")]
+    pub async fn decode_descriptors_async(
+        &mut self,
+        msg_idx: usize,
+    ) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>)> {
+        #[cfg(feature = "remote")]
+        if let Backend::Remote(remote) = &mut self.backend {
+            return remote.read_descriptors_async(msg_idx).await;
+        }
+
+        let msg = self.read_message_async(msg_idx).await?;
+        tokio::task::spawn_blocking(move || decode::decode_descriptors(&msg))
+            .await
+            .map_err(|e| TensogramError::Io(std::io::Error::other(e)))?
+    }
+
+    #[cfg(feature = "async")]
+    pub async fn decode_object_async(
+        &mut self,
+        msg_idx: usize,
+        obj_idx: usize,
+        options: &DecodeOptions,
+    ) -> Result<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)> {
+        #[cfg(feature = "remote")]
+        if let Backend::Remote(remote) = &mut self.backend {
+            return remote.read_object_async(msg_idx, obj_idx, options).await;
+        }
+
+        let msg = self.read_message_async(msg_idx).await?;
+        let opts = options.clone();
+        tokio::task::spawn_blocking(move || decode::decode_object(&msg, obj_idx, &opts))
             .await
             .map_err(|e| TensogramError::Io(std::io::Error::other(e)))?
     }
