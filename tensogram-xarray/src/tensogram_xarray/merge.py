@@ -145,6 +145,13 @@ def open_datasets(
 
         def _close_shared():
             nonlocal shared_file
+            for ds in datasets:
+                for var in list(ds.data_vars.values()) + list(ds.coords.values()):
+                    arr = getattr(var, "_data", None)
+                    while hasattr(arr, "array"):
+                        arr = arr.array
+                    if isinstance(arr, TensogramBackendArray):
+                        arr._shared_file = None
             shared_file = None
 
         for ds in datasets:
