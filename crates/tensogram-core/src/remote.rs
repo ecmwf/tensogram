@@ -166,7 +166,7 @@ impl RemoteBackend {
         let head_path = path.clone();
         let meta = block_on_shared(async move { head_store.head(&head_path).await })?;
 
-        let file_size = meta.size as u64;
+        let file_size = meta.size;
         if file_size < (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64 {
             return Err(TensogramError::Remote(format!(
                 "remote file too small ({file_size} bytes)"
@@ -768,7 +768,7 @@ impl RemoteBackend {
             .await
             .map_err(|e| TensogramError::Remote(e.to_string()))?;
 
-        let file_size = meta.size as u64;
+        let file_size = meta.size;
         if file_size < (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64 {
             return Err(TensogramError::Remote(format!(
                 "remote file too small ({file_size} bytes)"
