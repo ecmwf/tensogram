@@ -70,7 +70,7 @@ class TensogramDataStore:
     Parameters
     ----------
     file_path
-        Path to the ``.tgm`` file.
+        Path or remote URL to the ``.tgm`` file.
     msg_index
         Index of the message within the file.
     dim_names

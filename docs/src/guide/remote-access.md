@@ -21,7 +21,7 @@ let mut file = TensogramFile::open_source("s3://bucket/forecast.tgm")?;
 
 `open_source` inspects the URL scheme and routes to the remote backend for `s3://`, `s3a://`, `gs://`, `az://`, `azure://`, `http://`, `https://`. Everything else is treated as a local path.
 
-The original `open()` method is unchanged and always opens a local file.
+The Rust `open()` method is unchanged and always opens a local file. In Python, `TensogramFile.open()` auto-detects remote URLs.
 
 You can also check whether a string is a remote URL without opening:
 
@@ -49,6 +49,38 @@ let mut file = TensogramFile::open_remote("s3://bucket/forecast.tgm", &opts)?;
 ```
 
 When no options are passed, credentials are read from the environment (e.g. `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`, `GOOGLE_APPLICATION_CREDENTIALS`).
+
+## Python Usage
+
+```python
+import tensogram
+
+# Auto-detect remote URL
+with tensogram.TensogramFile.open("s3://bucket/forecast.tgm") as f:
+    meta = f.file_decode_metadata(0)
+    result = f.file_decode_object(0, 0)
+    data = result["data"]  # numpy array
+
+# With explicit storage options
+with tensogram.TensogramFile.open_remote(
+    "s3://bucket/forecast.tgm",
+    {"region": "eu-west-1"}
+) as f:
+    print(f.source())   # "s3://bucket/forecast.tgm"
+    print(f.is_remote()) # True
+```
+
+## xarray Usage
+
+```python
+import xarray as xr
+
+ds = xr.open_dataset(
+    "s3://bucket/forecast.tgm",
+    engine="tensogram",
+    storage_options={"region": "eu-west-1"},
+)
+```
 
 ## Supported Schemes
 
@@ -154,7 +186,7 @@ All errors are returned as `Result`. The library avoids panics; thread creation 
 ## Limitations
 
 - **Streaming messages must be last.** In multi-message files, streaming-encoded messages (`total_length=0`) must be the last message. The remote scanner assumes the streaming message extends to the end of the file.
-- **Optimistic scan.** Remote message scanning validates preamble magic and `total_length` plausibility but does not verify end-of-message markers (unlike local scanning). A corrupt preamble with a plausible length will be accepted until a later read fails.
+- **Optimistic scan for buffered messages.** Remote message scanning validates preamble magic and `total_length` plausibility but does not verify end-of-message markers for buffered messages. Streaming messages (`total_length=0`) do validate the END_MAGIC at EOF.
 - **Read-only.** Remote writes are not supported.
 - **Header probe size.** Layout discovery reads a single chunk of up to 256 KB from the header region. If the metadata or index frame does not fit in this chunk, `decode_metadata()` will error (it does not retry with a larger read).
 - **HTTP server requirements.** The remote HTTP server must support `HEAD` requests (for file size) and `Range` request headers (for partial reads).

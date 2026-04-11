@@ -178,8 +178,9 @@ def _nd_slice_to_flat_ranges(
 class TensogramBackendArray(BackendArray):
     """Lazy array backed by a tensogram file.
 
-    This class stores only the file path (no open handles) so that it can be
-    safely pickled for dask multiprocessing / distributed execution.
+    Stores the file path (or remote URL) and optionally a shared file handle.
+    The handle is dropped on pickle for dask multiprocessing compatibility
+    and lazily reopened on the worker.
     """
 
     def __init__(
