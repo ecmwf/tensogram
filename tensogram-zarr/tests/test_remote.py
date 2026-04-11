@@ -11,6 +11,10 @@ import tensogram
 from tensogram_zarr.store import TensogramStore
 
 
+async def _collect_async_iter(ait):
+    return [item async for item in ait]
+
+
 def _make_handler(file_data: bytes):
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -122,7 +126,7 @@ class TestZarrRemoteLazyReads:
         url = serve_tgm_bytes(msg)
 
         store = TensogramStore.open_tgm(url)
-        chunk_key = list(store._chunk_index.keys())[0]
+        chunk_key = next(iter(store._chunk_index))
         data = store._decode_chunk(chunk_key)
         assert data is not None
         arr = np.frombuffer(data, dtype=np.float32)
@@ -137,6 +141,42 @@ class TestZarrRemoteLazyReads:
         store.close()
         assert store._file is None
         assert len(store._chunk_index) == 0
+
+    def test_remote_chunk_cached_on_repeat_access(self, serve_tgm_bytes):
+        msg = _encode_simple_message()
+        url = serve_tgm_bytes(msg)
+
+        store = TensogramStore.open_tgm(url)
+        chunk_key = next(iter(store._chunk_index))
+        assert chunk_key not in store._keys
+
+        store._decode_chunk(chunk_key)
+        assert chunk_key in store._keys, "decoded chunk should be cached in _keys"
+
+        cached = store._keys[chunk_key]
+        again = store._decode_chunk(chunk_key)
+        assert again == cached
+
+    def test_remote_exists_sees_lazy_chunk(self, serve_tgm_bytes):
+        import asyncio
+
+        msg = _encode_simple_message()
+        url = serve_tgm_bytes(msg)
+
+        store = TensogramStore.open_tgm(url)
+        chunk_key = next(iter(store._chunk_index))
+        assert asyncio.run(store.exists(chunk_key))
+
+    def test_remote_list_includes_lazy_chunks(self, serve_tgm_bytes):
+        import asyncio
+
+        msg = _encode_simple_message()
+        url = serve_tgm_bytes(msg)
+
+        store = TensogramStore.open_tgm(url)
+        keys = asyncio.run(_collect_async_iter(store.list()))
+        chunk_keys = [k for k in keys if "/c/" in k]
+        assert len(chunk_keys) == 1
 
     def test_local_still_eager(self, tmp_path):
         msg = _encode_simple_message()

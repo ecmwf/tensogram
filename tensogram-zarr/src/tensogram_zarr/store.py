@@ -105,13 +105,11 @@ class TensogramStore(ZarrStore):
         self._message_index = message_index
         self._variable_key = variable_key
 
-        # Virtual key space — metadata keys only (zarr.json files).
-        # Chunk data is decoded lazily via _chunk_index.
         self._keys: dict[str, bytes] = {}
         self._variable_names: list[str] = []
 
-        # Lazy chunk index: chunk_key -> obj_index for on-demand decode.
-        # Populated during _scan_tgm_file; empty for write mode.
+        # Remote lazy chunk index: chunk_key -> obj_index.
+        # Empty for local reads (chunks go directly into _keys) and writes.
         self._chunk_index: dict[str, int] = {}
         self._file: Any = None
 
@@ -186,8 +184,6 @@ class TensogramStore(ZarrStore):
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if exc_type is not None:
-            # An exception is already in flight.  Attempt flush but log
-            # rather than replace the original exception.
             try:
                 if self._dirty and self._mode in ("w", "a"):
                     self._flush_to_tgm()
@@ -198,6 +194,8 @@ class TensogramStore(ZarrStore):
                     exc_info=True,
                 )
             finally:
+                self._file = None
+                self._chunk_index.clear()
                 self._is_open = False
         else:
             self.close()
@@ -316,7 +314,12 @@ class TensogramStore(ZarrStore):
     # ------------------------------------------------------------------
 
     def _all_keys(self) -> list[str]:
-        return list(self._keys.keys()) + list(self._chunk_index.keys())
+        seen = set(self._keys)
+        result = list(self._keys)
+        for k in self._chunk_index:
+            if k not in seen:
+                result.append(k)
+        return result
 
     async def list(self) -> AsyncIterator[str]:
         await self._ensure_open()
