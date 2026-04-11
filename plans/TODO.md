@@ -135,60 +135,46 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Remote Access
 
-- [x] **remote-object-store (PR1 — Rust core, header-indexed)**:
-  - `remote` feature gate with `object_store` 0.13 crate (S3, GCS, Azure, HTTP)
-  - `Backend` enum (Local | Remote) inside `TensogramFile` — one public type
-  - `remote.rs` module: URL scheme detection, `object_store::parse_url_opts`, range reads, per-message layout caching
-  - new public APIs: `open_source()`, `open_remote()`, `decode_metadata()`, `decode_descriptors()`, `decode_object()`, `is_remote()`, `source()`, `is_remote_url()`
-  - scheme whitelist: `s3://`, `s3a://`, `gs://`, `az://`, `azure://`, `http://`, `https://`
-  - sync bridge: `std::thread::scope` + per-call tokio runtime (avoids nested-runtime panics)
-  - 17 tests with mock HTTP server: URL detection, open, metadata, descriptors, single-object decode, multi-object, multi-message, request-count verification, cache reuse, local-vs-remote match, streaming rejection, error cases
-  - docs: `docs/src/guide/remote-access.md`, cross-reference from `file-api.md`
-  - scoped to header-indexed (buffered) messages only; read-only
-- [x] **remote-object-store (PR2 — footer support)**:
-  - fixed `StreamingEncoder` to store frame lengths (not payload lengths) in `IndexFrame.lengths` — consistent with buffered encoder
-  - updated `IndexFrame.lengths` doc from "payload length" to "total frame length"
-  - `scan_messages` handles `total_length=0` (streaming) by assigning remaining file size
-  - added `discover_footer_layout` + `parse_footer_frames` to remote backend
-  - `ensure_layout` now accepts both header-indexed and footer-indexed messages
-  - streaming messages must be last in multi-message files
-  - 5 new tests: streaming open/decode, local parity, multi-object, mixed buffered+streaming, index lengths
-- [ ] **remote-object-store (PR2b — async + optimization, deferred)**:
-  - native async path when both `remote` and `async` features enabled (avoid thread-per-request)
+- [x] **remote 1 — Rust core (header-indexed)**:
+  - `remote` feature gate with `object_store` 0.13, `Backend` enum (Local | Remote), `remote.rs` module
+  - APIs: `open_source()`, `open_remote()`, `decode_metadata()`, `decode_descriptors()`, `decode_object()`, `is_remote()`, `source()`
+  - schemes: `s3://`, `s3a://`, `gs://`, `az://`, `azure://`, `http://`, `https://`
+  - sync bridge: `std::thread::scope` + per-call tokio runtime
+  - 21 Rust tests with mock HTTP server; docs: `docs/src/guide/remote-access.md`
+- [x] **remote 2 — footer-indexed (streaming) support**:
+  - fixed `StreamingEncoder` index lengths (payload → frame), `scan_messages` handles `total_length=0`
+  - `discover_footer_layout` + `parse_footer_frames`, streaming must be last in multi-message files
+  - 5 new tests: streaming open/decode, local parity, multi-object, mixed, index lengths
+- [x] **remote 3 — Python + xarray + zarr integration**:
+  - Python `open()` auto-detects remote, `open_remote(source, storage_options)`, file-level decode APIs
+  - GIL released during all I/O via `py.allow_threads()`
+  - xarray: `storage_options` threaded through all 5 modules, remote reads use file-level APIs
+  - zarr: `storage_options`, remote writes rejected early
+  - 12 Python tests with mock HTTP server
+- [ ] **remote 4 — async + shared runtime**:
+  - native async path when both `remote` and `async` features enabled
   - shared tokio runtime instead of per-call runtime creation
-  - descriptor-only reads (currently fetches full object frame to extract descriptor)
-- [x] **remote-object-store (PR3 — Python + xarray + zarr integration)**:
-  - Python `TensogramFile.open()` now auto-detects remote URLs via `open_source()`
-  - added `TensogramFile.open_remote(source, storage_options)` for explicit options
-  - added file-level Python APIs: `file_decode_metadata()`, `file_decode_descriptors()`, `file_decode_object()`, `is_remote()`, `source()`
-  - enabled `remote` feature in `tensogram-python/Cargo.toml`
-  - xarray: `storage_options` threaded through backend.py, store.py, array.py, scanner.py, merge.py
-  - xarray: `os.path.abspath()` skipped for remote URLs; remote reads use file-level APIs
-  - zarr: `storage_options` added to `TensogramStore` and `open_tgm()`; remote writes rejected early
-
-- [ ] **free-threaded Python support (PR4 — parallelism)**:
-  - declare `#[pymodule(gil_used = false)]` for free-threaded Python (3.13+)
-  - change `PyTensogramFile` methods from `&mut self` to `&self` with internal `Mutex`/`RwLock` for concurrent access
-  - replace `GILOnceCell` with `std::sync::OnceLock` where applicable
-  - test with Python 3.13+ free-threaded build (`python3.13t`)
-  - enables true parallel `decode_object()` calls from multiple threads on the same file handle
-- [ ] **remote-object-store (PR2b — async + optimization)**:
-  - native async path when both `remote` and `async` features enabled (avoid thread-per-request)
-  - shared tokio runtime instead of per-call runtime creation
-  - descriptor-only reads (currently fetches full object frame to extract descriptor)
-- [ ] **remote examples**:
-  - `examples/rust/src/bin/` — remote open + selective object read from HTTP URL
+  - descriptor-only reads (currently fetches full object frame)
+- [ ] **remote 5 — examples**:
+  - `examples/rust/` — remote open + selective object read from HTTP URL
   - `examples/python/` — remote open, decode_object, xarray open_dataset with storage_options
-  - include a script that starts a local HTTP server serving a test `.tgm` file so examples are self-contained and runnable
-- [ ] **CI: Python remote tests**:
+  - self-contained script that starts a local HTTP server serving a test `.tgm` file
+- [ ] **remote 6 — CI Python tests**:
   - add `maturin develop` + `pytest tests/python/test_remote.py` to CI pipeline
-  - requires Python environment with `maturin`, `numpy`, `pytest` in CI
-- [ ] **zarr lazy remote reads**:
-  - current zarr store downloads full message at open via `read_message()` — defeats remote range-read benefits
-  - switch `_scan_tgm_file()` to use file-level `file_decode_descriptors()` for metadata and lazy `file_decode_object()` per chunk in `get()` instead of eagerly materializing all objects
-- [ ] **remote sub-object `decode_range()`**:
-  - add `TensogramFile::decode_range(msg_idx, obj_idx, ranges)` that does byte-level range reads for partial slices within a single object
-  - enables xarray partial-slice reads over remote (currently falls back to full object download)
+- [ ] **remote 7 — zarr lazy reads**:
+  - switch zarr `_scan_tgm_file()` from eager `read_message()` to lazy `file_decode_descriptors()` + per-chunk `file_decode_object()` in `get()`
+- [ ] **remote 8 — sub-object `decode_range()`**:
+  - add `TensogramFile::decode_range(msg_idx, obj_idx, ranges)` for byte-level range reads within a single object
+  - enables xarray partial-slice reads over remote
+
+## Free-Threaded Python
+
+- [ ] **free-threaded Python (parallelism)**:
+  - declare `#[pymodule(gil_used = false)]` for Python 3.13+
+  - change `PyTensogramFile` methods from `&mut self` to `&self` with internal `Mutex`/`RwLock`
+  - replace `GILOnceCell` with `std::sync::OnceLock`
+  - test with `python3.13t`
+  - enables true parallel decode/encode across threads for the whole library
 
 ## Code Quality
 
