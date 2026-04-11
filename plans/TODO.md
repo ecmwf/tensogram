@@ -166,6 +166,17 @@ For speculative ideas, see `IDEAS.md`.
   - xarray: `os.path.abspath()` skipped for remote URLs; remote reads use file-level APIs
   - zarr: `storage_options` added to `TensogramStore` and `open_tgm()`; remote writes rejected early
 
+- [ ] **free-threaded Python support (PR4 — parallelism)**:
+  - declare `#[pymodule(gil_used = false)]` for free-threaded Python (3.13+)
+  - change `PyTensogramFile` methods from `&mut self` to `&self` with internal `Mutex`/`RwLock` for concurrent access
+  - replace `GILOnceCell` with `std::sync::OnceLock` where applicable
+  - test with Python 3.13+ free-threaded build (`python3.13t`)
+  - enables true parallel `decode_object()` calls from multiple threads on the same file handle
+- [ ] **remote-object-store (PR2b — async + optimization, deferred)**:
+  - native async path when both `remote` and `async` features enabled (avoid thread-per-request)
+  - shared tokio runtime instead of per-call runtime creation
+  - descriptor-only reads (currently fetches full object frame to extract descriptor)
+
 ## Code Quality
 
 - [x] ~~code coverage~~ → 86 new Rust tests (376 total). All CLI commands tested (ls 98%, dump 97%, get 97%, convert_grib 99%, output 96%, merge 94%, copy 94%, reshuffle 94%, set 91%, split 89%). Encodings: simple_packing 97%, zfp 92%. Remaining: FFI at 0% (tested by 109 C++ tests). Total 974 tests.
