@@ -175,6 +175,7 @@ class TensogramStore(ZarrStore):
         finally:
             self._file = None
             self._chunk_index.clear()
+            self._keys.clear()
             self._is_open = False
 
     def __enter__(self):
@@ -196,6 +197,7 @@ class TensogramStore(ZarrStore):
             finally:
                 self._file = None
                 self._chunk_index.clear()
+                self._keys.clear()
                 self._is_open = False
         else:
             self.close()
