@@ -111,7 +111,7 @@ def scan_file(
     """
     import tensogram
 
-    is_remote = "://" in file_path
+    is_remote = tensogram.is_remote_url(file_path)
     resolved = file_path if is_remote else os.path.abspath(file_path)
     index = FileIndex(file_path=resolved)
 

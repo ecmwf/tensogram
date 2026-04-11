@@ -94,7 +94,9 @@ class TensogramDataStore:
         range_threshold: float = 0.5,
         storage_options: dict[str, str] | None = None,
     ):
-        self._is_remote = "://" in file_path
+        import tensogram
+
+        self._is_remote = tensogram.is_remote_url(file_path)
         self.file_path = file_path if self._is_remote else os.path.abspath(file_path)
         self.msg_index = msg_index
         self.dim_names = dim_names

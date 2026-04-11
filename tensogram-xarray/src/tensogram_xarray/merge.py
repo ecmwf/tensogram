@@ -70,11 +70,11 @@ def open_datasets(
     if not file_index.objects:
         return []
 
-    is_remote = "://" in path
+    import tensogram
+
+    is_remote = tensogram.is_remote_url(path)
     shared_file = None
     if is_remote:
-        import tensogram
-
         shared_file = (
             tensogram.TensogramFile.open_remote(path, storage_options or {})
             if storage_options or is_remote

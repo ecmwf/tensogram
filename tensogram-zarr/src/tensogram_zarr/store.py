@@ -82,7 +82,9 @@ class TensogramStore(ZarrStore):
     ) -> None:
         if mode not in ("r", "w", "a"):
             raise ValueError(f"invalid mode {mode!r}; expected 'r', 'w', or 'a'")
-        is_remote = "://" in path
+        import tensogram
+
+        is_remote = tensogram.is_remote_url(path)
         if is_remote and mode in ("w", "a"):
             raise ValueError(f"remote URLs do not support mode={mode!r}; use mode='r'")
         if message_index < 0:
@@ -340,7 +342,7 @@ class TensogramStore(ZarrStore):
         import tensogram
 
         try:
-            if "://" in self._path:
+            if tensogram.is_remote_url(self._path):
                 f = tensogram.TensogramFile.open_remote(self._path, self._storage_options or {})
             else:
                 f = tensogram.TensogramFile.open(self._path)

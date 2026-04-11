@@ -567,16 +567,21 @@ impl PyTensogramFile {
     ///         for meta, objects in f:
     ///             desc, arr = objects[0]
     ///             print(arr.shape)
-    fn __iter__(&mut self) -> PyResult<PyFileIter> {
-        // Open an independent file handle so the iterator owns its state.
-        // Safe under free-threaded Python (no shared mutable borrows).
-        let path = self.file.path().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("iteration not supported on remote files")
-        })?;
-        let mut iter_file = TensogramFile::open(path).map_err(to_py_err)?;
-        // Read count from the *iterator's* handle to avoid TOCTOU race
-        // if the file is modified between open() and first next() call.
-        let count = iter_file.message_count().map_err(to_py_err)?;
+    fn __iter__(&mut self, py: Python<'_>) -> PyResult<PyFileIter> {
+        let path = self
+            .file
+            .path()
+            .ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("iteration not supported on remote files")
+            })?
+            .to_path_buf();
+        let (iter_file, count) = py
+            .allow_threads(|| {
+                let mut f = TensogramFile::open(&path)?;
+                let c = f.message_count()?;
+                Ok::<_, tensogram_core::TensogramError>((f, c))
+            })
+            .map_err(to_py_err)?;
         Ok(PyFileIter {
             file: iter_file,
             index: 0,
@@ -1258,8 +1263,15 @@ fn py_validate_file(
 // Module definition
 // ---------------------------------------------------------------------------
 
+#[pyfunction]
+#[pyo3(name = "is_remote_url")]
+fn py_is_remote_url(source: &str) -> bool {
+    tensogram_core::is_remote_url(source)
+}
+
 #[pymodule]
 fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(py_is_remote_url, m)?)?;
     m.add_function(wrap_pyfunction!(py_encode, m)?)?;
     m.add_function(wrap_pyfunction!(py_encode_pre_encoded, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode, m)?)?;
