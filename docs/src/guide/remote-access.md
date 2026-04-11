@@ -100,10 +100,11 @@ These methods also work on local files, where they read the full message and dec
 | **First access** | `decode_metadata(i)` | 2 GETs (postamble + footer region) |
 | **Cached** | `decode_metadata(i)` again | 0 (served from cache) |
 | **Object read** | `decode_object(i, j)` | 1 GET per object (if layout already cached) |
+| **Descriptors** | `decode_descriptors(i)` | 1 GET per object in message |
 
 The layout (metadata + index) is discovered per-message on first access to that message, then cached. Subsequent calls reuse the cached layout. Streaming messages must be the last message in a multi-message file.
 
-## How It Works
+## How It Works (Header-Indexed Example)
 
 ```mermaid
 sequenceDiagram
@@ -148,7 +149,7 @@ Remote access can return different `TensogramError` variants depending on the fa
 | Unsupported layout | `Remote` | Message lacks both header-index and footer-index flags |
 | Object index out of range | `Object` | `decode_object(i, j)` where `j >= object_count` |
 
-All errors are returned as `Result`. The library avoids panics, though thread creation failures and corrupt-index arithmetic edge cases may still panic in extreme conditions.
+All errors are returned as `Result`. The library avoids panics; thread creation failures are the only remaining theoretical panic path.
 
 ## Limitations
 

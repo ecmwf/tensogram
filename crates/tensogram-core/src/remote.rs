@@ -188,6 +188,15 @@ impl RemoteBackend {
                 if remaining < min_message_size {
                     break;
                 }
+                // Validate END_MAGIC at the expected postamble position to
+                // reject files with trailing garbage after the message.
+                let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
+                let end_bytes = self.get_range(
+                    end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64,
+                )?;
+                if &end_bytes[..] != crate::wire::END_MAGIC {
+                    break;
+                }
                 self.layouts.push(MessageLayout {
                     offset: pos,
                     length: remaining,
@@ -195,7 +204,7 @@ impl RemoteBackend {
                     index: None,
                     global_metadata: None,
                 });
-                break; // streaming message consumes the rest of the file
+                break;
             }
 
             let msg_end = match pos.checked_add(msg_len) {
