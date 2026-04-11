@@ -82,6 +82,11 @@ class TensogramDataStore:
     range_threshold
         Maximum fraction of total array elements (0.0-1.0) for which
         partial ``decode_range()`` is used.  Default ``0.5``.
+    storage_options
+        Key-value pairs forwarded to the object store backend when
+        ``file_path`` is a remote URL (S3, GCS, Azure, HTTP).  Used
+        for credentials, region, endpoint overrides, etc.  Ignored
+        for local files.
     """
 
     def __init__(

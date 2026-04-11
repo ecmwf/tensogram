@@ -62,13 +62,19 @@ class TensogramStore(ZarrStore):
     Parameters
     ----------
     path : str
-        Path to the ``.tgm`` file.
+        Path or remote URL (S3, GCS, Azure, HTTP) to the ``.tgm`` file.
+        Remote URLs are detected automatically by scheme.
     mode : str
         ``"r"`` for read-only, ``"w"`` for write, ``"a"`` for append.
+        Remote URLs only support ``"r"``.
     message_index : int
         Which message to read (default ``0``). Only used in read mode.
     variable_key : str | None
         Dotted metadata path for variable naming (e.g. ``"mars.param"``).
+    storage_options : dict[str, Any] | None
+        Key-value pairs forwarded to the object store backend for
+        remote URLs.  Used for credentials, region, endpoint overrides,
+        etc.  Ignored for local files.
     """
 
     def __init__(

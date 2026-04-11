@@ -51,15 +51,19 @@ fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
 
 /// Run an async operation synchronously using the shared runtime.
 ///
-/// Two strategies based on the calling context:
+/// Three strategies based on the calling context:
 ///
 /// - **Not in async context** (Python, CLI): direct `handle.block_on()`,
 ///   no extra thread creation.
-/// - **Inside async context** (`#[tokio::test]`, server handler): spawns a
-///   scoped thread that calls `handle.block_on()` to avoid blocking a
-///   tokio worker or triggering a nested-runtime panic.
+/// - **Inside multi-thread tokio runtime** (`#[tokio::test]`, server
+///   handler): `block_in_place` + `handle.block_on()`, which tells
+///   tokio to spawn a replacement worker so the current one can block
+///   without causing runtime starvation.
+/// - **Inside current-thread tokio runtime**: scoped thread fallback,
+///   since `block_in_place` is not supported on single-threaded
+///   runtimes.
 ///
-/// In both cases the shared runtime's event loop and connection pool
+/// In all cases the shared runtime's event loop and connection pool
 /// are reused, eliminating the per-call runtime creation overhead of
 /// the old `block_on_thread` pattern.
 fn block_on_shared<T, Fut>(future: Fut) -> Result<T>
@@ -68,34 +72,44 @@ where
     Fut: std::future::Future<Output = std::result::Result<T, object_store::Error>> + Send,
 {
     let rt = shared_runtime()?;
-
-    if tokio::runtime::Handle::try_current().is_err() {
-        // Fast path: not in an async context — drive the future directly.
-        return rt
-            .handle()
-            .block_on(future)
-            .map_err(|e| TensogramError::Remote(e.to_string()));
-    }
-
-    // In an async context: block_on would panic, so use a scoped thread.
-    // The shared runtime's worker threads still handle I/O; this thread
-    // just parks until the future completes.
     let handle = rt.handle().clone();
-    std::thread::scope(|s| {
-        match s
-            .spawn(|| {
+
+    match tokio::runtime::Handle::try_current() {
+        Err(_) => {
+            // Not in an async context — drive the future directly.
+            handle
+                .block_on(future)
+                .map_err(|e| TensogramError::Remote(e.to_string()))
+        }
+        Ok(current) if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            // Multi-thread runtime: block_in_place lets tokio spawn a
+            // replacement worker so this one can block safely.
+            tokio::task::block_in_place(|| {
                 handle
                     .block_on(future)
                     .map_err(|e| TensogramError::Remote(e.to_string()))
             })
-            .join()
-        {
-            Ok(result) => result,
-            Err(_) => Err(TensogramError::Remote(
-                "remote I/O thread panicked".to_string(),
-            )),
         }
-    })
+        Ok(_) => {
+            // Current-thread runtime: block_in_place is unsupported,
+            // fall back to a scoped thread.
+            std::thread::scope(|s| {
+                match s
+                    .spawn(|| {
+                        handle
+                            .block_on(future)
+                            .map_err(|e| TensogramError::Remote(e.to_string()))
+                    })
+                    .join()
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(TensogramError::Remote(
+                        "remote I/O thread panicked".to_string(),
+                    )),
+                }
+            })
+        }
+    }
 }
 
 pub fn is_remote_url(source: &str) -> bool {
