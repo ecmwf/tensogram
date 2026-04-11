@@ -189,7 +189,11 @@ All errors are returned as `Result`. The library avoids panics.
 
 Remote I/O uses a process-wide shared tokio runtime (multi-thread, 2 workers) created on first use. All `RemoteBackend` instances share the same runtime, so TCP connection pools and DNS caches are reused across calls.
 
-When the sync API (`decode_object`, `decode_metadata`, etc.) is called from within an existing async context (e.g. `#[tokio::test]`), the library detects this and spawns a scoped thread to avoid nested-runtime panics. When called from a non-async context (Python, CLI), the runtime is driven directly with no extra thread creation.
+The sync bridge adapts to the calling context:
+
+- **Not in a tokio runtime** (Python, CLI): the shared runtime's handle drives the future directly — no extra thread creation.
+- **Inside a multi-thread tokio runtime** (`#[tokio::test]`, server handler): `block_in_place` tells tokio to spawn a replacement worker so the blocked thread doesn't cause runtime starvation.
+- **Inside a current-thread tokio runtime**: falls back to a scoped thread, since `block_in_place` is not supported on single-threaded runtimes.
 
 ## Async API
 

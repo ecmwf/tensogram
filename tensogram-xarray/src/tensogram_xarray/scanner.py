@@ -108,6 +108,14 @@ def scan_file(
 
     Decodes each message to get descriptors, per-object metadata
     (from ``meta.base`` and ``desc.params``), and extra metadata.
+
+    Parameters
+    ----------
+    file_path
+        Path or remote URL to the ``.tgm`` file.
+    storage_options
+        Key-value pairs forwarded to the object store backend for
+        remote URLs.  Ignored for local files.
     """
     import tensogram
 

@@ -77,6 +77,9 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
             Maximum fraction of total array elements (0.0-1.0) for which
             partial ``decode_range()`` is used instead of a full
             ``decode_object()``.  Default ``0.5`` (50%).
+        storage_options
+            Key-value pairs forwarded to the object store backend when
+            the path is a remote URL.  Ignored for local files.
 
         Returns
         -------

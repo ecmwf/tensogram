@@ -59,6 +59,9 @@ def open_datasets(
     range_threshold
         Maximum fraction of total array elements for which partial
         ``decode_range()`` is used.  Default ``0.5``.
+    storage_options
+        Key-value pairs forwarded to the object store backend for
+        remote URLs.  Ignored for local files.
 
     Returns
     -------
