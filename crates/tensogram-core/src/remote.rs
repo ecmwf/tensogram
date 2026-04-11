@@ -719,6 +719,35 @@ impl RemoteBackend {
         }
     }
 
+    pub(crate) fn read_range(
+        &mut self,
+        msg_idx: usize,
+        obj_idx: usize,
+        ranges: &[(u64, u64)],
+        options: &DecodeOptions,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.ensure_layout(msg_idx)?;
+        let layout = &self.layouts[msg_idx];
+        let msg_offset = layout.offset;
+
+        if let Some(ref index) = layout.index {
+            Self::validate_index_access(index, obj_idx)?;
+
+            let range = Self::checked_frame_range(
+                msg_offset,
+                layout.length,
+                index.offsets[obj_idx],
+                index.lengths[obj_idx],
+            )?;
+            let frame_bytes = self.get_range(range)?;
+            let (desc, payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
+            crate::decode::decode_range_from_payload(&desc, payload, ranges, options)
+        } else {
+            let msg_bytes = self.read_message(msg_idx)?;
+            crate::decode::decode_range(&msg_bytes, obj_idx, ranges, options)
+        }
+    }
+
     fn validate_index_access(index: &IndexFrame, obj_idx: usize) -> Result<()> {
         if index.offsets.len() != index.lengths.len() {
             return Err(TensogramError::Remote(format!(

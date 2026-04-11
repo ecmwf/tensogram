@@ -912,3 +912,55 @@ async fn test_async_remote_message_index_out_of_range() -> Result<(), Box<dyn Er
     assert!(result.is_err());
     Ok(())
 }
+
+// ── Remote decode_range tests ────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_remote_decode_range_single_range() -> Result<(), Box<dyn Error>> {
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![8]);
+    let data: Vec<u8> = (0..32).collect();
+    let msg = encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
+    let server = MockServer::start(msg).await?;
+
+    let mut file = TensogramFile::open_source(server.url())?;
+    let ranges = vec![(2u64, 3u64)];
+    let parts = file.decode_range(0, 0, &ranges, &DecodeOptions::default())?;
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0].len(), 3 * 4);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_remote_decode_range_matches_local() -> Result<(), Box<dyn Error>> {
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![16]);
+    let data: Vec<u8> = (0..64).collect();
+    let msg = encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
+    let server = MockServer::start(msg.clone()).await?;
+
+    let ranges = vec![(0u64, 4u64), (8u64, 4u64)];
+    let opts = DecodeOptions::default();
+
+    let mut remote_file = TensogramFile::open_source(server.url())?;
+    let remote_parts = remote_file.decode_range(0, 0, &ranges, &opts)?;
+
+    let local_parts = tensogram_core::decode_range(&msg, 0, &ranges, &opts)?;
+
+    assert_eq!(remote_parts.len(), local_parts.len());
+    for (rp, lp) in remote_parts.iter().zip(local_parts.iter()) {
+        assert_eq!(rp, lp);
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_remote_decode_range_out_of_range_object() -> Result<(), Box<dyn Error>> {
+    let msg = encode_test_message(vec![4], 42)?;
+    let server = MockServer::start(msg).await?;
+
+    let mut file = TensogramFile::open_source(server.url())?;
+    let result = file.decode_range(0, 5, &[(0, 1)], &DecodeOptions::default());
+    assert!(result.is_err());
+    Ok(())
+}

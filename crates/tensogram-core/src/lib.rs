@@ -16,7 +16,8 @@ pub mod validate;
 pub mod wire;
 
 pub use decode::{
-    decode, decode_descriptors, decode_metadata, decode_object, decode_range, DecodeOptions,
+    decode, decode_descriptors, decode_metadata, decode_object, decode_range,
+    decode_range_from_payload, DecodeOptions,
 };
 pub use dtype::Dtype;
 pub use encode::{encode, encode_pre_encoded, EncodeOptions};

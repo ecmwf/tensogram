@@ -147,8 +147,15 @@ pub fn decode_range(
     }
 
     let (desc, payload_bytes, _) = &msg.objects[object_index];
+    decode_range_from_payload(desc, payload_bytes, ranges, options)
+}
 
-    // Reject shuffle filter
+pub fn decode_range_from_payload(
+    desc: &DataObjectDescriptor,
+    payload_bytes: &[u8],
+    ranges: &[(u64, u64)],
+    options: &DecodeOptions,
+) -> Result<Vec<Vec<u8>>> {
     if desc.filter != "none" {
         return Err(TensogramError::Encoding(
             "decode_range is not supported when a filter (e.g. shuffle) is applied".to_string(),

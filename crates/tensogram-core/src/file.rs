@@ -353,6 +353,23 @@ impl TensogramFile {
         }
     }
 
+    pub fn decode_range(
+        &mut self,
+        msg_idx: usize,
+        obj_idx: usize,
+        ranges: &[(u64, u64)],
+        options: &DecodeOptions,
+    ) -> Result<Vec<Vec<u8>>> {
+        match &mut self.backend {
+            #[cfg(feature = "remote")]
+            Backend::Remote(remote) => remote.read_range(msg_idx, obj_idx, ranges, options),
+            _ => {
+                let msg = self.read_message(msg_idx)?;
+                decode::decode_range(&msg, obj_idx, ranges, options)
+            }
+        }
+    }
+
     pub fn is_remote(&self) -> bool {
         #[cfg(feature = "remote")]
         if matches!(self.backend, Backend::Remote(_)) {
