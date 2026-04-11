@@ -163,7 +163,7 @@ For speculative ideas, see `IDEAS.md`.
   - Rust example `14_remote_access.rs`: TcpListener-based HTTP server, open_source, decode APIs
   - CI: added `pytest tests/python/test_remote.py` to Python CI job
   - zarr lazy reads: remote files use `file_decode_descriptors()` at scan time (metadata-only), `file_decode_object()` per chunk on demand; local files unchanged (eager decode)
-  - 4 new zarr remote tests: lazy open, on-demand decode, close cleanup, local-still-eager parity
+  - 9 new zarr remote tests: lazy open, on-demand decode, close cleanup, cached repeat access, exists on lazy chunk, list includes lazy chunks, no duplicates after cache, exception cleanup, local-still-eager parity
 - [ ] **remote 6 — range reads**:
   - remote `decode_range()`: byte-level range reads within a single object for xarray partial slices
 

@@ -314,12 +314,7 @@ class TensogramStore(ZarrStore):
     # ------------------------------------------------------------------
 
     def _all_keys(self) -> list[str]:
-        seen = set(self._keys)
-        result = list(self._keys)
-        for k in self._chunk_index:
-            if k not in seen:
-                result.append(k)
-        return result
+        return list(self._keys) + list(self._chunk_index)
 
     async def list(self) -> AsyncIterator[str]:
         await self._ensure_open()
@@ -492,6 +487,7 @@ class TensogramStore(ZarrStore):
             arr = arr.byteswap().view(arr.dtype.newbyteorder("<"))
         data = arr.tobytes()
         self._keys[chunk_key] = data
+        self._chunk_index.pop(chunk_key, None)
         return data
 
     # ------------------------------------------------------------------

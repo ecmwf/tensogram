@@ -152,10 +152,7 @@ class TestZarrRemoteLazyReads:
 
         store._decode_chunk(chunk_key)
         assert chunk_key in store._keys, "decoded chunk should be cached in _keys"
-
-        cached = store._keys[chunk_key]
-        again = store._decode_chunk(chunk_key)
-        assert again == cached
+        assert chunk_key not in store._chunk_index, "should be removed from index after caching"
 
     def test_remote_exists_sees_lazy_chunk(self, serve_tgm_bytes):
         import asyncio
@@ -177,6 +174,34 @@ class TestZarrRemoteLazyReads:
         keys = asyncio.run(_collect_async_iter(store.list()))
         chunk_keys = [k for k in keys if "/c/" in k]
         assert len(chunk_keys) == 1
+
+    def test_remote_list_no_duplicates_after_cache(self, serve_tgm_bytes):
+        import asyncio
+
+        msg = _encode_simple_message()
+        url = serve_tgm_bytes(msg)
+
+        store = TensogramStore.open_tgm(url)
+        chunk_key = next(iter(store._chunk_index))
+        store._decode_chunk(chunk_key)
+
+        keys = asyncio.run(_collect_async_iter(store.list()))
+        chunk_keys = [k for k in keys if "/c/" in k]
+        assert len(chunk_keys) == 1, f"expected 1 chunk key, got {chunk_keys}"
+
+    def test_remote_exit_cleans_up_on_exception(self, serve_tgm_bytes):
+        msg = _encode_simple_message()
+        url = serve_tgm_bytes(msg)
+
+        store = TensogramStore.open_tgm(url)
+        try:
+            with store:
+                raise RuntimeError("test exception")
+        except RuntimeError:
+            pass
+        assert store._file is None
+        assert len(store._chunk_index) == 0
+        assert not store._is_open
 
     def test_local_still_eager(self, tmp_path):
         msg = _encode_simple_message()
