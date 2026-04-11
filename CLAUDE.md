@@ -118,6 +118,7 @@ This project contains Rust, Python, C and C++ code
 - Test: `source .venv/bin/activate && python -m pytest tests/python/ -v`
 - xarray tests: `source .venv/bin/activate && uv pip install -e "tensogram-xarray/[dask]" && python -m pytest tensogram-xarray/tests/ -v`
 - zarr tests: `source .venv/bin/activate && uv pip install -e tensogram-zarr/ && python -m pytest tensogram-zarr/tests/ -v`
+- IMPORTANT: ALWAYS run `ruff check` and `ruff format` before committing Python files. CI enforces this.
 
 # Version control
 - Git project in github.com/ecmwf/tensogram

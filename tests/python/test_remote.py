@@ -10,7 +10,6 @@ import numpy as np
 import pytest
 import tensogram
 
-
 # ---------------------------------------------------------------------------
 # Mock HTTP server with Range support
 # ---------------------------------------------------------------------------
@@ -209,14 +208,14 @@ class TestPythonRemoteDecode:
             remote_result = remote.file_decode_object(0, 0)
 
         with tensogram.TensogramFile.open(local_path) as local:
-            local_meta, local_objects = local.decode_message(0)
+            _local_meta, local_objects = local.decode_message(0)
 
         np.testing.assert_array_equal(remote_result["data"], local_objects[0][1])
 
 
 class TestPythonRemoteErrors:
     def test_invalid_url(self):
-        with pytest.raises(Exception):
+        with pytest.raises(OSError, match="invalid"):
             tensogram.TensogramFile.open("http://[invalid]/file.tgm")
 
     def test_open_remote_bad_storage_option_value(self, serve_tgm_bytes):
@@ -234,6 +233,8 @@ class TestPythonRemoteErrors:
         msg = encode_test_message([4])
         url = serve_tgm_bytes(msg)
 
-        with tensogram.TensogramFile.open(url) as f:
-            with pytest.raises(RuntimeError, match="iteration not supported"):
-                iter(f)
+        with (
+            tensogram.TensogramFile.open(url) as f,
+            pytest.raises(RuntimeError, match="iteration not supported"),
+        ):
+            iter(f)
