@@ -551,8 +551,9 @@ impl PyTensogramFile {
         false // do not suppress exceptions
     }
 
-    fn __len__(&mut self) -> PyResult<usize> {
-        self.file.message_count().map_err(to_py_err)
+    fn __len__(&mut self, py: Python<'_>) -> PyResult<usize> {
+        py.allow_threads(|| self.file.message_count())
+            .map_err(to_py_err)
     }
 
     /// Iterate over all messages in the file.

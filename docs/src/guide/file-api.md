@@ -153,7 +153,7 @@ let mut file = TensogramFile::open_source("s3://bucket/forecast.tgm")?;
 let (meta, desc, data) = file.decode_object(0, 1, &DecodeOptions::default())?;
 ```
 
-Currently supports Rust core only (header-indexed and footer-indexed files, read-only). Python and xarray integration will follow. See the [Remote Access](remote-access.md) guide for storage options, request budgets, and limitations.
+Supports header-indexed and footer-indexed files (read-only) from Rust, Python, xarray, and zarr. See the [Remote Access](remote-access.md) guide for storage options, request budgets, and limitations.
 
 ## Memory-Mapped I/O (optional)
 

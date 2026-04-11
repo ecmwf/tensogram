@@ -46,9 +46,7 @@ def _make_handler(file_data: bytes):
                     return
                 chunk = data[start:end]
                 self.send_response(206)
-                self.send_header(
-                    "Content-Range", f"bytes {start}-{end - 1}/{len(data)}"
-                )
+                self.send_header("Content-Range", f"bytes {start}-{end - 1}/{len(data)}")
                 self.send_header("Content-Length", str(len(chunk)))
                 self.end_headers()
                 self.wfile.write(chunk)
@@ -79,6 +77,7 @@ def serve_tgm_bytes():
 
     for s in servers:
         s.shutdown()
+        s.server_close()
 
 
 # ---------------------------------------------------------------------------
