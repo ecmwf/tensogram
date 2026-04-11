@@ -268,6 +268,8 @@ class TensogramBackendArray(BackendArray):
                         obj_index=self.obj_index,
                         ranges=flat_ranges,
                         join=True,
+                        verify_hash=self.verify_hash,
+                        native_byte_order=True,
                     )
                     return np.asarray(arr).reshape(out_shape)
             except (ValueError, RuntimeError, OSError) as exc:

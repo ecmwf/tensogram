@@ -105,11 +105,6 @@ jobs:
           source .venv/bin/activate
           python -m pytest tests/python/ -v
 
-      - name: Test (remote)
-        run: |
-          source .venv/bin/activate
-          python -m pytest tests/python/test_remote.py -v
-
   # ── Python packages: xarray + zarr ───────────────────────────────────
   python-packages:
     name: Python packages
