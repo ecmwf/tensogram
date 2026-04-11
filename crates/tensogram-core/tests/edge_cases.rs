@@ -417,7 +417,8 @@ fn decode_range_empty_ranges_returns_empty() {
     let data = vec![0u8; 40]; // 10 * 4 bytes
     let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
-    let result = decode_range(&encoded, 0, &[], &DecodeOptions::default()).unwrap();
+    let (_, result) =
+        decode_range(&encoded, 0, &[], &DecodeOptions::default()).expect("decode_range failed");
     assert!(result.is_empty());
 }
 
@@ -1580,7 +1581,7 @@ fn decode_range_with_hash_verification() {
     let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Range decode with hash verification
-    let result = decode_range(
+    let (_, result) = decode_range(
         &encoded,
         0,
         &[(0, 5)],
@@ -1590,9 +1591,7 @@ fn decode_range_with_hash_verification() {
         },
     )
     .unwrap();
-    // One range requested → one result part
     assert_eq!(result.len(), 1, "expected 1 part for 1 range");
-    // Total bytes: 5 elements * 4 bytes each = 20
     let total_bytes: usize = result.iter().map(|p| p.len()).sum();
     assert_eq!(total_bytes, 20);
 }

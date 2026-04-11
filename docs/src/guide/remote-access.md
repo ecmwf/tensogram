@@ -240,7 +240,7 @@ For remote files, it fetches the full object frame (via indexed access) then run
 ```rust
 // Rust: decode elements 100..200 from object 0
 let ranges = vec![(100, 100)];
-let parts = file.decode_range(0, 0, &ranges, &DecodeOptions::default())?;
+let (desc, parts) = file.decode_range(0, 0, &ranges, &DecodeOptions::default())?;
 ```
 
 ```python

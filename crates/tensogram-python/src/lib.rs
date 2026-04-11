@@ -516,36 +516,14 @@ impl PyTensogramFile {
             ..Default::default()
         };
 
-        let parts = py
+        let (desc, parts) = py
             .allow_threads(|| {
                 self.file
                     .decode_range(msg_index, obj_index, &ranges, &options)
             })
             .map_err(to_py_err)?;
 
-        let (_, descs) = py
-            .allow_threads(|| self.file.decode_descriptors(msg_index))
-            .map_err(to_py_err)?;
-        let desc = descs.get(obj_index).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "object_index {obj_index} out of range (num_objects={})",
-                descs.len()
-            ))
-        })?;
-
-        if join {
-            let total_bytes: Vec<u8> = parts.into_iter().flatten().collect();
-            let total_elements: u64 = ranges.iter().map(|(_, c)| c).sum();
-            raw_bytes_to_numpy_flat(py, desc.dtype, &total_bytes, total_elements as usize)
-        } else {
-            let mut arrays = Vec::with_capacity(parts.len());
-            for (part, &(_, count)) in parts.iter().zip(ranges.iter()) {
-                let arr = raw_bytes_to_numpy_flat(py, desc.dtype, part, count as usize)?;
-                arrays.push(arr);
-            }
-            let list = pyo3::types::PyList::new(py, arrays)?;
-            Ok(list.into_any().unbind())
-        }
+        build_range_result(py, desc.dtype, parts, &ranges, join)
     }
 
     fn is_remote(&self) -> bool {
@@ -925,32 +903,9 @@ fn py_decode_range(
         native_byte_order,
         ..Default::default()
     };
-    let parts = decode_range(buf, object_index, &ranges, &options).map_err(to_py_err)?;
+    let (desc, parts) = decode_range(buf, object_index, &ranges, &options).map_err(to_py_err)?;
 
-    // Look up the dtype from descriptors only — no payload decode.
-    let (_gm, descriptors) = decode_descriptors(buf).map_err(to_py_err)?;
-    let desc = descriptors.get(object_index).ok_or_else(|| {
-        PyValueError::new_err(format!(
-            "object_index {object_index} out of range (num_objects={})",
-            descriptors.len()
-        ))
-    })?;
-
-    if join {
-        // Concatenate all parts into a single flat array.
-        let total_bytes: Vec<u8> = parts.into_iter().flatten().collect();
-        let total_elements: u64 = ranges.iter().map(|(_, c)| c).sum();
-        raw_bytes_to_numpy_flat(py, desc.dtype, &total_bytes, total_elements as usize)
-    } else {
-        // Return a list of arrays, one per range.
-        let mut arrays = Vec::with_capacity(parts.len());
-        for (part, &(_, count)) in parts.iter().zip(ranges.iter()) {
-            let arr = raw_bytes_to_numpy_flat(py, desc.dtype, part, count as usize)?;
-            arrays.push(arr);
-        }
-        let list = pyo3::types::PyList::new(py, arrays)?;
-        Ok(list.into_any().unbind())
-    }
+    build_range_result(py, desc.dtype, parts, &ranges, join)
 }
 
 /// Scan *buf* for message boundaries → ``list[(offset, length)]``.
@@ -1860,6 +1815,28 @@ fn bytes_to_numpy(py: Python<'_>, desc: &DataObjectDescriptor, bytes: &[u8]) -> 
 ///
 /// Used by `decode_range` where the result is always flat.
 /// Validates that the byte count matches `expected_elements * byte_width`.
+fn build_range_result(
+    py: Python<'_>,
+    dtype: Dtype,
+    parts: Vec<Vec<u8>>,
+    ranges: &[(u64, u64)],
+    join: bool,
+) -> PyResult<PyObject> {
+    if join {
+        let total_bytes: Vec<u8> = parts.into_iter().flatten().collect();
+        let total_elements: u64 = ranges.iter().map(|(_, c)| c).sum();
+        raw_bytes_to_numpy_flat(py, dtype, &total_bytes, total_elements as usize)
+    } else {
+        let mut arrays = Vec::with_capacity(parts.len());
+        for (part, &(_, count)) in parts.iter().zip(ranges.iter()) {
+            let arr = raw_bytes_to_numpy_flat(py, dtype, part, count as usize)?;
+            arrays.push(arr);
+        }
+        let list = pyo3::types::PyList::new(py, arrays)?;
+        Ok(list.into_any().unbind())
+    }
+}
+
 fn raw_bytes_to_numpy_flat(
     py: Python<'_>,
     dtype: Dtype,

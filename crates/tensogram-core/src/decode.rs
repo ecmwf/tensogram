@@ -128,14 +128,15 @@ pub fn decode_object(
 ///
 /// `ranges` is a list of (element_offset, element_count) pairs.
 ///
-/// Returns one `Vec<u8>` per range (split results).  Callers that need a
-/// single concatenated buffer can flatten with `results.into_iter().flatten()`.
+/// Returns `(descriptor, parts)` where `parts` contains one `Vec<u8>`
+/// per range.  The descriptor is included so callers can determine
+/// the dtype without a separate lookup.
 pub fn decode_range(
     buf: &[u8],
     object_index: usize,
     ranges: &[(u64, u64)],
     options: &DecodeOptions,
-) -> Result<Vec<Vec<u8>>> {
+) -> Result<(DataObjectDescriptor, Vec<Vec<u8>>)> {
     let msg = framing::decode_message(buf)?;
 
     if object_index >= msg.objects.len() {
@@ -147,7 +148,8 @@ pub fn decode_range(
     }
 
     let (desc, payload_bytes, _) = &msg.objects[object_index];
-    decode_range_from_payload(desc, payload_bytes, ranges, options)
+    let parts = decode_range_from_payload(desc, payload_bytes, ranges, options)?;
+    Ok((desc.clone(), parts))
 }
 
 pub fn decode_range_from_payload(

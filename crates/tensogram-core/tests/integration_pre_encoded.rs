@@ -443,7 +443,7 @@ fn test_encode_pre_encoded_with_szip_decode_range() {
     assert_eq!(full_values.len(), 4096);
 
     // Partial decode: 500 elements starting at index 100.
-    let parts =
+    let (_, parts) =
         decode_range(&msg2, 0, &[(100, 500)], &DecodeOptions::default()).expect("decode_range");
     assert_eq!(parts.len(), 1, "one range → one part");
     let part_values: Vec<f64> = parts[0]

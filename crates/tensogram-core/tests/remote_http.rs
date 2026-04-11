@@ -953,7 +953,7 @@ async fn test_remote_decode_range_single_range() -> Result<(), Box<dyn Error>> {
 
     let mut file = TensogramFile::open_source(server.url())?;
     let ranges = vec![(2u64, 3u64)];
-    let parts = file.decode_range(0, 0, &ranges, &DecodeOptions::default())?;
+    let (_, parts) = file.decode_range(0, 0, &ranges, &DecodeOptions::default())?;
     assert_eq!(parts.len(), 1);
     assert_eq!(parts[0].len(), 3 * 4);
     Ok(())
@@ -971,9 +971,9 @@ async fn test_remote_decode_range_matches_local() -> Result<(), Box<dyn Error>> 
     let opts = DecodeOptions::default();
 
     let mut remote_file = TensogramFile::open_source(server.url())?;
-    let remote_parts = remote_file.decode_range(0, 0, &ranges, &opts)?;
+    let (_, remote_parts) = remote_file.decode_range(0, 0, &ranges, &opts)?;
 
-    let local_parts = tensogram_core::decode_range(&msg, 0, &ranges, &opts)?;
+    let (_, local_parts) = tensogram_core::decode_range(&msg, 0, &ranges, &opts)?;
 
     assert_eq!(remote_parts.len(), local_parts.len());
     for (rp, lp) in remote_parts.iter().zip(local_parts.iter()) {

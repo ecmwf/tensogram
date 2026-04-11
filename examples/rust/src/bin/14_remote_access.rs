@@ -138,8 +138,8 @@ fn parse_range(request: &str, file_len: usize) -> Option<(usize, usize)> {
         .lines()
         .find(|l| l.to_ascii_lowercase().starts_with("range:"))?;
     let spec = range_line.split("bytes=").nth(1)?.trim();
-    if spec.starts_with('-') {
-        let n: usize = spec[1..].trim().parse().ok()?;
+    if let Some(suffix) = spec.strip_prefix('-') {
+        let n: usize = suffix.trim().parse().ok()?;
         Some((file_len.saturating_sub(n), file_len))
     } else {
         let mut parts = spec.split('-');

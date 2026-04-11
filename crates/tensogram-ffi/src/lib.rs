@@ -824,7 +824,7 @@ pub extern "C" fn tgm_decode_range(
     };
 
     match decode_range(data, object_index, &ranges, &options) {
-        Ok(parts) => {
+        Ok((_, parts)) => {
             if join != 0 {
                 // Concatenate all parts into a single buffer.
                 let joined: Vec<u8> = parts.into_iter().flatten().collect();

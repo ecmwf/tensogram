@@ -725,7 +725,7 @@ impl RemoteBackend {
         obj_idx: usize,
         ranges: &[(u64, u64)],
         options: &DecodeOptions,
-    ) -> Result<Vec<Vec<u8>>> {
+    ) -> Result<(DataObjectDescriptor, Vec<Vec<u8>>)> {
         self.ensure_layout(msg_idx)?;
         let layout = &self.layouts[msg_idx];
         let msg_offset = layout.offset;
@@ -741,7 +741,8 @@ impl RemoteBackend {
             )?;
             let frame_bytes = self.get_range(range)?;
             let (desc, payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
-            crate::decode::decode_range_from_payload(&desc, payload, ranges, options)
+            let parts = crate::decode::decode_range_from_payload(&desc, payload, ranges, options)?;
+            Ok((desc, parts))
         } else {
             let msg_bytes = self.read_message(msg_idx)?;
             crate::decode::decode_range(&msg_bytes, obj_idx, ranges, options)

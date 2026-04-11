@@ -417,7 +417,8 @@ fn test_partial_range_decode_uncompressed() {
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Decode range: elements 3..6 (3 elements)
-    let partial = decode_range(&encoded, 0, &[(3, 3)], &DecodeOptions::default()).unwrap();
+    let (_, partial) =
+        decode_range(&encoded, 0, &[(3, 3)], &DecodeOptions::default()).expect("decode_range");
 
     // One range requested → one result part
     assert_eq!(partial.len(), 1, "expected 1 part for 1 range");
@@ -681,7 +682,8 @@ fn test_decode_range_cross_endian_native() {
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // decode_range elements 5..10 (5 elements)
-    let parts = decode_range(&encoded, 0, &[(5, 5)], &DecodeOptions::default()).unwrap();
+    let (_, parts) =
+        decode_range(&encoded, 0, &[(5, 5)], &DecodeOptions::default()).expect("decode_range");
     let part_values: Vec<f32> = parts[0]
         .chunks_exact(4)
         .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
@@ -723,7 +725,7 @@ fn test_decode_range_wire_byte_order_opt_out() {
         native_byte_order: false,
         ..Default::default()
     };
-    let parts = decode_range(&encoded, 0, &[(5, 5)], &wire_opts).unwrap();
+    let (_, parts) = decode_range(&encoded, 0, &[(5, 5)], &wire_opts).expect("decode_range");
     // Wire bytes should be big-endian
     let wire_values: Vec<f32> = parts[0]
         .chunks_exact(4)
@@ -995,8 +997,8 @@ fn test_szip_simple_packing_decode_range_vs_full() {
         .collect();
 
     // Partial decode: elements 100..600 (500 elements)
-    let partial_parts =
-        decode_range(&encoded, 0, &[(100, 500)], &DecodeOptions::default()).unwrap();
+    let (_, partial_parts) =
+        decode_range(&encoded, 0, &[(100, 500)], &DecodeOptions::default()).expect("decode_range");
 
     // One range requested → one result part
     assert_eq!(partial_parts.len(), 1, "expected 1 part for 1 range");
@@ -1034,7 +1036,8 @@ fn test_szip_simple_packing_decode_range_first_elements() {
         .collect();
 
     // First 10 elements
-    let partial_parts = decode_range(&encoded, 0, &[(0, 10)], &DecodeOptions::default()).unwrap();
+    let (_, partial_parts) =
+        decode_range(&encoded, 0, &[(0, 10)], &DecodeOptions::default()).expect("decode_range");
     assert_eq!(partial_parts.len(), 1, "expected 1 part for 1 range");
 
     let partial_bytes: Vec<u8> = partial_parts.into_iter().flatten().collect();
@@ -1070,8 +1073,8 @@ fn test_szip_simple_packing_decode_range_last_elements() {
         .collect();
 
     // Last 50 elements
-    let partial_parts =
-        decode_range(&encoded, 0, &[(4046, 50)], &DecodeOptions::default()).unwrap();
+    let (_, partial_parts) =
+        decode_range(&encoded, 0, &[(4046, 50)], &DecodeOptions::default()).expect("decode_range");
     assert_eq!(partial_parts.len(), 1, "expected 1 part for 1 range");
 
     let partial_bytes: Vec<u8> = partial_parts.into_iter().flatten().collect();
@@ -1313,13 +1316,13 @@ fn test_szip_decode_range_multiple_ranges() {
         .collect();
 
     // Two disjoint ranges: [10..20) and [3000..3050)
-    let partial_parts = decode_range(
+    let (_, partial_parts) = decode_range(
         &encoded,
         0,
         &[(10, 10), (3000, 50)],
         &DecodeOptions::default(),
     )
-    .unwrap();
+    .expect("decode_range");
 
     // Two ranges requested → two result parts
     assert_eq!(partial_parts.len(), 2, "expected 2 parts for 2 ranges");

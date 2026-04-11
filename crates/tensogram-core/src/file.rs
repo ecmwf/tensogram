@@ -370,7 +370,7 @@ impl TensogramFile {
         obj_idx: usize,
         ranges: &[(u64, u64)],
         options: &DecodeOptions,
-    ) -> Result<Vec<Vec<u8>>> {
+    ) -> Result<(DataObjectDescriptor, Vec<Vec<u8>>)> {
         match &mut self.backend {
             #[cfg(feature = "remote")]
             Backend::Remote(remote) => remote.read_range(msg_idx, obj_idx, ranges, options),
