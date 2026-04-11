@@ -158,10 +158,13 @@ For speculative ideas, see `IDEAS.md`.
   - descriptor-only reads: `read_descriptor_only` fetches only CBOR prefix for large frames (> 64 KB), full frame for small ones
   - `rt-multi-thread` tokio feature gated to `remote` only
   - 7 new tests (concurrent reads, sync context, descriptor parity, async open/decode/descriptors/streaming/parity/errors)
-- [ ] **remote 5 — polish (examples, CI, optimizations)**:
-  - examples: `examples/rust/` and `examples/python/` with self-contained HTTP server script
-  - CI: add `maturin develop` + `pytest tests/python/test_remote.py` to pipeline
-  - zarr lazy reads: switch `_scan_tgm_file()` from eager `read_message()` to lazy `file_decode_object()` per chunk
+- [x] **remote 5 — polish (examples, CI, zarr lazy reads)**:
+  - Python example `14_remote_access.py`: self-contained HTTP server, open_remote, file-level decode APIs
+  - Rust example `14_remote_access.rs`: TcpListener-based HTTP server, open_source, decode APIs
+  - CI: added `pytest tests/python/test_remote.py` to Python CI job
+  - zarr lazy reads: remote files use `file_decode_descriptors()` at scan time (metadata-only), `file_decode_object()` per chunk on demand; local files unchanged (eager decode)
+  - 4 new zarr remote tests: lazy open, on-demand decode, close cleanup, local-still-eager parity
+- [ ] **remote 6 — range reads**:
   - remote `decode_range()`: byte-level range reads within a single object for xarray partial slices
 
 ## Free-Threaded Python

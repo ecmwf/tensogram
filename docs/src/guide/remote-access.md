@@ -243,5 +243,5 @@ For frames smaller than 64 KB, the full frame is read in a single request (fewer
 - **Header probe size.** Layout discovery reads a single chunk of up to 256 KB from the header region. If the metadata or index frame does not fit in this chunk, `decode_metadata()` will error (it does not retry with a larger read).
 - **HTTP server requirements.** The remote HTTP server must support `HEAD` requests (for file size) and `Range` request headers (for partial reads).
 - **`read_message()` and `decode_message()` download the full message** even for remote files. Use `decode_metadata()`, `decode_descriptors()`, or `decode_object()` for selective access.
-- **Zarr remote reads are eager.** The zarr store downloads the full message at open time. For large messages with many objects, this can be slow over remote stores.
+- **Zarr remote reads are lazy per-chunk.** The zarr store fetches only metadata at open time; individual chunks are decoded on first access. Local files still use eager decode for lower latency.
 - **Sequential async access.** Async methods take `&mut self`, so a single file handle cannot serve concurrent async reads. Open separate handles for parallelism.
