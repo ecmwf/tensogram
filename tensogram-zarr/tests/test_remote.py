@@ -106,6 +106,51 @@ class TestZarrRemoteRead:
         assert store._path == url
 
 
+class TestZarrRemoteLazyReads:
+    def test_remote_open_does_not_fetch_chunk_data(self, serve_tgm_bytes):
+        msg = _encode_simple_message()
+        url = serve_tgm_bytes(msg)
+
+        store = TensogramStore.open_tgm(url)
+        chunk_keys_in_keys = [k for k in store._keys if "/c/" in k]
+        assert len(chunk_keys_in_keys) == 0, "chunk data should not be in _keys for remote"
+        assert len(store._chunk_index) == 1, "chunk index should have one entry"
+        assert store._file is not None, "file handle should be kept open for lazy reads"
+
+    def test_remote_chunk_decoded_on_access(self, serve_tgm_bytes):
+        msg = _encode_simple_message()
+        url = serve_tgm_bytes(msg)
+
+        store = TensogramStore.open_tgm(url)
+        chunk_key = list(store._chunk_index.keys())[0]
+        data = store._decode_chunk(chunk_key)
+        assert data is not None
+        arr = np.frombuffer(data, dtype=np.float32)
+        np.testing.assert_array_equal(arr, np.arange(4, dtype=np.float32))
+
+    def test_remote_close_releases_handle(self, serve_tgm_bytes):
+        msg = _encode_simple_message()
+        url = serve_tgm_bytes(msg)
+
+        store = TensogramStore.open_tgm(url)
+        assert store._file is not None
+        store.close()
+        assert store._file is None
+        assert len(store._chunk_index) == 0
+
+    def test_local_still_eager(self, tmp_path):
+        msg = _encode_simple_message()
+        path = str(tmp_path / "test.tgm")
+        with open(path, "wb") as fh:
+            fh.write(msg)
+
+        store = TensogramStore.open_tgm(path)
+        chunk_keys_in_keys = [k for k in store._keys if "/c/" in k]
+        assert len(chunk_keys_in_keys) == 1, "local files should decode chunks eagerly"
+        assert len(store._chunk_index) == 0, "no lazy index for local files"
+        assert store._file is None, "no persistent handle for local files"
+
+
 class TestZarrRemoteWriteRejection:
     def test_remote_write_rejected(self):
         with pytest.raises(ValueError, match="remote URLs do not support"):

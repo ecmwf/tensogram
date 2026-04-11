@@ -105,9 +105,15 @@ class TensogramStore(ZarrStore):
         self._message_index = message_index
         self._variable_key = variable_key
 
-        # Virtual key space — maps Zarr keys to raw bytes content
+        # Virtual key space — metadata keys only (zarr.json files).
+        # Chunk data is decoded lazily via _chunk_index.
         self._keys: dict[str, bytes] = {}
         self._variable_names: list[str] = []
+
+        # Lazy chunk index: chunk_key -> obj_index for on-demand decode.
+        # Populated during _scan_tgm_file; empty for write mode.
+        self._chunk_index: dict[str, int] = {}
+        self._file: Any = None
 
         # Write-path state
         self._write_arrays: dict[str, dict[str, Any]] = {}  # var → zarr_meta
@@ -169,6 +175,8 @@ class TensogramStore(ZarrStore):
             if self._dirty and self._mode in ("w", "a"):
                 self._flush_to_tgm()
         finally:
+            self._file = None
+            self._chunk_index.clear()
             self._is_open = False
 
     def __enter__(self):
@@ -239,6 +247,8 @@ class TensogramStore(ZarrStore):
     ) -> Buffer | None:
         """Synchronous get — the actual implementation."""
         data = self._keys.get(key)
+        if data is None and key in self._chunk_index:
+            data = self._decode_chunk(key)
         if data is None:
             return None
         if byte_range is not None:
@@ -255,7 +265,7 @@ class TensogramStore(ZarrStore):
 
     async def exists(self, key: str) -> bool:
         await self._ensure_open()
-        return key in self._keys
+        return key in self._keys or key in self._chunk_index
 
     # ------------------------------------------------------------------
     # Write operations
@@ -305,14 +315,17 @@ class TensogramStore(ZarrStore):
     # Listing
     # ------------------------------------------------------------------
 
+    def _all_keys(self) -> list[str]:
+        return list(self._keys.keys()) + list(self._chunk_index.keys())
+
     async def list(self) -> AsyncIterator[str]:
         await self._ensure_open()
-        for key in list(self._keys.keys()):
+        for key in self._all_keys():
             yield key
 
     async def list_prefix(self, prefix: str) -> AsyncIterator[str]:
         await self._ensure_open()
-        for key in list(self._keys.keys()):
+        for key in self._all_keys():
             if key.startswith(prefix):
                 yield key
 
@@ -322,18 +335,16 @@ class TensogramStore(ZarrStore):
             prefix = prefix + "/"
 
         seen: set[str] = set()
-        for key in list(self._keys.keys()):
+        for key in self._all_keys():
             if not key.startswith(prefix):
                 continue
             suffix = key[len(prefix) :]
             slash_pos = suffix.find("/")
             if slash_pos == -1:
-                # Leaf entry (file)
                 if suffix and suffix not in seen:
                     seen.add(suffix)
                     yield suffix
             else:
-                # Directory entry
                 dir_name = suffix[: slash_pos + 1]
                 if dir_name not in seen:
                     seen.add(dir_name)
@@ -344,35 +355,52 @@ class TensogramStore(ZarrStore):
     # ------------------------------------------------------------------
 
     def _scan_tgm_file(self) -> None:
-        """Scan the .tgm file and build the virtual key space."""
+        """Scan the .tgm file and build the virtual key space.
+
+        For local files, all chunk data is decoded eagerly into
+        ``_keys``.  For remote files, only metadata is fetched eagerly;
+        chunk data is decoded lazily on first access via
+        ``_chunk_index``.
+        """
         import tensogram
 
+        is_remote = tensogram.is_remote_url(self._path)
+
         try:
-            if tensogram.is_remote_url(self._path):
+            if is_remote:
                 f = tensogram.TensogramFile.open_remote(self._path, self._storage_options or {})
             else:
                 f = tensogram.TensogramFile.open(self._path)
         except Exception as exc:
             raise OSError(f"failed to open TGM file {self._path!r}: {exc}") from exc
 
+        msg_count = len(f)
+        if msg_count == 0:
+            self._keys["zarr.json"] = serialize_zarr_json(
+                {
+                    "zarr_format": 3,
+                    "node_type": "group",
+                    "attributes": {},
+                }
+            )
+            return
+
+        if self._message_index >= msg_count:
+            raise IndexError(
+                f"message_index {self._message_index} out of range "
+                f"(file has {msg_count} message(s))"
+            )
+
+        if is_remote:
+            self._scan_remote(f)
+        else:
+            self._scan_local(f)
+
+    def _scan_local(self, f: Any) -> None:
+        """Eager scan: read full message and decode all chunks."""
+        import tensogram
+
         with f:
-            msg_count = len(f)
-            if msg_count == 0:
-                self._keys["zarr.json"] = serialize_zarr_json(
-                    {
-                        "zarr_format": 3,
-                        "node_type": "group",
-                        "attributes": {},
-                    }
-                )
-                return
-
-            if self._message_index >= msg_count:
-                raise IndexError(
-                    f"message_index {self._message_index} out of range "
-                    f"(file has {msg_count} message(s))"
-                )
-
             raw_msg = f.read_message(self._message_index)
 
         try:
@@ -382,30 +410,13 @@ class TensogramStore(ZarrStore):
                 f"failed to decode message {self._message_index} in {self._path!r}: {exc}"
             ) from exc
 
-        # Determine variable names, deduplicating and sanitizing
         base = meta.base if hasattr(meta, "base") else []
-        names: list[str] = []
-        name_counts: dict[str, int] = {}
-        for i, _desc in enumerate(descriptors):
-            per_obj = _filter_reserved(base[i]) if i < len(base) else {}
-            extra = meta.extra if hasattr(meta, "extra") else {}
-            raw_name = resolve_variable_name(i, per_obj, extra, self._variable_key)
-            name = _sanitize_key_segment(raw_name)
-            # Deduplicate
-            if name in name_counts:
-                name_counts[name] += 1
-                name = f"{name}_{name_counts[name]}"
-            else:
-                name_counts[name] = 0
-            names.append(name)
-
+        names = self._resolve_names(descriptors, base)
         self._variable_names = names
 
-        # Root group zarr.json
         group_meta = build_group_zarr_json(meta, names)
         self._keys["zarr.json"] = serialize_zarr_json(group_meta)
 
-        # Per-array zarr.json + chunk data
         for i, (desc, name) in enumerate(zip(descriptors, names, strict=True)):
             per_obj = _filter_reserved(base[i]) if i < len(base) else {}
             array_meta = build_array_zarr_json(desc, per_obj)
@@ -418,14 +429,67 @@ class TensogramStore(ZarrStore):
                     f"failed to decode object {i} ({name!r}) "
                     f"in message {self._message_index} of {self._path!r}: {exc}"
                 ) from exc
-            # The tensogram decode API returns data in native byte order
-            # (native_byte_order=True by default).  The Zarr bytes codec
-            # declares endian="little", so on big-endian platforms we still
-            # need to swap from native (big) to little to match the codec.
             if arr.dtype.byteorder == ">" or (arr.dtype.byteorder == "=" and _native_is_big()):
                 arr = arr.byteswap().view(arr.dtype.newbyteorder("<"))
             chunk_key = _chunk_key_for_shape(desc.shape)
             self._keys[f"{name}/{chunk_key}"] = arr.tobytes()
+
+    def _scan_remote(self, f: Any) -> None:
+        """Lazy scan: fetch only descriptors, decode chunks on demand."""
+        try:
+            result = f.file_decode_descriptors(self._message_index)
+            meta = result["metadata"]
+            descriptors = result["descriptors"]
+        except Exception as exc:
+            raise ValueError(
+                f"failed to decode descriptors for message {self._message_index} "
+                f"in {self._path!r}: {exc}"
+            ) from exc
+
+        self._file = f
+
+        base = meta.base if hasattr(meta, "base") else []
+        names = self._resolve_names(descriptors, base)
+        self._variable_names = names
+
+        group_meta = build_group_zarr_json(meta, names)
+        self._keys["zarr.json"] = serialize_zarr_json(group_meta)
+
+        for i, (desc, name) in enumerate(zip(descriptors, names, strict=True)):
+            per_obj = _filter_reserved(base[i]) if i < len(base) else {}
+            array_meta = build_array_zarr_json(desc, per_obj)
+            self._keys[f"{name}/zarr.json"] = serialize_zarr_json(array_meta)
+
+            chunk_key = _chunk_key_for_shape(desc.shape)
+            self._chunk_index[f"{name}/{chunk_key}"] = i
+
+    def _resolve_names(self, descriptors: list, base: list) -> list[str]:
+        names: list[str] = []
+        name_counts: dict[str, int] = {}
+        for i, _desc in enumerate(descriptors):
+            per_obj = _filter_reserved(base[i]) if i < len(base) else {}
+            raw_name = resolve_variable_name(i, per_obj, None, self._variable_key)
+            name = _sanitize_key_segment(raw_name)
+            if name in name_counts:
+                name_counts[name] += 1
+                name = f"{name}_{name_counts[name]}"
+            else:
+                name_counts[name] = 0
+            names.append(name)
+        return names
+
+    def _decode_chunk(self, chunk_key: str) -> bytes | None:
+        """Decode a single chunk on demand, caching for repeat access."""
+        obj_index = self._chunk_index.get(chunk_key)
+        if obj_index is None or self._file is None:
+            return None
+        result = self._file.file_decode_object(self._message_index, obj_index)
+        arr = result["data"]
+        if arr.dtype.byteorder == ">" or (arr.dtype.byteorder == "=" and _native_is_big()):
+            arr = arr.byteswap().view(arr.dtype.newbyteorder("<"))
+        data = arr.tobytes()
+        self._keys[chunk_key] = data
+        return data
 
     # ------------------------------------------------------------------
     # Internal: TGM writing (write path)
