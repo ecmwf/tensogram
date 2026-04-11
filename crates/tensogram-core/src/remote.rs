@@ -601,6 +601,13 @@ impl RemoteBackend {
         let header_bytes = self.get_range(frame_start..frame_start + FRAME_HEADER_SIZE as u64)?;
         let fh = FrameHeader::read_from(&header_bytes)?;
 
+        if fh.frame_type != FrameType::DataObject {
+            return Err(TensogramError::Remote(format!(
+                "expected DataObject frame, got {:?}",
+                fh.frame_type
+            )));
+        }
+
         let footer_start = frame_end - DATA_OBJECT_FOOTER_SIZE as u64;
         let footer_bytes = self.get_range(footer_start..frame_end)?;
 
@@ -619,20 +626,26 @@ impl RemoteBackend {
                 .map_err(|_| TensogramError::Remote("footer cbor_offset truncated".to_string()))?,
         );
 
+        if cbor_offset < FRAME_HEADER_SIZE as u64 {
+            return Err(TensogramError::Remote(format!(
+                "cbor_offset ({cbor_offset}) below frame header size ({FRAME_HEADER_SIZE})"
+            )));
+        }
+
         let cbor_after = fh.flags & DataObjectFlags::CBOR_AFTER_PAYLOAD != 0;
+        let cbor_start = frame_start
+            .checked_add(cbor_offset)
+            .ok_or_else(|| TensogramError::Remote("cbor_start overflow".to_string()))?;
 
         if cbor_after {
-            let cbor_start = frame_start + cbor_offset;
-            let cbor_end = footer_start;
-            if cbor_start >= cbor_end {
+            if cbor_start >= footer_start {
                 return Err(TensogramError::Remote(
                     "cbor_offset points at or past footer".to_string(),
                 ));
             }
-            let cbor_bytes = self.get_range(cbor_start..cbor_end)?;
+            let cbor_bytes = self.get_range(cbor_start..footer_start)?;
             metadata::cbor_to_object_descriptor(&cbor_bytes)
         } else {
-            let cbor_start = frame_start + cbor_offset;
             if cbor_start >= footer_start {
                 return Err(TensogramError::Remote(
                     "cbor_offset beyond frame body".to_string(),
@@ -1014,6 +1027,13 @@ impl RemoteBackend {
             .await?;
         let fh = FrameHeader::read_from(&header_bytes)?;
 
+        if fh.frame_type != FrameType::DataObject {
+            return Err(TensogramError::Remote(format!(
+                "expected DataObject frame, got {:?}",
+                fh.frame_type
+            )));
+        }
+
         let footer_start = frame_end - DATA_OBJECT_FOOTER_SIZE as u64;
         let footer_bytes = self.get_range_async(footer_start..frame_end).await?;
 
@@ -1032,20 +1052,26 @@ impl RemoteBackend {
                 .map_err(|_| TensogramError::Remote("footer cbor_offset truncated".to_string()))?,
         );
 
+        if cbor_offset < FRAME_HEADER_SIZE as u64 {
+            return Err(TensogramError::Remote(format!(
+                "cbor_offset ({cbor_offset}) below frame header size ({FRAME_HEADER_SIZE})"
+            )));
+        }
+
         let cbor_after = fh.flags & DataObjectFlags::CBOR_AFTER_PAYLOAD != 0;
+        let cbor_start = frame_start
+            .checked_add(cbor_offset)
+            .ok_or_else(|| TensogramError::Remote("cbor_start overflow".to_string()))?;
 
         if cbor_after {
-            let cbor_start = frame_start + cbor_offset;
-            let cbor_end = footer_start;
-            if cbor_start >= cbor_end {
+            if cbor_start >= footer_start {
                 return Err(TensogramError::Remote(
                     "cbor_offset points at or past footer".to_string(),
                 ));
             }
-            let cbor_bytes = self.get_range_async(cbor_start..cbor_end).await?;
+            let cbor_bytes = self.get_range_async(cbor_start..footer_start).await?;
             metadata::cbor_to_object_descriptor(&cbor_bytes)
         } else {
-            let cbor_start = frame_start + cbor_offset;
             if cbor_start >= footer_start {
                 return Err(TensogramError::Remote(
                     "cbor_offset beyond frame body".to_string(),

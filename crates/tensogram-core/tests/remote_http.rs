@@ -752,6 +752,32 @@ async fn test_descriptor_only_matches_full_read() -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_descriptor_only_large_frame_exercises_fast_path() -> Result<(), Box<dyn Error>> {
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![256, 256]);
+    let data = vec![7u8; 256 * 256 * 4];
+    let msg = encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
+    assert!(
+        msg.len() > 64 * 1024,
+        "payload must exceed 64KB threshold, got {} bytes",
+        msg.len()
+    );
+    let server = MockServer::start(msg.clone()).await?;
+
+    let mut file = TensogramFile::open_source(server.url())?;
+    let (_, remote_descs) = file.decode_descriptors(0)?;
+    let (_, local_descs) = tensogram_core::decode::decode_descriptors(&msg)?;
+
+    assert_eq!(remote_descs.len(), 1);
+    assert_eq!(remote_descs[0].shape, local_descs[0].shape);
+    assert_eq!(remote_descs[0].dtype, local_descs[0].dtype);
+
+    let (_, _, decoded) = file.decode_object(0, 0, &DecodeOptions::default())?;
+    assert_eq!(decoded, data);
+    Ok(())
+}
+
 // ── Async remote tests (remote + async) ──────────────────────────────────────
 
 #[cfg(feature = "async")]
