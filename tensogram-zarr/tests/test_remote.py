@@ -61,7 +61,7 @@ def _make_handler(file_data: bytes):
 @pytest.fixture
 def serve_tgm_bytes():
     """Start a mock HTTP server for given bytes, isolated per call."""
-    servers = []
+    entries: list[tuple] = []
 
     def _serve(data: bytes) -> str:
         handler = _make_handler(data)
@@ -69,14 +69,15 @@ def serve_tgm_bytes():
         port = server.server_address[1]
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        servers.append(server)
+        entries.append((server, thread))
         return f"http://127.0.0.1:{port}/test.tgm"
 
     yield _serve
 
-    for s in servers:
-        s.shutdown()
-        s.server_close()
+    for server, thread in entries:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def _encode_simple_message() -> bytes:

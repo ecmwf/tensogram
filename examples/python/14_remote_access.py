@@ -155,4 +155,6 @@ print("  matches original pressure data")
 # ── Clean up ─────────────────────────────────────────────────────────────────
 
 server.shutdown()
+server.server_close()
+thread.join(timeout=5)
 print("\nRemote access example complete.")

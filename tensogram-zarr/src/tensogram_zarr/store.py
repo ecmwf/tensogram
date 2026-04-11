@@ -169,13 +169,18 @@ class TensogramStore(ZarrStore):
 
     def close(self) -> None:
         """Close the store. Flushes pending writes in write/append mode."""
+        flush_failed = False
         try:
             if self._dirty and self._mode in ("w", "a"):
                 self._flush_to_tgm()
+        except Exception:
+            flush_failed = True
+            raise
         finally:
             self._file = None
             self._chunk_index.clear()
-            self._keys.clear()
+            if not flush_failed:
+                self._keys.clear()
             self._is_open = False
 
     def __enter__(self):

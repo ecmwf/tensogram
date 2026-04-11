@@ -57,7 +57,7 @@ def _make_handler(file_data: bytes):
 @pytest.fixture
 def serve_tgm(tmp_path):
     """Create a .tgm file, serve it over HTTP, return (url, local_path)."""
-    servers = []
+    entries: list[tuple] = []
 
     def _serve(data: np.ndarray, shape: list[int], dtype: str = "float32") -> tuple[str, str]:
         meta = {"version": 2}
@@ -81,14 +81,15 @@ def serve_tgm(tmp_path):
         port = server.server_address[1]
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        servers.append(server)
+        entries.append((server, thread))
         return f"http://127.0.0.1:{port}/test.tgm", local_path
 
     yield _serve
 
-    for s in servers:
-        s.shutdown()
-        s.server_close()
+    for server, thread in entries:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 class TestXarrayRemoteOpen:
