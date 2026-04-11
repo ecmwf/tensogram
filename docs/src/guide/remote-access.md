@@ -118,25 +118,27 @@ These methods also work on local files, where they read the full message and dec
 
 | Phase | Operation | HTTP Requests |
 |-------|-----------|:---:|
-| **Open** | `open_source` / `open_remote` | 1 HEAD + 1 GET per message (preamble read) |
+| **Open** | `open_source` / `open_remote` | 1 HEAD + 1 GET (first preamble only) |
 | **First access** | `decode_metadata(i)` | 1 GET (header chunk, discovers metadata + index) |
 | **Cached** | `decode_metadata(i)` again | 0 (served from cache) |
 | **Object read** | `decode_object(i, j)` | 1 GET per object (if layout already cached) |
 | **Descriptors (first)** | `decode_descriptors(i)` | 1 GET (layout) + 1–3 GETs per object (descriptor-only reads for large frames) |
 | **Descriptors (cached)** | `decode_descriptors(i)` | 1–3 GETs per object |
+| **Message count** | `message_count()` | 1 GET per undiscovered message (24 B each) |
 
 ### Footer-indexed files (streaming writes)
 
 | Phase | Operation | HTTP Requests |
 |-------|-----------|:---:|
-| **Open** | `open_source` / `open_remote` | 1 HEAD + 1 GET per message (preamble read) |
+| **Open** | `open_source` / `open_remote` | 1 HEAD + 1 GET (first preamble only) |
 | **First access** | `decode_metadata(i)` | 2 GETs (postamble + footer region) |
 | **Cached** | `decode_metadata(i)` again | 0 (served from cache) |
 | **Object read** | `decode_object(i, j)` | 1 GET per object (if layout already cached) |
 | **Descriptors (first)** | `decode_descriptors(i)` | 2 GETs (layout) + 1–3 GETs per object |
 | **Descriptors (cached)** | `decode_descriptors(i)` | 1–3 GETs per object |
+| **Message count** | `message_count()` | 1 GET per undiscovered message (24 B each) |
 
-The layout (metadata + index) is discovered per-message on first access to that message, then cached. Subsequent calls reuse the cached layout. Streaming messages must be the last message in a multi-message file.
+The layout (metadata + index) is discovered per-message on first access to that message, then cached. Subsequent calls reuse the cached layout. Message boundaries are discovered lazily — `open` reads only the first preamble. Streaming messages must be the last message in a multi-message file.
 
 ## How It Works (Header-Indexed Example)
 

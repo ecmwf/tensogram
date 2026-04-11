@@ -429,7 +429,6 @@ async fn test_remote_request_count_header_indexed() -> Result<(), Box<dyn Error>
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    // Opening scans message boundaries only (HEAD + preamble reads)
     let mut file = TensogramFile::open_source(server.url())?;
     let open_requests = server.request_count();
 
@@ -446,6 +445,35 @@ async fn test_remote_request_count_header_indexed() -> Result<(), Box<dyn Error>
     assert!(
         range_requests > 0,
         "object read must use Range requests, not full GETs"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_remote_lazy_open_only_reads_first_preamble() -> Result<(), Box<dyn Error>> {
+    let msg1 = encode_test_message(vec![4], 10)?;
+    let msg2 = encode_test_message(vec![8], 20)?;
+    let mut combined = msg1;
+    combined.extend_from_slice(&msg2);
+    let server = MockServer::start(combined).await?;
+
+    let mut file = TensogramFile::open_source(server.url())?;
+    let open_requests = server.request_count();
+    assert_eq!(
+        open_requests, 2,
+        "open should cost exactly 2 requests (1 HEAD + 1 preamble), got {open_requests}"
+    );
+
+    let (_, desc, data) = file.decode_object(0, 0, &DecodeOptions::default())?;
+    assert_eq!(desc.shape, vec![4]);
+    assert_eq!(data, vec![10u8; 16]);
+
+    server.reset_count();
+    assert_eq!(file.message_count()?, 2);
+    let scan_requests = server.request_count();
+    assert!(
+        scan_requests >= 1,
+        "message_count should trigger scanning of remaining messages"
     );
     Ok(())
 }

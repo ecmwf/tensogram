@@ -316,80 +316,10 @@ impl RemoteBackend {
         Ok(())
     }
 
-    fn scan_all_chunked(&mut self) -> Result<()> {
-        if self.scan_complete {
-            return Ok(());
+    fn scan_all(&mut self) -> Result<()> {
+        while !self.scan_complete {
+            self.scan_next()?;
         }
-        const SCAN_CHUNK: u64 = 4 * 1024 * 1024;
-        let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
-
-        let mut pos = self.next_scan_offset;
-        let mut buf: Vec<u8> = Vec::new();
-        let mut buf_start: u64 = 0;
-
-        while pos + min_message_size <= self.file_size {
-            let need_end = pos + PREAMBLE_SIZE as u64;
-            if buf.is_empty() || pos < buf_start || need_end > buf_start + buf.len() as u64 {
-                let read_end = (pos + SCAN_CHUNK).min(self.file_size);
-                buf = self.get_range(pos..read_end)?.to_vec();
-                buf_start = pos;
-            }
-
-            let off = (pos - buf_start) as usize;
-            if off + PREAMBLE_SIZE > buf.len() {
-                break;
-            }
-            let preamble_slice = &buf[off..off + PREAMBLE_SIZE];
-
-            if &preamble_slice[..MAGIC.len()] != MAGIC {
-                break;
-            }
-            let preamble = match Preamble::read_from(preamble_slice) {
-                Ok(p) => p,
-                Err(_) => break,
-            };
-
-            let msg_len = preamble.total_length;
-
-            if msg_len == 0 {
-                let remaining = self.file_size - pos;
-                if remaining < min_message_size {
-                    break;
-                }
-                let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
-                let end_bytes = self.get_range(
-                    end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64,
-                )?;
-                if &end_bytes[..] != crate::wire::END_MAGIC {
-                    break;
-                }
-                self.layouts.push(MessageLayout {
-                    offset: pos,
-                    length: remaining,
-                    preamble,
-                    index: None,
-                    global_metadata: None,
-                });
-                break;
-            }
-
-            let msg_end = match pos.checked_add(msg_len) {
-                Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
-                _ => break,
-            };
-
-            self.layouts.push(MessageLayout {
-                offset: pos,
-                length: msg_len,
-                preamble,
-                index: None,
-                global_metadata: None,
-            });
-            pos = msg_end;
-        }
-
-        self.next_scan_offset = pos;
-        self.scan_complete = true;
         Ok(())
     }
 
@@ -595,7 +525,7 @@ impl RemoteBackend {
     // ── Public API used by TensogramFile ─────────────────────────────────
 
     pub(crate) fn message_count(&mut self) -> Result<usize> {
-        self.scan_all_chunked()?;
+        self.scan_all()?;
         Ok(self.layouts.len())
     }
 
