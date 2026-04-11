@@ -49,7 +49,7 @@ def open_datasets(
     Parameters
     ----------
     path
-        Path to the ``.tgm`` file.
+        Path or remote URL (S3, GCS, Azure, HTTP) to the ``.tgm`` file.
     dim_names
         Explicit dimension names for the innermost tensor axes.
     variable_key
