@@ -224,6 +224,12 @@ impl TensogramFile {
 
     pub fn read_message(&mut self, index: usize) -> Result<Vec<u8>> {
         self.ensure_scanned()?;
+
+        #[cfg(feature = "remote")]
+        if let Backend::Remote(remote) = &self.backend {
+            return remote.read_message(index);
+        }
+
         let (offset, length) = self.checked_offsets(index)?;
 
         #[cfg(feature = "mmap")]
@@ -249,7 +255,9 @@ impl TensogramFile {
                 Ok(buf)
             }
             #[cfg(feature = "remote")]
-            Backend::Remote(remote) => remote.read_message(index),
+            Backend::Remote(_) => Err(TensogramError::Remote(
+                "unreachable: remote handled above".to_string(),
+            )),
         }
     }
 

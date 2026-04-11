@@ -134,7 +134,7 @@ These methods also work on local files, where they read the full message and dec
 | **Cached** | `decode_metadata(i)` again | 0 (served from cache) |
 | **Object read** | `decode_object(i, j)` | 1 GET per object (if layout already cached) |
 | **Descriptors (first)** | `decode_descriptors(i)` | 2 GETs (layout) + 1–3 GETs per object |
-| **Descriptors (cached)** | `decode_descriptors(i)` | 1 GET per object |
+| **Descriptors (cached)** | `decode_descriptors(i)` | 1–3 GETs per object |
 
 The layout (metadata + index) is discovered per-message on first access to that message, then cached. Subsequent calls reuse the cached layout. Streaming messages must be the last message in a multi-message file.
 
