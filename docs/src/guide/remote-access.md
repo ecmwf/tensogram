@@ -229,6 +229,25 @@ For remote backends, async methods directly `await` object store operations, byp
 tensogram-core = { path = "...", features = ["remote", "async"] }
 ```
 
+## Range Reads
+
+`TensogramFile::decode_range()` supports partial object decoding for both local and remote files. It takes an object index and a list of `(offset, count)` element ranges, returning only the requested elements without decoding the entire object.
+
+For remote files, it fetches the full object frame (via indexed access) then runs the range decode pipeline on the raw payload. This is most beneficial with szip-compressed objects that have `szip_block_offsets`, where only the compressed blocks covering the requested range are decompressed.
+
+```rust
+// Rust: decode elements 100..200 from object 0
+let ranges = vec![(100, 100)];
+let parts = file.decode_range(0, 0, &ranges, &DecodeOptions::default())?;
+```
+
+```python
+# Python: decode elements 100..200 from object 0
+arr = file.file_decode_range(0, 0, [(100, 100)], join=True)
+```
+
+The xarray backend uses `file_decode_range` automatically when slicing remote arrays that support partial decode (uncompressed or szip-compressed objects without shuffle filters).
+
 ## Descriptor-Only Reads
 
 `decode_descriptors()` fetches only the CBOR descriptor from each data object frame, not the full payload. For large objects (hundreds of MB), this avoids downloading the entire frame just to extract a few hundred bytes of metadata.

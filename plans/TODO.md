@@ -164,8 +164,13 @@ For speculative ideas, see `IDEAS.md`.
   - CI: added `pytest tests/python/test_remote.py` to Python CI job
   - zarr lazy reads: remote files use `file_decode_descriptors()` at scan time (metadata-only), `file_decode_object()` per chunk on demand; local files unchanged (eager decode)
   - 9 new zarr remote tests: lazy open, on-demand decode, close cleanup, cached repeat access, exists on lazy chunk, list includes lazy chunks, no duplicates after cache, exception cleanup, local-still-eager parity
-- [ ] **remote 6 — range reads**:
-  - remote `decode_range()`: byte-level range reads within a single object for xarray partial slices
+- [x] **remote 6 — range reads**:
+  - extracted `decode_range_from_payload` from `decode_range` (takes descriptor + payload, no message parsing)
+  - `RemoteBackend::read_range`: fetches object frame via index, extracts payload, runs range decode pipeline
+  - `TensogramFile::decode_range(msg_idx, obj_idx, ranges, options)`: dispatches to remote or local
+  - Python `file_decode_range(msg_index, obj_index, ranges, join, verify_hash)`: file-level range decode binding
+  - xarray `array.py`: uses `file_decode_range` for both local and remote (replaces buffer-level `decode_range` and remote `file_decode_object` fallback)
+  - 3 Rust tests: single range, remote-vs-local parity, out-of-range error
 
 ## Free-Threaded Python
 
