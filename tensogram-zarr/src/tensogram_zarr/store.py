@@ -78,9 +78,13 @@ class TensogramStore(ZarrStore):
         mode: str = "r",
         message_index: int = 0,
         variable_key: str | None = None,
+        storage_options: dict[str, str] | None = None,
     ) -> None:
         if mode not in ("r", "w", "a"):
             raise ValueError(f"invalid mode {mode!r}; expected 'r', 'w', or 'a'")
+        is_remote = "://" in path
+        if is_remote and mode in ("w", "a"):
+            raise ValueError(f"remote URLs do not support mode={mode!r}; use mode='r'")
         if message_index < 0:
             raise ValueError(f"message_index must be >= 0, got {message_index}")
         if not isinstance(path, str) or not path:
@@ -89,6 +93,7 @@ class TensogramStore(ZarrStore):
         super().__init__(read_only=read_only)
         self._path = path
         self._mode = mode
+        self._storage_options = storage_options
         self._message_index = message_index
         self._variable_key = variable_key
 
@@ -113,13 +118,20 @@ class TensogramStore(ZarrStore):
         *,
         message_index: int = 0,
         variable_key: str | None = None,
+        storage_options: dict[str, str] | None = None,
     ) -> TensogramStore:
         """Open a ``.tgm`` file as a read-only Zarr store (synchronous).
 
         This is a convenience wrapper that creates the store, scans the
         file, and returns a ready-to-use instance.
         """
-        store = cls(path, mode="r", message_index=message_index, variable_key=variable_key)
+        store = cls(
+            path,
+            mode="r",
+            message_index=message_index,
+            variable_key=variable_key,
+            storage_options=storage_options,
+        )
         store._open_sync()
         return store
 
@@ -328,7 +340,10 @@ class TensogramStore(ZarrStore):
         import tensogram
 
         try:
-            f = tensogram.TensogramFile.open(self._path)
+            if self._storage_options:
+                f = tensogram.TensogramFile.open_remote(self._path, self._storage_options)
+            else:
+                f = tensogram.TensogramFile.open(self._path)
         except Exception as exc:
             raise OSError(f"failed to open TGM file {self._path!r}: {exc}") from exc
 
