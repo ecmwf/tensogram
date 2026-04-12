@@ -511,6 +511,20 @@ async fn test_eager_layout_combines_scan_and_discover() -> Result<(), Box<dyn Er
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_eager_layout_streaming_falls_back() -> Result<(), Box<dyn Error>> {
+    let msg = encode_streaming_message(vec![4], 42)?;
+    let server = MockServer::start(msg).await?;
+
+    let mut file = TensogramFile::open_source(server.url())?;
+    server.reset_count();
+    let (_, desc, data) = file.decode_object(0, 0, &DecodeOptions::default())?;
+
+    assert_eq!(desc.shape, vec![4]);
+    assert_eq!(data, vec![42u8; 16]);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_remote_repeated_object_reads_use_cache() -> Result<(), Box<dyn Error>> {
     let shapes = vec![vec![4], vec![8]];
     let fills = vec![10u8, 20u8];

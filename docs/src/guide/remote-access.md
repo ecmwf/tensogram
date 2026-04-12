@@ -118,27 +118,34 @@ These methods also work on local files, where they read the full message and dec
 
 | Phase | Operation | HTTP Requests |
 |-------|-----------|:---:|
-| **Open** | `open_source` / `open_remote` | 1 HEAD + 1 GET (first preamble only) |
-| **First access** | `decode_metadata(i)` | 1 GET (header chunk, discovers metadata + index) |
+| **Open** | `open_source` / `open_remote` | 1 HEAD + 1 GET (first preamble only, 24 B) |
+| **Next message** | first data access to message *i* | 1 GET (preamble + layout combined) |
 | **Cached** | `decode_metadata(i)` again | 0 (served from cache) |
 | **Object read** | `decode_object(i, j)` | 1 GET per object (if layout already cached) |
-| **Descriptors (first)** | `decode_descriptors(i)` | 1 GET (layout) + 1–3 GETs per object (descriptor-only reads for large frames) |
-| **Descriptors (cached)** | `decode_descriptors(i)` | 1–3 GETs per object |
-| **Message count** | `message_count()` | 1 GET per undiscovered message (24 B each) |
+| **Descriptors** | `decode_descriptors(i)` | 1–3 GETs per object (descriptor-only reads for large frames) |
+| **Message count** | `message_count()` | 1 GET per undiscovered message (24 B each, preamble only) |
 
-### Footer-indexed files (streaming writes)
+### Footer-indexed files (buffered with known total_length)
 
 | Phase | Operation | HTTP Requests |
 |-------|-----------|:---:|
-| **Open** | `open_source` / `open_remote` | 1 HEAD + 1 GET (first preamble only) |
-| **First access** | `decode_metadata(i)` | 2 GETs (postamble + footer region) |
+| **Open** | `open_source` / `open_remote` | 1 HEAD + 1 GET (first preamble only, 24 B) |
+| **Next message** | first data access to message *i* | 1 GET (preamble) + 1 GET (suffix) |
 | **Cached** | `decode_metadata(i)` again | 0 (served from cache) |
 | **Object read** | `decode_object(i, j)` | 1 GET per object (if layout already cached) |
-| **Descriptors (first)** | `decode_descriptors(i)` | 2 GETs (layout) + 1–3 GETs per object |
-| **Descriptors (cached)** | `decode_descriptors(i)` | 1–3 GETs per object |
+| **Descriptors** | `decode_descriptors(i)` | 1–3 GETs per object |
 | **Message count** | `message_count()` | 1 GET per undiscovered message (24 B each) |
 
-The layout (metadata + index) is discovered per-message on first access to that message, then cached. Subsequent calls reuse the cached layout. Message boundaries are discovered lazily — `open` reads only the first preamble. Streaming messages must be the last message in a multi-message file.
+### Streaming files (total_length=0)
+
+| Phase | Operation | HTTP Requests |
+|-------|-----------|:---:|
+| **Open** | `open_source` / `open_remote` | 1 HEAD + 1 GET (preamble) + 1 GET (END_MAGIC check) |
+| **First access** | `decode_metadata(0)` | 2 GETs (postamble + footer region) |
+| **Object read** | `decode_object(0, j)` | 1 GET per object |
+| **Message count** | `message_count()` | 0 (streaming is always the last message) |
+
+Layout discovery is combined with message scanning for both header-indexed and footer-indexed messages — the library reads the preamble and layout in one GET (header-indexed) or two GETs (footer-indexed suffix read). `message_count()` uses a lean scan path (24 bytes per preamble). Streaming messages (`total_length=0`) must be the last message in a multi-message file.
 
 ## How It Works (Header-Indexed Example)
 

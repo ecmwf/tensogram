@@ -172,6 +172,14 @@ For speculative ideas, see `IDEAS.md`.
   - xarray `array.py`: uses `file_decode_range` for both local and remote (replaces buffer-level `decode_range` and remote `file_decode_object` fallback)
   - 3 Rust tests: single range, remote-vs-local parity, out-of-range error
 
+## Python Async Bindings
+
+- [ ] **Python asyncio support**:
+  - expose async methods via `pyo3-asyncio` or manual future wrapping
+  - `await file.decode_object_async(msg, obj)`, `await file.decode_range_async(...)`, etc.
+  - uses the native async Rust path (`ensure_layout_eager_async` → `scan_and_discover_next_async`)
+  - enables asyncio-native workflows (e.g., `asyncio.gather` for concurrent frame fetches on a single handle)
+
 ## Free-Threaded Python
 
 - [ ] **free-threaded Python (parallelism)**:

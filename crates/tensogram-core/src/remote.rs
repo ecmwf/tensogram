@@ -400,9 +400,68 @@ impl RemoteBackend {
         if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX) {
             let chunk_end = (msg_len as usize).min(chunk.len());
             self.parse_header_frames(msg_idx, &chunk[..chunk_end])?;
+        } else if flags.has(MessageFlags::FOOTER_METADATA) && flags.has(MessageFlags::FOOTER_INDEX)
+        {
+            self.discover_footer_layout_from_suffix(msg_idx)?;
         }
 
         Ok(())
+    }
+
+    /// Discover footer layout by reading a single suffix chunk from the
+    /// message end.  The suffix covers both the postamble and the footer
+    /// region (metadata + index frames) in one GET, halving the round
+    /// trips compared to separate postamble + footer reads.
+    ///
+    /// The suffix size is capped at 256 KB — footer regions are typically
+    /// a few KB.  If `first_footer_offset` points outside the suffix,
+    /// falls back to a separate read for the footer region.
+    fn discover_footer_layout_from_suffix(&mut self, msg_idx: usize) -> Result<()> {
+        let msg_offset = self.layouts[msg_idx].offset;
+        let msg_len = self.layouts[msg_idx].length;
+
+        let suffix_size = msg_len.min(256 * 1024);
+        let msg_end = msg_offset
+            .checked_add(msg_len)
+            .ok_or_else(|| TensogramError::Remote("message end overflow".to_string()))?;
+        let suffix_start = msg_end - suffix_size;
+        let suffix = self.get_range(suffix_start..msg_end)?;
+
+        if suffix.len() < POSTAMBLE_SIZE {
+            return Err(TensogramError::Remote(
+                "suffix too short for postamble".to_string(),
+            ));
+        }
+
+        let pa_bytes = &suffix[suffix.len() - POSTAMBLE_SIZE..];
+        let postamble = Postamble::read_from(pa_bytes)?;
+
+        if postamble.first_footer_offset < PREAMBLE_SIZE as u64 {
+            return Err(TensogramError::Remote(format!(
+                "first_footer_offset ({}) is before preamble end ({PREAMBLE_SIZE})",
+                postamble.first_footer_offset
+            )));
+        }
+
+        let footer_abs_start = msg_offset
+            .checked_add(postamble.first_footer_offset)
+            .ok_or_else(|| TensogramError::Remote("footer offset overflow".to_string()))?;
+        let footer_abs_end = msg_end - POSTAMBLE_SIZE as u64;
+
+        if footer_abs_start >= footer_abs_end {
+            return Err(TensogramError::Remote(
+                "first_footer_offset points at or past postamble".to_string(),
+            ));
+        }
+
+        if footer_abs_start >= suffix_start {
+            let local_start = (footer_abs_start - suffix_start) as usize;
+            let local_end = suffix.len() - POSTAMBLE_SIZE;
+            self.parse_footer_frames(msg_idx, &suffix[local_start..local_end])
+        } else {
+            let footer_bytes = self.get_range(footer_abs_start..footer_abs_end)?;
+            self.parse_footer_frames(msg_idx, &footer_bytes)
+        }
     }
 
     fn ensure_layout_eager(&mut self, msg_idx: usize) -> Result<()> {
@@ -1102,9 +1161,63 @@ impl RemoteBackend {
         if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX) {
             let chunk_end = (msg_len as usize).min(chunk.len());
             self.parse_header_frames(msg_idx, &chunk[..chunk_end])?;
+        } else if flags.has(MessageFlags::FOOTER_METADATA) && flags.has(MessageFlags::FOOTER_INDEX)
+        {
+            self.discover_footer_layout_from_suffix_async(msg_idx)
+                .await?;
         }
 
         Ok(())
+    }
+
+    async fn discover_footer_layout_from_suffix_async(&mut self, msg_idx: usize) -> Result<()> {
+        let msg_offset = self.layouts[msg_idx].offset;
+        let msg_len = self.layouts[msg_idx].length;
+
+        let suffix_size = msg_len.min(256 * 1024);
+        let msg_end = msg_offset
+            .checked_add(msg_len)
+            .ok_or_else(|| TensogramError::Remote("message end overflow".to_string()))?;
+        let suffix_start = msg_end - suffix_size;
+        let suffix = self.get_range_async(suffix_start..msg_end).await?;
+
+        if suffix.len() < POSTAMBLE_SIZE {
+            return Err(TensogramError::Remote(
+                "suffix too short for postamble".to_string(),
+            ));
+        }
+
+        let pa_bytes = &suffix[suffix.len() - POSTAMBLE_SIZE..];
+        let postamble = Postamble::read_from(pa_bytes)?;
+
+        if postamble.first_footer_offset < PREAMBLE_SIZE as u64 {
+            return Err(TensogramError::Remote(format!(
+                "first_footer_offset ({}) is before preamble end ({PREAMBLE_SIZE})",
+                postamble.first_footer_offset
+            )));
+        }
+
+        let footer_abs_start = msg_offset
+            .checked_add(postamble.first_footer_offset)
+            .ok_or_else(|| TensogramError::Remote("footer offset overflow".to_string()))?;
+        let footer_abs_end = msg_end - POSTAMBLE_SIZE as u64;
+
+        if footer_abs_start >= footer_abs_end {
+            return Err(TensogramError::Remote(
+                "first_footer_offset points at or past postamble".to_string(),
+            ));
+        }
+
+        if footer_abs_start >= suffix_start {
+            let local_start = (footer_abs_start - suffix_start) as usize;
+            let local_end = suffix.len() - POSTAMBLE_SIZE;
+            self.parse_footer_frames(msg_idx, &suffix[local_start..local_end])
+        } else {
+            let footer_bytes = self
+                .get_range_async(footer_abs_start..footer_abs_end)
+                .await?;
+            self.parse_footer_frames(msg_idx, &footer_bytes)
+        }
     }
 
     async fn ensure_layout_eager_async(&mut self, msg_idx: usize) -> Result<()> {
