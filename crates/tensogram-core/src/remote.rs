@@ -323,6 +323,106 @@ impl RemoteBackend {
         Ok(())
     }
 
+    fn scan_and_discover_next(&mut self) -> Result<()> {
+        if self.scan_complete {
+            return Ok(());
+        }
+        let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+        let pos = self.next_scan_offset;
+
+        if pos + min_message_size > self.file_size {
+            self.scan_complete = true;
+            return Ok(());
+        }
+
+        let chunk_size = (self.file_size - pos).min(256 * 1024);
+        let chunk = self.get_range(pos..pos + chunk_size)?;
+
+        if chunk.len() < PREAMBLE_SIZE || &chunk[..MAGIC.len()] != MAGIC {
+            self.scan_complete = true;
+            return Ok(());
+        }
+
+        let preamble = match Preamble::read_from(&chunk[..PREAMBLE_SIZE]) {
+            Ok(p) => p,
+            Err(_) => {
+                self.scan_complete = true;
+                return Ok(());
+            }
+        };
+
+        let msg_len = preamble.total_length;
+
+        if msg_len == 0 {
+            let remaining = self.file_size - pos;
+            if remaining < min_message_size {
+                self.scan_complete = true;
+                return Ok(());
+            }
+            let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
+            let end_bytes =
+                self.get_range(end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64)?;
+            if &end_bytes[..] != crate::wire::END_MAGIC {
+                self.scan_complete = true;
+                return Ok(());
+            }
+            self.layouts.push(MessageLayout {
+                offset: pos,
+                length: remaining,
+                preamble,
+                index: None,
+                global_metadata: None,
+            });
+            self.scan_complete = true;
+            return Ok(());
+        }
+
+        let msg_end = match pos.checked_add(msg_len) {
+            Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
+            _ => {
+                self.scan_complete = true;
+                return Ok(());
+            }
+        };
+
+        let flags = preamble.flags;
+        let msg_idx = self.layouts.len();
+
+        self.layouts.push(MessageLayout {
+            offset: pos,
+            length: msg_len,
+            preamble,
+            index: None,
+            global_metadata: None,
+        });
+        self.next_scan_offset = msg_end;
+
+        if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX) {
+            let chunk_end = (msg_len as usize).min(chunk.len());
+            self.parse_header_frames(msg_idx, &chunk[..chunk_end])?;
+        }
+
+        Ok(())
+    }
+
+    fn ensure_layout_eager(&mut self, msg_idx: usize) -> Result<()> {
+        while msg_idx >= self.layouts.len() && !self.scan_complete {
+            self.scan_and_discover_next()?;
+        }
+        if msg_idx >= self.layouts.len() {
+            return Err(TensogramError::Framing(format!(
+                "message index {} out of range (count={})",
+                msg_idx,
+                self.layouts.len()
+            )));
+        }
+        if self.layouts[msg_idx].global_metadata.is_some() && self.layouts[msg_idx].index.is_some()
+        {
+            return Ok(());
+        }
+        self.ensure_layout(msg_idx)
+    }
+
     // ── Layout discovery (metadata + index for a single message) ─────────
 
     fn ensure_layout(&mut self, msg_idx: usize) -> Result<()> {
@@ -537,7 +637,7 @@ impl RemoteBackend {
     }
 
     pub(crate) fn read_metadata(&mut self, msg_idx: usize) -> Result<GlobalMetadata> {
-        self.ensure_layout(msg_idx)?;
+        self.ensure_layout_eager(msg_idx)?;
         self.layouts[msg_idx]
             .global_metadata
             .clone()
@@ -548,7 +648,7 @@ impl RemoteBackend {
         &mut self,
         msg_idx: usize,
     ) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>)> {
-        self.ensure_layout(msg_idx)?;
+        self.ensure_layout_eager(msg_idx)?;
         let layout = &self.layouts[msg_idx];
         let msg_offset = layout.offset;
 
@@ -687,7 +787,7 @@ impl RemoteBackend {
         obj_idx: usize,
         options: &DecodeOptions,
     ) -> Result<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)> {
-        self.ensure_layout(msg_idx)?;
+        self.ensure_layout_eager(msg_idx)?;
         let layout = &self.layouts[msg_idx];
         let msg_offset = layout.offset;
 
@@ -726,7 +826,7 @@ impl RemoteBackend {
         ranges: &[(u64, u64)],
         options: &DecodeOptions,
     ) -> Result<(DataObjectDescriptor, Vec<Vec<u8>>)> {
-        self.ensure_layout(msg_idx)?;
+        self.ensure_layout_eager(msg_idx)?;
         let layout = &self.layouts[msg_idx];
         let msg_offset = layout.offset;
 
@@ -924,6 +1024,107 @@ impl RemoteBackend {
         Ok(())
     }
 
+    async fn scan_and_discover_next_async(&mut self) -> Result<()> {
+        if self.scan_complete {
+            return Ok(());
+        }
+        let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+        let pos = self.next_scan_offset;
+
+        if pos + min_message_size > self.file_size {
+            self.scan_complete = true;
+            return Ok(());
+        }
+
+        let chunk_size = (self.file_size - pos).min(256 * 1024);
+        let chunk = self.get_range_async(pos..pos + chunk_size).await?;
+
+        if chunk.len() < PREAMBLE_SIZE || &chunk[..MAGIC.len()] != MAGIC {
+            self.scan_complete = true;
+            return Ok(());
+        }
+
+        let preamble = match Preamble::read_from(&chunk[..PREAMBLE_SIZE]) {
+            Ok(p) => p,
+            Err(_) => {
+                self.scan_complete = true;
+                return Ok(());
+            }
+        };
+
+        let msg_len = preamble.total_length;
+
+        if msg_len == 0 {
+            let remaining = self.file_size - pos;
+            if remaining < min_message_size {
+                self.scan_complete = true;
+                return Ok(());
+            }
+            let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
+            let end_bytes = self
+                .get_range_async(end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64)
+                .await?;
+            if &end_bytes[..] != crate::wire::END_MAGIC {
+                self.scan_complete = true;
+                return Ok(());
+            }
+            self.layouts.push(MessageLayout {
+                offset: pos,
+                length: remaining,
+                preamble,
+                index: None,
+                global_metadata: None,
+            });
+            self.scan_complete = true;
+            return Ok(());
+        }
+
+        let msg_end = match pos.checked_add(msg_len) {
+            Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
+            _ => {
+                self.scan_complete = true;
+                return Ok(());
+            }
+        };
+
+        let flags = preamble.flags;
+        let msg_idx = self.layouts.len();
+
+        self.layouts.push(MessageLayout {
+            offset: pos,
+            length: msg_len,
+            preamble,
+            index: None,
+            global_metadata: None,
+        });
+        self.next_scan_offset = msg_end;
+
+        if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX) {
+            let chunk_end = (msg_len as usize).min(chunk.len());
+            self.parse_header_frames(msg_idx, &chunk[..chunk_end])?;
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_layout_eager_async(&mut self, msg_idx: usize) -> Result<()> {
+        while msg_idx >= self.layouts.len() && !self.scan_complete {
+            self.scan_and_discover_next_async().await?;
+        }
+        if msg_idx >= self.layouts.len() {
+            return Err(TensogramError::Framing(format!(
+                "message index {} out of range (count={})",
+                msg_idx,
+                self.layouts.len()
+            )));
+        }
+        if self.layouts[msg_idx].global_metadata.is_some() && self.layouts[msg_idx].index.is_some()
+        {
+            return Ok(());
+        }
+        self.ensure_layout_async(msg_idx).await
+    }
+
     async fn ensure_layout_async(&mut self, msg_idx: usize) -> Result<()> {
         self.ensure_message_async(msg_idx).await?;
         if self.layouts[msg_idx].global_metadata.is_some() && self.layouts[msg_idx].index.is_some()
@@ -1012,7 +1213,7 @@ impl RemoteBackend {
     }
 
     pub(crate) async fn read_metadata_async(&mut self, msg_idx: usize) -> Result<GlobalMetadata> {
-        self.ensure_layout_async(msg_idx).await?;
+        self.ensure_layout_eager_async(msg_idx).await?;
         self.layouts[msg_idx]
             .global_metadata
             .clone()
@@ -1023,7 +1224,7 @@ impl RemoteBackend {
         &mut self,
         msg_idx: usize,
     ) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>)> {
-        self.ensure_layout_async(msg_idx).await?;
+        self.ensure_layout_eager_async(msg_idx).await?;
         let layout = &self.layouts[msg_idx];
         let msg_offset = layout.offset;
 
@@ -1159,7 +1360,7 @@ impl RemoteBackend {
         obj_idx: usize,
         options: &DecodeOptions,
     ) -> Result<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)> {
-        self.ensure_layout_async(msg_idx).await?;
+        self.ensure_layout_eager_async(msg_idx).await?;
         let layout = &self.layouts[msg_idx];
         let msg_offset = layout.offset;
 

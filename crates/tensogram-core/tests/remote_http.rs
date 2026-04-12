@@ -180,18 +180,28 @@ fn handle_request(
     if let Some(range_header) = req.headers().get("Range") {
         range_request_count.fetch_add(1, Ordering::SeqCst);
         let range_str = range_header.to_str().unwrap_or("");
-        if let Some(byte_range) = parse_range_header(range_str, data.len()) {
-            let slice = &data[byte_range.0..byte_range.1];
-            let resp = Response::builder()
-                .status(StatusCode::PARTIAL_CONTENT)
-                .header(
-                    "Content-Range",
-                    format!("bytes {}-{}/{}", byte_range.0, byte_range.1 - 1, data.len()),
-                )
-                .header("Content-Length", slice.len())
-                .body(Full::new(Bytes::copy_from_slice(slice)))
-                .map_err(std::io::Error::other)?;
-            return Ok(resp);
+        match parse_range_header(range_str, data.len()) {
+            Some(byte_range) => {
+                let slice = &data[byte_range.0..byte_range.1];
+                let resp = Response::builder()
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header(
+                        "Content-Range",
+                        format!("bytes {}-{}/{}", byte_range.0, byte_range.1 - 1, data.len()),
+                    )
+                    .header("Content-Length", slice.len())
+                    .body(Full::new(Bytes::copy_from_slice(slice)))
+                    .map_err(std::io::Error::other)?;
+                return Ok(resp);
+            }
+            None => {
+                let resp = Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header("Content-Range", format!("bytes */{}", data.len()))
+                    .body(Full::new(Bytes::new()))
+                    .map_err(std::io::Error::other)?;
+                return Ok(resp);
+            }
         }
     }
 
@@ -474,6 +484,28 @@ async fn test_remote_lazy_open_only_reads_first_preamble() -> Result<(), Box<dyn
     assert!(
         scan_requests >= 1,
         "message_count should trigger scanning of remaining messages"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_eager_layout_combines_scan_and_discover() -> Result<(), Box<dyn Error>> {
+    let msg1 = encode_test_message(vec![4], 10)?;
+    let msg2 = encode_test_message(vec![8], 20)?;
+    let mut combined = msg1;
+    combined.extend_from_slice(&msg2);
+    let server = MockServer::start(combined).await?;
+
+    let mut file = TensogramFile::open_source(server.url())?;
+    server.reset_count();
+    let (_, desc, data) = file.decode_object(1, 0, &DecodeOptions::default())?;
+    let eager_requests = server.request_count();
+
+    assert_eq!(desc.shape, vec![8]);
+    assert_eq!(data, vec![20u8; 32]);
+    assert!(
+        eager_requests <= 2,
+        "eager layout should combine scan+discover into 1 GET per message, got {eager_requests}"
     );
     Ok(())
 }
