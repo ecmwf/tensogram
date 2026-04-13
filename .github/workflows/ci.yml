@@ -13,7 +13,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-
+  TMPDIR: /home/github-actions/tmp
+  RUSTUP_HOME: ${{ github.workspace }}/.rustup
+  CARGO_HOME: ${{ github.workspace }}/.cargo
 
 jobs:
   # ── Main: Rust lint/test + Python bindings + GRIB + NetCDF ──────────
@@ -26,6 +28,7 @@ jobs:
         runner: [[self-hosted, Linux, platform-builder-docker-xl], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
     steps:
       - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -49,7 +52,6 @@ jobs:
           echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix eccodes)/lib/pkgconfig:$(brew --prefix netcdf)/lib/pkgconfig:$(brew --prefix hdf5)/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "ECCODES_DIR=$(brew --prefix eccodes)" >> "$GITHUB_ENV"
 
-      # ── Rust lint ──
       - name: Format check
         run: cargo fmt --check
 
@@ -58,7 +60,6 @@ jobs:
           cargo clippy --workspace --all-targets -- -D warnings
           cargo clippy -p tensogram-core -p tensogram-ffi --all-targets --all-features -- -D warnings
 
-      # ── Rust test ──
       - name: Test
         run: cargo test --workspace
 
@@ -79,7 +80,6 @@ jobs:
           cargo test --manifest-path crates/tensogram-netcdf/Cargo.toml
           cargo test -p tensogram-cli --features netcdf
 
-      # ── Python bindings (reuses compiled workspace) ──
       - name: Build and test Python bindings
         run: |
           uv python install 3.13
@@ -90,6 +90,10 @@ jobs:
           ruff check --config crates/tensogram-python/pyproject.toml tests/python/
           python -m pytest tests/python/ -v
 
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" .venv build .rustup .cargo
+
   # ── Python: free-threaded 3.13t ───────────────────────────────────────
   python-free-threaded:
     name: Python 3.13t (free-threaded)
@@ -97,6 +101,7 @@ jobs:
     runs-on: [self-hosted, Linux, platform-builder-docker-xl]
     steps:
       - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v5
@@ -120,6 +125,10 @@ jobs:
           cd crates/tensogram-python && maturin develop --release && cd ../..
           python -m pytest tests/python/ -v
 
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" .venv .rustup .cargo
+
   # ── Python packages: xarray + zarr ───────────────────────────────────
   python-packages:
     name: Python packages
@@ -127,6 +136,7 @@ jobs:
     runs-on: [self-hosted, Linux, platform-builder-docker-xl]
     steps:
       - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v5
@@ -150,6 +160,10 @@ jobs:
           uv pip install -e tensogram-zarr/
           python -m pytest tensogram-zarr/tests/ -v
 
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" .venv .rustup .cargo
+
   # ── C++: build + test ────────────────────────────────────────────────
   cpp:
     name: C++ (${{ matrix.runner }})
@@ -160,6 +174,7 @@ jobs:
         runner: [[self-hosted, Linux, platform-builder-docker-xl], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
     steps:
       - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -168,7 +183,6 @@ jobs:
         run: |
           dpkg -s libclang-dev >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev)
           which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build and test
         run: |
@@ -177,12 +191,17 @@ jobs:
           cmake --build build -j
           ctest --test-dir build --output-on-failure
 
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" build .rustup .cargo
+
   # ── WASM: build + test ───────────────────────────────────────────────
   wasm:
     name: WASM
     runs-on: [self-hosted, Linux, platform-builder-docker-xl]
     steps:
       - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -194,3 +213,7 @@ jobs:
         run: |
           which wasm-pack >/dev/null 2>&1 || cargo install wasm-pack --locked
           wasm-pack test --node crates/tensogram-wasm
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" .rustup .cargo
