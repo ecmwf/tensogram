@@ -58,7 +58,7 @@ jobs:
       - name: Clippy
         run: |
           cargo clippy --workspace --all-targets -- -D warnings
-          cargo clippy -p tensogram-core -p tensogram-ffi --all-targets --all-features -- -D warnings
+          cargo clippy -p tensogram-core -p tensogram-ffi -p tensogram-cli --all-targets --all-features -- -D warnings
 
       - name: Test
         run: cargo test --workspace
