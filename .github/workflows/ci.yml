@@ -264,6 +264,7 @@ jobs:
     runs-on: [self-hosted, Linux, hpc]
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - name: Install mdbook + preprocessors
         run: |
           cargo install mdbook --locked
