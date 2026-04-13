@@ -166,20 +166,6 @@ jobs:
           cmake --build build -j
           ctest --test-dir build --output-on-failure
 
-  # ── Documentation: mdbook ────────────────────────────────────────────
-  docs:
-    name: Documentation
-    runs-on: [self-hosted, Linux, hpc]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build docs
-        run: |
-          which mdbook >/dev/null 2>&1 || cargo install mdbook --locked
-          which mdbook-mermaid >/dev/null 2>&1 || cargo install mdbook-mermaid --locked
-          cd docs && mdbook build
-
   # ── WASM: build + test ───────────────────────────────────────────────
   wasm:
     name: WASM
