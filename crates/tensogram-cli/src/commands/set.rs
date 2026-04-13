@@ -351,7 +351,7 @@ mod tests {
         // Set source=modified only for param=2t (goes into base entries)
         run(&input, &output, "source=modified", Some("param=2t")).unwrap();
 
-        let mut f = TensogramFile::open(&output).unwrap();
+        let f = TensogramFile::open(&output).unwrap();
         assert_eq!(f.message_count().unwrap(), 2);
 
         // First message should be modified — source is in base[0]

@@ -717,7 +717,7 @@ fn empty_file_has_zero_messages() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("empty.tgm");
 
-    let mut file = TensogramFile::create(&path).unwrap();
+    let file = TensogramFile::create(&path).unwrap();
     assert_eq!(file.message_count().unwrap(), 0);
 }
 
@@ -726,7 +726,7 @@ fn read_message_from_empty_file_errors() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("empty.tgm");
 
-    let mut file = TensogramFile::create(&path).unwrap();
+    let file = TensogramFile::create(&path).unwrap();
     let result = file.read_message(0);
     assert!(result.is_err());
 }

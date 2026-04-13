@@ -91,7 +91,7 @@ mod tests {
         run(&input, &output).unwrap();
 
         // Verify output is valid and has same content
-        let mut f = tensogram_core::TensogramFile::open(&output).unwrap();
+        let f = tensogram_core::TensogramFile::open(&output).unwrap();
         assert_eq!(f.message_count().unwrap(), 2);
         let msg = f.read_message(0).unwrap();
         let (meta, objs) = decode(&msg, &DecodeOptions::default()).unwrap();
