@@ -12,9 +12,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Ensure rustup uses default profile on self-hosted runners
-  RUSTUP_HOME: ${{ github.workspace }}/.rustup
-  CARGO_HOME: ${{ github.workspace }}/.cargo
+  CARGO_INCREMENTAL: 0
 
 jobs:
   # ── Rust: build, lint, test ──────────────────────────────────────────
@@ -219,7 +217,7 @@ jobs:
 
       - name: Install libnetcdf (Ubuntu)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libnetcdf-dev libhdf5-dev
+        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev libnetcdf-dev libhdf5-dev
 
       - name: Install libnetcdf (macOS)
         if: runner.os == 'macOS'
