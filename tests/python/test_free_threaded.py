@@ -30,9 +30,7 @@ def _make_message(size=1000, encoding="none", compression="none", dtype="float32
         "compression": compression,
     }
     if encoding == "simple_packing":
-        params = tensogram.compute_packing_params(
-            data.astype(np.float64).ravel(), 16, 0
-        )
+        params = tensogram.compute_packing_params(data.astype(np.float64).ravel(), 16, 0)
         desc.update(params)
     msg = tensogram.encode(meta, [(desc, data)])
     return data, meta, desc, msg
@@ -297,9 +295,7 @@ class TestConcurrentDecode:
 
     def test_shared_buffer_decode_packing(self):
         """Multiple threads decode same simple_packing+zstd message."""
-        data, _meta, _desc, msg = _make_message(
-            2000, "simple_packing", "zstd", "float64"
-        )
+        data, _meta, _desc, msg = _make_message(2000, "simple_packing", "zstd", "float64")
 
         def work(tid):
             for _ in range(ITERATIONS):
@@ -384,9 +380,7 @@ class TestConcurrentStreamingEncoder:
             for _ in range(ITERATIONS):
                 enc = tensogram.StreamingEncoder({"version": 2})
                 data = np.arange(100, dtype=np.float32) + tid
-                enc.write_object(
-                    {"type": "ntensor", "shape": [100], "dtype": "float32"}, data
-                )
+                enc.write_object({"type": "ntensor", "shape": [100], "dtype": "float32"}, data)
                 msg = enc.finish()
                 result = tensogram.decode(msg)
                 arr = result.objects[0][1]

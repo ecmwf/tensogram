@@ -92,9 +92,7 @@ def make_msg(size, encoding="none", compression="none", dtype="float32"):
         "compression": compression,
     }
     if encoding == "simple_packing":
-        params = tensogram.compute_packing_params(
-            data.astype(np.float64).ravel(), 24, 0
-        )
+        params = tensogram.compute_packing_params(data.astype(np.float64).ravel(), 24, 0)
         desc.update(params)
     msg = tensogram.encode(meta, [(desc, data)])
     return meta, desc, data, msg
@@ -121,9 +119,7 @@ def run_codec_sweep(thread_counts, iters):
         meta, desc, data, msg = make_msg(1_000_000, encoding, compression, dtype)
         label = f"{encoding}+{compression}"
         dec = bench_scaling(tensogram.decode, (msg,), thread_counts, iters)
-        enc = bench_scaling(
-            tensogram.encode, (meta, [(desc, data)]), thread_counts, iters
-        )
+        enc = bench_scaling(tensogram.encode, (meta, [(desc, data)]), thread_counts, iters)
         print_scaling_table(f"Decode (1M {dtype}, {label})", dec, thread_counts)
         print_scaling_table(f"Encode (1M {dtype}, {label})", enc, thread_counts)
 
@@ -169,9 +165,7 @@ def run_operations(thread_counts, iters):
         thread_counts,
         iters,
     )
-    print_scaling_table(
-        "Iter-messages (3 msgs, 100K f32 each)", iter_res, thread_counts
-    )
+    print_scaling_table("Iter-messages (3 msgs, 100K f32 each)", iter_res, thread_counts)
 
 
 def main():

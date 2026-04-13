@@ -256,10 +256,7 @@ class TestValidateFile:
             f.write(b"TRAILING_GARBAGE")
         report = tensogram.validate_file(path)
         assert len(report["file_issues"]) > 0
-        assert any(
-            "trailing" in issue["description"].lower()
-            for issue in report["file_issues"]
-        )
+        assert any("trailing" in issue["description"].lower() for issue in report["file_issues"])
 
     def test_empty_file(self, tmp_path):
         path = str(tmp_path / "empty.tgm")
@@ -286,10 +283,7 @@ class TestValidateFile:
         report = tensogram.validate_file(path)
         assert len(report["messages"]) == 0
         assert len(report["file_issues"]) > 0
-        assert any(
-            "no valid messages" in issue["description"]
-            for issue in report["file_issues"]
-        )
+        assert any("no valid messages" in issue["description"] for issue in report["file_issues"])
 
     def test_garbage_between_messages(self, tmp_path):
         """File with garbage bytes between two valid messages."""
@@ -312,9 +306,7 @@ class TestValidateFile:
             f.write(msg[: len(msg) // 2])
         report = tensogram.validate_file(path)
         assert len(report["messages"]) >= 1
-        has_issue = len(report["file_issues"]) > 0 or any(
-            m["issues"] for m in report["messages"]
-        )
+        has_issue = len(report["file_issues"]) > 0 or any(m["issues"] for m in report["messages"])
         assert has_issue
 
     def test_validate_file_invalid_level(self, tmp_path):

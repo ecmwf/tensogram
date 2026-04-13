@@ -125,9 +125,7 @@ class TestEncodePreEncodedSimplePacking:
         temps = np.linspace(249.15, 349.05, n, dtype=np.float64)
 
         # Compute packing parameters via the library helper
-        params = tensogram.compute_packing_params(
-            temps, bits_per_value=16, decimal_scale_factor=0
-        )
+        params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
         ref_val = params["reference_value"]
         bsf = params["binary_scale_factor"]
         dsf = params["decimal_scale_factor"]
@@ -164,9 +162,7 @@ class TestEncodePreEncodedSimplePacking:
         """Pre-encoded simple_packing produces same decoded payload as encode()."""
         n = 500
         temps = np.linspace(200.0, 300.0, n, dtype=np.float64)
-        params = tensogram.compute_packing_params(
-            temps, bits_per_value=16, decimal_scale_factor=0
-        )
+        params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
 
         desc = make_descriptor(
             shape=[n],
@@ -218,9 +214,7 @@ class TestEncodePreEncodedSzip:
         """
         n = 10000
         temps = np.linspace(200.0, 300.0, n, dtype=np.float64)
-        params = tensogram.compute_packing_params(
-            temps, bits_per_value=16, decimal_scale_factor=0
-        )
+        params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
 
         desc_szip = make_descriptor(
             shape=[n],
@@ -287,9 +281,7 @@ class TestEncodePreEncodedSzip:
         """Non-monotonic szip_block_offsets must be rejected."""
         n = 100
         temps = np.linspace(200.0, 300.0, n, dtype=np.float64)
-        params = tensogram.compute_packing_params(
-            temps, bits_per_value=16, decimal_scale_factor=0
-        )
+        params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
         packed = simple_pack_python(
             temps,
             params["reference_value"],
@@ -310,18 +302,14 @@ class TestEncodePreEncodedSzip:
             **params,
         )
         meta = make_global_meta(2)
-        with pytest.raises(
-            ValueError, match="szip_block_offsets must be strictly increasing"
-        ):
+        with pytest.raises(ValueError, match="szip_block_offsets must be strictly increasing"):
             tensogram.encode_pre_encoded(meta, [(desc, packed)])
 
     def test_szip_block_offsets_with_non_szip_rejected(self):
         """szip_block_offsets with non-szip compression must be rejected."""
         n = 100
         temps = np.linspace(200.0, 300.0, n, dtype=np.float64)
-        params = tensogram.compute_packing_params(
-            temps, bits_per_value=16, decimal_scale_factor=0
-        )
+        params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
         packed = simple_pack_python(
             temps,
             params["reference_value"],
@@ -339,9 +327,7 @@ class TestEncodePreEncodedSzip:
             **params,
         )
         meta = make_global_meta(2)
-        with pytest.raises(
-            ValueError, match="szip_block_offsets provided but compression"
-        ):
+        with pytest.raises(ValueError, match="szip_block_offsets provided but compression"):
             tensogram.encode_pre_encoded(meta, [(desc, packed)])
 
 
