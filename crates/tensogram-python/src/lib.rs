@@ -9,6 +9,7 @@ use std::path::Path;
 use numpy::PyArrayMethods;
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
 use tensogram_core::validate::{
@@ -19,6 +20,8 @@ use tensogram_core::{
     encode_pre_encoded, scan, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
     GlobalMetadata, HashAlgorithm, StreamingEncoder, TensogramError, TensogramFile, RESERVED_KEY,
 };
+
+type PyObject = Py<PyAny>;
 
 // ---------------------------------------------------------------------------
 // Error conversion
@@ -92,14 +95,14 @@ fn py_to_cbor(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<ciborium::Value> {
     if obj.is_none() {
         return Ok(ciborium::Value::Null);
     }
-    if let Ok(dict) = obj.downcast::<PyDict>() {
+    if let Ok(dict) = obj.cast::<PyDict>() {
         let mut entries = Vec::new();
         for (k, v) in dict.iter() {
             entries.push((py_to_cbor(&k)?, py_to_cbor(&v)?));
         }
         return Ok(ciborium::Value::Map(entries));
     }
-    if let Ok(list) = obj.downcast::<PyList>() {
+    if let Ok(list) = obj.cast::<PyList>() {
         let items: PyResult<Vec<_>> = list.iter().map(|v| py_to_cbor(&v)).collect();
         return Ok(ciborium::Value::Array(items?));
     }
@@ -126,7 +129,7 @@ fn extra_to_py(py: Python<'_>, extra: &BTreeMap<String, ciborium::Value>) -> PyR
 /// Contains both tensor metadata (shape, dtype, strides) and encoding
 /// pipeline info (byte_order, encoding, filter, compression, params).
 /// Returned alongside decoded numpy arrays from ``decode()`` and friends.
-#[pyclass(name = "DataObjectDescriptor")]
+#[pyclass(name = "DataObjectDescriptor", from_py_object)]
 #[derive(Clone)]
 struct PyDataObjectDescriptor {
     inner: DataObjectDescriptor,
@@ -230,7 +233,7 @@ impl PyDataObjectDescriptor {
 /// Access version via ``meta.version``, per-object metadata via ``meta.base``,
 /// and extra keys via dict syntax:
 /// ``meta["mars"]``, ``"mars" in meta``, ``meta.extra``.
-#[pyclass(name = "Metadata")]
+#[pyclass(name = "Metadata", from_py_object)]
 #[derive(Clone)]
 struct PyMetadata {
     inner: GlobalMetadata,
@@ -339,7 +342,7 @@ impl PyTensogramFile {
     fn open(py: Python<'_>, source: &str) -> PyResult<Self> {
         let source = source.to_string();
         let file = py
-            .allow_threads(|| TensogramFile::open_source(&source))
+            .detach(|| TensogramFile::open_source(&source))
             .map_err(to_py_err)?;
         Ok(PyTensogramFile { file })
     }
@@ -371,7 +374,7 @@ impl PyTensogramFile {
         };
         let source = source.to_string();
         let file = py
-            .allow_threads(|| TensogramFile::open_remote(&source, &opts))
+            .detach(|| TensogramFile::open_remote(&source, &opts))
             .map_err(to_py_err)?;
         Ok(PyTensogramFile { file })
     }
@@ -384,9 +387,8 @@ impl PyTensogramFile {
     }
 
     /// Number of valid messages in the file.
-    fn message_count(&mut self, py: Python<'_>) -> PyResult<usize> {
-        py.allow_threads(|| self.file.message_count())
-            .map_err(to_py_err)
+    fn message_count(&self, py: Python<'_>) -> PyResult<usize> {
+        py.detach(|| self.file.message_count()).map_err(to_py_err)
     }
 
     /// Append one message.
@@ -411,7 +413,7 @@ impl PyTensogramFile {
             pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
         let options = make_encode_options(hash)?;
-        py.allow_threads(|| self.file.append(&global_meta, &refs, &options))
+        py.detach(|| self.file.append(&global_meta, &refs, &options))
             .map_err(to_py_err)
     }
 
@@ -421,7 +423,7 @@ impl PyTensogramFile {
     /// Set *native_byte_order* to ``False`` to get wire-order bytes (default ``True``).
     #[pyo3(signature = (index, verify_hash=None, native_byte_order=true))]
     fn decode_message(
-        &mut self,
+        &self,
         py: Python<'_>,
         index: usize,
         verify_hash: Option<bool>,
@@ -433,15 +435,15 @@ impl PyTensogramFile {
             ..Default::default()
         };
         let (global_meta, data_objects) = py
-            .allow_threads(|| self.file.decode_message(index, &options))
+            .detach(|| self.file.decode_message(index, &options))
             .map_err(to_py_err)?;
         let result_list = data_objects_to_python(py, &data_objects)?;
         pack_message(py, PyMetadata { inner: global_meta }, result_list)
     }
 
-    fn file_decode_metadata(&mut self, py: Python<'_>, msg_index: usize) -> PyResult<PyObject> {
+    fn file_decode_metadata(&self, py: Python<'_>, msg_index: usize) -> PyResult<PyObject> {
         let meta = py
-            .allow_threads(|| self.file.decode_metadata(msg_index))
+            .detach(|| self.file.decode_metadata(msg_index))
             .map_err(to_py_err)?;
         Ok(PyMetadata { inner: meta }
             .into_pyobject(py)?
@@ -449,9 +451,9 @@ impl PyTensogramFile {
             .unbind())
     }
 
-    fn file_decode_descriptors(&mut self, py: Python<'_>, msg_index: usize) -> PyResult<PyObject> {
+    fn file_decode_descriptors(&self, py: Python<'_>, msg_index: usize) -> PyResult<PyObject> {
         let (meta, descriptors) = py
-            .allow_threads(|| self.file.decode_descriptors(msg_index))
+            .detach(|| self.file.decode_descriptors(msg_index))
             .map_err(to_py_err)?;
         let desc_list: Vec<PyObject> = descriptors
             .iter()
@@ -470,7 +472,7 @@ impl PyTensogramFile {
 
     #[pyo3(signature = (msg_index, obj_index, verify_hash=false, native_byte_order=true))]
     fn file_decode_object(
-        &mut self,
+        &self,
         py: Python<'_>,
         msg_index: usize,
         obj_index: usize,
@@ -483,7 +485,7 @@ impl PyTensogramFile {
             ..Default::default()
         };
         let (meta, desc, data) = py
-            .allow_threads(|| self.file.decode_object(msg_index, obj_index, &options))
+            .detach(|| self.file.decode_object(msg_index, obj_index, &options))
             .map_err(to_py_err)?;
         let arr = bytes_to_numpy(py, &desc, &data)?;
         let py_desc = PyDataObjectDescriptor {
@@ -500,8 +502,9 @@ impl PyTensogramFile {
     }
 
     #[pyo3(signature = (msg_index, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
+    #[allow(clippy::too_many_arguments)]
     fn file_decode_range(
-        &mut self,
+        &self,
         py: Python<'_>,
         msg_index: usize,
         obj_index: usize,
@@ -517,7 +520,7 @@ impl PyTensogramFile {
         };
 
         let (desc, parts) = py
-            .allow_threads(|| {
+            .detach(|| {
                 self.file
                     .decode_range(msg_index, obj_index, &ranges, &options)
             })
@@ -535,23 +538,17 @@ impl PyTensogramFile {
     }
 
     /// Raw wire-format bytes for the message at *index*.
-    fn read_message<'py>(
-        &mut self,
-        py: Python<'py>,
-        index: usize,
-    ) -> PyResult<Bound<'py, PyBytes>> {
+    fn read_message<'py>(&self, py: Python<'py>, index: usize) -> PyResult<Bound<'py, PyBytes>> {
         let bytes = py
-            .allow_threads(|| self.file.read_message(index))
+            .detach(|| self.file.read_message(index))
             .map_err(to_py_err)?;
         Ok(PyBytes::new(py, &bytes))
     }
 
     /// All raw message bytes as a list of ``bytes`` objects.
-    fn messages<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+    fn messages<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         #[allow(deprecated)]
-        let msgs = py
-            .allow_threads(|| self.file.messages())
-            .map_err(to_py_err)?;
+        let msgs = py.detach(|| self.file.messages()).map_err(to_py_err)?;
         let items: Vec<PyObject> = msgs
             .iter()
             .map(|m| PyBytes::new(py, m).into_any().unbind())
@@ -577,9 +574,8 @@ impl PyTensogramFile {
         false // do not suppress exceptions
     }
 
-    fn __len__(&mut self, py: Python<'_>) -> PyResult<usize> {
-        py.allow_threads(|| self.file.message_count())
-            .map_err(to_py_err)
+    fn __len__(&self, py: Python<'_>) -> PyResult<usize> {
+        py.detach(|| self.file.message_count()).map_err(to_py_err)
     }
 
     /// Iterate over all messages in the file.
@@ -593,7 +589,7 @@ impl PyTensogramFile {
     ///         for meta, objects in f:
     ///             desc, arr = objects[0]
     ///             print(arr.shape)
-    fn __iter__(&mut self, py: Python<'_>) -> PyResult<PyFileIter> {
+    fn __iter__(&self, py: Python<'_>) -> PyResult<PyFileIter> {
         let path = self
             .file
             .path()
@@ -602,8 +598,8 @@ impl PyTensogramFile {
             })?
             .to_path_buf();
         let (iter_file, count) = py
-            .allow_threads(|| {
-                let mut f = TensogramFile::open(&path)?;
+            .detach(|| {
+                let f = TensogramFile::open(&path)?;
                 let c = f.message_count()?;
                 Ok::<_, tensogram_core::TensogramError>((f, c))
             })
@@ -620,10 +616,8 @@ impl PyTensogramFile {
     /// - ``file[i]`` returns ``Message(metadata, objects)``
     /// - ``file[-1]`` returns the last message
     /// - ``file[1:4]`` returns ``list[Message]``
-    fn __getitem__(&mut self, py: Python<'_>, key: &Bound<'_, pyo3::PyAny>) -> PyResult<PyObject> {
-        let count = py
-            .allow_threads(|| self.file.message_count())
-            .map_err(to_py_err)?;
+    fn __getitem__(&self, py: Python<'_>, key: &Bound<'_, pyo3::PyAny>) -> PyResult<PyObject> {
+        let count = py.detach(|| self.file.message_count()).map_err(to_py_err)?;
 
         if let Ok(index) = key.extract::<isize>() {
             let idx = if index < 0 {
@@ -639,7 +633,7 @@ impl PyTensogramFile {
             return self.decode_message(py, idx as usize, None, true);
         }
 
-        if let Ok(slice) = key.downcast::<pyo3::types::PySlice>() {
+        if let Ok(slice) = key.cast::<pyo3::types::PySlice>() {
             let indices = slice.indices(count as isize)?;
             let mut items: Vec<PyObject> = Vec::with_capacity(indices.slicelength as usize);
             let mut i = indices.start;
@@ -661,11 +655,11 @@ impl PyTensogramFile {
 /// The Message class is cached after first lookup to avoid repeated
 /// import + getattr on every decode call.
 fn pack_message(py: Python<'_>, meta: PyMetadata, objects: PyObject) -> PyResult<PyObject> {
-    use pyo3::sync::GILOnceCell;
-    static MESSAGE_TYPE: GILOnceCell<PyObject> = GILOnceCell::new();
+    use pyo3::sync::PyOnceLock;
+    static MESSAGE_TYPE: PyOnceLock<PyObject> = PyOnceLock::new();
     let msg_type = MESSAGE_TYPE
-        .get_or_try_init::<_, PyErr>(py, || {
-            Ok(py.import("tensogram")?.getattr("Message")?.unbind())
+        .get_or_try_init(py, || {
+            Ok::<_, PyErr>(py.import("tensogram")?.getattr("Message")?.unbind())
         })?
         .bind(py);
     let meta_obj = meta.into_pyobject(py)?.into_any();
@@ -703,7 +697,7 @@ impl PyFileIter {
         self.index += 1;
         let options = DecodeOptions::default();
         let (global_meta, data_objects) = py
-            .allow_threads(|| self.file.decode_message(i, &options))
+            .detach(|| self.file.decode_message(i, &options))
             .map_err(to_py_err)?;
         let result_list = data_objects_to_python(py, &data_objects)?;
         Ok(Some(pack_message(
@@ -753,7 +747,7 @@ fn py_encode<'py>(
         pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
     let options = make_encode_options(hash)?;
-    let msg = encode(&global_meta, &refs, &options).map_err(to_py_err)?;
+    let msg = py.detach(|| encode(&global_meta, &refs, &options).map_err(to_py_err))?;
     Ok(PyBytes::new(py, &msg))
 }
 
@@ -790,7 +784,7 @@ fn py_encode_pre_encoded<'py>(
         pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
     let options = make_encode_options(hash)?;
-    let msg = encode_pre_encoded(&global_meta, &refs, &options).map_err(to_py_err)?;
+    let msg = py.detach(|| encode_pre_encoded(&global_meta, &refs, &options).map_err(to_py_err))?;
     Ok(PyBytes::new(py, &msg))
 }
 
@@ -801,7 +795,7 @@ fn py_encode_pre_encoded<'py>(
 #[pyo3(name = "decode", signature = (buf, verify_hash=false, native_byte_order=true))]
 fn py_decode(
     py: Python<'_>,
-    buf: &[u8],
+    buf: PyBackedBytes,
     verify_hash: bool,
     native_byte_order: bool,
 ) -> PyResult<PyObject> {
@@ -810,7 +804,7 @@ fn py_decode(
         native_byte_order,
         ..Default::default()
     };
-    let (global_meta, data_objects) = decode(buf, &options).map_err(to_py_err)?;
+    let (global_meta, data_objects) = py.detach(|| decode(&buf, &options).map_err(to_py_err))?;
     let result_list = data_objects_to_python(py, &data_objects)?;
     pack_message(py, PyMetadata { inner: global_meta }, result_list)
 }
@@ -854,7 +848,7 @@ fn py_decode_descriptors(py: Python<'_>, buf: &[u8]) -> PyResult<(PyMetadata, Py
 #[pyo3(name = "decode_object", signature = (buf, index, verify_hash=false, native_byte_order=true))]
 fn py_decode_object(
     py: Python<'_>,
-    buf: &[u8],
+    buf: PyBackedBytes,
     index: usize,
     verify_hash: bool,
     native_byte_order: bool,
@@ -864,7 +858,8 @@ fn py_decode_object(
         native_byte_order,
         ..Default::default()
     };
-    let (global_meta, desc, obj_bytes) = decode_object(buf, index, &options).map_err(to_py_err)?;
+    let (global_meta, desc, obj_bytes) =
+        py.detach(|| decode_object(&buf, index, &options).map_err(to_py_err))?;
     let arr = bytes_to_numpy(py, &desc, &obj_bytes)?;
     Ok((
         PyMetadata { inner: global_meta },
@@ -891,7 +886,7 @@ fn py_decode_object(
 #[pyo3(name = "decode_range", signature = (buf, object_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
 fn py_decode_range(
     py: Python<'_>,
-    buf: &[u8],
+    buf: PyBackedBytes,
     object_index: usize,
     ranges: Vec<(u64, u64)>,
     join: bool,
@@ -903,7 +898,8 @@ fn py_decode_range(
         native_byte_order,
         ..Default::default()
     };
-    let (desc, parts) = decode_range(buf, object_index, &ranges, &options).map_err(to_py_err)?;
+    let (desc, parts) =
+        py.detach(|| decode_range(&buf, object_index, &ranges, &options).map_err(to_py_err))?;
 
     build_range_result(py, desc.dtype, parts, &ranges, join)
 }
@@ -914,8 +910,8 @@ fn py_decode_range(
 /// Useful for multi-message buffers (e.g. from a network socket or mmap).
 #[pyfunction]
 #[pyo3(name = "scan")]
-fn py_scan(buf: &[u8]) -> Vec<(usize, usize)> {
-    scan(buf)
+fn py_scan(py: Python<'_>, buf: PyBackedBytes) -> Vec<(usize, usize)> {
+    py.detach(|| scan(&buf))
 }
 
 /// Iterate over messages in a byte buffer.
@@ -975,12 +971,13 @@ impl PyBufferIter {
         }
         let (offset, length) = self.offsets[self.index];
         self.index += 1;
-        let msg_bytes = &self.buf[offset..offset + length];
+        let msg_bytes = self.buf[offset..offset + length].to_vec();
         let options = DecodeOptions {
             verify_hash: self.verify_hash,
             ..Default::default()
         };
-        let (global_meta, data_objects) = decode(msg_bytes, &options).map_err(to_py_err)?;
+        let (global_meta, data_objects) =
+            py.detach(|| decode(&msg_bytes, &options).map_err(to_py_err))?;
         let result_list = data_objects_to_python(py, &data_objects)?;
         Ok(Some(pack_message(
             py,
@@ -1114,7 +1111,7 @@ impl PyStreamingEncoder {
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
         // Zero-copy fast path for PyBytes; fall back to extract for bytearray / memoryview.
-        if let Ok(py_bytes) = data.downcast::<PyBytes>() {
+        if let Ok(py_bytes) = data.cast::<PyBytes>() {
             inner
                 .write_object_pre_encoded(&desc, py_bytes.as_bytes())
                 .map_err(to_py_err)
@@ -1218,12 +1215,12 @@ fn json_value_to_py(py: Python<'_>, val: &serde_json::Value) -> PyResult<PyObjec
 #[pyo3(name = "validate", signature = (buf, level="default", check_canonical=false))]
 fn py_validate(
     py: Python<'_>,
-    buf: &[u8],
+    buf: PyBackedBytes,
     level: &str,
     check_canonical: bool,
 ) -> PyResult<PyObject> {
     let options = parse_validate_options(level, check_canonical)?;
-    let report = validate_message(buf, &options);
+    let report = py.detach(|| validate_message(&buf, &options));
     let json_val = serde_json::to_value(&report)
         .map_err(|e| PyValueError::new_err(format!("serialization error: {e}")))?;
     json_value_to_py(py, &json_val)
@@ -1258,7 +1255,9 @@ fn py_validate_file(
     check_canonical: bool,
 ) -> PyResult<PyObject> {
     let options = parse_validate_options(level, check_canonical)?;
-    let report = core_validate_file(Path::new(path), &options)
+    let path = path.to_string();
+    let report = py
+        .detach(|| core_validate_file(Path::new(&path), &options))
         .map_err(|e| PyIOError::new_err(format!("{e}")))?;
     let json_val = serde_json::to_value(&report)
         .map_err(|e| PyValueError::new_err(format!("serialization error: {e}")))?;
@@ -1275,7 +1274,7 @@ fn py_is_remote_url(source: &str) -> bool {
     tensogram_core::is_remote_url(source)
 }
 
-#[pymodule]
+#[pymodule(gil_used = false)]
 fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_is_remote_url, m)?)?;
     m.add_function(wrap_pyfunction!(py_encode, m)?)?;
@@ -1323,7 +1322,7 @@ fn extract_descriptor_data_pairs(
 ) -> PyResult<Vec<(DataObjectDescriptor, Vec<u8>)>> {
     let mut result = Vec::new();
     for item in pairs_list.iter() {
-        let tuple = item.downcast::<pyo3::types::PyTuple>().map_err(|_| {
+        let tuple = item.cast::<pyo3::types::PyTuple>().map_err(|_| {
             PyValueError::new_err("each element must be a (descriptor_dict, data) tuple")
         })?;
         if tuple.len() != 2 {
@@ -1331,7 +1330,7 @@ fn extract_descriptor_data_pairs(
                 "each element must be a (descriptor_dict, data) tuple of length 2",
             ));
         }
-        let desc_dict = tuple.get_item(0)?.downcast_into::<PyDict>().map_err(|_| {
+        let desc_dict = tuple.get_item(0)?.cast_into::<PyDict>().map_err(|_| {
             PyValueError::new_err("first element of each pair must be a descriptor dict")
         })?;
         let desc = dict_to_data_object_descriptor(&desc_dict)?;
@@ -1395,7 +1394,7 @@ fn extract_pre_encoded_pairs(
 ) -> PyResult<Vec<(DataObjectDescriptor, Vec<u8>)>> {
     let mut result = Vec::new();
     for item in pairs_list.iter() {
-        let tuple = item.downcast::<pyo3::types::PyTuple>().map_err(|_| {
+        let tuple = item.cast::<pyo3::types::PyTuple>().map_err(|_| {
             PyValueError::new_err("each element must be a (descriptor_dict, bytes) tuple")
         })?;
         if tuple.len() != 2 {
@@ -1403,7 +1402,7 @@ fn extract_pre_encoded_pairs(
                 "each element must be a (descriptor_dict, bytes) tuple of length 2",
             ));
         }
-        let desc_dict = tuple.get_item(0)?.downcast_into::<PyDict>().map_err(|_| {
+        let desc_dict = tuple.get_item(0)?.cast_into::<PyDict>().map_err(|_| {
             PyValueError::new_err("first element of each pair must be a descriptor dict")
         })?;
         let desc = dict_to_data_object_descriptor(&desc_dict)?;
@@ -1463,7 +1462,7 @@ fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata>
     let base = match dict.get_item("base")? {
         Some(v) => {
             let list = v
-                .downcast::<PyList>()
+                .cast::<PyList>()
                 .map_err(|_| PyValueError::new_err("'base' must be a list of dicts"))?;
             let mut entries = Vec::with_capacity(list.len());
             for item in list.iter() {
@@ -1486,7 +1485,7 @@ fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata>
         Some(v) => py_dict_to_btree(&v)?,
         None => match dict.get_item("extra")? {
             Some(v) => {
-                if v.downcast::<PyDict>().is_ok() {
+                if v.cast::<PyDict>().is_ok() {
                     py_dict_to_btree(&v)?
                 } else {
                     return Err(PyValueError::new_err(
@@ -1525,7 +1524,7 @@ fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata>
 /// Convert a Python dict (or dict-like CBOR map value) to `BTreeMap<String, CborValue>`.
 fn py_dict_to_btree(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<BTreeMap<String, ciborium::Value>> {
     let dict = obj
-        .downcast::<PyDict>()
+        .cast::<PyDict>()
         .map_err(|_| PyValueError::new_err("expected a dict"))?;
     let mut map = BTreeMap::new();
     for (k, v) in dict.iter() {
