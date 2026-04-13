@@ -35,7 +35,9 @@ jobs:
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
-        run: dpkg -s libclang-dev cmake libnetcdf-dev libhdf5-dev libeccodes-dev >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake libnetcdf-dev libhdf5-dev libeccodes-dev)
+        run: |
+          dpkg -s libclang-dev libnetcdf-dev libhdf5-dev libeccodes-dev >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev libnetcdf-dev libhdf5-dev libeccodes-dev)
+          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" || pip install cmake
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
@@ -103,7 +105,8 @@ jobs:
           enable-cache: true
 
       - name: Install system dependencies
-        run: dpkg -s libclang-dev cmake >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake)
+        run: dpkg -s libclang-dev >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev)
+          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" || pip install cmake
 
       - name: Build and test
         env:
@@ -131,7 +134,8 @@ jobs:
           enable-cache: true
 
       - name: Install system dependencies
-        run: dpkg -s libclang-dev cmake >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake)
+        run: dpkg -s libclang-dev >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev)
+          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" || pip install cmake
 
       - name: Build and test
         run: |
@@ -160,7 +164,8 @@ jobs:
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
-        run: dpkg -s libclang-dev cmake >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake)
+        run: dpkg -s libclang-dev >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev)
+          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" || pip install cmake
 
       - name: Build and test
         run: |
