@@ -2106,3 +2106,193 @@ fn write_test_frame(out: &mut Vec<u8>, frame_type: u16, payload: &[u8]) {
     let pad = (8 - (out.len() % 8)) % 8;
     out.extend(std::iter::repeat_n(0u8, pad));
 }
+
+// ── 48. Corrupt descriptor CBOR ──────────────────────────────────────────────
+
+#[test]
+fn corrupt_metadata_cbor_rejected() {
+    // Build a valid message, then corrupt the metadata CBOR frame to test
+    // the framing::decode_message error path for bad CBOR.
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let data = vec![0u8; 16];
+    let mut encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    // Find the HeaderMetadata frame: "FR" followed by frame type 0x0001
+    let header_meta_marker: &[u8] = &[b'F', b'R', 0x00, 0x01];
+    if let Some(frame_start) = encoded.windows(4).position(|w| w == header_meta_marker) {
+        // Corrupt the CBOR payload inside the metadata frame
+        // The frame header is 16 bytes; corrupt the payload area
+        let payload_start = frame_start + 16;
+        if payload_start + 4 < encoded.len() {
+            encoded[payload_start] = 0xFF;
+            encoded[payload_start + 1] = 0xFF;
+            encoded[payload_start + 2] = 0xFF;
+            encoded[payload_start + 3] = 0xFF;
+        }
+    }
+
+    let result = decode(&encoded, &DecodeOptions::default());
+    assert!(result.is_err(), "corrupt metadata CBOR should be rejected");
+}
+
+#[test]
+fn truncated_buffer_rejected() {
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let data = vec![0u8; 16];
+    let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    // Truncate to half the message
+    let truncated = &encoded[..encoded.len() / 2];
+    let result = decode(truncated, &DecodeOptions::default());
+    assert!(result.is_err(), "truncated buffer should be rejected");
+}
+
+// ── 49. decode_object with index out of range ────────────────────────────────
+
+#[test]
+fn decode_object_negative_boundary() {
+    // Test index exactly at boundary (num_objects)
+    let meta = make_global_meta();
+    let desc0 = make_descriptor(vec![2], Dtype::Float32);
+    let desc1 = make_descriptor(vec![3], Dtype::Float32);
+    let data0 = vec![0u8; 8];
+    let data1 = vec![0u8; 12];
+
+    let encoded = encode(
+        &meta,
+        &[(&desc0, data0.as_slice()), (&desc1, data1.as_slice())],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
+
+    // Index 2 is out of range for 2 objects (indices 0, 1)
+    let result = decode_object(&encoded, 2, &DecodeOptions::default());
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("out of range"));
+
+    // Index 1 should succeed (last valid index)
+    let result = decode_object(&encoded, 1, &DecodeOptions::default());
+    assert!(result.is_ok());
+}
+
+// ── 50. decode_range with invalid ranges ─────────────────────────────────────
+
+#[test]
+fn decode_range_with_filter_rejected() {
+    // decode_range should reject messages with a filter applied
+    let meta = make_global_meta();
+    let mut params = BTreeMap::new();
+    params.insert(
+        "shuffle_element_size".to_string(),
+        ciborium::Value::Integer(4.into()),
+    );
+    let mut desc = make_descriptor(vec![10], Dtype::Float32);
+    desc.filter = "shuffle".to_string();
+    desc.params = params;
+    let data: Vec<u8> = (0..40).collect();
+
+    let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let result = decode_range(&encoded, 0, &[(0, 5)], &DecodeOptions::default());
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("filter") || msg.contains("shuffle"),
+        "expected filter error, got: {msg}"
+    );
+}
+
+#[test]
+fn decode_range_on_bitmask_dtype_rejected() {
+    // decode_range should reject bitmask dtype
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![16], Dtype::Bitmask);
+    let data = vec![0xFF; 2];
+    let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    let result = decode_range(&encoded, 0, &[(0, 4)], &DecodeOptions::default());
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("bitmask"));
+}
+
+// ── 51. decode on completely invalid data ────────────────────────────────────
+
+#[test]
+fn decode_on_random_garbage() {
+    let garbage = vec![
+        0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x01, 0x02, 0x03,
+    ];
+    let result = decode(&garbage, &DecodeOptions::default());
+    assert!(result.is_err());
+}
+
+#[test]
+fn decode_metadata_on_garbage() {
+    let garbage = vec![0u8; 50];
+    let result = decode_metadata(&garbage);
+    assert!(result.is_err());
+}
+
+#[test]
+fn decode_descriptors_on_garbage() {
+    let garbage = vec![0xFF; 100];
+    let result = decode_descriptors(&garbage);
+    assert!(result.is_err());
+}
+
+// ── 52. decode_object on empty message (no objects) ──────────────────────────
+
+#[test]
+fn decode_object_on_empty_message() {
+    let meta = make_global_meta();
+    let encoded = encode(&meta, &[], &EncodeOptions::default()).unwrap();
+
+    let result = decode_object(&encoded, 0, &DecodeOptions::default());
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("out of range"));
+}
+
+// ── 53. decode_range on empty message (no objects) ───────────────────────────
+
+#[test]
+fn decode_range_on_empty_message() {
+    let meta = make_global_meta();
+    let encoded = encode(&meta, &[], &EncodeOptions::default()).unwrap();
+
+    let result = decode_range(&encoded, 0, &[(0, 1)], &DecodeOptions::default());
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("out of range"));
+}
+
+// ── 54. Corrupt data object frame ENDF trailer ──────────────────────────────
+
+#[test]
+fn corrupt_data_object_frame_trailer_rejected() {
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let data = vec![42u8; 16];
+    let mut encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    // Find the DataObject frame: "FR" followed by frame type 0x0004
+    let data_object_marker: &[u8] = &[b'F', b'R', 0x00, 0x04];
+    if let Some(frame_start) = encoded.windows(4).position(|w| w == data_object_marker) {
+        // Read the total_length from the frame header (bytes 8-15)
+        let total_len_bytes = &encoded[frame_start + 8..frame_start + 16];
+        let total_len = u64::from_be_bytes(total_len_bytes.try_into().unwrap()) as usize;
+        // The ENDF trailer is the last 4 bytes of the frame
+        let endf_start = frame_start + total_len - 4;
+        if endf_start + 4 <= encoded.len() {
+            encoded[endf_start] = 0xFF;
+            encoded[endf_start + 1] = 0xFF;
+            encoded[endf_start + 2] = 0xFF;
+            encoded[endf_start + 3] = 0xFF;
+        }
+    }
+
+    let result = decode(&encoded, &DecodeOptions::default());
+    assert!(
+        result.is_err(),
+        "corrupt data object frame trailer should be rejected"
+    );
+}

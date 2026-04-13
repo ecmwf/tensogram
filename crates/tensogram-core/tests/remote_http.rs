@@ -987,6 +987,416 @@ async fn test_async_remote_message_index_out_of_range() -> Result<(), Box<dyn Er
     Ok(())
 }
 
+// ── Async multi-message scan ─────────────────────────────────────────────────
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_remote_multi_message_scan() -> Result<(), Box<dyn Error>> {
+    let msg1 = encode_test_message(vec![4], 10)?;
+    let msg2 = encode_test_message(vec![8], 20)?;
+    let mut combined = msg1;
+    combined.extend_from_slice(&msg2);
+
+    let server = MockServer::start(combined).await?;
+
+    let mut file = TensogramFile::open_source_async(server.url()).await?;
+    assert_eq!(file.message_count()?, 2);
+
+    let meta0 = file.decode_metadata_async(0).await?;
+    assert_eq!(meta0.version, 2);
+
+    let (_, descs1) = file.decode_descriptors_async(1).await?;
+    assert_eq!(descs1[0].shape, vec![8]);
+    Ok(())
+}
+
+// ── Async eager layout tests ─────────────────────────────────────────────────
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_eager_layout_combines_scan_and_discover() -> Result<(), Box<dyn Error>> {
+    let msg1 = encode_test_message(vec![4], 10)?;
+    let msg2 = encode_test_message(vec![8], 20)?;
+    let mut combined = msg1;
+    combined.extend_from_slice(&msg2);
+    let server = MockServer::start(combined).await?;
+
+    let mut file = TensogramFile::open_source_async(server.url()).await?;
+    server.reset_count();
+    let (_, desc, data) = file
+        .decode_object_async(1, 0, &DecodeOptions::default())
+        .await?;
+
+    assert_eq!(desc.shape, vec![8]);
+    assert_eq!(data, vec![20u8; 32]);
+    Ok(())
+}
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_eager_layout_streaming_falls_back() -> Result<(), Box<dyn Error>> {
+    let msg = encode_streaming_message(vec![4], 42)?;
+    let server = MockServer::start(msg).await?;
+
+    let mut file = TensogramFile::open_source_async(server.url()).await?;
+    server.reset_count();
+    let (_, desc, data) = file
+        .decode_object_async(0, 0, &DecodeOptions::default())
+        .await?;
+
+    assert_eq!(desc.shape, vec![4]);
+    assert_eq!(data, vec![42u8; 16]);
+    Ok(())
+}
+
+// ── Async descriptor-only tests ──────────────────────────────────────────────
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_descriptor_only_matches_full_read() -> Result<(), Box<dyn Error>> {
+    let shapes = vec![vec![4], vec![8, 2], vec![100]];
+    let fills = vec![10u8, 20u8, 30u8];
+    let msg = encode_multi_object_message(&shapes, &fills)?;
+    let server = MockServer::start(msg.clone()).await?;
+
+    let mut file = TensogramFile::open_source_async(server.url()).await?;
+    let (_, remote_descs) = file.decode_descriptors_async(0).await?;
+
+    let (_, local_descs) = tensogram_core::decode::decode_descriptors(&msg)?;
+
+    assert_eq!(remote_descs.len(), local_descs.len());
+    for (rd, ld) in remote_descs.iter().zip(local_descs.iter()) {
+        assert_eq!(rd.shape, ld.shape);
+        assert_eq!(rd.dtype, ld.dtype);
+        assert_eq!(rd.encoding, ld.encoding);
+        assert_eq!(rd.compression, ld.compression);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_descriptor_only_large_frame_exercises_fast_path() -> Result<(), Box<dyn Error>>
+{
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![256, 256]);
+    let data = vec![7u8; 256 * 256 * 4];
+    let msg = encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
+    assert!(
+        msg.len() > 64 * 1024,
+        "payload must exceed 64KB threshold, got {} bytes",
+        msg.len()
+    );
+    let server = MockServer::start(msg.clone()).await?;
+
+    let mut file = TensogramFile::open_source_async(server.url()).await?;
+    let (_, remote_descs) = file.decode_descriptors_async(0).await?;
+    let (_, local_descs) = tensogram_core::decode::decode_descriptors(&msg)?;
+
+    assert_eq!(remote_descs.len(), 1);
+    assert_eq!(remote_descs[0].shape, local_descs[0].shape);
+    assert_eq!(remote_descs[0].dtype, local_descs[0].dtype);
+
+    let (_, _, decoded) = file
+        .decode_object_async(0, 0, &DecodeOptions::default())
+        .await?;
+    assert_eq!(decoded, data);
+    Ok(())
+}
+
+// ── Async decode_range tests ─────────────────────────────────────────────────
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_remote_decode_range_single_range() -> Result<(), Box<dyn Error>> {
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![8]);
+    let data: Vec<u8> = (0..32).collect();
+    let msg = encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
+    let server = MockServer::start(msg).await?;
+
+    // Use sync API to test the range (async decode_range not exposed on TensogramFile,
+    // but the async layout discovery path is exercised by open_source_async + sync range)
+    let file = TensogramFile::open_source(server.url())?;
+    let ranges = vec![(2u64, 3u64)];
+    let (_, parts) = file.decode_range(0, 0, &ranges, &DecodeOptions::default())?;
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0].len(), 3 * 4);
+    Ok(())
+}
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_remote_decode_range_matches_local() -> Result<(), Box<dyn Error>> {
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![16]);
+    let data: Vec<u8> = (0..64).collect();
+    let msg = encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
+    let server = MockServer::start(msg.clone()).await?;
+
+    let ranges = vec![(0u64, 4u64), (8u64, 4u64)];
+    let opts = DecodeOptions::default();
+
+    let remote_file = TensogramFile::open_source(server.url())?;
+    let (_, remote_parts) = remote_file.decode_range(0, 0, &ranges, &opts)?;
+
+    let (_, local_parts) = tensogram_core::decode_range(&msg, 0, &ranges, &opts)?;
+
+    assert_eq!(remote_parts.len(), local_parts.len());
+    for (rp, lp) in remote_parts.iter().zip(local_parts.iter()) {
+        assert_eq!(rp, lp);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_remote_decode_range_out_of_range_object() -> Result<(), Box<dyn Error>> {
+    let msg = encode_test_message(vec![4], 42)?;
+    let server = MockServer::start(msg).await?;
+
+    let file = TensogramFile::open_source(server.url())?;
+    let result = file.decode_range(0, 5, &[(0, 1)], &DecodeOptions::default());
+    assert!(result.is_err());
+    Ok(())
+}
+
+// ── Async request budget tests ───────────────────────────────────────────────
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_remote_request_budget_header_indexed() -> Result<(), Box<dyn Error>> {
+    let msg = encode_test_message(vec![4], 42)?;
+    let server = MockServer::start(msg).await?;
+
+    let mut file = TensogramFile::open_source_async(server.url()).await?;
+    let open_requests = server.request_count();
+
+    server.reset_count();
+    let _ = file
+        .decode_object_async(0, 0, &DecodeOptions::default())
+        .await?;
+    let object_requests = server.request_count();
+    let range_requests = server.range_request_count();
+
+    assert!(
+        object_requests <= 2,
+        "expected <=2 requests for object read, got {object_requests} (open used {open_requests})"
+    );
+    assert!(
+        range_requests > 0,
+        "object read must use Range requests, not full GETs"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_remote_lazy_open_only_reads_first_preamble() -> Result<(), Box<dyn Error>> {
+    let msg1 = encode_test_message(vec![4], 10)?;
+    let msg2 = encode_test_message(vec![8], 20)?;
+    let mut combined = msg1;
+    combined.extend_from_slice(&msg2);
+    let server = MockServer::start(combined).await?;
+
+    let mut file = TensogramFile::open_source_async(server.url()).await?;
+
+    let (_, desc, data) = file
+        .decode_object_async(0, 0, &DecodeOptions::default())
+        .await?;
+    assert_eq!(desc.shape, vec![4]);
+    assert_eq!(data, vec![10u8; 16]);
+
+    server.reset_count();
+    assert_eq!(file.message_count()?, 2);
+    let scan_requests = server.request_count();
+    assert!(
+        scan_requests >= 1,
+        "message_count should trigger scanning of remaining messages"
+    );
+    Ok(())
+}
+
+// ── Async suffix read combines test ──────────────────────────────────────────
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_remote_suffix_read_combines_streaming() -> Result<(), Box<dyn Error>> {
+    let msg = encode_streaming_message(vec![4], 42)?;
+    let server = MockServer::start(msg.clone()).await?;
+
+    let mut file = TensogramFile::open_source_async(server.url()).await?;
+    assert!(file.is_remote());
+    assert_eq!(file.message_count()?, 1);
+
+    let meta = file.decode_metadata_async(0).await?;
+    assert_eq!(meta.version, 2);
+
+    let (_, desc, data) = file
+        .decode_object_async(0, 0, &DecodeOptions::default())
+        .await?;
+    assert_eq!(desc.shape, vec![4]);
+    assert_eq!(data, vec![42u8; 16]);
+
+    // Verify consistency with local decode
+    let (local_meta, local_objects) =
+        tensogram_core::decode::decode(&msg, &DecodeOptions::default())?;
+    assert_eq!(local_meta.version, meta.version);
+    assert_eq!(local_objects[0].1, data);
+    Ok(())
+}
+
+// ── Async mixed message types test ───────────────────────────────────────────
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_remote_mixed_buffered_then_streaming() -> Result<(), Box<dyn Error>> {
+    let buffered_msg = encode_test_message(vec![4], 10)?;
+    let streaming_msg = encode_streaming_message(vec![8], 20)?;
+
+    let mut combined = buffered_msg;
+    combined.extend_from_slice(&streaming_msg);
+
+    let server = MockServer::start(combined).await?;
+    let mut file = TensogramFile::open_source_async(server.url()).await?;
+    assert_eq!(file.message_count()?, 2);
+
+    let (_, _, data0) = file
+        .decode_object_async(0, 0, &DecodeOptions::default())
+        .await?;
+    assert_eq!(data0, vec![10u8; 16]);
+
+    let (_, _, data1) = file
+        .decode_object_async(1, 0, &DecodeOptions::default())
+        .await?;
+    assert_eq!(data1, vec![20u8; 32]);
+    Ok(())
+}
+
+// ── Async repeated reads use cache ───────────────────────────────────────────
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_remote_repeated_object_reads_use_cache() -> Result<(), Box<dyn Error>> {
+    let shapes = vec![vec![4], vec![8]];
+    let fills = vec![10u8, 20u8];
+    let msg = encode_multi_object_message(&shapes, &fills)?;
+    let server = MockServer::start(msg).await?;
+
+    let mut file = TensogramFile::open_source_async(server.url()).await?;
+    server.reset_count();
+
+    // First object read
+    let _ = file
+        .decode_object_async(0, 0, &DecodeOptions::default())
+        .await?;
+    let first_read_count = server.request_count();
+
+    server.reset_count();
+
+    // Second object read from same message — layout is cached
+    let _ = file
+        .decode_object_async(0, 1, &DecodeOptions::default())
+        .await?;
+    let second_read_count = server.request_count();
+
+    assert!(
+        second_read_count <= 1,
+        "repeated reads should reuse cached layout, got {second_read_count} requests (first was {first_read_count})"
+    );
+    Ok(())
+}
+
+// ── Async matches local decode ───────────────────────────────────────────────
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_remote_matches_local_decode() -> Result<(), Box<dyn Error>> {
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![10]);
+    let data: Vec<u8> = (0..40).collect();
+    let msg = encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
+
+    let server = MockServer::start(msg.clone()).await?;
+
+    // Local decode
+    let (local_meta, local_objects) =
+        tensogram_core::decode::decode(&msg, &DecodeOptions::default())?;
+
+    // Async remote decode
+    let mut remote_file = TensogramFile::open_source_async(server.url()).await?;
+    let (remote_meta, remote_desc, remote_data) = remote_file
+        .decode_object_async(0, 0, &DecodeOptions::default())
+        .await?;
+
+    assert_eq!(local_meta.version, remote_meta.version);
+    assert_eq!(local_objects[0].0.shape, remote_desc.shape);
+    assert_eq!(local_objects[0].1, remote_data);
+    Ok(())
+}
+
+// ── Async multi-object test ──────────────────────────────────────────────────
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_async_remote_multi_object_decode_single() -> Result<(), Box<dyn Error>> {
+    let shapes = vec![vec![4], vec![8], vec![2]];
+    let fills = vec![10u8, 20u8, 30u8];
+    let msg = encode_multi_object_message(&shapes, &fills)?;
+    let server = MockServer::start(msg).await?;
+
+    let mut file = TensogramFile::open_source_async(server.url()).await?;
+
+    // Read only the second object
+    let (_, desc, data) = file
+        .decode_object_async(0, 1, &DecodeOptions::default())
+        .await?;
+    assert_eq!(desc.shape, vec![8]);
+    assert_eq!(data, vec![20u8; 32]);
+
+    // Read the third object
+    let (_, desc, data) = file
+        .decode_object_async(0, 2, &DecodeOptions::default())
+        .await?;
+    assert_eq!(desc.shape, vec![2]);
+    assert_eq!(data, vec![30u8; 8]);
+    Ok(())
+}
+
+// ── Scoped-thread fallback test (current_thread runtime) ─────────────────────
+
+#[cfg(feature = "remote")]
+#[tokio::test(flavor = "current_thread")]
+async fn test_block_on_shared_current_thread_fallback() -> Result<(), Box<dyn Error>> {
+    // This test uses flavor = "current_thread" which forces the scoped-thread
+    // fallback path in block_on_shared (lines 93-112 of remote.rs).
+    let msg = encode_test_message(vec![4], 42)?;
+    let server = MockServer::start(msg).await?;
+    let url = server.url();
+
+    // Spawn a blocking task to call open_source from within the current-thread runtime.
+    // open_source → RemoteBackend::open → block_on_shared which will hit the
+    // current-thread fallback branch.
+    let result = tokio::task::spawn_blocking(move || {
+        let file = TensogramFile::open_source(&url)?;
+        assert!(file.is_remote());
+        let meta = file.decode_metadata(0)?;
+        assert_eq!(meta.version, 2);
+        let (_, desc, data) = file.decode_object(0, 0, &DecodeOptions::default())?;
+        assert_eq!(desc.shape, vec![4]);
+        assert_eq!(data, vec![42u8; 16]);
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(e.to_string().into()),
+        Err(e) => return Err(format!("spawn_blocking panicked: {e}").into()),
+    }
+    Ok(())
+}
+
 // ── Remote decode_range tests ────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -76,8 +76,6 @@ def resolve_variable_name(
     keys_to_try.extend(_VARIABLE_NAME_KEYS)
 
     for key in keys_to_try:
-        if key is None:
-            continue
         val = _resolve_dotted(source, key)
         if val is not None:
             return str(val)
