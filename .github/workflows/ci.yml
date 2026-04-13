@@ -35,7 +35,7 @@ jobs:
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake libnetcdf-dev libhdf5-dev libeccodes-dev
+        run: dpkg -s libclang-dev cmake libnetcdf-dev libhdf5-dev libeccodes-dev >/dev/null 2>&1 || (dpkg -s libclang-dev cmake >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake) libnetcdf-dev libhdf5-dev libeccodes-dev)
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
@@ -99,7 +99,7 @@ jobs:
           enable-cache: true
 
       - name: Install system dependencies
-        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake
+        run: dpkg -s libclang-dev cmake >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake)
 
       - name: Build and test
         env:
@@ -126,7 +126,7 @@ jobs:
           enable-cache: true
 
       - name: Install system dependencies
-        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake
+        run: dpkg -s libclang-dev cmake >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake)
 
       - name: Build and test
         run: |
@@ -155,7 +155,7 @@ jobs:
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake
+        run: dpkg -s libclang-dev cmake >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake)
 
       - name: Build and test
         run: |
