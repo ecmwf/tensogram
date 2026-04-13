@@ -91,7 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 2. Open and inspect ───────────────────────────────────────────────────
     {
-        let mut file = TensogramFile::open(&path)?;
+        let file = TensogramFile::open(&path)?;
         // No I/O yet. Scan runs on first access below.
 
         let count = file.message_count()?; // ← scan happens here

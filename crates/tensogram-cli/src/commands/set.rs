@@ -70,7 +70,7 @@ pub fn run(
         }
     }
 
-    let mut in_file = TensogramFile::open(input)?;
+    let in_file = TensogramFile::open(input)?;
     let mut out = std::fs::File::create(output)?;
     let count = in_file.message_count()?;
 

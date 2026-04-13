@@ -17,7 +17,7 @@ pub fn run(
 
     let has_placeholders = output.contains('[') && output.contains(']');
 
-    let mut in_file = TensogramFile::open(input)?;
+    let in_file = TensogramFile::open(input)?;
     let count = in_file.message_count()?;
 
     if !has_placeholders {

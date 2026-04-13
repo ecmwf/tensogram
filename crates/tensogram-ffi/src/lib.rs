@@ -1353,7 +1353,7 @@ pub extern "C" fn tgm_file_message_count(file: *mut TgmFile, out_count: *mut usi
         return TgmError::InvalidArg;
     }
 
-    let f = unsafe { &mut (*file).file };
+    let f = unsafe { &(*file).file };
     match f.message_count() {
         Ok(count) => {
             unsafe {
@@ -1383,7 +1383,7 @@ pub extern "C" fn tgm_file_decode_message(
         return TgmError::InvalidArg;
     }
 
-    let f = unsafe { &mut (*file).file };
+    let f = unsafe { &(*file).file };
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
         native_byte_order: native_byte_order != 0,
@@ -1430,7 +1430,7 @@ pub extern "C" fn tgm_file_read_message(
         return TgmError::InvalidArg;
     }
 
-    let f = unsafe { &mut (*file).file };
+    let f = unsafe { &(*file).file };
 
     match f.read_message(index) {
         Ok(bytes) => {
@@ -1844,7 +1844,7 @@ pub extern "C" fn tgm_file_iter_create(file: *mut TgmFile, out: *mut *mut TgmFil
         set_last_error("null argument");
         return TgmError::InvalidArg;
     }
-    let f = unsafe { &mut (*file).file };
+    let f = unsafe { &(*file).file };
     match f.iter() {
         Ok(inner) => {
             let iter = Box::new(TgmFileIter { inner });

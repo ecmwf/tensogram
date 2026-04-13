@@ -80,7 +80,7 @@ pub fn run(
     let mut all_objects: Vec<(tensogram_core::DataObjectDescriptor, Vec<u8>)> = Vec::new();
 
     for input in inputs {
-        let mut file = TensogramFile::open(input.as_ref())?;
+        let file = TensogramFile::open(input.as_ref())?;
         let count = file.message_count()?;
 
         for i in 0..count {

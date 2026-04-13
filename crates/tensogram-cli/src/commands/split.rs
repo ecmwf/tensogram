@@ -9,7 +9,7 @@ use tensogram_core::{decode, encode, DecodeOptions, EncodeOptions, TensogramFile
 /// Output files are named using the template with `[index]` placeholder,
 /// or sequentially numbered in the output directory.
 pub fn run(input: &Path, output_template: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut file = TensogramFile::open(input)?;
+    let file = TensogramFile::open(input)?;
     let count = file.message_count()?;
 
     let mut total_written = 0;
