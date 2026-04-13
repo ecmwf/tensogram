@@ -383,7 +383,7 @@ class TensogramStore(ZarrStore):
             try:
                 self._scan_remote(f)
             except Exception:
-                f.close()
+                f.__exit__(None, None, None)
                 raise
         else:
             msg_count = len(f)
