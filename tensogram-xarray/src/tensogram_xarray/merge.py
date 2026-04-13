@@ -84,6 +84,7 @@ def open_datasets(
     coord_indices, var_indices, coord_dim_map = detect_coords(all_metas)
 
     lock = threading.Lock()
+    all_backend_arrays: list[TensogramBackendArray] = []
     coord_vars: dict[str, xr.Variable] = {}
     for ci in coord_indices:
         obj = file_index.objects[ci]
@@ -104,6 +105,7 @@ def open_datasets(
             storage_options=storage_options,
             shared_file=shared_file,
         )
+        all_backend_arrays.append(backend_array)
         lazy_data = indexing.LazilyIndexedArray(backend_array)
 
         if dim_name in coord_vars:
@@ -137,6 +139,7 @@ def open_datasets(
             verify_hash=verify_hash,
             storage_options=storage_options,
             shared_file=shared_file,
+            backend_arrays=all_backend_arrays,
         )
         if ds is not None:
             datasets.append(ds)
@@ -148,17 +151,9 @@ def open_datasets(
 
         def _close_shared():
             nonlocal shared_file
-            for ds in datasets:
-                for var in ds.variables.values():
-                    arr = getattr(var, "_data", None)
-                    while hasattr(arr, "array"):
-                        arr = arr.array
-                    if isinstance(arr, TensogramBackendArray):
-                        arr._shared_file = None
-                    elif isinstance(arr, StackedBackendArray):
-                        for inner in arr._arrays:
-                            if isinstance(inner, TensogramBackendArray):
-                                inner._shared_file = None
+            for arr in all_backend_arrays:
+                arr._shared_file = None
+            all_backend_arrays.clear()
             shared_file = None
 
         for ds in datasets:
@@ -320,6 +315,7 @@ def _build_dataset_from_group(
     storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
+    backend_arrays: list | None = None,
 ) -> xr.Dataset | None:
     """Build a Dataset from a group of structurally compatible objects.
 
@@ -343,6 +339,7 @@ def _build_dataset_from_group(
             verify_hash=verify_hash,
             storage_options=storage_options,
             shared_file=shared_file,
+            backend_arrays=backend_arrays,
         )
 
     # Multiple objects -> try hypercube merge.
@@ -372,6 +369,7 @@ def _build_dataset_from_group(
                 verify_hash=verify_hash,
                 storage_options=storage_options,
                 shared_file=shared_file,
+                backend_arrays=backend_arrays,
             )
 
     # Check if the varying keys form a hypercube.
@@ -390,6 +388,7 @@ def _build_dataset_from_group(
             verify_hash=verify_hash,
             storage_options=storage_options,
             shared_file=shared_file,
+            backend_arrays=backend_arrays,
         )
 
     if _try_hypercube(group, varying):
@@ -406,6 +405,7 @@ def _build_dataset_from_group(
             verify_hash=verify_hash,
             storage_options=storage_options,
             shared_file=shared_file,
+            backend_arrays=backend_arrays,
         )
 
     # Hypercube incomplete -> just return as separate variables.
@@ -436,6 +436,7 @@ def _single_object_dataset(
     storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
+    backend_arrays: list | None = None,
 ) -> xr.Dataset:
     """Build a Dataset from a single object."""
     np_dtype = _to_numpy_dtype(obj.dtype)
@@ -457,6 +458,8 @@ def _single_object_dataset(
         storage_options=storage_options,
         shared_file=shared_file,
     )
+    if backend_arrays is not None:
+        backend_arrays.append(backend_array)
     lazy_data = indexing.LazilyIndexedArray(backend_array)
     var = xr.Variable(dims, lazy_data, dict(obj.merged_meta))
 
@@ -478,6 +481,7 @@ def _flat_group_dataset(
     storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
+    backend_arrays: list | None = None,
 ) -> xr.Dataset:
     """Build a Dataset with one variable per object (no stacking)."""
     data_vars: dict[str, xr.Variable] = {}
@@ -501,6 +505,8 @@ def _flat_group_dataset(
             storage_options=storage_options,
             shared_file=shared_file,
         )
+        if backend_arrays is not None:
+            backend_arrays.append(backend_array)
         lazy_data = indexing.LazilyIndexedArray(backend_array)
         data_vars[var_name] = xr.Variable(dims, lazy_data, dict(obj.merged_meta))
 
@@ -523,6 +529,7 @@ def _hypercube_dataset(
     storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
+    backend_arrays: list | None = None,
 ) -> xr.Dataset:
     """Stack objects into a Dataset with outer dimensions from varying keys.
 
@@ -582,6 +589,8 @@ def _hypercube_dataset(
             )
         )
 
+    if backend_arrays is not None:
+        backend_arrays.extend(backing_arrays)
     stacked = StackedBackendArray(backing_arrays, outer_shape, inner_shape, np_dtype)
     lazy_data = indexing.LazilyIndexedArray(stacked)
 
@@ -611,6 +620,7 @@ def _build_multi_variable_dataset(
     storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
+    backend_arrays: list | None = None,
 ) -> xr.Dataset:
     """Split group by variable_key, then stack each sub-group.
 
@@ -649,6 +659,8 @@ def _build_multi_variable_dataset(
                 storage_options=storage_options,
                 shared_file=shared_file,
             )
+            if backend_arrays is not None:
+                backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
             data_vars[var_name] = xr.Variable(inner_dims, lazy_data, dict(obj.merged_meta))
         elif remaining_varying:
@@ -702,6 +714,8 @@ def _build_multi_variable_dataset(
                         )
                     )
 
+                if backend_arrays is not None:
+                    backend_arrays.extend(backing)
                 stacked = StackedBackendArray(backing, outer_shape, inner_shape, np_dtype)
                 lazy_data = indexing.LazilyIndexedArray(stacked)
 
@@ -731,6 +745,8 @@ def _build_multi_variable_dataset(
                     storage_options=storage_options,
                     shared_file=shared_file,
                 )
+                if backend_arrays is not None:
+                    backend_arrays.append(backend_array)
                 lazy_data = indexing.LazilyIndexedArray(backend_array)
                 data_vars[var_name] = xr.Variable(inner_dims, lazy_data, dict(obj.merged_meta))
         else:
@@ -757,6 +773,8 @@ def _build_multi_variable_dataset(
                 storage_options=storage_options,
                 shared_file=shared_file,
             )
+            if backend_arrays is not None:
+                backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
             data_vars[var_name] = xr.Variable(inner_dims, lazy_data, dict(obj.merged_meta))
 
