@@ -13,7 +13,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  CARGO_BUILD_JOBS: 4
+
 
 jobs:
   # ── Main: Rust lint/test + Python bindings + GRIB + NetCDF ──────────
@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [[self-hosted, Linux, hpc], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
+        runner: [[self-hosted, Linux, platform-builder-docker-xl], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -94,7 +94,7 @@ jobs:
   python-free-threaded:
     name: Python 3.13t (free-threaded)
     needs: main
-    runs-on: [self-hosted, Linux, hpc]
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -124,7 +124,7 @@ jobs:
   python-packages:
     name: Python packages
     needs: main
-    runs-on: [self-hosted, Linux, hpc]
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -157,7 +157,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [[self-hosted, Linux, hpc], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
+        runner: [[self-hosted, Linux, platform-builder-docker-xl], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -172,15 +172,15 @@ jobs:
 
       - name: Build and test
         run: |
-          cargo build -p tensogram-ffi
-          cmake -B build -DCMAKE_BUILD_TYPE=Debug
+          cargo build --release -p tensogram-ffi
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j
           ctest --test-dir build --output-on-failure
 
   # ── WASM: build + test ───────────────────────────────────────────────
   wasm:
     name: WASM
-    runs-on: [self-hosted, Linux, hpc]
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
