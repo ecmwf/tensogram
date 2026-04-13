@@ -285,6 +285,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - uses: jetli/wasm-pack-action@v0.4.0
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
       - name: Test WASM (Node.js)
         run: wasm-pack test --node crates/tensogram-wasm
