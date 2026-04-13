@@ -13,6 +13,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  CARGO_BUILD_JOBS: 4
 
 jobs:
   # ── Main: Rust lint/test + Python bindings + GRIB + NetCDF ──────────
@@ -171,8 +172,8 @@ jobs:
 
       - name: Build and test
         run: |
-          cargo build --release -p tensogram-ffi
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cargo build -p tensogram-ffi
+          cmake -B build -DCMAKE_BUILD_TYPE=Debug
           cmake --build build -j
           ctest --test-dir build --output-on-failure
 
