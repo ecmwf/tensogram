@@ -10,6 +10,24 @@
 - CRITICAL: Always prefer the LSP tool over Grep/Read for code navigation. 
     - Use it to find definitions, references, and workspace symbols.
 
+- CRITICAL: NEVER suppress warnings, lint errors, or test failures with annotations
+  (`#[allow(...)]`, `noqa`, `@SuppressWarnings`, etc.) unless the suppression itself
+  is the correct semantic choice (e.g., `#[allow(clippy::too_many_arguments)]` on a
+  function that genuinely needs many parameters). If a lint fires, fix the underlying
+  code. If a test fails, fix the bug. If a warning appears, resolve the root cause.
+  Quick workarounds that hide problems are strictly prohibited.
+
+- CRITICAL: Always prefer proper solutions over quick fixes.
+  When facing a problem, invest the effort to understand the root cause and fix it
+  correctly rather than applying a workaround. Specifically:
+  - Do NOT skip platforms or configurations to avoid fixing a build failure.
+  - Do NOT add conditional compilation or feature gates to hide broken code.
+  - Do NOT remove or weaken tests to make CI pass.
+  - Do NOT add TODO/FIXME/HACK comments as a substitute for doing the work now.
+  - If a proper fix requires changing multiple files or modules, do it.
+  - If a proper fix requires understanding unfamiliar code, read it first.
+  - If you are unsure whether a fix is proper, ask before proceeding.
+
 - IMPORTANT: Don't worry about breaking compatibility or being backwards compatible.
     - neither for the API nor for the Wire Format
     - FTM this software has not been make public yet and there is no system using it. 
