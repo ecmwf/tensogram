@@ -3010,8 +3010,8 @@ mod tests {
 
         // Float with default
         let bad_key3 = CString::new("missing_float").unwrap();
-        let fval = super::tgm_metadata_get_float(meta, bad_key3.as_ptr(), 3.14);
-        assert!((fval - 3.14).abs() < f64::EPSILON);
+        let fval = super::tgm_metadata_get_float(meta, bad_key3.as_ptr(), 3.25);
+        assert!((fval - 3.25).abs() < f64::EPSILON);
 
         super::tgm_metadata_free(meta);
     }

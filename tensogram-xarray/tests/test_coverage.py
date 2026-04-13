@@ -13,6 +13,7 @@ Targets specific untested code paths identified by pytest-cov:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -835,7 +836,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _base_entry_from_meta
 
         class FakeMeta:
-            base = ["not_a_dict", {"key": "val"}]
+            base: ClassVar[list[object]] = ["not_a_dict", {"key": "val"}]
 
         # index 0 is a string, not a dict -> should return {}
         assert _base_entry_from_meta(FakeMeta(), 0) == {}
@@ -856,7 +857,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _base_entry_from_meta
 
         class FakeMeta:
-            base = "not a list"
+            base: ClassVar[str] = "not a list"
 
         assert _base_entry_from_meta(FakeMeta(), 0) == {}
 
@@ -865,7 +866,9 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _base_entry_from_meta
 
         class FakeMeta:
-            base = [{"mars": {"param": "2t"}, "_reserved_": {"tensor": {}}}]
+            base: ClassVar[list[object]] = [
+                {"mars": {"param": "2t"}, "_reserved_": {"tensor": {}}}
+            ]
 
         result = _base_entry_from_meta(FakeMeta(), 0)
         assert "_reserved_" not in result
@@ -876,7 +879,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _extra_from_meta
 
         class FakeMeta:
-            extra = {}
+            extra: ClassVar[dict[str, object]] = {}
 
         assert _extra_from_meta(FakeMeta()) == {}
 
@@ -885,7 +888,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _extra_from_meta
 
         class FakeMeta:
-            extra = None
+            extra: ClassVar[None] = None
 
         assert _extra_from_meta(FakeMeta()) == {}
 
@@ -903,7 +906,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _extra_from_meta
 
         class FakeMeta:
-            extra = [1, 2, 3]
+            extra: ClassVar[list[object]] = [1, 2, 3]
 
         assert _extra_from_meta(FakeMeta()) == {}
 
@@ -912,7 +915,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _desc_params
 
         class FakeDesc:
-            params = None
+            params: ClassVar[None] = None
 
         assert _desc_params(FakeDesc()) == {}
 
@@ -921,7 +924,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _desc_params
 
         class FakeDesc:
-            params = "not_a_dict"
+            params: ClassVar[str] = "not_a_dict"
 
         assert _desc_params(FakeDesc()) == {}
 
@@ -939,7 +942,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _desc_params
 
         class FakeDesc:
-            params = {"custom": "value", "count": 42}
+            params: ClassVar[dict[str, object]] = {"custom": "value", "count": 42}
 
         result = _desc_params(FakeDesc())
         assert result == {"custom": "value", "count": 42}
@@ -951,10 +954,10 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _merge_per_object_meta
 
         class FakeMeta:
-            base = [{"key": "from_base", "shared": "base_val"}]
+            base: ClassVar[list[object]] = [{"key": "from_base", "shared": "base_val"}]
 
         class FakeDesc:
-            params = {"shared": "desc_val", "extra": "desc_only"}
+            params: ClassVar[dict[str, object]] = {"shared": "desc_val", "extra": "desc_only"}
 
         result = _merge_per_object_meta(FakeMeta(), 0, FakeDesc())
         assert result["key"] == "from_base"
@@ -1106,9 +1109,9 @@ class TestSupportsRangeDecodeEdges:
         from tensogram_xarray.array import _supports_range_decode
 
         class FakeDesc:
-            compression = "zfp"
-            filter = "none"
-            params = {"zfp_mode": "fixed_accuracy"}
+            compression: ClassVar[str] = "zfp"
+            filter: ClassVar[str] = "none"
+            params: ClassVar[dict[str, object]] = {"zfp_mode": "fixed_accuracy"}
 
         assert _supports_range_decode(FakeDesc()) is False
 
@@ -1117,9 +1120,9 @@ class TestSupportsRangeDecodeEdges:
         from tensogram_xarray.array import _supports_range_decode
 
         class FakeDesc:
-            compression = "zfp"
-            filter = "none"
-            params = {"zfp_mode": "fixed_rate"}
+            compression: ClassVar[str] = "zfp"
+            filter: ClassVar[str] = "none"
+            params: ClassVar[dict[str, object]] = {"zfp_mode": "fixed_rate"}
 
         assert _supports_range_decode(FakeDesc()) is True
 
@@ -1128,9 +1131,9 @@ class TestSupportsRangeDecodeEdges:
         from tensogram_xarray.array import _supports_range_decode
 
         class FakeDesc:
-            compression = "zfp"
-            filter = "none"
-            params = None
+            compression: ClassVar[str] = "zfp"
+            filter: ClassVar[str] = "none"
+            params: ClassVar[None] = None
 
         assert _supports_range_decode(FakeDesc()) is False
 
@@ -1139,9 +1142,9 @@ class TestSupportsRangeDecodeEdges:
         from tensogram_xarray.array import _supports_range_decode
 
         class FakeDesc:
-            compression = "none"
-            filter = "shuffle"
-            params = {}
+            compression: ClassVar[str] = "none"
+            filter: ClassVar[str] = "shuffle"
+            params: ClassVar[dict[str, object]] = {}
 
         assert _supports_range_decode(FakeDesc()) is False
 
@@ -1150,9 +1153,9 @@ class TestSupportsRangeDecodeEdges:
         from tensogram_xarray.array import _supports_range_decode
 
         class FakeDesc:
-            compression = "zstd"
-            filter = "none"
-            params = {}
+            compression: ClassVar[str] = "zstd"
+            filter: ClassVar[str] = "none"
+            params: ClassVar[dict[str, object]] = {}
 
         assert _supports_range_decode(FakeDesc()) is False
 
@@ -1161,9 +1164,9 @@ class TestSupportsRangeDecodeEdges:
         from tensogram_xarray.array import _supports_range_decode
 
         class FakeDesc:
-            compression = "szip"
-            filter = "none"
-            params = {}
+            compression: ClassVar[str] = "szip"
+            filter: ClassVar[str] = "none"
+            params: ClassVar[dict[str, object]] = {}
 
         assert _supports_range_decode(FakeDesc()) is True
 

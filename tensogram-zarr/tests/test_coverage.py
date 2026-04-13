@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 import numpy as np
@@ -489,8 +490,8 @@ class TestTgmDtypeToNumpyError:
 class TestBuildGroupMissingAttrs:
     def test_extra_only(self):
         class Meta:
-            version = 2
-            extra = {"source": "test"}
+            version: ClassVar[int] = 2
+            extra: ClassVar[dict[str, object]] = {"source": "test"}
 
         result = build_group_zarr_json(Meta(), ["arr"])
         assert result["attributes"]["source"] == "test"
@@ -498,8 +499,8 @@ class TestBuildGroupMissingAttrs:
 
     def test_with_extra(self):
         class Meta:
-            version = 2
-            extra = {"custom": 42}
+            version: ClassVar[int] = 2
+            extra: ClassVar[dict[str, object]] = {"custom": 42}
 
         result = build_group_zarr_json(Meta(), [])
         assert result["attributes"]["custom"] == 42
@@ -508,13 +509,13 @@ class TestBuildGroupMissingAttrs:
 class TestBuildArrayParamsBranch:
     def test_truthy_params(self):
         class Desc:
-            shape = [3]
-            dtype = "float32"
-            encoding = "simple_packing"
-            filter = "none"
-            compression = "none"
-            hash = None
-            params = {"bits_per_value": 16, "reference_value": 0.5}
+            shape: ClassVar[list[object]] = [3]
+            dtype: ClassVar[str] = "float32"
+            encoding: ClassVar[str] = "simple_packing"
+            filter: ClassVar[str] = "none"
+            compression: ClassVar[str] = "none"
+            hash: ClassVar[None] = None
+            params: ClassVar[dict[str, object]] = {"bits_per_value": 16, "reference_value": 0.5}
 
         result = build_array_zarr_json(Desc())
         assert result["attributes"]["_tensogram_params"]["bits_per_value"] == 16
@@ -523,13 +524,13 @@ class TestBuildArrayParamsBranch:
         """Empty shape → chunk_shape should be [1]."""
 
         class Desc:
-            shape = []
-            dtype = "float64"
-            encoding = "none"
-            filter = "none"
-            compression = "none"
-            hash = None
-            params = {}
+            shape: ClassVar[list[object]] = []
+            dtype: ClassVar[str] = "float64"
+            encoding: ClassVar[str] = "none"
+            filter: ClassVar[str] = "none"
+            compression: ClassVar[str] = "none"
+            hash: ClassVar[None] = None
+            params: ClassVar[dict[str, object]] = {}
 
         result = build_array_zarr_json(Desc())
         assert result["chunk_grid"]["configuration"]["chunk_shape"] == [1]
@@ -800,12 +801,12 @@ class TestVariableNamePriorityChain:
         # No "name" or "mars.param", uses "param"
         assert resolve_variable_name(0, meta) == "sp"
 
-    def test_shortName_fallback(self):
+    def test_short_name_fallback(self):
         meta = {"mars": {"shortName": "msl"}}
         # No name, mars.param, or param
         assert resolve_variable_name(0, meta) == "msl"
 
-    def test_bare_shortName_fallback(self):
+    def test_bare_short_name_fallback(self):
         meta = {"shortName": "msl"}
         assert resolve_variable_name(0, meta) == "msl"
 
@@ -953,7 +954,7 @@ class TestBuildGroupNoExtra:
 
     def test_no_extra_attr(self):
         class Meta:
-            version = 2
+            version: ClassVar[int] = 2
 
         # No extra attribute at all
         result = build_group_zarr_json(Meta(), ["arr"])
@@ -962,16 +963,16 @@ class TestBuildGroupNoExtra:
 
     def test_none_extra(self):
         class Meta:
-            version = 2
-            extra = None
+            version: ClassVar[int] = 2
+            extra: ClassVar[None] = None
 
         result = build_group_zarr_json(Meta(), [])
         assert result["attributes"]["_tensogram_version"] == 2
 
     def test_empty_extra(self):
         class Meta:
-            version = 2
-            extra = {}
+            version: ClassVar[int] = 2
+            extra: ClassVar[dict[str, object]] = {}
 
         result = build_group_zarr_json(Meta(), ["a"])
         assert result["attributes"]["_tensogram_version"] == 2
@@ -987,13 +988,13 @@ class TestBuildArrayEdges:
 
     def test_no_per_object_meta(self):
         class Desc:
-            shape = [3]
-            dtype = "int32"
-            encoding = "none"
-            filter = "none"
-            compression = "none"
-            hash = None
-            params = {}
+            shape: ClassVar[list[object]] = [3]
+            dtype: ClassVar[str] = "int32"
+            encoding: ClassVar[str] = "none"
+            filter: ClassVar[str] = "none"
+            compression: ClassVar[str] = "none"
+            hash: ClassVar[None] = None
+            params: ClassVar[dict[str, object]] = {}
 
         result = build_array_zarr_json(Desc(), None)
         assert result["attributes"]["_tensogram_encoding"] == "none"
@@ -1002,13 +1003,13 @@ class TestBuildArrayEdges:
 
     def test_with_hash(self):
         class Desc:
-            shape = [3]
-            dtype = "float32"
-            encoding = "none"
-            filter = "none"
-            compression = "none"
-            hash = {"type": "xxh3", "value": "deadbeef"}
-            params = {}
+            shape: ClassVar[list[object]] = [3]
+            dtype: ClassVar[str] = "float32"
+            encoding: ClassVar[str] = "none"
+            filter: ClassVar[str] = "none"
+            compression: ClassVar[str] = "none"
+            hash: ClassVar[dict[str, object]] = {"type": "xxh3", "value": "deadbeef"}
+            params: ClassVar[dict[str, object]] = {}
 
         result = build_array_zarr_json(Desc())
         assert result["attributes"]["_tensogram_hash"] == {
@@ -1020,13 +1021,13 @@ class TestBuildArrayEdges:
         """Empty params dict means no _tensogram_params."""
 
         class Desc:
-            shape = [3]
-            dtype = "float32"
-            encoding = "none"
-            filter = "none"
-            compression = "none"
-            hash = None
-            params = {}
+            shape: ClassVar[list[object]] = [3]
+            dtype: ClassVar[str] = "float32"
+            encoding: ClassVar[str] = "none"
+            filter: ClassVar[str] = "none"
+            compression: ClassVar[str] = "none"
+            hash: ClassVar[None] = None
+            params: ClassVar[dict[str, object]] = {}
 
         result = build_array_zarr_json(Desc())
         assert "_tensogram_params" not in result["attributes"]

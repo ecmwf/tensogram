@@ -912,8 +912,7 @@ mod tests {
         )?;
 
         // Decode elements 2..5 (3 elements)
-        let (ret_desc, parts) =
-            file.decode_range(0, 0, &[(2, 3)], &DecodeOptions::default())?;
+        let (ret_desc, parts) = file.decode_range(0, 0, &[(2, 3)], &DecodeOptions::default())?;
         assert_eq!(ret_desc.shape, vec![10]);
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].len(), 3 * 4); // 3 float32s = 12 bytes
@@ -921,8 +920,8 @@ mod tests {
     }
 
     #[test]
-    fn test_local_decode_range_multiple_ranges() -> std::result::Result<(), Box<dyn std::error::Error>>
-    {
+    fn test_local_decode_range_multiple_ranges(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("range_multi.tgm");
 
@@ -945,8 +944,8 @@ mod tests {
     }
 
     #[test]
-    fn test_local_decode_range_invalid_object_index() -> std::result::Result<(), Box<dyn std::error::Error>>
-    {
+    fn test_local_decode_range_invalid_object_index(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("range_bad_obj.tgm");
 
@@ -963,13 +962,16 @@ mod tests {
         let result = file.decode_range(0, 5, &[(0, 1)], &DecodeOptions::default());
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("out of range"), "expected 'out of range', got: {msg}");
+        assert!(
+            msg.contains("out of range"),
+            "expected 'out of range', got: {msg}"
+        );
         Ok(())
     }
 
     #[test]
-    fn test_local_decode_range_invalid_message_index() -> std::result::Result<(), Box<dyn std::error::Error>>
-    {
+    fn test_local_decode_range_invalid_message_index(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("range_bad_msg.tgm");
 
@@ -1037,8 +1039,8 @@ mod tests {
 
     #[cfg(feature = "async")]
     #[tokio::test]
-    async fn test_async_open_nonexistent_file() -> std::result::Result<(), Box<dyn std::error::Error>>
-    {
+    async fn test_async_open_nonexistent_file(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         let result = TensogramFile::open_async("/tmp/nonexistent_tensogram_file_12345.tgm").await;
         match result {
             Ok(_) => panic!("expected error for nonexistent file"),
@@ -1055,8 +1057,8 @@ mod tests {
 
     #[cfg(feature = "async")]
     #[tokio::test]
-    async fn test_async_message_index_out_of_range() -> std::result::Result<(), Box<dyn std::error::Error>>
-    {
+    async fn test_async_message_index_out_of_range(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("async_oor.tgm");
 
@@ -1083,8 +1085,8 @@ mod tests {
 
     #[cfg(feature = "async")]
     #[tokio::test]
-    async fn test_async_decode_metadata_out_of_range() -> std::result::Result<(), Box<dyn std::error::Error>>
-    {
+    async fn test_async_decode_metadata_out_of_range(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("async_meta_oor.tgm");
 
@@ -1146,8 +1148,9 @@ mod tests {
         )?;
 
         let mut async_file = TensogramFile::open_async(&path).await?;
-        let (decoded_meta, decoded_desc, decoded_data) =
-            async_file.decode_object_async(0, 0, &DecodeOptions::default()).await?;
+        let (decoded_meta, decoded_desc, decoded_data) = async_file
+            .decode_object_async(0, 0, &DecodeOptions::default())
+            .await?;
         assert_eq!(decoded_meta.version, 2);
         assert_eq!(decoded_desc.shape, vec![4]);
         assert_eq!(decoded_data, data);
@@ -1202,8 +1205,8 @@ mod tests {
     }
 
     #[test]
-    fn test_source_returns_path_string_for_local() -> std::result::Result<(), Box<dyn std::error::Error>>
-    {
+    fn test_source_returns_path_string_for_local(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("source_test.tgm");
 
