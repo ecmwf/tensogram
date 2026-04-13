@@ -248,12 +248,11 @@ class TensogramBackendArray(BackendArray):
     def _raw_indexing_method(self, key: tuple) -> np.ndarray:
         import tensogram
 
-        with self.lock:
-            if self._shared_file is not None:
-                return self._read_from_file(self._shared_file, key, tensogram)
+        if self._shared_file is not None:
+            return self._read_from_file(self._shared_file, key, tensogram)
 
-            with self._get_file() as f:
-                return self._read_from_file(f, key, tensogram)
+        with self._get_file() as f:
+            return self._read_from_file(f, key, tensogram)
 
     def _read_from_file(self, f, key: tuple, tensogram) -> np.ndarray:
         if self.supports_range and _is_contiguous_slice(key):
