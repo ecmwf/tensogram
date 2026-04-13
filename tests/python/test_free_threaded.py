@@ -176,15 +176,15 @@ class TestSharedFileHandle:
                 for _ in range(10):
                     f.append(meta, [(desc, data)])
 
-            shared_file = tensogram.TensogramFile.open(path)
+            with tensogram.TensogramFile.open(path) as shared_file:
 
-            def work(tid):
-                for _ in range(ITERATIONS):
-                    msg = shared_file.decode_message(tid % 10)
-                    arr = msg.objects[0][1]
-                    np.testing.assert_array_equal(arr, data)
+                def work(tid):
+                    for _ in range(ITERATIONS):
+                        msg = shared_file.decode_message(tid % 10)
+                        arr = msg.objects[0][1]
+                        np.testing.assert_array_equal(arr, data)
 
-            _run_threaded(work)
+                _run_threaded(work)
         finally:
             os.unlink(path)
 
@@ -199,21 +199,21 @@ class TestSharedFileHandle:
                 for _ in range(5):
                     f.append(meta, [(desc, data)])
 
-            shared = tensogram.TensogramFile.open(path)
+            with tensogram.TensogramFile.open(path) as shared:
 
-            def work(tid):
-                for _ in range(ITERATIONS):
-                    if tid % 4 == 0:
-                        assert shared.message_count() == 5
-                    elif tid % 4 == 1:
-                        shared.file_decode_metadata(0)
-                    elif tid % 4 == 2:
-                        shared.file_decode_descriptors(0)
-                    else:
-                        msg = shared.decode_message(tid % 5)
-                        np.testing.assert_array_equal(msg.objects[0][1], data)
+                def work(tid):
+                    for _ in range(ITERATIONS):
+                        if tid % 4 == 0:
+                            assert shared.message_count() == 5
+                        elif tid % 4 == 1:
+                            shared.file_decode_metadata(0)
+                        elif tid % 4 == 2:
+                            shared.file_decode_descriptors(0)
+                        else:
+                            msg = shared.decode_message(tid % 5)
+                            np.testing.assert_array_equal(msg.objects[0][1], data)
 
-            _run_threaded(work)
+                _run_threaded(work)
         finally:
             os.unlink(path)
 
@@ -227,49 +227,51 @@ class TestSharedFileHandle:
             with tensogram.TensogramFile.create(path) as f:
                 f.append(meta, [(desc, data)])
 
-            shared = tensogram.TensogramFile.open(path)
-            errors_lock = threading.Lock()
-            runtime_errors = [0]
-            other_errors = []
-            barrier = threading.Barrier(4)
+            with tensogram.TensogramFile.open(path) as shared:
+                errors_lock = threading.Lock()
+                runtime_errors = [0]
+                other_errors = []
+                barrier = threading.Barrier(4)
 
-            def reader(tid):
-                try:
-                    barrier.wait(timeout=10)
-                    for _ in range(50):
-                        shared.decode_message(0)
-                except RuntimeError:
-                    with errors_lock:
-                        runtime_errors[0] += 1
-                except Exception as e:
-                    with errors_lock:
-                        other_errors.append((tid, type(e).__name__, str(e)))
+                def reader(tid):
+                    try:
+                        barrier.wait(timeout=10)
+                        for _ in range(50):
+                            shared.decode_message(0)
+                    except RuntimeError:
+                        with errors_lock:
+                            runtime_errors[0] += 1
+                    except Exception as e:
+                        with errors_lock:
+                            other_errors.append((tid, type(e).__name__, str(e)))
 
-            def writer(tid):
-                try:
-                    barrier.wait(timeout=10)
-                    for _ in range(50):
-                        shared.append(meta, [(desc, data)])
-                except RuntimeError:
-                    with errors_lock:
-                        runtime_errors[0] += 1
-                except Exception as e:
-                    with errors_lock:
-                        other_errors.append((tid, type(e).__name__, str(e)))
+                def writer(tid):
+                    try:
+                        barrier.wait(timeout=10)
+                        for _ in range(50):
+                            shared.append(meta, [(desc, data)])
+                    except RuntimeError:
+                        with errors_lock:
+                            runtime_errors[0] += 1
+                    except Exception as e:
+                        with errors_lock:
+                            other_errors.append((tid, type(e).__name__, str(e)))
 
-            threads = [threading.Thread(target=reader, args=(i,)) for i in range(3)] + [
-                threading.Thread(target=writer, args=(99,))
-            ]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join(timeout=30)
+                threads = [threading.Thread(target=reader, args=(i,)) for i in range(3)] + [
+                    threading.Thread(target=writer, args=(99,))
+                ]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=30)
+                for t in threads:
+                    assert not t.is_alive(), "thread did not finish (possible deadlock)"
 
-            # RuntimeError from PyO3 borrow check is expected when
-            # read (&self) and write (&mut self) overlap. Whether it
-            # actually triggers depends on timing, so we only assert
-            # no unexpected exception types occurred.
-            assert not other_errors, f"Unexpected errors: {other_errors}"
+                # RuntimeError from PyO3 borrow check is expected when
+                # read (&self) and write (&mut self) overlap. Whether it
+                # actually triggers depends on timing, so we only assert
+                # no unexpected exception types occurred.
+                assert not other_errors, f"Unexpected errors: {other_errors}"
         finally:
             os.unlink(path)
 

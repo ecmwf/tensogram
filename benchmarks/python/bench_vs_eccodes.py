@@ -23,12 +23,12 @@ import sys
 import threading
 import time
 
-import numpy as np
-import tensogram
-
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["BLOSC_NTHREADS"] = "1"
+
+import numpy as np
+import tensogram
 
 NUM_POINTS = 10_000_000
 ORIG_BYTES = NUM_POINTS * 8
@@ -98,6 +98,9 @@ def bench_median(operation, args):
             wall = time.perf_counter_ns()
             for t in threads:
                 t.join(timeout=300)
+            for t in threads:
+                if t.is_alive():
+                    raise RuntimeError(f"worker thread did not finish for {n} thread(s)")
             wall_ns = time.perf_counter_ns() - wall
             medians.append(n * ITERS / (wall_ns / 1e9))
         medians.sort()
