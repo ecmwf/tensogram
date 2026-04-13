@@ -208,6 +208,13 @@ impl TensogramFile {
         descriptors: &[(&DataObjectDescriptor, &[u8])],
         options: &EncodeOptions,
     ) -> Result<()> {
+        #[cfg(feature = "mmap")]
+        if let Backend::Local { mmap: Some(_), .. } = &self.backend {
+            return Err(TensogramError::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "cannot append to a memory-mapped file (open without mmap to append)",
+            )));
+        }
         let path = self.local_path()?.clone();
         let msg = encode::encode(global_metadata, descriptors, options)?;
         let mut file = fs::OpenOptions::new()

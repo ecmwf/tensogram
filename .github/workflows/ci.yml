@@ -137,7 +137,7 @@ jobs:
       - name: Build Python bindings
         run: |
           source .venv/bin/activate
-          cd crates/tensogram-python && maturin develop
+          cd crates/tensogram-python && maturin develop --release
 
       - name: Test
         env:

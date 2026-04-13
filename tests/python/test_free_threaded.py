@@ -217,7 +217,7 @@ class TestSharedFileHandle:
         finally:
             os.unlink(path)
 
-    def test_shared_file_read_during_append_raises(self):
+    def test_shared_file_concurrent_read_and_append(self):
         with tempfile.NamedTemporaryFile(suffix=".tgm", delete=False) as tmp:
             path = tmp.name
         try:
@@ -259,6 +259,10 @@ class TestSharedFileHandle:
             for t in threads:
                 t.join(timeout=30)
 
+            # RuntimeError from PyO3 borrow check is expected when
+            # read (&self) and write (&mut self) overlap. Whether it
+            # actually triggers depends on timing, so we only assert
+            # no unexpected exception types occurred.
             assert not errors["other"], f"Unexpected errors: {errors['other']}"
         finally:
             os.unlink(path)

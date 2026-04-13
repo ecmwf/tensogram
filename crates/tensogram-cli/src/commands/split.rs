@@ -154,8 +154,7 @@ mod tests {
         assert!(dir.path().join("split_0000.tgm").exists());
         assert!(dir.path().join("split_0001.tgm").exists());
         // Verify each split file has 1 object
-        let f0 =
-            tensogram_core::TensogramFile::open(dir.path().join("split_0000.tgm")).unwrap();
+        let f0 = tensogram_core::TensogramFile::open(dir.path().join("split_0000.tgm")).unwrap();
         let msg = f0.read_message(0).unwrap();
         let (_, objs) =
             tensogram_core::decode(&msg, &tensogram_core::DecodeOptions::default()).unwrap();
