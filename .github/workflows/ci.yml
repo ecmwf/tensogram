@@ -186,6 +186,9 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - name: Build and test
         run: |
           which wasm-pack >/dev/null 2>&1 || cargo install wasm-pack --locked
