@@ -444,23 +444,6 @@ class TensogramStore(ZarrStore):
 
     def _scan_remote(self, f: Any) -> None:
         """Lazy scan: fetch only descriptors, decode chunks on demand."""
-        msg_count = f.message_count()
-        if msg_count == 0:
-            self._keys["zarr.json"] = serialize_zarr_json(
-                {
-                    "zarr_format": 3,
-                    "node_type": "group",
-                    "attributes": {},
-                }
-            )
-            return
-
-        if self._message_index >= msg_count:
-            raise IndexError(
-                f"message_index {self._message_index} out of range "
-                f"for file with {msg_count} message(s)"
-            )
-
         try:
             result = f.file_decode_descriptors(self._message_index)
             meta = result["metadata"]
