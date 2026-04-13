@@ -16,12 +16,12 @@ env:
 jobs:
   # ── Rust: build, lint, test ──────────────────────────────────────────
   rust:
-    name: Rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Rust (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        runner: [[self-hosted, Linux, hpc], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -53,37 +53,35 @@ jobs:
 
   # ── Python: build bindings + test ────────────────────────────────────
   python:
-    name: Python (${{ matrix.os }}, ${{ matrix.python }})
-    runs-on: ${{ matrix.os }}
+    name: Python (${{ matrix.runner }}, ${{ matrix.python }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        runner: [[self-hosted, Linux, hpc], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
         python: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
       # libnetcdf is needed so the feature-gated tensogram-cli build
       # for the convert-netcdf end-to-end tests succeeds.
-      - name: Install libnetcdf (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Install libnetcdf (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libnetcdf-dev libhdf5-dev
 
       - name: Install libnetcdf (macOS)
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         run: brew install netcdf hdf5
 
       - name: Create virtualenv and install dependencies
         run: |
-          uv venv .venv
+          uv python install ${{ matrix.python }}
+          uv venv .venv --python ${{ matrix.python }}
           source .venv/bin/activate
           uv pip install maturin pytest numpy ruff netCDF4
 
@@ -108,21 +106,18 @@ jobs:
   # ── Python: free-threaded 3.13t ───────────────────────────────────────
   python-free-threaded:
     name: Python 3.13t (free-threaded)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, hpc]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: deadsnakes/action@v3.2.0
-        with:
-          python-version: "3.13"
-          nogil: true
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
-      - name: Create virtualenv and install dependencies
+      - name: Install free-threaded Python and create virtualenv
         run: |
+          uv python install cpython-3.13+freethreaded
           uv venv .venv --python python3.13t
           source .venv/bin/activate
           uv pip install maturin pytest "numpy>=2.1"
@@ -149,21 +144,19 @@ jobs:
   # ── Python packages: xarray + zarr ───────────────────────────────────
   python-packages:
     name: Python packages
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, hpc]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
       - name: Create virtualenv and install base
         run: |
-          uv venv .venv
+          uv python install 3.12
+          uv venv .venv --python 3.12
           source .venv/bin/activate
           uv pip install maturin pytest numpy
           cd crates/tensogram-python && maturin develop && cd ../..
@@ -182,23 +175,23 @@ jobs:
 
   # ── GRIB: build + test (requires ecCodes) ─────────────────────────────
   grib:
-    name: GRIB (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: GRIB (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        runner: [[self-hosted, Linux, hpc], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
       - name: Install ecCodes library (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libeccodes-dev
 
       - name: Install ecCodes library (macOS)
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         run: brew install eccodes
 
       - name: Run GRIB tests
@@ -209,23 +202,23 @@ jobs:
 
   # ── NetCDF: build + test (requires libnetcdf) ─────────────────────────
   netcdf:
-    name: NetCDF (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: NetCDF (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        runner: [[self-hosted, Linux, hpc], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
       - name: Install libnetcdf (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libnetcdf-dev libhdf5-dev
 
       - name: Install libnetcdf (macOS)
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         run: brew install netcdf hdf5
 
       - name: Clippy NetCDF crate
@@ -242,12 +235,12 @@ jobs:
 
   # ── C++: build + test ────────────────────────────────────────────────
   cpp:
-    name: C++ (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: C++ (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        runner: [[self-hosted, Linux, hpc], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -268,7 +261,7 @@ jobs:
   # ── Documentation: mdbook ────────────────────────────────────────────
   docs:
     name: Documentation
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, hpc]
     steps:
       - uses: actions/checkout@v4
       - name: Install mdbook + preprocessors
@@ -282,7 +275,7 @@ jobs:
   # ── WASM: build + test ───────────────────────────────────────────────
   wasm:
     name: WASM
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, hpc]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
