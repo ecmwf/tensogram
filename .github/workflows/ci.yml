@@ -105,6 +105,47 @@ jobs:
           source .venv/bin/activate
           python -m pytest tests/python/ -v
 
+  # ── Python: free-threaded 3.13t ───────────────────────────────────────
+  python-free-threaded:
+    name: Python 3.13t (free-threaded)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: deadsnakes/action@v3.2.0
+        with:
+          python-version: "3.13"
+          nogil: true
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Create virtualenv and install dependencies
+        run: |
+          uv venv .venv --python python3.13t
+          source .venv/bin/activate
+          uv pip install maturin pytest "numpy>=2.1"
+
+      - name: Verify GIL is disabled
+        env:
+          PYTHON_GIL: "0"
+        run: |
+          source .venv/bin/activate
+          python -c "import sys; assert not sys._is_gil_enabled(), 'GIL should be disabled'"
+
+      - name: Build Python bindings
+        run: |
+          source .venv/bin/activate
+          cd crates/tensogram-python && maturin develop
+
+      - name: Test
+        env:
+          PYTHON_GIL: "0"
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/python/ -v
+
   # ── Python packages: xarray + zarr ───────────────────────────────────
   python-packages:
     name: Python packages
