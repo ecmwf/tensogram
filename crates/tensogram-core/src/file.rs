@@ -244,9 +244,8 @@ impl TensogramFile {
 
         #[cfg(feature = "mmap")]
         if let Backend::Local {
-            mmap: Some(ref mmap),
-            ..
-        } = self.backend
+            mmap: Some(mmap), ..
+        } = &self.backend
         {
             return Ok(mmap[offset..offset + length].to_vec());
         }
