@@ -12,6 +12,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Ensure rustup uses default profile on self-hosted runners
+  RUSTUP_HOME: ${{ github.workspace }}/.rustup
+  CARGO_HOME: ${{ github.workspace }}/.cargo
 
 jobs:
   # ── Rust: build, lint, test ──────────────────────────────────────────
