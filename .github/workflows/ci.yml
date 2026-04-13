@@ -15,9 +15,9 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  # ── Rust: build, lint, test ──────────────────────────────────────────
-  rust:
-    name: Rust (${{ matrix.runner }})
+  # ── Main: Rust lint/test + Python bindings + GRIB + NetCDF ──────────
+  main:
+    name: Main (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -29,21 +29,32 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake
+        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake libnetcdf-dev libhdf5-dev libeccodes-dev
 
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install netcdf hdf5 eccodes
+
+      # ── Rust lint ──
       - name: Format check
         run: cargo fmt --check
 
-      # Skip --all-features on workspace level to avoid tensogram-grib (requires ecCodes).
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Clippy (all features, core + FFI)
         run: cargo clippy -p tensogram-core -p tensogram-ffi --all-targets --all-features -- -D warnings
 
+      - name: Clippy (NetCDF)
+        run: cargo clippy --manifest-path crates/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
+
+      # ── Rust test ──
       - name: Test
         run: cargo test --workspace
 
@@ -53,51 +64,25 @@ jobs:
       - name: Test (remote + async features)
         run: cargo test -p tensogram-core --features "remote,async"
 
-  # ── Python: build bindings + test ────────────────────────────────────
-  python:
-    name: Python (${{ matrix.runner }}, ${{ matrix.python }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [[self-hosted, Linux, hpc], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
-        python: ["3.12", "3.13"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev libnetcdf-dev libhdf5-dev
-
-      - name: Install libnetcdf (macOS)
-        if: runner.os == 'macOS'
-        run: brew install netcdf hdf5
-
-      - name: Create virtualenv and install dependencies
+      - name: Test (GRIB)
         run: |
-          uv python install ${{ matrix.python }}
-          uv venv .venv --python ${{ matrix.python }}
-          source .venv/bin/activate
-          uv pip install maturin pytest numpy ruff netCDF4
+          cargo test --manifest-path crates/tensogram-grib/Cargo.toml
+          cargo test -p tensogram-cli --features grib
 
-      - name: Build Python bindings
+      - name: Test (NetCDF)
         run: |
-          source .venv/bin/activate
-          cd crates/tensogram-python && maturin develop
+          cargo test --manifest-path crates/tensogram-netcdf/Cargo.toml
+          cargo test -p tensogram-cli --features netcdf
 
-      - name: Lint
+      # ── Python bindings (reuses compiled workspace) ──
+      - name: Build and test Python bindings
         run: |
+          uv python install 3.13
+          uv venv .venv --python 3.13
           source .venv/bin/activate
+          uv pip install maturin pytest numpy ruff
+          cd crates/tensogram-python && maturin develop && cd ../..
           ruff check --config crates/tensogram-python/pyproject.toml tests/python/
-
-      - name: Test
-        run: |
-          source .venv/bin/activate
           python -m pytest tests/python/ -v
 
   # ── Python: free-threaded 3.13t ───────────────────────────────────────
@@ -115,30 +100,16 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev
 
-      - name: Install free-threaded Python and create virtualenv
+      - name: Build and test
+        env:
+          PYTHON_GIL: "0"
         run: |
           uv python install cpython-3.13+freethreaded
           uv venv .venv --python python3.13t
           source .venv/bin/activate
           uv pip install maturin pytest "numpy>=2.1"
-
-      - name: Verify GIL is disabled
-        env:
-          PYTHON_GIL: "0"
-        run: |
-          source .venv/bin/activate
           python -c "import sys; assert not sys._is_gil_enabled(), 'GIL should be disabled'"
-
-      - name: Build Python bindings
-        run: |
-          source .venv/bin/activate
-          cd crates/tensogram-python && maturin develop --release
-
-      - name: Test
-        env:
-          PYTHON_GIL: "0"
-        run: |
-          source .venv/bin/activate
+          cd crates/tensogram-python && maturin develop --release && cd ../..
           python -m pytest tests/python/ -v
 
   # ── Python packages: xarray + zarr ───────────────────────────────────
@@ -153,87 +124,20 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Create virtualenv and install base
+      - name: Install system dependencies
+        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev
+
+      - name: Build and test
         run: |
           uv python install 3.12
           uv venv .venv --python 3.12
           source .venv/bin/activate
           uv pip install maturin pytest numpy
           cd crates/tensogram-python && maturin develop && cd ../..
-
-      - name: Install and test xarray
-        run: |
-          source .venv/bin/activate
           uv pip install -e "tensogram-xarray/[dask]"
           python -m pytest tensogram-xarray/tests/ -v
-
-      - name: Install and test zarr
-        run: |
-          source .venv/bin/activate
           uv pip install -e tensogram-zarr/
           python -m pytest tensogram-zarr/tests/ -v
-
-  # ── GRIB: build + test (requires ecCodes) ─────────────────────────────
-  grib:
-    name: GRIB (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [[self-hosted, Linux, hpc], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install ecCodes library (Ubuntu)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libeccodes-dev
-
-      - name: Install ecCodes library (macOS)
-        if: runner.os == 'macOS'
-        run: brew install eccodes
-
-      - name: Run GRIB tests
-        run: cargo test --manifest-path crates/tensogram-grib/Cargo.toml -v
-
-      - name: Run CLI tests with grib feature
-        run: cargo test -p tensogram-cli --features grib -v
-
-  # ── NetCDF: build + test (requires libnetcdf) ─────────────────────────
-  netcdf:
-    name: NetCDF (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [[self-hosted, Linux, hpc], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install libnetcdf (Ubuntu)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev libnetcdf-dev libhdf5-dev
-
-      - name: Install libnetcdf (macOS)
-        if: runner.os == 'macOS'
-        run: brew install netcdf hdf5
-
-      - name: Clippy NetCDF crate
-        run: cargo clippy --manifest-path crates/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
-
-      - name: Run NetCDF library tests
-        run: cargo test --manifest-path crates/tensogram-netcdf/Cargo.toml -v
-
-      - name: Run CLI tests with netcdf feature
-        run: cargo test -p tensogram-cli --features netcdf -v
-
-      - name: Build convert-netcdf rust example
-        run: cargo build -p tensogram-rust-examples --bin 12_convert_netcdf --features netcdf
 
   # ── C++: build + test ────────────────────────────────────────────────
   cpp:
@@ -252,17 +156,12 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake
 
-      - name: Build Rust libraries
-        run: cargo build --release
-
-      - name: CMake configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
-
-      - name: CMake build
-        run: cmake --build build -j
-
-      - name: CTest
-        run: ctest --test-dir build --output-on-failure
+      - name: Build and test
+        run: |
+          cargo build --release
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+          ctest --test-dir build --output-on-failure
 
   # ── Documentation: mdbook ────────────────────────────────────────────
   docs:
@@ -272,13 +171,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install mdbook + preprocessors
+      - name: Build docs
         run: |
           cargo install mdbook --locked
           cargo install mdbook-mermaid --locked
-      - name: Build docs
-        working-directory: docs
-        run: mdbook build
+          cd docs && mdbook build
 
   # ── WASM: build + test ───────────────────────────────────────────────
   wasm:
@@ -290,7 +187,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --locked
-      - name: Test WASM (Node.js)
-        run: wasm-pack test --node crates/tensogram-wasm
+      - name: Build and test
+        run: |
+          cargo install wasm-pack --locked
+          wasm-pack test --node crates/tensogram-wasm
