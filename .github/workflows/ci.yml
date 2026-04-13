@@ -39,7 +39,10 @@ jobs:
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew list netcdf hdf5 eccodes >/dev/null 2>&1 || brew install netcdf hdf5 eccodes
+        run: |
+          for pkg in netcdf hdf5 eccodes; do
+            brew list --formula "$pkg" >/dev/null 2>&1 || brew install "$pkg"
+          done
 
       # ── Rust lint ──
       - name: Format check
