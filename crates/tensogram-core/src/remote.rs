@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::Range;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use bytes::Bytes;
 use object_store::path::Path as ObjectPath;
@@ -172,6 +172,12 @@ impl std::fmt::Debug for RemoteBackend {
 impl RemoteBackend {
     pub(crate) fn source_url(&self) -> &str {
         &self.source_url
+    }
+
+    fn lock_state(&self) -> Result<MutexGuard<'_, RemoteState>> {
+        self.state
+            .lock()
+            .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))
     }
 
     pub(crate) fn open(source: &str, storage_options: &BTreeMap<String, String>) -> Result<Self> {
@@ -1008,7 +1014,6 @@ impl RemoteBackend {
 // ── Native async path (remote + async) ───────────────────────────────────────
 
 #[cfg(feature = "async")]
-#[allow(clippy::await_holding_lock)]
 impl RemoteBackend {
     async fn get_range_async(&self, range: Range<u64>) -> Result<Bytes> {
         self.store
@@ -1054,12 +1059,9 @@ impl RemoteBackend {
             file_size,
             state: Mutex::new(RemoteState::default()),
         };
+        backend.scan_next_async().await?;
         {
-            let mut state = backend
-                .state
-                .lock()
-                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
-            backend.scan_next_locked(&mut state)?;
+            let state = backend.lock_state()?;
             if state.layouts.is_empty() {
                 return Err(TensogramError::Remote(
                     "no valid messages found in remote file".to_string(),
@@ -1069,20 +1071,466 @@ impl RemoteBackend {
         Ok(backend)
     }
 
-    // Async scanning methods removed: public async methods now use sync
-    // scanning (ensure_*_locked) to avoid holding MutexGuard across .await.
-    // The sync path uses block_on_shared() for I/O which is acceptable
-    // since scanning is a one-time cost per message (results are cached).
+    async fn scan_next_async(&self) -> Result<()> {
+        let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+        let pos = {
+            let state = self.lock_state()?;
+            if state.scan_complete {
+                return Ok(());
+            }
+            state.next_scan_offset
+        };
+
+        if pos + min_message_size > self.file_size {
+            let mut state = self.lock_state()?;
+            if state.next_scan_offset == pos {
+                state.scan_complete = true;
+            }
+            return Ok(());
+        }
+
+        let preamble_bytes = self
+            .get_range_async(pos..pos + PREAMBLE_SIZE as u64)
+            .await?;
+        if &preamble_bytes[..MAGIC.len()] != MAGIC {
+            let mut state = self.lock_state()?;
+            if state.next_scan_offset == pos {
+                state.scan_complete = true;
+            }
+            return Ok(());
+        }
+
+        let preamble = match Preamble::read_from(&preamble_bytes) {
+            Ok(preamble) => preamble,
+            Err(_) => {
+                let mut state = self.lock_state()?;
+                if state.next_scan_offset == pos {
+                    state.scan_complete = true;
+                }
+                return Ok(());
+            }
+        };
+
+        let msg_len = preamble.total_length;
+
+        if msg_len == 0 {
+            let remaining = self.file_size - pos;
+            if remaining < min_message_size {
+                let mut state = self.lock_state()?;
+                if state.next_scan_offset == pos {
+                    state.scan_complete = true;
+                }
+                return Ok(());
+            }
+
+            let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
+            let end_bytes = self
+                .get_range_async(end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64)
+                .await?;
+            if &end_bytes[..] != crate::wire::END_MAGIC {
+                let mut state = self.lock_state()?;
+                if state.next_scan_offset == pos {
+                    state.scan_complete = true;
+                }
+                return Ok(());
+            }
+
+            let mut state = self.lock_state()?;
+            if state.scan_complete || state.next_scan_offset != pos {
+                return Ok(());
+            }
+            state.layouts.push(MessageLayout {
+                offset: pos,
+                length: remaining,
+                preamble,
+                index: None,
+                global_metadata: None,
+            });
+            state.scan_complete = true;
+            return Ok(());
+        }
+
+        let msg_end = match pos.checked_add(msg_len) {
+            Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
+            _ => {
+                let mut state = self.lock_state()?;
+                if state.next_scan_offset == pos {
+                    state.scan_complete = true;
+                }
+                return Ok(());
+            }
+        };
+
+        let mut state = self.lock_state()?;
+        if state.scan_complete || state.next_scan_offset != pos {
+            return Ok(());
+        }
+        state.layouts.push(MessageLayout {
+            offset: pos,
+            length: msg_len,
+            preamble,
+            index: None,
+            global_metadata: None,
+        });
+        state.next_scan_offset = msg_end;
+        Ok(())
+    }
+
+    async fn ensure_message_async(&self, msg_idx: usize) -> Result<()> {
+        loop {
+            let ready = {
+                let state = self.lock_state()?;
+                if msg_idx < state.layouts.len() {
+                    return Ok(());
+                }
+                if state.scan_complete {
+                    return Err(TensogramError::Framing(format!(
+                        "message index {} out of range (count={})",
+                        msg_idx,
+                        state.layouts.len()
+                    )));
+                }
+                false
+            };
+
+            if !ready {
+                self.scan_next_async().await?;
+            }
+        }
+    }
+
+    async fn scan_and_discover_next_async(&self) -> Result<()> {
+        let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+        let pos = {
+            let state = self.lock_state()?;
+            if state.scan_complete {
+                return Ok(());
+            }
+            state.next_scan_offset
+        };
+
+        if pos + min_message_size > self.file_size {
+            let mut state = self.lock_state()?;
+            if state.next_scan_offset == pos {
+                state.scan_complete = true;
+            }
+            return Ok(());
+        }
+
+        let chunk_size = (self.file_size - pos).min(256 * 1024);
+        let chunk = self.get_range_async(pos..pos + chunk_size).await?;
+
+        if chunk.len() < PREAMBLE_SIZE || &chunk[..MAGIC.len()] != MAGIC {
+            let mut state = self.lock_state()?;
+            if state.next_scan_offset == pos {
+                state.scan_complete = true;
+            }
+            return Ok(());
+        }
+
+        let preamble = match Preamble::read_from(&chunk[..PREAMBLE_SIZE]) {
+            Ok(preamble) => preamble,
+            Err(_) => {
+                let mut state = self.lock_state()?;
+                if state.next_scan_offset == pos {
+                    state.scan_complete = true;
+                }
+                return Ok(());
+            }
+        };
+
+        let msg_len = preamble.total_length;
+
+        if msg_len == 0 {
+            let remaining = self.file_size - pos;
+            if remaining < min_message_size {
+                let mut state = self.lock_state()?;
+                if state.next_scan_offset == pos {
+                    state.scan_complete = true;
+                }
+                return Ok(());
+            }
+
+            let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
+            let end_bytes = self
+                .get_range_async(end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64)
+                .await?;
+            if &end_bytes[..] != crate::wire::END_MAGIC {
+                let mut state = self.lock_state()?;
+                if state.next_scan_offset == pos {
+                    state.scan_complete = true;
+                }
+                return Ok(());
+            }
+
+            let mut state = self.lock_state()?;
+            if state.scan_complete || state.next_scan_offset != pos {
+                return Ok(());
+            }
+            state.layouts.push(MessageLayout {
+                offset: pos,
+                length: remaining,
+                preamble,
+                index: None,
+                global_metadata: None,
+            });
+            state.scan_complete = true;
+            return Ok(());
+        }
+
+        let msg_end = match pos.checked_add(msg_len) {
+            Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
+            _ => {
+                let mut state = self.lock_state()?;
+                if state.next_scan_offset == pos {
+                    state.scan_complete = true;
+                }
+                return Ok(());
+            }
+        };
+
+        let flags = preamble.flags;
+        let msg_idx = {
+            let mut state = self.lock_state()?;
+            if state.scan_complete || state.next_scan_offset != pos {
+                return Ok(());
+            }
+            let msg_idx = state.layouts.len();
+            state.layouts.push(MessageLayout {
+                offset: pos,
+                length: msg_len,
+                preamble,
+                index: None,
+                global_metadata: None,
+            });
+            state.next_scan_offset = msg_end;
+            msg_idx
+        };
+
+        if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX) {
+            let chunk_end = (msg_len as usize).min(chunk.len());
+            let mut state = self.lock_state()?;
+            if msg_idx < state.layouts.len()
+                && state.layouts[msg_idx].offset == pos
+                && state.layouts[msg_idx].global_metadata.is_none()
+                && state.layouts[msg_idx].index.is_none()
+            {
+                Self::parse_header_frames(&mut state, msg_idx, &chunk[..chunk_end])?;
+            }
+        } else if flags.has(MessageFlags::FOOTER_METADATA) && flags.has(MessageFlags::FOOTER_INDEX)
+        {
+            self.discover_footer_layout_from_suffix_async(msg_idx)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn discover_footer_layout_from_suffix_async(&self, msg_idx: usize) -> Result<()> {
+        let (msg_offset, msg_len) = {
+            let state = self.lock_state()?;
+            let layout = state.layouts.get(msg_idx).ok_or_else(|| {
+                TensogramError::Framing(format!(
+                    "message index {} out of range (count={})",
+                    msg_idx,
+                    state.layouts.len()
+                ))
+            })?;
+            (layout.offset, layout.length)
+        };
+
+        let suffix_size = msg_len.min(256 * 1024);
+        let msg_end = msg_offset
+            .checked_add(msg_len)
+            .ok_or_else(|| TensogramError::Remote("message end overflow".to_string()))?;
+        let suffix_start = msg_end - suffix_size;
+        let suffix = self.get_range_async(suffix_start..msg_end).await?;
+
+        if suffix.len() < POSTAMBLE_SIZE {
+            return Err(TensogramError::Remote(
+                "suffix too short for postamble".to_string(),
+            ));
+        }
+
+        let pa_bytes = &suffix[suffix.len() - POSTAMBLE_SIZE..];
+        let postamble = Postamble::read_from(pa_bytes)?;
+
+        if postamble.first_footer_offset < PREAMBLE_SIZE as u64 {
+            return Err(TensogramError::Remote(format!(
+                "first_footer_offset ({}) is before preamble end ({PREAMBLE_SIZE})",
+                postamble.first_footer_offset
+            )));
+        }
+
+        let footer_abs_start = msg_offset
+            .checked_add(postamble.first_footer_offset)
+            .ok_or_else(|| TensogramError::Remote("footer offset overflow".to_string()))?;
+        let footer_abs_end = msg_end - POSTAMBLE_SIZE as u64;
+
+        if footer_abs_start >= footer_abs_end {
+            return Err(TensogramError::Remote(
+                "first_footer_offset points at or past postamble".to_string(),
+            ));
+        }
+
+        if footer_abs_start >= suffix_start {
+            let local_start = (footer_abs_start - suffix_start) as usize;
+            let local_end = suffix.len() - POSTAMBLE_SIZE;
+            let mut state = self.lock_state()?;
+            if state.layouts[msg_idx].global_metadata.is_some()
+                && state.layouts[msg_idx].index.is_some()
+            {
+                return Ok(());
+            }
+            Self::parse_footer_frames(&mut state, msg_idx, &suffix[local_start..local_end])
+        } else {
+            let footer_bytes = self
+                .get_range_async(footer_abs_start..footer_abs_end)
+                .await?;
+            let mut state = self.lock_state()?;
+            if state.layouts[msg_idx].global_metadata.is_some()
+                && state.layouts[msg_idx].index.is_some()
+            {
+                return Ok(());
+            }
+            Self::parse_footer_frames(&mut state, msg_idx, &footer_bytes)
+        }
+    }
+
+    async fn ensure_layout_eager_async(&self, msg_idx: usize) -> Result<()> {
+        loop {
+            let should_scan = {
+                let state = self.lock_state()?;
+                if let Some(layout) = state.layouts.get(msg_idx) {
+                    if layout.global_metadata.is_some() && layout.index.is_some() {
+                        return Ok(());
+                    }
+                    false
+                } else if state.scan_complete {
+                    return Err(TensogramError::Framing(format!(
+                        "message index {} out of range (count={})",
+                        msg_idx,
+                        state.layouts.len()
+                    )));
+                } else {
+                    true
+                }
+            };
+
+            if should_scan {
+                self.scan_and_discover_next_async().await?;
+                continue;
+            }
+
+            return self.ensure_layout_async(msg_idx).await;
+        }
+    }
+
+    async fn ensure_layout_async(&self, msg_idx: usize) -> Result<()> {
+        self.ensure_message_async(msg_idx).await?;
+
+        let flags = {
+            let state = self.lock_state()?;
+            let layout = &state.layouts[msg_idx];
+            if layout.global_metadata.is_some() && layout.index.is_some() {
+                return Ok(());
+            }
+            layout.preamble.flags
+        };
+
+        if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX) {
+            self.discover_header_layout_async(msg_idx).await?;
+        } else if flags.has(MessageFlags::FOOTER_METADATA) && flags.has(MessageFlags::FOOTER_INDEX)
+        {
+            self.discover_footer_layout_async(msg_idx).await?;
+        } else {
+            return Err(TensogramError::Remote(
+                "remote access requires header-indexed or footer-indexed messages".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn discover_header_layout_async(&self, msg_idx: usize) -> Result<()> {
+        let (msg_offset, msg_len) = {
+            let state = self.lock_state()?;
+            let layout = state.layouts.get(msg_idx).ok_or_else(|| {
+                TensogramError::Framing(format!(
+                    "message index {} out of range (count={})",
+                    msg_idx,
+                    state.layouts.len()
+                ))
+            })?;
+            (layout.offset, layout.length)
+        };
+
+        let chunk_size = msg_len.min(256 * 1024);
+        let header_bytes = self
+            .get_range_async(msg_offset..msg_offset + chunk_size)
+            .await?;
+
+        let mut state = self.lock_state()?;
+        if state.layouts[msg_idx].global_metadata.is_some()
+            && state.layouts[msg_idx].index.is_some()
+        {
+            return Ok(());
+        }
+        Self::parse_header_frames(&mut state, msg_idx, &header_bytes)
+    }
+
+    async fn discover_footer_layout_async(&self, msg_idx: usize) -> Result<()> {
+        let (msg_offset, msg_len) = {
+            let state = self.lock_state()?;
+            let layout = state.layouts.get(msg_idx).ok_or_else(|| {
+                TensogramError::Framing(format!(
+                    "message index {} out of range (count={})",
+                    msg_idx,
+                    state.layouts.len()
+                ))
+            })?;
+            (layout.offset, layout.length)
+        };
+
+        let pa_offset = msg_offset
+            .checked_add(msg_len)
+            .and_then(|end| end.checked_sub(POSTAMBLE_SIZE as u64))
+            .ok_or_else(|| TensogramError::Remote("postamble offset overflow".to_string()))?;
+        let pa_bytes = self
+            .get_range_async(pa_offset..pa_offset + POSTAMBLE_SIZE as u64)
+            .await?;
+        let postamble = Postamble::read_from(&pa_bytes)?;
+
+        if postamble.first_footer_offset < PREAMBLE_SIZE as u64 {
+            return Err(TensogramError::Remote(format!(
+                "first_footer_offset ({}) is before preamble end ({})",
+                postamble.first_footer_offset, PREAMBLE_SIZE
+            )));
+        }
+        let footer_start = msg_offset
+            .checked_add(postamble.first_footer_offset)
+            .ok_or_else(|| TensogramError::Remote("footer offset overflow".to_string()))?;
+        let footer_end = pa_offset;
+        if footer_start >= footer_end {
+            return Err(TensogramError::Remote(
+                "first_footer_offset points at or past postamble".to_string(),
+            ));
+        }
+
+        let footer_bytes = self.get_range_async(footer_start..footer_end).await?;
+        let mut state = self.lock_state()?;
+        if state.layouts[msg_idx].global_metadata.is_some()
+            && state.layouts[msg_idx].index.is_some()
+        {
+            return Ok(());
+        }
+        Self::parse_footer_frames(&mut state, msg_idx, &footer_bytes)
+    }
 
     pub(crate) async fn read_message_async(&self, msg_idx: usize) -> Result<Vec<u8>> {
-        // Use sync scanning inside the lock (cached after first call),
-        // then release the lock before async I/O.
+        self.ensure_message_async(msg_idx).await?;
         let (offset, length) = {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
-            self.ensure_message_locked(&mut state, msg_idx)?;
+            let state = self.lock_state()?;
             let layout = &state.layouts[msg_idx];
             (layout.offset, layout.length)
         };
@@ -1091,11 +1539,8 @@ impl RemoteBackend {
     }
 
     pub(crate) async fn read_metadata_async(&self, msg_idx: usize) -> Result<GlobalMetadata> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
-        self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+        self.ensure_layout_eager_async(msg_idx).await?;
+        let state = self.lock_state()?;
         state.layouts[msg_idx]
             .global_metadata
             .clone()
@@ -1106,12 +1551,9 @@ impl RemoteBackend {
         &self,
         msg_idx: usize,
     ) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>)> {
+        self.ensure_layout_eager_async(msg_idx).await?;
         let layout = {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
-            self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+            let state = self.lock_state()?;
             state.layouts[msg_idx].clone()
         };
         let msg_offset = layout.offset;
@@ -1248,12 +1690,9 @@ impl RemoteBackend {
         obj_idx: usize,
         options: &DecodeOptions,
     ) -> Result<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)> {
+        self.ensure_layout_eager_async(msg_idx).await?;
         let layout = {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
-            self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+            let state = self.lock_state()?;
             state.layouts[msg_idx].clone()
         };
         let msg_offset = layout.offset;
