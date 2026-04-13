@@ -46,9 +46,6 @@ jobs:
       - name: Clippy (all features, core + FFI)
         run: cargo clippy -p tensogram-core -p tensogram-ffi --all-targets --all-features -- -D warnings
 
-      - name: Build
-        run: cargo build --workspace
-
       - name: Test
         run: cargo test --workspace
 
@@ -94,9 +91,6 @@ jobs:
         run: |
           source .venv/bin/activate
           cd crates/tensogram-python && maturin develop
-
-      - name: Build tensogram CLI with netcdf feature
-        run: cargo build -p tensogram-cli --features netcdf
 
       - name: Lint
         run: |
@@ -279,6 +273,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Install mdbook + preprocessors
         run: |
           cargo install mdbook --locked
