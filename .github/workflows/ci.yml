@@ -34,7 +34,7 @@ jobs:
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev cmake
+        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake
 
       - name: Format check
         run: cargo fmt --check
@@ -77,7 +77,7 @@ jobs:
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev libnetcdf-dev libhdf5-dev
+        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev libnetcdf-dev libhdf5-dev
 
       - name: Install libnetcdf (macOS)
         if: runner.os == 'macOS'
@@ -121,7 +121,7 @@ jobs:
           enable-cache: true
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev
 
       - name: Install free-threaded Python and create virtualenv
         run: |
@@ -196,7 +196,7 @@ jobs:
 
       - name: Install ecCodes library (Ubuntu)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libeccodes-dev
+        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libeccodes-dev
 
       - name: Install ecCodes library (macOS)
         if: runner.os == 'macOS'
@@ -225,7 +225,7 @@ jobs:
 
       - name: Install libnetcdf (Ubuntu)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libnetcdf-dev libhdf5-dev
+        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libnetcdf-dev libhdf5-dev
 
       - name: Install libnetcdf (macOS)
         if: runner.os == 'macOS'
@@ -258,7 +258,7 @@ jobs:
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev cmake
+        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake
 
       - name: Build Rust libraries
         run: cargo build --release
