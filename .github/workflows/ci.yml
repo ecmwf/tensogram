@@ -66,12 +66,13 @@ jobs:
 
       - name: Test (GRIB)
         run: |
-          cargo test --manifest-path crates/tensogram-grib/Cargo.toml
+          cargo test -p tensogram-grib
           cargo test -p tensogram-cli --features grib
 
       - name: Test (NetCDF)
         run: |
-          cargo test --manifest-path crates/tensogram-netcdf/Cargo.toml
+          cargo clippy -p tensogram-netcdf --all-targets -- -D warnings
+          cargo test -p tensogram-netcdf
           cargo test -p tensogram-cli --features netcdf
 
       # ── Python bindings (reuses compiled workspace) ──
