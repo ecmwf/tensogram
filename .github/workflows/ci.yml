@@ -98,7 +98,7 @@ jobs:
           enable-cache: true
 
       - name: Install system dependencies
-        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev
+        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake
 
       - name: Build and test
         env:
@@ -125,7 +125,7 @@ jobs:
           enable-cache: true
 
       - name: Install system dependencies
-        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev
+        run: sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev cmake
 
       - name: Build and test
         run: |
