@@ -209,7 +209,6 @@ class TensogramBackendArray(BackendArray):
         self.supports_range = supports_range
         self.verify_hash = verify_hash
         self.range_threshold = range_threshold
-        self.lock = lock or threading.Lock()
         self.storage_options = storage_options
         self._shared_file = shared_file
 
@@ -217,13 +216,11 @@ class TensogramBackendArray(BackendArray):
 
     def __getstate__(self) -> dict:
         state = self.__dict__.copy()
-        state["lock"] = None
         state["_shared_file"] = None
         return state
 
     def __setstate__(self, state: dict) -> None:
         self.__dict__.update(state)
-        self.lock = threading.Lock()
         self._shared_file = None
 
     # -- BackendArray interface ---------------------------------------------

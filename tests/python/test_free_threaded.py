@@ -18,9 +18,10 @@ NUM_THREADS = 8
 ITERATIONS = 50
 
 
-def _make_message(size=1000, encoding="none", compression="none", dtype="float32"):
+def _make_message(size=1000, encoding="none", compression="none", dtype="float32", seed=42):
     """Create a test message with the given parameters."""
-    data = np.random.randn(size).astype(getattr(np, dtype))
+    rng = np.random.default_rng(seed)
+    data = rng.standard_normal(size).astype(getattr(np, dtype))
     meta = {"version": 2, "base": [{}]}
     desc = {
         "type": "ntensor",
@@ -452,7 +453,8 @@ class TestConcurrentCodecBackends:
     )
     def test_codec_concurrent(self, encoding, compression):
         def work(tid):
-            data = np.random.randn(500).astype(np.float64) + tid
+            rng = np.random.default_rng(tid)
+            data = rng.standard_normal(500).astype(np.float64) + tid
             meta = {"version": 2, "base": [{}]}
             desc = {
                 "type": "ntensor",
