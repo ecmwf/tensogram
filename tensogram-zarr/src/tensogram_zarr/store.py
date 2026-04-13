@@ -380,7 +380,11 @@ class TensogramStore(ZarrStore):
             raise OSError(f"failed to open TGM file {self._path!r}: {exc}") from exc
 
         if is_remote:
-            self._scan_remote(f)
+            try:
+                self._scan_remote(f)
+            except Exception:
+                f.close()
+                raise
         else:
             msg_count = len(f)
             if msg_count == 0:

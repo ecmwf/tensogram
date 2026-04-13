@@ -39,6 +39,7 @@ def _make_message(size=1000, encoding="none", compression="none", dtype="float32
 def _run_threaded(fn, num_threads=NUM_THREADS):
     """Run fn(thread_id) on num_threads threads; raise on any error."""
     errors = []
+    errors_lock = threading.Lock()
     barrier = threading.Barrier(num_threads)
 
     def wrapper(tid):
@@ -46,7 +47,8 @@ def _run_threaded(fn, num_threads=NUM_THREADS):
             barrier.wait(timeout=10)
             fn(tid)
         except Exception as e:
-            errors.append((tid, e))
+            with errors_lock:
+                errors.append((tid, e))
 
     threads = [threading.Thread(target=wrapper, args=(i,)) for i in range(num_threads)]
     for t in threads:
@@ -226,7 +228,9 @@ class TestSharedFileHandle:
                 f.append(meta, [(desc, data)])
 
             shared = tensogram.TensogramFile.open(path)
-            errors = {"runtime": 0, "other": []}
+            errors_lock = threading.Lock()
+            runtime_errors = [0]
+            other_errors = []
             barrier = threading.Barrier(4)
 
             def reader(tid):
@@ -235,9 +239,11 @@ class TestSharedFileHandle:
                     for _ in range(50):
                         shared.decode_message(0)
                 except RuntimeError:
-                    errors["runtime"] += 1
+                    with errors_lock:
+                        runtime_errors[0] += 1
                 except Exception as e:
-                    errors["other"].append((tid, type(e).__name__, str(e)))
+                    with errors_lock:
+                        other_errors.append((tid, type(e).__name__, str(e)))
 
             def writer(tid):
                 try:
@@ -245,9 +251,11 @@ class TestSharedFileHandle:
                     for _ in range(50):
                         shared.append(meta, [(desc, data)])
                 except RuntimeError:
-                    errors["runtime"] += 1
+                    with errors_lock:
+                        runtime_errors[0] += 1
                 except Exception as e:
-                    errors["other"].append((tid, type(e).__name__, str(e)))
+                    with errors_lock:
+                        other_errors.append((tid, type(e).__name__, str(e)))
 
             threads = [threading.Thread(target=reader, args=(i,)) for i in range(3)] + [
                 threading.Thread(target=writer, args=(99,))
@@ -261,7 +269,7 @@ class TestSharedFileHandle:
             # read (&self) and write (&mut self) overlap. Whether it
             # actually triggers depends on timing, so we only assert
             # no unexpected exception types occurred.
-            assert not errors["other"], f"Unexpected errors: {errors['other']}"
+            assert not other_errors, f"Unexpected errors: {other_errors}"
         finally:
             os.unlink(path)
 
