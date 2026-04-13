@@ -1512,10 +1512,10 @@ fn mmap_decode_matches_regular() {
     )
     .unwrap();
 
-    let mut regular = TensogramFile::open(&path).unwrap();
+    let regular = TensogramFile::open(&path).unwrap();
     let regular_msg = regular.read_message(0).unwrap();
 
-    let mut mmap = TensogramFile::open_mmap(&path).unwrap();
+    let mmap = TensogramFile::open_mmap(&path).unwrap();
     let mmap_msg = mmap.read_message(0).unwrap();
 
     assert_eq!(regular_msg, mmap_msg);

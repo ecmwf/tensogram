@@ -752,7 +752,7 @@ mod tests {
             &EncodeOptions::default(),
         )?;
 
-        let mut mmap_file = TensogramFile::open_mmap(&path)?;
+        let mmap_file = TensogramFile::open_mmap(&path)?;
         assert_eq!(mmap_file.message_count()?, 2);
 
         let (decoded_meta, objects) = mmap_file.decode_message(0, &DecodeOptions::default())?;
@@ -780,10 +780,10 @@ mod tests {
             &EncodeOptions::default(),
         )?;
 
-        let mut regular = TensogramFile::open(&path)?;
+        let regular = TensogramFile::open(&path)?;
         let regular_msg = regular.read_message(0)?;
 
-        let mut mmap = TensogramFile::open_mmap(&path)?;
+        let mmap = TensogramFile::open_mmap(&path)?;
         let mmap_msg = mmap.read_message(0)?;
 
         assert_eq!(regular_msg, mmap_msg);
@@ -885,7 +885,7 @@ mod tests {
             &EncodeOptions::default(),
         )?;
 
-        let mut sync_file = TensogramFile::open(&path)?;
+        let sync_file = TensogramFile::open(&path)?;
         let sync_msg = sync_file.read_message(0)?;
 
         let mut async_file = TensogramFile::open_async(&path).await?;
