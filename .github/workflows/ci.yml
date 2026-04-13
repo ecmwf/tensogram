@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [[self-hosted, Linux, platform-builder-Ubuntu-22.04], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
+        runner: [[self-hosted, Linux, hpc], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -95,7 +95,7 @@ jobs:
   python-free-threaded:
     name: Python 3.13t (free-threaded)
     needs: main
-    runs-on: [self-hosted, Linux, platform-builder-Ubuntu-22.04]
+    runs-on: [self-hosted, Linux, hpc]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -124,7 +124,7 @@ jobs:
   python-packages:
     name: Python packages
     needs: main
-    runs-on: [self-hosted, Linux, platform-builder-Ubuntu-22.04]
+    runs-on: [self-hosted, Linux, hpc]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -156,7 +156,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [[self-hosted, Linux, platform-builder-Ubuntu-22.04], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
+        runner: [[self-hosted, Linux, hpc], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -177,7 +177,7 @@ jobs:
   # ── WASM: build + test ───────────────────────────────────────────────
   wasm:
     name: WASM
-    runs-on: [self-hosted, Linux, platform-builder-Ubuntu-22.04]
+    runs-on: [self-hosted, Linux, hpc]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
