@@ -36,6 +36,7 @@
 - [xarray Integration](guide/xarray-integration.md)
 - [Dask Integration](guide/dask-integration.md)
 - [Zarr v3 Backend](guide/zarr-backend.md)
+- [Free-Threaded Python](guide/free-threaded-python.md)
 - [Benchmarks](guide/benchmarks.md)
 - [Benchmark Results](guide/benchmark-results.md)
 
