@@ -39,7 +39,7 @@ jobs:
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install netcdf hdf5 eccodes
+        run: brew list netcdf hdf5 eccodes >/dev/null 2>&1 || brew install netcdf hdf5 eccodes
 
       # ── Rust lint ──
       - name: Format check
@@ -89,6 +89,7 @@ jobs:
   # ── Python: free-threaded 3.13t ───────────────────────────────────────
   python-free-threaded:
     name: Python 3.13t (free-threaded)
+    needs: main
     runs-on: [self-hosted, Linux, hpc]
     steps:
       - uses: actions/checkout@v4
@@ -116,6 +117,7 @@ jobs:
   # ── Python packages: xarray + zarr ───────────────────────────────────
   python-packages:
     name: Python packages
+    needs: main
     runs-on: [self-hosted, Linux, hpc]
     steps:
       - uses: actions/checkout@v4
@@ -174,8 +176,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build docs
         run: |
-          cargo install mdbook --locked
-          cargo install mdbook-mermaid --locked
+          which mdbook >/dev/null 2>&1 || cargo install mdbook --locked
+          which mdbook-mermaid >/dev/null 2>&1 || cargo install mdbook-mermaid --locked
           cd docs && mdbook build
 
   # ── WASM: build + test ───────────────────────────────────────────────
@@ -190,5 +192,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build and test
         run: |
-          cargo install wasm-pack --locked
+          which wasm-pack >/dev/null 2>&1 || cargo install wasm-pack --locked
           wasm-pack test --node crates/tensogram-wasm
