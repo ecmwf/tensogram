@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::ops::Range;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use bytes::Bytes;
 use object_store::path::Path as ObjectPath;
@@ -142,6 +142,11 @@ pub(crate) struct RemoteBackend {
     store: Arc<dyn ObjectStore>,
     path: ObjectPath,
     file_size: u64,
+    state: Mutex<RemoteState>,
+}
+
+#[derive(Debug, Default)]
+struct RemoteState {
     layouts: Vec<MessageLayout>,
     next_scan_offset: u64,
     scan_complete: bool,
@@ -152,7 +157,14 @@ impl std::fmt::Debug for RemoteBackend {
         f.debug_struct("RemoteBackend")
             .field("source", &self.source_url)
             .field("file_size", &self.file_size)
-            .field("messages", &self.layouts.len())
+            .field(
+                "messages",
+                &self
+                    .state
+                    .lock()
+                    .map(|state| state.layouts.len())
+                    .unwrap_or(0),
+            )
             .finish()
     }
 }
@@ -189,20 +201,24 @@ impl RemoteBackend {
             )));
         }
 
-        let mut backend = RemoteBackend {
+        let backend = RemoteBackend {
             source_url: source.to_string(),
             store,
             path,
             file_size,
-            layouts: Vec::new(),
-            next_scan_offset: 0,
-            scan_complete: false,
+            state: Mutex::new(RemoteState::default()),
         };
-        backend.scan_next()?;
-        if backend.layouts.is_empty() {
-            return Err(TensogramError::Remote(
-                "no valid messages found in remote file".to_string(),
-            ));
+        {
+            let mut state = backend
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            backend.scan_next_locked(&mut state)?;
+            if state.layouts.is_empty() {
+                return Err(TensogramError::Remote(
+                    "no valid messages found in remote file".to_string(),
+                ));
+            }
         }
         Ok(backend)
     }
@@ -231,28 +247,28 @@ impl RemoteBackend {
 
     // ── Message scanning ─────────────────────────────────────────────────
 
-    fn scan_next(&mut self) -> Result<()> {
-        if self.scan_complete {
+    fn scan_next_locked(&self, state: &mut RemoteState) -> Result<()> {
+        if state.scan_complete {
             return Ok(());
         }
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
-        let pos = self.next_scan_offset;
+        let pos = state.next_scan_offset;
 
         if pos + min_message_size > self.file_size {
-            self.scan_complete = true;
+            state.scan_complete = true;
             return Ok(());
         }
 
         let preamble_bytes = self.get_range(pos..pos + PREAMBLE_SIZE as u64)?;
         if &preamble_bytes[..MAGIC.len()] != MAGIC {
-            self.scan_complete = true;
+            state.scan_complete = true;
             return Ok(());
         }
 
         let preamble = match Preamble::read_from(&preamble_bytes) {
             Ok(p) => p,
             Err(_) => {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
         };
@@ -262,76 +278,76 @@ impl RemoteBackend {
         if msg_len == 0 {
             let remaining = self.file_size - pos;
             if remaining < min_message_size {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
             let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
             let end_bytes =
                 self.get_range(end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64)?;
             if &end_bytes[..] != crate::wire::END_MAGIC {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
-            self.layouts.push(MessageLayout {
+            state.layouts.push(MessageLayout {
                 offset: pos,
                 length: remaining,
                 preamble,
                 index: None,
                 global_metadata: None,
             });
-            self.scan_complete = true;
+            state.scan_complete = true;
             return Ok(());
         }
 
         let msg_end = match pos.checked_add(msg_len) {
             Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
             _ => {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
         };
 
-        self.layouts.push(MessageLayout {
+        state.layouts.push(MessageLayout {
             offset: pos,
             length: msg_len,
             preamble,
             index: None,
             global_metadata: None,
         });
-        self.next_scan_offset = msg_end;
+        state.next_scan_offset = msg_end;
         Ok(())
     }
 
-    fn ensure_message(&mut self, msg_idx: usize) -> Result<()> {
-        while msg_idx >= self.layouts.len() && !self.scan_complete {
-            self.scan_next()?;
+    fn ensure_message_locked(&self, state: &mut RemoteState, msg_idx: usize) -> Result<()> {
+        while msg_idx >= state.layouts.len() && !state.scan_complete {
+            self.scan_next_locked(state)?;
         }
-        if msg_idx >= self.layouts.len() {
+        if msg_idx >= state.layouts.len() {
             return Err(TensogramError::Framing(format!(
                 "message index {} out of range (count={})",
                 msg_idx,
-                self.layouts.len()
+                state.layouts.len()
             )));
         }
         Ok(())
     }
 
-    fn scan_all(&mut self) -> Result<()> {
-        while !self.scan_complete {
-            self.scan_next()?;
+    fn scan_all_locked(&self, state: &mut RemoteState) -> Result<()> {
+        while !state.scan_complete {
+            self.scan_next_locked(state)?;
         }
         Ok(())
     }
 
-    fn scan_and_discover_next(&mut self) -> Result<()> {
-        if self.scan_complete {
+    fn scan_and_discover_next_locked(&self, state: &mut RemoteState) -> Result<()> {
+        if state.scan_complete {
             return Ok(());
         }
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
-        let pos = self.next_scan_offset;
+        let pos = state.next_scan_offset;
 
         if pos + min_message_size > self.file_size {
-            self.scan_complete = true;
+            state.scan_complete = true;
             return Ok(());
         }
 
@@ -339,14 +355,14 @@ impl RemoteBackend {
         let chunk = self.get_range(pos..pos + chunk_size)?;
 
         if chunk.len() < PREAMBLE_SIZE || &chunk[..MAGIC.len()] != MAGIC {
-            self.scan_complete = true;
+            state.scan_complete = true;
             return Ok(());
         }
 
         let preamble = match Preamble::read_from(&chunk[..PREAMBLE_SIZE]) {
             Ok(p) => p,
             Err(_) => {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
         };
@@ -356,53 +372,53 @@ impl RemoteBackend {
         if msg_len == 0 {
             let remaining = self.file_size - pos;
             if remaining < min_message_size {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
             let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
             let end_bytes =
                 self.get_range(end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64)?;
             if &end_bytes[..] != crate::wire::END_MAGIC {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
-            self.layouts.push(MessageLayout {
+            state.layouts.push(MessageLayout {
                 offset: pos,
                 length: remaining,
                 preamble,
                 index: None,
                 global_metadata: None,
             });
-            self.scan_complete = true;
+            state.scan_complete = true;
             return Ok(());
         }
 
         let msg_end = match pos.checked_add(msg_len) {
             Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
             _ => {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
         };
 
         let flags = preamble.flags;
-        let msg_idx = self.layouts.len();
+        let msg_idx = state.layouts.len();
 
-        self.layouts.push(MessageLayout {
+        state.layouts.push(MessageLayout {
             offset: pos,
             length: msg_len,
             preamble,
             index: None,
             global_metadata: None,
         });
-        self.next_scan_offset = msg_end;
+        state.next_scan_offset = msg_end;
 
         if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX) {
             let chunk_end = (msg_len as usize).min(chunk.len());
-            self.parse_header_frames(msg_idx, &chunk[..chunk_end])?;
+            Self::parse_header_frames(state, msg_idx, &chunk[..chunk_end])?;
         } else if flags.has(MessageFlags::FOOTER_METADATA) && flags.has(MessageFlags::FOOTER_INDEX)
         {
-            self.discover_footer_layout_from_suffix(msg_idx)?;
+            self.discover_footer_layout_from_suffix_locked(state, msg_idx)?;
         }
 
         Ok(())
@@ -416,9 +432,13 @@ impl RemoteBackend {
     /// The suffix size is capped at 256 KB — footer regions are typically
     /// a few KB.  If `first_footer_offset` points outside the suffix,
     /// falls back to a separate read for the footer region.
-    fn discover_footer_layout_from_suffix(&mut self, msg_idx: usize) -> Result<()> {
-        let msg_offset = self.layouts[msg_idx].offset;
-        let msg_len = self.layouts[msg_idx].length;
+    fn discover_footer_layout_from_suffix_locked(
+        &self,
+        state: &mut RemoteState,
+        msg_idx: usize,
+    ) -> Result<()> {
+        let msg_offset = state.layouts[msg_idx].offset;
+        let msg_len = state.layouts[msg_idx].length;
 
         let suffix_size = msg_len.min(256 * 1024);
         let msg_end = msg_offset
@@ -457,47 +477,49 @@ impl RemoteBackend {
         if footer_abs_start >= suffix_start {
             let local_start = (footer_abs_start - suffix_start) as usize;
             let local_end = suffix.len() - POSTAMBLE_SIZE;
-            self.parse_footer_frames(msg_idx, &suffix[local_start..local_end])
+            Self::parse_footer_frames(state, msg_idx, &suffix[local_start..local_end])
         } else {
             let footer_bytes = self.get_range(footer_abs_start..footer_abs_end)?;
-            self.parse_footer_frames(msg_idx, &footer_bytes)
+            Self::parse_footer_frames(state, msg_idx, &footer_bytes)
         }
     }
 
-    fn ensure_layout_eager(&mut self, msg_idx: usize) -> Result<()> {
-        while msg_idx >= self.layouts.len() && !self.scan_complete {
-            self.scan_and_discover_next()?;
+    fn ensure_layout_eager_locked(&self, state: &mut RemoteState, msg_idx: usize) -> Result<()> {
+        while msg_idx >= state.layouts.len() && !state.scan_complete {
+            self.scan_and_discover_next_locked(state)?;
         }
-        if msg_idx >= self.layouts.len() {
+        if msg_idx >= state.layouts.len() {
             return Err(TensogramError::Framing(format!(
                 "message index {} out of range (count={})",
                 msg_idx,
-                self.layouts.len()
+                state.layouts.len()
             )));
         }
-        if self.layouts[msg_idx].global_metadata.is_some() && self.layouts[msg_idx].index.is_some()
+        if state.layouts[msg_idx].global_metadata.is_some()
+            && state.layouts[msg_idx].index.is_some()
         {
             return Ok(());
         }
-        self.ensure_layout(msg_idx)
+        self.ensure_layout_locked(state, msg_idx)
     }
 
     // ── Layout discovery (metadata + index for a single message) ─────────
 
-    fn ensure_layout(&mut self, msg_idx: usize) -> Result<()> {
-        self.ensure_message(msg_idx)?;
-        if self.layouts[msg_idx].global_metadata.is_some() && self.layouts[msg_idx].index.is_some()
+    fn ensure_layout_locked(&self, state: &mut RemoteState, msg_idx: usize) -> Result<()> {
+        self.ensure_message_locked(state, msg_idx)?;
+        if state.layouts[msg_idx].global_metadata.is_some()
+            && state.layouts[msg_idx].index.is_some()
         {
             return Ok(());
         }
 
-        let flags = self.layouts[msg_idx].preamble.flags;
+        let flags = state.layouts[msg_idx].preamble.flags;
 
         if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX) {
-            self.discover_header_layout(msg_idx)?;
+            self.discover_header_layout_locked(state, msg_idx)?;
         } else if flags.has(MessageFlags::FOOTER_METADATA) && flags.has(MessageFlags::FOOTER_INDEX)
         {
-            self.discover_footer_layout(msg_idx)?;
+            self.discover_footer_layout_locked(state, msg_idx)?;
         } else {
             return Err(TensogramError::Remote(
                 "remote access requires header-indexed or footer-indexed messages".to_string(),
@@ -507,9 +529,9 @@ impl RemoteBackend {
         Ok(())
     }
 
-    fn discover_footer_layout(&mut self, msg_idx: usize) -> Result<()> {
-        let msg_offset = self.layouts[msg_idx].offset;
-        let msg_len = self.layouts[msg_idx].length;
+    fn discover_footer_layout_locked(&self, state: &mut RemoteState, msg_idx: usize) -> Result<()> {
+        let msg_offset = state.layouts[msg_idx].offset;
+        let msg_len = state.layouts[msg_idx].length;
 
         let pa_offset = msg_offset
             .checked_add(msg_len)
@@ -535,11 +557,11 @@ impl RemoteBackend {
         }
         let footer_bytes = self.get_range(footer_start..footer_end)?;
 
-        self.parse_footer_frames(msg_idx, &footer_bytes)
+        Self::parse_footer_frames(state, msg_idx, &footer_bytes)
     }
 
-    fn discover_header_layout(&mut self, msg_idx: usize) -> Result<()> {
-        let layout = &self.layouts[msg_idx];
+    fn discover_header_layout_locked(&self, state: &mut RemoteState, msg_idx: usize) -> Result<()> {
+        let layout = &state.layouts[msg_idx];
         let msg_offset = layout.offset;
         let msg_len = layout.length;
 
@@ -548,10 +570,10 @@ impl RemoteBackend {
         let chunk_size = msg_len.min(256 * 1024);
         let header_bytes = self.get_range(msg_offset..msg_offset + chunk_size)?;
 
-        self.parse_header_frames(msg_idx, &header_bytes)
+        Self::parse_header_frames(state, msg_idx, &header_bytes)
     }
 
-    fn parse_header_frames(&mut self, msg_idx: usize, buf: &[u8]) -> Result<()> {
+    fn parse_header_frames(state: &mut RemoteState, msg_idx: usize, buf: &[u8]) -> Result<()> {
         let min_frame_size = FRAME_HEADER_SIZE + FRAME_END.len();
         let mut pos = PREAMBLE_SIZE;
 
@@ -586,11 +608,11 @@ impl RemoteBackend {
             match fh.frame_type {
                 FrameType::HeaderMetadata => {
                     let meta = metadata::cbor_to_global_metadata(payload)?;
-                    self.layouts[msg_idx].global_metadata = Some(meta);
+                    state.layouts[msg_idx].global_metadata = Some(meta);
                 }
                 FrameType::HeaderIndex => {
                     let idx = metadata::cbor_to_index(payload)?;
-                    self.layouts[msg_idx].index = Some(idx);
+                    state.layouts[msg_idx].index = Some(idx);
                 }
                 FrameType::DataObject | FrameType::PrecederMetadata => {
                     break;
@@ -602,12 +624,12 @@ impl RemoteBackend {
             pos = aligned.min(buf.len());
         }
 
-        if self.layouts[msg_idx].global_metadata.is_none() {
+        if state.layouts[msg_idx].global_metadata.is_none() {
             return Err(TensogramError::Remote(
                 "header region did not contain a metadata frame".to_string(),
             ));
         }
-        if self.layouts[msg_idx].index.is_none() {
+        if state.layouts[msg_idx].index.is_none() {
             return Err(TensogramError::Remote(
                 "header region did not contain an index frame (header chunk may be too small)"
                     .to_string(),
@@ -617,7 +639,7 @@ impl RemoteBackend {
         Ok(())
     }
 
-    fn parse_footer_frames(&mut self, msg_idx: usize, buf: &[u8]) -> Result<()> {
+    fn parse_footer_frames(state: &mut RemoteState, msg_idx: usize, buf: &[u8]) -> Result<()> {
         let min_frame_size = FRAME_HEADER_SIZE + FRAME_END.len();
         let mut pos = 0;
 
@@ -654,11 +676,11 @@ impl RemoteBackend {
             match fh.frame_type {
                 FrameType::FooterMetadata => {
                     let meta = metadata::cbor_to_global_metadata(payload)?;
-                    self.layouts[msg_idx].global_metadata = Some(meta);
+                    state.layouts[msg_idx].global_metadata = Some(meta);
                 }
                 FrameType::FooterIndex => {
                     let idx = metadata::cbor_to_index(payload)?;
-                    self.layouts[msg_idx].index = Some(idx);
+                    state.layouts[msg_idx].index = Some(idx);
                 }
                 _ => {}
             }
@@ -667,12 +689,12 @@ impl RemoteBackend {
             pos = aligned.min(buf.len());
         }
 
-        if self.layouts[msg_idx].global_metadata.is_none() {
+        if state.layouts[msg_idx].global_metadata.is_none() {
             return Err(TensogramError::Remote(
                 "footer region did not contain a metadata frame".to_string(),
             ));
         }
-        if self.layouts[msg_idx].index.is_none() {
+        if state.layouts[msg_idx].index.is_none() {
             return Err(TensogramError::Remote(
                 "footer region did not contain an index frame".to_string(),
             ));
@@ -683,32 +705,53 @@ impl RemoteBackend {
 
     // ── Public API used by TensogramFile ─────────────────────────────────
 
-    pub(crate) fn message_count(&mut self) -> Result<usize> {
-        self.scan_all()?;
-        Ok(self.layouts.len())
+    pub(crate) fn message_count(&self) -> Result<usize> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+        self.scan_all_locked(&mut state)?;
+        Ok(state.layouts.len())
     }
 
-    pub(crate) fn read_message(&mut self, msg_idx: usize) -> Result<Vec<u8>> {
-        self.ensure_message(msg_idx)?;
-        let layout = &self.layouts[msg_idx];
-        let bytes = self.get_range(layout.offset..layout.offset + layout.length)?;
+    pub(crate) fn read_message(&self, msg_idx: usize) -> Result<Vec<u8>> {
+        let (offset, length) = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            self.ensure_message_locked(&mut state, msg_idx)?;
+            let layout = &state.layouts[msg_idx];
+            (layout.offset, layout.length)
+        };
+        let bytes = self.get_range(offset..offset + length)?;
         Ok(bytes.to_vec())
     }
 
-    pub(crate) fn read_metadata(&mut self, msg_idx: usize) -> Result<GlobalMetadata> {
-        self.ensure_layout_eager(msg_idx)?;
-        self.layouts[msg_idx]
+    pub(crate) fn read_metadata(&self, msg_idx: usize) -> Result<GlobalMetadata> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+        self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+        state.layouts[msg_idx]
             .global_metadata
             .clone()
             .ok_or_else(|| TensogramError::Remote("metadata not found".to_string()))
     }
 
     pub(crate) fn read_descriptors(
-        &mut self,
+        &self,
         msg_idx: usize,
     ) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>)> {
-        self.ensure_layout_eager(msg_idx)?;
-        let layout = &self.layouts[msg_idx];
+        let layout = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+            state.layouts[msg_idx].clone()
+        };
         let msg_offset = layout.offset;
 
         if let Some(ref index) = layout.index {
@@ -841,13 +884,19 @@ impl RemoteBackend {
     }
 
     pub(crate) fn read_object(
-        &mut self,
+        &self,
         msg_idx: usize,
         obj_idx: usize,
         options: &DecodeOptions,
     ) -> Result<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)> {
-        self.ensure_layout_eager(msg_idx)?;
-        let layout = &self.layouts[msg_idx];
+        let layout = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+            state.layouts[msg_idx].clone()
+        };
         let msg_offset = layout.offset;
 
         if let Some(ref index) = layout.index {
@@ -879,14 +928,20 @@ impl RemoteBackend {
     }
 
     pub(crate) fn read_range(
-        &mut self,
+        &self,
         msg_idx: usize,
         obj_idx: usize,
         ranges: &[(u64, u64)],
         options: &DecodeOptions,
     ) -> Result<(DataObjectDescriptor, Vec<Vec<u8>>)> {
-        self.ensure_layout_eager(msg_idx)?;
-        let layout = &self.layouts[msg_idx];
+        let layout = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+            state.layouts[msg_idx].clone()
+        };
         let msg_offset = layout.offset;
 
         if let Some(ref index) = layout.index {
@@ -953,6 +1008,7 @@ impl RemoteBackend {
 // ── Native async path (remote + async) ───────────────────────────────────────
 
 #[cfg(feature = "async")]
+#[allow(clippy::await_holding_lock)]
 impl RemoteBackend {
     async fn get_range_async(&self, range: Range<u64>) -> Result<Bytes> {
         self.store
@@ -991,33 +1047,37 @@ impl RemoteBackend {
             )));
         }
 
-        let mut backend = RemoteBackend {
+        let backend = RemoteBackend {
             source_url: source.to_string(),
             store,
             path,
             file_size,
-            layouts: Vec::new(),
-            next_scan_offset: 0,
-            scan_complete: false,
+            state: Mutex::new(RemoteState::default()),
         };
-        backend.scan_next_async().await?;
-        if backend.layouts.is_empty() {
-            return Err(TensogramError::Remote(
-                "no valid messages found in remote file".to_string(),
-            ));
+        {
+            let mut state = backend
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            backend.scan_next_locked(&mut state)?;
+            if state.layouts.is_empty() {
+                return Err(TensogramError::Remote(
+                    "no valid messages found in remote file".to_string(),
+                ));
+            }
         }
         Ok(backend)
     }
 
-    async fn scan_next_async(&mut self) -> Result<()> {
-        if self.scan_complete {
+    async fn scan_next_async_locked(&self, state: &mut RemoteState) -> Result<()> {
+        if state.scan_complete {
             return Ok(());
         }
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
-        let pos = self.next_scan_offset;
+        let pos = state.next_scan_offset;
 
         if pos + min_message_size > self.file_size {
-            self.scan_complete = true;
+            state.scan_complete = true;
             return Ok(());
         }
 
@@ -1025,14 +1085,14 @@ impl RemoteBackend {
             .get_range_async(pos..pos + PREAMBLE_SIZE as u64)
             .await?;
         if &preamble_bytes[..MAGIC.len()] != MAGIC {
-            self.scan_complete = true;
+            state.scan_complete = true;
             return Ok(());
         }
 
         let preamble = match Preamble::read_from(&preamble_bytes) {
             Ok(p) => p,
             Err(_) => {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
         };
@@ -1042,7 +1102,7 @@ impl RemoteBackend {
         if msg_len == 0 {
             let remaining = self.file_size - pos;
             if remaining < min_message_size {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
             let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
@@ -1050,48 +1110,48 @@ impl RemoteBackend {
                 .get_range_async(end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64)
                 .await?;
             if &end_bytes[..] != crate::wire::END_MAGIC {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
-            self.layouts.push(MessageLayout {
+            state.layouts.push(MessageLayout {
                 offset: pos,
                 length: remaining,
                 preamble,
                 index: None,
                 global_metadata: None,
             });
-            self.scan_complete = true;
+            state.scan_complete = true;
             return Ok(());
         }
 
         let msg_end = match pos.checked_add(msg_len) {
             Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
             _ => {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
         };
 
-        self.layouts.push(MessageLayout {
+        state.layouts.push(MessageLayout {
             offset: pos,
             length: msg_len,
             preamble,
             index: None,
             global_metadata: None,
         });
-        self.next_scan_offset = msg_end;
+        state.next_scan_offset = msg_end;
         Ok(())
     }
 
-    async fn scan_and_discover_next_async(&mut self) -> Result<()> {
-        if self.scan_complete {
+    async fn scan_and_discover_next_async_locked(&self, state: &mut RemoteState) -> Result<()> {
+        if state.scan_complete {
             return Ok(());
         }
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
-        let pos = self.next_scan_offset;
+        let pos = state.next_scan_offset;
 
         if pos + min_message_size > self.file_size {
-            self.scan_complete = true;
+            state.scan_complete = true;
             return Ok(());
         }
 
@@ -1099,14 +1159,14 @@ impl RemoteBackend {
         let chunk = self.get_range_async(pos..pos + chunk_size).await?;
 
         if chunk.len() < PREAMBLE_SIZE || &chunk[..MAGIC.len()] != MAGIC {
-            self.scan_complete = true;
+            state.scan_complete = true;
             return Ok(());
         }
 
         let preamble = match Preamble::read_from(&chunk[..PREAMBLE_SIZE]) {
             Ok(p) => p,
             Err(_) => {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
         };
@@ -1116,7 +1176,7 @@ impl RemoteBackend {
         if msg_len == 0 {
             let remaining = self.file_size - pos;
             if remaining < min_message_size {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
             let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
@@ -1124,55 +1184,59 @@ impl RemoteBackend {
                 .get_range_async(end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64)
                 .await?;
             if &end_bytes[..] != crate::wire::END_MAGIC {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
-            self.layouts.push(MessageLayout {
+            state.layouts.push(MessageLayout {
                 offset: pos,
                 length: remaining,
                 preamble,
                 index: None,
                 global_metadata: None,
             });
-            self.scan_complete = true;
+            state.scan_complete = true;
             return Ok(());
         }
 
         let msg_end = match pos.checked_add(msg_len) {
             Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
             _ => {
-                self.scan_complete = true;
+                state.scan_complete = true;
                 return Ok(());
             }
         };
 
         let flags = preamble.flags;
-        let msg_idx = self.layouts.len();
+        let msg_idx = state.layouts.len();
 
-        self.layouts.push(MessageLayout {
+        state.layouts.push(MessageLayout {
             offset: pos,
             length: msg_len,
             preamble,
             index: None,
             global_metadata: None,
         });
-        self.next_scan_offset = msg_end;
+        state.next_scan_offset = msg_end;
 
         if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX) {
             let chunk_end = (msg_len as usize).min(chunk.len());
-            self.parse_header_frames(msg_idx, &chunk[..chunk_end])?;
+            Self::parse_header_frames(state, msg_idx, &chunk[..chunk_end])?;
         } else if flags.has(MessageFlags::FOOTER_METADATA) && flags.has(MessageFlags::FOOTER_INDEX)
         {
-            self.discover_footer_layout_from_suffix_async(msg_idx)
+            self.discover_footer_layout_from_suffix_async_locked(state, msg_idx)
                 .await?;
         }
 
         Ok(())
     }
 
-    async fn discover_footer_layout_from_suffix_async(&mut self, msg_idx: usize) -> Result<()> {
-        let msg_offset = self.layouts[msg_idx].offset;
-        let msg_len = self.layouts[msg_idx].length;
+    async fn discover_footer_layout_from_suffix_async_locked(
+        &self,
+        state: &mut RemoteState,
+        msg_idx: usize,
+    ) -> Result<()> {
+        let msg_offset = state.layouts[msg_idx].offset;
+        let msg_len = state.layouts[msg_idx].length;
 
         let suffix_size = msg_len.min(256 * 1024);
         let msg_end = msg_offset
@@ -1211,47 +1275,59 @@ impl RemoteBackend {
         if footer_abs_start >= suffix_start {
             let local_start = (footer_abs_start - suffix_start) as usize;
             let local_end = suffix.len() - POSTAMBLE_SIZE;
-            self.parse_footer_frames(msg_idx, &suffix[local_start..local_end])
+            Self::parse_footer_frames(state, msg_idx, &suffix[local_start..local_end])
         } else {
             let footer_bytes = self
                 .get_range_async(footer_abs_start..footer_abs_end)
                 .await?;
-            self.parse_footer_frames(msg_idx, &footer_bytes)
+            Self::parse_footer_frames(state, msg_idx, &footer_bytes)
         }
     }
 
-    async fn ensure_layout_eager_async(&mut self, msg_idx: usize) -> Result<()> {
-        while msg_idx >= self.layouts.len() && !self.scan_complete {
-            self.scan_and_discover_next_async().await?;
+    async fn ensure_layout_eager_async_locked(
+        &self,
+        state: &mut RemoteState,
+        msg_idx: usize,
+    ) -> Result<()> {
+        while msg_idx >= state.layouts.len() && !state.scan_complete {
+            self.scan_and_discover_next_async_locked(state).await?;
         }
-        if msg_idx >= self.layouts.len() {
+        if msg_idx >= state.layouts.len() {
             return Err(TensogramError::Framing(format!(
                 "message index {} out of range (count={})",
                 msg_idx,
-                self.layouts.len()
+                state.layouts.len()
             )));
         }
-        if self.layouts[msg_idx].global_metadata.is_some() && self.layouts[msg_idx].index.is_some()
+        if state.layouts[msg_idx].global_metadata.is_some()
+            && state.layouts[msg_idx].index.is_some()
         {
             return Ok(());
         }
-        self.ensure_layout_async(msg_idx).await
+        self.ensure_layout_async_locked(state, msg_idx).await
     }
 
-    async fn ensure_layout_async(&mut self, msg_idx: usize) -> Result<()> {
-        self.ensure_message_async(msg_idx).await?;
-        if self.layouts[msg_idx].global_metadata.is_some() && self.layouts[msg_idx].index.is_some()
+    async fn ensure_layout_async_locked(
+        &self,
+        state: &mut RemoteState,
+        msg_idx: usize,
+    ) -> Result<()> {
+        self.ensure_message_async_locked(state, msg_idx).await?;
+        if state.layouts[msg_idx].global_metadata.is_some()
+            && state.layouts[msg_idx].index.is_some()
         {
             return Ok(());
         }
 
-        let flags = self.layouts[msg_idx].preamble.flags;
+        let flags = state.layouts[msg_idx].preamble.flags;
 
         if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX) {
-            self.discover_header_layout_async(msg_idx).await?;
+            self.discover_header_layout_async_locked(state, msg_idx)
+                .await?;
         } else if flags.has(MessageFlags::FOOTER_METADATA) && flags.has(MessageFlags::FOOTER_INDEX)
         {
-            self.discover_footer_layout_async(msg_idx).await?;
+            self.discover_footer_layout_async_locked(state, msg_idx)
+                .await?;
         } else {
             return Err(TensogramError::Remote(
                 "remote access requires header-indexed or footer-indexed messages".to_string(),
@@ -1261,19 +1337,27 @@ impl RemoteBackend {
         Ok(())
     }
 
-    async fn discover_header_layout_async(&mut self, msg_idx: usize) -> Result<()> {
-        let msg_offset = self.layouts[msg_idx].offset;
-        let msg_len = self.layouts[msg_idx].length;
+    async fn discover_header_layout_async_locked(
+        &self,
+        state: &mut RemoteState,
+        msg_idx: usize,
+    ) -> Result<()> {
+        let msg_offset = state.layouts[msg_idx].offset;
+        let msg_len = state.layouts[msg_idx].length;
         let chunk_size = msg_len.min(256 * 1024);
         let header_bytes = self
             .get_range_async(msg_offset..msg_offset + chunk_size)
             .await?;
-        self.parse_header_frames(msg_idx, &header_bytes)
+        Self::parse_header_frames(state, msg_idx, &header_bytes)
     }
 
-    async fn discover_footer_layout_async(&mut self, msg_idx: usize) -> Result<()> {
-        let msg_offset = self.layouts[msg_idx].offset;
-        let msg_len = self.layouts[msg_idx].length;
+    async fn discover_footer_layout_async_locked(
+        &self,
+        state: &mut RemoteState,
+        msg_idx: usize,
+    ) -> Result<()> {
+        let msg_offset = state.layouts[msg_idx].offset;
+        let msg_len = state.layouts[msg_idx].length;
         let pa_offset = msg_offset
             .checked_add(msg_len)
             .and_then(|end| end.checked_sub(POSTAMBLE_SIZE as u64))
@@ -1299,46 +1383,67 @@ impl RemoteBackend {
             ));
         }
         let footer_bytes = self.get_range_async(footer_start..footer_end).await?;
-        self.parse_footer_frames(msg_idx, &footer_bytes)
+        Self::parse_footer_frames(state, msg_idx, &footer_bytes)
     }
 
-    async fn ensure_message_async(&mut self, msg_idx: usize) -> Result<()> {
-        while msg_idx >= self.layouts.len() && !self.scan_complete {
-            self.scan_next_async().await?;
+    async fn ensure_message_async_locked(
+        &self,
+        state: &mut RemoteState,
+        msg_idx: usize,
+    ) -> Result<()> {
+        while msg_idx >= state.layouts.len() && !state.scan_complete {
+            self.scan_next_async_locked(state).await?;
         }
-        if msg_idx >= self.layouts.len() {
+        if msg_idx >= state.layouts.len() {
             return Err(TensogramError::Framing(format!(
                 "message index {} out of range (count={})",
                 msg_idx,
-                self.layouts.len()
+                state.layouts.len()
             )));
         }
         Ok(())
     }
 
-    pub(crate) async fn read_message_async(&mut self, msg_idx: usize) -> Result<Vec<u8>> {
-        self.ensure_message_async(msg_idx).await?;
-        let layout = &self.layouts[msg_idx];
-        let bytes = self
-            .get_range_async(layout.offset..layout.offset + layout.length)
-            .await?;
+    pub(crate) async fn read_message_async(&self, msg_idx: usize) -> Result<Vec<u8>> {
+        // Use sync scanning inside the lock (cached after first call),
+        // then release the lock before async I/O.
+        let (offset, length) = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            self.ensure_message_locked(&mut state, msg_idx)?;
+            let layout = &state.layouts[msg_idx];
+            (layout.offset, layout.length)
+        };
+        let bytes = self.get_range_async(offset..offset + length).await?;
         Ok(bytes.to_vec())
     }
 
-    pub(crate) async fn read_metadata_async(&mut self, msg_idx: usize) -> Result<GlobalMetadata> {
-        self.ensure_layout_eager_async(msg_idx).await?;
-        self.layouts[msg_idx]
+    pub(crate) async fn read_metadata_async(&self, msg_idx: usize) -> Result<GlobalMetadata> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+        self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+        state.layouts[msg_idx]
             .global_metadata
             .clone()
             .ok_or_else(|| TensogramError::Remote("metadata not found".to_string()))
     }
 
     pub(crate) async fn read_descriptors_async(
-        &mut self,
+        &self,
         msg_idx: usize,
     ) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>)> {
-        self.ensure_layout_eager_async(msg_idx).await?;
-        let layout = &self.layouts[msg_idx];
+        let layout = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+            state.layouts[msg_idx].clone()
+        };
         let msg_offset = layout.offset;
 
         if let Some(ref index) = layout.index {
@@ -1468,13 +1573,19 @@ impl RemoteBackend {
     }
 
     pub(crate) async fn read_object_async(
-        &mut self,
+        &self,
         msg_idx: usize,
         obj_idx: usize,
         options: &DecodeOptions,
     ) -> Result<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)> {
-        self.ensure_layout_eager_async(msg_idx).await?;
-        let layout = &self.layouts[msg_idx];
+        let layout = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+            state.layouts[msg_idx].clone()
+        };
         let msg_offset = layout.offset;
 
         if let Some(ref index) = layout.index {

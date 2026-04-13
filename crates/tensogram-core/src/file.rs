@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::decode::{self, DecodeOptions};
 use crate::encode::{self, EncodeOptions};
@@ -36,7 +37,7 @@ impl Backend {
 /// remote object stores (`remote` feature) via a unified API.
 pub struct TensogramFile {
     backend: Backend,
-    message_offsets: Option<Vec<(usize, usize)>>,
+    message_offsets: OnceLock<Vec<(usize, usize)>>,
 }
 
 impl TensogramFile {
@@ -55,7 +56,7 @@ impl TensogramFile {
                 #[cfg(feature = "mmap")]
                 mmap: None,
             },
-            message_offsets: None,
+            message_offsets: OnceLock::new(),
         })
     }
 
@@ -84,7 +85,7 @@ impl TensogramFile {
         let remote = crate::remote::RemoteBackend::open(source, storage_options)?;
         Ok(TensogramFile {
             backend: Backend::Remote(remote),
-            message_offsets: None,
+            message_offsets: OnceLock::new(),
         })
     }
 
@@ -112,7 +113,7 @@ impl TensogramFile {
                 #[cfg(feature = "mmap")]
                 mmap: None,
             },
-            message_offsets: None,
+            message_offsets: OnceLock::new(),
         })
     }
 
@@ -140,7 +141,7 @@ impl TensogramFile {
                 path,
                 mmap: Some(mmap),
             },
-            message_offsets: Some(offsets),
+            message_offsets: OnceLock::from(offsets),
         })
     }
 
@@ -156,26 +157,25 @@ impl TensogramFile {
         }
     }
 
-    fn ensure_scanned(&mut self) -> Result<()> {
-        if self.message_offsets.is_some() {
-            return Ok(());
+    fn ensure_scanned(&self) -> Result<()> {
+        if self.message_offsets.get().is_none() {
+            let path = self.local_path()?.clone();
+            let mut file = fs::File::open(&path).map_err(|e| {
+                TensogramError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("{}: {e}", path.display()),
+                ))
+            })?;
+            let offsets = framing::scan_file(&mut file)?;
+            let _ = self.message_offsets.set(offsets);
         }
-        let path = self.local_path()?.clone();
-        let mut file = fs::File::open(&path).map_err(|e| {
-            TensogramError::Io(std::io::Error::new(
-                e.kind(),
-                format!("{}: {e}", path.display()),
-            ))
-        })?;
-        let offsets = framing::scan_file(&mut file)?;
-        self.message_offsets = Some(offsets);
         Ok(())
     }
 
     fn checked_offsets(&self, index: usize) -> Result<(usize, usize)> {
         let offsets = self
             .message_offsets
-            .as_ref()
+            .get()
             .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?;
         if index >= offsets.len() {
             return Err(TensogramError::Framing(format!(
@@ -189,15 +189,15 @@ impl TensogramFile {
 
     // ── Public API ───────────────────────────────────────────────────────
 
-    pub fn message_count(&mut self) -> Result<usize> {
+    pub fn message_count(&self) -> Result<usize> {
         #[cfg(feature = "remote")]
-        if let Backend::Remote(remote) = &mut self.backend {
+        if let Backend::Remote(remote) = &self.backend {
             return remote.message_count();
         }
         self.ensure_scanned()?;
         Ok(self
             .message_offsets
-            .as_ref()
+            .get()
             .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?
             .len())
     }
@@ -221,13 +221,13 @@ impl TensogramFile {
                 ))
             })?;
         file.write_all(&msg)?;
-        self.message_offsets = None;
+        self.message_offsets = OnceLock::new();
         Ok(())
     }
 
-    pub fn read_message(&mut self, index: usize) -> Result<Vec<u8>> {
+    pub fn read_message(&self, index: usize) -> Result<Vec<u8>> {
         #[cfg(feature = "remote")]
-        if let Backend::Remote(remote) = &mut self.backend {
+        if let Backend::Remote(remote) = &self.backend {
             return remote.read_message(index);
         }
 
@@ -265,11 +265,11 @@ impl TensogramFile {
     }
 
     #[deprecated(note = "Use message_count() + read_message(index) for lazy access")]
-    pub fn messages(&mut self) -> Result<Vec<Vec<u8>>> {
+    pub fn messages(&self) -> Result<Vec<Vec<u8>>> {
         self.ensure_scanned()?;
         let count = self
             .message_offsets
-            .as_ref()
+            .get()
             .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?
             .len();
         let mut msgs = Vec::with_capacity(count);
@@ -280,7 +280,7 @@ impl TensogramFile {
     }
 
     pub fn decode_message(
-        &mut self,
+        &self,
         index: usize,
         options: &DecodeOptions,
     ) -> Result<(GlobalMetadata, Vec<DecodedObject>)> {
@@ -288,12 +288,12 @@ impl TensogramFile {
         decode::decode(&msg, options)
     }
 
-    pub fn iter(&mut self) -> Result<crate::iter::FileMessageIter> {
+    pub fn iter(&self) -> Result<crate::iter::FileMessageIter> {
         self.ensure_scanned()?;
         let path = self.local_path()?.clone();
         let offsets = self
             .message_offsets
-            .as_ref()
+            .get()
             .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?
             .clone();
         crate::iter::FileMessageIter::new(path, offsets)
@@ -314,7 +314,7 @@ impl TensogramFile {
     pub fn invalidate_offsets(&mut self) {
         match &self.backend {
             Backend::Local { .. } => {
-                self.message_offsets = None;
+                self.message_offsets = OnceLock::new();
             }
             #[cfg(feature = "remote")]
             Backend::Remote(_) => {}
@@ -323,8 +323,8 @@ impl TensogramFile {
 
     // ── Object-level access (efficient for remote) ───────────────────────
 
-    pub fn decode_metadata(&mut self, msg_idx: usize) -> Result<GlobalMetadata> {
-        match &mut self.backend {
+    pub fn decode_metadata(&self, msg_idx: usize) -> Result<GlobalMetadata> {
+        match &self.backend {
             #[cfg(feature = "remote")]
             Backend::Remote(remote) => remote.read_metadata(msg_idx),
             _ => {
@@ -335,10 +335,10 @@ impl TensogramFile {
     }
 
     pub fn decode_descriptors(
-        &mut self,
+        &self,
         msg_idx: usize,
     ) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>)> {
-        match &mut self.backend {
+        match &self.backend {
             #[cfg(feature = "remote")]
             Backend::Remote(remote) => remote.read_descriptors(msg_idx),
             _ => {
@@ -349,12 +349,12 @@ impl TensogramFile {
     }
 
     pub fn decode_object(
-        &mut self,
+        &self,
         msg_idx: usize,
         obj_idx: usize,
         options: &DecodeOptions,
     ) -> Result<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)> {
-        match &mut self.backend {
+        match &self.backend {
             #[cfg(feature = "remote")]
             Backend::Remote(remote) => remote.read_object(msg_idx, obj_idx, options),
             _ => {
@@ -365,13 +365,13 @@ impl TensogramFile {
     }
 
     pub fn decode_range(
-        &mut self,
+        &self,
         msg_idx: usize,
         obj_idx: usize,
         ranges: &[(u64, u64)],
         options: &DecodeOptions,
     ) -> Result<(DataObjectDescriptor, Vec<Vec<u8>>)> {
-        match &mut self.backend {
+        match &self.backend {
             #[cfg(feature = "remote")]
             Backend::Remote(remote) => remote.read_range(msg_idx, obj_idx, ranges, options),
             _ => {
@@ -419,18 +419,18 @@ impl TensogramFile {
                 #[cfg(feature = "mmap")]
                 mmap: None,
             },
-            message_offsets: Some(offsets),
+            message_offsets: OnceLock::from(offsets),
         })
     }
 
     #[cfg(feature = "async")]
     pub async fn read_message_async(&mut self, index: usize) -> Result<Vec<u8>> {
         #[cfg(feature = "remote")]
-        if let Backend::Remote(remote) = &mut self.backend {
+        if let Backend::Remote(remote) = &self.backend {
             return remote.read_message_async(index).await;
         }
 
-        if self.message_offsets.is_none() {
+        if self.message_offsets.get().is_none() {
             let p = self.local_path()?.clone();
             let offsets = tokio::task::spawn_blocking(move || {
                 let mut file = fs::File::open(&p)?;
@@ -438,7 +438,7 @@ impl TensogramFile {
             })
             .await
             .map_err(|e| TensogramError::Io(std::io::Error::other(e)))??;
-            self.message_offsets = Some(offsets);
+            let _ = self.message_offsets.set(offsets);
         }
 
         let (offset, length) = self.checked_offsets(index)?;
@@ -487,7 +487,7 @@ impl TensogramFile {
         let remote = crate::remote::RemoteBackend::open_async(source, storage_options).await?;
         Ok(TensogramFile {
             backend: Backend::Remote(remote),
-            message_offsets: None,
+            message_offsets: OnceLock::new(),
         })
     }
 
