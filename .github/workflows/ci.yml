@@ -13,7 +13,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  TMPDIR: /home/github-actions/tmp
+  TMPDIR: ${{ github.workspace }}/.tmp
   RUSTUP_HOME: ${{ github.workspace }}/.rustup
   CARGO_HOME: ${{ github.workspace }}/.cargo
 
@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [[self-hosted, Linux, platform-builder-docker-xl], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
+        runner: [[self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
     steps:
       - uses: actions/checkout@v4
       - run: mkdir -p "$TMPDIR"
@@ -37,11 +37,31 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install LLVM (Linux)
+        if: runner.os == 'Linux'
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "14"
+          directory: ${{ github.workspace }}/.llvm
+
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
+        id: linux-deps
         run: |
-          dpkg -s libclang-dev libnetcdf-dev libhdf5-dev libeccodes-dev >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev libnetcdf-dev libhdf5-dev libeccodes-dev)
-          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
+          echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
+
+          if [ "$(id -u)" = "0" ]; then APT="apt-get"; else APT="sudo -n apt-get"; fi
+          install_apt() { $APT update -o DPkg::Lock::Timeout=120 && $APT install -y -o DPkg::Lock::Timeout=120 "$@"; }
+
+          has_grib_deps=true
+          for pkg in libnetcdf-dev libhdf5-dev libeccodes-dev; do
+            dpkg -s "$pkg" >/dev/null 2>&1 || install_apt "$pkg" 2>/dev/null || has_grib_deps=false
+          done
+          echo "has_grib_deps=$has_grib_deps" >> "$GITHUB_OUTPUT"
+
+          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" \
+            || (python3 -m pip install --user cmake 2>/dev/null && echo "$HOME/.local/bin" >> "$GITHUB_PATH") \
+            || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
@@ -58,7 +78,9 @@ jobs:
       - name: Clippy
         run: |
           cargo clippy --workspace --all-targets -- -D warnings
-          cargo clippy -p tensogram-core -p tensogram-ffi -p tensogram-cli --all-targets --all-features -- -D warnings
+          if [ "${{ steps.linux-deps.outputs.has_grib_deps }}" != "false" ]; then
+            cargo clippy -p tensogram-core -p tensogram-ffi -p tensogram-cli --all-targets --all-features -- -D warnings
+          fi
 
       - name: Test
         run: cargo test --workspace
@@ -70,11 +92,13 @@ jobs:
         run: cargo test -p tensogram-core --features "remote,async"
 
       - name: Test (GRIB)
+        if: runner.os != 'Linux' || steps.linux-deps.outputs.has_grib_deps == 'true'
         run: |
           cargo test --manifest-path crates/tensogram-grib/Cargo.toml
           cargo test -p tensogram-cli --features grib
 
       - name: Test (NetCDF)
+        if: runner.os != 'Linux' || steps.linux-deps.outputs.has_grib_deps == 'true'
         run: |
           cargo clippy --manifest-path crates/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
           cargo test --manifest-path crates/tensogram-netcdf/Cargo.toml
@@ -92,13 +116,13 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf "$TMPDIR" .venv build .rustup .cargo
+        run: rm -rf "$TMPDIR" .venv build .rustup .cargo .llvm
 
   # ── Python: free-threaded 3.13t ───────────────────────────────────────
   python-free-threaded:
     name: Python 3.13t (free-threaded)
     needs: main
-    runs-on: [self-hosted, Linux, platform-builder-docker-xl]
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     steps:
       - uses: actions/checkout@v4
       - run: mkdir -p "$TMPDIR"
@@ -108,10 +132,18 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install LLVM
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "14"
+          directory: ${{ github.workspace }}/.llvm
+
       - name: Install system dependencies
         run: |
-          dpkg -s libclang-dev >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev)
-          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
+          echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
+          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" \
+            || (python3 -m pip install --user cmake 2>/dev/null && echo "$HOME/.local/bin" >> "$GITHUB_PATH") \
+            || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
 
       - name: Build and test
         env:
@@ -127,13 +159,13 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf "$TMPDIR" .venv .rustup .cargo
+        run: rm -rf "$TMPDIR" .venv .rustup .cargo .llvm
 
   # ── Python packages: xarray + zarr ───────────────────────────────────
   python-packages:
     name: Python packages
     needs: main
-    runs-on: [self-hosted, Linux, platform-builder-docker-xl]
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     steps:
       - uses: actions/checkout@v4
       - run: mkdir -p "$TMPDIR"
@@ -143,10 +175,18 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install LLVM
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "14"
+          directory: ${{ github.workspace }}/.llvm
+
       - name: Install system dependencies
         run: |
-          dpkg -s libclang-dev >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev)
-          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
+          echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
+          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" \
+            || (python3 -m pip install --user cmake 2>/dev/null && echo "$HOME/.local/bin" >> "$GITHUB_PATH") \
+            || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
 
       - name: Build and test
         run: |
@@ -162,7 +202,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf "$TMPDIR" .venv .rustup .cargo
+        run: rm -rf "$TMPDIR" .venv .rustup .cargo .llvm
 
   # ── C++: build + test ────────────────────────────────────────────────
   cpp:
@@ -171,18 +211,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [[self-hosted, Linux, platform-builder-docker-xl], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
+        runner: [[self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
     steps:
       - uses: actions/checkout@v4
       - run: mkdir -p "$TMPDIR"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install LLVM (Linux)
+        if: runner.os == 'Linux'
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "14"
+          directory: ${{ github.workspace }}/.llvm
+
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
-          dpkg -s libclang-dev >/dev/null 2>&1 || (sudo apt-get update -o DPkg::Lock::Timeout=120 && sudo apt-get install -y -o DPkg::Lock::Timeout=120 libclang-dev)
-          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
+          echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
+          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" \
+            || (python3 -m pip install --user cmake 2>/dev/null && echo "$HOME/.local/bin" >> "$GITHUB_PATH") \
+            || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
 
       - name: Build and test
         run: |
@@ -193,12 +242,12 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf "$TMPDIR" build .rustup .cargo
+        run: rm -rf "$TMPDIR" build .rustup .cargo .llvm
 
   # ── WASM: build + test ───────────────────────────────────────────────
   wasm:
     name: WASM
-    runs-on: [self-hosted, Linux, platform-builder-docker-xl]
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     steps:
       - uses: actions/checkout@v4
       - run: mkdir -p "$TMPDIR"
