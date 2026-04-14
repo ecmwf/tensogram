@@ -1791,6 +1791,9 @@ impl RemoteBackend {
     }
 
     pub(crate) async fn ensure_all_layouts_batch_async(&self, msg_indices: &[usize]) -> Result<()> {
+        if msg_indices.is_empty() {
+            return Ok(());
+        }
         let max_idx = msg_indices.iter().copied().max().unwrap_or(0);
         loop {
             let (need_scan, scan_complete) = {

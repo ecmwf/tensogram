@@ -371,7 +371,8 @@ Before running many concurrent decodes on a remote file, prefetch
 the internal layout metadata to avoid repeated discovery requests:
 
 ```python
-    await f.prefetch_layouts(list(range(len(f))))
+    count = await f.message_count()
+    await f.prefetch_layouts(list(range(count)))
 ```
 
 ### Context manager and iteration

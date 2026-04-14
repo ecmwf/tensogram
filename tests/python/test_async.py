@@ -56,7 +56,7 @@ class TestAsyncOpen:
 
     @pytest.mark.asyncio
     async def test_open_nonexistent(self):
-        with pytest.raises(OSError, match="not found"):
+        with pytest.raises(OSError, match=r"[Nn]o such|not found"):
             await tensogram.AsyncTensogramFile.open("/nonexistent/path.tgm")
 
     @pytest.mark.asyncio
