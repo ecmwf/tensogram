@@ -116,7 +116,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf "$TMPDIR" .venv build .rustup .cargo .llvm
+        run: rm -rf "$TMPDIR" .venv build .rustup .cargo .llvm target
 
   # ── Python: free-threaded 3.13t ───────────────────────────────────────
   python-free-threaded:
@@ -159,7 +159,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf "$TMPDIR" .venv .rustup .cargo .llvm
+        run: rm -rf "$TMPDIR" .venv .rustup .cargo .llvm target
 
   # ── Python packages: xarray + zarr ───────────────────────────────────
   python-packages:
@@ -202,7 +202,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf "$TMPDIR" .venv .rustup .cargo .llvm
+        run: rm -rf "$TMPDIR" .venv .rustup .cargo .llvm target
 
   # ── C++: build + test ────────────────────────────────────────────────
   cpp:
@@ -242,7 +242,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf "$TMPDIR" build .rustup .cargo .llvm
+        run: rm -rf "$TMPDIR" build .rustup .cargo .llvm target
 
   # ── WASM: build + test ───────────────────────────────────────────────
   wasm:
@@ -265,4 +265,4 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf "$TMPDIR" .rustup .cargo
+        run: rm -rf "$TMPDIR" .rustup .cargo target
