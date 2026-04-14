@@ -1137,7 +1137,7 @@ mod tests {
         }
 
         // Open with mmap and try to append
-        let mmap_file = TensogramFile::open_mmap(&path)?;
+        let mut mmap_file = TensogramFile::open_mmap(&path)?;
         let meta = make_global_meta();
         let desc = make_descriptor(vec![4]);
         let data = vec![0u8; 16];
