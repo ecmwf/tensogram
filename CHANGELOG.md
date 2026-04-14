@@ -3,6 +3,60 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.10.0] - 2026-04-14
+
+### Added
+- **Remote object store backend** — read `.tgm` files directly from S3, GCS,
+  Azure, and HTTP(S) URLs without downloading the whole file. Range-request
+  based message scanning (1 GET per message), layout caching, footer-indexed
+  file support, and checked arithmetic for all remote-supplied lengths.
+  New `remote` feature gate with `object_store`, `tokio`, `bytes`, `url` deps.
+- **Free-threaded Python support (3.13t / 3.14t)** — all hot paths release
+  the GIL (`py.allow_threads`). Module declared `gil_used = false`. PyO3
+  upgraded 0.25 → 0.28. Buffer handling changed from `&[u8]` to
+  `PyBackedBytes` for safe GIL-free access. Passes 23 concurrent thread-safety
+  tests.
+- **Remote Python API** — `TensogramFile.open_remote(url, storage_options=None)`,
+  `file_decode_metadata()`, `file_decode_descriptors()`, `file_decode_object()`,
+  `file_decode_range()`, `is_remote_url()`, `is_remote()`, `source()`.
+- **Remote xarray backend** — `open_datatree()` / `open_dataset()` accept
+  remote URLs via `storage_options`. Lazy chunk reads for remote zarr stores.
+  Context-manager file handles with `set_close` callbacks for deterministic
+  cleanup.
+- **Remote zarr backend** — `TensogramStore` accepts remote URLs with
+  `storage_options` and write rejection. Lazy message scanning for remote
+  files.
+- **Remote documentation** — `docs/src/guide/remote-access.md` (request
+  budgets, error handling, limitations) and
+  `docs/src/guide/free-threaded-python.md` (benchmark results, usage guide).
+- **Remote examples** — `examples/python/14_remote_access.py` and
+  `examples/rust/src/bin/14_remote_access.rs`.
+- **164 new coverage tests** — 71 FFI round-trip tests, 30 validate
+  adversarial tests, 22 remote async parity tests, 17 file API tests,
+  11 decode edge-case tests, 13 Python coverage-gap tests.
+- **Threading benchmarks** — `bench_threading.py` (multi-threaded scaling)
+  and `bench_vs_eccodes.py` (comparison against ecCodes).
+
+### Changed
+- **`TensogramFile` is now `&self`** — all read methods changed from
+  `&mut self` to `&self` using `OnceLock` for cached offsets (thread safety).
+  `Backend` enum (`Local` | `Remote`) replaces raw `PathBuf` + `Option<Mmap>`.
+  `path()` returns `Option<&Path>` (remote files have no local path).
+- **xarray `BackendArray` refactored** — replaced `xarray._data` private
+  traversal with explicit array tracking. `set_close` callbacks for
+  deterministic cleanup.
+- **CI switched to self-hosted runners** — all jobs use
+  `platform-builder-docker-xl` with explicit LLVM install, `noexec /tmp`
+  handling, and disk cleanup steps.
+- Removed unreachable dead code guards in `xarray/mapping.py` and
+  `zarr/mapping.py`.
+
+### Stats
+- 1,545+ total tests (870 Rust + 523 Python + 224 Zarr) — all green
+- Rust coverage: 90.7% (up from 83.0%)
+- Python coverage: 97–99%
+- 0 clippy warnings, 0 fmt diffs
+
 ## [0.9.1] - 2026-04-11
 
 ### Added
