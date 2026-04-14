@@ -1,4 +1,5 @@
-.claude/
+.claude/*
+!.claude/commands/
 .weave/
 .sisyphus/
 .coverage
