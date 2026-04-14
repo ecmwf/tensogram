@@ -3,6 +3,23 @@
 > For historical release notes, see `../CHANGELOG.md`.
 > For planned features, see `TODO.md`. For ideas, see `IDEAS.md`.
 
+## Python async bindings (completed)
+
+`AsyncTensogramFile` exposes all read/decode operations as `asyncio` coroutines
+via `pyo3-async-runtimes` + tokio.  A single handle supports truly concurrent
+operations (core async methods take `&self`, no mutex).
+
+| Component | What changed |
+|-----------|-------------|
+| `tensogram-core/file.rs` | All async methods `&mut self` → `&self`. Added `decode_range_async`, `decode_range_batch_async`, `decode_object_batch_async`, `prefetch_layouts_async`, `message_count_async`. Sync batch: `decode_range_batch`, `decode_object_batch`. |
+| `tensogram-core/remote.rs` | Added `read_range_async`, `read_range_batch_async`, `read_object_batch_async`, `ensure_all_layouts_batch_async` (batched layout discovery via `get_ranges`), `message_count_async`. Sync batch: `read_range_batch`, `read_object_batch`. |
+| `tensogram-python` | `PyAsyncTensogramFile` (20 methods, `Arc<TensogramFile>`, no mutex), `PyAsyncTensogramFileIter`, sync `file_decode_range_batch` and `file_decode_object_batch` on `PyTensogramFile`. `pyo3-async-runtimes` 0.28 dependency. |
+| Tests | 73 async/batch tests (`test_async.py`), shared fixtures (`conftest.py`). 407 total. |
+| Docs | `python-api.md` async section, example `15_async_operations.py`, examples README. |
+| CI | `pytest-asyncio` added, `--no-default-features` check. |
+| Rust examples | Fixed stale `let mut` from `&self` change in `12_convert_netcdf.rs`, `14_remote_access.rs`. |
+| Rust tests | Fixed 26 stale `let mut` in `remote_http.rs` and `file.rs` tests. |
+
 ## caller-endianness (completed)
 
 Decoded data is now always returned in the caller's native byte order by

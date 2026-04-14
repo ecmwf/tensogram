@@ -52,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(tensogram_core::remote::is_remote_url(&url));
     println!("is_remote_url = true");
 
-    let mut file = TensogramFile::open_source(&url)?;
+    let file = TensogramFile::open_source(&url)?;
     println!(
         "\nOpened: source={} is_remote={} messages={}",
         file.source(),

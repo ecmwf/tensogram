@@ -109,10 +109,11 @@ jobs:
           uv python install 3.13
           uv venv .venv --python 3.13
           source .venv/bin/activate
-          uv pip install maturin pytest numpy ruff
+          uv pip install maturin pytest pytest-asyncio numpy ruff
           cd crates/tensogram-python && maturin develop && cd ../..
           ruff check --config crates/tensogram-python/pyproject.toml tests/python/
           python -m pytest tests/python/ -v
+          cargo check --manifest-path crates/tensogram-python/Cargo.toml --no-default-features
 
       - name: Cleanup
         if: always()
@@ -152,7 +153,7 @@ jobs:
           uv python install cpython-3.13+freethreaded
           uv venv .venv --python python3.13t
           source .venv/bin/activate
-          uv pip install maturin pytest "numpy>=2.1"
+          uv pip install maturin pytest pytest-asyncio "numpy>=2.1"
           python -c "import sys; assert not sys._is_gil_enabled(), 'GIL should be disabled'"
           cd crates/tensogram-python && maturin develop --release && cd ../..
           python -m pytest tests/python/ -v

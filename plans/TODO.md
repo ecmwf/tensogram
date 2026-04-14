@@ -174,20 +174,22 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Python Async Bindings
 
-- [ ] **Python asyncio support**:
-  - expose async methods via `pyo3-asyncio` or manual future wrapping
-  - `await file.decode_object_async(msg, obj)`, `await file.decode_range_async(...)`, etc.
-  - uses the native async Rust path (`ensure_layout_eager_async` → `scan_and_discover_next_async`)
-  - enables asyncio-native workflows (e.g., `asyncio.gather` for concurrent frame fetches on a single handle)
+- [x] **Python asyncio support**:
+  - `AsyncTensogramFile` class via `pyo3-async-runtimes` + tokio bridge
+  - all core async methods changed from `&mut self` to `&self` (no mutex needed)
+  - `file_decode_range_batch` and `file_decode_object_batch` for batched HTTP via `object_store::get_ranges`
+  - `prefetch_layouts` for layout warmup
+  - `asyncio.gather` achieves real I/O overlap on a single handle
+  - async context manager, async iteration, 20 methods total
+  - 73 tests, example `15_async_operations.py`
 
 ## Free-Threaded Python
 
-- [ ] **free-threaded Python (parallelism)**:
-  - declare `#[pymodule(gil_used = false)]` for Python 3.13+
-  - change `PyTensogramFile` methods from `&mut self` to `&self` with internal `Mutex`/`RwLock`
-  - replace `GILOnceCell` with `std::sync::OnceLock`
-  - test with `python3.13t`
-  - enables true parallel decode/encode across threads for the whole library
+- [x] **free-threaded Python (parallelism)** *(merged in v0.10.0)*:
+  - `#[pymodule(gil_used = false)]` declared
+  - `GILOnceCell` replaced with `std::sync::OnceLock`
+  - CI tests with Python 3.13t / 3.14t
+  - enables true parallel decode/encode across threads
 
 ## Code Quality
 

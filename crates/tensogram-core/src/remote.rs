@@ -933,6 +933,60 @@ impl RemoteBackend {
         }
     }
 
+    pub(crate) fn read_range_batch(
+        &self,
+        msg_indices: &[usize],
+        obj_idx: usize,
+        ranges: &[(u64, u64)],
+        options: &DecodeOptions,
+    ) -> Result<Vec<(DataObjectDescriptor, Vec<Vec<u8>>)>> {
+        for &msg_idx in msg_indices {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+        }
+
+        let mut byte_ranges = Vec::with_capacity(msg_indices.len());
+        {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            for &msg_idx in msg_indices {
+                let layout = &state.layouts[msg_idx];
+                if let Some(ref index) = layout.index {
+                    Self::validate_index_access(index, obj_idx)?;
+                    byte_ranges.push(Self::checked_frame_range(
+                        layout.offset,
+                        layout.length,
+                        index.offsets[obj_idx],
+                        index.lengths[obj_idx],
+                    )?);
+                } else {
+                    return Err(TensogramError::Remote(format!(
+                        "message {} has no index frame; batch requires indexed messages",
+                        msg_idx
+                    )));
+                }
+            }
+        }
+
+        let store = self.store.clone();
+        let path = self.path.clone();
+        let all_bytes =
+            block_on_shared(async move { store.get_ranges(&path, &byte_ranges).await })?;
+
+        let mut results = Vec::with_capacity(msg_indices.len());
+        for frame_bytes in &all_bytes {
+            let (desc, payload, _consumed) = framing::decode_data_object_frame(frame_bytes)?;
+            let parts = crate::decode::decode_range_from_payload(&desc, payload, ranges, options)?;
+            results.push((desc, parts));
+        }
+        Ok(results)
+    }
+
     pub(crate) fn read_range(
         &self,
         msg_idx: usize,
@@ -1527,6 +1581,21 @@ impl RemoteBackend {
         Self::parse_footer_frames(&mut state, msg_idx, &footer_bytes)
     }
 
+    pub(crate) async fn message_count_async(&self) -> Result<usize> {
+        loop {
+            let done = {
+                let state = self.lock_state()?;
+                state.scan_complete
+            };
+            if done {
+                break;
+            }
+            self.scan_and_discover_next_async().await?;
+        }
+        let state = self.lock_state()?;
+        Ok(state.layouts.len())
+    }
+
     pub(crate) async fn read_message_async(&self, msg_idx: usize) -> Result<Vec<u8>> {
         self.ensure_message_async(msg_idx).await?;
         let (offset, length) = {
@@ -1718,6 +1787,338 @@ impl RemoteBackend {
         } else {
             let msg_bytes = self.read_message_async(msg_idx).await?;
             crate::decode::decode_object(&msg_bytes, obj_idx, options)
+        }
+    }
+
+    pub(crate) async fn ensure_all_layouts_batch_async(&self, msg_indices: &[usize]) -> Result<()> {
+        let max_idx = msg_indices.iter().copied().max().unwrap_or(0);
+        loop {
+            let (need_scan, scan_complete) = {
+                let state = self.lock_state()?;
+                (state.layouts.len() <= max_idx, state.scan_complete)
+            };
+            if !need_scan || scan_complete {
+                break;
+            }
+            self.scan_and_discover_next_async().await?;
+        }
+
+        {
+            let state = self.lock_state()?;
+            for &idx in msg_indices {
+                if idx >= state.layouts.len() {
+                    return Err(TensogramError::Framing(format!(
+                        "message index {} out of range (count={})",
+                        idx,
+                        state.layouts.len()
+                    )));
+                }
+            }
+        }
+
+        // Phase 2: find which messages still need layout discovery.
+        let needs_layout: Vec<usize> = {
+            let state = self.lock_state()?;
+            msg_indices
+                .iter()
+                .copied()
+                .filter(|&idx| {
+                    state
+                        .layouts
+                        .get(idx)
+                        .is_none_or(|l| l.global_metadata.is_none() || l.index.is_none())
+                })
+                .collect()
+        };
+
+        if needs_layout.is_empty() {
+            return Ok(());
+        }
+
+        // Phase 3: compute header/footer byte ranges for all cold messages.
+        let mut fetch_ranges: Vec<Range<u64>> = Vec::new();
+        let mut fetch_map: Vec<(usize, bool)> = Vec::new(); // (msg_idx, is_header)
+        {
+            let state = self.lock_state()?;
+            for &msg_idx in &needs_layout {
+                let layout = &state.layouts[msg_idx];
+                let flags = layout.preamble.flags;
+                if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX)
+                {
+                    let chunk_size = layout.length.min(256 * 1024);
+                    fetch_ranges.push(layout.offset..layout.offset + chunk_size);
+                    fetch_map.push((msg_idx, true));
+                } else if flags.has(MessageFlags::FOOTER_METADATA)
+                    && flags.has(MessageFlags::FOOTER_INDEX)
+                {
+                    let pa_offset = layout
+                        .offset
+                        .checked_add(layout.length)
+                        .and_then(|end| end.checked_sub(POSTAMBLE_SIZE as u64))
+                        .ok_or_else(|| {
+                            TensogramError::Remote("postamble offset overflow".to_string())
+                        })?;
+                    fetch_ranges.push(pa_offset..pa_offset + POSTAMBLE_SIZE as u64);
+                    fetch_map.push((msg_idx, false));
+                } else {
+                    return Err(TensogramError::Remote(
+                        "remote batch requires header-indexed or footer-indexed messages"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Phase 4: batched HTTP fetch for all layout headers.
+        let all_bytes = self
+            .store
+            .get_ranges(&self.path, &fetch_ranges)
+            .await
+            .map_err(|e| TensogramError::Remote(e.to_string()))?;
+
+        // Phase 5: parse header layouts.
+        let mut footer_fetches: Vec<(usize, Range<u64>)> = Vec::new();
+        {
+            let mut state = self.lock_state()?;
+            for (bytes, &(msg_idx, is_header)) in all_bytes.iter().zip(fetch_map.iter()) {
+                if state.layouts[msg_idx].global_metadata.is_some()
+                    && state.layouts[msg_idx].index.is_some()
+                {
+                    continue;
+                }
+                if is_header {
+                    Self::parse_header_frames(&mut state, msg_idx, bytes)?;
+                } else {
+                    let postamble = Postamble::read_from(bytes)?;
+                    let layout = &state.layouts[msg_idx];
+                    let footer_start = layout
+                        .offset
+                        .checked_add(postamble.first_footer_offset)
+                        .ok_or_else(|| {
+                            TensogramError::Remote("footer offset overflow".to_string())
+                        })?;
+                    let pa_offset = layout
+                        .offset
+                        .checked_add(layout.length)
+                        .and_then(|end| end.checked_sub(POSTAMBLE_SIZE as u64))
+                        .ok_or_else(|| {
+                            TensogramError::Remote("postamble offset overflow".to_string())
+                        })?;
+                    footer_fetches.push((msg_idx, footer_start..pa_offset));
+                }
+            }
+        }
+
+        // Phase 6: batched footer fetch if any footer-indexed messages.
+        if !footer_fetches.is_empty() {
+            let footer_ranges: Vec<Range<u64>> =
+                footer_fetches.iter().map(|(_, r)| r.clone()).collect();
+            let footer_bytes = self
+                .store
+                .get_ranges(&self.path, &footer_ranges)
+                .await
+                .map_err(|e| TensogramError::Remote(e.to_string()))?;
+            let mut state = self.lock_state()?;
+            for (bytes, &(msg_idx, _)) in footer_bytes.iter().zip(footer_fetches.iter()) {
+                if state.layouts[msg_idx].global_metadata.is_some()
+                    && state.layouts[msg_idx].index.is_some()
+                {
+                    continue;
+                }
+                Self::parse_footer_frames(&mut state, msg_idx, bytes)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn read_object_batch_async(
+        &self,
+        msg_indices: &[usize],
+        obj_idx: usize,
+        options: &DecodeOptions,
+    ) -> Result<Vec<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)>> {
+        self.ensure_all_layouts_batch_async(msg_indices).await?;
+
+        let mut byte_ranges = Vec::with_capacity(msg_indices.len());
+        let mut metas = Vec::with_capacity(msg_indices.len());
+        {
+            let state = self.lock_state()?;
+            for &msg_idx in msg_indices {
+                let layout = &state.layouts[msg_idx];
+                if let Some(ref index) = layout.index {
+                    Self::validate_index_access(index, obj_idx)?;
+                    byte_ranges.push(Self::checked_frame_range(
+                        layout.offset,
+                        layout.length,
+                        index.offsets[obj_idx],
+                        index.lengths[obj_idx],
+                    )?);
+                    metas.push(layout.global_metadata.clone().ok_or_else(|| {
+                        TensogramError::Remote("metadata not cached".to_string())
+                    })?);
+                } else {
+                    return Err(TensogramError::Remote(format!(
+                        "message {} has no index frame; batch decode requires indexed messages",
+                        msg_idx
+                    )));
+                }
+            }
+        }
+
+        let all_bytes = self
+            .store
+            .get_ranges(&self.path, &byte_ranges)
+            .await
+            .map_err(|e| TensogramError::Remote(e.to_string()))?;
+
+        let mut results = Vec::with_capacity(msg_indices.len());
+        for (frame_bytes, meta) in all_bytes.iter().zip(metas) {
+            let (desc, payload, _consumed) = framing::decode_data_object_frame(frame_bytes)?;
+            let decoded = crate::decode::decode_single_object(&desc, payload, options)?;
+            results.push((meta, desc, decoded));
+        }
+        Ok(results)
+    }
+
+    pub(crate) fn read_object_batch(
+        &self,
+        msg_indices: &[usize],
+        obj_idx: usize,
+        options: &DecodeOptions,
+    ) -> Result<Vec<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)>> {
+        for &msg_idx in msg_indices {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+        }
+
+        let mut byte_ranges = Vec::with_capacity(msg_indices.len());
+        let mut metas = Vec::with_capacity(msg_indices.len());
+        {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            for &msg_idx in msg_indices {
+                let layout = &state.layouts[msg_idx];
+                if let Some(ref index) = layout.index {
+                    Self::validate_index_access(index, obj_idx)?;
+                    byte_ranges.push(Self::checked_frame_range(
+                        layout.offset,
+                        layout.length,
+                        index.offsets[obj_idx],
+                        index.lengths[obj_idx],
+                    )?);
+                    metas.push(layout.global_metadata.clone().ok_or_else(|| {
+                        TensogramError::Remote("metadata not cached".to_string())
+                    })?);
+                } else {
+                    return Err(TensogramError::Remote(format!(
+                        "message {} has no index frame; batch decode requires indexed messages",
+                        msg_idx
+                    )));
+                }
+            }
+        }
+
+        let store = self.store.clone();
+        let path = self.path.clone();
+        let all_bytes =
+            block_on_shared(async move { store.get_ranges(&path, &byte_ranges).await })?;
+
+        let mut results = Vec::with_capacity(msg_indices.len());
+        for (frame_bytes, meta) in all_bytes.iter().zip(metas) {
+            let (desc, payload, _consumed) = framing::decode_data_object_frame(frame_bytes)?;
+            let decoded = crate::decode::decode_single_object(&desc, payload, options)?;
+            results.push((meta, desc, decoded));
+        }
+        Ok(results)
+    }
+
+    pub(crate) async fn read_range_batch_async(
+        &self,
+        msg_indices: &[usize],
+        obj_idx: usize,
+        ranges: &[(u64, u64)],
+        options: &DecodeOptions,
+    ) -> Result<Vec<(DataObjectDescriptor, Vec<Vec<u8>>)>> {
+        // 1. Batch-discover all layouts (scan + batched header/footer fetch).
+        self.ensure_all_layouts_batch_async(msg_indices).await?;
+
+        // 2. Compute byte ranges for each message's data object frame.
+        let mut byte_ranges = Vec::with_capacity(msg_indices.len());
+        {
+            let state = self.lock_state()?;
+            for &msg_idx in msg_indices {
+                let layout = &state.layouts[msg_idx];
+                if let Some(ref index) = layout.index {
+                    Self::validate_index_access(index, obj_idx)?;
+                    let range = Self::checked_frame_range(
+                        layout.offset,
+                        layout.length,
+                        index.offsets[obj_idx],
+                        index.lengths[obj_idx],
+                    )?;
+                    byte_ranges.push(range);
+                } else {
+                    return Err(TensogramError::Remote(format!(
+                        "message {} has no index frame; batch range decode requires indexed messages",
+                        msg_idx
+                    )));
+                }
+            }
+        }
+
+        // 3. Single batched HTTP fetch for all frames.
+        let all_bytes = self
+            .store
+            .get_ranges(&self.path, &byte_ranges)
+            .await
+            .map_err(|e| TensogramError::Remote(e.to_string()))?;
+
+        // 4. Decode each frame locally.
+        let mut results = Vec::with_capacity(msg_indices.len());
+        for frame_bytes in &all_bytes {
+            let (desc, payload, _consumed) = framing::decode_data_object_frame(frame_bytes)?;
+            let parts = crate::decode::decode_range_from_payload(&desc, payload, ranges, options)?;
+            results.push((desc, parts));
+        }
+        Ok(results)
+    }
+
+    pub(crate) async fn read_range_async(
+        &self,
+        msg_idx: usize,
+        obj_idx: usize,
+        ranges: &[(u64, u64)],
+        options: &DecodeOptions,
+    ) -> Result<(DataObjectDescriptor, Vec<Vec<u8>>)> {
+        self.ensure_layout_eager_async(msg_idx).await?;
+        let layout = {
+            let state = self.lock_state()?;
+            state.layouts[msg_idx].clone()
+        };
+        let msg_offset = layout.offset;
+
+        if let Some(ref index) = layout.index {
+            Self::validate_index_access(index, obj_idx)?;
+
+            let range = Self::checked_frame_range(
+                msg_offset,
+                layout.length,
+                index.offsets[obj_idx],
+                index.lengths[obj_idx],
+            )?;
+            let frame_bytes = self.get_range_async(range).await?;
+            let (desc, payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
+            let parts = crate::decode::decode_range_from_payload(&desc, payload, ranges, options)?;
+            Ok((desc, parts))
+        } else {
+            let msg_bytes = self.read_message_async(msg_idx).await?;
+            crate::decode::decode_range(&msg_bytes, obj_idx, ranges, options)
         }
     }
 }

@@ -12,6 +12,9 @@ use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
+#[cfg(feature = "async")]
+use std::sync::Arc;
+
 use tensogram_core::validate::{
     validate_file as core_validate_file, validate_message, ValidateOptions, ValidationLevel,
 };
@@ -527,6 +530,86 @@ impl PyTensogramFile {
             .map_err(to_py_err)?;
 
         build_range_result(py, desc.dtype, parts, &ranges, join)
+    }
+
+    /// Batch-decode full objects across multiple messages. Remote only.
+    #[pyo3(signature = (msg_indices, obj_index, verify_hash=false, native_byte_order=true))]
+    fn file_decode_object_batch(
+        &self,
+        py: Python<'_>,
+        msg_indices: Vec<usize>,
+        obj_index: usize,
+        verify_hash: bool,
+        native_byte_order: bool,
+    ) -> PyResult<PyObject> {
+        let options = DecodeOptions {
+            verify_hash,
+            native_byte_order,
+            ..Default::default()
+        };
+
+        let batch = py
+            .detach(|| {
+                self.file
+                    .decode_object_batch(&msg_indices, obj_index, &options)
+            })
+            .map_err(to_py_err)?;
+
+        let py_results: Vec<PyObject> = batch
+            .into_iter()
+            .map(|(meta, desc, data)| {
+                let arr = bytes_to_numpy(py, &desc, &data)?;
+                let py_desc = PyDataObjectDescriptor {
+                    inner: desc.clone(),
+                }
+                .into_pyobject(py)?
+                .into_any()
+                .unbind();
+                let result = PyDict::new(py);
+                result.set_item(
+                    "metadata",
+                    PyMetadata { inner: meta }.into_pyobject(py)?,
+                )?;
+                result.set_item("descriptor", py_desc)?;
+                result.set_item("data", arr)?;
+                Ok(result.into_any().unbind())
+            })
+            .collect::<PyResult<_>>()?;
+        Ok(PyList::new(py, py_results)?.into_any().unbind())
+    }
+
+    /// Batch-decode a sub-array range from the same object across multiple
+    /// messages in a single HTTP round-trip. Remote only.
+    #[pyo3(signature = (msg_indices, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
+    #[allow(clippy::too_many_arguments)]
+    fn file_decode_range_batch(
+        &self,
+        py: Python<'_>,
+        msg_indices: Vec<usize>,
+        obj_index: usize,
+        ranges: Vec<(u64, u64)>,
+        join: bool,
+        verify_hash: bool,
+        native_byte_order: bool,
+    ) -> PyResult<PyObject> {
+        let options = DecodeOptions {
+            verify_hash,
+            native_byte_order,
+            ..Default::default()
+        };
+
+        let batch = py
+            .detach(|| {
+                self.file
+                    .decode_range_batch(&msg_indices, obj_index, &ranges, &options)
+            })
+            .map_err(to_py_err)?;
+
+        let py_results: Vec<PyObject> = batch
+            .into_iter()
+            .map(|(desc, parts)| build_range_result(py, desc.dtype, parts, &ranges, join))
+            .collect::<PyResult<_>>()?;
+        Ok(PyList::new(py, py_results)?.into_any().unbind())
     }
 
     fn is_remote(&self) -> bool {
@@ -1268,6 +1351,531 @@ fn py_validate_file(
 // Module definition
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// PyAsyncTensogramFile — async wrapper around TensogramFile
+// ---------------------------------------------------------------------------
+
+/// Async file-based Tensogram container for use with Python ``asyncio``.
+///
+/// Wraps :class:`TensogramFile` for non-blocking I/O.  Decode methods
+/// return coroutines that can be composed with ``asyncio.gather``::
+///
+///     f = await tensogram.AsyncTensogramFile.open("data.tgm")
+///     results = await asyncio.gather(
+///         f.file_decode_object(0, 0),
+///         f.file_decode_object(0, 1),
+///     )
+///
+/// A single handle supports truly concurrent operations (no mutex).
+#[cfg(feature = "async")]
+#[pyclass(name = "AsyncTensogramFile")]
+struct PyAsyncTensogramFile {
+    file: Arc<TensogramFile>,
+    cached_source: String,
+    cached_is_remote: bool,
+    cached_message_count: Arc<std::sync::OnceLock<usize>>,
+}
+
+#[cfg(feature = "async")]
+#[pymethods]
+impl PyAsyncTensogramFile {
+    /// Open a local file or remote URL asynchronously.
+    ///
+    /// Auto-detects remote URLs (``s3://``, ``gs://``, ``http://``, etc.)
+    /// when the ``remote`` feature is enabled.
+    ///
+    /// Returns a coroutine; use ``await``::
+    ///
+    ///     f = await AsyncTensogramFile.open("data.tgm")
+    #[staticmethod]
+    fn open<'py>(py: Python<'py>, source: &str) -> PyResult<Bound<'py, PyAny>> {
+        let source = source.to_string();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let file = TensogramFile::open_source_async(&source)
+                .await
+                .map_err(to_py_err)?;
+            let is_remote = file.is_remote();
+            let source_str = file.source();
+            let wrapped = PyAsyncTensogramFile {
+                file: Arc::new(file),
+                cached_source: source_str,
+                cached_is_remote: is_remote,
+                cached_message_count: Arc::new(std::sync::OnceLock::new()),
+            };
+            Python::attach(|py| Ok(wrapped.into_pyobject(py)?.into_any().unbind()))
+        })
+    }
+
+    /// Open a remote URL with explicit storage options.
+    ///
+    /// Args:
+    ///     source: Remote URL (``s3://``, ``gs://``, ``http://``, etc.).
+    ///     storage_options: Optional dict of provider credentials / config.
+    ///
+    /// Returns a coroutine; use ``await``::
+    ///
+    ///     f = await AsyncTensogramFile.open_remote("s3://bucket/data.tgm",
+    ///                                               {"region": "eu-west-1"})
+    #[staticmethod]
+    #[pyo3(signature = (source, storage_options=None))]
+    fn open_remote<'py>(
+        py: Python<'py>,
+        source: &str,
+        storage_options: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        // Validate storage_options eagerly — errors at call site, not on await.
+        let opts = match storage_options {
+            Some(dict) => {
+                let mut map = BTreeMap::new();
+                for (k, v) in dict.iter() {
+                    let key: String = k.extract()?;
+                    let val: String = v.extract::<String>().or_else(|_| {
+                        v.str().map(|s| s.to_string()).map_err(|_| {
+                            PyValueError::new_err(format!(
+                                "storage_options value for key '{key}' \
+                                     must be convertible to string"
+                            ))
+                        })
+                    })?;
+                    map.insert(key, val);
+                }
+                map
+            }
+            None => BTreeMap::new(),
+        };
+        let source = source.to_string();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let file = TensogramFile::open_remote_async(&source, &opts)
+                .await
+                .map_err(to_py_err)?;
+            let is_remote = file.is_remote();
+            let source_str = file.source();
+            let wrapped = PyAsyncTensogramFile {
+                file: Arc::new(file),
+                cached_source: source_str,
+                cached_is_remote: is_remote,
+                cached_message_count: Arc::new(std::sync::OnceLock::new()),
+            };
+            Python::attach(|py| Ok(wrapped.into_pyobject(py)?.into_any().unbind()))
+        })
+    }
+
+    // ── Async decode methods ─────────────────────────────────────────────
+
+    /// Decode message at *index* asynchronously.
+    ///
+    /// Returns ``Message(metadata, objects)`` — identical to the sync
+    /// :meth:`TensogramFile.decode_message`.
+    #[pyo3(signature = (index, verify_hash=None, native_byte_order=true))]
+    fn decode_message<'py>(
+        &self,
+        py: Python<'py>,
+        index: usize,
+        verify_hash: Option<bool>,
+        native_byte_order: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let file = Arc::clone(&self.file);
+        let options = DecodeOptions {
+            verify_hash: verify_hash.unwrap_or(false),
+            native_byte_order,
+            ..Default::default()
+        };
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let (global_meta, data_objects) = file
+                .decode_message_async(index, &options)
+                .await
+                .map_err(to_py_err)?;
+            Python::attach(|py| {
+                let result_list = data_objects_to_python(py, &data_objects)?;
+                let msg = pack_message(py, PyMetadata { inner: global_meta }, result_list)?;
+                Ok(msg)
+            })
+        })
+    }
+
+    /// Decode only metadata for message *msg_index* asynchronously.
+    fn file_decode_metadata<'py>(
+        &self,
+        py: Python<'py>,
+        msg_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let file = Arc::clone(&self.file);
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let meta = file
+                .decode_metadata_async(msg_index)
+                .await
+                .map_err(to_py_err)?;
+            Python::attach(|py| {
+                Ok(PyMetadata { inner: meta }
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind())
+            })
+        })
+    }
+
+    /// Decode metadata and descriptors for message *msg_index* asynchronously.
+    fn file_decode_descriptors<'py>(
+        &self,
+        py: Python<'py>,
+        msg_index: usize,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let file = Arc::clone(&self.file);
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let (meta, descriptors) = file
+                .decode_descriptors_async(msg_index)
+                .await
+                .map_err(to_py_err)?;
+            Python::attach(|py| {
+                let desc_list: Vec<Py<PyAny>> = descriptors
+                    .iter()
+                    .map(|d| {
+                        Ok(PyDataObjectDescriptor { inner: d.clone() }
+                            .into_pyobject(py)?
+                            .into_any()
+                            .unbind())
+                    })
+                    .collect::<PyResult<_>>()?;
+                let result = PyDict::new(py);
+                result.set_item("metadata", PyMetadata { inner: meta }.into_pyobject(py)?)?;
+                result.set_item("descriptors", PyList::new(py, desc_list)?)?;
+                Ok(result.into_any().unbind())
+            })
+        })
+    }
+
+    /// Decode a single data object asynchronously.
+    ///
+    /// Returns ``dict(metadata=Metadata, descriptor=DataObjectDescriptor, data=ndarray)``.
+    #[pyo3(signature = (msg_index, obj_index, verify_hash=false, native_byte_order=true))]
+    fn file_decode_object<'py>(
+        &self,
+        py: Python<'py>,
+        msg_index: usize,
+        obj_index: usize,
+        verify_hash: bool,
+        native_byte_order: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let file = Arc::clone(&self.file);
+        let options = DecodeOptions {
+            verify_hash,
+            native_byte_order,
+            ..Default::default()
+        };
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let (meta, desc, data) = file
+                .decode_object_async(msg_index, obj_index, &options)
+                .await
+                .map_err(to_py_err)?;
+            Python::attach(|py| {
+                let arr = bytes_to_numpy(py, &desc, &data)?;
+                let py_desc = PyDataObjectDescriptor {
+                    inner: desc.clone(),
+                }
+                .into_pyobject(py)?
+                .into_any()
+                .unbind();
+                let result = PyDict::new(py);
+                result.set_item("metadata", PyMetadata { inner: meta }.into_pyobject(py)?)?;
+                result.set_item("descriptor", py_desc)?;
+                result.set_item("data", arr)?;
+                Ok(result.into_any().unbind())
+            })
+        })
+    }
+
+    // ── Async read ───────────────────────────────────────────────────────
+
+    /// Raw wire-format bytes for the message at *index* (async).
+    fn read_message<'py>(&self, py: Python<'py>, index: usize) -> PyResult<Bound<'py, PyAny>> {
+        let file = Arc::clone(&self.file);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let bytes = file.read_message_async(index).await.map_err(to_py_err)?;
+            Python::attach(|py| Ok(PyBytes::new(py, &bytes).into_any().unbind()))
+        })
+    }
+
+    // ── Sync utility methods (no I/O, cached fields) ─────────────────────
+
+    /// Number of messages in the file (async, lazy scan on first call).
+    fn message_count<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        if let Some(&count) = self.cached_message_count.get() {
+            return pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(count) });
+        }
+        let file = Arc::clone(&self.file);
+        let cache = Arc::clone(&self.cached_message_count);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let count = file.message_count_async().await.map_err(to_py_err)?;
+            let _ = cache.set(count);
+            Ok(count)
+        })
+    }
+
+    /// Whether this file was opened from a remote URL.
+    fn is_remote(&self) -> bool {
+        self.cached_is_remote
+    }
+
+    /// The source path or URL this file was opened from.
+    fn source(&self) -> &str {
+        &self.cached_source
+    }
+
+    /// Batch-prefetch layouts for the given message indices (remote only).
+    fn prefetch_layouts<'py>(
+        &self,
+        py: Python<'py>,
+        msg_indices: Vec<usize>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let file = Arc::clone(&self.file);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            file.prefetch_layouts_async(&msg_indices)
+                .await
+                .map_err(to_py_err)?;
+            Ok(true)
+        })
+    }
+
+    // ── file_decode_range (native async for remote, spawn_blocking for local) ─
+
+    #[pyo3(signature = (msg_index, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
+    #[allow(clippy::too_many_arguments)]
+    fn file_decode_range<'py>(
+        &self,
+        py: Python<'py>,
+        msg_index: usize,
+        obj_index: usize,
+        ranges: Vec<(u64, u64)>,
+        join: bool,
+        verify_hash: bool,
+        native_byte_order: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let file = Arc::clone(&self.file);
+        let options = DecodeOptions {
+            verify_hash,
+            native_byte_order,
+            ..Default::default()
+        };
+        let ranges_for_result = ranges.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let (desc, parts) = file
+                .decode_range_async(msg_index, obj_index, &ranges, &options)
+                .await
+                .map_err(to_py_err)?;
+            let dtype = desc.dtype;
+            Python::attach(|py| build_range_result(py, dtype, parts, &ranges_for_result, join))
+        })
+    }
+
+    /// Batch-decode full objects across multiple messages. Remote only.
+    #[pyo3(signature = (msg_indices, obj_index, verify_hash=false, native_byte_order=true))]
+    fn file_decode_object_batch<'py>(
+        &self,
+        py: Python<'py>,
+        msg_indices: Vec<usize>,
+        obj_index: usize,
+        verify_hash: bool,
+        native_byte_order: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let file = Arc::clone(&self.file);
+        let options = DecodeOptions {
+            verify_hash,
+            native_byte_order,
+            ..Default::default()
+        };
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let batch = file
+                .decode_object_batch_async(&msg_indices, obj_index, &options)
+                .await
+                .map_err(to_py_err)?;
+
+            Python::attach(|py| {
+                let py_results: Vec<PyObject> = batch
+                    .into_iter()
+                    .map(|(meta, desc, data)| {
+                        let arr = bytes_to_numpy(py, &desc, &data)?;
+                        let py_desc = PyDataObjectDescriptor {
+                            inner: desc.clone(),
+                        }
+                        .into_pyobject(py)?
+                        .into_any()
+                        .unbind();
+                        let result = PyDict::new(py);
+                        result.set_item(
+                            "metadata",
+                            PyMetadata { inner: meta }.into_pyobject(py)?,
+                        )?;
+                        result.set_item("descriptor", py_desc)?;
+                        result.set_item("data", arr)?;
+                        Ok(result.into_any().unbind())
+                    })
+                    .collect::<PyResult<_>>()?;
+                Ok(PyList::new(py, py_results)?.into_any().unbind())
+            })
+        })
+    }
+
+    /// Batch-decode sub-array ranges across multiple messages. Remote only.
+    #[pyo3(signature = (msg_indices, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
+    #[allow(clippy::too_many_arguments)]
+    fn file_decode_range_batch<'py>(
+        &self,
+        py: Python<'py>,
+        msg_indices: Vec<usize>,
+        obj_index: usize,
+        ranges: Vec<(u64, u64)>,
+        join: bool,
+        verify_hash: bool,
+        native_byte_order: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let file = Arc::clone(&self.file);
+        let options = DecodeOptions {
+            verify_hash,
+            native_byte_order,
+            ..Default::default()
+        };
+        let ranges_for_result = ranges.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let batch = file
+                .decode_range_batch_async(&msg_indices, obj_index, &ranges, &options)
+                .await
+                .map_err(to_py_err)?;
+
+            Python::attach(|py| {
+                let py_results: Vec<PyObject> = batch
+                    .into_iter()
+                    .map(|(desc, parts)| {
+                        build_range_result(py, desc.dtype, parts, &ranges_for_result, join)
+                    })
+                    .collect::<PyResult<_>>()?;
+                Ok(PyList::new(py, py_results)?.into_any().unbind())
+            })
+        })
+    }
+
+    /// All raw message bytes as a list of ``bytes`` objects (async).
+    fn messages<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let file = Arc::clone(&self.file);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let count = file.message_count_async().await.map_err(to_py_err)?;
+            let mut raw_msgs = Vec::with_capacity(count);
+            for i in 0..count {
+                let bytes = file.read_message_async(i).await.map_err(to_py_err)?;
+                raw_msgs.push(bytes);
+            }
+            Python::attach(|py| {
+                let items: Vec<PyObject> = raw_msgs
+                    .iter()
+                    .map(|m| PyBytes::new(py, m).into_any().unbind())
+                    .collect();
+                Ok(PyList::new(py, items)?.into_any().unbind())
+            })
+        })
+    }
+
+    // ── Async context manager ────────────────────────────────────────────
+
+    fn __aenter__<'py>(slf: Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let obj = slf.unbind();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(obj) })
+    }
+
+    #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
+    fn __aexit__<'py>(
+        &self,
+        py: Python<'py>,
+        _exc_type: Option<&Bound<'_, pyo3::PyAny>>,
+        _exc_val: Option<&Bound<'_, pyo3::PyAny>>,
+        _exc_tb: Option<&Bound<'_, pyo3::PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(false) })
+    }
+
+    // ── __len__ (cached after first access via OnceLock) ───────────────
+
+    fn __len__(&self) -> PyResult<usize> {
+        if let Some(&count) = self.cached_message_count.get() {
+            return Ok(count);
+        }
+        let count = self.file.message_count().map_err(to_py_err)?;
+        let _ = self.cached_message_count.set(count);
+        Ok(count)
+    }
+
+    // ── Async iteration ──────────────────────────────────────────────────
+
+    fn __aiter__(&self, _py: Python<'_>) -> PyResult<PyAsyncTensogramFileIter> {
+        let count = self.__len__()?;
+        Ok(PyAsyncTensogramFileIter {
+            file: Arc::clone(&self.file),
+            index: std::sync::atomic::AtomicUsize::new(0),
+            count,
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!("AsyncTensogramFile(source='{}')", self.cached_source)
+    }
+}
+
+#[cfg(feature = "async")]
+#[pyclass(name = "AsyncTensogramFileIter")]
+struct PyAsyncTensogramFileIter {
+    file: Arc<TensogramFile>,
+    index: std::sync::atomic::AtomicUsize,
+    count: usize,
+}
+
+#[cfg(feature = "async")]
+#[pymethods]
+impl PyAsyncTensogramFileIter {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let idx = self
+            .index
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if idx >= self.count {
+            return Ok(None);
+        }
+        let file = Arc::clone(&self.file);
+        let options = DecodeOptions::default();
+        Ok(Some(pyo3_async_runtimes::tokio::future_into_py(
+            py,
+            async move {
+                let (meta, objects) = file
+                    .decode_message_async(idx, &options)
+                    .await
+                    .map_err(to_py_err)?;
+                Python::attach(|py| {
+                    let result_list = data_objects_to_python(py, &objects)?;
+                    pack_message(py, PyMetadata { inner: meta }, result_list)
+                })
+            },
+        )?))
+    }
+
+    fn __len__(&self) -> usize {
+        let current = self.index.load(std::sync::atomic::Ordering::Relaxed);
+        self.count.saturating_sub(current)
+    }
+
+    fn __repr__(&self) -> String {
+        let current = self.index.load(std::sync::atomic::Ordering::Relaxed);
+        let remaining = self.count.saturating_sub(current);
+        format!("AsyncTensogramFileIter(position={current}, remaining={remaining})")
+    }
+}
+
 #[pyfunction]
 #[pyo3(name = "is_remote_url")]
 fn py_is_remote_url(source: &str) -> bool {
@@ -1295,6 +1903,10 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFileIter>()?;
     m.add_class::<PyBufferIter>()?;
     m.add_class::<PyStreamingEncoder>()?;
+    #[cfg(feature = "async")]
+    m.add_class::<PyAsyncTensogramFile>()?;
+    #[cfg(feature = "async")]
+    m.add_class::<PyAsyncTensogramFileIter>()?;
     Ok(())
 }
 
