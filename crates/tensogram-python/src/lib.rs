@@ -1625,7 +1625,7 @@ impl PyAsyncTensogramFile {
         &self.cached_source
     }
 
-    /// Batch-prefetch layouts for the given message indices (remote only).
+    /// Batch-prefetch layouts for the given message indices. No-op for local files.
     fn prefetch_layouts<'py>(
         &self,
         py: Python<'py>,

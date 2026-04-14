@@ -297,7 +297,7 @@ For pre-encoded payloads, use `enc.write_object_pre_encoded(desc, raw_bytes)`.
 
 `AsyncTensogramFile` provides the same operations as `TensogramFile` but as
 `asyncio` coroutines.  A single handle supports truly concurrent operations
-with no internal locking.
+with no per-handle mutex; internal caches are thread-safe.
 
 ### Opening and decoding
 
