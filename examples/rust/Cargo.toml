@@ -53,11 +53,15 @@ required-features = ["netcdf"]
 name = "13_validate"
 path = "src/bin/13_validate.rs"
 
+[[bin]]
+name = "14_remote_access"
+path = "src/bin/14_remote_access.rs"
+required-features = ["remote"]
+
 [features]
 default = []
-# Enables the 12_convert_netcdf example. Requires libnetcdf at the OS
-# level — see crates/tensogram-netcdf for installation instructions.
 netcdf = ["dep:tensogram-netcdf"]
+remote = ["tensogram-core/remote"]
 
 [dependencies]
 tensogram-core = { path = "../../crates/tensogram-core" }

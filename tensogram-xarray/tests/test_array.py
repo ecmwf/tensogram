@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pickle
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import xarray as xr
@@ -22,7 +23,7 @@ class TestSupportsRangeDecodeLogic:
         class _Desc:
             compression = "none"
             filter = "none"
-            params = {}
+            params: ClassVar[dict[str, object]] = {}
 
         assert _supports_range_decode(_Desc()) is True
 
@@ -30,7 +31,7 @@ class TestSupportsRangeDecodeLogic:
         class _Desc:
             compression = "szip"
             filter = "none"
-            params = {}
+            params: ClassVar[dict[str, object]] = {}
 
         assert _supports_range_decode(_Desc()) is True
 
@@ -38,7 +39,7 @@ class TestSupportsRangeDecodeLogic:
         class _Desc:
             compression = "blosc2"
             filter = "none"
-            params = {}
+            params: ClassVar[dict[str, object]] = {}
 
         assert _supports_range_decode(_Desc()) is True
 
@@ -46,7 +47,7 @@ class TestSupportsRangeDecodeLogic:
         class _Desc:
             compression = "zfp"
             filter = "none"
-            params = {"zfp_mode": "fixed_rate"}
+            params: ClassVar[dict[str, object]] = {"zfp_mode": "fixed_rate"}
 
         assert _supports_range_decode(_Desc()) is True
 
@@ -54,7 +55,7 @@ class TestSupportsRangeDecodeLogic:
         class _Desc:
             compression = "zfp"
             filter = "none"
-            params = {"zfp_mode": "fixed_precision"}
+            params: ClassVar[dict[str, object]] = {"zfp_mode": "fixed_precision"}
 
         assert _supports_range_decode(_Desc()) is False
 
@@ -62,7 +63,7 @@ class TestSupportsRangeDecodeLogic:
         class _Desc:
             compression = "zstd"
             filter = "none"
-            params = {}
+            params: ClassVar[dict[str, object]] = {}
 
         assert _supports_range_decode(_Desc()) is False
 
@@ -70,7 +71,7 @@ class TestSupportsRangeDecodeLogic:
         class _Desc:
             compression = "lz4"
             filter = "none"
-            params = {}
+            params: ClassVar[dict[str, object]] = {}
 
         assert _supports_range_decode(_Desc()) is False
 
@@ -78,7 +79,7 @@ class TestSupportsRangeDecodeLogic:
         class _Desc:
             compression = "sz3"
             filter = "none"
-            params = {}
+            params: ClassVar[dict[str, object]] = {}
 
         assert _supports_range_decode(_Desc()) is False
 
@@ -88,7 +89,7 @@ class TestSupportsRangeDecodeLogic:
         class _Desc:
             compression = "none"
             filter = "shuffle"
-            params = {}
+            params: ClassVar[dict[str, object]] = {}
 
         assert _supports_range_decode(_Desc()) is False
 
@@ -96,7 +97,7 @@ class TestSupportsRangeDecodeLogic:
         class _Desc:
             compression = "szip"
             filter = "shuffle"
-            params = {}
+            params: ClassVar[dict[str, object]] = {}
 
         assert _supports_range_decode(_Desc()) is False
 

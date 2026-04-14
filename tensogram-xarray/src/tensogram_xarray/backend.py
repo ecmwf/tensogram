@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable, Sequence
+from typing import Any
 
 import xarray as xr
 from xarray.backends import BackendEntrypoint
@@ -48,6 +49,7 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
         merge_objects: bool = False,
         verify_hash: bool = False,
         range_threshold: float = 0.5,
+        storage_options: dict[str, Any] | None = None,
     ) -> xr.Dataset:
         """Open a single tensogram message as an :class:`xr.Dataset`.
 
@@ -75,6 +77,9 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
             Maximum fraction of total array elements (0.0-1.0) for which
             partial ``decode_range()`` is used instead of a full
             ``decode_object()``.  Default ``0.5`` (50%).
+        storage_options
+            Key-value pairs forwarded to the object store backend when
+            the path is a remote URL.  Ignored for local files.
 
         Returns
         -------
@@ -96,6 +101,7 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
                 variable_key=variable_key,
                 verify_hash=verify_hash,
                 range_threshold=range_threshold,
+                storage_options=storage_options,
             )
             if not datasets:
                 return xr.Dataset()
@@ -108,6 +114,7 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
             variable_key=variable_key,
             verify_hash=verify_hash,
             range_threshold=range_threshold,
+            storage_options=storage_options,
         )
 
         drop_set = set(drop_variables) if drop_variables else None

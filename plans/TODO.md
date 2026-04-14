@@ -135,20 +135,59 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Remote Access
 
-- [ ] **remote-object-store**:
-  - add the ability to open `.tgm` files on remote object stores (S3, GCS, Azure, HTTP) and read individual objects without downloading the whole file.
-  - the wire format already supports efficient remote access:
-    - header-indexed files (non-streaming): index is at the beginning, right after the preamble. A single range read gets metadata + index + all object offsets. One more range read fetches the target object. 2 HTTP requests total.
-    - footer-indexed files (streaming): the postamble (last 16 bytes) contains `first_footer_offset`. One small range read (last 16 bytes) finds the footer. One more fetches the footer (index + hashes). One more fetches the target object. 2-3 HTTP requests total.
-  - what's missing is the transport layer. `TensogramFile` currently only works with local paths via `std::fs::File` + `Seek`.
-  - implementation approach:
-    - add an async `ReadAt` trait (or use `object_store` crate's `ObjectStore` trait) supporting range reads: `read_range(offset, length) -> Bytes`
-    - implement for local files (existing, via seek+read), HTTP/HTTPS (range requests), S3 (via `object_store` or `opendal` crate)
-    - add `TensogramFile::open_remote(url)` that auto-detects the protocol
-    - the scan/index/decode logic already works with byte offsets — wire it to use range reads instead of seeking a local file
-    - expose in Python: `tensogram.open("s3://bucket/file.tgm")`
-    - expose in xarray: `xr.open_dataset("s3://bucket/file.tgm", engine="tensogram")`
-  - tests: unit tests with mock HTTP server returning range responses, read single object from remote file and verify data matches local decode, latency test measuring request count (should be 2 for header-indexed files), integration test with real S3 bucket (CI-optional), test both header-index and footer-index paths.
+- [x] **remote 1 — Rust core (header-indexed)**:
+  - `remote` feature gate with `object_store` 0.13, `Backend` enum (Local | Remote), `remote.rs` module
+  - APIs: `open_source()`, `open_remote()`, `decode_metadata()`, `decode_descriptors()`, `decode_object()`, `is_remote()`, `source()`
+  - schemes: `s3://`, `s3a://`, `gs://`, `az://`, `azure://`, `http://`, `https://`
+  - sync bridge: `std::thread::scope` + per-call tokio runtime
+  - 21 Rust tests with mock HTTP server; docs: `docs/src/guide/remote-access.md`
+- [x] **remote 2 — footer-indexed (streaming) support**:
+  - fixed `StreamingEncoder` index lengths (payload → frame), `scan_messages` handles `total_length=0`
+  - `discover_footer_layout` + `parse_footer_frames`, streaming must be last in multi-message files
+  - 5 new tests: streaming open/decode, local parity, multi-object, mixed, index lengths
+- [x] **remote 3 — Python + xarray + zarr integration**:
+  - Python `open()` auto-detects remote, `open_remote(source, storage_options)`, file-level decode APIs
+  - GIL released during all I/O via `py.allow_threads()`
+  - xarray: `storage_options` threaded through all 5 modules, remote reads use file-level APIs
+  - zarr: `storage_options`, remote writes rejected early
+  - 12 Python tests with mock HTTP server
+- [x] **remote 4 — async + shared runtime**:
+  - shared `OnceLock<Runtime>` replaces per-call `block_on_thread` (thread + runtime per I/O call)
+  - `block_on_shared`: direct `handle.block_on()` when not in async context, scoped thread fallback when in async context
+  - native async methods when both `remote` and `async` features enabled: `open_source_async`, `open_remote_async`, `decode_metadata_async`, `decode_descriptors_async`, `decode_object_async`, `read_message_async` (remote-aware)
+  - descriptor-only reads: `read_descriptor_only` fetches only CBOR prefix for large frames (> 64 KB), full frame for small ones
+  - `rt-multi-thread` tokio feature gated to `remote` only
+  - 7 new tests (concurrent reads, sync context, descriptor parity, async open/decode/descriptors/streaming/parity/errors)
+- [x] **remote 5 — polish (examples, CI, zarr lazy reads)**:
+  - Python example `14_remote_access.py`: self-contained HTTP server, open_remote, file-level decode APIs
+  - Rust example `14_remote_access.rs`: TcpListener-based HTTP server, open_source, decode APIs
+  - CI: added `pytest tests/python/test_remote.py` to Python CI job
+  - zarr lazy reads: remote files use `file_decode_descriptors()` at scan time (metadata-only), `file_decode_object()` per chunk on demand; local files unchanged (eager decode)
+  - 9 new zarr remote tests: lazy open, on-demand decode, close cleanup, cached repeat access, exists on lazy chunk, list includes lazy chunks, no duplicates after cache, exception cleanup, local-still-eager parity
+- [x] **remote 6 — range reads**:
+  - extracted `decode_range_from_payload` from `decode_range` (takes descriptor + payload, no message parsing)
+  - `RemoteBackend::read_range`: fetches object frame via index, extracts payload, runs range decode pipeline
+  - `TensogramFile::decode_range(msg_idx, obj_idx, ranges, options)`: dispatches to remote or local
+  - Python `file_decode_range(msg_index, obj_index, ranges, join, verify_hash)`: file-level range decode binding
+  - xarray `array.py`: uses `file_decode_range` for both local and remote (replaces buffer-level `decode_range` and remote `file_decode_object` fallback)
+  - 3 Rust tests: single range, remote-vs-local parity, out-of-range error
+
+## Python Async Bindings
+
+- [ ] **Python asyncio support**:
+  - expose async methods via `pyo3-asyncio` or manual future wrapping
+  - `await file.decode_object_async(msg, obj)`, `await file.decode_range_async(...)`, etc.
+  - uses the native async Rust path (`ensure_layout_eager_async` → `scan_and_discover_next_async`)
+  - enables asyncio-native workflows (e.g., `asyncio.gather` for concurrent frame fetches on a single handle)
+
+## Free-Threaded Python
+
+- [ ] **free-threaded Python (parallelism)**:
+  - declare `#[pymodule(gil_used = false)]` for Python 3.13+
+  - change `PyTensogramFile` methods from `&mut self` to `&self` with internal `Mutex`/`RwLock`
+  - replace `GILOnceCell` with `std::sync::OnceLock`
+  - test with `python3.13t`
+  - enables true parallel decode/encode across threads for the whole library
 
 ## Code Quality
 

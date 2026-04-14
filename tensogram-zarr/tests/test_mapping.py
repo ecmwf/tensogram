@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import numpy as np
 import pytest
 from tensogram_zarr.mapping import (
@@ -137,8 +139,8 @@ class TestGroupZarrJson:
 
     def test_basic_structure(self):
         class FakeMeta:
-            version = 2
-            extra = {"mars": {"class": "od"}}
+            version: ClassVar[int] = 2
+            extra: ClassVar[dict[str, object]] = {"mars": {"class": "od"}}
 
         result = build_group_zarr_json(FakeMeta(), ["temp", "pressure"])
         assert result["zarr_format"] == 3
@@ -153,13 +155,13 @@ class TestArrayZarrJson:
 
     def test_basic_float32(self):
         class FakeDesc:
-            shape = [6, 10]
-            dtype = "float32"
-            encoding = "none"
-            filter = "none"
-            compression = "none"
-            hash = None
-            params = {}
+            shape: ClassVar[list[object]] = [6, 10]
+            dtype: ClassVar[str] = "float32"
+            encoding: ClassVar[str] = "none"
+            filter: ClassVar[str] = "none"
+            compression: ClassVar[str] = "none"
+            hash: ClassVar[None] = None
+            params: ClassVar[dict[str, object]] = {}
 
         result = build_array_zarr_json(FakeDesc())
         assert result["zarr_format"] == 3
@@ -170,13 +172,13 @@ class TestArrayZarrJson:
 
     def test_per_object_metadata_in_attrs(self):
         class FakeDesc:
-            shape = [3]
-            dtype = "int32"
-            encoding = "none"
-            filter = "none"
-            compression = "none"
-            hash = {"type": "xxh3", "value": "abc"}
-            params = {}
+            shape: ClassVar[list[object]] = [3]
+            dtype: ClassVar[str] = "int32"
+            encoding: ClassVar[str] = "none"
+            filter: ClassVar[str] = "none"
+            compression: ClassVar[str] = "none"
+            hash: ClassVar[dict[str, object]] = {"type": "xxh3", "value": "abc"}
+            params: ClassVar[dict[str, object]] = {}
 
         per_obj = {"mars": {"param": "2t"}}
         result = build_array_zarr_json(FakeDesc(), per_obj)
@@ -194,13 +196,13 @@ class TestParseArrayZarrJson:
 
     def test_round_trip(self):
         class FakeDesc:
-            shape = [4, 8]
-            dtype = "float64"
-            encoding = "none"
-            filter = "none"
-            compression = "none"
-            hash = None
-            params = {}
+            shape: ClassVar[list[object]] = [4, 8]
+            dtype: ClassVar[str] = "float64"
+            encoding: ClassVar[str] = "none"
+            filter: ClassVar[str] = "none"
+            compression: ClassVar[str] = "none"
+            hash: ClassVar[None] = None
+            params: ClassVar[dict[str, object]] = {}
 
         zarr_meta = build_array_zarr_json(FakeDesc())
         parsed = parse_array_zarr_json(zarr_meta)
@@ -289,13 +291,13 @@ class TestSerializeNanCompliance:
         import json
 
         class Desc:
-            shape = [3]
-            dtype = "float32"
-            encoding = "none"
-            filter = "none"
-            compression = "none"
-            hash = None
-            params = {}
+            shape: ClassVar[list[object]] = [3]
+            dtype: ClassVar[str] = "float32"
+            encoding: ClassVar[str] = "none"
+            filter: ClassVar[str] = "none"
+            compression: ClassVar[str] = "none"
+            hash: ClassVar[None] = None
+            params: ClassVar[dict[str, object]] = {}
 
         zarr_meta = build_array_zarr_json(Desc())
         data = serialize_zarr_json(zarr_meta)

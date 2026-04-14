@@ -21,7 +21,7 @@ pub fn run(
         keys.map(|k| k.split(',').map(|s| s.trim().to_string()).collect());
 
     for path in files {
-        let mut file = TensogramFile::open(path)?;
+        let file = TensogramFile::open(path)?;
         let count = file.message_count()?;
 
         for i in 0..count {

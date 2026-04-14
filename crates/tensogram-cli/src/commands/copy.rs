@@ -17,7 +17,7 @@ pub fn run(
 
     let has_placeholders = output.contains('[') && output.contains(']');
 
-    let mut in_file = TensogramFile::open(input)?;
+    let in_file = TensogramFile::open(input)?;
     let count = in_file.message_count()?;
 
     if !has_placeholders {
@@ -158,7 +158,7 @@ mod tests {
         let input = make_test_file(dir.path());
         let out = dir.path().join("copy_out.tgm");
         run(&input, out.to_str().unwrap(), None).unwrap();
-        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram_core::TensogramFile::open(&out).unwrap();
         assert_eq!(f.message_count().unwrap(), 2);
     }
 
@@ -168,7 +168,7 @@ mod tests {
         let input = make_test_file(dir.path());
         let out = dir.path().join("filtered.tgm");
         run(&input, out.to_str().unwrap(), Some("param=2t")).unwrap();
-        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram_core::TensogramFile::open(&out).unwrap();
         assert_eq!(f.message_count().unwrap(), 1);
     }
 

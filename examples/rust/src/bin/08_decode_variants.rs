@@ -140,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Default return is split: one Vec<u8> per range.
     {
         // Single range — returns Vec<Vec<u8>> with one entry
-        let parts = decode_range(
+        let (_, parts) = decode_range(
             &message,
             2,          // object index
             &[(10, 8)], // offset=10, count=8
@@ -159,7 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(partial.len(), 8);
 
         // Multiple ranges — returns one Vec<u8> per range
-        let parts2 = decode_range(
+        let (_, parts2) = decode_range(
             &message,
             2,
             &[(0, 4), (60, 4)], // first 4 + last 4 elements of the 8×8 grid

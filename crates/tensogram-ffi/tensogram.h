@@ -23,6 +23,7 @@ typedef enum {
    * Returned by `tgm_*_iter_next` when iteration is exhausted.
    */
   TGM_ERROR_END_OF_ITER = 9,
+  TGM_ERROR_REMOTE = 10,
 } tgm_error;
 
 /**

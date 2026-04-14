@@ -144,6 +144,8 @@ class TestWriteReadOnly:
     """Test that read-only stores reject writes."""
 
     def test_read_only_rejects_writes(self, simple_tgm: str):
-        with TensogramStore(simple_tgm, mode="r") as store:
-            with pytest.raises(ValueError, match="read-only"):
-                store._check_writable()
+        with (
+            TensogramStore(simple_tgm, mode="r") as store,
+            pytest.raises(ValueError, match="read-only"),
+        ):
+            store._check_writable()

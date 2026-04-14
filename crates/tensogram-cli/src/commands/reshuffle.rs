@@ -9,7 +9,7 @@ use tensogram_core::{decode, encode, DecodeOptions, EncodeOptions, TensogramFile
 /// random-access-mode messages (header-based index/hash).
 /// This is a decode → re-encode operation.
 pub fn run(input: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let mut file = TensogramFile::open(input)?;
+    let file = TensogramFile::open(input)?;
     let count = file.message_count()?;
 
     let mut out = std::fs::File::create(output)?;
@@ -91,7 +91,7 @@ mod tests {
         run(&input, &output).unwrap();
 
         // Verify output is valid and has same content
-        let mut f = tensogram_core::TensogramFile::open(&output).unwrap();
+        let f = tensogram_core::TensogramFile::open(&output).unwrap();
         assert_eq!(f.message_count().unwrap(), 2);
         let msg = f.read_message(0).unwrap();
         let (meta, objs) = decode(&msg, &DecodeOptions::default()).unwrap();

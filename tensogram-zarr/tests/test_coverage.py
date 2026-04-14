@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 import numpy as np
@@ -489,8 +490,8 @@ class TestTgmDtypeToNumpyError:
 class TestBuildGroupMissingAttrs:
     def test_extra_only(self):
         class Meta:
-            version = 2
-            extra = {"source": "test"}
+            version: ClassVar[int] = 2
+            extra: ClassVar[dict[str, object]] = {"source": "test"}
 
         result = build_group_zarr_json(Meta(), ["arr"])
         assert result["attributes"]["source"] == "test"
@@ -498,8 +499,8 @@ class TestBuildGroupMissingAttrs:
 
     def test_with_extra(self):
         class Meta:
-            version = 2
-            extra = {"custom": 42}
+            version: ClassVar[int] = 2
+            extra: ClassVar[dict[str, object]] = {"custom": 42}
 
         result = build_group_zarr_json(Meta(), [])
         assert result["attributes"]["custom"] == 42
@@ -508,13 +509,13 @@ class TestBuildGroupMissingAttrs:
 class TestBuildArrayParamsBranch:
     def test_truthy_params(self):
         class Desc:
-            shape = [3]
-            dtype = "float32"
-            encoding = "simple_packing"
-            filter = "none"
-            compression = "none"
-            hash = None
-            params = {"bits_per_value": 16, "reference_value": 0.5}
+            shape: ClassVar[list[object]] = [3]
+            dtype: ClassVar[str] = "float32"
+            encoding: ClassVar[str] = "simple_packing"
+            filter: ClassVar[str] = "none"
+            compression: ClassVar[str] = "none"
+            hash: ClassVar[None] = None
+            params: ClassVar[dict[str, object]] = {"bits_per_value": 16, "reference_value": 0.5}
 
         result = build_array_zarr_json(Desc())
         assert result["attributes"]["_tensogram_params"]["bits_per_value"] == 16
@@ -523,13 +524,13 @@ class TestBuildArrayParamsBranch:
         """Empty shape → chunk_shape should be [1]."""
 
         class Desc:
-            shape = []
-            dtype = "float64"
-            encoding = "none"
-            filter = "none"
-            compression = "none"
-            hash = None
-            params = {}
+            shape: ClassVar[list[object]] = []
+            dtype: ClassVar[str] = "float64"
+            encoding: ClassVar[str] = "none"
+            filter: ClassVar[str] = "none"
+            compression: ClassVar[str] = "none"
+            hash: ClassVar[None] = None
+            params: ClassVar[dict[str, object]] = {}
 
         result = build_array_zarr_json(Desc())
         assert result["chunk_grid"]["configuration"]["chunk_shape"] == [1]
@@ -800,12 +801,12 @@ class TestVariableNamePriorityChain:
         # No "name" or "mars.param", uses "param"
         assert resolve_variable_name(0, meta) == "sp"
 
-    def test_shortName_fallback(self):
+    def test_short_name_fallback(self):
         meta = {"mars": {"shortName": "msl"}}
         # No name, mars.param, or param
         assert resolve_variable_name(0, meta) == "msl"
 
-    def test_bare_shortName_fallback(self):
+    def test_bare_short_name_fallback(self):
         meta = {"shortName": "msl"}
         assert resolve_variable_name(0, meta) == "msl"
 
@@ -953,7 +954,7 @@ class TestBuildGroupNoExtra:
 
     def test_no_extra_attr(self):
         class Meta:
-            version = 2
+            version: ClassVar[int] = 2
 
         # No extra attribute at all
         result = build_group_zarr_json(Meta(), ["arr"])
@@ -962,16 +963,16 @@ class TestBuildGroupNoExtra:
 
     def test_none_extra(self):
         class Meta:
-            version = 2
-            extra = None
+            version: ClassVar[int] = 2
+            extra: ClassVar[None] = None
 
         result = build_group_zarr_json(Meta(), [])
         assert result["attributes"]["_tensogram_version"] == 2
 
     def test_empty_extra(self):
         class Meta:
-            version = 2
-            extra = {}
+            version: ClassVar[int] = 2
+            extra: ClassVar[dict[str, object]] = {}
 
         result = build_group_zarr_json(Meta(), ["a"])
         assert result["attributes"]["_tensogram_version"] == 2
@@ -987,13 +988,13 @@ class TestBuildArrayEdges:
 
     def test_no_per_object_meta(self):
         class Desc:
-            shape = [3]
-            dtype = "int32"
-            encoding = "none"
-            filter = "none"
-            compression = "none"
-            hash = None
-            params = {}
+            shape: ClassVar[list[object]] = [3]
+            dtype: ClassVar[str] = "int32"
+            encoding: ClassVar[str] = "none"
+            filter: ClassVar[str] = "none"
+            compression: ClassVar[str] = "none"
+            hash: ClassVar[None] = None
+            params: ClassVar[dict[str, object]] = {}
 
         result = build_array_zarr_json(Desc(), None)
         assert result["attributes"]["_tensogram_encoding"] == "none"
@@ -1002,13 +1003,13 @@ class TestBuildArrayEdges:
 
     def test_with_hash(self):
         class Desc:
-            shape = [3]
-            dtype = "float32"
-            encoding = "none"
-            filter = "none"
-            compression = "none"
-            hash = {"type": "xxh3", "value": "deadbeef"}
-            params = {}
+            shape: ClassVar[list[object]] = [3]
+            dtype: ClassVar[str] = "float32"
+            encoding: ClassVar[str] = "none"
+            filter: ClassVar[str] = "none"
+            compression: ClassVar[str] = "none"
+            hash: ClassVar[dict[str, object]] = {"type": "xxh3", "value": "deadbeef"}
+            params: ClassVar[dict[str, object]] = {}
 
         result = build_array_zarr_json(Desc())
         assert result["attributes"]["_tensogram_hash"] == {
@@ -1020,13 +1021,13 @@ class TestBuildArrayEdges:
         """Empty params dict means no _tensogram_params."""
 
         class Desc:
-            shape = [3]
-            dtype = "float32"
-            encoding = "none"
-            filter = "none"
-            compression = "none"
-            hash = None
-            params = {}
+            shape: ClassVar[list[object]] = [3]
+            dtype: ClassVar[str] = "float32"
+            encoding: ClassVar[str] = "none"
+            filter: ClassVar[str] = "none"
+            compression: ClassVar[str] = "none"
+            hash: ClassVar[None] = None
+            params: ClassVar[dict[str, object]] = {}
 
         result = build_array_zarr_json(Desc())
         assert "_tensogram_params" not in result["attributes"]
@@ -1145,3 +1146,142 @@ class TestFlushCleanGroupAttrs:
             store.close()
 
         asyncio.run(run())
+
+
+# ===================================================================
+# Additional coverage gap tests
+# ===================================================================
+
+
+class TestByteRangeGet:
+    """Cover store.py line 256: _apply_byte_range in _get_sync."""
+
+    def test_get_with_offset_byte_range(self, simple_tgm: str):
+        """Fetching a chunk key with an OffsetByteRequest applies byte slicing."""
+        from zarr.abc.store import OffsetByteRequest
+        from zarr.core.buffer import default_buffer_prototype
+
+        async def run():
+            store = TensogramStore(simple_tgm, mode="r")
+            await store._open()
+            proto = default_buffer_prototype()
+
+            # Get full zarr.json first to confirm it exists
+            full = store._get_sync("zarr.json", proto, byte_range=None)
+            assert full is not None
+
+            # Get with an offset byte range (skip first 5 bytes)
+            sliced = store._get_sync("zarr.json", proto, byte_range=OffsetByteRequest(offset=5))
+            assert sliced is not None
+            assert len(sliced) == len(full) - 5
+
+            store.close()
+
+        asyncio.run(run())
+
+    def test_get_with_suffix_byte_range(self, simple_tgm: str):
+        """Fetching with a SuffixByteRequest returns the last N bytes."""
+        from zarr.abc.store import SuffixByteRequest
+        from zarr.core.buffer import default_buffer_prototype
+
+        async def run():
+            store = TensogramStore(simple_tgm, mode="r")
+            await store._open()
+            proto = default_buffer_prototype()
+
+            full = store._get_sync("zarr.json", proto, byte_range=None)
+            assert full is not None
+
+            sliced = store._get_sync("zarr.json", proto, byte_range=SuffixByteRequest(suffix=10))
+            assert sliced is not None
+            assert len(sliced) == 10
+
+            store.close()
+
+        asyncio.run(run())
+
+
+class TestSetIfNotExists:
+    """Cover store.py line 301: set_if_not_exists write path."""
+
+    def test_set_if_not_exists_writes_new_key(self, output_path: str):
+        """set_if_not_exists writes when key is absent."""
+        from zarr.core.buffer import default_buffer_prototype
+
+        async def run():
+            store = TensogramStore(output_path, mode="w")
+            await store._open()
+            proto = default_buffer_prototype()
+
+            group_json = serialize_zarr_json(
+                {"zarr_format": 3, "node_type": "group", "attributes": {}}
+            )
+            await store.set_if_not_exists("zarr.json", proto.buffer.from_bytes(group_json))
+            assert await store.exists("zarr.json")
+            store._dirty = False
+            store.close()
+
+        asyncio.run(run())
+
+    def test_set_if_not_exists_skips_existing_key(self, output_path: str):
+        """set_if_not_exists does NOT overwrite an existing key."""
+        from zarr.core.buffer import default_buffer_prototype
+
+        async def run():
+            store = TensogramStore(output_path, mode="w")
+            await store._open()
+            proto = default_buffer_prototype()
+
+            original = serialize_zarr_json(
+                {"zarr_format": 3, "node_type": "group", "attributes": {"v": 1}}
+            )
+            replacement = serialize_zarr_json(
+                {"zarr_format": 3, "node_type": "group", "attributes": {"v": 2}}
+            )
+            await store.set("zarr.json", proto.buffer.from_bytes(original))
+            await store.set_if_not_exists("zarr.json", proto.buffer.from_bytes(replacement))
+            # Original should still be there — read raw bytes from _keys
+            raw = store._keys.get("zarr.json")
+            assert raw is not None
+            text = raw.decode() if isinstance(raw, bytes) else str(raw)
+            assert '"v": 1' in text or '"v":1' in text
+            store._dirty = False
+            store.close()
+
+        asyncio.run(run())
+
+
+class TestListDirPrefixNormalization:
+    """Cover store.py line 340: prefix without trailing '/'."""
+
+    def test_list_dir_without_trailing_slash(self, simple_tgm: str):
+        """list_dir with prefix lacking '/' still works."""
+
+        async def run():
+            store = TensogramStore(simple_tgm, mode="r")
+            await store._open()
+
+            # list_dir with a prefix that has no trailing slash
+            entries = []
+            async for entry in store.list_dir("object_0"):
+                entries.append(entry)
+            # Should find at least zarr.json and c/ for the variable
+            assert len(entries) >= 1
+            store.close()
+
+        asyncio.run(run())
+
+
+class TestFindChunkDataMultiChunkError:
+    """Cover store.py lines 648-649: _find_chunk_data multi-chunk error."""
+
+    def test_multiple_chunk_keys_raises(self):
+        """Multiple chunk keys for same variable raises ValueError."""
+        from tensogram_zarr.store import _find_chunk_data
+
+        chunks = {
+            "temp/c/0": b"data1",
+            "temp/c/1": b"data2",
+        }
+        with pytest.raises(ValueError, match="chunk keys"):
+            _find_chunk_data("temp", chunks)

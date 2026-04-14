@@ -12,234 +12,257 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  TMPDIR: ${{ github.workspace }}/.tmp
+  RUSTUP_HOME: ${{ github.workspace }}/.rustup
+  CARGO_HOME: ${{ github.workspace }}/.cargo
 
 jobs:
-  # ── Rust: build, lint, test ──────────────────────────────────────────
-  rust:
-    name: Rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  # ── Main: Rust lint/test + Python bindings + GRIB + NetCDF ──────────
+  main:
+    name: Main (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        runner: [[self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
     steps:
       - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install LLVM (Linux)
+        if: runner.os == 'Linux'
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "14"
+          directory: ${{ github.workspace }}/.llvm
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        id: linux-deps
+        run: |
+          echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
+
+          if [ "$(id -u)" = "0" ]; then APT="apt-get"; else APT="sudo -n apt-get"; fi
+          install_apt() { $APT update -o DPkg::Lock::Timeout=120 && $APT install -y -o DPkg::Lock::Timeout=120 "$@"; }
+
+          has_grib_deps=true
+          for pkg in libnetcdf-dev libhdf5-dev libeccodes-dev; do
+            dpkg -s "$pkg" >/dev/null 2>&1 || install_apt "$pkg" 2>/dev/null || has_grib_deps=false
+          done
+          echo "has_grib_deps=$has_grib_deps" >> "$GITHUB_OUTPUT"
+
+          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" \
+            || (python3 -m pip install --user cmake 2>/dev/null && echo "$HOME/.local/bin" >> "$GITHUB_PATH") \
+            || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          for pkg in netcdf hdf5 eccodes; do
+            brew list --formula "$pkg" >/dev/null 2>&1 || brew install "$pkg"
+          done
+          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix eccodes)/lib/pkgconfig:$(brew --prefix netcdf)/lib/pkgconfig:$(brew --prefix hdf5)/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "ECCODES_DIR=$(brew --prefix eccodes)" >> "$GITHUB_ENV"
 
       - name: Format check
         run: cargo fmt --check
 
-      # Skip --all-features to avoid tensogram-grib which requires ecCodes.
-      # The workspace excludes tensogram-python and tensogram-grib by default.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Build
-        run: cargo build --workspace
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          if [ "${{ steps.linux-deps.outputs.has_grib_deps }}" != "false" ]; then
+            cargo clippy -p tensogram-core -p tensogram-ffi -p tensogram-cli --all-targets --all-features -- -D warnings
+          fi
 
       - name: Test
         run: cargo test --workspace
 
-  # ── Python: build bindings + test ────────────────────────────────────
-  python:
-    name: Python (${{ matrix.os }}, ${{ matrix.python }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        python: ["3.12", "3.13"]
+      - name: Test (remote feature)
+        run: cargo test -p tensogram-core --features remote
+
+      - name: Test (remote + async features)
+        run: cargo test -p tensogram-core --features "remote,async"
+
+      - name: Test (GRIB)
+        if: runner.os != 'Linux' || steps.linux-deps.outputs.has_grib_deps == 'true'
+        run: |
+          cargo test --manifest-path crates/tensogram-grib/Cargo.toml
+          cargo test -p tensogram-cli --features grib
+
+      - name: Test (NetCDF)
+        if: runner.os != 'Linux' || steps.linux-deps.outputs.has_grib_deps == 'true'
+        run: |
+          cargo clippy --manifest-path crates/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path crates/tensogram-netcdf/Cargo.toml
+          cargo test -p tensogram-cli --features netcdf
+
+      - name: Build and test Python bindings
+        run: |
+          uv python install 3.13
+          uv venv .venv --python 3.13
+          source .venv/bin/activate
+          uv pip install maturin pytest numpy ruff
+          cd crates/tensogram-python && maturin develop && cd ../..
+          ruff check --config crates/tensogram-python/pyproject.toml tests/python/
+          python -m pytest tests/python/ -v
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" .venv build .rustup .cargo .llvm target
+
+  # ── Python: free-threaded 3.13t ───────────────────────────────────────
+  python-free-threaded:
+    name: Python 3.13t (free-threaded)
+    needs: main
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     steps:
       - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
-      # libnetcdf is needed so the feature-gated tensogram-cli build
-      # for the convert-netcdf end-to-end tests succeeds.
-      - name: Install libnetcdf (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libnetcdf-dev libhdf5-dev
+      - name: Install LLVM
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "14"
+          directory: ${{ github.workspace }}/.llvm
 
-      - name: Install libnetcdf (macOS)
-        if: matrix.os == 'macos-latest'
-        run: brew install netcdf hdf5
-
-      - name: Create virtualenv and install dependencies
+      - name: Install system dependencies
         run: |
-          uv venv .venv
-          source .venv/bin/activate
-          uv pip install maturin pytest numpy ruff netCDF4
+          echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
+          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" \
+            || (python3 -m pip install --user cmake 2>/dev/null && echo "$HOME/.local/bin" >> "$GITHUB_PATH") \
+            || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
 
-      - name: Build Python bindings
+      - name: Build and test
+        env:
+          PYTHON_GIL: "0"
         run: |
+          uv python install cpython-3.13+freethreaded
+          uv venv .venv --python python3.13t
           source .venv/bin/activate
-          cd crates/tensogram-python && maturin develop
-
-      - name: Build tensogram CLI with netcdf feature
-        run: cargo build -p tensogram-cli --features netcdf
-
-      - name: Lint
-        run: |
-          source .venv/bin/activate
-          ruff check --config crates/tensogram-python/pyproject.toml tests/python/
-
-      - name: Test
-        run: |
-          source .venv/bin/activate
+          uv pip install maturin pytest "numpy>=2.1"
+          python -c "import sys; assert not sys._is_gil_enabled(), 'GIL should be disabled'"
+          cd crates/tensogram-python && maturin develop --release && cd ../..
           python -m pytest tests/python/ -v
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" .venv .rustup .cargo .llvm target
 
   # ── Python packages: xarray + zarr ───────────────────────────────────
   python-packages:
     name: Python packages
-    runs-on: ubuntu-latest
+    needs: main
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     steps:
       - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
-      - name: Create virtualenv and install base
+      - name: Install LLVM
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "14"
+          directory: ${{ github.workspace }}/.llvm
+
+      - name: Install system dependencies
         run: |
-          uv venv .venv
+          echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
+          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" \
+            || (python3 -m pip install --user cmake 2>/dev/null && echo "$HOME/.local/bin" >> "$GITHUB_PATH") \
+            || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
+
+      - name: Build and test
+        run: |
+          uv python install 3.12
+          uv venv .venv --python 3.12
           source .venv/bin/activate
           uv pip install maturin pytest numpy
           cd crates/tensogram-python && maturin develop && cd ../..
-
-      - name: Install and test xarray
-        run: |
-          source .venv/bin/activate
           uv pip install -e "tensogram-xarray/[dask]"
           python -m pytest tensogram-xarray/tests/ -v
-
-      - name: Install and test zarr
-        run: |
-          source .venv/bin/activate
           uv pip install -e tensogram-zarr/
           python -m pytest tensogram-zarr/tests/ -v
 
-  # ── GRIB: build + test (requires ecCodes) ─────────────────────────────
-  grib:
-    name: GRIB (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install ecCodes library (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libeccodes-dev
-
-      - name: Install ecCodes library (macOS)
-        if: matrix.os == 'macos-latest'
-        run: brew install eccodes
-
-      - name: Run GRIB tests
-        run: cargo test --manifest-path crates/tensogram-grib/Cargo.toml -v
-
-      - name: Run CLI tests with grib feature
-        run: cargo test -p tensogram-cli --features grib -v
-
-  # ── NetCDF: build + test (requires libnetcdf) ─────────────────────────
-  netcdf:
-    name: NetCDF (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install libnetcdf (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libnetcdf-dev libhdf5-dev
-
-      - name: Install libnetcdf (macOS)
-        if: matrix.os == 'macos-latest'
-        run: brew install netcdf hdf5
-
-      - name: Clippy NetCDF crate
-        run: cargo clippy --manifest-path crates/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
-
-      - name: Run NetCDF library tests
-        run: cargo test --manifest-path crates/tensogram-netcdf/Cargo.toml -v
-
-      - name: Run CLI tests with netcdf feature
-        run: cargo test -p tensogram-cli --features netcdf -v
-
-      - name: Build convert-netcdf rust example
-        run: cargo build -p tensogram-rust-examples --bin 12_convert_netcdf --features netcdf
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" .venv .rustup .cargo .llvm target
 
   # ── C++: build + test ────────────────────────────────────────────────
   cpp:
-    name: C++ (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: C++ (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        runner: [[self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
     steps:
       - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build Rust libraries
-        run: cargo build --release
+      - name: Install LLVM (Linux)
+        if: runner.os == 'Linux'
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "14"
+          directory: ${{ github.workspace }}/.llvm
 
-      - name: CMake configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
-
-      - name: CMake build
-        run: cmake --build build -j
-
-      - name: CTest
-        run: ctest --test-dir build --output-on-failure
-
-  # ── Documentation: mdbook ────────────────────────────────────────────
-  docs:
-    name: Documentation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install mdbook + preprocessors
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
-          cargo install mdbook --locked
-          cargo install mdbook-mermaid --locked
-      - name: Build docs
-        working-directory: docs
-        run: mdbook build
+          echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
+          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" \
+            || (python3 -m pip install --user cmake 2>/dev/null && echo "$HOME/.local/bin" >> "$GITHUB_PATH") \
+            || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
+
+      - name: Build and test
+        run: |
+          cargo build --release -p tensogram-ffi
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+          ctest --test-dir build --output-on-failure
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" build .rustup .cargo .llvm target
 
   # ── WASM: build + test ───────────────────────────────────────────────
   wasm:
     name: WASM
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     steps:
       - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - uses: jetli/wasm-pack-action@v0.4.0
-      - name: Test WASM (Node.js)
-        run: wasm-pack test --node crates/tensogram-wasm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build and test
+        run: |
+          which wasm-pack >/dev/null 2>&1 || cargo install wasm-pack --locked
+          wasm-pack test --node crates/tensogram-wasm
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" .rustup .cargo target

@@ -58,6 +58,7 @@ pub enum TgmError {
     InvalidArg = 8,
     /// Returned by `tgm_*_iter_next` when iteration is exhausted.
     EndOfIter = 9,
+    Remote = 10,
 }
 
 fn to_error_code(e: &TensogramError) -> TgmError {
@@ -69,6 +70,7 @@ fn to_error_code(e: &TensogramError) -> TgmError {
         TensogramError::Object(_) => TgmError::Object,
         TensogramError::Io(_) => TgmError::Io,
         TensogramError::HashMismatch { .. } => TgmError::HashMismatch,
+        TensogramError::Remote(_) => TgmError::Remote,
     }
 }
 
@@ -822,7 +824,7 @@ pub extern "C" fn tgm_decode_range(
     };
 
     match decode_range(data, object_index, &ranges, &options) {
-        Ok(parts) => {
+        Ok((_, parts)) => {
             if join != 0 {
                 // Concatenate all parts into a single buffer.
                 let joined: Vec<u8> = parts.into_iter().flatten().collect();
@@ -1351,7 +1353,7 @@ pub extern "C" fn tgm_file_message_count(file: *mut TgmFile, out_count: *mut usi
         return TgmError::InvalidArg;
     }
 
-    let f = unsafe { &mut (*file).file };
+    let f = unsafe { &(*file).file };
     match f.message_count() {
         Ok(count) => {
             unsafe {
@@ -1381,7 +1383,7 @@ pub extern "C" fn tgm_file_decode_message(
         return TgmError::InvalidArg;
     }
 
-    let f = unsafe { &mut (*file).file };
+    let f = unsafe { &(*file).file };
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
         native_byte_order: native_byte_order != 0,
@@ -1428,7 +1430,7 @@ pub extern "C" fn tgm_file_read_message(
         return TgmError::InvalidArg;
     }
 
-    let f = unsafe { &mut (*file).file };
+    let f = unsafe { &(*file).file };
 
     match f.read_message(index) {
         Ok(bytes) => {
@@ -1468,10 +1470,17 @@ pub extern "C" fn tgm_file_append_raw(
 
     // Write raw bytes using std::fs
     use std::io::Write;
+    let path = match f.path() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            set_last_error("append_raw not supported on remote files");
+            return TgmError::Remote;
+        }
+    };
     let result = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(f.path())
+        .open(&path)
         .and_then(|mut fh| fh.write_all(data));
 
     match result {
@@ -1835,7 +1844,7 @@ pub extern "C" fn tgm_file_iter_create(file: *mut TgmFile, out: *mut *mut TgmFil
         set_last_error("null argument");
         return TgmError::InvalidArg;
     }
-    let f = unsafe { &mut (*file).file };
+    let f = unsafe { &(*file).file };
     match f.iter() {
         Ok(inner) => {
             let iter = Box::new(TgmFileIter { inner });
@@ -2608,6 +2617,2189 @@ mod tests {
             len: 0,
         };
         let err = super::tgm_validate_file(path.as_ptr(), level.as_ptr(), 0, &mut out);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    // =====================================================================
+    // FFI round-trip tests — exercise #[no_mangle] extern "C" functions
+    // =====================================================================
+
+    /// Helper: build a JSON metadata string and raw data for a single float32
+    /// tensor, encode via `tgm_encode`, and return the encoded bytes.
+    fn ffi_encode_single_f32_tensor(values: &[f32], extra_json: &str) -> Vec<u8> {
+        let shape_str = format!("[{}]", values.len());
+        let json = format!(
+            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]{extra}}}"#,
+            shape = shape_str,
+            bo = if cfg!(target_endian = "little") {
+                "little"
+            } else {
+                "big"
+            },
+            extra = if extra_json.is_empty() {
+                String::new()
+            } else {
+                format!(",{extra_json}")
+            },
+        );
+
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let c_json = CString::new(json).unwrap();
+        let data_ptr: *const u8 = data.as_ptr();
+        let data_len: usize = data.len();
+
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+
+        let err = super::tgm_encode(
+            c_json.as_ptr(),
+            &data_ptr as *const *const u8,
+            &data_len as *const usize,
+            1,
+            ptr::null(), // no hash
+            &mut out,
+        );
+        assert!(matches!(err, super::TgmError::Ok), "tgm_encode failed");
+        assert!(!out.data.is_null());
+        assert!(out.len > 0);
+
+        let encoded = unsafe { slice::from_raw_parts(out.data, out.len) }.to_vec();
+        super::tgm_bytes_free(out);
+        encoded
+    }
+
+    /// Helper: encode with hash enabled.
+    fn ffi_encode_with_hash(values: &[f32]) -> Vec<u8> {
+        let shape_str = format!("[{}]", values.len());
+        let json = format!(
+            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            shape = shape_str,
+            bo = if cfg!(target_endian = "little") {
+                "little"
+            } else {
+                "big"
+            },
+        );
+
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let c_json = CString::new(json).unwrap();
+        let hash_algo = CString::new("xxh3").unwrap();
+        let data_ptr: *const u8 = data.as_ptr();
+        let data_len: usize = data.len();
+
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+
+        let err = super::tgm_encode(
+            c_json.as_ptr(),
+            &data_ptr as *const *const u8,
+            &data_len as *const usize,
+            1,
+            hash_algo.as_ptr(),
+            &mut out,
+        );
+        assert!(
+            matches!(err, super::TgmError::Ok),
+            "tgm_encode with hash failed"
+        );
+
+        let encoded = unsafe { slice::from_raw_parts(out.data, out.len) }.to_vec();
+        super::tgm_bytes_free(out);
+        encoded
+    }
+
+    // ── tgm_encode / tgm_decode round-trip ──
+
+    #[test]
+    fn ffi_encode_decode_round_trip() {
+        let values = [1.0f32, 2.0, 3.0, 4.0];
+        let encoded = ffi_encode_single_f32_tensor(&values, "");
+
+        // Decode
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(
+            encoded.as_ptr(),
+            encoded.len(),
+            0, // no hash verify
+            0, // no native byte order rewrite
+            &mut msg,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!msg.is_null());
+
+        // Message-level accessors
+        assert_eq!(super::tgm_message_version(msg), 2);
+        assert_eq!(super::tgm_message_num_objects(msg), 1);
+        assert_eq!(super::tgm_message_num_decoded(msg), 1);
+
+        // Object-level accessors
+        assert_eq!(super::tgm_object_ndim(msg, 0), 1);
+
+        let shape_ptr = super::tgm_object_shape(msg, 0);
+        assert!(!shape_ptr.is_null());
+        assert_eq!(unsafe { *shape_ptr }, 4);
+
+        let strides_ptr = super::tgm_object_strides(msg, 0);
+        assert!(!strides_ptr.is_null());
+        assert_eq!(unsafe { *strides_ptr }, 1);
+
+        // dtype string
+        let dtype_ptr = super::tgm_object_dtype(msg, 0);
+        assert!(!dtype_ptr.is_null());
+        let dtype_str = unsafe { CStr::from_ptr(dtype_ptr) }.to_str().unwrap();
+        assert_eq!(dtype_str, "float32");
+
+        // type string
+        let type_ptr = super::tgm_object_type(msg, 0);
+        assert!(!type_ptr.is_null());
+        let type_str = unsafe { CStr::from_ptr(type_ptr) }.to_str().unwrap();
+        assert_eq!(type_str, "ntensor");
+
+        // byte_order string
+        let bo_ptr = super::tgm_object_byte_order(msg, 0);
+        assert!(!bo_ptr.is_null());
+        let bo_str = unsafe { CStr::from_ptr(bo_ptr) }.to_str().unwrap();
+        assert!(bo_str == "little" || bo_str == "big");
+
+        // filter string
+        let filter_ptr = super::tgm_object_filter(msg, 0);
+        assert!(!filter_ptr.is_null());
+        let filter_str = unsafe { CStr::from_ptr(filter_ptr) }.to_str().unwrap();
+        assert_eq!(filter_str, "none");
+
+        // compression string
+        let comp_ptr = super::tgm_object_compression(msg, 0);
+        assert!(!comp_ptr.is_null());
+        let comp_str = unsafe { CStr::from_ptr(comp_ptr) }.to_str().unwrap();
+        assert_eq!(comp_str, "none");
+
+        // encoding string
+        let enc_ptr = super::tgm_payload_encoding(msg, 0);
+        assert!(!enc_ptr.is_null());
+        let enc_str = unsafe { CStr::from_ptr(enc_ptr) }.to_str().unwrap();
+        assert_eq!(enc_str, "none");
+
+        // decoded data
+        let mut data_len: usize = 0;
+        let data_ptr = super::tgm_object_data(msg, 0, &mut data_len);
+        assert!(!data_ptr.is_null());
+        assert_eq!(data_len, 16); // 4 × 4 bytes
+
+        let decoded_bytes = unsafe { slice::from_raw_parts(data_ptr, data_len) };
+        let decoded_values: Vec<f32> = decoded_bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded_values, values);
+
+        super::tgm_message_free(msg);
+    }
+
+    #[test]
+    fn ffi_encode_decode_with_hash() {
+        let values = [10.0f32, 20.0, 30.0];
+        let encoded = ffi_encode_with_hash(&values);
+
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(
+            encoded.as_ptr(),
+            encoded.len(),
+            1, // verify hash
+            0,
+            &mut msg,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // Hash should be present
+        assert_eq!(super::tgm_payload_has_hash(msg, 0), 1);
+
+        let ht_ptr = super::tgm_object_hash_type(msg, 0);
+        assert!(!ht_ptr.is_null());
+        let ht_str = unsafe { CStr::from_ptr(ht_ptr) }.to_str().unwrap();
+        assert_eq!(ht_str, "xxh3");
+
+        let hv_ptr = super::tgm_object_hash_value(msg, 0);
+        assert!(!hv_ptr.is_null());
+        let hv_str = unsafe { CStr::from_ptr(hv_ptr) }.to_str().unwrap();
+        assert!(!hv_str.is_empty());
+
+        super::tgm_message_free(msg);
+    }
+
+    #[test]
+    fn ffi_encode_decode_no_hash() {
+        let values = [5.0f32];
+        let encoded = ffi_encode_single_f32_tensor(&values, "");
+
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        assert_eq!(super::tgm_payload_has_hash(msg, 0), 0);
+        assert!(super::tgm_object_hash_type(msg, 0).is_null());
+        assert!(super::tgm_object_hash_value(msg, 0).is_null());
+
+        super::tgm_message_free(msg);
+    }
+
+    #[test]
+    fn ffi_encode_with_extra_metadata() {
+        let values = [1.0f32, 2.0];
+        let encoded = ffi_encode_single_f32_tensor(&values, r#""source":"test_source","count":42"#);
+
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // Extract metadata from decoded message
+        let mut meta: *mut super::TgmMetadata = ptr::null_mut();
+        let err = super::tgm_message_metadata(msg, &mut meta);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let key = CString::new("source").unwrap();
+        let val_ptr = super::tgm_metadata_get_string(meta, key.as_ptr());
+        assert!(!val_ptr.is_null());
+        let val_str = unsafe { CStr::from_ptr(val_ptr) }.to_str().unwrap();
+        assert_eq!(val_str, "test_source");
+
+        let key_count = CString::new("count").unwrap();
+        let val_int = super::tgm_metadata_get_int(meta, key_count.as_ptr(), -1);
+        assert_eq!(val_int, 42);
+
+        super::tgm_metadata_free(meta);
+        super::tgm_message_free(msg);
+    }
+
+    // ── tgm_encode null/error paths ──
+
+    #[test]
+    fn ffi_encode_null_json() {
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_encode(
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            &mut out,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn ffi_encode_null_out() {
+        let json = CString::new(r#"{"version":2,"descriptors":[]}"#).unwrap();
+        let err = super::tgm_encode(
+            json.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            ptr::null_mut(),
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn ffi_encode_descriptor_count_mismatch() {
+        // JSON says 0 descriptors, but num_objects = 1
+        let json = CString::new(r#"{"version":2,"descriptors":[]}"#).unwrap();
+        let data: [u8; 4] = [0; 4];
+        let data_ptr: *const u8 = data.as_ptr();
+        let data_len: usize = 4;
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_encode(
+            json.as_ptr(),
+            &data_ptr as *const *const u8,
+            &data_len as *const usize,
+            1, // mismatch!
+            ptr::null(),
+            &mut out,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn ffi_encode_invalid_json() {
+        let json = CString::new("not valid json").unwrap();
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_encode(
+            json.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            &mut out,
+        );
+        assert!(matches!(err, super::TgmError::Metadata));
+    }
+
+    // ── tgm_decode null/error paths ──
+
+    #[test]
+    fn ffi_decode_null_buf() {
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(ptr::null(), 0, 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn ffi_decode_null_out() {
+        let data = [0u8; 10];
+        let err = super::tgm_decode(data.as_ptr(), data.len(), 0, 0, ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn ffi_decode_garbage_data() {
+        let data = [0u8; 10];
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(data.as_ptr(), data.len(), 0, 0, &mut msg);
+        // Should fail with a framing or other error
+        assert!(!matches!(err, super::TgmError::Ok));
+    }
+
+    // ── tgm_decode_metadata round-trip ──
+
+    #[test]
+    fn ffi_decode_metadata_round_trip() {
+        let values = [1.0f32, 2.0];
+        let encoded = ffi_encode_single_f32_tensor(&values, r#""source":"meta_test""#);
+
+        let mut meta: *mut super::TgmMetadata = ptr::null_mut();
+        let err = super::tgm_decode_metadata(encoded.as_ptr(), encoded.len(), &mut meta);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!meta.is_null());
+
+        // Version
+        assert_eq!(super::tgm_metadata_version(meta), 2);
+
+        // num_objects
+        assert_eq!(super::tgm_metadata_num_objects(meta), 1);
+
+        // String lookup
+        let key = CString::new("source").unwrap();
+        let val_ptr = super::tgm_metadata_get_string(meta, key.as_ptr());
+        assert!(!val_ptr.is_null());
+        let val_str = unsafe { CStr::from_ptr(val_ptr) }.to_str().unwrap();
+        assert_eq!(val_str, "meta_test");
+
+        // Missing key returns null
+        let bad_key = CString::new("nonexistent").unwrap();
+        assert!(super::tgm_metadata_get_string(meta, bad_key.as_ptr()).is_null());
+
+        // Int with default
+        let bad_key2 = CString::new("missing_int").unwrap();
+        assert_eq!(
+            super::tgm_metadata_get_int(meta, bad_key2.as_ptr(), -999),
+            -999
+        );
+
+        // Float with default
+        let bad_key3 = CString::new("missing_float").unwrap();
+        let fval = super::tgm_metadata_get_float(meta, bad_key3.as_ptr(), 3.25);
+        assert!((fval - 3.25).abs() < f64::EPSILON);
+
+        super::tgm_metadata_free(meta);
+    }
+
+    #[test]
+    fn ffi_decode_metadata_null_args() {
+        let mut meta: *mut super::TgmMetadata = ptr::null_mut();
+        let err = super::tgm_decode_metadata(ptr::null(), 0, &mut meta);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        let data = [0u8; 10];
+        let err = super::tgm_decode_metadata(data.as_ptr(), data.len(), ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    // ── tgm_metadata null pointer safety ──
+
+    #[test]
+    fn ffi_metadata_accessors_null_handle() {
+        assert_eq!(super::tgm_metadata_version(ptr::null()), 0);
+        assert_eq!(super::tgm_metadata_num_objects(ptr::null()), 0);
+        assert!(super::tgm_metadata_get_string(ptr::null(), ptr::null()).is_null());
+        assert_eq!(
+            super::tgm_metadata_get_int(ptr::null(), ptr::null(), -1),
+            -1
+        );
+        assert_eq!(
+            super::tgm_metadata_get_float(ptr::null(), ptr::null(), 1.5),
+            1.5
+        );
+    }
+
+    #[test]
+    fn ffi_metadata_get_string_null_key() {
+        let encoded = ffi_encode_single_f32_tensor(&[1.0f32], "");
+        let mut meta: *mut super::TgmMetadata = ptr::null_mut();
+        let err = super::tgm_decode_metadata(encoded.as_ptr(), encoded.len(), &mut meta);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        assert!(super::tgm_metadata_get_string(meta, ptr::null()).is_null());
+        assert_eq!(super::tgm_metadata_get_int(meta, ptr::null(), -1), -1);
+        assert_eq!(super::tgm_metadata_get_float(meta, ptr::null(), 1.5), 1.5);
+
+        super::tgm_metadata_free(meta);
+    }
+
+    #[test]
+    fn ffi_metadata_get_version_via_string() {
+        let encoded = ffi_encode_single_f32_tensor(&[1.0f32], "");
+        let mut meta: *mut super::TgmMetadata = ptr::null_mut();
+        let err = super::tgm_decode_metadata(encoded.as_ptr(), encoded.len(), &mut meta);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let key = CString::new("version").unwrap();
+        let val_ptr = super::tgm_metadata_get_string(meta, key.as_ptr());
+        assert!(!val_ptr.is_null());
+        let val_str = unsafe { CStr::from_ptr(val_ptr) }.to_str().unwrap();
+        assert_eq!(val_str, "2");
+
+        let ival = super::tgm_metadata_get_int(meta, key.as_ptr(), -1);
+        assert_eq!(ival, 2);
+
+        super::tgm_metadata_free(meta);
+    }
+
+    #[test]
+    fn ffi_metadata_get_float_value() {
+        let values = [1.0f32];
+        let encoded = ffi_encode_single_f32_tensor(&values, r#""temperature":98.6"#);
+
+        let mut meta: *mut super::TgmMetadata = ptr::null_mut();
+        let err = super::tgm_decode_metadata(encoded.as_ptr(), encoded.len(), &mut meta);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let key = CString::new("temperature").unwrap();
+        let fval = super::tgm_metadata_get_float(meta, key.as_ptr(), 0.0);
+        assert!((fval - 98.6).abs() < 0.01);
+
+        super::tgm_metadata_free(meta);
+    }
+
+    // ── tgm_decode_object ──
+
+    #[test]
+    fn ffi_decode_object_round_trip() {
+        let values = [10.0f32, 20.0, 30.0, 40.0];
+        let encoded = ffi_encode_single_f32_tensor(&values, "");
+
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode_object(
+            encoded.as_ptr(),
+            encoded.len(),
+            0, // index
+            0, // verify hash
+            0, // native byte order
+            &mut msg,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!msg.is_null());
+
+        // Single object in result
+        assert_eq!(super::tgm_message_num_objects(msg), 1);
+        assert_eq!(super::tgm_object_ndim(msg, 0), 1);
+
+        let mut data_len: usize = 0;
+        let data_ptr = super::tgm_object_data(msg, 0, &mut data_len);
+        assert!(!data_ptr.is_null());
+        let decoded_bytes = unsafe { slice::from_raw_parts(data_ptr, data_len) };
+        let decoded_values: Vec<f32> = decoded_bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded_values, values);
+
+        super::tgm_message_free(msg);
+    }
+
+    #[test]
+    fn ffi_decode_object_out_of_range() {
+        let encoded = ffi_encode_single_f32_tensor(&[1.0f32], "");
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode_object(
+            encoded.as_ptr(),
+            encoded.len(),
+            999, // out of range
+            0,
+            0,
+            &mut msg,
+        );
+        assert!(!matches!(err, super::TgmError::Ok));
+    }
+
+    #[test]
+    fn ffi_decode_object_null_args() {
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode_object(ptr::null(), 0, 0, 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        let data = [0u8; 10];
+        let err = super::tgm_decode_object(data.as_ptr(), data.len(), 0, 0, 0, ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    // ── tgm_message_metadata ──
+
+    #[test]
+    fn ffi_message_metadata_null_args() {
+        let err = super::tgm_message_metadata(ptr::null(), ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        let encoded = ffi_encode_single_f32_tensor(&[1.0f32], "");
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let err = super::tgm_message_metadata(msg, ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        super::tgm_message_free(msg);
+    }
+
+    // ── tgm_message accessors with null msg ──
+
+    #[test]
+    fn ffi_message_accessors_null_handle() {
+        assert_eq!(super::tgm_message_version(ptr::null()), 0);
+        assert_eq!(super::tgm_message_num_objects(ptr::null()), 0);
+        assert_eq!(super::tgm_message_num_decoded(ptr::null()), 0);
+        assert_eq!(super::tgm_object_ndim(ptr::null(), 0), 0);
+        assert!(super::tgm_object_shape(ptr::null(), 0).is_null());
+        assert!(super::tgm_object_strides(ptr::null(), 0).is_null());
+        assert!(super::tgm_object_dtype(ptr::null(), 0).is_null());
+        assert!(super::tgm_object_type(ptr::null(), 0).is_null());
+        assert!(super::tgm_object_byte_order(ptr::null(), 0).is_null());
+        assert!(super::tgm_object_filter(ptr::null(), 0).is_null());
+        assert!(super::tgm_object_compression(ptr::null(), 0).is_null());
+        assert!(super::tgm_payload_encoding(ptr::null(), 0).is_null());
+        assert_eq!(super::tgm_payload_has_hash(ptr::null(), 0), 0);
+        assert!(super::tgm_object_hash_type(ptr::null(), 0).is_null());
+        assert!(super::tgm_object_hash_value(ptr::null(), 0).is_null());
+
+        let mut data_len: usize = 99;
+        let data_ptr = super::tgm_object_data(ptr::null(), 0, &mut data_len);
+        assert!(data_ptr.is_null());
+        assert_eq!(data_len, 0);
+    }
+
+    // ── tgm_message accessors out-of-bounds index ──
+
+    #[test]
+    fn ffi_message_accessors_out_of_bounds() {
+        let encoded = ffi_encode_single_f32_tensor(&[1.0f32], "");
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // Index 1 does not exist (only index 0)
+        assert_eq!(super::tgm_object_ndim(msg, 1), 0);
+        assert!(super::tgm_object_shape(msg, 1).is_null());
+        assert!(super::tgm_object_strides(msg, 1).is_null());
+        assert!(super::tgm_object_dtype(msg, 1).is_null());
+        assert!(super::tgm_object_type(msg, 1).is_null());
+        assert!(super::tgm_object_byte_order(msg, 1).is_null());
+        assert!(super::tgm_object_filter(msg, 1).is_null());
+        assert!(super::tgm_object_compression(msg, 1).is_null());
+        assert!(super::tgm_payload_encoding(msg, 1).is_null());
+        assert_eq!(super::tgm_payload_has_hash(msg, 1), 0);
+        assert!(super::tgm_object_hash_type(msg, 1).is_null());
+        assert!(super::tgm_object_hash_value(msg, 1).is_null());
+
+        let mut data_len: usize = 99;
+        let data_ptr = super::tgm_object_data(msg, 1, &mut data_len);
+        assert!(data_ptr.is_null());
+        assert_eq!(data_len, 0);
+
+        super::tgm_message_free(msg);
+    }
+
+    // ── tgm_object_data with null out_len ──
+
+    #[test]
+    fn ffi_object_data_null_out_len() {
+        let encoded = ffi_encode_single_f32_tensor(&[1.0f32], "");
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // null out_len should not crash
+        let data_ptr = super::tgm_object_data(msg, 0, ptr::null_mut());
+        assert!(!data_ptr.is_null());
+
+        super::tgm_message_free(msg);
+    }
+
+    // ── tgm_decode_range ──
+
+    #[test]
+    fn ffi_decode_range_round_trip() {
+        let values = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let encoded = ffi_encode_single_f32_tensor(&values, "");
+
+        // Request elements [2..5) (3 elements)
+        let range_offset: u64 = 2;
+        let range_count: u64 = 3;
+        let mut out_buf = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let mut out_count: usize = 0;
+
+        let err = super::tgm_decode_range(
+            encoded.as_ptr(),
+            encoded.len(),
+            0,
+            &range_offset as *const u64,
+            &range_count as *const u64,
+            1,
+            0, // no hash verify
+            0, // no native byte order
+            1, // join
+            &mut out_buf,
+            &mut out_count,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(out_count, 1);
+        assert!(!out_buf.data.is_null());
+
+        let decoded_bytes = unsafe { slice::from_raw_parts(out_buf.data, out_buf.len) };
+        let decoded_values: Vec<f32> = decoded_bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded_values, [3.0, 4.0, 5.0]);
+
+        super::tgm_bytes_free(out_buf);
+    }
+
+    #[test]
+    fn ffi_decode_range_split_mode() {
+        let values = [10.0f32, 20.0, 30.0, 40.0];
+        let encoded = ffi_encode_single_f32_tensor(&values, "");
+
+        // Two ranges: [0..2), [2..4)
+        let range_offsets: [u64; 2] = [0, 2];
+        let range_counts: [u64; 2] = [2, 2];
+        let mut out_bufs = [
+            super::TgmBytes {
+                data: ptr::null_mut(),
+                len: 0,
+            },
+            super::TgmBytes {
+                data: ptr::null_mut(),
+                len: 0,
+            },
+        ];
+        let mut out_count: usize = 0;
+
+        let err = super::tgm_decode_range(
+            encoded.as_ptr(),
+            encoded.len(),
+            0,
+            range_offsets.as_ptr(),
+            range_counts.as_ptr(),
+            2,
+            0,
+            0,
+            0, // split mode (join=0)
+            out_bufs.as_mut_ptr(),
+            &mut out_count,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(out_count, 2);
+
+        // First range: [10.0, 20.0]
+        let bytes0 = unsafe { slice::from_raw_parts(out_bufs[0].data, out_bufs[0].len) };
+        let vals0: Vec<f32> = bytes0
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(vals0, [10.0, 20.0]);
+
+        // Second range: [30.0, 40.0]
+        let bytes1 = unsafe { slice::from_raw_parts(out_bufs[1].data, out_bufs[1].len) };
+        let vals1: Vec<f32> = bytes1
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(vals1, [30.0, 40.0]);
+
+        // TgmBytes is not Copy, so manually construct values for free
+        super::tgm_bytes_free(super::TgmBytes {
+            data: out_bufs[0].data,
+            len: out_bufs[0].len,
+        });
+        super::tgm_bytes_free(super::TgmBytes {
+            data: out_bufs[1].data,
+            len: out_bufs[1].len,
+        });
+    }
+
+    #[test]
+    fn ffi_decode_range_null_args() {
+        let mut out_buf = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let mut out_count: usize = 0;
+
+        // null buf
+        let err = super::tgm_decode_range(
+            ptr::null(),
+            0,
+            0,
+            ptr::null(),
+            ptr::null(),
+            0,
+            0,
+            0,
+            0,
+            &mut out_buf,
+            &mut out_count,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // null out
+        let data = [0u8; 10];
+        let err = super::tgm_decode_range(
+            data.as_ptr(),
+            data.len(),
+            0,
+            ptr::null(),
+            ptr::null(),
+            0,
+            0,
+            0,
+            0,
+            ptr::null_mut(),
+            &mut out_count,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // null out_count
+        let err = super::tgm_decode_range(
+            data.as_ptr(),
+            data.len(),
+            0,
+            ptr::null(),
+            ptr::null(),
+            0,
+            0,
+            0,
+            0,
+            &mut out_buf,
+            ptr::null_mut(),
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn ffi_decode_range_null_ranges_with_nonzero_count() {
+        let encoded = ffi_encode_single_f32_tensor(&[1.0f32], "");
+        let mut out_buf = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let mut out_count: usize = 0;
+
+        let err = super::tgm_decode_range(
+            encoded.as_ptr(),
+            encoded.len(),
+            0,
+            ptr::null(), // null ranges_offsets
+            ptr::null(), // null ranges_counts
+            1,           // but num_ranges > 0
+            0,
+            0,
+            0,
+            &mut out_buf,
+            &mut out_count,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    // ── tgm_scan ──
+
+    #[test]
+    fn ffi_scan_single_message() {
+        let encoded = ffi_encode_single_f32_tensor(&[1.0f32, 2.0], "");
+
+        let mut result: *mut super::TgmScanResult = ptr::null_mut();
+        let err = super::tgm_scan(encoded.as_ptr(), encoded.len(), &mut result);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!result.is_null());
+
+        assert_eq!(super::tgm_scan_count(result), 1);
+
+        let entry = super::tgm_scan_entry(result, 0);
+        assert_eq!(entry.offset, 0);
+        assert_eq!(entry.length, encoded.len());
+
+        // Out of bounds entry returns zeros
+        let bad = super::tgm_scan_entry(result, 999);
+        assert_eq!(bad.offset, 0);
+        assert_eq!(bad.length, 0);
+
+        super::tgm_scan_free(result);
+    }
+
+    #[test]
+    fn ffi_scan_null_args() {
+        let mut result: *mut super::TgmScanResult = ptr::null_mut();
+        let err = super::tgm_scan(ptr::null(), 0, &mut result);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        let data = [0u8; 10];
+        let err = super::tgm_scan(data.as_ptr(), data.len(), ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn ffi_scan_null_handle_accessors() {
+        assert_eq!(super::tgm_scan_count(ptr::null()), 0);
+        let entry = super::tgm_scan_entry(ptr::null(), 0);
+        assert_eq!(entry.offset, 0);
+        assert_eq!(entry.length, 0);
+    }
+
+    #[test]
+    fn ffi_scan_concatenated_messages() {
+        let msg1 = ffi_encode_single_f32_tensor(&[1.0f32], "");
+        let msg2 = ffi_encode_single_f32_tensor(&[2.0f32], "");
+        let mut concat = msg1.clone();
+        concat.extend_from_slice(&msg2);
+
+        let mut result: *mut super::TgmScanResult = ptr::null_mut();
+        let err = super::tgm_scan(concat.as_ptr(), concat.len(), &mut result);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        assert_eq!(super::tgm_scan_count(result), 2);
+
+        let e0 = super::tgm_scan_entry(result, 0);
+        assert_eq!(e0.offset, 0);
+        assert_eq!(e0.length, msg1.len());
+
+        let e1 = super::tgm_scan_entry(result, 1);
+        assert_eq!(e1.offset, msg1.len());
+        assert_eq!(e1.length, msg2.len());
+
+        super::tgm_scan_free(result);
+    }
+
+    // ── tgm_file_* functions ──
+
+    #[test]
+    fn ffi_file_create_append_count_decode_close() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_test_file.tgm");
+        let _ = std::fs::remove_file(&path);
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        // Create
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        let err = super::tgm_file_create(c_path.as_ptr(), &mut file);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!file.is_null());
+
+        // Append a message
+        let values = [10.0f32, 20.0, 30.0];
+        let shape_str = format!("[{}]", values.len());
+        let json = format!(
+            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            shape = shape_str,
+            bo = if cfg!(target_endian = "little") {
+                "little"
+            } else {
+                "big"
+            },
+        );
+        let c_json = CString::new(json).unwrap();
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let data_ptr: *const u8 = data.as_ptr();
+        let data_len: usize = data.len();
+
+        let err = super::tgm_file_append(
+            file,
+            c_json.as_ptr(),
+            &data_ptr as *const *const u8,
+            &data_len as *const usize,
+            1,
+            ptr::null(),
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // Check path accessor
+        let path_ptr = super::tgm_file_path(file);
+        assert!(!path_ptr.is_null());
+        let path_str = unsafe { CStr::from_ptr(path_ptr) }.to_str().unwrap();
+        assert!(path_str.contains("ffi_test_file.tgm"));
+
+        super::tgm_file_close(file);
+
+        // Re-open for reading
+        let mut file2: *mut super::TgmFile = ptr::null_mut();
+        let err = super::tgm_file_open(c_path.as_ptr(), &mut file2);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // Message count
+        let mut count: usize = 0;
+        let err = super::tgm_file_message_count(file2, &mut count);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(count, 1);
+
+        // Decode message
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_file_decode_message(file2, 0, 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        assert_eq!(super::tgm_message_num_objects(msg), 1);
+        let mut data_len2: usize = 0;
+        let dp = super::tgm_object_data(msg, 0, &mut data_len2);
+        assert!(!dp.is_null());
+        let decoded_bytes = unsafe { slice::from_raw_parts(dp, data_len2) };
+        let decoded_values: Vec<f32> = decoded_bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded_values, values);
+
+        super::tgm_message_free(msg);
+
+        // Read raw message
+        let mut raw = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_file_read_message(file2, 0, &mut raw);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!raw.data.is_null());
+        assert!(raw.len > 0);
+        super::tgm_bytes_free(raw);
+
+        super::tgm_file_close(file2);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ffi_file_open_nonexistent() {
+        let c_path = CString::new("/nonexistent/file.tgm").unwrap();
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        let err = super::tgm_file_open(c_path.as_ptr(), &mut file);
+        assert!(!matches!(err, super::TgmError::Ok));
+    }
+
+    #[test]
+    fn ffi_file_null_args() {
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+
+        // open null path
+        let err = super::tgm_file_open(ptr::null(), &mut file);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // open null out
+        let c_path = CString::new("/tmp/test.tgm").unwrap();
+        let err = super::tgm_file_open(c_path.as_ptr(), ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // create null path
+        let err = super::tgm_file_create(ptr::null(), &mut file);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // create null out
+        let err = super::tgm_file_create(c_path.as_ptr(), ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // message_count null args
+        let err = super::tgm_file_message_count(ptr::null_mut(), ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // decode_message null args
+        let err = super::tgm_file_decode_message(ptr::null_mut(), 0, 0, 0, ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // read_message null args
+        let err = super::tgm_file_read_message(ptr::null_mut(), 0, ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // append null args
+        let err = super::tgm_file_append(
+            ptr::null_mut(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // append_raw null args
+        let err = super::tgm_file_append_raw(ptr::null_mut(), ptr::null(), 0);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // path null
+        assert!(super::tgm_file_path(ptr::null()).is_null());
+    }
+
+    #[test]
+    fn ffi_file_append_raw_round_trip() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_test_append_raw.tgm");
+        let _ = std::fs::remove_file(&path);
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        // Create
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        let err = super::tgm_file_create(c_path.as_ptr(), &mut file);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // Encode a message in memory, then append raw bytes
+        let encoded = ffi_encode_single_f32_tensor(&[1.0f32, 2.0], "");
+        let err = super::tgm_file_append_raw(file, encoded.as_ptr(), encoded.len());
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // Count
+        let mut count: usize = 0;
+        let err = super::tgm_file_message_count(file, &mut count);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(count, 1);
+
+        super::tgm_file_close(file);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── tgm_streaming_encoder_* ──
+
+    #[test]
+    fn ffi_streaming_encoder_round_trip() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_streaming_test.tgm");
+        let _ = std::fs::remove_file(&path);
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+
+        // Create
+        let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
+        let err = super::tgm_streaming_encoder_create(
+            c_path.as_ptr(),
+            meta_json.as_ptr(),
+            ptr::null(), // no hash
+            &mut enc,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!enc.is_null());
+
+        // Write an object
+        let values = [100.0f32, 200.0, 300.0];
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let desc_json = CString::new(format!(
+            r#"{{"type":"ntensor","ndim":1,"shape":[{len}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}"#,
+            len = values.len(),
+            bo = if cfg!(target_endian = "little") { "little" } else { "big" },
+        )).unwrap();
+
+        let err =
+            super::tgm_streaming_encoder_write(enc, desc_json.as_ptr(), data.as_ptr(), data.len());
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // Count
+        assert_eq!(super::tgm_streaming_encoder_count(enc), 1);
+
+        // Finish
+        let err = super::tgm_streaming_encoder_finish(enc);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // Double finish should fail
+        let err = super::tgm_streaming_encoder_finish(enc);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // Count after finish
+        assert_eq!(super::tgm_streaming_encoder_count(enc), 0);
+
+        // Free
+        super::tgm_streaming_encoder_free(enc);
+
+        // Read back and verify
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        let err = super::tgm_file_open(c_path.as_ptr(), &mut file);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let mut count: usize = 0;
+        let err = super::tgm_file_message_count(file, &mut count);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(count, 1);
+
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_file_decode_message(file, 0, 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let mut data_len: usize = 0;
+        let dp = super::tgm_object_data(msg, 0, &mut data_len);
+        let decoded_bytes = unsafe { slice::from_raw_parts(dp, data_len) };
+        let decoded_values: Vec<f32> = decoded_bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded_values, values);
+
+        super::tgm_message_free(msg);
+        super::tgm_file_close(file);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ffi_streaming_encoder_null_args() {
+        let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
+
+        // create with null path
+        let meta = CString::new(r#"{"version":2}"#).unwrap();
+        let err =
+            super::tgm_streaming_encoder_create(ptr::null(), meta.as_ptr(), ptr::null(), &mut enc);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // create with null metadata
+        let p = CString::new("/tmp/dummy.tgm").unwrap();
+        let err =
+            super::tgm_streaming_encoder_create(p.as_ptr(), ptr::null(), ptr::null(), &mut enc);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // create with null out
+        let err = super::tgm_streaming_encoder_create(
+            p.as_ptr(),
+            meta.as_ptr(),
+            ptr::null(),
+            ptr::null_mut(),
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // write null enc
+        let desc = CString::new(r#"{}"#).unwrap();
+        let data = [0u8; 4];
+        let err = super::tgm_streaming_encoder_write(
+            ptr::null_mut(),
+            desc.as_ptr(),
+            data.as_ptr(),
+            data.len(),
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // write null descriptor
+        // Need a valid encoder for this — skip as it requires file creation
+
+        // finish null
+        let err = super::tgm_streaming_encoder_finish(ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // count null
+        assert_eq!(super::tgm_streaming_encoder_count(ptr::null()), 0);
+
+        // free null — should not crash
+        super::tgm_streaming_encoder_free(ptr::null_mut());
+    }
+
+    #[test]
+    fn ffi_streaming_encoder_write_null_data() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_streaming_null_data.tgm");
+        let _ = std::fs::remove_file(&path);
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+
+        let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
+        let err = super::tgm_streaming_encoder_create(
+            c_path.as_ptr(),
+            meta_json.as_ptr(),
+            ptr::null(),
+            &mut enc,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let desc = CString::new(r#"{"type":"ntensor","ndim":1,"shape":[1],"strides":[1],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}"#).unwrap();
+        let err = super::tgm_streaming_encoder_write(enc, desc.as_ptr(), ptr::null(), 4);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // Write with null descriptor json
+        let data = [0u8; 4];
+        let err = super::tgm_streaming_encoder_write(enc, ptr::null(), data.as_ptr(), data.len());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        super::tgm_streaming_encoder_free(enc);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ffi_streaming_encoder_with_preceder() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_streaming_preceder.tgm");
+        let _ = std::fs::remove_file(&path);
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+
+        let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
+        let err = super::tgm_streaming_encoder_create(
+            c_path.as_ptr(),
+            meta_json.as_ptr(),
+            ptr::null(),
+            &mut enc,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // Write preceder
+        let preceder_json = CString::new(r#"{"param":"2t","source":"test"}"#).unwrap();
+        let err = super::tgm_streaming_encoder_write_preceder(enc, preceder_json.as_ptr());
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // Write object after preceder
+        let values = [42.0f32];
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let desc_json = CString::new(format!(
+            r#"{{"type":"ntensor","ndim":1,"shape":[1],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}"#,
+            bo = if cfg!(target_endian = "little") { "little" } else { "big" },
+        )).unwrap();
+
+        let err =
+            super::tgm_streaming_encoder_write(enc, desc_json.as_ptr(), data.as_ptr(), data.len());
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let err = super::tgm_streaming_encoder_finish(enc);
+        assert!(matches!(err, super::TgmError::Ok));
+        super::tgm_streaming_encoder_free(enc);
+
+        // Re-open and verify the metadata contains the preceder keys
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        let err = super::tgm_file_open(c_path.as_ptr(), &mut file);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_file_decode_message(file, 0, 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let mut meta: *mut super::TgmMetadata = ptr::null_mut();
+        let err = super::tgm_message_metadata(msg, &mut meta);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let key = CString::new("param").unwrap();
+        let val_ptr = super::tgm_metadata_get_string(meta, key.as_ptr());
+        assert!(!val_ptr.is_null());
+        let val_str = unsafe { CStr::from_ptr(val_ptr) }.to_str().unwrap();
+        assert_eq!(val_str, "2t");
+
+        super::tgm_metadata_free(meta);
+        super::tgm_message_free(msg);
+        super::tgm_file_close(file);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ffi_streaming_encoder_write_preceder_null_args() {
+        let err = super::tgm_streaming_encoder_write_preceder(ptr::null_mut(), ptr::null());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn ffi_streaming_encoder_write_pre_encoded_null_args() {
+        let err = super::tgm_streaming_encoder_write_pre_encoded(
+            ptr::null_mut(),
+            ptr::null(),
+            ptr::null(),
+            0,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    // ── tgm_compute_hash ──
+
+    #[test]
+    fn ffi_compute_hash_xxh3() {
+        let data = b"hello world";
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_compute_hash(
+            data.as_ptr(),
+            data.len(),
+            ptr::null(), // default = xxh3
+            &mut out,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!out.data.is_null());
+        assert!(out.len > 0);
+
+        let hex = unsafe { std::str::from_utf8(slice::from_raw_parts(out.data, out.len)).unwrap() };
+        // xxh3 produces a hex string
+        assert!(!hex.is_empty());
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+
+        super::tgm_bytes_free(out);
+    }
+
+    #[test]
+    fn ffi_compute_hash_explicit_xxh3() {
+        let data = b"test data";
+        let algo = CString::new("xxh3").unwrap();
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_compute_hash(data.as_ptr(), data.len(), algo.as_ptr(), &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(out.len > 0);
+        super::tgm_bytes_free(out);
+    }
+
+    #[test]
+    fn ffi_compute_hash_null_data() {
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_compute_hash(ptr::null(), 0, ptr::null(), &mut out);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn ffi_compute_hash_null_out() {
+        let data = b"hello";
+        let err = super::tgm_compute_hash(data.as_ptr(), data.len(), ptr::null(), ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn ffi_compute_hash_invalid_algo() {
+        let data = b"hello";
+        let algo = CString::new("bogus_algo").unwrap();
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_compute_hash(data.as_ptr(), data.len(), algo.as_ptr(), &mut out);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    // ── tgm_simple_packing_compute_params ──
+
+    #[test]
+    fn ffi_simple_packing_compute_params() {
+        let values = [100.0f64, 200.0, 300.0, 400.0];
+        let mut ref_val: f64 = 0.0;
+        let mut bin_scale: i32 = 0;
+        let err = super::tgm_simple_packing_compute_params(
+            values.as_ptr(),
+            values.len(),
+            16,
+            0,
+            &mut ref_val,
+            &mut bin_scale,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        // Reference value should be <= min(values)
+        assert!(ref_val <= 100.0);
+    }
+
+    #[test]
+    fn ffi_simple_packing_compute_params_null_args() {
+        let mut ref_val: f64 = 0.0;
+        let mut bin_scale: i32 = 0;
+
+        // null values
+        let err = super::tgm_simple_packing_compute_params(
+            ptr::null(),
+            0,
+            16,
+            0,
+            &mut ref_val,
+            &mut bin_scale,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // null out_reference_value
+        let values = [1.0f64];
+        let err = super::tgm_simple_packing_compute_params(
+            values.as_ptr(),
+            values.len(),
+            16,
+            0,
+            ptr::null_mut(),
+            &mut bin_scale,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // null out_binary_scale_factor
+        let err = super::tgm_simple_packing_compute_params(
+            values.as_ptr(),
+            values.len(),
+            16,
+            0,
+            &mut ref_val,
+            ptr::null_mut(),
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    // ── tgm_last_error ──
+
+    #[test]
+    fn ffi_last_error_after_success() {
+        // After a successful encode, last_error should remain from whatever was
+        // set before (or NULL). We don't clear on success.
+        let values = [1.0f32];
+        let _ = ffi_encode_single_f32_tensor(&values, "");
+        // No crash, test passes
+    }
+
+    #[test]
+    fn ffi_last_error_after_failure() {
+        // Trigger an error
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let _ = super::tgm_encode(
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            &mut out,
+        );
+
+        let err_ptr = super::tgm_last_error();
+        assert!(!err_ptr.is_null());
+        let err_str = unsafe { CStr::from_ptr(err_ptr) }.to_str().unwrap();
+        assert!(err_str.contains("null"));
+    }
+
+    // ── tgm_error_string ──
+
+    #[test]
+    fn ffi_error_string_all_variants() {
+        let check = |err: super::TgmError, expected: &str| {
+            let ptr = super::tgm_error_string(err);
+            assert!(!ptr.is_null());
+            let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+            assert_eq!(s, expected);
+        };
+
+        check(super::TgmError::Ok, "ok");
+        check(super::TgmError::Framing, "framing error");
+        check(super::TgmError::Metadata, "metadata error");
+        check(super::TgmError::Encoding, "encoding error");
+        check(super::TgmError::Compression, "compression error");
+        check(super::TgmError::Object, "object error");
+        check(super::TgmError::Io, "I/O error");
+        check(super::TgmError::HashMismatch, "hash mismatch");
+        check(super::TgmError::InvalidArg, "invalid argument");
+        check(super::TgmError::EndOfIter, "end of iteration");
+        check(super::TgmError::Remote, "unknown error");
+    }
+
+    // ── tgm_bytes_free safety ──
+
+    #[test]
+    fn ffi_bytes_free_null_data() {
+        let buf = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        super::tgm_bytes_free(buf); // should not crash
+    }
+
+    // ── tgm_message_free / tgm_metadata_free / tgm_scan_free null safety ──
+
+    #[test]
+    fn ffi_free_null_handles() {
+        super::tgm_message_free(ptr::null_mut());
+        super::tgm_metadata_free(ptr::null_mut());
+        super::tgm_scan_free(ptr::null_mut());
+        super::tgm_file_close(ptr::null_mut());
+        super::tgm_streaming_encoder_free(ptr::null_mut());
+        // Should all be no-ops, no crash
+    }
+
+    // ── tgm_encode_pre_encoded ──
+
+    #[test]
+    fn ffi_encode_pre_encoded_null_args() {
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_encode_pre_encoded(
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            &mut out,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        let json = CString::new(r#"{"version":2,"descriptors":[]}"#).unwrap();
+        let err = super::tgm_encode_pre_encoded(
+            json.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            ptr::null_mut(),
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    #[test]
+    fn ffi_encode_pre_encoded_round_trip() {
+        // Encode with pre_encoded: for "none" encoding, the raw bytes are the payload
+        let values = [5.0f32, 6.0, 7.0];
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+
+        let json = format!(
+            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":[{len}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            len = values.len(),
+            bo = if cfg!(target_endian = "little") {
+                "little"
+            } else {
+                "big"
+            },
+        );
+        let c_json = CString::new(json).unwrap();
+        let data_ptr: *const u8 = data.as_ptr();
+        let data_len: usize = data.len();
+
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_encode_pre_encoded(
+            c_json.as_ptr(),
+            &data_ptr as *const *const u8,
+            &data_len as *const usize,
+            1,
+            ptr::null(),
+            &mut out,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let encoded = unsafe { slice::from_raw_parts(out.data, out.len) }.to_vec();
+        super::tgm_bytes_free(out);
+
+        // Decode
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let mut dl: usize = 0;
+        let dp = super::tgm_object_data(msg, 0, &mut dl);
+        let decoded_bytes = unsafe { slice::from_raw_parts(dp, dl) };
+        let decoded_values: Vec<f32> = decoded_bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded_values, values);
+
+        super::tgm_message_free(msg);
+    }
+
+    // ── tgm_buffer_iter_* ──
+
+    #[test]
+    fn ffi_buffer_iter_round_trip() {
+        let msg1 = ffi_encode_single_f32_tensor(&[1.0f32], "");
+        let msg2 = ffi_encode_single_f32_tensor(&[2.0f32], "");
+        let mut concat = msg1.clone();
+        concat.extend_from_slice(&msg2);
+
+        let mut iter: *mut super::TgmBufferIter = ptr::null_mut();
+        let err = super::tgm_buffer_iter_create(concat.as_ptr(), concat.len(), &mut iter);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!iter.is_null());
+
+        assert_eq!(super::tgm_buffer_iter_count(iter), 2);
+
+        // First message
+        let mut out_buf: *const u8 = ptr::null();
+        let mut out_len: usize = 0;
+        let err = super::tgm_buffer_iter_next(iter, &mut out_buf, &mut out_len);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!out_buf.is_null());
+        assert_eq!(out_len, msg1.len());
+
+        // Second message
+        let err = super::tgm_buffer_iter_next(iter, &mut out_buf, &mut out_len);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(out_len, msg2.len());
+
+        // End of iteration
+        let err = super::tgm_buffer_iter_next(iter, &mut out_buf, &mut out_len);
+        assert!(matches!(err, super::TgmError::EndOfIter));
+
+        super::tgm_buffer_iter_free(iter);
+    }
+
+    #[test]
+    fn ffi_buffer_iter_null_args() {
+        let mut iter: *mut super::TgmBufferIter = ptr::null_mut();
+        let err = super::tgm_buffer_iter_create(ptr::null(), 0, &mut iter);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        let data = [0u8; 10];
+        let err = super::tgm_buffer_iter_create(data.as_ptr(), data.len(), ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // next with null iter
+        let mut out_buf: *const u8 = ptr::null();
+        let mut out_len: usize = 0;
+        let err = super::tgm_buffer_iter_next(ptr::null_mut(), &mut out_buf, &mut out_len);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // next with null out_buf
+        // We need a valid iter for this, but let's test the easy null cases
+        let err = super::tgm_buffer_iter_next(ptr::null_mut(), ptr::null_mut(), &mut out_len);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // count null
+        assert_eq!(super::tgm_buffer_iter_count(ptr::null()), 0);
+
+        // free null — no crash
+        super::tgm_buffer_iter_free(ptr::null_mut());
+    }
+
+    // ── tgm_object_iter_* ──
+
+    #[test]
+    fn ffi_object_iter_round_trip() {
+        let encoded = ffi_encode_single_f32_tensor(&[10.0f32, 20.0], "");
+
+        let mut iter: *mut super::TgmObjectIter = ptr::null_mut();
+        let err = super::tgm_object_iter_create(
+            encoded.as_ptr(),
+            encoded.len(),
+            0, // no hash verify
+            0, // no native byte order
+            &mut iter,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!iter.is_null());
+
+        // Get the single object
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_object_iter_next(iter, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!msg.is_null());
+
+        assert_eq!(super::tgm_message_num_objects(msg), 1);
+        assert_eq!(super::tgm_message_version(msg), 2);
+
+        let mut data_len: usize = 0;
+        let dp = super::tgm_object_data(msg, 0, &mut data_len);
+        assert!(!dp.is_null());
+        assert_eq!(data_len, 8); // 2 × f32
+
+        super::tgm_message_free(msg);
+
+        // Iteration should be exhausted
+        let mut msg2: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_object_iter_next(iter, &mut msg2);
+        assert!(matches!(err, super::TgmError::EndOfIter));
+
+        super::tgm_object_iter_free(iter);
+    }
+
+    #[test]
+    fn ffi_object_iter_null_args() {
+        let mut iter: *mut super::TgmObjectIter = ptr::null_mut();
+        let err = super::tgm_object_iter_create(ptr::null(), 0, 0, 0, &mut iter);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        let data = [0u8; 10];
+        let err = super::tgm_object_iter_create(data.as_ptr(), data.len(), 0, 0, ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // next null iter
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_object_iter_next(ptr::null_mut(), &mut msg);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // next null out
+        let err = super::tgm_object_iter_next(ptr::null_mut(), ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // free null — no crash
+        super::tgm_object_iter_free(ptr::null_mut());
+    }
+
+    // ── tgm_file_iter_* ──
+
+    #[test]
+    fn ffi_file_iter_round_trip() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_file_iter_test.tgm");
+        let _ = std::fs::remove_file(&path);
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+
+        // Create file with 2 messages
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        let err = super::tgm_file_create(c_path.as_ptr(), &mut file);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let msg1 = ffi_encode_single_f32_tensor(&[1.0f32], "");
+        let msg2 = ffi_encode_single_f32_tensor(&[2.0f32], "");
+        let err = super::tgm_file_append_raw(file, msg1.as_ptr(), msg1.len());
+        assert!(matches!(err, super::TgmError::Ok));
+        let err = super::tgm_file_append_raw(file, msg2.as_ptr(), msg2.len());
+        assert!(matches!(err, super::TgmError::Ok));
+
+        // Create iterator
+        let mut iter: *mut super::TgmFileIter = ptr::null_mut();
+        let err = super::tgm_file_iter_create(file, &mut iter);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!iter.is_null());
+
+        // First message
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_file_iter_next(iter, &mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!out.data.is_null());
+        assert_eq!(out.len, msg1.len());
+        super::tgm_bytes_free(out);
+
+        // Second message
+        let mut out2 = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_file_iter_next(iter, &mut out2);
+        assert!(matches!(err, super::TgmError::Ok));
+        super::tgm_bytes_free(out2);
+
+        // End
+        let mut out3 = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_file_iter_next(iter, &mut out3);
+        assert!(matches!(err, super::TgmError::EndOfIter));
+
+        super::tgm_file_iter_free(iter);
+        super::tgm_file_close(file);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ffi_file_iter_null_args() {
+        let mut iter: *mut super::TgmFileIter = ptr::null_mut();
+        let err = super::tgm_file_iter_create(ptr::null_mut(), &mut iter);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        let err = super::tgm_file_iter_create(ptr::null_mut(), ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // next null
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_file_iter_next(ptr::null_mut(), &mut out);
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        let err = super::tgm_file_iter_next(ptr::null_mut(), ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+
+        // free null — no crash
+        super::tgm_file_iter_free(ptr::null_mut());
+    }
+
+    // ── tgm_encode zero objects (metadata-only message) ──
+
+    #[test]
+    fn ffi_encode_decode_zero_objects() {
+        let json = CString::new(r#"{"version":2,"descriptors":[],"source":"empty"}"#).unwrap();
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_encode(
+            json.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            &mut out,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let encoded = unsafe { slice::from_raw_parts(out.data, out.len) }.to_vec();
+        super::tgm_bytes_free(out);
+
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        assert_eq!(super::tgm_message_version(msg), 2);
+        assert_eq!(super::tgm_message_num_objects(msg), 0);
+
+        super::tgm_message_free(msg);
+    }
+
+    // ── tgm_streaming_encoder with hash ──
+
+    #[test]
+    fn ffi_streaming_encoder_with_hash() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_streaming_hash.tgm");
+        let _ = std::fs::remove_file(&path);
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+        let hash_algo = CString::new("xxh3").unwrap();
+
+        let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
+        let err = super::tgm_streaming_encoder_create(
+            c_path.as_ptr(),
+            meta_json.as_ptr(),
+            hash_algo.as_ptr(),
+            &mut enc,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let values = [1.0f32, 2.0];
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let desc_json = CString::new(format!(
+            r#"{{"type":"ntensor","ndim":1,"shape":[{len}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}"#,
+            len = values.len(),
+            bo = if cfg!(target_endian = "little") { "little" } else { "big" },
+        )).unwrap();
+
+        let err =
+            super::tgm_streaming_encoder_write(enc, desc_json.as_ptr(), data.as_ptr(), data.len());
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let err = super::tgm_streaming_encoder_finish(enc);
+        assert!(matches!(err, super::TgmError::Ok));
+        super::tgm_streaming_encoder_free(enc);
+
+        // Read back and verify hash
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        let err = super::tgm_file_open(c_path.as_ptr(), &mut file);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_file_decode_message(file, 0, 1, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        assert_eq!(super::tgm_payload_has_hash(msg, 0), 1);
+
+        super::tgm_message_free(msg);
+        super::tgm_file_close(file);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── tgm_streaming_encoder_create with invalid hash algo ──
+
+    #[test]
+    fn ffi_streaming_encoder_invalid_hash_algo() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_streaming_bad_hash.tgm");
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+        let bad_algo = CString::new("bogus_hash").unwrap();
+
+        let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
+        let err = super::tgm_streaming_encoder_create(
+            c_path.as_ptr(),
+            meta_json.as_ptr(),
+            bad_algo.as_ptr(),
+            &mut enc,
+        );
+        assert!(matches!(err, super::TgmError::InvalidArg));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── tgm_streaming_encoder_create with invalid metadata JSON ──
+
+    #[test]
+    fn ffi_streaming_encoder_invalid_metadata() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_streaming_bad_meta.tgm");
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let bad_meta = CString::new("not json").unwrap();
+
+        let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
+        let err = super::tgm_streaming_encoder_create(
+            c_path.as_ptr(),
+            bad_meta.as_ptr(),
+            ptr::null(),
+            &mut enc,
+        );
+        assert!(matches!(err, super::TgmError::Metadata));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── Multiple objects encode/decode ──
+
+    #[test]
+    fn ffi_encode_decode_multiple_objects() {
+        let vals1 = [1.0f32, 2.0];
+        let vals2 = [10.0f32, 20.0, 30.0];
+        let bo = if cfg!(target_endian = "little") {
+            "little"
+        } else {
+            "big"
+        };
+
+        let json = format!(
+            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":[{len1}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}},{{"type":"ntensor","ndim":1,"shape":[{len2}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            len1 = vals1.len(),
+            len2 = vals2.len(),
+            bo = bo,
+        );
+
+        let data1: Vec<u8> = vals1.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let data2: Vec<u8> = vals2.iter().flat_map(|v| v.to_ne_bytes()).collect();
+
+        let c_json = CString::new(json).unwrap();
+        let data_ptrs: [*const u8; 2] = [data1.as_ptr(), data2.as_ptr()];
+        let data_lens: [usize; 2] = [data1.len(), data2.len()];
+
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_encode(
+            c_json.as_ptr(),
+            data_ptrs.as_ptr(),
+            data_lens.as_ptr(),
+            2,
+            ptr::null(),
+            &mut out,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let encoded = unsafe { slice::from_raw_parts(out.data, out.len) }.to_vec();
+        super::tgm_bytes_free(out);
+
+        // Decode all
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert_eq!(super::tgm_message_num_objects(msg), 2);
+
+        // Object 0
+        let mut dl: usize = 0;
+        let dp = super::tgm_object_data(msg, 0, &mut dl);
+        let decoded0: Vec<f32> = unsafe { slice::from_raw_parts(dp, dl) }
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded0, vals1);
+
+        // Object 1
+        let dp1 = super::tgm_object_data(msg, 1, &mut dl);
+        let decoded1: Vec<f32> = unsafe { slice::from_raw_parts(dp1, dl) }
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded1, vals2);
+
+        // Shape check
+        let shape0 = super::tgm_object_shape(msg, 0);
+        assert_eq!(unsafe { *shape0 }, vals1.len() as u64);
+        let shape1 = super::tgm_object_shape(msg, 1);
+        assert_eq!(unsafe { *shape1 }, vals2.len() as u64);
+
+        super::tgm_message_free(msg);
+    }
+
+    // ── tgm_encode with base metadata ──
+
+    #[test]
+    fn ffi_encode_decode_with_base_metadata() {
+        let bo = if cfg!(target_endian = "little") {
+            "little"
+        } else {
+            "big"
+        };
+        let json = format!(
+            r#"{{"version":2,"base":[{{"param":"2t","level":"surface"}}],"descriptors":[{{"type":"ntensor","ndim":1,"shape":[2],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            bo = bo,
+        );
+
+        let data: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let c_json = CString::new(json).unwrap();
+        let data_ptr: *const u8 = data.as_ptr();
+        let data_len: usize = data.len();
+
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_encode(
+            c_json.as_ptr(),
+            &data_ptr as *const *const u8,
+            &data_len as *const usize,
+            1,
+            ptr::null(),
+            &mut out,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let encoded = unsafe { slice::from_raw_parts(out.data, out.len) }.to_vec();
+        super::tgm_bytes_free(out);
+
+        // Decode metadata and check base keys
+        let mut meta: *mut super::TgmMetadata = ptr::null_mut();
+        let err = super::tgm_decode_metadata(encoded.as_ptr(), encoded.len(), &mut meta);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let key = CString::new("param").unwrap();
+        let val_ptr = super::tgm_metadata_get_string(meta, key.as_ptr());
+        assert!(!val_ptr.is_null());
+        let val_str = unsafe { CStr::from_ptr(val_ptr) }.to_str().unwrap();
+        assert_eq!(val_str, "2t");
+
+        let key2 = CString::new("level").unwrap();
+        let val_ptr2 = super::tgm_metadata_get_string(meta, key2.as_ptr());
+        assert!(!val_ptr2.is_null());
+        let val_str2 = unsafe { CStr::from_ptr(val_ptr2) }.to_str().unwrap();
+        assert_eq!(val_str2, "surface");
+
+        super::tgm_metadata_free(meta);
+    }
+
+    // ── tgm_compute_hash deterministic ──
+
+    #[test]
+    fn ffi_compute_hash_deterministic() {
+        let data = b"deterministic hash test";
+        let mut out1 = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let mut out2 = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+
+        let err = super::tgm_compute_hash(data.as_ptr(), data.len(), ptr::null(), &mut out1);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let err = super::tgm_compute_hash(data.as_ptr(), data.len(), ptr::null(), &mut out2);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let hex1 = unsafe { slice::from_raw_parts(out1.data, out1.len) };
+        let hex2 = unsafe { slice::from_raw_parts(out2.data, out2.len) };
+        assert_eq!(hex1, hex2);
+
+        super::tgm_bytes_free(out1);
+        super::tgm_bytes_free(out2);
+    }
+
+    // ── tgm_streaming_encoder_write_pre_encoded round-trip ──
+
+    #[test]
+    fn ffi_streaming_encoder_write_pre_encoded_round_trip() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_streaming_pre_encoded.tgm");
+        let _ = std::fs::remove_file(&path);
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+
+        let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
+        let err = super::tgm_streaming_encoder_create(
+            c_path.as_ptr(),
+            meta_json.as_ptr(),
+            ptr::null(),
+            &mut enc,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let values = [7.0f32, 8.0];
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let desc_json = CString::new(format!(
+            r#"{{"type":"ntensor","ndim":1,"shape":[{len}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}"#,
+            len = values.len(),
+            bo = if cfg!(target_endian = "little") { "little" } else { "big" },
+        )).unwrap();
+
+        let err = super::tgm_streaming_encoder_write_pre_encoded(
+            enc,
+            desc_json.as_ptr(),
+            data.as_ptr(),
+            data.len(),
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let err = super::tgm_streaming_encoder_finish(enc);
+        assert!(matches!(err, super::TgmError::Ok));
+        super::tgm_streaming_encoder_free(enc);
+
+        // Read back and verify
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        let err = super::tgm_file_open(c_path.as_ptr(), &mut file);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_file_decode_message(file, 0, 0, 0, &mut msg);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        let mut dl: usize = 0;
+        let dp = super::tgm_object_data(msg, 0, &mut dl);
+        let decoded: Vec<f32> = unsafe { slice::from_raw_parts(dp, dl) }
+            .chunks_exact(4)
+            .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded, values);
+
+        super::tgm_message_free(msg);
+        super::tgm_file_close(file);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── tgm_encode with invalid hash algo ──
+
+    #[test]
+    fn ffi_encode_invalid_hash_algo() {
+        let json = CString::new(r#"{"version":2,"descriptors":[]}"#).unwrap();
+        let bad_algo = CString::new("bogus").unwrap();
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+
+        let err = super::tgm_encode(
+            json.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            bad_algo.as_ptr(),
+            &mut out,
+        );
         assert!(matches!(err, super::TgmError::InvalidArg));
     }
 }

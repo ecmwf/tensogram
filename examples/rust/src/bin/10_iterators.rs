@@ -123,7 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n=== File iterator ===");
-    let mut file = TensogramFile::open(&path)?;
+    let file = TensogramFile::open(&path)?;
     let file_iter = file.iter()?;
     println!("  {} messages in file (ExactSizeIterator)", file_iter.len());
 

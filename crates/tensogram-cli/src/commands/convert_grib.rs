@@ -92,7 +92,7 @@ mod tests {
             &default_pipeline(),
         )
         .unwrap();
-        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram_core::TensogramFile::open(&out).unwrap();
         assert!(f.message_count().unwrap() >= 1);
     }
 
@@ -108,7 +108,7 @@ mod tests {
             &default_pipeline(),
         )
         .unwrap();
-        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram_core::TensogramFile::open(&out).unwrap();
         assert!(f.message_count().unwrap() >= 1);
     }
 
@@ -124,7 +124,7 @@ mod tests {
             &default_pipeline(),
         )
         .unwrap();
-        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram_core::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
         let meta = tensogram_core::decode_metadata(&msg).unwrap();
         assert!(
@@ -145,7 +145,7 @@ mod tests {
             &default_pipeline(),
         )
         .unwrap();
-        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram_core::TensogramFile::open(&out).unwrap();
         assert!(
             f.message_count().unwrap() >= 2,
             "two input files should produce at least 2 messages"
@@ -182,7 +182,7 @@ mod tests {
             &default_pipeline(),
         )
         .unwrap();
-        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram_core::TensogramFile::open(&out).unwrap();
         assert!(f.message_count().unwrap() >= 1);
     }
 
@@ -198,7 +198,7 @@ mod tests {
             &default_pipeline(),
         )
         .unwrap();
-        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram_core::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
         let meta = tensogram_core::decode_metadata(&msg).unwrap();
         assert!(meta.base.iter().any(|e| e.contains_key("grib")));
@@ -217,7 +217,7 @@ mod tests {
             &default_pipeline(),
         )
         .unwrap();
-        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram_core::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
         let (_, objects) =
             tensogram_core::decode(&msg, &tensogram_core::DecodeOptions::default()).unwrap();

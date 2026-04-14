@@ -43,6 +43,7 @@ uv pip install -e tensogram-zarr/
 | `11_encode_pre_encoded.py` | Pre-encoded data API for already-framed payloads |
 | `12_convert_netcdf.py` | Convert NetCDF → Tensogram via the CLI (uses `netCDF4` + `subprocess`) |
 | `13_validate.py` | Message and file validation at different levels |
+| `14_remote_access.py` | Remote file access over HTTP with `open_remote` and file-level decode APIs |
 
 ## Module Structure
 

@@ -70,7 +70,7 @@ class TensogramDataStore:
     Parameters
     ----------
     file_path
-        Path to the ``.tgm`` file.
+        Path or remote URL to the ``.tgm`` file.
     msg_index
         Index of the message within the file.
     dim_names
@@ -82,6 +82,11 @@ class TensogramDataStore:
     range_threshold
         Maximum fraction of total array elements (0.0-1.0) for which
         partial ``decode_range()`` is used.  Default ``0.5``.
+    storage_options
+        Key-value pairs forwarded to the object store backend when
+        ``file_path`` is a remote URL (S3, GCS, Azure, HTTP).  Used
+        for credentials, region, endpoint overrides, etc.  Ignored
+        for local files.
     """
 
     def __init__(
@@ -92,28 +97,40 @@ class TensogramDataStore:
         variable_key: str | None = None,
         verify_hash: bool = False,
         range_threshold: float = 0.5,
+        storage_options: dict[str, Any] | None = None,
     ):
-        self.file_path = os.path.abspath(file_path)
+        import tensogram
+
+        self._is_remote = tensogram.is_remote_url(file_path)
+        self.file_path = file_path if self._is_remote else os.path.abspath(file_path)
         self.msg_index = msg_index
         self.dim_names = dim_names
         self.variable_key = variable_key
         self.verify_hash = verify_hash
         self.range_threshold = range_threshold
+        self.storage_options = storage_options
         self._lock = threading.Lock()
+        self._backend_arrays: list[TensogramBackendArray] = []
 
-        # Eagerly read metadata + descriptors (no payload decode).
+        self._file = self._open_file()
         self._meta, self._descriptors = self._read_metadata()
 
-    def _read_metadata(self) -> tuple[Any, list]:
-        """Read metadata and descriptors from the message."""
+    def _open_file(self) -> Any:
         import tensogram
 
-        with tensogram.TensogramFile.open(self.file_path) as f:
-            raw = f.read_message(self.msg_index)
+        if self._is_remote:
+            return tensogram.TensogramFile.open_remote(self.file_path, self.storage_options or {})
+        return tensogram.TensogramFile.open(self.file_path)
 
+    def _read_metadata(self) -> tuple[Any, list]:
+        import tensogram
+
+        if self._is_remote:
+            result = self._file.file_decode_descriptors(self.msg_index)
+            return result["metadata"], result["descriptors"]
+
+        raw = self._file.read_message(self.msg_index)
         meta = tensogram.decode_metadata(raw)
-
-        # Decode descriptors only (no payload decode).
         _, descriptors = tensogram.decode_descriptors(raw)
         return meta, descriptors
 
@@ -199,15 +216,16 @@ class TensogramDataStore:
                 verify_hash=self.verify_hash,
                 range_threshold=self.range_threshold,
                 lock=self._lock,
+                storage_options=self.storage_options,
+                shared_file=self._file,
             )
+            self._backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
 
-            # Coordinate arrays are 1-D.
             coord_dims = (dim_name,)
             coord_attrs = dict(obj_metas[ci])
             coord_vars[dim_name] = xr.Variable(coord_dims, lazy_data, coord_attrs)
 
-        # Build data variables.
         data_vars: dict[str, xr.Variable] = {}
         for vi in var_indices:
             desc = self._descriptors[vi]
@@ -218,8 +236,6 @@ class TensogramDataStore:
             np_dtype = _to_numpy_dtype(desc.dtype)
             shape = tuple(desc.shape)
 
-            # Resolve dimension names: match against detected coordinates
-            # where shape aligns, otherwise use user-specified or generic.
             dims = self._resolve_dims_for_var(shape, coord_vars)
 
             backend_array = TensogramBackendArray(
@@ -232,7 +248,10 @@ class TensogramDataStore:
                 verify_hash=self.verify_hash,
                 range_threshold=self.range_threshold,
                 lock=self._lock,
+                storage_options=self.storage_options,
+                shared_file=self._file,
             )
+            self._backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
 
             var_attrs = dict(obj_metas[vi])
@@ -284,4 +303,7 @@ class TensogramDataStore:
         return tuple(dims)
 
     def close(self) -> None:
-        """No-op: no persistent resources to release."""
+        for arr in self._backend_arrays:
+            arr._shared_file = None
+        self._backend_arrays.clear()
+        self._file = None

@@ -80,7 +80,7 @@ pub fn run(
     let mut all_objects: Vec<(tensogram_core::DataObjectDescriptor, Vec<u8>)> = Vec::new();
 
     for input in inputs {
-        let mut file = TensogramFile::open(input.as_ref())?;
+        let file = TensogramFile::open(input.as_ref())?;
         let count = file.message_count()?;
 
         for i in 0..count {
@@ -268,7 +268,7 @@ mod tests {
         let b = make_test_file(dir.path(), "b.tgm", "msl");
         let out = dir.path().join("merged.tgm");
         run(&[a, b], &out, "first").unwrap();
-        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram_core::TensogramFile::open(&out).unwrap();
         assert_eq!(f.message_count().unwrap(), 1); // merged into 1 message
     }
 
@@ -298,7 +298,7 @@ mod tests {
         let out = dir.path().join("merged_base.tgm");
         run(&[a, b], &out, "first").unwrap();
 
-        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram_core::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
         let meta = tensogram_core::decode_metadata(&msg).unwrap();
         // Should have 2 base entries (one from each file)
@@ -353,7 +353,7 @@ mod tests {
         let out = dir.path().join("merged_strip.tgm");
         run(&[a], &out, "first").unwrap();
 
-        let mut f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram_core::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
         let meta = tensogram_core::decode_metadata(&msg).unwrap();
         // _reserved_ at message level should be regenerated (encoder adds fresh)

@@ -13,6 +13,7 @@ Targets specific untested code paths identified by pytest-cov:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -835,7 +836,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _base_entry_from_meta
 
         class FakeMeta:
-            base = ["not_a_dict", {"key": "val"}]
+            base: ClassVar[list[object]] = ["not_a_dict", {"key": "val"}]
 
         # index 0 is a string, not a dict -> should return {}
         assert _base_entry_from_meta(FakeMeta(), 0) == {}
@@ -856,7 +857,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _base_entry_from_meta
 
         class FakeMeta:
-            base = "not a list"
+            base: ClassVar[str] = "not a list"
 
         assert _base_entry_from_meta(FakeMeta(), 0) == {}
 
@@ -865,7 +866,9 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _base_entry_from_meta
 
         class FakeMeta:
-            base = [{"mars": {"param": "2t"}, "_reserved_": {"tensor": {}}}]
+            base: ClassVar[list[object]] = [
+                {"mars": {"param": "2t"}, "_reserved_": {"tensor": {}}}
+            ]
 
         result = _base_entry_from_meta(FakeMeta(), 0)
         assert "_reserved_" not in result
@@ -876,7 +879,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _extra_from_meta
 
         class FakeMeta:
-            extra = {}
+            extra: ClassVar[dict[str, object]] = {}
 
         assert _extra_from_meta(FakeMeta()) == {}
 
@@ -885,7 +888,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _extra_from_meta
 
         class FakeMeta:
-            extra = None
+            extra: ClassVar[None] = None
 
         assert _extra_from_meta(FakeMeta()) == {}
 
@@ -903,7 +906,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _extra_from_meta
 
         class FakeMeta:
-            extra = [1, 2, 3]
+            extra: ClassVar[list[object]] = [1, 2, 3]
 
         assert _extra_from_meta(FakeMeta()) == {}
 
@@ -912,7 +915,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _desc_params
 
         class FakeDesc:
-            params = None
+            params: ClassVar[None] = None
 
         assert _desc_params(FakeDesc()) == {}
 
@@ -921,7 +924,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _desc_params
 
         class FakeDesc:
-            params = "not_a_dict"
+            params: ClassVar[str] = "not_a_dict"
 
         assert _desc_params(FakeDesc()) == {}
 
@@ -939,7 +942,7 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _desc_params
 
         class FakeDesc:
-            params = {"custom": "value", "count": 42}
+            params: ClassVar[dict[str, object]] = {"custom": "value", "count": 42}
 
         result = _desc_params(FakeDesc())
         assert result == {"custom": "value", "count": 42}
@@ -951,10 +954,10 @@ class TestScannerHelpers:
         from tensogram_xarray.scanner import _merge_per_object_meta
 
         class FakeMeta:
-            base = [{"key": "from_base", "shared": "base_val"}]
+            base: ClassVar[list[object]] = [{"key": "from_base", "shared": "base_val"}]
 
         class FakeDesc:
-            params = {"shared": "desc_val", "extra": "desc_only"}
+            params: ClassVar[dict[str, object]] = {"shared": "desc_val", "extra": "desc_only"}
 
         result = _merge_per_object_meta(FakeMeta(), 0, FakeDesc())
         assert result["key"] == "from_base"
@@ -1106,9 +1109,9 @@ class TestSupportsRangeDecodeEdges:
         from tensogram_xarray.array import _supports_range_decode
 
         class FakeDesc:
-            compression = "zfp"
-            filter = "none"
-            params = {"zfp_mode": "fixed_accuracy"}
+            compression: ClassVar[str] = "zfp"
+            filter: ClassVar[str] = "none"
+            params: ClassVar[dict[str, object]] = {"zfp_mode": "fixed_accuracy"}
 
         assert _supports_range_decode(FakeDesc()) is False
 
@@ -1117,9 +1120,9 @@ class TestSupportsRangeDecodeEdges:
         from tensogram_xarray.array import _supports_range_decode
 
         class FakeDesc:
-            compression = "zfp"
-            filter = "none"
-            params = {"zfp_mode": "fixed_rate"}
+            compression: ClassVar[str] = "zfp"
+            filter: ClassVar[str] = "none"
+            params: ClassVar[dict[str, object]] = {"zfp_mode": "fixed_rate"}
 
         assert _supports_range_decode(FakeDesc()) is True
 
@@ -1128,9 +1131,9 @@ class TestSupportsRangeDecodeEdges:
         from tensogram_xarray.array import _supports_range_decode
 
         class FakeDesc:
-            compression = "zfp"
-            filter = "none"
-            params = None
+            compression: ClassVar[str] = "zfp"
+            filter: ClassVar[str] = "none"
+            params: ClassVar[None] = None
 
         assert _supports_range_decode(FakeDesc()) is False
 
@@ -1139,9 +1142,9 @@ class TestSupportsRangeDecodeEdges:
         from tensogram_xarray.array import _supports_range_decode
 
         class FakeDesc:
-            compression = "none"
-            filter = "shuffle"
-            params = {}
+            compression: ClassVar[str] = "none"
+            filter: ClassVar[str] = "shuffle"
+            params: ClassVar[dict[str, object]] = {}
 
         assert _supports_range_decode(FakeDesc()) is False
 
@@ -1150,9 +1153,9 @@ class TestSupportsRangeDecodeEdges:
         from tensogram_xarray.array import _supports_range_decode
 
         class FakeDesc:
-            compression = "zstd"
-            filter = "none"
-            params = {}
+            compression: ClassVar[str] = "zstd"
+            filter: ClassVar[str] = "none"
+            params: ClassVar[dict[str, object]] = {}
 
         assert _supports_range_decode(FakeDesc()) is False
 
@@ -1161,9 +1164,9 @@ class TestSupportsRangeDecodeEdges:
         from tensogram_xarray.array import _supports_range_decode
 
         class FakeDesc:
-            compression = "szip"
-            filter = "none"
-            params = {}
+            compression: ClassVar[str] = "szip"
+            filter: ClassVar[str] = "none"
+            params: ClassVar[dict[str, object]] = {}
 
         assert _supports_range_decode(FakeDesc()) is True
 
@@ -1246,3 +1249,138 @@ class TestResolveDimsForVar:
         dims = ds["field"].dims
         assert "latitude" in dims
         assert "longitude" in dims
+
+
+# ---------------------------------------------------------------------------
+# Coverage pass 3: additional gap tests
+# ---------------------------------------------------------------------------
+
+
+class TestRangeMergeContiguous:
+    """Cover array.py line 165: adjacent flat-range merging."""
+
+    def test_contiguous_rows_merged(self):
+        """3-D array: outer slice over two rows with full inner dims merges."""
+        # shape (4, 3, 5), slice [0:2, 0:3, 0:5] → all slices
+        # The outer indices produce flat ranges that are adjacent → merged.
+        shape = (4, 3, 5)
+        key = (slice(0, 2), slice(0, 3), slice(0, 5))
+        ranges, out_shape = _nd_slice_to_flat_ranges(shape, key)
+        assert out_shape == (2, 3, 5)
+        # The two outer-row ranges should merge into one:
+        assert len(ranges) == 1
+        assert ranges[0] == (0, 30)
+
+    def test_non_contiguous_rows_not_merged(self):
+        """Non-adjacent rows produce separate flat ranges."""
+        # shape (4, 3, 5), partial inner slice → gaps between outer rows
+        shape = (4, 3, 5)
+        key = (slice(0, 2), slice(0, 1), slice(0, 5))
+        ranges, out_shape = _nd_slice_to_flat_ranges(shape, key)
+        assert out_shape == (2, 1, 5)
+        # Row 0 col 0: (0, 5); Row 1 col 0: (15, 5) → NOT adjacent
+        assert len(ranges) == 2
+
+
+class TestDuplicateCoordDedup:
+    """Cover merge.py line 121: duplicate coord with matching shape skipped."""
+
+    def test_duplicate_coord_across_messages(self, tmp_path):
+        """Two messages with the same 1-D coord name + shape: second is skipped."""
+        lat = np.linspace(-90, 90, 5, dtype=np.float64)
+        data1 = np.ones((5, 8), dtype=np.float32)
+        data2 = np.ones((5, 8), dtype=np.float32) * 2
+
+        path = str(tmp_path / "dup_coord.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            # Both messages include 'latitude' as a coord object
+            f.append(
+                {
+                    "version": 2,
+                    "base": [
+                        {"name": "latitude"},
+                        {"name": "temp"},
+                    ],
+                },
+                [
+                    (_desc([5], dtype="float64"), lat),
+                    (_desc([5, 8]), data1),
+                ],
+            )
+            f.append(
+                {
+                    "version": 2,
+                    "base": [
+                        {"name": "latitude"},
+                        {"name": "wind"},
+                    ],
+                },
+                [
+                    (_desc([5], dtype="float64"), lat),
+                    (_desc([5, 8]), data2),
+                ],
+            )
+
+        datasets = open_datasets(path)
+        # Should not raise despite duplicate 'latitude' coord
+        assert len(datasets) >= 1
+        # latitude should exist as a coord
+        ds = datasets[0]
+        assert "latitude" in ds.coords or any("latitude" in d.coords for d in datasets)
+
+
+class TestCoordOnlyFile:
+    """Cover merge.py line 148: coord-only file produces fallback Dataset."""
+
+    def test_coord_only_fallback(self, tmp_path):
+        """File with only 1-D objects (all become coords) → fallback Dataset."""
+        lat = np.linspace(-90, 90, 5, dtype=np.float64)
+        lon = np.linspace(0, 360, 8, endpoint=False, dtype=np.float64)
+
+        path = str(tmp_path / "coord_only.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                {
+                    "version": 2,
+                    "base": [
+                        {"name": "latitude"},
+                        {"name": "longitude"},
+                    ],
+                },
+                [
+                    (_desc([5], dtype="float64"), lat),
+                    (_desc([8], dtype="float64"), lon),
+                ],
+            )
+
+        datasets = open_datasets(path)
+        assert len(datasets) >= 1
+        # No data vars, but coords should exist
+        ds = datasets[0]
+        assert "latitude" in ds.coords
+        assert "longitude" in ds.coords
+
+
+class TestUnhashableMetadataConstant:
+    """Cover merge.py lines 222-225: unhashable values treated as constant."""
+
+    def test_dict_metadata_becomes_attr(self, tmp_path):
+        """Dict-valued metadata can't be hashed → treated as constant attr."""
+        path = str(tmp_path / "unhashable.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            for i in range(3):
+                data = np.ones((3, 4), dtype=np.float32) * i
+                f.append(
+                    {
+                        "version": 2,
+                        "base": [
+                            {"config": {"nested": [1, 2, 3]}, "name": "temp"},
+                        ],
+                    },
+                    [(_desc([3, 4]), data)],
+                )
+
+        datasets = open_datasets(path)
+        assert len(datasets) >= 1
+        # The unhashable 'config' key should become a dataset attribute,
+        # not a dimension — open_datasets should not crash

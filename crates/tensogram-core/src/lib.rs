@@ -8,13 +8,16 @@ pub mod hash;
 pub mod iter;
 pub mod metadata;
 pub mod pipeline;
+#[cfg(feature = "remote")]
+pub mod remote;
 pub mod streaming;
 pub mod types;
 pub mod validate;
 pub mod wire;
 
 pub use decode::{
-    decode, decode_descriptors, decode_metadata, decode_object, decode_range, DecodeOptions,
+    decode, decode_descriptors, decode_metadata, decode_object, decode_range,
+    decode_range_from_payload, DecodeOptions,
 };
 pub use dtype::Dtype;
 pub use encode::{encode, encode_pre_encoded, EncodeOptions};
@@ -36,3 +39,6 @@ pub use validate::{
     IssueSeverity, ValidateOptions, ValidationIssue, ValidationLevel, ValidationReport,
 };
 pub use wire::{FrameType, MessageFlags};
+
+#[cfg(feature = "remote")]
+pub use remote::is_remote_url;

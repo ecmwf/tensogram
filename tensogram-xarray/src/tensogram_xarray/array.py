@@ -178,8 +178,9 @@ def _nd_slice_to_flat_ranges(
 class TensogramBackendArray(BackendArray):
     """Lazy array backed by a tensogram file.
 
-    This class stores only the file path (no open handles) so that it can be
-    safely pickled for dask multiprocessing / distributed execution.
+    Stores the file path (or remote URL) and optionally a shared file handle.
+    The handle is dropped on pickle for dask multiprocessing compatibility
+    and lazily reopened on the worker.
     """
 
     def __init__(
@@ -194,10 +195,13 @@ class TensogramBackendArray(BackendArray):
         verify_hash: bool = False,
         range_threshold: float = DEFAULT_RANGE_THRESHOLD,
         lock: threading.Lock | None = None,
+        storage_options: dict[str, Any] | None = None,
+        shared_file: Any | None = None,
     ):
-        # Resolve to absolute path so dask workers with different CWDs
-        # can still find the file after pickle/unpickle.
-        self.file_path = os.path.abspath(file_path)
+        import tensogram
+
+        self._is_remote = tensogram.is_remote_url(file_path)
+        self.file_path = file_path if self._is_remote else os.path.abspath(file_path)
         self.msg_index = msg_index
         self.obj_index = obj_index
         self.shape = shape
@@ -205,18 +209,19 @@ class TensogramBackendArray(BackendArray):
         self.supports_range = supports_range
         self.verify_hash = verify_hash
         self.range_threshold = range_threshold
-        self.lock = lock or threading.Lock()
+        self.storage_options = storage_options
+        self._shared_file = shared_file
 
     # -- pickle support (no open handles stored) ----------------------------
 
     def __getstate__(self) -> dict:
         state = self.__dict__.copy()
-        state["lock"] = None  # locks are not picklable
+        state["_shared_file"] = None
         return state
 
     def __setstate__(self, state: dict) -> None:
         self.__dict__.update(state)
-        self.lock = threading.Lock()
+        self._shared_file = None
 
     # -- BackendArray interface ---------------------------------------------
 
@@ -228,50 +233,65 @@ class TensogramBackendArray(BackendArray):
             self._raw_indexing_method,
         )
 
-    def _raw_indexing_method(self, key: tuple) -> np.ndarray:
-        """Thread-safe read from the tensogram file."""
+    def _get_file(self):
+        if self._shared_file is not None:
+            return self._shared_file
         import tensogram
 
-        with self.lock:
-            with tensogram.TensogramFile.open(self.file_path) as f:
-                raw_msg = f.read_message(self.msg_index)
+        if self._is_remote:
+            return tensogram.TensogramFile.open_remote(self.file_path, self.storage_options or {})
+        return tensogram.TensogramFile.open(self.file_path)
 
-            # Try partial decode for contiguous slices when random access
-            # is available and the requested fraction is below threshold.
-            if self.supports_range and _is_contiguous_slice(key):
-                try:
-                    flat_ranges, out_shape = _nd_slice_to_flat_ranges(self.shape, key)
-                    total_requested = sum(c for _, c in flat_ranges)
-                    total_elements = math.prod(self.shape)
+    def _raw_indexing_method(self, key: tuple) -> np.ndarray:
+        import tensogram
 
-                    if (
-                        total_elements > 0
-                        and total_requested / total_elements <= self.range_threshold
-                    ):
-                        arr = tensogram.decode_range(
-                            raw_msg,
-                            object_index=self.obj_index,
-                            ranges=flat_ranges,
-                            join=True,
-                        )
-                        return np.asarray(arr).reshape(out_shape)
-                except (ValueError, RuntimeError, OSError) as exc:
-                    logger.debug(
-                        "decode_range failed for %s msg=%d obj=%d, "
-                        "falling back to full decode: %s",
-                        self.file_path,
+        if self._shared_file is not None:
+            return self._read_from_file(self._shared_file, key, tensogram)
+
+        with self._get_file() as f:
+            return self._read_from_file(f, key, tensogram)
+
+    def _read_from_file(self, f, key: tuple, tensogram) -> np.ndarray:
+        if self.supports_range and _is_contiguous_slice(key):
+            try:
+                flat_ranges, out_shape = _nd_slice_to_flat_ranges(self.shape, key)
+                total_requested = sum(c for _, c in flat_ranges)
+                total_elements = math.prod(self.shape)
+
+                if total_elements > 0 and total_requested / total_elements <= self.range_threshold:
+                    arr = f.file_decode_range(
                         self.msg_index,
-                        self.obj_index,
-                        exc,
+                        obj_index=self.obj_index,
+                        ranges=flat_ranges,
+                        join=True,
+                        verify_hash=self.verify_hash,
+                        native_byte_order=True,
                     )
+                    return np.asarray(arr).reshape(out_shape)
+            except (ValueError, RuntimeError, OSError) as exc:
+                logger.debug(
+                    "decode_range failed for %s msg=%d obj=%d, falling back to full decode: %s",
+                    self.file_path,
+                    self.msg_index,
+                    self.obj_index,
+                    exc,
+                )
 
-            # Full object decode + in-memory slice.
-            _meta, _desc, arr = tensogram.decode_object(
-                raw_msg,
+        if self._is_remote:
+            result = f.file_decode_object(
+                self.msg_index,
                 self.obj_index,
                 verify_hash=self.verify_hash,
             )
-            return np.asarray(arr[key])
+            return np.asarray(result["data"][key])
+
+        raw_msg = f.read_message(self.msg_index)
+        _meta, _desc, arr = tensogram.decode_object(
+            raw_msg,
+            self.obj_index,
+            verify_hash=self.verify_hash,
+        )
+        return np.asarray(arr[key])
 
 
 # ---------------------------------------------------------------------------

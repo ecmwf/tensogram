@@ -9,7 +9,7 @@ use tensogram_core::{decode, encode, DecodeOptions, EncodeOptions, TensogramFile
 /// Output files are named using the template with `[index]` placeholder,
 /// or sequentially numbered in the output directory.
 pub fn run(input: &Path, output_template: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut file = TensogramFile::open(input)?;
+    let file = TensogramFile::open(input)?;
     let count = file.message_count()?;
 
     let mut total_written = 0;
@@ -154,8 +154,7 @@ mod tests {
         assert!(dir.path().join("split_0000.tgm").exists());
         assert!(dir.path().join("split_0001.tgm").exists());
         // Verify each split file has 1 object
-        let mut f0 =
-            tensogram_core::TensogramFile::open(dir.path().join("split_0000.tgm")).unwrap();
+        let f0 = tensogram_core::TensogramFile::open(dir.path().join("split_0000.tgm")).unwrap();
         let msg = f0.read_message(0).unwrap();
         let (_, objs) =
             tensogram_core::decode(&msg, &tensogram_core::DecodeOptions::default()).unwrap();
@@ -207,7 +206,7 @@ mod tests {
         assert!(!dir.path().join("split_0001.tgm").exists());
 
         // Verify the single file has 1 object
-        let mut f = tensogram_core::TensogramFile::open(dir.path().join("split_0000.tgm")).unwrap();
+        let f = tensogram_core::TensogramFile::open(dir.path().join("split_0000.tgm")).unwrap();
         let msg = f.read_message(0).unwrap();
         let (_, objs) =
             tensogram_core::decode(&msg, &tensogram_core::DecodeOptions::default()).unwrap();

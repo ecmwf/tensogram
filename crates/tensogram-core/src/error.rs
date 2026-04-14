@@ -16,6 +16,8 @@ pub enum TensogramError {
     Io(#[from] std::io::Error),
     #[error("hash mismatch: expected {expected}, got {actual}")]
     HashMismatch { expected: String, actual: String },
+    #[error("remote error: {0}")]
+    Remote(String),
 }
 
 pub type Result<T> = std::result::Result<T, TensogramError>;

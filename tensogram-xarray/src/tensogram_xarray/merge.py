@@ -38,6 +38,7 @@ def open_datasets(
     variable_key: str | None = None,
     verify_hash: bool = False,
     range_threshold: float = 0.5,
+    storage_options: dict[str, Any] | None = None,
 ) -> list[xr.Dataset]:
     """Open a ``.tgm`` file, auto-grouping into compatible Datasets.
 
@@ -48,7 +49,7 @@ def open_datasets(
     Parameters
     ----------
     path
-        Path to the ``.tgm`` file.
+        Path or remote URL (S3, GCS, Azure, HTTP) to the ``.tgm`` file.
     dim_names
         Explicit dimension names for the innermost tensor axes.
     variable_key
@@ -58,23 +59,32 @@ def open_datasets(
     range_threshold
         Maximum fraction of total array elements for which partial
         ``decode_range()`` is used.  Default ``0.5``.
+    storage_options
+        Key-value pairs forwarded to the object store backend for
+        remote URLs.  Ignored for local files.
 
     Returns
     -------
     list[xr.Dataset]
         One Dataset per compatible group.
     """
-    file_index = scan_file(path)
+    file_index = scan_file(path, storage_options=storage_options)
 
     if not file_index.objects:
         return []
 
-    # Separate coordinate objects from data objects.
+    import tensogram
+
+    is_remote = tensogram.is_remote_url(path)
+    shared_file = None
+    if is_remote:
+        shared_file = tensogram.TensogramFile.open_remote(path, storage_options or {})
+
     all_metas = [o.merged_meta for o in file_index.objects]
     coord_indices, var_indices, coord_dim_map = detect_coords(all_metas)
 
-    # Build coordinate variables eagerly (they are small).
     lock = threading.Lock()
+    all_backend_arrays: list[TensogramBackendArray] = []
     coord_vars: dict[str, xr.Variable] = {}
     for ci in coord_indices:
         obj = file_index.objects[ci]
@@ -92,7 +102,10 @@ def open_datasets(
             verify_hash=verify_hash,
             range_threshold=range_threshold,
             lock=lock,
+            storage_options=storage_options,
+            shared_file=shared_file,
         )
+        all_backend_arrays.append(backend_array)
         lazy_data = indexing.LazilyIndexedArray(backend_array)
 
         if dim_name in coord_vars:
@@ -124,11 +137,29 @@ def open_datasets(
             lock=lock,
             range_threshold=range_threshold,
             verify_hash=verify_hash,
+            storage_options=storage_options,
+            shared_file=shared_file,
+            backend_arrays=all_backend_arrays,
         )
         if ds is not None:
             datasets.append(ds)
 
-    return datasets if datasets else [xr.Dataset(coords=coord_vars, attrs={"source": path})]
+    if not datasets:
+        datasets = [xr.Dataset(coords=coord_vars, attrs={"source": path})]
+
+    if shared_file is not None:
+
+        def _close_shared():
+            nonlocal shared_file
+            for arr in all_backend_arrays:
+                arr._shared_file = None
+            all_backend_arrays.clear()
+            shared_file = None
+
+        for ds in datasets:
+            ds.set_close(_close_shared)
+
+    return datasets
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +312,10 @@ def _build_dataset_from_group(
     lock: threading.Lock,
     range_threshold: float = 0.5,
     verify_hash: bool = False,
+    storage_options: dict[str, Any] | None = None,
+    *,
+    shared_file: Any = None,
+    backend_arrays: list | None = None,
 ) -> xr.Dataset | None:
     """Build a Dataset from a group of structurally compatible objects.
 
@@ -302,6 +337,9 @@ def _build_dataset_from_group(
             lock,
             range_threshold=range_threshold,
             verify_hash=verify_hash,
+            storage_options=storage_options,
+            shared_file=shared_file,
+            backend_arrays=backend_arrays,
         )
 
     # Multiple objects -> try hypercube merge.
@@ -329,6 +367,9 @@ def _build_dataset_from_group(
                 lock,
                 range_threshold=range_threshold,
                 verify_hash=verify_hash,
+                storage_options=storage_options,
+                shared_file=shared_file,
+                backend_arrays=backend_arrays,
             )
 
     # Check if the varying keys form a hypercube.
@@ -345,6 +386,9 @@ def _build_dataset_from_group(
             lock,
             range_threshold=range_threshold,
             verify_hash=verify_hash,
+            storage_options=storage_options,
+            shared_file=shared_file,
+            backend_arrays=backend_arrays,
         )
 
     if _try_hypercube(group, varying):
@@ -359,6 +403,9 @@ def _build_dataset_from_group(
             lock,
             range_threshold=range_threshold,
             verify_hash=verify_hash,
+            storage_options=storage_options,
+            shared_file=shared_file,
+            backend_arrays=backend_arrays,
         )
 
     # Hypercube incomplete -> just return as separate variables.
@@ -372,6 +419,8 @@ def _build_dataset_from_group(
         lock,
         range_threshold=range_threshold,
         verify_hash=verify_hash,
+        storage_options=storage_options,
+        shared_file=shared_file,
     )
 
 
@@ -384,6 +433,10 @@ def _single_object_dataset(
     lock: threading.Lock,
     range_threshold: float = 0.5,
     verify_hash: bool = False,
+    storage_options: dict[str, Any] | None = None,
+    *,
+    shared_file: Any = None,
+    backend_arrays: list | None = None,
 ) -> xr.Dataset:
     """Build a Dataset from a single object."""
     np_dtype = _to_numpy_dtype(obj.dtype)
@@ -402,7 +455,11 @@ def _single_object_dataset(
         verify_hash=verify_hash,
         range_threshold=range_threshold,
         lock=lock,
+        storage_options=storage_options,
+        shared_file=shared_file,
     )
+    if backend_arrays is not None:
+        backend_arrays.append(backend_array)
     lazy_data = indexing.LazilyIndexedArray(backend_array)
     var = xr.Variable(dims, lazy_data, dict(obj.merged_meta))
 
@@ -421,6 +478,10 @@ def _flat_group_dataset(
     lock: threading.Lock,
     range_threshold: float = 0.5,
     verify_hash: bool = False,
+    storage_options: dict[str, Any] | None = None,
+    *,
+    shared_file: Any = None,
+    backend_arrays: list | None = None,
 ) -> xr.Dataset:
     """Build a Dataset with one variable per object (no stacking)."""
     data_vars: dict[str, xr.Variable] = {}
@@ -441,7 +502,11 @@ def _flat_group_dataset(
             verify_hash=verify_hash,
             range_threshold=range_threshold,
             lock=lock,
+            storage_options=storage_options,
+            shared_file=shared_file,
         )
+        if backend_arrays is not None:
+            backend_arrays.append(backend_array)
         lazy_data = indexing.LazilyIndexedArray(backend_array)
         data_vars[var_name] = xr.Variable(dims, lazy_data, dict(obj.merged_meta))
 
@@ -461,6 +526,10 @@ def _hypercube_dataset(
     lock: threading.Lock,
     range_threshold: float = 0.5,
     verify_hash: bool = False,
+    storage_options: dict[str, Any] | None = None,
+    *,
+    shared_file: Any = None,
+    backend_arrays: list | None = None,
 ) -> xr.Dataset:
     """Stack objects into a Dataset with outer dimensions from varying keys.
 
@@ -515,9 +584,13 @@ def _hypercube_dataset(
                 range_threshold=range_threshold,
                 verify_hash=verify_hash,
                 lock=lock,
+                storage_options=storage_options,
+                shared_file=shared_file,
             )
         )
 
+    if backend_arrays is not None:
+        backend_arrays.extend(backing_arrays)
     stacked = StackedBackendArray(backing_arrays, outer_shape, inner_shape, np_dtype)
     lazy_data = indexing.LazilyIndexedArray(stacked)
 
@@ -544,6 +617,10 @@ def _build_multi_variable_dataset(
     lock: threading.Lock,
     range_threshold: float = 0.5,
     verify_hash: bool = False,
+    storage_options: dict[str, Any] | None = None,
+    *,
+    shared_file: Any = None,
+    backend_arrays: list | None = None,
 ) -> xr.Dataset:
     """Split group by variable_key, then stack each sub-group.
 
@@ -579,7 +656,11 @@ def _build_multi_variable_dataset(
                 verify_hash=verify_hash,
                 range_threshold=range_threshold,
                 lock=lock,
+                storage_options=storage_options,
+                shared_file=shared_file,
             )
+            if backend_arrays is not None:
+                backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
             data_vars[var_name] = xr.Variable(inner_dims, lazy_data, dict(obj.merged_meta))
         elif remaining_varying:
@@ -628,9 +709,13 @@ def _build_multi_variable_dataset(
                             range_threshold=range_threshold,
                             verify_hash=verify_hash,
                             lock=lock,
+                            storage_options=storage_options,
+                            shared_file=shared_file,
                         )
                     )
 
+                if backend_arrays is not None:
+                    backend_arrays.extend(backing)
                 stacked = StackedBackendArray(backing, outer_shape, inner_shape, np_dtype)
                 lazy_data = indexing.LazilyIndexedArray(stacked)
 
@@ -657,7 +742,11 @@ def _build_multi_variable_dataset(
                     verify_hash=verify_hash,
                     range_threshold=range_threshold,
                     lock=lock,
+                    storage_options=storage_options,
+                    shared_file=shared_file,
                 )
+                if backend_arrays is not None:
+                    backend_arrays.append(backend_array)
                 lazy_data = indexing.LazilyIndexedArray(backend_array)
                 data_vars[var_name] = xr.Variable(inner_dims, lazy_data, dict(obj.merged_meta))
         else:
@@ -681,7 +770,11 @@ def _build_multi_variable_dataset(
                 verify_hash=verify_hash,
                 range_threshold=range_threshold,
                 lock=lock,
+                storage_options=storage_options,
+                shared_file=shared_file,
             )
+            if backend_arrays is not None:
+                backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
             data_vars[var_name] = xr.Variable(inner_dims, lazy_data, dict(obj.merged_meta))
 

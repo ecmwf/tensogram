@@ -27,7 +27,7 @@ pub fn run(
     }
 
     for path in files {
-        let mut file = TensogramFile::open(path)?;
+        let file = TensogramFile::open(path)?;
         let count = file.message_count()?;
 
         for i in 0..count {
