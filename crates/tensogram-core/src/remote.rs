@@ -987,6 +987,63 @@ impl RemoteBackend {
         Ok(results)
     }
 
+    pub(crate) fn read_object_batch(
+        &self,
+        msg_indices: &[usize],
+        obj_idx: usize,
+        options: &DecodeOptions,
+    ) -> Result<Vec<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)>> {
+        for &msg_idx in msg_indices {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+        }
+
+        let mut byte_ranges = Vec::with_capacity(msg_indices.len());
+        let mut metas = Vec::with_capacity(msg_indices.len());
+        {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            for &msg_idx in msg_indices {
+                let layout = &state.layouts[msg_idx];
+                if let Some(ref index) = layout.index {
+                    Self::validate_index_access(index, obj_idx)?;
+                    byte_ranges.push(Self::checked_frame_range(
+                        layout.offset,
+                        layout.length,
+                        index.offsets[obj_idx],
+                        index.lengths[obj_idx],
+                    )?);
+                    metas.push(layout.global_metadata.clone().ok_or_else(|| {
+                        TensogramError::Remote("metadata not cached".to_string())
+                    })?);
+                } else {
+                    return Err(TensogramError::Remote(format!(
+                        "message {} has no index frame; batch decode requires indexed messages",
+                        msg_idx
+                    )));
+                }
+            }
+        }
+
+        let store = self.store.clone();
+        let path = self.path.clone();
+        let all_bytes =
+            block_on_shared(async move { store.get_ranges(&path, &byte_ranges).await })?;
+
+        let mut results = Vec::with_capacity(msg_indices.len());
+        for (frame_bytes, meta) in all_bytes.iter().zip(metas) {
+            let (desc, payload, _consumed) = framing::decode_data_object_frame(frame_bytes)?;
+            let decoded = crate::decode::decode_single_object(&desc, payload, options)?;
+            results.push((meta, desc, decoded));
+        }
+        Ok(results)
+    }
+
     pub(crate) fn read_range(
         &self,
         msg_idx: usize,
@@ -1974,63 +2031,6 @@ impl RemoteBackend {
             .get_ranges(&self.path, &byte_ranges)
             .await
             .map_err(|e| TensogramError::Remote(e.to_string()))?;
-
-        let mut results = Vec::with_capacity(msg_indices.len());
-        for (frame_bytes, meta) in all_bytes.iter().zip(metas) {
-            let (desc, payload, _consumed) = framing::decode_data_object_frame(frame_bytes)?;
-            let decoded = crate::decode::decode_single_object(&desc, payload, options)?;
-            results.push((meta, desc, decoded));
-        }
-        Ok(results)
-    }
-
-    pub(crate) fn read_object_batch(
-        &self,
-        msg_indices: &[usize],
-        obj_idx: usize,
-        options: &DecodeOptions,
-    ) -> Result<Vec<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)>> {
-        for &msg_idx in msg_indices {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
-            self.ensure_layout_eager_locked(&mut state, msg_idx)?;
-        }
-
-        let mut byte_ranges = Vec::with_capacity(msg_indices.len());
-        let mut metas = Vec::with_capacity(msg_indices.len());
-        {
-            let state = self
-                .state
-                .lock()
-                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
-            for &msg_idx in msg_indices {
-                let layout = &state.layouts[msg_idx];
-                if let Some(ref index) = layout.index {
-                    Self::validate_index_access(index, obj_idx)?;
-                    byte_ranges.push(Self::checked_frame_range(
-                        layout.offset,
-                        layout.length,
-                        index.offsets[obj_idx],
-                        index.lengths[obj_idx],
-                    )?);
-                    metas.push(layout.global_metadata.clone().ok_or_else(|| {
-                        TensogramError::Remote("metadata not cached".to_string())
-                    })?);
-                } else {
-                    return Err(TensogramError::Remote(format!(
-                        "message {} has no index frame; batch decode requires indexed messages",
-                        msg_idx
-                    )));
-                }
-            }
-        }
-
-        let store = self.store.clone();
-        let path = self.path.clone();
-        let all_bytes =
-            block_on_shared(async move { store.get_ranges(&path, &byte_ranges).await })?;
 
         let mut results = Vec::with_capacity(msg_indices.len());
         for (frame_bytes, meta) in all_bytes.iter().zip(metas) {
