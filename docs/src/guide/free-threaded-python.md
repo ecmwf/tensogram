@@ -175,7 +175,7 @@ Methodology: 5 runs per configuration, median reported. 200–500 warmup iterati
 - **Scan shows dramatic free-threaded scaling** — free-threaded reaches **15.5x at 16 threads**. GIL-enabled scales to 2.0x at 4 threads but drops back at higher thread counts due to contention.
 - **Small messages (16K) reach 13.0x at 16 threads** on free-threaded (3.14t) vs 1.2x on GIL-enabled.
 - **iter_messages scales to 4.7x at 8 threads** on free-threaded, then drops due to contention. GIL-enabled stays flat (~1.0x).
-- **Single-thread trade-off** — for heavyweight operations (decode, encode, validate), free-threaded builds perform within ~5% of GIL-enabled. For scan, free-threaded single-thread is ~4x slower due to per-object biased reference counting overhead on the returned Python list, but this is recovered by 2 threads.
+- **Single-thread trade-off** — for decode and encode, free-threaded builds perform within ~5% of GIL-enabled. Validate is ~20% slower single-threaded on free-threaded (4,347 vs 5,457 op/s) due to reference counting overhead, but recovers by 2 threads and exceeds GIL-enabled at 16 threads. Scan single-thread is ~4x slower for the same reason, but is recovered by 2 threads.
 
 > These numbers are machine-specific. Run the benchmark on your hardware:
 > ```bash

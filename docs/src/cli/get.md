@@ -12,7 +12,7 @@ tensogram get [OPTIONS] -p <KEYS> [FILES]...
 
 | Option | Description |
 |---|---|
-| `-w <WHERE_CLAUSE>` | |
+| `-w <WHERE_CLAUSE>` | Filter messages (e.g. `mars.param=2t`, same syntax as `ls`) |
 | `-p <KEYS>` | Comma-separated keys to extract (required) |
 | `-h, --help` | Print help |
 

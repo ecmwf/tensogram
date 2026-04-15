@@ -33,8 +33,9 @@ pub fn shuffle(data: &[u8], element_size: usize) -> Result<Vec<u8>, ShuffleError
 Rearranges bytes. `element_size` is the byte width of each element (e.g. 4 for float32, 8 for float64).
 
 ```rust
-let raw: Vec<u8> = floats.iter().flat_map(|f: &f32| f.to_ne_bytes()).collect();
-let shuffled = shuffle(&raw, 4)?;
+let floats: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+let raw: Vec<u8> = floats.iter().flat_map(|f| f.to_ne_bytes()).collect();
+let shuffled = shuffle(&raw, 4).expect("aligned to 4 bytes");
 // shuffled is ready for compression
 ```
 
@@ -82,7 +83,7 @@ The shuffle operation requires `data.len() % element_size == 0`. If this is not 
 
 ### Shuffle Alone Does Not Compress
 
-Shuffle rearranges bytes but does not reduce the total byte count. It only helps when followed by a compression stage. Currently, since szip is a stub, combining shuffle with actual compression is not yet possible. The filter is implemented and tested for when compression support arrives.
+Shuffle rearranges bytes but does not reduce the total byte count. It only helps when followed by a compression stage (e.g. szip, zstd, lz4, blosc2). Set `compression` in the descriptor to apply compression after the shuffle step.
 
 ### Combining with simple_packing
 

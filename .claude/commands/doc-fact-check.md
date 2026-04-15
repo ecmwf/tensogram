@@ -15,7 +15,7 @@ Examples: `/doc-fact-check guide/python-api.md`, `/doc-fact-check cli/`, `/doc-f
 ```bash
 cargo build --workspace
 source .venv/bin/activate
-cd crates/tensogram-python && maturin develop && cd ../..
+cd python/bindings && maturin develop && cd ../..
 python -c "import tensogram; print('OK')"
 ```
 

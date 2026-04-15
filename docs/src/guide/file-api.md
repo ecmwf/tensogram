@@ -48,7 +48,7 @@ let mut file = TensogramFile::create("output.tgm")?;
 
 for param in ["2t", "10u", "10v", "msl"] {
     let (global, desc, data) = produce_field(param);
-file.append(&global, &[(&desc, &data)], &EncodeOptions::default())?;
+    file.append(&global, &[(&desc, &data)], &EncodeOptions::default())?;
 }
 ```
 

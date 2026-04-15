@@ -12,9 +12,9 @@ tensogram dump [OPTIONS] [FILES]...
 
 | Option | Description |
 |---|---|
-| `-w <WHERE_CLAUSE>` | |
-| `-p <KEYS>` | |
-| `-j` | |
+| `-w <WHERE_CLAUSE>` | Filter messages (e.g. `mars.param=2t`, same syntax as `ls`) |
+| `-p <KEYS>` | Comma-separated keys to display |
+| `-j` | JSON output |
 | `-h, --help` | Print help |
 
 ## Example

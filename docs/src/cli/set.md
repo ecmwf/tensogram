@@ -13,7 +13,7 @@ tensogram set [OPTIONS] -s <SET_VALUES> <INPUT> <OUTPUT>
 | Option | Description |
 |---|---|
 | `-s <SET_VALUES>` | Key=value pairs to set (comma-separated) |
-| `-w <WHERE_CLAUSE>` | |
+| `-w <WHERE_CLAUSE>` | Only modify messages matching this filter (e.g. `mars.param=2t`) |
 | `-h, --help` | Print help |
 
 ## Examples
