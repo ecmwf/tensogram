@@ -1,3 +1,11 @@
+// (C) Copyright 2026- ECMWF and individual contributors.
+//
+// This software is licensed under the terms of the Apache Licence Version 2.0
+// which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+// In applying this licence, ECMWF does not waive the privileges and immunities
+// granted to it by virtue of its status as an intergovernmental organisation nor
+// does it submit to any jurisdiction.
+
 //! 12 — convert-netcdf via the library API
 //!
 //! End-to-end example: call `tensogram_netcdf::convert_netcdf_file()` directly
@@ -80,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("4. Wrote {}", out_path.display());
 
     // ── 5. Read it back with TensogramFile ──────────────────────────────
-    let mut tgm = TensogramFile::open(&out_path)?;
+    let tgm = TensogramFile::open(&out_path)?;
     let count = tgm.message_count()?;
     println!("5. message_count = {count}");
 

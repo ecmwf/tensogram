@@ -18,7 +18,7 @@ cd tensogram
 # Build everything
 cargo build --workspace
 
-# Run the test suite (157 tests, should take a few seconds)
+# Run the test suite
 cargo test --workspace
 
 # Check formatting and lints
@@ -32,14 +32,23 @@ If all of that passes, you're ready to go.
 
 ```
 tensogram/
-├── crates/
+├── rust/
 │   ├── tensogram-core/         # Core library: wire format, encode/decode, file API
 │   │   ├── src/                # 11 modules (wire, framing, metadata, types, ...)
 │   │   └── tests/              # Integration tests + golden binary files
 │   ├── tensogram-encodings/    # Encoding pipeline: packing, shuffle, compression
 │   ├── tensogram-cli/          # CLI tool (tensogram info/ls/dump/get/set/copy)
 │   ├── tensogram-ffi/          # C FFI layer (generates tensogram.h via cbindgen)
-│   └── tensogram-python/       # Python bindings (PyO3, excluded from default build)
+│   └── benchmarks/             # Benchmark suite
+├── python/
+│   ├── bindings/               # Python bindings (PyO3, excluded from default build)
+│   ├── tensogram-xarray/       # xarray backend engine
+│   ├── tensogram-zarr/         # Zarr v3 store backend
+│   └── tests/                  # Python test suite
+├── cpp/
+│   ├── include/                # C++ wrapper header + C header
+│   ├── tests/                  # C++ GoogleTest suite
+│   └── CMakeLists.txt          # CMake build system
 ├── examples/
 │   ├── rust/                   # 10 runnable Rust examples
 │   ├── cpp/                    # C++ examples using the FFI
@@ -48,7 +57,7 @@ tensogram/
 ├── plans/                      # Design docs, implementation status, TODOs
 ├── ARCHITECTURE.md             # How the crates fit together
 ├── CHANGELOG.md                # Release history
-└── VERSION                     # Current version (0.1.0)
+└── VERSION                     # Current version
 ```
 
 ## Development Workflow
@@ -114,14 +123,14 @@ If you add a new API surface, add a runnable example in `examples/rust/`. The na
 
 | Location | Type | Count | Purpose |
 |----------|------|-------|---------|
-| `crates/tensogram-core/src/*.rs` | Unit | ~57 | Module-level tests alongside the code |
-| `crates/tensogram-core/tests/integration.rs` | Integration | ~12 | Full encode/decode round-trips |
-| `crates/tensogram-core/tests/adversarial.rs` | Adversarial | ~12 | Corrupted inputs, boundary conditions |
-| `crates/tensogram-core/tests/golden_files.rs` | Golden | 6 | Deterministic binary file verification |
-| `crates/tensogram-encodings/src/*.rs` | Unit | ~47 | Encoding pipeline tests |
-| `crates/tensogram-cli/src/*.rs` | Unit | 5 | CLI argument parsing |
+| `rust/tensogram-core/src/*.rs` | Unit | ~57 | Module-level tests alongside the code |
+| `rust/tensogram-core/tests/integration.rs` | Integration | ~12 | Full encode/decode round-trips |
+| `rust/tensogram-core/tests/adversarial.rs` | Adversarial | ~12 | Corrupted inputs, boundary conditions |
+| `rust/tensogram-core/tests/golden_files.rs` | Golden | 6 | Deterministic binary file verification |
+| `rust/tensogram-encodings/src/*.rs` | Unit | ~47 | Encoding pipeline tests |
+| `rust/tensogram-cli/src/*.rs` | Unit | 5 | CLI argument parsing |
 
-Golden binary files in `tests/golden/` are checked into the repo. If the wire format changes, regenerate them by running `cargo test --test golden_files`.
+Golden binary files in `rust/tensogram-core/tests/golden/` are checked into the repo. If the wire format changes, regenerate them by running `cargo test --test golden_files`.
 
 ## Python Bindings
 
@@ -134,16 +143,16 @@ source .venv/bin/activate
 uv pip install maturin numpy pytest ruff
 
 # Build and install the Rust extension into the active venv
-cd crates/tensogram-python && maturin develop && cd ../..
+cd python/bindings && maturin develop && cd ../..
 
 # Run core Python tests
-python -m pytest tests/python/ -v
+python -m pytest python/tests/ -v
 
 # Optional: install and test xarray/zarr backends
-uv pip install -e "tensogram-xarray/[dask]"
-python -m pytest tensogram-xarray/tests/ -v
-uv pip install -e tensogram-zarr/
-python -m pytest tensogram-zarr/tests/ -v
+uv pip install -e "python/tensogram-xarray/[dask]"
+python -m pytest python/tensogram-xarray/tests/ -v
+uv pip install -e python/tensogram-zarr/
+python -m pytest python/tensogram-zarr/tests/ -v
 ```
 
 > If `uv` is not available, substitute `python -m venv .venv` and `pip install` for the virtualenv and install steps above.
@@ -155,7 +164,7 @@ The FFI crate generates `tensogram.h` via cbindgen:
 ```bash
 cargo build -p tensogram-ffi
 # Output:
-#   crates/tensogram-ffi/tensogram.h
+#   cpp/include/tensogram.h
 #   target/debug/libtensogram_ffi.a
 #   target/debug/libtensogram_ffi.{so,dylib}
 ```

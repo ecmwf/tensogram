@@ -17,7 +17,7 @@ The `tensogram-grib` crate is excluded from the default workspace build to avoid
 
 ```bash
 # Build the library
-cd crates/tensogram-grib && cargo build
+cd rust/tensogram-grib && cargo build
 
 # Build CLI with GRIB support
 cargo build -p tensogram-cli --features grib

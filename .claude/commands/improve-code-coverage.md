@@ -13,8 +13,8 @@ cargo llvm-cov --workspace --all-features --summary-only
 
 **Python:**
 ```
-python -m pytest tests/python/ tensogram-xarray/tests/ --cov --cov-report=term-missing
-python -m pytest tensogram-zarr/tests/ --cov --cov-report=term-missing
+python -m pytest python/tests/ python/tensogram-xarray/tests/ --cov --cov-report=term-missing
+python -m pytest python/tensogram-zarr/tests/ --cov --cov-report=term-missing
 ```
 
 ### 2. Identify Gaps

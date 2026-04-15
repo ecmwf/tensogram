@@ -6,7 +6,7 @@ This page walks you through encoding and decoding a real tensor — a 2D tempera
 
 ```toml
 [dependencies]
-tensogram-core = { path = "../crates/tensogram-core" }
+tensogram-core = { path = "../rust/tensogram-core" }
 ```
 
 ## Encode a Temperature Field

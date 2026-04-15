@@ -7,7 +7,7 @@ uv venv .venv && source .venv/bin/activate   # if not already in a virtualenv
 uv pip install tensogram          # once published to PyPI
 # or, build from source:
 uv pip install maturin numpy      # install build dependencies
-(cd crates/tensogram-python && maturin develop)
+(cd python/bindings && maturin develop)
 ```
 
 For the xarray and dask examples (08, 09), also install:
@@ -15,7 +15,7 @@ For the xarray and dask examples (08, 09), also install:
 ```bash
 uv pip install "tensogram-xarray[dask]"   # includes xarray + dask[array]
 # or from source:
-uv pip install -e "tensogram-xarray/[dask]"
+uv pip install -e "python/tensogram-xarray/[dask]"
 ```
 
 For the Zarr example, install:
@@ -23,7 +23,7 @@ For the Zarr example, install:
 ```bash
 uv pip install tensogram-zarr
 # or from source:
-uv pip install -e tensogram-zarr/
+uv pip install -e python/tensogram-zarr/
 ```
 
 ## Examples
@@ -44,6 +44,7 @@ uv pip install -e tensogram-zarr/
 | `12_convert_netcdf.py` | Convert NetCDF → Tensogram via the CLI (uses `netCDF4` + `subprocess`) |
 | `13_validate.py` | Message and file validation at different levels |
 | `14_remote_access.py` | Remote file access over HTTP with `open_remote` and file-level decode APIs |
+| `15_async_operations.py` | Async open, decode, and `asyncio.gather` with `AsyncTensogramFile` |
 
 ## Module Structure
 

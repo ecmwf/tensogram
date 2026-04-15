@@ -8,7 +8,7 @@ attributes are also still present in the verbose `netcdf` map alongside
 every other variable attribute — the `cf` map is a curated, schema-stable
 view that CF-aware tooling can rely on.
 
-The allow-list lives in [`crates/tensogram-netcdf/src/metadata.rs`](https://github.com/ecmwf/tensogram/blob/main/crates/tensogram-netcdf/src/metadata.rs)
+The allow-list lives in [`rust/tensogram-netcdf/src/metadata.rs`](https://github.com/ecmwf/tensogram/blob/main/rust/tensogram-netcdf/src/metadata.rs)
 as the constant `CF_ATTRIBUTES`. If you change the list, update this page
 to match.
 

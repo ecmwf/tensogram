@@ -94,10 +94,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint
 cargo build -p tensogram-core --features mmap,async
 ```
 
-**C++ wrapper** (`include/tensogram.hpp`):
+**C++ wrapper** (`cpp/include/tensogram.hpp`):
 ```bash
 cargo build --release                  # build Rust static library first
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S cpp -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build --output-on-failure  # run C++ tests
 ```
@@ -107,15 +107,15 @@ See `examples/cpp/` for encode/decode, metadata, file API, and iterator examples
 ```bash
 uv venv .venv && source .venv/bin/activate
 uv pip install maturin numpy
-cd crates/tensogram-python && maturin develop
-python -m pytest tests/python/ -v              # 200 tests
+cd python/bindings && maturin develop
+python -m pytest python/tests/ -v              # 200 tests
 ```
 
 **xarray + Zarr backends:**
 ```bash
 source .venv/bin/activate                      # activate venv from above step
-uv pip install -e "tensogram-xarray/[dask]"    # 124 tests
-uv pip install -e tensogram-zarr/              # 172 tests
+uv pip install -e "python/tensogram-xarray/[dask]"    # 124 tests
+uv pip install -e python/tensogram-zarr/              # 172 tests
 ```
 
 **GRIB conversion** (requires [ecCodes](https://confluence.ecmwf.int/display/ECC)):
@@ -130,27 +130,43 @@ cargo build -p tensogram-cli --features netcdf
 tensogram convert-netcdf --cf --compression zstd forecast.nc -o forecast.tgm
 ```
 
+## Support
+
+This software is developed by ECMWF and provided on a **best-effort** basis.
+No operational support is provided. For questions, bug reports, or feature
+requests please [open a GitHub issue](https://github.com/ecmwf/tensogram/issues).
+For general enquiries about ECMWF software, visit the
+[ECMWF Support Portal](https://support.ecmwf.int).
+
 ## Documentation
 
 - [mdbook docs](docs/) — full developer guide (`cd docs && mdbook build`)
 - [Architecture](ARCHITECTURE.md) — crate structure and design decisions
 - [Contributing](CONTRIBUTING.md) — setup and workflow
+- [Code of Conduct](CODE_OF_CONDUCT.md) — community guidelines
 - [Changelog](CHANGELOG.md) — release history
 - [Python API](docs/src/guide/python-api.md) — encoding, decoding, file API, validation
 
 ## Repository Layout
 
 ```
-crates/
+rust/
 ├── tensogram-core/       Core encode/decode library
 ├── tensogram-encodings/  Encoding pipeline + compression codecs
 ├── tensogram-cli/        CLI binary (tensogram command)
 ├── tensogram-ffi/        C FFI layer
 ├── tensogram-grib/       GRIB converter (ecCodes, excluded from default build)
 ├── tensogram-netcdf/     NetCDF converter (libnetcdf, excluded from default build)
-└── tensogram-python/     Python bindings (PyO3, excluded from default build)
-tensogram-xarray/         xarray backend engine (Python package)
-tensogram-zarr/           Zarr v3 store backend (Python package)
+└── benchmarks/           Benchmark suite
+python/
+├── bindings/             Python bindings (PyO3, excluded from default build)
+├── tensogram-xarray/     xarray backend engine (Python package)
+├── tensogram-zarr/       Zarr v3 store backend (Python package)
+└── tests/                Python test suite
+cpp/
+├── include/              C++ wrapper header + C header
+├── tests/                C++ GoogleTest suite
+└── CMakeLists.txt        CMake build system
 examples/{rust,cpp,python}/
 docs/                     mdBook documentation
 .github/workflows/ci.yml  CI matrix (Rust, Python, C++, GRIB, xarray, zarr, docs)
@@ -158,7 +174,7 @@ docs/                     mdBook documentation
 
 ## Copyright and License
 
-Copyright 2024- European Centre for Medium-Range Weather Forecasts (ECMWF).
+Copyright 2026- European Centre for Medium-Range Weather Forecasts (ECMWF).
 
 This software is licensed under the terms of the [Apache License, Version 2.0](LICENSE) which can also be obtained at http://www.apache.org/licenses/LICENSE-2.0.
 

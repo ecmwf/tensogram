@@ -1,6 +1,6 @@
 # C++ API
 
-Tensogram provides a header-only C++17 wrapper at `include/tensogram.hpp`. It delegates all work to the C FFI and adds RAII handle management, typed exceptions, and idiomatic C++ patterns.
+Tensogram provides a header-only C++17 wrapper at `cpp/include/tensogram.hpp`. It delegates all work to the C FFI and adds RAII handle management, typed exceptions, and idiomatic C++ patterns.
 
 ## Requirements
 
@@ -12,7 +12,7 @@ Tensogram provides a header-only C++17 wrapper at `include/tensogram.hpp`. It de
 
 ```bash
 cargo build --release
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S cpp -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 

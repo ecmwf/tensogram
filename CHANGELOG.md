@@ -3,6 +3,47 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.11.0] - 2026-04-15
+
+### Added
+- **Async Python bindings** — new `AsyncTensogramFile` class for use with
+  Python `asyncio`. All decode methods return coroutines composable with
+  `asyncio.gather()` for true I/O concurrency. Built on
+  `pyo3-async-runtimes::tokio` bridging Rust futures to Python coroutines.
+- **Batched remote I/O** — `decode_object_batch` and `decode_range_batch`
+  (sync and async) combine multiple message decodes into a single HTTP
+  request. Achieves O(1) HTTP round-trips for data and O(2) for layout
+  discovery regardless of batch size.
+- **Layout prefetching** — `prefetch_layouts` / `prefetch_layouts_async`
+  pre-warms layout metadata for N messages in ≤2 HTTP calls.
+- **Async context manager and iteration** — `async with` and `async for`
+  support on `AsyncTensogramFile`.
+- **78 async Python tests** — covering all async API methods, sync/async
+  parity, error paths, cancellation, iteration, batching, and local-file
+  error assertions for batch methods.
+- **Async documentation** — new "Async API" section in Python API guide
+  with `asyncio.gather` patterns, batch decode examples, sync-vs-async
+  decision table.
+- **Async example** — `examples/python/15_async_operations.py`.
+- **`.claude/commands/` slash commands** — 7 project workflow commands
+  extracted from CLAUDE.md: `make-further-pass`, `improve-error-handling`,
+  `improve-edge-cases`, `improve-code-coverage`, `prepare-make-pr`,
+  `address-pr-comments`, `make-release`.
+- **AGENTS.md** symlink to CLAUDE.md for cross-tool compatibility.
+
+### Changed
+- All async file methods changed from `&mut self` to `&self`, enabling
+  `Arc<TensogramFile>` sharing across concurrent futures.
+- `AsyncTensogramFile` uses `Arc<TensogramFile>` internally — no
+  Python-level mutex, truly concurrent async operations.
+- `__len__` on `AsyncTensogramFile` requires prior `await message_count()`
+  call; raises `RuntimeError` if count not yet known (no hidden blocking).
+- Removed unnecessary `desc.clone()` in decode paths — move instead of copy.
+
+### Stats
+- 1,695+ total tests (870 Rust + 412 Python + 189 xarray + 224 Zarr) — all green
+- 0 clippy warnings, 0 ruff warnings
+
 ## [0.10.0] - 2026-04-14
 
 ### Added

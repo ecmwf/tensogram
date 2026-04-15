@@ -120,7 +120,7 @@ or skipped with a `warning: …` line on stderr so the operator can see
 what was dropped.
 
 ```
-tensogram-netcdf errors (crates/tensogram-netcdf/src/error.rs)
+tensogram-netcdf errors (rust/tensogram-netcdf/src/error.rs)
   │
   ├─ NetcdfError::Netcdf(netcdf::Error)
   │     Low-level failure from libnetcdf — file missing, permission
@@ -179,7 +179,7 @@ instead of dropping data silently so operators can trace unexpected
 missing metadata.
 
 ```
-tensogram-grib errors (crates/tensogram-grib/src/error.rs)
+tensogram-grib errors (rust/tensogram-grib/src/error.rs)
   │
   ├─ GribError::Eccodes(String) — ecCodes C library error
   ├─ GribError::NoMessages — empty GRIB file
