@@ -14,7 +14,7 @@ pub fn encode(
 
 - `global_metadata` — reference to message-level metadata (version, base entries, `_extra_` fields)
 - `descriptors` — a slice of `(descriptor, data)` pairs, one per object
-- `options` — controls hash algorithm, preceder emission, and compression backend selection
+- `options` — controls hash algorithm and compression backend selection (the `emit_preceders` field is reserved for future buffered-mode support; preceders are currently only emitted via `StreamingEncoder::write_preceder`)
 
 Returns a complete, self-contained message as a `Vec<u8>`.
 

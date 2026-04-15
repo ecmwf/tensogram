@@ -11,7 +11,7 @@ For methodology, flags, and how to re-run, see [Benchmarks](benchmarks.md).
 | Field | Value |
 |-------|-------|
 | **Date** | 2026-04-16 |
-| **Tensogram version** | 0.11.0 |
+| **Tensogram version** | 0.12.0 |
 | **CPU** | Intel Core i9-10850K @ 3.60 GHz, 10 cores / 20 threads |
 | **OS** | Linux 6.19.10 (CachyOS) x86_64 |
 | **Rust** | rustc 1.94.0 |
