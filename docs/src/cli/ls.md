@@ -5,16 +5,17 @@ Lists messages in a Tensogram file, showing metadata in tabular or JSON format.
 ## Usage
 
 ```
-tensogram ls [OPTIONS] <FILE>
+tensogram ls [OPTIONS] [FILES]...
 ```
 
 ## Options
 
 | Option | Description |
 |---|---|
-| `-w, --where <EXPR>` | Filter messages (see below) |
-| `-p, --pick <KEYS>` | Show only specific metadata keys (comma-separated) |
-| `-j, --json` | Output one JSON object per line instead of a table |
+| `-w <WHERE_CLAUSE>` | Where-clause filter (e.g., mars.param=2t/10u) |
+| `-p <KEYS>` | Comma-separated keys to display |
+| `-j` | JSON output |
+| `-h, --help` | Print help |
 
 ## Examples
 

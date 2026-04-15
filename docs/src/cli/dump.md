@@ -5,15 +5,17 @@ Prints the full contents of every message in a Tensogram file — metadata keys 
 ## Usage
 
 ```
-tensogram dump [OPTIONS] <FILE>
+tensogram dump [OPTIONS] [FILES]...
 ```
 
 ## Options
 
 | Option | Description |
 |---|---|
-| `-w, --where <EXPR>` | Filter messages (same syntax as `ls`) |
-| `-j, --json` | Output JSON instead of human-readable text |
+| `-w <WHERE_CLAUSE>` | |
+| `-p <KEYS>` | |
+| `-j` | |
+| `-h, --help` | Print help |
 
 ## Example
 

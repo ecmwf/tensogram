@@ -5,8 +5,16 @@ Merge messages from one or more files into a single message.
 ## Usage
 
 ```bash
-tensogram merge <FILES>... -o <OUTPUT>
+tensogram merge [OPTIONS] --output <OUTPUT> [INPUTS]...
 ```
+
+## Options
+
+| Option | Description |
+|---|---|
+| `-o, --output <OUTPUT>` | Output file |
+| `-s, --strategy <STRATEGY>` | Merge strategy for conflicting metadata keys: first (default) — first value wins, last — last value wins, error — fail on conflict [default: first] |
+| `-h, --help` | Print help |
 
 ## Description
 

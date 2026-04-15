@@ -5,8 +5,15 @@ Split multi-object messages into separate single-object files.
 ## Usage
 
 ```bash
-tensogram split <INPUT> -o <OUTPUT_TEMPLATE>
+tensogram split --output <OUTPUT> <INPUT>
 ```
+
+## Options
+
+| Option | Description |
+|---|---|
+| `-o, --output <OUTPUT>` | Output template (use `[index]` for numbering) |
+| `-h, --help` | Print help |
 
 ## Description
 

@@ -5,14 +5,16 @@ Modifies metadata keys in messages and writes the result to a new file. Matching
 ## Usage
 
 ```
-tensogram set [OPTIONS] <INPUT> <OUTPUT> <KEY=VALUE>[,KEY=VALUE...]
+tensogram set [OPTIONS] -s <SET_VALUES> <INPUT> <OUTPUT>
 ```
 
 ## Options
 
 | Option | Description |
 |---|---|
-| `-w, --where <EXPR>` | Only modify messages that match this filter |
+| `-s <SET_VALUES>` | Key=value pairs to set (comma-separated) |
+| `-w <WHERE_CLAUSE>` | |
+| `-h, --help` | Print help |
 
 ## Examples
 

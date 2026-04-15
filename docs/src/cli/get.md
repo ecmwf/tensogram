@@ -5,27 +5,28 @@ Extracts a single metadata value from messages in a file. Returns an error if th
 ## Usage
 
 ```
-tensogram get [OPTIONS] <FILE> <KEY>
+tensogram get [OPTIONS] -p <KEYS> [FILES]...
 ```
 
 ## Options
 
 | Option | Description |
 |---|---|
-| `-w, --where <EXPR>` | Filter messages before extracting |
-| `-j, --json` | Output JSON |
+| `-w <WHERE_CLAUSE>` | |
+| `-p <KEYS>` | Comma-separated keys to extract (required) |
+| `-h, --help` | Print help |
 
 ## Examples
 
 ```bash
 # Get the mars.param value from all messages
-tensogram get forecast.tgm mars.param
+tensogram get -p mars.param forecast.tgm
 
 # Get the date from messages where param is 2t
-tensogram get forecast.tgm mars.date -w "mars.param=2t"
+tensogram get -p mars.date -w "mars.param=2t" forecast.tgm
 
 # Get the shape of object 0
-tensogram get forecast.tgm shape
+tensogram get -p shape forecast.tgm
 ```
 
 ## Strict Key Lookup
@@ -33,7 +34,7 @@ tensogram get forecast.tgm shape
 Unlike `ls` which shows a blank for missing keys, `get` exits with a non-zero status if any matching message does not have the requested key:
 
 ```bash
-$ tensogram get forecast.tgm mars.nonexistent
+$ tensogram get -p mars.nonexistent forecast.tgm
 Error: key "mars.nonexistent" not found in message 0
 ```
 
@@ -43,13 +44,4 @@ This makes `get` safe to use in shell scripts where missing data should fail fas
 
 For messages with multiple objects, `get` returns the first matching value found. Lookup checks top-level metadata first and then scans objects in order until it finds a match.
 
-## JSON Output
 
-```bash
-$ tensogram get forecast.tgm mars.param -j
-"2t"
-"10u"
-"10v"
-```
-
-One JSON value per line, one per matching message.

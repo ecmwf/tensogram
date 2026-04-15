@@ -5,14 +5,15 @@ Copies messages from one file to one or more output files. The output filename c
 ## Usage
 
 ```
-tensogram copy [OPTIONS] <INPUT> <OUTPUT_PATTERN>
+tensogram copy [OPTIONS] <INPUT> <OUTPUT>
 ```
 
 ## Options
 
 | Option | Description |
 |---|---|
-| `-w, --where <EXPR>` | Only copy messages that match this filter |
+| `-w <WHERE_CLAUSE>` | Only copy messages that match this filter |
+| `-h, --help` | Print help |
 
 ## Basic Copy
 

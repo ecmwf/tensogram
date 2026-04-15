@@ -5,8 +5,15 @@ Reshuffle frames: move footer frames to header position.
 ## Usage
 
 ```bash
-tensogram reshuffle <INPUT> -o <OUTPUT>
+tensogram reshuffle --output <OUTPUT> <INPUT>
 ```
+
+## Options
+
+| Option | Description |
+|---|---|
+| `-o, --output <OUTPUT>` | Output file |
+| `-h, --help` | Print help |
 
 ## Description
 
