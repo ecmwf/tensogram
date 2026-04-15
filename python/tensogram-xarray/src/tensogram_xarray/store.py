@@ -269,19 +269,53 @@ class TensogramDataStore:
         ds = xr.Dataset(data_vars, coords=coord_vars, attrs=dataset_attrs)
         return ds
 
-    def _get_meta_dim_names(self) -> dict[int, str]:
-        """Return a size->name mapping from ``_extra_["dim_names"]``.
+    def _get_meta_dim_names(self, ndim: int) -> list[str] | dict[int, str]:
+        """Return dimension name hints from ``_extra_["dim_names"]``.
 
-        Any writer can embed a ``{"<size>": "<name>"}`` dict at
-        ``_extra_["dim_names"]`` to provide meaningful dimension names
-        without the reader having to pass ``dim_names`` explicitly.
-        Returns an empty dict when the key is absent or malformed.
+        Any writer can embed hints at ``_extra_["dim_names"]`` to provide
+        meaningful dimension names without the reader passing ``dim_names``
+        explicitly. Two formats are accepted:
+
+        **List (preferred)** — axis-ordered names, one per dimension::
+
+            "_extra_": {"dim_names": ["values", "level"]}
+
+        This handles axes with identical sizes correctly because names
+        are assigned by position.
+
+        **Dict (legacy)** — size-to-name mapping::
+
+            "_extra_": {"dim_names": {"1000": "values", "50": "level"}}
+
+        A dict cannot disambiguate axes with the same size; only the
+        first matching axis receives the hint.
+
+        Returns an empty list/dict when the key is absent or malformed.
         """
         try:
-            raw: dict = self._meta.extra["dim_names"]
-            return {int(k): str(v) for k, v in raw.items()}
-        except (AttributeError, KeyError, TypeError, ValueError):
+            raw = self._meta.extra["dim_names"]
+        except (AttributeError, KeyError, TypeError):
             return {}
+
+        # List format: axis-ordered names.
+        if isinstance(raw, list):
+            try:
+                names = [str(n) for n in raw]
+                if len(names) == ndim:
+                    return names
+                # Length mismatch — ignore the hint rather than crash.
+                return {}
+            except (TypeError, ValueError):
+                return {}
+
+        # Dict format: size -> name (legacy).
+        if isinstance(raw, dict):
+            try:
+                return {int(k): str(v) for k, v in raw.items()}
+            except (TypeError, ValueError):
+                return {}
+
+        return {}
 
     def _resolve_dims_for_var(
         self,
@@ -293,7 +327,7 @@ class TensogramDataStore:
         Strategy:
         1. If user provided ``dim_names``, use them directly.
         2. Try to match each axis size against a known coordinate variable.
-        3. Try to match each axis size against hints in ``_extra_["dim_names"]``.
+        3. Use producer hints from ``_extra_["dim_names"]`` (list or dict).
         4. Fall back to ``dim_0``, ``dim_1``, ...
         """
         ndim = len(shape)
@@ -309,9 +343,14 @@ class TensogramDataStore:
             csize = cvar.shape[0]
             size_to_coord.setdefault(csize, []).append(cname)
 
-        # (3) Metadata hints written by the producer (size -> name).
-        meta_dim_names = self._get_meta_dim_names()
+        # (3) Metadata hints written by the producer.
+        meta_hints = self._get_meta_dim_names(ndim)
 
+        # If the producer supplied an axis-ordered list, use it directly.
+        if isinstance(meta_hints, list):
+            return tuple(meta_hints)
+
+        # Otherwise meta_hints is a dict (size -> name); match by size.
         dims: list[str] = []
         used: set[str] = set()
         for axis, axis_size in enumerate(shape):
@@ -324,9 +363,9 @@ class TensogramDataStore:
                         used.add(cname)
                         matched = True
                         break
-            # Fall back to producer hint.
-            if not matched and axis_size in meta_dim_names:
-                hint = meta_dim_names[axis_size]
+            # Fall back to producer hint (dict).
+            if not matched and axis_size in meta_hints:
+                hint = meta_hints[axis_size]
                 if hint not in used:
                     dims.append(hint)
                     used.add(hint)
