@@ -1,0 +1,317 @@
+# Third-Party Dependency Licences
+#
+# Tensogram is licensed under Apache-2.0.
+# This file catalogues all third-party dependencies and their licences.
+#
+# Audit date : 2025-07-16
+# Branch      : prep-open-source
+# Audited by  : automated licence scan (cargo metadata + manual review)
+#
+# Compatible licences : Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC,
+#                       Zlib, MPL-2.0, Unlicense, BSL-1.0,
+#                       Apache-2.0 WITH LLVM-exception, Unicode-3.0
+# Incompatible        : GPL-2.0-only, GPL-3.0-only, AGPL, SSPL, CPAL
+#
+# ⚠  BLOCKING ISSUE — see "FINDINGS" section at the bottom.
+
+================================================================================
+ RUST DEPENDENCIES  (from cargo metadata)
+================================================================================
+
+Crate                          Version        Licence                                   Status
+------------------------------+-------------+-----------------------------------------+-----------
+aho-corasick                   1.1.4          Unlicense OR MIT                          OK
+anes                           0.1.6          MIT OR Apache-2.0                         OK
+anstream                       1.0.0          MIT OR Apache-2.0                         OK
+anstyle                        1.0.14         MIT OR Apache-2.0                         OK
+anstyle-parse                  1.0.0          MIT OR Apache-2.0                         OK
+anstyle-query                  1.1.5          MIT OR Apache-2.0                         OK
+anstyle-wincon                 3.0.11         MIT OR Apache-2.0                         OK
+anyhow                         1.0.102        MIT OR Apache-2.0                         OK
+atomic-waker                   1.1.2          Apache-2.0 OR MIT                         OK
+autocfg                        1.5.0          Apache-2.0 OR MIT                         OK
+bindgen                        0.70.1         BSD-3-Clause                              OK
+bindgen                        0.71.1         BSD-3-Clause                              OK
+bindgen                        0.72.1         BSD-3-Clause                              OK
+bit-set                        0.8.0          Apache-2.0 OR MIT                         OK
+bit-vec                        0.8.0          Apache-2.0 OR MIT                         OK
+bitflags                       2.11.0         MIT OR Apache-2.0                         OK
+block-buffer                   0.10.4         MIT OR Apache-2.0                         OK
+blosc2                         0.2.2          Apache-2.0                                OK
+blosc2-rs-sys                  0.1.5          Apache-2.0                                OK
+bumpalo                        3.20.2         MIT OR Apache-2.0                         OK
+bytes                          1.11.1         MIT                                       OK
+cast                           0.3.0          MIT OR Apache-2.0                         OK
+cbindgen                       0.27.0         MPL-2.0                                   OK
+cc                             1.2.59         MIT OR Apache-2.0                         OK
+cexpr                          0.6.0          Apache-2.0/MIT                            OK
+cfg-if                         1.0.4          MIT OR Apache-2.0                         OK
+ciborium                       0.2.2          Apache-2.0                                OK
+ciborium-io                    0.2.2          Apache-2.0                                OK
+ciborium-ll                    0.2.2          Apache-2.0                                OK
+clang-sys                      1.8.1          Apache-2.0                                OK
+clap                           4.6.0          MIT OR Apache-2.0                         OK
+clap_builder                   4.6.0          MIT OR Apache-2.0                         OK
+clap_derive                    4.6.0          MIT OR Apache-2.0                         OK
+clap_lex                       1.1.0          MIT OR Apache-2.0                         OK
+cmake                          0.1.58         MIT OR Apache-2.0                         OK
+colorchoice                    1.0.5          MIT OR Apache-2.0                         OK
+cpufeatures                    0.2.17         MIT OR Apache-2.0                         OK
+criterion                      0.5.1          Apache-2.0 OR MIT                         OK
+criterion-plot                 0.5.0          MIT/Apache-2.0                            OK
+crossbeam-deque                0.8.6          MIT OR Apache-2.0                         OK
+crossbeam-epoch                0.9.18         MIT OR Apache-2.0                         OK
+crossbeam-utils                0.8.21         MIT OR Apache-2.0                         OK
+crunchy                        0.2.4          MIT                                       OK
+crypto-common                  0.1.7          MIT OR Apache-2.0                         OK
+digest                         0.10.7         MIT OR Apache-2.0                         OK
+either                         1.15.0         MIT OR Apache-2.0                         OK
+equivalent                     1.0.2          Apache-2.0 OR MIT                         OK
+errno                          0.3.14         MIT OR Apache-2.0                         OK
+fastrand                       2.4.1          Apache-2.0 OR MIT                         OK
+find-msvc-tools                0.1.9          MIT OR Apache-2.0                         OK
+fnv                            1.0.7          Apache-2.0 / MIT                          OK
+foldhash                       0.1.5          Zlib                                      OK
+futures-channel                0.3.32         MIT OR Apache-2.0                         OK
+futures-core                   0.3.32         MIT OR Apache-2.0                         OK
+generic-array                  0.14.7         MIT                                       OK
+getrandom                      0.3.4          MIT OR Apache-2.0                         OK
+getrandom                      0.4.2          MIT OR Apache-2.0                         OK
+glob                           0.3.3          MIT OR Apache-2.0                         OK
+half                           2.7.1          MIT OR Apache-2.0                         OK
+hashbrown                      0.15.5         MIT OR Apache-2.0                         OK
+hashbrown                      0.16.1         MIT OR Apache-2.0                         OK
+heck                           0.4.1          MIT OR Apache-2.0                         OK
+heck                           0.5.0          MIT OR Apache-2.0                         OK
+hermit-abi                     0.5.2          MIT OR Apache-2.0                         OK
+http                           1.4.0          MIT OR Apache-2.0                         OK
+http-body                      1.0.1          MIT                                       OK
+http-body-util                 0.1.3          MIT                                       OK
+httparse                       1.10.1         MIT OR Apache-2.0                         OK
+httpdate                       1.0.3          MIT OR Apache-2.0                         OK
+hyper                          1.9.0          MIT                                       OK
+hyper-util                     0.1.20         MIT                                       OK
+id-arena                       2.3.0          MIT/Apache-2.0                            OK
+indexmap                        2.13.1         Apache-2.0 OR MIT                         OK
+is-terminal                    0.4.17         MIT                                       OK
+is_terminal_polyfill           1.70.2         MIT OR Apache-2.0                         OK
+itertools                      0.10.5         MIT/Apache-2.0                            OK
+itertools                      0.13.0         MIT OR Apache-2.0                         OK
+itoa                           1.0.18         MIT OR Apache-2.0                         OK
+jobserver                      0.1.34         MIT OR Apache-2.0                         OK
+js-sys                         0.3.94         MIT OR Apache-2.0                         OK
+lazy_static                    1.5.0          MIT OR Apache-2.0                         OK
+leb128fmt                      0.1.0          MIT OR Apache-2.0                         OK
+libaec-sys                     0.1.3          MIT OR Apache-2.0                         OK
+libc                           0.2.184        MIT OR Apache-2.0                         OK
+libloading                     0.8.9          ISC                                       OK
+linux-raw-sys                  0.12.1         Apache-2.0 WITH LLVM-exception OR ...     OK
+log                            0.4.29         MIT OR Apache-2.0                         OK
+lz4_flex                       0.11.6         MIT                                       OK
+matchers                       0.2.0          MIT                                       OK
+memchr                         2.8.0          Unlicense OR MIT                          OK
+minimal-lexical                0.2.1          MIT/Apache-2.0                            OK
+nom                            7.1.3          MIT                                       OK
+nu-ansi-term                   0.50.3         MIT                                       OK
+num-traits                     0.2.19         MIT OR Apache-2.0                         OK
+once_cell                      1.21.4         MIT OR Apache-2.0                         OK
+once_cell_polyfill             1.70.2         MIT OR Apache-2.0                         OK
+oorandom                       11.1.5         MIT                                       OK
+pin-project-lite               0.2.17         Apache-2.0 OR MIT                         OK
+pkg-config                     0.3.32         MIT OR Apache-2.0                         OK
+plotters                       0.3.7          MIT                                       OK
+plotters-backend               0.3.7          MIT                                       OK
+plotters-svg                   0.3.7          MIT                                       OK
+ppv-lite86                     0.2.21         MIT OR Apache-2.0                         OK
+prettyplease                   0.2.37         MIT OR Apache-2.0                         OK
+proc-macro2                    1.0.106        MIT OR Apache-2.0                         OK
+proptest                       1.11.0         MIT OR Apache-2.0                         OK
+quick-error                    1.2.3          MIT/Apache-2.0                            OK
+quote                          1.0.45         MIT OR Apache-2.0                         OK
+r-efi                          5.3.0          MIT OR Apache-2.0 OR LGPL-2.1-or-later   OK (MIT chosen)
+r-efi                          6.0.0          MIT OR Apache-2.0 OR LGPL-2.1-or-later   OK (MIT chosen)
+rand                           0.9.2          MIT OR Apache-2.0                         OK
+rand_chacha                    0.9.0          MIT OR Apache-2.0                         OK
+rand_core                      0.9.5          MIT OR Apache-2.0                         OK
+rand_xorshift                  0.4.0          MIT OR Apache-2.0                         OK
+rayon                          1.11.0         MIT OR Apache-2.0                         OK
+rayon-core                     1.13.0         MIT OR Apache-2.0                         OK
+regex                          1.12.3         MIT OR Apache-2.0                         OK
+regex-automata                 0.4.14         MIT OR Apache-2.0                         OK
+regex-syntax                   0.8.10         MIT OR Apache-2.0                         OK
+rustc-hash                     1.1.0          Apache-2.0/MIT                            OK
+rustc-hash                     2.1.2          Apache-2.0 OR MIT                         OK
+rustix                         1.1.4          Apache-2.0 WITH LLVM-exception OR ...     OK
+rustversion                    1.0.22         MIT OR Apache-2.0                         OK
+rusty-fork                     0.3.1          MIT/Apache-2.0                            OK
+same-file                      1.0.6          Unlicense/MIT                             OK
+semver                         1.0.28         MIT OR Apache-2.0                         OK
+serde                          1.0.228        MIT OR Apache-2.0                         OK
+serde_core                     1.0.228        MIT OR Apache-2.0                         OK
+serde_derive                   1.0.228        MIT OR Apache-2.0                         OK
+serde_json                     1.0.149        MIT OR Apache-2.0                         OK
+serde_spanned                  0.6.9          MIT OR Apache-2.0                         OK
+sha2                           0.10.9         MIT OR Apache-2.0                         OK
+sharded-slab                   0.1.7          MIT                                       OK
+shlex                          1.3.0          MIT OR Apache-2.0                         OK
+smallvec                       1.15.1         MIT OR Apache-2.0                         OK
+strsim                         0.11.1         MIT                                       OK
+syn                            2.0.117        MIT OR Apache-2.0                         OK
+sz3                            0.4.3          MIT OR Apache-2.0                         OK
+sz3-sys                        0.4.1          GPL-3.0-only  ← DECLARED                 ⚠ BLOCKER (see findings)
+tempfile                       3.27.0         MIT OR Apache-2.0                         OK
+thiserror                      2.0.18         MIT OR Apache-2.0                         OK
+thiserror-impl                 2.0.18         MIT OR Apache-2.0                         OK
+thread_local                   1.1.9          MIT OR Apache-2.0                         OK
+tinytemplate                   1.2.1          Apache-2.0 OR MIT                         OK
+tokio                          1.51.1         MIT                                       OK
+tokio-macros                   2.7.0          MIT                                       OK
+toml                           0.8.23         MIT OR Apache-2.0                         OK
+toml_datetime                  0.6.11         MIT OR Apache-2.0                         OK
+toml_edit                      0.22.27        MIT OR Apache-2.0                         OK
+toml_write                     0.1.2          MIT OR Apache-2.0                         OK
+tracing                        0.1.44         MIT                                       OK
+tracing-attributes             0.1.31         MIT                                       OK
+tracing-core                   0.1.36         MIT                                       OK
+tracing-log                    0.2.0          MIT                                       OK
+tracing-subscriber             0.3.23         MIT                                       OK
+twox-hash                      2.1.2          MIT                                       OK
+typenum                        1.19.0         MIT OR Apache-2.0                         OK
+unarray                        0.1.4          MIT OR Apache-2.0                         OK
+unicode-ident                  1.0.24         (MIT OR Apache-2.0) AND Unicode-3.0       OK
+unicode-xid                    0.2.6          MIT OR Apache-2.0                         OK
+utf8parse                      0.2.2          Apache-2.0 OR MIT                         OK
+uuid                           1.23.0         Apache-2.0 OR MIT                         OK
+valuable                       0.1.1          MIT                                       OK
+version_check                  0.9.5          MIT/Apache-2.0                            OK
+wait-timeout                   0.2.1          MIT/Apache-2.0                            OK
+walkdir                        2.5.0          Unlicense/MIT                             OK
+wasip2                         1.0.2          Apache-2.0 WITH LLVM-exception OR ...     OK
+wasip3                         0.4.0          Apache-2.0 WITH LLVM-exception OR ...     OK
+wasm-bindgen                   0.2.117        MIT OR Apache-2.0                         OK
+wasm-bindgen-macro             0.2.117        MIT OR Apache-2.0                         OK
+wasm-bindgen-macro-support     0.2.117        MIT OR Apache-2.0                         OK
+wasm-bindgen-shared            0.2.117        MIT OR Apache-2.0                         OK
+wasm-encoder                   0.244.0        Apache-2.0 WITH LLVM-exception OR ...     OK
+wasm-metadata                  0.244.0        Apache-2.0 WITH LLVM-exception OR ...     OK
+wasmparser                     0.244.0        Apache-2.0 WITH LLVM-exception OR ...     OK
+web-sys                        0.3.94         MIT OR Apache-2.0                         OK
+winapi-util                    0.1.11         Unlicense OR MIT                          OK
+windows-link                   0.2.1          MIT OR Apache-2.0                         OK
+windows-sys                    0.61.2         MIT OR Apache-2.0                         OK
+winnow                         0.7.15         MIT                                       OK
+wit-bindgen                    0.51.0         Apache-2.0 WITH LLVM-exception OR ...     OK
+wit-bindgen-core               0.51.0         Apache-2.0 WITH LLVM-exception OR ...     OK
+wit-bindgen-rust               0.51.0         Apache-2.0 WITH LLVM-exception OR ...     OK
+wit-bindgen-rust-macro         0.51.0         Apache-2.0 WITH LLVM-exception OR ...     OK
+wit-component                  0.244.0        Apache-2.0 WITH LLVM-exception OR ...     OK
+wit-parser                     0.244.0        Apache-2.0 WITH LLVM-exception OR ...     OK
+xxhash-rust                    0.8.15         BSL-1.0  (Boost Software Licence 1.0)     OK (note 1)
+zerocopy                       0.8.48         BSD-2-Clause OR Apache-2.0 OR MIT         OK
+zerocopy-derive                0.8.48         BSD-2-Clause OR Apache-2.0 OR MIT         OK
+zfp-sys-cc                     0.2.0          MIT                                       OK
+zmij                           1.0.21         MIT                                       OK
+zstd                           0.13.3         MIT                                       OK
+zstd-safe                      7.2.4          MIT OR Apache-2.0                         OK
+zstd-sys                       2.0.16         MIT/Apache-2.0                            OK
+
+================================================================================
+ C / C++ LIBRARY DEPENDENCIES  (linked at build time)
+================================================================================
+
+Library                Version   Licence                                        Status
+----------------------+--------+----------------------------------------------+-----------
+libaec (szip compat)   1.1+      BSD-2-Clause                                   OK
+zfp                    1.0.x     BSD-3-Clause (LLNL)                            OK
+SZ3 (upstream C++)     3.3.2     BSD-3-Clause (Argonne / UChicago)              OK (note 2)
+c-blosc2               2.x       BSD-3-Clause (Blosc Development Team)          OK
+zstd (libzstd)         1.5.7     BSD-3-Clause (Meta Platforms)                  OK
+lz4 (liblz4)           1.10.x    BSD-2-Clause (lib/) / GPL-2.0 (tools only)    OK (lib only)
+
+================================================================================
+ PYTHON DEPENDENCIES  (from pyproject.toml files)
+================================================================================
+
+Package                Licence                              Status
+----------------------+------------------------------------+-----------
+numpy                  BSD-3-Clause                         OK
+xarray                 Apache-2.0                           OK
+zarr                   MIT                                  OK
+dask                   BSD-3-Clause                         OK (optional)
+maturin                MIT OR Apache-2.0                    OK (build only)
+hatchling              MIT                                  OK (build only)
+pytest                 MIT                                  OK (dev only)
+pytest-asyncio         MIT                                  OK (dev only)
+ruff                   MIT                                  OK (dev only)
+PyO3                   MIT OR Apache-2.0                    OK (build only)
+
+================================================================================
+ FINDINGS & REQUIRED ACTIONS
+================================================================================
+
+⚠  BLOCKER: sz3-sys 0.4.1 declares "GPL-3.0-only" in its Cargo.toml
+   -----------------------------------------------------------------------
+   The upstream SZ3 C++ library (szcompressor/SZ3) is BSD-3-Clause
+   (Argonne National Lab, licence SF-16-105). The Rust crate sz3-sys wraps
+   this library but the crate author erroneously set licence = "GPL-3.0-only"
+   in the crate metadata. The Rust wrapper code itself adds a GPL-3.0 grant.
+
+   Impact : If taken at face value, GPL-3.0-only is incompatible with
+            distributing tensogram under Apache-2.0.
+
+   Remediation options (pick one before open-sourcing):
+     1. PREFERRED: File an issue / PR on
+        https://github.com/apertus-open-source-cinema/sz3-rs/ asking the
+        author to relicense the ~200 lines of Rust wrapper code as
+        MIT OR Apache-2.0 (matching the sz3 high-level crate) and correct
+        the Cargo.toml licence field.
+     2. Fork sz3-sys, relicense the thin wrapper under MIT/Apache-2.0
+        (permissible since the wrapped C code is BSD), and publish as
+        tensogram-sz3-sys or vendor it in-tree.
+     3. Make the sz3 feature opt-out / disabled by default so that no
+        GPL-tagged code is compiled into the default build. Document clearly
+        that enabling it pulls in a GPL-3.0-only dependency.
+     4. Remove the sz3 dependency entirely.
+
+   Current default features include sz3, so this is a shipping blocker.
+
+------------------------------------------------------------------------
+
+Note 1: xxhash-rust (BSL-1.0 — Boost Software Licence 1.0)
+   BSL-1.0 is a permissive licence recognised by OSI. It is compatible
+   with Apache-2.0. No action required.
+
+Note 2: SZ3 upstream C++ library
+   Uses a 4-clause BSD-style licence with an acknowledgment requirement
+   (clause 4). This is sometimes called "modified BSD" or "BSD-4-Clause".
+   It is compatible with Apache-2.0 but the acknowledgment clause should
+   be honoured in documentation/NOTICE if SZ3 is distributed.
+
+Note 3: Unlicense crates (aho-corasick, memchr, walkdir, same-file, winapi-util)
+   All dual-licensed Unlicense/MIT. We select MIT. No action required.
+
+Note 4: lz4 upstream C library
+   The lz4 repository uses BSD-2-Clause for the library (lib/) and
+   GPL-2.0+ for the command-line tools. Only the lib/ portion is linked.
+   No action required.
+
+Note 5: MPL-2.0 (cbindgen)
+   MPL-2.0 is compatible with Apache-2.0 per MPL §3. cbindgen is a
+   build-time tool only (not linked into the binary). No action required.
+
+Note 6: r-efi triple-licensed MIT OR Apache-2.0 OR LGPL-2.1-or-later
+   We select MIT. No action required.
+
+Note 7: unicode-ident requires (MIT OR Apache-2.0) AND Unicode-3.0
+   Unicode-3.0 is a permissive data licence. Compatible. No action required.
+
+================================================================================
+ SUMMARY
+================================================================================
+
+ Total Rust crates scanned  : 150 (excluding 7 workspace crates)
+ Total C/C++ libraries      : 6
+ Total Python packages      : 10
+ Compatible                 : 165 / 166
+ Blockers                   : 1  (sz3-sys GPL-3.0-only)
+ Action items               : 1  (resolve sz3-sys before open-source release)
