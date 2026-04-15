@@ -363,7 +363,8 @@ For even more speed, split the work into chunks and run them concurrently:
 ```
 
 The sync `TensogramFile` also has `file_decode_range_batch` and
-`file_decode_object_batch` with the same signatures.
+`file_decode_object_batch` with the same signatures.  Both batch methods
+require a remote backend; calling them on a local file raises `OSError`.
 
 ### Layout prefetching
 
@@ -379,11 +380,14 @@ the internal layout metadata to avoid repeated discovery requests:
 
 ```python
     async with await tensogram.AsyncTensogramFile.open("data.tgm") as f:
+        await f.message_count()   # required before async for or len(f)
         async for meta, objects in f:
             print(objects[0][1].shape)
 ```
 
 Async iteration works on remote files (sync iteration does not).
+`await f.message_count()` must be called once before using `async for`
+or `len(f)`, to discover the message count without blocking the event loop.
 
 ### Other methods
 
@@ -391,8 +395,11 @@ Async iteration works on remote files (sync iteration does not).
     count = await f.message_count()
     raw = await f.read_message(0)
     all_raw = await f.messages()
-    print(f.is_remote(), f.source(), len(f))
+    print(f.is_remote(), f.source())
 ```
+
+> **Note:** `len(f)` is synchronous and may block on first call (triggers a
+> file scan). In async code, prefer `await f.message_count()`.
 
 ### When to use async vs sync
 

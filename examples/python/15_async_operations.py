@@ -41,7 +41,8 @@ async def main():
     print(f"Opened: {f}")
     print(f"  is_remote = {f.is_remote()}")
     print(f"  source    = {f.source()}")
-    print(f"  len       = {len(f)}")
+    count = await f.message_count()
+    print(f"  messages  = {count}")
 
     # 1. Single decode
     meta, objects = await f.decode_message(0)
@@ -62,7 +63,7 @@ async def main():
     row, col = 50, 100
     offset = row * 200 + col
     values = await asyncio.gather(
-        *[f.file_decode_range(i, 0, [(offset, 1)], join=True) for i in range(20)]
+        *[f.file_decode_range(i, 0, [(offset, 1)], join=True) for i in range(count)]
     )
     print(f"\nGrid point [{row},{col}] across 20 messages:")
     for i, arr in enumerate(values):

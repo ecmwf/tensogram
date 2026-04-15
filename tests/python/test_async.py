@@ -384,14 +384,23 @@ class TestAsyncContextManager:
 
 class TestAsyncLen:
     @pytest.mark.asyncio
-    async def test_len(self, tgm_path):
+    async def test_len_after_message_count(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
+        count = await f.message_count()
+        assert count == 3
         assert len(f) == 3
+
+    @pytest.mark.asyncio
+    async def test_len_without_message_count_raises(self, tgm_path):
+        f = await tensogram.AsyncTensogramFile.open(tgm_path)
+        with pytest.raises(RuntimeError, match="message_count"):
+            len(f)
 
     @pytest.mark.asyncio
     async def test_len_matches_sync(self, tgm_path):
         sync_file = tensogram.TensogramFile.open(tgm_path)
         async_file = await tensogram.AsyncTensogramFile.open(tgm_path)
+        await async_file.message_count()
         assert len(sync_file) == len(async_file)
 
 
@@ -399,6 +408,7 @@ class TestAsyncIteration:
     @pytest.mark.asyncio
     async def test_aiter_all_messages(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
+        await f.message_count()
         messages = []
         async for msg in f:
             messages.append(msg)
@@ -412,6 +422,7 @@ class TestAsyncIteration:
     @pytest.mark.asyncio
     async def test_aiter_early_break(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
+        await f.message_count()
         count = 0
         async for _msg in f:
             count += 1
@@ -425,6 +436,7 @@ class TestAsyncIteration:
         sync_messages = list(sync_file)
 
         async_file = await tensogram.AsyncTensogramFile.open(tgm_path)
+        await async_file.message_count()
         async_messages = []
         async for msg in async_file:
             async_messages.append(msg)
@@ -439,6 +451,7 @@ class TestAsyncIteration:
         msg = _encode_test_message([4], fill=99.0)
         url = serve_tgm_bytes(msg)
         f = await tensogram.AsyncTensogramFile.open(url)
+        await f.message_count()
         messages = []
         async for m in f:
             messages.append(m)
@@ -450,6 +463,7 @@ class TestAsyncIteration:
     @pytest.mark.asyncio
     async def test_aiter_repr(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
+        await f.message_count()
         it = f.__aiter__()
         r = repr(it)
         assert "AsyncTensogramFileIter" in r
@@ -459,6 +473,7 @@ class TestAsyncIteration:
     @pytest.mark.asyncio
     async def test_aiter_len(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
+        await f.message_count()
         it = f.__aiter__()
         assert len(it) == 3
         await it.__anext__()
@@ -470,6 +485,7 @@ class TestAsyncIteration:
         with tensogram.TensogramFile.create(path):
             pass
         f = await tensogram.AsyncTensogramFile.open(path)
+        await f.message_count()
         messages = []
         async for msg in f:
             messages.append(msg)
@@ -478,6 +494,7 @@ class TestAsyncIteration:
     @pytest.mark.asyncio
     async def test_aiter_exhaustion(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
+        await f.message_count()
         it = f.__aiter__()
         for _ in range(3):
             await it.__anext__()
@@ -487,6 +504,7 @@ class TestAsyncIteration:
     @pytest.mark.asyncio
     async def test_aiter_concurrent_iterators(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
+        await f.message_count()
         it1 = f.__aiter__()
         it2 = f.__aiter__()
         msg1_first = await it1.__anext__()
@@ -522,6 +540,7 @@ class TestAsyncLenRemote:
         msg = _encode_test_message([4])
         url = serve_tgm_bytes(msg)
         f = await tensogram.AsyncTensogramFile.open(url)
+        await f.message_count()
         assert len(f) == 1
 
 

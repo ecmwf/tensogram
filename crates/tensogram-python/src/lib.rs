@@ -1804,9 +1804,9 @@ impl PyAsyncTensogramFile {
         if let Some(&count) = self.cached_message_count.get() {
             return Ok(count);
         }
-        let count = self.file.message_count().map_err(to_py_err)?;
-        let _ = self.cached_message_count.set(count);
-        Ok(count)
+        Err(PyRuntimeError::new_err(
+            "message count not yet known; call 'await f.message_count()' first",
+        ))
     }
 
     // ── Async iteration ──────────────────────────────────────────────────
