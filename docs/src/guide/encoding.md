@@ -14,7 +14,7 @@ pub fn encode(
 
 - `global_metadata` — reference to message-level metadata (version, base entries, `_extra_` fields)
 - `descriptors` — a slice of `(descriptor, data)` pairs, one per object
-- `options` — controls hash algorithm
+- `options` — controls hash algorithm, preceder emission, and compression backend selection
 
 Returns a complete, self-contained message as a `Vec<u8>`.
 
@@ -24,12 +24,19 @@ Returns a complete, self-contained message as a `Vec<u8>`.
 pub struct EncodeOptions {
     /// Hash algorithm to use. None disables hashing entirely.
     pub hash_algorithm: Option<HashAlgorithm>,
+    /// Reserved for future buffered-mode preceder support.
+    pub emit_preceders: bool,
+    /// Which backend to use for szip / zstd when both FFI and pure-Rust
+    /// implementations are compiled in.
+    pub compression_backend: CompressionBackend,
 }
 
 impl Default for EncodeOptions {
     fn default() -> Self {
         Self {
             hash_algorithm: Some(HashAlgorithm::Xxh3),
+            emit_preceders: false,
+            compression_backend: CompressionBackend::default(),
         }
     }
 }
@@ -40,6 +47,7 @@ The default applies xxh3 hashing to every object payload. Use `None` to skip has
 ```rust
 let options = EncodeOptions {
     hash_algorithm: None,
+    ..Default::default()
 };
 ```
 
