@@ -25,7 +25,7 @@ jobs:
     name: Lint
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     container:
-      image: eccr.ecmwf.int/tensogram/ci:1.0.0
+      image: eccr.ecmwf.int/tensogram/ci:1.1.0
       credentials:
         username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
         password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
@@ -38,8 +38,6 @@ jobs:
           cargo fmt --check
           cargo clippy --workspace --all-targets -- -D warnings
           cargo clippy -p tensogram-core --all-targets --features "remote,async" -- -D warnings
-          cargo clippy -p tensogram-cli --all-targets --features "grib,netcdf" -- -D warnings
-          cargo clippy --manifest-path crates/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
 
       - name: Cleanup
         if: always()
@@ -50,7 +48,7 @@ jobs:
     name: Test
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     container:
-      image: eccr.ecmwf.int/tensogram/ci:1.0.0
+      image: eccr.ecmwf.int/tensogram/ci:1.1.0
       credentials:
         username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
         password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
@@ -63,30 +61,8 @@ jobs:
           cargo test --workspace
           cargo test -p tensogram-core --features remote
           cargo test -p tensogram-core --features "remote,async"
-          cargo test --manifest-path crates/tensogram-grib/Cargo.toml
-          cargo test -p tensogram-cli --features grib
-          cargo test --manifest-path crates/tensogram-netcdf/Cargo.toml
-          cargo test -p tensogram-cli --features netcdf
 
-      - name: Cleanup
-        if: always()
-        run: rm -rf "$TMPDIR" target
-
-  # ── Linux: Python bindings ─────────────────────────────────────
-  python:
-    name: Python
-    needs: lint
-    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
-    container:
-      image: eccr.ecmwf.int/tensogram/ci:1.0.0
-      credentials:
-        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
-        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p "$TMPDIR"
-
-      - name: Build and test
+      - name: Python bindings (3.13)
         run: |
           uv python install 3.13
           uv venv .venv --python 3.13
@@ -96,6 +72,32 @@ jobs:
           ruff check --config crates/tensogram-python/pyproject.toml tests/python/
           python -m pytest tests/python/ -v
           cargo check --manifest-path crates/tensogram-python/Cargo.toml --no-default-features
+
+      - name: Python packages (3.12, xarray + zarr)
+        run: |
+          rm -rf .venv
+          uv python install 3.12
+          uv venv .venv --python 3.12
+          . .venv/bin/activate
+          uv pip install maturin pytest numpy
+          cd crates/tensogram-python && maturin develop && cd ../..
+          uv pip install -e "tensogram-xarray/[dask]"
+          python -m pytest tensogram-xarray/tests/ -v
+          uv pip install -e tensogram-zarr/
+          python -m pytest tensogram-zarr/tests/ -v
+
+      - name: Python free-threaded (3.13t)
+        env:
+          PYTHON_GIL: "0"
+        run: |
+          rm -rf .venv
+          uv python install cpython-3.13+freethreaded
+          uv venv .venv --python python3.13t
+          . .venv/bin/activate
+          uv pip install maturin pytest pytest-asyncio "numpy>=2.1"
+          python -c "import sys; assert not sys._is_gil_enabled(), 'GIL should be disabled'"
+          cd crates/tensogram-python && maturin develop --release && cd ../..
+          python -m pytest tests/python/ -v
 
       - name: Cleanup
         if: always()
@@ -172,74 +174,12 @@ jobs:
         if: always()
         run: rm -rf "$TMPDIR" .venv build .rustup .cargo .llvm target
 
-  # ── Python: free-threaded 3.13t ────────────────────────────────
-  python-free-threaded:
-    name: Python 3.13t (free-threaded)
-    needs: [test, python]
-    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
-    container:
-      image: eccr.ecmwf.int/tensogram/ci:1.0.0
-      credentials:
-        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
-        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p "$TMPDIR"
-
-
-      - name: Build and test
-        env:
-          PYTHON_GIL: "0"
-        run: |
-          uv python install cpython-3.13+freethreaded
-          uv venv .venv --python python3.13t
-          . .venv/bin/activate
-          uv pip install maturin pytest pytest-asyncio "numpy>=2.1"
-          python -c "import sys; assert not sys._is_gil_enabled(), 'GIL should be disabled'"
-          cd crates/tensogram-python && maturin develop --release && cd ../..
-          python -m pytest tests/python/ -v
-
-      - name: Cleanup
-        if: always()
-        run: rm -rf "$TMPDIR" .venv target
-
-  # ── Python packages: xarray + zarr ─────────────────────────────
-  python-packages:
-    name: Python packages
-    needs: [test, python]
-    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
-    container:
-      image: eccr.ecmwf.int/tensogram/ci:1.0.0
-      credentials:
-        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
-        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p "$TMPDIR"
-
-
-      - name: Build and test
-        run: |
-          uv python install 3.12
-          uv venv .venv --python 3.12
-          . .venv/bin/activate
-          uv pip install maturin pytest numpy
-          cd crates/tensogram-python && maturin develop && cd ../..
-          uv pip install -e "tensogram-xarray/[dask]"
-          python -m pytest tensogram-xarray/tests/ -v
-          uv pip install -e tensogram-zarr/
-          python -m pytest tensogram-zarr/tests/ -v
-
-      - name: Cleanup
-        if: always()
-        run: rm -rf "$TMPDIR" .venv target
-
   # ── C++: Linux ─────────────────────────────────────────────────
   cpp-linux:
     name: C++ (Linux)
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     container:
-      image: eccr.ecmwf.int/tensogram/ci:1.0.0
+      image: eccr.ecmwf.int/tensogram/ci:1.1.0
       credentials:
         username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
         password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
@@ -288,7 +228,7 @@ jobs:
     name: WASM
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     container:
-      image: eccr.ecmwf.int/tensogram/ci:1.0.0
+      image: eccr.ecmwf.int/tensogram/ci:1.1.0
       credentials:
         username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
         password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}

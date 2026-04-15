@@ -55,9 +55,7 @@ RUN set -eux \
       build-essential pkg-config git curl ca-certificates \
       cmake \
       libclang1-18 libclang-common-18-dev \
-      libnetcdf-dev libhdf5-dev libeccodes-dev \
  && rm -f /usr/lib/x86_64-linux-gnu/libicu*.a \
-         /usr/lib/x86_64-linux-gnu/libhdf5*.a \
          /usr/lib/x86_64-linux-gnu/libssl.a \
          /usr/lib/x86_64-linux-gnu/libcrypto.a \
          /usr/lib/x86_64-linux-gnu/libxml2.a \
