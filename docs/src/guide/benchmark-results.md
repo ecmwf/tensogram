@@ -10,8 +10,8 @@ For methodology, flags, and how to re-run, see [Benchmarks](benchmarks.md).
 
 | Field | Value |
 |-------|-------|
-| **Date** | 2026-04-08 |
-| **Tensogram version** | 0.6.0 |
+| **Date** | 2026-04-16 |
+| **Tensogram version** | 0.11.0 |
 | **CPU** | Intel Core i9-10850K @ 3.60 GHz, 10 cores / 20 threads |
 | **OS** | Linux 6.19.10 (CachyOS) x86_64 |
 | **Rust** | rustc 1.94.0 |
@@ -46,11 +46,11 @@ bit-identical to the original.
 
 | Method | Enc (ms) | Dec (ms) | Enc MB/s | Dec MB/s | Ratio | Size (MiB) |
 |--------|----------|----------|----------|----------|-------|------------|
-| no compression **[REF]** | 35.2 | 35.0 | 3466 | 3489 | 100% | 122.1 |
-| zstd level 3 | 178.9 | 113.8 | 682 | 1073 | 90.3% | 110.2 |
-| LZ4 | 41.5 | 37.5 | 2942 | 3251 | 100.4% | 122.5 |
-| Blosc2 | 160.6 | 63.9 | 760 | 1912 | 75.2% | 91.8 |
-| szip | 186.4 | 316.5 | 655 | 386 | 100.9% | 123.2 |
+| no compression **[REF]** | 34.6 | 35.2 | 3525 | 3465 | 100% | 122.1 |
+| zstd level 3 | 179.7 | 114.3 | 680 | 1068 | 90.3% | 110.2 |
+| LZ4 | 40.2 | 36.6 | 3038 | 3337 | 100.4% | 122.6 |
+| Blosc2 | 162.9 | 64.4 | 749 | 1894 | 75.2% | 91.8 |
+| szip | 186.9 | 314.3 | 653 | 388 | 100.9% | 123.2 |
 
 Raw 64-bit floats have high entropy, so most lossless compressors cannot reduce
 their size. LZ4 and szip slightly expand the data. Blosc2 is the exception — its
@@ -63,21 +63,21 @@ bit width, not on the compressor — see the fidelity table below.
 
 | Method | Enc (ms) | Dec (ms) | Enc MB/s | Dec MB/s | Ratio | Size (MiB) |
 |--------|----------|----------|----------|----------|-------|------------|
-| 16-bit only | 88.7 | 73.3 | 1376 | 1665 | 25.0% | 30.5 |
-| 16-bit + zstd | 138.6 | 87.6 | 881 | 1393 | 24.4% | 29.7 |
-| 16-bit + LZ4 | 98.9 | 74.4 | 1234 | 1640 | 25.1% | 30.6 |
-| 16-bit + Blosc2 | 221.3 | 91.9 | 552 | 1329 | 20.3% | 24.8 |
-| 16-bit + szip | 158.6 | 187.8 | 770 | 650 | 14.6% | 17.8 |
-| 24-bit only | 99.9 | 78.3 | 1222 | 1560 | 37.5% | 45.8 |
-| 24-bit + zstd | 170.8 | 102.5 | 715 | 1191 | 37.2% | 45.4 |
-| 24-bit + LZ4 | 117.0 | 91.8 | 1044 | 1329 | 37.7% | 46.0 |
-| 24-bit + Blosc2 | 265.2 | 135.9 | 460 | 898 | 32.8% | 40.0 |
-| 24-bit + szip | 191.8 | 230.1 | 637 | 531 | 27.2% | 33.2 |
-| 32-bit only | 99.3 | 73.4 | 1229 | 1664 | 50.0% | 61.0 |
-| 32-bit + zstd | 192.6 | 100.0 | 634 | 1221 | 49.8% | 60.8 |
-| 32-bit + LZ4 | 121.7 | 91.8 | 1003 | 1330 | 50.2% | 61.3 |
-| 32-bit + Blosc2 | 279.5 | 124.0 | 437 | 985 | 45.3% | 55.3 |
-| 32-bit + szip | 203.2 | 268.6 | 601 | 455 | 39.7% | 48.4 |
+| 16-bit only | 96.8 | 73.5 | 1261 | 1662 | 25.0% | 30.5 |
+| 16-bit + zstd | 146.9 | 88.1 | 831 | 1385 | 24.4% | 29.7 |
+| 16-bit + LZ4 | 107.8 | 76.1 | 1132 | 1604 | 25.1% | 30.6 |
+| 16-bit + Blosc2 | 230.3 | 92.4 | 530 | 1321 | 20.3% | 24.8 |
+| 16-bit + szip | 167.0 | 188.6 | 731 | 647 | 14.6% | 17.8 |
+| 24-bit only | 107.8 | 78.6 | 1133 | 1553 | 37.5% | 45.8 |
+| 24-bit + zstd | 178.6 | 102.0 | 684 | 1197 | 37.2% | 45.4 |
+| 24-bit + LZ4 | 124.8 | 91.2 | 978 | 1339 | 37.6% | 46.0 |
+| 24-bit + Blosc2 | 272.8 | 135.7 | 448 | 900 | 32.8% | 40.0 |
+| 24-bit + szip | 199.7 | 230.8 | 611 | 529 | 27.2% | 33.2 |
+| 32-bit only | 107.3 | 74.5 | 1137 | 1638 | 50.0% | 61.0 |
+| 32-bit + zstd | 203.7 | 104.4 | 599 | 1169 | 49.8% | 60.8 |
+| 32-bit + LZ4 | 131.6 | 94.6 | 928 | 1291 | 50.2% | 61.3 |
+| 32-bit + Blosc2 | 291.2 | 126.0 | 419 | 969 | 45.3% | 55.3 |
+| 32-bit + szip | 212.4 | 269.7 | 575 | 453 | 39.7% | 48.4 |
 
 #### Fidelity by bit width
 
@@ -96,10 +96,10 @@ These operate directly on raw f64 bytes without quantization.
 
 | Method | Enc (ms) | Dec (ms) | Enc MB/s | Dec MB/s | Ratio | Size (MiB) |
 |--------|----------|----------|----------|----------|-------|------------|
-| ZFP rate 16 | 493.5 | 507.3 | 247 | 241 | 25.0% | 30.5 |
-| ZFP rate 24 | 621.8 | 743.4 | 196 | 164 | 37.5% | 45.8 |
-| ZFP rate 32 | 717.5 | 920.0 | 170 | 133 | 50.0% | 61.0 |
-| SZ3 abs 0.01 | 464.1 | 276.2 | 263 | 442 | 6.5% | 7.9 |
+| ZFP rate 16 | 492.9 | 508.5 | 248 | 240 | 25.0% | 30.5 |
+| ZFP rate 24 | 615.1 | 742.7 | 199 | 164 | 37.5% | 45.8 |
+| ZFP rate 32 | 711.7 | 919.2 | 172 | 133 | 50.0% | 61.0 |
+| SZ3 abs 0.01 | 459.9 | 277.1 | 266 | 441 | 6.5% | 7.9 |
 
 #### Fidelity by lossy codec
 
@@ -135,9 +135,9 @@ codec matrix above.
 
 | Method | Enc (ms) | Dec (ms) | Enc MB/s | Dec MB/s | Ratio | Size (MiB) |
 |--------|----------|----------|----------|----------|-------|------------|
-| ecCodes CCSDS **[REF]** | 84.7 | 139.1 | 900 | 549 | 27.2% | 20.7 |
-| ecCodes simple packing | 67.0 | 39.0 | 1139 | 1954 | 37.5% | 28.6 |
-| Tensogram 24-bit + szip | 114.2 | 136.5 | 668 | 559 | 27.4% | 20.9 |
+| ecCodes CCSDS **[REF]** | 84.8 | 141.5 | 900 | 539 | 27.2% | 20.8 |
+| ecCodes simple packing | 65.6 | 40.8 | 1163 | 1870 | 37.5% | 28.6 |
+| Tensogram 24-bit + szip | 119.2 | 138.0 | 640 | 553 | 27.4% | 20.9 |
 
 All three methods produce identical fidelity: Linf = 1.9 × 10⁻⁶,
 L1 = 9.5 × 10⁻⁷, L2 = 1.1 × 10⁻⁶.
@@ -146,5 +146,5 @@ L1 = 9.5 × 10⁻⁷, L2 = 1.1 × 10⁻⁶.
 
 - **Tensogram and ecCodes CCSDS achieve nearly identical compression** (27.4% vs 27.2%)
   and identical fidelity at 24 bits.
-- **Tensogram encode is 1.3× slower** (114 vs 85 ms); decode is slightly faster (137 vs 139 ms).
-- **ecCodes simple packing** decodes fastest (39 ms) but produces a larger file (37.5% vs 27%).
+- **Tensogram encode is 1.4× slower** (119 vs 85 ms); decode is comparable (138 vs 142 ms).
+- **ecCodes simple packing** decodes fastest (41 ms) but produces a larger file (37.5% vs 27%).
