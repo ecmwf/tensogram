@@ -8,7 +8,7 @@ Fourteen small NetCDF files used by the integration test suite
 ```bash
 source .venv/bin/activate   # from repo root
 pip install "netCDF4<2" numpy
-cd crates/tensogram-netcdf/testdata
+cd rust/tensogram-netcdf/testdata
 python generate.py
 python verify.py             # should print "All fixtures verified."
 ```

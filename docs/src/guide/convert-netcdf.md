@@ -28,7 +28,7 @@ avoid forcing libnetcdf on every contributor. Build it explicitly:
 
 ```bash
 # Library
-cargo build --manifest-path crates/tensogram-netcdf/Cargo.toml
+cargo build --manifest-path rust/tensogram-netcdf/Cargo.toml
 
 # CLI with NetCDF support
 cargo build -p tensogram-cli --features netcdf

@@ -74,12 +74,12 @@ This project contains Rust, Python, C and C++ code
 
 ## Python
 - Setup (first time): `uv venv .venv && source .venv/bin/activate && uv pip install maturin numpy pytest ruff`
-- Build: `source .venv/bin/activate && cd crates/tensogram-python && maturin develop`
-- Lint: `ruff check --config crates/tensogram-python/pyproject.toml tests/python/`
-- Format: `ruff format --config crates/tensogram-python/pyproject.toml tests/python/`
-- Test: `source .venv/bin/activate && python -m pytest tests/python/ -v`
-- xarray tests: `source .venv/bin/activate && uv pip install -e "tensogram-xarray/[dask]" && python -m pytest tensogram-xarray/tests/ -v`
-- zarr tests: `source .venv/bin/activate && uv pip install -e tensogram-zarr/ && python -m pytest tensogram-zarr/tests/ -v`
+- Build: `source .venv/bin/activate && cd python/bindings && maturin develop`
+- Lint: `ruff check --config python/bindings/pyproject.toml python/tests/`
+- Format: `ruff format --config python/bindings/pyproject.toml python/tests/`
+- Test: `source .venv/bin/activate && python -m pytest python/tests/ -v`
+- xarray tests: `source .venv/bin/activate && uv pip install -e "python/tensogram-xarray/[dask]" && python -m pytest python/tensogram-xarray/tests/ -v`
+- zarr tests: `source .venv/bin/activate && uv pip install -e python/tensogram-zarr/ && python -m pytest python/tensogram-zarr/tests/ -v`
 - IMPORTANT: ALWAYS run `ruff check` and `ruff format` before committing Python files. CI enforces this.
 
 # Version control
@@ -102,10 +102,10 @@ This project contains Rust, Python, C and C++ code
     - `VERSION` (the source of truth)
     - `Cargo.toml` in EVERY crate: tensogram-core, tensogram-encodings, tensogram-cli,
       tensogram-ffi, tensogram-python, tensogram-grib, benchmarks, examples/rust
-    - `pyproject.toml` in EVERY Python package: crates/tensogram-python, tensogram-xarray,
-      tensogram-zarr
+    - `pyproject.toml` in EVERY Python package: python/bindings, python/tensogram-xarray,
+      python/tensogram-zarr
     - `CHANGELOG.md` (new release entry header)
-  The provenance encoder in `crates/tensogram-core/src/encode.rs` reads the version via
+  The provenance encoder in `rust/tensogram-core/src/encode.rs` reads the version via
   `env!("CARGO_PKG_VERSION")` which comes from Cargo.toml — so keeping Cargo.toml in sync
   with VERSION is critical for correct provenance in encoded messages.
   If ANY of these are out of sync, the release is broken. Always grep for the old version

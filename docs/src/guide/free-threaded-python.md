@@ -6,7 +6,7 @@ Tensogram supports [free-threaded Python](https://docs.python.org/3.14/whatsnew/
 
 On standard CPython, the GIL serializes access to the interpreter — only one thread runs Python code at a time. Tensogram already releases the GIL during Rust computation (`py.detach()`), which helps, but the GIL is still re-acquired for numpy array construction and Python object creation.
 
-On free-threaded CPython (3.13t / 3.14t), there is no GIL at all. Multiple threads can call `tensogram.encode()` and `tensogram.decode()` in true parallel. Use the included benchmark (`benchmarks/python/bench_threading.py`) to measure scaling on your hardware.
+On free-threaded CPython (3.13t / 3.14t), there is no GIL at all. Multiple threads can call `tensogram.encode()` and `tensogram.decode()` in true parallel. Use the included benchmark (`rust/benchmarks/python/bench_threading.py`) to measure scaling on your hardware.
 
 ## Building for Free-Threaded Python
 
@@ -26,7 +26,7 @@ Build tensogram:
 uv venv .venv --python python3.14t
 source .venv/bin/activate
 uv pip install maturin "numpy>=2.1"
-cd crates/tensogram-python && maturin develop --release
+cd python/bindings && maturin develop --release
 ```
 
 Verify the GIL is disabled:
@@ -179,9 +179,9 @@ Methodology: 5 runs per configuration, median reported. 200–500 warmup iterati
 
 > These numbers are machine-specific. Run the benchmark on your hardware:
 > ```bash
-> python benchmarks/python/bench_threading.py              # full suite
-> python benchmarks/python/bench_threading.py --headline   # quick comparison
-> python benchmarks/python/bench_threading.py --quick      # CI smoke test
+> python rust/benchmarks/python/bench_threading.py              # full suite
+> python rust/benchmarks/python/bench_threading.py --headline   # quick comparison
+> python rust/benchmarks/python/bench_threading.py --quick      # CI smoke test
 > ```
 
 ## Tensogram Python vs ecCodes C
@@ -192,7 +192,7 @@ This section compares **Tensogram called from Python** against **ecCodes called 
 
 Both sides are measured **end-to-end**: from a float64 array to serialized compressed bytes (encode), and back to a float64 array (decode). Both include metadata serialization, framing, and integrity overhead — not just the raw packing step.
 
-**ecCodes (C, single-threaded)**: The Rust benchmark (`benchmarks/src/bin/grib_comparison.rs`) calls ecCodes' C library directly via FFI. Encode: allocate a GRIB handle, configure the grid (10M regular lat/lon), set packing type to CCSDS at 24 bits, write the values array, serialize to GRIB bytes. Decode: load the GRIB message from bytes, extract the values array. No Python involved. Median of 10 iterations, 3 warmup.
+**ecCodes (C, single-threaded)**: The Rust benchmark (`rust/benchmarks/src/bin/grib_comparison.rs`) calls ecCodes' C library directly via FFI. Encode: allocate a GRIB handle, configure the grid (10M regular lat/lon), set packing type to CCSDS at 24 bits, write the values array, serialize to GRIB bytes. Decode: load the GRIB message from bytes, extract the values array. No Python involved. Median of 10 iterations, 3 warmup.
 
 **Tensogram (Python, multi-threaded)**: The same 10M float64 values, same 24-bit quantization, same szip compression. Encode: pass a numpy array + CBOR metadata dict to `tensogram.encode()`, which crosses the PyO3 boundary, quantizes, compresses, frames, computes the integrity hash, and returns Python `bytes`. Decode: pass `bytes` to `tensogram.decode()`, which deframes, decompresses, dequantizes, and returns a numpy array. Each Python thread makes independent encode/decode calls. The GIL is released during the Rust computation.
 

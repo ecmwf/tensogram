@@ -94,11 +94,11 @@ cargo build --release
 
 ### CMake (recommended)
 
-The project root `CMakeLists.txt` already builds the Rust library and sets up
+The `cpp/CMakeLists.txt` already builds the Rust library and sets up
 include paths. Add example targets there, or build from the project root:
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S cpp -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
@@ -107,7 +107,7 @@ cmake --build build -j
 ```bash
 # Linux:
 g++ -std=c++17 \
-    -I include -I crates/tensogram-ffi \
+    -I cpp/include \
     examples/cpp/01_encode_decode.cpp \
     -L target/release -ltensogram_ffi \
     -ldl -lpthread -lm \
@@ -115,7 +115,7 @@ g++ -std=c++17 \
 
 # macOS:
 g++ -std=c++17 \
-    -I include -I crates/tensogram-ffi \
+    -I cpp/include \
     examples/cpp/01_encode_decode.cpp \
     -L target/release -ltensogram_ffi \
     -framework CoreFoundation -framework Security -framework SystemConfiguration \

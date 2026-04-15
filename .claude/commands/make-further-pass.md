@@ -38,5 +38,5 @@ Everything from Pass 3-4, PLUS with ZERO TOLERANCE:
 3. List all findings grouped by category
 4. Fix each finding, verifying the fix compiles and tests pass
 5. Run all formatters and linters: `cargo fmt`, `cargo clippy`, `ruff check`, `ruff format`
-6. Run all tests: `cargo test --workspace`, `python -m pytest tests/python/ -v`
+6. Run all tests: `cargo test --workspace`, `python -m pytest python/tests/ -v`
 7. Summarize what was changed and what the next pass should focus on

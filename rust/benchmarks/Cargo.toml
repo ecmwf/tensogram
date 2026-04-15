@@ -27,8 +27,8 @@ default = []
 eccodes = ["dep:eccodes", "dep:eccodes-sys"]
 
 [dependencies]
-tensogram-encodings = { path = "../crates/tensogram-encodings" }
-tensogram-core = { path = "../crates/tensogram-core" }
+tensogram-encodings = { path = "../tensogram-encodings" }
+tensogram-core = { path = "../tensogram-core" }
 ciborium = { workspace = true }
 clap = { workspace = true }
 eccodes = { version = "0.14", default-features = false, optional = true }

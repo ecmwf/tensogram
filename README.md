@@ -94,10 +94,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint
 cargo build -p tensogram-core --features mmap,async
 ```
 
-**C++ wrapper** (`include/tensogram.hpp`):
+**C++ wrapper** (`cpp/include/tensogram.hpp`):
 ```bash
 cargo build --release                  # build Rust static library first
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S cpp -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build --output-on-failure  # run C++ tests
 ```
@@ -107,15 +107,15 @@ See `examples/cpp/` for encode/decode, metadata, file API, and iterator examples
 ```bash
 uv venv .venv && source .venv/bin/activate
 uv pip install maturin numpy
-cd crates/tensogram-python && maturin develop
-python -m pytest tests/python/ -v              # 200 tests
+cd python/bindings && maturin develop
+python -m pytest python/tests/ -v              # 200 tests
 ```
 
 **xarray + Zarr backends:**
 ```bash
 source .venv/bin/activate                      # activate venv from above step
-uv pip install -e "tensogram-xarray/[dask]"    # 124 tests
-uv pip install -e tensogram-zarr/              # 172 tests
+uv pip install -e "python/tensogram-xarray/[dask]"    # 124 tests
+uv pip install -e python/tensogram-zarr/              # 172 tests
 ```
 
 **GRIB conversion** (requires [ecCodes](https://confluence.ecmwf.int/display/ECC)):
@@ -150,16 +150,23 @@ For general enquiries about ECMWF software, visit the
 ## Repository Layout
 
 ```
-crates/
+rust/
 ├── tensogram-core/       Core encode/decode library
 ├── tensogram-encodings/  Encoding pipeline + compression codecs
 ├── tensogram-cli/        CLI binary (tensogram command)
 ├── tensogram-ffi/        C FFI layer
 ├── tensogram-grib/       GRIB converter (ecCodes, excluded from default build)
 ├── tensogram-netcdf/     NetCDF converter (libnetcdf, excluded from default build)
-└── tensogram-python/     Python bindings (PyO3, excluded from default build)
-tensogram-xarray/         xarray backend engine (Python package)
-tensogram-zarr/           Zarr v3 store backend (Python package)
+└── benchmarks/           Benchmark suite
+python/
+├── bindings/             Python bindings (PyO3, excluded from default build)
+├── tensogram-xarray/     xarray backend engine (Python package)
+├── tensogram-zarr/       Zarr v3 store backend (Python package)
+└── tests/                Python test suite
+cpp/
+├── include/              C++ wrapper header + C header
+├── tests/                C++ GoogleTest suite
+└── CMakeLists.txt        CMake build system
 examples/{rust,cpp,python}/
 docs/                     mdBook documentation
 .github/workflows/ci.yml  CI matrix (Rust, Python, C++, GRIB, xarray, zarr, docs)

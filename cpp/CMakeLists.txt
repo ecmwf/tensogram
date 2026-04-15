@@ -8,13 +8,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # ---------------------------------------------------------------------------
 # Build the Rust static library via cargo
 # ---------------------------------------------------------------------------
-set(CARGO_TARGET_DIR "${CMAKE_SOURCE_DIR}/target")
+set(CARGO_TARGET_DIR "${CMAKE_SOURCE_DIR}/../target")
 set(RUST_LIB "${CARGO_TARGET_DIR}/release/libtensogram_ffi.a")
 
 add_custom_command(
     OUTPUT "${RUST_LIB}"
     COMMAND cargo build --release -p tensogram-ffi
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/.."
     COMMENT "Building Rust tensogram-ffi static library"
 )
 add_custom_target(rust_lib ALL DEPENDS "${RUST_LIB}")
@@ -30,8 +30,7 @@ add_dependencies(tensogram_ffi rust_lib)
 # ---------------------------------------------------------------------------
 add_library(tensogram INTERFACE)
 target_include_directories(tensogram INTERFACE
-    "${CMAKE_SOURCE_DIR}/include"
-    "${CMAKE_SOURCE_DIR}/crates/tensogram-ffi")
+    "${CMAKE_SOURCE_DIR}/include")
 target_link_libraries(tensogram INTERFACE tensogram_ffi)
 
 # Platform-specific system libraries required by the Rust static library
@@ -53,5 +52,5 @@ endif()
 option(BUILD_TESTING "Build tests" ON)
 if(BUILD_TESTING)
     enable_testing()
-    add_subdirectory(tests/cpp)
+    add_subdirectory(tests)
 endif()

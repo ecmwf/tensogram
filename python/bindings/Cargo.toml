@@ -12,8 +12,8 @@ default = ["async"]
 async = ["tensogram-core/async", "dep:pyo3-async-runtimes"]
 
 [dependencies]
-tensogram-core = { path = "../tensogram-core", features = ["remote"] }
-tensogram-encodings = { path = "../tensogram-encodings" }
+tensogram-core = { path = "../../rust/tensogram-core", features = ["remote"] }
+tensogram-encodings = { path = "../../rust/tensogram-encodings" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 numpy = "0.28"
 ciborium = "0.2"
