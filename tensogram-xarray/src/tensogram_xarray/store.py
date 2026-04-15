@@ -285,7 +285,7 @@ class TensogramDataStore:
         Strategy:
         1. If user provided ``dim_names``, use them directly.
         2. Try to match each axis size against a known coordinate variable.
-        3. Try to match each axis size against hints in ``_extra_["anemoi"]["dim_names"]``.
+        3. Try to match each axis size against hints in ``_extra_["dim_names"]``.
         4. Fall back to ``dim_0``, ``dim_1``, ...
         """
         ndim = len(shape)
