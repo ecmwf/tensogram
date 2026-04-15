@@ -816,6 +816,32 @@ class TestSyncBatchRange:
             np.testing.assert_array_equal(b, i)
 
 
+class TestBatchLocalFileError:
+    """Batch methods require remote backend; calling on local files must raise."""
+
+    def test_sync_object_batch_raises_on_local(self, tgm_path):
+        f = tensogram.TensogramFile.open(tgm_path)
+        with pytest.raises(OSError, match="remote backend"):
+            f.file_decode_object_batch([0, 1], 0)
+
+    def test_sync_range_batch_raises_on_local(self, tgm_path):
+        f = tensogram.TensogramFile.open(tgm_path)
+        with pytest.raises(OSError, match="remote backend"):
+            f.file_decode_range_batch([0, 1], 0, [(0, 5)])
+
+    @pytest.mark.asyncio
+    async def test_async_object_batch_raises_on_local(self, tgm_path):
+        f = await tensogram.AsyncTensogramFile.open(tgm_path)
+        with pytest.raises(OSError, match="remote backend"):
+            await f.file_decode_object_batch([0, 1], 0)
+
+    @pytest.mark.asyncio
+    async def test_async_range_batch_raises_on_local(self, tgm_path):
+        f = await tensogram.AsyncTensogramFile.open(tgm_path)
+        with pytest.raises(OSError, match="remote backend"):
+            await f.file_decode_range_batch([0, 1], 0, [(0, 5)])
+
+
 class TestAsyncPrefetchLayouts:
     @pytest.mark.asyncio
     async def test_prefetch_then_decode(self, serve_tgm_bytes):
