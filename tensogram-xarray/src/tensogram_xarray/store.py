@@ -261,6 +261,20 @@ class TensogramDataStore:
         ds = xr.Dataset(data_vars, coords=coord_vars, attrs=dataset_attrs)
         return ds
 
+    def _get_meta_dim_names(self) -> dict[int, str]:
+        """Return a size->name mapping from ``_extra_["dim_names"]``.
+
+        Any writer can embed a ``{"<size>": "<name>"}`` dict at
+        ``_extra_["dim_names"]`` to provide meaningful dimension names
+        without the reader having to pass ``dim_names`` explicitly.
+        Returns an empty dict when the key is absent or malformed.
+        """
+        try:
+            raw: dict = self._meta.extra["dim_names"]
+            return {int(k): str(v) for k, v in raw.items()}
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return {}
+
     def _resolve_dims_for_var(
         self,
         shape: tuple[int, ...],
@@ -271,7 +285,8 @@ class TensogramDataStore:
         Strategy:
         1. If user provided ``dim_names``, use them directly.
         2. Try to match each axis size against a known coordinate variable.
-        3. Fall back to ``dim_0``, ``dim_1``, ...
+        3. Try to match each axis size against hints in ``_extra_["anemoi"]["dim_names"]``.
+        4. Fall back to ``dim_0``, ``dim_1``, ...
         """
         ndim = len(shape)
 
@@ -286,17 +301,29 @@ class TensogramDataStore:
             csize = cvar.shape[0]
             size_to_coord.setdefault(csize, []).append(cname)
 
+        # (3) Metadata hints written by the producer (size -> name).
+        meta_dim_names = self._get_meta_dim_names()
+
         dims: list[str] = []
-        used_coords: set[str] = set()
+        used: set[str] = set()
         for axis, axis_size in enumerate(shape):
             matched = False
+            # Prefer a detected coordinate dimension.
             if axis_size in size_to_coord:
                 for cname in size_to_coord[axis_size]:
-                    if cname not in used_coords:
+                    if cname not in used:
                         dims.append(cname)
-                        used_coords.add(cname)
+                        used.add(cname)
                         matched = True
                         break
+            # Fall back to producer hint.
+            if not matched and axis_size in meta_dim_names:
+                hint = meta_dim_names[axis_size]
+                if hint not in used:
+                    dims.append(hint)
+                    used.add(hint)
+                    matched = True
+            # Final fallback.
             if not matched:
                 dims.append(f"dim_{axis}")
 
