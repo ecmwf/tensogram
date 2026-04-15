@@ -27,21 +27,21 @@ Now the B0 run and B1 run are highly compressible (long runs of similar values).
 ### shuffle
 
 ```rust
-pub fn shuffle(data: &[u8], element_size: usize) -> Vec<u8>
+pub fn shuffle(data: &[u8], element_size: usize) -> Result<Vec<u8>, ShuffleError>
 ```
 
 Rearranges bytes. `element_size` is the byte width of each element (e.g. 4 for float32, 8 for float64).
 
 ```rust
 let raw: Vec<u8> = floats.iter().flat_map(|f: &f32| f.to_ne_bytes()).collect();
-let shuffled = shuffle(&raw, 4);
+let shuffled = shuffle(&raw, 4)?;
 // shuffled is ready for compression
 ```
 
 ### unshuffle
 
 ```rust
-pub fn unshuffle(data: &[u8], element_size: usize) -> Vec<u8>
+pub fn unshuffle(data: &[u8], element_size: usize) -> Result<Vec<u8>, ShuffleError>
 ```
 
 Reverses the shuffle. Applied automatically by the decode pipeline.
@@ -59,7 +59,12 @@ params.insert(
     Value::Integer(4.into()), // 4 bytes per float32
 );
 
-let payload = PayloadDescriptor {
+let desc = DataObjectDescriptor {
+    obj_type: "ntensor".to_string(),
+    ndim: 1,
+    shape: vec![100],
+    strides: vec![1],
+    dtype: Dtype::Float32,
     byte_order: ByteOrder::Big,
     encoding: "none".to_string(),
     filter: "shuffle".to_string(),
@@ -73,7 +78,7 @@ let payload = PayloadDescriptor {
 
 ### Element Size Must Divide the Buffer
 
-The shuffle operation requires `data.len() % element_size == 0`. If this is not true, the function panics. Ensure your data buffer is a whole number of elements.
+The shuffle operation requires `data.len() % element_size == 0`. If this is not true, the function returns `Err(ShuffleError::Misaligned)`. Ensure your data buffer is a whole number of elements.
 
 ### Shuffle Alone Does Not Compress
 
