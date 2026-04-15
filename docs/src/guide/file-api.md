@@ -36,7 +36,7 @@ let desc = DataObjectDescriptor {
     hash: None,
 };
 
-file.append(global, &[(&desc, &data)], &EncodeOptions::default())?;
+    file.append(&global, &[(&desc, &data)], &EncodeOptions::default())?;
 ```
 
 Each `append` encodes one message and appends it to the end of the file. You can call it as many times as you like — each message is independent and self-describing.
@@ -48,7 +48,7 @@ let mut file = TensogramFile::create("output.tgm")?;
 
 for param in ["2t", "10u", "10v", "msl"] {
     let (global, desc, data) = produce_field(param);
-    file.append(global, &[(&desc, &data)], &EncodeOptions::default())?;
+file.append(&global, &[(&desc, &data)], &EncodeOptions::default())?;
 }
 ```
 

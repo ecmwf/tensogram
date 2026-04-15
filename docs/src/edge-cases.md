@@ -156,7 +156,7 @@ If a message contains a hash with an algorithm the decoder doesn't recognize (e.
 
 ## decode_range with Empty Ranges
 
-Calling `decode_range()` with an empty `ranges` slice (`&[]`) returns an empty `Vec<u8>`. This is not an error.
+Calling `decode_range()` with an empty `ranges` slice (`&[]`) returns `(descriptor, vec![])` — the parts vector is empty. This is not an error.
 
 ## Preceder Metadata Error Paths
 

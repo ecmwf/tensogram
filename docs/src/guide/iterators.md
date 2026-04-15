@@ -80,7 +80,7 @@ for raw in file.iter()? {
 }
 ```
 
-`file.iter()` scans the file once (if not already scanned), then returns a `FileMessageIter` that reads each message via seek + read. The iterator does not borrow the `TensogramFile` — it owns a clone of the path and offsets.
+`file.iter()` scans the file once (if not already scanned), then returns a `FileMessageIter` that reads each message via seek + read. The iterator does not borrow the `TensogramFile` — it owns an open file handle and a copy of the message offsets.
 
 ## C / C++ API
 
