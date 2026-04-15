@@ -245,20 +245,6 @@ impl RemoteBackend {
         block_on_shared(async move { store.get_range(&path, range).await })
     }
 
-    #[allow(dead_code)]
-    fn get_suffix(&self, nbytes: u64) -> Result<Bytes> {
-        let store = self.store.clone();
-        let path = self.path.clone();
-        block_on_shared(async move {
-            let opts = GetOptions {
-                range: Some(GetRange::Suffix(nbytes)),
-                ..Default::default()
-            };
-            let result = store.get_opts(&path, opts).await?;
-            result.bytes().await
-        })
-    }
-
     // ── Message scanning ─────────────────────────────────────────────────
 
     fn scan_next_locked(&self, state: &mut RemoteState) -> Result<()> {
