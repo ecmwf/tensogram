@@ -3,6 +3,65 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.12.0] - 2026-04-16
+
+### Added
+- **Producer metadata dimension hints** — xarray backend resolves dimension
+  names from `_extra_["dim_names"]` embedded by the writer. Supports two
+  formats: list (axis-ordered, handles same-size axes) and dict (size→name,
+  legacy). Resolution priority: user `dim_names` > coord matching > producer
+  hints > `dim_N` fallback. (PR #34, @HCookie)
+- **Open source preparation** — Apache 2.0 licence headers on all 203 source
+  files, `THIRD_PARTY_LICENSES` audit (166/166 clean), `CODE_OF_CONDUCT.md`,
+  `SECURITY.md`, PR template with CLA, ECMWF Support Portal link in README,
+  branch protection on `main`. (PR #35)
+- **Clean-room `tensogram-sz3-sys`** (Apache-2.0 OR MIT) — replaces the
+  GPL-licensed `sz3-sys` crate with a thin C++ FFI shim wrapping the
+  BSD-licensed SZ3 library. Zero GPL code in the dependency tree.
+- **`tensogram-sz3`** (Apache-2.0 OR MIT) — high-level SZ3 API matching the
+  published `sz3` crate interface.
+- **Docker CI image** — multi-stage Dockerfile with all build deps pre-baked.
+  CI split into parallel lint/test/python/C++ jobs. (PR #36)
+- **Top-level `Makefile`** — `make rust-test`, `make python-test`,
+  `make cpp-test`, `make lint`, `make fmt`, `make docs-build`, `make clean`.
+- **30 edge case tests** — NaN/Inf/-0.0 bit-exact float round-trip, bitmask
+  validation, 100-object stress, mixed streaming+buffered files, unicode
+  metadata (emoji/CJK/Arabic), Python bool→CBOR, xarray single-element and
+  all-NaN, decode_range zero-count and overlapping.
+- **92 code coverage tests** — tensogram-sz3 (34), validate (10), decode (21),
+  file (18), compression (9). Rust coverage 92.6% → 93.4%.
+
+### Changed
+- **Repository restructured** — language-grouped layout: `rust/` (all crates
+  + benchmarks), `python/` (bindings + xarray + zarr + tests), `cpp/`
+  (headers + CMake + tests). Workspace `Cargo.toml` and `Cargo.lock` stay at
+  root. (PR #37)
+- All copyright headers updated from `2024-` to `2026-`.
+- 2 library panics in `tensogram-sz3` replaced with `Result` propagation
+  (`UnsupportedAlgorithm`, `UnsupportedErrorBound`).
+- Published `sz3`/`sz3-sys` crates removed from dependency tree.
+
+### Fixed
+- Bitmask data length now validated at encode time (`ceil(shape_product/8)`).
+- `compute_strides` overflow guard in Python bindings (checked_mul).
+- FFI `tgm_scan_entry` OOB returns sentinel + error instead of silent zero.
+- FFI `collect_data_slices` avoids `from_raw_parts(null, 0)` UB.
+- SZ3 FFI shim: `using namespace SZ3` for GCC compatibility.
+- Unused `GetOptions`/`GetRange` imports removed from `remote.rs`.
+- Dead `get_suffix()` method removed from `remote.rs`.
+- Stale hardcoded test counts removed from `CONTRIBUTING.md`.
+
+### Removed
+- `ZARR_RESEARCH.md`, `plans/FREE_THREADED_PYTHON.md`,
+  `plans/python-async-bindings*.md` (implemented and shipped).
+- GPL-licensed `sz3-sys` dependency.
+
+### Stats
+- 1,848+ total tests (920 Rust + 423 Python + 201 xarray + 224 zarr +
+  80+ C++) — all green
+- 0 clippy warnings, 0 ruff issues
+- 166/166 third-party dependencies Apache-2.0 compatible
+
 ## [0.11.0] - 2026-04-15
 
 ### Added
