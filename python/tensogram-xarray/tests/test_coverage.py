@@ -1264,6 +1264,112 @@ class TestResolveDimsForVar:
 # ---------------------------------------------------------------------------
 
 
+class TestMetaDimNames:
+    """Cover _get_meta_dim_names() and its integration into _resolve_dims_for_var."""
+
+    def test_meta_dim_names_used(self, tmp_path):
+        """Producer-embedded dim_names override the dim_N fallback."""
+        data = np.ones((1000, 50), dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [{"name": "field"}],
+            "_extra_": {"dim_names": {"1000": "values", "50": "level"}},
+        }
+        path = str(tmp_path / "meta_dims.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([1000, 50]), data)])
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["field"].dims == ("values", "level")
+
+    def test_meta_dim_names_absent(self, tmp_path):
+        """Without _extra_.dim_names, dims fall back to dim_N."""
+        data = np.ones((3, 4), dtype=np.float32)
+        path = str(tmp_path / "no_meta.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append({"version": 2}, [(_desc([3, 4]), data)])
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["object_0"].dims == ("dim_0", "dim_1")
+
+    def test_meta_dim_names_malformed(self, tmp_path):
+        """Malformed dim_names silently falls back to dim_N."""
+        data = np.ones((3, 4), dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [{"name": "field"}],
+            "_extra_": {"dim_names": "not_a_dict"},
+        }
+        path = str(tmp_path / "bad_meta.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([3, 4]), data)])
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["field"].dims == ("dim_0", "dim_1")
+
+    def test_coord_takes_priority_over_meta(self, tmp_path):
+        """Coord-based matching (step 2) takes priority over meta hints (step 3)."""
+        lat = np.linspace(-90, 90, 5, dtype=np.float64)
+        data = np.ones((5, 8), dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [
+                {"name": "latitude"},
+                {"name": "field"},
+            ],
+            "_extra_": {"dim_names": {"5": "rows", "8": "cols"}},
+        }
+        path = str(tmp_path / "coord_vs_meta.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([5], dtype="float64"), lat),
+                    (_desc([5, 8]), data),
+                ],
+            )
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        dims = ds["field"].dims
+        # Axis 0 (size 5): coord "latitude" wins over hint "rows"
+        assert dims[0] == "latitude"
+        # Axis 1 (size 8): no coord match, hint "cols" used
+        assert dims[1] == "cols"
+
+    def test_explicit_dim_names_override_meta(self, tmp_path):
+        """User-supplied dim_names (step 1) override everything."""
+        data = np.ones((5, 8), dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [{"name": "field"}],
+            "_extra_": {"dim_names": {"5": "rows", "8": "cols"}},
+        }
+        path = str(tmp_path / "explicit_vs_meta.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([5, 8]), data)])
+
+        ds = xr.open_dataset(path, engine="tensogram", dim_names=["lat", "lon"])
+        assert ds["field"].dims == ("lat", "lon")
+
+    def test_meta_dim_names_duplicate_size(self, tmp_path):
+        """When two axes have the same size, hint is used once then fallback."""
+        data = np.ones((10, 10), dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [{"name": "field"}],
+            "_extra_": {"dim_names": {"10": "grid"}},
+        }
+        path = str(tmp_path / "dup_size.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([10, 10]), data)])
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        dims = ds["field"].dims
+        # First axis gets "grid", second falls back to "dim_1"
+        assert dims[0] == "grid"
+        assert dims[1] == "dim_1"
+
+
 class TestRangeMergeContiguous:
     """Cover array.py line 165: adjacent flat-range merging."""
 
