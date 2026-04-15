@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/tensogram-core",
     "crates/tensogram-encodings",
+    "crates/tensogram-sz3",
+    "crates/tensogram-sz3-sys",
     "crates/tensogram-szip",
     "crates/tensogram-cli",
     "crates/tensogram-ffi",
@@ -35,7 +37,8 @@ lz4_flex = "0.11"
 blosc2 = { version = "0.2", default-features = false, features = ["zstd", "zlib"] }
 blosc2-sys = { package = "blosc2-rs-sys", version = "0.1" }
 zfp-sys-cc = "0.2"
-sz3 = "0.4"
+tensogram-sz3 = { path = "crates/tensogram-sz3" }
+tensogram-sz3-sys = { path = "crates/tensogram-sz3-sys" }
 proptest = "1"
 
 # Prevent panics from unwinding across the FFI boundary (undefined behaviour).

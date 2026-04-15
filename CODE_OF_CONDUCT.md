@@ -2,8 +2,7 @@
 
 ## Our Pledge
 
-Tensogram is developed at ECMWF, an intergovernmental organisation whose
-software underpins critical weather and climate services worldwide. We are
+While developing software and services at ECMWF and with our community of Member and Cooperating States, we are
 committed to fostering an inclusive, respectful, and harassment-free community
 in line with [ECMWF's Open Source Principles](https://github.com/ecmwf/codex/blob/main/Principles/open-source-principles.md),
 which are inspired by the [United Nations Open Source Principles](https://opensource.un.org/en/news/united-nations-open-source-principles).
@@ -54,9 +53,8 @@ individual is representing the project or its community in public spaces.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behaviour may be
-reported by contacting the project team via the
-[ECMWF Support Portal](https://support.ecmwf.int). All complaints will be
-reviewed and investigated and will result in a response that is deemed
+reported by contacting the development team via [software@ecmwf.int](emailto:software@ecmwf.int). 
+All complaints will be reviewed and investigated and will result in a response that is deemed
 necessary and appropriate to the circumstances. The project team is obligated
 to maintain confidentiality with regard to the reporter of an incident.
 

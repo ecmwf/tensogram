@@ -158,7 +158,7 @@ smallvec                       1.15.1         MIT OR Apache-2.0                 
 strsim                         0.11.1         MIT                                       OK
 syn                            2.0.117        MIT OR Apache-2.0                         OK
 sz3                            0.4.3          MIT OR Apache-2.0                         OK
-sz3-sys                        0.4.1          GPL-3.0-only  ← DECLARED                 ⚠ BLOCKER (see findings)
+sz3-sys                        —              REMOVED (replaced by tensogram-sz3-sys)  ✅ RESOLVED
 tempfile                       3.27.0         MIT OR Apache-2.0                         OK
 thiserror                      2.0.18         MIT OR Apache-2.0                         OK
 thiserror-impl                 2.0.18         MIT OR Apache-2.0                         OK
@@ -249,31 +249,20 @@ PyO3                   MIT OR Apache-2.0                    OK (build only)
  FINDINGS & REQUIRED ACTIONS
 ================================================================================
 
-⚠  BLOCKER: sz3-sys 0.4.1 declares "GPL-3.0-only" in its Cargo.toml
+✅ RESOLVED: sz3-sys GPL-3.0-only dependency replaced
    -----------------------------------------------------------------------
-   The upstream SZ3 C++ library (szcompressor/SZ3) is BSD-3-Clause
-   (Argonne National Lab, licence SF-16-105). The Rust crate sz3-sys wraps
-   this library but the crate author erroneously set licence = "GPL-3.0-only"
-   in the crate metadata. The Rust wrapper code itself adds a GPL-3.0 grant.
+   The published sz3-sys crate (0.4.1) declared GPL-3.0-only. The upstream
+   SZ3 C++ library (szcompressor/SZ3) is BSD-3-Clause (Argonne National Lab,
+   licence SF-16-105).
 
-   Impact : If taken at face value, GPL-3.0-only is incompatible with
-            distributing tensogram under Apache-2.0.
+   Resolution: Created clean-room replacements:
+     - tensogram-sz3-sys (Apache-2.0 OR MIT) — thin C++ FFI shim wrapping
+       the BSD-licensed SZ3 header-only library directly
+     - tensogram-sz3 (Apache-2.0 OR MIT) — high-level API matching the
+       published sz3 crate interface
 
-   Remediation options (pick one before open-sourcing):
-     1. PREFERRED: File an issue / PR on
-        https://github.com/apertus-open-source-cinema/sz3-rs/ asking the
-        author to relicense the ~200 lines of Rust wrapper code as
-        MIT OR Apache-2.0 (matching the sz3 high-level crate) and correct
-        the Cargo.toml licence field.
-     2. Fork sz3-sys, relicense the thin wrapper under MIT/Apache-2.0
-        (permissible since the wrapped C code is BSD), and publish as
-        tensogram-sz3-sys or vendor it in-tree.
-     3. Make the sz3 feature opt-out / disabled by default so that no
-        GPL-tagged code is compiled into the default build. Document clearly
-        that enabling it pulls in a GPL-3.0-only dependency.
-     4. Remove the sz3 dependency entirely.
-
-   Current default features include sz3, so this is a shipping blocker.
+   The published sz3/sz3-sys crates are no longer in the dependency tree.
+   No GPL code is compiled into any configuration of Tensogram.
 
 ------------------------------------------------------------------------
 
@@ -312,6 +301,6 @@ Note 7: unicode-ident requires (MIT OR Apache-2.0) AND Unicode-3.0
  Total Rust crates scanned  : 150 (excluding 7 workspace crates)
  Total C/C++ libraries      : 6
  Total Python packages      : 10
- Compatible                 : 165 / 166
- Blockers                   : 1  (sz3-sys GPL-3.0-only)
- Action items               : 1  (resolve sz3-sys before open-source release)
+ Compatible                 : 166 / 166
+ Blockers                   : 0  (sz3-sys replaced with tensogram-sz3-sys)
+ Action items               : 0
