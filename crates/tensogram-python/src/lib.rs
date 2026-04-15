@@ -492,7 +492,7 @@ impl PyTensogramFile {
             .map_err(to_py_err)?;
         let arr = bytes_to_numpy(py, &desc, &data)?;
         let py_desc = PyDataObjectDescriptor {
-            inner: desc.clone(),
+            inner: desc,
         }
         .into_pyobject(py)?
         .into_any()
@@ -560,7 +560,7 @@ impl PyTensogramFile {
             .map(|(meta, desc, data)| {
                 let arr = bytes_to_numpy(py, &desc, &data)?;
                 let py_desc = PyDataObjectDescriptor {
-                    inner: desc.clone(),
+                    inner: desc,
                 }
                 .into_pyobject(py)?
                 .into_any()
@@ -1571,7 +1571,7 @@ impl PyAsyncTensogramFile {
             Python::attach(|py| {
                 let arr = bytes_to_numpy(py, &desc, &data)?;
                 let py_desc = PyDataObjectDescriptor {
-                    inner: desc.clone(),
+                    inner: desc,
                 }
                 .into_pyobject(py)?
                 .into_any()
@@ -1698,7 +1698,7 @@ impl PyAsyncTensogramFile {
                     .map(|(meta, desc, data)| {
                         let arr = bytes_to_numpy(py, &desc, &data)?;
                         let py_desc = PyDataObjectDescriptor {
-                            inner: desc.clone(),
+                            inner: desc,
                         }
                         .into_pyobject(py)?
                         .into_any()
