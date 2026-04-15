@@ -1,3 +1,11 @@
+# (C) Copyright 2026- ECMWF and individual contributors.
+#
+# This software is licensed under the terms of the Apache Licence Version 2.0
+# which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+# In applying this licence, ECMWF does not waive the privileges and immunities
+# granted to it by virtue of its status as an intergovernmental organisation nor
+# does it submit to any jurisdiction.
+
 """Tests for AsyncTensogramFile — Python asyncio bindings."""
 
 from __future__ import annotations
@@ -159,9 +167,7 @@ class TestAsyncGather:
             f.file_decode_object(2, 0),
         )
         for i, r in enumerate(results):
-            np.testing.assert_allclose(
-                r["data"], np.full(10, float(i), dtype=np.float32)
-            )
+            np.testing.assert_allclose(r["data"], np.full(10, float(i), dtype=np.float32))
 
     @pytest.mark.asyncio
     async def test_gather_mixed_operations(self, tgm_path):
@@ -183,9 +189,7 @@ class TestAsyncGather:
         )
         for i, (meta, objects) in enumerate(messages):
             assert meta.version == 2
-            np.testing.assert_allclose(
-                objects[0][1], np.full(10, float(i), dtype=np.float32)
-            )
+            np.testing.assert_allclose(objects[0][1], np.full(10, float(i), dtype=np.float32))
 
 
 class TestAsyncParity:
@@ -415,9 +419,7 @@ class TestAsyncIteration:
         assert len(messages) == 3
         for i, (meta, objects) in enumerate(messages):
             assert meta.version == 2
-            np.testing.assert_allclose(
-                objects[0][1], np.full(10, float(i), dtype=np.float32)
-            )
+            np.testing.assert_allclose(objects[0][1], np.full(10, float(i), dtype=np.float32))
 
     @pytest.mark.asyncio
     async def test_aiter_early_break(self, tgm_path):
@@ -456,9 +458,7 @@ class TestAsyncIteration:
         async for m in f:
             messages.append(m)
         assert len(messages) == 1
-        np.testing.assert_allclose(
-            messages[0][1][0][1], np.full(4, 99.0, dtype=np.float32)
-        )
+        np.testing.assert_allclose(messages[0][1][0][1], np.full(4, 99.0, dtype=np.float32))
 
     @pytest.mark.asyncio
     async def test_aiter_repr(self, tgm_path):
@@ -672,9 +672,7 @@ class TestAsyncBatchObject:
             assert "data" in r
             assert "metadata" in r
             assert "descriptor" in r
-            np.testing.assert_allclose(
-                r["data"], np.full(10, float(i), dtype=np.float32)
-            )
+            np.testing.assert_allclose(r["data"], np.full(10, float(i), dtype=np.float32))
 
     @pytest.mark.asyncio
     async def test_batch_matches_individual(self, serve_tgm_bytes):
@@ -737,9 +735,7 @@ class TestSyncBatchObject:
         results = f.file_decode_object_batch([0, 1, 2], 0)
         assert len(results) == 3
         for i, r in enumerate(results):
-            np.testing.assert_allclose(
-                r["data"], np.full(10, float(i), dtype=np.float32)
-            )
+            np.testing.assert_allclose(r["data"], np.full(10, float(i), dtype=np.float32))
 
     def test_batch_matches_individual(self, serve_tgm_bytes):
         meta = {"version": 2, "base": [{}]}

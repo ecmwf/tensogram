@@ -1,3 +1,11 @@
+// (C) Copyright 2026- ECMWF and individual contributors.
+//
+// This software is licensed under the terms of the Apache Licence Version 2.0
+// which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+// In applying this licence, ECMWF does not waive the privileges and immunities
+// granted to it by virtue of its status as an intergovernmental organisation nor
+// does it submit to any jurisdiction.
+
 use crate::encode::build_pipeline_config_with_backend;
 use crate::error::{Result, TensogramError};
 use crate::framing;
@@ -224,6 +232,7 @@ pub(crate) fn decode_single_object(
     decode_single_object_with_backend(desc, payload_bytes, options, options.compression_backend)
 }
 
+/// Decode a single object payload, using the specified compression backend.
 fn decode_single_object_with_backend(
     desc: &DataObjectDescriptor,
     payload_bytes: &[u8],
@@ -248,4 +257,414 @@ fn decode_single_object_with_backend(
         .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
     Ok(decoded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dtype::Dtype;
+    use crate::encode::{encode, EncodeOptions};
+    use crate::types::ByteOrder;
+    use std::collections::BTreeMap;
+
+    fn make_global_meta() -> GlobalMetadata {
+        GlobalMetadata {
+            version: 2,
+            extra: BTreeMap::new(),
+            ..Default::default()
+        }
+    }
+
+    fn make_descriptor(shape: Vec<u64>) -> DataObjectDescriptor {
+        let strides = if shape.is_empty() {
+            vec![]
+        } else {
+            let mut s = vec![1u64; shape.len()];
+            for i in (0..shape.len() - 1).rev() {
+                s[i] = s[i + 1] * shape[i + 1];
+            }
+            s
+        };
+        DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: shape.len() as u64,
+            shape,
+            strides,
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        }
+    }
+
+    // ── corrupt descriptor CBOR → decode error ───────────────────────────
+
+    #[test]
+    fn test_decode_corrupt_message_bytes() {
+        // Completely invalid bytes — not a valid tensogram message
+        let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03];
+        let result = decode(&garbage, &DecodeOptions::default());
+        assert!(result.is_err(), "decoding garbage should fail");
+    }
+
+    #[test]
+    fn test_decode_truncated_message() {
+        // Encode a valid message then truncate it
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+        // Truncate to half
+        let truncated = &encoded[..encoded.len() / 2];
+        let result = decode(truncated, &DecodeOptions::default());
+        assert!(result.is_err(), "decoding truncated message should fail");
+    }
+
+    #[test]
+    fn test_decode_corrupted_cbor_in_message() {
+        // Encode a valid message then corrupt the metadata frame CBOR.
+        // The metadata CBOR starts right after preamble (24 bytes) +
+        // frame header (16 bytes). Aggressively corrupt that region.
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![42u8; 16];
+        let mut encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+        // Preamble = 24 bytes, Frame header = 16 bytes => CBOR starts at 40
+        let cbor_start = 40;
+        let corrupt_end = (cbor_start + 30).min(encoded.len());
+        for byte in &mut encoded[cbor_start..corrupt_end] {
+            *byte = 0xFF;
+        }
+
+        let result = decode(&encoded, &DecodeOptions::default());
+        // Should fail because CBOR metadata or frame structure is corrupted
+        assert!(result.is_err(), "decoding corrupted CBOR should fail");
+    }
+
+    // ── object index out of range in decode_object ───────────────────────
+
+    #[test]
+    fn test_decode_object_index_out_of_range() {
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+        // Only 1 object (index 0), request index 1
+        let result = decode_object(&encoded, 1, &DecodeOptions::default());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("out of range"),
+            "expected 'out of range', got: {msg}"
+        );
+
+        // Request a very large index
+        let result = decode_object(&encoded, 999, &DecodeOptions::default());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("out of range"));
+    }
+
+    #[test]
+    fn test_decode_object_valid_index() {
+        let meta = make_global_meta();
+        let desc0 = make_descriptor(vec![2]);
+        let data0 = vec![10u8; 8];
+        let desc1 = make_descriptor(vec![3]);
+        let data1 = vec![20u8; 12];
+
+        let encoded = encode(
+            &meta,
+            &[(&desc0, data0.as_slice()), (&desc1, data1.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+
+        // Access object 0
+        let (_, ret_desc, ret_data) =
+            decode_object(&encoded, 0, &DecodeOptions::default()).unwrap();
+        assert_eq!(ret_desc.shape, vec![2]);
+        assert_eq!(ret_data, data0);
+
+        // Access object 1
+        let (_, ret_desc, ret_data) =
+            decode_object(&encoded, 1, &DecodeOptions::default()).unwrap();
+        assert_eq!(ret_desc.shape, vec![3]);
+        assert_eq!(ret_data, data1);
+    }
+
+    // ── decode_range invalid byte ranges ─────────────────────────────────
+
+    #[test]
+    fn test_decode_range_object_index_out_of_range() {
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+        let result = decode_range(&encoded, 5, &[(0, 2)], &DecodeOptions::default());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("out of range"),
+            "expected 'out of range', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_decode_range_exceeds_payload() {
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]); // 4 float32s = 16 bytes
+        let data = vec![0u8; 16];
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+        // Request range offset=2, count=10 but only 4 elements
+        let result = decode_range(&encoded, 0, &[(2, 10)], &DecodeOptions::default());
+        assert!(result.is_err(), "range exceeding payload should fail");
+    }
+
+    #[test]
+    fn test_decode_range_valid() {
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![8]); // 8 float32s = 32 bytes
+        let data: Vec<u8> = (0..32).collect();
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+        let (ret_desc, parts) =
+            decode_range(&encoded, 0, &[(0, 4)], &DecodeOptions::default()).unwrap();
+        assert_eq!(ret_desc.shape, vec![8]);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].len(), 16); // 4 float32s = 16 bytes
+    }
+
+    #[test]
+    fn test_decode_range_empty_ranges() {
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+        let (_, parts) = decode_range(&encoded, 0, &[], &DecodeOptions::default()).unwrap();
+        assert!(parts.is_empty());
+    }
+
+    // ── decode_metadata ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_decode_metadata_valid() {
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+        let decoded_meta = decode_metadata(&encoded).unwrap();
+        assert_eq!(decoded_meta.version, 2);
+    }
+
+    #[test]
+    fn test_decode_metadata_corrupt() {
+        let garbage = vec![0xFF; 50];
+        let result = decode_metadata(&garbage);
+        assert!(result.is_err(), "decode_metadata on garbage should fail");
+    }
+
+    // ── decode_descriptors ───────────────────────────────────────────────
+
+    #[test]
+    fn test_decode_descriptors_valid() {
+        let meta = make_global_meta();
+        let desc0 = make_descriptor(vec![4]);
+        let desc1 = make_descriptor(vec![2, 3]);
+        let data0 = vec![0u8; 16];
+        let data1 = vec![0u8; 24];
+        let encoded = encode(
+            &meta,
+            &[(&desc0, data0.as_slice()), (&desc1, data1.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+
+        let (decoded_meta, descs) = decode_descriptors(&encoded).unwrap();
+        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(descs.len(), 2);
+        assert_eq!(descs[0].shape, vec![4]);
+        assert_eq!(descs[1].shape, vec![2, 3]);
+    }
+
+    // ── decode_range with filter=shuffle → error ─────────────────────────
+
+    #[test]
+    fn test_decode_range_filter_shuffle_rejected() {
+        let meta = make_global_meta();
+        let mut desc = make_descriptor(vec![100]);
+        desc.filter = "shuffle".to_string();
+        desc.params.insert(
+            "shuffle_element_size".to_string(),
+            ciborium::Value::Integer(4.into()),
+        );
+        let data: Vec<u8> = (0..400).map(|i| (i % 256) as u8).collect();
+
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+        let result = decode_range(&encoded, 0, &[(0, 10)], &DecodeOptions::default());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("filter") || msg.contains("shuffle"),
+            "expected filter/shuffle error, got: {msg}"
+        );
+    }
+
+    // ── decode_range with bitmask dtype → error ──────────────────────────
+
+    #[test]
+    fn test_decode_range_bitmask_dtype_rejected() {
+        let meta = make_global_meta();
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: 1,
+            shape: vec![16],
+            strides: vec![1],
+            dtype: Dtype::Bitmask,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let data = vec![0xFF; 2]; // ceil(16/8) = 2 bytes
+
+        let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+        let result = decode_range(&encoded, 0, &[(0, 8)], &DecodeOptions::default());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("bitmask"),
+            "expected bitmask error, got: {msg}"
+        );
+    }
+
+    // ── DecodeOptions defaults ───────────────────────────────────────────
+
+    #[test]
+    fn test_decode_options_defaults() {
+        let opts = DecodeOptions::default();
+        assert!(!opts.verify_hash);
+        assert!(opts.native_byte_order);
+    }
+
+    // ── decode with unknown encoding in descriptor ───────────────────────
+
+    #[test]
+    fn test_decode_unknown_encoding_in_descriptor() {
+        // We need to craft a message with an unknown encoding.
+        // Easiest: encode a valid message, then manually patch the CBOR
+        // descriptor's encoding field. Instead, use build_pipeline_config directly.
+        let mut desc = make_descriptor(vec![4]);
+        desc.encoding = "foobar".to_string();
+
+        let result = crate::encode::build_pipeline_config_with_backend(
+            &desc,
+            4,
+            Dtype::Float32,
+            pipeline::CompressionBackend::default(),
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("unknown encoding"),
+            "expected 'unknown encoding', got: {msg}"
+        );
+    }
+
+    // ── decode with unknown compression in descriptor ────────────────────
+
+    #[test]
+    fn test_decode_unknown_compression_in_descriptor() {
+        let mut desc = make_descriptor(vec![4]);
+        desc.compression = "quantum_compress".to_string();
+
+        let result = crate::encode::build_pipeline_config_with_backend(
+            &desc,
+            4,
+            Dtype::Float32,
+            pipeline::CompressionBackend::default(),
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("unknown compression"),
+            "expected 'unknown compression', got: {msg}"
+        );
+    }
+
+    // ── extract_block_offsets error paths ─────────────────────────────────
+
+    #[test]
+    fn test_extract_block_offsets_missing() {
+        let params = BTreeMap::new();
+        let result = extract_block_offsets(&params);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("szip_block_offsets"),
+            "expected szip_block_offsets error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_extract_block_offsets_wrong_type() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Text("not an array".to_string()),
+        );
+        let result = extract_block_offsets(&params);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("must be an array"),
+            "expected 'must be an array', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_extract_block_offsets_non_integer_elements() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Array(vec![
+                ciborium::Value::Float(1.5), // not an integer
+            ]),
+        );
+        let result = extract_block_offsets(&params);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("integers"),
+            "expected integers error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_extract_block_offsets_valid() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "szip_block_offsets".to_string(),
+            ciborium::Value::Array(vec![
+                ciborium::Value::Integer(0.into()),
+                ciborium::Value::Integer(100.into()),
+                ciborium::Value::Integer(200.into()),
+            ]),
+        );
+        let result = extract_block_offsets(&params).unwrap();
+        assert_eq!(result, vec![0, 100, 200]);
+    }
 }

@@ -1,3 +1,11 @@
+// (C) Copyright 2026- ECMWF and individual contributors.
+//
+// This software is licensed under the terms of the Apache Licence Version 2.0
+// which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+// In applying this licence, ECMWF does not waive the privileges and immunities
+// granted to it by virtue of its status as an intergovernmental organisation nor
+// does it submit to any jurisdiction.
+
 #[cfg(feature = "blosc2")]
 mod blosc2;
 #[cfg(feature = "lz4")]
@@ -129,5 +137,121 @@ mod tests {
         let data: Vec<u8> = (0..100).collect();
         let compressor = NoopCompressor;
         assert!(compressor.decompress_range(&data, &[], 90, 20).is_err());
+    }
+
+    // ── NoopCompressor compress roundtrip ────────────────────────────────
+
+    #[test]
+    fn noop_compressor_compress_roundtrip() {
+        let data: Vec<u8> = (0..256).map(|i| (i % 256) as u8).collect();
+        let compressor = NoopCompressor;
+
+        let result = compressor.compress(&data).unwrap();
+        assert_eq!(result.data, data);
+        assert!(result.block_offsets.is_none());
+    }
+
+    #[test]
+    fn noop_compressor_decompress() {
+        let data: Vec<u8> = (0..64).collect();
+        let compressor = NoopCompressor;
+
+        let decompressed = compressor.decompress(&data, 64).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    // ── NoopCompressor edge cases ────────────────────────────────────────
+
+    #[test]
+    fn noop_compressor_empty_data() {
+        let compressor = NoopCompressor;
+
+        let result = compressor.compress(&[]).unwrap();
+        assert!(result.data.is_empty());
+
+        let decompressed = compressor.decompress(&[], 0).unwrap();
+        assert!(decompressed.is_empty());
+    }
+
+    #[test]
+    fn noop_compressor_range_at_start() {
+        let data: Vec<u8> = (0..100).collect();
+        let compressor = NoopCompressor;
+
+        let partial = compressor.decompress_range(&data, &[], 0, 10).unwrap();
+        assert_eq!(&partial[..], &data[0..10]);
+    }
+
+    #[test]
+    fn noop_compressor_range_at_end() {
+        let data: Vec<u8> = (0..100).collect();
+        let compressor = NoopCompressor;
+
+        let partial = compressor.decompress_range(&data, &[], 90, 10).unwrap();
+        assert_eq!(&partial[..], &data[90..100]);
+    }
+
+    #[test]
+    fn noop_compressor_range_exact_end() {
+        let data: Vec<u8> = (0..100).collect();
+        let compressor = NoopCompressor;
+
+        // Exactly at the boundary — should succeed
+        let partial = compressor.decompress_range(&data, &[], 0, 100).unwrap();
+        assert_eq!(partial, data);
+    }
+
+    #[test]
+    fn noop_compressor_range_one_past_end() {
+        let data: Vec<u8> = (0..100).collect();
+        let compressor = NoopCompressor;
+
+        // One byte past the end
+        let result = compressor.decompress_range(&data, &[], 0, 101);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn noop_compressor_range_overflow() {
+        let data: Vec<u8> = (0..100).collect();
+        let compressor = NoopCompressor;
+
+        // byte_pos + byte_size would overflow usize
+        let result = compressor.decompress_range(&data, &[], usize::MAX, 1);
+        assert!(result.is_err(), "overflow should produce error");
+    }
+
+    // ── CompressionError Display coverage ────────────────────────────────
+
+    #[test]
+    fn compression_error_display() {
+        let err = CompressionError::Szip("test szip error".to_string());
+        assert!(err.to_string().contains("szip error"));
+
+        let err = CompressionError::Zstd("test zstd error".to_string());
+        assert!(err.to_string().contains("zstd error"));
+
+        let err = CompressionError::Lz4("test lz4 error".to_string());
+        assert!(err.to_string().contains("lz4 error"));
+
+        let err = CompressionError::Blosc2("test blosc2 error".to_string());
+        assert!(err.to_string().contains("blosc2 error"));
+
+        let err = CompressionError::Zfp("test zfp error".to_string());
+        assert!(err.to_string().contains("zfp error"));
+
+        let err = CompressionError::Sz3("test sz3 error".to_string());
+        assert!(err.to_string().contains("sz3 error"));
+
+        let err = CompressionError::RangeNotSupported;
+        assert!(err.to_string().contains("range decode not supported"));
+
+        let err = CompressionError::Unknown("mystery".to_string());
+        assert!(err.to_string().contains("unknown compression"));
+        assert!(err.to_string().contains("mystery"));
+
+        let err = CompressionError::NotAvailable("szip".to_string());
+        assert!(err.to_string().contains("not available"));
+        assert!(err.to_string().contains("szip"));
     }
 }

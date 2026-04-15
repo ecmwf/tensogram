@@ -130,11 +130,20 @@ cargo build -p tensogram-cli --features netcdf
 tensogram convert-netcdf --cf --compression zstd forecast.nc -o forecast.tgm
 ```
 
+## Support
+
+This software is developed by ECMWF and provided on a **best-effort** basis.
+No operational support is provided. For questions, bug reports, or feature
+requests please [open a GitHub issue](https://github.com/ecmwf/tensogram/issues).
+For general enquiries about ECMWF software, visit the
+[ECMWF Support Portal](https://support.ecmwf.int).
+
 ## Documentation
 
 - [mdbook docs](docs/) — full developer guide (`cd docs && mdbook build`)
 - [Architecture](ARCHITECTURE.md) — crate structure and design decisions
 - [Contributing](CONTRIBUTING.md) — setup and workflow
+- [Code of Conduct](CODE_OF_CONDUCT.md) — community guidelines
 - [Changelog](CHANGELOG.md) — release history
 - [Python API](docs/src/guide/python-api.md) — encoding, decoding, file API, validation
 
@@ -158,7 +167,7 @@ docs/                     mdBook documentation
 
 ## Copyright and License
 
-Copyright 2024- European Centre for Medium-Range Weather Forecasts (ECMWF).
+Copyright 2026- European Centre for Medium-Range Weather Forecasts (ECMWF).
 
 This software is licensed under the terms of the [Apache License, Version 2.0](LICENSE) which can also be obtained at http://www.apache.org/licenses/LICENSE-2.0.
 

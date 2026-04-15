@@ -18,7 +18,7 @@ cd tensogram
 # Build everything
 cargo build --workspace
 
-# Run the test suite (157 tests, should take a few seconds)
+# Run the test suite
 cargo test --workspace
 
 # Check formatting and lints
@@ -48,7 +48,7 @@ tensogram/
 ├── plans/                      # Design docs, implementation status, TODOs
 ├── ARCHITECTURE.md             # How the crates fit together
 ├── CHANGELOG.md                # Release history
-└── VERSION                     # Current version (0.1.0)
+└── VERSION                     # Current version
 ```
 
 ## Development Workflow

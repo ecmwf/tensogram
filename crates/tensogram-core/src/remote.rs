@@ -1,3 +1,11 @@
+// (C) Copyright 2026- ECMWF and individual contributors.
+//
+// This software is licensed under the terms of the Apache Licence Version 2.0
+// which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+// In applying this licence, ECMWF does not waive the privileges and immunities
+// granted to it by virtue of its status as an intergovernmental organisation nor
+// does it submit to any jurisdiction.
+
 //! Remote object store backend for `TensogramFile`.
 //!
 //! Enables reading `.tgm` files from S3, GCS, Azure, and HTTP(S) via
@@ -9,7 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use bytes::Bytes;
 use object_store::path::Path as ObjectPath;
-use object_store::{GetOptions, GetRange, ObjectStore, ObjectStoreExt};
+use object_store::{ObjectStore, ObjectStoreExt};
 use url::Url;
 
 use crate::decode::DecodeOptions;
@@ -235,20 +243,6 @@ impl RemoteBackend {
         let store = self.store.clone();
         let path = self.path.clone();
         block_on_shared(async move { store.get_range(&path, range).await })
-    }
-
-    #[allow(dead_code)]
-    fn get_suffix(&self, nbytes: u64) -> Result<Bytes> {
-        let store = self.store.clone();
-        let path = self.path.clone();
-        block_on_shared(async move {
-            let opts = GetOptions {
-                range: Some(GetRange::Suffix(nbytes)),
-                ..Default::default()
-            };
-            let result = store.get_opts(&path, opts).await?;
-            result.bytes().await
-        })
     }
 
     // ── Message scanning ─────────────────────────────────────────────────

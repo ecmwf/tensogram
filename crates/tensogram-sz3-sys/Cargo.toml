@@ -1,0 +1,17 @@
+[package]
+name = "tensogram-sz3-sys"
+version = "0.11.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+description = "Clean-room FFI bindings for the SZ3 lossy compression library"
+links = "sz3"
+
+[build-dependencies]
+cc = "1"
+
+[dependencies]
+zstd-sys = "2"
+
+[features]
+default = []
+openmp = []

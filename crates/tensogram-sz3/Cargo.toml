@@ -1,0 +1,17 @@
+[package]
+name = "tensogram-sz3"
+version = "0.11.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+description = "High-level SZ3 compression API for Tensogram"
+
+[dependencies]
+tensogram-sz3-sys = { path = "../tensogram-sz3-sys" }
+thiserror = "1"
+# zstd-sys is needed to ensure the zstd symbols that tensogram-sz3-sys's C++
+# code references are available at link time.
+zstd-sys = "2"
+
+[features]
+default = []
+openmp = ["tensogram-sz3-sys/openmp"]

@@ -1,15 +1,23 @@
+// (C) Copyright 2026- ECMWF and individual contributors.
+//
+// This software is licensed under the terms of the Apache Licence Version 2.0
+// which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+// In applying this licence, ECMWF does not waive the privileges and immunities
+// granted to it by virtue of its status as an intergovernmental organisation nor
+// does it submit to any jurisdiction.
+
 use super::{CompressResult, CompressionError, Compressor};
 use crate::pipeline::{ByteOrder, Sz3ErrorBound};
 
-fn map_err(e: sz3::SZ3Error) -> CompressionError {
+fn map_err(e: tensogram_sz3::SZ3Error) -> CompressionError {
     CompressionError::Sz3(format!("{e:?}"))
 }
 
-fn to_sz3_bound(bound: &Sz3ErrorBound) -> sz3::ErrorBound {
+fn to_sz3_bound(bound: &Sz3ErrorBound) -> tensogram_sz3::ErrorBound {
     match bound {
-        Sz3ErrorBound::Absolute(v) => sz3::ErrorBound::Absolute(*v),
-        Sz3ErrorBound::Relative(v) => sz3::ErrorBound::Relative(*v),
-        Sz3ErrorBound::Psnr(v) => sz3::ErrorBound::PSNR(*v),
+        Sz3ErrorBound::Absolute(v) => tensogram_sz3::ErrorBound::Absolute(*v),
+        Sz3ErrorBound::Relative(v) => tensogram_sz3::ErrorBound::Relative(*v),
+        Sz3ErrorBound::Psnr(v) => tensogram_sz3::ErrorBound::PSNR(*v),
     }
 }
 
@@ -36,14 +44,14 @@ impl Compressor for Sz3Compressor {
         // would produce garbage if the caller provides native-endian data
         // (which is the contract for all encode paths).
         let values = bytes_to_f64_native(data)?;
-        let dimensioned = sz3::DimensionedData::<f64, _>::build(&values)
+        let dimensioned = tensogram_sz3::DimensionedData::<f64, _>::build(&values)
             .dim(values.len())
             .map_err(map_err)?
             .finish()
             .map_err(map_err)?;
 
-        let compressed =
-            sz3::compress(&dimensioned, to_sz3_bound(&self.error_bound)).map_err(map_err)?;
+        let compressed = tensogram_sz3::compress(&dimensioned, to_sz3_bound(&self.error_bound))
+            .map_err(map_err)?;
 
         Ok(CompressResult {
             data: compressed,
@@ -52,7 +60,7 @@ impl Compressor for Sz3Compressor {
     }
 
     fn decompress(&self, data: &[u8], _expected_size: usize) -> Result<Vec<u8>, CompressionError> {
-        let (_config, dimensioned) = sz3::decompress::<f64, _>(data).map_err(map_err)?;
+        let (_config, dimensioned) = tensogram_sz3::decompress::<f64, _>(data).map_err(map_err)?;
         let values = dimensioned.into_data();
         // Write in the wire byte order so the pipeline's byteswap step can
         // uniformly convert wire → native without special-casing lossy codecs.

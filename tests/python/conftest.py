@@ -1,3 +1,11 @@
+# (C) Copyright 2026- ECMWF and individual contributors.
+#
+# This software is licensed under the terms of the Apache Licence Version 2.0
+# which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+# In applying this licence, ECMWF does not waive the privileges and immunities
+# granted to it by virtue of its status as an intergovernmental organisation nor
+# does it submit to any jurisdiction.
+
 """Shared pytest fixtures for tensogram Python tests."""
 
 from __future__ import annotations
@@ -41,9 +49,7 @@ def _make_handler(file_data: bytes):
                     return
                 chunk = data[start:end]
                 self.send_response(206)
-                self.send_header(
-                    "Content-Range", f"bytes {start}-{end - 1}/{len(data)}"
-                )
+                self.send_header("Content-Range", f"bytes {start}-{end - 1}/{len(data)}")
                 self.send_header("Content-Length", str(len(chunk)))
                 self.end_headers()
                 self.wfile.write(chunk)
