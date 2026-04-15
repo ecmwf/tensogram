@@ -104,6 +104,7 @@ static SZ3_Config_C config_cpp_to_c(const SZ3::Config& cfg) {
                                                                               \
 extern "C" size_t sz3_compress_size_bound_##suffix(SZ3_Config_C config) {     \
     auto cfg = config_c_to_cpp(config);                                       \
+    using namespace SZ3;                                                      \
     return SZ_compress_size_bound<T>(cfg);                                    \
 }                                                                             \
                                                                               \
@@ -120,7 +121,8 @@ extern "C" void sz3_decompress_##suffix(                                      \
         const char* compressed_data,                                          \
         size_t compressed_len,                                                \
         T* decompressed_data) {                                               \
-    SZ3::Config cfg;                                                          \
+    using namespace SZ3;                                                      \
+    Config cfg;                                                               \
     SZ_decompress<T>(cfg, compressed_data, compressed_len, decompressed_data);\
 }
 
