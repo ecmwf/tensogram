@@ -418,7 +418,16 @@ unsafe fn collect_data_slices<'a>(
     Ok(ptrs
         .iter()
         .zip(lens.iter())
-        .map(|(&p, &l)| slice::from_raw_parts(p, l))
+        .map(|(&p, &l)| {
+            if l == 0 {
+                // Avoid calling slice::from_raw_parts with a potentially null
+                // pointer when length is zero — that is UB even for zero-length
+                // slices per the Rust reference.
+                &[] as &[u8]
+            } else {
+                slice::from_raw_parts(p, l)
+            }
+        })
         .collect())
 }
 
@@ -932,13 +941,27 @@ pub extern "C" fn tgm_scan_count(result: *const TgmScanResult) -> usize {
 #[no_mangle]
 pub extern "C" fn tgm_scan_entry(result: *const TgmScanResult, index: usize) -> TgmScanEntry {
     let fallback = TgmScanEntry {
-        offset: 0,
+        offset: usize::MAX,
         length: 0,
     };
     unsafe {
-        as_scan(result)
-            .and_then(|r| r.entries.get(index).copied())
-            .unwrap_or(fallback)
+        match as_scan(result) {
+            Some(r) => match r.entries.get(index) {
+                Some(entry) => *entry,
+                None => {
+                    set_last_error(&format!(
+                        "scan entry index {} out of range (count={})",
+                        index,
+                        r.entries.len()
+                    ));
+                    fallback
+                }
+            },
+            None => {
+                set_last_error("null scan result handle");
+                fallback
+            }
+        }
     }
 }
 
@@ -3460,10 +3483,18 @@ mod tests {
         assert_eq!(entry.offset, 0);
         assert_eq!(entry.length, encoded.len());
 
-        // Out of bounds entry returns zeros
+        // Out of bounds entry returns sentinel (offset=usize::MAX, length=0)
+        // and sets tgm_last_error
         let bad = super::tgm_scan_entry(result, 999);
-        assert_eq!(bad.offset, 0);
+        assert_eq!(bad.offset, usize::MAX);
         assert_eq!(bad.length, 0);
+        let err_ptr = super::tgm_last_error();
+        assert!(!err_ptr.is_null());
+        let err_str = unsafe { CStr::from_ptr(err_ptr) }.to_str().unwrap();
+        assert!(
+            err_str.contains("out of range"),
+            "expected OOB error, got: {err_str}"
+        );
 
         super::tgm_scan_free(result);
     }
@@ -3483,7 +3514,7 @@ mod tests {
     fn ffi_scan_null_handle_accessors() {
         assert_eq!(super::tgm_scan_count(ptr::null()), 0);
         let entry = super::tgm_scan_entry(ptr::null(), 0);
-        assert_eq!(entry.offset, 0);
+        assert_eq!(entry.offset, usize::MAX);
         assert_eq!(entry.length, 0);
     }
 
@@ -4809,6 +4840,74 @@ mod tests {
             &mut out,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    // ── tgm_scan_entry OOB returns sentinel and sets error ──
+
+    #[test]
+    fn ffi_scan_entry_oob_returns_sentinel() {
+        let encoded = ffi_encode_single_f32_tensor(&[1.0f32], "");
+
+        let mut result: *mut super::TgmScanResult = ptr::null_mut();
+        let err = super::tgm_scan(encoded.as_ptr(), encoded.len(), &mut result);
+        assert!(matches!(err, super::TgmError::Ok));
+
+        assert_eq!(super::tgm_scan_count(result), 1);
+
+        // Valid index works
+        let good = super::tgm_scan_entry(result, 0);
+        assert_eq!(good.offset, 0);
+        assert!(good.length > 0);
+
+        // OOB index returns sentinel
+        let bad = super::tgm_scan_entry(result, 1);
+        assert_eq!(bad.offset, usize::MAX);
+        assert_eq!(bad.length, 0);
+
+        // Error message is set
+        let err_ptr = super::tgm_last_error();
+        assert!(!err_ptr.is_null());
+        let err_str = unsafe { CStr::from_ptr(err_ptr) }.to_str().unwrap();
+        assert!(
+            err_str.contains("out of range"),
+            "expected OOB error, got: {err_str}"
+        );
+
+        super::tgm_scan_free(result);
+    }
+
+    // ── collect_data_slices null ptr + len=0 safety ──
+
+    #[test]
+    fn ffi_encode_zero_length_null_data_accepted() {
+        // Encode with a zero-element tensor where the data pointer could be null
+        // but length is 0 — should succeed without UB.
+        let json = CString::new(
+            r#"{"version":2,"descriptors":[{"type":"ntensor","ndim":1,"shape":[0],"strides":[1],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]}"#,
+        )
+        .unwrap();
+        let data_ptrs: [*const u8; 1] = [ptr::null()];
+        let data_lens: [usize; 1] = [0];
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+
+        let err = super::tgm_encode(
+            json.as_ptr(),
+            data_ptrs.as_ptr(),
+            data_lens.as_ptr(),
+            1,
+            ptr::null(), // no hash
+            &mut out,
+        );
+        assert!(
+            matches!(err, super::TgmError::Ok),
+            "encoding zero-length data with null pointer should succeed"
+        );
+        if !out.data.is_null() {
+            super::tgm_bytes_free(out);
+        }
     }
 }
 

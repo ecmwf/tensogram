@@ -2186,7 +2186,7 @@ fn dict_to_data_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<DataObje
     let strides: Vec<u64> = if let Some(s) = dict.get_item("strides")? {
         s.extract()?
     } else {
-        compute_strides(&shape)
+        compute_strides(&shape)?
     };
 
     let dtype = parse_dtype(&dtype_str)?;
@@ -2265,15 +2265,22 @@ fn parse_dtype(s: &str) -> PyResult<Dtype> {
     }
 }
 
-fn compute_strides(shape: &[u64]) -> Vec<u64> {
+fn compute_strides(shape: &[u64]) -> PyResult<Vec<u64>> {
     if shape.is_empty() {
-        return vec![];
+        return Ok(vec![]);
     }
     let mut strides = vec![1u64; shape.len()];
     for i in (0..shape.len() - 1).rev() {
-        strides[i] = strides[i + 1] * shape[i + 1];
+        strides[i] = strides[i + 1]
+            .checked_mul(shape[i + 1])
+            .ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "strides overflow: cannot compute strides for shape {:?}",
+                    shape
+                ))
+            })?;
     }
-    strides
+    Ok(strides)
 }
 
 // ---------------------------------------------------------------------------

@@ -77,19 +77,29 @@ pub(crate) fn validate_object(desc: &DataObjectDescriptor, data_len: usize) -> R
             desc.shape.len()
         )));
     }
-    if desc.encoding == "none" && desc.dtype.byte_width() > 0 {
+    if desc.encoding == "none" {
         let product = desc
             .shape
             .iter()
             .try_fold(1u64, |acc, &x| acc.checked_mul(x))
             .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
-        let expected_bytes = product
-            .checked_mul(desc.dtype.byte_width() as u64)
-            .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
-        if expected_bytes != data_len as u64 {
-            return Err(TensogramError::Metadata(format!(
-                "data_len {data_len} does not match expected {expected_bytes} bytes from shape and dtype"
-            )));
+        if desc.dtype.byte_width() > 0 {
+            let expected_bytes = product
+                .checked_mul(desc.dtype.byte_width() as u64)
+                .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
+            if expected_bytes != data_len as u64 {
+                return Err(TensogramError::Metadata(format!(
+                    "data_len {data_len} does not match expected {expected_bytes} bytes from shape and dtype"
+                )));
+            }
+        } else if desc.dtype == crate::Dtype::Bitmask {
+            // Bitmask: expected data length is ceil(shape_product / 8)
+            let expected_bytes = product.div_ceil(8);
+            if expected_bytes != data_len as u64 {
+                return Err(TensogramError::Metadata(format!(
+                    "data_len {data_len} does not match expected {expected_bytes} bytes for bitmask (ceil({product}/8))"
+                )));
+            }
         }
     }
     Ok(())
