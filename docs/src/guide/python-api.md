@@ -10,7 +10,7 @@ pip install tensogram
 
 # From source
 pip install maturin numpy
-cd crates/tensogram-python && maturin develop
+cd python/bindings && maturin develop
 ```
 
 ## Quick Start

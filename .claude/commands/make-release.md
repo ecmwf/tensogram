@@ -28,10 +28,10 @@ cargo test -p tensogram-core --features "remote,async"
 ### 3. Python
 ```bash
 source .venv/bin/activate
-ruff check --config crates/tensogram-python/pyproject.toml tests/python/
-python -m pytest tests/python/ -v
-python -m pytest tensogram-xarray/tests/ -v
-python -m pytest tensogram-zarr/tests/ -v
+ruff check --config python/bindings/pyproject.toml python/tests/
+python -m pytest python/tests/ -v
+python -m pytest python/tensogram-xarray/tests/ -v
+python -m pytest python/tensogram-zarr/tests/ -v
 ```
 
 ### 4. Examples Build
@@ -57,8 +57,8 @@ Update ALL of these locations (they MUST all match):
 - `Cargo.toml` in EVERY crate: tensogram-core, tensogram-encodings, tensogram-cli,
   tensogram-ffi, tensogram-python, tensogram-grib, tensogram-netcdf, tensogram-szip,
   tensogram-wasm, benchmarks, examples/rust
-- `pyproject.toml` in EVERY Python package: crates/tensogram-python, tensogram-xarray,
-  tensogram-zarr
+- `pyproject.toml` in EVERY Python package: python/bindings, python/tensogram-xarray,
+  python/tensogram-zarr
 - `CHANGELOG.md` — add new release entry header with today's date
 
 Verify no stale version strings remain:

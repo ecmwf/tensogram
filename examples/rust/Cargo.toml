@@ -64,9 +64,9 @@ netcdf = ["dep:tensogram-netcdf"]
 remote = ["tensogram-core/remote"]
 
 [dependencies]
-tensogram-core = { path = "../../crates/tensogram-core" }
-tensogram-encodings = { path = "../../crates/tensogram-encodings" }
-tensogram-netcdf = { path = "../../crates/tensogram-netcdf", optional = true }
+tensogram-core = { path = "../../rust/tensogram-core" }
+tensogram-encodings = { path = "../../rust/tensogram-encodings" }
+tensogram-netcdf = { path = "../../rust/tensogram-netcdf", optional = true }
 ciborium = "0.2"
 tempfile = "3"
 serde_json = "1"

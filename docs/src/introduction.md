@@ -30,12 +30,15 @@ The library is a Rust workspace with five crates:
 
 ```
 tensogram/
-├── crates/
+├── rust/
 │   ├── tensogram-core        ← encode, decode, framing, file API
 │   ├── tensogram-encodings   ← simple_packing, shuffle, compression
 │   ├── tensogram-cli         ← `tensogram` command-line tool
-│   ├── tensogram-ffi         ← C FFI layer for C/C++ callers
-│   └── tensogram-python      ← Python bindings (PyO3 / maturin)
+│   └── tensogram-ffi         ← C FFI layer for C/C++ callers
+├── python/
+│   └── bindings/             ← Python bindings (PyO3 / maturin)
+├── cpp/
+│   └── include/              ← C++ wrapper header + C header
 ```
 
 Most users interact with `tensogram-core` and the CLI. The encodings crate is used internally by the core but is also importable directly if you need to call the encoding functions outside of a full message.

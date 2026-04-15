@@ -1,23 +1,23 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/tensogram-core",
-    "crates/tensogram-encodings",
-    "crates/tensogram-sz3",
-    "crates/tensogram-sz3-sys",
-    "crates/tensogram-szip",
-    "crates/tensogram-cli",
-    "crates/tensogram-ffi",
+    "rust/tensogram-core",
+    "rust/tensogram-encodings",
+    "rust/tensogram-sz3",
+    "rust/tensogram-sz3-sys",
+    "rust/tensogram-szip",
+    "rust/tensogram-cli",
+    "rust/tensogram-ffi",
     "examples/rust",
-    "benchmarks",
+    "rust/benchmarks",
 ]
 # tensogram-python is built via `maturin develop` (PyO3 extension modules
 # require the Python linker). It is excluded from default workspace builds.
 exclude = [
-    "crates/tensogram-python",
-    "crates/tensogram-grib",
-    "crates/tensogram-netcdf",
-    "crates/tensogram-wasm",
+    "python/bindings",
+    "rust/tensogram-grib",
+    "rust/tensogram-netcdf",
+    "rust/tensogram-wasm",
 ]
 
 [workspace.dependencies]
@@ -30,15 +30,15 @@ tracing = "0.1"
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 libaec-sys = "0.1"
-tensogram-szip = { path = "crates/tensogram-szip" }
+tensogram-szip = { path = "rust/tensogram-szip" }
 zstd = "0.13"
 ruzstd = "0.8"
 lz4_flex = "0.11"
 blosc2 = { version = "0.2", default-features = false, features = ["zstd", "zlib"] }
 blosc2-sys = { package = "blosc2-rs-sys", version = "0.1" }
 zfp-sys-cc = "0.2"
-tensogram-sz3 = { path = "crates/tensogram-sz3" }
-tensogram-sz3-sys = { path = "crates/tensogram-sz3-sys" }
+tensogram-sz3 = { path = "rust/tensogram-sz3" }
+tensogram-sz3-sys = { path = "rust/tensogram-sz3-sys" }
 proptest = "1"
 
 # Prevent panics from unwinding across the FFI boundary (undefined behaviour).

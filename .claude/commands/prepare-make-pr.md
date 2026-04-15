@@ -17,11 +17,11 @@ cargo test -p tensogram-core --features "remote,async"
 ### 2. Python
 ```bash
 source .venv/bin/activate
-ruff check --config crates/tensogram-python/pyproject.toml tests/python/
-ruff format --check --config crates/tensogram-python/pyproject.toml tests/python/
-python -m pytest tests/python/ -v
-python -m pytest tensogram-xarray/tests/ -v
-python -m pytest tensogram-zarr/tests/ -v
+ruff check --config python/bindings/pyproject.toml python/tests/
+ruff format --check --config python/bindings/pyproject.toml python/tests/
+python -m pytest python/tests/ -v
+python -m pytest python/tensogram-xarray/tests/ -v
+python -m pytest python/tensogram-zarr/tests/ -v
 ```
 
 ### 3. Examples

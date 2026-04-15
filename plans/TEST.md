@@ -77,7 +77,7 @@ Repo: ecmwf/tensogram
 
 ## Golden Test Files
 
-5 canonical `.tgm` files in `crates/tensogram-core/tests/golden/`:
+5 canonical `.tgm` files in `rust/tensogram-core/tests/golden/`:
 - `simple_f32.tgm` — single float32 object
 - `multi_object.tgm` — 3 dtypes: u8, i32, f64
 - `mars_metadata.tgm` — MARS keys in per-object `base` entries

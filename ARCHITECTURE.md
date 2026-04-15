@@ -57,13 +57,13 @@ The dependency graph is a clean tree. `tensogram-encodings` has no internal depe
 
 ## C++ Wrapper
 
-The header-only C++17 wrapper lives at `include/tensogram.hpp`. It delegates all work to the C FFI (`tensogram-ffi`) and adds:
+The header-only C++17 wrapper lives at `cpp/include/tensogram.hpp`. It delegates all work to the C FFI (`tensogram-ffi`) and adds:
 
 - **RAII classes** — `message`, `metadata`, `file`, `buffer_iterator`, `file_iterator`, `object_iterator`, `streaming_encoder`, each wrapping an opaque C handle via `std::unique_ptr` with a custom deleter.
 - **Typed exceptions** — `tensogram::error` hierarchy maps every C error code to a specific subclass (`framing_error`, `io_error`, `hash_mismatch_error`, etc.).
 - **C++17 idioms** — `[[nodiscard]]`, `std::string_view`, range-based for over decoded objects.
 
-The CMake build system (`CMakeLists.txt`) invokes `cargo build --release` to produce the Rust static library, then exposes an INTERFACE header-only target that links the static lib and platform-specific system libraries.
+The CMake build system (`cpp/CMakeLists.txt`) invokes `cargo build --release` to produce the Rust static library, then exposes an INTERFACE header-only target that links the static lib and platform-specific system libraries.
 
 ## Core Modules (tensogram-core)
 
@@ -156,12 +156,12 @@ cargo build -p tensogram-core --no-default-features --features mmap
 1,008 tests across the workspace:
 
 - Unit tests in `#[cfg(test)]` modules alongside the code
-- Integration tests in `crates/tensogram-core/tests/` (round-trips, adversarial inputs, golden files)
-- Python tests in `tests/python/` (226 pytest tests with parametrized dtypes)
-- xarray backend tests in `tensogram-xarray/tests/` (181 tests, ~98% coverage)
-- Zarr backend tests in `tensogram-zarr/tests/` (204 tests, ~95% coverage)
+- Integration tests in `rust/tensogram-core/tests/` (round-trips, adversarial inputs, golden files)
+- Python tests in `python/tests/` (226 pytest tests with parametrized dtypes)
+- xarray backend tests in `python/tensogram-xarray/tests/` (181 tests, ~98% coverage)
+- Zarr backend tests in `python/tensogram-zarr/tests/` (204 tests, ~95% coverage)
 - C++ wrapper tests via GoogleTest (105 tests across 10 files)
-- Golden binary files in `tests/golden/` for cross-language verification
+- Golden binary files in `rust/tensogram-core/tests/golden/` for cross-language verification
 - Feature-gated tests for `mmap` and `async` behind `#[cfg(feature = "...")]`
 
 ```bash

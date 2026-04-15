@@ -18,7 +18,7 @@ For speculative ideas, see `IDEAS.md`.
 
 - [x] ~~`tensogram merge` strategies~~ → `--strategy first|last|error` flag added to CLI merge command
 
-- [x] ~~tensogram-convert-netcdf~~ → v0.7.0. New `crates/tensogram-netcdf/`
+- [x] ~~tensogram-convert-netcdf~~ → v0.7.0. New `rust/tensogram-netcdf/`
   crate + `tensogram convert-netcdf` CLI (feature-gated behind `netcdf`);
   NetCDF-3 classic + NetCDF-4 (HDF5) inputs; 10 native dtypes; packed
   `scale_factor`/`add_offset` unpacked to f64; `--cf` lifts 16 CF
@@ -31,7 +31,7 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Multi-Language Support
 
-  - [x] ~~**wasm-decoder**~~ → v0.8.0. `crates/tensogram-wasm/` — full decode,
+  - [x] ~~**wasm-decoder**~~ → v0.8.0. `rust/tensogram-wasm/` — full decode,
     encode, scan, and streaming API via `wasm-bindgen`. Compressors: lz4,
     szip (pure-Rust `tensogram-szip` crate, CCSDS 121.0-B-3), zstd (pure-Rust
     `ruzstd`). 134 `wasm-bindgen-test` tests. `wasm-pack build --target web`.
@@ -58,11 +58,12 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Builds
 
-- [ ] **restructure-repo**:
-  - mode the code to sub-folders with languages as names
-  - rust code in rust/crates/
-  - python code in ptyhon/
-  - keep examples/<lang> separate
+- [x] ~~**restructure-repo**~~:
+  - moved code to sub-folders with languages as names
+  - rust code in rust/
+  - python code in python/
+  - cpp code in cpp/
+  - examples/<lang> stays separate
 
 - [x] ~~CI matrix~~ → `.github/workflows/ci.yml` — Rust (ubuntu+macos), Python (3.12+3.13, ubuntu+macos), xarray, zarr, C++ (ubuntu+macos), docs. GRIB gated on ecCodes.
 
@@ -131,7 +132,7 @@ For speculative ideas, see `IDEAS.md`.
   - C FFI: `tgm_validate(buf, len, level, check_canonical, *out) -> tgm_error` and `tgm_validate_file(path, level, check_canonical, *out) -> tgm_error` returning JSON via `TgmBytes` out-parameter.
   - C++ wrapper: `tensogram::validate()` and `tensogram::validate_file()` returning JSON strings.
   - Examples in `examples/python/13_validate.py` and `examples/rust/src/bin/13_validate.rs`.
-  - 34 Python tests in `tests/python/test_validate.py`. 12 FFI unit tests. 11 C++ GoogleTest tests.
+  - 34 Python tests in `python/tests/test_validate.py`. 12 FFI unit tests. 11 C++ GoogleTest tests.
 
 ## Remote Access
 
@@ -161,7 +162,7 @@ For speculative ideas, see `IDEAS.md`.
 - [x] **remote 5 — polish (examples, CI, zarr lazy reads)**:
   - Python example `14_remote_access.py`: self-contained HTTP server, open_remote, file-level decode APIs
   - Rust example `14_remote_access.rs`: TcpListener-based HTTP server, open_source, decode APIs
-  - CI: added `pytest tests/python/test_remote.py` to Python CI job
+  - CI: added `pytest python/tests/test_remote.py` to Python CI job
   - zarr lazy reads: remote files use `file_decode_descriptors()` at scan time (metadata-only), `file_decode_object()` per chunk on demand; local files unchanged (eager decode)
   - 9 new zarr remote tests: lazy open, on-demand decode, close cleanup, cached repeat access, exists on lazy chunk, list includes lazy chunks, no duplicates after cache, exception cleanup, local-still-eager parity
 - [x] **remote 6 — range reads**:
