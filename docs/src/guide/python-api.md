@@ -293,6 +293,127 @@ msg = enc.finish()  # returns complete message as bytes
 
 For pre-encoded payloads, use `enc.write_object_pre_encoded(desc, raw_bytes)`.
 
+## Async API
+
+`AsyncTensogramFile` provides the same operations as `TensogramFile` but as
+`asyncio` coroutines.  A single handle supports truly concurrent operations
+with no per-handle mutex; internal caches are thread-safe.
+
+### Opening and decoding
+
+```python
+import asyncio
+import tensogram
+
+async def main():
+    f = await tensogram.AsyncTensogramFile.open("forecast.tgm")
+
+    meta, objects = await f.decode_message(0)
+    result = await f.file_decode_object(0, 0)
+    print(result["data"].shape)
+
+asyncio.run(main())
+```
+
+For remote files with credentials:
+
+```python
+    f = await tensogram.AsyncTensogramFile.open_remote(
+        "s3://bucket/data.tgm", {"region": "eu-west-1"}
+    )
+```
+
+### Concurrent decoding with `asyncio.gather`
+
+Multiple decode calls run concurrently on a single handle:
+
+```python
+    results = await asyncio.gather(
+        f.file_decode_object(0, 0),
+        f.file_decode_object(1, 0),
+        f.file_decode_object(2, 0),
+    )
+```
+
+### Batch decoding from many messages at once
+
+When you need the same data from many messages, for example reading how a
+value at one grid point changes over 300 time steps, individual requests
+are slow because each one is a separate HTTP round-trip.
+
+`file_decode_range_batch` collects the requested element ranges across
+messages and fetches the underlying data in a batched HTTP call.
+`file_decode_object_batch` does the same for full frames:
+
+```python
+    indices = list(range(300))
+    row, col, grid = 100, 200, 528
+    offset = row * grid + col
+
+    values = await f.file_decode_range_batch(indices, 0, [(offset, 1)], join=True)
+
+    frames = await f.file_decode_object_batch(indices, 0)
+```
+
+For even more speed, split the work into chunks and run them concurrently:
+
+```python
+    chunks = [indices[i::16] for i in range(16)]
+    batch_results = await asyncio.gather(
+        *[f.file_decode_range_batch(chunk, 0, [(offset, 1)], join=True)
+          for chunk in chunks]
+    )
+```
+
+The sync `TensogramFile` also has `file_decode_range_batch` and
+`file_decode_object_batch` with the same signatures.  Both batch methods
+require a remote backend; calling them on a local file raises `OSError`.
+
+### Layout prefetching
+
+Before running many concurrent decodes on a remote file, prefetch
+the internal layout metadata to avoid repeated discovery requests:
+
+```python
+    count = await f.message_count()
+    await f.prefetch_layouts(list(range(count)))
+```
+
+### Context manager and iteration
+
+```python
+    async with await tensogram.AsyncTensogramFile.open("data.tgm") as f:
+        await f.message_count()   # required before async for or len(f)
+        async for meta, objects in f:
+            print(objects[0][1].shape)
+```
+
+Async iteration works on remote files (sync iteration does not).
+`await f.message_count()` must be called once before using `async for`
+or `len(f)`, to discover the message count without blocking the event loop.
+
+### Other methods
+
+```python
+    count = await f.message_count()
+    raw = await f.read_message(0)
+    all_raw = await f.messages()
+    print(f.is_remote(), f.source())
+```
+
+> **Note:** `len(f)` requires a prior `await f.message_count()` call. Without
+> it, `len(f)` raises `RuntimeError`.
+
+### When to use async vs sync
+
+| Scenario | Recommendation |
+|----------|---------------|
+| Script, CLI, or notebook | `TensogramFile` (sync) |
+| Inside an asyncio event loop | `AsyncTensogramFile` |
+| xarray or zarr | Sync (those frameworks are synchronous) |
+| Many concurrent remote reads | `asyncio.gather` on one `AsyncTensogramFile` |
+| Same data from many messages | `file_decode_range_batch` or `file_decode_object_batch` |
+
 ## Validation
 
 Two functions check whether messages and files are well-formed without consuming the data. See also the [CLI reference](../cli/validate.md).
@@ -404,3 +525,4 @@ See `examples/python/` for complete working examples:
 | `11_encode_pre_encoded.py` | Pre-encoded data API |
 | `12_convert_netcdf.py` | NetCDF → Tensogram conversion via CLI |
 | `13_validate.py` | Message and file validation |
+| `15_async_operations.py` | Async open, decode, and `asyncio.gather` |

@@ -370,6 +370,39 @@ impl TensogramFile {
         }
     }
 
+    #[cfg(feature = "remote")]
+    pub fn decode_range_batch(
+        &self,
+        msg_indices: &[usize],
+        obj_idx: usize,
+        ranges: &[(u64, u64)],
+        options: &DecodeOptions,
+    ) -> Result<Vec<(DataObjectDescriptor, Vec<Vec<u8>>)>> {
+        match &self.backend {
+            Backend::Remote(remote) => {
+                remote.read_range_batch(msg_indices, obj_idx, ranges, options)
+            }
+            _ => Err(TensogramError::Io(std::io::Error::other(
+                "batch range decode requires a remote backend",
+            ))),
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    pub fn decode_object_batch(
+        &self,
+        msg_indices: &[usize],
+        obj_idx: usize,
+        options: &DecodeOptions,
+    ) -> Result<Vec<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)>> {
+        match &self.backend {
+            Backend::Remote(remote) => remote.read_object_batch(msg_indices, obj_idx, options),
+            _ => Err(TensogramError::Io(std::io::Error::other(
+                "batch object decode requires a remote backend",
+            ))),
+        }
+    }
+
     pub fn decode_range(
         &self,
         msg_idx: usize,
@@ -430,7 +463,32 @@ impl TensogramFile {
     }
 
     #[cfg(feature = "async")]
-    pub async fn read_message_async(&mut self, index: usize) -> Result<Vec<u8>> {
+    pub async fn message_count_async(&self) -> Result<usize> {
+        #[cfg(feature = "remote")]
+        if let Backend::Remote(remote) = &self.backend {
+            return remote.message_count_async().await;
+        }
+
+        if self.message_offsets.get().is_none() {
+            let p = self.local_path()?.clone();
+            let offsets = tokio::task::spawn_blocking(move || {
+                let mut file = fs::File::open(&p)?;
+                framing::scan_file(&mut file)
+            })
+            .await
+            .map_err(|e| TensogramError::Io(std::io::Error::other(e)))??;
+            let _ = self.message_offsets.set(offsets);
+        }
+
+        Ok(self
+            .message_offsets
+            .get()
+            .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?
+            .len())
+    }
+
+    #[cfg(feature = "async")]
+    pub async fn read_message_async(&self, index: usize) -> Result<Vec<u8>> {
         #[cfg(feature = "remote")]
         if let Backend::Remote(remote) = &self.backend {
             return remote.read_message_async(index).await;
@@ -463,7 +521,7 @@ impl TensogramFile {
 
     #[cfg(feature = "async")]
     pub async fn decode_message_async(
-        &mut self,
+        &self,
         index: usize,
         options: &DecodeOptions,
     ) -> Result<(GlobalMetadata, Vec<DecodedObject>)> {
@@ -498,9 +556,9 @@ impl TensogramFile {
     }
 
     #[cfg(feature = "async")]
-    pub async fn decode_metadata_async(&mut self, msg_idx: usize) -> Result<GlobalMetadata> {
+    pub async fn decode_metadata_async(&self, msg_idx: usize) -> Result<GlobalMetadata> {
         #[cfg(feature = "remote")]
-        if let Backend::Remote(remote) = &mut self.backend {
+        if let Backend::Remote(remote) = &self.backend {
             return remote.read_metadata_async(msg_idx).await;
         }
 
@@ -512,11 +570,11 @@ impl TensogramFile {
 
     #[cfg(feature = "async")]
     pub async fn decode_descriptors_async(
-        &mut self,
+        &self,
         msg_idx: usize,
     ) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>)> {
         #[cfg(feature = "remote")]
-        if let Backend::Remote(remote) = &mut self.backend {
+        if let Backend::Remote(remote) = &self.backend {
             return remote.read_descriptors_async(msg_idx).await;
         }
 
@@ -528,13 +586,13 @@ impl TensogramFile {
 
     #[cfg(feature = "async")]
     pub async fn decode_object_async(
-        &mut self,
+        &self,
         msg_idx: usize,
         obj_idx: usize,
         options: &DecodeOptions,
     ) -> Result<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)> {
         #[cfg(feature = "remote")]
-        if let Backend::Remote(remote) = &mut self.backend {
+        if let Backend::Remote(remote) = &self.backend {
             return remote.read_object_async(msg_idx, obj_idx, options).await;
         }
 
@@ -543,6 +601,72 @@ impl TensogramFile {
         tokio::task::spawn_blocking(move || decode::decode_object(&msg, obj_idx, &opts))
             .await
             .map_err(|e| TensogramError::Io(std::io::Error::other(e)))?
+    }
+
+    #[cfg(feature = "async")]
+    pub async fn decode_range_async(
+        &self,
+        msg_idx: usize,
+        obj_idx: usize,
+        ranges: &[(u64, u64)],
+        options: &DecodeOptions,
+    ) -> Result<(DataObjectDescriptor, Vec<Vec<u8>>)> {
+        #[cfg(feature = "remote")]
+        if let Backend::Remote(remote) = &self.backend {
+            return remote
+                .read_range_async(msg_idx, obj_idx, ranges, options)
+                .await;
+        }
+
+        let msg = self.read_message_async(msg_idx).await?;
+        let ranges = ranges.to_vec();
+        let opts = options.clone();
+        tokio::task::spawn_blocking(move || decode::decode_range(&msg, obj_idx, &ranges, &opts))
+            .await
+            .map_err(|e| TensogramError::Io(std::io::Error::other(e)))?
+    }
+
+    #[cfg(all(feature = "remote", feature = "async"))]
+    pub async fn prefetch_layouts_async(&self, msg_indices: &[usize]) -> Result<()> {
+        if let Backend::Remote(remote) = &self.backend {
+            return remote.ensure_all_layouts_batch_async(msg_indices).await;
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "remote", feature = "async"))]
+    pub async fn decode_object_batch_async(
+        &self,
+        msg_indices: &[usize],
+        obj_idx: usize,
+        options: &DecodeOptions,
+    ) -> Result<Vec<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)>> {
+        if let Backend::Remote(remote) = &self.backend {
+            return remote
+                .read_object_batch_async(msg_indices, obj_idx, options)
+                .await;
+        }
+        Err(TensogramError::Io(std::io::Error::other(
+            "batch object decode requires a remote backend",
+        )))
+    }
+
+    #[cfg(all(feature = "remote", feature = "async"))]
+    pub async fn decode_range_batch_async(
+        &self,
+        msg_indices: &[usize],
+        obj_idx: usize,
+        ranges: &[(u64, u64)],
+        options: &DecodeOptions,
+    ) -> Result<Vec<(DataObjectDescriptor, Vec<Vec<u8>>)>> {
+        if let Backend::Remote(remote) = &self.backend {
+            return remote
+                .read_range_batch_async(msg_indices, obj_idx, ranges, options)
+                .await;
+        }
+        Err(TensogramError::Io(std::io::Error::other(
+            "batch range decode requires a remote backend",
+        )))
     }
 }
 
@@ -853,7 +977,7 @@ mod tests {
             &EncodeOptions::default(),
         )?;
 
-        let mut async_file = TensogramFile::open_async(&path).await?;
+        let async_file = TensogramFile::open_async(&path).await?;
         assert_eq!(async_file.message_count()?, 2);
 
         let msg0 = async_file.read_message_async(0).await?;
@@ -887,7 +1011,7 @@ mod tests {
         let sync_file = TensogramFile::open(&path)?;
         let sync_msg = sync_file.read_message(0)?;
 
-        let mut async_file = TensogramFile::open_async(&path).await?;
+        let async_file = TensogramFile::open_async(&path).await?;
         let async_msg = async_file.read_message_async(0).await?;
 
         assert_eq!(sync_msg, async_msg);
@@ -1072,7 +1196,7 @@ mod tests {
             &EncodeOptions::default(),
         )?;
 
-        let mut async_file = TensogramFile::open_async(&path).await?;
+        let async_file = TensogramFile::open_async(&path).await?;
         let result = async_file.read_message_async(5).await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
@@ -1100,7 +1224,7 @@ mod tests {
             &EncodeOptions::default(),
         )?;
 
-        let mut async_file = TensogramFile::open_async(&path).await?;
+        let async_file = TensogramFile::open_async(&path).await?;
         let result = async_file.decode_metadata_async(10).await;
         assert!(result.is_err());
         Ok(())
@@ -1123,7 +1247,7 @@ mod tests {
             &EncodeOptions::default(),
         )?;
 
-        let mut async_file = TensogramFile::open_async(&path).await?;
+        let async_file = TensogramFile::open_async(&path).await?;
         let (decoded_meta, descriptors) = async_file.decode_descriptors_async(0).await?;
         assert_eq!(decoded_meta.version, 2);
         assert_eq!(descriptors.len(), 1);
@@ -1147,7 +1271,7 @@ mod tests {
             &EncodeOptions::default(),
         )?;
 
-        let mut async_file = TensogramFile::open_async(&path).await?;
+        let async_file = TensogramFile::open_async(&path).await?;
         let (decoded_meta, decoded_desc, decoded_data) = async_file
             .decode_object_async(0, 0, &DecodeOptions::default())
             .await?;

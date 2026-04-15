@@ -2,88 +2,13 @@
 
 from __future__ import annotations
 
-import http.server
-import threading
 from typing import Any
 
 import numpy as np
 import pytest
 import tensogram
 
-# ---------------------------------------------------------------------------
-# Mock HTTP server with Range support
-# ---------------------------------------------------------------------------
-
-
-def _make_handler(file_data: bytes):
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, fmt, *args):
-            pass
-
-        def do_HEAD(self):
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(file_data)))
-            self.send_header("Accept-Ranges", "bytes")
-            self.end_headers()
-
-        def do_GET(self):
-            data = file_data
-            range_header = self.headers.get("Range")
-            if range_header and range_header.startswith("bytes="):
-                range_spec = range_header[6:]
-                if range_spec.startswith("-"):
-                    suffix = int(range_spec[1:])
-                    start = max(0, len(data) - suffix)
-                    end = len(data)
-                else:
-                    parts = range_spec.split("-")
-                    start = int(parts[0])
-                    end = int(parts[1]) + 1 if parts[1] else len(data)
-                    end = min(end, len(data))
-                if start >= len(data):
-                    self.send_response(416)
-                    self.end_headers()
-                    return
-                chunk = data[start:end]
-                self.send_response(206)
-                self.send_header("Content-Range", f"bytes {start}-{end - 1}/{len(data)}")
-                self.send_header("Content-Length", str(len(chunk)))
-                self.end_headers()
-                self.wfile.write(chunk)
-            else:
-                self.send_response(200)
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-
-    return Handler
-
-
-@pytest.fixture
-def serve_tgm_bytes():
-    """Fixture that starts a mock HTTP server for given bytes, isolated per call."""
-    entries: list[tuple] = []
-
-    def _serve(data: bytes) -> str:
-        handler = _make_handler(data)
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        port = server.server_address[1]
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        entries.append((server, thread))
-        return f"http://127.0.0.1:{port}/test.tgm"
-
-    yield _serve
-
-    for server, thread in entries:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# serve_tgm_bytes fixture is auto-discovered from conftest.py
 
 
 def make_global_meta(version: int = 2, **extra: Any) -> dict[str, Any]:

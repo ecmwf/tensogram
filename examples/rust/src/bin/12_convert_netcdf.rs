@@ -80,7 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("4. Wrote {}", out_path.display());
 
     // ── 5. Read it back with TensogramFile ──────────────────────────────
-    let mut tgm = TensogramFile::open(&out_path)?;
+    let tgm = TensogramFile::open(&out_path)?;
     let count = tgm.message_count()?;
     println!("5. message_count = {count}");
 
