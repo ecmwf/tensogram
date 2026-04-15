@@ -41,20 +41,20 @@ pub enum CompressionAlgorithm {
 }
 
 impl CompressionAlgorithm {
-    fn decode(config: SZ3_Config) -> Self {
+    fn decode(config: SZ3_Config) -> Result<Self> {
         match config.cmprAlgo as u32 {
-            tensogram_sz3_sys::SZ3::ALGO_ALGO_INTERP => Self::Interpolation,
-            tensogram_sz3_sys::SZ3::ALGO_ALGO_INTERP_LORENZO => Self::InterpolationLorenzo,
-            tensogram_sz3_sys::SZ3::ALGO_ALGO_LORENZO_REG => Self::LorenzoRegression {
+            tensogram_sz3_sys::SZ3::ALGO_ALGO_INTERP => Ok(Self::Interpolation),
+            tensogram_sz3_sys::SZ3::ALGO_ALGO_INTERP_LORENZO => Ok(Self::InterpolationLorenzo),
+            tensogram_sz3_sys::SZ3::ALGO_ALGO_LORENZO_REG => Ok(Self::LorenzoRegression {
                 lorenzo: config.lorenzo,
                 lorenzo_second_order: config.lorenzo2,
                 regression: config.regression,
-            },
-            tensogram_sz3_sys::SZ3::ALGO_ALGO_BIOMD => Self::BiologyMolecularData,
-            tensogram_sz3_sys::SZ3::ALGO_ALGO_BIOMDXTC => Self::BiologyMolecularDataGromacsXtc,
-            tensogram_sz3_sys::SZ3::ALGO_ALGO_NOPRED => Self::NoPrediction,
-            tensogram_sz3_sys::SZ3::ALGO_ALGO_LOSSLESS => Self::Lossless,
-            algo => panic!("unsupported compression algorithm {}", algo),
+            }),
+            tensogram_sz3_sys::SZ3::ALGO_ALGO_BIOMD => Ok(Self::BiologyMolecularData),
+            tensogram_sz3_sys::SZ3::ALGO_ALGO_BIOMDXTC => Ok(Self::BiologyMolecularDataGromacsXtc),
+            tensogram_sz3_sys::SZ3::ALGO_ALGO_NOPRED => Ok(Self::NoPrediction),
+            tensogram_sz3_sys::SZ3::ALGO_ALGO_LOSSLESS => Ok(Self::Lossless),
+            algo => Err(SZ3Error::UnsupportedAlgorithm(algo)),
         }
     }
 
@@ -177,21 +177,21 @@ pub enum ErrorBound {
 }
 
 impl ErrorBound {
-    fn decode(config: SZ3_Config) -> Self {
+    fn decode(config: SZ3_Config) -> Result<Self> {
         match config.errorBoundMode as u32 {
-            tensogram_sz3_sys::SZ3::EB_EB_ABS => Self::Absolute(config.absErrorBound),
-            tensogram_sz3_sys::SZ3::EB_EB_REL => Self::Relative(config.relErrorBound),
-            tensogram_sz3_sys::SZ3::EB_EB_PSNR => Self::PSNR(config.psnrErrorBound),
-            tensogram_sz3_sys::SZ3::EB_EB_L2NORM => Self::L2Norm(config.l2normErrorBound),
-            tensogram_sz3_sys::SZ3::EB_EB_ABS_OR_REL => Self::AbsoluteOrRelative {
+            tensogram_sz3_sys::SZ3::EB_EB_ABS => Ok(Self::Absolute(config.absErrorBound)),
+            tensogram_sz3_sys::SZ3::EB_EB_REL => Ok(Self::Relative(config.relErrorBound)),
+            tensogram_sz3_sys::SZ3::EB_EB_PSNR => Ok(Self::PSNR(config.psnrErrorBound)),
+            tensogram_sz3_sys::SZ3::EB_EB_L2NORM => Ok(Self::L2Norm(config.l2normErrorBound)),
+            tensogram_sz3_sys::SZ3::EB_EB_ABS_OR_REL => Ok(Self::AbsoluteOrRelative {
                 absolute_bound: config.absErrorBound,
                 relative_bound: config.relErrorBound,
-            },
-            tensogram_sz3_sys::SZ3::EB_EB_ABS_AND_REL => Self::AbsoluteAndRelative {
+            }),
+            tensogram_sz3_sys::SZ3::EB_EB_ABS_AND_REL => Ok(Self::AbsoluteAndRelative {
                 absolute_bound: config.absErrorBound,
                 relative_bound: config.relErrorBound,
-            },
-            mode => panic!("unsupported error bound {}", mode),
+            }),
+            mode => Err(SZ3Error::UnsupportedErrorBound(mode)),
         }
     }
 
@@ -269,14 +269,14 @@ impl Config {
         }
     }
 
-    fn from_decompressed(config: SZ3_Config) -> Self {
-        Self {
-            compression_algorithm: CompressionAlgorithm::decode(config),
-            error_bound: ErrorBound::decode(config),
+    fn from_decompressed(config: SZ3_Config) -> Result<Self> {
+        Ok(Self {
+            compression_algorithm: CompressionAlgorithm::decode(config)?,
+            error_bound: ErrorBound::decode(config)?,
             openmp: config.openmp,
             quantization_bincount: config.quantbinCnt as _,
             block_size: Some(config.blockSize as _),
-        }
+        })
     }
 
     /// Set the prediction algorithm.
@@ -518,6 +518,10 @@ pub enum SZ3Error {
     },
     #[error("cannot decompress to array with a different data type")]
     DecompressedDataTypeMismatch,
+    #[error("unsupported SZ3 compression algorithm code: {0}")]
+    UnsupportedAlgorithm(u32),
+    #[error("unsupported SZ3 error bound mode: {0}")]
+    UnsupportedErrorBound(u32),
     #[error("cannot decompress array with dimensions {found:?} to array with different dimensions {expected:?}")]
     DecompressedDimsMismatch {
         found: Vec<usize>,
@@ -605,7 +609,7 @@ struct ParsedConfig {
 }
 
 impl ParsedConfig {
-    fn from_compressed(compressed_data: &[u8]) -> Self {
+    fn from_compressed(compressed_data: &[u8]) -> Result<Self> {
         let raw = unsafe {
             tensogram_sz3_sys::sz3_decompress_config(
                 compressed_data.as_ptr().cast(),
@@ -623,13 +627,13 @@ impl ParsedConfig {
             dataType: data_type,
             ..
         } = raw;
-        let config = Config::from_decompressed(raw);
-        Self {
+        let config = Config::from_decompressed(raw)?;
+        Ok(Self {
             config,
             len,
             dims,
             data_type,
-        }
+        })
     }
 }
 
@@ -727,7 +731,7 @@ pub fn decompress<V: SZ3Compressible, T: std::ops::Deref<Target = [u8]>>(
         len,
         dims,
         data_type,
-    } = ParsedConfig::from_compressed(&compressed_data);
+    } = ParsedConfig::from_compressed(&compressed_data)?;
 
     if data_type != V::SZ_DATA_TYPE {
         return Err(SZ3Error::DecompressedDataTypeMismatch);
@@ -775,7 +779,7 @@ pub fn decompress_into_dimensioned<
         len,
         dims,
         data_type,
-    } = ParsedConfig::from_compressed(&compressed_data);
+    } = ParsedConfig::from_compressed(&compressed_data)?;
 
     if data_type != V::SZ_DATA_TYPE {
         return Err(SZ3Error::DecompressedDataTypeMismatch);
