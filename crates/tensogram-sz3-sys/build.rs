@@ -1,4 +1,4 @@
-// (C) Copyright 2024- ECMWF and individual contributors.
+// (C) Copyright 2026- ECMWF and individual contributors.
 //
 // This software is licensed under the terms of the Apache Licence Version 2.0
 // which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
@@ -6,8 +6,6 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
-// build.rs for tensogram-sz3-sys
-//
 // Strategy:
 // 1. SZ3 is header-only. We generate `version.hpp` from `version.hpp.in` by
 //    substituting the cmake variables ourselves (avoids a full cmake configure
@@ -130,18 +128,20 @@ fn main() {
 fn parse_project_version(cmake_txt: &str) -> (u32, u32, u32) {
     for line in cmake_txt.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("project(") && trimmed.contains("VERSION") {
-            // Extract the version string after "VERSION"
-            if let Some(idx) = trimmed.find("VERSION") {
-                let rest = &trimmed[idx + "VERSION".len()..];
-                let rest = rest.trim().trim_end_matches(')');
-                let parts: Vec<&str> = rest.split('.').collect();
-                if parts.len() >= 3 {
-                    let major = parts[0].trim().parse().unwrap_or(0);
-                    let minor = parts[1].trim().parse().unwrap_or(0);
-                    let patch = parts[2].trim().parse().unwrap_or(0);
-                    return (major, minor, patch);
-                }
+        if let Some(idx) = trimmed
+            .starts_with("project(")
+            .then(|| trimmed.find("VERSION"))
+            .flatten()
+        {
+            let rest = trimmed[idx + "VERSION".len()..]
+                .trim()
+                .trim_end_matches(')');
+            let parts: Vec<&str> = rest.split('.').collect();
+            if parts.len() >= 3 {
+                let major = parts[0].trim().parse().unwrap_or(0);
+                let minor = parts[1].trim().parse().unwrap_or(0);
+                let patch = parts[2].trim().parse().unwrap_or(0);
+                return (major, minor, patch);
             }
         }
     }

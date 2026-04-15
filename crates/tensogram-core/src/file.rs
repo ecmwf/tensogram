@@ -1,4 +1,4 @@
-// (C) Copyright 2024- ECMWF and individual contributors.
+// (C) Copyright 2026- ECMWF and individual contributors.
 //
 // This software is licensed under the terms of the Apache Licence Version 2.0
 // which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
@@ -1505,7 +1505,8 @@ mod tests {
     // ── decode_range valid extraction ─────────────────────────────────────
 
     #[test]
-    fn test_local_decode_range_full_tensor() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_local_decode_range_full_tensor() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("range_full.tgm");
 
@@ -1600,11 +1601,7 @@ mod tests {
             let mut f = TensogramFile::create(&path)?;
             let meta = make_global_meta();
             let desc = make_descriptor(vec![2]);
-            f.append(
-                &meta,
-                &[(&desc, &[0u8; 8])],
-                &EncodeOptions::default(),
-            )?;
+            f.append(&meta, &[(&desc, &[0u8; 8])], &EncodeOptions::default())?;
         }
         let opened = TensogramFile::open(&path)?;
         assert!(!opened.is_remote());

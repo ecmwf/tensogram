@@ -1,4 +1,4 @@
-// (C) Copyright 2024- ECMWF and individual contributors.
+// (C) Copyright 2026- ECMWF and individual contributors.
 //
 // This software is licensed under the terms of the Apache Licence Version 2.0
 // which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
@@ -23,6 +23,7 @@ use tensogram_sz3_sys::SZ3_Config;
 // CompressionAlgorithm
 // ---------------------------------------------------------------------------
 
+/// Which prediction algorithm SZ3 should use during compression.
 #[derive(Clone, Debug, Copy)]
 #[non_exhaustive]
 pub enum CompressionAlgorithm {
@@ -59,8 +60,8 @@ impl CompressionAlgorithm {
 
     fn code(&self) -> u8 {
         (match self {
-            Self::Interpolation { .. } => tensogram_sz3_sys::SZ3::ALGO_ALGO_INTERP,
-            Self::InterpolationLorenzo { .. } => tensogram_sz3_sys::SZ3::ALGO_ALGO_INTERP_LORENZO,
+            Self::Interpolation => tensogram_sz3_sys::SZ3::ALGO_ALGO_INTERP,
+            Self::InterpolationLorenzo => tensogram_sz3_sys::SZ3::ALGO_ALGO_INTERP_LORENZO,
             Self::LorenzoRegression { .. } => tensogram_sz3_sys::SZ3::ALGO_ALGO_LORENZO_REG,
             Self::BiologyMolecularData => tensogram_sz3_sys::SZ3::ALGO_ALGO_BIOMD,
             Self::BiologyMolecularDataGromacsXtc => tensogram_sz3_sys::SZ3::ALGO_ALGO_BIOMDXTC,
@@ -93,14 +94,17 @@ impl CompressionAlgorithm {
         }
     }
 
+    /// Pure interpolation predictor.
     pub fn interpolation() -> Self {
         Self::Interpolation
     }
 
+    /// Interpolation with Lorenzo fallback (the default).
     pub fn interpolation_lorenzo() -> Self {
         Self::InterpolationLorenzo
     }
 
+    /// Lorenzo + regression predictor with default sub-flags.
     pub fn lorenzo_regression() -> Self {
         Self::LorenzoRegression {
             lorenzo: true,
@@ -109,6 +113,7 @@ impl CompressionAlgorithm {
         }
     }
 
+    /// Lorenzo + regression predictor with individually overridable sub-flags.
     pub fn lorenzo_regression_custom(
         lorenzo: Option<bool>,
         lorenzo_second_order: Option<bool>,
@@ -121,18 +126,22 @@ impl CompressionAlgorithm {
         }
     }
 
+    /// Predictor optimised for molecular-dynamics data.
     pub fn biology_molecular_data() -> Self {
         Self::BiologyMolecularData
     }
 
+    /// Predictor optimised for GROMACS XTC molecular-dynamics data.
     pub fn biology_molecular_data_gromacs_xtc() -> Self {
         Self::BiologyMolecularDataGromacsXtc
     }
 
+    /// Skip prediction entirely; only quantise and encode.
     pub fn no_prediction() -> Self {
         Self::NoPrediction
     }
 
+    /// Fully lossless compression (no quantisation).
     pub fn lossless() -> Self {
         Self::Lossless
     }
@@ -148,6 +157,8 @@ impl Default for CompressionAlgorithm {
 // ErrorBound
 // ---------------------------------------------------------------------------
 
+/// Error-bound mode that controls how much distortion SZ3 is allowed to
+/// introduce during lossy compression.
 #[derive(Clone, Debug, Copy)]
 #[non_exhaustive]
 pub enum ErrorBound {
@@ -198,8 +209,8 @@ impl ErrorBound {
     fn abs_bound(&self) -> f64 {
         match self {
             Self::Absolute(bound) => *bound,
-            Self::AbsoluteOrRelative { absolute_bound, .. } => *absolute_bound,
-            Self::AbsoluteAndRelative { absolute_bound, .. } => *absolute_bound,
+            Self::AbsoluteOrRelative { absolute_bound, .. }
+            | Self::AbsoluteAndRelative { absolute_bound, .. } => *absolute_bound,
             _ => 0.0,
         }
     }
@@ -207,8 +218,8 @@ impl ErrorBound {
     fn rel_bound(&self) -> f64 {
         match self {
             Self::Relative(bound) => *bound,
-            Self::AbsoluteOrRelative { relative_bound, .. } => *relative_bound,
-            Self::AbsoluteAndRelative { relative_bound, .. } => *relative_bound,
+            Self::AbsoluteOrRelative { relative_bound, .. }
+            | Self::AbsoluteAndRelative { relative_bound, .. } => *relative_bound,
             _ => 0.0,
         }
     }
@@ -232,6 +243,10 @@ impl ErrorBound {
 // Config
 // ---------------------------------------------------------------------------
 
+/// Full configuration for an SZ3 compress/decompress round-trip.
+///
+/// Use the builder-style setters to customise individual parameters; the
+/// only required parameter is [`ErrorBound`], passed via [`Config::new`].
 #[derive(Clone, Debug)]
 pub struct Config {
     compression_algorithm: CompressionAlgorithm,
@@ -242,6 +257,8 @@ pub struct Config {
 }
 
 impl Config {
+    /// Create a new configuration with the given error bound and default
+    /// settings (interpolation-lorenzo algorithm, 65 536 quantization bins).
     pub fn new(error_bound: ErrorBound) -> Self {
         Self {
             compression_algorithm: CompressionAlgorithm::default(),
@@ -262,32 +279,38 @@ impl Config {
         }
     }
 
+    /// Set the prediction algorithm.
     pub fn compression_algorithm(mut self, compression_algorithm: CompressionAlgorithm) -> Self {
         self.compression_algorithm = compression_algorithm;
         self
     }
 
+    /// Override the error bound.
     pub fn error_bound(mut self, error_bound: ErrorBound) -> Self {
         self.error_bound = error_bound;
         self
     }
 
+    /// Enable or disable OpenMP parallelism (requires the `openmp` feature).
     #[cfg(feature = "openmp")]
     pub fn openmp(mut self, openmp: bool) -> Self {
         self.openmp = openmp;
         self
     }
 
+    /// Set the number of quantization bins (default: 65 536).
     pub fn quantization_bincount(mut self, quantization_bincount: u32) -> Self {
         self.quantization_bincount = quantization_bincount;
         self
     }
 
+    /// Set an explicit block size, overriding the automatic default.
     pub fn block_size(mut self, block_size: u32) -> Self {
         self.block_size = Some(block_size);
         self
     }
 
+    /// Revert to the automatic block size (chosen based on dimensionality).
     pub fn automatic_block_size(mut self) -> Self {
         self.block_size = None;
         self
@@ -298,6 +321,11 @@ impl Config {
 // SZ3Compressible trait + sealed implementation
 // ---------------------------------------------------------------------------
 
+/// Marker trait for types that SZ3 can compress and decompress.
+///
+/// Implemented for `f32`, `f64`, `u8`, `i8`, `u16`, `i16`, `u32`, `i32`,
+/// `u64`, and `i64`.  This trait is sealed and cannot be implemented outside
+/// this crate.
 pub trait SZ3Compressible: private::Sealed + Sized {}
 impl SZ3Compressible for f32 {}
 impl SZ3Compressible for f64 {}
@@ -382,12 +410,18 @@ mod private {
 // DimensionedData + builders
 // ---------------------------------------------------------------------------
 
+/// A data buffer together with its N-dimensional shape, ready for SZ3
+/// compression or decompression.
+///
+/// Construct via [`DimensionedData::build`] (immutable) or
+/// [`DimensionedData::build_mut`] (mutable).
 #[derive(Clone, Debug)]
 pub struct DimensionedData<V: SZ3Compressible, T: std::ops::Deref<Target = [V]>> {
     data: T,
     dims: Vec<usize>,
 }
 
+/// Builder for an immutable [`DimensionedData`] reference.
 #[derive(Clone, Debug)]
 pub struct DimensionedDataBuilder<'a, V> {
     data: &'a [V],
@@ -395,6 +429,7 @@ pub struct DimensionedDataBuilder<'a, V> {
     remainder: usize,
 }
 
+/// Builder for a mutable [`DimensionedData`] reference.
 #[derive(Debug)]
 pub struct DimensionedDataBuilderMut<'a, V> {
     data: &'a mut [V],
@@ -403,6 +438,7 @@ pub struct DimensionedDataBuilderMut<'a, V> {
 }
 
 impl<V: SZ3Compressible, T: std::ops::Deref<Target = [V]>> DimensionedData<V, T> {
+    /// Start building an immutable dimensioned view over `data`.
     pub fn build<'a>(data: &'a T) -> DimensionedDataBuilder<'a, V> {
         DimensionedDataBuilder {
             data,
@@ -411,14 +447,17 @@ impl<V: SZ3Compressible, T: std::ops::Deref<Target = [V]>> DimensionedData<V, T>
         }
     }
 
+    /// Returns the underlying data as a flat slice.
     pub fn data(&self) -> &[V] {
         &self.data
     }
 
+    /// Consume the wrapper and return the owned data container.
     pub fn into_data(self) -> T {
         self.data
     }
 
+    /// Returns the dimension sizes.
     pub fn dims(&self) -> &[usize] {
         &self.dims
     }
@@ -433,6 +472,7 @@ impl<V: SZ3Compressible, T: std::ops::Deref<Target = [V]>> DimensionedData<V, T>
 }
 
 impl<V: SZ3Compressible, T: std::ops::DerefMut<Target = [V]>> DimensionedData<V, T> {
+    /// Start building a mutable dimensioned view over `data`.
     pub fn build_mut<'a>(data: &'a mut T) -> DimensionedDataBuilderMut<'a, V> {
         DimensionedDataBuilderMut {
             remainder: data.len(),
@@ -441,6 +481,7 @@ impl<V: SZ3Compressible, T: std::ops::DerefMut<Target = [V]>> DimensionedData<V,
         }
     }
 
+    /// Returns the underlying data as a mutable flat slice.
     pub fn data_mut(&mut self) -> &mut [V] {
         &mut self.data
     }
@@ -450,6 +491,7 @@ impl<V: SZ3Compressible, T: std::ops::DerefMut<Target = [V]>> DimensionedData<V,
 // SZ3Error
 // ---------------------------------------------------------------------------
 
+/// Errors returned by the SZ3 compression and dimension-building APIs.
 #[derive(thiserror::Error, Debug)]
 pub enum SZ3Error {
     #[error(
@@ -492,6 +534,10 @@ type Result<T> = std::result::Result<T, SZ3Error>;
 macro_rules! impl_dimensioned_data_builder {
     ($($builder:ident => $data:ty),*) => {
         $(impl<'a, V: SZ3Compressible> $builder<'a, V> {
+            /// Append a dimension with the given `length`.
+            ///
+            /// Returns an error if `length` does not evenly divide the
+            /// remaining element count.
             pub fn dim(mut self, length: usize) -> Result<Self> {
                 if length == 1 {
                     if self.dims.is_empty() && self.remainder == 1 {
@@ -500,7 +546,7 @@ macro_rules! impl_dimensioned_data_builder {
                     } else {
                         Err(SZ3Error::OneSizedDimension)
                     }
-                } else if self.remainder.rem_euclid(length) != 0 {
+                } else if self.remainder % length != 0 {
                     Err(SZ3Error::InvalidDimensionSize {
                         dims: self.dims,
                         len: self.data.len(),
@@ -514,11 +560,16 @@ macro_rules! impl_dimensioned_data_builder {
                 }
             }
 
+            /// Append a final dimension that consumes all remaining elements.
             pub fn remainder_dim(self) -> Result<$data> {
                 let remainder = self.remainder;
                 self.dim(remainder)?.finish()
             }
 
+            /// Finalise the builder, returning the dimensioned data.
+            ///
+            /// Returns an error if the specified dimensions do not exactly
+            /// cover the data length.
             pub fn finish(self) -> Result<$data> {
                 if self.remainder != 1 {
                     Err(SZ3Error::UnderSpecifiedDimensions {
@@ -546,14 +597,14 @@ impl_dimensioned_data_builder! {
 // Internal: read config from compressed blob
 // ---------------------------------------------------------------------------
 
-struct DecompressedConfig {
+struct ParsedConfig {
     config: Config,
     len: usize,
     dims: Vec<usize>,
     data_type: u8,
 }
 
-impl DecompressedConfig {
+impl ParsedConfig {
     fn from_compressed(compressed_data: &[u8]) -> Self {
         let raw = unsafe {
             tensogram_sz3_sys::sz3_decompress_config(
@@ -586,6 +637,7 @@ impl DecompressedConfig {
 // Public API: compress / decompress
 // ---------------------------------------------------------------------------
 
+/// Compress `data` with the given error bound, returning a new `Vec<u8>`.
 pub fn compress<V: SZ3Compressible, T: std::ops::Deref<Target = [V]>>(
     data: &DimensionedData<V, T>,
     error_bound: ErrorBound,
@@ -594,6 +646,7 @@ pub fn compress<V: SZ3Compressible, T: std::ops::Deref<Target = [V]>>(
     compress_with_config(data, &config)
 }
 
+/// Compress `data` with a full [`Config`], returning a new `Vec<u8>`.
 pub fn compress_with_config<V: SZ3Compressible, T: std::ops::Deref<Target = [V]>>(
     data: &DimensionedData<V, T>,
     config: &Config,
@@ -603,6 +656,7 @@ pub fn compress_with_config<V: SZ3Compressible, T: std::ops::Deref<Target = [V]>
     Ok(compressed_data)
 }
 
+/// Compress `data` and **append** the result to `compressed_data`.
 pub fn compress_into<V: SZ3Compressible, T: std::ops::Deref<Target = [V]>>(
     data: &DimensionedData<V, T>,
     error_bound: ErrorBound,
@@ -612,6 +666,8 @@ pub fn compress_into<V: SZ3Compressible, T: std::ops::Deref<Target = [V]>>(
     compress_into_with_config(data, &config, compressed_data)
 }
 
+/// Compress `data` with a full [`Config`] and **append** the result to
+/// `compressed_data`.
 pub fn compress_into_with_config<V: SZ3Compressible, T: std::ops::Deref<Target = [V]>>(
     data: &DimensionedData<V, T>,
     config: &Config,
@@ -661,15 +717,17 @@ pub fn compress_into_with_config<V: SZ3Compressible, T: std::ops::Deref<Target =
     Ok(())
 }
 
+/// Decompress an SZ3 blob into a new `Vec<V>`, returning the recovered
+/// [`Config`] and [`DimensionedData`].
 pub fn decompress<V: SZ3Compressible, T: std::ops::Deref<Target = [u8]>>(
     compressed_data: T,
 ) -> Result<(Config, DimensionedData<V, Vec<V>>)> {
-    let DecompressedConfig {
+    let ParsedConfig {
         config,
         len,
         dims,
         data_type,
-    } = DecompressedConfig::from_compressed(&compressed_data);
+    } = ParsedConfig::from_compressed(&compressed_data);
 
     if data_type != V::SZ_DATA_TYPE {
         return Err(SZ3Error::DecompressedDataTypeMismatch);
@@ -700,6 +758,10 @@ pub fn decompress<V: SZ3Compressible, T: std::ops::Deref<Target = [u8]>>(
     ))
 }
 
+/// Decompress an SZ3 blob into a pre-allocated [`DimensionedData`] buffer.
+///
+/// Returns an error if the data type or dimensions of the compressed blob do
+/// not match the destination buffer.
 pub fn decompress_into_dimensioned<
     V: SZ3Compressible,
     C: std::ops::Deref<Target = [u8]>,
@@ -708,12 +770,12 @@ pub fn decompress_into_dimensioned<
     compressed_data: C,
     decompressed_data: &mut DimensionedData<V, D>,
 ) -> Result<Config> {
-    let DecompressedConfig {
+    let ParsedConfig {
         config,
         len,
         dims,
         data_type,
-    } = DecompressedConfig::from_compressed(&compressed_data);
+    } = ParsedConfig::from_compressed(&compressed_data);
 
     if data_type != V::SZ_DATA_TYPE {
         return Err(SZ3Error::DecompressedDataTypeMismatch);
@@ -878,7 +940,7 @@ mod tests {
 
     #[test]
     fn round_trip_i32() {
-        let data: Vec<i32> = (-128..128).map(|i| i as i32 * 1000).collect();
+        let data: Vec<i32> = (-128..128).map(|i: i32| i * 1000).collect();
         let d = DimensionedData::<i32, _>::build(&data)
             .dim(256)
             .unwrap()

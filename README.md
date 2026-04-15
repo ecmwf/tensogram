@@ -167,7 +167,7 @@ docs/                     mdBook documentation
 
 ## Copyright and License
 
-Copyright 2024- European Centre for Medium-Range Weather Forecasts (ECMWF).
+Copyright 2026- European Centre for Medium-Range Weather Forecasts (ECMWF).
 
 This software is licensed under the terms of the [Apache License, Version 2.0](LICENSE) which can also be obtained at http://www.apache.org/licenses/LICENSE-2.0.
 

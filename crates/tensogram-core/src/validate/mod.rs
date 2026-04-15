@@ -1,4 +1,4 @@
-// (C) Copyright 2024- ECMWF and individual contributors.
+// (C) Copyright 2026- ECMWF and individual contributors.
 //
 // This software is licensed under the terms of the Apache Licence Version 2.0
 // which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
@@ -2594,7 +2594,7 @@ mod tests {
         pf.extend_from_slice(FRAME_END);
         let pf2 = pf.clone();
         let desc = default_desc();
-        let data_frame = build_data_object_frame(&desc, &vec![0u8; 32]);
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
         let hm = build_metadata_frame();
         let flags = 1u16 | (1u16 << 6);
         let msg = build_raw_message(flags, &[hm, pf, pf2, data_frame], None, false);
@@ -2625,7 +2625,7 @@ mod tests {
         pf.extend_from_slice(FRAME_END);
         let hm = build_metadata_frame();
         let desc = default_desc();
-        let df = build_data_object_frame(&desc, &vec![0u8; 32]);
+        let df = build_data_object_frame(&desc, &[0u8; 32]);
         let flags = 1u16 | (1u16 << 6);
         let msg = build_raw_message(flags, &[hm, df, pf], None, false);
         let report = validate_message(&msg, &ValidateOptions::default());
@@ -2643,7 +2643,7 @@ mod tests {
     fn structure_flag_mismatch_extra() {
         let meta_frame = build_metadata_frame();
         let desc = default_desc();
-        let data_frame = build_data_object_frame(&desc, &vec![0u8; 32]);
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
         let msg = build_raw_message(0u16, &[meta_frame, data_frame], None, false);
         let report = validate_message(&msg, &ValidateOptions::default());
         assert!(
@@ -2744,7 +2744,7 @@ mod tests {
         use crate::wire::{FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
         let meta_frame = build_metadata_frame();
         let desc = default_desc();
-        let data_frame = build_data_object_frame(&desc, &vec![0u8; 32]);
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
         let hf = crate::types::HashFrame {
             object_count: 1,
             hash_type: "blake99".to_string(),

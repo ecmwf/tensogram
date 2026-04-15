@@ -1,4 +1,4 @@
-// (C) Copyright 2024- ECMWF and individual contributors.
+// (C) Copyright 2026- ECMWF and individual contributors.
 //
 // This software is licensed under the terms of the Apache Licence Version 2.0
 // which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
@@ -337,8 +337,8 @@ mod tests {
         // Preamble = 24 bytes, Frame header = 16 bytes => CBOR starts at 40
         let cbor_start = 40;
         let corrupt_end = (cbor_start + 30).min(encoded.len());
-        for i in cbor_start..corrupt_end {
-            encoded[i] = 0xFF;
+        for byte in &mut encoded[cbor_start..corrupt_end] {
+            *byte = 0xFF;
         }
 
         let result = decode(&encoded, &DecodeOptions::default());

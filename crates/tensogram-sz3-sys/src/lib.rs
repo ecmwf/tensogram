@@ -1,4 +1,4 @@
-// (C) Copyright 2024- ECMWF and individual contributors.
+// (C) Copyright 2026- ECMWF and individual contributors.
 //
 // This software is licensed under the terms of the Apache Licence Version 2.0
 // which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
@@ -107,6 +107,10 @@ extern "C" {
 // ---------------------------------------------------------------------------
 
 /// SZ3 algorithm and error-bound mode constants.
+///
+/// Named to match the C++ `SZ3::` namespace; the `ALGO_` and `EB_` prefixes
+/// distinguish compression-algorithm IDs from error-bound mode IDs.
+#[allow(non_snake_case)]
 pub mod SZ3 {
     // Compression algorithms
     pub const ALGO_ALGO_LORENZO_REG: u32 = 0;
