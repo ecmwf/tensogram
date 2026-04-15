@@ -24,16 +24,23 @@ Tensogram defines a network-transmissible binary message format, not a file form
 - **Self-describing messages** — CBOR-encoded metadata vocabulary agnostic
 - **N-Tensor support** — multiple tensors of different dtypes per message (float16 through float64, int8 through int64, complex, bfloat16)
 - **No panics** — robust library where all fallible operations return `Result<T, TensogramError>`
+- **File API** — `TensogramFile` for multi-message `.tgm` files: append, random-access read, iterate, and decode individual messages or objects
+- **Partial decode** — `decode_range` extracts sub-tensor slices without decoding the full object, with random-access support for szip, blosc2, and zfp
+- **Remote access** — read `.tgm` files directly from S3, GCS, Azure Blob, or HTTP via `object_store` integration (`open_remote`, `open_source`)
+- **Async API** — full async counterparts for file open, message read, decode, and iteration via tokio (`open_async`, `decode_message_async`, etc.)
 - **Streaming encoder** — progressive encode/transmit without buffering the full message; preceder metadata frames enable consumer-side streaming decode
-- **Compression** — szip, zstd, lz4, blosc2, zfp, sz3 per data object
+- **Compression** — szip, zstd, lz4, blosc2, zfp, sz3 per data object; pure-Rust backends available (`szip-pure`, `zstd-pure`) for environments without C libraries
 - **Hash verification** — xxHash xxh3-64 integrity check per object
-- **Multiple languages** — Rust, Python (NumPy), C/C++
+- **Validation** — 4-level structural and data integrity validation with optional JSON output (`tensogram validate --quick|--checksum|--full`)
+- **Multiple languages** — Rust, Python (NumPy), C/C++, WebAssembly
+- **Free-threaded Python** — GIL-free operation on Python 3.13t with full parallel encode/decode
 - **xarray backend** — `xr.open_dataset("file.tgm", engine="tensogram")` with lazy loading, coordinate auto-detection, and hypercube stacking via `open_datasets()`
-- **Zarr v3 store** — `zarr.open_group(store=TensogramStore.open_tgm("file.tgm"))` for standard Zarr API access with 14 bidirectionally-mapped dtypes
+- **Dask integration** — parallel chunked computation via `xr.open_dataset(..., chunks={})` with per-chunk `decode_range` for efficient out-of-core processing
+- **Zarr v3 store** — `zarr.open_group(store=TensogramStore.open_tgm("file.tgm"), mode="r")` for standard Zarr API access with 14 bidirectionally-mapped dtypes
 - **GRIB conversion** — import GRIB data with MARS metadata preservation and configurable namespace extraction
 - **NetCDF conversion** — import NetCDF-3 and NetCDF-4 files with CF metadata lifting (`--cf`), packed data unpacking, and configurable encoding/compression pipeline shared with `convert-grib`
 - **CLI** — `tensogram info/ls/dump/get/set/copy/merge/split/reshuffle/convert-grib/convert-netcdf` with `--strategy first|last|error` merge conflict resolution
-- **Optional features** — `mmap` (zero-copy file reads), `async` (tokio I/O)
+- **Optional features** — `mmap` (zero-copy file reads), `async` (tokio I/O), `remote` (S3/GCS/Azure/HTTP)
 
 ## Quick Start
 
@@ -76,7 +83,7 @@ ds = xr.open_dataset("forecast.tgm", engine="tensogram")  # lazy-loaded
 
 ```python
 # open all .tgm files in a directory
-group = zarr.open_group(store=TensogramStore.open_dir("somedir/"))  # loads somedir/*.tgm
+group = zarr.open_group(store=TensogramStore.open_dir("somedir/"), mode="r")  # loads somedir/*.tgm
 ```
 
 See `examples/python/` for encode/decode, metadata, packing, file API, iterators, xarray, zarr, and streaming consumer patterns.
@@ -91,7 +98,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint
 
 **Optional features:**
 ```bash
-cargo build -p tensogram-core --features mmap,async
+cargo build -p tensogram-core --features mmap,async,remote
 ```
 
 **C++ wrapper** (`cpp/include/tensogram.hpp`):
@@ -108,14 +115,14 @@ See `examples/cpp/` for encode/decode, metadata, file API, and iterator examples
 uv venv .venv && source .venv/bin/activate
 uv pip install maturin numpy
 cd python/bindings && maturin develop
-python -m pytest python/tests/ -v              # 200 tests
+python -m pytest python/tests/ -v              # ~400 tests
 ```
 
 **xarray + Zarr backends:**
 ```bash
 source .venv/bin/activate                      # activate venv from above step
-uv pip install -e "python/tensogram-xarray/[dask]"    # 124 tests
-uv pip install -e python/tensogram-zarr/              # 172 tests
+uv pip install -e "python/tensogram-xarray/[dask]"    # ~190 tests
+uv pip install -e python/tensogram-zarr/              # ~220 tests
 ```
 
 **GRIB conversion** (requires [ecCodes](https://confluence.ecmwf.int/display/ECC)):
@@ -155,6 +162,9 @@ rust/
 ├── tensogram-encodings/  Encoding pipeline + compression codecs
 ├── tensogram-cli/        CLI binary (tensogram command)
 ├── tensogram-ffi/        C FFI layer
+├── tensogram-szip/       Pure-Rust szip implementation
+├── tensogram-sz3/        SZ3 lossy compressor bindings
+├── tensogram-wasm/       WebAssembly bindings
 ├── tensogram-grib/       GRIB converter (ecCodes, excluded from default build)
 ├── tensogram-netcdf/     NetCDF converter (libnetcdf, excluded from default build)
 └── benchmarks/           Benchmark suite
