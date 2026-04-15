@@ -20,9 +20,9 @@ env:
   NODE_VERSION: "22.22.2"
 
 jobs:
-  # ── Linux: lint + test + GRIB + NetCDF + Python ────────────────
-  main-linux:
-    name: Main (Linux)
+  # ── Linux: lint (parallel with test) ───────────────────────────
+  lint:
+    name: Lint
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     container:
       image: eccr.ecmwf.int/tensogram/ci:1.0.0
@@ -32,39 +32,65 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: mkdir -p "$TMPDIR"
-      - name: Format check
-        run: cargo fmt --check
 
-      - name: Clippy
+      - name: Format + Clippy
         run: |
+          cargo fmt --check
           cargo clippy --workspace --all-targets -- -D warnings
-          cargo clippy -p tensogram-core -p tensogram-ffi -p tensogram-cli --all-targets --all-features -- -D warnings
+          cargo clippy -p tensogram-core --all-targets --features "remote,async" -- -D warnings
+          cargo clippy -p tensogram-cli --all-targets --features "grib,netcdf" -- -D warnings
+          cargo clippy --manifest-path crates/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" target
+
+  # ── Linux: test (parallel with lint) ───────────────────────────
+  test:
+    name: Test
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.0.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
 
       - name: Test
-        run: cargo test --workspace
-
-      - name: Test (remote feature)
-        run: cargo test -p tensogram-core --features remote
-
-      - name: Test (remote + async features)
-        run: cargo test -p tensogram-core --features "remote,async"
-
-      - name: Test (GRIB)
         run: |
+          cargo test --workspace
+          cargo test -p tensogram-core --features remote
+          cargo test -p tensogram-core --features "remote,async"
           cargo test --manifest-path crates/tensogram-grib/Cargo.toml
           cargo test -p tensogram-cli --features grib
-
-      - name: Test (NetCDF)
-        run: |
-          cargo clippy --manifest-path crates/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
           cargo test --manifest-path crates/tensogram-netcdf/Cargo.toml
           cargo test -p tensogram-cli --features netcdf
 
-      - name: Build and test Python bindings
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" target
+
+  # ── Linux: Python bindings ─────────────────────────────────────
+  python:
+    name: Python
+    needs: lint
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.0.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
+
+      - name: Build and test
         run: |
           uv python install 3.13
           uv venv .venv --python 3.13
-          source .venv/bin/activate
+          . .venv/bin/activate
           uv pip install maturin pytest pytest-asyncio numpy ruff
           cd crates/tensogram-python && maturin develop && cd ../..
           ruff check --config crates/tensogram-python/pyproject.toml tests/python/
@@ -73,7 +99,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf "$TMPDIR" .venv target build
+        run: rm -rf "$TMPDIR" .venv target
 
   # ── macOS: lint + test + GRIB + NetCDF + Python ────────────────
   main-macos:
@@ -107,7 +133,9 @@ jobs:
       - name: Clippy
         run: |
           cargo clippy --workspace --all-targets -- -D warnings
-          cargo clippy -p tensogram-core -p tensogram-ffi -p tensogram-cli --all-targets --all-features -- -D warnings
+          cargo clippy -p tensogram-core --all-targets --features "remote,async" -- -D warnings
+          cargo clippy -p tensogram-cli --all-targets --features "grib,netcdf" -- -D warnings
+          cargo clippy --manifest-path crates/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
 
       - name: Test
         run: cargo test --workspace
@@ -133,7 +161,7 @@ jobs:
         run: |
           uv python install 3.13
           uv venv .venv --python 3.13
-          source .venv/bin/activate
+          . .venv/bin/activate
           uv pip install maturin pytest pytest-asyncio numpy ruff
           cd crates/tensogram-python && maturin develop && cd ../..
           ruff check --config crates/tensogram-python/pyproject.toml tests/python/
@@ -147,7 +175,7 @@ jobs:
   # ── Python: free-threaded 3.13t ────────────────────────────────
   python-free-threaded:
     name: Python 3.13t (free-threaded)
-    needs: main-linux
+    needs: [test, python]
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     container:
       image: eccr.ecmwf.int/tensogram/ci:1.0.0
@@ -165,7 +193,7 @@ jobs:
         run: |
           uv python install cpython-3.13+freethreaded
           uv venv .venv --python python3.13t
-          source .venv/bin/activate
+          . .venv/bin/activate
           uv pip install maturin pytest pytest-asyncio "numpy>=2.1"
           python -c "import sys; assert not sys._is_gil_enabled(), 'GIL should be disabled'"
           cd crates/tensogram-python && maturin develop --release && cd ../..
@@ -178,7 +206,7 @@ jobs:
   # ── Python packages: xarray + zarr ─────────────────────────────
   python-packages:
     name: Python packages
-    needs: main-linux
+    needs: [test, python]
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     container:
       image: eccr.ecmwf.int/tensogram/ci:1.0.0
@@ -194,7 +222,7 @@ jobs:
         run: |
           uv python install 3.12
           uv venv .venv --python 3.12
-          source .venv/bin/activate
+          . .venv/bin/activate
           uv pip install maturin pytest numpy
           cd crates/tensogram-python && maturin develop && cd ../..
           uv pip install -e "tensogram-xarray/[dask]"
