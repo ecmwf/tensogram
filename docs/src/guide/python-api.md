@@ -400,8 +400,8 @@ or `len(f)`, to discover the message count without blocking the event loop.
     print(f.is_remote(), f.source())
 ```
 
-> **Note:** `len(f)` is synchronous and may block on first call (triggers a
-> file scan). In async code, prefer `await f.message_count()`.
+> **Note:** `len(f)` requires a prior `await f.message_count()` call. Without
+> it, `len(f)` raises `RuntimeError`.
 
 ### When to use async vs sync
 

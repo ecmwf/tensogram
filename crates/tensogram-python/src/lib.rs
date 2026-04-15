@@ -579,7 +579,7 @@ impl PyTensogramFile {
     }
 
     /// Batch-decode a sub-array range from the same object across multiple
-    /// messages via batched HTTP. Remote only. Call ``prefetch_layouts`` first to avoid per-message discovery overhead.
+    /// messages via batched HTTP. Remote only.
     #[pyo3(signature = (msg_indices, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
     #[allow(clippy::too_many_arguments)]
     fn file_decode_range_batch(
@@ -1431,10 +1431,7 @@ impl PyAsyncTensogramFile {
                     let key: String = k.extract()?;
                     let val: String = v.extract::<String>().or_else(|_| {
                         v.str().map(|s| s.to_string()).map_err(|_| {
-                            PyValueError::new_err(format!(
-                                "storage_options value for key '{key}' \
-                                     must be convertible to string"
-                            ))
+                            PyValueError::new_err(format!("storage_options value for key '{key}' must be convertible to string"))
                         })
                     })?;
                     map.insert(key, val);
@@ -1636,7 +1633,7 @@ impl PyAsyncTensogramFile {
             file.prefetch_layouts_async(&msg_indices)
                 .await
                 .map_err(to_py_err)?;
-            Ok(true)
+            Ok(())
         })
     }
 
