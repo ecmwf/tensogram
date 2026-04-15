@@ -10,6 +10,8 @@ Demonstrates:
 """
 
 import asyncio
+import os
+import shutil
 import tempfile
 
 import numpy as np
@@ -32,9 +34,8 @@ def create_test_file(path: str) -> None:
 
 
 async def main():
-    with tempfile.NamedTemporaryFile(suffix=".tgm", delete=False) as tmp:
-        path = tmp.name
-
+    tmpdir = tempfile.mkdtemp()
+    path = os.path.join(tmpdir, "test.tgm")
     create_test_file(path)
 
     f = await tensogram.AsyncTensogramFile.open(path)
@@ -65,16 +66,19 @@ async def main():
     values = await asyncio.gather(
         *[f.file_decode_range(i, 0, [(offset, 1)], join=True) for i in range(count)]
     )
-    print(f"\nGrid point [{row},{col}] across 20 messages:")
+    print(f"\nGrid point [{row},{col}] across {count} messages:")
     for i, arr in enumerate(values):
         print(f"  message {i}: value={float(arr[0]):.1f}")
 
-    # 6. Async context manager and iteration
+    # 4. Async context manager and iteration
     async with await tensogram.AsyncTensogramFile.open(path) as f2:
+        await f2.message_count()
         count = 0
         async for _meta, _objects in f2:
             count += 1
         print(f"\nAsync iteration: {count} messages")
+
+    shutil.rmtree(tmpdir)
 
 
 if __name__ == "__main__":

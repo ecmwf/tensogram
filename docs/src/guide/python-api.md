@@ -346,6 +346,8 @@ a single call.  `file_decode_object_batch` does the same for full frames:
 
 ```python
     indices = list(range(300))
+    row, col, grid = 100, 200, 528
+    offset = row * grid + col
 
     values = await f.file_decode_range_batch(indices, 0, [(offset, 1)], join=True)
 

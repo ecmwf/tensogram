@@ -940,20 +940,15 @@ impl RemoteBackend {
         ranges: &[(u64, u64)],
         options: &DecodeOptions,
     ) -> Result<Vec<(DataObjectDescriptor, Vec<Vec<u8>>)>> {
-        for &msg_idx in msg_indices {
+        let mut byte_ranges = Vec::with_capacity(msg_indices.len());
+        {
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
-            self.ensure_layout_eager_locked(&mut state, msg_idx)?;
-        }
-
-        let mut byte_ranges = Vec::with_capacity(msg_indices.len());
-        {
-            let state = self
-                .state
-                .lock()
-                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            for &msg_idx in msg_indices {
+                self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+            }
             for &msg_idx in msg_indices {
                 let layout = &state.layouts[msg_idx];
                 if let Some(ref index) = layout.index {
@@ -993,21 +988,16 @@ impl RemoteBackend {
         obj_idx: usize,
         options: &DecodeOptions,
     ) -> Result<Vec<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)>> {
-        for &msg_idx in msg_indices {
+        let mut byte_ranges = Vec::with_capacity(msg_indices.len());
+        let mut metas = Vec::with_capacity(msg_indices.len());
+        {
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
-            self.ensure_layout_eager_locked(&mut state, msg_idx)?;
-        }
-
-        let mut byte_ranges = Vec::with_capacity(msg_indices.len());
-        let mut metas = Vec::with_capacity(msg_indices.len());
-        {
-            let state = self
-                .state
-                .lock()
-                .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+            for &msg_idx in msg_indices {
+                self.ensure_layout_eager_locked(&mut state, msg_idx)?;
+            }
             for &msg_idx in msg_indices {
                 let layout = &state.layouts[msg_idx];
                 if let Some(ref index) = layout.index {

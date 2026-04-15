@@ -579,7 +579,7 @@ impl PyTensogramFile {
     }
 
     /// Batch-decode a sub-array range from the same object across multiple
-    /// messages in a single HTTP round-trip. Remote only.
+    /// messages via batched HTTP. Remote only. Call ``prefetch_layouts`` first to avoid per-message discovery overhead.
     #[pyo3(signature = (msg_indices, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
     #[allow(clippy::too_many_arguments)]
     fn file_decode_range_batch(
@@ -1721,7 +1721,7 @@ impl PyAsyncTensogramFile {
         })
     }
 
-    /// Batch-decode sub-array ranges across multiple messages. Remote only.
+    /// Batch-decode sub-array ranges across multiple messages via batched HTTP. Remote only. Call ``prefetch_layouts`` first to avoid per-message discovery overhead.
     #[pyo3(signature = (msg_indices, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
     #[allow(clippy::too_many_arguments)]
     fn file_decode_range_batch<'py>(
@@ -1763,8 +1763,10 @@ impl PyAsyncTensogramFile {
     /// All raw message bytes as a list of ``bytes`` objects (async).
     fn messages<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let file = Arc::clone(&self.file);
+        let cache = Arc::clone(&self.cached_message_count);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let count = file.message_count_async().await.map_err(to_py_err)?;
+            let _ = cache.set(count);
             let mut raw_msgs = Vec::with_capacity(count);
             for i in 0..count {
                 let bytes = file.read_message_async(i).await.map_err(to_py_err)?;
