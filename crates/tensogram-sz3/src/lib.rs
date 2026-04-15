@@ -794,19 +794,602 @@ mod tests {
     #[test]
     fn dimension_errors() {
         let data: Vec<f64> = vec![1.0; 100];
-        // Size 1 dimension on non-singleton data is an error
         let err = DimensionedData::<f64, _>::build(&data).dim(1);
-        assert!(err.is_err());
-
-        // Non-dividing dimension
+        assert!(matches!(err.unwrap_err(), SZ3Error::OneSizedDimension));
         let err = DimensionedData::<f64, _>::build(&data).dim(7);
-        assert!(err.is_err());
-
-        // Under-specified
+        assert!(matches!(
+            err.unwrap_err(),
+            SZ3Error::InvalidDimensionSize { .. }
+        ));
         let err = DimensionedData::<f64, _>::build(&data)
             .dim(10)
             .unwrap()
             .finish();
-        assert!(err.is_err());
+        assert!(matches!(
+            err.unwrap_err(),
+            SZ3Error::UnderSpecifiedDimensions { .. }
+        ));
+    }
+
+    #[test]
+    fn round_trip_u8() {
+        let data: Vec<u8> = (0..256).map(|i| i as u8).collect();
+        let d = DimensionedData::<u8, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let compressed = compress(&d, ErrorBound::Absolute(0.0)).unwrap();
+        let (_, dec) = decompress::<u8, _>(&*compressed).unwrap();
+        assert_eq!(dec.data(), data.as_slice());
+    }
+
+    #[test]
+    fn round_trip_i8() {
+        let data: Vec<i8> = (-128..127).map(|i| i as i8).collect();
+        let d = DimensionedData::<i8, _>::build(&data)
+            .dim(data.len())
+            .unwrap()
+            .finish()
+            .unwrap();
+        let compressed = compress(&d, ErrorBound::Absolute(0.0)).unwrap();
+        let (_, dec) = decompress::<i8, _>(&*compressed).unwrap();
+        assert_eq!(dec.data(), data.as_slice());
+    }
+
+    #[test]
+    fn round_trip_u16() {
+        let data: Vec<u16> = (0..256).map(|i| i as u16 * 100).collect();
+        let d = DimensionedData::<u16, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let compressed = compress(&d, ErrorBound::Absolute(0.0)).unwrap();
+        let (_, dec) = decompress::<u16, _>(&*compressed).unwrap();
+        assert_eq!(dec.data(), data.as_slice());
+    }
+
+    #[test]
+    fn round_trip_i16() {
+        let data: Vec<i16> = (-128..128).map(|i| i as i16 * 50).collect();
+        let d = DimensionedData::<i16, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let compressed = compress(&d, ErrorBound::Absolute(0.0)).unwrap();
+        let (_, dec) = decompress::<i16, _>(&*compressed).unwrap();
+        assert_eq!(dec.data(), data.as_slice());
+    }
+
+    #[test]
+    fn round_trip_u32() {
+        let data: Vec<u32> = (0..256).map(|i| i as u32 * 1000).collect();
+        let d = DimensionedData::<u32, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let compressed = compress(&d, ErrorBound::Absolute(0.0)).unwrap();
+        let (_, dec) = decompress::<u32, _>(&*compressed).unwrap();
+        assert_eq!(dec.data(), data.as_slice());
+    }
+
+    #[test]
+    fn round_trip_i32() {
+        let data: Vec<i32> = (-128..128).map(|i| i as i32 * 1000).collect();
+        let d = DimensionedData::<i32, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let compressed = compress(&d, ErrorBound::Absolute(0.0)).unwrap();
+        let (_, dec) = decompress::<i32, _>(&*compressed).unwrap();
+        assert_eq!(dec.data(), data.as_slice());
+    }
+
+    #[test]
+    fn round_trip_u64() {
+        let data: Vec<u64> = (0..256).map(|i| i as u64 * 10000).collect();
+        let d = DimensionedData::<u64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let compressed = compress(&d, ErrorBound::Absolute(0.0)).unwrap();
+        let (_, dec) = decompress::<u64, _>(&*compressed).unwrap();
+        assert_eq!(dec.data(), data.as_slice());
+    }
+
+    #[test]
+    fn round_trip_i64() {
+        let data: Vec<i64> = (-128..128).map(|i| i as i64 * 10000).collect();
+        let d = DimensionedData::<i64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let compressed = compress(&d, ErrorBound::Absolute(0.0)).unwrap();
+        let (_, dec) = decompress::<i64, _>(&*compressed).unwrap();
+        assert_eq!(dec.data(), data.as_slice());
+    }
+
+    #[test]
+    fn error_bound_relative() {
+        let data: Vec<f64> = (0..256)
+            .map(|i| (i as f64 / 256.0 * std::f64::consts::PI).sin() + 2.0)
+            .collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let cfg = Config::new(ErrorBound::Relative(1e-4));
+        let c = compress_with_config(&d, &cfg).unwrap();
+        let (_, dec) = decompress::<f64, _>(&*c).unwrap();
+        assert_eq!(dec.data().len(), data.len());
+    }
+
+    #[test]
+    fn error_bound_psnr() {
+        let data: Vec<f64> = (0..256)
+            .map(|i| (i as f64 / 256.0 * std::f64::consts::PI).sin())
+            .collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let cfg = Config::new(ErrorBound::PSNR(80.0));
+        let c = compress_with_config(&d, &cfg).unwrap();
+        let (_, dec) = decompress::<f64, _>(&*c).unwrap();
+        assert_eq!(dec.data().len(), data.len());
+    }
+
+    #[test]
+    fn error_bound_l2norm() {
+        let data: Vec<f64> = (0..256)
+            .map(|i| (i as f64 / 256.0 * std::f64::consts::PI).sin())
+            .collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let cfg = Config::new(ErrorBound::L2Norm(1e-3));
+        let c = compress_with_config(&d, &cfg).unwrap();
+        let (_, dec) = decompress::<f64, _>(&*c).unwrap();
+        assert_eq!(dec.data().len(), data.len());
+    }
+
+    #[test]
+    fn error_bound_abs_and_rel() {
+        let data: Vec<f64> = (0..256)
+            .map(|i| (i as f64 / 256.0 * std::f64::consts::PI).sin() + 2.0)
+            .collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let cfg = Config::new(ErrorBound::AbsoluteAndRelative {
+            absolute_bound: 1e-4,
+            relative_bound: 1e-3,
+        });
+        let c = compress_with_config(&d, &cfg).unwrap();
+        let (_, dec) = decompress::<f64, _>(&*c).unwrap();
+        assert_eq!(dec.data().len(), data.len());
+    }
+
+    #[test]
+    fn error_bound_abs_or_rel() {
+        let data: Vec<f64> = (0..256)
+            .map(|i| (i as f64 / 256.0 * std::f64::consts::PI).sin() + 2.0)
+            .collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let cfg = Config::new(ErrorBound::AbsoluteOrRelative {
+            absolute_bound: 1e-4,
+            relative_bound: 1e-3,
+        });
+        let c = compress_with_config(&d, &cfg).unwrap();
+        let (_, dec) = decompress::<f64, _>(&*c).unwrap();
+        assert_eq!(dec.data().len(), data.len());
+    }
+
+    #[test]
+    fn algo_interpolation() {
+        let data: Vec<f64> = (0..256).map(|i| i as f64).collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let cfg = Config::new(ErrorBound::Absolute(1e-6))
+            .compression_algorithm(CompressionAlgorithm::interpolation());
+        let c = compress_with_config(&d, &cfg).unwrap();
+        let (dc, dec) = decompress::<f64, _>(&*c).unwrap();
+        assert_eq!(dec.data().len(), data.len());
+        assert!(matches!(
+            dc.compression_algorithm,
+            CompressionAlgorithm::Interpolation
+        ));
+    }
+
+    #[test]
+    fn algo_lorenzo_regression() {
+        let data: Vec<f64> = (0..256).map(|i| i as f64).collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let cfg = Config::new(ErrorBound::Absolute(1e-6))
+            .compression_algorithm(CompressionAlgorithm::lorenzo_regression());
+        let c = compress_with_config(&d, &cfg).unwrap();
+        let (dc, dec) = decompress::<f64, _>(&*c).unwrap();
+        assert_eq!(dec.data().len(), data.len());
+        assert!(matches!(
+            dc.compression_algorithm,
+            CompressionAlgorithm::LorenzoRegression { .. }
+        ));
+    }
+
+    #[test]
+    fn algo_lossless() {
+        let data: Vec<f64> = (0..256).map(|i| i as f64).collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let cfg = Config::new(ErrorBound::Absolute(0.0))
+            .compression_algorithm(CompressionAlgorithm::lossless());
+        let c = compress_with_config(&d, &cfg).unwrap();
+        let (_, dec) = decompress::<f64, _>(&*c).unwrap();
+        assert_eq!(dec.data(), data.as_slice());
+    }
+
+    #[test]
+    fn config_quantization_bincount() {
+        let data: Vec<f64> = (0..256).map(|i| i as f64).collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let cfg = Config::new(ErrorBound::Absolute(1e-6)).quantization_bincount(1024);
+        let c = compress_with_config(&d, &cfg).unwrap();
+        let (dc, _) = decompress::<f64, _>(&*c).unwrap();
+        assert_eq!(dc.quantization_bincount, 1024);
+    }
+
+    #[test]
+    fn config_block_size() {
+        let data: Vec<f64> = (0..256).map(|i| i as f64).collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let cfg = Config::new(ErrorBound::Absolute(1e-6)).block_size(64);
+        let c = compress_with_config(&d, &cfg).unwrap();
+        let (dc, _) = decompress::<f64, _>(&*c).unwrap();
+        assert_eq!(dc.block_size, Some(64));
+    }
+
+    #[test]
+    fn config_automatic_block_size() {
+        let data: Vec<f64> = (0..256).map(|i| i as f64).collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let cfg = Config::new(ErrorBound::Absolute(1e-6))
+            .block_size(64)
+            .automatic_block_size();
+        assert!(cfg.block_size.is_none());
+        let c = compress_with_config(&d, &cfg).unwrap();
+        let (_, dec) = decompress::<f64, _>(&*c).unwrap();
+        assert_eq!(dec.data().len(), data.len());
+    }
+
+    #[test]
+    fn config_error_bound_setter() {
+        let cfg = Config::new(ErrorBound::Absolute(1.0)).error_bound(ErrorBound::Relative(0.5));
+        assert!(matches!(cfg.error_bound, ErrorBound::Relative(_)));
+    }
+
+    #[test]
+    fn dimensioned_data_accessors() {
+        let data: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let dd = DimensionedData::<f64, _>::build(&data)
+            .dim(2)
+            .unwrap()
+            .dim(3)
+            .unwrap()
+            .finish()
+            .unwrap();
+        assert_eq!(dd.dims(), &[2, 3]);
+        assert_eq!(dd.data(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let owned = dd.into_data();
+        assert_eq!(owned, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn dimensioned_data_build_mut() {
+        let mut data: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0];
+        let mut dd = DimensionedData::<f64, _>::build_mut(&mut data)
+            .dim(4)
+            .unwrap()
+            .finish()
+            .unwrap();
+        assert_eq!(dd.data(), &[1.0, 2.0, 3.0, 4.0]);
+        dd.data_mut()[0] = 99.0;
+        assert_eq!(dd.data()[0], 99.0);
+    }
+
+    #[test]
+    fn dimensioned_data_remainder_dim() {
+        let data: Vec<f64> = vec![1.0; 120];
+        let dd = DimensionedData::<f64, _>::build(&data)
+            .dim(10)
+            .unwrap()
+            .remainder_dim()
+            .unwrap();
+        assert_eq!(dd.dims(), &[10, 12]);
+        assert_eq!(dd.data().len(), 120);
+    }
+
+    #[test]
+    fn dimensioned_data_singleton() {
+        let data: Vec<f64> = vec![42.0];
+        let dd = DimensionedData::<f64, _>::build(&data)
+            .dim(1)
+            .unwrap()
+            .finish()
+            .unwrap();
+        assert_eq!(dd.dims(), &[1]);
+        assert_eq!(dd.data(), &[42.0]);
+    }
+
+    #[test]
+    fn decompress_into_dimensioned_round_trip() {
+        let data: Vec<f64> = (0..256)
+            .map(|i| (i as f64 / 256.0 * std::f64::consts::PI).sin())
+            .collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let compressed = compress(&d, ErrorBound::Absolute(1e-6)).unwrap();
+        let mut output = vec![0.0f64; 256];
+        let mut out_dim = DimensionedData::<f64, _>::build_mut(&mut output)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let _cfg = decompress_into_dimensioned(&*compressed, &mut out_dim).unwrap();
+        for (orig, dec) in data.iter().zip(out_dim.data()) {
+            assert!((orig - dec).abs() <= 1e-6);
+        }
+    }
+
+    #[test]
+    fn decompress_data_type_mismatch() {
+        let data: Vec<f32> = (0..256).map(|i| i as f32).collect();
+        let d = DimensionedData::<f32, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let compressed = compress(&d, ErrorBound::Absolute(1e-4)).unwrap();
+        let result = decompress::<f64, _>(&*compressed);
+        assert!(matches!(
+            result.unwrap_err(),
+            SZ3Error::DecompressedDataTypeMismatch
+        ));
+    }
+
+    #[test]
+    fn decompress_into_dims_mismatch() {
+        let data: Vec<f64> = (0..256).map(|i| i as f64).collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let compressed = compress(&d, ErrorBound::Absolute(1e-6)).unwrap();
+        let mut output = vec![0.0f64; 256];
+        let mut out_dim = DimensionedData::<f64, _>::build_mut(&mut output)
+            .dim(16)
+            .unwrap()
+            .dim(16)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let result = decompress_into_dimensioned(&*compressed, &mut out_dim);
+        assert!(matches!(
+            result.unwrap_err(),
+            SZ3Error::DecompressedDimsMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn decompress_into_type_mismatch() {
+        let data: Vec<f32> = (0..256).map(|i| i as f32).collect();
+        let d = DimensionedData::<f32, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let compressed = compress(&d, ErrorBound::Absolute(1e-4)).unwrap();
+        let mut output = vec![0.0f64; 256];
+        let mut out_dim = DimensionedData::<f64, _>::build_mut(&mut output)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let result = decompress_into_dimensioned(&*compressed, &mut out_dim);
+        assert!(matches!(
+            result.unwrap_err(),
+            SZ3Error::DecompressedDataTypeMismatch
+        ));
+    }
+
+    #[test]
+    fn compress_into_appends() {
+        let data: Vec<f64> = (0..256).map(|i| i as f64).collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let mut buf = vec![0xAA, 0xBB, 0xCC];
+        compress_into(&d, ErrorBound::Absolute(1e-6), &mut buf).unwrap();
+        assert_eq!(&buf[..3], &[0xAA, 0xBB, 0xCC]);
+        assert!(buf.len() > 3);
+        let (_, dec) = decompress::<f64, _>(&buf[3..]).unwrap();
+        assert_eq!(dec.data().len(), data.len());
+    }
+
+    #[test]
+    fn compress_into_with_config_appends() {
+        let data: Vec<f64> = (0..256).map(|i| i as f64).collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(256)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let cfg = Config::new(ErrorBound::Absolute(1e-6))
+            .compression_algorithm(CompressionAlgorithm::lossless());
+        let mut buf = vec![0xDD, 0xEE];
+        compress_into_with_config(&d, &cfg, &mut buf).unwrap();
+        assert_eq!(&buf[..2], &[0xDD, 0xEE]);
+        let (_, dec) = decompress::<f64, _>(&buf[2..]).unwrap();
+        assert_eq!(dec.data(), data.as_slice());
+    }
+
+    #[test]
+    fn round_trip_2d() {
+        let data: Vec<f64> = (0..256).map(|i| i as f64).collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(16)
+            .unwrap()
+            .dim(16)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let c = compress(&d, ErrorBound::Absolute(1e-6)).unwrap();
+        let (_, dec) = decompress::<f64, _>(&*c).unwrap();
+        assert_eq!(dec.dims(), &[16, 16]);
+    }
+
+    #[test]
+    fn round_trip_3d() {
+        let data: Vec<f64> = (0..216).map(|i| i as f64).collect();
+        let d = DimensionedData::<f64, _>::build(&data)
+            .dim(6)
+            .unwrap()
+            .dim(6)
+            .unwrap()
+            .dim(6)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let c = compress(&d, ErrorBound::Absolute(1e-6)).unwrap();
+        let (_, dec) = decompress::<f64, _>(&*c).unwrap();
+        assert_eq!(dec.dims(), &[6, 6, 6]);
+    }
+
+    #[test]
+    fn algo_constructors() {
+        assert!(matches!(
+            CompressionAlgorithm::interpolation(),
+            CompressionAlgorithm::Interpolation
+        ));
+        assert!(matches!(
+            CompressionAlgorithm::interpolation_lorenzo(),
+            CompressionAlgorithm::InterpolationLorenzo
+        ));
+        assert!(matches!(
+            CompressionAlgorithm::lorenzo_regression(),
+            CompressionAlgorithm::LorenzoRegression {
+                lorenzo: true,
+                lorenzo_second_order: false,
+                regression: true
+            }
+        ));
+        let a =
+            CompressionAlgorithm::lorenzo_regression_custom(Some(false), Some(true), Some(false));
+        assert!(matches!(
+            a,
+            CompressionAlgorithm::LorenzoRegression {
+                lorenzo: false,
+                lorenzo_second_order: true,
+                regression: false
+            }
+        ));
+        let a = CompressionAlgorithm::lorenzo_regression_custom(None, None, None);
+        assert!(matches!(
+            a,
+            CompressionAlgorithm::LorenzoRegression {
+                lorenzo: true,
+                lorenzo_second_order: false,
+                regression: true
+            }
+        ));
+        assert!(matches!(
+            CompressionAlgorithm::biology_molecular_data(),
+            CompressionAlgorithm::BiologyMolecularData
+        ));
+        assert!(matches!(
+            CompressionAlgorithm::biology_molecular_data_gromacs_xtc(),
+            CompressionAlgorithm::BiologyMolecularDataGromacsXtc
+        ));
+        assert!(matches!(
+            CompressionAlgorithm::no_prediction(),
+            CompressionAlgorithm::NoPrediction
+        ));
+        assert!(matches!(
+            CompressionAlgorithm::lossless(),
+            CompressionAlgorithm::Lossless
+        ));
+        assert!(matches!(
+            CompressionAlgorithm::default(),
+            CompressionAlgorithm::InterpolationLorenzo
+        ));
+    }
+
+    #[test]
+    fn error_display_messages() {
+        let e = SZ3Error::OneSizedDimension;
+        assert!(format!("{e}").contains("size one"));
+        let e = SZ3Error::DecompressedDataTypeMismatch;
+        assert!(format!("{e}").contains("different data type"));
+        let e = SZ3Error::DecompressedDimsMismatch {
+            found: vec![256],
+            expected: vec![16, 16],
+        };
+        assert!(format!("{e}").contains("[256]"));
+        let e = SZ3Error::InvalidDimensionSize {
+            dims: vec![10],
+            len: 100,
+            wanted: 7,
+            remainder: 10,
+        };
+        assert!(format!("{e}").contains("7"));
+        let e = SZ3Error::UnderSpecifiedDimensions {
+            dims: vec![10],
+            len: 100,
+            remainder: 10,
+        };
+        assert!(format!("{e}").contains("10"));
     }
 }

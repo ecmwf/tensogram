@@ -1408,4 +1408,457 @@ mod tests {
         assert_eq!(file.message_count()?, 2);
         Ok(())
     }
+
+    // ── open_source dispatches to local backend ──────────────────────────
+
+    #[test]
+    fn test_open_source_local_path_source_and_path_accessors(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("open_src_acc.tgm");
+
+        // Create a file with one message
+        {
+            let mut file = TensogramFile::create(&path)?;
+            let meta = make_global_meta();
+            let desc = make_descriptor(vec![4]);
+            let data = vec![7u8; 16];
+            file.append(
+                &meta,
+                &[(&desc, data.as_slice())],
+                &EncodeOptions::default(),
+            )?;
+        }
+
+        let path_str = path.to_str().unwrap();
+        let opened = TensogramFile::open_source(path_str)?;
+
+        // source() should include the filename
+        assert!(
+            opened.source().contains("open_src_acc.tgm"),
+            "source() = {}",
+            opened.source()
+        );
+        // path() should return the exact path for local files
+        assert_eq!(opened.path().unwrap(), path.as_path());
+        // is_remote() is false for local files
+        assert!(!opened.is_remote());
+        // Can read the message back
+        let count = opened.message_count()?;
+        assert_eq!(count, 1);
+        Ok(())
+    }
+
+    // ── open nonexistent via open_source ──────────────────────────────────
+
+    #[test]
+    fn test_open_source_nonexistent() {
+        let result = TensogramFile::open_source("/tmp/no_such_file_tensogram_abc.tgm");
+        match result {
+            Ok(_) => panic!("expected error for nonexistent file"),
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("not found"),
+                    "expected 'not found', got: {msg}"
+                );
+            }
+        }
+    }
+
+    // ── message index out of range (sync) ────────────────────────────────
+
+    #[test]
+    fn test_read_message_index_out_of_range() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("oor.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        // Index 0 works
+        assert!(file.read_message(0).is_ok());
+
+        // Index 1 is out of range
+        let result = file.read_message(1);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("out of range"),
+            "expected 'out of range', got: {msg}"
+        );
+
+        // Large index
+        let result = file.read_message(999);
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    // ── decode_range valid extraction ─────────────────────────────────────
+
+    #[test]
+    fn test_local_decode_range_full_tensor() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("range_full.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![8]);
+        let data: Vec<u8> = (0..32).collect(); // 8 float32s = 32 bytes
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        // Decode the entire range
+        let (ret_desc, parts) = file.decode_range(0, 0, &[(0, 8)], &DecodeOptions::default())?;
+        assert_eq!(ret_desc.shape, vec![8]);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].len(), 32); // all 8 float32s
+        assert_eq!(parts[0], data);
+        Ok(())
+    }
+
+    // ── decode_object on local file ──────────────────────────────────────
+
+    #[test]
+    fn test_local_decode_object_valid() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("dec_obj.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![99u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        let (decoded_meta, decoded_desc, decoded_data) =
+            file.decode_object(0, 0, &DecodeOptions::default())?;
+        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_desc.shape, vec![4]);
+        assert_eq!(decoded_data, data);
+        Ok(())
+    }
+
+    #[test]
+    fn test_local_decode_object_out_of_range() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("dec_obj_oor.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        // Object index 5 doesn't exist (only object 0)
+        let result = file.decode_object(0, 5, &DecodeOptions::default());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("out of range"),
+            "expected 'out of range', got: {msg}"
+        );
+        Ok(())
+    }
+
+    // ── Backend::Local — is_remote() returns false ────────────────────────
+
+    #[test]
+    fn test_is_remote_false_for_local() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("not_remote.tgm");
+        let file = TensogramFile::create(&path)?;
+        assert!(!file.is_remote());
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_remote_false_for_opened_local() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("not_remote2.tgm");
+        {
+            let mut f = TensogramFile::create(&path)?;
+            let meta = make_global_meta();
+            let desc = make_descriptor(vec![2]);
+            f.append(
+                &meta,
+                &[(&desc, &[0u8; 8])],
+                &EncodeOptions::default(),
+            )?;
+        }
+        let opened = TensogramFile::open(&path)?;
+        assert!(!opened.is_remote());
+        Ok(())
+    }
+
+    // ── decode_descriptors via file ──────────────────────────────────────
+
+    #[test]
+    fn test_file_decode_descriptors_msg_out_of_range(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("desc_oor.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        // Message index 10 is out of range
+        let result = file.decode_descriptors(10);
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    // ── decode_metadata via file with out-of-range index ─────────────────
+
+    #[test]
+    fn test_file_decode_metadata_out_of_range(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("meta_oor.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        let result = file.decode_metadata(99);
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    // ── invalidate_offsets explicit ───────────────────────────────────────
+
+    #[test]
+    fn test_invalidate_offsets_explicit() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("inv_explicit.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+        assert_eq!(file.message_count()?, 1);
+
+        // Manually invalidate and verify rescan works
+        file.invalidate_offsets();
+        assert_eq!(file.message_count()?, 1);
+        Ok(())
+    }
+
+    // ── open file then re-open and read ──────────────────────────────────
+
+    #[test]
+    fn test_open_existing_file_and_read() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("reopen.tgm");
+
+        // Create and write
+        {
+            let mut file = TensogramFile::create(&path)?;
+            let meta = make_global_meta();
+            let desc = make_descriptor(vec![4]);
+            let data = vec![55u8; 16];
+            file.append(
+                &meta,
+                &[(&desc, data.as_slice())],
+                &EncodeOptions::default(),
+            )?;
+        }
+
+        // Re-open with open()
+        let file = TensogramFile::open(&path)?;
+        assert_eq!(file.message_count()?, 1);
+        let (meta, objs) = file.decode_message(0, &DecodeOptions::default())?;
+        assert_eq!(meta.version, 2);
+        assert_eq!(objs[0].1, vec![55u8; 16]);
+        Ok(())
+    }
+
+    // ── decode_range out-of-bounds element range ─────────────────────────
+
+    #[test]
+    fn test_local_decode_range_out_of_bounds_elements(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("range_oob.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]); // 4 float32s
+        let data = vec![0u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        // Request range that exceeds the tensor: offset=2, count=10 but only 4 elements
+        let result = file.decode_range(0, 0, &[(2, 10)], &DecodeOptions::default());
+        assert!(result.is_err(), "expected error for out-of-bounds range");
+        Ok(())
+    }
+
+    // ── path() returns None for remote-like scenarios ────────────────────
+    // (We can only test the local branch here since remote requires feature)
+
+    #[test]
+    fn test_path_some_for_created_file() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("path_created.tgm");
+        let file = TensogramFile::create(&path)?;
+        assert!(file.path().is_some());
+        assert_eq!(file.path().unwrap(), path.as_path());
+        Ok(())
+    }
+
+    // ── async decode_range ───────────────────────────────────────────────
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_async_decode_range() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("async_range.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![10]);
+        let data: Vec<u8> = (0..40).collect(); // 10 float32s
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        let async_file = TensogramFile::open_async(&path).await?;
+        let (ret_desc, parts) = async_file
+            .decode_range_async(0, 0, &[(0, 5)], &DecodeOptions::default())
+            .await?;
+        assert_eq!(ret_desc.shape, vec![10]);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].len(), 5 * 4); // 5 float32s = 20 bytes
+        Ok(())
+    }
+
+    // ── async decode_object ──────────────────────────────────────────────
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_async_decode_object_out_of_range(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("async_obj_oor.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        let async_file = TensogramFile::open_async(&path).await?;
+        let result = async_file
+            .decode_object_async(0, 99, &DecodeOptions::default())
+            .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("out of range"),
+            "expected 'out of range', got: {msg}"
+        );
+        Ok(())
+    }
+
+    // ── async message_count_async ────────────────────────────────────────
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_async_message_count() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("async_count.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        let async_file = TensogramFile::open_async(&path).await?;
+        let count = async_file.message_count_async().await?;
+        assert_eq!(count, 2);
+        Ok(())
+    }
+
+    // ── async decode_descriptors ─────────────────────────────────────────
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn test_async_decode_descriptors_out_of_range(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("async_descs_oor.tgm");
+
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 16];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+
+        let async_file = TensogramFile::open_async(&path).await?;
+        let result = async_file.decode_descriptors_async(10).await;
+        assert!(result.is_err());
+        Ok(())
+    }
 }

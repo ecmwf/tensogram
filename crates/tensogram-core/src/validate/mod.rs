@@ -2551,4 +2551,292 @@ mod tests {
         let report = validate_message(&msg, &full_opts());
         assert!(report.is_ok(), "issues: {:?}", report.issues);
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Additional coverage — Structure (Level 1)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn structure_streaming_ffo_high() {
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let payload = vec![0u8; 32];
+        let data_frame = build_data_object_frame(&desc, &payload);
+        let flags = 1u16;
+        let mut msg = build_raw_message(flags, &[meta_frame, data_frame], None, true);
+        let pa_start = msg.len() - 16;
+        let bad_ffo: u64 = (msg.len() + 100) as u64;
+        msg[pa_start..pa_start + 8].copy_from_slice(&bad_ffo.to_be_bytes());
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::FooterOffsetOutOfRange),
+            "expected FooterOffsetOutOfRange, got: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn structure_double_preceder() {
+        use crate::wire::{FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
+        let meta_cbor =
+            crate::metadata::global_metadata_to_cbor(&GlobalMetadata::default()).unwrap();
+        let total_length = (FRAME_HEADER_SIZE + meta_cbor.len() + FRAME_END.len()) as u64;
+        let mut pf = Vec::new();
+        pf.extend_from_slice(FRAME_MAGIC);
+        pf.extend_from_slice(&8u16.to_be_bytes());
+        pf.extend_from_slice(&1u16.to_be_bytes());
+        pf.extend_from_slice(&0u16.to_be_bytes());
+        pf.extend_from_slice(&total_length.to_be_bytes());
+        pf.extend_from_slice(&meta_cbor);
+        pf.extend_from_slice(FRAME_END);
+        let pf2 = pf.clone();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &vec![0u8; 32]);
+        let hm = build_metadata_frame();
+        let flags = 1u16 | (1u16 << 6);
+        let msg = build_raw_message(flags, &[hm, pf, pf2, data_frame], None, false);
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::PrecederNotFollowedByObject),
+            "expected PrecederNotFollowedByObject, got: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn structure_trailing_preceder() {
+        use crate::wire::{FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
+        let meta_cbor =
+            crate::metadata::global_metadata_to_cbor(&GlobalMetadata::default()).unwrap();
+        let tl = (FRAME_HEADER_SIZE + meta_cbor.len() + FRAME_END.len()) as u64;
+        let mut pf = Vec::new();
+        pf.extend_from_slice(FRAME_MAGIC);
+        pf.extend_from_slice(&8u16.to_be_bytes());
+        pf.extend_from_slice(&1u16.to_be_bytes());
+        pf.extend_from_slice(&0u16.to_be_bytes());
+        pf.extend_from_slice(&tl.to_be_bytes());
+        pf.extend_from_slice(&meta_cbor);
+        pf.extend_from_slice(FRAME_END);
+        let hm = build_metadata_frame();
+        let desc = default_desc();
+        let df = build_data_object_frame(&desc, &vec![0u8; 32]);
+        let flags = 1u16 | (1u16 << 6);
+        let msg = build_raw_message(flags, &[hm, df, pf], None, false);
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::DanglingPreceder),
+            "expected DanglingPreceder, got: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn structure_flag_mismatch_extra() {
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &vec![0u8; 32]);
+        let msg = build_raw_message(0u16, &[meta_frame, data_frame], None, false);
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::FlagMismatch),
+            "expected FlagMismatch, got: {:?}",
+            report.issues
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Additional coverage — Fidelity (Level 4)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn fidelity_bitmask_wrong_size() {
+        let msg = make_message_with_patched_descriptor(|v| {
+            cbor_map_set(v, "dtype", ciborium::Value::Text("bitmask".to_string()));
+            cbor_map_set(v, "ndim", ciborium::Value::Integer(1.into()));
+            cbor_map_set(
+                v,
+                "shape",
+                ciborium::Value::Array(vec![ciborium::Value::Integer(1000.into())]),
+            );
+            cbor_map_set(
+                v,
+                "strides",
+                ciborium::Value::Array(vec![ciborium::Value::Integer(1.into())]),
+            );
+        });
+        let report = validate_message(&msg, &full_opts());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::DecodedSizeMismatch),
+            "expected DecodedSizeMismatch for bitmask, got: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn fidelity_multi_object_mixed() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![2],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            hash: None,
+        };
+        let nan_data: Vec<u8> = f64::NAN
+            .to_be_bytes()
+            .iter()
+            .chain(1.0f64.to_be_bytes().iter())
+            .copied()
+            .collect();
+        let ok_data: Vec<u8> = 2.0f64
+            .to_be_bytes()
+            .iter()
+            .chain(3.0f64.to_be_bytes().iter())
+            .copied()
+            .collect();
+        let msg = encode(
+            &meta,
+            &[(&desc, nan_data.as_slice()), (&desc, ok_data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &full_opts());
+        let nans: Vec<_> = report
+            .issues
+            .iter()
+            .filter(|i| i.code == IssueCode::NanDetected)
+            .collect();
+        assert!(
+            !nans.is_empty(),
+            "expected NanDetected, got: {:?}",
+            report.issues
+        );
+        assert_eq!(nans[0].object_index, Some(0));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Additional coverage — Integrity (Level 3)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn integrity_unknown_hash_in_frame() {
+        use crate::wire::{FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &vec![0u8; 32]);
+        let hf = crate::types::HashFrame {
+            object_count: 1,
+            hash_type: "blake99".to_string(),
+            hashes: vec!["deadbeef".to_string()],
+        };
+        let hcbor = crate::metadata::hash_frame_to_cbor(&hf).unwrap();
+        let htl = (FRAME_HEADER_SIZE + hcbor.len() + FRAME_END.len()) as u64;
+        let mut hash_frame = Vec::new();
+        hash_frame.extend_from_slice(FRAME_MAGIC);
+        hash_frame.extend_from_slice(&3u16.to_be_bytes());
+        hash_frame.extend_from_slice(&1u16.to_be_bytes());
+        hash_frame.extend_from_slice(&0u16.to_be_bytes());
+        hash_frame.extend_from_slice(&htl.to_be_bytes());
+        hash_frame.extend_from_slice(&hcbor);
+        hash_frame.extend_from_slice(FRAME_END);
+        let flags = 1u16 | (1u16 << 4);
+        let msg = build_raw_message(flags, &[meta_frame, hash_frame, data_frame], None, false);
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::UnknownHashAlgorithm),
+            "expected UnknownHashAlgorithm, got: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn integrity_corrupt_compressed_zstd() {
+        let msg = make_message_with_patched_descriptor(|v| {
+            cbor_map_set(v, "compression", ciborium::Value::Text("zstd".to_string()));
+        });
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report.issues.iter().any(|i| matches!(
+                i.code,
+                IssueCode::DecodePipelineFailed | IssueCode::PipelineConfigFailed
+            )),
+            "expected decode failure, got: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn integrity_shape_overflow_filter() {
+        let msg = make_message_with_patched_descriptor(|v| {
+            cbor_map_set(v, "filter", ciborium::Value::Text("bitshuffle".to_string()));
+            cbor_map_set(v, "ndim", ciborium::Value::Integer(2.into()));
+            cbor_map_set(
+                v,
+                "shape",
+                ciborium::Value::Array(vec![
+                    ciborium::Value::Integer(u64::MAX.into()),
+                    ciborium::Value::Integer(2.into()),
+                ]),
+            );
+            cbor_map_set(
+                v,
+                "strides",
+                ciborium::Value::Array(vec![
+                    ciborium::Value::Integer(8.into()),
+                    ciborium::Value::Integer(8.into()),
+                ]),
+            );
+        });
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report.issues.iter().any(|i| matches!(
+                i.code,
+                IssueCode::ShapeOverflow | IssueCode::PipelineConfigFailed
+            )),
+            "expected ShapeOverflow or PipelineConfigFailed, got: {:?}",
+            report.issues
+        );
+    }
+
+    #[test]
+    fn fidelity_non_raw_decode_error() {
+        let msg = make_message_with_patched_descriptor(|v| {
+            cbor_map_set(v, "compression", ciborium::Value::Text("zstd".to_string()));
+        });
+        let report = validate_message(&msg, &full_opts());
+        assert!(
+            report.issues.iter().any(|i| matches!(
+                i.code,
+                IssueCode::DecodePipelineFailed
+                    | IssueCode::PipelineConfigFailed
+                    | IssueCode::DecodeObjectFailed
+            )),
+            "expected decode error, got: {:?}",
+            report.issues
+        );
+    }
 }
