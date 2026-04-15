@@ -341,8 +341,9 @@ When you need the same data from many messages, for example reading how a
 value at one grid point changes over 300 time steps, individual requests
 are slow because each one is a separate HTTP round-trip.
 
-`file_decode_range_batch` collects all the byte ranges and fetches them in
-a single call.  `file_decode_object_batch` does the same for full frames:
+`file_decode_range_batch` collects the requested element ranges across
+messages and fetches the underlying data in a batched HTTP call.
+`file_decode_object_batch` does the same for full frames:
 
 ```python
     indices = list(range(300))
