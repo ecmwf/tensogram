@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use bytes::Bytes;
 use object_store::path::Path as ObjectPath;
-use object_store::{GetOptions, GetRange, ObjectStore, ObjectStoreExt};
+use object_store::{ObjectStore, ObjectStoreExt};
 use url::Url;
 
 use crate::decode::DecodeOptions;
