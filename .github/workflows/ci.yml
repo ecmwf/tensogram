@@ -2,69 +2,126 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   TMPDIR: ${{ github.workspace }}/.tmp
-  RUSTUP_HOME: ${{ github.workspace }}/.rustup
-  CARGO_HOME: ${{ github.workspace }}/.cargo
+  NODE_VERSION: "22.22.2"
 
 jobs:
-  # ── Main: Rust lint/test + Python bindings + GRIB + NetCDF ──────────
-  main:
-    name: Main (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [[self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
+  # ── Linux: lint (parallel with test) ───────────────────────────
+  lint:
+    name: Lint
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.1.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
+
+      - name: Format + Clippy
+        run: |
+          cargo fmt --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo clippy -p tensogram-core --all-targets --features "remote,async" -- -D warnings
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" target
+
+  # ── Linux: test (parallel with lint) ───────────────────────────
+  test:
+    name: Test
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.1.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
+
+      - name: Test
+        run: |
+          cargo test --workspace
+          cargo test -p tensogram-core --features remote
+          cargo test -p tensogram-core --features "remote,async"
+
+      - name: Python bindings (3.13)
+        run: |
+          uv python install 3.13
+          uv venv .venv --python 3.13
+          . .venv/bin/activate
+          uv pip install maturin pytest pytest-asyncio numpy ruff
+          cd crates/tensogram-python && maturin develop && cd ../..
+          ruff check --config crates/tensogram-python/pyproject.toml tests/python/
+          python -m pytest tests/python/ -v
+          cargo check --manifest-path crates/tensogram-python/Cargo.toml --no-default-features
+
+      - name: Python packages (3.12, xarray + zarr)
+        run: |
+          rm -rf .venv
+          uv python install 3.12
+          uv venv .venv --python 3.12
+          . .venv/bin/activate
+          uv pip install maturin pytest numpy
+          cd crates/tensogram-python && maturin develop && cd ../..
+          uv pip install -e "tensogram-xarray/[dask]"
+          python -m pytest tensogram-xarray/tests/ -v
+          uv pip install -e tensogram-zarr/
+          python -m pytest tensogram-zarr/tests/ -v
+
+      - name: Python free-threaded (3.13t)
+        env:
+          PYTHON_GIL: "0"
+        run: |
+          rm -rf .venv
+          uv python install cpython-3.13+freethreaded
+          uv venv .venv --python python3.13t
+          . .venv/bin/activate
+          uv pip install maturin pytest pytest-asyncio "numpy>=2.1"
+          python -c "import sys; assert not sys._is_gil_enabled(), 'GIL should be disabled'"
+          cd crates/tensogram-python && maturin develop --release && cd ../..
+          python -m pytest tests/python/ -v
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" .venv target
+
+  # ── macOS: lint + test + GRIB + NetCDF + Python ────────────────
+  main-macos:
+    name: Main (macOS)
+    runs-on: [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]
+    env:
+      RUSTUP_HOME: ${{ github.workspace }}/.rustup
+      CARGO_HOME: ${{ github.workspace }}/.cargo
     steps:
       - uses: actions/checkout@v4
       - run: mkdir -p "$TMPDIR"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
-      - name: Install LLVM (Linux)
-        if: runner.os == 'Linux'
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "14"
-          directory: ${{ github.workspace }}/.llvm
-
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        id: linux-deps
-        run: |
-          echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
-
-          if [ "$(id -u)" = "0" ]; then APT="apt-get"; else APT="sudo -n apt-get"; fi
-          install_apt() { $APT update -o DPkg::Lock::Timeout=120 && $APT install -y -o DPkg::Lock::Timeout=120 "$@"; }
-
-          has_grib_deps=true
-          for pkg in libnetcdf-dev libhdf5-dev libeccodes-dev; do
-            dpkg -s "$pkg" >/dev/null 2>&1 || install_apt "$pkg" 2>/dev/null || has_grib_deps=false
-          done
-          echo "has_grib_deps=$has_grib_deps" >> "$GITHUB_OUTPUT"
-
-          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" \
-            || (python3 -m pip install --user cmake 2>/dev/null && echo "$HOME/.local/bin" >> "$GITHUB_PATH") \
-            || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
-
-      - name: Install system dependencies (macOS)
-        if: runner.os == 'macOS'
+      - name: Install system dependencies
         run: |
           for pkg in netcdf hdf5 eccodes; do
             brew list --formula "$pkg" >/dev/null 2>&1 || brew install "$pkg"
@@ -78,9 +135,9 @@ jobs:
       - name: Clippy
         run: |
           cargo clippy --workspace --all-targets -- -D warnings
-          if [ "${{ steps.linux-deps.outputs.has_grib_deps }}" != "false" ]; then
-            cargo clippy -p tensogram-core -p tensogram-ffi -p tensogram-cli --all-targets --all-features -- -D warnings
-          fi
+          cargo clippy -p tensogram-core --all-targets --features "remote,async" -- -D warnings
+          cargo clippy -p tensogram-cli --all-targets --features "grib,netcdf" -- -D warnings
+          cargo clippy --manifest-path crates/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
 
       - name: Test
         run: cargo test --workspace
@@ -92,13 +149,11 @@ jobs:
         run: cargo test -p tensogram-core --features "remote,async"
 
       - name: Test (GRIB)
-        if: runner.os != 'Linux' || steps.linux-deps.outputs.has_grib_deps == 'true'
         run: |
           cargo test --manifest-path crates/tensogram-grib/Cargo.toml
           cargo test -p tensogram-cli --features grib
 
       - name: Test (NetCDF)
-        if: runner.os != 'Linux' || steps.linux-deps.outputs.has_grib_deps == 'true'
         run: |
           cargo clippy --manifest-path crates/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
           cargo test --manifest-path crates/tensogram-netcdf/Cargo.toml
@@ -108,7 +163,7 @@ jobs:
         run: |
           uv python install 3.13
           uv venv .venv --python 3.13
-          source .venv/bin/activate
+          . .venv/bin/activate
           uv pip install maturin pytest pytest-asyncio numpy ruff
           cd crates/tensogram-python && maturin develop && cd ../..
           ruff check --config crates/tensogram-python/pyproject.toml tests/python/
@@ -119,120 +174,19 @@ jobs:
         if: always()
         run: rm -rf "$TMPDIR" .venv build .rustup .cargo .llvm target
 
-  # ── Python: free-threaded 3.13t ───────────────────────────────────────
-  python-free-threaded:
-    name: Python 3.13t (free-threaded)
-    needs: main
+  # ── C++: Linux ─────────────────────────────────────────────────
+  cpp-linux:
+    name: C++ (Linux)
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.1.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - run: mkdir -p "$TMPDIR"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
 
-      - name: Install LLVM
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "14"
-          directory: ${{ github.workspace }}/.llvm
-
-      - name: Install system dependencies
-        run: |
-          echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
-          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" \
-            || (python3 -m pip install --user cmake 2>/dev/null && echo "$HOME/.local/bin" >> "$GITHUB_PATH") \
-            || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
-
-      - name: Build and test
-        env:
-          PYTHON_GIL: "0"
-        run: |
-          uv python install cpython-3.13+freethreaded
-          uv venv .venv --python python3.13t
-          source .venv/bin/activate
-          uv pip install maturin pytest pytest-asyncio "numpy>=2.1"
-          python -c "import sys; assert not sys._is_gil_enabled(), 'GIL should be disabled'"
-          cd crates/tensogram-python && maturin develop --release && cd ../..
-          python -m pytest tests/python/ -v
-
-      - name: Cleanup
-        if: always()
-        run: rm -rf "$TMPDIR" .venv .rustup .cargo .llvm target
-
-  # ── Python packages: xarray + zarr ───────────────────────────────────
-  python-packages:
-    name: Python packages
-    needs: main
-    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p "$TMPDIR"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Install LLVM
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "14"
-          directory: ${{ github.workspace }}/.llvm
-
-      - name: Install system dependencies
-        run: |
-          echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
-          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" \
-            || (python3 -m pip install --user cmake 2>/dev/null && echo "$HOME/.local/bin" >> "$GITHUB_PATH") \
-            || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
-
-      - name: Build and test
-        run: |
-          uv python install 3.12
-          uv venv .venv --python 3.12
-          source .venv/bin/activate
-          uv pip install maturin pytest numpy
-          cd crates/tensogram-python && maturin develop && cd ../..
-          uv pip install -e "tensogram-xarray/[dask]"
-          python -m pytest tensogram-xarray/tests/ -v
-          uv pip install -e tensogram-zarr/
-          python -m pytest tensogram-zarr/tests/ -v
-
-      - name: Cleanup
-        if: always()
-        run: rm -rf "$TMPDIR" .venv .rustup .cargo .llvm target
-
-  # ── C++: build + test ────────────────────────────────────────────────
-  cpp:
-    name: C++ (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [[self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04], [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]]
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p "$TMPDIR"
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install LLVM (Linux)
-        if: runner.os == 'Linux'
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "14"
-          directory: ${{ github.workspace }}/.llvm
-
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
-          which cmake >/dev/null 2>&1 && cmake --version | grep -q "3\.\(2[6-9]\|[3-9][0-9]\)" \
-            || (python3 -m pip install --user cmake 2>/dev/null && echo "$HOME/.local/bin" >> "$GITHUB_PATH") \
-            || (pip install cmake && echo "$HOME/.local/bin" >> "$GITHUB_PATH")
 
       - name: Build and test
         run: |
@@ -243,27 +197,54 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: rm -rf "$TMPDIR" build .rustup .cargo .llvm target
+        run: rm -rf "$TMPDIR" build target
 
-  # ── WASM: build + test ───────────────────────────────────────────────
-  wasm:
-    name: WASM
-    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+  # ── C++: macOS ─────────────────────────────────────────────────
+  cpp-macos:
+    name: C++ (macOS)
+    runs-on: [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]
+    env:
+      RUSTUP_HOME: ${{ github.workspace }}/.rustup
+      CARGO_HOME: ${{ github.workspace }}/.cargo
     steps:
       - uses: actions/checkout@v4
       - run: mkdir -p "$TMPDIR"
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
+
+
       - name: Build and test
         run: |
-          which wasm-pack >/dev/null 2>&1 || cargo install wasm-pack --locked
-          wasm-pack test --node crates/tensogram-wasm
+          cargo build --release -p tensogram-ffi
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+          ctest --test-dir build --output-on-failure
 
       - name: Cleanup
         if: always()
-        run: rm -rf "$TMPDIR" .rustup .cargo target
+        run: rm -rf "$TMPDIR" build .rustup .cargo target
+
+  # ── WASM: build + test ────────────────────────────────────────
+  wasm:
+    name: WASM
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.1.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
+
+
+      - name: Install Node.js
+        run: |
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" \
+            | tar xz --strip-components=1 -C /usr/local "node-v${NODE_VERSION}-linux-x64/bin/node"
+
+      - name: Build and test
+        run: wasm-pack test --node crates/tensogram-wasm
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" target
