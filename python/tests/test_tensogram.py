@@ -1031,7 +1031,9 @@ class TestEdgeCases:
             for idx in [0, 25, 49]:
                 meta, objects = f2.decode_message(idx)
                 _, arr = objects[0]
-                np.testing.assert_array_equal(arr, np.full(10, float(idx), dtype=np.float32))
+                np.testing.assert_array_equal(
+                    arr, np.full(10, float(idx), dtype=np.float32)
+                )
                 assert meta["index"] == idx
 
     def test_native_endian_roundtrip(self):
@@ -1085,7 +1087,9 @@ class TestEdgeCases:
 
         with (
             tensogram.TensogramFile.open(path) as f2,
-            pytest.raises((ValueError, IndexError), match=r"index|out of range|ObjectError"),
+            pytest.raises(
+                (ValueError, IndexError), match=r"index|out of range|ObjectError"
+            ),
         ):
             f2.decode_message(99)
 
@@ -1171,7 +1175,9 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for _i in range(3):
                 data = np.zeros(4, dtype=np.float32)
-                f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+                f.append(
+                    make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
+                )
 
         with tensogram.TensogramFile.open(path) as f:
             it = iter(f)
@@ -1188,7 +1194,9 @@ class TestEdgeCases:
         path = str(tmp_path / "stop.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(
+                make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
+            )
 
         with tensogram.TensogramFile.open(path) as f:
             it = iter(f)
@@ -1218,7 +1226,9 @@ class TestEdgeCases:
         path = str(tmp_path / "oob.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(
+                make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
+            )
 
         with tensogram.TensogramFile.open(path) as f:
             with pytest.raises(IndexError):
@@ -1303,7 +1313,9 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for _i in range(3):
                 data = np.zeros(4, dtype=np.float32)
-                f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+                f.append(
+                    make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
+                )
 
         with tensogram.TensogramFile.open(path) as f:
             assert f[2:2] == []
@@ -1314,7 +1326,9 @@ class TestEdgeCases:
         path = str(tmp_path / "badkey.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(
+                make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
+            )
 
         with tensogram.TensogramFile.open(path) as f, pytest.raises(TypeError):
             f["bad"]
@@ -1401,7 +1415,9 @@ class TestEdgeCases:
         """iter_messages raises StopIteration after exhaustion."""
         data = np.ones(4, dtype=np.float32)
         msg = bytes(
-            tensogram.encode(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+            tensogram.encode(
+                make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)]
+            )
         )
 
         it = tensogram.iter_messages(msg)
@@ -1950,7 +1966,9 @@ class TestDecodeRangeDtypeCoverage:
         """decode_range with join=True concatenates results."""
         data = np.arange(50, dtype=np.float32)
         msg = encode_simple(data)
-        joined = tensogram.decode_range(msg, object_index=0, ranges=[(0, 5), (20, 5)], join=True)
+        joined = tensogram.decode_range(
+            msg, object_index=0, ranges=[(0, 5), (20, 5)], join=True
+        )
         expected = np.concatenate([data[:5], data[20:25]])
         np.testing.assert_array_equal(joined, expected)
 
@@ -2499,3 +2517,147 @@ class TestPyMetadataAccessCoverage:
         meta = tensogram.decode_metadata(msg)
         assert "a" in meta
         assert "b" in meta
+
+
+# ---------------------------------------------------------------------------
+# Unicode metadata cross-language parity
+# ---------------------------------------------------------------------------
+
+
+class TestUnicodeMetadata:
+    """Verify Unicode strings (emoji, CJK, Arabic) round-trip through encode/decode."""
+
+    def test_emoji_metadata_roundtrip(self):
+        """Emoji characters in metadata survive encode → decode."""
+        data = np.ones(4, dtype=np.float32)
+        emoji_str = "🌍🌊🔥❄️🌡️"
+        msg = encode_simple(data, extra_meta={"emoji": emoji_str})
+        meta = tensogram.decode_metadata(msg)
+        assert meta["emoji"] == emoji_str
+
+    def test_cjk_metadata_roundtrip(self):
+        """CJK (Chinese/Japanese/Korean) characters in metadata round-trip."""
+        data = np.ones(4, dtype=np.float32)
+        cjk_str = "気温データ"
+        msg = encode_simple(data, extra_meta={"cjk": cjk_str})
+        meta = tensogram.decode_metadata(msg)
+        assert meta["cjk"] == cjk_str
+
+    def test_arabic_metadata_roundtrip(self):
+        """Arabic characters in metadata round-trip."""
+        data = np.ones(4, dtype=np.float32)
+        arabic_str = "بيانات الطقس"
+        msg = encode_simple(data, extra_meta={"arabic": arabic_str})
+        meta = tensogram.decode_metadata(msg)
+        assert meta["arabic"] == arabic_str
+
+    def test_mixed_unicode_metadata_roundtrip(self):
+        """Mixed Unicode (emoji + accented + CJK) in one metadata value."""
+        data = np.ones(4, dtype=np.float32)
+        mixed = "Temperature 🌡️ is 25°C — très bien — 気温"
+        msg = encode_simple(data, extra_meta={"mixed": mixed})
+        meta = tensogram.decode_metadata(msg)
+        assert meta["mixed"] == mixed
+
+    def test_unicode_in_base_metadata(self):
+        """Unicode in per-object base metadata survives round-trip."""
+        data = np.ones(4, dtype=np.float32)
+        meta_dict = {
+            "version": 2,
+            "base": [{"name": "気温", "units": "°C", "note": "🌡️ surface"}],
+        }
+        desc = make_descriptor([4], dtype="float32")
+        msg = bytes(tensogram.encode(meta_dict, [(desc, data)]))
+        decoded_meta = tensogram.decode_metadata(msg)
+        assert decoded_meta.base[0]["name"] == "気温"
+        assert decoded_meta.base[0]["units"] == "°C"
+        assert decoded_meta.base[0]["note"] == "🌡️ surface"
+
+    def test_unicode_in_nested_metadata(self):
+        """Unicode in deeply nested metadata structures round-trips."""
+        data = np.ones(4, dtype=np.float32)
+        nested = {"source": {"name": "観測所", "emoji": "🏔️"}}
+        msg = encode_simple(data, extra_meta=nested)
+        meta = tensogram.decode_metadata(msg)
+        assert meta["source"]["name"] == "観測所"
+        assert meta["source"]["emoji"] == "🏔️"
+
+    def test_empty_string_and_whitespace(self):
+        """Empty string and whitespace-only strings round-trip."""
+        data = np.ones(4, dtype=np.float32)
+        msg = encode_simple(
+            data, extra_meta={"empty": "", "spaces": "   ", "tabs": "\t\n"}
+        )
+        meta = tensogram.decode_metadata(msg)
+        assert meta["empty"] == ""
+        assert meta["spaces"] == "   "
+        assert meta["tabs"] == "\t\n"
+
+
+# ---------------------------------------------------------------------------
+# Bool→CBOR round-trip
+# ---------------------------------------------------------------------------
+
+
+class TestBoolCborRoundtrip:
+    """Verify Python bool values survive CBOR round-trip as bools, not ints."""
+
+    def test_true_false_roundtrip(self):
+        """True and False metadata values come back as Python bool."""
+        data = np.ones(4, dtype=np.float32)
+        msg = encode_simple(data, extra_meta={"flag_true": True, "flag_false": False})
+        meta = tensogram.decode_metadata(msg)
+        assert meta["flag_true"] is True
+        assert meta["flag_false"] is False
+        # Ensure they are actually bool, not int
+        assert type(meta["flag_true"]) is bool
+        assert type(meta["flag_false"]) is bool
+
+    def test_bool_in_nested_structure(self):
+        """Bool values inside nested dicts and lists survive round-trip."""
+        data = np.ones(4, dtype=np.float32)
+        msg = encode_simple(
+            data,
+            extra_meta={
+                "config": {"enabled": True, "debug": False},
+                "flags": [True, False, True],
+            },
+        )
+        meta = tensogram.decode_metadata(msg)
+        assert meta["config"]["enabled"] is True
+        assert meta["config"]["debug"] is False
+        assert meta["flags"] == [True, False, True]
+        assert type(meta["flags"][0]) is bool
+        assert type(meta["flags"][1]) is bool
+
+    def test_bool_in_base_metadata(self):
+        """Bool values in per-object base metadata survive round-trip."""
+        data = np.ones(4, dtype=np.float32)
+        meta_dict = {
+            "version": 2,
+            "base": [{"is_valid": True, "is_forecast": False}],
+        }
+        desc = make_descriptor([4], dtype="float32")
+        msg = bytes(tensogram.encode(meta_dict, [(desc, data)]))
+        decoded_meta = tensogram.decode_metadata(msg)
+        assert decoded_meta.base[0]["is_valid"] is True
+        assert decoded_meta.base[0]["is_forecast"] is False
+        assert type(decoded_meta.base[0]["is_valid"]) is bool
+
+
+# ---------------------------------------------------------------------------
+# compute_strides overflow
+# ---------------------------------------------------------------------------
+
+
+class TestComputeStridesOverflow:
+    """Verify strides overflow is detected rather than wrapping."""
+
+    def test_huge_shape_overflow_rejected(self):
+        """Shape with dimensions that overflow u64 strides raises ValueError."""
+        data = np.ones(4, dtype=np.float32)
+        # Shape [2^63, 2] would overflow u64 in stride computation
+        huge_shape = [2**63, 2]
+        desc = make_descriptor(huge_shape, dtype="float32")
+        with pytest.raises(ValueError, match=r"[Oo]verflow|strides"):
+            tensogram.encode(make_global_meta(2), [(desc, data)])

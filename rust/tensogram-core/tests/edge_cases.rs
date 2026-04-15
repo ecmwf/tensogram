@@ -2100,6 +2100,256 @@ fn encode_base_exactly_matches_descriptors() {
     );
 }
 
+// ── 55. 100 data objects stress test (two-pass index) ────────────────────────
+
+#[test]
+fn stress_100_data_objects_roundtrip() {
+    let meta = make_global_meta();
+    let num_objects = 100;
+
+    // Build 100 float32[10] descriptors/data pairs
+    let desc = make_descriptor(vec![10], Dtype::Float32);
+    let objects_data: Vec<Vec<u8>> = (0..num_objects)
+        .map(|i| {
+            // Fill each array with a distinct byte pattern based on index
+            let val = (i % 256) as u8;
+            vec![val; 10 * 4]
+        })
+        .collect();
+
+    let pairs: Vec<(&DataObjectDescriptor, &[u8])> =
+        objects_data.iter().map(|d| (&desc, d.as_slice())).collect();
+
+    let encoded = encode(&meta, &pairs, &EncodeOptions::default()).unwrap();
+
+    // Verify scan finds the message
+    let offsets = scan(&encoded);
+    assert_eq!(offsets.len(), 1);
+
+    // Decode all objects
+    let (decoded_meta, decoded_objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
+    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_objects.len(), num_objects);
+
+    // Verify each object's data round-trips correctly
+    for (i, (obj_desc, obj_data)) in decoded_objects.iter().enumerate() {
+        assert_eq!(obj_desc.shape, vec![10], "object {i} shape mismatch");
+        assert_eq!(obj_desc.dtype, Dtype::Float32, "object {i} dtype mismatch");
+        assert_eq!(*obj_data, objects_data[i], "object {i} data mismatch");
+    }
+
+    // Also verify decode_object works for random indices
+    for idx in [0, 49, 99] {
+        let (_, ret_desc, ret_data) =
+            decode_object(&encoded, idx, &DecodeOptions::default()).unwrap();
+        assert_eq!(ret_desc.shape, vec![10]);
+        assert_eq!(ret_data, objects_data[idx]);
+    }
+}
+
+// ── 56. Mixed streaming + buffered messages in one file ──────────────────────
+
+#[test]
+fn mixed_streaming_and_buffered_in_one_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mixed_mode.tgm");
+
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let buffered_data = vec![11u8; 16]; // 4 float32s
+    let streaming_data = vec![22u8; 16]; // 4 float32s
+
+    // Create file, append a buffered message
+    let mut file = TensogramFile::create(&path).unwrap();
+    file.append(
+        &meta,
+        &[(&desc, buffered_data.as_slice())],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
+
+    // Append a streaming message by writing directly to the file
+    {
+        let f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        let writer = std::io::BufWriter::new(f);
+        let mut enc = StreamingEncoder::new(writer, &meta, &EncodeOptions::default()).unwrap();
+        enc.write_object(&desc, &streaming_data).unwrap();
+        enc.finish().unwrap();
+    }
+
+    // Re-open and verify both messages
+    file.invalidate_offsets();
+    assert_eq!(file.message_count().unwrap(), 2);
+
+    // Verify buffered message (message 0)
+    let msg0 = file.read_message(0).unwrap();
+    let (_, objects0) = decode(&msg0, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects0.len(), 1);
+    assert_eq!(objects0[0].1, buffered_data);
+
+    // Verify streaming message (message 1)
+    let msg1 = file.read_message(1).unwrap();
+    let (_, objects1) = decode(&msg1, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects1.len(), 1);
+    assert_eq!(objects1[0].1, streaming_data);
+
+    // Also verify scan() finds correct offsets for both
+    let all_bytes = std::fs::read(&path).unwrap();
+    let offsets = scan(&all_bytes);
+    assert_eq!(offsets.len(), 2);
+    assert_eq!(offsets[0].0, 0);
+    assert_eq!(offsets[0].1, msg0.len());
+}
+
+// ── 57. Garbage between messages in a file ───────────────────────────────────
+
+#[test]
+fn garbage_between_messages_scan_still_finds_both() {
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![2], Dtype::Uint8);
+
+    let msg1 = encode(&meta, &[(&desc, &[0xAA, 0xBB])], &EncodeOptions::default()).unwrap();
+    let msg2 = encode(&meta, &[(&desc, &[0xCC, 0xDD])], &EncodeOptions::default()).unwrap();
+
+    // Concatenate: msg1 + 16 random garbage bytes + msg2
+    let garbage: Vec<u8> = (0u8..16)
+        .map(|i| i.wrapping_mul(37).wrapping_add(7))
+        .collect();
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&msg1);
+    buf.extend_from_slice(&garbage);
+    buf.extend_from_slice(&msg2);
+
+    let offsets = scan(&buf);
+    assert_eq!(
+        offsets.len(),
+        2,
+        "scan should find 2 messages despite garbage between them"
+    );
+
+    // First message at offset 0
+    assert_eq!(offsets[0].0, 0);
+    assert_eq!(offsets[0].1, msg1.len());
+
+    // Second message after msg1 + garbage
+    let expected_offset2 = msg1.len() + garbage.len();
+    assert_eq!(offsets[1].0, expected_offset2);
+    assert_eq!(offsets[1].1, msg2.len());
+
+    // Decode both messages to verify data integrity
+    let slice1 = &buf[offsets[0].0..offsets[0].0 + offsets[0].1];
+    let (_, objects1) = decode(slice1, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects1[0].1, vec![0xAA, 0xBB]);
+
+    let slice2 = &buf[offsets[1].0..offsets[1].0 + offsets[1].1];
+    let (_, objects2) = decode(slice2, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects2[0].1, vec![0xCC, 0xDD]);
+}
+
+// ── 58. Streaming encoder with zero messages (finish immediately) ────────────
+
+#[test]
+fn streaming_encoder_finish_immediately_produces_valid_message() {
+    let meta = make_global_meta();
+    let options = EncodeOptions {
+        hash_algorithm: None,
+        ..Default::default()
+    };
+
+    let buf: Vec<u8> = Vec::new();
+    let enc = StreamingEncoder::new(buf, &meta, &options).unwrap();
+    assert_eq!(enc.object_count(), 0);
+    let result = enc.finish().unwrap();
+
+    // The result should NOT be empty — it should be a valid streaming message
+    // (preamble + header metadata + footer metadata + footer index + postamble)
+    assert!(
+        !result.is_empty(),
+        "streaming encoder with 0 objects should produce non-empty bytes"
+    );
+
+    // scan should find exactly one message
+    let offsets = scan(&result);
+    assert_eq!(
+        offsets.len(),
+        1,
+        "streaming zero-object message should be scannable"
+    );
+
+    // Decode should succeed with 0 objects
+    let (decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
+    assert_eq!(decoded_meta.version, 2);
+    assert!(
+        objects.is_empty(),
+        "streaming zero-object message should decode to 0 objects"
+    );
+}
+
+// ── 59. Unicode metadata round-trip ──────────────────────────────────────────
+
+#[test]
+fn unicode_metadata_emoji_and_cjk_roundtrip() {
+    let mut extra = BTreeMap::new();
+    extra.insert(
+        "emoji".to_string(),
+        ciborium::Value::Text("🌍🌊🔥❄️".to_string()),
+    );
+    extra.insert(
+        "cjk".to_string(),
+        ciborium::Value::Text("気温データ".to_string()),
+    );
+    extra.insert(
+        "mixed".to_string(),
+        ciborium::Value::Text("Temperature 🌡️ is 25°C — très bien".to_string()),
+    );
+    extra.insert(
+        "arabic".to_string(),
+        ciborium::Value::Text("بيانات الطقس".to_string()),
+    );
+    extra.insert(
+        "null_char".to_string(),
+        ciborium::Value::Text("before\0after".to_string()),
+    );
+
+    let meta = GlobalMetadata {
+        version: 2,
+        extra,
+        ..Default::default()
+    };
+
+    let desc = make_descriptor(vec![2], Dtype::Float32);
+    let data = vec![0u8; 8];
+
+    let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let (decoded_meta, _) = decode(&encoded, &DecodeOptions::default()).unwrap();
+
+    assert_eq!(
+        decoded_meta.extra.get("emoji"),
+        Some(&ciborium::Value::Text("🌍🌊🔥❄️".to_string()))
+    );
+    assert_eq!(
+        decoded_meta.extra.get("cjk"),
+        Some(&ciborium::Value::Text("気温データ".to_string()))
+    );
+    assert_eq!(
+        decoded_meta.extra.get("mixed"),
+        Some(&ciborium::Value::Text(
+            "Temperature 🌡️ is 25°C — très bien".to_string()
+        ))
+    );
+    assert_eq!(
+        decoded_meta.extra.get("arabic"),
+        Some(&ciborium::Value::Text("بيانات الطقس".to_string()))
+    );
+    assert_eq!(
+        decoded_meta.extra.get("null_char"),
+        Some(&ciborium::Value::Text("before\0after".to_string()))
+    );
+}
+
 /// Helper: write a frame (FR + type + version=1 + flags=0 + len + payload + ENDF)
 /// with 8-byte alignment padding.
 fn write_test_frame(out: &mut Vec<u8>, frame_type: u16, payload: &[u8]) {
@@ -2302,5 +2552,234 @@ fn corrupt_data_object_frame_trailer_rejected() {
     assert!(
         result.is_err(),
         "corrupt data object frame trailer should be rejected"
+    );
+}
+
+// ── 55. NaN/Inf/-0.0 bit-exact round-trip ────────────────────────────────────
+
+#[test]
+fn float32_nan_inf_neg_zero_bit_exact_roundtrip() {
+    let special_values: [f32; 5] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.0f32, 0.0f32];
+    let data: Vec<u8> = special_values
+        .iter()
+        .flat_map(|v| v.to_ne_bytes())
+        .collect();
+
+    let desc = make_descriptor(vec![5], Dtype::Float32);
+    let (_, objects) = encode_roundtrip(&desc, &data);
+    assert_eq!(objects.len(), 1);
+    assert_eq!(objects[0].1.len(), data.len());
+
+    // Verify bit-exact round-trip using to_bits()
+    let decoded_values: Vec<f32> = objects[0]
+        .1
+        .chunks_exact(4)
+        .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+        .collect();
+
+    assert_eq!(decoded_values.len(), 5);
+    for (orig, decoded) in special_values.iter().zip(decoded_values.iter()) {
+        assert_eq!(
+            orig.to_bits(),
+            decoded.to_bits(),
+            "bit-exact mismatch: orig={orig} (bits={:#010x}), decoded={decoded} (bits={:#010x})",
+            orig.to_bits(),
+            decoded.to_bits()
+        );
+    }
+}
+
+#[test]
+fn float64_nan_inf_neg_zero_bit_exact_roundtrip() {
+    let special_values: [f64; 5] = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.0f64, 0.0f64];
+    let data: Vec<u8> = special_values
+        .iter()
+        .flat_map(|v| v.to_ne_bytes())
+        .collect();
+
+    let desc = make_descriptor(vec![5], Dtype::Float64);
+    let (_, objects) = encode_roundtrip(&desc, &data);
+    assert_eq!(objects.len(), 1);
+    assert_eq!(objects[0].1.len(), data.len());
+
+    let decoded_values: Vec<f64> = objects[0]
+        .1
+        .chunks_exact(8)
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+        .collect();
+
+    assert_eq!(decoded_values.len(), 5);
+    for (orig, decoded) in special_values.iter().zip(decoded_values.iter()) {
+        assert_eq!(
+            orig.to_bits(),
+            decoded.to_bits(),
+            "bit-exact mismatch: orig={orig} (bits={:#018x}), decoded={decoded} (bits={:#018x})",
+            orig.to_bits(),
+            decoded.to_bits()
+        );
+    }
+}
+
+// ── 56. Bitmask wrong data length rejected ───────────────────────────────────
+
+#[test]
+fn bitmask_wrong_data_length_rejected() {
+    let meta = make_global_meta();
+    // Shape [10] → expected ceil(10/8) = 2 bytes
+    let desc = make_descriptor(vec![10], Dtype::Bitmask);
+    let data = vec![0xFF; 3]; // Wrong: should be 2 bytes
+
+    let result = encode(&meta, &[(&desc, &data)], &EncodeOptions::default());
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("bitmask") || msg.contains("data_len"),
+        "expected bitmask data length error, got: {msg}"
+    );
+}
+
+#[test]
+fn bitmask_correct_data_length_accepted() {
+    let meta = make_global_meta();
+    // Shape [10] → expected ceil(10/8) = 2 bytes
+    let desc = make_descriptor(vec![10], Dtype::Bitmask);
+    let data = vec![0xFF; 2]; // Correct
+
+    let result = encode(&meta, &[(&desc, &data)], &EncodeOptions::default());
+    assert!(result.is_ok());
+}
+
+#[test]
+fn bitmask_exact_multiple_of_8_accepted() {
+    let meta = make_global_meta();
+    // Shape [16] → expected ceil(16/8) = 2 bytes
+    let desc = make_descriptor(vec![16], Dtype::Bitmask);
+    let data = vec![0xFF; 2];
+
+    let result = encode(&meta, &[(&desc, &data)], &EncodeOptions::default());
+    assert!(result.is_ok());
+}
+
+// ── 57. decode_range with zero-count range ───────────────────────────────────
+
+#[test]
+fn decode_range_zero_count_returns_empty() {
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![10], Dtype::Float32);
+    let data = vec![0u8; 40]; // 10 * 4 bytes
+    let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    // Range with count=0 at offset=5
+    let (_, result) = decode_range(&encoded, 0, &[(5, 0)], &DecodeOptions::default()).unwrap();
+    assert_eq!(result.len(), 1, "should return 1 part for 1 range");
+    assert!(
+        result[0].is_empty(),
+        "zero-count range should produce empty bytes"
+    );
+}
+
+#[test]
+fn decode_range_overlapping_ranges_returns_duplicate_data() {
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![10], Dtype::Float32);
+    let data: Vec<u8> = (0..40).collect(); // 10 * 4 bytes
+    let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    // Overlapping ranges: [0..3) and [1..4) share elements 1 and 2
+    let (_, result) =
+        decode_range(&encoded, 0, &[(0, 3), (1, 3)], &DecodeOptions::default()).unwrap();
+    assert_eq!(result.len(), 2, "should return 2 parts for 2 ranges");
+
+    // First range: elements 0,1,2 → 12 bytes
+    assert_eq!(result[0].len(), 12);
+    // Second range: elements 1,2,3 → 12 bytes
+    assert_eq!(result[1].len(), 12);
+
+    // The overlapping portion (elements 1,2) should be identical in both
+    // result[0] bytes 4..12 == result[1] bytes 0..8
+    assert_eq!(
+        &result[0][4..12],
+        &result[1][0..8],
+        "overlapping elements should have identical bytes"
+    );
+}
+
+// ── 58. Unicode metadata with emoji keys, CJK values, empty key ──────────────
+
+#[test]
+fn unicode_metadata_emoji_keys_roundtrip() {
+    let mut extra = BTreeMap::new();
+    extra.insert(
+        "🌡️".to_string(),
+        ciborium::Value::Text("temperature".to_string()),
+    );
+
+    let meta = GlobalMetadata {
+        version: 2,
+        extra,
+        ..Default::default()
+    };
+
+    let desc = make_descriptor(vec![2], Dtype::Float32);
+    let data = vec![0u8; 8];
+
+    let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let (decoded_meta, _) = decode(&encoded, &DecodeOptions::default()).unwrap();
+
+    assert_eq!(
+        decoded_meta.extra.get("🌡️"),
+        Some(&ciborium::Value::Text("temperature".to_string()))
+    );
+}
+
+#[test]
+fn unicode_metadata_cjk_values_roundtrip() {
+    let mut extra = BTreeMap::new();
+    extra.insert(
+        "name".to_string(),
+        ciborium::Value::Text("気温".to_string()),
+    );
+
+    let meta = GlobalMetadata {
+        version: 2,
+        extra,
+        ..Default::default()
+    };
+
+    let desc = make_descriptor(vec![2], Dtype::Float32);
+    let data = vec![0u8; 8];
+
+    let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let (decoded_meta, _) = decode(&encoded, &DecodeOptions::default()).unwrap();
+
+    assert_eq!(
+        decoded_meta.extra.get("name"),
+        Some(&ciborium::Value::Text("気温".to_string()))
+    );
+}
+
+#[test]
+fn unicode_metadata_empty_string_key_roundtrip() {
+    let mut extra = BTreeMap::new();
+    extra.insert(
+        "".to_string(),
+        ciborium::Value::Text("empty_key".to_string()),
+    );
+
+    let meta = GlobalMetadata {
+        version: 2,
+        extra,
+        ..Default::default()
+    };
+
+    let desc = make_descriptor(vec![2], Dtype::Float32);
+    let data = vec![0u8; 8];
+
+    let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let (decoded_meta, _) = decode(&encoded, &DecodeOptions::default()).unwrap();
+
+    assert_eq!(
+        decoded_meta.extra.get(""),
+        Some(&ciborium::Value::Text("empty_key".to_string()))
     );
 }

@@ -357,6 +357,71 @@ class TestCoordDetectionEdges:
 # ---------------------------------------------------------------------------
 
 
+class TestWireFormatEdgeCases:
+    """Wire format edge cases for xarray integration."""
+
+    def test_single_element_variable(self, tmp_path: Path):
+        """Shape [1] variable opens correctly with xarray."""
+        path = str(tmp_path / "single_elem.tgm")
+        data = np.array([42.0], dtype=np.float32)
+        meta = {"version": 2, "base": [{"name": "scalar_like"}]}
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([1]), data)])
+
+        ds = xr.open_dataset(path, engine="tensogram", variable_key="name")
+        var = ds["scalar_like"]
+        assert var.shape == (1,)
+        np.testing.assert_array_equal(var.values, data)
+
+    def test_all_nan_float32_preserved(self, tmp_path: Path):
+        """All-NaN float32 array opens correctly with xarray, NaN preserved."""
+        path = str(tmp_path / "all_nan.tgm")
+        data = np.full((3, 4), np.nan, dtype=np.float32)
+        meta = {"version": 2, "base": [{"name": "nan_field"}]}
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([3, 4]), data)])
+
+        ds = xr.open_dataset(path, engine="tensogram", variable_key="name")
+        var = ds["nan_field"]
+        assert var.shape == (3, 4)
+        assert var.dtype == np.float32
+        assert np.all(np.isnan(var.values))
+
+    def test_file_with_20_messages_open_datasets_count(self, tmp_path: Path):
+        """File with 20 messages → open_datasets returns correct count.
+
+        open_datasets groups messages by compatible shape/dtype/name and
+        stacks along varying metadata keys.  Here 'step' varies, so the
+        20 messages form a hypercube along 'step'.
+        """
+        path = str(tmp_path / "twenty_msgs.tgm")
+        n_messages = 20
+        with tensogram.TensogramFile.create(path) as f:
+            for i in range(n_messages):
+                data = np.full((3, 4), float(i), dtype=np.float32)
+                meta = {
+                    "version": 2,
+                    "base": [{"name": "temp", "step": i}],
+                }
+                f.append(meta, [(_desc([3, 4]), data)])
+
+        datasets = open_datasets(path)
+        assert isinstance(datasets, list)
+        assert len(datasets) >= 1
+
+        # All 20 messages should be present in the dataset(s).
+        # With varying 'step', they form a hypercube with step as outer dim.
+        # The 'step' dim should have size 20.
+        total_steps = 0
+        for ds in datasets:
+            if "step" in ds.sizes:
+                total_steps += ds.sizes["step"]
+            else:
+                # No step dim means each dataset has 1 message
+                total_steps += len(ds.data_vars)
+        assert total_steps == n_messages
+
+
 class TestDimResolutionEdges:
     """Edge cases in dimension name resolution."""
 
