@@ -14,9 +14,15 @@
  *
  * - {@link init} — one-time WASM initialisation
  * - {@link encode} — encode a `GlobalMetadata` + objects into wire bytes
- * - {@link decode} — decode wire bytes to a `DecodedMessage` with typed payload views
- * - {@link decodeMetadata}, {@link decodeObject}, {@link scan}
- * - {@link getMetaKey}, {@link computeCommon} — metadata helpers
+ * - {@link decode}, {@link decodeMetadata}, {@link decodeObject}, {@link scan} —
+ *   whole-buffer decoding with dtype-aware payload views
+ * - {@link decodeStream} — progressive decode over a `ReadableStream<Uint8Array>`
+ * - {@link TensogramFile} — random-access file / URL / in-memory reader
+ * - {@link getMetaKey}, {@link computeCommon}, {@link cborValuesEqual} —
+ *   metadata helpers
+ * - {@link typedArrayFor}, {@link payloadByteSize}, {@link shapeElementCount},
+ *   {@link DTYPE_BYTE_WIDTH}, {@link SUPPORTED_DTYPES}, {@link isDtype} —
+ *   dtype introspection and dispatch
  * - {@link TensogramError} and subclasses — typed error hierarchy
  *
  * See `docs/src/guide/typescript-api.md` for the user guide and

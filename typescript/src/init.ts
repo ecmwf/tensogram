@@ -60,6 +60,10 @@ export function init(opts?: InitOptions): Promise<void> {
 /**
  * Internal accessor used by `encode`, `decode`, etc. Throws if
  * `init()` has not been awaited yet.
+ *
+ * @internal — not part of the public npm surface; the package
+ *             `exports` field in package.json only allows deep imports
+ *             of `./wasm`, so consumers cannot reach this symbol.
  */
 export function getWbg(): WbgModule {
   if (instance === undefined) {

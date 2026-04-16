@@ -122,6 +122,8 @@ export class StreamingLimitError extends TensogramError {
  * `FramingError` as a safe default (every variant has a known prefix
  * today — the catch-all only triggers if the Rust side ever
  * introduces a new variant without updating this mapping).
+ *
+ * @internal — not re-exported from the package barrel.
  */
 export function mapTensogramError(err: unknown): TensogramError {
   const raw = err instanceof Error ? err.message : String(err);
@@ -134,8 +136,10 @@ export function mapTensogramError(err: unknown): TensogramError {
     const expectedMatch = /expected[=\s]+([0-9a-fA-F]+)/.exec(raw);
     const actualMatch = /(?:got|actual)[=\s]+([0-9a-fA-F]+)/.exec(raw);
     // Strip the "hash mismatch: " prefix so `err.message` is consistent
-    // with the other variants in `TensogramError`.
-    const stripped = raw.replace(/^hash mismatch:?\s*/, '');
+    // with the other variants in `TensogramError`. If the raw message is
+    // just `"hash mismatch"` with no trailing detail, keep the raw form
+    // rather than leaving `.message` empty.
+    const stripped = raw.replace(/^hash mismatch:?\s*/, '') || raw;
     return new HashMismatchError(stripped, raw, expectedMatch?.[1], actualMatch?.[1]);
   }
 
@@ -180,6 +184,8 @@ export function mapTensogramError(err: unknown): TensogramError {
 /**
  * Utility: run a thunk and re-throw any error through `mapTensogramError`.
  * Used by the public wrappers so consumers always see typed errors.
+ *
+ * @internal — not re-exported from the package barrel.
  */
 export function rethrowTyped<T>(fn: () => T): T {
   try {

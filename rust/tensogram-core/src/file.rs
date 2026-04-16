@@ -1507,16 +1507,22 @@ mod tests {
         Ok(())
     }
 
+    /// Appending a message with zero descriptors produces a valid
+    /// header-only message (preamble + metadata + postamble). Exercises
+    /// the edge case in `encode_inner` where the data-objects loop runs
+    /// zero times.
     #[test]
     fn test_append_empty_message() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("empty_append.tgm");
         let mut file = TensogramFile::create(&path)?;
         let meta = make_global_meta();
-        // Append with zero descriptors — allowed?
-        let result = file.append(&meta, &[], &EncodeOptions::default());
-        // Empty message may or may not be permitted; either way, no panic.
-        let _ = result;
+        file.append(&meta, &[], &EncodeOptions::default())?;
+        assert_eq!(file.message_count()?, 1);
+        // The one message has zero objects.
+        let (decoded_meta, objects) = file.decode_message(0, &DecodeOptions::default())?;
+        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(objects.len(), 0);
         Ok(())
     }
 
