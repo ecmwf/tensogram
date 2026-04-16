@@ -61,9 +61,7 @@ def _make_transparent_msg(threads: int, n: int = 200_000) -> bytes:
 def _make_sp_msg(threads: int, bits: int, n: int = 200_000) -> bytes:
     rng = np.random.default_rng(42)
     values = 250.0 + rng.standard_normal(n) * 30.0
-    params = tensogram.compute_packing_params(
-        values.astype(np.float64).ravel(), bits, 0
-    )
+    params = tensogram.compute_packing_params(values.astype(np.float64).ravel(), bits, 0)
     meta = {"version": 2, "base": [{}]}
     desc = {
         "type": "ntensor",
@@ -206,7 +204,7 @@ class TestDecodeThreads:
 
     def test_decode_object_threads(self):
         msg = _make_transparent_msg(threads=0)
-        _, desc, data = tensogram.decode_object(msg, 0, threads=8)
+        _, _desc, data = tensogram.decode_object(msg, 0, threads=8)
         assert data.shape == (200_000,)
 
     def test_decode_range_threads(self):
@@ -235,6 +233,4 @@ async def test_async_decode_message_threads_matches_sync(tmp_path):
     async with await tensogram.AsyncTensogramFile.open(path) as f:
         result_seq = await f.decode_message(0)
         result_par = await f.decode_message(0, threads=4)
-        np.testing.assert_array_equal(
-            result_seq.objects[0][1], result_par.objects[0][1]
-        )
+        np.testing.assert_array_equal(result_seq.objects[0][1], result_par.objects[0][1])
