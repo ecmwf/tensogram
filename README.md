@@ -10,6 +10,9 @@
   <a href="https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity#emerging">
     <img src="https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity/emerging_badge.svg" alt="Emerging">
   </a>
+  <a href="https://sites.ecmwf.int/docs/tensogram/main">
+    <img src="https://img.shields.io/badge/docs-online-blue" alt="Documentation">
+  </a>
 </p>
 
 > [!IMPORTANT]
