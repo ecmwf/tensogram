@@ -16,10 +16,12 @@ import { mapTensogramError } from '../src/errors.js';
 describe('Phase 1 — typed error hierarchy', () => {
   it('all concrete errors extend TensogramError', () => {
     const candidates = [
-      new FramingError('framing error: bad magic', 'bad magic'),
-      new InvalidArgumentError('bad arg', 'bad arg'),
-      new ObjectError('object error: oob', 'oob'),
-      new HashMismatchError('hash mismatch', 'hash mismatch', 'aa', 'bb'),
+      // Constructors are `(message, rawMessage?)` — see errors.ts.
+      // When only `message` is given, `rawMessage` defaults to it.
+      new FramingError('bad magic', 'framing error: bad magic'),
+      new InvalidArgumentError('bad arg'),
+      new ObjectError('oob', 'object error: oob'),
+      new HashMismatchError('expected aa, got bb', 'hash mismatch: expected aa, got bb', 'aa', 'bb'),
     ];
     for (const err of candidates) {
       expect(err).toBeInstanceOf(TensogramError);
@@ -59,9 +61,17 @@ describe('Phase 1 — typed error hierarchy', () => {
   });
 
   it('TensogramError exposes rawMessage', () => {
-    const e = new FramingError('framing error: bad', 'bad');
+    // Signature: (message, rawMessage?). `message` is the user-facing
+    // prefix-free form; `rawMessage` retains the original WASM string.
+    const e = new FramingError('bad', 'framing error: bad');
     expect(e.rawMessage).toBe('framing error: bad');
     expect(e.message).toBe('bad');
+  });
+
+  it('TensogramError rawMessage defaults to message when omitted', () => {
+    const e = new InvalidArgumentError('bad arg');
+    expect(e.rawMessage).toBe('bad arg');
+    expect(e.message).toBe('bad arg');
   });
 
   // ── Coverage closers for the fallback keyword-routing paths ──────────
@@ -107,7 +117,7 @@ describe('Phase 1 — typed error hierarchy', () => {
 
   it('rethrowTyped passes through TensogramError instances untouched', async () => {
     const { rethrowTyped } = await import('../src/errors.js');
-    const original = new FramingError('framing error: x', 'x');
+    const original = new FramingError('x', 'framing error: x');
     expect(() => rethrowTyped(() => { throw original; })).toThrow(original);
   });
 });

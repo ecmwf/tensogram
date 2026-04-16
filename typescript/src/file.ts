@@ -67,7 +67,6 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     if (typeof path !== 'string' && !(path instanceof URL)) {
       throw new InvalidArgumentError(
         'TensogramFile.open: path must be a string or file:// URL',
-        'TensogramFile.open: path must be a string or file:// URL',
       );
     }
     let readFile: typeof import('node:fs/promises').readFile;
@@ -75,10 +74,7 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
       ({ readFile } = await import('node:fs/promises'));
     } catch (cause) {
       throw withCause(
-        new IoError(
-          'TensogramFile.open requires Node; use fromUrl in browsers',
-          'TensogramFile.open requires Node; use fromUrl in browsers',
-        ),
+        new IoError('TensogramFile.open requires Node; use fromUrl in browsers'),
         cause,
       );
     }
@@ -89,13 +85,7 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
       const buf = await readFile(path, readOptions);
       bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
     } catch (err) {
-      throw withCause(
-        new IoError(
-          `TensogramFile.open: ${describeError(err)}`,
-          `TensogramFile.open: ${describeError(err)}`,
-        ),
-        err,
-      );
+      throw withCause(new IoError(`TensogramFile.open: ${describeError(err)}`), err);
     }
     return new TensogramFile(bytes, 'local');
   }
@@ -116,7 +106,6 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     if (typeof fetchFn !== 'function') {
       throw new InvalidArgumentError(
         'TensogramFile.fromUrl: no fetch implementation is available',
-        'TensogramFile.fromUrl: no fetch implementation is available',
       );
     }
     const init: RequestInit = {};
@@ -127,19 +116,11 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     try {
       response = await fetchFn(url, init);
     } catch (err) {
-      throw withCause(
-        new IoError(
-          `TensogramFile.fromUrl: ${describeError(err)}`,
-          `TensogramFile.fromUrl: ${describeError(err)}`,
-        ),
-        err,
-      );
+      throw withCause(new IoError(`TensogramFile.fromUrl: ${describeError(err)}`), err);
     }
     if (!response.ok) {
-      throw new IoError(
-        `TensogramFile.fromUrl: HTTP ${response.status} ${response.statusText || ''}`.trim(),
-        `TensogramFile.fromUrl: HTTP ${response.status} ${response.statusText || ''}`.trim(),
-      );
+      const status = `${response.status} ${response.statusText || ''}`.trim();
+      throw new IoError(`TensogramFile.fromUrl: HTTP ${status}`);
     }
     const buf = await response.arrayBuffer();
     return new TensogramFile(new Uint8Array(buf), 'remote');
@@ -152,10 +133,7 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
    */
   static fromBytes(bytes: Uint8Array): TensogramFile {
     if (!(bytes instanceof Uint8Array)) {
-      throw new InvalidArgumentError(
-        'TensogramFile.fromBytes: expected a Uint8Array',
-        'TensogramFile.fromBytes: expected a Uint8Array',
-      );
+      throw new InvalidArgumentError('TensogramFile.fromBytes: expected a Uint8Array');
     }
     // Defensive copy so later mutation of the caller's buffer doesn't
     // invalidate our scan result.
@@ -197,7 +175,6 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     if (!Number.isInteger(index) || index < 0 || index >= this.#positions.length) {
       throw new ObjectError(
         `message index ${index} out of range (have ${this.#positions.length})`,
-        `message index ${index} out of range (have ${this.#positions.length})`,
       );
     }
     const { offset, length } = this.#positions[index];
@@ -221,10 +198,7 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
 
   #assertOpen(): void {
     if (this.#closed) {
-      throw new InvalidArgumentError(
-        'TensogramFile has been closed',
-        'TensogramFile has been closed',
-      );
+      throw new InvalidArgumentError('TensogramFile has been closed');
     }
   }
 }

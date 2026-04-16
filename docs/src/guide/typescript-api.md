@@ -7,9 +7,9 @@ browser or Node ≥ 20.
 > **Status:** Scope B is complete. Typed encode / decode / scan, dtype
 > dispatch, metadata helpers, **progressive streaming decode**, and the
 > **`TensogramFile` file / URL helper** are all available. Scope C
-> follow-ups (validate, encode_pre_encoded, float16 / bfloat16 /
-> complex first-class support, npm publish) are tracked in
-> `plans/TYPESCRIPT_WRAPPER.md`.
+> follow-ups (`validate` wrapper, `encodePreEncoded`, first-class
+> `float16` / `bfloat16` / `complex*` types, npm publish pipeline) are
+> tracked in `plans/TYPESCRIPT_WRAPPER.md`.
 
 ## Installation
 

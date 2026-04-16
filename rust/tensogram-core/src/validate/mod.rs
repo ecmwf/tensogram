@@ -3299,8 +3299,9 @@ mod tests {
 
     // ── Coverage closers: validate/fidelity.rs per-dtype NaN/Inf paths ──
 
-    /// Construct a full-mode validation message for a given dtype + raw bytes
-    /// and assert the report contains the expected IssueCode.
+    /// Build a single-object Tensogram message with the given dtype, shape,
+    /// and raw little-endian payload bytes. Used by the fidelity NaN/Inf
+    /// coverage tests to stage adversarial inputs.
     fn make_raw_object_message(dtype: Dtype, bytes: Vec<u8>, shape: Vec<u64>) -> Vec<u8> {
         let meta = GlobalMetadata::default();
         let byte_width = dtype.byte_width();
@@ -3326,14 +3327,6 @@ mod tests {
         .unwrap()
     }
 
-    fn full_opts_local() -> ValidateOptions {
-        ValidateOptions {
-            max_level: ValidationLevel::Fidelity,
-            check_canonical: false,
-            checksum_only: false,
-        }
-    }
-
     #[test]
     fn fidelity_float16_nan() {
         // half-precision NaN: sign=0, exp=0x1F, mantissa != 0
@@ -3343,7 +3336,7 @@ mod tests {
             .flat_map(|v| v.to_le_bytes())
             .collect();
         let msg = make_raw_object_message(Dtype::Float16, bytes, vec![4]);
-        let report = validate_message(&msg, &full_opts_local());
+        let report = validate_message(&msg, &full_opts());
         assert!(
             report
                 .issues
@@ -3363,7 +3356,7 @@ mod tests {
             .flat_map(|v| v.to_le_bytes())
             .collect();
         let msg = make_raw_object_message(Dtype::Float16, bytes, vec![4]);
-        let report = validate_message(&msg, &full_opts_local());
+        let report = validate_message(&msg, &full_opts());
         assert!(
             report
                 .issues
@@ -3383,7 +3376,7 @@ mod tests {
             .flat_map(|v| v.to_le_bytes())
             .collect();
         let msg = make_raw_object_message(Dtype::Bfloat16, bytes, vec![2]);
-        let report = validate_message(&msg, &full_opts_local());
+        let report = validate_message(&msg, &full_opts());
         assert!(report
             .issues
             .iter()
@@ -3399,7 +3392,7 @@ mod tests {
             .flat_map(|v| v.to_le_bytes())
             .collect();
         let msg = make_raw_object_message(Dtype::Bfloat16, bytes, vec![2]);
-        let report = validate_message(&msg, &full_opts_local());
+        let report = validate_message(&msg, &full_opts());
         assert!(report
             .issues
             .iter()
@@ -3416,7 +3409,7 @@ mod tests {
         bytes.extend_from_slice(&1.0f32.to_le_bytes());
         bytes.extend_from_slice(&1.0f32.to_le_bytes());
         let msg = make_raw_object_message(Dtype::Complex64, bytes, vec![2]);
-        let report = validate_message(&msg, &full_opts_local());
+        let report = validate_message(&msg, &full_opts());
         assert!(report
             .issues
             .iter()
@@ -3431,7 +3424,7 @@ mod tests {
         bytes.extend_from_slice(&1.0f32.to_le_bytes());
         bytes.extend_from_slice(&1.0f32.to_le_bytes());
         let msg = make_raw_object_message(Dtype::Complex64, bytes, vec![2]);
-        let report = validate_message(&msg, &full_opts_local());
+        let report = validate_message(&msg, &full_opts());
         assert!(report
             .issues
             .iter()
@@ -3447,7 +3440,7 @@ mod tests {
         bytes.extend_from_slice(&1.0f64.to_le_bytes());
         bytes.extend_from_slice(&1.0f64.to_le_bytes());
         let msg = make_raw_object_message(Dtype::Complex128, bytes, vec![2]);
-        let report = validate_message(&msg, &full_opts_local());
+        let report = validate_message(&msg, &full_opts());
         assert!(report
             .issues
             .iter()
@@ -3462,7 +3455,7 @@ mod tests {
         bytes.extend_from_slice(&1.0f64.to_le_bytes());
         bytes.extend_from_slice(&1.0f64.to_le_bytes());
         let msg = make_raw_object_message(Dtype::Complex128, bytes, vec![2]);
-        let report = validate_message(&msg, &full_opts_local());
+        let report = validate_message(&msg, &full_opts());
         assert!(report
             .issues
             .iter()

@@ -51,7 +51,8 @@ export function encode(
     data: toUint8ArrayView(o.data),
   }));
 
-  const hash: boolean = options?.hash === false ? false : true;
+  // Default to hashing. Opt out explicitly with `{ hash: false }`.
+  const hash = options?.hash !== false;
   return rethrowTyped(() => wbg.encode(metadata, objArray, hash));
 }
 
@@ -59,39 +60,31 @@ function validateMetadata(meta: GlobalMetadata): void {
   if (meta === null || typeof meta !== 'object') {
     throw new InvalidArgumentError(
       `metadata must be a plain object, got ${typeof meta}`,
-      `metadata must be a plain object, got ${typeof meta}`,
     );
   }
   if (typeof meta.version !== 'number' || !Number.isInteger(meta.version) || meta.version < 0) {
     throw new InvalidArgumentError(
       `metadata.version must be a non-negative integer, got ${String(meta.version)}`,
-      `metadata.version must be a non-negative integer, got ${String(meta.version)}`,
     );
   }
   if ('_reserved_' in meta && meta._reserved_ !== undefined) {
     throw new InvalidArgumentError(
-      "metadata._reserved_ is managed by the library; client code must not write it",
-      "metadata._reserved_ is managed by the library; client code must not write it",
+      'metadata._reserved_ is managed by the library; client code must not write it',
     );
   }
   if (meta.base !== undefined) {
     if (!Array.isArray(meta.base)) {
       throw new InvalidArgumentError(
         `metadata.base must be an array, got ${typeof meta.base}`,
-        `metadata.base must be an array, got ${typeof meta.base}`,
       );
     }
     for (let i = 0; i < meta.base.length; i++) {
       const entry = meta.base[i];
       if (entry === null || typeof entry !== 'object') {
-        throw new InvalidArgumentError(
-          `metadata.base[${i}] must be a plain object`,
-          `metadata.base[${i}] must be a plain object`,
-        );
+        throw new InvalidArgumentError(`metadata.base[${i}] must be a plain object`);
       }
       if ('_reserved_' in entry) {
         throw new InvalidArgumentError(
-          `metadata.base[${i}]._reserved_ is managed by the library; client code must not write it`,
           `metadata.base[${i}]._reserved_ is managed by the library; client code must not write it`,
         );
       }
@@ -101,23 +94,16 @@ function validateMetadata(meta: GlobalMetadata): void {
 
 function validateObjects(objects: readonly EncodeInput[]): void {
   if (!Array.isArray(objects)) {
-    throw new InvalidArgumentError(
-      `objects must be an array, got ${typeof objects}`,
-      `objects must be an array, got ${typeof objects}`,
-    );
+    throw new InvalidArgumentError(`objects must be an array, got ${typeof objects}`);
   }
   for (let i = 0; i < objects.length; i++) {
     const o = objects[i];
     if (o === null || typeof o !== 'object') {
-      throw new InvalidArgumentError(
-        `objects[${i}] must be a { descriptor, data } pair`,
-        `objects[${i}] must be a { descriptor, data } pair`,
-      );
+      throw new InvalidArgumentError(`objects[${i}] must be a { descriptor, data } pair`);
     }
     validateDescriptor(o.descriptor, i);
     if (!ArrayBuffer.isView(o.data)) {
       throw new InvalidArgumentError(
-        `objects[${i}].data must be an ArrayBufferView (TypedArray, DataView, ...)`,
         `objects[${i}].data must be an ArrayBufferView (TypedArray, DataView, ...)`,
       );
     }
@@ -126,32 +112,21 @@ function validateObjects(objects: readonly EncodeInput[]): void {
 
 function validateDescriptor(desc: DataObjectDescriptor, i: number): void {
   if (desc === null || typeof desc !== 'object') {
-    throw new InvalidArgumentError(
-      `objects[${i}].descriptor must be a plain object`,
-      `objects[${i}].descriptor must be a plain object`,
-    );
+    throw new InvalidArgumentError(`objects[${i}].descriptor must be a plain object`);
   }
   if (typeof desc.type !== 'string') {
-    throw new InvalidArgumentError(
-      `objects[${i}].descriptor.type must be a string`,
-      `objects[${i}].descriptor.type must be a string`,
-    );
+    throw new InvalidArgumentError(`objects[${i}].descriptor.type must be a string`);
   }
   if (!Array.isArray(desc.shape)) {
-    throw new InvalidArgumentError(
-      `objects[${i}].descriptor.shape must be an array`,
-      `objects[${i}].descriptor.shape must be an array`,
-    );
+    throw new InvalidArgumentError(`objects[${i}].descriptor.shape must be an array`);
   }
   if (!SUPPORTED_DTYPES.has(desc.dtype)) {
     throw new InvalidArgumentError(
-      `objects[${i}].descriptor.dtype=${String(desc.dtype)} is not a recognised dtype`,
       `objects[${i}].descriptor.dtype=${String(desc.dtype)} is not a recognised dtype`,
     );
   }
   if (desc.byte_order !== 'big' && desc.byte_order !== 'little') {
     throw new InvalidArgumentError(
-      `objects[${i}].descriptor.byte_order must be "big" or "little"`,
       `objects[${i}].descriptor.byte_order must be "big" or "little"`,
     );
   }

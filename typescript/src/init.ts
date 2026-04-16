@@ -65,7 +65,6 @@ export function getWbg(): WbgModule {
   if (instance === undefined) {
     throw new InvalidArgumentError(
       'tensogram: init() must be awaited before using any other API',
-      'tensogram: init() must be awaited before using any other API',
     );
   }
   return instance;
@@ -83,8 +82,6 @@ export function _resetForTests(): void {
 }
 
 async function doInit(opts?: InitOptions): Promise<WbgModule> {
-  const wbgAny = wbg as unknown as Record<string, unknown>;
-
   if (opts?.wasmInput !== undefined) {
     await wbgInit({ module_or_path: opts.wasmInput });
     return { ...wbg, default: wbgInit } as WbgModule;
@@ -92,15 +89,15 @@ async function doInit(opts?: InitOptions): Promise<WbgModule> {
 
   // Node: read the .wasm file off disk explicitly. Avoids depending on
   // Node's file:// fetch support (Node < 21 can't fetch file URLs).
-  if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+  const isNode = typeof globalThis.process?.versions?.node === 'string';
+  if (isNode) {
     const [{ readFile }, { fileURLToPath }] = await Promise.all([
       import('node:fs/promises'),
       import('node:url'),
     ]);
     // The wasm file lives next to the generated glue in `../wasm/`.
     const wasmUrl = new URL('../wasm/tensogram_wasm_bg.wasm', import.meta.url);
-    const wasmPath = fileURLToPath(wasmUrl);
-    const bytes = await readFile(wasmPath);
+    const bytes = await readFile(fileURLToPath(wasmUrl));
     // wasm-bindgen expects a real ArrayBuffer, not a Node Buffer view; copy
     // into a fresh ArrayBuffer so `instanceof ArrayBuffer` works.
     const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
@@ -108,11 +105,8 @@ async function doInit(opts?: InitOptions): Promise<WbgModule> {
     return { ...wbg, default: wbgInit } as WbgModule;
   }
 
-  // Browser (or any runtime with WASM streaming): fall through to
-  // wasm-pack's built-in fetch-from-import.meta.url path.
-  // The `_` marker suppresses a false-positive lint about the empty
-  // call expression; it's the documented default init path.
-  void wbgAny;
+  // Browser (or any runtime with WASM streaming): use wasm-pack's
+  // built-in fetch-from-`import.meta.url` path.
   await wbgInit();
   return { ...wbg, default: wbgInit } as WbgModule;
 }

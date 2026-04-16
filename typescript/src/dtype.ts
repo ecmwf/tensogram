@@ -50,10 +50,7 @@ export const DTYPE_BYTE_WIDTH: Readonly<Record<Dtype, number>> = Object.freeze({
  */
 export function payloadByteSize(dtype: Dtype, elementCount: number): number {
   if (!Number.isFinite(elementCount) || elementCount < 0) {
-    throw new InvalidArgumentError(
-      `invalid element count: ${elementCount}`,
-      `invalid element count: ${elementCount}`,
-    );
+    throw new InvalidArgumentError(`invalid element count: ${elementCount}`);
   }
   if (dtype === 'bitmask') {
     return Math.ceil(elementCount / 8);
@@ -146,12 +143,10 @@ export function typedArrayFor(dtype: Dtype, bytes: Uint8Array, copy = true): Typ
       return new BigUint64Array(aligned.buffer, aligned.byteOffset, aligned.byteLength / 8);
     }
     default: {
-      // Exhaustiveness guard.
+      // Exhaustiveness guard — reached only if a new dtype is added to
+      // the `Dtype` union without updating this switch.
       const _exhaustive: never = dtype;
-      throw new InvalidArgumentError(
-        `unknown dtype: ${String(_exhaustive)}`,
-        `unknown dtype: ${String(_exhaustive)}`,
-      );
+      throw new InvalidArgumentError(`unknown dtype: ${String(_exhaustive)}`);
     }
   }
 }

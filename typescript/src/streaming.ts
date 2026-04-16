@@ -80,10 +80,7 @@ export async function* decodeStream(
   options: DecodeStreamOptions = {},
 ): AsyncGenerator<DecodedFrame, void, void> {
   if (!(stream instanceof ReadableStream)) {
-    throw new InvalidArgumentError(
-      'decodeStream: expected a ReadableStream<Uint8Array>',
-      'decodeStream: expected a ReadableStream<Uint8Array>',
-    );
+    throw new InvalidArgumentError('decodeStream: expected a ReadableStream<Uint8Array>');
   }
 
   const wbg = getWbg();
@@ -195,7 +192,6 @@ function buildFrame(handle: WbgDecodedFrame): DecodedFrame {
 function assertOpen(closed: boolean): void {
   if (closed) {
     throw new InvalidArgumentError(
-      'decoded frame has been closed — payload access is no longer valid',
       'decoded frame has been closed — payload access is no longer valid',
     );
   }

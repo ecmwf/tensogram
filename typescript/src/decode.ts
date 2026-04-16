@@ -31,6 +31,7 @@ import type {
 // it structurally here and only hold it as an opaque handle.
 interface WbgDecodedMessage {
   free(): void;
+  metadata(): GlobalMetadata;
   object_count(): number;
   object_descriptor(index: number): unknown;
   object_data_u8(index: number): Uint8Array;
@@ -83,10 +84,7 @@ export function decodeObject(
 ): DecodedMessage {
   assertUint8Array(buf, 'buf');
   if (!Number.isInteger(index) || index < 0) {
-    throw new InvalidArgumentError(
-      `index must be a non-negative integer, got ${index}`,
-      `index must be a non-negative integer, got ${index}`,
-    );
+    throw new InvalidArgumentError(`index must be a non-negative integer, got ${index}`);
   }
   const wbg = getWbg();
   const handle = rethrowTyped(() =>
@@ -114,34 +112,32 @@ export function scan(buf: Uint8Array): MessagePosition[] {
 
 function buildDecodedMessage(handle: WbgDecodedMessage): DecodedMessage {
   // Hoist the metadata once; .data()/.dataView() pull payload bytes
-  // lazily per call, so objects[] is cheap to construct.
-  // `metadata()` lives on the wasm-bindgen class; not in our interface,
-  // fetch via the full typed handle.
-  const wbgHandle = handle as unknown as WbgDecodedMessage & { metadata(): GlobalMetadata };
-  const metadata = rethrowTyped(() => wbgHandle.metadata()) as GlobalMetadata;
+  // lazily per call so objects[] is cheap to construct.
+  const metadata = rethrowTyped(() => handle.metadata());
 
   const count = handle.object_count();
   const objects: DecodedObject[] = [];
   let closed = false;
 
+  // `for (let i = ...)` creates a fresh per-iteration binding, so the
+  // closures below capture the correct index directly.
   for (let i = 0; i < count; i++) {
     const descriptor = rethrowTyped(
       () => handle.object_descriptor(i) as DataObjectDescriptor,
     );
     const byteLength = handle.object_byte_length(i);
-    const idx = i;
 
     const obj: DecodedObject = {
       descriptor,
       byteLength,
       data(): TypedArray {
         assertOpen(closed);
-        const bytes = rethrowTyped(() => handle.object_data_u8(idx));
+        const bytes = rethrowTyped(() => handle.object_data_u8(i));
         return typedArrayFor(descriptor.dtype, bytes, /* copy */ true);
       },
       dataView(): TypedArray {
         assertOpen(closed);
-        const bytes = rethrowTyped(() => handle.object_data_u8(idx));
+        const bytes = rethrowTyped(() => handle.object_data_u8(i));
         return typedArrayFor(descriptor.dtype, bytes, /* copy */ false);
       },
     };
@@ -172,16 +168,12 @@ function assertOpen(closed: boolean): void {
   if (closed) {
     throw new InvalidArgumentError(
       'decoded message has been closed — payload access is no longer valid',
-      'decoded message has been closed — payload access is no longer valid',
     );
   }
 }
 
 function assertUint8Array(buf: unknown, name: string): asserts buf is Uint8Array {
   if (!(buf instanceof Uint8Array)) {
-    throw new InvalidArgumentError(
-      `${name} must be a Uint8Array, got ${typeof buf}`,
-      `${name} must be a Uint8Array, got ${typeof buf}`,
-    );
+    throw new InvalidArgumentError(`${name} must be a Uint8Array, got ${typeof buf}`);
   }
 }
