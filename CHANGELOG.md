@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.13.0] - 2026-04-16
+## [0.13.0] - 2026-04-17
 
 ### Added
 - **Multi-threaded coding pipeline** — caller-controlled `threads: u32`
@@ -69,6 +69,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - FFI signatures gain a `threads` parameter — this is an ABI
   break from 0.12.0, but downstream code that used option-struct
   defaults will pick it up naturally.
+- **TypeScript wrapper** (`@ecmwf/tensogram` under `typescript/`)
+  — ergonomic TypeScript bindings over the existing WebAssembly
+  crate, shipped as a separate npm package. Includes a full Vitest
+  suite (smoke, init, encode, decode, metadata, streaming, errors,
+  dtype, file, property-based, and cross-language golden parity
+  tests) and the same 0.13.0 version as the rest of the workspace.
+- **Remote error class** — `TensogramError::Remote` gets a dedicated
+  string in the C FFI error formatter and a corresponding
+  `remote_error` exception class in the C++ wrapper. Previously a
+  remote I/O failure surfaced as the generic `unknown error`.
+- **Documentation reorganisation** —
+  - `ARCHITECTURE.md` moved under `plans/`; README and `CONTRIBUTING.md`
+    links updated; `plans/ARCHITECTURE.md` rewritten against the current
+    11-crate workspace, opt-in crates, separate Python packages, and
+    full feature-gate tables.
+  - `plans/DONE.md` rewritten as a version-agnostic implementation-path
+    log with an explicit instruction that agents must not add version
+    numbers or fixed test counts to that file.
+  - `plans/TEST.md` replaced with a shape-over-counts coverage
+    description.
+  - `plans/IDEAS.md` cleaned of items that have already shipped.
+  - `plans/BRAINSTORMING.md` added — a long-form brainstorm of
+    potential future directions for Tensogram as a general-purpose
+    scientific tensor format (protocol extensions, lineage/signing,
+    learned compression, conformance test suite, ecosystem bindings,
+    and more).
+  - `docs/src/introduction.md`, `CLAUDE.md`, `CONTRIBUTING.md`
+    refreshed to reflect the current crate and package names.
+  - README gains a documentation badge and an online docs link.
+  - mdBook pages (wire-format tables, mermaid diagram colours) fixed
+    for readability.
+  - A docs fact-check pass corrected multiple API signatures
+    (`EncodeOptions`, `DecodeOptions`, `decode_range`,
+    `simple_packing`, `shuffle`, CLI usage) against the actual source.
+- **Apache 2.0 licence metadata** tightened across the repository.
 
 ## [0.12.0] - 2026-04-16
 
