@@ -31,9 +31,6 @@ pub fn run(
         Grouping::MergeAll
     };
 
-    let mut encode_options = tensogram_core::EncodeOptions::default();
-    encode_options.threads = threads;
-
     let options = ConvertOptions {
         grouping,
         preserve_all_keys: all_keys,
@@ -44,7 +41,10 @@ pub fn run(
             compression: pipeline.compression.clone(),
             compression_level: pipeline.compression_level,
         },
-        encode_options,
+        encode_options: tensogram_core::EncodeOptions {
+            threads,
+            ..Default::default()
+        },
         ..Default::default()
     };
 

@@ -103,6 +103,18 @@ pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Ve
     let use_axis_a = parallel && crate::parallel::use_axis_a(msg.objects.len(), budget, any_axis_b);
     let intra_codec_threads = if parallel && !use_axis_a { budget } else { 0 };
 
+    let decode_one = |(desc, payload_bytes, _offset): &(DataObjectDescriptor, &[u8], usize)|
+        -> Result<DecodedObject> {
+        let decoded = decode_single_object_with_backend(
+            desc,
+            payload_bytes,
+            options,
+            options.compression_backend,
+            intra_codec_threads,
+        )?;
+        Ok((desc.clone(), decoded))
+    };
+
     let data_objects: Vec<DecodedObject> = if use_axis_a {
         #[cfg(feature = "threads")]
         {
@@ -110,56 +122,18 @@ pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Ve
             crate::parallel::with_pool(budget, || {
                 msg.objects
                     .par_iter()
-                    .map(|(desc, payload_bytes, _offset)| {
-                        let decoded = decode_single_object_with_backend(
-                            desc,
-                            payload_bytes,
-                            options,
-                            options.compression_backend,
-                            intra_codec_threads,
-                        )?;
-                        Ok((desc.clone(), decoded))
-                    })
+                    .map(&decode_one)
                     .collect::<Result<Vec<_>>>()
             })?
         }
         #[cfg(not(feature = "threads"))]
         {
-            msg.objects
-                .iter()
-                .map(|(desc, payload_bytes, _offset)| {
-                    let decoded = decode_single_object_with_backend(
-                        desc,
-                        payload_bytes,
-                        options,
-                        options.compression_backend,
-                        intra_codec_threads,
-                    )?;
-                    Ok((desc.clone(), decoded))
-                })
-                .collect::<Result<Vec<_>>>()?
+            msg.objects.iter().map(decode_one).collect::<Result<_>>()?
         }
     } else {
-        let run = || -> Result<Vec<DecodedObject>> {
-            msg.objects
-                .iter()
-                .map(|(desc, payload_bytes, _offset)| {
-                    let decoded = decode_single_object_with_backend(
-                        desc,
-                        payload_bytes,
-                        options,
-                        options.compression_backend,
-                        intra_codec_threads,
-                    )?;
-                    Ok((desc.clone(), decoded))
-                })
-                .collect()
-        };
-        if parallel && intra_codec_threads > 1 {
-            crate::parallel::with_pool(budget, run)?
-        } else {
-            run()?
-        }
+        crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, || {
+            msg.objects.iter().map(decode_one).collect::<Result<_>>()
+        })?
     };
 
     Ok((msg.global_metadata, data_objects))
@@ -212,7 +186,7 @@ pub fn decode_object(
     );
     let intra_codec_threads = if parallel { budget } else { 0 };
 
-    let run = || {
+    let decoded = crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, || {
         decode_single_object_with_backend(
             desc,
             payload_bytes,
@@ -220,12 +194,7 @@ pub fn decode_object(
             options.compression_backend,
             intra_codec_threads,
         )
-    };
-    let decoded = if parallel && intra_codec_threads > 1 {
-        crate::parallel::with_pool(budget, run)?
-    } else {
-        run()?
-    };
+    })?;
 
     Ok((msg.global_metadata, desc.clone(), decoded))
 }
@@ -337,6 +306,13 @@ pub fn decode_range_from_payload(
         })
     };
 
+    let run_seq = || -> Result<Vec<Vec<u8>>> {
+        ranges
+            .iter()
+            .map(|&(offset, count)| decode_one(offset, count))
+            .collect()
+    };
+
     let results: Vec<Vec<u8>> = if use_axis_a {
         #[cfg(feature = "threads")]
         {
@@ -350,23 +326,10 @@ pub fn decode_range_from_payload(
         }
         #[cfg(not(feature = "threads"))]
         {
-            ranges
-                .iter()
-                .map(|&(offset, count)| decode_one(offset, count))
-                .collect::<Result<Vec<_>>>()?
+            run_seq()?
         }
     } else {
-        let run = || -> Result<Vec<Vec<u8>>> {
-            ranges
-                .iter()
-                .map(|&(offset, count)| decode_one(offset, count))
-                .collect()
-        };
-        if parallel && intra_codec_threads > 1 {
-            crate::parallel::with_pool(budget, run)?
-        } else {
-            run()?
-        }
+        crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, run_seq)?
     };
 
     Ok(results)

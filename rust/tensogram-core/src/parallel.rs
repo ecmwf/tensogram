@@ -13,30 +13,32 @@
 //! - Byte-identical output regardless of `threads` setting (determinism).
 //! - Zero overhead when `threads == 0` and no env override is active.
 //! - Graceful degradation when the `threads` cargo feature is disabled —
-//!   callers pay for an `Option<u32>` field and a single branch.
+//!   callers pay for an extra `u32` field, an `Option<usize>` field, and
+//!   a single branch per encode/decode call.
 //!
 //! ## Thread budget resolution
 //!
-//! The resolution order is:
+//! The resolution order in [`resolve_budget`] is:
 //!
 //! 1. If the caller set `threads > 0`, use that value verbatim (option
 //!    beats environment).
-//! 2. If `threads == 0` and the `TENSOGRAM_THREADS` env var parses as a
-//!    non-zero `u32`, use that value.
-//! 3. Otherwise, `threads` is `0` (sequential).
+//! 2. If `threads == 0`, fall back to `TENSOGRAM_THREADS`.  Any value
+//!    that does not parse as a `u32` (or is missing entirely) is treated
+//!    as `0`, i.e. sequential.
 //!
-//! The env var is cached in a `OnceLock` so repeated calls do not pay
-//! the `std::env::var` cost.  This matches the
+//! The env var is parsed once per process and cached in a [`OnceLock`]
+//! so repeated calls pay no `std::env::var` cost.  This matches the
 //! `TENSOGRAM_COMPRESSION_BACKEND` pattern used elsewhere.
 //!
 //! ## Small-message threshold
 //!
-//! Building a rayon `ThreadPool` costs tens of microseconds and is
-//! pointless for tiny payloads.  [`should_parallelise`] skips the pool
-//! when the total work bytes are below a configurable threshold
-//! (default 64 KiB).  Callers with a known-small workload can either
-//! request `threads = 0` or pass `parallel_threshold_bytes = Some(usize::MAX)`
-//! to force the sequential path.
+//! Building a rayon [`rayon::ThreadPool`] costs tens of microseconds
+//! and is pointless for tiny payloads.  [`should_parallelise`] skips
+//! the pool when the total work bytes are below a configurable
+//! threshold (default 64 KiB).  Callers with a known-small workload
+//! can either request `threads = 0` or pass
+//! `parallel_threshold_bytes = Some(usize::MAX)` to force the
+//! sequential path.
 
 use std::sync::OnceLock;
 
@@ -49,9 +51,9 @@ use std::sync::OnceLock;
 /// or `DecodeOptions.parallel_threshold_bytes`.
 pub const DEFAULT_PARALLEL_THRESHOLD_BYTES: usize = 64 * 1024;
 
-/// Env var consulted when `threads == 0`.  Values accepted: any
-/// non-negative integer.  Zero, empty, or unparseable values fall back
-/// to sequential execution.
+/// Env var consulted by [`resolve_budget`] when the caller-provided
+/// `threads` is `0`.  Must parse as a `u32`; zero, missing, empty, or
+/// otherwise unparseable values all resolve to `0` (sequential).
 pub const ENV_THREADS: &str = "TENSOGRAM_THREADS";
 
 fn env_threads() -> u32 {
@@ -119,7 +121,7 @@ pub fn is_axis_b_friendly(encoding: &str, filter: &str, compression: &str) -> bo
 ///   return `false`.
 /// - `any_object_axis_b_friendly == true` → axis B wins.  This matches
 ///   the "Tensogram messages tend to carry a small number of very
-///   large objects" heuristic and avoids N\u{00b2} thread over-subscription
+///   large objects" heuristic and avoids N² thread over-subscription
 ///   when blosc2 or zstd spawn their own internal worker pool per call.
 /// - otherwise → axis A (`par_iter` across objects).
 #[inline]
@@ -138,9 +140,10 @@ pub fn use_axis_a(n_objects: usize, budget: u32, any_object_axis_b_friendly: boo
 ///   paths — useful for testing.
 /// - `budget >= 2` and the `threads` feature is enabled: builds a
 ///   scoped pool of `budget` workers and runs `f` via
-///   `ThreadPool::install`.  The pool is dropped when `f` returns.
+///   [`rayon::ThreadPool::install`].  The pool is dropped when `f`
+///   returns.
 /// - `budget >= 2` and the `threads` feature is disabled: logs a
-///   `tracing::warn!` on first use and falls back to sequential.
+///   [`tracing::warn!`] on first use and falls back to sequential.
 ///
 /// The pool build is intentionally scoped (not global) so that
 /// different call sites can pick different thread counts without
@@ -173,6 +176,29 @@ where
     #[cfg(not(feature = "threads"))]
     {
         warn_threads_feature_disabled();
+        f()
+    }
+}
+
+/// Run a sequential object-loop either inside a scoped thread pool (so
+/// any nested `par_iter` inside a codec picks it up via
+/// [`rayon::current_num_threads`]) or inline.
+///
+/// This is the common "axis-B or purely sequential" path shared by
+/// `encode_inner`, `decode`, `decode_object`, and
+/// `decode_range_from_payload`.  Build a pool iff both `parallel` is
+/// true *and* the intra-codec budget is large enough to benefit from
+/// having a pool installed — otherwise run `f` on the caller thread
+/// with no allocation.
+#[inline]
+pub fn run_maybe_pooled<F, R>(budget: u32, parallel: bool, intra_codec_threads: u32, f: F) -> R
+where
+    F: FnOnce() -> R + Send,
+    R: Send,
+{
+    if parallel && intra_codec_threads > 1 {
+        with_pool(budget, f)
+    } else {
         f()
     }
 }
@@ -280,6 +306,24 @@ mod tests {
     #[test]
     fn use_axis_a_multi_object_non_b_friendly_uses_a() {
         assert!(use_axis_a(10, 4, false));
+    }
+
+    #[test]
+    fn run_maybe_pooled_no_budget_runs_inline() {
+        // budget=0 or parallel=false or intra<=1: never build a pool.
+        assert_eq!(run_maybe_pooled(0, false, 0, || 7), 7);
+        assert_eq!(run_maybe_pooled(4, false, 0, || 7), 7);
+        assert_eq!(run_maybe_pooled(4, true, 0, || 7), 7);
+        assert_eq!(run_maybe_pooled(4, true, 1, || 7), 7);
+    }
+
+    #[cfg(feature = "threads")]
+    #[test]
+    fn run_maybe_pooled_with_budget_installs_pool() {
+        // intra_codec_threads >= 2 AND parallel=true: pool is installed,
+        // so rayon::current_num_threads() reflects our budget.
+        let observed = run_maybe_pooled(4, true, 4, rayon::current_num_threads);
+        assert_eq!(observed, 4);
     }
 
     #[cfg(feature = "threads")]

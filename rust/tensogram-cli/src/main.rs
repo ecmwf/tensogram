@@ -261,7 +261,6 @@ fn main() {
             // Level 3-4 decode payloads via the library's own path; a
             // future enhancement could thread `threads` into
             // `ValidateOptions`, but for now validate runs sequentially.
-            let _ = threads;
             commands::validate::run(&files, &options, json)
         }
         #[cfg(feature = "grib")]

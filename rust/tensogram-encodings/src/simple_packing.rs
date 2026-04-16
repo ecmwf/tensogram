@@ -8,16 +8,27 @@
 
 use thiserror::Error;
 
-/// Minimum number of values below which the parallel min/max scan is
-/// skipped.  Rayon's par_iter cost on small buffers exceeds the gain;
-/// 64 KiB of f64 = 8192 values is a reasonable break-even on modern CPUs.
-#[cfg(feature = "threads")]
-const PARALLEL_SCAN_MIN_VALUES: usize = 8192;
+#[derive(Debug, Error)]
+pub enum PackingError {
+    #[error("NaN value encountered at index {0}")]
+    NanValue(usize),
+    #[error("bits_per_value {0} exceeds maximum of 64")]
+    BitsPerValueTooLarge(u32),
+    #[error("insufficient data: expected at least {expected} bytes, got {actual}")]
+    InsufficientData { expected: usize, actual: usize },
+    #[error("output size overflow: {num_values} values × {bytes_per_value} bytes")]
+    OutputSizeOverflow {
+        num_values: usize,
+        bytes_per_value: usize,
+    },
+}
 
 /// Minimum number of values below which the parallel simple_packing
-/// encode/decode paths are skipped.  Matches the scan threshold.
+/// paths (min/max scan, encode, decode) fall back to sequential.
+/// Rayon's par_iter cost on small buffers exceeds the gain; 64 KiB of
+/// f64 = 8192 values is a reasonable break-even on modern CPUs.
 #[cfg(feature = "threads")]
-const PARALLEL_SP_MIN_VALUES: usize = 8192;
+const PARALLEL_MIN_VALUES: usize = 8192;
 
 /// Run a min/max scan over `values`, returning `Err(NanValue)` on the
 /// first NaN observed (or any NaN when running in parallel).
@@ -27,7 +38,7 @@ fn scan_min_max(
 ) -> Result<(f64, f64), PackingError> {
     #[cfg(feature = "threads")]
     {
-        if threads >= 2 && values.len() >= PARALLEL_SCAN_MIN_VALUES {
+        if threads >= 2 && values.len() >= PARALLEL_MIN_VALUES {
             use rayon::prelude::*;
             // Short-circuit on NaN: `try_fold` stops as soon as one
             // worker sees a NaN.  The reported index is from whichever
@@ -70,21 +81,6 @@ fn scan_min_max(
         }
     }
     Ok((min_val, max_val))
-}
-
-#[derive(Debug, Error)]
-pub enum PackingError {
-    #[error("NaN value encountered at index {0}")]
-    NanValue(usize),
-    #[error("bits_per_value {0} exceeds maximum of 64")]
-    BitsPerValueTooLarge(u32),
-    #[error("insufficient data: expected at least {expected} bytes, got {actual}")]
-    InsufficientData { expected: usize, actual: usize },
-    #[error("output size overflow: {num_values} values × {bytes_per_value} bytes")]
-    OutputSizeOverflow {
-        num_values: usize,
-        bytes_per_value: usize,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -199,7 +195,7 @@ pub fn encode_with_threads(
     // below; sequential goes through the original fast check so that
     // the first-NaN-index guarantee holds.
     #[cfg(feature = "threads")]
-    let parallel = threads >= 2 && values.len() >= PARALLEL_SP_MIN_VALUES;
+    let parallel = threads >= 2 && values.len() >= PARALLEL_MIN_VALUES;
     #[cfg(not(feature = "threads"))]
     let parallel = false;
 
@@ -246,6 +242,35 @@ pub fn encode_with_threads(
     }
 }
 
+/// Write `q` into a chunk as `N` MSB-first big-endian bytes.
+///
+/// Shared by the aligned sequential and parallel paths.  `N` is always
+/// one of 1, 2, 3, 4 — the compiler specialises each caller.
+#[inline]
+fn splat_aligned<const N: usize>(chunk: &mut [u8], q: u64) {
+    match N {
+        1 => {
+            chunk[0] = q as u8;
+        }
+        2 => {
+            chunk[0] = (q >> 8) as u8;
+            chunk[1] = q as u8;
+        }
+        3 => {
+            chunk[0] = (q >> 16) as u8;
+            chunk[1] = (q >> 8) as u8;
+            chunk[2] = q as u8;
+        }
+        4 => {
+            chunk[0] = (q >> 24) as u8;
+            chunk[1] = (q >> 16) as u8;
+            chunk[2] = (q >> 8) as u8;
+            chunk[3] = q as u8;
+        }
+        _ => unreachable!("encode_aligned only instantiated for N in 1..=4"),
+    }
+}
+
 fn encode_aligned<const N: usize>(
     values: &[f64],
     refv: f64,
@@ -265,27 +290,7 @@ fn encode_aligned<const N: usize>(
         // Saturating f64→u64 cast handles negative values (→ 0).
         // u64::min handles the rare +1 overshoot from rounding.
         let q = (((v - refv) * scale).round() as u64).min(max_packed);
-        match N {
-            1 => {
-                chunk[0] = q as u8;
-            }
-            2 => {
-                chunk[0] = (q >> 8) as u8;
-                chunk[1] = q as u8;
-            }
-            3 => {
-                chunk[0] = (q >> 16) as u8;
-                chunk[1] = (q >> 8) as u8;
-                chunk[2] = q as u8;
-            }
-            4 => {
-                chunk[0] = (q >> 24) as u8;
-                chunk[1] = (q >> 16) as u8;
-                chunk[2] = (q >> 8) as u8;
-                chunk[3] = q as u8;
-            }
-            _ => unreachable!(),
-        }
+        splat_aligned::<N>(chunk, q);
     }
     Ok(out)
 }
@@ -324,27 +329,7 @@ fn encode_aligned_par<const N: usize>(
                 return Err(PackingError::NanValue(i));
             }
             let q = (((v - refv) * scale).round() as u64).min(max_packed);
-            match N {
-                1 => {
-                    chunk[0] = q as u8;
-                }
-                2 => {
-                    chunk[0] = (q >> 8) as u8;
-                    chunk[1] = q as u8;
-                }
-                3 => {
-                    chunk[0] = (q >> 16) as u8;
-                    chunk[1] = (q >> 8) as u8;
-                    chunk[2] = q as u8;
-                }
-                4 => {
-                    chunk[0] = (q >> 24) as u8;
-                    chunk[1] = (q >> 16) as u8;
-                    chunk[2] = (q >> 8) as u8;
-                    chunk[3] = q as u8;
-                }
-                _ => unreachable!(),
-            }
+            splat_aligned::<N>(chunk, q);
             Ok(())
         })?;
 
@@ -520,7 +505,7 @@ pub fn decode_with_threads(
         2f64.powi(params.binary_scale_factor) * 10f64.powi(-params.decimal_scale_factor);
 
     #[cfg(feature = "threads")]
-    let parallel = threads >= 2 && num_values >= PARALLEL_SP_MIN_VALUES;
+    let parallel = threads >= 2 && num_values >= PARALLEL_MIN_VALUES;
     #[cfg(not(feature = "threads"))]
     let parallel = false;
 
@@ -546,6 +531,25 @@ pub fn decode_with_threads(
     }
 }
 
+/// Read `N` MSB-first big-endian bytes from `chunk` as a `u64`.
+///
+/// Shared by the aligned sequential and parallel decode paths.
+#[inline]
+fn gather_aligned<const N: usize>(chunk: &[u8]) -> u64 {
+    match N {
+        1 => chunk[0] as u64,
+        2 => ((chunk[0] as u64) << 8) | chunk[1] as u64,
+        3 => ((chunk[0] as u64) << 16) | ((chunk[1] as u64) << 8) | chunk[2] as u64,
+        4 => {
+            ((chunk[0] as u64) << 24)
+                | ((chunk[1] as u64) << 16)
+                | ((chunk[2] as u64) << 8)
+                | chunk[3] as u64
+        }
+        _ => unreachable!("decode_aligned only instantiated for N in 1..=4"),
+    }
+}
+
 fn decode_aligned<const N: usize>(
     packed: &[u8],
     num_values: usize,
@@ -553,20 +557,8 @@ fn decode_aligned<const N: usize>(
     inv_scale: f64,
 ) -> Vec<f64> {
     let mut values = Vec::with_capacity(num_values);
-
     for chunk in packed[..num_values * N].chunks_exact(N) {
-        let packed_int: u64 = match N {
-            1 => chunk[0] as u64,
-            2 => ((chunk[0] as u64) << 8) | chunk[1] as u64,
-            3 => ((chunk[0] as u64) << 16) | ((chunk[1] as u64) << 8) | chunk[2] as u64,
-            4 => {
-                ((chunk[0] as u64) << 24)
-                    | ((chunk[1] as u64) << 16)
-                    | ((chunk[2] as u64) << 8)
-                    | chunk[3] as u64
-            }
-            _ => unreachable!(),
-        };
+        let packed_int = gather_aligned::<N>(chunk);
         values.push(refv + inv_scale * packed_int as f64);
     }
     values
@@ -587,18 +579,7 @@ fn decode_aligned_par<const N: usize>(
         .par_iter_mut()
         .zip(packed[..num_values * N].par_chunks_exact(N))
         .for_each(|(out, chunk)| {
-            let packed_int: u64 = match N {
-                1 => chunk[0] as u64,
-                2 => ((chunk[0] as u64) << 8) | chunk[1] as u64,
-                3 => ((chunk[0] as u64) << 16) | ((chunk[1] as u64) << 8) | chunk[2] as u64,
-                4 => {
-                    ((chunk[0] as u64) << 24)
-                        | ((chunk[1] as u64) << 16)
-                        | ((chunk[2] as u64) << 8)
-                        | chunk[3] as u64
-                }
-                _ => unreachable!(),
-            };
+            let packed_int = gather_aligned::<N>(chunk);
             *out = refv + inv_scale * packed_int as f64;
         });
     values
@@ -897,7 +878,7 @@ mod tests {
     #[cfg(feature = "threads")]
     #[test]
     fn threads_below_threshold_uses_sequential_path() {
-        // Below PARALLEL_SP_MIN_VALUES the threaded API should still
+        // Below PARALLEL_MIN_VALUES the threaded API should still
         // produce byte-identical output (it falls back to sequential).
         let values: Vec<f64> = (0..100).map(|i| i as f64).collect();
         let params = compute_params(&values, 16, 0).unwrap();

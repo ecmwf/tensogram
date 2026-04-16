@@ -131,35 +131,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // blosc2 with nthreads > 0 produces a different compressed byte
     // stream (blocks land in worker completion order) but always
-    // round-trips to the same data.
+    // round-trips to the same data.  blosc2 is part of the default
+    // tensogram-core feature set, so no cfg gate is needed here.
 
-    #[cfg(feature = "blosc2")]
-    {
-        use ciborium::Value;
-        let mut blosc2_desc = desc.clone();
-        blosc2_desc.compression = "blosc2".to_string();
-        blosc2_desc
-            .params
-            .insert("blosc2_clevel".to_string(), Value::Integer(5.into()));
-        blosc2_desc
-            .params
-            .insert("blosc2_codec".to_string(), Value::Text("lz4".to_string()));
+    use ciborium::Value;
+    let mut blosc2_desc = desc.clone();
+    blosc2_desc.compression = "blosc2".to_string();
+    blosc2_desc
+        .params
+        .insert("blosc2_clevel".to_string(), Value::Integer(5.into()));
+    blosc2_desc
+        .params
+        .insert("blosc2_codec".to_string(), Value::Text("lz4".to_string()));
 
-        let msg_b0 = encode(&meta, &[(&blosc2_desc, &data)], &opts_seq)?;
-        let msg_b8 = encode(&meta, &[(&blosc2_desc, &data)], &opts_par)?;
+    let msg_b0 = encode(&meta, &[(&blosc2_desc, &data)], &opts_seq)?;
+    let msg_b8 = encode(&meta, &[(&blosc2_desc, &data)], &opts_par)?;
 
-        let (_, dec_b0) = decode(&msg_b0, &opts_dec_seq)?;
-        let (_, dec_b8) = decode(&msg_b8, &opts_dec_seq)?;
+    let (_, dec_b0) = decode(&msg_b0, &opts_dec_seq)?;
+    let (_, dec_b8) = decode(&msg_b8, &opts_dec_seq)?;
 
-        println!();
-        println!("blosc2 opaque pipeline:");
-        println!("  encode bytes differ across threads: {}", msg_b0 != msg_b8);
-        println!("  decoded data matches: {}", dec_b0[0].1 == dec_b8[0].1);
-        assert_eq!(
-            dec_b0[0].1, dec_b8[0].1,
-            "blosc2 must round-trip losslessly regardless of threads"
-        );
-    }
+    println!();
+    println!("blosc2 opaque pipeline:");
+    println!("  encode bytes differ across threads: {}", msg_b0 != msg_b8);
+    println!("  decoded data matches: {}", dec_b0[0].1 == dec_b8[0].1);
+    assert_eq!(
+        dec_b0[0].1, dec_b8[0].1,
+        "blosc2 must round-trip losslessly regardless of threads"
+    );
 
     Ok(())
 }

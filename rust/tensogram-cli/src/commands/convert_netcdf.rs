@@ -37,13 +37,13 @@ pub fn run(
         }
     };
 
-    let mut encode_options = tensogram_core::EncodeOptions::default();
-    encode_options.threads = threads;
-
     let options = ConvertOptions {
         split_by,
         cf,
-        encode_options,
+        encode_options: tensogram_core::EncodeOptions {
+            threads,
+            ..Default::default()
+        },
         pipeline: DataPipeline {
             encoding: pipeline.encoding.clone(),
             bits: pipeline.bits,

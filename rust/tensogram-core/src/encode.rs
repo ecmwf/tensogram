@@ -256,45 +256,36 @@ fn encode_inner(
     // caller's ask.
     let intra_codec_threads = if parallel && !use_axis_a { budget } else { 0 };
 
+    let encode_one = |(desc, data): &(&DataObjectDescriptor, &[u8])| {
+        encode_one_object(desc, data, mode, options, intra_codec_threads)
+    };
+
     let encoded_objects: Vec<EncodedObject> = if use_axis_a {
+        // Axis A: par_iter across objects.  Requires the `threads`
+        // feature; when it's off, the caller's budget silently falls
+        // back to sequential (with a one-time warning from `with_pool`).
         #[cfg(feature = "threads")]
         {
             use rayon::prelude::*;
             crate::parallel::with_pool(budget, || {
                 descriptors
                     .par_iter()
-                    .map(|(desc, data)| {
-                        encode_one_object(desc, data, mode, options, intra_codec_threads)
-                    })
+                    .map(&encode_one)
                     .collect::<Result<Vec<_>>>()
             })?
         }
         #[cfg(not(feature = "threads"))]
         {
-            descriptors
-                .iter()
-                .map(|(desc, data)| {
-                    encode_one_object(desc, data, mode, options, intra_codec_threads)
-                })
-                .collect::<Result<Vec<_>>>()?
+            descriptors.iter().map(encode_one).collect::<Result<_>>()?
         }
     } else {
-        // Axis B (or purely sequential): iterate objects in order.  The
-        // rayon pool (if budget > 1) is installed so that nested codec
-        // calls can pick it up via `rayon::current_num_threads()`.
-        let run = || -> Result<Vec<EncodedObject>> {
-            descriptors
-                .iter()
-                .map(|(desc, data)| {
-                    encode_one_object(desc, data, mode, options, intra_codec_threads)
-                })
-                .collect()
-        };
-        if parallel && intra_codec_threads > 1 {
-            crate::parallel::with_pool(budget, run)?
-        } else {
-            run()?
-        }
+        // Axis B (or purely sequential): iterate objects in order.
+        // Install the pool when there's an intra-codec budget so that
+        // parallel primitives inside codec implementations (e.g.
+        // `simple_packing` chunked par_iter) actually use it.
+        crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, || {
+            descriptors.iter().map(encode_one).collect::<Result<_>>()
+        })?
     };
 
     // Validate that the caller hasn't written to _reserved_ at any level.

@@ -22,13 +22,17 @@ pub struct ZstdCompressor {
     pub nb_workers: u32,
 }
 
+#[inline]
+fn map_zstd_err<E: std::fmt::Display>(e: E) -> CompressionError {
+    CompressionError::Zstd(e.to_string())
+}
+
 impl Compressor for ZstdCompressor {
     fn compress(&self, data: &[u8]) -> Result<CompressResult, CompressionError> {
         // Fast path: no workers requested → use the one-shot helper
         // which is guaranteed byte-identical to previous releases.
         if self.nb_workers == 0 {
-            let compressed = zstd::encode_all(data, self.level)
-                .map_err(|e| CompressionError::Zstd(e.to_string()))?;
+            let compressed = zstd::encode_all(data, self.level).map_err(map_zstd_err)?;
             return Ok(CompressResult {
                 data: compressed,
                 block_offsets: None,
@@ -36,13 +40,10 @@ impl Compressor for ZstdCompressor {
         }
 
         // Multi-threaded path: use bulk::Compressor and set NbWorkers.
-        let mut cctx = zstd::bulk::Compressor::new(self.level)
-            .map_err(|e| CompressionError::Zstd(e.to_string()))?;
+        let mut cctx = zstd::bulk::Compressor::new(self.level).map_err(map_zstd_err)?;
         cctx.set_parameter(zstd::zstd_safe::CParameter::NbWorkers(self.nb_workers))
-            .map_err(|e| CompressionError::Zstd(e.to_string()))?;
-        let compressed = cctx
-            .compress(data)
-            .map_err(|e| CompressionError::Zstd(e.to_string()))?;
+            .map_err(map_zstd_err)?;
+        let compressed = cctx.compress(data).map_err(map_zstd_err)?;
         Ok(CompressResult {
             data: compressed,
             block_offsets: None,
@@ -53,7 +54,7 @@ impl Compressor for ZstdCompressor {
         // Decompression is not affected by NbWorkers — zstd always
         // decodes frames sequentially regardless of how they were
         // encoded.  Use the simple helper.
-        zstd::decode_all(data).map_err(|e| CompressionError::Zstd(e.to_string()))
+        zstd::decode_all(data).map_err(map_zstd_err)
     }
 
     fn decompress_range(

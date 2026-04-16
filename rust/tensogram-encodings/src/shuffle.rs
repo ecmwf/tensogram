@@ -125,25 +125,26 @@ pub fn unshuffle_with_threads(
         if threads >= 2 && element_size >= 2 && data.len() >= PARALLEL_SHUFFLE_MIN_BYTES {
             use rayon::prelude::*;
             let mut output = vec![0u8; data.len()];
-            // Split output into element-aligned chunks.  Picking the
-            // smallest chunk size that still amortises rayon overhead:
-            // ~4 KiB per chunk is a reasonable heuristic.
+            // Split output into element-aligned chunks.  ~4 KiB per
+            // chunk amortises rayon split cost; minimum 64 elements so
+            // tiny element_size values still get decent chunks.
+            //
+            // The chunk size is always a multiple of `element_size` and
+            // `data.len()` is a multiple of `element_size` (validated
+            // above), so within every chunk `chunks_exact_mut` visits
+            // every element with no tail.
             let chunk_elems = (4096 / element_size).max(64);
             output
                 .par_chunks_mut(chunk_elems * element_size)
                 .enumerate()
                 .for_each(|(chunk_idx, out_chunk)| {
                     let elem_start = chunk_idx * chunk_elems;
-                    let elems_in_chunk = out_chunk.len() / element_size;
                     for (local_elem, dst) in out_chunk.chunks_exact_mut(element_size).enumerate() {
                         let elem = elem_start + local_elem;
                         for byte_idx in 0..element_size {
                             dst[byte_idx] = data[byte_idx * num_elements + elem];
                         }
                     }
-                    // Tail within the chunk (if any) — chunks_exact_mut
-                    // already ignored it; handle here.
-                    let _ = elems_in_chunk;
                 });
             return Ok(output);
         }
