@@ -44,30 +44,84 @@ For speculative ideas, see `IDEAS.md`.
     `TensogramFile.open/fromUrl/fromBytes`, 87 tests, 6 examples, CI job,
     mdBook page, Makefile targets.
 
-  - [ ] **typescript-wrapper (Scope C)** — follow-ups to the shipped Scope B.
-    These are the surfaces the Rust / Python / FFI / C++ sides expose that
-    the TS wrapper currently does not. Cross-language parity matrix in
-    `plans/TYPESCRIPT_WRAPPER.md`.
+  - [ ] **typescript-wrapper (Scope C.1) — API-surface parity**
+    Close the gap between the TS wrapper and the Rust / Python / FFI / C++
+    surfaces listed in `plans/TYPESCRIPT_WRAPPER.md` → "Cross-language
+    parity matrix". Landing these as a single work stream keeps the
+    `@internal` conventions, typed-error routing, and doc-comment
+    patterns consistent; they share infrastructure (new WASM exports,
+    TS → WASM boundary typing, test harness, example scripts).
     - `decodeRange(buf, objIndex, ranges, opts?)` — mirrors Rust
       `decode_range` / Python `file_decode_range` / `tgm_decode_range`.
-    - `StreamingEncoder` class — wraps Rust `StreamingEncoder`, Python
-      `AsyncStreamingEncoder`, and `tgm_streaming_encoder_*`.
-    - `TensogramFile#append(metadata, objects, opts?)` — mirrors Rust
-      `TensogramFile::append`.
-    - `validate(buf, opts?)` / `validateFile(path, opts?)` wrappers over
-      `tgm_validate` / `tgm_validate_file`.
-    - `computeHash(bytes, algo?)` — mirrors `tgm_compute_hash`.
+      WASM already exposes the primitive.
+    - `computeHash(bytes, algo?)` — mirrors `tgm_compute_hash`. WASM
+      already exposes the primitive.
     - `encodePreEncoded(metadata, objects, opts?)` — mirrors Rust
       `encode_pre_encoded` / `tgm_encode_pre_encoded`.
-    - `simplePackingComputeParams(values, bitsPerValue, decimalScaleFactor)` —
-      mirrors `tgm_simple_packing_compute_params`.
+    - `simplePackingComputeParams(values, bitsPerValue, decimalScaleFactor)`
+      — mirrors `tgm_simple_packing_compute_params`.
+    - `validate(buf, opts?)` / `validateFile(path, opts?)` — requires
+      first extending `tensogram-wasm` to export `validate_buffer` /
+      `validate_file` before wrapping on the TS side.
+    - `TensogramFile#append(metadata, objects, opts?)` — mirrors Rust
+      `TensogramFile::append`. Requires file-append exposure through
+      `tensogram-wasm`.
+    - `StreamingEncoder` class — wraps Rust `StreamingEncoder`,
+      Python `AsyncStreamingEncoder`, and `tgm_streaming_encoder_*`.
+      Requires WASM-side `StreamingEncoder` parallel to the existing
+      `StreamingDecoder`.
     - Range-based lazy backend for `TensogramFile.fromUrl` (currently
-      downloads the whole file).
-    - First-class `float16` / `bfloat16` / `complex*` support (today they
-      round-trip as `Uint16Array` / interleaved `Float32/64Array` surrogates).
-    - npm publish pipeline + semver alignment with `VERSION`.
-    - Zarr.js integration mirroring `tensogram-zarr`.
-    - Bundle-size budget (`size-limit`) enforced in CI.
+      downloads the whole file; add HTTP `Range` + streaming reader).
+
+  - [ ] **typescript-wrapper (Scope C.2) — first-class half-precision + complex dtypes**
+    JS has no native `Float16Array` (it's at Stage-3 in TC39 — arriving
+    but not widely supported). Today `float16` / `bfloat16` round-trip
+    as `Uint16Array`, and `complex64` / `complex128` as interleaved
+    `Float32Array` / `Float64Array`. This is functional but forces
+    consumers to know the encoding. Ship first-class support via a
+    small runtime helper: typed array views with `.real(i)` / `.imag(i)`
+    / `.toFloat32(i)` accessors, mirroring numpy.
+    - Probe `typeof Float16Array === 'function'` and prefer the native
+      implementation when present.
+    - Provide a polyfill class for runtimes that lack it.
+    - Round-trip tests across f16/bf16/c64/c128 with fast-check.
+
+  - [ ] **typescript-wrapper (Scope C.3) — distribution & CI maturity**
+    Three intertwined tasks that all touch the build, pack, and publish
+    pipeline. Best done together so we don't re-open CI config three
+    times.
+    - **npm publish pipeline.** Choose an npm org (`@ecmwf/tensogram`
+      already exists in `package.json`), wire a GitHub Actions job that
+      publishes on tagged releases and enforces semver lock-step with
+      the root `VERSION` file (add `typescript/package.json` to the
+      VERSION-sync list in CLAUDE.md — already noted but not wired).
+    - **Browser-environment CI.** Today the `typescript` CI job runs
+      Vitest in Node only. Add a browser lane (Vitest `browser` mode
+      via Playwright, or a dedicated Playwright job) so regressions
+      that only surface in a real browser (`import.meta.url` resolution,
+      streams API, `fetch` semantics) can't slip through.
+    - **Bundle-size budget via `size-limit`.** Track the produced
+      `dist/*.js` + `wasm/tensogram_wasm_bg.wasm` size deltas on every
+      PR. Fail CI if the growth exceeds a documented threshold
+      (e.g. WASM ≤ 1.5 MiB, JS glue ≤ 30 KiB).
+    - **Micro-benchmarks on hot paths.** Add `vitest bench` runs for
+      `encode`, `decode`, and `decodeStream` so allocation regressions
+      can be spotted without running full load-test scenarios.
+
+  - [ ] **typescript-wrapper (Scope C.4) — Zarr.js integration**
+    JavaScript mirror of the `tensogram-zarr` package. Lets downstream
+    JS tooling (browser-based data explorers, notebook viewers)
+    consume Tensogram-backed Zarr stores without re-implementing the
+    chunk-store contract. Ships as a separate `@ecmwf/tensogram-zarr`
+    npm package that depends on `@ecmwf/tensogram`.
+    - Implement the Zarr v3 chunk-store trait against a `TensogramFile`
+      backend.
+    - 14 bidirectional dtype mappings to match the Python
+      `tensogram-zarr` test matrix.
+    - Smoke-test from a notebook-style fetch scenario
+      (`zarr-js` reading a `.tgm`-backed store over HTTPS).
+    - Standalone CI job; does not block the main `@ecmwf/tensogram`
+      pipeline.
 
 ## Metadata
 
