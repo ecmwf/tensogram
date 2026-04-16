@@ -36,12 +36,31 @@ Three approaches were considered:
 
 ### Crate Structure
 
-- `tensogram-core` — message encode/decode, CBOR metadata, framing, buffer + file API, iterators
-- `tensogram-encodings` — encoding pipeline, filters, compression codecs (all feature-gated)
-- `tensogram-ffi` — C-compatible FFI surface (62 functions), auto-generated `tensogram.h` via cbindgen
-- `tensogram-python` — Python bindings via PyO3/maturin with NumPy integration
+Default Rust workspace:
+
+- `tensogram-core` — message encode/decode, CBOR metadata, framing, buffer + file API, iterators, validation (Levels 1-4), remote object-store access
+- `tensogram-encodings` — encoding pipeline, filters, compression codecs (all feature-gated, both C-FFI and pure-Rust variants)
+- `tensogram-ffi` — C-compatible FFI surface, auto-generated `tensogram.h` via cbindgen
 - `tensogram-cli` — CLI binary (`tensogram` command with subcommands)
-- `tensogram-grib` — GRIB-to-Tensogram converter via ecCodes (optional, excluded from default workspace)
+- `tensogram-szip` — pure-Rust CCSDS 121.0-B-3 szip codec (used via the `szip-pure` feature)
+- `tensogram-sz3` — high-level Rust API for SZ3
+- `tensogram-sz3-sys` — clean-room FFI shim wrapping the BSD-licensed SZ3 C++ library (Apache-2.0 / MIT)
+- `benchmarks` — benchmark suite
+- `examples/rust` — runnable Rust examples
+
+Excluded from the default workspace (opt-in):
+
+- `python/bindings` (Cargo `tensogram-python`, PyPI `tensogram`) — PyO3/maturin Python bindings with NumPy integration
+- `tensogram-grib` — GRIB-to-Tensogram converter via ecCodes (needs `libeccodes`)
+- `tensogram-netcdf` — NetCDF-to-Tensogram converter via libnetcdf (needs `libnetcdf`)
+- `tensogram-wasm` — WebAssembly bindings via `wasm-pack`
+
+Separate pure-Python packages (not part of the Cargo workspace):
+
+- `tensogram-xarray` — xarray backend engine
+- `tensogram-zarr` — Zarr v3 store backend
+
+See `ARCHITECTURE.md` for the full layout and build recipes.
 
 ### Core API — Buffer Interface (Primary)
 
@@ -83,10 +102,17 @@ Common options:
 | `get [options] <files>` | Extract specific key values (strict: errors on missing key) |
 | `set -s key=val,... <in> <out>` | Modify metadata (immutable key protection for shape/dtype/encoding/hash) |
 | `copy [options] <in> <out>` | Copy/split with `[keyName]` filename placeholders |
-| `merge <files>... -o <out>` | Merge messages from multiple files |
+| `merge <files>... -o <out> [--strategy first\|last\|error]` | Merge messages from multiple files, with per-key conflict resolution |
 | `split [options] <in> <out>` | Split multi-object messages into singles |
 | `reshuffle [options] <in> <out>` | Convert streaming to random-access mode |
-| `convert-grib [--all-keys] <in> -o <out>` | GRIB-to-Tensogram conversion (feature-gated) |
+| `validate [--quick\|--checksum\|--full] [--canonical] [--json] <files>` | Validate `.tgm` files (Levels 1-4) |
+| `convert-grib [--all-keys] <in> -o <out>` | GRIB-to-Tensogram conversion (feature-gated on `grib`) |
+| `convert-netcdf [--cf] [--split-by file\|variable\|record] <in> -o <out>` | NetCDF-to-Tensogram conversion (feature-gated on `netcdf`) |
+
+`convert-grib` and `convert-netcdf` share a common pipeline flag set
+(`--encoding/--bits/--filter/--compression/--compression-level`) via
+`tensogram-core::pipeline::apply_pipeline`, so both converters produce
+byte-identical descriptors for the same options.
 
 ## Key Design Decisions
 
