@@ -1405,24 +1405,15 @@ mod tests {
     /// Restores the mode at the end so the tempdir cleans up correctly.
     ///
     /// Unix-only because Windows's permission model does not honour
-    /// `chmod` in the same way. If running as root (rare but possible in
-    /// containers) the test skips gracefully because root bypasses mode
-    /// checks on regular filesystems.
+    /// `chmod` in the same way. Skips gracefully if we detect that the
+    /// current user bypasses directory-mode permission checks (running
+    /// as root in a container, CAP_DAC_OVERRIDE set, etc.) — in those
+    /// environments the test's premise cannot be deterministically met.
     #[cfg(unix)]
     #[test]
     fn test_create_in_nonwritable_location_returns_io_error(
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::PermissionsExt;
-
-        // Cheap root detection without adding a libc dependency: rely on
-        // the well-established `USER` / `LOGNAME` convention. Good enough
-        // for this test's purposes — if someone mis-sets it they'll see a
-        // clean "expected Io error" failure, not undefined behaviour.
-        let am_root = std::env::var("USER").as_deref() == Ok("root")
-            || std::env::var("LOGNAME").as_deref() == Ok("root");
-        if am_root {
-            return Ok(());
-        }
 
         let dir = tempfile::tempdir()?;
         let dir_path = dir.path().to_path_buf();
@@ -1432,6 +1423,19 @@ mod tests {
         let mut readonly = original.clone();
         readonly.set_mode(0o555);
         std::fs::set_permissions(&dir_path, readonly)?;
+
+        // Probe: try to write to the chmod'd dir via std::fs. If the
+        // probe succeeds, we're in an environment where dir-mode checks
+        // are bypassed (root, CAP_DAC_OVERRIDE, etc.) — skip gracefully.
+        let probe_path = dir_path.join(".perm_probe");
+        let probe_result = std::fs::File::create(&probe_path);
+        if probe_result.is_ok() {
+            // Clean up and skip.
+            let _ = std::fs::remove_file(&probe_path);
+            std::fs::set_permissions(&dir_path, original)?;
+            return Ok(());
+        }
+        drop(probe_result);
 
         let target = dir_path.join("nope.tgm");
         let result = TensogramFile::create(&target);
