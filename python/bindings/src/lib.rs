@@ -410,20 +410,21 @@ impl PyTensogramFile {
     ///         Each descriptor_dict requires ``type``, ``shape``, ``dtype`` and
     ///         optionally ``byte_order``, ``encoding``, ``filter``, ``compression``.
     ///     hash: ``"xxh3"`` (default) or ``None`` to skip hashing.
-    #[pyo3(signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3")))]
+    #[pyo3(signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3"), threads=0))]
     fn append(
         &mut self,
         py: Python<'_>,
         global_meta_dict: &Bound<'_, PyDict>,
         descriptors_and_data: &Bound<'_, PyList>,
         hash: Option<&str>,
+        threads: u32,
     ) -> PyResult<()> {
         let global_meta = dict_to_global_metadata(global_meta_dict)?;
         let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
         let refs: Vec<(&DataObjectDescriptor, &[u8])> =
             pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
-        let options = make_encode_options(hash)?;
+        let options = make_encode_options(hash, threads)?;
         py.detach(|| self.file.append(&global_meta, &refs, &options))
             .map_err(to_py_err)
     }
@@ -432,17 +433,21 @@ impl PyTensogramFile {
     ///
     /// Set *verify_hash* to ``True`` to verify payload integrity (default ``False``).
     /// Set *native_byte_order* to ``False`` to get wire-order bytes (default ``True``).
-    #[pyo3(signature = (index, verify_hash=None, native_byte_order=true))]
+    /// Set *threads* to ``N`` to spend a budget of ``N`` threads on decoding
+    /// (0 = sequential / env fallback).
+    #[pyo3(signature = (index, verify_hash=None, native_byte_order=true, threads=0))]
     fn decode_message(
         &self,
         py: Python<'_>,
         index: usize,
         verify_hash: Option<bool>,
         native_byte_order: bool,
+        threads: u32,
     ) -> PyResult<PyObject> {
         let options = DecodeOptions {
             verify_hash: verify_hash.unwrap_or(false),
             native_byte_order,
+            threads,
             ..Default::default()
         };
         let (global_meta, data_objects) = py
@@ -481,7 +486,8 @@ impl PyTensogramFile {
         Ok(result.into_any().unbind())
     }
 
-    #[pyo3(signature = (msg_index, obj_index, verify_hash=false, native_byte_order=true))]
+    #[pyo3(signature = (msg_index, obj_index, verify_hash=false, native_byte_order=true, threads=0))]
+    #[allow(clippy::too_many_arguments)]
     fn file_decode_object(
         &self,
         py: Python<'_>,
@@ -489,10 +495,12 @@ impl PyTensogramFile {
         obj_index: usize,
         verify_hash: bool,
         native_byte_order: bool,
+        threads: u32,
     ) -> PyResult<PyObject> {
         let options = DecodeOptions {
             verify_hash,
             native_byte_order,
+            threads,
             ..Default::default()
         };
         let (meta, desc, data) = py
@@ -512,7 +520,7 @@ impl PyTensogramFile {
         Ok(result.into_any().unbind())
     }
 
-    #[pyo3(signature = (msg_index, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
+    #[pyo3(signature = (msg_index, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true, threads=0))]
     #[allow(clippy::too_many_arguments)]
     fn file_decode_range(
         &self,
@@ -523,10 +531,12 @@ impl PyTensogramFile {
         join: bool,
         verify_hash: bool,
         native_byte_order: bool,
+        threads: u32,
     ) -> PyResult<PyObject> {
         let options = DecodeOptions {
             verify_hash,
             native_byte_order,
+            threads,
             ..Default::default()
         };
 
@@ -541,7 +551,8 @@ impl PyTensogramFile {
     }
 
     /// Batch-decode full objects across multiple messages. Remote only.
-    #[pyo3(signature = (msg_indices, obj_index, verify_hash=false, native_byte_order=true))]
+    #[pyo3(signature = (msg_indices, obj_index, verify_hash=false, native_byte_order=true, threads=0))]
+    #[allow(clippy::too_many_arguments)]
     fn file_decode_object_batch(
         &self,
         py: Python<'_>,
@@ -549,10 +560,12 @@ impl PyTensogramFile {
         obj_index: usize,
         verify_hash: bool,
         native_byte_order: bool,
+        threads: u32,
     ) -> PyResult<PyObject> {
         let options = DecodeOptions {
             verify_hash,
             native_byte_order,
+            threads,
             ..Default::default()
         };
 
@@ -588,7 +601,7 @@ impl PyTensogramFile {
 
     /// Batch-decode a sub-array range from the same object across multiple
     /// messages via batched HTTP. Remote only.
-    #[pyo3(signature = (msg_indices, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
+    #[pyo3(signature = (msg_indices, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true, threads=0))]
     #[allow(clippy::too_many_arguments)]
     fn file_decode_range_batch(
         &self,
@@ -599,10 +612,12 @@ impl PyTensogramFile {
         join: bool,
         verify_hash: bool,
         native_byte_order: bool,
+        threads: u32,
     ) -> PyResult<PyObject> {
         let options = DecodeOptions {
             verify_hash,
             native_byte_order,
+            threads,
             ..Default::default()
         };
 
@@ -721,7 +736,7 @@ impl PyTensogramFile {
                     "message index {index} out of range for file with {count} messages"
                 )));
             }
-            return self.decode_message(py, idx as usize, None, true);
+            return self.decode_message(py, idx as usize, None, true, 0);
         }
 
         if let Ok(slice) = key.cast::<pyo3::types::PySlice>() {
@@ -729,7 +744,7 @@ impl PyTensogramFile {
             let mut items: Vec<PyObject> = Vec::with_capacity(indices.slicelength as usize);
             let mut i = indices.start;
             while (indices.step > 0 && i < indices.stop) || (indices.step < 0 && i > indices.stop) {
-                items.push(self.decode_message(py, i as usize, None, true)?);
+                items.push(self.decode_message(py, i as usize, None, true, 0)?);
                 i += indices.step;
             }
             return Ok(PyList::new(py, items)?.into_any().unbind());
@@ -825,19 +840,20 @@ impl PyFileIter {
 /// Returns:
 ///     ``bytes`` — the complete wire-format message.
 #[pyfunction]
-#[pyo3(name = "encode", signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3")))]
+#[pyo3(name = "encode", signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3"), threads=0))]
 fn py_encode<'py>(
     py: Python<'py>,
     global_meta_dict: &Bound<'_, PyDict>,
     descriptors_and_data: &Bound<'_, PyList>,
     hash: Option<&str>,
+    threads: u32,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let global_meta = dict_to_global_metadata(global_meta_dict)?;
     let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
     let refs: Vec<(&DataObjectDescriptor, &[u8])> =
         pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
-    let options = make_encode_options(hash)?;
+    let options = make_encode_options(hash, threads)?;
     let msg = py.detach(|| encode(&global_meta, &refs, &options).map_err(to_py_err))?;
     Ok(PyBytes::new(py, &msg))
 }
@@ -862,19 +878,20 @@ fn py_encode<'py>(
 /// Returns:
 ///     ``bytes`` — the complete wire-format message.
 #[pyfunction]
-#[pyo3(name = "encode_pre_encoded", signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3")))]
+#[pyo3(name = "encode_pre_encoded", signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3"), threads=0))]
 fn py_encode_pre_encoded<'py>(
     py: Python<'py>,
     global_meta_dict: &Bound<'_, PyDict>,
     descriptors_and_data: &Bound<'_, PyList>,
     hash: Option<&str>,
+    threads: u32,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let global_meta = dict_to_global_metadata(global_meta_dict)?;
     let pairs = extract_pre_encoded_pairs(descriptors_and_data)?;
     let refs: Vec<(&DataObjectDescriptor, &[u8])> =
         pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
-    let options = make_encode_options(hash)?;
+    let options = make_encode_options(hash, threads)?;
     let msg = py.detach(|| encode_pre_encoded(&global_meta, &refs, &options).map_err(to_py_err))?;
     Ok(PyBytes::new(py, &msg))
 }
@@ -883,16 +900,18 @@ fn py_encode_pre_encoded<'py>(
 ///
 /// Set *verify_hash* to ``True`` to verify payload integrity.
 #[pyfunction]
-#[pyo3(name = "decode", signature = (buf, verify_hash=false, native_byte_order=true))]
+#[pyo3(name = "decode", signature = (buf, verify_hash=false, native_byte_order=true, threads=0))]
 fn py_decode(
     py: Python<'_>,
     buf: PyBackedBytes,
     verify_hash: bool,
     native_byte_order: bool,
+    threads: u32,
 ) -> PyResult<PyObject> {
     let options = DecodeOptions {
         verify_hash,
         native_byte_order,
+        threads,
         ..Default::default()
     };
     let (global_meta, data_objects) = py.detach(|| decode(&buf, &options).map_err(to_py_err))?;
@@ -936,17 +955,19 @@ fn py_decode_descriptors(py: Python<'_>, buf: &[u8]) -> PyResult<(PyMetadata, Py
 /// Only the header and the requested object's payload are read.
 /// Raises ``ValueError`` if *index* is out of range.
 #[pyfunction]
-#[pyo3(name = "decode_object", signature = (buf, index, verify_hash=false, native_byte_order=true))]
+#[pyo3(name = "decode_object", signature = (buf, index, verify_hash=false, native_byte_order=true, threads=0))]
 fn py_decode_object(
     py: Python<'_>,
     buf: PyBackedBytes,
     index: usize,
     verify_hash: bool,
     native_byte_order: bool,
+    threads: u32,
 ) -> PyResult<(PyMetadata, PyDataObjectDescriptor, PyObject)> {
     let options = DecodeOptions {
         verify_hash,
         native_byte_order,
+        threads,
         ..Default::default()
     };
     let (global_meta, desc, obj_bytes) =
@@ -974,7 +995,7 @@ fn py_decode_object(
 /// Returns:
 ///     ``list[ndarray]`` (default) or ``ndarray`` (when ``join=True``).
 #[pyfunction]
-#[pyo3(name = "decode_range", signature = (buf, object_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
+#[pyo3(name = "decode_range", signature = (buf, object_index, ranges, join=false, verify_hash=false, native_byte_order=true, threads=0))]
 fn py_decode_range(
     py: Python<'_>,
     buf: PyBackedBytes,
@@ -983,10 +1004,12 @@ fn py_decode_range(
     join: bool,
     verify_hash: bool,
     native_byte_order: bool,
+    threads: u32,
 ) -> PyResult<PyObject> {
     let options = DecodeOptions {
         verify_hash,
         native_byte_order,
+        threads,
         ..Default::default()
     };
     let (desc, parts) =
@@ -1154,11 +1177,19 @@ impl PyStreamingEncoder {
     /// Args:
     ///     global_meta_dict: ``{"version": 2, ...}`` with any extra keys.
     ///     hash: ``"xxh3"`` (default) or ``None`` to skip integrity hashing.
+    ///     threads: thread budget for intra-codec parallelism inside
+    ///         :meth:`write_object` (axis B only — streaming encoding
+    ///         does not have cross-object parallelism by design).
+    ///         Default ``0`` preserves the sequential path.
     #[new]
-    #[pyo3(signature = (global_meta_dict, hash=Some("xxh3")))]
-    fn new(global_meta_dict: &Bound<'_, PyDict>, hash: Option<&str>) -> PyResult<Self> {
+    #[pyo3(signature = (global_meta_dict, hash=Some("xxh3"), threads=0))]
+    fn new(
+        global_meta_dict: &Bound<'_, PyDict>,
+        hash: Option<&str>,
+        threads: u32,
+    ) -> PyResult<Self> {
         let global_meta = dict_to_global_metadata(global_meta_dict)?;
-        let options = make_encode_options(hash)?;
+        let options = make_encode_options(hash, threads)?;
         let inner = StreamingEncoder::new(Vec::new(), &global_meta, &options).map_err(to_py_err)?;
         Ok(Self { inner: Some(inner) })
     }
@@ -1471,18 +1502,20 @@ impl PyAsyncTensogramFile {
     ///
     /// Returns ``Message(metadata, objects)`` — identical to the sync
     /// :meth:`TensogramFile.decode_message`.
-    #[pyo3(signature = (index, verify_hash=None, native_byte_order=true))]
+    #[pyo3(signature = (index, verify_hash=None, native_byte_order=true, threads=0))]
     fn decode_message<'py>(
         &self,
         py: Python<'py>,
         index: usize,
         verify_hash: Option<bool>,
         native_byte_order: bool,
+        threads: u32,
     ) -> PyResult<Bound<'py, PyAny>> {
         let file = Arc::clone(&self.file);
         let options = DecodeOptions {
             verify_hash: verify_hash.unwrap_or(false),
             native_byte_order,
+            threads,
             ..Default::default()
         };
 
@@ -1555,7 +1588,8 @@ impl PyAsyncTensogramFile {
     /// Decode a single data object asynchronously.
     ///
     /// Returns ``dict(metadata=Metadata, descriptor=DataObjectDescriptor, data=ndarray)``.
-    #[pyo3(signature = (msg_index, obj_index, verify_hash=false, native_byte_order=true))]
+    #[pyo3(signature = (msg_index, obj_index, verify_hash=false, native_byte_order=true, threads=0))]
+    #[allow(clippy::too_many_arguments)]
     fn file_decode_object<'py>(
         &self,
         py: Python<'py>,
@@ -1563,11 +1597,13 @@ impl PyAsyncTensogramFile {
         obj_index: usize,
         verify_hash: bool,
         native_byte_order: bool,
+        threads: u32,
     ) -> PyResult<Bound<'py, PyAny>> {
         let file = Arc::clone(&self.file);
         let options = DecodeOptions {
             verify_hash,
             native_byte_order,
+            threads,
             ..Default::default()
         };
 
@@ -1647,7 +1683,7 @@ impl PyAsyncTensogramFile {
 
     // ── file_decode_range (native async for remote, spawn_blocking for local) ─
 
-    #[pyo3(signature = (msg_index, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
+    #[pyo3(signature = (msg_index, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true, threads=0))]
     #[allow(clippy::too_many_arguments)]
     fn file_decode_range<'py>(
         &self,
@@ -1658,11 +1694,13 @@ impl PyAsyncTensogramFile {
         join: bool,
         verify_hash: bool,
         native_byte_order: bool,
+        threads: u32,
     ) -> PyResult<Bound<'py, PyAny>> {
         let file = Arc::clone(&self.file);
         let options = DecodeOptions {
             verify_hash,
             native_byte_order,
+            threads,
             ..Default::default()
         };
         let ranges_for_result = ranges.clone();
@@ -1678,7 +1716,8 @@ impl PyAsyncTensogramFile {
     }
 
     /// Batch-decode full objects across multiple messages. Remote only.
-    #[pyo3(signature = (msg_indices, obj_index, verify_hash=false, native_byte_order=true))]
+    #[pyo3(signature = (msg_indices, obj_index, verify_hash=false, native_byte_order=true, threads=0))]
+    #[allow(clippy::too_many_arguments)]
     fn file_decode_object_batch<'py>(
         &self,
         py: Python<'py>,
@@ -1686,11 +1725,13 @@ impl PyAsyncTensogramFile {
         obj_index: usize,
         verify_hash: bool,
         native_byte_order: bool,
+        threads: u32,
     ) -> PyResult<Bound<'py, PyAny>> {
         let file = Arc::clone(&self.file);
         let options = DecodeOptions {
             verify_hash,
             native_byte_order,
+            threads,
             ..Default::default()
         };
 
@@ -1727,7 +1768,7 @@ impl PyAsyncTensogramFile {
     }
 
     /// Batch-decode sub-array ranges across multiple messages via batched HTTP. Remote only. Call ``prefetch_layouts`` first to avoid per-message discovery overhead.
-    #[pyo3(signature = (msg_indices, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true))]
+    #[pyo3(signature = (msg_indices, obj_index, ranges, join=false, verify_hash=false, native_byte_order=true, threads=0))]
     #[allow(clippy::too_many_arguments)]
     fn file_decode_range_batch<'py>(
         &self,
@@ -1738,11 +1779,13 @@ impl PyAsyncTensogramFile {
         join: bool,
         verify_hash: bool,
         native_byte_order: bool,
+        threads: u32,
     ) -> PyResult<Bound<'py, PyAny>> {
         let file = Arc::clone(&self.file);
         let options = DecodeOptions {
             verify_hash,
             native_byte_order,
+            threads,
             ..Default::default()
         };
         let ranges_for_result = ranges.clone();
@@ -1921,7 +1964,7 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_encode_options(hash: Option<&str>) -> PyResult<EncodeOptions> {
+fn make_encode_options(hash: Option<&str>, threads: u32) -> PyResult<EncodeOptions> {
     let hash_algorithm = match hash {
         None => None,
         Some("xxh3") => Some(HashAlgorithm::Xxh3),
@@ -1929,6 +1972,7 @@ fn make_encode_options(hash: Option<&str>) -> PyResult<EncodeOptions> {
     };
     Ok(EncodeOptions {
         hash_algorithm,
+        threads,
         ..Default::default()
     })
 }

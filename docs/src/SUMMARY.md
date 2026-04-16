@@ -38,6 +38,7 @@
 - [Dask Integration](guide/dask-integration.md)
 - [Zarr v3 Backend](guide/zarr-backend.md)
 - [Free-Threaded Python](guide/free-threaded-python.md)
+- [Multi-Threaded Coding Pipeline](guide/multi-threaded-pipeline.md)
 - [Benchmarks](guide/benchmarks.md)
 - [Benchmark Results](guide/benchmark-results.md)
 

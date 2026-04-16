@@ -2160,7 +2160,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-benchmarks"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "ciborium",
  "clap",
@@ -2173,7 +2173,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-cli"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "ciborium",
  "clap",
@@ -2189,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-core"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "bytes",
  "ciborium",
@@ -2198,6 +2198,8 @@ dependencies = [
  "hyper-util",
  "memmap2",
  "object_store",
+ "proptest",
+ "rayon",
  "serde",
  "serde_json",
  "sha2",
@@ -2213,12 +2215,13 @@ dependencies = [
 
 [[package]]
 name = "tensogram-encodings"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "blosc2",
  "blosc2-rs-sys",
  "libaec-sys",
  "lz4_flex",
+ "rayon",
  "ruzstd",
  "serde",
  "tensogram-sz3",
@@ -2231,7 +2234,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-ffi"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cbindgen",
  "ciborium",
@@ -2243,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-grib"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "ciborium",
  "eccodes",
@@ -2254,7 +2257,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-netcdf"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "ciborium",
  "netcdf",
@@ -2265,7 +2268,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-rust-examples"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "ciborium",
  "serde_json",
@@ -2277,7 +2280,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-sz3"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "tensogram-sz3-sys",
  "thiserror 1.0.69",
@@ -2286,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-sz3-sys"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cc",
  "zstd-sys",
@@ -2294,7 +2297,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-szip"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "libaec-sys",
  "proptest",

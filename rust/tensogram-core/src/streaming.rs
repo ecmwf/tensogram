@@ -71,6 +71,13 @@ pub struct StreamingEncoder<W: Write> {
     /// Per-object preceder payloads — stored so the footer metadata can
     /// include all per-object metadata (for decoders that skip preceders).
     preceder_payloads: Vec<Option<BTreeMap<String, ciborium::Value>>>,
+    /// Intra-codec thread budget resolved from `EncodeOptions.threads`
+    /// at construction time.  Passed through to every `write_object`
+    /// pipeline call; axis A is not applicable in streaming mode
+    /// because each `write_object` is a separate caller-paced event.
+    intra_codec_threads: u32,
+    /// Snapshot of the parallel-threshold option for the same reason.
+    parallel_threshold_bytes: Option<usize>,
 }
 
 impl<W: Write> StreamingEncoder<W> {
@@ -114,6 +121,11 @@ impl<W: Write> StreamingEncoder<W> {
 
         write_padding(&mut writer, &mut bytes_written)?;
 
+        // Snapshot the thread budget now so that mid-message changes to
+        // TENSOGRAM_THREADS don't leak in between write_object calls —
+        // one message is deterministic.
+        let intra_codec_threads = crate::parallel::resolve_budget(options.threads);
+
         Ok(Self {
             writer,
             object_offsets: Vec::new(),
@@ -125,6 +137,8 @@ impl<W: Write> StreamingEncoder<W> {
             global_meta: global_meta.clone(),
             pending_preceder: false,
             preceder_payloads: Vec::new(),
+            intra_codec_threads,
+            parallel_threshold_bytes: options.parallel_threshold_bytes,
         })
     }
 
@@ -174,6 +188,12 @@ impl<W: Write> StreamingEncoder<W> {
     /// The descriptor's encoding/filter/compression pipeline is applied,
     /// the payload is hashed (if configured), and the frame is written
     /// immediately — no buffering.
+    ///
+    /// When `EncodeOptions.threads > 0` was passed to
+    /// [`StreamingEncoder::new`], the pipeline call may use up to that
+    /// many threads internally (axis B).  Axis A is not available in
+    /// streaming mode — each `write_object` is a caller-paced event
+    /// with no cross-object parallelism opportunity.
     pub fn write_object(&mut self, desc: &DataObjectDescriptor, data: &[u8]) -> Result<()> {
         validate_object(desc, data.len())?;
 
@@ -185,8 +205,32 @@ impl<W: Write> StreamingEncoder<W> {
         let num_elements = usize::try_from(shape_product)
             .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
 
-        let config = build_pipeline_config(desc, num_elements, desc.dtype)?;
-        let result = pipeline::encode_pipeline(data, &config)
+        // Honour the intra-codec thread budget captured at construction.
+        // Small-message threshold: if the payload is below the threshold,
+        // skip the pool (the overhead would outweigh any codec win).
+        let parallel = crate::parallel::should_parallelise(
+            self.intra_codec_threads,
+            data.len(),
+            self.parallel_threshold_bytes,
+        );
+        let intra = if parallel {
+            self.intra_codec_threads
+        } else {
+            0
+        };
+
+        let config = crate::encode::build_pipeline_config_with_backend(
+            desc,
+            num_elements,
+            desc.dtype,
+            tensogram_encodings::pipeline::CompressionBackend::default(),
+            intra,
+        )?;
+
+        let result =
+            crate::parallel::run_maybe_pooled(self.intra_codec_threads, parallel, intra, || {
+                pipeline::encode_pipeline(data, &config)
+            })
             .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
         // Build final descriptor with computed fields
@@ -538,6 +582,8 @@ mod tests {
             compression_backend: Default::default(),
             hash_algorithm: Some(HashAlgorithm::Xxh3),
             emit_preceders: false,
+            threads: 0,
+            parallel_threshold_bytes: None,
         };
 
         // Buffered encode
@@ -587,6 +633,8 @@ mod tests {
             compression_backend: Default::default(),
             hash_algorithm: Some(HashAlgorithm::Xxh3),
             emit_preceders: false,
+            threads: 0,
+            parallel_threshold_bytes: None,
         };
 
         let buf = Vec::new();
@@ -610,6 +658,8 @@ mod tests {
             compression_backend: Default::default(),
             hash_algorithm: None,
             emit_preceders: false,
+            threads: 0,
+            parallel_threshold_bytes: None,
         };
 
         let buf = Vec::new();
@@ -620,6 +670,54 @@ mod tests {
         let (decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
         assert_eq!(decoded_meta.version, 2);
         assert_eq!(objects.len(), 0);
+    }
+
+    /// Threads budget on `StreamingEncoder` must not change the encoded
+    /// payload for transparent pipelines.  This locks in the pass-3
+    /// consistency: axis-B dispatch inside `write_object` is opt-in and
+    /// transparent-codec output is byte-identical across thread counts.
+    #[test]
+    fn streaming_threads_byte_identical_transparent() {
+        let meta = GlobalMetadata::default();
+        // One large object — 200 KiB — above the 64 KiB default threshold.
+        let desc = make_descriptor(vec![50_000]);
+        let data: Vec<u8> = (0..50_000)
+            .flat_map(|i| (250.0f32 + (i as f32).sin() * 30.0).to_ne_bytes())
+            .collect();
+
+        let mk = |threads: u32| -> Vec<u8> {
+            let buf = Vec::new();
+            let opts = EncodeOptions {
+                threads,
+                parallel_threshold_bytes: Some(0), // force parallel
+                ..Default::default()
+            };
+            let mut enc = StreamingEncoder::new(buf, &meta, &opts).unwrap();
+            enc.write_object(&desc, &data).unwrap();
+            enc.finish().unwrap()
+        };
+
+        // Compare encoded payload bytes (ignore provenance).
+        let payloads = |buf: &[u8]| -> Vec<Vec<u8>> {
+            crate::framing::decode_message(buf)
+                .unwrap()
+                .objects
+                .iter()
+                .map(|(_, p, _)| p.to_vec())
+                .collect()
+        };
+
+        let baseline = mk(0);
+        let payloads_baseline = payloads(&baseline);
+
+        for t in [1u32, 2, 4, 8] {
+            let got = mk(t);
+            assert_eq!(
+                payloads_baseline,
+                payloads(&got),
+                "streaming threads={t} payload must match sequential"
+            );
+        }
     }
 
     #[test]

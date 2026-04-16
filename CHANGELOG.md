@@ -3,6 +3,73 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.13.0] - 2026-04-16
+
+### Added
+- **Multi-threaded coding pipeline** — caller-controlled `threads: u32`
+  option on `EncodeOptions` / `DecodeOptions` (default `0` = sequential,
+  identical to 0.12.0).  New module
+  `tensogram_core::parallel` wraps a scoped rayon pool, resolves the
+  effective budget from the option or the `TENSOGRAM_THREADS`
+  environment variable, and dispatches along one of two axes:
+  - **Axis B (preferred)** — intra-codec parallelism for `blosc2`
+    (`CParams/DParams::nthreads`), `zstd` (`NbWorkers`),
+    `simple_packing` (byte-aligned chunked encode/decode, including
+    non-byte-aligned bit widths via `lcm(8,bpv)` chunks), and
+    `shuffle`/`unshuffle`.
+  - **Axis A (fallback)** — `par_iter` across objects via rayon,
+    only when every object uses a non-axis-B-friendly codec, so
+    the total thread count never exceeds the caller's budget.
+  Transparent codecs (`none`, `lz4`, `szip`, `zfp`, `sz3`,
+  `simple_packing`, `shuffle`) produce byte-identical encoded
+  payloads across all `threads` values; opaque codecs (`blosc2`,
+  `zstd` with workers) round-trip losslessly but may reorder
+  compressed blocks by completion order.
+- **Python/FFI/C++ bindings** gain `threads` parameters on every
+  encode/decode entry point plus `TensogramFile.decode_message`,
+  async variants, batch variants, and `StreamingEncoder`.  Python
+  bindings keep the GIL release behaviour.
+- **CLI** — global `--threads N` flag (env `TENSOGRAM_THREADS`
+  fallback) on every subcommand; decode-heavy commands
+  (`merge`, `split`, `reshuffle`, `convert-grib`,
+  `convert-netcdf`) honour it; metadata-only commands
+  (`info`, `ls`, `get`, `dump`, `copy`, `set`) ignore it.
+- **`threads-scaling` benchmark** binary
+  (`rust/benchmarks/src/bin/threads_scaling.rs`) sweeping seven
+  representative codec combinations across a user-configurable
+  thread budget, reporting speedup vs `threads=0`.
+- **New docs page** `docs/src/guide/multi-threaded-pipeline.md`
+  covering option semantics, axis-A/B policy, determinism contract,
+  env-var precedence, free-threaded Python interaction, and tuning
+  recommendations.  Benchmark results page extended with a
+  Threading Scaling section.
+- **Examples 16** in `examples/rust/src/bin/` and
+  `examples/python/` demonstrating both the byte-identity
+  invariant for transparent pipelines and the lossless
+  round-trip for opaque pipelines across thread counts.
+- **Determinism tests** at every layer: Rust integration suite
+  (`rust/tensogram-core/tests/threads_determinism.rs`, 7 tests),
+  Python (`python/tests/test_threads.py`, 12 tests), per-codec
+  unit tests (`blosc2_nthreads_round_trip_lossless`,
+  `zstd_nb_workers_round_trip_lossless`,
+  simple_packing aligned + generic byte-identity, shuffle/unshuffle
+  byte-identity), and C++ GoogleTest coverage.
+
+### Changed
+- **Version bumped to 0.13.0** across all Rust crates, Python
+  packages, C++ headers, and the top-level `VERSION` file.
+- New cargo feature `threads` (default-on native, off on
+  `wasm32`) in both `tensogram-core` and `tensogram-encodings`
+  controlling the rayon dependency.
+- `zstd` crate gains the `zstdmt` feature on the workspace
+  dependency so libzstd is built with thread support.
+- `clap` workspace dependency gains the `env` feature so the CLI
+  `--threads` flag can read `TENSOGRAM_THREADS` automatically.
+- `PipelineConfig` gains an `intra_codec_threads: u32` field.
+- FFI signatures gain a `threads` parameter — this is an ABI
+  break from 0.12.0, but downstream code that used option-struct
+  defaults will pick it up naturally.
+
 ## [0.12.0] - 2026-04-16
 
 ### Added

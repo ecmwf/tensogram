@@ -54,6 +54,19 @@ pub struct DecodeOptions {
     /// Which backend to use for szip / zstd when both FFI and pure-Rust
     /// implementations are compiled in.
     pub compression_backend: pipeline::CompressionBackend,
+    /// Thread budget for the multi-threaded decoding pipeline.
+    ///
+    /// Semantics match
+    /// [`EncodeOptions.threads`](crate::encode::EncodeOptions::threads):
+    /// `0` means sequential (may be overridden by `TENSOGRAM_THREADS`),
+    /// `1` means explicit single-threaded execution, `N ≥ 2` builds a
+    /// scoped pool.  Output bytes are byte-identical to the
+    /// sequential path regardless of `N`.
+    pub threads: u32,
+    /// Minimum total payload bytes below which the parallel path is
+    /// skipped.  See
+    /// [`EncodeOptions.parallel_threshold_bytes`](crate::encode::EncodeOptions::parallel_threshold_bytes).
+    pub parallel_threshold_bytes: Option<usize>,
 }
 
 impl Default for DecodeOptions {
@@ -62,26 +75,66 @@ impl Default for DecodeOptions {
             verify_hash: false,
             native_byte_order: true,
             compression_backend: pipeline::CompressionBackend::default(),
+            threads: 0,
+            parallel_threshold_bytes: None,
         }
     }
 }
 
 /// Decode all objects from a message buffer.
 /// Returns (global_metadata, list of (descriptor, decoded_data)).
+///
+/// When `options.threads > 0` (or `TENSOGRAM_THREADS` is set),
+/// per-object decode work is parallelised using the axis-B-first
+/// policy documented in
+/// `docs/src/guide/multi-threaded-pipeline.md`.  Output bytes are
+/// byte-identical to the sequential path regardless of thread count.
 #[tracing::instrument(skip(buf, options), fields(buf_len = buf.len()))]
 pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Vec<DecodedObject>)> {
     let msg = framing::decode_message(buf)?;
 
-    let mut data_objects = Vec::with_capacity(msg.objects.len());
-    for (desc, payload_bytes, _offset) in &msg.objects {
+    let budget = crate::parallel::resolve_budget(options.threads);
+    let total_bytes: usize = msg.objects.iter().map(|(_, p, _)| p.len()).sum();
+    let parallel =
+        crate::parallel::should_parallelise(budget, total_bytes, options.parallel_threshold_bytes);
+    let any_axis_b = msg.objects.iter().any(|(d, _, _)| {
+        crate::parallel::is_axis_b_friendly(&d.encoding, &d.filter, &d.compression)
+    });
+    let use_axis_a = parallel && crate::parallel::use_axis_a(msg.objects.len(), budget, any_axis_b);
+    let intra_codec_threads = if parallel && !use_axis_a { budget } else { 0 };
+
+    let decode_one = |(desc, payload_bytes, _offset): &(DataObjectDescriptor, &[u8], usize)|
+        -> Result<DecodedObject> {
         let decoded = decode_single_object_with_backend(
             desc,
             payload_bytes,
             options,
             options.compression_backend,
+            intra_codec_threads,
         )?;
-        data_objects.push((desc.clone(), decoded));
-    }
+        Ok((desc.clone(), decoded))
+    };
+
+    let data_objects: Vec<DecodedObject> = if use_axis_a {
+        #[cfg(feature = "threads")]
+        {
+            use rayon::prelude::*;
+            crate::parallel::with_pool(budget, || {
+                msg.objects
+                    .par_iter()
+                    .map(&decode_one)
+                    .collect::<Result<Vec<_>>>()
+            })?
+        }
+        #[cfg(not(feature = "threads"))]
+        {
+            msg.objects.iter().map(decode_one).collect::<Result<_>>()?
+        }
+    } else {
+        crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, || {
+            msg.objects.iter().map(decode_one).collect::<Result<_>>()
+        })?
+    };
 
     Ok((msg.global_metadata, data_objects))
 }
@@ -122,12 +175,26 @@ pub fn decode_object(
     }
 
     let (desc, payload_bytes, _) = &msg.objects[index];
-    let decoded = decode_single_object_with_backend(
-        desc,
-        payload_bytes,
-        options,
-        options.compression_backend,
-    )?;
+
+    // Single-object decode: axis A is impossible — spend the entire
+    // budget (if any) on the codec internally (axis B).
+    let budget = crate::parallel::resolve_budget(options.threads);
+    let parallel = crate::parallel::should_parallelise(
+        budget,
+        payload_bytes.len(),
+        options.parallel_threshold_bytes,
+    );
+    let intra_codec_threads = if parallel { budget } else { 0 };
+
+    let decoded = crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, || {
+        decode_single_object_with_backend(
+            desc,
+            payload_bytes,
+            options,
+            options.compression_backend,
+            intra_codec_threads,
+        )
+    })?;
 
     Ok((msg.global_metadata, desc.clone(), decoded))
 }
@@ -191,11 +258,32 @@ pub fn decode_range_from_payload(
         .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
     let num_elements = usize::try_from(shape_product)
         .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
+    // Thread-budget dispatch for range decode.
+    //
+    // Each range is an independent decode call; parallelism is natural
+    // when the caller requests multiple ranges.  Axis B is always
+    // preferred when there's only one range.
+    let budget = crate::parallel::resolve_budget(options.threads);
+    // Work is proportional to decoded output, not the input payload —
+    // sum the requested counts × element byte width.
+    let elem_bytes = desc.dtype.byte_width();
+    let total_bytes: usize = ranges
+        .iter()
+        .map(|(_, c)| (*c as usize).saturating_mul(elem_bytes))
+        .sum();
+    let parallel =
+        crate::parallel::should_parallelise(budget, total_bytes, options.parallel_threshold_bytes);
+    let axis_b_friendly =
+        crate::parallel::is_axis_b_friendly(&desc.encoding, &desc.filter, &desc.compression);
+    let use_axis_a = parallel && crate::parallel::use_axis_a(ranges.len(), budget, axis_b_friendly);
+    let intra_codec_threads = if parallel && !use_axis_a { budget } else { 0 };
+
     let config = build_pipeline_config_with_backend(
         desc,
         num_elements,
         desc.dtype,
         options.compression_backend,
+        intra_codec_threads,
     )?;
 
     let block_offsets = if desc.compression == "szip" {
@@ -204,9 +292,8 @@ pub fn decode_range_from_payload(
         Vec::new()
     };
 
-    let mut results = Vec::with_capacity(ranges.len());
-    for &(offset, count) in ranges {
-        let range_bytes = pipeline::decode_range_pipeline(
+    let decode_one = |offset: u64, count: u64| -> Result<Vec<u8>> {
+        pipeline::decode_range_pipeline(
             payload_bytes,
             &config,
             &block_offsets,
@@ -216,9 +303,34 @@ pub fn decode_range_from_payload(
         )
         .map_err(|e| {
             TensogramError::Encoding(format!("range (offset={offset}, count={count}): {e}"))
-        })?;
-        results.push(range_bytes);
-    }
+        })
+    };
+
+    let run_seq = || -> Result<Vec<Vec<u8>>> {
+        ranges
+            .iter()
+            .map(|&(offset, count)| decode_one(offset, count))
+            .collect()
+    };
+
+    let results: Vec<Vec<u8>> = if use_axis_a {
+        #[cfg(feature = "threads")]
+        {
+            use rayon::prelude::*;
+            crate::parallel::with_pool(budget, || {
+                ranges
+                    .par_iter()
+                    .map(|&(offset, count)| decode_one(offset, count))
+                    .collect::<Result<Vec<_>>>()
+            })?
+        }
+        #[cfg(not(feature = "threads"))]
+        {
+            run_seq()?
+        }
+    } else {
+        crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, run_seq)?
+    };
 
     Ok(results)
 }
@@ -229,15 +341,19 @@ pub(crate) fn decode_single_object(
     payload_bytes: &[u8],
     options: &DecodeOptions,
 ) -> Result<Vec<u8>> {
-    decode_single_object_with_backend(desc, payload_bytes, options, options.compression_backend)
+    decode_single_object_with_backend(desc, payload_bytes, options, options.compression_backend, 0)
 }
 
-/// Decode a single object payload, using the specified compression backend.
+/// Decode a single object payload using the specified compression backend
+/// and intra-codec thread budget.
+///
+/// `intra_codec_threads == 0` preserves the pre-threads behaviour.
 fn decode_single_object_with_backend(
     desc: &DataObjectDescriptor,
     payload_bytes: &[u8],
     options: &DecodeOptions,
     backend: pipeline::CompressionBackend,
+    intra_codec_threads: u32,
 ) -> Result<Vec<u8>> {
     if options.verify_hash {
         if let Some(ref hash_desc) = desc.hash {
@@ -252,7 +368,13 @@ fn decode_single_object_with_backend(
         .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
     let num_elements = usize::try_from(shape_product)
         .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
-    let config = build_pipeline_config_with_backend(desc, num_elements, desc.dtype, backend)?;
+    let config = build_pipeline_config_with_backend(
+        desc,
+        num_elements,
+        desc.dtype,
+        backend,
+        intra_codec_threads,
+    )?;
     let decoded = pipeline::decode_pipeline(payload_bytes, &config, options.native_byte_order)
         .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
@@ -575,6 +697,7 @@ mod tests {
             4,
             Dtype::Float32,
             pipeline::CompressionBackend::default(),
+            0,
         );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -596,6 +719,7 @@ mod tests {
             4,
             Dtype::Float32,
             pipeline::CompressionBackend::default(),
+            0,
         );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();

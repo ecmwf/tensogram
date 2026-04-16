@@ -19,6 +19,7 @@ pub fn run(
     split: bool,
     all_keys: bool,
     pipeline: &PipelineArgs,
+    threads: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if inputs.is_empty() {
         return Err("no input files specified".into());
@@ -40,7 +41,10 @@ pub fn run(
             compression: pipeline.compression.clone(),
             compression_level: pipeline.compression_level,
         },
-        ..Default::default()
+        encode_options: tensogram_core::EncodeOptions {
+            threads,
+            ..Default::default()
+        },
     };
 
     let mut all_messages = Vec::new();
@@ -98,6 +102,7 @@ mod tests {
             false,
             false,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -114,6 +119,7 @@ mod tests {
             true,
             false,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -130,6 +136,7 @@ mod tests {
             false,
             true,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -151,6 +158,7 @@ mod tests {
             false,
             false,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -163,7 +171,7 @@ mod tests {
     #[test]
     fn convert_no_inputs_errors() {
         let empty: Vec<String> = vec![];
-        assert!(run(&empty, None, false, false, &default_pipeline()).is_err());
+        assert!(run(&empty, None, false, false, &default_pipeline(), 0).is_err());
     }
 
     #[test]
@@ -174,6 +182,7 @@ mod tests {
             false,
             false,
             &default_pipeline(),
+            0,
         );
         assert!(result.is_err());
     }
@@ -188,6 +197,7 @@ mod tests {
             false,
             false,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -204,6 +214,7 @@ mod tests {
             true,
             true,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -223,6 +234,7 @@ mod tests {
             true,
             false,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();

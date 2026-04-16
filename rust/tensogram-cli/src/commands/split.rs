@@ -16,7 +16,11 @@ use tensogram_core::{decode, encode, DecodeOptions, EncodeOptions, TensogramFile
 /// Each data object becomes its own message, inheriting the global metadata.
 /// Output files are named using the template with `[index]` placeholder,
 /// or sequentially numbered in the output directory.
-pub fn run(input: &Path, output_template: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(
+    input: &Path,
+    output_template: &str,
+    threads: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
     let file = TensogramFile::open(input)?;
     let count = file.message_count()?;
 
@@ -27,6 +31,7 @@ pub fn run(input: &Path, output_template: &str) -> Result<(), Box<dyn std::error
         // Wire byte order: preserve original byte layout for re-encoding.
         let wire_opts = DecodeOptions {
             native_byte_order: false,
+            threads,
             ..Default::default()
         };
         let (meta, objects) = decode(&msg, &wire_opts)?;
@@ -59,7 +64,10 @@ pub fn run(input: &Path, output_template: &str) -> Result<(), Box<dyn std::error
             let encoded = encode(
                 &split_meta,
                 &[(desc, data.as_slice())],
-                &EncodeOptions::default(),
+                &EncodeOptions {
+                    threads,
+                    ..Default::default()
+                },
             )?;
 
             let mut out = std::fs::File::create(&out_name)?;
@@ -158,7 +166,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let input = make_multi_object_file(dir.path());
         let template = format!("{}/split_[index].tgm", dir.path().display());
-        run(&input, &template).unwrap();
+        run(&input, &template, 0).unwrap();
         assert!(dir.path().join("split_0000.tgm").exists());
         assert!(dir.path().join("split_0001.tgm").exists());
         // Verify each split file has 1 object
@@ -174,7 +182,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let input = make_multi_object_file(dir.path());
         let template = format!("{}/out.tgm", dir.path().display());
-        run(&input, &template).unwrap();
+        run(&input, &template, 0).unwrap();
         assert!(dir.path().join("out_0000.tgm").exists());
         assert!(dir.path().join("out_0001.tgm").exists());
     }
@@ -208,7 +216,7 @@ mod tests {
         drop(f);
 
         let template = format!("{}/split_[index].tgm", dir.path().display());
-        run(&path, &template).unwrap();
+        run(&path, &template, 0).unwrap();
         assert!(dir.path().join("split_0000.tgm").exists());
         // Should NOT have a second file
         assert!(!dir.path().join("split_0001.tgm").exists());
@@ -259,7 +267,7 @@ mod tests {
         drop(f);
 
         let template = format!("{}/split_meta_[index].tgm", dir.path().display());
-        run(&path, &template).unwrap();
+        run(&path, &template, 0).unwrap();
 
         // Verify first split has param=2t
         let msg0 = std::fs::read(dir.path().join("split_meta_0000.tgm")).unwrap();

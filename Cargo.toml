@@ -27,11 +27,11 @@ serde = { version = "1", features = ["derive"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 serde_json = "1"
 libaec-sys = "0.1"
 tensogram-szip = { path = "rust/tensogram-szip" }
-zstd = "0.13"
+zstd = { version = "0.13", features = ["zstdmt"] }
 ruzstd = "0.8"
 lz4_flex = "0.11"
 blosc2 = { version = "0.2", default-features = false, features = ["zstd", "zlib"] }
@@ -40,6 +40,7 @@ zfp-sys-cc = "0.2"
 tensogram-sz3 = { path = "rust/tensogram-sz3" }
 tensogram-sz3-sys = { path = "rust/tensogram-sz3-sys" }
 proptest = "1"
+rayon = "1"
 
 # Prevent panics from unwinding across the FFI boundary (undefined behaviour).
 # With panic = "abort", any panic terminates the process immediately.

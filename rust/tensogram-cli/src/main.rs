@@ -22,6 +22,22 @@ mod output;
 #[derive(Parser)]
 #[command(name = "tensogram", about = "Tensogram message format CLI", version)]
 struct Cli {
+    /// Thread budget for the coding pipeline.
+    ///
+    /// 0 (default) runs sequentially (and may be overridden by the
+    /// `TENSOGRAM_THREADS` env var).  N >= 1 spawns a scoped rayon
+    /// pool of size N that is spent axis-B-first (intra-codec
+    /// parallelism for blosc2/zstd/simple_packing/shuffle), falling
+    /// back to axis A (across objects) when no codec stage can use
+    /// the budget.  See docs/src/guide/multi-threaded-pipeline.md.
+    ///
+    /// Read-only metadata commands (info/ls/get/dump) ignore this
+    /// flag — they do no decoding work.  Decode-heavy commands
+    /// (copy/merge/split/reshuffle/convert-grib/convert-netcdf/validate)
+    /// honour it.
+    #[arg(long, global = true, default_value_t = 0, env = "TENSOGRAM_THREADS")]
+    threads: u32,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -181,6 +197,7 @@ fn main() {
         .init();
 
     let cli = Cli::parse();
+    let threads = cli.threads;
 
     let result = match cli.command {
         Commands::Info { files } => commands::info::run(&files),
@@ -216,9 +233,9 @@ fn main() {
             inputs,
             output,
             strategy,
-        } => commands::merge::run(&inputs, &output, &strategy),
-        Commands::Split { input, output } => commands::split::run(&input, &output),
-        Commands::Reshuffle { input, output } => commands::reshuffle::run(&input, &output),
+        } => commands::merge::run(&inputs, &output, &strategy, threads),
+        Commands::Split { input, output } => commands::split::run(&input, &output, threads),
+        Commands::Reshuffle { input, output } => commands::reshuffle::run(&input, &output, threads),
         Commands::Validate {
             files,
             quick,
@@ -239,6 +256,10 @@ fn main() {
                 check_canonical: canonical,
                 checksum_only: checksum,
             };
+            // `threads` is deliberately dropped for validate: levels
+            // 1-2 are structure/metadata only, and level 3-4 currently
+            // lack a `threads` field on `ValidateOptions`.  Tracked in
+            // plans/IDEAS.md under "ValidateOptions.threads".
             commands::validate::run(&files, &options, json)
         }
         #[cfg(feature = "grib")]
@@ -248,7 +269,14 @@ fn main() {
             split,
             all_keys,
             pipeline,
-        } => commands::convert_grib::run(&inputs, output.as_deref(), split, all_keys, &pipeline),
+        } => commands::convert_grib::run(
+            &inputs,
+            output.as_deref(),
+            split,
+            all_keys,
+            &pipeline,
+            threads,
+        ),
         #[cfg(feature = "netcdf")]
         Commands::ConvertNetcdf {
             inputs,
@@ -256,7 +284,14 @@ fn main() {
             split_by,
             cf,
             pipeline,
-        } => commands::convert_netcdf::run(&inputs, output.as_deref(), &split_by, cf, &pipeline),
+        } => commands::convert_netcdf::run(
+            &inputs,
+            output.as_deref(),
+            &split_by,
+            cf,
+            &pipeline,
+            threads,
+        ),
     };
 
     if let Err(e) = result {

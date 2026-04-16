@@ -16,7 +16,7 @@ use tensogram_core::{decode, encode, DecodeOptions, EncodeOptions, TensogramFile
 /// Converts streaming-mode messages (footer-based index/hash) into
 /// random-access-mode messages (header-based index/hash).
 /// This is a decode → re-encode operation.
-pub fn run(input: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(input: &Path, output: &Path, threads: u32) -> Result<(), Box<dyn std::error::Error>> {
     let file = TensogramFile::open(input)?;
     let count = file.message_count()?;
 
@@ -29,6 +29,7 @@ pub fn run(input: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>
         // but leave the descriptor's byte_order unchanged, creating a mismatch.
         let wire_opts = DecodeOptions {
             native_byte_order: false,
+            threads,
             ..Default::default()
         };
         let (mut meta, objects) = decode(&msg, &wire_opts)?;
@@ -42,7 +43,14 @@ pub fn run(input: &Path, output: &Path) -> Result<(), Box<dyn std::error::Error>
         let refs: Vec<_> = objects.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
         // Re-encode produces a header-mode message (non-streaming)
-        let encoded = encode(&meta, &refs, &EncodeOptions::default())?;
+        let encoded = encode(
+            &meta,
+            &refs,
+            &EncodeOptions {
+                threads,
+                ..Default::default()
+            },
+        )?;
         out.write_all(&encoded)?;
     }
 
@@ -96,7 +104,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let input = make_test_file(dir.path());
         let output = dir.path().join("reshuffled.tgm");
-        run(&input, &output).unwrap();
+        run(&input, &output, 0).unwrap();
 
         // Verify output is valid and has same content
         let f = tensogram_core::TensogramFile::open(&output).unwrap();

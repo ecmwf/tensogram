@@ -10,6 +10,7 @@ pub mod codec_matrix;
 pub mod constants;
 pub mod datagen;
 pub mod report;
+pub mod threads_scaling;
 
 #[derive(Debug)]
 pub enum BenchmarkError {

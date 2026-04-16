@@ -165,7 +165,7 @@ Then open `http://localhost:3000`.
 
 ### Other resources
 
-- [Architecture](ARCHITECTURE.md) — crate structure and design decisions
+- [Architecture](plans/ARCHITECTURE.md) — crate structure and design decisions
 - [Contributing](CONTRIBUTING.md) — setup and workflow
 - [Code of Conduct](CODE_OF_CONDUCT.md) — community guidelines
 - [Changelog](CHANGELOG.md) — release history

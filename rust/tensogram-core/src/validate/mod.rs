@@ -3522,8 +3522,7 @@ mod tests {
             &[(&desc, data.as_slice())],
             &EncodeOptions {
                 hash_algorithm: Some(crate::hash::HashAlgorithm::Xxh3),
-                emit_preceders: false,
-                compression_backend: Default::default(),
+                ..EncodeOptions::default()
             },
         )
         .unwrap();
@@ -3560,8 +3559,7 @@ mod tests {
             &[(&desc, data.as_slice())],
             &EncodeOptions {
                 hash_algorithm: Some(crate::hash::HashAlgorithm::Xxh3),
-                emit_preceders: false,
-                compression_backend: Default::default(),
+                ..EncodeOptions::default()
             },
         )
         .unwrap();
@@ -3606,8 +3604,7 @@ mod tests {
             &[(&desc, data.as_slice())],
             &EncodeOptions {
                 hash_algorithm: Some(crate::hash::HashAlgorithm::Xxh3),
-                emit_preceders: false,
-                compression_backend: Default::default(),
+                ..EncodeOptions::default()
             },
         )
         .unwrap();
