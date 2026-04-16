@@ -35,7 +35,7 @@ Unlike `ls` which shows a blank for missing keys, `get` exits with a non-zero st
 
 ```bash
 $ tensogram get -p mars.nonexistent forecast.tgm
-Error: key "mars.nonexistent" not found in message 0
+Error: key not found: mars.nonexistent
 ```
 
 This makes `get` safe to use in shell scripts where missing data should fail fast.

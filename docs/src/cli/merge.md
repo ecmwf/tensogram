@@ -18,7 +18,7 @@ tensogram merge [OPTIONS] --output <OUTPUT> [INPUTS]...
 
 ## Description
 
-All data objects from all input messages are collected into a single Tensogram message. Global metadata is merged — keys from the first message take precedence on conflict.
+All data objects from all input messages are collected into a single Tensogram message. Global metadata is merged according to `--strategy`: `first` (default) keeps the first value, `last` keeps the last, and `error` fails on conflict.
 
 ## Examples
 
