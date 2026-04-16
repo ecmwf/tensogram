@@ -108,6 +108,7 @@ mod tests {
             "file",
             false,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -124,6 +125,7 @@ mod tests {
             "variable",
             false,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -141,6 +143,7 @@ mod tests {
             "record",
             false,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -157,6 +160,7 @@ mod tests {
             "file",
             true,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -179,6 +183,7 @@ mod tests {
             "file",
             false,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -191,7 +196,7 @@ mod tests {
     #[test]
     fn convert_no_inputs_errors() {
         let empty: Vec<String> = vec![];
-        assert!(run(&empty, None, "file", false, &default_pipeline()).is_err());
+        assert!(run(&empty, None, "file", false, &default_pipeline(), 0).is_err());
     }
 
     #[test]
@@ -202,6 +207,7 @@ mod tests {
             "file",
             false,
             &default_pipeline(),
+            0,
         );
         assert!(result.is_err());
     }
@@ -214,6 +220,7 @@ mod tests {
             "file",
             false,
             &default_pipeline(),
+            0,
         );
         assert!(result.is_err(), "empty file should produce an error");
     }
@@ -226,6 +233,7 @@ mod tests {
             "invalid",
             false,
             &default_pipeline(),
+            0,
         );
         assert!(result.is_err());
     }
@@ -238,6 +246,7 @@ mod tests {
             "record",
             false,
             &default_pipeline(),
+            0,
         );
         assert!(
             result.is_err(),
@@ -255,6 +264,7 @@ mod tests {
             "file",
             false,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -284,6 +294,7 @@ mod tests {
             "file",
             false,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
@@ -332,6 +343,7 @@ mod tests {
             "file",
             false,
             &pipeline_with("simple_packing", Some(24), "none", "none"),
+            0,
         )
         .unwrap();
         let (encoding, _, _) = first_descriptor_fields(&out);
@@ -348,6 +360,7 @@ mod tests {
             "file",
             false,
             &pipeline_with("none", None, "none", "zstd"),
+            0,
         )
         .unwrap();
         let (_, _, compression) = first_descriptor_fields(&out);
@@ -364,6 +377,7 @@ mod tests {
             "file",
             false,
             &pipeline_with("none", None, "shuffle", "none"),
+            0,
         )
         .unwrap();
         let (_, filter, _) = first_descriptor_fields(&out);
@@ -378,6 +392,7 @@ mod tests {
             "file",
             false,
             &pipeline_with("none", None, "none", "bogus"),
+            0,
         );
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
@@ -399,6 +414,7 @@ mod tests {
             "file",
             false,
             &default_pipeline(),
+            0,
         )
         .unwrap();
         let (encoding, filter, compression) = first_descriptor_fields(&out);

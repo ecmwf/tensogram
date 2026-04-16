@@ -21,3 +21,4 @@ python/bindings/Cargo.lock
 *~
 .DS_Store
 .idea/
+rust/tensogram-netcdf/Cargo.lock
