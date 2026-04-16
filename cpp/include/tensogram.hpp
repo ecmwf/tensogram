@@ -112,7 +112,8 @@ public:
     invalid_arg_error(tgm_error code, const std::string& msg) : error(code, msg) {}
 };
 
-/// Thrown when a remote object-store operation fails (S3/GCS/Azure/HTTP).
+/// Thrown when a remote object-store operation fails
+/// (S3, GCS, Azure, or HTTP(S)).
 class remote_error : public error {
 public:
     remote_error(tgm_error code, const std::string& msg) : error(code, msg) {}

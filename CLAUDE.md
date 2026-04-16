@@ -64,7 +64,7 @@ Follow plans/DESIGN.md principles and plans/STYLE.md conventions in all code.
 # Build / lint / test (required before marking done)
 
 ## Languages
-This project contains Rust, Python, C and C++ code
+This project contains Rust, Python, C, C++ and TypeScript code
 
 ## Rust
 - Build: `cargo build --workspace`
@@ -81,6 +81,17 @@ This project contains Rust, Python, C and C++ code
 - xarray tests: `source .venv/bin/activate && uv pip install -e "python/tensogram-xarray/[dask]" && python -m pytest python/tensogram-xarray/tests/ -v`
 - zarr tests: `source .venv/bin/activate && uv pip install -e python/tensogram-zarr/ && python -m pytest python/tensogram-zarr/tests/ -v`
 - IMPORTANT: ALWAYS run `ruff check` and `ruff format` before committing Python files. CI enforces this.
+
+## TypeScript
+- Requires `wasm-pack` (`cargo install wasm-pack`) and Node ≥ 20
+- Install deps: `cd typescript && npm install`
+- Build: `make ts-build` (runs `wasm-pack build` then `tsc`)
+- Typecheck: `make ts-typecheck` (strict, covers src + tests)
+- Test: `make ts-test` (vitest)
+- Run an example: `cd examples/typescript && npm install && npx tsx 01_encode_decode.ts`
+- Design doc: `plans/TYPESCRIPT_WRAPPER.md`
+- User-facing docs: `docs/src/guide/typescript-api.md`
+- Scope: Phase 0–2 shipped (typed surface, dtype dispatch, metadata helpers); Phase 3 streaming + Phase 4 file API are follow-ups. See `plans/TYPESCRIPT_WRAPPER.md`.
 
 # Version control
 - Git project in github.com/ecmwf/tensogram
@@ -104,6 +115,10 @@ This project contains Rust, Python, C and C++ code
       `find . -name Cargo.toml -not -path './target/*' -not -path './.venv/*'`
       and update every one to match `VERSION`.
     - `pyproject.toml` in EVERY Python package under `python/`.
+    - `package.json` in EVERY JS package — discover them with
+      `find . -name package.json -not -path './**/node_modules/*' -not -path './target/*'`
+      (currently `typescript/` and `examples/typescript/`; the list grows if
+      new JS packages land).
     - `CHANGELOG.md` (new release entry header).
   The provenance encoder in `rust/tensogram-core/src/encode.rs` reads the version via
   `env!("CARGO_PKG_VERSION")` which comes from Cargo.toml — so keeping Cargo.toml in sync

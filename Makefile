@@ -13,7 +13,8 @@
         rust-check rust-test rust-lint rust-fmt rust-clippy \
         python-build python-test python-lint python-fmt \
         cpp-build cpp-test \
-        wasm-test docs-build
+        wasm-test docs-build \
+        ts-install ts-build ts-test ts-typecheck
 
 # ── Defaults ──────────────────────────────────────────────────────────────
 
@@ -73,6 +74,20 @@ cpp-test: cpp-build ## Run C++ tests
 wasm-test: ## Run WASM tests
 	wasm-pack test --node rust/tensogram-wasm
 
+# ── TypeScript ────────────────────────────────────────────────────────────
+
+ts-install: ## Install TypeScript wrapper dependencies
+	cd typescript && npm install
+
+ts-build: ## Build the TypeScript wrapper (wasm-pack + tsc)
+	cd typescript && npm run build
+
+ts-test: ## Run TypeScript wrapper tests (vitest)
+	cd typescript && npm test
+
+ts-typecheck: ## Strict typecheck source + tests
+	cd typescript && npx tsc --noEmit -p tsconfig.test.json
+
 # ── Docs ──────────────────────────────────────────────────────────────────
 
 docs-build: ## Build mdbook documentation
@@ -81,8 +96,8 @@ docs-build: ## Build mdbook documentation
 # ── Aggregates ────────────────────────────────────────────────────────────
 
 check: rust-check ## Check all builds
-test: rust-test python-test ## Run all tests
-lint: rust-lint python-lint python-fmt ## Run all lints
+test: rust-test python-test ts-test ## Run all tests
+lint: rust-lint python-lint python-fmt ts-typecheck ## Run all lints
 fmt: rust-fmt python-fmt ## Check all formatting
 
 # ── Cleanup ───────────────────────────────────────────────────────────────
@@ -90,4 +105,6 @@ fmt: rust-fmt python-fmt ## Check all formatting
 clean: ## Remove build artifacts
 	cargo clean
 	rm -rf build/
+	rm -rf typescript/dist/ typescript/wasm/ typescript/node_modules/
+	rm -rf examples/typescript/node_modules/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

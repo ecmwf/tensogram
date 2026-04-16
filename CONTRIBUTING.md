@@ -7,6 +7,7 @@ Thank you for your interest in contributing. This guide will get you from zero t
 - **Rust 1.75+** (`rustup install stable`)
 - **C compiler** (for libaec, zfp, blosc2 FFI dependencies)
 - Optional: Python 3.9+ and `uv` for Python bindings (`pip install uv` or https://docs.astral.sh/uv/getting-started/installation/)
+- Optional: Node ≥ 20 and `wasm-pack` (`cargo install wasm-pack`) for the TypeScript wrapper
 - Optional: mdbook for documentation (`cargo install mdbook`)
 
 ## Quick Setup
@@ -190,6 +191,29 @@ cargo build -p tensogram-ffi
 #   target/debug/libtensogram_ffi.a
 #   target/debug/libtensogram_ffi.{so,dylib}
 ```
+
+## TypeScript Wrapper
+
+The TS wrapper lives in `typescript/` and is driven by `wasm-pack` (for the WASM glue)
+plus `tsc` + `vitest` (for the TS layer). The scope and design are in
+`plans/TYPESCRIPT_WRAPPER.md`; user-facing docs in `docs/src/guide/typescript-api.md`.
+
+```bash
+# One-time setup
+cargo install wasm-pack        # if not already installed
+
+# Build + test
+make ts-build                  # wasm-pack build + tsc
+make ts-test                   # vitest
+make ts-typecheck              # strict tsc --noEmit across src + tests
+
+# Run an example end-to-end
+cd examples/typescript
+npm install
+npx tsx 01_encode_decode.ts
+```
+
+The top-level `make test` / `make lint` now include `ts-test` and `ts-typecheck`.
 
 ## Commit Messages
 

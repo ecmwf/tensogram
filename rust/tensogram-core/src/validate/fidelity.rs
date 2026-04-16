@@ -199,7 +199,15 @@ fn scan_f32(
         return;
     }
     for (idx, chunk) in chunks.enumerate() {
-        let bytes: [u8; 4] = chunk.try_into().unwrap();
+        // chunks_exact(4) guarantees each chunk has length 4. The slice
+        // pattern formalises the invariant and keeps this function panic-free;
+        // the `else` branch is unreachable under a correct std implementation
+        // but lets us skip gracefully instead of panicking if that ever
+        // changes.
+        let &[b0, b1, b2, b3] = chunk else {
+            continue;
+        };
+        let bytes = [b0, b1, b2, b3];
         let val = match byte_order {
             ByteOrder::Big => f32::from_be_bytes(bytes),
             ByteOrder::Little => f32::from_le_bytes(bytes),
@@ -249,7 +257,11 @@ fn scan_f64(
         return;
     }
     for (idx, chunk) in chunks.enumerate() {
-        let bytes: [u8; 8] = chunk.try_into().unwrap();
+        // See scan_f32 for the rationale of this slice-pattern idiom.
+        let &[b0, b1, b2, b3, b4, b5, b6, b7] = chunk else {
+            continue;
+        };
+        let bytes = [b0, b1, b2, b3, b4, b5, b6, b7];
         let val = match byte_order {
             ByteOrder::Big => f64::from_be_bytes(bytes),
             ByteOrder::Little => f64::from_le_bytes(bytes),
@@ -299,7 +311,11 @@ fn scan_f16(
         return;
     }
     for (idx, chunk) in chunks.enumerate() {
-        let bytes: [u8; 2] = chunk.try_into().unwrap();
+        // See scan_f32 for the rationale of this slice-pattern idiom.
+        let &[b0, b1] = chunk else {
+            continue;
+        };
+        let bytes = [b0, b1];
         let bits = match byte_order {
             ByteOrder::Big => u16::from_be_bytes(bytes),
             ByteOrder::Little => u16::from_le_bytes(bytes),
@@ -353,7 +369,11 @@ fn scan_bf16(
         return;
     }
     for (idx, chunk) in chunks.enumerate() {
-        let bytes: [u8; 2] = chunk.try_into().unwrap();
+        // See scan_f32 for the rationale of this slice-pattern idiom.
+        let &[b0, b1] = chunk else {
+            continue;
+        };
+        let bytes = [b0, b1];
         let bits = match byte_order {
             ByteOrder::Big => u16::from_be_bytes(bytes),
             ByteOrder::Little => u16::from_le_bytes(bytes),
@@ -408,8 +428,12 @@ fn scan_complex64(
         return;
     }
     for (idx, chunk) in chunks.enumerate() {
-        let real_bytes: [u8; 4] = chunk[0..4].try_into().unwrap();
-        let imag_bytes: [u8; 4] = chunk[4..8].try_into().unwrap();
+        // See scan_f32 for the rationale of this slice-pattern idiom.
+        let &[r0, r1, r2, r3, i0, i1, i2, i3] = chunk else {
+            continue;
+        };
+        let real_bytes = [r0, r1, r2, r3];
+        let imag_bytes = [i0, i1, i2, i3];
         let (real, imag) = match byte_order {
             ByteOrder::Big => (
                 f32::from_be_bytes(real_bytes),
@@ -468,8 +492,12 @@ fn scan_complex128(
         return;
     }
     for (idx, chunk) in chunks.enumerate() {
-        let real_bytes: [u8; 8] = chunk[0..8].try_into().unwrap();
-        let imag_bytes: [u8; 8] = chunk[8..16].try_into().unwrap();
+        // See scan_f32 for the rationale of this slice-pattern idiom.
+        let &[r0, r1, r2, r3, r4, r5, r6, r7, i0, i1, i2, i3, i4, i5, i6, i7] = chunk else {
+            continue;
+        };
+        let real_bytes = [r0, r1, r2, r3, r4, r5, r6, r7];
+        let imag_bytes = [i0, i1, i2, i3, i4, i5, i6, i7];
         let (real, imag) = match byte_order {
             ByteOrder::Big => (
                 f64::from_be_bytes(real_bytes),

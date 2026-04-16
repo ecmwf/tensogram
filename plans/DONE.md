@@ -193,6 +193,67 @@ streaming. Compiles to `wasm32-unknown-unknown` via `wasm-pack`.
 - **Build / test.** `wasm-pack build rust/tensogram-wasm --target web`,
   `wasm-pack test --node rust/tensogram-wasm`.
 
+## TypeScript wrapper (`@ecmwf/tensogram`)
+
+Ergonomic typed layer over `tensogram-wasm` for browser + Node consumers.
+Design doc: `plans/TYPESCRIPT_WRAPPER.md`. User guide:
+`docs/src/guide/typescript-api.md`.
+
+- **Package.** `typescript/` — ESM-only, strict TS, Node ≥ 20, built
+  via `wasm-pack build --target web` + `tsc`. Package name
+  `@ecmwf/tensogram`.
+- **WASM side-change.** `rust/tensogram-wasm/src/convert.rs::to_js`
+  uses `Serializer::json_compatible()` so CBOR metadata surfaces as
+  plain JS objects rather than ES `Map`. Backwards-compatible at the
+  WASM-test level because existing tests use `from_value`, which
+  accepts both shapes.
+- **Public surface.** `init()` (idempotent async WASM load); `encode`
+  / `decode` / `decodeMetadata` / `decodeObject` / `scan`; dtype-aware
+  payload views (`data()` safe-copy, `dataView()` zero-copy);
+  `decodeStream(readable, opts?)` over Web Streams; `TensogramFile`
+  with `.open(path)` (Node), `.fromUrl(url)` (fetch), `.fromBytes()`
+  factories; `getMetaKey`, `computeCommon`, `cborValuesEqual`
+  metadata helpers; dtype introspection (`typedArrayFor`,
+  `payloadByteSize`, `shapeElementCount`, `DTYPE_BYTE_WIDTH`,
+  `SUPPORTED_DTYPES`, `isDtype`).
+- **Error hierarchy.** Abstract `TensogramError` base + 8 WASM-mapped
+  subclasses (`FramingError`, `MetadataError`, `EncodingError`,
+  `CompressionError`, `ObjectError`, `IoError`, `RemoteError`,
+  `HashMismatchError`) + 2 TS-only (`InvalidArgumentError`,
+  `StreamingLimitError`). Base constructor
+  `(message, rawMessage = message)` lets TS-side errors pass a single
+  argument. `mapTensogramError` parses WASM error strings, strips
+  variant prefixes from `.message` for consistency, and extracts
+  `expected` / `actual` hex digests for hash mismatches.
+- **C++ parity.** A `remote_error` class was added to the header-only
+  C++ wrapper to cover the `TGM_ERROR_REMOTE` code that previously
+  fell through to the generic `error` base.
+- **Memory model.** Safe-copy by default (`data()` allocates on the
+  JS heap, survives WASM memory growth). Zero-copy opt-in (`dataView()`
+  — invalidated on the next WASM call that grows memory). Explicit
+  `close()` + `FinalizationRegistry` fallback for all handles.
+- **Streaming.** `decodeStream` wraps the existing WASM
+  `StreamingDecoder` as an async generator; handles `AbortSignal`,
+  `maxBufferBytes`, and per-message corruption via `onError` without
+  breaking iteration. Cleans up on early `break`, throws, and aborts.
+- **Cross-language parity.** TS decodes the same
+  `rust/tensogram-core/tests/golden/*.tgm` fixtures that Rust,
+  Python, and C++ verify — full parity matrix in
+  `plans/TYPESCRIPT_WRAPPER.md`.
+- **Property-based robustness.** `fast-check` invariants pin
+  `mapTensogramError` totality, `encode → decode` bit-exactness across
+  random shapes + MARS metadata, and the "no panic on random bytes"
+  invariant for `decode`.
+- **Build / test.** `make ts-build` (wasm-pack + tsc), `make ts-test`
+  (vitest), `make ts-typecheck` (strict tsc on src + tests). `make
+  test` / `make lint` / `make clean` include the TS lanes. The
+  `typescript` CI job mirrors the `wasm` lane.
+- **Examples.** `examples/typescript/` carries runnable `.ts` files
+  numbered in step with `examples/python/` (`01_encode_decode`,
+  `02_mars_metadata`, `03_multi_object`, `05_streaming_fetch`,
+  `06_file_api`, `07_hash_and_errors`). The package references the
+  local `typescript/` package via a `file:` dependency.
+
 ## `tensogram-benchmarks`
 
 Separate workspace crate providing a codec-matrix benchmark and a

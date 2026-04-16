@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.DS_Store
+
+# Generated wasm-pack output. Re-created by `npm run build:wasm`.
+wasm/

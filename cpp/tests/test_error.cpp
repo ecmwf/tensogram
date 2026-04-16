@@ -136,9 +136,38 @@ TEST(ErrorTest, ErrorStringNonNull) {
     EXPECT_NE(tgm_error_string(TGM_ERROR_HASH_MISMATCH), nullptr);
     EXPECT_NE(tgm_error_string(TGM_ERROR_INVALID_ARG), nullptr);
     EXPECT_NE(tgm_error_string(TGM_ERROR_END_OF_ITER), nullptr);
+    EXPECT_NE(tgm_error_string(TGM_ERROR_REMOTE), nullptr);
 
     // Each should be non-empty
     EXPECT_GT(std::strlen(tgm_error_string(TGM_ERROR_FRAMING)), 0u);
+    EXPECT_GT(std::strlen(tgm_error_string(TGM_ERROR_REMOTE)), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// remote_error class is wired correctly: constructible, catchable as
+// tensogram::error, carries TGM_ERROR_REMOTE.
+// ---------------------------------------------------------------------------
+
+TEST(ErrorTest, RemoteErrorClass) {
+    tensogram::remote_error err(TGM_ERROR_REMOTE, "network unreachable");
+    EXPECT_EQ(err.code(), TGM_ERROR_REMOTE);
+    EXPECT_STREQ(err.what(), "network unreachable");
+
+    // Polymorphism through the base class
+    try {
+        throw tensogram::remote_error(TGM_ERROR_REMOTE, "timeout");
+    } catch (const tensogram::error& e) {
+        EXPECT_EQ(e.code(), TGM_ERROR_REMOTE);
+    }
+
+    // Catch specifically as remote_error
+    try {
+        throw tensogram::remote_error(TGM_ERROR_REMOTE, "forbidden");
+    } catch (const tensogram::remote_error&) {
+        SUCCEED();
+    } catch (...) {
+        FAIL() << "Expected remote_error";
+    }
 }
 
 // ---------------------------------------------------------------------------
