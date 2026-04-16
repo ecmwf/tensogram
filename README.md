@@ -150,12 +150,25 @@ For general enquiries about ECMWF software, visit the
 
 ## Documentation
 
-- [mdbook docs](docs/) — full developer guide (`cd docs && mdbook build`)
+Full documentation is available online at **[sites.ecmwf.int/docs/tensogram/main](https://sites.ecmwf.int/docs/tensogram/main)**.
+
+The source markdown files live under [`docs/src/`](docs/src/) and are easy to browse directly on GitHub.
+
+To build and serve locally:
+
+```bash
+cargo install mdbook mdbook-mermaid mdbook-tabs
+mdbook serve docs/
+```
+
+Then open `http://localhost:3000`.
+
+### Other resources
+
 - [Architecture](ARCHITECTURE.md) — crate structure and design decisions
 - [Contributing](CONTRIBUTING.md) — setup and workflow
 - [Code of Conduct](CODE_OF_CONDUCT.md) — community guidelines
 - [Changelog](CHANGELOG.md) — release history
-- [Python API](docs/src/guide/python-api.md) — encoding, decoding, file API, validation
 
 ## Repository Layout
 
