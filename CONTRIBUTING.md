@@ -33,12 +33,20 @@ If all of that passes, you're ready to go.
 ```
 tensogram/
 ├── rust/
-│   ├── tensogram-core/         # Core library: wire format, encode/decode, file API
-│   │   ├── src/                # 11 modules (wire, framing, metadata, types, ...)
-│   │   └── tests/              # Integration tests + golden binary files
-│   ├── tensogram-encodings/    # Encoding pipeline: packing, shuffle, compression
-│   ├── tensogram-cli/          # CLI tool (tensogram info/ls/dump/get/set/copy)
+│   ├── tensogram-core/         # Core library: wire format, encode/decode,
+│   │                           #   file API, iterators, validation, remote
+│   ├── tensogram-encodings/    # Encoding pipeline: simple_packing, shuffle,
+│   │                           #   compression (szip, zstd, lz4, blosc2, zfp, sz3)
+│   ├── tensogram-cli/          # CLI tool: info, ls, dump, get, set, copy,
+│   │                           #   merge, split, reshuffle, validate,
+│   │                           #   convert-grib (opt), convert-netcdf (opt)
 │   ├── tensogram-ffi/          # C FFI layer (generates tensogram.h via cbindgen)
+│   ├── tensogram-szip/         # Pure-Rust CCSDS szip codec (for WebAssembly)
+│   ├── tensogram-sz3/          # SZ3 Rust API over the clean-room shim
+│   ├── tensogram-sz3-sys/      # Clean-room C++ FFI shim for SZ3
+│   ├── tensogram-grib/         # GRIB→Tensogram converter (ecCodes; opt-in)
+│   ├── tensogram-netcdf/       # NetCDF→Tensogram converter (libnetcdf; opt-in)
+│   ├── tensogram-wasm/         # WebAssembly bindings (wasm-pack; opt-in)
 │   └── benchmarks/             # Benchmark suite
 ├── python/
 │   ├── bindings/               # Python bindings (PyO3, excluded from default build)
@@ -50,12 +58,12 @@ tensogram/
 │   ├── tests/                  # C++ GoogleTest suite
 │   └── CMakeLists.txt          # CMake build system
 ├── examples/
-│   ├── rust/                   # 10 runnable Rust examples
-│   ├── cpp/                    # C++ examples using the FFI
+│   ├── rust/                   # Runnable Rust examples (NN_description.rs)
+│   ├── cpp/                    # C++ examples using the wrapper
 │   └── python/                 # Python examples using the PyO3 bindings
 ├── docs/                       # mdbook documentation source
 ├── plans/                      # Design docs, implementation status, TODOs
-├── ARCHITECTURE.md             # How the crates fit together
+│   └── ARCHITECTURE.md         # How the crates fit together
 ├── CHANGELOG.md                # Release history
 └── VERSION                     # Current version
 ```
@@ -121,16 +129,30 @@ If you add a new API surface, add a runnable example in `examples/rust/`. The na
 
 ## Test Structure
 
-| Location | Type | Count | Purpose |
-|----------|------|-------|---------|
-| `rust/tensogram-core/src/*.rs` | Unit | ~57 | Module-level tests alongside the code |
-| `rust/tensogram-core/tests/integration.rs` | Integration | ~12 | Full encode/decode round-trips |
-| `rust/tensogram-core/tests/adversarial.rs` | Adversarial | ~12 | Corrupted inputs, boundary conditions |
-| `rust/tensogram-core/tests/golden_files.rs` | Golden | 6 | Deterministic binary file verification |
-| `rust/tensogram-encodings/src/*.rs` | Unit | ~47 | Encoding pipeline tests |
-| `rust/tensogram-cli/src/*.rs` | Unit | 5 | CLI argument parsing |
+Tests are organised by *shape*, not by fixed count (counts drift every
+release). Rely on `cargo test --workspace` and the language-specific
+runners to tell you the current numbers.
 
-Golden binary files in `rust/tensogram-core/tests/golden/` are checked into the repo. If the wire format changes, regenerate them by running `cargo test --test golden_files`.
+| Shape | Where it lives | Purpose |
+|-------|----------------|---------|
+| Unit | `#[cfg(test)]` modules alongside the code in each crate | Module-level behaviour tests |
+| Integration | `rust/tensogram-core/tests/integration*.rs` | Full encode/decode round-trips across dtypes and pipelines |
+| Adversarial | `rust/tensogram-core/tests/adversarial.rs`, `edge_cases.rs` | Corrupted inputs, boundary conditions, error paths |
+| Golden files | `rust/tensogram-core/tests/golden_files.rs` + `tests/golden/*.tgm` | Byte-for-byte cross-language determinism |
+| Property-based | `rust/tensogram-szip/tests/proptest_roundtrip.rs` | Proptest round-trip for the pure-Rust szip codec |
+| Stress / parity | `rust/tensogram-szip/tests/stress.rs`, `libaec_parity.rs`, `ffi_crosscheck.rs` | Cross-validation against libaec |
+| Remote HTTP | `rust/tensogram-core/tests/remote_http.rs` | Mock HTTP server exercising the `remote` feature |
+| CLI | `rust/tensogram-cli/src/commands/*.rs` + `rust/benchmarks/tests/smoke.rs` | Subcommand behaviour (needs `--features netcdf,grib` for converter coverage) |
+| Converters | `rust/tensogram-grib/tests/`, `rust/tensogram-netcdf/tests/` | Integration against real GRIB / NetCDF fixtures |
+| WebAssembly | `rust/tensogram-wasm/` + `wasm-bindgen-test` | Browser / Node.js decode paths |
+| Python | `python/tests/` (+ `test_async.py`, `test_validate.py`, `test_remote.py`, `test_convert_netcdf.py`) | Full pytest suite covering the PyO3 bindings |
+| xarray | `python/tensogram-xarray/tests/` | Backend engine, coordinate detection, hypercube stacking |
+| Zarr | `python/tensogram-zarr/tests/` | Zarr v3 store read/write path |
+| C++ wrapper | `cpp/tests/*.cpp` | RAII handle behaviour, exception mapping, cross-language round-trip |
+
+Golden binary files in `rust/tensogram-core/tests/golden/` are checked
+into the repo. If the wire format changes, regenerate them by running
+`cargo test --test golden_files`.
 
 ## Python Bindings
 

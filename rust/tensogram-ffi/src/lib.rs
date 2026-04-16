@@ -2105,6 +2105,7 @@ pub extern "C" fn tgm_error_string(err: TgmError) -> *const c_char {
         7 => b"hash mismatch\0",
         8 => b"invalid argument\0",
         9 => b"end of iteration\0",
+        10 => b"remote error\0",
         _ => b"unknown error\0",
     };
     s.as_ptr() as *const c_char
@@ -4214,7 +4215,7 @@ mod tests {
         check(super::TgmError::HashMismatch, "hash mismatch");
         check(super::TgmError::InvalidArg, "invalid argument");
         check(super::TgmError::EndOfIter, "end of iteration");
-        check(super::TgmError::Remote, "unknown error");
+        check(super::TgmError::Remote, "remote error");
     }
 
     // ── tgm_bytes_free safety ──

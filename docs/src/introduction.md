@@ -26,12 +26,13 @@ Tensogram solves both. The metadata is CBOR (a compact binary version of JSON) s
 
 ## Crate Layout
 
-The library is a Rust workspace with five crates:
+The primary four Rust crates make up the default workspace build:
 
 ```
 tensogram/
 ├── rust/
-│   ├── tensogram-core        ← encode, decode, framing, file API
+│   ├── tensogram-core        ← encode, decode, framing, file API,
+│   │                            validation, remote object store
 │   ├── tensogram-encodings   ← simple_packing, shuffle, compression
 │   ├── tensogram-cli         ← `tensogram` command-line tool
 │   └── tensogram-ffi         ← C FFI layer for C/C++ callers
@@ -41,7 +42,19 @@ tensogram/
 │   └── include/              ← C++ wrapper header + C header
 ```
 
-Most users interact with `tensogram-core` and the CLI. The encodings crate is used internally by the core but is also importable directly if you need to call the encoding functions outside of a full message.
+On top of those, the repository ships several opt-in crates — the
+`tensogram-grib` / `tensogram-netcdf` converters (exposed as the
+`convert-grib` / `convert-netcdf` CLI subcommands), the `tensogram-wasm`
+WebAssembly bindings, and the pure-Rust `tensogram-szip` /
+`tensogram-sz3` / `tensogram-sz3-sys` compression crates — together
+with the separate Python packages `tensogram-xarray` (xarray backend)
+and `tensogram-zarr` (Zarr v3 store backend), and a `tensogram-benchmarks`
+crate. See [`plans/ARCHITECTURE.md`](https://github.com/ecmwf/tensogram/blob/main/plans/ARCHITECTURE.md)
+for the full crate list and build recipes.
+
+Most users interact with `tensogram-core` and the CLI. The encodings
+crate is used internally by the core but is also importable directly
+if you need to call the encoding functions outside of a full message.
 
 ## Quick Example
 

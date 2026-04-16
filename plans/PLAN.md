@@ -31,7 +31,7 @@ The 10x version of Tensogram isn't just a wire format library. It's ECMWF's inte
 These were the decisions made before coding began. Some evolved during implementation:
 
 - **CBOR crate:** ciborium (built-in canonical encoding, serde integration) — *still current*
-- **Approach:** Full Stack (all 5 crates from day 1) — *still current*
+- **Approach:** Full Stack (all 5 crates from day 1) — *baseline still current; the workspace has since grown with additional opt-in crates; see `ARCHITECTURE.md`*
 - **Feature gates:** `async` for tokio, `mmap` for memory-mapped access — *still current*
 - **NaN handling:** simple_packing rejects NaN with EncodingError — *still current*
 - **Zero-object messages:** Valid (metadata-only for pipeline signaling) — *still current*

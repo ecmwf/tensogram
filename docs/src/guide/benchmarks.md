@@ -119,9 +119,9 @@ flowchart TD
     T --> F[Fidelity check]
     F --> R[Print report]
 
-    style G fill:#e8f4e8
-    style T fill:#e8e8f4
-    style F fill:#f4e8e8
+    style G fill:#388e3c,stroke:#2e7d32,color:#fff
+    style T fill:#1565c0,stroke:#0d47a1,color:#fff
+    style F fill:#c62828,stroke:#b71c1c,color:#fff
 ```
 
 Each timed iteration runs a full encode → decode cycle. After all iterations

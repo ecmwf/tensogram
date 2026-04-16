@@ -97,14 +97,14 @@ This project contains Rust, Python, C and C++ code
 
 - NOTE: SINGLE SOURCE OF TRUTH FOR VERSION — The `VERSION` file at the repo root is the
   canonical version for the ENTIRE project. ALL version strings everywhere MUST match it.
-  When bumping the version (e.g. during a release), you MUST update ALL of these locations
-  to match the VERSION file:
+  When bumping the version (e.g. during a release), you MUST update:
     - `VERSION` (the source of truth)
-    - `Cargo.toml` in EVERY crate: tensogram-core, tensogram-encodings, tensogram-cli,
-      tensogram-ffi, tensogram-python, tensogram-grib, benchmarks, examples/rust
-    - `pyproject.toml` in EVERY Python package: python/bindings, python/tensogram-xarray,
-      python/tensogram-zarr
-    - `CHANGELOG.md` (new release entry header)
+    - `Cargo.toml` in EVERY crate in the repository (workspace + opt-in crates +
+      examples). Do not hardcode a crate list here — discover them with
+      `find . -name Cargo.toml -not -path './target/*' -not -path './.venv/*'`
+      and update every one to match `VERSION`.
+    - `pyproject.toml` in EVERY Python package under `python/`.
+    - `CHANGELOG.md` (new release entry header).
   The provenance encoder in `rust/tensogram-core/src/encode.rs` reads the version via
   `env!("CARGO_PKG_VERSION")` which comes from Cargo.toml — so keeping Cargo.toml in sync
   with VERSION is critical for correct provenance in encoded messages.
