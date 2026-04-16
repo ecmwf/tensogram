@@ -62,48 +62,65 @@ controls this across all interfaces.
 | CLI | `reshuffle`, `merge`, `split`, `set` use `native_byte_order=false` to preserve wire layout on re-encode |
 | Docs | `decoding.md`, `encode-pre-encoded.md`, `DESIGN.md` updated |
 
-## `tensogram validate`
+## Multi-threaded coding pipeline
 
-A full validation API and CLI subcommand, layered across four levels.
+Caller-controlled `threads: u32` budget on `EncodeOptions` and
+`DecodeOptions`, off by default (`threads=0` matches the sequential
+path byte-for-byte — golden files unchanged).  When the caller opts
+in, a scoped rayon pool is built for the call and work is dispatched
+**axis-B-first** so a small number of very large messages benefits
+most:
 
-- **Level 1 (Structure).** Raw byte walking — magic, preamble, frame
-  headers/ENDF, total_length, postamble, first_footer_offset, frame
-  ordering, preceder legality, preamble flags vs observed, overflow-safe
-  arithmetic.
-- **Level 2 (Metadata).** Raw CBOR parsing from frame payloads (before
-  `decode_message` normalisation), required keys, dtype/encoding/filter/
-  compression recognised, shape/strides/ndim consistency, index/hash
-  frame consistency.
-- **Level 3 (Integrity).** xxh3 hash verification (descriptor + hash
-  frame fallback), decode pipeline execution for compressed objects.
-  Unknown hash algorithms produce warnings. `hash_verified` is true only
-  when every object is verified.
-- **Level 4 (Fidelity).** Full decode, decoded-size check, NaN/Inf scan
-  for Float16/Bfloat16/Float32/Float64/Complex64/Complex128. NaN/Inf are
-  errors. Reports element index and component (real/imag).
+| Stage | Axis B mechanism |
+|-------|------------------|
+| `simple_packing` encode/decode | chunked `par_iter`, byte-aligned chunks (LCM-chunked for non-aligned widths) |
+| `shuffle` / `unshuffle` | parallel byte-plane outer loop (shuffle), output-chunk scatter (unshuffle) |
+| `blosc2` | `CParams/DParams::nthreads` on the compress path (decompress stays sequential — safe-wrapper limitation) |
+| `zstd` FFI | `NbWorkers` via `bulk::Compressor` (requires `zstdmt` feature) |
 
-- **API.** Composable `ValidateOptions { max_level, check_canonical,
-  checksum_only }`. `ObjectContext` for shared per-object state across
-  levels: Level 2 caches descriptors, Level 3 caches decoded bytes,
-  Level 4 reuses both.
-- **Modular layout.** `validate/types.rs` (types + `IssueCode` enum),
-  `validate/structure.rs`, `validate/metadata.rs`,
-  `validate/integrity.rs`, `validate/fidelity.rs`, `validate/mod.rs`.
-- **CLI.** `tensogram validate [--quick|--checksum|--full]
-  [--canonical] [--json] <files>` with mutually exclusive level flags,
-  `--canonical` combinable with any level, serde_json batch array
-  output, exit code 0/1.
-- **Python.** `tensogram.validate(buf, level, check_canonical) -> dict`
-  and `tensogram.validate_file(path, level, check_canonical) -> dict`
-  via PyO3. Four levels: `"quick"`, `"default"`, `"checksum"`, `"full"`.
-- **C FFI.** `tgm_validate` and `tgm_validate_file` return JSON via
-  `tgm_bytes_t` out-parameter.
-- **C++ wrapper.** `tensogram::validate()` and
-  `tensogram::validate_file()` return JSON strings with typed exception
-  mapping (`invalid_arg_error`, `io_error`, `encoding_error`).
-- **Examples.** `examples/python/13_validate.py`,
-  `examples/rust/src/bin/13_validate.rs`.
-- **Docs.** `docs/src/cli/validate.md`, `docs/src/guide/python-api.md`.
+Axis A (`par_iter` across objects) is the fallback when no object has
+an axis-B-friendly codec, to avoid N×M thread over-subscription.
+
+| Component | What changed |
+|-----------|-------------|
+| `tensogram-core/parallel.rs` | new private module: `resolve_budget`, `with_pool`, `run_maybe_pooled`, `is_axis_b_friendly`, `use_axis_a`, `should_parallelise`; constants `DEFAULT_PARALLEL_THRESHOLD_BYTES` (64 KiB) and `ENV_THREADS="TENSOGRAM_THREADS"` re-exported from the crate root |
+| `tensogram-core/encode.rs` | `encode_one_object` extracted; axis-A/B dispatch at the top of `encode_inner` |
+| `tensogram-core/decode.rs` | axis-A/B dispatch in `decode`, `decode_object`, `decode_range_from_payload`; `decode_single_object_with_backend` gains `intra_codec_threads` arg |
+| `tensogram-core/streaming.rs` | `StreamingEncoder` captures `EncodeOptions.threads` at construction and forwards to every `write_object` pipeline call (axis B only — streaming semantics preclude axis A) |
+| `tensogram-encodings/pipeline.rs` | `PipelineConfig.intra_codec_threads` threaded into every codec builder |
+| `tensogram-encodings/simple_packing.rs` | `encode_with_threads`, `decode_with_threads`, `compute_params_with_threads`; parallel aligned + generic (LCM-chunked) paths; shared `splat_aligned`/`gather_aligned` helpers |
+| `tensogram-encodings/shuffle.rs` | `shuffle_with_threads`, `unshuffle_with_threads`; 64 KiB threshold for parallel path |
+| `tensogram-encodings/compression/blosc2.rs` | `nthreads` field + `build_cparams`/`build_dparams` helpers |
+| `tensogram-encodings/compression/zstd.rs` | `nb_workers` field + `bulk::Compressor` with `NbWorkers`; `zstdmt` workspace feature enabled on the zstd dep |
+| Python (PyO3) | `threads` kwarg on `encode`, `encode_pre_encoded`, `decode`, `decode_object`, `decode_range`, `TensogramFile.append`/`decode_message`/`file_decode_*`, `AsyncTensogramFile` mirrors, `StreamingEncoder.__init__` |
+| C FFI | `threads: u32` parameter added to `tgm_encode`, `tgm_encode_pre_encoded`, `tgm_decode`, `tgm_decode_object`, `tgm_decode_range`, `tgm_file_append`, `tgm_file_decode_message`, `tgm_streaming_encoder_create`; `tensogram.h` regenerated |
+| C++ wrapper | `encode_options.threads`, `decode_options.threads` (default 0); all free functions and member methods forward them |
+| CLI | global `--threads N` (env `TENSOGRAM_THREADS` fallback) on every subcommand; honoured by `merge`, `split`, `reshuffle`, `convert-grib`, `convert-netcdf`; metadata-only commands ignore it |
+| Benchmark | new `rust/benchmarks/src/threads_scaling.rs` module + `threads-scaling` binary; 7 codec configurations × thread sweep |
+| Docs | `docs/src/guide/multi-threaded-pipeline.md` (API, axis-A/B policy, determinism contract, env-var semantics, cross-language parity matrix, free-threaded Python notes, tuning recommendations); Threading Scaling section in `benchmark-results.md` |
+| Examples | `examples/rust/src/bin/16_multi_threaded_pipeline.rs`, `examples/python/16_multi_threaded_pipeline.py` |
+| Feature gate | new `threads` cargo feature (default-on native, off on `wasm32`) pulls `rayon`; when disabled, any `threads > 0` request logs a one-time `tracing::warn!` and falls back to sequential |
+
+**Determinism contract.**  Two classes of codec behave differently:
+
+- **Transparent codecs** (`none`, `lz4`, `szip`, `zfp`, `sz3`,
+  `simple_packing`, `shuffle`) produce **byte-identical** encoded
+  payloads across all `threads` values.
+- **Opaque codecs** (`blosc2` with `nthreads>0`, `zstd` with
+  `nb_workers>0`) may produce compressed bytes that differ from the
+  sequential path (block offsets land in worker completion order) but
+  always **round-trip losslessly** regardless of how they were
+  encoded.
+
+`threads=0` (the default) is byte-identical to the pre-feature
+sequential path on every codec, so golden `.tgm` files continue to
+validate unchanged.
+
+**Policy.**  The choice between axis A and axis B is taken once per
+call based on the descriptors — there is no run-time tunable beyond
+`threads` and `parallel_threshold_bytes` (small-message cutoff,
+default 64 KiB).  The env var `TENSOGRAM_THREADS` fills in when
+`threads=0`; explicit option beats environment.
 
 ## `tensogram-netcdf`
 

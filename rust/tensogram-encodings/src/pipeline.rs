@@ -243,6 +243,20 @@ pub struct PipelineConfig {
     pub swap_unit_size: usize,
     /// Which backend to use for szip / zstd when both are compiled in.
     pub compression_backend: CompressionBackend,
+    /// Intra-codec thread budget for this object.
+    ///
+    /// - `0` — sequential (default; preserves pre-threads behaviour).
+    /// - `N ≥ 1` — codec may use up to `N` threads internally.  Only a
+    ///   subset of codecs honour this (currently: blosc2, zstd FFI,
+    ///   simple_packing, shuffle); others ignore it.  Output bytes are
+    ///   byte-identical regardless of `N`.
+    ///
+    /// Callers should expect this to be set by the `tensogram-core`
+    /// layer after consulting
+    /// [`EncodeOptions.threads`](../../../tensogram_core/encode/struct.EncodeOptions.html#structfield.threads)
+    /// and the small-message threshold; direct pipeline callers may
+    /// leave it at `0`.
+    pub intra_codec_threads: u32,
 }
 
 pub struct PipelineResult {
@@ -297,10 +311,15 @@ fn build_szip_compressor(
 }
 
 /// Build a zstd compressor, dispatching between FFI and pure-Rust at runtime.
+///
+/// `nb_workers` is forwarded to the FFI path (libzstd `NbWorkers`
+/// parameter) and ignored by the pure-Rust path (ruzstd is
+/// single-threaded).
 #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
 fn build_zstd_compressor(
     #[allow(unused_variables)] backend: CompressionBackend,
     level: i32,
+    #[allow(unused_variables)] nb_workers: u32,
 ) -> Box<dyn Compressor> {
     #[cfg(all(feature = "zstd", feature = "zstd-pure"))]
     if matches!(backend, CompressionBackend::Pure) {
@@ -309,7 +328,7 @@ fn build_zstd_compressor(
 
     #[cfg(feature = "zstd")]
     {
-        Box::new(ZstdCompressor { level })
+        Box::new(ZstdCompressor { level, nb_workers })
     }
 
     #[cfg(all(feature = "zstd-pure", not(feature = "zstd")))]
@@ -358,8 +377,11 @@ fn build_compressor(
         }
         #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
         CompressionType::Zstd { level } => {
-            let compressor: Box<dyn Compressor> =
-                build_zstd_compressor(config.compression_backend, *level);
+            let compressor: Box<dyn Compressor> = build_zstd_compressor(
+                config.compression_backend,
+                *level,
+                config.intra_codec_threads,
+            );
             Ok(Some(compressor))
         }
         #[cfg(feature = "lz4")]
@@ -373,6 +395,7 @@ fn build_compressor(
             codec: *codec,
             clevel: *clevel,
             typesize: *typesize,
+            nthreads: config.intra_codec_threads,
         }))),
         #[cfg(feature = "zfp")]
         CompressionType::Zfp { mode } => Ok(Some(Box::new(ZfpCompressor {
@@ -400,7 +423,11 @@ pub fn encode_pipeline(
         EncodingType::None => Cow::Borrowed(data),
         EncodingType::SimplePacking(params) => {
             let values = bytes_to_f64(data, config.byte_order);
-            Cow::Owned(simple_packing::encode(&values, params)?)
+            Cow::Owned(simple_packing::encode_with_threads(
+                &values,
+                params,
+                config.intra_codec_threads,
+            )?)
         }
     };
 
@@ -408,7 +435,7 @@ pub fn encode_pipeline(
     let filtered: Cow<'_, [u8]> = match &config.filter {
         FilterType::None => encoded,
         FilterType::Shuffle { element_size } => Cow::Owned(
-            shuffle::shuffle(&encoded, *element_size)
+            shuffle::shuffle_with_threads(&encoded, *element_size, config.intra_codec_threads)
                 .map_err(|e| PipelineError::Shuffle(e.to_string()))?,
         ),
     };
@@ -441,13 +468,17 @@ pub fn encode_pipeline_f64(
 ) -> Result<PipelineResult, PipelineError> {
     let encoded: Cow<'_, [u8]> = match &config.encoding {
         EncodingType::None => Cow::Owned(f64_to_bytes(values, config.byte_order)),
-        EncodingType::SimplePacking(params) => Cow::Owned(simple_packing::encode(values, params)?),
+        EncodingType::SimplePacking(params) => Cow::Owned(simple_packing::encode_with_threads(
+            values,
+            params,
+            config.intra_codec_threads,
+        )?),
     };
 
     let filtered: Cow<'_, [u8]> = match &config.filter {
         FilterType::None => encoded,
         FilterType::Shuffle { element_size } => Cow::Owned(
-            shuffle::shuffle(&encoded, *element_size)
+            shuffle::shuffle_with_threads(&encoded, *element_size, config.intra_codec_threads)
                 .map_err(|e| PipelineError::Shuffle(e.to_string()))?,
         ),
     };
@@ -495,8 +526,12 @@ pub fn decode_pipeline(
     let unfiltered: Cow<'_, [u8]> = match &config.filter {
         FilterType::None => decompressed,
         FilterType::Shuffle { element_size } => Cow::Owned(
-            shuffle::unshuffle(&decompressed, *element_size)
-                .map_err(|e| PipelineError::Shuffle(e.to_string()))?,
+            shuffle::unshuffle_with_threads(
+                &decompressed,
+                *element_size,
+                config.intra_codec_threads,
+            )
+            .map_err(|e| PipelineError::Shuffle(e.to_string()))?,
         ),
     };
 
@@ -515,7 +550,12 @@ pub fn decode_pipeline(
         EncodingType::SimplePacking(params) => {
             // simple_packing decodes to Vec<f64> in-register values (no byte
             // order) then serialises directly to the target byte order.
-            let values = simple_packing::decode(&unfiltered, config.num_values, params)?;
+            let values = simple_packing::decode_with_threads(
+                &unfiltered,
+                config.num_values,
+                params,
+                config.intra_codec_threads,
+            )?;
             f64_to_bytes(&values, target_byte_order)
         }
     };
@@ -673,6 +713,7 @@ mod tests {
             dtype_byte_width: 8,
             swap_unit_size: 8,
             compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
         };
         let result = encode_pipeline(&data, &config).unwrap();
         assert_eq!(result.encoded_bytes, data);
@@ -695,6 +736,7 @@ mod tests {
             dtype_byte_width: 8,
             swap_unit_size: 8,
             compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -718,6 +760,7 @@ mod tests {
             dtype_byte_width: 4,
             swap_unit_size: 4,
             compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -748,6 +791,7 @@ mod tests {
             dtype_byte_width: 1,
             swap_unit_size: 1,
             compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -830,6 +874,7 @@ mod tests {
             dtype_byte_width: 4,
             swap_unit_size: 4,
             compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
         };
 
         let result = encode_pipeline(&be_bytes, &config).unwrap();
@@ -861,6 +906,7 @@ mod tests {
             dtype_byte_width: 8,
             swap_unit_size: 8,
             compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -902,6 +948,7 @@ mod tests {
             dtype_byte_width: 4,
             swap_unit_size: 4,
             compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -924,6 +971,7 @@ mod tests {
             dtype_byte_width: 2,
             swap_unit_size: 2,
             compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
         };
         let result = encode_pipeline(&be_bytes, &config).unwrap();
         let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
@@ -944,6 +992,7 @@ mod tests {
             dtype_byte_width: 8,
             swap_unit_size: 8,
             compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
         };
         let result = encode_pipeline(&be_bytes, &config).unwrap();
         let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
@@ -968,6 +1017,7 @@ mod tests {
             dtype_byte_width: 8,
             swap_unit_size: 4, // complex64: swap each float32 component
             compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
         };
         let result = encode_pipeline(&be_bytes, &config).unwrap();
         let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
@@ -990,6 +1040,7 @@ mod tests {
             dtype_byte_width: 1,
             swap_unit_size: 1,
             compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
         };
         let result = encode_pipeline(&data, &config).unwrap();
         let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();

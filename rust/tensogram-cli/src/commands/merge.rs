@@ -77,6 +77,7 @@ pub fn run(
     inputs: &[impl AsRef<Path>],
     output: &Path,
     strategy_str: &str,
+    threads: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if inputs.is_empty() {
         return Err("no input files specified".into());
@@ -96,6 +97,7 @@ pub fn run(
             // Wire byte order: preserve original byte layout for re-encoding.
             let wire_opts = DecodeOptions {
                 native_byte_order: false,
+                threads,
                 ..Default::default()
             };
             let (meta, objects) = decode(&msg, &wire_opts)?;
@@ -130,7 +132,14 @@ pub fn run(
     let refs: Vec<(&tensogram_core::DataObjectDescriptor, &[u8])> =
         all_objects.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
-    let encoded = encode(&global_meta, &refs, &EncodeOptions::default())?;
+    let encoded = encode(
+        &global_meta,
+        &refs,
+        &EncodeOptions {
+            threads,
+            ..Default::default()
+        },
+    )?;
 
     let mut out = std::fs::File::create(output)?;
     out.write_all(&encoded)?;
@@ -275,7 +284,7 @@ mod tests {
         let a = make_test_file(dir.path(), "a.tgm", "2t");
         let b = make_test_file(dir.path(), "b.tgm", "msl");
         let out = dir.path().join("merged.tgm");
-        run(&[a, b], &out, "first").unwrap();
+        run(&[a, b], &out, "first", 0).unwrap();
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
         assert_eq!(f.message_count().unwrap(), 1); // merged into 1 message
     }
@@ -286,7 +295,7 @@ mod tests {
         let a = make_test_file(dir.path(), "a.tgm", "2t");
         let b = make_test_file(dir.path(), "b.tgm", "msl");
         let out = dir.path().join("merged.tgm");
-        run(&[a, b], &out, "last").unwrap();
+        run(&[a, b], &out, "last", 0).unwrap();
     }
 
     #[test]
@@ -294,7 +303,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("merged.tgm");
         let empty: Vec<std::path::PathBuf> = vec![];
-        assert!(run(&empty, &out, "first").is_err());
+        assert!(run(&empty, &out, "first", 0).is_err());
     }
 
     #[test]
@@ -304,7 +313,7 @@ mod tests {
         let a = make_test_file_with_base(dir.path(), "a.tgm", "2t");
         let b = make_test_file_with_base(dir.path(), "b.tgm", "msl");
         let out = dir.path().join("merged_base.tgm");
-        run(&[a, b], &out, "first").unwrap();
+        run(&[a, b], &out, "first", 0).unwrap();
 
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
@@ -359,7 +368,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = make_test_file_with_base(dir.path(), "a_strip.tgm", "2t");
         let out = dir.path().join("merged_strip.tgm");
-        run(&[a], &out, "first").unwrap();
+        run(&[a], &out, "first", 0).unwrap();
 
         let f = tensogram_core::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
@@ -389,7 +398,7 @@ mod tests {
         let b = make_test_file(dir.path(), "b_err.tgm", "msl");
         let out = dir.path().join("merged_err.tgm");
         // "error" strategy should fail on conflict
-        let result = run(&[a, b], &out, "error");
+        let result = run(&[a, b], &out, "error", 0);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("conflicting"));
     }

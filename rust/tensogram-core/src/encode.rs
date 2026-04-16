@@ -45,6 +45,30 @@ pub struct EncodeOptions {
     /// `TENSOGRAM_COMPRESSION_BACKEND=pure` env variable, or set this
     /// field explicitly.
     pub compression_backend: pipeline::CompressionBackend,
+    /// Thread budget for the multi-threaded coding pipeline.
+    ///
+    /// - `0` (default) — sequential (current behaviour).  Can be
+    ///   overridden at runtime via `TENSOGRAM_THREADS=N`.
+    /// - `1` — explicit single-threaded execution (bypasses env).
+    /// - `N ≥ 2` — scoped pool of `N` workers.  Output bytes are
+    ///   byte-identical to the sequential path regardless of `N`.
+    ///
+    /// When more than one data object is being encoded the budget is
+    /// spent axis-B-first (intra-codec parallelism) — this codebase
+    /// tends to have a small number of very large messages.  See the
+    /// [multi-threaded pipeline guide](../../docs/src/guide/multi-threaded-pipeline.md)
+    /// for the full policy.
+    ///
+    /// Ignored with a one-time `tracing::warn!` when the `threads`
+    /// cargo feature is disabled.
+    pub threads: u32,
+    /// Minimum total payload bytes below which the parallel path is
+    /// skipped even when `threads > 0`.
+    ///
+    /// `None` uses [`crate::DEFAULT_PARALLEL_THRESHOLD_BYTES`] (64 KiB).
+    /// Set to `Some(0)` to force the parallel path for testing; set to
+    /// `Some(usize::MAX)` to force sequential.
+    pub parallel_threshold_bytes: Option<usize>,
 }
 
 impl Default for EncodeOptions {
@@ -53,6 +77,8 @@ impl Default for EncodeOptions {
             hash_algorithm: Some(HashAlgorithm::Xxh3),
             emit_preceders: false,
             compression_backend: pipeline::CompressionBackend::default(),
+            threads: 0,
+            parallel_threshold_bytes: None,
         }
     }
 }
@@ -111,6 +137,90 @@ enum EncodeMode {
     PreEncoded,
 }
 
+/// Encode a single object: run the pipeline (or validate pre-encoded
+/// bytes), compute its hash, and return the `EncodedObject`.
+///
+/// `intra_codec_threads` is passed through to [`PipelineConfig`] and
+/// honoured by axis-B-capable codecs (blosc2, zstd, simple_packing,
+/// shuffle).  Pure functional — no shared state, safe to call from
+/// multiple rayon workers in parallel.
+fn encode_one_object(
+    desc: &DataObjectDescriptor,
+    data: &[u8],
+    mode: EncodeMode,
+    options: &EncodeOptions,
+    intra_codec_threads: u32,
+) -> Result<EncodedObject> {
+    validate_object(desc, data.len())?;
+
+    let shape_product = desc
+        .shape
+        .iter()
+        .try_fold(1u64, |acc, &x| acc.checked_mul(x))
+        .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
+    let num_elements = usize::try_from(shape_product)
+        .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
+    let dtype = desc.dtype;
+
+    let config = build_pipeline_config_with_backend(
+        desc,
+        num_elements,
+        dtype,
+        options.compression_backend,
+        intra_codec_threads,
+    )?;
+
+    // Build the final descriptor with computed fields
+    let mut final_desc = desc.clone();
+
+    let encoded_payload: Vec<u8> = match mode {
+        EncodeMode::Raw => {
+            // Run the full encoding pipeline.
+            let result = pipeline::encode_pipeline(data, &config)
+                .map_err(|e| TensogramError::Encoding(e.to_string()))?;
+
+            // Store szip block offsets if produced
+            if let Some(offsets) = &result.block_offsets {
+                final_desc.params.insert(
+                    "szip_block_offsets".to_string(),
+                    ciborium::Value::Array(
+                        offsets
+                            .iter()
+                            .map(|&o| ciborium::Value::Integer(o.into()))
+                            .collect(),
+                    ),
+                );
+            }
+
+            result.encoded_bytes
+        }
+        EncodeMode::PreEncoded => {
+            // Caller's bytes are already encoded — use them directly.
+            // build_pipeline_config was already called above for
+            // defense-in-depth validation of encoding/compression params.
+            validate_no_szip_offsets_for_non_szip(desc)?;
+            if desc.compression == "szip" && desc.params.contains_key("szip_block_offsets") {
+                validate_szip_block_offsets(&desc.params, data.len())?;
+            }
+            data.to_vec()
+        }
+    };
+
+    // Compute hash over encoded payload (overwrites any caller-supplied hash).
+    if let Some(algorithm) = options.hash_algorithm {
+        let hash_value = compute_hash(&encoded_payload, algorithm);
+        final_desc.hash = Some(HashDescriptor {
+            hash_type: algorithm.as_str().to_string(),
+            value: hash_value,
+        });
+    }
+
+    Ok(EncodedObject {
+        descriptor: final_desc,
+        encoded_payload,
+    })
+}
+
 fn encode_inner(
     global_metadata: &GlobalMetadata,
     descriptors: &[(&DataObjectDescriptor, &[u8])],
@@ -125,72 +235,58 @@ fn encode_inner(
         ));
     }
 
-    let mut encoded_objects = Vec::with_capacity(descriptors.len());
+    // ── Thread-budget dispatch (axis-B-first policy) ────────────────────
+    //
+    // Resolve the effective thread budget (explicit option > env var),
+    // decide if the workload is large enough to parallelise, and pick
+    // axis A (par_iter across objects) vs axis B (sequential, codec
+    // uses the budget internally).
+    let budget = crate::parallel::resolve_budget(options.threads);
+    let total_bytes: usize = descriptors.iter().map(|(_, d)| d.len()).sum();
+    let parallel =
+        crate::parallel::should_parallelise(budget, total_bytes, options.parallel_threshold_bytes);
 
-    for (desc, data) in descriptors {
-        validate_object(desc, data.len())?;
+    let any_axis_b = descriptors
+        .iter()
+        .any(|(d, _)| crate::parallel::is_axis_b_friendly(&d.encoding, &d.filter, &d.compression));
+    let use_axis_a = parallel && crate::parallel::use_axis_a(descriptors.len(), budget, any_axis_b);
 
-        let shape_product = desc
-            .shape
-            .iter()
-            .try_fold(1u64, |acc, &x| acc.checked_mul(x))
-            .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
-        let num_elements = usize::try_from(shape_product)
-            .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
-        let dtype = desc.dtype;
+    // Axis B gets the full budget; axis A keeps codecs sequential so
+    // that the product of axis A and axis B threads never exceeds the
+    // caller's ask.
+    let intra_codec_threads = if parallel && !use_axis_a { budget } else { 0 };
 
-        let config = build_pipeline_config(desc, num_elements, dtype)?;
+    let encode_one = |(desc, data): &(&DataObjectDescriptor, &[u8])| {
+        encode_one_object(desc, data, mode, options, intra_codec_threads)
+    };
 
-        // Build the final descriptor with computed fields
-        let mut final_desc = (*desc).clone();
-
-        let encoded_payload: Vec<u8> = match mode {
-            EncodeMode::Raw => {
-                // Run the full encoding pipeline.
-                let result = pipeline::encode_pipeline(data, &config)
-                    .map_err(|e| TensogramError::Encoding(e.to_string()))?;
-
-                // Store szip block offsets if produced
-                if let Some(offsets) = &result.block_offsets {
-                    final_desc.params.insert(
-                        "szip_block_offsets".to_string(),
-                        ciborium::Value::Array(
-                            offsets
-                                .iter()
-                                .map(|&o| ciborium::Value::Integer(o.into()))
-                                .collect(),
-                        ),
-                    );
-                }
-
-                result.encoded_bytes
-            }
-            EncodeMode::PreEncoded => {
-                // Caller's bytes are already encoded — use them directly.
-                // build_pipeline_config() was already called above for
-                // defense-in-depth validation of encoding/compression params.
-                validate_no_szip_offsets_for_non_szip(desc)?;
-                if desc.compression == "szip" && desc.params.contains_key("szip_block_offsets") {
-                    validate_szip_block_offsets(&desc.params, data.len())?;
-                }
-                data.to_vec()
-            }
-        };
-
-        // Compute hash over encoded payload (overwrites any caller-supplied hash)
-        if let Some(algorithm) = options.hash_algorithm {
-            let hash_value = compute_hash(&encoded_payload, algorithm);
-            final_desc.hash = Some(HashDescriptor {
-                hash_type: algorithm.as_str().to_string(),
-                value: hash_value,
-            });
+    let encoded_objects: Vec<EncodedObject> = if use_axis_a {
+        // Axis A: par_iter across objects.  Requires the `threads`
+        // feature; when it's off, the caller's budget silently falls
+        // back to sequential (with a one-time warning from `with_pool`).
+        #[cfg(feature = "threads")]
+        {
+            use rayon::prelude::*;
+            crate::parallel::with_pool(budget, || {
+                descriptors
+                    .par_iter()
+                    .map(&encode_one)
+                    .collect::<Result<Vec<_>>>()
+            })?
         }
-
-        encoded_objects.push(EncodedObject {
-            descriptor: final_desc,
-            encoded_payload,
-        });
-    }
+        #[cfg(not(feature = "threads"))]
+        {
+            descriptors.iter().map(encode_one).collect::<Result<_>>()?
+        }
+    } else {
+        // Axis B (or purely sequential): iterate objects in order.
+        // Install the pool when there's an intra-codec budget so that
+        // parallel primitives inside codec implementations (e.g.
+        // `simple_packing` chunked par_iter) actually use it.
+        crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, || {
+            descriptors.iter().map(encode_one).collect::<Result<_>>()
+        })?
+    };
 
     // Validate that the caller hasn't written to _reserved_ at any level.
     validate_no_client_reserved(global_metadata)?;
@@ -417,15 +513,21 @@ pub(crate) fn build_pipeline_config(
         num_values,
         dtype,
         pipeline::CompressionBackend::default(),
+        0,
     )
 }
 
-/// Build a pipeline config with an explicit compression backend override.
+/// Build a pipeline config with an explicit compression backend override
+/// and an intra-codec thread budget.
+///
+/// `intra_codec_threads == 0` preserves the pre-threads behaviour and is
+/// what direct pipeline callers (benchmarks, external code) should use.
 pub(crate) fn build_pipeline_config_with_backend(
     desc: &DataObjectDescriptor,
     num_values: usize,
     dtype: Dtype,
     compression_backend: pipeline::CompressionBackend,
+    intra_codec_threads: u32,
 ) -> Result<PipelineConfig> {
     let encoding = match desc.encoding.as_str() {
         "none" => EncodingType::None,
@@ -604,6 +706,7 @@ pub(crate) fn build_pipeline_config_with_backend(
         dtype_byte_width: dtype.byte_width(),
         swap_unit_size: dtype.swap_unit_size(),
         compression_backend,
+        intra_codec_threads,
     })
 }
 

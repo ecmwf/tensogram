@@ -15,6 +15,12 @@ pub mod framing;
 pub mod hash;
 pub mod iter;
 pub mod metadata;
+// Internal thread-dispatch helpers for the multi-threaded coding
+// pipeline.  Callers configure threading via `EncodeOptions.threads`
+// and `DecodeOptions.threads`; the constants
+// `DEFAULT_PARALLEL_THRESHOLD_BYTES` and `ENV_THREADS` are re-exported
+// at the crate root for documentation.
+mod parallel;
 pub mod pipeline;
 #[cfg(feature = "remote")]
 pub mod remote;
@@ -35,6 +41,7 @@ pub use framing::{scan, scan_file};
 pub use hash::{compute_hash, verify_hash, HashAlgorithm};
 pub use iter::{messages, objects, objects_metadata, FileMessageIter, MessageIter, ObjectIter};
 pub use metadata::{compute_common, verify_canonical_cbor, RESERVED_KEY};
+pub use parallel::{DEFAULT_PARALLEL_THRESHOLD_BYTES, ENV_THREADS};
 pub use pipeline::{apply_pipeline, DataPipeline};
 pub use streaming::StreamingEncoder;
 pub use tensogram_encodings::pipeline::CompressionBackend;

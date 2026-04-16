@@ -31,6 +31,20 @@ implement until promoted to `TODO.md`.
   containers may improve compression ratio for 17-24 bit data.
   Requires padding/unpadding in the szip compressor and is a wire
   format change.
+- [ ] `ValidateOptions.threads` (follow-up to the multi-threaded
+  coding pipeline): level 3/4 validation runs the full decode
+  pipeline, so adding `threads` to `ValidateOptions` would let the
+  `--threads` CLI flag accelerate `tensogram validate --full`.  The
+  CLI already plumbs the flag but currently drops it on the floor
+  before `validate::run`.  Needs a small API change; blocked only by
+  appetite.
+- [ ] blosc2 `decompress` parallelism: currently our
+  `Blosc2Compressor` applies `nthreads` only on the compress path
+  because blosc2's safe `SChunk::from_buffer` ignores runtime
+  dparams overrides.  A `Chunk::set_dparams`-based rewrite
+  (unsafe-free but lower-level) would let axis-B benefit the decode
+  path too.  Gains are modest (decompress is memory-bound) but it
+  would close the symmetry gap.
 
 ## CI
 
