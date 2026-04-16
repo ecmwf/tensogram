@@ -2,7 +2,7 @@
 name = "tensogram-sz3-sys"
 version = "0.13.0"
 edition = "2021"
-license = "Apache-2.0 OR MIT"
+license = "Apache-2.0"
 description = "Clean-room FFI bindings for the SZ3 lossy compression library"
 links = "sz3"
 
