@@ -271,6 +271,32 @@ mod tests {
     }
 
     #[test]
+    fn should_parallelise_boundary_values() {
+        // exactly at threshold -> inclusive, returns true.
+        assert!(should_parallelise(
+            2,
+            DEFAULT_PARALLEL_THRESHOLD_BYTES,
+            None
+        ));
+        // one byte below -> false.
+        assert!(!should_parallelise(
+            2,
+            DEFAULT_PARALLEL_THRESHOLD_BYTES - 1,
+            None
+        ));
+        // zero budget always false regardless of bytes.
+        assert!(!should_parallelise(0, usize::MAX, Some(0)));
+        // explicit threshold 0 means "always parallel if budget > 0".
+        assert!(should_parallelise(1, 0, Some(0)));
+        // explicit threshold usize::MAX means "never parallel".
+        assert!(!should_parallelise(
+            u32::MAX,
+            usize::MAX - 1,
+            Some(usize::MAX)
+        ));
+    }
+
+    #[test]
     fn with_pool_budget_zero_runs_inline() {
         let result = with_pool(0, || 42);
         assert_eq!(result, 42);

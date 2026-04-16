@@ -128,17 +128,30 @@ fn build_cases(n: usize) -> Vec<Case> {
     ]
 }
 
+/// One row of the threads-scaling benchmark result table.
+///
+/// Reported fields are medians over `iterations` timed runs; throughput
+/// helpers divide `original_bytes` (not compressed size) by wall time so
+/// numbers are directly comparable across codec configurations.
 #[derive(Debug, Clone)]
 pub struct ThreadsScalingRow {
+    /// Human-readable case name, e.g. "sp(24)+blosc2(lz4)".
     pub case: String,
+    /// Thread budget passed via `PipelineConfig.intra_codec_threads`.
     pub threads: u32,
+    /// Median encode wall time across `iterations` runs.
     pub encode_median_ms: f64,
+    /// Median decode wall time across `iterations` runs.
     pub decode_median_ms: f64,
+    /// Compressed byte count emitted by the encode pipeline.
     pub compressed_bytes: usize,
+    /// Original uncompressed byte count (for ratio + throughput).
     pub original_bytes: usize,
 }
 
 impl ThreadsScalingRow {
+    /// Compressed size as a percentage of original.  `0.0` when the
+    /// original payload was empty.
     pub fn ratio_pct(&self) -> f64 {
         if self.original_bytes == 0 {
             0.0
@@ -147,6 +160,8 @@ impl ThreadsScalingRow {
         }
     }
 
+    /// Encode throughput in MB/s computed against the *original* byte
+    /// size, so numbers compare directly across compression ratios.
     pub fn encode_mbps(&self) -> f64 {
         if self.encode_median_ms <= 0.0 {
             0.0
@@ -155,6 +170,8 @@ impl ThreadsScalingRow {
         }
     }
 
+    /// Decode throughput in MB/s — see [`ThreadsScalingRow::encode_mbps`]
+    /// for the normalisation rationale.
     pub fn decode_mbps(&self) -> f64 {
         if self.decode_median_ms <= 0.0 {
             0.0

@@ -8,6 +8,7 @@ byte-identical output to previous releases until the caller opts in.
 This page covers:
 
 - [The `threads` option](#the-threads-option)
+- [Cross-language parity](#cross-language-parity)
 - [Axis-A vs axis-B dispatch](#axis-a-vs-axis-b-dispatch)
 - [Determinism contract](#determinism-contract)
 - [Environment variable override](#environment-variable-override)
@@ -71,6 +72,34 @@ TENSOGRAM_THREADS=4 tensogram split -o 'part_[index].tgm' input.tgm
 | `0` (default) | Sequential, single-threaded.  Falls back to the `TENSOGRAM_THREADS` env var if set and non-zero. |
 | `1` | Build a scoped 1-worker rayon pool.  Useful for testing — everything flows through the parallel code paths but runs deterministically. |
 | `N ≥ 2` | Build a scoped `N`-worker rayon pool for the duration of the call.  Pool is dropped when the call returns. |
+
+## Cross-language parity
+
+Every language binding exposes the same `threads` option on every
+encode/decode entry point that does CPU work.  Metadata-only commands
+(scan, describe, list) never accept it because they never decode
+payloads.
+
+| Entry point | Rust | Python | C FFI | C++ wrapper | CLI |
+|-------------|:----:|:------:|:-----:|:-----------:|:---:|
+| `encode` / `encode_pre_encoded` | ✅ | ✅ | ✅ | ✅ | — (via subcommand) |
+| `decode` / `decode_object` / `decode_range` | ✅ | ✅ | ✅ | ✅ | — (via subcommand) |
+| `TensogramFile::append` | ✅ | ✅ | ✅ | ✅ | — |
+| `TensogramFile::decode_message` | ✅ | ✅ | ✅ | ✅ | — |
+| `TensogramFile::decode_range` | ✅ | ✅ | ✅ | ✅ | — |
+| Batch decode (object/range) | ✅ | ✅ | — (not exposed in FFI) | — | — |
+| `AsyncTensogramFile::*` | — (async feature, trait) | ✅ | — | — | — |
+| `StreamingEncoder::new` | ✅ | ✅ | ✅ | ✅ | — |
+| `tensogram merge` | — | — | — | — | ✅ (`--threads`) |
+| `tensogram split` | — | — | — | — | ✅ |
+| `tensogram reshuffle` | — | — | — | — | ✅ |
+| `tensogram convert-grib` / `convert-netcdf` | — | — | — | — | ✅ |
+| `tensogram validate` | — | — | — | — | ⚠ (flag accepted but not plumbed — [IDEAS](../../plans/IDEAS.md)) |
+| `tensogram copy` / `merge` | — | — | — | — | ✅ |
+| `TENSOGRAM_THREADS` env var fallback | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+Legend: ✅ = full support, ⚠ = flag accepted but currently a no-op
+(tracked in IDEAS), — = not applicable at this layer.
 
 ### Threshold behaviour
 

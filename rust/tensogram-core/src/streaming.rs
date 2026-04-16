@@ -672,6 +672,54 @@ mod tests {
         assert_eq!(objects.len(), 0);
     }
 
+    /// Threads budget on `StreamingEncoder` must not change the encoded
+    /// payload for transparent pipelines.  This locks in the pass-3
+    /// consistency: axis-B dispatch inside `write_object` is opt-in and
+    /// transparent-codec output is byte-identical across thread counts.
+    #[test]
+    fn streaming_threads_byte_identical_transparent() {
+        let meta = GlobalMetadata::default();
+        // One large object — 200 KiB — above the 64 KiB default threshold.
+        let desc = make_descriptor(vec![50_000]);
+        let data: Vec<u8> = (0..50_000)
+            .flat_map(|i| (250.0f32 + (i as f32).sin() * 30.0).to_ne_bytes())
+            .collect();
+
+        let mk = |threads: u32| -> Vec<u8> {
+            let buf = Vec::new();
+            let opts = EncodeOptions {
+                threads,
+                parallel_threshold_bytes: Some(0), // force parallel
+                ..Default::default()
+            };
+            let mut enc = StreamingEncoder::new(buf, &meta, &opts).unwrap();
+            enc.write_object(&desc, &data).unwrap();
+            enc.finish().unwrap()
+        };
+
+        // Compare encoded payload bytes (ignore provenance).
+        let payloads = |buf: &[u8]| -> Vec<Vec<u8>> {
+            crate::framing::decode_message(buf)
+                .unwrap()
+                .objects
+                .iter()
+                .map(|(_, p, _)| p.to_vec())
+                .collect()
+        };
+
+        let baseline = mk(0);
+        let payloads_baseline = payloads(&baseline);
+
+        for t in [1u32, 2, 4, 8] {
+            let got = mk(t);
+            assert_eq!(
+                payloads_baseline,
+                payloads(&got),
+                "streaming threads={t} payload must match sequential"
+            );
+        }
+    }
+
     #[test]
     fn streaming_with_metadata() {
         let mut extra = BTreeMap::new();
