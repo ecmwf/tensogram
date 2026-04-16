@@ -24,7 +24,8 @@ Returns a complete, self-contained message as a `Vec<u8>`.
 pub struct EncodeOptions {
     /// Hash algorithm to use. None disables hashing entirely.
     pub hash_algorithm: Option<HashAlgorithm>,
-    /// Reserved for future buffered-mode preceder support.
+    /// Reserved — buffered `encode()` rejects `true`. Use
+    /// `StreamingEncoder::write_preceder()` instead.
     pub emit_preceders: bool,
     /// Which backend to use for szip / zstd when both FFI and pure-Rust
     /// implementations are compiled in.

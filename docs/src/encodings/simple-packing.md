@@ -51,7 +51,7 @@ If all values are identical (range = 0), `compute_params()` succeeds and stores 
 
 ### bits_per_value Range
 
-Valid range: **0 to 64**. More than 64 bits is rejected. Zero bits is accepted — `compute_params` stores everything in the reference value and `encode` produces an empty byte buffer. The practical range for weather data is 8–24 bits.
+Valid range: **0 to 64**. More than 64 bits is rejected. Zero bits is accepted — `compute_params` stores the first value as the reference value (not the minimum) and `encode` produces an empty byte buffer. Decode reconstructs the reference value for every element, so this is only lossless for constant fields. The practical range for weather data is 8–24 bits.
 
 | bits_per_value | Packed values | Precision vs float64 |
 |---|---|---|
