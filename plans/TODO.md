@@ -135,11 +135,16 @@ For speculative ideas, see `IDEAS.md`.
     - develop a loader for earthkit-data to load tensogram data
     - support loading files and streaming 
     - support decoding and encoding
+    - support integration with Python array interface as Earthkit data does
     - add this code to the tensogram-xarray module, such that the earthkit extension can use to export to xarray
 
 ## Documentation
 
 - [x] ~~Document all error paths in docs/ (error handling reference page)~~ → `docs/src/guide/error-handling.md`
+
+- [ ] interactive-docs:
+  - make the docs interactive. 
+  - since we have WASM, you can embed demos in the docs
 
 ## Builds
 

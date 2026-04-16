@@ -6,12 +6,29 @@ implement until promoted to `TODO.md`.
 ## Tools
 
 - [ ] `tensogram filter` subcommand (v2 rules engine)
+- [ ] Inspectors/Viewers: Command-line or GUI tools to peer inside the file without writing a custom script. -- a TUI for tensograms?
+
+## Features
+
+- [ ] Progressive precision decoding (maybe you already have that)
+  - this needs more discussion. how would you see this progression? in the same message? each data frame contains further precision?
+
+- [ ] Metadata schemas and self-registration of schema definitions -- see CovJSON
+  - there's a standard for registering your own metadata. 
+  - you describe something like "$schema: "ecmwf.int/coveragejson/schema" which standard tools know how to fetch
+  - research how is done
+
 
 ## Bridges
 
 - [ ] Tensogram as a storage backend for NetCDF
 
-## NaN handling
+## Languages
+
+- [ ] Go interface over Rust
+- [ ] Fortran interface over Rust
+
+## encoding / decoding
 
 - [ ] NaN bitmask companion object: use a reserved preamble flag to
   signal that a data object has NaN values, with a succeeding bitmask
@@ -21,12 +38,17 @@ implement until promoted to `TODO.md`.
 
 ## Optimisations
 
+- [ ] GPU encoding/decoding. check nvidia nvcomp
+    - also check compute-shader decoding (maybe encoding too) -- wonder how fast that would go vs threads
+
 - [ ] SIMD payload alignment: optional padding for 16 / 32 / 64-byte
   aligned payloads.
+
 - [ ] Parallel batch validation: `validate` file loop with rayon
   `par_iter` for thousands-of-files use cases. Architecture already
   supports it (`validate_message` is `&[u8] -> Report`, no shared
   state).
+
 - [ ] 4-byte AEC containers for 24-bit szip: zero-padded 4-byte
   containers may improve compression ratio for 17-24 bit data.
   Requires padding/unpadding in the szip compressor and is a wire
