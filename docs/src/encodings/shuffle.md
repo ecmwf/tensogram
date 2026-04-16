@@ -49,7 +49,7 @@ Reverses the shuffle. Applied automatically by the decode pipeline.
 
 ## Using Shuffle in a Message
 
-Set `filter: "shuffle"` in the payload descriptor and provide `shuffle_element_size`:
+Set `filter: "shuffle"` in the `DataObjectDescriptor` and provide `shuffle_element_size`:
 
 ```rust
 use ciborium::Value;
