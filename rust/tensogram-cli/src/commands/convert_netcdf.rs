@@ -19,6 +19,7 @@ pub fn run(
     split_by: &str,
     cf: bool,
     pipeline: &PipelineArgs,
+    threads: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if inputs.is_empty() {
         return Err("no input files specified".into());
@@ -36,10 +37,13 @@ pub fn run(
         }
     };
 
+    let mut encode_options = tensogram_core::EncodeOptions::default();
+    encode_options.threads = threads;
+
     let options = ConvertOptions {
         split_by,
         cf,
-        encode_options: tensogram_core::EncodeOptions::default(),
+        encode_options,
         pipeline: DataPipeline {
             encoding: pipeline.encoding.clone(),
             bits: pipeline.bits,

@@ -19,6 +19,7 @@ pub fn run(
     split: bool,
     all_keys: bool,
     pipeline: &PipelineArgs,
+    threads: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if inputs.is_empty() {
         return Err("no input files specified".into());
@@ -30,6 +31,9 @@ pub fn run(
         Grouping::MergeAll
     };
 
+    let mut encode_options = tensogram_core::EncodeOptions::default();
+    encode_options.threads = threads;
+
     let options = ConvertOptions {
         grouping,
         preserve_all_keys: all_keys,
@@ -40,6 +44,7 @@ pub fn run(
             compression: pipeline.compression.clone(),
             compression_level: pipeline.compression_level,
         },
+        encode_options,
         ..Default::default()
     };
 
