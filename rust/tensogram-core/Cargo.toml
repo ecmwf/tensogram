@@ -1,10 +1,10 @@
 [package]
 name = "tensogram-core"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 
 [features]
-default = ["szip", "zstd", "lz4", "blosc2", "zfp", "sz3"]
+default = ["szip", "zstd", "lz4", "blosc2", "zfp", "sz3", "threads"]
 mmap = ["dep:memmap2"]
 async = ["dep:tokio"]
 remote = ["dep:object_store", "dep:url", "dep:bytes", "dep:tokio", "tokio/rt-multi-thread"]
@@ -17,6 +17,12 @@ lz4 = ["tensogram-encodings/lz4"]
 blosc2 = ["tensogram-encodings/blosc2"]
 zfp = ["tensogram-encodings/zfp"]
 sz3 = ["tensogram-encodings/sz3"]
+# Enables the multi-threaded coding pipeline.  Pulls `rayon` and the
+# matching feature in `tensogram-encodings`.  When disabled (e.g. on
+# `wasm32`), `EncodeOptions.threads` / `DecodeOptions.threads` are
+# accepted but silently ignored — the library falls back to sequential
+# execution.
+threads = ["dep:rayon", "tensogram-encodings/threads"]
 
 [dependencies]
 tensogram-encodings = { path = "../tensogram-encodings", default-features = false }
@@ -32,6 +38,7 @@ tokio = { version = "1", features = ["fs", "rt"], optional = true }
 object_store = { version = "0.13", default-features = false, features = ["aws", "gcp", "azure", "http"], optional = true }
 url = { version = "2", optional = true }
 bytes = { version = "1", optional = true }
+rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true

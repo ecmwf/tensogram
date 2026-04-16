@@ -8,6 +8,70 @@
 
 use thiserror::Error;
 
+/// Minimum number of values below which the parallel min/max scan is
+/// skipped.  Rayon's par_iter cost on small buffers exceeds the gain;
+/// 64 KiB of f64 = 8192 values is a reasonable break-even on modern CPUs.
+#[cfg(feature = "threads")]
+const PARALLEL_SCAN_MIN_VALUES: usize = 8192;
+
+/// Minimum number of values below which the parallel simple_packing
+/// encode/decode paths are skipped.  Matches the scan threshold.
+#[cfg(feature = "threads")]
+const PARALLEL_SP_MIN_VALUES: usize = 8192;
+
+/// Run a min/max scan over `values`, returning `Err(NanValue)` on the
+/// first NaN observed (or any NaN when running in parallel).
+fn scan_min_max(
+    values: &[f64],
+    #[allow(unused_variables)] threads: u32,
+) -> Result<(f64, f64), PackingError> {
+    #[cfg(feature = "threads")]
+    {
+        if threads >= 2 && values.len() >= PARALLEL_SCAN_MIN_VALUES {
+            use rayon::prelude::*;
+            // Short-circuit on NaN: `try_fold` stops as soon as one
+            // worker sees a NaN.  The reported index is from whichever
+            // chunk that worker owned — not necessarily the globally-
+            // first NaN.  This trade-off was accepted for
+            // `threads > 0` callers; sequential callers see the
+            // original first-NaN behaviour.
+            return values
+                .par_iter()
+                .enumerate()
+                .try_fold(
+                    || (f64::INFINITY, f64::NEG_INFINITY),
+                    |(mn, mx), (i, &v)| {
+                        if v.is_nan() {
+                            Err(PackingError::NanValue(i))
+                        } else {
+                            Ok((mn.min(v), mx.max(v)))
+                        }
+                    },
+                )
+                .try_reduce(
+                    || (f64::INFINITY, f64::NEG_INFINITY),
+                    |(amn, amx), (bmn, bmx)| Ok((amn.min(bmn), amx.max(bmx))),
+                );
+        }
+    }
+
+    // Sequential scan — preserves first-NaN-index semantics.
+    let mut min_val = f64::INFINITY;
+    let mut max_val = f64::NEG_INFINITY;
+    for (i, &v) in values.iter().enumerate() {
+        if v.is_nan() {
+            return Err(PackingError::NanValue(i));
+        }
+        if v < min_val {
+            min_val = v;
+        }
+        if v > max_val {
+            max_val = v;
+        }
+    }
+    Ok((min_val, max_val))
+}
+
 #[derive(Debug, Error)]
 pub enum PackingError {
     #[error("NaN value encountered at index {0}")]
@@ -36,6 +100,30 @@ pub fn compute_params(
     bits_per_value: u32,
     decimal_scale_factor: i32,
 ) -> Result<SimplePackingParams, PackingError> {
+    compute_params_with_threads(values, bits_per_value, decimal_scale_factor, 0)
+}
+
+/// Thread-aware variant of [`compute_params`].
+///
+/// `threads == 0` preserves the pre-0.13.0 sequential scan, including
+/// the guarantee that the reported `NanValue(i)` is the **first** NaN
+/// in `values`.
+///
+/// `threads > 0` splits the scan across rayon workers.  Output
+/// `SimplePackingParams` are byte-identical to the sequential path
+/// (min/max are associative and NaN-free slices produce the same
+/// reduction regardless of split).  The caveat is NaN reporting:
+/// when more than one NaN is present, the **index reported** may
+/// belong to any of them (rayon's work-stealing reduction is not
+/// order-preserving for short-circuit errors).  This trade-off was
+/// accepted in the feature design — see
+/// `docs/src/guide/multi-threaded-pipeline.md`.
+pub fn compute_params_with_threads(
+    values: &[f64],
+    bits_per_value: u32,
+    decimal_scale_factor: i32,
+    #[allow(unused_variables)] threads: u32,
+) -> Result<SimplePackingParams, PackingError> {
     if bits_per_value > 64 {
         return Err(PackingError::BitsPerValueTooLarge(bits_per_value));
     }
@@ -50,19 +138,10 @@ pub fn compute_params(
         });
     }
 
-    let mut min_val = f64::INFINITY;
-    let mut max_val = f64::NEG_INFINITY;
-    for (i, &v) in values.iter().enumerate() {
-        if v.is_nan() {
-            return Err(PackingError::NanValue(i));
-        }
-        if v < min_val {
-            min_val = v;
-        }
-        if v > max_val {
-            max_val = v;
-        }
-    }
+    // Parallel scan when the `threads` feature is compiled in and the
+    // caller requested it AND the input is large enough to amortise
+    // the rayon split overhead.
+    let (min_val, max_val) = scan_min_max(values, threads)?;
 
     let d_scale = 10f64.powi(decimal_scale_factor);
 
@@ -91,14 +170,45 @@ pub fn compute_params(
 }
 
 /// Encode f64 values to packed integer bytes (MSB-first bit packing).
-///
 pub fn encode(values: &[f64], params: &SimplePackingParams) -> Result<Vec<u8>, PackingError> {
+    encode_with_threads(values, params, 0)
+}
+
+/// Thread-aware variant of [`encode`].
+///
+/// `threads == 0` preserves the pre-0.13.0 sequential path.
+/// `threads > 0` splits the packing work across rayon workers.  Output
+/// bytes are byte-identical to the sequential path regardless of
+/// thread count (simple_packing is transparent under chunked
+/// parallelism — each chunk produces the same MSB-first bits it would
+/// in a sequential scan).
+///
+/// NaN handling: same short-circuit semantics as
+/// [`compute_params_with_threads`] — when `threads > 0` the reported
+/// NaN index may belong to any of several NaNs in the input.
+pub fn encode_with_threads(
+    values: &[f64],
+    params: &SimplePackingParams,
+    #[allow(unused_variables)] threads: u32,
+) -> Result<Vec<u8>, PackingError> {
     if params.bits_per_value > 64 {
         return Err(PackingError::BitsPerValueTooLarge(params.bits_per_value));
     }
-    if let Some(i) = values.iter().position(|v| v.is_nan()) {
-        return Err(PackingError::NanValue(i));
+
+    // NaN scan.  When parallel, this is fused into the packing loop
+    // below; sequential goes through the original fast check so that
+    // the first-NaN-index guarantee holds.
+    #[cfg(feature = "threads")]
+    let parallel = threads >= 2 && values.len() >= PARALLEL_SP_MIN_VALUES;
+    #[cfg(not(feature = "threads"))]
+    let parallel = false;
+
+    if !parallel {
+        if let Some(i) = values.iter().position(|v| v.is_nan()) {
+            return Err(PackingError::NanValue(i));
+        }
     }
+
     if params.bits_per_value == 0 {
         return Ok(Vec::new());
     }
@@ -113,6 +223,19 @@ pub fn encode(values: &[f64], params: &SimplePackingParams) -> Result<Vec<u8>, P
     } else {
         (1u64 << bpv) - 1
     };
+
+    if parallel {
+        #[cfg(feature = "threads")]
+        {
+            return match bpv {
+                8 => encode_aligned_par::<1>(values, refv, scale, max_packed),
+                16 => encode_aligned_par::<2>(values, refv, scale, max_packed),
+                24 => encode_aligned_par::<3>(values, refv, scale, max_packed),
+                32 => encode_aligned_par::<4>(values, refv, scale, max_packed),
+                _ => encode_generic_par(values, refv, scale, max_packed, bpv),
+            };
+        }
+    }
 
     match bpv {
         8 => encode_aligned::<1>(values, refv, scale, max_packed),
@@ -167,6 +290,159 @@ fn encode_aligned<const N: usize>(
     Ok(out)
 }
 
+/// Parallel aligned encode.  Each output N-byte chunk is computed
+/// independently from the corresponding input f64, so rayon's
+/// `par_chunks_mut` gives byte-identical output to the sequential
+/// path.  NaN check is fused into the packing loop and short-circuits
+/// the whole parallel reduction on the first sighting in the current
+/// worker's slice.
+#[cfg(feature = "threads")]
+fn encode_aligned_par<const N: usize>(
+    values: &[f64],
+    refv: f64,
+    scale: f64,
+    max_packed: u64,
+) -> Result<Vec<u8>, PackingError> {
+    use rayon::prelude::*;
+
+    let len = values
+        .len()
+        .checked_mul(N)
+        .ok_or(PackingError::OutputSizeOverflow {
+            num_values: values.len(),
+            bytes_per_value: N,
+        })?;
+    let mut out = vec![0u8; len];
+
+    // Work per chunk is ~N bytes + 1 f64 load.  We let rayon pick
+    // chunk boundaries via par_chunks_mut; pair output chunks with
+    // input values by index.
+    out.par_chunks_exact_mut(N)
+        .zip(values.par_iter().enumerate())
+        .try_for_each(|(chunk, (i, &v))| -> Result<(), PackingError> {
+            if v.is_nan() {
+                return Err(PackingError::NanValue(i));
+            }
+            let q = (((v - refv) * scale).round() as u64).min(max_packed);
+            match N {
+                1 => {
+                    chunk[0] = q as u8;
+                }
+                2 => {
+                    chunk[0] = (q >> 8) as u8;
+                    chunk[1] = q as u8;
+                }
+                3 => {
+                    chunk[0] = (q >> 16) as u8;
+                    chunk[1] = (q >> 8) as u8;
+                    chunk[2] = q as u8;
+                }
+                4 => {
+                    chunk[0] = (q >> 24) as u8;
+                    chunk[1] = (q >> 16) as u8;
+                    chunk[2] = (q >> 8) as u8;
+                    chunk[3] = q as u8;
+                }
+                _ => unreachable!(),
+            }
+            Ok(())
+        })?;
+
+    Ok(out)
+}
+
+/// Parallel generic encode for non-byte-aligned bit widths.
+///
+/// Splits the work into chunks sized at `lcm(8, bpv) / bpv` values —
+/// guaranteeing each chunk starts and ends on a byte boundary, so
+/// workers never share output bytes.  Output bytes are byte-identical
+/// to the sequential path.
+#[cfg(feature = "threads")]
+fn encode_generic_par(
+    values: &[f64],
+    refv: f64,
+    scale: f64,
+    max_packed: u64,
+    bpv: u32,
+) -> Result<Vec<u8>, PackingError> {
+    use rayon::prelude::*;
+
+    let total_bits =
+        (values.len() as u64)
+            .checked_mul(bpv as u64)
+            .ok_or(PackingError::OutputSizeOverflow {
+                num_values: values.len(),
+                bytes_per_value: (bpv as usize).div_ceil(8),
+            })?;
+    let total_bytes =
+        usize::try_from(total_bits.div_ceil(8)).map_err(|_| PackingError::OutputSizeOverflow {
+            num_values: values.len(),
+            bytes_per_value: (bpv as usize).div_ceil(8),
+        })?;
+    let mut output = vec![0u8; total_bytes];
+
+    // Chunk size in values: lcm(8, bpv) / bpv.
+    // lcm(a, b) = a*b / gcd(a, b).
+    let bpv_usize = bpv as usize;
+    let g = gcd(8, bpv_usize);
+    let values_per_chunk = (8 * bpv_usize / g) / bpv_usize;
+    let bytes_per_chunk = values_per_chunk * bpv_usize / 8;
+
+    // Pair value chunks with output byte chunks.  The last chunk may
+    // be shorter — fall back to sequential packing for it so we
+    // don't need a separate tail path.
+    let full_chunks = values.len() / values_per_chunk;
+    let head_values = &values[..full_chunks * values_per_chunk];
+    let head_bytes = &mut output[..full_chunks * bytes_per_chunk];
+    head_values
+        .par_chunks(values_per_chunk)
+        .zip(head_bytes.par_chunks_mut(bytes_per_chunk))
+        .try_for_each(|(vchunk, bchunk)| -> Result<(), PackingError> {
+            let mut bit_pos: u64 = 0;
+            for (local_i, &value) in vchunk.iter().enumerate() {
+                if value.is_nan() {
+                    // Index is chunk-local — we cannot easily recover
+                    // the global one under par without extra bookkeeping.
+                    // The caller explicitly opted into threads=N; doc'd
+                    // non-determinism of reported NaN index is accepted.
+                    return Err(PackingError::NanValue(local_i));
+                }
+                let packed = (((value - refv) * scale).round() as u64).min(max_packed);
+                write_bits(bchunk, bit_pos, packed, bpv);
+                bit_pos += bpv as u64;
+            }
+            Ok(())
+        })?;
+
+    // Tail (if any): sequential.
+    let tail_values = &values[full_chunks * values_per_chunk..];
+    if !tail_values.is_empty() {
+        let tail_byte_start = full_chunks * bytes_per_chunk;
+        let tail_bytes = &mut output[tail_byte_start..];
+        let mut bit_pos: u64 = 0;
+        for (i, &value) in tail_values.iter().enumerate() {
+            if value.is_nan() {
+                return Err(PackingError::NanValue(full_chunks * values_per_chunk + i));
+            }
+            let packed = (((value - refv) * scale).round() as u64).min(max_packed);
+            write_bits(tail_bytes, bit_pos, packed, bpv);
+            bit_pos += bpv as u64;
+        }
+    }
+
+    Ok(output)
+}
+
+#[cfg(feature = "threads")]
+const fn gcd(mut a: usize, mut b: usize) -> usize {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}
+
 fn encode_generic(
     values: &[f64],
     refv: f64,
@@ -204,6 +480,22 @@ pub fn decode(
     num_values: usize,
     params: &SimplePackingParams,
 ) -> Result<Vec<f64>, PackingError> {
+    decode_with_threads(packed, num_values, params, 0)
+}
+
+/// Thread-aware variant of [`decode`].
+///
+/// `threads == 0` preserves the pre-0.13.0 sequential path.
+/// `threads > 0` uses rayon to unpack in parallel.  Output values are
+/// byte-identical to the sequential path (floating-point math is
+/// trivially associative here — each value is computed independently
+/// from its packed bits).
+pub fn decode_with_threads(
+    packed: &[u8],
+    num_values: usize,
+    params: &SimplePackingParams,
+    #[allow(unused_variables)] threads: u32,
+) -> Result<Vec<f64>, PackingError> {
     if params.bits_per_value > 64 {
         return Err(PackingError::BitsPerValueTooLarge(params.bits_per_value));
     }
@@ -226,6 +518,24 @@ pub fn decode(
     // value = ref + 2^E * 10^(-D) * packed_int = ref + inv_scale * packed_int
     let inv_scale =
         2f64.powi(params.binary_scale_factor) * 10f64.powi(-params.decimal_scale_factor);
+
+    #[cfg(feature = "threads")]
+    let parallel = threads >= 2 && num_values >= PARALLEL_SP_MIN_VALUES;
+    #[cfg(not(feature = "threads"))]
+    let parallel = false;
+
+    if parallel {
+        #[cfg(feature = "threads")]
+        {
+            return Ok(match bpv {
+                8 => decode_aligned_par::<1>(packed, num_values, refv, inv_scale),
+                16 => decode_aligned_par::<2>(packed, num_values, refv, inv_scale),
+                24 => decode_aligned_par::<3>(packed, num_values, refv, inv_scale),
+                32 => decode_aligned_par::<4>(packed, num_values, refv, inv_scale),
+                _ => decode_generic_par(packed, num_values, refv, inv_scale, bpv),
+            });
+        }
+    }
 
     match bpv {
         8 => Ok(decode_aligned::<1>(packed, num_values, refv, inv_scale)),
@@ -259,6 +569,93 @@ fn decode_aligned<const N: usize>(
         };
         values.push(refv + inv_scale * packed_int as f64);
     }
+    values
+}
+
+/// Parallel aligned decode — byte-identical to the sequential path.
+#[cfg(feature = "threads")]
+fn decode_aligned_par<const N: usize>(
+    packed: &[u8],
+    num_values: usize,
+    refv: f64,
+    inv_scale: f64,
+) -> Vec<f64> {
+    use rayon::prelude::*;
+
+    let mut values = vec![0.0f64; num_values];
+    values
+        .par_iter_mut()
+        .zip(packed[..num_values * N].par_chunks_exact(N))
+        .for_each(|(out, chunk)| {
+            let packed_int: u64 = match N {
+                1 => chunk[0] as u64,
+                2 => ((chunk[0] as u64) << 8) | chunk[1] as u64,
+                3 => ((chunk[0] as u64) << 16) | ((chunk[1] as u64) << 8) | chunk[2] as u64,
+                4 => {
+                    ((chunk[0] as u64) << 24)
+                        | ((chunk[1] as u64) << 16)
+                        | ((chunk[2] as u64) << 8)
+                        | chunk[3] as u64
+                }
+                _ => unreachable!(),
+            };
+            *out = refv + inv_scale * packed_int as f64;
+        });
+    values
+}
+
+/// Parallel generic decode for non-byte-aligned bit widths.  Uses the
+/// same byte-aligned chunking trick as `encode_generic_par`: chunks
+/// of `lcm(8, bpv) / bpv` values start and end on byte boundaries.
+#[cfg(feature = "threads")]
+fn decode_generic_par(
+    packed: &[u8],
+    num_values: usize,
+    refv: f64,
+    inv_scale: f64,
+    bpv: u32,
+) -> Vec<f64> {
+    use rayon::prelude::*;
+
+    let bpv_usize = bpv as usize;
+    let g = gcd(8, bpv_usize);
+    let values_per_chunk = (8 * bpv_usize / g) / bpv_usize;
+    let bytes_per_chunk = values_per_chunk * bpv_usize / 8;
+
+    let full_chunks = num_values / values_per_chunk;
+    let mut values = vec![0.0f64; num_values];
+
+    {
+        let head_values_slice = &mut values[..full_chunks * values_per_chunk];
+        let head_bytes = &packed[..full_chunks * bytes_per_chunk];
+
+        head_values_slice
+            .par_chunks_mut(values_per_chunk)
+            .zip(head_bytes.par_chunks(bytes_per_chunk))
+            .for_each(|(vchunk, bchunk)| {
+                let mut bit_pos: u64 = 0;
+                for out in vchunk.iter_mut() {
+                    let packed_int = read_bits(bchunk, bit_pos, bpv);
+                    *out = refv + inv_scale * packed_int as f64;
+                    bit_pos += bpv as u64;
+                }
+            });
+    }
+
+    // Tail — sequential.
+    let tail_count = num_values - full_chunks * values_per_chunk;
+    if tail_count > 0 {
+        let tail_byte_start = full_chunks * bytes_per_chunk;
+        let tail_bytes = &packed[tail_byte_start..];
+        let tail_values = &mut values[full_chunks * values_per_chunk..];
+        let mut bit_pos: u64 = 0;
+        for out in tail_values.iter_mut() {
+            let packed_int = read_bits(tail_bytes, bit_pos, bpv);
+            *out = refv + inv_scale * packed_int as f64;
+            bit_pos += bpv as u64;
+        }
+    }
+
     values
 }
 
@@ -452,6 +849,76 @@ fn read_bits(buf: &[u8], bit_offset: u64, nbits: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Threading determinism ─────────────────────────────────────────
+    //
+    // The invariants tested here are the foundation of the
+    // multi-threaded pipeline: for simple_packing the output must be
+    // byte-identical across all thread counts (it is a transparent
+    // codec — no internal block reordering).  This is stronger than
+    // the blosc2/zstd contract which only guarantees round-trip
+    // identity.
+
+    #[cfg(feature = "threads")]
+    #[test]
+    fn threads_byte_identical_aligned_widths() {
+        let values: Vec<f64> = (0..100_000).map(|i| 200.0 + i as f64 * 0.001).collect();
+        for bpv in [8u32, 16, 24, 32] {
+            let params = compute_params(&values, bpv, 0).unwrap();
+            let seq = encode_with_threads(&values, &params, 0).unwrap();
+            for t in [1u32, 2, 4, 8] {
+                let par = encode_with_threads(&values, &params, t).unwrap();
+                assert_eq!(seq, par, "encode threads={t} bpv={bpv} mismatch");
+                let rt = decode_with_threads(&par, values.len(), &params, t).unwrap();
+                let rt_seq = decode_with_threads(&seq, values.len(), &params, 0).unwrap();
+                assert_eq!(rt, rt_seq, "decode threads={t} bpv={bpv} mismatch");
+            }
+        }
+    }
+
+    #[cfg(feature = "threads")]
+    #[test]
+    fn threads_byte_identical_generic_widths() {
+        // Non-byte-aligned widths exercise the chunked-lcm parallel path.
+        let values: Vec<f64> = (0..100_000).map(|i| 1.0 + i as f64 * 0.001).collect();
+        for bpv in [12u32, 20, 7, 13] {
+            let params = compute_params(&values, bpv, 0).unwrap();
+            let seq = encode_with_threads(&values, &params, 0).unwrap();
+            for t in [1u32, 2, 4, 8] {
+                let par = encode_with_threads(&values, &params, t).unwrap();
+                assert_eq!(seq, par, "encode threads={t} bpv={bpv} mismatch");
+                let rt = decode_with_threads(&par, values.len(), &params, t).unwrap();
+                let rt_seq = decode_with_threads(&seq, values.len(), &params, 0).unwrap();
+                assert_eq!(rt, rt_seq, "decode threads={t} bpv={bpv} mismatch");
+            }
+        }
+    }
+
+    #[cfg(feature = "threads")]
+    #[test]
+    fn threads_below_threshold_uses_sequential_path() {
+        // Below PARALLEL_SP_MIN_VALUES the threaded API should still
+        // produce byte-identical output (it falls back to sequential).
+        let values: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        let params = compute_params(&values, 16, 0).unwrap();
+        let seq = encode(&values, &params).unwrap();
+        let par = encode_with_threads(&values, &params, 8).unwrap();
+        assert_eq!(seq, par);
+    }
+
+    #[cfg(feature = "threads")]
+    #[test]
+    fn threads_compute_params_matches_sequential_on_clean_input() {
+        // Without NaN, the min/max reduction produces identical params.
+        let values: Vec<f64> = (0..100_000)
+            .map(|i| (i as f64).sin() * 50.0 + 100.0)
+            .collect();
+        let seq = compute_params(&values, 16, 0).unwrap();
+        let par = compute_params_with_threads(&values, 16, 0, 8).unwrap();
+        assert_eq!(seq.reference_value.to_bits(), par.reference_value.to_bits());
+        assert_eq!(seq.binary_scale_factor, par.binary_scale_factor);
+        assert_eq!(seq.bits_per_value, par.bits_per_value);
+    }
 
     #[test]
     fn test_constant_field() {

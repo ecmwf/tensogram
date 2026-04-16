@@ -1,10 +1,10 @@
 [package]
 name = "tensogram-encodings"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 
 [features]
-default = ["szip", "zstd", "lz4", "blosc2", "zfp", "sz3"]
+default = ["szip", "zstd", "lz4", "blosc2", "zfp", "sz3", "threads"]
 szip = ["dep:libaec-sys"]
 szip-pure = ["dep:tensogram-szip"]
 zstd = ["dep:zstd"]
@@ -13,6 +13,11 @@ lz4 = ["dep:lz4_flex"]
 blosc2 = ["dep:blosc2", "dep:blosc2-sys"]
 zfp = ["dep:zfp-sys-cc"]
 sz3 = ["dep:tensogram-sz3"]
+# Enables rayon-backed intra-codec parallelism (simple_packing, shuffle).
+# Feature is on by default on native targets; consumers targeting `wasm32`
+# should build with `default-features = false` and pick the codec features
+# they need without `threads`.
+threads = ["dep:rayon"]
 
 [dependencies]
 thiserror.workspace = true
@@ -27,3 +32,4 @@ blosc2 = { workspace = true, optional = true }
 blosc2-sys = { workspace = true, optional = true }
 zfp-sys-cc = { workspace = true, optional = true }
 tensogram-sz3 = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }

@@ -15,6 +15,7 @@ pub mod framing;
 pub mod hash;
 pub mod iter;
 pub mod metadata;
+pub mod parallel;
 pub mod pipeline;
 #[cfg(feature = "remote")]
 pub mod remote;

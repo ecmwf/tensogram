@@ -71,6 +71,13 @@ pub struct StreamingEncoder<W: Write> {
     /// Per-object preceder payloads — stored so the footer metadata can
     /// include all per-object metadata (for decoders that skip preceders).
     preceder_payloads: Vec<Option<BTreeMap<String, ciborium::Value>>>,
+    /// Intra-codec thread budget resolved from `EncodeOptions.threads`
+    /// at construction time.  Passed through to every `write_object`
+    /// pipeline call; axis A is not applicable in streaming mode
+    /// because each `write_object` is a separate caller-paced event.
+    intra_codec_threads: u32,
+    /// Snapshot of the parallel-threshold option for the same reason.
+    parallel_threshold_bytes: Option<usize>,
 }
 
 impl<W: Write> StreamingEncoder<W> {
@@ -114,6 +121,11 @@ impl<W: Write> StreamingEncoder<W> {
 
         write_padding(&mut writer, &mut bytes_written)?;
 
+        // Snapshot the thread budget now so that mid-message changes to
+        // TENSOGRAM_THREADS don't leak in between write_object calls —
+        // one message is deterministic.
+        let intra_codec_threads = crate::parallel::resolve_budget(options.threads);
+
         Ok(Self {
             writer,
             object_offsets: Vec::new(),
@@ -125,6 +137,8 @@ impl<W: Write> StreamingEncoder<W> {
             global_meta: global_meta.clone(),
             pending_preceder: false,
             preceder_payloads: Vec::new(),
+            intra_codec_threads,
+            parallel_threshold_bytes: options.parallel_threshold_bytes,
         })
     }
 
@@ -174,6 +188,12 @@ impl<W: Write> StreamingEncoder<W> {
     /// The descriptor's encoding/filter/compression pipeline is applied,
     /// the payload is hashed (if configured), and the frame is written
     /// immediately — no buffering.
+    ///
+    /// When `EncodeOptions.threads > 0` was passed to
+    /// [`StreamingEncoder::new`], the pipeline call may use up to that
+    /// many threads internally (axis B).  Axis A is not available in
+    /// streaming mode — each `write_object` is a caller-paced event
+    /// with no cross-object parallelism opportunity.
     pub fn write_object(&mut self, desc: &DataObjectDescriptor, data: &[u8]) -> Result<()> {
         validate_object(desc, data.len())?;
 
@@ -185,9 +205,35 @@ impl<W: Write> StreamingEncoder<W> {
         let num_elements = usize::try_from(shape_product)
             .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
 
-        let config = build_pipeline_config(desc, num_elements, desc.dtype)?;
-        let result = pipeline::encode_pipeline(data, &config)
-            .map_err(|e| TensogramError::Encoding(e.to_string()))?;
+        // Honour the intra-codec thread budget captured at construction.
+        // Small-message threshold: if the payload is below the threshold,
+        // skip the pool (the overhead would outweigh any codec win).
+        let use_threads = crate::parallel::should_parallelise(
+            self.intra_codec_threads,
+            data.len(),
+            self.parallel_threshold_bytes,
+        );
+        let intra = if use_threads {
+            self.intra_codec_threads
+        } else {
+            0
+        };
+
+        let config = crate::encode::build_pipeline_config_with_backend(
+            desc,
+            num_elements,
+            desc.dtype,
+            tensogram_encodings::pipeline::CompressionBackend::default(),
+            intra,
+        )?;
+
+        let run = || pipeline::encode_pipeline(data, &config);
+        let result = if intra > 1 {
+            crate::parallel::with_pool(intra, run)
+        } else {
+            run()
+        }
+        .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
         // Build final descriptor with computed fields
         let mut final_desc = desc.clone();
@@ -538,6 +584,8 @@ mod tests {
             compression_backend: Default::default(),
             hash_algorithm: Some(HashAlgorithm::Xxh3),
             emit_preceders: false,
+            threads: 0,
+            parallel_threshold_bytes: None,
         };
 
         // Buffered encode
@@ -587,6 +635,8 @@ mod tests {
             compression_backend: Default::default(),
             hash_algorithm: Some(HashAlgorithm::Xxh3),
             emit_preceders: false,
+            threads: 0,
+            parallel_threshold_bytes: None,
         };
 
         let buf = Vec::new();
@@ -610,6 +660,8 @@ mod tests {
             compression_backend: Default::default(),
             hash_algorithm: None,
             emit_preceders: false,
+            threads: 0,
+            parallel_threshold_bytes: None,
         };
 
         let buf = Vec::new();
