@@ -152,18 +152,23 @@ let msg = encode_pre_encoded(
 // decode_range works because szip_block_offsets is present.
 ```
 
-## How it works (mermaid)
+## How it works
 
 ```mermaid
-flowchart LR
-    A[Caller bytes] -->|encode_pre_encoded| B[validate_object]
-    B --> C[validate_szip_block_offsets]
-    C --> D[Recompute hash]
+flowchart TD
+    subgraph pre["encode_pre_encoded path"]
+        A[Caller bytes] --> B[validate_object]
+        B --> C[validate_szip_block_offsets]
+        C --> D[Recompute hash]
+    end
+
+    subgraph normal["encode path"]
+        G[Caller bytes] --> H[Run encoding pipeline]
+        H --> D
+    end
+
     D --> E[Wrap in CBOR framing]
     E --> F[Wire message]
-    
-    G[Caller bytes] -.->|encode| H[Run pipeline]
-    H -.-> D
 ```
 
 The pre-encoded path skips the pipeline entirely. The wire format is identical.

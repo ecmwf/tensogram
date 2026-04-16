@@ -147,9 +147,9 @@ flowchart TD
     D -->|"Best ratio"| N["blosc2 or zstd"]
     D -->|"Need random access"| O["blosc2"]
 
-    style E fill:#e8f5e9,stroke:#388e3c
-    style I fill:#e8f5e9,stroke:#388e3c
-    style O fill:#e8f5e9,stroke:#388e3c
+    style E fill:#388e3c,stroke:#2e7d32,color:#fff
+    style I fill:#388e3c,stroke:#2e7d32,color:#fff
+    style O fill:#388e3c,stroke:#2e7d32,color:#fff
 ```
 
 | Use case | Recommended | Why |

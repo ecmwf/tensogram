@@ -28,8 +28,8 @@ flowchart TD
 
     A --> B --> C --> D --> E
 
-    style A fill:#e8f5e9,stroke:#388e3c
-    style E fill:#e3f2fd,stroke:#1565c0
+    style A fill:#388e3c,stroke:#2e7d32,color:#fff
+    style E fill:#1565c0,stroke:#0d47a1,color:#fff
 ```
 
 ## Limitations and Edge Cases

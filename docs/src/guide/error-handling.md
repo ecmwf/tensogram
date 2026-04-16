@@ -15,6 +15,7 @@ returns an error code (C). No library code panics.
 | **Object** | Invalid descriptor, object index out of range | `TensogramError::Object` | `ValueError` | `object_error` | `TGM_ERROR_OBJECT (5)` |
 | **I/O** | File not found, permission denied, disk full | `TensogramError::Io` | `OSError` | `io_error` | `TGM_ERROR_IO (6)` |
 | **Hash Mismatch** | Payload integrity check fails on `verify_hash=True` | `TensogramError::HashMismatch` | `RuntimeError` | `hash_mismatch_error` | `TGM_ERROR_HASH_MISMATCH (7)` |
+| **Remote** | S3/GCS/Azure/HTTP object-store failure | `TensogramError::Remote` | `OSError` | `remote_error` | `TGM_ERROR_REMOTE (10)` |
 | **Invalid Arg** | NULL pointer or invalid argument in C/C++ FFI | — | — | `invalid_arg_error` | `TGM_ERROR_INVALID_ARG (8)` |
 
 ## Error Paths by Operation
@@ -219,7 +220,7 @@ except RuntimeError as e:
     # Hash verification mismatch
     print(f"integrity error: {e}")
 except OSError as e:
-    # File I/O errors
+    # File I/O and Remote (S3/GCS/Azure/HTTP) errors
     print(f"I/O error: {e}")
 
 # File errors
