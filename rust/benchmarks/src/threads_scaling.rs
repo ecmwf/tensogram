@@ -25,11 +25,13 @@ use crate::datagen::generate_weather_field;
 use crate::report::compute_timing_stats;
 use crate::BenchmarkError;
 
+type ConfigBuilder = Box<dyn Fn(u32, &[f64]) -> Result<PipelineConfig, BenchmarkError>>;
+
 /// One scaling case: a codec configuration, plus a human-readable name.
 struct Case {
     name: String,
     /// Build a fresh `PipelineConfig` for a given thread budget.
-    build: Box<dyn Fn(u32, &[f64]) -> Result<PipelineConfig, BenchmarkError>>,
+    build: ConfigBuilder,
     /// Use the typed f64 fast path?  `true` for simple_packing cases.
     use_f64_path: bool,
 }

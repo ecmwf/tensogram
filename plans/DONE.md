@@ -1,7 +1,54 @@
-# Tensogram — Current Implementation Status (v0.8.0)
+# Tensogram — Current Implementation Status (v0.13.0)
 
 > For historical release notes, see `../CHANGELOG.md`.
 > For planned features, see `TODO.md`. For ideas, see `IDEAS.md`.
+
+## multi-threaded-coding-pipeline (v0.13.0, completed)
+
+Caller-controlled `threads: u32` budget added to both `EncodeOptions`
+and `DecodeOptions`.  Off by default (`threads=0` matches 0.12.0
+byte-for-byte).  When set, a scoped rayon pool is built for the call
+and work is dispatched axis-B-first:
+
+| Stage | Axis B mechanism |
+|-------|------------------|
+| `simple_packing` encode/decode | chunked `par_iter`, byte-aligned chunks for non-aligned widths via `lcm(8, bpv)` |
+| `shuffle` / `unshuffle` | parallel byte-plane outer loop (shuffle) + output-chunk scatter (unshuffle) |
+| `blosc2` | `CParams/DParams::nthreads` on the compress path (decompress stays sequential — safe-wrapper limitation) |
+| `zstd` FFI | `NbWorkers` via `bulk::Compressor` (requires `zstdmt` feature; decompress is inherently sequential) |
+
+Axis A (`par_iter` across objects) is used only when no object has an
+axis-B-friendly codec, to avoid N×M thread over-subscription.
+
+| Component | What changed |
+|-----------|-------------|
+| `tensogram-core/parallel.rs` | new module: `resolve_budget`, `with_pool`, `is_axis_b_friendly`, `use_axis_a`, `should_parallelise`, `DEFAULT_PARALLEL_THRESHOLD_BYTES` (64 KiB), `ENV_THREADS=TENSOGRAM_THREADS` |
+| `tensogram-core/encode.rs` | `encode_one_object` extracted; axis-A/B dispatch at the top of `encode_inner` |
+| `tensogram-core/decode.rs` | axis-A/B dispatch in `decode`, `decode_object`, `decode_range_from_payload`; `decode_single_object_with_backend` gains `intra_codec_threads` arg |
+| `tensogram-core/streaming.rs` | `StreamingEncoder` captures `EncodeOptions.threads` at construction and forwards to the per-`write_object` pipeline call (axis B only — streaming semantics preclude axis A) |
+| `tensogram-encodings/pipeline.rs` | `PipelineConfig.intra_codec_threads` threaded into every codec builder |
+| `tensogram-encodings/simple_packing.rs` | `encode_with_threads`, `decode_with_threads`, `compute_params_with_threads`; parallel aligned + generic (LCM-chunked) paths |
+| `tensogram-encodings/shuffle.rs` | `shuffle_with_threads`, `unshuffle_with_threads`; 64 KiB threshold for parallel path |
+| `tensogram-encodings/compression/blosc2.rs` | `nthreads` field + `build_cparams`/`build_dparams` helpers |
+| `tensogram-encodings/compression/zstd.rs` | `nb_workers` field + bulk::Compressor with `NbWorkers` |
+| `tensogram-python` (PyO3) | `threads` kwarg on `encode`, `encode_pre_encoded`, `decode`, `decode_object`, `decode_range`, `TensogramFile.append`/`decode_message`/`file_decode_*`, `AsyncTensogramFile` mirrors, `StreamingEncoder.__init__` |
+| `tensogram-ffi` | `threads: u32` parameter added to `tgm_encode`, `tgm_encode_pre_encoded`, `tgm_decode`, `tgm_decode_object`, `tgm_decode_range`, `tgm_file_append`, `tgm_file_decode_message`, `tgm_streaming_encoder_create`; header regenerated |
+| C++ wrapper | `encode_options.threads`, `decode_options.threads` (default 0); all free functions and member methods forward them |
+| CLI | global `--threads N` (env `TENSOGRAM_THREADS` fallback) on every subcommand; honoured by `merge`, `split`, `reshuffle`, `convert-grib`, `convert-netcdf`; metadata-only commands ignore it |
+| Tests | 7 new Rust integration tests in `threads_determinism.rs`; 12 Python tests in `test_threads.py`; new `blosc2_nthreads_*`, `zstd_nb_workers_*`, `threads_byte_identical_*` unit tests; parallel module unit tests |
+| Benchmark | new `rust/benchmarks/src/threads_scaling.rs` module + `threads-scaling` binary; 7 configurations × thread sweep |
+| Docs | `docs/src/guide/multi-threaded-pipeline.md` (API, policy, determinism, tuning); Threading Scaling section in `benchmark-results.md` |
+| Examples | `examples/rust/src/bin/16_multi_threaded_pipeline.rs`, `examples/python/16_multi_threaded_pipeline.py` |
+| Version | 0.12.0 → 0.13.0 across all `Cargo.toml`, `pyproject.toml`, `VERSION` |
+
+**Determinism contract:**
+- Transparent pipelines (no codec, simple_packing, szip, lz4, zfp, sz3,
+  shuffle) → **byte-identical** encoded payloads for any `threads` value.
+- Opaque pipelines (blosc2 nthreads>0, zstd nb_workers>0) → compressed
+  bytes may differ (codec reorders blocks by worker completion order);
+  always round-trip **losslessly**.
+- `threads=0` (default) → byte-identical to pre-0.13.0 releases; golden
+  files unchanged.
 
 ## Python async bindings (completed)
 

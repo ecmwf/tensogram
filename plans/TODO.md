@@ -75,18 +75,20 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Optimisation
 
-- [ ] **multi-threaded-coding-pipeline**:
-  - add multi-threaded support for the encoding and decoding pipelines
-  - this should always be an option controled by the caller, off by default, similar to the hash check
-  - caller can control how many threads are spawn simultaneously
-  - option can be integer such that:
-    - 0 means off
-    - 1 means spawn a singe thread and execute the pipeline there
-    - N means spawn that many and parallelise where possible
-  - parallelisation can be done in 2 ways:
-    - async coding of data objects simultaneously
-    - sync coding of a single data object using multiple threads, where the algorithms are parallelisable.
-  - when on, consider the theads as a pool of workers, and the main thread as a broker of the work
+- [x] ~~**multi-threaded-coding-pipeline**~~ → v0.13.0.  Caller-controlled
+  `threads: u32` option on `EncodeOptions`/`DecodeOptions` (off by
+  default).  `TENSOGRAM_THREADS` env fallback.  Axis-B-first dispatch
+  (intra-codec parallelism for blosc2 `nthreads`, zstd `NbWorkers`,
+  `simple_packing` chunked, `shuffle`/`unshuffle` chunked) with axis A
+  (`par_iter` across objects) as fallback when no codec is axis-B
+  friendly — avoids N×M thread over-subscription.  Threaded through
+  Python (kwarg), C FFI (new `uint32_t` parameter), C++ wrapper
+  (`options.threads` field), and the CLI (global `--threads N`).
+  Determinism: transparent codecs byte-identical across thread counts,
+  opaque codecs lossless round-trip.  New `threads-scaling` benchmark,
+  new docs page, runnable Rust+Python examples, ~20 new determinism
+  tests.  See `DONE.md` for the full breakdown and
+  `docs/src/guide/multi-threaded-pipeline.md` for the API reference.
 
 - [ ] **hash-while-encoding**:
   - explore a possible optimisation to compute the xxhash while the encoding is happening
