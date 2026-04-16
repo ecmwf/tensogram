@@ -358,11 +358,40 @@ on the cross-language parity matrix.
 - **CI** runs all of the above on every PR that touches
   `rust/tensogram-wasm/**` or `typescript/**`.
 
+## Cross-language parity matrix
+
+Scope B brought TS to parity with the other language surfaces for the
+core read/write path. Remaining gaps, all tracked as Scope-C items:
+
+| Concept | Rust | Python | FFI | C++ | TypeScript |
+|---|---|---|---|---|---|
+| `encode` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `decode` / `decode_metadata` / `decode_object` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `scan` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `streaming_decoder` | ✓ | ✓ | ✓ | ✓ | ✓ (`decodeStream`) |
+| File open / message / iter | ✓ | ✓ | ✓ | ✓ | ✓ (`TensogramFile`) |
+| Remote fetch | ✓ | ✓ | — | — | ✓ (`.fromUrl`) |
+| `metadata_get_key` | ✓ | ✓ | ✓ | ✓ | ✓ (`getMetaKey`) |
+| `compute_common` | ✓ | ✓ | — | — | ✓ |
+| **`decode_range`** | ✓ | ✓ | ✓ | ✓ | **—** |
+| **`streaming_encoder`** | ✓ | ✓ | ✓ | ✓ | **—** |
+| **`file_append`** | ✓ | ✓ | ✓ | ✓ | **—** |
+| **`validate_buffer` / `validate_file`** | ✓ | ✓ | ✓ | ✓ | **—** |
+| **`compute_hash`** | ✓ | ✓ | ✓ | ✓ | **—** |
+| **`encode_pre_encoded`** | ✓ | ✓ | ✓ | ✓ | **—** |
+| **`simple_packing_params`** | ✓ | ✓ | ✓ | ✓ | **—** |
+
+The gaps above are all intentional: Scope B focused on read-path ergonomics;
+Scope C extends the wrapper to write-path tooling, validation, and utility
+helpers. See `plans/TODO.md` for the enumerated Scope-C task list.
+
 ## Open items & follow-ups (post-Scope B)
 
 - Publishing pipeline: choose npm org, set up `npm publish` from CI on
   tagged releases, align version with `VERSION` file.
-- `validate` + `encodePreEncoded` wrappers.
+- Scope-C API surface (see parity matrix above): `validate`,
+  `encodePreEncoded`, `decodeRange`, `StreamingEncoder`,
+  `TensogramFile#append`, `computeHash`, `simplePackingComputeParams`.
 - `float16` / `bfloat16` / `complex*` first-class support (likely via
   a small runtime helper; JS has no native half-precision TypedArray).
 - Bundle-size budget (`size-limit`) in CI.

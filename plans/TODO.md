@@ -44,10 +44,25 @@ For speculative ideas, see `IDEAS.md`.
     `TensogramFile.open/fromUrl/fromBytes`, 87 tests, 6 examples, CI job,
     mdBook page, Makefile targets.
 
-  - [ ] **typescript-wrapper (Scope C)** — follow-ups to the shipped Scope B:
+  - [ ] **typescript-wrapper (Scope C)** — follow-ups to the shipped Scope B.
+    These are the surfaces the Rust / Python / FFI / C++ sides expose that
+    the TS wrapper currently does not. Cross-language parity matrix in
+    `plans/TYPESCRIPT_WRAPPER.md`.
+    - `decodeRange(buf, objIndex, ranges, opts?)` — mirrors Rust
+      `decode_range` / Python `file_decode_range` / `tgm_decode_range`.
+    - `StreamingEncoder` class — wraps Rust `StreamingEncoder`, Python
+      `AsyncStreamingEncoder`, and `tgm_streaming_encoder_*`.
+    - `TensogramFile#append(metadata, objects, opts?)` — mirrors Rust
+      `TensogramFile::append`.
+    - `validate(buf, opts?)` / `validateFile(path, opts?)` wrappers over
+      `tgm_validate` / `tgm_validate_file`.
+    - `computeHash(bytes, algo?)` — mirrors `tgm_compute_hash`.
+    - `encodePreEncoded(metadata, objects, opts?)` — mirrors Rust
+      `encode_pre_encoded` / `tgm_encode_pre_encoded`.
+    - `simplePackingComputeParams(values, bitsPerValue, decimalScaleFactor)` —
+      mirrors `tgm_simple_packing_compute_params`.
     - Range-based lazy backend for `TensogramFile.fromUrl` (currently
       downloads the whole file).
-    - `validate` / `encode_pre_encoded` wrappers.
     - First-class `float16` / `bfloat16` / `complex*` support (today they
       round-trip as `Uint16Array` / interleaved `Float32/64Array` surrogates).
     - npm publish pipeline + semver alignment with `VERSION`.

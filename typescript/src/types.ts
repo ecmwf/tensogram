@@ -184,7 +184,9 @@ export interface DecodedObject {
 
 /** Result of a full `decode()`. */
 export interface DecodedMessage {
+  /** Global metadata parsed from the message's header metadata frame. */
   readonly metadata: GlobalMetadata;
+  /** One entry per data-object frame in the message, in wire order. */
   readonly objects: readonly DecodedObject[];
   /** Release the underlying WASM memory. Idempotent. */
   close(): void;
@@ -222,7 +224,13 @@ export interface DecodedFrame {
 
 /** A `(descriptor, data)` pair suitable for `encode()`. */
 export interface EncodeInput {
+  /** Shape, dtype, and encoding-pipeline configuration for this object. */
   descriptor: DataObjectDescriptor;
+  /**
+   * Raw payload bytes in native byte order. Any `ArrayBufferView` is
+   * accepted (`TypedArray`, `DataView`, ...); the wrapper normalises
+   * to a `Uint8Array` view before the WASM call.
+   */
   data: ArrayBufferView;
 }
 
@@ -241,7 +249,9 @@ export type TypedArray =
 
 /** A message offset + length pair returned by `scan()`. */
 export interface MessagePosition {
+  /** Byte offset where the message's preamble begins. */
   offset: number;
+  /** Total byte length of the message (preamble through postamble). */
   length: number;
 }
 

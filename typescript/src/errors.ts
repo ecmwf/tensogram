@@ -173,7 +173,13 @@ export function mapTensogramError(err: unknown): TensogramError {
   if (/\bindex\b.*\bout of range\b/i.test(raw)) {
     return new ObjectError(raw);
   }
-  if (/shape|dtype|byte_order|descriptor/i.test(raw) && /\berror|invalid|unknown|missing\b/i.test(raw)) {
+  // Metadata-shaped failures — these keywords appear in Rust error
+  // messages like "shape product overflow", "unknown dtype: ...",
+  // "invalid byte_order: ...", "missing required descriptor field".
+  if (
+    /shape|dtype|byte_order|descriptor/i.test(raw)
+    && /\berror|invalid|unknown|missing|overflow\b/i.test(raw)
+  ) {
     return new MetadataError(raw);
   }
 
