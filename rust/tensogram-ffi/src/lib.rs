@@ -4152,7 +4152,7 @@ mod tests {
         check(super::TgmError::HashMismatch, "hash mismatch");
         check(super::TgmError::InvalidArg, "invalid argument");
         check(super::TgmError::EndOfIter, "end of iteration");
-        check(super::TgmError::Remote, "unknown error");
+        check(super::TgmError::Remote, "remote error");
     }
 
     // ── tgm_bytes_free safety ──
