@@ -2070,6 +2070,7 @@ pub extern "C" fn tgm_error_string(err: TgmError) -> *const c_char {
         7 => b"hash mismatch\0",
         8 => b"invalid argument\0",
         9 => b"end of iteration\0",
+        10 => b"remote error\0",
         _ => b"unknown error\0",
     };
     s.as_ptr() as *const c_char
