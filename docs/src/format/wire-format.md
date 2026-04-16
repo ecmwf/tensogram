@@ -9,30 +9,30 @@ All integer fields are **big-endian** (network byte order).
 A Tensogram message is built from three sections: a **header** (preamble + optional frames), one or more **data object frames**, and a **footer** (optional frames + postamble).
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  PREAMBLE           magic, version, flags, length  (24 B)    │
-├──────────────────────────────────────────────────────────────┤
-│  HEADER METADATA FRAME    CBOR global metadata   (optional)  │
-├──────────────────────────────────────────────────────────────┤
-│  HEADER INDEX FRAME       CBOR object offsets    (optional)   │
-├──────────────────────────────────────────────────────────────┤
-│  HEADER HASH FRAME        CBOR object hashes     (optional)   │
-├──────────────────────────────────────────────────────────────┤
-│  PRECEDER METADATA FRAME  per-object metadata      (optional)  │
-│  DATA OBJECT FRAME 0      header + payload + descriptor       │
-│  PRECEDER METADATA FRAME  per-object metadata      (optional)  │
-│  DATA OBJECT FRAME 1      ...                                 │
-│  DATA OBJECT FRAME 2      (no preceder)                       │
-│  ...                      (any number of objects)             │
-├──────────────────────────────────────────────────────────────┤
-│  FOOTER HASH FRAME        CBOR object hashes     (optional)   │
-├──────────────────────────────────────────────────────────────┤
-│  FOOTER INDEX FRAME       CBOR object offsets    (optional)   │
-├──────────────────────────────────────────────────────────────┤
-│  FOOTER METADATA FRAME    CBOR global metadata   (optional)   │
-├──────────────────────────────────────────────────────────────┤
-│  POSTAMBLE          first_footer_offset, end_magic (16 B)     │
-└──────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│  PREAMBLE                  magic, version, flags, length  (24 B)   │
+├────────────────────────────────────────────────────────────────────┤
+│  HEADER METADATA FRAME     CBOR global metadata      (optional)    │
+├────────────────────────────────────────────────────────────────────┤
+│  HEADER INDEX FRAME        CBOR object offsets       (optional)    │
+├────────────────────────────────────────────────────────────────────┤
+│  HEADER HASH FRAME         CBOR object hashes        (optional)    │
+├────────────────────────────────────────────────────────────────────┤
+│  PRECEDER METADATA FRAME   per-object metadata       (optional)    │
+│  DATA OBJECT FRAME 0       header + payload + descriptor           │
+│  PRECEDER METADATA FRAME   per-object metadata       (optional)    │
+│  DATA OBJECT FRAME 1       ...                                     │
+│  DATA OBJECT FRAME 2       (no preceder)                           │
+│  ...                       (any number of objects)                 │
+├────────────────────────────────────────────────────────────────────┤
+│  FOOTER HASH FRAME         CBOR object hashes        (optional)    │
+├────────────────────────────────────────────────────────────────────┤
+│  FOOTER INDEX FRAME        CBOR object offsets       (optional)    │
+├────────────────────────────────────────────────────────────────────┤
+│  FOOTER METADATA FRAME     CBOR global metadata      (optional)    │
+├────────────────────────────────────────────────────────────────────┤
+│  POSTAMBLE                 first_footer_offset, end_magic  (16 B)  │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 At least one metadata frame (header or footer) must be present — messages cannot exist without metadata. Index and hash frames are optional but highly encouraged. By default, the encoder places them in the header when writing to a buffer, or in the footer when streaming.

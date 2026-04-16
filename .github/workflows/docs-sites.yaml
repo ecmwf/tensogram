@@ -1,6 +1,6 @@
 # Builds mdBook docs and publishes them to ECMWF Sites:
-# - PRs get preview publish/unpublish under `dev-section/pull-requests`.
-# - Pushes to `main`/tags publish canonical docs under `dev-section`.
+# - PRs get preview publish/unpublish under `tensogram/pull-requests`.
+# - Pushes to `main`/tags publish canonical docs under `tensogram`.
 # - Manual runs are build-only by default; publish is opt-in.
 name: Docs Sites Publish
 
@@ -115,12 +115,12 @@ jobs:
     with:
       artifact-id: ${{ needs.build-docs.outputs.artifact-id }}
       space: docs
-      name: dev-section
-      path: tensogram/pull-requests
+      name: tensogram
+      path: pull-requests
       link-tag: PREVIEW-PUBLISH-TENSOGRAM-DOCS
       link-text: "Docs Preview"
     secrets:
-      sites-token: ${{ secrets.ECMWF_SITES_DOCS_DEV_SECTION_TOKEN }}
+      sites-token: ${{ secrets.ECMWF_SITES_DOCS_TENSOGRAM_TOKEN }}
 
   # Remove preview docs when PR is closed to avoid stale preview content.
   preview-unpublish:
@@ -128,10 +128,10 @@ jobs:
     uses: ecmwf/reusable-workflows/.github/workflows/pr-preview-unpublish.yml@5a1d1cb1442aa632f7823e4088d639b980627afc
     with:
       space: docs
-      name: dev-section
-      path: tensogram/pull-requests
+      name: tensogram
+      path: pull-requests
     secrets:
-      sites-token: ${{ secrets.ECMWF_SITES_DOCS_DEV_SECTION_TOKEN }}
+      sites-token: ${{ secrets.ECMWF_SITES_DOCS_TENSOGRAM_TOKEN }}
 
   # Compute a safe publish id used for docs publish path segments.
   # This prevents malformed or path-like values from workflow inputs/tags.
@@ -198,8 +198,8 @@ jobs:
     with:
       artifact-id: ${{ needs.build-docs.outputs.artifact-id }}
       space: docs
-      name: dev-section
-      path: tensogram
+      name: tensogram
+      path: ""
       # Use sanitized id from compute-publish-id.
       id: ${{ needs.compute-publish-id.outputs.publish-id }}
       # Keep stable aliases only for push events:
@@ -207,4 +207,4 @@ jobs:
       # - main publish => latest
       softlink: ${{ github.event_name == 'push' && (github.ref_type == 'tag' && 'stable' || github.ref_name == 'main' && 'latest') || '' }}
     secrets:
-      sites-token: ${{ secrets.ECMWF_SITES_DOCS_DEV_SECTION_TOKEN }}
+      sites-token: ${{ secrets.ECMWF_SITES_DOCS_TENSOGRAM_TOKEN }}

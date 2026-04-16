@@ -16,7 +16,7 @@ TypeScript), or returns an error code (C). No library code panics.
 | **I/O** | File not found, permission denied, disk full | `TensogramError::Io` | `OSError` | `io_error` | `IoError` | `TGM_ERROR_IO (6)` |
 | **Hash Mismatch** | Payload integrity check fails on `verify_hash=True` | `TensogramError::HashMismatch` | `RuntimeError` | `hash_mismatch_error` | `HashMismatchError` | `TGM_ERROR_HASH_MISMATCH (7)` |
 | **Invalid Arg** | NULL pointer or invalid argument at the API boundary | — | `ValueError` | `invalid_arg_error` | `InvalidArgumentError` | `TGM_ERROR_INVALID_ARG (8)` |
-| **Remote** | S3 / GCS / Azure / HTTP(S) object-store failure | `TensogramError::Remote` | `RuntimeError` | `remote_error` | `RemoteError` | `TGM_ERROR_REMOTE (10)` |
+| **Remote** | S3 / GCS / Azure / HTTP(S) object-store failure | `TensogramError::Remote` | `OSError` | `remote_error` | `RemoteError` | `TGM_ERROR_REMOTE (10)` |
 | **Streaming Limit** | `decodeStream` internal buffer exceeded the configured maximum | — | — | — | `StreamingLimitError` | — |
 
 Notes on the TypeScript column:
@@ -233,7 +233,7 @@ except RuntimeError as e:
     # Hash verification mismatch
     print(f"integrity error: {e}")
 except OSError as e:
-    # File I/O errors
+    # File I/O and Remote (S3/GCS/Azure/HTTP) errors
     print(f"I/O error: {e}")
 
 # File errors
