@@ -382,8 +382,27 @@ architecture, phases, test strategy, memory model, and open follow-ups.
 
 ## Cross-language parity
 
-This TypeScript package decodes the same wire format used by the Rust,
-Python, and C++ test suites. The TS test suite exercises encode / decode
-round-trips and streaming decode against synthesised messages, and the
-CI `typescript` job rebuilds and runs the full TS surface on every PR —
-making TS the fourth language on the cross-language parity matrix.
+This TypeScript package decodes the **same golden `.tgm` files** used
+by the Rust, Python, and C++ test suites. The committed files at
+`rust/tensogram-core/tests/golden/*.tgm` are decoded by each language's
+test runner; any drift in wire-format semantics fails all four suites.
+
+Specifically, `typescript/tests/golden.test.ts` decodes:
+
+- `simple_f32.tgm` — single-object Float32 round-trip
+- `multi_object.tgm` — mixed-dtype message (f32 / i64 / u8)
+- `mars_metadata.tgm` — MARS keys under `base[0].mars`
+- `multi_message.tgm` — two concatenated messages (via `scan()`)
+- `hash_xxh3.tgm` — verifyHash success + tamper detection
+
+`typescript/tests/property.test.ts` adds `fast-check` property tests
+pinning:
+
+- `mapTensogramError` never throws for any finite-string input and
+  always returns a `TensogramError` subclass;
+- `encode → decode` is bit-exact for random Float32 shapes across
+  random MARS metadata;
+- `decode` on random byte input either succeeds with a structurally
+  valid message or throws a typed `TensogramError` — never panics.
+
+The CI `typescript` job rebuilds and runs all 145 TS tests on every PR.
