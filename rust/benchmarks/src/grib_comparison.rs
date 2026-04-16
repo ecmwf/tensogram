@@ -320,6 +320,7 @@ fn time_tensogram_sp_szip(
             dtype_byte_width: 8,
             swap_unit_size: 8, // f64
             compression_backend: Default::default(),
+            intra_codec_threads: 0,
         })
     };
 
