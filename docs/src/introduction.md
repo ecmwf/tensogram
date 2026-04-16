@@ -43,11 +43,12 @@ tensogram/
 ```
 
 On top of those, the repository ships several opt-in crates — the
-`convert-grib` / `convert-netcdf` converters, the `tensogram-wasm`
+`tensogram-grib` / `tensogram-netcdf` converters (exposed as the
+`convert-grib` / `convert-netcdf` CLI subcommands), the `tensogram-wasm`
 WebAssembly bindings, and the pure-Rust `tensogram-szip` /
 `tensogram-sz3` / `tensogram-sz3-sys` compression crates — together
 with the separate Python packages `tensogram-xarray` (xarray backend)
-and `tensogram-zarr` (Zarr v3 store backend), and a `benchmarks`
+and `tensogram-zarr` (Zarr v3 store backend), and a `tensogram-benchmarks`
 crate. See [`plans/ARCHITECTURE.md`](https://github.com/ecmwf/tensogram/blob/main/plans/ARCHITECTURE.md)
 for the full crate list and build recipes.
 

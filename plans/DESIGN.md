@@ -45,8 +45,8 @@ Default Rust workspace:
 - `tensogram-szip` — pure-Rust CCSDS 121.0-B-3 szip codec (used via the `szip-pure` feature)
 - `tensogram-sz3` — high-level Rust API for SZ3
 - `tensogram-sz3-sys` — clean-room FFI shim wrapping the BSD-licensed SZ3 C++ library (Apache-2.0 / MIT)
-- `benchmarks` — benchmark suite
-- `examples/rust` — runnable Rust examples
+- `tensogram-benchmarks` — benchmark suite (under `rust/benchmarks/`)
+- `tensogram-rust-examples` — runnable Rust examples (under `examples/rust/`)
 
 Excluded from the default workspace (opt-in):
 

@@ -78,20 +78,20 @@ WebAssembly tooling, or external system libraries.
 | `tensogram-szip` | Pure-Rust CCSDS 121.0-B-3 szip codec (used via the `szip-pure` feature, e.g. for WebAssembly) | (standalone) |
 | `tensogram-sz3` | High-level SZ3 API matching the published `sz3` crate interface | `tensogram-sz3-sys` |
 | `tensogram-sz3-sys` | Clean-room FFI shim wrapping the BSD-licensed SZ3 C++ library (Apache-2.0 / MIT) | (native C++ build) |
-| `benchmarks` | Benchmark suite (`codec-matrix`, `grib-comparison`) | `tensogram-core`, `tensogram-encodings` |
-| `examples/rust` | Runnable Rust examples (numbered `NN_description.rs`) | `tensogram-core` |
+| `tensogram-benchmarks` | Benchmark suite in `rust/benchmarks` (`codec-matrix`, `grib-comparison` binaries) | `tensogram-core`, `tensogram-encodings` |
+| `tensogram-rust-examples` | Runnable Rust examples in `examples/rust` (numbered `NN_description.rs`) | `tensogram-core` |
 
 ### Excluded-from-default-workspace crates
 
 These live in the repo but are opt-in because they require a Python
 interpreter, WebAssembly tooling, or external C libraries.
 
-| Crate | Excluded because | Build recipe |
-|-------|------------------|--------------|
-| `python/bindings` (Cargo name `tensogram-python`, PyPI package `tensogram`) | PyO3 extension requires the Python linker | `cd python/bindings && maturin develop` |
-| `rust/tensogram-grib` | Needs `libeccodes` (ecCodes) | `cd rust/tensogram-grib && cargo build` |
-| `rust/tensogram-netcdf` | Needs `libnetcdf` | `cd rust/tensogram-netcdf && cargo build` |
-| `rust/tensogram-wasm` | Needs `wasm-pack` and the `wasm32-unknown-unknown` target | `wasm-pack build rust/tensogram-wasm --target web` |
+| Cargo package | Directory | Excluded because | Build recipe |
+|---------------|-----------|------------------|--------------|
+| `tensogram-python` (PyPI package `tensogram`) | `python/bindings` | PyO3 extension requires the Python linker | `cd python/bindings && maturin develop` |
+| `tensogram-grib` | `rust/tensogram-grib` | Needs `libeccodes` (ecCodes) | `cd rust/tensogram-grib && cargo build` |
+| `tensogram-netcdf` | `rust/tensogram-netcdf` | Needs `libnetcdf` | `cd rust/tensogram-netcdf && cargo build` |
+| `tensogram-wasm` | `rust/tensogram-wasm` | Needs `wasm-pack` and the `wasm32-unknown-unknown` target | `wasm-pack build rust/tensogram-wasm --target web` |
 
 ### Separate Python packages
 

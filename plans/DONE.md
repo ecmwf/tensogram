@@ -22,8 +22,11 @@
   (`tensogram-xarray`, `tensogram-zarr`). See `ARCHITECTURE.md` for the
   full crate list and what each one does.
 - **Quality bar.** Zero clippy warnings, zero ruff issues,
-  `panic = "abort"` on both release and dev profiles, no `unwrap`/
-  `expect`/`panic!` in non-test library code.
+  `panic = "abort"` on both release and dev profiles. Library code
+  avoids `unwrap`/`expect`/`panic!` on any fallible input path;
+  remaining `unwrap` calls on library code are confined to provably
+  infallible conversions (e.g. `chunk.try_into()` after
+  `chunks_exact(N)`). Panics never cross the FFI boundary.
 
 ---
 
@@ -457,8 +460,12 @@ comparison against ecCodes.
 
 ## Error handling
 
-- No panics: zero `unwrap()`, `expect()`, `panic!()`, `todo!()`,
-  `unimplemented!()` in non-test library code across all crates.
+- No panics on any fallible input path: no `unwrap()`, `expect()`,
+  `panic!()`, `todo!()` or `unimplemented!()` used to bail out of
+  library code on unexpected input. Remaining `unwrap()` calls are
+  provably infallible (e.g. `try_into()` after a `chunks_exact(N)`
+  length guard). Panics cannot cross the FFI boundary because
+  `panic = "abort"` is set on both release and dev profiles.
 - Integer overflow: `usize::try_from()` on `total_length` (u64) in
   decode paths; scan paths use `as usize` with subsequent bounds checks
   (truncation is harmless).
