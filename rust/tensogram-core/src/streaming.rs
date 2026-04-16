@@ -208,12 +208,12 @@ impl<W: Write> StreamingEncoder<W> {
         // Honour the intra-codec thread budget captured at construction.
         // Small-message threshold: if the payload is below the threshold,
         // skip the pool (the overhead would outweigh any codec win).
-        let use_threads = crate::parallel::should_parallelise(
+        let parallel = crate::parallel::should_parallelise(
             self.intra_codec_threads,
             data.len(),
             self.parallel_threshold_bytes,
         );
-        let intra = if use_threads {
+        let intra = if parallel {
             self.intra_codec_threads
         } else {
             0
@@ -227,13 +227,11 @@ impl<W: Write> StreamingEncoder<W> {
             intra,
         )?;
 
-        let run = || pipeline::encode_pipeline(data, &config);
-        let result = if intra > 1 {
-            crate::parallel::with_pool(intra, run)
-        } else {
-            run()
-        }
-        .map_err(|e| TensogramError::Encoding(e.to_string()))?;
+        let result =
+            crate::parallel::run_maybe_pooled(self.intra_codec_threads, parallel, intra, || {
+                pipeline::encode_pipeline(data, &config)
+            })
+            .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
         // Build final descriptor with computed fields
         let mut final_desc = desc.clone();

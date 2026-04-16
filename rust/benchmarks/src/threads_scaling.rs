@@ -273,17 +273,20 @@ pub fn run_threads_scaling(
             "-------", "--------", "--------", "--------", "--------", "------", "----------"
         );
 
-        let mut baseline_enc_ms: Option<f64> = None;
-        let mut baseline_dec_ms: Option<f64> = None;
+        // Measure every requested thread count; the first reading is the
+        // baseline that subsequent rows are compared against.  Relative
+        // speedups are therefore always 1.0× for the first row.
+        let mut baseline_enc_ms = f64::NAN;
+        let mut baseline_dec_ms = f64::NAN;
 
-        for &t in thread_counts {
+        for (row_idx, &t) in thread_counts.iter().enumerate() {
             let row = time_case(case, &values, &raw_bytes, t, iterations, warmup)?;
-            if baseline_enc_ms.is_none() {
-                baseline_enc_ms = Some(row.encode_median_ms);
-                baseline_dec_ms = Some(row.decode_median_ms);
+            if row_idx == 0 {
+                baseline_enc_ms = row.encode_median_ms;
+                baseline_dec_ms = row.decode_median_ms;
             }
-            let enc_speedup = baseline_enc_ms.unwrap() / row.encode_median_ms;
-            let dec_speedup = baseline_dec_ms.unwrap() / row.decode_median_ms;
+            let enc_speedup = baseline_enc_ms / row.encode_median_ms;
+            let dec_speedup = baseline_dec_ms / row.decode_median_ms;
             println!(
                 "  {:>7} | {:>10.1} | {:>10.1} | {:>10.0} | {:>10.0} | {:>7.1}% | {:>10.1}  (enc x{:.2}, dec x{:.2})",
                 t,

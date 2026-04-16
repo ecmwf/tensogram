@@ -256,11 +256,10 @@ fn main() {
                 check_canonical: canonical,
                 checksum_only: checksum,
             };
-            // Note: `threads` is intentionally not forwarded to validate.
-            // Levels 1-2 are structure/metadata only (no decoding).
-            // Level 3-4 decode payloads via the library's own path; a
-            // future enhancement could thread `threads` into
-            // `ValidateOptions`, but for now validate runs sequentially.
+            // `threads` is deliberately dropped for validate: levels
+            // 1-2 are structure/metadata only, and level 3-4 currently
+            // lack a `threads` field on `ValidateOptions`.  Tracked in
+            // plans/IDEAS.md under "ValidateOptions.threads".
             commands::validate::run(&files, &options, json)
         }
         #[cfg(feature = "grib")]

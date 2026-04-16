@@ -65,9 +65,9 @@ pub struct EncodeOptions {
     /// Minimum total payload bytes below which the parallel path is
     /// skipped even when `threads > 0`.
     ///
-    /// `None` uses [`parallel::DEFAULT_PARALLEL_THRESHOLD_BYTES`]
-    /// (64 KiB).  Set to `Some(0)` to force the parallel path for
-    /// testing; set to `Some(usize::MAX)` to force sequential.
+    /// `None` uses [`crate::DEFAULT_PARALLEL_THRESHOLD_BYTES`] (64 KiB).
+    /// Set to `Some(0)` to force the parallel path for testing; set to
+    /// `Some(usize::MAX)` to force sequential.
     pub parallel_threshold_bytes: Option<usize>,
 }
 

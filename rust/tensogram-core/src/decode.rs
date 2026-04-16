@@ -86,9 +86,9 @@ impl Default for DecodeOptions {
 ///
 /// When `options.threads > 0` (or `TENSOGRAM_THREADS` is set),
 /// per-object decode work is parallelised using the axis-B-first
-/// policy described in [`crate::parallel::use_axis_a`].  Output bytes
-/// are byte-identical to the sequential path regardless of thread
-/// count.
+/// policy documented in
+/// `docs/src/guide/multi-threaded-pipeline.md`.  Output bytes are
+/// byte-identical to the sequential path regardless of thread count.
 #[tracing::instrument(skip(buf, options), fields(buf_len = buf.len()))]
 pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Vec<DecodedObject>)> {
     let msg = framing::decode_message(buf)?;

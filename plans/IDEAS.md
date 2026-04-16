@@ -23,6 +23,8 @@ Ideas for possible future implementation. Do not implement these yet.
     - [x] benchmark suite
     - [x] compare with eccodes simple+szip
     - [ ] 4-byte AEC containers for 24-bit szip: zero-padded 4-byte containers may improve compression ratio for 17-24 bit data. Requires padding/unpadding in the szip compressor and is a wire format change.
+    - [ ] `ValidateOptions.threads` (follow-up to the v0.13.0 multi-threaded pipeline): Level 3/4 validation runs the full decode pipeline, so adding `threads` to `ValidateOptions` would let the `--threads` CLI flag accelerate `tensogram validate --full`.  The CLI already plumbs the flag but currently drops it on the floor before `validate::run`.  Needs a small API change; blocked only by appetite.
+    - [ ] blosc2 `decompress` parallelism: currently our Blosc2Compressor applies `nthreads` only on the compress path because blosc2's safe `SChunk::from_buffer` ignores runtime dparams overrides.  A `Chunk::set_dparams`-based rewrite (unsafe-free but lower-level) would let axis-B benefit the decode path too.  Gains are modest (decompress is memory-bound) but it would close the symmetry gap.
 
 - CI
     - [ ] integrate CI with ECMWF workers

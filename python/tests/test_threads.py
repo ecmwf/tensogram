@@ -215,3 +215,26 @@ class TestDecodeThreads:
         assert len(parts) == 2
         assert parts[0].shape == (100,)
         assert parts[1].shape == (100,)
+
+
+# ── Async binding parity ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_async_decode_message_threads_matches_sync(tmp_path):
+    """`AsyncTensogramFile.decode_message(threads=N)` parity with sync path.
+
+    Keeps the async wrapper honest: the new `threads` kwarg on the async
+    API must reach the core the same way the sync kwarg does.
+    """
+    path = str(tmp_path / "async_threads.tgm")
+    msg = _make_transparent_msg(threads=0)
+    with open(path, "wb") as fh:
+        fh.write(msg)
+
+    async with await tensogram.AsyncTensogramFile.open(path) as f:
+        result_seq = await f.decode_message(0)
+        result_par = await f.decode_message(0, threads=4)
+        np.testing.assert_array_equal(
+            result_seq.objects[0][1], result_par.objects[0][1]
+        )

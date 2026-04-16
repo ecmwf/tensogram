@@ -51,9 +51,9 @@ use std::sync::OnceLock;
 /// or `DecodeOptions.parallel_threshold_bytes`.
 pub const DEFAULT_PARALLEL_THRESHOLD_BYTES: usize = 64 * 1024;
 
-/// Env var consulted by [`resolve_budget`] when the caller-provided
-/// `threads` is `0`.  Must parse as a `u32`; zero, missing, empty, or
-/// otherwise unparseable values all resolve to `0` (sequential).
+/// Env var consulted when the caller-provided `threads` is `0`.  Must
+/// parse as a `u32`; zero, missing, empty, or otherwise unparseable
+/// values all resolve to `0` (sequential execution).
 pub const ENV_THREADS: &str = "TENSOGRAM_THREADS";
 
 fn env_threads() -> u32 {
@@ -74,7 +74,7 @@ fn env_threads() -> u32 {
 /// Values are not clamped to CPU count — rayon handles that naturally,
 /// and pathological N values simply see diminishing returns.
 #[inline]
-pub fn resolve_budget(requested: u32) -> u32 {
+pub(crate) fn resolve_budget(requested: u32) -> u32 {
     if requested > 0 {
         requested
     } else {
@@ -87,7 +87,11 @@ pub fn resolve_budget(requested: u32) -> u32 {
 ///
 /// `threshold_bytes == None` uses [`DEFAULT_PARALLEL_THRESHOLD_BYTES`].
 #[inline]
-pub fn should_parallelise(budget: u32, work_bytes: usize, threshold_bytes: Option<usize>) -> bool {
+pub(crate) fn should_parallelise(
+    budget: u32,
+    work_bytes: usize,
+    threshold_bytes: Option<usize>,
+) -> bool {
     if budget == 0 {
         return false;
     }
@@ -102,7 +106,7 @@ pub fn should_parallelise(budget: u32, work_bytes: usize, threshold_bytes: Optio
 /// Keep this in sync with the codec dispatch in `tensogram-encodings`:
 /// whenever a codec grows internal parallelism, add its identifier here.
 #[inline]
-pub fn is_axis_b_friendly(encoding: &str, filter: &str, compression: &str) -> bool {
+pub(crate) fn is_axis_b_friendly(encoding: &str, filter: &str, compression: &str) -> bool {
     matches!(compression, "blosc2" | "zstd")
         || matches!(encoding, "simple_packing")
         || matches!(filter, "shuffle")
@@ -125,7 +129,7 @@ pub fn is_axis_b_friendly(encoding: &str, filter: &str, compression: &str) -> bo
 ///   when blosc2 or zstd spawn their own internal worker pool per call.
 /// - otherwise → axis A (`par_iter` across objects).
 #[inline]
-pub fn use_axis_a(n_objects: usize, budget: u32, any_object_axis_b_friendly: bool) -> bool {
+pub(crate) fn use_axis_a(n_objects: usize, budget: u32, any_object_axis_b_friendly: bool) -> bool {
     if budget <= 1 || n_objects <= 1 {
         return false;
     }
@@ -149,7 +153,7 @@ pub fn use_axis_a(n_objects: usize, budget: u32, any_object_axis_b_friendly: boo
 /// different call sites can pick different thread counts without
 /// interfering with each other.
 #[inline]
-pub fn with_pool<F, R>(budget: u32, f: F) -> R
+pub(crate) fn with_pool<F, R>(budget: u32, f: F) -> R
 where
     F: FnOnce() -> R + Send,
     R: Send,
@@ -191,7 +195,12 @@ where
 /// having a pool installed — otherwise run `f` on the caller thread
 /// with no allocation.
 #[inline]
-pub fn run_maybe_pooled<F, R>(budget: u32, parallel: bool, intra_codec_threads: u32, f: F) -> R
+pub(crate) fn run_maybe_pooled<F, R>(
+    budget: u32,
+    parallel: bool,
+    intra_codec_threads: u32,
+    f: F,
+) -> R
 where
     F: FnOnce() -> R + Send,
     R: Send,

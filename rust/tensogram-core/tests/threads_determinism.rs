@@ -297,3 +297,105 @@ fn decode_threads_byte_identical_transparent() {
         );
     }
 }
+
+// ── Edge cases ─────────────────────────────────────────────────────────
+
+/// A message with no data objects is legal.  `threads=N` must not trip
+/// any of the axis-A / axis-B dispatch logic on an empty slice.
+#[test]
+fn encode_zero_objects_any_threads_ok() {
+    let meta = GlobalMetadata::default();
+    for &t in &[0u32, 1, 4, 8] {
+        let opts = EncodeOptions {
+            threads: t,
+            parallel_threshold_bytes: Some(0),
+            ..Default::default()
+        };
+        let msg = encode(&meta, &[], &opts).expect("encode with 0 objects");
+        // Round-trip: decode must also accept an empty-object message.
+        let dec_opts = DecodeOptions {
+            threads: t,
+            parallel_threshold_bytes: Some(0),
+            ..Default::default()
+        };
+        let (_meta, objects) = decode(&msg, &dec_opts).expect("decode empty");
+        assert_eq!(objects.len(), 0);
+    }
+}
+
+/// A zero-length payload on a legal shape must not crash the parallel
+/// dispatcher.  `shape = [0]` is a valid empty tensor.
+#[test]
+fn encode_zero_length_payload_any_threads_ok() {
+    let meta = GlobalMetadata::default();
+    let desc = make_descriptor(vec![0], Dtype::Float64);
+    let data: Vec<u8> = vec![];
+    for &t in &[0u32, 1, 4, 8] {
+        let opts = EncodeOptions {
+            threads: t,
+            parallel_threshold_bytes: Some(0),
+            ..Default::default()
+        };
+        let msg = encode(&meta, &[(&desc, &data)], &opts).expect("encode zero-length");
+        let dec_opts = DecodeOptions {
+            threads: t,
+            parallel_threshold_bytes: Some(0),
+            ..Default::default()
+        };
+        let (_meta, objects) = decode(&msg, &dec_opts).expect("decode zero-length");
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].1.len(), 0);
+    }
+}
+
+/// `decode_range` with an empty `ranges` slice is a no-op: must return
+/// `Ok(vec![])` regardless of `threads`.
+#[test]
+fn decode_range_empty_slice_any_threads_ok() {
+    use tensogram_core::decode_range;
+
+    let meta = GlobalMetadata::default();
+    let desc = make_descriptor(vec![1024], Dtype::Float64);
+    let data = large_float_bytes(1024);
+    let msg = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    for &t in &[0u32, 1, 4, 8] {
+        let opts = DecodeOptions {
+            threads: t,
+            parallel_threshold_bytes: Some(0),
+            ..Default::default()
+        };
+        let (_desc, parts) = decode_range(&msg, 0, &[], &opts).expect("empty ranges");
+        assert!(parts.is_empty(), "threads={t} expected no parts");
+    }
+}
+
+/// When `threads > 1` is requested but no axis has work to distribute
+/// (e.g. single tiny object), the dispatcher must still produce correct
+/// output and must not construct a pool.  This is harder to assert
+/// directly — instead we verify that the output is byte-identical to
+/// the sequential path.
+#[test]
+fn single_tiny_object_threads_ignored() {
+    let meta = GlobalMetadata::default();
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let data: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
+        .iter()
+        .flat_map(|v| v.to_ne_bytes())
+        .collect();
+
+    let baseline =
+        encoded_payloads(&encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap());
+    for &t in &[1u32, 4, 16] {
+        let opts = EncodeOptions {
+            threads: t,
+            parallel_threshold_bytes: None, // default 64 KiB — well above 16 bytes
+            ..Default::default()
+        };
+        let got = encoded_payloads(&encode(&meta, &[(&desc, &data)], &opts).unwrap());
+        assert_eq!(
+            baseline, got,
+            "single tiny object threads={t} must match sequential"
+        );
+    }
+}
