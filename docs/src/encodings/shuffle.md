@@ -35,7 +35,7 @@ Rearranges bytes. `element_size` is the byte width of each element (e.g. 4 for f
 ```rust
 let floats: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
 let raw: Vec<u8> = floats.iter().flat_map(|f| f.to_ne_bytes()).collect();
-let shuffled = shuffle(&raw, 4).expect("aligned to 4 bytes");
+let shuffled = shuffle(&raw, 4)?;
 // shuffled is ready for compression
 ```
 
