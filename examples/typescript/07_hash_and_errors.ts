@@ -7,7 +7,7 @@
 // does it submit to any jurisdiction.
 
 /**
- * Example 04 — Hash verification and typed errors (TypeScript)
+ * Example 07 — Hash verification and typed errors (TypeScript)
  *
  * Demonstrates the typed error hierarchy. `decode(buf, { verifyHash: true })`
  * throws `HashMismatchError` when the payload has been tampered with.

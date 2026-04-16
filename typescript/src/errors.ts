@@ -118,9 +118,12 @@ export function mapTensogramError(err: unknown): TensogramError {
     // future error-message tweaks.
     const expectedMatch = /expected[=\s]+([0-9a-fA-F]+)/.exec(raw);
     const actualMatch = /(?:got|actual)[=\s]+([0-9a-fA-F]+)/.exec(raw);
+    // Strip the "hash mismatch: " prefix so `err.message` is consistent
+    // with the other variants in `TensogramError`.
+    const stripped = raw.replace(/^hash mismatch:?\s*/, '');
     return new HashMismatchError(
       raw,
-      raw,
+      stripped,
       expectedMatch?.[1],
       actualMatch?.[1],
     );

@@ -1400,50 +1400,105 @@ mod tests {
         Ok(())
     }
 
+    /// Create a temp directory, drop its write bit, attempt to create a
+    /// `.tgm` file inside, and assert that a typed `Io` error comes back.
+    /// Restores the mode at the end so the tempdir cleans up correctly.
+    ///
+    /// Unix-only because Windows's permission model does not honour
+    /// `chmod` in the same way. If running as root (rare but possible in
+    /// containers) the test skips gracefully because root bypasses mode
+    /// checks on regular filesystems.
+    #[cfg(unix)]
     #[test]
-    fn test_create_in_nonwritable_location_returns_io_error() {
-        // `/` (root) is not writable by non-root users — should return Io error.
-        let result = TensogramFile::create("/tensogram-create-root-only-test.tgm");
-        if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
-            // On Linux/macOS, non-root users can't write to /.
-            match result {
-                Ok(_) => {
-                    // Running as root (unlikely in tests); clean up and move on.
-                    let _ = std::fs::remove_file("/tensogram-create-root-only-test.tgm");
-                }
-                Err(e) => {
-                    let msg = e.to_string();
-                    assert!(
-                        msg.contains("cannot create")
-                            || msg.contains("permission")
-                            || msg.contains("read-only"),
-                        "expected create error, got: {msg}"
-                    );
-                }
-            }
+    fn test_create_in_nonwritable_location_returns_io_error(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Cheap root detection without adding a libc dependency: rely on
+        // the well-established `USER` / `LOGNAME` convention. Good enough
+        // for this test's purposes — if someone mis-sets it they'll see a
+        // clean "expected Io error" failure, not undefined behaviour.
+        let am_root = std::env::var("USER").as_deref() == Ok("root")
+            || std::env::var("LOGNAME").as_deref() == Ok("root");
+        if am_root {
+            return Ok(());
         }
+
+        let dir = tempfile::tempdir()?;
+        let dir_path = dir.path().to_path_buf();
+
+        // Drop all write bits (mode 0o555 = r-xr-xr-x).
+        let original = std::fs::metadata(&dir_path)?.permissions();
+        let mut readonly = original.clone();
+        readonly.set_mode(0o555);
+        std::fs::set_permissions(&dir_path, readonly)?;
+
+        let target = dir_path.join("nope.tgm");
+        let result = TensogramFile::create(&target);
+
+        // Always restore permissions so tempdir can clean up.
+        std::fs::set_permissions(&dir_path, original)?;
+
+        // TensogramFile doesn't implement Debug, so use match instead of expect_err.
+        let msg = match result {
+            Ok(_) => panic!("expected Io error creating in non-writable dir, got Ok"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("cannot create")
+                || msg.contains("permission")
+                || msg.contains("read-only"),
+            "expected permission-related error, got: {msg}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn test_read_message_from_nonexistent_file_errors(
+    fn test_read_message_from_deleted_file_errors(
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        // Create a file then delete it under us — read_message must return an error.
+        // TensogramFile is path-backed: each read reopens the file. If the
+        // underlying path disappears out from under an open handle, the
+        // next read_message call must surface a typed I/O error rather
+        // than panic.
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("deleted.tgm");
-        let mut file = TensogramFile::create(&path)?;
-        let meta = make_global_meta();
-        let desc = make_descriptor(vec![2]);
-        file.append(
-            &meta,
-            &[(&desc, vec![0u8; 8].as_slice())],
-            &EncodeOptions::default(),
-        )?;
-        drop(file);
 
-        // Delete the file
+        // Phase 1 — scope a write handle and let it flush on drop so the
+        // file exists on disk before we delete it.
+        {
+            let mut writer = TensogramFile::create(&path)?;
+            let meta = make_global_meta();
+            let desc = make_descriptor(vec![2]);
+            writer.append(
+                &meta,
+                &[(&desc, vec![0u8; 8].as_slice())],
+                &EncodeOptions::default(),
+            )?;
+        }
+
+        // Phase 2 — open a read handle, cache the message offsets, then
+        // delete the underlying file. The handle is still alive; the next
+        // disk-backed operation should fail.
+        let reader = TensogramFile::open(&path)?;
+        assert_eq!(reader.message_count()?, 1);
+
         std::fs::remove_file(&path)?;
 
-        // Reopen should fail
+        // read_message must return an Io error because the path is gone.
+        let read_result = reader.read_message(0);
+        assert!(
+            read_result.is_err(),
+            "expected read_message to fail after underlying file was deleted, got Ok"
+        );
+        let err_msg = read_result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not found")
+                || err_msg.contains("No such")
+                || err_msg.contains("cannot"),
+            "expected I/O error mentioning missing file, got: {err_msg}"
+        );
+
+        // Reopening the deleted path must also fail.
         assert!(TensogramFile::open(&path).is_err());
         Ok(())
     }

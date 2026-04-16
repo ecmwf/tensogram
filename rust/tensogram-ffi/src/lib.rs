@@ -5098,7 +5098,7 @@ mod tests {
         super::tgm_message_free(msg);
     }
 
-    // ── tgm_decode_range with bitmask dtype (unsupported) ─────────────
+    // ── tgm_decode_range on a compression that lacks a block index ────
 
     #[test]
     fn ffi_decode_range_on_compressed_without_offsets() {

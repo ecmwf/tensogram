@@ -207,7 +207,10 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
   /** Iterate all messages in wire order. */
   async *[Symbol.asyncIterator](): AsyncIterator<DecodedMessage> {
     for (let i = 0; i < this.#positions.length; i++) {
-      yield this.message(i);
+      // Explicit `await` so consumers that call `.next()` directly observe
+      // a resolved DecodedMessage, not a Promise thereof. The `for await`
+      // caller experience is unchanged.
+      yield await this.message(i);
     }
   }
 

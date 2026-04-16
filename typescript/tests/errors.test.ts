@@ -47,6 +47,10 @@ describe('Phase 1 — typed error hierarchy', () => {
     const hm = e as HashMismatchError;
     expect(hm.expected).toBe('a1b2c3d4');
     expect(hm.actual).toBe('11223344');
+    // Consistency with other variants: `message` strips the variant prefix.
+    expect(hm.message).toBe('expected=a1b2c3d4, actual=11223344');
+    // `rawMessage` retains the full string including the prefix.
+    expect(hm.rawMessage).toBe('hash mismatch: expected=a1b2c3d4, actual=11223344');
   });
 
   it('mapTensogramError routes "index out of range" as ObjectError', () => {

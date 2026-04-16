@@ -127,14 +127,18 @@ export function computeCommon(meta: GlobalMetadata): Record<string, CborValue> {
 
 /**
  * Value-level equality for `CborValue`. Mirrors Rust's
- * `cbor_values_equal` — positional map / array comparison, NaN bit-pattern
- * equality for floats.
+ * `cbor_values_equal` — positional map / array comparison, with any two
+ * `NaN` values treated as equal. Note this is value-level, not bit-pattern,
+ * equality: different NaN payloads are considered the same. That matches
+ * the operational need because canonical CBOR (RFC 8949 §4.2) normalises
+ * all NaN encodings, so distinguishing payloads has no observable effect
+ * after a round-trip.
  */
 export function cborValuesEqual(a: CborValue, b: CborValue): boolean {
   if (a === b) return true;
   if (typeof a !== typeof b) return false;
 
-  // NaN equality by bit pattern (float64 route; JS numbers are IEEE 754 f64).
+  // Any NaN is treated as equal to any other NaN.
   if (typeof a === 'number' && typeof b === 'number') {
     if (Number.isNaN(a) && Number.isNaN(b)) return true;
     return a === b;
