@@ -115,6 +115,7 @@ tgm_error tgm_encode(const char *metadata_json,
                      const size_t *data_lens,
                      size_t num_objects,
                      const char *hash_algo,
+                     uint32_t threads,
                      tgm_bytes_t *out);
 
 /**
@@ -153,6 +154,7 @@ tgm_error tgm_encode_pre_encoded(const char *metadata_json,
                                  const size_t *data_lens,
                                  size_t num_objects,
                                  const char *hash_algo,
+                                 uint32_t threads,
                                  tgm_bytes_t *out);
 
 /**
@@ -168,6 +170,7 @@ tgm_error tgm_decode(const uint8_t *buf,
                      size_t buf_len,
                      int32_t verify_hash,
                      int32_t native_byte_order,
+                     uint32_t threads,
                      tgm_message_t **out);
 
 /**
@@ -186,6 +189,7 @@ tgm_error tgm_decode_object(const uint8_t *buf,
                             size_t index,
                             int32_t verify_hash,
                             int32_t native_byte_order,
+                            uint32_t threads,
                             tgm_message_t **out);
 
 /**
@@ -210,6 +214,7 @@ tgm_error tgm_decode_range(const uint8_t *buf,
                            size_t num_ranges,
                            int32_t verify_hash,
                            int32_t native_byte_order,
+                           uint32_t threads,
                            int32_t join,
                            tgm_bytes_t *out,
                            size_t *out_count);
@@ -392,6 +397,7 @@ tgm_error tgm_file_decode_message(tgm_file_t *file,
                                   size_t index,
                                   int32_t verify_hash,
                                   int32_t native_byte_order,
+                                  uint32_t threads,
                                   tgm_message_t **out);
 
 /**
@@ -420,7 +426,8 @@ tgm_error tgm_file_append(tgm_file_t *file,
                           const uint8_t *const *data_ptrs,
                           const size_t *data_lens,
                           size_t num_objects,
-                          const char *hash_algo);
+                          const char *hash_algo,
+                          uint32_t threads);
 
 /**
  * Close a file handle and release resources.
@@ -553,6 +560,7 @@ tgm_error tgm_compute_hash(const uint8_t *data,
 tgm_error tgm_streaming_encoder_create(const char *path,
                                        const char *metadata_json,
                                        const char *hash_algo,
+                                       uint32_t threads,
                                        tgm_streaming_encoder_t **out);
 
 /**

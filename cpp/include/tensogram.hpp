@@ -178,6 +178,16 @@ struct scan_entry {
 struct encode_options {
     /// Hash algorithm name (e.g. "xxh3").  Empty string disables hashing.
     std::string hash_algo = "xxh3";
+    /// Thread budget for the multi-threaded coding pipeline.
+    ///
+    /// - `0` (default): sequential execution (pre-0.13.0 behaviour); may
+    ///   still be overridden by the `TENSOGRAM_THREADS` environment variable.
+    /// - `1`: single worker thread.
+    /// - `N ≥ 2`: scoped pool of `N` workers.  For the transparent pipeline
+    ///   stages the encoded payload is byte-identical across thread counts;
+    ///   for opaque codecs (blosc2, zstd with workers) the compressed bytes
+    ///   may differ but round-trip losslessly.
+    std::uint32_t threads = 0;
 };
 
 /// Options controlling message decoding.
@@ -188,6 +198,9 @@ struct decode_options {
     /// caller's native byte order.  Set to false to receive bytes in the
     /// message's declared wire byte order.
     bool native_byte_order = true;
+    /// Thread budget for the multi-threaded decoding pipeline.
+    /// See `encode_options::threads` for semantics.
+    std::uint32_t threads = 0;
 };
 
 // ============================================================
@@ -540,7 +553,7 @@ public:
         tgm_message_t* raw = nullptr;
         detail::check(tgm_file_decode_message(
             handle_.get(), index, opts.verify_hash ? 1 : 0,
-            opts.native_byte_order ? 1 : 0, &raw));
+            opts.native_byte_order ? 1 : 0, opts.threads, &raw));
         return message(raw);
     }
 
@@ -572,7 +585,7 @@ public:
                                                      : opts.hash_algo.c_str();
         detail::check(tgm_file_append(handle_.get(), metadata_json.c_str(),
                                        sg.ptrs.data(), sg.lens.data(),
-                                       objects.size(), hash));
+                                       objects.size(), hash, opts.threads));
     }
 
     /// File path as a string.
@@ -764,7 +777,7 @@ public:
         const char* hash = opts.hash_algo.empty() ? nullptr
                                                     : opts.hash_algo.c_str();
         detail::check(tgm_streaming_encoder_create(
-            path.c_str(), metadata_json.c_str(), hash, &raw));
+            path.c_str(), metadata_json.c_str(), hash, opts.threads, &raw));
         handle_.reset(raw);
     }
 
@@ -862,7 +875,7 @@ private:
     tgm_bytes_t bytes{};
     detail::check(tgm_encode(metadata_json.c_str(),
                               sg.ptrs.data(), sg.lens.data(), objects.size(),
-                              hash, &bytes));
+                              hash, opts.threads, &bytes));
     std::vector<std::uint8_t> result(bytes.data, bytes.data + bytes.len);
     tgm_bytes_free(bytes);
     return result;
@@ -909,7 +922,8 @@ private:
     tgm_bytes_t bytes{};
     detail::check(tgm_encode_pre_encoded(metadata_json.c_str(),
                                           sg.ptrs.data(), sg.lens.data(),
-                                          objects.size(), hash, &bytes));
+                                          objects.size(), hash,
+                                          opts.threads, &bytes));
     std::vector<std::uint8_t> result(bytes.data, bytes.data + bytes.len);
     tgm_bytes_free(bytes);
     return result;
@@ -921,7 +935,8 @@ private:
 {
     tgm_message_t* raw = nullptr;
     detail::check(tgm_decode(buf, len, opts.verify_hash ? 1 : 0,
-                              opts.native_byte_order ? 1 : 0, &raw));
+                              opts.native_byte_order ? 1 : 0,
+                              opts.threads, &raw));
     return message(raw);
 }
 
@@ -941,7 +956,8 @@ private:
     tgm_message_t* raw = nullptr;
     detail::check(tgm_decode_object(buf, len, index,
                                      opts.verify_hash ? 1 : 0,
-                                     opts.native_byte_order ? 1 : 0, &raw));
+                                     opts.native_byte_order ? 1 : 0,
+                                     opts.threads, &raw));
     return message(raw);
 }
 
@@ -965,7 +981,8 @@ private:
                                     offsets.data(), counts.data(), ranges.size(),
                                     opts.verify_hash ? 1 : 0,
                                     opts.native_byte_order ? 1 : 0,
-                                    0, bufs.data(), &out_count));
+                                    opts.threads, 0,
+                                    bufs.data(), &out_count));
     if (out_count > ranges.size()) {
         for (std::size_t i = 0; i < ranges.size(); ++i) {
             tgm_bytes_free(bufs[i]);
@@ -1001,7 +1018,8 @@ private:
                                     offsets.data(), counts.data(), ranges.size(),
                                     opts.verify_hash ? 1 : 0,
                                     opts.native_byte_order ? 1 : 0,
-                                    1, &bytes, &out_count));
+                                    opts.threads, 1,
+                                    &bytes, &out_count));
     if (out_count != 1) {
         tgm_bytes_free(bytes);
         throw std::runtime_error("tgm_decode_range returned unexpected out_count in joined mode");

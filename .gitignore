@@ -6,7 +6,8 @@
 *.dylib.dSYM/
 **/target
 **/pkg
-/build/
+**/build/
+python/bindings/Cargo.lock
 
 /docs/book
 **/.venv

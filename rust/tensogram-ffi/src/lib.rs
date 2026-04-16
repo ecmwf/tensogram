@@ -443,6 +443,7 @@ unsafe fn parse_encode_args<'a>(
     data_lens: *const usize,
     num_objects: usize,
     hash_algo: *const c_char,
+    threads: u32,
 ) -> Result<ParsedEncode<'a>, (TgmError, String)> {
     let (global_metadata, descriptors) =
         parse_encode_json(json_str).map_err(|e| (TgmError::Metadata, e))?;
@@ -462,6 +463,7 @@ unsafe fn parse_encode_args<'a>(
     let hash_algorithm = parse_hash_algo(hash_algo)?;
     let options = EncodeOptions {
         hash_algorithm,
+        threads,
         ..Default::default()
     };
 
@@ -497,6 +499,7 @@ pub extern "C" fn tgm_encode(
     data_lens: *const usize,
     num_objects: usize,
     hash_algo: *const c_char,
+    threads: u32,
     out: *mut TgmBytes,
 ) -> TgmError {
     if metadata_json.is_null() || out.is_null() {
@@ -513,7 +516,14 @@ pub extern "C" fn tgm_encode(
     };
 
     let parsed = match unsafe {
-        parse_encode_args(json_str, data_ptrs, data_lens, num_objects, hash_algo)
+        parse_encode_args(
+            json_str,
+            data_ptrs,
+            data_lens,
+            num_objects,
+            hash_algo,
+            threads,
+        )
     } {
         Ok(p) => p,
         Err((code, msg)) => {
@@ -587,6 +597,7 @@ pub extern "C" fn tgm_encode_pre_encoded(
     data_lens: *const usize,
     num_objects: usize,
     hash_algo: *const c_char,
+    threads: u32,
     out: *mut TgmBytes,
 ) -> TgmError {
     if metadata_json.is_null() || out.is_null() {
@@ -603,7 +614,14 @@ pub extern "C" fn tgm_encode_pre_encoded(
     };
 
     let parsed = match unsafe {
-        parse_encode_args(json_str, data_ptrs, data_lens, num_objects, hash_algo)
+        parse_encode_args(
+            json_str,
+            data_ptrs,
+            data_lens,
+            num_objects,
+            hash_algo,
+            threads,
+        )
     } {
         Ok(p) => p,
         Err((code, msg)) => {
@@ -658,6 +676,7 @@ pub extern "C" fn tgm_decode(
     buf_len: usize,
     verify_hash: i32,
     native_byte_order: i32,
+    threads: u32,
     out: *mut *mut TgmMessage,
 ) -> TgmError {
     if buf.is_null() || out.is_null() {
@@ -669,6 +688,7 @@ pub extern "C" fn tgm_decode(
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
         native_byte_order: native_byte_order != 0,
+        threads,
         ..Default::default()
     };
 
@@ -742,6 +762,7 @@ pub extern "C" fn tgm_decode_object(
     index: usize,
     verify_hash: i32,
     native_byte_order: i32,
+    threads: u32,
     out: *mut *mut TgmMessage,
 ) -> TgmError {
     if buf.is_null() || out.is_null() {
@@ -753,6 +774,7 @@ pub extern "C" fn tgm_decode_object(
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
         native_byte_order: native_byte_order != 0,
+        threads,
         ..Default::default()
     };
 
@@ -797,6 +819,7 @@ pub extern "C" fn tgm_decode_object(
 ///
 /// Free each returned buffer with `tgm_bytes_free`.
 #[no_mangle]
+#[allow(clippy::too_many_arguments)]
 pub extern "C" fn tgm_decode_range(
     buf: *const u8,
     buf_len: usize,
@@ -806,6 +829,7 @@ pub extern "C" fn tgm_decode_range(
     num_ranges: usize,
     verify_hash: i32,
     native_byte_order: i32,
+    threads: u32,
     join: i32,
     out: *mut TgmBytes,
     out_count: *mut usize,
@@ -823,6 +847,7 @@ pub extern "C" fn tgm_decode_range(
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
         native_byte_order: native_byte_order != 0,
+        threads,
         ..Default::default()
     };
 
@@ -1407,6 +1432,7 @@ pub extern "C" fn tgm_file_decode_message(
     index: usize,
     verify_hash: i32,
     native_byte_order: i32,
+    threads: u32,
     out: *mut *mut TgmMessage,
 ) -> TgmError {
     if file.is_null() || out.is_null() {
@@ -1418,6 +1444,7 @@ pub extern "C" fn tgm_file_decode_message(
     let options = DecodeOptions {
         verify_hash: verify_hash != 0,
         native_byte_order: native_byte_order != 0,
+        threads,
         ..Default::default()
     };
 
@@ -1546,6 +1573,7 @@ pub extern "C" fn tgm_file_append(
     data_lens: *const usize,
     num_objects: usize,
     hash_algo: *const c_char,
+    threads: u32,
 ) -> TgmError {
     if file.is_null() || metadata_json.is_null() {
         set_last_error("null argument");
@@ -1561,7 +1589,14 @@ pub extern "C" fn tgm_file_append(
     };
 
     let parsed = match unsafe {
-        parse_encode_args(json_str, data_ptrs, data_lens, num_objects, hash_algo)
+        parse_encode_args(
+            json_str,
+            data_ptrs,
+            data_lens,
+            num_objects,
+            hash_algo,
+            threads,
+        )
     } {
         Ok(p) => p,
         Err((code, msg)) => {
@@ -2690,6 +2725,7 @@ mod tests {
             &data_len as *const usize,
             1,
             ptr::null(), // no hash
+            0,           // threads
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok), "tgm_encode failed");
@@ -2731,6 +2767,7 @@ mod tests {
             &data_len as *const usize,
             1,
             hash_algo.as_ptr(),
+            0,
             &mut out,
         );
         assert!(
@@ -2757,6 +2794,7 @@ mod tests {
             encoded.len(),
             0, // no hash verify
             0, // no native byte order rewrite
+            0, // threads
             &mut msg,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -2841,6 +2879,7 @@ mod tests {
             encoded.len(),
             1, // verify hash
             0,
+            0, // threads
             &mut msg,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -2867,7 +2906,7 @@ mod tests {
         let encoded = ffi_encode_single_f32_tensor(&values, "");
 
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         assert_eq!(super::tgm_payload_has_hash(msg, 0), 0);
@@ -2883,7 +2922,7 @@ mod tests {
         let encoded = ffi_encode_single_f32_tensor(&values, r#""source":"test_source","count":42"#);
 
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         // Extract metadata from decoded message
@@ -2919,6 +2958,7 @@ mod tests {
             ptr::null(),
             0,
             ptr::null(),
+            0,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -2933,6 +2973,7 @@ mod tests {
             ptr::null(),
             0,
             ptr::null(),
+            0,
             ptr::null_mut(),
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -2955,6 +2996,7 @@ mod tests {
             &data_len as *const usize,
             1, // mismatch!
             ptr::null(),
+            0, // threads
             &mut out,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -2973,6 +3015,7 @@ mod tests {
             ptr::null(),
             0,
             ptr::null(),
+            0,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Metadata));
@@ -2983,14 +3026,14 @@ mod tests {
     #[test]
     fn ffi_decode_null_buf() {
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(ptr::null(), 0, 0, 0, &mut msg);
+        let err = super::tgm_decode(ptr::null(), 0, 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::InvalidArg));
     }
 
     #[test]
     fn ffi_decode_null_out() {
         let data = [0u8; 10];
-        let err = super::tgm_decode(data.as_ptr(), data.len(), 0, 0, ptr::null_mut());
+        let err = super::tgm_decode(data.as_ptr(), data.len(), 0, 0, 0, ptr::null_mut());
         assert!(matches!(err, super::TgmError::InvalidArg));
     }
 
@@ -2998,7 +3041,7 @@ mod tests {
     fn ffi_decode_garbage_data() {
         let data = [0u8; 10];
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(data.as_ptr(), data.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(data.as_ptr(), data.len(), 0, 0, 0, &mut msg);
         // Should fail with a framing or other error
         assert!(!matches!(err, super::TgmError::Ok));
     }
@@ -3138,6 +3181,7 @@ mod tests {
             0, // index
             0, // verify hash
             0, // native byte order
+            0, // threads
             &mut msg,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -3170,6 +3214,7 @@ mod tests {
             999, // out of range
             0,
             0,
+            0, // threads
             &mut msg,
         );
         assert!(!matches!(err, super::TgmError::Ok));
@@ -3178,11 +3223,11 @@ mod tests {
     #[test]
     fn ffi_decode_object_null_args() {
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode_object(ptr::null(), 0, 0, 0, 0, &mut msg);
+        let err = super::tgm_decode_object(ptr::null(), 0, 0, 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::InvalidArg));
 
         let data = [0u8; 10];
-        let err = super::tgm_decode_object(data.as_ptr(), data.len(), 0, 0, 0, ptr::null_mut());
+        let err = super::tgm_decode_object(data.as_ptr(), data.len(), 0, 0, 0, 0, ptr::null_mut());
         assert!(matches!(err, super::TgmError::InvalidArg));
     }
 
@@ -3195,7 +3240,7 @@ mod tests {
 
         let encoded = ffi_encode_single_f32_tensor(&[1.0f32], "");
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         let err = super::tgm_message_metadata(msg, ptr::null_mut());
@@ -3236,7 +3281,7 @@ mod tests {
     fn ffi_message_accessors_out_of_bounds() {
         let encoded = ffi_encode_single_f32_tensor(&[1.0f32], "");
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         // Index 1 does not exist (only index 0)
@@ -3267,7 +3312,7 @@ mod tests {
     fn ffi_object_data_null_out_len() {
         let encoded = ffi_encode_single_f32_tensor(&[1.0f32], "");
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         // null out_len should not crash
@@ -3302,6 +3347,7 @@ mod tests {
             1,
             0, // no hash verify
             0, // no native byte order
+            0, // threads
             1, // join
             &mut out_buf,
             &mut out_count,
@@ -3349,6 +3395,7 @@ mod tests {
             2,
             0,
             0,
+            0, // threads
             0, // split mode (join=0)
             out_bufs.as_mut_ptr(),
             &mut out_count,
@@ -3402,6 +3449,7 @@ mod tests {
             0,
             0,
             0,
+            0,
             &mut out_buf,
             &mut out_count,
         );
@@ -3419,6 +3467,7 @@ mod tests {
             0,
             0,
             0,
+            0,
             ptr::null_mut(),
             &mut out_count,
         );
@@ -3431,6 +3480,7 @@ mod tests {
             0,
             ptr::null(),
             ptr::null(),
+            0,
             0,
             0,
             0,
@@ -3459,6 +3509,7 @@ mod tests {
             1,           // but num_ranges > 0
             0,
             0,
+            0, // threads
             0,
             &mut out_buf,
             &mut out_count,
@@ -3582,6 +3633,7 @@ mod tests {
             &data_len as *const usize,
             1,
             ptr::null(),
+            0,
         );
         assert!(matches!(err, super::TgmError::Ok));
 
@@ -3606,7 +3658,7 @@ mod tests {
 
         // Decode message
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_file_decode_message(file2, 0, 0, 0, &mut msg);
+        let err = super::tgm_file_decode_message(file2, 0, 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         assert_eq!(super::tgm_message_num_objects(msg), 1);
@@ -3671,7 +3723,7 @@ mod tests {
         assert!(matches!(err, super::TgmError::InvalidArg));
 
         // decode_message null args
-        let err = super::tgm_file_decode_message(ptr::null_mut(), 0, 0, 0, ptr::null_mut());
+        let err = super::tgm_file_decode_message(ptr::null_mut(), 0, 0, 0, 0, ptr::null_mut());
         assert!(matches!(err, super::TgmError::InvalidArg));
 
         // read_message null args
@@ -3686,6 +3738,7 @@ mod tests {
             ptr::null(),
             0,
             ptr::null(),
+            0,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
 
@@ -3742,6 +3795,7 @@ mod tests {
             c_path.as_ptr(),
             meta_json.as_ptr(),
             ptr::null(), // no hash
+            0,           // threads
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -3788,7 +3842,7 @@ mod tests {
         assert_eq!(count, 1);
 
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_file_decode_message(file, 0, 0, 0, &mut msg);
+        let err = super::tgm_file_decode_message(file, 0, 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         let mut data_len: usize = 0;
@@ -3811,14 +3865,19 @@ mod tests {
 
         // create with null path
         let meta = CString::new(r#"{"version":2}"#).unwrap();
-        let err =
-            super::tgm_streaming_encoder_create(ptr::null(), meta.as_ptr(), ptr::null(), &mut enc);
+        let err = super::tgm_streaming_encoder_create(
+            ptr::null(),
+            meta.as_ptr(),
+            ptr::null(),
+            0,
+            &mut enc,
+        );
         assert!(matches!(err, super::TgmError::InvalidArg));
 
         // create with null metadata
         let p = CString::new("/tmp/dummy.tgm").unwrap();
         let err =
-            super::tgm_streaming_encoder_create(p.as_ptr(), ptr::null(), ptr::null(), &mut enc);
+            super::tgm_streaming_encoder_create(p.as_ptr(), ptr::null(), ptr::null(), 0, &mut enc);
         assert!(matches!(err, super::TgmError::InvalidArg));
 
         // create with null out
@@ -3826,6 +3885,7 @@ mod tests {
             p.as_ptr(),
             meta.as_ptr(),
             ptr::null(),
+            0,
             ptr::null_mut(),
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -3869,6 +3929,7 @@ mod tests {
             c_path.as_ptr(),
             meta_json.as_ptr(),
             ptr::null(),
+            0,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -3900,6 +3961,7 @@ mod tests {
             c_path.as_ptr(),
             meta_json.as_ptr(),
             ptr::null(),
+            0,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -3931,7 +3993,7 @@ mod tests {
         assert!(matches!(err, super::TgmError::Ok));
 
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_file_decode_message(file, 0, 0, 0, &mut msg);
+        let err = super::tgm_file_decode_message(file, 0, 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         let mut meta: *mut super::TgmMetadata = ptr::null_mut();
@@ -4121,6 +4183,7 @@ mod tests {
             ptr::null(),
             0,
             ptr::null(),
+            0,
             &mut out,
         );
 
@@ -4191,6 +4254,7 @@ mod tests {
             ptr::null(),
             0,
             ptr::null(),
+            0,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -4202,6 +4266,7 @@ mod tests {
             ptr::null(),
             0,
             ptr::null(),
+            0,
             ptr::null_mut(),
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -4236,6 +4301,7 @@ mod tests {
             &data_len as *const usize,
             1,
             ptr::null(),
+            0,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4245,7 +4311,7 @@ mod tests {
 
         // Decode
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         let mut dl: usize = 0;
@@ -4488,6 +4554,7 @@ mod tests {
             ptr::null(),
             0,
             ptr::null(),
+            0,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4496,7 +4563,7 @@ mod tests {
         super::tgm_bytes_free(out);
 
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         assert_eq!(super::tgm_message_version(msg), 2);
@@ -4522,6 +4589,7 @@ mod tests {
             c_path.as_ptr(),
             meta_json.as_ptr(),
             hash_algo.as_ptr(),
+            0,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4548,7 +4616,7 @@ mod tests {
         assert!(matches!(err, super::TgmError::Ok));
 
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_file_decode_message(file, 0, 1, 0, &mut msg);
+        let err = super::tgm_file_decode_message(file, 0, 1, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         assert_eq!(super::tgm_payload_has_hash(msg, 0), 1);
@@ -4573,6 +4641,7 @@ mod tests {
             c_path.as_ptr(),
             meta_json.as_ptr(),
             bad_algo.as_ptr(),
+            0,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -4593,6 +4662,7 @@ mod tests {
             c_path.as_ptr(),
             bad_meta.as_ptr(),
             ptr::null(),
+            0,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Metadata));
@@ -4635,6 +4705,7 @@ mod tests {
             data_lens.as_ptr(),
             2,
             ptr::null(),
+            0,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4644,7 +4715,7 @@ mod tests {
 
         // Decode all
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
         assert_eq!(super::tgm_message_num_objects(msg), 2);
 
@@ -4703,6 +4774,7 @@ mod tests {
             &data_len as *const usize,
             1,
             ptr::null(),
+            0,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4774,6 +4846,7 @@ mod tests {
             c_path.as_ptr(),
             meta_json.as_ptr(),
             ptr::null(),
+            0,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4804,7 +4877,7 @@ mod tests {
         assert!(matches!(err, super::TgmError::Ok));
 
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_file_decode_message(file, 0, 0, 0, &mut msg);
+        let err = super::tgm_file_decode_message(file, 0, 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         let mut dl: usize = 0;
@@ -4837,6 +4910,7 @@ mod tests {
             ptr::null(),
             0,
             bad_algo.as_ptr(),
+            0,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -4899,6 +4973,7 @@ mod tests {
             data_lens.as_ptr(),
             1,
             ptr::null(), // no hash
+            0,           // threads
             &mut out,
         );
         assert!(
@@ -5034,6 +5109,7 @@ pub extern "C" fn tgm_streaming_encoder_create(
     path: *const c_char,
     metadata_json: *const c_char,
     hash_algo: *const c_char,
+    threads: u32,
     out: *mut *mut TgmStreamingEncoder,
 ) -> TgmError {
     if path.is_null() || metadata_json.is_null() || out.is_null() {
@@ -5094,6 +5170,7 @@ pub extern "C" fn tgm_streaming_encoder_create(
 
     let options = EncodeOptions {
         hash_algorithm,
+        threads,
         ..Default::default()
     };
     let writer = std::io::BufWriter::new(file);
