@@ -1,0 +1,57 @@
+{
+  "name": "@ecmwf/tensogram",
+  "version": "0.12.0",
+  "description": "TypeScript bindings for the Tensogram N-tensor message format",
+  "keywords": [
+    "tensogram",
+    "ecmwf",
+    "cbor",
+    "wasm",
+    "scientific-data",
+    "weather",
+    "tensor"
+  ],
+  "license": "Apache-2.0",
+  "author": "ECMWF",
+  "homepage": "https://github.com/ecmwf/tensogram",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ecmwf/tensogram.git",
+    "directory": "typescript"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./wasm": {
+      "default": "./wasm/tensogram_wasm.js"
+    }
+  },
+  "files": [
+    "dist",
+    "wasm",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build:wasm": "wasm-pack build ../rust/tensogram-wasm --release --target web --out-dir ../../typescript/wasm --out-name tensogram_wasm",
+    "build:ts": "tsc",
+    "build": "npm run build:wasm && npm run build:ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@vitest/coverage-v8": "^2.1.9",
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

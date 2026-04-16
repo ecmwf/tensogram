@@ -1,7 +1,46 @@
-# Tensogram — Current Implementation Status (v0.8.0)
+# Tensogram — Current Implementation Status (v0.12.0)
 
 > For historical release notes, see `../CHANGELOG.md`.
 > For planned features, see `TODO.md`. For ideas, see `IDEAS.md`.
+
+## TypeScript wrapper — Scope B complete (Phases 0–5)
+
+New top-level `typescript/` package (`@ecmwf/tensogram`) that wraps
+`rust/tensogram-wasm` with a typed, idiomatic TypeScript API. Design doc:
+`plans/TYPESCRIPT_WRAPPER.md`. User-facing docs:
+`docs/src/guide/typescript-api.md`.
+
+| Component | What landed |
+|-----------|-------------|
+| Rust fix | `rust/tensogram-wasm/src/convert.rs::to_js` now uses `Serializer::json_compatible()` so metadata comes across as plain JS objects rather than ES `Map`. All 134 existing `wasm-bindgen-test` tests still pass. |
+| Scaffold | `typescript/` with `package.json`, `tsconfig.json`, `vitest.config.ts`, `README.md`, `.gitignore`. ESM-only, Node ≥ 20. |
+| Build wiring | `wasm-pack build --target web` → `typescript/wasm/`, then `tsc` emits `dist/`. |
+| `src/types.ts` | Hand-written types: `Dtype`, `ByteOrder`, `Encoding`, `Filter`, `Compression`, `CborValue`, `HashDescriptor`, `DataObjectDescriptor`, `GlobalMetadata`, `BaseEntry`, `DecodedObject`, `DecodedMessage`, `EncodeInput`, `EncodeOptions`, `DecodeOptions`, `TypedArray`, `MessagePosition`. |
+| `src/errors.ts` | Abstract `TensogramError` + 8 concrete subclasses (`FramingError`, `MetadataError`, `EncodingError`, `CompressionError`, `ObjectError`, `IoError`, `RemoteError`, `HashMismatchError`) plus `InvalidArgumentError`. `mapTensogramError` parses the Rust-side error prefixes and extracts hex digests from hash-mismatch messages. |
+| `src/dtype.ts` | `DTYPE_BYTE_WIDTH`, `payloadByteSize` (handles bitmask `ceil(N/8)`), `shapeElementCount`, `typedArrayFor` (dispatches to all 10 native JS `TypedArray` types plus `Uint16Array` / interleaved `Float32/64Array` surrogates for half-precision and complex dtypes), `isDtype`, `SUPPORTED_DTYPES`. |
+| `src/init.ts` | Idempotent async `init()`; explicit Node file read path (avoids depending on Node's experimental `file://` `fetch`); browser `fetch` fallback. Internal `getWbg()` + `_resetForTests()`. |
+| `src/encode.ts` | Typed wrapper with client-side validation for `version`, `_reserved_` writes, dtype recognition, byte-order, and descriptor shape. Accepts any `ArrayBufferView` (not just `TypedArray`). |
+| `src/decode.ts` | `decode`, `decodeMetadata`, `decodeObject`, `scan`. Returns `DecodedMessage` with safe-copy `data()` + zero-copy `dataView()` per object. Explicit `close()` + `FinalizationRegistry` fallback. |
+| `src/metadata.ts` | `getMetaKey(meta, "mars.param")` with first-match-across-`base[*]` + fallback-to-`_extra_` semantics; `_reserved_` always hidden. `computeCommon(meta)` mirrors Rust `compute_common`. `cborValuesEqual` handles NaN bit patterns and positional map/array comparison. |
+| `src/index.ts` | Barrel export of the full public surface. |
+| `src/streaming.ts` | `decodeStream(stream, opts?)` async generator built on the WASM `StreamingDecoder`. Produces `DecodedFrame` objects with typed `descriptor`, per-object `baseEntry`, safe-copy `data()`, zero-copy `dataView()`. Handles `AbortSignal`, `maxBufferBytes` limits, and corrupt-message skip/report via `onError`. Cleanup on early `break`, thrown exceptions, and signal-fire is covered by the generator's `finally` block. |
+| `src/file.ts` | `TensogramFile` class with three factories: `.open(path)` (Node `fs/promises`, lazy-imported so browser bundlers tree-shake it), `.fromUrl(url, opts?)` (any fetch-capable runtime; `fetch`, `headers`, `signal` options), `.fromBytes(bytes)` (in-memory, with defensive copy). Random access via `message(i)` / `messageMetadata(i)` / `rawMessage(i)`; async iteration via `[Symbol.asyncIterator]`; `close()` blocks further access. |
+| Tests | **87 vitest tests across 8 files**: `smoke` (4), `encode` (10), `decode` (12), `dtype` (12), `metadata` (13), `errors` (6), `streaming` (10), `file` (20). Covers round-trips for float32/float64/int32/int64/uint8, multi-object messages, hash verification with tamper-detect, error routing, `_reserved_` rejection, scan tolerance of inter-message garbage, `close()` idempotence, the plain-object-not-ES-Map parity claim, chunk-boundary-tolerant streaming, corrupt-message skip + `onError` observation, `AbortSignal` cancellation, `maxBufferBytes` enforcement, Node temp-file `open()`, `fetch`-mock `fromUrl()`, HTTP-status error handling, and defensive copy semantics. |
+| Typecheck | Strict `tsc` (noImplicitAny, strictNullChecks, noUnusedLocals/Parameters) passes cleanly on source and tests. |
+| Examples | `examples/typescript/01_encode_decode.ts`, `02_mars_metadata.ts`, `03_multi_object.ts`, `05_streaming_fetch.ts`, `06_file_api.ts`, `07_hash_and_errors.ts`. `examples/typescript/package.json` uses a local file: dependency on the `typescript/` package. All six examples run green end-to-end via `npx tsx`. Numbered to stay in step with `examples/python/`. |
+| Makefile | Top-level targets: `ts-install`, `ts-build`, `ts-test`, `ts-typecheck`. `make test` runs `ts-test`; `make lint` runs `ts-typecheck`; `make clean` also removes `typescript/dist`, `typescript/wasm`, `typescript/node_modules`, `examples/typescript/node_modules`. |
+| CI | New `typescript` job in `.github/workflows/ci.yml` mirroring the existing `wasm` job: installs the full Node distribution, runs `wasm-pack build`, `tsc --noEmit` (src + tests), `vitest run`, `tsc` (emit dist), then smoke-tests all six examples via `npx tsx`. |
+| Docs | mdBook page `docs/src/guide/typescript-api.md` now covers the full Scope-B surface (encode/decode, dtype dispatch, metadata helpers, streaming, `TensogramFile`, memory model, error classes, examples); linked from `docs/src/SUMMARY.md`. |
+| Agent & contributor docs | `CLAUDE.md` and `CONTRIBUTING.md` covered TS setup in the earlier pass; unchanged here. |
+
+### Deferred to follow-ups (Scope C)
+
+- Range-based lazy backend for `TensogramFile.fromUrl` (current impl downloads the whole file).
+- `validate` / `encode_pre_encoded` wrappers.
+- First-class `float16` / `bfloat16` / `complex*` support (today they round-trip as `Uint16Array` / interleaved `Float32/64Array` surrogates).
+- npm publish pipeline (the package is currently local-only).
+- Zarr.js integration mirroring `tensogram-zarr`.
+- Bundle-size budget (`size-limit`) in CI.
 
 ## Python async bindings (completed)
 

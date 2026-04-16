@@ -1,21 +1,35 @@
 # Error Handling
 
 Tensogram uses typed errors across all language bindings. Every fallible
-operation returns a `Result` (Rust), raises an exception (Python/C++), or
-returns an error code (C). No library code panics.
+operation returns a `Result` (Rust), raises an exception (Python / C++ /
+TypeScript), or returns an error code (C). No library code panics.
 
 ## Error Categories
 
-| Category | Trigger | Rust | Python | C++ | C Code |
-|----------|---------|------|--------|-----|--------|
-| **Framing** | Invalid magic bytes, truncated message, bad terminator | `TensogramError::Framing` | `ValueError` | `framing_error` | `TGM_ERROR_FRAMING (1)` |
-| **Metadata** | CBOR parse failure, missing required field, schema violation | `TensogramError::Metadata` | `ValueError` | `metadata_error` | `TGM_ERROR_METADATA (2)` |
-| **Encoding** | Encoding pipeline failure (e.g. NaN in simple\_packing) | `TensogramError::Encoding` | `ValueError` | `encoding_error` | `TGM_ERROR_ENCODING (3)` |
-| **Compression** | Decompression failure, unknown codec | `TensogramError::Compression` | `ValueError` | `compression_error` | `TGM_ERROR_COMPRESSION (4)` |
-| **Object** | Invalid descriptor, object index out of range | `TensogramError::Object` | `ValueError` | `object_error` | `TGM_ERROR_OBJECT (5)` |
-| **I/O** | File not found, permission denied, disk full | `TensogramError::Io` | `OSError` | `io_error` | `TGM_ERROR_IO (6)` |
-| **Hash Mismatch** | Payload integrity check fails on `verify_hash=True` | `TensogramError::HashMismatch` | `RuntimeError` | `hash_mismatch_error` | `TGM_ERROR_HASH_MISMATCH (7)` |
-| **Invalid Arg** | NULL pointer or invalid argument in C/C++ FFI | — | — | `invalid_arg_error` | `TGM_ERROR_INVALID_ARG (8)` |
+| Category | Trigger | Rust | Python | C++ | TypeScript | C Code |
+|----------|---------|------|--------|-----|------------|--------|
+| **Framing** | Invalid magic bytes, truncated message, bad terminator | `TensogramError::Framing` | `ValueError` | `framing_error` | `FramingError` | `TGM_ERROR_FRAMING (1)` |
+| **Metadata** | CBOR parse failure, missing required field, schema violation | `TensogramError::Metadata` | `ValueError` | `metadata_error` | `MetadataError` | `TGM_ERROR_METADATA (2)` |
+| **Encoding** | Encoding pipeline failure (e.g. NaN in simple\_packing) | `TensogramError::Encoding` | `ValueError` | `encoding_error` | `EncodingError` | `TGM_ERROR_ENCODING (3)` |
+| **Compression** | Decompression failure, unknown codec | `TensogramError::Compression` | `ValueError` | `compression_error` | `CompressionError` | `TGM_ERROR_COMPRESSION (4)` |
+| **Object** | Invalid descriptor, object index out of range | `TensogramError::Object` | `ValueError` | `object_error` | `ObjectError` | `TGM_ERROR_OBJECT (5)` |
+| **I/O** | File not found, permission denied, disk full | `TensogramError::Io` | `OSError` | `io_error` | `IoError` | `TGM_ERROR_IO (6)` |
+| **Hash Mismatch** | Payload integrity check fails on `verify_hash=True` | `TensogramError::HashMismatch` | `RuntimeError` | `hash_mismatch_error` | `HashMismatchError` | `TGM_ERROR_HASH_MISMATCH (7)` |
+| **Invalid Arg** | NULL pointer or invalid argument at the API boundary | — | `ValueError` | `invalid_arg_error` | `InvalidArgumentError` | `TGM_ERROR_INVALID_ARG (8)` |
+| **Remote** | S3 / GCS / Azure / HTTP(S) object-store failure | `TensogramError::Remote` | `RuntimeError` | `remote_error` | `RemoteError` | `TGM_ERROR_REMOTE (10)` |
+| **Streaming Limit** | `decodeStream` internal buffer exceeded the configured maximum | — | — | — | `StreamingLimitError` | — |
+
+Notes on the TypeScript column:
+
+- All TypeScript errors extend the abstract `TensogramError` base class,
+  so a single `catch (err) { if (err instanceof TensogramError) … }`
+  handles every library-raised error.
+- `HashMismatchError` in TypeScript additionally carries parsed
+  `expected` and `actual` hex digests when the underlying Rust message
+  is in the canonical `"hash mismatch: expected X, got Y"` form.
+- `StreamingLimitError` is TS-specific and is raised only from
+  `decodeStream` when the internal buffer would grow past
+  `maxBufferBytes` (default 256 MiB).
 
 ## Error Paths by Operation
 
@@ -277,6 +291,83 @@ if (!msg) {
 
 > **Note:** `tgm_last_error()` returns a thread-local string valid until the
 > next FFI call on the same thread. Copy it if you need to keep it.
+
+### TypeScript
+
+Every error thrown by `@ecmwf/tensogram` is an instance of the abstract
+`TensogramError` base class. The concrete subclasses match the Rust
+variants one-to-one, plus a TS-specific `InvalidArgumentError` and
+`StreamingLimitError`.
+
+```ts
+import {
+  decode,
+  TensogramError,
+  FramingError,
+  HashMismatchError,
+  ObjectError,
+  StreamingLimitError,
+} from '@ecmwf/tensogram';
+
+try {
+  const { metadata, objects } = decode(buf, { verifyHash: true });
+  // ...
+} catch (err) {
+  if (err instanceof HashMismatchError) {
+    // Structured fields are parsed from the Rust-side message.
+    console.error('integrity failure:', err.expected, err.actual);
+  } else if (err instanceof FramingError) {
+    console.error('bad wire format:', err.message);
+  } else if (err instanceof ObjectError) {
+    console.error('object index error:', err.message);
+  } else if (err instanceof TensogramError) {
+    console.error('tensogram error:', err.name, err.message);
+  } else {
+    throw err;
+  }
+}
+```
+
+All concrete classes expose:
+
+- `err.rawMessage` — the untruncated string from the WASM / Rust side,
+  including any error-variant prefix (`"framing error: ..."`).
+- `err.message` — the human-readable message with the prefix stripped.
+- `err.name` — stable string name (`"FramingError"`, etc.).
+
+`HashMismatchError` additionally exposes parsed `expected` and `actual`
+hex digests when the underlying message follows the canonical
+`"hash mismatch: expected X, got Y"` form.
+
+Streaming decode does **not** throw on a single corrupt message — the
+iterator skips and continues. Register an `onError` callback to observe
+the skips:
+
+```ts
+import { decodeStream, StreamingLimitError } from '@ecmwf/tensogram';
+
+try {
+  for await (const frame of decodeStream(res.body!, {
+    maxBufferBytes: 64 * 1024 * 1024,
+    onError: ({ message, skippedCount }) => {
+      console.warn(`skipped corrupt message (#${skippedCount}): ${message}`);
+    },
+  })) {
+    render(frame.descriptor.shape, frame.data());
+    frame.close();
+  }
+} catch (err) {
+  if (err instanceof StreamingLimitError) {
+    // Stream exceeded maxBufferBytes; configure a larger limit or split.
+  } else {
+    throw err;
+  }
+}
+```
+
+> **Note:** `decodeStream` does throw for infrastructure-level failures
+> (buffer limit exceeded, `AbortSignal` fired, non-`ReadableStream`
+> input). Only per-message corruption is routed through `onError`.
 
 ## Common Error Scenarios
 

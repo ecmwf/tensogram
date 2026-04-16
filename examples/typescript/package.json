@@ -1,0 +1,24 @@
+{
+  "name": "tensogram-typescript-examples",
+  "version": "0.12.0",
+  "private": true,
+  "description": "Runnable TypeScript examples for @ecmwf/tensogram",
+  "type": "module",
+  "scripts": {
+    "01": "tsx 01_encode_decode.ts",
+    "02": "tsx 02_mars_metadata.ts",
+    "03": "tsx 03_multi_object.ts",
+    "05": "tsx 05_streaming_fetch.ts",
+    "06": "tsx 06_file_api.ts",
+    "07": "tsx 07_hash_and_errors.ts",
+    "all": "npm run 01 && npm run 02 && npm run 03 && npm run 05 && npm run 06 && npm run 07"
+  },
+  "dependencies": {
+    "@ecmwf/tensogram": "file:../../typescript"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}

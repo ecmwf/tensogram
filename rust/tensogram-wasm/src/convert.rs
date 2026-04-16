@@ -15,9 +15,22 @@
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
-/// Convert any serde-serializable value to a JsValue.
+/// Convert any serde-serializable value to a JsValue using a
+/// JSON-compatible representation.
+///
+/// Rust `BTreeMap` / `HashMap` values serialise as plain JS objects
+/// (not ES `Map`), which is the natural shape TypeScript consumers
+/// expect and what the high-level `@ecmwf/tensogram` wrapper relies
+/// on. Safe-range `u64` values come across as `number`; values that
+/// exceed `Number.MAX_SAFE_INTEGER` come across as `BigInt`.
+///
+/// The existing `wasm-bindgen-test` suite round-trips through
+/// `from_value`, which accepts both `Map` and plain object input,
+/// so this switch is backwards-compatible.
 pub(crate) fn to_js<T: Serialize>(val: &T) -> Result<JsValue, JsError> {
-    serde_wasm_bindgen::to_value(val).map_err(|e| JsError::new(&e.to_string()))
+    let serializer = serde_wasm_bindgen::Serializer::json_compatible();
+    val.serialize(&serializer)
+        .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// Create a zero-copy `Float32Array` view into a byte slice living in WASM memory.

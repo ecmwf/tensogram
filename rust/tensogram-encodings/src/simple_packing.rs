@@ -21,6 +21,12 @@ pub enum PackingError {
         num_values: usize,
         bytes_per_value: usize,
     },
+    /// Internal invariant violation — specialised aligned-width encoder
+    /// was invoked with an unsupported byte width. This is unreachable
+    /// under the public API; surfaced as an error instead of panicking
+    /// so the library remains panic-free even on developer error.
+    #[error("internal error: aligned packing does not support byte width {0}")]
+    UnsupportedAlignedWidth(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +144,12 @@ fn encode_aligned<const N: usize>(
         })?;
     let mut out = vec![0u8; len];
 
+    // Surface unsupported widths as errors instead of panicking. The public
+    // `encode()` dispatcher only ever calls this with N ∈ {1, 2, 3, 4}.
+    if !matches!(N, 1..=4) {
+        return Err(PackingError::UnsupportedAlignedWidth(N));
+    }
+
     for (chunk, &v) in out.chunks_exact_mut(N).zip(values) {
         // Saturating f64→u64 cast handles negative values (→ 0).
         // u64::min handles the rare +1 overshoot from rounding.
@@ -161,7 +173,10 @@ fn encode_aligned<const N: usize>(
                 chunk[2] = (q >> 8) as u8;
                 chunk[3] = q as u8;
             }
-            _ => unreachable!(),
+            // N is verified above — this arm is unreachable at runtime but
+            // kept for exhaustiveness. No `unreachable!()` macro is used so
+            // the library stays panic-free.
+            _ => continue,
         }
     }
     Ok(out)
@@ -228,10 +243,10 @@ pub fn decode(
         2f64.powi(params.binary_scale_factor) * 10f64.powi(-params.decimal_scale_factor);
 
     match bpv {
-        8 => Ok(decode_aligned::<1>(packed, num_values, refv, inv_scale)),
-        16 => Ok(decode_aligned::<2>(packed, num_values, refv, inv_scale)),
-        24 => Ok(decode_aligned::<3>(packed, num_values, refv, inv_scale)),
-        32 => Ok(decode_aligned::<4>(packed, num_values, refv, inv_scale)),
+        8 => decode_aligned::<1>(packed, num_values, refv, inv_scale),
+        16 => decode_aligned::<2>(packed, num_values, refv, inv_scale),
+        24 => decode_aligned::<3>(packed, num_values, refv, inv_scale),
+        32 => decode_aligned::<4>(packed, num_values, refv, inv_scale),
         _ => Ok(decode_generic(packed, num_values, refv, inv_scale, bpv)),
     }
 }
@@ -241,7 +256,13 @@ fn decode_aligned<const N: usize>(
     num_values: usize,
     refv: f64,
     inv_scale: f64,
-) -> Vec<f64> {
+) -> Result<Vec<f64>, PackingError> {
+    // Surface unsupported widths as errors instead of panicking. The public
+    // `decode()` dispatcher only ever calls this with N ∈ {1, 2, 3, 4}.
+    if !matches!(N, 1..=4) {
+        return Err(PackingError::UnsupportedAlignedWidth(N));
+    }
+
     let mut values = Vec::with_capacity(num_values);
 
     for chunk in packed[..num_values * N].chunks_exact(N) {
@@ -255,11 +276,14 @@ fn decode_aligned<const N: usize>(
                     | ((chunk[2] as u64) << 8)
                     | chunk[3] as u64
             }
-            _ => unreachable!(),
+            // N is verified above — this arm is unreachable at runtime but
+            // kept for exhaustiveness. No `unreachable!()` macro is used so
+            // the library stays panic-free.
+            _ => continue,
         };
         values.push(refv + inv_scale * packed_int as f64);
     }
-    values
+    Ok(values)
 }
 
 fn decode_generic(
@@ -724,5 +748,166 @@ mod tests {
         let mut buf = vec![0u8; 4];
         write_bits(&mut buf, 0, 0, 0);
         assert_eq!(read_bits(&buf, 0, 0), 0);
+    }
+
+    /// Direct invocation of `encode_aligned` with an unsupported const-generic
+    /// width must return `PackingError::UnsupportedAlignedWidth` rather than
+    /// panic. The public `encode()` dispatcher never picks such widths, but
+    /// this test pins the private contract in case of a future refactor.
+    #[test]
+    fn encode_aligned_rejects_unsupported_width() {
+        let values = vec![1.0f64, 2.0, 3.0];
+        let result = encode_aligned::<5>(&values, 0.0, 1.0, u64::MAX);
+        assert!(matches!(
+            result,
+            Err(PackingError::UnsupportedAlignedWidth(5))
+        ));
+    }
+
+    #[test]
+    fn decode_aligned_rejects_unsupported_width() {
+        let packed = vec![0u8; 16];
+        let result = decode_aligned::<6>(&packed, 3, 0.0, 1.0);
+        assert!(matches!(
+            result,
+            Err(PackingError::UnsupportedAlignedWidth(6))
+        ));
+    }
+
+    // ── Coverage closers for bpv edge cases ─────────────────────────────
+
+    #[test]
+    fn encode_decode_bpv_64() {
+        // bpv=64 takes the u64::MAX branch for max_packed and goes through encode_generic.
+        let values = vec![0.0f64, 1e-9, 1e9];
+        let params = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 64,
+        };
+        let encoded = encode(&values, &params).unwrap();
+        assert_eq!(encoded.len(), values.len() * 8);
+        let decoded = decode(&encoded, values.len(), &params).unwrap();
+        assert_eq!(decoded.len(), values.len());
+    }
+
+    #[test]
+    fn encode_decode_bpv_7() {
+        // Odd bpv (not aligned to 8/16/24/32) goes through encode_generic
+        // and write_bits' multi-byte straddling path.
+        let values: Vec<f64> = (0..20).map(|i| i as f64).collect();
+        let params = compute_params(&values, 7, 0).unwrap();
+        let encoded = encode(&values, &params).unwrap();
+        let decoded = decode(&encoded, values.len(), &params).unwrap();
+        assert_eq!(decoded.len(), 20);
+        for (a, b) in values.iter().zip(decoded.iter()) {
+            assert!((a - b).abs() < 1.0, "loss out of range: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn encode_decode_bpv_9() {
+        // Another non-aligned bpv — crosses byte boundaries.
+        let values: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+        let params = compute_params(&values, 9, 0).unwrap();
+        let encoded = encode(&values, &params).unwrap();
+        let decoded = decode(&encoded, values.len(), &params).unwrap();
+        for (a, b) in values.iter().zip(decoded.iter()) {
+            assert!((a - b).abs() < 1.0);
+        }
+    }
+
+    #[test]
+    fn decode_range_generic_bpv() {
+        // Exercise the generic (non-aligned) decode_range path.
+        let values: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        let params = compute_params(&values, 7, 0).unwrap();
+        let encoded = encode(&values, &params).unwrap();
+        // Decode a sub-range from the middle.
+        let range = decode_range(&encoded, 7 * 10, 20, &params).unwrap();
+        assert_eq!(range.len(), 20);
+        for (i, v) in range.iter().enumerate() {
+            assert!((v - (i + 10) as f64).abs() < 1.0);
+        }
+    }
+
+    #[test]
+    fn decode_range_aligned_bpv_8() {
+        // Aligned bpv triggers the read_bits fast path for 8-bit reads.
+        let values: Vec<f64> = (0..100).map(|i| i as f64 * 0.5).collect();
+        let params = compute_params(&values, 8, 0).unwrap();
+        let encoded = encode(&values, &params).unwrap();
+        let range = decode_range(&encoded, 8 * 5, 10, &params).unwrap();
+        assert_eq!(range.len(), 10);
+    }
+
+    #[test]
+    fn decode_range_aligned_bpv_16() {
+        let values: Vec<f64> = (0..100).map(|i| 200.0 + i as f64).collect();
+        let params = compute_params(&values, 16, 0).unwrap();
+        let encoded = encode(&values, &params).unwrap();
+        let range = decode_range(&encoded, 16 * 20, 30, &params).unwrap();
+        assert_eq!(range.len(), 30);
+    }
+
+    #[test]
+    fn decode_range_aligned_bpv_24() {
+        let values: Vec<f64> = (0..200).map(|i| 1e5 + i as f64).collect();
+        let params = compute_params(&values, 24, 0).unwrap();
+        let encoded = encode(&values, &params).unwrap();
+        let range = decode_range(&encoded, 24 * 50, 50, &params).unwrap();
+        assert_eq!(range.len(), 50);
+    }
+
+    #[test]
+    fn decode_range_aligned_bpv_32() {
+        let values: Vec<f64> = (0..300).map(|i| i as f64 * 0.25).collect();
+        let params = compute_params(&values, 32, 0).unwrap();
+        let encoded = encode(&values, &params).unwrap();
+        let range = decode_range(&encoded, 32 * 100, 50, &params).unwrap();
+        assert_eq!(range.len(), 50);
+    }
+
+    #[test]
+    fn encode_value_clamped_above_max() {
+        // A value far above the range should saturate to max_packed, not panic.
+        let values = vec![0.0f64, 1e9, -1e9];
+        let params = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 8, // tiny range
+        };
+        let encoded = encode(&values, &params).unwrap();
+        let decoded = decode(&encoded, values.len(), &params).unwrap();
+        // Positive overshoot clamps to u8::MAX, negative clamps to 0.
+        assert_eq!(decoded[1], 255.0);
+        assert_eq!(decoded[2], 0.0);
+    }
+
+    #[test]
+    fn write_bits_zero_nbits_is_noop() {
+        let mut buf = vec![0xFFu8; 4];
+        write_bits(&mut buf, 0, 0x12345678, 0);
+        assert_eq!(buf, vec![0xFF; 4]);
+    }
+
+    #[test]
+    fn read_bits_crosses_byte_boundary() {
+        // Write a value that spans two bytes at an unaligned position.
+        let mut buf = vec![0u8; 4];
+        write_bits(&mut buf, 3, 0b11111, 5); // 5 bits at bit offset 3
+        let val = read_bits(&buf, 3, 5);
+        assert_eq!(val, 0b11111);
+    }
+
+    #[test]
+    fn read_bits_spans_three_bytes() {
+        // A value wider than 8 bits at a non-aligned offset spans 3 bytes.
+        let mut buf = vec![0u8; 8];
+        write_bits(&mut buf, 5, 0b1111_0000_1111, 12);
+        let val = read_bits(&buf, 5, 12);
+        assert_eq!(val, 0b1111_0000_1111);
     }
 }

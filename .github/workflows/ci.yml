@@ -248,3 +248,57 @@ jobs:
       - name: Cleanup
         if: always()
         run: rm -rf "$TMPDIR" target
+
+  # ── TypeScript: wrapper build, typecheck, vitest ──────────────
+  typescript:
+    name: TypeScript
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.1.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
+
+      - name: Install Node.js (full distribution — needs npm/npx)
+        run: |
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+            | tar xJ --strip-components=1 -C /usr/local
+
+      - name: Build WASM (wasm-pack → typescript/wasm)
+        run: |
+          wasm-pack build rust/tensogram-wasm --release \
+            --target web --out-dir ../../typescript/wasm --out-name tensogram_wasm
+
+      - name: Install typescript deps
+        working-directory: typescript
+        run: npm ci || npm install --no-audit --no-fund
+
+      - name: Typecheck (strict, src + tests)
+        working-directory: typescript
+        run: npx tsc --noEmit -p tsconfig.test.json
+
+      - name: Run tests (vitest)
+        working-directory: typescript
+        run: npx vitest run
+
+      - name: Build distributable
+        working-directory: typescript
+        run: npx tsc
+
+      - name: Smoke-test examples
+        run: |
+          cd examples/typescript
+          npm install --no-audit --no-fund
+          npx tsx 01_encode_decode.ts
+          npx tsx 02_mars_metadata.ts
+          npx tsx 03_multi_object.ts
+          npx tsx 05_streaming_fetch.ts
+          npx tsx 06_file_api.ts
+          npx tsx 07_hash_and_errors.ts
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" target typescript/node_modules typescript/dist typescript/wasm examples/typescript/node_modules

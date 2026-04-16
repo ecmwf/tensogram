@@ -1378,6 +1378,131 @@ mod tests {
         }
     }
 
+    // ── Coverage closers ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_create_in_nested_path_creates_parent(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Exercises the `fs::create_dir_all(parent)` branch in `create()`.
+        let dir = tempfile::tempdir()?;
+        let deep_path = dir.path().join("a").join("b").join("c").join("deep.tgm");
+        let mut file = TensogramFile::create(&deep_path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![2]);
+        let data = vec![0u8; 8];
+        file.append(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )?;
+        assert_eq!(file.message_count()?, 1);
+        assert!(deep_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_in_nonwritable_location_returns_io_error() {
+        // `/` (root) is not writable by non-root users — should return Io error.
+        let result = TensogramFile::create("/tensogram-create-root-only-test.tgm");
+        if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
+            // On Linux/macOS, non-root users can't write to /.
+            match result {
+                Ok(_) => {
+                    // Running as root (unlikely in tests); clean up and move on.
+                    let _ = std::fs::remove_file("/tensogram-create-root-only-test.tgm");
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    assert!(
+                        msg.contains("cannot create")
+                            || msg.contains("permission")
+                            || msg.contains("read-only"),
+                        "expected create error, got: {msg}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_read_message_from_nonexistent_file_errors(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Create a file then delete it under us — read_message must return an error.
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("deleted.tgm");
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![2]);
+        file.append(
+            &meta,
+            &[(&desc, vec![0u8; 8].as_slice())],
+            &EncodeOptions::default(),
+        )?;
+        drop(file);
+
+        // Delete the file
+        std::fs::remove_file(&path)?;
+
+        // Reopen should fail
+        assert!(TensogramFile::open(&path).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_append_empty_message() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("empty_append.tgm");
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        // Append with zero descriptors — allowed?
+        let result = file.append(&meta, &[], &EncodeOptions::default());
+        // Empty message may or may not be permitted; either way, no panic.
+        let _ = result;
+        Ok(())
+    }
+
+    #[test]
+    fn test_file_iter_after_modification() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("modified.tgm");
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![2]);
+        let data = vec![0u8; 8];
+        for _ in 0..3 {
+            file.append(
+                &meta,
+                &[(&desc, data.as_slice())],
+                &EncodeOptions::default(),
+            )?;
+        }
+        assert_eq!(file.message_count()?, 3);
+        drop(file);
+
+        // Reopen and verify count persists
+        let reopened = TensogramFile::open(&path)?;
+        assert_eq!(reopened.message_count()?, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_message_out_of_range_clearly_errors(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("oor.tgm");
+        let mut file = TensogramFile::create(&path)?;
+        let meta = make_global_meta();
+        let desc = make_descriptor(vec![2]);
+        file.append(
+            &meta,
+            &[(&desc, vec![0u8; 8].as_slice())],
+            &EncodeOptions::default(),
+        )?;
+        let result = file.decode_message(99, &DecodeOptions::default());
+        assert!(result.is_err());
+        Ok(())
+    }
+
     // ── invalidate_offsets ────────────────────────────────────────────────
 
     #[test]

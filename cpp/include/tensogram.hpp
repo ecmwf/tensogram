@@ -112,6 +112,13 @@ public:
     invalid_arg_error(tgm_error code, const std::string& msg) : error(code, msg) {}
 };
 
+/// Thrown when a remote object-store operation fails
+/// (S3, GCS, Azure, or HTTP(S)).
+class remote_error : public error {
+public:
+    remote_error(tgm_error code, const std::string& msg) : error(code, msg) {}
+};
+
 // ============================================================
 // detail — error checking helper
 // ============================================================
@@ -132,6 +139,7 @@ inline void check(tgm_error err) {
         case TGM_ERROR_IO:            throw io_error(err, message);
         case TGM_ERROR_HASH_MISMATCH: throw hash_mismatch_error(err, message);
         case TGM_ERROR_INVALID_ARG:   throw invalid_arg_error(err, message);
+        case TGM_ERROR_REMOTE:        throw remote_error(err, message);
         case TGM_ERROR_END_OF_ITER:   throw error(err, message);
         default:                      throw error(err, message);
     }

@@ -37,7 +37,23 @@ For speculative ideas, see `IDEAS.md`.
     `ruzstd`). 134 `wasm-bindgen-test` tests. `wasm-pack build --target web`.
     StreamingDecoder with buffer limit, error visibility, and reset.
     Zero-copy TypedArray views for f32/f64/i32/u8 with zero-length safety.
-   
+
+  - [x] ~~**typescript-wrapper (Scope B)**~~ — see `plans/TYPESCRIPT_WRAPPER.md`
+    and `DONE.md`. New `typescript/` package, typed encode / decode / scan,
+    dtype dispatch, metadata helpers, streaming (`decodeStream`),
+    `TensogramFile.open/fromUrl/fromBytes`, 87 tests, 6 examples, CI job,
+    mdBook page, Makefile targets.
+
+  - [ ] **typescript-wrapper (Scope C)** — follow-ups to the shipped Scope B:
+    - Range-based lazy backend for `TensogramFile.fromUrl` (currently
+      downloads the whole file).
+    - `validate` / `encode_pre_encoded` wrappers.
+    - First-class `float16` / `bfloat16` / `complex*` support (today they
+      round-trip as `Uint16Array` / interleaved `Float32/64Array` surrogates).
+    - npm publish pipeline + semver alignment with `VERSION`.
+    - Zarr.js integration mirroring `tensogram-zarr`.
+    - Bundle-size budget (`size-limit`) enforced in CI.
+
 ## Metadata
 
 - [x] ~~metadata-major-refactor~~ → v0.6.0. Removed `common`/`payload`, added `base` (per-object independent entries), renamed `reserved` → `_reserved_`, `extra` → `_extra_`. Auto-populated keys under `base[i]._reserved_.tensor`. Added `compute_common()` utility. All docs updated.
