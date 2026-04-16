@@ -51,7 +51,7 @@ If all values are identical (range = 0), `compute_params()` succeeds and stores 
 
 ### bits_per_value Range
 
-Valid range: **1 to 64**. Zero bits and more than 64 bits are rejected. The practical range for weather data is 8–24 bits.
+Valid range: **0 to 64**. More than 64 bits is rejected. Zero bits is accepted — `compute_params` stores the first value as the reference value (not the minimum) and `encode` produces an empty byte buffer. Decode reconstructs the reference value for every element, so this is only lossless for constant fields. The practical range for weather data is 8–24 bits.
 
 | bits_per_value | Packed values | Precision vs float64 |
 |---|---|---|
@@ -67,9 +67,9 @@ Valid range: **1 to 64**. Zero bits and more than 64 bits are rejected. The prac
 ```rust
 pub fn compute_params(
     values: &[f64],
-    bits_per_value: u8,
-    decimal_scale_factor: i16,
-) -> Result<PackingParams>
+    bits_per_value: u32,
+    decimal_scale_factor: i32,
+) -> Result<SimplePackingParams, PackingError>
 ```
 
 Computes the optimal packing parameters for the given data. Call this once before encoding.
@@ -88,8 +88,8 @@ println!("bits_per_value: {}", params.bits_per_value);
 ```rust
 pub fn encode(
     values: &[f64],
-    params: &PackingParams,
-) -> Result<Vec<u8>>
+    params: &SimplePackingParams,
+) -> Result<Vec<u8>, PackingError>
 ```
 
 Encodes f64 values to a packed byte buffer using the given parameters.
@@ -100,8 +100,8 @@ Encodes f64 values to a packed byte buffer using the given parameters.
 pub fn decode(
     packed: &[u8],
     num_values: usize,
-    params: &PackingParams,
-) -> Result<Vec<f64>>
+    params: &SimplePackingParams,
+) -> Result<Vec<f64>, PackingError>
 ```
 
 Decodes a packed buffer back to f64 values. The `num_values` parameter is required because the byte length alone is not enough to determine the element count (bits per value may not divide evenly into bytes).

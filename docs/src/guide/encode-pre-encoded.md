@@ -67,7 +67,7 @@ std::vector<std::uint8_t> tensogram::encode_pre_encoded(
 ## Hash semantics
 
 The library **always recomputes** the hash of the pre-encoded bytes using
-the algorithm specified in `EncodeOptions.hash` (default `xxh3`). Any hash
+the algorithm specified in `EncodeOptions.hash_algorithm` (default `xxh3`). Any hash
 the caller stored on the descriptor is silently overwritten. This guarantees
 the wire format invariant `descriptor.hash == hash_algo(bytes)` always holds.
 

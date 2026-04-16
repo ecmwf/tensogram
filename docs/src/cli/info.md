@@ -5,8 +5,14 @@ Displays a summary of a Tensogram file: number of messages, total file size, and
 ## Usage
 
 ```
-tensogram info <FILE>
+tensogram info [FILES]...
 ```
+
+## Options
+
+| Option | Description |
+|---|---|
+| `-h, --help` | Print help |
 
 ## Example
 

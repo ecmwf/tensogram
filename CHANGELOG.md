@@ -408,7 +408,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   - 113 tests, 97% line coverage
 - **tensogram-zarr** — Zarr v3 Store backend for `.tgm` files
   - Read/write/append modes via `TensogramStore`
-  - `zarr.open_group(store=TensogramStore.open_tgm("file.tgm"))` for standard Zarr API access
+  - `zarr.open_group(store=TensogramStore.open_tgm("file.tgm"), mode="r")` for standard Zarr API access
   - 14 numeric dtypes mapped bidirectionally (TGM <-> Zarr v3 <-> NumPy)
   - Variable naming from MARS metadata with dedup and sanitization
   - Byte-range support (RangeByteRequest, OffsetByteRequest, SuffixByteRequest)

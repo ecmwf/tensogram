@@ -99,29 +99,29 @@ All scaling below comes from Python-level threading (`threading.Thread`). Each c
 
 | Threads | 3.13 (GIL) | 3.13t (free) | 3.14 (GIL) | 3.14t (free) |
 |--------:|-----------:|-------------:|-----------:|-------------:|
-| 1       |  932 op/s  |  972 op/s    |  971 op/s  |  954 op/s    |
-| 2       |  985 (1.06x) | 1,819 (1.87x) | 1,001 (1.03x) | 1,754 (1.84x) |
-| 4       |  905 (0.97x) | 2,764 (2.84x) |  899 (0.93x) | 2,745 (2.88x) |
-| 8       |  902 (0.97x) | 2,136 (2.20x) |  901 (0.93x) | 2,134 (2.24x) |
+| 1       |  416 op/s  |  391 op/s    |  408 op/s  |  396 op/s    |
+| 2       |  432 (1.04x) |  775 (1.98x) |  432 (1.06x) |  776 (1.96x) |
+| 4       |  427 (1.03x) | 1,356 (3.47x) |  425 (1.04x) | 1,352 (3.41x) |
+| 8       |  309 (0.74x) | 1,507 (3.85x) |  293 (0.72x) | 1,841 (4.65x) |
 
 ### Headline: Encode Throughput (1M float32, no codec)
 
 | Threads | 3.13 (GIL) | 3.13t (free) | 3.14 (GIL) | 3.14t (free) |
 |--------:|-----------:|-------------:|-----------:|-------------:|
-| 1       |  679 op/s  |  644 op/s    |  704 op/s  |  596 op/s    |
-| 2       |  829 (1.22x) |  847 (1.31x) |  858 (1.22x) |  793 (1.33x) |
-| 4       |  777 (1.14x) |  845 (1.31x) |  778 (1.10x) |  801 (1.34x) |
-| 8       |  776 (1.14x) |  743 (1.15x) |  782 (1.11x) |  704 (1.18x) |
+| 1       |  608 op/s  |  572 op/s    |  504 op/s  |  595 op/s    |
+| 2       |  761 (1.25x) |  709 (1.24x) |  664 (1.32x) |  702 (1.18x) |
+| 4       |  659 (1.08x) |  726 (1.27x) |  468 (0.93x) |  725 (1.22x) |
+| 8       |  520 (0.86x) |  706 (1.23x) |  351 (0.70x) |  717 (1.20x) |
 
 ### Small Messages (16K float32, no codec)
 
 | Threads | 3.13 (GIL) | 3.13t (free) | 3.14 (GIL) | 3.14t (free) |
 |--------:|-----------:|-------------:|-----------:|-------------:|
-| 1       | 41,453 op/s | 38,989 op/s | 39,702 op/s | 34,398 op/s |
-| 2       | 52,803 (1.27x) | 74,776 (1.92x) | 50,870 (1.28x) | 70,337 (2.04x) |
-| 4       | 51,810 (1.25x) | 151,869 (3.90x) | 50,094 (1.26x) | 138,838 (4.04x) |
-| 8       | 53,011 (1.28x) | 290,683 (7.46x) | 50,996 (1.28x) | 284,758 (8.28x) |
-| 16      | 51,290 (1.24x) | 310,577 (7.97x) | 51,468 (1.30x) | 289,111 (8.40x) |
+| 1       | 20,765 op/s | 17,085 op/s | 20,174 op/s | 12,951 op/s |
+| 2       | 23,689 (1.14x) | 35,642 (2.09x) | 23,093 (1.14x) | 35,176 (2.72x) |
+| 4       | 22,629 (1.09x) | 36,483 (2.14x) | 22,839 (1.13x) | 61,583 (4.75x) |
+| 8       | 23,664 (1.14x) | 79,539 (4.66x) | 22,487 (1.11x) | 73,549 (5.68x) |
+| 16      | 23,418 (1.13x) | 93,627 (5.48x) | 23,369 (1.16x) | 168,786 (13.03x) |
 
 ### Other Operations (1M float32)
 
@@ -129,53 +129,53 @@ All scaling below comes from Python-level threading (`threading.Thread`). Each c
 
 | Threads | 3.14 (GIL) | 3.14t (free) |
 |--------:|-----------:|-------------:|
-| 1       | 5,049,944 op/s | 1,195,612 op/s |
-| 2       | 2,457,685 (0.49x) | 2,497,771 (2.09x) |
-| 4       | 1,009,050 (0.20x) | 3,301,490 (2.76x) |
-| 8       | 797,019 (0.16x) | 3,936,237 (3.29x) |
-| 16      | 747,419 (0.15x) | 4,420,334 (3.70x) |
+| 1       | 312,930 op/s | 79,431 op/s |
+| 2       | 421,701 (1.35x) | 266,103 (3.35x) |
+| 4       | 629,505 (2.01x) | 811,096 (10.21x) |
+| 8       | 522,940 (1.67x) | 389,106 (4.90x) |
+| 16      | 516,342 (1.65x) | 1,231,777 (15.51x) |
 
 **Validate** (full message validation — CPU-bound, scales well on both):
 
 | Threads | 3.14 (GIL) | 3.14t (free) |
 |--------:|-----------:|-------------:|
-| 1       | 5,591 op/s | 5,022 op/s |
-| 2       | 11,121 (1.99x) | 10,071 (2.01x) |
-| 4       | 21,769 (3.89x) | 19,697 (3.92x) |
-| 8       | 44,115 (7.89x) | 39,057 (7.78x) |
-| 16      | 51,518 (9.21x) | 48,573 (9.67x) |
+| 1       | 5,457 op/s | 4,347 op/s |
+| 2       | 10,860 (1.99x) | 9,440 (2.17x) |
+| 4       | 20,249 (3.71x) | 18,752 (4.31x) |
+| 8       | 39,766 (7.29x) | 23,048 (5.30x) |
+| 16      | 48,560 (8.90x) | 45,455 (10.46x) |
 
 **Decode-range** (sub-array extraction, 2x1K slices from 1M):
 
 | Threads | 3.14 (GIL) | 3.14t (free) |
 |--------:|-----------:|-------------:|
-| 1       | 92,670 op/s | 86,293 op/s |
-| 2       | 175,087 (1.89x) | 173,262 (2.01x) |
-| 4       | 167,350 (1.81x) | 343,264 (3.98x) |
-| 8       | 160,692 (1.73x) | 665,837 (7.72x) |
-| 16      | 159,898 (1.73x) | 742,405 (8.60x) |
+| 1       | 66,488 op/s | 40,265 op/s |
+| 2       | 111,544 (1.68x) | 98,319 (2.44x) |
+| 4       | 103,191 (1.55x) | 167,786 (4.17x) |
+| 8       | 104,752 (1.58x) | 325,101 (8.07x) |
+| 16      | 103,236 (1.55x) | 475,755 (11.82x) |
 
 **Iter-messages** (3 messages, 100K f32 each):
 
 | Threads | 3.14 (GIL) | 3.14t (free) |
 |--------:|-----------:|-------------:|
-| 1       | 2,443 op/s | 2,560 op/s |
-| 2       | 2,793 (1.14x) | 4,838 (1.89x) |
-| 4       | 2,715 (1.11x) | 9,244 (3.61x) |
-| 8       | 2,357 (0.96x) | 8,564 (3.35x) |
-| 16      | 2,066 (0.85x) | 4,847 (1.89x) |
+| 1       | 1,214 op/s | 1,195 op/s |
+| 2       | 1,291 (1.06x) | 2,327 (1.95x) |
+| 4       | 1,211 (1.00x) | 4,548 (3.81x) |
+| 8       | 1,194 (0.98x) | 5,589 (4.68x) |
+| 16      | 1,106 (0.91x) | 4,432 (3.71x) |
 
 ### Key Takeaways
 
 Methodology: 5 runs per configuration, median reported. 200–500 warmup iterations for fast operations.
 
-- **Validate scales near-linearly on both GIL and free-threaded** — 9.2x (GIL) and 9.7x (free-threaded) at 16 threads. This is the most CPU-bound operation and benefits fully from `py.detach()` regardless of GIL.
-- **Free-threaded decode scales to 2.9x at 4 threads** for the headline workload (1M f32, no codec). GIL-enabled stays near 1.0x because numpy array construction dominates and serializes under the GIL.
-- **GIL-enabled decode-range plateaus at ~1.9x** — `py.detach()` allows 2 threads of overlap but the lightweight result construction can't overlap further. Free-threaded reaches **8.6x at 16 threads**.
-- **Scan degrades under the GIL** — scan is so fast (~0.2µs/call) that GIL acquisition overhead dominates, yielding 0.15x at 16 threads. Free-threaded scales to 3.7x.
-- **Small messages (16K) reach 8.4x at 16 threads** on free-threaded vs 1.3x on GIL-enabled.
-- **iter_messages scales to 3.6x at 4 threads** on free-threaded, then drops due to contention. GIL-enabled stays flat (~1.1x).
-- **Single-thread trade-off** — for heavyweight operations (decode, encode, validate), free-threaded builds perform within ~10% of GIL-enabled. For scan, free-threaded single-thread is ~4x slower due to per-object biased reference counting overhead on the returned Python list, but this is recovered by 2 threads.
+- **Validate scales near-linearly on both GIL and free-threaded** — 8.9x (GIL) and 10.5x (free-threaded) at 16 threads. This is the most CPU-bound operation and benefits fully from `py.detach()` regardless of GIL.
+- **Free-threaded decode scales to 4.7x at 8 threads** for the headline workload (1M f32, no codec). GIL-enabled stays near 1.0x because numpy array construction dominates and serializes under the GIL.
+- **GIL-enabled decode-range plateaus at ~1.7x** — `py.detach()` allows 2 threads of overlap but the lightweight result construction can't overlap further. Free-threaded reaches **11.8x at 16 threads**.
+- **Scan shows dramatic free-threaded scaling** — free-threaded reaches **15.5x at 16 threads**. GIL-enabled scales to 2.0x at 4 threads but drops back at higher thread counts due to contention.
+- **Small messages (16K) reach 13.0x at 16 threads** on free-threaded (3.14t) vs 1.2x on GIL-enabled.
+- **iter_messages scales to 4.7x at 8 threads** on free-threaded, then drops due to contention. GIL-enabled stays flat (~1.0x).
+- **Single-thread trade-off** — free-threaded single-thread performance varies by workload: decode is within ~5% of GIL-enabled (396 vs 408 op/s on 3.14), encode varies by version (3.14t is 18% faster than 3.14, while 3.13t is 6% slower than 3.13). Validate is ~20% slower (4,347 vs 5,457 op/s) and scan ~4x slower due to reference counting overhead on returned Python objects — both recover by 2 threads.
 
 > These numbers are machine-specific. Run the benchmark on your hardware:
 > ```bash

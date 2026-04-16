@@ -25,9 +25,9 @@ DataObjectDescriptor {
     compression: "szip",           // or "none", "zstd", "lz4", etc.
 
     // ── Flexible parameters (encoding only) ──
-    params: BTreeMap::from([       // encoding params only
-        ("reference_value", 230.5),
-        ("bits_per_value", 16),
+    params: BTreeMap::from([       // BTreeMap<String, ciborium::Value>
+        ("reference_value".into(), ciborium::Value::Float(230.5)),
+        ("bits_per_value".into(), ciborium::Value::Integer(16.into())),
     ]),
 
     // ── Integrity ──

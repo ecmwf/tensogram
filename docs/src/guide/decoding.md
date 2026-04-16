@@ -74,9 +74,9 @@ println!("shape: {:?}, dtype: {}", descriptor.shape, descriptor.dtype);
 pub fn decode_range(
     message: &[u8],
     object_index: usize,
-    ranges: &[(usize, usize)],  // (offset, count) in flattened element order
+    ranges: &[(u64, u64)],  // (offset, count) in flattened element order
     options: &DecodeOptions,
-) -> Result<Vec<Vec<u8>>>
+) -> Result<(DataObjectDescriptor, Vec<Vec<u8>>)>
 ```
 
 Decodes one or more contiguous slices of elements from an object. Each `(offset, count)` pair in `ranges` selects a span of elements along the flattened dimension; the function returns **one byte vector per range** by default. This split-result design avoids an unnecessary copy when the caller needs the ranges individually (e.g. to feed separate array slices).
@@ -85,7 +85,7 @@ Decodes one or more contiguous slices of elements from an object. Each `(offset,
 
 ```rust
 // Two separate ranges from object 0
-let parts: Vec<Vec<u8>> = decode_range(
+let (desc, parts) = decode_range(
     &message, 0,
     &[(100, 50), (300, 25)],
     &DecodeOptions::default(),
@@ -141,11 +141,18 @@ pub struct DecodeOptions {
     /// caller's native byte order. Set to false to receive bytes in the
     /// message's declared wire byte order.
     pub native_byte_order: bool,
+    /// Which backend to use for szip / zstd when both FFI and pure-Rust
+    /// implementations are compiled in.
+    pub compression_backend: CompressionBackend,
 }
 
 impl Default for DecodeOptions {
     fn default() -> Self {
-        Self { verify_hash: false, native_byte_order: true }
+        Self {
+            verify_hash: false,
+            native_byte_order: true,
+            compression_backend: CompressionBackend::default(),
+        }
     }
 }
 ```
