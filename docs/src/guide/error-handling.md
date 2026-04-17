@@ -115,7 +115,6 @@ output is used, `StreamingEncoder::write_object` returns
 `TensogramError::Framing` **before writing any bytes**, so the caller's
 sink is never corrupted.  Use the buffered `encode()` API for such
 algorithms.
-```
 
 ### CLI Operations
 

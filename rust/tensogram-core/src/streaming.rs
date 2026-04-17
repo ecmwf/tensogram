@@ -546,7 +546,8 @@ fn write_padding(writer: &mut impl Write, bytes_written: &mut u64) -> std::io::R
 ///
 /// * [`TensogramError::Framing`] if the configured [`HashAlgorithm`]
 ///   produces a CBOR representation whose length depends on the digest
-///   value.  No bytes are written to `writer` in this case.
+///   value, or if the frame's `total_length` would overflow `u64`.  In
+///   both cases no bytes are written to `writer`.
 /// * [`TensogramError::Metadata`] if CBOR serialisation fails.
 /// * [`TensogramError::Io`] on any `writer` failure — partial writes may
 ///   already be on the sink.
@@ -604,8 +605,22 @@ fn write_data_object_frame_hashed<W: Write>(
     };
 
     let payload_len = payload.len();
-    let total_length =
-        (FRAME_HEADER_SIZE + cbor_len_estimate + payload_len + DATA_OBJECT_FOOTER_SIZE) as u64;
+
+    // Compute `total_length` in u64 with checked arithmetic so an
+    // overflow (only reachable on pathological 32-bit inputs) becomes
+    // a clean `TensogramError::Framing` before any bytes are written.
+    let total_length = (FRAME_HEADER_SIZE as u64)
+        .checked_add(cbor_len_estimate as u64)
+        .and_then(|n| n.checked_add(payload_len as u64))
+        .and_then(|n| n.checked_add(DATA_OBJECT_FOOTER_SIZE as u64))
+        .ok_or_else(|| {
+            TensogramError::Framing(format!(
+                "data object frame total_length overflows u64 \
+                 (payload {payload_len} bytes, CBOR {cbor_len_estimate} bytes, \
+                 framing {} bytes)",
+                FRAME_HEADER_SIZE + DATA_OBJECT_FOOTER_SIZE
+            ))
+        })?;
 
     // ── 1) Frame header ──────────────────────────────────────────────
     let mut header_bytes = Vec::with_capacity(FRAME_HEADER_SIZE);
@@ -619,13 +634,29 @@ fn write_data_object_frame_hashed<W: Write>(
     writer.write_all(&header_bytes)?;
 
     // ── 2) Payload — single walk, hashing inline in 64 KiB chunks ────
+    //
+    // Inline streaming hashing is xxh3-specific today: the digest
+    // format (`format_xxh3_digest`) and hasher type (`Xxh3Default`)
+    // are both Xxh3-bound.  The inner match on `HashAlgorithm` is
+    // exhaustive, so adding a new variant becomes a compile error
+    // here — forcing the maintainer to either wire up a new hasher
+    // and digest formatter, or to reject the new algorithm with a
+    // clean `TensogramError::Framing` (and route it through the
+    // buffered `encode()` path instead).
+    //
+    // We couple the hasher with its algorithm tag in a single
+    // `Option<(hasher, alg)>` so the digest-install match in step 3
+    // cannot get out of sync with the construction.
     const CHUNK: usize = 64 * 1024;
-    let mut hasher = hash_algorithm.map(|_| xxhash_rust::xxh3::Xxh3Default::new());
+    let mut inline_hasher: Option<(xxhash_rust::xxh3::Xxh3Default, HashAlgorithm)> = hash_algorithm
+        .map(|alg| match alg {
+            HashAlgorithm::Xxh3 => (xxhash_rust::xxh3::Xxh3Default::new(), alg),
+        });
     let mut offset = 0;
     while offset < payload_len {
         let end = (offset + CHUNK).min(payload_len);
         let chunk = &payload[offset..end];
-        if let Some(h) = &mut hasher {
+        if let Some((h, _)) = &mut inline_hasher {
             h.update(chunk);
         }
         writer.write_all(chunk)?;
@@ -634,16 +665,16 @@ fn write_data_object_frame_hashed<W: Write>(
 
     // ── 3) Install the real hash digest on the descriptor ────────────
     //
-    // The `(hasher, hash_algorithm)` pair is `Some`/`Some` or
-    // `None`/`None` by construction above — the match makes that
-    // explicit so there is no `expect` panic in the happy path.
-    descriptor.hash = match (hasher, hash_algorithm) {
-        (Some(h), Some(alg)) => Some(HashDescriptor {
+    // The match on `alg` is exhaustive over `HashAlgorithm`; a new
+    // variant forces a compile error until its hex-digest formatter
+    // is wired in (or the construction in step 2 is extended to
+    // reject it).
+    descriptor.hash = inline_hasher.map(|(h, alg)| match alg {
+        HashAlgorithm::Xxh3 => HashDescriptor {
             hash_type: alg.as_str().to_string(),
             value: crate::hash::format_xxh3_digest(h.digest()),
-        }),
-        _ => None,
-    };
+        },
+    });
 
     // ── 4) CBOR descriptor — re-serialised with the real hash value ──
     //

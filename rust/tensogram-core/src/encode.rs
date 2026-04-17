@@ -173,11 +173,22 @@ fn encode_one_object(
     // Build the final descriptor with computed fields
     let mut final_desc = desc.clone();
 
-    // When a hash is requested and we are running the pipeline (Raw mode),
-    // ask the pipeline to compute it inline — this avoids a second walk
-    // over the encoded payload.  PreEncoded mode skips the pipeline
-    // entirely, so its branch below still calls `compute_hash` directly.
-    let inline_hash_requested = matches!(mode, EncodeMode::Raw) && options.hash_algorithm.is_some();
+    // When xxh3 hashing is requested and we are running the pipeline
+    // (Raw mode), ask the pipeline to compute it inline — this avoids
+    // a second walk over the encoded payload.  The pipeline's inline
+    // path is xxh3-specific; other `HashAlgorithm` variants and
+    // `PreEncoded` mode fall back to `compute_hash` further down.
+    //
+    // The match on `options.hash_algorithm` is exhaustive so that
+    // adding a new `HashAlgorithm` variant becomes a compile error
+    // here, forcing the maintainer to either wire a new inline path
+    // for that algorithm or to route it explicitly through the
+    // post-hoc `compute_hash` fallback below.
+    let inline_hash_requested = matches!(mode, EncodeMode::Raw)
+        && match options.hash_algorithm {
+            Some(HashAlgorithm::Xxh3) => true,
+            None => false,
+        };
     config.compute_hash = inline_hash_requested;
 
     let (encoded_payload, inline_hash) = match mode {
