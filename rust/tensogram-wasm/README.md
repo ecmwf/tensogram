@@ -26,7 +26,7 @@ Generates `tensogram_wasm.js`, `tensogram_wasm_bg.wasm`, and `.d.ts`.
 
 ```toml
 [dependencies]
-tensogram-wasm = "0.1"
+tensogram-wasm = "0.14"
 ```
 
 ## Documentation

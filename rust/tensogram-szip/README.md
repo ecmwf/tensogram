@@ -17,7 +17,7 @@ let decompressed = AecDecoder::decode(&compressed, width, height)?;
 
 ```toml
 [dependencies]
-tensogram-szip = "0.1"
+tensogram-szip = "0.14"
 ```
 
 ## Documentation

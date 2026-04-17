@@ -20,7 +20,7 @@ convert_grib("forecast.grib", "forecast.tgm", &GribConvertOptions::default())?;
 
 ```toml
 [dependencies]
-tensogram-grib = "0.1"
+tensogram-grib = "0.14"
 ```
 
 ## CLI

@@ -25,7 +25,7 @@ let slice = decode_range(&file, 0, &[0..100, 50..150])?;
 
 ```toml
 [dependencies]
-tensogram-core = { version = "0.1", features = ["mmap", "async", "remote"] }
+tensogram-core = { version = "0.14", features = ["mmap", "async", "remote"] }
 ```
 
 ## Documentation

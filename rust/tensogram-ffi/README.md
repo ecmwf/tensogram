@@ -25,7 +25,7 @@ Generates `target/release/libtensogram.so`, `libtensogram.a`, and `tensogram.h`.
 
 ```toml
 [dependencies]
-tensogram-ffi = "0.1"
+tensogram-ffi = "0.14"
 ```
 
 ## Documentation

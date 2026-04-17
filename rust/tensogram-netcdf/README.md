@@ -20,7 +20,7 @@ convert_netcdf("data.nc", "data.tgm", &NetcdfConvertOptions::default())?;
 
 ```toml
 [dependencies]
-tensogram-netcdf = "0.1"
+tensogram-netcdf = "0.14"
 ```
 
 ## CLI

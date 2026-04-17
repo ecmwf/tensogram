@@ -16,7 +16,7 @@ let compressor = unsafe { SZ3_Init(config_ptr) };
 
 ```toml
 [dependencies]
-tensogram-sz3-sys = "0.1"
+tensogram-sz3-sys = "0.14"
 ```
 
 ## Documentation

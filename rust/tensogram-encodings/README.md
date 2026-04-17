@@ -8,7 +8,7 @@ This crate provides the encoding pipeline infrastructure and supports multiple c
 
 ```toml
 [dependencies]
-tensogram-encodings = { version = "0.1", features = ["szip", "zstd"] }
+tensogram-encodings = { version = "0.14", features = ["szip", "zstd"] }
 ```
 
 ```rust

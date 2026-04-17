@@ -17,7 +17,7 @@ let compressed = Sz3Compressor::compress(&data, &config)?;
 
 ```toml
 [dependencies]
-tensogram-sz3 = "0.1"
+tensogram-sz3 = "0.14"
 ```
 
 ## Documentation
