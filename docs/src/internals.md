@@ -12,7 +12,7 @@ The library encodes all CBOR structures (global metadata, data object descriptor
 
 Standard serde serialization into ciborium does not guarantee key order (it depends on the HashMap/BTreeMap iteration order of the struct). Even though the library uses `BTreeMap` throughout (which gives alphabetical iteration order for string keys), relying on that would be fragile. The explicit canonicalization step ensures the output matches RFC 8949 §4.2 regardless of how the keys were stored.
 
-```
+```text
 GlobalMetadata / DataObjectDescriptor struct
     ↓ serde serialization
 ciborium::Value::Map (arbitrary key order)
@@ -38,7 +38,7 @@ The v2 wire format uses a frame-based structure instead of the v1 monolithic bin
 
 ### Preamble (24 bytes)
 
-```
+```text
 MAGIC "TENSOGRM" (8) + version u16 (2) + flags u16 (2) + reserved u32 (4) + total_length u64 (8)
 ```
 
@@ -48,7 +48,7 @@ The preamble flags indicate which optional frames are present (header/footer met
 
 Every frame (metadata, index, hash, data object) starts with:
 
-```
+```text
 "FR" (2) + frame_type u16 (2) + version u16 (2) + flags u16 (2) + total_length u64 (8)
 ```
 
@@ -58,7 +58,7 @@ And ends with `"ENDF"` (4 bytes). Frame versions are independent of message vers
 
 Each data object is a self-contained frame:
 
-```
+```text
 Frame header (16B) + [CBOR descriptor] + payload bytes + [CBOR descriptor] + cbor_offset u64 (8B) + "ENDF" (4B)
 ```
 
@@ -66,7 +66,7 @@ The `cbor_offset` is the byte offset from the frame start to the CBOR descriptor
 
 ### Postamble (16 bytes)
 
-```
+```text
 first_footer_offset u64 (8) + END_MAGIC "39277777" (8)
 ```
 
@@ -95,7 +95,7 @@ The `encode_message()` function delegates to five focused helpers:
 
 Values are packed MSB-first (most significant bit first), matching the GRIB 2 simple packing specification:
 
-```
+```text
 Element 0: bits [0 .. B-1]
 Element 1: bits [B .. 2B-1]
 Element 2: bits [2B .. 3B-1]
@@ -106,7 +106,7 @@ The last byte is zero-padded on the right if `N × B` is not a multiple of 8.
 
 The decode formula is:
 
-```
+```text
 V[i] = R + (packed[i] × 2^E) / 10^D
 ```
 
@@ -120,7 +120,7 @@ Where:
 
 `TensogramFile::open()` does not read the file. The first call that needs the message list (e.g. `message_count()`, `read_message()`) triggers a streaming scan using `scan_file()`. The scanner reads only preamble-sized chunks and seeks forward, so it never loads the entire file into memory. After that, the list of `(offset, length)` pairs is cached in memory for the lifetime of the `TensogramFile` object.
 
-```rust
+```rust,ignore
 // No I/O here
 let mut file = TensogramFile::open("huge.tgm")?;
 
@@ -133,7 +133,7 @@ let msg = file.read_message(999)?;
 
 ## Error Hierarchy
 
-```
+```text
 TensogramError
 ├── Framing     — invalid magic, truncated preamble, bad frame markers, missing postamble
 ├── Metadata    — CBOR serialization/deserialization failure
@@ -150,7 +150,7 @@ All public functions return `Result<T>` where the error is `TensogramError`. The
 
 The `mmap` feature gate enables memory-mapped file access via `memmap2`. When you open a file with `TensogramFile::open_mmap()`, the file is mapped into virtual memory and the existing `scan()` function runs directly on the mapped buffer. Subsequent `read_message()` calls return copies from the mapped region without additional seeks.
 
-```rust
+```rust,ignore
 // Requires: cargo build --features mmap
 let mut file = TensogramFile::open_mmap("huge.tgm")?;
 let count = file.message_count()?; // already scanned during open_mmap
@@ -163,7 +163,7 @@ The regular `open()` path still works without the feature and uses streaming see
 
 The `async` feature gate adds tokio-based async variants: `open_async()`, `read_message_async()`, and `decode_message_async()`. All CPU-intensive work (scanning, decoding, FFI calls to libaec/zfp/blosc2) runs via `spawn_blocking` to avoid blocking the async runtime.
 
-```rust
+```rust,ignore
 // Requires: cargo build --features async
 let mut file = TensogramFile::open_async("forecast.tgm").await?;
 let (meta, objects) = file.decode_message_async(0, &opts).await?;

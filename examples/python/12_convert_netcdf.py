@@ -43,7 +43,7 @@ try:
 except ImportError as e:
     print(f"Missing dependency: {e}", file=sys.stderr)
     print(
-        "Install with: uv pip install netCDF4 numpy && (cd crates/tensogram-python && maturin develop)",
+        "Install with: uv pip install netCDF4 numpy && (cd python/bindings && maturin develop)",
         file=sys.stderr,
     )
     sys.exit(1)

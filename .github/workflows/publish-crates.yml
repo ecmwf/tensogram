@@ -1,0 +1,110 @@
+name: Publish Rust crates to crates.io
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish all crates
+    runs-on: ubuntu-24.04
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies (eccodes + netcdf)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libeccodes-dev libnetcdf-dev
+
+      # ── Helper: publish a single crate, skip if already on crates.io ──
+      # Usage: publish_crate <crate-name> [extra-args...]
+      - name: Define publish helper
+        id: helper
+        run: |
+          cat > /tmp/publish-crate.sh << 'SCRIPT'
+          #!/bin/bash
+          set -euo pipefail
+          CRATE="$1"; shift
+          VERSION=$(cargo metadata --no-deps --format-version=1 | \
+            python3 -c "import sys,json; pkgs=json.load(sys.stdin)['packages']; print([p['version'] for p in pkgs if p['name']=='$CRATE'][0])" 2>/dev/null || true)
+
+          if [ -z "$VERSION" ]; then
+            # Excluded crate — read version from manifest
+            MANIFEST=$(find rust -name Cargo.toml -path "*/$CRATE/*" | head -1)
+            VERSION=$(grep '^version' "$MANIFEST" | head -1 | sed 's/.*"\(.*\)"/\1/')
+          fi
+
+          echo "::group::$CRATE@$VERSION"
+          HTTP=$(curl -sS -o /dev/null -w "%{http_code}" \
+            "https://crates.io/api/v1/crates/$CRATE/$VERSION" 2>/dev/null || echo "000")
+          if [ "$HTTP" = "200" ]; then
+            echo "Already published — skipping"
+            echo "::endgroup::"
+            exit 0
+          fi
+          echo "Publishing $CRATE@$VERSION ..."
+          cargo publish "$@"
+          echo "::endgroup::"
+
+          # Wait for crates.io index
+          echo "Waiting for crates.io index ..."
+          for i in $(seq 1 30); do
+            CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
+              "https://crates.io/api/v1/crates/$CRATE/$VERSION" 2>/dev/null || echo "000")
+            if [ "$CODE" = "200" ]; then
+              echo "Indexed after ${i}0s"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::warning::Index poll timed out for $CRATE — continuing anyway"
+          SCRIPT
+          chmod +x /tmp/publish-crate.sh
+
+      # ── Publish in strict dependency order ─────────────────────────────
+      - name: "1/10 — tensogram-szip"
+        env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
+        run: /tmp/publish-crate.sh tensogram-szip -p tensogram-szip
+
+      - name: "2/10 — tensogram-sz3-sys"
+        env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
+        run: /tmp/publish-crate.sh tensogram-sz3-sys -p tensogram-sz3-sys
+
+      - name: "3/10 — tensogram-sz3"
+        env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
+        run: /tmp/publish-crate.sh tensogram-sz3 -p tensogram-sz3
+
+      - name: "4/10 — tensogram-encodings"
+        env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
+        run: /tmp/publish-crate.sh tensogram-encodings -p tensogram-encodings
+
+      - name: "5/10 — tensogram-core"
+        env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
+        run: /tmp/publish-crate.sh tensogram-core -p tensogram-core
+
+      - name: "6/10 — tensogram-grib"
+        env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
+        run: /tmp/publish-crate.sh tensogram-grib --manifest-path rust/tensogram-grib/Cargo.toml --no-verify
+
+      - name: "7/10 — tensogram-netcdf"
+        env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
+        run: /tmp/publish-crate.sh tensogram-netcdf --manifest-path rust/tensogram-netcdf/Cargo.toml --no-verify
+
+      - name: "8/10 — tensogram-ffi"
+        env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
+        run: /tmp/publish-crate.sh tensogram-ffi -p tensogram-ffi
+
+      - name: "9/10 — tensogram-cli"
+        env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
+        run: /tmp/publish-crate.sh tensogram-cli -p tensogram-cli
+
+      - name: "10/10 — tensogram-wasm"
+        env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
+        run: /tmp/publish-crate.sh tensogram-wasm --manifest-path rust/tensogram-wasm/Cargo.toml --no-verify
