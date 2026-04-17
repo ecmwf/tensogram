@@ -10,6 +10,7 @@
 
 # ── Pinned versions (edit here to bump) ─────────────────────────
 ARG UV_VERSION=0.11.6
+ARG SCCACHE_VERSION=0.10.0
 
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
@@ -74,11 +75,19 @@ COPY --from=builder /usr/local/cargo  /usr/local/cargo
 # ── uv (Python + Node installed at CI runtime) ─────────────────
 COPY --from=uv /uv /uvx /usr/local/bin/
 
+# ── sccache (S3-backed compilation cache) ──────────────────────
+ARG SCCACHE_VERSION
+RUN set -eux \
+ && curl -fsSL "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    | tar xz --strip-components=1 -C /usr/local/bin \
+        "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache"
+
 # ── Smoke test ──────────────────────────────────────────────────
 RUN set -eux \
  && rustc --version && cargo --version \
  && cmake --version \
  && wasm-pack --version \
- && uv --version
+ && uv --version \
+ && sccache --version
 
 WORKDIR /workspace
