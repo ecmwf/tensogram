@@ -29,20 +29,20 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use tempfile::tempdir;
-use tensogram_core::{TensogramFile, decode_metadata};
-use tensogram_netcdf::{ConvertOptions, DataPipeline, SplitBy, convert_netcdf_file};
+use tensogram_core::{decode_metadata, TensogramFile};
+use tensogram_netcdf::{convert_netcdf_file, ConvertOptions, DataPipeline, SplitBy};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── 1. Locate a fixture from the tensogram-netcdf crate ──────────────
     //
     // The example crate lives at examples/rust, so we walk up two levels
-    // and dive into crates/tensogram-netcdf/testdata to find the shipped
+    // and dive into rust/tensogram-netcdf/testdata to find the shipped
     // CF-compliant temperature file.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixture = manifest_dir
         .join("..")
         .join("..")
-        .join("crates")
+        .join("rust")
         .join("tensogram-netcdf")
         .join("testdata")
         .join("cf_temperature.nc");

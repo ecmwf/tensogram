@@ -11,7 +11,7 @@ documentation = "https://docs.rs/tensogram-ffi"
 readme = "README.md"
 keywords = ["tensogram", "ffi", "c-api", "scientific-data", "bindings"]
 categories = ["science", "api-bindings"]
-authors = ["ECMWF <software-support@ecmwf.int>"]
+authors = ["ECMWF <software@ecmwf.int>"]
 include = ["src/**", "build.rs", "cbindgen.toml", "tensogram.h", "Cargo.toml", "README.md"]
 
 [lib]

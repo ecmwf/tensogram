@@ -375,7 +375,7 @@ untrustworthy. Classifiers also control how PyPI indexes and filters the package
 ```toml
 description = "Fast binary N-tensor message format for scientific data"
 license = "Apache-2.0"
-authors = [{name = "ECMWF", email = "software-support@ecmwf.int"}]
+authors = [{name = "ECMWF", email = "software@ecmwf.int"}]
 readme = "README.md"
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -383,7 +383,6 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Rust",
     "Topic :: Scientific/Engineering",
-    "Topic :: Scientific/Engineering :: Atmospheric Science",
 ]
 
 [project.urls]

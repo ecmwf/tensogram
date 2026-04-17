@@ -11,7 +11,7 @@ documentation = "https://docs.rs/tensogram-szip"
 readme = "README.md"
 keywords = ["szip", "aec", "compression", "entropy-coding", "scientific-data"]
 categories = ["science", "compression"]
-authors = ["ECMWF <software-support@ecmwf.int>"]
+authors = ["ECMWF <software@ecmwf.int>"]
 
 [dependencies]
 thiserror = { workspace = true }

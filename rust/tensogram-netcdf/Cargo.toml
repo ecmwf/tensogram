@@ -11,7 +11,7 @@ documentation = "https://sites.ecmwf.int/docs/tensogram/main"
 readme = "README.md"
 keywords = ["tensogram", "netcdf", "scientific-data", "climate", "weather"]
 categories = ["science"]
-authors = ["ECMWF <software-support@ecmwf.int>"]
+authors = ["ECMWF <software@ecmwf.int>"]
 
 [dependencies]
 tensogram-core = { path = "../tensogram-core", version = "=0.14.0" }

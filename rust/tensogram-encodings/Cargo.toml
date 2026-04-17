@@ -11,7 +11,7 @@ documentation = "https://docs.rs/tensogram-encodings"
 readme = "README.md"
 keywords = ["tensogram", "encoding", "compression", "codec", "scientific-data"]
 categories = ["science", "encoding", "compression"]
-authors = ["ECMWF <software-support@ecmwf.int>"]
+authors = ["ECMWF <software@ecmwf.int>"]
 
 [package.metadata.docs.rs]
 all-features = true

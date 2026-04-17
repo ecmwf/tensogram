@@ -8,7 +8,7 @@ version = "0.14.0"
 description = "Zarr v3 store backend for tensogram .tgm files"
 requires-python = ">=3.10"
 license = "Apache-2.0"
-authors = [{name = "ECMWF", email = "software-support@ecmwf.int"}]
+authors = [{name = "ECMWF", email = "software@ecmwf.int"}]
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: Apache Software License",

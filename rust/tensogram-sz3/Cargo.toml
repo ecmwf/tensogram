@@ -11,7 +11,7 @@ documentation = "https://docs.rs/tensogram-sz3"
 readme = "README.md"
 keywords = ["sz3", "compression", "lossy", "scientific-data", "tensogram"]
 categories = ["science", "compression"]
-authors = ["ECMWF <software-support@ecmwf.int>"]
+authors = ["ECMWF <software@ecmwf.int>"]
 
 [dependencies]
 tensogram-sz3-sys = { path = "../tensogram-sz3-sys", version = "=0.14.0" }
