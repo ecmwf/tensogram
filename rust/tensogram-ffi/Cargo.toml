@@ -12,7 +12,7 @@ readme = "README.md"
 keywords = ["tensogram", "ffi", "c-api", "scientific-data", "bindings"]
 categories = ["science", "api-bindings"]
 authors = ["ECMWF <software-support@ecmwf.int>"]
-include = ["src/**", "build.rs", "cbindgen.toml", "tensogram.h", "Cargo.toml", "README.md", "LICENSE"]
+include = ["src/**", "build.rs", "cbindgen.toml", "tensogram.h", "Cargo.toml", "README.md"]
 
 [lib]
 crate-type = ["cdylib", "staticlib"]
