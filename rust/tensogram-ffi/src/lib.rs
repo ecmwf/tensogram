@@ -396,41 +396,39 @@ unsafe fn collect_data_slices<'a>(
     data_lens: *const usize,
     num_objects: usize,
 ) -> Result<Vec<&'a [u8]>, (TgmError, String)> {
-    unsafe {
-        if num_objects == 0 {
-            return Ok(vec![]);
-        }
-        if data_ptrs.is_null() || data_lens.is_null() {
+    if num_objects == 0 {
+        return Ok(vec![]);
+    }
+    if data_ptrs.is_null() || data_lens.is_null() {
+        return Err((
+            TgmError::InvalidArg,
+            "null data_ptrs or data_lens".to_string(),
+        ));
+    }
+    let ptrs = unsafe { slice::from_raw_parts(data_ptrs, num_objects) };
+    let lens = unsafe { slice::from_raw_parts(data_lens, num_objects) };
+    for (i, (&p, &l)) in ptrs.iter().zip(lens.iter()).enumerate() {
+        if p.is_null() && l > 0 {
             return Err((
                 TgmError::InvalidArg,
-                "null data_ptrs or data_lens".to_string(),
+                format!("null data pointer at index {i}"),
             ));
         }
-        let ptrs = slice::from_raw_parts(data_ptrs, num_objects);
-        let lens = slice::from_raw_parts(data_lens, num_objects);
-        for (i, (&p, &l)) in ptrs.iter().zip(lens.iter()).enumerate() {
-            if p.is_null() && l > 0 {
-                return Err((
-                    TgmError::InvalidArg,
-                    format!("null data pointer at index {i}"),
-                ));
-            }
-        }
-        Ok(ptrs
-            .iter()
-            .zip(lens.iter())
-            .map(|(&p, &l)| {
-                if l == 0 {
-                    // Avoid calling slice::from_raw_parts with a potentially null
-                    // pointer when length is zero — that is UB even for zero-length
-                    // slices per the Rust reference.
-                    &[] as &[u8]
-                } else {
-                    slice::from_raw_parts(p, l)
-                }
-            })
-            .collect())
     }
+    Ok(ptrs
+        .iter()
+        .zip(lens.iter())
+        .map(|(&p, &l)| {
+            if l == 0 {
+                // Avoid calling slice::from_raw_parts with a potentially null
+                // pointer when length is zero — that is UB even for zero-length
+                // slices per the Rust reference.
+                &[] as &[u8]
+            } else {
+                unsafe { slice::from_raw_parts(p, l) }
+            }
+        })
+        .collect())
 }
 
 /// Parse and validate the common arguments for `tgm_encode` / `tgm_file_append`.
@@ -447,36 +445,34 @@ unsafe fn parse_encode_args<'a>(
     hash_algo: *const c_char,
     threads: u32,
 ) -> Result<ParsedEncode<'a>, (TgmError, String)> {
-    unsafe {
-        let (global_metadata, descriptors) =
-            parse_encode_json(json_str).map_err(|e| (TgmError::Metadata, e))?;
+    let (global_metadata, descriptors) =
+        parse_encode_json(json_str).map_err(|e| (TgmError::Metadata, e))?;
 
-        if descriptors.len() != num_objects {
-            return Err((
-                TgmError::InvalidArg,
-                format!(
-                    "descriptors array length {} does not match num_objects {}",
-                    descriptors.len(),
-                    num_objects
-                ),
-            ));
-        }
-
-        let data_slices = collect_data_slices(data_ptrs, data_lens, num_objects)?;
-        let hash_algorithm = parse_hash_algo(hash_algo)?;
-        let options = EncodeOptions {
-            hash_algorithm,
-            threads,
-            ..Default::default()
-        };
-
-        Ok(ParsedEncode {
-            global_metadata,
-            descriptors,
-            data_slices,
-            options,
-        })
+    if descriptors.len() != num_objects {
+        return Err((
+            TgmError::InvalidArg,
+            format!(
+                "descriptors array length {} does not match num_objects {}",
+                descriptors.len(),
+                num_objects
+            ),
+        ));
     }
+
+    let data_slices = unsafe { collect_data_slices(data_ptrs, data_lens, num_objects) }?;
+    let hash_algorithm = parse_hash_algo(hash_algo)?;
+    let options = EncodeOptions {
+        hash_algorithm,
+        threads,
+        ..Default::default()
+    };
+
+    Ok(ParsedEncode {
+        global_metadata,
+        descriptors,
+        data_slices,
+        options,
+    })
 }
 
 // ---------------------------------------------------------------------------
