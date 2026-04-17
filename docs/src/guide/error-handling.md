@@ -102,8 +102,19 @@ StreamingEncoder
   ├─ finish() with pending prec ──► Framing error (dangling preceder)
   ├─ write_object invalid shape ──► Metadata error
   ├─ Encoding pipeline failure ───► Encoding error
+  ├─ Variable-length hash algo ───► Framing error (see below)
   └─ I/O write failure ───────────► I/O error
 ```
+
+The streaming path writes the frame header before the payload has been
+hashed, so it needs to know the final CBOR descriptor length up front.
+This works only when the configured `HashAlgorithm` produces a digest
+whose hex representation has a fixed length — currently only `Xxh3`
+(always 16 hex chars).  If a future hash algorithm with variable-length
+output is used, `StreamingEncoder::write_object` returns
+`TensogramError::Framing` **before writing any bytes**, so the caller's
+sink is never corrupted.  Use the buffered `encode()` API for such
+algorithms.
 
 ### CLI Operations
 
@@ -463,3 +474,11 @@ and `unimplemented!()` in non-test code paths. The library guarantees:
   `unwrap_or_default()` only for `CString::new()` (interior null fallback).
 - The scan functions (`scan`, `scan_file`) tolerate truncation of
   `total_length as usize` because the subsequent bounds check catches it.
+- The hash-while-encoding pipeline
+  (`PipelineConfig.compute_hash = true` plus the streaming encoder's
+  inline-hash path) verifies its CBOR-length invariant *before* writing
+  any bytes and surfaces a `TensogramError::Framing` if a
+  variable-length hash algorithm is ever configured — the caller's
+  sink is never left in a partial-write state on that specific failure
+  mode.  Internal debug assertions guard against non-deterministic CBOR
+  serialisation during development.

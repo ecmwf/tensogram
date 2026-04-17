@@ -51,6 +51,7 @@ fn make_case(
             swap_unit_size: 8, // f64
             compression_backend: Default::default(),
             intra_codec_threads: 0,
+            compute_hash: false,
         },
         sp_bits: None,
         is_lossy,
@@ -220,6 +221,7 @@ fn run_case(
                     swap_unit_size: case.config.swap_unit_size,
                     compression_backend: case.config.compression_backend,
                     intra_codec_threads: case.config.intra_codec_threads,
+                    compute_hash: case.config.compute_hash,
                 })
             } else {
                 Ok(case.config.clone())

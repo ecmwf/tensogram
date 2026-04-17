@@ -72,6 +72,30 @@ implement until promoted to `TODO.md`.
   path too.  Gains are modest (decompress is memory-bound) but it
   would close the symmetry gap.
 
+- [ ] **hash-in-frame-footer** (wire-format change): move the xxh3
+  digest out of the object's CBOR descriptor and into the data-object
+  frame footer as a fixed-width binary field.  Independently
+  attractive:
+  - Integrity checks can skip CBOR parsing entirely — useful for
+    `tensogram validate --checksum` over large archives.
+  - CBOR descriptor becomes hash-independent, which lets identical
+    descriptors be cached and reused across objects of the same
+    shape/dtype (the Time-Series Optimised Layout brainstorm in
+    `BRAINSTORMING.md` D4 would lean on this).
+  - A fixed binary slot is a cleaner evolution point for future hash
+    algorithms (xxh3-128, BLAKE3, …) than a variable-length CBOR map
+    entry.
+  Costs: wire-format version bump, regenerate all five golden
+  `.tgm` fixtures, update every language binding (Rust, Python,
+  C FFI, C++, WASM, TypeScript), and re-design the `HashDescriptor`
+  to decide between a fixed xxh3-only slot and a self-describing
+  `1-byte algo + N-byte value` layout.  Considered during the
+  `hash-while-encoding` design round and deferred; that optimisation
+  already achieves single-pass hashing against the current wire
+  format.  Promote to `TODO.md` when any of: (a) `--checksum`
+  validation is a measured bottleneck, (b) we ship a second hash
+  algorithm, or (c) the Time-Series Optimised Layout work needs it.
+
 ## CI
 
 - [ ] Integrate CI with ECMWF workers

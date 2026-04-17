@@ -15,7 +15,7 @@ use crate::encode::{
 };
 use crate::error::{Result, TensogramError};
 use crate::framing::EncodedObject;
-use crate::hash::{HashAlgorithm, compute_hash};
+use crate::hash::HashAlgorithm;
 use crate::metadata::{self, RESERVED_KEY};
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashDescriptor, HashFrame, IndexFrame};
 use crate::wire::{
@@ -298,33 +298,36 @@ impl<W: Write> StreamingEncoder<W> {
     /// Shared inner implementation for both [`write_object`](Self::write_object) and
     /// [`write_object_pre_encoded`](Self::write_object_pre_encoded).
     ///
-    /// Computes the hash, builds the data object frame, updates all bookkeeping,
-    /// consumes any pending preceder, and writes the frame to the stream.
+    /// Writes the data object frame directly to the sink and — when a hash
+    /// algorithm is configured — computes the xxh3-64 digest inline with
+    /// the payload write.  The payload bytes are therefore walked exactly
+    /// once: no intermediate frame buffer is built in memory.
+    ///
+    /// Updates all bookkeeping and consumes any pending preceder.
     fn write_object_inner(
         &mut self,
         mut final_desc: DataObjectDescriptor,
         encoded_bytes: &[u8],
     ) -> Result<()> {
-        // Compute hash
-        let hash_entry = if let Some(algorithm) = self.hash_algorithm {
-            let hash_value = compute_hash(encoded_bytes, algorithm);
-            let hash_type = algorithm.as_str().to_string();
-            let entry = Some((hash_type.clone(), hash_value.clone()));
-            final_desc.hash = Some(HashDescriptor {
-                hash_type,
-                value: hash_value,
-            });
-            entry
-        } else {
-            None
-        };
+        let start_offset = self.bytes_written;
 
-        // Build the data object frame bytes
-        let frame_bytes =
-            crate::framing::encode_data_object_frame(&final_desc, encoded_bytes, false)?;
+        let frame_len = write_data_object_frame_hashed(
+            &mut self.writer,
+            &mut final_desc,
+            encoded_bytes,
+            self.hash_algorithm,
+        )?;
+        self.bytes_written += frame_len;
 
-        self.object_offsets.push(self.bytes_written);
-        self.object_lengths.push(frame_bytes.len() as u64);
+        // The helper writes the real hash back into `final_desc.hash`;
+        // mirror it into `hash_entries` for footer-frame bookkeeping.
+        let hash_entry = final_desc
+            .hash
+            .as_ref()
+            .map(|h| (h.hash_type.clone(), h.value.clone()));
+
+        self.object_offsets.push(start_offset);
+        self.object_lengths.push(frame_len);
         self.hash_entries.push(hash_entry);
         // Retain only the descriptor for footer metadata population.
         // The encoded payload has already been written to the stream;
@@ -341,10 +344,6 @@ impl<W: Write> StreamingEncoder<W> {
         } else {
             self.preceder_payloads.push(None);
         }
-
-        // Write frame
-        self.writer.write_all(&frame_bytes)?;
-        self.bytes_written += frame_bytes.len() as u64;
 
         // Align to 8 bytes
         write_padding(&mut self.writer, &mut self.bytes_written)?;
@@ -497,6 +496,213 @@ fn write_padding(writer: &mut impl Write, bytes_written: &mut u64) -> std::io::R
         *bytes_written += pad as u64;
     }
     Ok(())
+}
+
+/// Write a data object frame directly to `writer` while optionally hashing
+/// the payload in a single pass.
+///
+/// This is the streaming equivalent of
+/// [`crate::framing::encode_data_object_frame`], but instead of allocating a
+/// `Vec<u8>` for the whole frame it streams pieces straight to the sink.
+/// When `hash_algorithm` is `Some(_)`, the payload is fed to an
+/// `Xxh3Default` hasher in 64 KiB chunks as it is written, so the payload
+/// is walked exactly once end-to-end.
+///
+/// Frame layout (always `CBOR_AFTER_PAYLOAD`):
+///
+/// ```text
+/// [FrameHeader 16B][Payload][CBOR descriptor][cbor_offset 8B][ENDF 4B]
+/// ```
+///
+/// # CBOR length invariant
+///
+/// The CBOR descriptor embeds the hash value, but the frame header's
+/// `total_length` field must be written *before* the hash is known.  We
+/// rely on each [`HashAlgorithm`] variant producing a hex string of a
+/// fixed advertised length (see [`HashAlgorithm::hex_digest_len`]) so
+/// that the CBOR byte count is the same whether we serialise a
+/// placeholder or the real digest.  The length is verified twice:
+///
+/// 1. Once **before writing any bytes**, by serialising with two
+///    distinct placeholder digests and confirming they produce the same
+///    CBOR length.  If this fails we return a
+///    [`TensogramError::Framing`] without touching the sink, so the
+///    caller's stream is untouched.
+/// 2. Once **after** the real CBOR is built, as a debug-only sanity
+///    check (the first check makes this redundant, but it catches
+///    divergences in `object_descriptor_to_cbor` itself).
+///
+/// The descriptor's `hash` field is cleared on entry so any
+/// caller-supplied hash does not leak into the size estimate, and on exit
+/// carries the real `HashDescriptor` produced by the inline hash (or
+/// `None` when `hash_algorithm == None`).
+///
+/// # Returns
+///
+/// Number of bytes written to `writer`, not including any trailing 8-byte
+/// alignment padding (the caller's responsibility).
+///
+/// # Errors
+///
+/// * [`TensogramError::Framing`] if the configured [`HashAlgorithm`]
+///   produces a CBOR representation whose length depends on the digest
+///   value, or if the frame's `total_length` would overflow `u64`.  In
+///   both cases no bytes are written to `writer`.
+/// * [`TensogramError::Metadata`] if CBOR serialisation fails.
+/// * [`TensogramError::Io`] on any `writer` failure — partial writes may
+///   already be on the sink.
+fn write_data_object_frame_hashed<W: Write>(
+    writer: &mut W,
+    descriptor: &mut DataObjectDescriptor,
+    payload: &[u8],
+    hash_algorithm: Option<HashAlgorithm>,
+) -> Result<u64> {
+    use crate::wire::{DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END};
+
+    // ── CBOR size estimate ────────────────────────────────────────────
+    //
+    // Build a placeholder descriptor that carries the exact same
+    // `hash_type` label the final descriptor will carry, plus a hex
+    // value of `alg.hex_digest_len()` zeros.
+    let cbor_len_estimate = match hash_algorithm {
+        None => {
+            descriptor.hash = None;
+            metadata::object_descriptor_to_cbor(descriptor)?.len()
+        }
+        Some(alg) => {
+            let placeholder_len = alg.hex_digest_len();
+            descriptor.hash = Some(HashDescriptor {
+                hash_type: alg.as_str().to_string(),
+                value: "0".repeat(placeholder_len),
+            });
+            let len_zeros = metadata::object_descriptor_to_cbor(descriptor)?.len();
+
+            // Verify the invariant BEFORE writing any bytes: a second
+            // placeholder with different digit values must serialise to
+            // the same length, otherwise the CBOR length depends on the
+            // hash value and we would corrupt `total_length`.
+            descriptor.hash = Some(HashDescriptor {
+                hash_type: alg.as_str().to_string(),
+                value: "f".repeat(placeholder_len),
+            });
+            let len_ones = metadata::object_descriptor_to_cbor(descriptor)?.len();
+            if len_zeros != len_ones {
+                return Err(TensogramError::Framing(format!(
+                    "streaming encoder requires a hash algorithm with a \
+                     value-independent CBOR encoding length; {} produced \
+                     {len_zeros} bytes for an all-zero digest and \
+                     {len_ones} bytes for an all-'f' digest of the same \
+                     length ({placeholder_len} chars).  No frame bytes \
+                     have been written.  Use the buffered encode() API \
+                     for this hash algorithm, or extend \
+                     write_data_object_frame_hashed to handle variable-\
+                     length digests.",
+                    alg.as_str()
+                )));
+            }
+            len_zeros
+        }
+    };
+
+    let payload_len = payload.len();
+
+    // Compute `total_length` in u64 with checked arithmetic so an
+    // overflow (only reachable on pathological 32-bit inputs) becomes
+    // a clean `TensogramError::Framing` before any bytes are written.
+    let total_length = (FRAME_HEADER_SIZE as u64)
+        .checked_add(cbor_len_estimate as u64)
+        .and_then(|n| n.checked_add(payload_len as u64))
+        .and_then(|n| n.checked_add(DATA_OBJECT_FOOTER_SIZE as u64))
+        .ok_or_else(|| {
+            TensogramError::Framing(format!(
+                "data object frame total_length overflows u64 \
+                 (payload {payload_len} bytes, CBOR {cbor_len_estimate} bytes, \
+                 framing {} bytes)",
+                FRAME_HEADER_SIZE + DATA_OBJECT_FOOTER_SIZE
+            ))
+        })?;
+
+    // ── 1) Frame header ──────────────────────────────────────────────
+    let mut header_bytes = Vec::with_capacity(FRAME_HEADER_SIZE);
+    FrameHeader {
+        frame_type: FrameType::DataObject,
+        version: 1,
+        flags: DataObjectFlags::CBOR_AFTER_PAYLOAD,
+        total_length,
+    }
+    .write_to(&mut header_bytes);
+    writer.write_all(&header_bytes)?;
+
+    // ── 2) Payload — single walk, hashing inline in 64 KiB chunks ────
+    //
+    // Inline streaming hashing is xxh3-specific today: the digest
+    // format (`format_xxh3_digest`) and hasher type (`Xxh3Default`)
+    // are both Xxh3-bound.  The inner match on `HashAlgorithm` is
+    // exhaustive, so adding a new variant becomes a compile error
+    // here — forcing the maintainer to either wire up a new hasher
+    // and digest formatter, or to reject the new algorithm with a
+    // clean `TensogramError::Framing` (and route it through the
+    // buffered `encode()` path instead).
+    //
+    // We couple the hasher with its algorithm tag in a single
+    // `Option<(hasher, alg)>` so the digest-install match in step 3
+    // cannot get out of sync with the construction.
+    const CHUNK: usize = 64 * 1024;
+    let mut inline_hasher: Option<(xxhash_rust::xxh3::Xxh3Default, HashAlgorithm)> = hash_algorithm
+        .map(|alg| match alg {
+            HashAlgorithm::Xxh3 => (xxhash_rust::xxh3::Xxh3Default::new(), alg),
+        });
+    let mut offset = 0;
+    while offset < payload_len {
+        let end = (offset + CHUNK).min(payload_len);
+        let chunk = &payload[offset..end];
+        if let Some((h, _)) = &mut inline_hasher {
+            h.update(chunk);
+        }
+        writer.write_all(chunk)?;
+        offset = end;
+    }
+
+    // ── 3) Install the real hash digest on the descriptor ────────────
+    //
+    // The match on `alg` is exhaustive over `HashAlgorithm`; a new
+    // variant forces a compile error until its hex-digest formatter
+    // is wired in (or the construction in step 2 is extended to
+    // reject it).
+    descriptor.hash = inline_hasher.map(|(h, alg)| match alg {
+        HashAlgorithm::Xxh3 => HashDescriptor {
+            hash_type: alg.as_str().to_string(),
+            value: crate::hash::format_xxh3_digest(h.digest()),
+        },
+    });
+
+    // ── 4) CBOR descriptor — re-serialised with the real hash value ──
+    //
+    // Length must match the placeholder estimate byte-for-byte, which
+    // the pre-write check above has already guaranteed for this
+    // algorithm.  The `debug_assert_eq!` is a dev-time tripwire for
+    // bugs inside `object_descriptor_to_cbor` itself (non-canonical
+    // serialisation etc.), not for the hash-length invariant.
+    let cbor_bytes = metadata::object_descriptor_to_cbor(descriptor)?;
+    debug_assert_eq!(
+        cbor_bytes.len(),
+        cbor_len_estimate,
+        "write_data_object_frame_hashed: final CBOR length \
+         ({}) differs from pre-write estimate ({cbor_len_estimate}) — \
+         this indicates a non-deterministic CBOR serialiser, not a \
+         hash-length problem (that would have been caught earlier)",
+        cbor_bytes.len(),
+    );
+    writer.write_all(&cbor_bytes)?;
+
+    // ── 5) cbor_offset — frame-relative byte offset of CBOR start ────
+    let cbor_offset = (FRAME_HEADER_SIZE + payload_len) as u64;
+    writer.write_all(&cbor_offset.to_be_bytes())?;
+
+    // ── 6) ENDF terminator ───────────────────────────────────────────
+    writer.write_all(FRAME_END)?;
+
+    Ok(total_length)
 }
 
 #[cfg(test)]

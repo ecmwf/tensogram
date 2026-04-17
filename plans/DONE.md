@@ -62,6 +62,43 @@ controls this across all interfaces.
 | CLI | `reshuffle`, `merge`, `split`, `set` use `native_byte_order=false` to preserve wire layout on re-encode |
 | Docs | `decoding.md`, `encode-pre-encoded.md`, `DESIGN.md` updated |
 
+## Hash-while-encoding
+
+Inline xxh3-64 hashing fused into the encoding pipeline, eliminating a
+second pass over the encoded payload whenever `EncodeOptions.hash_algorithm
+= Some(Xxh3)` (the default).  Output bytes, descriptor contents, and wire
+format are unchanged — every `.tgm` produced after this change is
+byte-identical to the pre-change output for every codec and every thread
+count.
+
+| Component | What changed |
+|-----------|-------------|
+| `tensogram-encodings/pipeline.rs` | New `PipelineConfig.compute_hash: bool` flag and `PipelineResult.hash: Option<u64>`; new `copy_and_hash` helper fuses the passthrough copy with `Xxh3Default::update` in 64 KiB chunks; hash is produced at each codec exit point while the buffer is cache-hot.  Added `xxhash-rust` workspace dependency. |
+| `tensogram-core/encode.rs` | `encode_one_object` sets `config.compute_hash = options.hash_algorithm.is_some()` in `EncodeMode::Raw` and populates the descriptor's `HashDescriptor` from `PipelineResult.hash`.  `EncodeMode::PreEncoded` unchanged (no pipeline to fuse with). |
+| `tensogram-core/hash.rs` | New `pub(crate) format_xxh3_digest(u64) -> String` helper — single source of truth for `"{digest:016x}"` formatting, used by both the pipeline-inline path and the legacy post-hoc `compute_hash`. |
+| `tensogram-core/streaming.rs` | `write_object_inner` refactored to use new `write_data_object_frame_hashed` helper that writes directly to the `W: Write` sink, hashing the payload in 64 KiB chunks during the single pass.  Reduces streaming payload reads from three (hash → memcpy → write) to one.  CBOR size is pre-computed via a placeholder digest (xxh3 is fixed-width), guarded by a debug assert. |
+| Tests | New `pipeline.rs` unit tests: `streaming_and_oneshot_xxh3_agree`, `pipeline_hash_none_when_disabled`, `pipeline_hash_matches_post_hoc_for_{passthrough,simple_packing,lz4}`, `pipeline_f64_hash_matches_post_hoc`, `pipeline_hash_byte_identical_across_threads_transparent`.  New integration suite `tensogram-core/tests/hash_while_encoding.rs` covering buffered/streaming hash parity, no-hash passthrough, multi-thread determinism, and `verify_hash` round-trip. |
+| Benchmarks | New `hash_overhead.rs` criterion bench comparing `no_hash`, `two_pass_hash`, `fused_inline_hash` across `{none+none, none+lz4, sp24+szip, sp24+zstd3}` on 16 Mi float64 (128 MiB).  Passthrough case: ~11% total encode speedup, recovering ~24% of hash overhead.  Heavy pipelines (sp24+szip): within noise, as expected — encode dominates. |
+
+### Determinism contract
+
+Unchanged from the multi-threaded pipeline contract.  The hash is a pure
+function of the final encoded bytes and follows the same rule:
+transparent codecs produce byte-identical hashes across thread counts;
+opaque codecs (blosc2, zstd with workers) hash their own
+worker-completion-ordered output, which round-trips losslessly.
+
+### What did NOT change
+
+- Public APIs of `tensogram-core`, `tensogram-ffi`, `tensogram-cli`,
+  `tensogram-wasm`, and every language binding (Python, C++, WASM, TS).
+- Wire format — every `.tgm` byte is identical to pre-change output.
+- Golden files — verified by the existing `tests/golden_files.rs` suite.
+- `compute_hash` and `verify_hash` public functions — still used by
+  `encode_pre_encoded`, validation, and external callers.
+- `encode_pre_encoded` hashing — still a single pass over caller bytes
+  (no pipeline to fuse with; already optimal).
+
 ## Multi-threaded coding pipeline
 
 Caller-controlled `threads: u32` budget on `EncodeOptions` and

@@ -162,7 +162,7 @@ fn encode_one_object(
         .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
     let dtype = desc.dtype;
 
-    let config = build_pipeline_config_with_backend(
+    let mut config = build_pipeline_config_with_backend(
         desc,
         num_elements,
         dtype,
@@ -173,7 +173,25 @@ fn encode_one_object(
     // Build the final descriptor with computed fields
     let mut final_desc = desc.clone();
 
-    let encoded_payload: Vec<u8> = match mode {
+    // When xxh3 hashing is requested and we are running the pipeline
+    // (Raw mode), ask the pipeline to compute it inline — this avoids
+    // a second walk over the encoded payload.  The pipeline's inline
+    // path is xxh3-specific; other `HashAlgorithm` variants and
+    // `PreEncoded` mode fall back to `compute_hash` further down.
+    //
+    // The match on `options.hash_algorithm` is exhaustive so that
+    // adding a new `HashAlgorithm` variant becomes a compile error
+    // here, forcing the maintainer to either wire a new inline path
+    // for that algorithm or to route it explicitly through the
+    // post-hoc `compute_hash` fallback below.
+    let inline_hash_requested = matches!(mode, EncodeMode::Raw)
+        && match options.hash_algorithm {
+            Some(HashAlgorithm::Xxh3) => true,
+            None => false,
+        };
+    config.compute_hash = inline_hash_requested;
+
+    let (encoded_payload, inline_hash) = match mode {
         EncodeMode::Raw => {
             // Run the full encoding pipeline.
             let result = pipeline::encode_pipeline(data, &config)
@@ -192,23 +210,30 @@ fn encode_one_object(
                 );
             }
 
-            result.encoded_bytes
+            (result.encoded_bytes, result.hash)
         }
         EncodeMode::PreEncoded => {
             // Caller's bytes are already encoded — use them directly.
-            // build_pipeline_config was already called above for
-            // defense-in-depth validation of encoding/compression params.
+            // `build_pipeline_config_with_backend` was called above purely
+            // for defence-in-depth validation of the declared
+            // encoding/compression params.
             validate_no_szip_offsets_for_non_szip(desc)?;
             if desc.compression == "szip" && desc.params.contains_key("szip_block_offsets") {
                 validate_szip_block_offsets(&desc.params, data.len())?;
             }
-            data.to_vec()
+            (data.to_vec(), None)
         }
     };
 
-    // Compute hash over encoded payload (overwrites any caller-supplied hash).
+    // Attach the integrity hash to the descriptor, overwriting any
+    // caller-supplied hash.  `inline_hash` carries the pipeline's inline
+    // digest when `compute_hash` was set; otherwise (PreEncoded mode) we
+    // fall back to a single-pass `compute_hash` over the payload.
     if let Some(algorithm) = options.hash_algorithm {
-        let hash_value = compute_hash(&encoded_payload, algorithm);
+        let hash_value = match inline_hash {
+            Some(digest) => crate::hash::format_xxh3_digest(digest),
+            None => compute_hash(&encoded_payload, algorithm),
+        };
         final_desc.hash = Some(HashDescriptor {
             hash_type: algorithm.as_str().to_string(),
             value: hash_value,
@@ -707,6 +732,11 @@ pub(crate) fn build_pipeline_config_with_backend(
         swap_unit_size: dtype.swap_unit_size(),
         compression_backend,
         intra_codec_threads,
+        // `compute_hash` is not carried in the descriptor — the caller
+        // (encode_one_object / streaming) flips it on when a hash is
+        // requested.  Default off so direct pipeline callers pay nothing
+        // for hashing unless they opt in.
+        compute_hash: false,
     })
 }
 

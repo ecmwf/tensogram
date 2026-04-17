@@ -22,6 +22,10 @@ path = "src/bin/threads_scaling.rs"
 name = "encode_pre_encoded"
 harness = false
 
+[[bench]]
+name = "hash_overhead"
+harness = false
+
 [lib]
 name = "tensogram_benchmarks"
 path = "src/lib.rs"
@@ -40,3 +44,4 @@ eccodes-sys = { version = "0.7", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+xxhash-rust = { workspace = true }
