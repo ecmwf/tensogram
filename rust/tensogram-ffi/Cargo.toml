@@ -2,7 +2,7 @@
 name = "tensogram-ffi"
 version = "0.14.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 license = "Apache-2.0"
 description = "C FFI bindings for the Tensogram N-tensor message format library"
 repository = "https://github.com/ecmwf/tensogram"

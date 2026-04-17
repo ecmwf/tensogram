@@ -2,7 +2,7 @@
 name = "tensogram-netcdf"
 version = "0.14.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 license = "Apache-2.0"
 description = "NetCDF to Tensogram format converter"
 repository = "https://github.com/ecmwf/tensogram"

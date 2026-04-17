@@ -2,7 +2,7 @@
 name = "tensogram-core"
 version = "0.14.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 license = "Apache-2.0"
 description = "Fast binary N-tensor message format for scientific data — encode, decode, file I/O, streaming"
 repository = "https://github.com/ecmwf/tensogram"

@@ -2,7 +2,7 @@
 name = "tensogram-sz3-sys"
 version = "0.14.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 license-file = "LICENSES.md"
 description = "Clean-room FFI bindings for the SZ3 lossy compression library"
 repository = "https://github.com/ecmwf/tensogram"

@@ -2,7 +2,7 @@
 name = "tensogram-grib"
 version = "0.14.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 license = "Apache-2.0"
 description = "GRIB to Tensogram format converter using ecCodes"
 repository = "https://github.com/ecmwf/tensogram"
