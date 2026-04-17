@@ -1,0 +1,136 @@
+name: Release preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Expected version (e.g. 0.14.0)"
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  preflight:
+    name: Validate release readiness
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libeccodes-dev libnetcdf-dev
+
+      - name: Check version consistency
+        run: |
+          EXPECTED="${{ inputs.version }}"
+          echo "Expected version: $EXPECTED"
+          ERRORS=0
+
+          check_version() {
+            local file="$1" actual="$2"
+            if [ "$actual" != "$EXPECTED" ]; then
+              echo "::error file=$file::Version mismatch: got '$actual', expected '$EXPECTED'"
+              ERRORS=$((ERRORS + 1))
+            fi
+          }
+
+          check_version "VERSION" "$(cat VERSION)"
+
+          for toml in \
+            rust/tensogram-core/Cargo.toml \
+            rust/tensogram-encodings/Cargo.toml \
+            rust/tensogram-szip/Cargo.toml \
+            rust/tensogram-sz3/Cargo.toml \
+            rust/tensogram-sz3-sys/Cargo.toml \
+            rust/tensogram-cli/Cargo.toml \
+            rust/tensogram-ffi/Cargo.toml \
+            rust/tensogram-grib/Cargo.toml \
+            rust/tensogram-netcdf/Cargo.toml \
+            rust/tensogram-wasm/Cargo.toml \
+            python/bindings/Cargo.toml \
+            rust/benchmarks/Cargo.toml \
+            examples/rust/Cargo.toml; do
+            VER=$(grep '^version' "$toml" | head -1 | sed 's/.*"\(.*\)"/\1/')
+            check_version "$toml" "$VER"
+          done
+
+          for pytoml in \
+            python/bindings/pyproject.toml \
+            python/tensogram-xarray/pyproject.toml \
+            python/tensogram-zarr/pyproject.toml; do
+            VER=$(grep '^version' "$pytoml" | head -1 | sed 's/.*"\(.*\)"/\1/')
+            check_version "$pytoml" "$VER"
+          done
+
+          TSVER=$(python3 -c "import json; print(json.load(open('typescript/package.json'))['version'])")
+          check_version "typescript/package.json" "$TSVER"
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::$ERRORS version mismatches found"
+            exit 1
+          fi
+          echo "All versions match $EXPECTED"
+
+      - name: cargo fmt
+        run: cargo fmt --check
+
+      - name: cargo clippy (workspace)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: cargo test (workspace)
+        run: cargo test --workspace
+
+      - name: cargo test (excluded crates)
+        run: |
+          cargo test --manifest-path rust/tensogram-grib/Cargo.toml
+          cargo test --manifest-path rust/tensogram-netcdf/Cargo.toml
+
+      - name: Verify crate tarballs
+        run: |
+          for crate in tensogram-szip tensogram-sz3-sys tensogram-sz3 \
+                       tensogram-encodings tensogram-core tensogram-ffi \
+                       tensogram-cli; do
+            echo "::group::cargo package -p $crate"
+            cargo package -p "$crate" --list
+            echo "::endgroup::"
+          done
+
+          for crate in tensogram-grib tensogram-netcdf tensogram-wasm; do
+            echo "::group::cargo package --manifest-path rust/$crate/Cargo.toml"
+            cargo package --manifest-path "rust/$crate/Cargo.toml" --list
+            echo "::endgroup::"
+          done
+
+      - name: Dry-run publish (leaf crates only)
+        env: { CARGO_REGISTRY_TOKEN: "dry-run-placeholder" }
+        run: |
+          cargo publish --dry-run -p tensogram-szip
+          cargo publish --dry-run -p tensogram-sz3-sys
+
+      - name: Build Python wheel
+        run: |
+          pip install maturin
+          cd python/bindings
+          maturin build --release
+
+      - name: Build pure Python packages
+        run: |
+          pip install build twine
+          python -m build python/tensogram-xarray/
+          python -m build python/tensogram-zarr/
+
+      - name: Validate Python packages
+        run: twine check python/bindings/target/wheels/*.whl python/tensogram-xarray/dist/* python/tensogram-zarr/dist/*
