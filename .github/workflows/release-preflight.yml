@@ -110,7 +110,7 @@ jobs:
 
           for crate in tensogram-grib tensogram-netcdf tensogram-wasm; do
             echo "::group::cargo package --manifest-path rust/$crate/Cargo.toml"
-            cargo package --manifest-path "rust/$crate/Cargo.toml" --list
+            cargo package --manifest-path "rust/$crate/Cargo.toml" --list --allow-dirty
             echo "::endgroup::"
           done
 
