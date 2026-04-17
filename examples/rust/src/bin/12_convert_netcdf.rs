@@ -36,13 +36,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── 1. Locate a fixture from the tensogram-netcdf crate ──────────────
     //
     // The example crate lives at examples/rust, so we walk up two levels
-    // and dive into crates/tensogram-netcdf/testdata to find the shipped
+    // and dive into rust/tensogram-netcdf/testdata to find the shipped
     // CF-compliant temperature file.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixture = manifest_dir
         .join("..")
         .join("..")
-        .join("crates")
+        .join("rust")
         .join("tensogram-netcdf")
         .join("testdata")
         .join("cf_temperature.nc");
