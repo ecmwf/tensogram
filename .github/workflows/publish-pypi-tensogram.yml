@@ -21,7 +21,7 @@ jobs:
           working-directory: python/bindings
           target: x86_64
           manylinux: auto
-          args: --release --out dist
+          args: --release --out dist --find-interpreter
           sccache: true
 
       - uses: actions/upload-artifact@v4
@@ -63,26 +63,26 @@ jobs:
 
   build-wheels-freethreaded:
     name: Build free-threaded wheel (Linux x86_64)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
 
+      - uses: dtolnay/rust-toolchain@stable
+
       - uses: astral-sh/setup-uv@v3
 
-      - name: Install free-threaded Python
+      - name: Install free-threaded Python and maturin
         run: |
           uv python install cpython-3.13+freethreaded
-          echo "FREETHREADED_PYTHON=$(uv python find cpython-3.13+freethreaded)" >> "$GITHUB_ENV"
+          PYTHON=$(uv python find cpython-3.13+freethreaded)
+          echo "FREETHREADED_PYTHON=$PYTHON" >> "$GITHUB_ENV"
+          pip install maturin
 
-      - uses: PyO3/maturin-action@v1
-        with:
-          working-directory: python/bindings
-          target: x86_64
-          manylinux: auto
-          args: --release --out dist --interpreter ${{ env.FREETHREADED_PYTHON }}
-          sccache: true
+      - name: Build free-threaded wheel
+        working-directory: python/bindings
+        run: maturin build --release --out dist --interpreter "$FREETHREADED_PYTHON"
 
       - uses: actions/upload-artifact@v4
         with:
