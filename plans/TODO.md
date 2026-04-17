@@ -146,6 +146,9 @@ For speculative ideas, see `IDEAS.md`.
   - make the docs interactive. 
   - since we have WASM, you can embed demos in the docs
 
+- [ ] jupyter-notebooks:
+  - add examples using jupyter notebooks
+
 ## Builds
 
 - [x] ~~**restructure-repo**~~:
