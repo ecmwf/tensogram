@@ -18,8 +18,8 @@
 use std::collections::BTreeMap;
 
 use tensogram_core::{
-    decode, encode, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
-    GlobalMetadata,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, decode,
+    encode,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

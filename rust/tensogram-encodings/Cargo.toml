@@ -1,7 +1,7 @@
 [package]
 name = "tensogram-encodings"
 version = "0.13.0"
-edition = "2021"
+edition = "2024"
 
 [features]
 default = ["szip", "zstd", "lz4", "blosc2", "zfp", "sz3", "threads"]

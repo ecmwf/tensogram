@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use tensogram_core::{decode_metadata, TensogramFile};
+use tensogram_core::{TensogramFile, decode_metadata};
 
 use crate::filter::{self, lookup_key};
 
@@ -36,10 +36,10 @@ pub fn run(
         for i in 0..count {
             let msg = in_file.read_message(i)?;
             let metadata = decode_metadata(&msg)?;
-            if let Some(ref clause) = clause {
-                if !filter::matches(&metadata, clause) {
-                    continue;
-                }
+            if let Some(ref clause) = clause
+                && !filter::matches(&metadata, clause)
+            {
+                continue;
             }
             out.write_all(&msg)?;
         }
@@ -48,10 +48,10 @@ pub fn run(
         for i in 0..count {
             let msg = in_file.read_message(i)?;
             let metadata = decode_metadata(&msg)?;
-            if let Some(ref clause) = clause {
-                if !filter::matches(&metadata, clause) {
-                    continue;
-                }
+            if let Some(ref clause) = clause
+                && !filter::matches(&metadata, clause)
+            {
+                continue;
             }
 
             let out_name = expand_placeholders(output, &metadata);

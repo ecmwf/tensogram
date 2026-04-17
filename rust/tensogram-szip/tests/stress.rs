@@ -12,8 +12,8 @@
 //! patterns, flag combinations, large inputs, and range decode boundaries.
 
 use tensogram_szip::{
-    aec_compress, aec_decompress, aec_decompress_range, AecParams, AEC_DATA_MSB,
-    AEC_DATA_PREPROCESS, AEC_DATA_SIGNED, AEC_NOT_ENFORCE, AEC_PAD_RSI, AEC_RESTRICTED,
+    AEC_DATA_MSB, AEC_DATA_PREPROCESS, AEC_DATA_SIGNED, AEC_NOT_ENFORCE, AEC_PAD_RSI,
+    AEC_RESTRICTED, AecParams, aec_compress, aec_decompress, aec_decompress_range,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -80,11 +80,7 @@ fn make_noise(n_samples: usize, bps: u32, seed: u32, msb: bool) -> Vec<u8> {
 
 fn byte_width(bps: u32) -> usize {
     let nbytes = (bps as usize).div_ceil(8);
-    if nbytes == 3 {
-        3
-    } else {
-        nbytes
-    }
+    if nbytes == 3 { 3 } else { nbytes }
 }
 
 fn write_sample(out: &mut Vec<u8>, val: u32, bw: usize, msb: bool) {

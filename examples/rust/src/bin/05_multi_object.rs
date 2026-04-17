@@ -21,8 +21,8 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode, decode_object, encode, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype,
-    EncodeOptions, GlobalMetadata,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, decode,
+    decode_object, encode,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

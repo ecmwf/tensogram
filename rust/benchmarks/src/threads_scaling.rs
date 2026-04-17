@@ -20,10 +20,10 @@ use tensogram_encodings::{
     Blosc2Codec, ByteOrder, CompressionType, EncodingType, FilterType, PipelineConfig,
 };
 
+use crate::BenchmarkError;
 use crate::constants::AEC_DATA_PREPROCESS;
 use crate::datagen::generate_weather_field;
 use crate::report::compute_timing_stats;
-use crate::BenchmarkError;
 
 type ConfigBuilder = Box<dyn Fn(u32, &[f64]) -> Result<PipelineConfig, BenchmarkError>>;
 

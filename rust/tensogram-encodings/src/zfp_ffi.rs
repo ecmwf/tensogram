@@ -156,22 +156,24 @@ unsafe fn set_mode(
     mode: &ZfpMode,
     ztype: zfp_sys_cc::zfp_type,
 ) -> Result<(), CompressionError> {
-    match mode {
-        ZfpMode::FixedRate { rate } => {
-            // dims=1 for 1D, zfp_false=0 for non-aligned
-            zfp_sys_cc::zfp_stream_set_rate(zfp, *rate, ztype, 1, 0);
-        }
-        ZfpMode::FixedPrecision { precision } => {
-            zfp_sys_cc::zfp_stream_set_precision(zfp, *precision);
-        }
-        ZfpMode::FixedAccuracy { tolerance } => {
-            let ret = zfp_sys_cc::zfp_stream_set_accuracy(zfp, *tolerance);
-            if ret == 0.0 {
-                return Err(err("zfp_stream_set_accuracy returned 0"));
+    unsafe {
+        match mode {
+            ZfpMode::FixedRate { rate } => {
+                // dims=1 for 1D, zfp_false=0 for non-aligned
+                zfp_sys_cc::zfp_stream_set_rate(zfp, *rate, ztype, 1, 0);
+            }
+            ZfpMode::FixedPrecision { precision } => {
+                zfp_sys_cc::zfp_stream_set_precision(zfp, *precision);
+            }
+            ZfpMode::FixedAccuracy { tolerance } => {
+                let ret = zfp_sys_cc::zfp_stream_set_accuracy(zfp, *tolerance);
+                if ret == 0.0 {
+                    return Err(err("zfp_stream_set_accuracy returned 0"));
+                }
             }
         }
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -11,8 +11,8 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use tensogram_core::{
-    decode, decode_metadata, encode, DataObjectDescriptor, DecodeOptions, EncodeOptions,
-    GlobalMetadata, TensogramFile, RESERVED_KEY,
+    DataObjectDescriptor, DecodeOptions, EncodeOptions, GlobalMetadata, RESERVED_KEY,
+    TensogramFile, decode, decode_metadata, encode,
 };
 
 use crate::filter;
@@ -250,7 +250,7 @@ fn insert_nested_cbor_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tensogram_core::{encode, ByteOrder, DataObjectDescriptor, Dtype, GlobalMetadata};
+    use tensogram_core::{ByteOrder, DataObjectDescriptor, Dtype, GlobalMetadata, encode};
 
     fn make_global_meta() -> GlobalMetadata {
         GlobalMetadata {
@@ -377,10 +377,12 @@ mod tests {
         // Second message should be unchanged
         let m1 = f.read_message(1).unwrap();
         let meta1_out = decode_metadata(&m1).unwrap();
-        assert!(meta1_out
-            .base
-            .iter()
-            .all(|entry| entry.get("source").is_none()));
+        assert!(
+            meta1_out
+                .base
+                .iter()
+                .all(|entry| entry.get("source").is_none())
+        );
         assert_eq!(meta1_out.extra.get("source"), None);
     }
 

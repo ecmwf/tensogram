@@ -245,10 +245,10 @@ pub fn decode_range_from_payload(
         ));
     }
 
-    if options.verify_hash {
-        if let Some(ref hash_desc) = desc.hash {
-            hash::verify_hash(payload_bytes, hash_desc)?;
-        }
+    if options.verify_hash
+        && let Some(ref hash_desc) = desc.hash
+    {
+        hash::verify_hash(payload_bytes, hash_desc)?;
     }
 
     let shape_product = desc
@@ -355,10 +355,10 @@ fn decode_single_object_with_backend(
     backend: pipeline::CompressionBackend,
     intra_codec_threads: u32,
 ) -> Result<Vec<u8>> {
-    if options.verify_hash {
-        if let Some(ref hash_desc) = desc.hash {
-            hash::verify_hash(payload_bytes, hash_desc)?;
-        }
+    if options.verify_hash
+        && let Some(ref hash_desc) = desc.hash
+    {
+        hash::verify_hash(payload_bytes, hash_desc)?;
     }
 
     let shape_product = desc
@@ -385,7 +385,7 @@ fn decode_single_object_with_backend(
 mod tests {
     use super::*;
     use crate::dtype::Dtype;
-    use crate::encode::{encode, EncodeOptions};
+    use crate::encode::{EncodeOptions, encode};
     use crate::types::ByteOrder;
     use std::collections::BTreeMap;
 

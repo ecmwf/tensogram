@@ -522,7 +522,9 @@ pub enum SZ3Error {
     UnsupportedAlgorithm(u32),
     #[error("unsupported SZ3 error bound mode: {0}")]
     UnsupportedErrorBound(u32),
-    #[error("cannot decompress array with dimensions {found:?} to array with different dimensions {expected:?}")]
+    #[error(
+        "cannot decompress array with dimensions {found:?} to array with different dimensions {expected:?}"
+    )]
     DecompressedDimsMismatch {
         found: Vec<usize>,
         expected: Vec<usize>,

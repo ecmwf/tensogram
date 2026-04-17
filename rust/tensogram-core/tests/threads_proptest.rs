@@ -27,8 +27,8 @@ use std::collections::BTreeMap;
 use proptest::prelude::*;
 
 use tensogram_core::{
-    decode, encode, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
-    GlobalMetadata,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, decode,
+    encode,
 };
 
 #[derive(Debug, Clone)]

@@ -493,7 +493,25 @@ fn scan_complex128(
     }
     for (idx, chunk) in chunks.enumerate() {
         // See scan_f32 for the rationale of this slice-pattern idiom.
-        let &[r0, r1, r2, r3, r4, r5, r6, r7, i0, i1, i2, i3, i4, i5, i6, i7] = chunk else {
+        let &[
+            r0,
+            r1,
+            r2,
+            r3,
+            r4,
+            r5,
+            r6,
+            r7,
+            i0,
+            i1,
+            i2,
+            i3,
+            i4,
+            i5,
+            i6,
+            i7,
+        ] = chunk
+        else {
             continue;
         };
         let real_bytes = [r0, r1, r2, r3, r4, r5, r6, r7];

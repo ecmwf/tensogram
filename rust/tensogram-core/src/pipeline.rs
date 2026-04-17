@@ -251,8 +251,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::types::ByteOrder;
     use crate::Dtype;
+    use crate::types::ByteOrder;
 
     fn mk_desc() -> DataObjectDescriptor {
         DataObjectDescriptor {

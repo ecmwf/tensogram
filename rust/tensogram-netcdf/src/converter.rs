@@ -10,12 +10,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use ciborium::Value as CborValue;
-use netcdf::types::{FloatType, IntType, NcVariableType};
 use netcdf::AttributeValue;
+use netcdf::types::{FloatType, IntType, NcVariableType};
 
 use tensogram_core::pipeline::apply_pipeline;
 use tensogram_core::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
-use tensogram_core::{encode, DataPipeline, Dtype};
+use tensogram_core::{DataPipeline, Dtype, encode};
 
 use crate::error::NetcdfError;
 use crate::metadata::{attr_value_to_cbor, extract_cf_attrs, extract_var_attrs};
@@ -87,10 +87,10 @@ fn build_base_entry(
         base_entry.insert("netcdf".to_string(), cbor_map_from(netcdf_meta));
     }
 
-    if let Some(cf) = cf_meta {
-        if !cf.is_empty() {
-            base_entry.insert("cf".to_string(), cbor_map_from(cf));
-        }
+    if let Some(cf) = cf_meta
+        && !cf.is_empty()
+    {
+        base_entry.insert("cf".to_string(), cbor_map_from(cf));
     }
 
     base_entry
@@ -121,12 +121,12 @@ pub fn convert_netcdf_file(
 
     let file_path_str = path.to_string_lossy().to_string();
 
-    if let Ok(mut groups) = file.groups() {
-        if groups.next().is_some() {
-            eprintln!(
-                "warning: {file_path_str}: sub-groups found; only root-group variables are converted"
-            );
-        }
+    if let Ok(mut groups) = file.groups()
+        && groups.next().is_some()
+    {
+        eprintln!(
+            "warning: {file_path_str}: sub-groups found; only root-group variables are converted"
+        );
     }
 
     let global_attrs = extract_global_attrs(&file);
@@ -279,11 +279,11 @@ fn read_and_unpack(
     })?;
 
     for v in &mut vals {
-        if let Some(fv) = fill_value {
-            if (*v - fv).abs() < f64::EPSILON * fv.abs().max(1.0) {
-                *v = f64::NAN;
-                continue;
-            }
+        if let Some(fv) = fill_value
+            && (*v - fv).abs() < f64::EPSILON * fv.abs().max(1.0)
+        {
+            *v = f64::NAN;
+            continue;
         }
         if let Some(sf) = scale_factor {
             *v *= sf;

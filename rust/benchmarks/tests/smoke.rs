@@ -9,7 +9,7 @@
 use tensogram_benchmarks::codec_matrix::run_codec_matrix;
 use tensogram_benchmarks::datagen::generate_weather_field;
 use tensogram_benchmarks::report::{
-    compute_fidelity, format_table, BenchmarkResult, Fidelity, TimingStats,
+    BenchmarkResult, Fidelity, TimingStats, compute_fidelity, format_table,
 };
 
 fn make_stats(ms: f64) -> TimingStats {

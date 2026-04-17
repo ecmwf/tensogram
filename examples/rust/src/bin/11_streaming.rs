@@ -20,7 +20,7 @@ use std::io::BufWriter;
 
 use tensogram_core::streaming::StreamingEncoder;
 use tensogram_core::{
-    decode, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, decode,
 };
 
 fn make_descriptor(shape: Vec<u64>) -> DataObjectDescriptor {

@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::Path;
 
 use tensogram_core::{
-    decode, encode, DecodeOptions, EncodeOptions, GlobalMetadata, TensogramFile, RESERVED_KEY,
+    DecodeOptions, EncodeOptions, GlobalMetadata, RESERVED_KEY, TensogramFile, decode, encode,
 };
 
 /// Merge strategy for conflicting metadata keys.
@@ -55,13 +55,13 @@ fn merge_key(
             map.insert(key, value);
         }
         MergeStrategy::Error => {
-            if let Some(existing) = map.get(&key) {
-                if existing != &value {
-                    return Err(format!(
-                        "conflicting values for key '{key}' (use --strategy first or last to resolve)"
-                    )
-                    .into());
-                }
+            if let Some(existing) = map.get(&key)
+                && existing != &value
+            {
+                return Err(format!(
+                    "conflicting values for key '{key}' (use --strategy first or last to resolve)"
+                )
+                .into());
             }
             map.insert(key, value);
         }

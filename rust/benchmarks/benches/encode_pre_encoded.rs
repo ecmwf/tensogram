@@ -19,10 +19,10 @@
 
 use std::collections::BTreeMap;
 
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use tensogram_core::{
-    encode, encode_pre_encoded, framing, ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions,
-    GlobalMetadata,
+    ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata, encode,
+    encode_pre_encoded, framing,
 };
 use tensogram_encodings::simple_packing::compute_params;
 

@@ -247,10 +247,10 @@ pub fn validate_buffer(buf: &[u8], options: &ValidateOptions) -> FileValidationR
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encode::{encode, EncodeOptions};
+    use crate::Dtype;
+    use crate::encode::{EncodeOptions, encode};
     use crate::types::{DataObjectDescriptor, GlobalMetadata};
     use crate::wire::{FRAME_HEADER_SIZE, POSTAMBLE_SIZE, PREAMBLE_SIZE};
-    use crate::Dtype;
     use std::collections::BTreeMap;
     use tensogram_encodings::ByteOrder;
 
@@ -898,10 +898,12 @@ mod tests {
         let msg = make_float64_message(&[f64::NEG_INFINITY, 1.0]);
         let report = validate_message(&msg, &full_opts());
         assert!(!report.is_ok());
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == IssueCode::InfDetected));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::InfDetected)
+        );
     }
 
     #[test]
@@ -909,10 +911,12 @@ mod tests {
         let msg = make_float32_message_le(&[1.0, f32::NAN, 3.0]);
         let report = validate_message(&msg, &full_opts());
         assert!(!report.is_ok());
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == IssueCode::NanDetected));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::NanDetected)
+        );
     }
 
     #[test]
@@ -920,10 +924,12 @@ mod tests {
         let msg = make_float32_message_le(&[f32::INFINITY]);
         let report = validate_message(&msg, &full_opts());
         assert!(!report.is_ok());
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == IssueCode::InfDetected));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::InfDetected)
+        );
     }
 
     #[test]
@@ -1034,10 +1040,12 @@ mod tests {
         .unwrap();
         let report = validate_message(&msg, &full_opts());
         assert!(!report.is_ok());
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == IssueCode::InfDetected));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::InfDetected)
+        );
     }
 
     #[test]
@@ -1067,10 +1075,12 @@ mod tests {
         .unwrap();
         let report = validate_message(&msg, &full_opts());
         assert!(!report.is_ok());
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == IssueCode::NanDetected));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::NanDetected)
+        );
     }
 
     #[test]
@@ -1760,7 +1770,7 @@ mod tests {
 
         // Build data object frame manually with patched CBOR
         use crate::wire::{
-            DataObjectFlags, DATA_OBJECT_FOOTER_SIZE, FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC,
+            DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC,
         };
         let payload = vec![0u8; 32];
         let cbor_offset = (FRAME_HEADER_SIZE + payload.len()) as u64;
@@ -1788,11 +1798,11 @@ mod tests {
     fn cbor_map_set(value: &mut ciborium::Value, key: &str, new_val: ciborium::Value) {
         if let ciborium::Value::Map(pairs) = value {
             for (k, v) in pairs.iter_mut() {
-                if let ciborium::Value::Text(s) = k {
-                    if s == key {
-                        *v = new_val;
-                        return;
-                    }
+                if let ciborium::Value::Text(s) = k
+                    && s == key
+                {
+                    *v = new_val;
+                    return;
                 }
             }
             // Key not found, add it
@@ -3377,10 +3387,12 @@ mod tests {
             .collect();
         let msg = make_raw_object_message(Dtype::Bfloat16, bytes, vec![2]);
         let report = validate_message(&msg, &full_opts());
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == IssueCode::NanDetected));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::NanDetected)
+        );
     }
 
     #[test]
@@ -3393,10 +3405,12 @@ mod tests {
             .collect();
         let msg = make_raw_object_message(Dtype::Bfloat16, bytes, vec![2]);
         let report = validate_message(&msg, &full_opts());
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == IssueCode::InfDetected));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::InfDetected)
+        );
     }
 
     #[test]
@@ -3410,10 +3424,12 @@ mod tests {
         bytes.extend_from_slice(&1.0f32.to_le_bytes());
         let msg = make_raw_object_message(Dtype::Complex64, bytes, vec![2]);
         let report = validate_message(&msg, &full_opts());
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == IssueCode::NanDetected));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::NanDetected)
+        );
     }
 
     #[test]
@@ -3425,10 +3441,12 @@ mod tests {
         bytes.extend_from_slice(&1.0f32.to_le_bytes());
         let msg = make_raw_object_message(Dtype::Complex64, bytes, vec![2]);
         let report = validate_message(&msg, &full_opts());
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == IssueCode::InfDetected));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::InfDetected)
+        );
     }
 
     #[test]
@@ -3441,10 +3459,12 @@ mod tests {
         bytes.extend_from_slice(&1.0f64.to_le_bytes());
         let msg = make_raw_object_message(Dtype::Complex128, bytes, vec![2]);
         let report = validate_message(&msg, &full_opts());
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == IssueCode::NanDetected));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::NanDetected)
+        );
     }
 
     #[test]
@@ -3456,10 +3476,12 @@ mod tests {
         bytes.extend_from_slice(&1.0f64.to_le_bytes());
         let msg = make_raw_object_message(Dtype::Complex128, bytes, vec![2]);
         let report = validate_message(&msg, &full_opts());
-        assert!(report
-            .issues
-            .iter()
-            .any(|i| i.code == IssueCode::InfDetected));
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::InfDetected)
+        );
     }
 
     // ── Coverage closers: validate/metadata.rs DescriptorCborNonCanonical
@@ -3718,7 +3740,7 @@ mod tests {
         msg.extend_from_slice(&0u16.to_be_bytes());
         msg.extend_from_slice(&0u32.to_be_bytes());
         msg.extend_from_slice(&0u64.to_be_bytes()); // streaming
-                                                    // Bogus postamble (wrong end magic)
+        // Bogus postamble (wrong end magic)
         msg.extend_from_slice(&(PREAMBLE_SIZE as u64).to_be_bytes());
         msg.extend_from_slice(b"BOGUSMAG");
         let report = validate_message(&msg, &ValidateOptions::default());

@@ -189,7 +189,7 @@ fn test_golden_files_are_deterministic() {
     // messages and compare metadata + payload data. Byte-exact comparison
     // is not possible because provenance fields (uuid, time) are
     // nondeterministic.
-    use tensogram_core::decode::{decode, DecodeOptions};
+    use tensogram_core::decode::{DecodeOptions, decode};
 
     let dir = golden_dir();
     let decode_opts = DecodeOptions::default();
@@ -262,7 +262,7 @@ fn test_golden_simple_f32() {
     // Verify payload values
     let bytes = &objects[0].1;
     assert_eq!(bytes.len(), 16); // 4 * 4 bytes
-                                 // Decoded bytes are in native byte order (native_byte_order=true default).
+    // Decoded bytes are in native byte order (native_byte_order=true default).
     let values: Vec<f32> = bytes
         .chunks_exact(4)
         .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))

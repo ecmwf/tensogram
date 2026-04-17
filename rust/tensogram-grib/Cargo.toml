@@ -1,7 +1,7 @@
 [package]
 name = "tensogram-grib"
 version = "0.13.0"
-edition = "2021"
+edition = "2024"
 description = "GRIB to Tensogram format converter using ecCodes"
 
 [dependencies]

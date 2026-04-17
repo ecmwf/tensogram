@@ -22,8 +22,8 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode_metadata, encode, scan, ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions,
-    GlobalMetadata,
+    ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata, decode_metadata, encode,
+    scan,
 };
 
 fn make_message(param: &str, step: i64) -> Vec<u8> {

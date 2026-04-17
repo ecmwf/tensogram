@@ -1052,8 +1052,8 @@ mod tests {
     }
 
     #[test]
-    fn test_local_decode_range_multiple_ranges(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_local_decode_range_multiple_ranges()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("range_multi.tgm");
 
@@ -1076,8 +1076,8 @@ mod tests {
     }
 
     #[test]
-    fn test_local_decode_range_invalid_object_index(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_local_decode_range_invalid_object_index()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("range_bad_obj.tgm");
 
@@ -1102,8 +1102,8 @@ mod tests {
     }
 
     #[test]
-    fn test_local_decode_range_invalid_message_index(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_local_decode_range_invalid_message_index()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("range_bad_msg.tgm");
 
@@ -1171,8 +1171,8 @@ mod tests {
 
     #[cfg(feature = "async")]
     #[tokio::test]
-    async fn test_async_open_nonexistent_file(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    async fn test_async_open_nonexistent_file()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let result = TensogramFile::open_async("/tmp/nonexistent_tensogram_file_12345.tgm").await;
         match result {
             Ok(_) => panic!("expected error for nonexistent file"),
@@ -1189,8 +1189,8 @@ mod tests {
 
     #[cfg(feature = "async")]
     #[tokio::test]
-    async fn test_async_message_index_out_of_range(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    async fn test_async_message_index_out_of_range()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("async_oor.tgm");
 
@@ -1217,8 +1217,8 @@ mod tests {
 
     #[cfg(feature = "async")]
     #[tokio::test]
-    async fn test_async_decode_metadata_out_of_range(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    async fn test_async_decode_metadata_out_of_range()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("async_meta_oor.tgm");
 
@@ -1337,8 +1337,8 @@ mod tests {
     }
 
     #[test]
-    fn test_source_returns_path_string_for_local(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_source_returns_path_string_for_local()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("source_test.tgm");
 
@@ -1381,8 +1381,8 @@ mod tests {
     // ── Coverage closers ─────────────────────────────────────────────────
 
     #[test]
-    fn test_create_in_nested_path_creates_parent(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_create_in_nested_path_creates_parent()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Exercises the `fs::create_dir_all(parent)` branch in `create()`.
         let dir = tempfile::tempdir()?;
         let deep_path = dir.path().join("a").join("b").join("c").join("deep.tgm");
@@ -1411,8 +1411,8 @@ mod tests {
     /// environments the test's premise cannot be deterministically met.
     #[cfg(unix)]
     #[test]
-    fn test_create_in_nonwritable_location_returns_io_error(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_create_in_nonwritable_location_returns_io_error()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir()?;
@@ -1458,8 +1458,8 @@ mod tests {
     }
 
     #[test]
-    fn test_read_message_from_deleted_file_errors(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_read_message_from_deleted_file_errors()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // TensogramFile is path-backed: each read reopens the file. If the
         // underlying path disappears out from under an open handle, the
         // next read_message call must surface a typed I/O error rather
@@ -1551,8 +1551,8 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_message_out_of_range_clearly_errors(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_decode_message_out_of_range_clearly_errors()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("oor.tgm");
         let mut file = TensogramFile::create(&path)?;
@@ -1602,8 +1602,8 @@ mod tests {
     // ── open_source dispatches to local backend ──────────────────────────
 
     #[test]
-    fn test_open_source_local_path_source_and_path_accessors(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_open_source_local_path_source_and_path_accessors()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("open_src_acc.tgm");
 
@@ -1801,8 +1801,8 @@ mod tests {
     // ── decode_descriptors via file ──────────────────────────────────────
 
     #[test]
-    fn test_file_decode_descriptors_msg_out_of_range(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_file_decode_descriptors_msg_out_of_range()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("desc_oor.tgm");
 
@@ -1825,8 +1825,8 @@ mod tests {
     // ── decode_metadata via file with out-of-range index ─────────────────
 
     #[test]
-    fn test_file_decode_metadata_out_of_range(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_file_decode_metadata_out_of_range()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("meta_oor.tgm");
 
@@ -1901,8 +1901,8 @@ mod tests {
     // ── decode_range out-of-bounds element range ─────────────────────────
 
     #[test]
-    fn test_local_decode_range_out_of_bounds_elements(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn test_local_decode_range_out_of_bounds_elements()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("range_oob.tgm");
 
@@ -1967,8 +1967,8 @@ mod tests {
 
     #[cfg(feature = "async")]
     #[tokio::test]
-    async fn test_async_decode_object_out_of_range(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    async fn test_async_decode_object_out_of_range()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("async_obj_oor.tgm");
 
@@ -2028,8 +2028,8 @@ mod tests {
 
     #[cfg(feature = "async")]
     #[tokio::test]
-    async fn test_async_decode_descriptors_out_of_range(
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    async fn test_async_decode_descriptors_out_of_range()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("async_descs_oor.tgm");
 

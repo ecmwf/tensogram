@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use tensogram_core::{decode_metadata, TensogramFile};
+use tensogram_core::{TensogramFile, decode_metadata};
 
 use crate::filter::{self, lookup_key};
 
@@ -33,10 +33,10 @@ pub fn run(
             let msg = file.read_message(i)?;
             let metadata = decode_metadata(&msg)?;
 
-            if let Some(ref clause) = clause {
-                if !filter::matches(&metadata, clause) {
-                    continue;
-                }
+            if let Some(ref clause) = clause
+                && !filter::matches(&metadata, clause)
+            {
+                continue;
             }
 
             // Strict: error on missing key

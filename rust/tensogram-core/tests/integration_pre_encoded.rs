@@ -31,8 +31,8 @@ use std::collections::BTreeMap;
 
 use tensogram_core::framing;
 use tensogram_core::{
-    decode, decode_range, encode, encode_pre_encoded, ByteOrder, DataObjectDescriptor,
-    DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, HashDescriptor, StreamingEncoder,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
+    HashDescriptor, StreamingEncoder, decode, decode_range, encode, encode_pre_encoded,
 };
 use tensogram_encodings::simple_packing;
 

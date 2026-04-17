@@ -41,12 +41,12 @@ use std::ptr;
 use std::slice;
 
 use tensogram_core::validate::{
-    validate_file as core_validate_file, validate_message, ValidateOptions, ValidationLevel,
+    ValidateOptions, ValidationLevel, validate_file as core_validate_file, validate_message,
 };
 use tensogram_core::{
-    decode, decode_metadata, decode_object, decode_range, encode, encode_pre_encoded, scan,
     DataObjectDescriptor, DecodeOptions, EncodeOptions, GlobalMetadata, HashAlgorithm,
-    StreamingEncoder, TensogramError, TensogramFile, RESERVED_KEY,
+    RESERVED_KEY, StreamingEncoder, TensogramError, TensogramFile, decode, decode_metadata,
+    decode_object, decode_range, encode, encode_pre_encoded, scan,
 };
 
 // ---------------------------------------------------------------------------
@@ -95,7 +95,7 @@ fn set_last_error(msg: &str) {
 
 /// Returns a pointer to the last error message, or NULL if no error.
 /// The pointer is valid until the next FFI call on the same thread.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_last_error() -> *const c_char {
     LAST_ERROR.with(|cell| {
         cell.borrow()
@@ -117,7 +117,7 @@ pub struct TgmBytes {
 }
 
 /// Free a byte buffer returned by `tgm_encode`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_bytes_free(buf: TgmBytes) {
     if !buf.data.is_null() {
         unsafe {
@@ -396,39 +396,41 @@ unsafe fn collect_data_slices<'a>(
     data_lens: *const usize,
     num_objects: usize,
 ) -> Result<Vec<&'a [u8]>, (TgmError, String)> {
-    if num_objects == 0 {
-        return Ok(vec![]);
-    }
-    if data_ptrs.is_null() || data_lens.is_null() {
-        return Err((
-            TgmError::InvalidArg,
-            "null data_ptrs or data_lens".to_string(),
-        ));
-    }
-    let ptrs = slice::from_raw_parts(data_ptrs, num_objects);
-    let lens = slice::from_raw_parts(data_lens, num_objects);
-    for (i, (&p, &l)) in ptrs.iter().zip(lens.iter()).enumerate() {
-        if p.is_null() && l > 0 {
+    unsafe {
+        if num_objects == 0 {
+            return Ok(vec![]);
+        }
+        if data_ptrs.is_null() || data_lens.is_null() {
             return Err((
                 TgmError::InvalidArg,
-                format!("null data pointer at index {i}"),
+                "null data_ptrs or data_lens".to_string(),
             ));
         }
-    }
-    Ok(ptrs
-        .iter()
-        .zip(lens.iter())
-        .map(|(&p, &l)| {
-            if l == 0 {
-                // Avoid calling slice::from_raw_parts with a potentially null
-                // pointer when length is zero — that is UB even for zero-length
-                // slices per the Rust reference.
-                &[] as &[u8]
-            } else {
-                slice::from_raw_parts(p, l)
+        let ptrs = slice::from_raw_parts(data_ptrs, num_objects);
+        let lens = slice::from_raw_parts(data_lens, num_objects);
+        for (i, (&p, &l)) in ptrs.iter().zip(lens.iter()).enumerate() {
+            if p.is_null() && l > 0 {
+                return Err((
+                    TgmError::InvalidArg,
+                    format!("null data pointer at index {i}"),
+                ));
             }
-        })
-        .collect())
+        }
+        Ok(ptrs
+            .iter()
+            .zip(lens.iter())
+            .map(|(&p, &l)| {
+                if l == 0 {
+                    // Avoid calling slice::from_raw_parts with a potentially null
+                    // pointer when length is zero — that is UB even for zero-length
+                    // slices per the Rust reference.
+                    &[] as &[u8]
+                } else {
+                    slice::from_raw_parts(p, l)
+                }
+            })
+            .collect())
+    }
 }
 
 /// Parse and validate the common arguments for `tgm_encode` / `tgm_file_append`.
@@ -445,34 +447,36 @@ unsafe fn parse_encode_args<'a>(
     hash_algo: *const c_char,
     threads: u32,
 ) -> Result<ParsedEncode<'a>, (TgmError, String)> {
-    let (global_metadata, descriptors) =
-        parse_encode_json(json_str).map_err(|e| (TgmError::Metadata, e))?;
+    unsafe {
+        let (global_metadata, descriptors) =
+            parse_encode_json(json_str).map_err(|e| (TgmError::Metadata, e))?;
 
-    if descriptors.len() != num_objects {
-        return Err((
-            TgmError::InvalidArg,
-            format!(
-                "descriptors array length {} does not match num_objects {}",
-                descriptors.len(),
-                num_objects
-            ),
-        ));
+        if descriptors.len() != num_objects {
+            return Err((
+                TgmError::InvalidArg,
+                format!(
+                    "descriptors array length {} does not match num_objects {}",
+                    descriptors.len(),
+                    num_objects
+                ),
+            ));
+        }
+
+        let data_slices = collect_data_slices(data_ptrs, data_lens, num_objects)?;
+        let hash_algorithm = parse_hash_algo(hash_algo)?;
+        let options = EncodeOptions {
+            hash_algorithm,
+            threads,
+            ..Default::default()
+        };
+
+        Ok(ParsedEncode {
+            global_metadata,
+            descriptors,
+            data_slices,
+            options,
+        })
     }
-
-    let data_slices = collect_data_slices(data_ptrs, data_lens, num_objects)?;
-    let hash_algorithm = parse_hash_algo(hash_algo)?;
-    let options = EncodeOptions {
-        hash_algorithm,
-        threads,
-        ..Default::default()
-    };
-
-    Ok(ParsedEncode {
-        global_metadata,
-        descriptors,
-        data_slices,
-        options,
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -492,7 +496,7 @@ unsafe fn parse_encode_args<'a>(
 ///
 /// On success returns `TgmError::Ok` and fills `out` with the encoded bytes.
 /// The caller must free `out` with `tgm_bytes_free`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_encode(
     metadata_json: *const c_char,
     data_ptrs: *const *const u8,
@@ -590,7 +594,7 @@ pub extern "C" fn tgm_encode(
 ///
 /// On success returns `TgmError::Ok` and fills `out` with the encoded message.
 /// The caller must free `out` with `tgm_bytes_free`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_encode_pre_encoded(
     metadata_json: *const c_char,
     data_ptrs: *const *const u8,
@@ -670,7 +674,7 @@ pub extern "C" fn tgm_encode_pre_encoded(
 ///
 /// On success, fills `out` with a `TgmMessage` handle.
 /// Free with `tgm_message_free`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_decode(
     buf: *const u8,
     buf_len: usize,
@@ -720,7 +724,7 @@ pub extern "C" fn tgm_decode(
 }
 
 /// Decode only the global metadata (no payload bytes are read).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_decode_metadata(
     buf: *const u8,
     buf_len: usize,
@@ -755,7 +759,7 @@ pub extern "C" fn tgm_decode_metadata(
 ///
 /// On success, fills `out` with a `TgmMessage` handle containing exactly
 /// one object (at index 0). The global metadata covers the whole message.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_decode_object(
     buf: *const u8,
     buf_len: usize,
@@ -818,7 +822,7 @@ pub extern "C" fn tgm_decode_object(
 /// `out_count`: filled with the number of buffers written to `out`.
 ///
 /// Free each returned buffer with `tgm_bytes_free`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn tgm_decode_range(
     buf: *const u8,
@@ -915,7 +919,7 @@ pub extern "C" fn tgm_decode_range(
 ///
 /// Returns a `TgmScanResult` handle. Access entries with `tgm_scan_count`
 /// and `tgm_scan_entry`. Free with `tgm_scan_free`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_scan(
     buf: *const u8,
     buf_len: usize,
@@ -941,29 +945,27 @@ pub extern "C" fn tgm_scan(
 
 /// # Safety: caller must pass valid, non-null pointer from tgm_scan.
 unsafe fn as_scan(result: *const TgmScanResult) -> Option<&'static TgmScanResult> {
-    if result.is_null() {
-        None
-    } else {
-        Some(&*result)
+    unsafe {
+        if result.is_null() {
+            None
+        } else {
+            Some(&*result)
+        }
     }
 }
 
 /// # Safety: caller must pass valid, non-null pointer from tgm_decode*.
 unsafe fn as_msg(msg: *const TgmMessage) -> Option<&'static TgmMessage> {
-    if msg.is_null() {
-        None
-    } else {
-        Some(&*msg)
-    }
+    unsafe { if msg.is_null() { None } else { Some(&*msg) } }
 }
 
 /// Returns the number of messages found by `tgm_scan`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_scan_count(result: *const TgmScanResult) -> usize {
     unsafe { as_scan(result).map(|r| r.entries.len()).unwrap_or(0) }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_scan_entry(result: *const TgmScanResult, index: usize) -> TgmScanEntry {
     let fallback = TgmScanEntry {
         offset: usize::MAX,
@@ -991,7 +993,7 @@ pub extern "C" fn tgm_scan_entry(result: *const TgmScanResult, index: usize) -> 
 }
 
 /// Free a scan result handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_scan_free(result: *mut TgmScanResult) {
     if !result.is_null() {
         unsafe {
@@ -1005,7 +1007,7 @@ pub extern "C" fn tgm_scan_free(result: *mut TgmScanResult) {
 // ---------------------------------------------------------------------------
 
 /// Returns the wire format version from a decoded message.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_message_version(msg: *const TgmMessage) -> u64 {
     unsafe {
         as_msg(msg)
@@ -1017,20 +1019,20 @@ pub extern "C" fn tgm_message_version(msg: *const TgmMessage) -> u64 {
 /// Returns the number of decoded objects in this message handle.
 /// For `tgm_decode` this equals the total object count; for
 /// `tgm_decode_object` this is always 1.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_message_num_objects(msg: *const TgmMessage) -> usize {
     unsafe { as_msg(msg).map(|m| m.objects.len()).unwrap_or(0) }
 }
 
 /// Returns the number of decoded payload buffers.
 /// Equivalent to `tgm_message_num_objects` — kept for ABI compatibility.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_message_num_decoded(msg: *const TgmMessage) -> usize {
     unsafe { as_msg(msg).map(|m| m.objects.len()).unwrap_or(0) }
 }
 
 /// Returns the number of dimensions for object at index.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_object_ndim(msg: *const TgmMessage, index: usize) -> u64 {
     unsafe {
         as_msg(msg)
@@ -1042,7 +1044,7 @@ pub extern "C" fn tgm_object_ndim(msg: *const TgmMessage, index: usize) -> u64 {
 
 /// Returns a pointer to the shape array. Length is `tgm_object_ndim()`.
 /// The pointer is valid until the message is freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_object_shape(msg: *const TgmMessage, index: usize) -> *const u64 {
     unsafe {
         as_msg(msg)
@@ -1053,7 +1055,7 @@ pub extern "C" fn tgm_object_shape(msg: *const TgmMessage, index: usize) -> *con
 }
 
 /// Returns a pointer to the strides array. Length is `tgm_object_ndim()`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_object_strides(msg: *const TgmMessage, index: usize) -> *const u64 {
     unsafe {
         as_msg(msg)
@@ -1065,7 +1067,7 @@ pub extern "C" fn tgm_object_strides(msg: *const TgmMessage, index: usize) -> *c
 
 /// Returns the dtype as a null-terminated string (e.g. "float32").
 /// The pointer is valid until the message is freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_object_dtype(msg: *const TgmMessage, index: usize) -> *const c_char {
     unsafe {
         as_msg(msg)
@@ -1079,7 +1081,7 @@ pub extern "C" fn tgm_object_dtype(msg: *const TgmMessage, index: usize) -> *con
 /// `decoded_index` is the index into the decoded objects array (0 for the
 /// first decoded object, regardless of the original object index).
 /// `out_len` receives the byte length.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_object_data(
     msg: *const TgmMessage,
     decoded_index: usize,
@@ -1105,7 +1107,7 @@ pub extern "C" fn tgm_object_data(
 
 /// Returns the encoding string for a data object descriptor (e.g. "none", "simple_packing").
 /// The pointer is valid until the message is freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_payload_encoding(msg: *const TgmMessage, index: usize) -> *const c_char {
     unsafe {
         as_msg(msg)
@@ -1116,7 +1118,7 @@ pub extern "C" fn tgm_payload_encoding(msg: *const TgmMessage, index: usize) -> 
 }
 
 /// Returns 1 if the object descriptor has a hash, 0 otherwise.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_payload_has_hash(msg: *const TgmMessage, index: usize) -> i32 {
     unsafe {
         as_msg(msg)
@@ -1128,7 +1130,7 @@ pub extern "C" fn tgm_payload_has_hash(msg: *const TgmMessage, index: usize) -> 
 
 /// Extract a metadata handle from a decoded message.
 /// The metadata handle is independent — free it separately with `tgm_metadata_free`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_message_metadata(
     msg: *const TgmMessage,
     out: *mut *mut TgmMetadata,
@@ -1149,7 +1151,7 @@ pub extern "C" fn tgm_message_metadata(
 }
 
 /// Returns the object type string (e.g. "ndarray"). Valid until message freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_object_type(msg: *const TgmMessage, index: usize) -> *const c_char {
     unsafe {
         as_msg(msg)
@@ -1160,7 +1162,7 @@ pub extern "C" fn tgm_object_type(msg: *const TgmMessage, index: usize) -> *cons
 }
 
 /// Returns the byte order string ("big" or "little"). Valid until message freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_object_byte_order(msg: *const TgmMessage, index: usize) -> *const c_char {
     unsafe {
         as_msg(msg)
@@ -1171,7 +1173,7 @@ pub extern "C" fn tgm_object_byte_order(msg: *const TgmMessage, index: usize) ->
 }
 
 /// Returns the filter string (e.g. "none", "shuffle"). Valid until message freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_object_filter(msg: *const TgmMessage, index: usize) -> *const c_char {
     unsafe {
         as_msg(msg)
@@ -1182,7 +1184,7 @@ pub extern "C" fn tgm_object_filter(msg: *const TgmMessage, index: usize) -> *co
 }
 
 /// Returns the compression string (e.g. "none", "zstd"). Valid until message freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_object_compression(msg: *const TgmMessage, index: usize) -> *const c_char {
     unsafe {
         as_msg(msg)
@@ -1193,7 +1195,7 @@ pub extern "C" fn tgm_object_compression(msg: *const TgmMessage, index: usize) -
 }
 
 /// Returns the hash type string ("xxh3") or NULL if no hash. Valid until message freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_object_hash_type(msg: *const TgmMessage, index: usize) -> *const c_char {
     unsafe {
         as_msg(msg)
@@ -1205,7 +1207,7 @@ pub extern "C" fn tgm_object_hash_type(msg: *const TgmMessage, index: usize) -> 
 }
 
 /// Returns the hash value hex string or NULL if no hash. Valid until message freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_object_hash_value(msg: *const TgmMessage, index: usize) -> *const c_char {
     unsafe {
         as_msg(msg)
@@ -1217,7 +1219,7 @@ pub extern "C" fn tgm_object_hash_value(msg: *const TgmMessage, index: usize) ->
 }
 
 /// Free a decoded message handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_message_free(msg: *mut TgmMessage) {
     if !msg.is_null() {
         unsafe {
@@ -1231,7 +1233,7 @@ pub extern "C" fn tgm_message_free(msg: *mut TgmMessage) {
 // ---------------------------------------------------------------------------
 
 /// Returns the wire format version from metadata.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_version(meta: *const TgmMetadata) -> u64 {
     if meta.is_null() {
         return 0;
@@ -1242,7 +1244,7 @@ pub extern "C" fn tgm_metadata_version(meta: *const TgmMetadata) -> u64 {
 /// Returns the number of objects described in the global metadata.
 ///
 /// Returns the length of the `base` array, which has one entry per data object.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_num_objects(meta: *const TgmMetadata) -> usize {
     if meta.is_null() {
         return 0;
@@ -1253,7 +1255,7 @@ pub extern "C" fn tgm_metadata_num_objects(meta: *const TgmMetadata) -> usize {
 /// Look up a string value by dot-notation key (e.g. "mars.class").
 /// Returns NULL if the key is not found or is not a string.
 /// The pointer is valid until the metadata handle is freed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_get_string(
     meta: *const TgmMetadata,
     key: *const c_char,
@@ -1284,7 +1286,7 @@ pub extern "C" fn tgm_metadata_get_string(
 
 /// Look up an integer value by dot-notation key.
 /// Returns `default_val` if the key is not found or is not an integer.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_get_int(
     meta: *const TgmMetadata,
     key: *const c_char,
@@ -1304,7 +1306,7 @@ pub extern "C" fn tgm_metadata_get_int(
 }
 
 /// Look up a float value by dot-notation key.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_get_float(
     meta: *const TgmMetadata,
     key: *const c_char,
@@ -1324,7 +1326,7 @@ pub extern "C" fn tgm_metadata_get_float(
 }
 
 /// Free a metadata handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_free(meta: *mut TgmMetadata) {
     if !meta.is_null() {
         unsafe {
@@ -1338,7 +1340,7 @@ pub extern "C" fn tgm_metadata_free(meta: *mut TgmMetadata) {
 // ---------------------------------------------------------------------------
 
 /// Open an existing Tensogram file for reading.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_file_open(path: *const c_char, out: *mut *mut TgmFile) -> TgmError {
     if path.is_null() || out.is_null() {
         set_last_error("null argument");
@@ -1370,7 +1372,7 @@ pub extern "C" fn tgm_file_open(path: *const c_char, out: *mut *mut TgmFile) -> 
 }
 
 /// Create a new Tensogram file for writing.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_file_create(path: *const c_char, out: *mut *mut TgmFile) -> TgmError {
     if path.is_null() || out.is_null() {
         set_last_error("null argument");
@@ -1402,7 +1404,7 @@ pub extern "C" fn tgm_file_create(path: *const c_char, out: *mut *mut TgmFile) -
 }
 
 /// Count messages in the file (may trigger lazy scan).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_file_message_count(file: *mut TgmFile, out_count: *mut usize) -> TgmError {
     if file.is_null() || out_count.is_null() {
         set_last_error("null argument");
@@ -1426,7 +1428,7 @@ pub extern "C" fn tgm_file_message_count(file: *mut TgmFile, out_count: *mut usi
 
 /// Decode message at `index` from the file.
 /// On success fills `out` with a `TgmMessage` handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_file_decode_message(
     file: *mut TgmFile,
     index: usize,
@@ -1477,7 +1479,7 @@ pub extern "C" fn tgm_file_decode_message(
 
 /// Read raw message bytes at `index`.
 /// On success fills `out` with a `TgmBytes` buffer.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_file_read_message(
     file: *mut TgmFile,
     index: usize,
@@ -1512,7 +1514,7 @@ pub extern "C" fn tgm_file_read_message(
 }
 
 /// Append raw message bytes to the file.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_file_append_raw(
     file: *mut TgmFile,
     buf: *const u8,
@@ -1555,7 +1557,7 @@ pub extern "C" fn tgm_file_append_raw(
 
 /// Returns the file path as a null-terminated string.
 /// The pointer is valid until the file handle is closed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_file_path(file: *const TgmFile) -> *const c_char {
     if file.is_null() {
         return ptr::null();
@@ -1565,7 +1567,7 @@ pub extern "C" fn tgm_file_path(file: *const TgmFile) -> *const c_char {
 
 /// Encode and append a message to the file.
 /// Same JSON schema as `tgm_encode` for `metadata_json`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_file_append(
     file: *mut TgmFile,
     metadata_json: *const c_char,
@@ -1623,7 +1625,7 @@ pub extern "C" fn tgm_file_append(
 }
 
 /// Close a file handle and release resources.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_file_close(file: *mut TgmFile) {
     if !file.is_null() {
         unsafe {
@@ -1773,7 +1775,7 @@ fn lookup_float_key(global_metadata: &GlobalMetadata, key: &str) -> Option<f64> 
 ///
 /// Returns TgmError::Ok on success, filling the out-params.
 /// Returns Encoding error if data contains NaN.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_simple_packing_compute_params(
     values: *const f64,
     num_values: usize,
@@ -1825,7 +1827,7 @@ pub struct TgmBufferIter {
 ///
 /// Scans `buf` once and stores message boundaries. The buffer must remain
 /// valid and unmodified until `tgm_buffer_iter_free` is called.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_buffer_iter_create(
     buf: *const u8,
     buf_len: usize,
@@ -1849,7 +1851,7 @@ pub extern "C" fn tgm_buffer_iter_create(
 }
 
 /// Return the total number of messages in the buffer iterator.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_buffer_iter_count(iter: *const TgmBufferIter) -> usize {
     if iter.is_null() {
         return 0;
@@ -1862,7 +1864,7 @@ pub extern "C" fn tgm_buffer_iter_count(iter: *const TgmBufferIter) -> usize {
 ///
 /// Returns `TgmError::Ok` if a message is available, `TgmError::EndOfIter`
 /// when iteration is exhausted.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_buffer_iter_next(
     iter: *mut TgmBufferIter,
     out_buf: *mut *const u8,
@@ -1886,7 +1888,7 @@ pub extern "C" fn tgm_buffer_iter_next(
 }
 
 /// Free a buffer iterator handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_buffer_iter_free(iter: *mut TgmBufferIter) {
     if !iter.is_null() {
         unsafe {
@@ -1904,7 +1906,7 @@ pub struct TgmFileIter {
 ///
 /// Scans the file to locate message boundaries. The file handle remains
 /// usable after this call.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_file_iter_create(file: *mut TgmFile, out: *mut *mut TgmFileIter) -> TgmError {
     if file.is_null() || out.is_null() {
         set_last_error("null argument");
@@ -1932,7 +1934,7 @@ pub extern "C" fn tgm_file_iter_create(file: *mut TgmFile, out: *mut *mut TgmFil
 ///
 /// Returns `TgmError::Ok` when a message is available, `TgmError::EndOfIter`
 /// when iteration is exhausted.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_file_iter_next(iter: *mut TgmFileIter, out: *mut TgmBytes) -> TgmError {
     if iter.is_null() || out.is_null() {
         set_last_error("null argument");
@@ -1962,7 +1964,7 @@ pub extern "C" fn tgm_file_iter_next(iter: *mut TgmFileIter, out: *mut TgmBytes)
 }
 
 /// Free a file iterator handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_file_iter_free(iter: *mut TgmFileIter) {
     if !iter.is_null() {
         unsafe {
@@ -1984,7 +1986,7 @@ pub struct TgmObjectIter {
 /// Parses metadata once, then decodes each object on demand when
 /// `tgm_object_iter_next` is called. The global metadata from the
 /// original message is preserved in each yielded `TgmMessage`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_object_iter_create(
     buf: *const u8,
     buf_len: usize,
@@ -2031,7 +2033,7 @@ pub extern "C" fn tgm_object_iter_create(
 /// Returns `TgmError::Ok` when an object is available, `TgmError::EndOfIter`
 /// when iteration is exhausted. Free each yielded `TgmMessage` with
 /// `tgm_message_free`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_object_iter_next(
     iter: *mut TgmObjectIter,
     out: *mut *mut TgmMessage,
@@ -2072,7 +2074,7 @@ pub extern "C" fn tgm_object_iter_next(
 }
 
 /// Free an object iterator handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_object_iter_free(iter: *mut TgmObjectIter) {
     if !iter.is_null() {
         unsafe {
@@ -2090,7 +2092,7 @@ pub extern "C" fn tgm_object_iter_free(iter: *mut TgmObjectIter) {
 ///
 /// Accepts a raw integer and matches by value so that invalid discriminants
 /// from C callers do not trigger undefined behaviour in Rust.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_error_string(err: TgmError) -> *const c_char {
     // Convert to integer for safe matching — C callers may pass invalid values.
     let code = err as i32;
@@ -5288,7 +5290,7 @@ mod tests {
 /// Returns `TGM_ERROR_OK` on success, fills `out` with a `tgm_bytes_t`
 /// containing the hex-encoded hash string (NOT null-terminated).
 /// Free with `tgm_bytes_free`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_compute_hash(
     data: *const u8,
     data_len: usize,
@@ -5402,7 +5404,7 @@ fn parse_streaming_metadata_json(json_str: &str) -> Result<GlobalMetadata, Strin
 /// On success fills `out` with a `TgmStreamingEncoder` handle.
 /// Free with `tgm_streaming_encoder_free` or finalize with
 /// `tgm_streaming_encoder_finish`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_streaming_encoder_create(
     path: *const c_char,
     metadata_json: *const c_char,
@@ -5496,7 +5498,7 @@ pub extern "C" fn tgm_streaming_encoder_create(
 ///
 /// Must be followed by exactly one `tgm_streaming_encoder_write` call
 /// before another preceder or `tgm_streaming_encoder_finish`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_streaming_encoder_write_preceder(
     enc: *mut TgmStreamingEncoder,
     metadata_json: *const c_char,
@@ -5550,7 +5552,7 @@ pub extern "C" fn tgm_streaming_encoder_write_preceder(
 /// `descriptor_json` is a JSON object with the descriptor fields
 /// (type, ndim, shape, strides, dtype, byte_order, encoding, filter,
 /// compression, etc.).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_streaming_encoder_write(
     enc: *mut TgmStreamingEncoder,
     descriptor_json: *const c_char,
@@ -5615,7 +5617,7 @@ pub extern "C" fn tgm_streaming_encoder_write(
 ///
 /// Any `hash` field embedded in the descriptor JSON is ignored — the
 /// library always recomputes the hash from the caller's bytes.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_streaming_encoder_write_pre_encoded(
     enc: *mut TgmStreamingEncoder,
     descriptor_json: *const c_char,
@@ -5662,7 +5664,7 @@ pub extern "C" fn tgm_streaming_encoder_write_pre_encoded(
 }
 
 /// Return the number of objects written so far.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_streaming_encoder_count(enc: *const TgmStreamingEncoder) -> usize {
     if enc.is_null() {
         return 0;
@@ -5674,7 +5676,7 @@ pub extern "C" fn tgm_streaming_encoder_count(enc: *const TgmStreamingEncoder) -
 ///
 /// After calling this, the handle is still valid but empty — the caller
 /// must still call `tgm_streaming_encoder_free` to release it.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_streaming_encoder_finish(enc: *mut TgmStreamingEncoder) -> TgmError {
     if enc.is_null() {
         set_last_error("null argument");
@@ -5702,7 +5704,7 @@ pub extern "C" fn tgm_streaming_encoder_finish(enc: *mut TgmStreamingEncoder) ->
 }
 
 /// Free a streaming encoder without finalizing (abandons the output).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_streaming_encoder_free(enc: *mut TgmStreamingEncoder) {
     if !enc.is_null() {
         unsafe {
@@ -5768,7 +5770,7 @@ fn parse_validate_options(
 /// the issues are in the JSON report). Returns `TGM_ERROR_INVALID_ARG`
 /// for argument validation failures (null pointers, invalid level string),
 /// or `TGM_ERROR_ENCODING` if JSON serialization of the report fails.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_validate(
     buf: *const u8,
     buf_len: usize,
@@ -5834,7 +5836,7 @@ pub extern "C" fn tgm_validate(
 /// Returns `TGM_ERROR_IO` if the file cannot be opened or read.
 /// Returns `TGM_ERROR_INVALID_ARG` for null pointers or invalid level.
 /// Returns `TGM_ERROR_ENCODING` if JSON serialization of the report fails.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn tgm_validate_file(
     path: *const c_char,
     level: *const c_char,

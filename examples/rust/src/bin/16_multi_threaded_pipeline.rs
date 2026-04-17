@@ -25,8 +25,8 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use tensogram_core::{
-    decode, encode, framing, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
-    GlobalMetadata,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, decode,
+    encode, framing,
 };
 
 fn encoded_payloads(msg: &[u8]) -> Vec<Vec<u8>> {

@@ -9,9 +9,9 @@
 //! Level 1: Structure validation — raw byte walking.
 
 use crate::wire::{
-    self, DataObjectFlags, FrameHeader, FrameType, MessageFlags, Postamble, Preamble,
-    DATA_OBJECT_FOOTER_SIZE, FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC, MAGIC, POSTAMBLE_SIZE,
-    PREAMBLE_SIZE,
+    self, DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC,
+    FrameHeader, FrameType, MAGIC, MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE, Postamble,
+    Preamble,
 };
 
 use super::types::*;

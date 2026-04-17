@@ -441,7 +441,8 @@ pub fn encode_pipeline(
     };
 
     // Step 3: Compression
-    match build_compressor(&config.compression, config)? {
+    let compressor = build_compressor(&config.compression, config)?;
+    match compressor {
         None => Ok(PipelineResult {
             encoded_bytes: filtered.into_owned(),
             block_offsets: None,
@@ -483,7 +484,8 @@ pub fn encode_pipeline_f64(
         ),
     };
 
-    match build_compressor(&config.compression, config)? {
+    let compressor = build_compressor(&config.compression, config)?;
+    match compressor {
         None => Ok(PipelineResult {
             encoded_bytes: filtered.into_owned(),
             block_offsets: None,

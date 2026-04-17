@@ -167,74 +167,73 @@ pub(crate) fn validate_integrity(
         }
 
         // Decompression check (requires parsed descriptor, skipped in checksum-only mode)
-        if !checksum_only {
-            if let Some(ref desc) = obj.descriptor {
-                if desc.compression != "none" || desc.encoding != "none" || desc.filter != "none" {
-                    let shape_product = desc
-                        .shape
-                        .iter()
-                        .try_fold(1u64, |acc, &x| acc.checked_mul(x));
-                    let num_elements = match shape_product {
-                        Some(product) => match usize::try_from(product) {
-                            Ok(n) => Some(n),
-                            Err(_) => {
-                                obj.decode_state = DecodeState::DecodeFailed;
-                                issues.push(err(
-                                    IssueCode::PipelineConfigFailed,
-                                    ValidationLevel::Integrity,
-                                    Some(i),
-                                    Some(obj.frame_offset),
-                                    format!("shape product {} does not fit in usize", product),
-                                ));
-                                None
-                            }
-                        },
-                        None => {
-                            // Shape overflow already reported at Level 2
-                            obj.decode_state = DecodeState::DecodeFailed;
-                            None
-                        }
-                    };
-                    if let Some(num_elements) = num_elements {
-                        match build_pipeline_config(desc, num_elements, desc.dtype) {
-                            Ok(config) => {
-                                match tensogram_encodings::pipeline::decode_pipeline(
-                                    obj.payload,
-                                    &config,
-                                    false,
-                                ) {
-                                    Ok(decoded) => {
-                                        if cache_decoded {
-                                            obj.decode_state = DecodeState::Decoded(decoded);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        obj.decode_state = DecodeState::DecodeFailed;
-                                        issues.push(err(
-                                            IssueCode::DecodePipelineFailed,
-                                            ValidationLevel::Integrity,
-                                            Some(i),
-                                            Some(obj.frame_offset),
-                                            format!("decode pipeline failed: {e}"),
-                                        ));
-                                    }
+        if !checksum_only
+            && let Some(ref desc) = obj.descriptor
+            && (desc.compression != "none" || desc.encoding != "none" || desc.filter != "none")
+        {
+            let shape_product = desc
+                .shape
+                .iter()
+                .try_fold(1u64, |acc, &x| acc.checked_mul(x));
+            let num_elements = match shape_product {
+                Some(product) => match usize::try_from(product) {
+                    Ok(n) => Some(n),
+                    Err(_) => {
+                        obj.decode_state = DecodeState::DecodeFailed;
+                        issues.push(err(
+                            IssueCode::PipelineConfigFailed,
+                            ValidationLevel::Integrity,
+                            Some(i),
+                            Some(obj.frame_offset),
+                            format!("shape product {} does not fit in usize", product),
+                        ));
+                        None
+                    }
+                },
+                None => {
+                    // Shape overflow already reported at Level 2
+                    obj.decode_state = DecodeState::DecodeFailed;
+                    None
+                }
+            };
+            if let Some(num_elements) = num_elements {
+                match build_pipeline_config(desc, num_elements, desc.dtype) {
+                    Ok(config) => {
+                        match tensogram_encodings::pipeline::decode_pipeline(
+                            obj.payload,
+                            &config,
+                            false,
+                        ) {
+                            Ok(decoded) => {
+                                if cache_decoded {
+                                    obj.decode_state = DecodeState::Decoded(decoded);
                                 }
                             }
                             Err(e) => {
                                 obj.decode_state = DecodeState::DecodeFailed;
                                 issues.push(err(
-                                    IssueCode::PipelineConfigFailed,
+                                    IssueCode::DecodePipelineFailed,
                                     ValidationLevel::Integrity,
                                     Some(i),
                                     Some(obj.frame_offset),
-                                    format!("cannot build pipeline config: {e}"),
+                                    format!("decode pipeline failed: {e}"),
                                 ));
                             }
                         }
                     }
+                    Err(e) => {
+                        obj.decode_state = DecodeState::DecodeFailed;
+                        issues.push(err(
+                            IssueCode::PipelineConfigFailed,
+                            ValidationLevel::Integrity,
+                            Some(i),
+                            Some(obj.frame_offset),
+                            format!("cannot build pipeline config: {e}"),
+                        ));
+                    }
                 }
             }
-        } // if !checksum_only
+        }
     }
 
     any_checked && all_verified

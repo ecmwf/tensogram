@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use tensogram_netcdf::{convert_netcdf_file, ConvertOptions, DataPipeline, SplitBy};
+use tensogram_netcdf::{ConvertOptions, DataPipeline, SplitBy, convert_netcdf_file};
 
 use crate::encoding_args::PipelineArgs;
 
@@ -33,7 +33,7 @@ pub fn run(
             return Err(format!(
                 "unknown --split-by value '{other}'; expected file, variable, or record"
             )
-            .into())
+            .into());
         }
     };
 

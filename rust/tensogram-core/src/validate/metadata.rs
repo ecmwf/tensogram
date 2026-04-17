@@ -27,16 +27,14 @@ pub(crate) fn validate_metadata(
     for (ft, payload) in &walk.meta_frames {
         match ft {
             FrameType::HeaderMetadata | FrameType::FooterMetadata => {
-                if check_canonical {
-                    if let Err(e) = metadata::verify_canonical_cbor(payload) {
-                        issues.push(warn(
-                            IssueCode::MetadataCborNonCanonical,
-                            ValidationLevel::Metadata,
-                            None,
-                            None,
-                            format!("metadata CBOR is not canonical: {e}"),
-                        ));
-                    }
+                if check_canonical && let Err(e) = metadata::verify_canonical_cbor(payload) {
+                    issues.push(warn(
+                        IssueCode::MetadataCborNonCanonical,
+                        ValidationLevel::Metadata,
+                        None,
+                        None,
+                        format!("metadata CBOR is not canonical: {e}"),
+                    ));
                 }
                 match metadata::cbor_to_global_metadata(payload) {
                     Ok(meta) => {
@@ -154,16 +152,14 @@ pub(crate) fn validate_metadata(
     // Validate preceder metadata frames
     for (ft, payload) in &walk.meta_frames {
         if *ft == FrameType::PrecederMetadata {
-            if check_canonical {
-                if let Err(e) = metadata::verify_canonical_cbor(payload) {
-                    issues.push(warn(
-                        IssueCode::PrecederCborNonCanonical,
-                        ValidationLevel::Metadata,
-                        None,
-                        None,
-                        format!("preceder metadata CBOR is not canonical: {e}"),
-                    ));
-                }
+            if check_canonical && let Err(e) = metadata::verify_canonical_cbor(payload) {
+                issues.push(warn(
+                    IssueCode::PrecederCborNonCanonical,
+                    ValidationLevel::Metadata,
+                    None,
+                    None,
+                    format!("preceder metadata CBOR is not canonical: {e}"),
+                ));
             }
             match metadata::cbor_to_global_metadata(payload) {
                 Ok(prec) => {
@@ -200,33 +196,31 @@ pub(crate) fn validate_metadata(
 
     // base.len() vs object count
     let obj_count = objects.len();
-    if let Some(base_len) = meta_base_len {
-        if base_len > obj_count {
-            issues.push(err(
-                IssueCode::BaseCountExceedsObjects,
-                ValidationLevel::Metadata,
-                None,
-                None,
-                format!(
-                    "metadata base has {} entries but message has {} data objects",
-                    base_len, obj_count
-                ),
-            ));
-        }
+    if let Some(base_len) = meta_base_len
+        && base_len > obj_count
+    {
+        issues.push(err(
+            IssueCode::BaseCountExceedsObjects,
+            ValidationLevel::Metadata,
+            None,
+            None,
+            format!(
+                "metadata base has {} entries but message has {} data objects",
+                base_len, obj_count
+            ),
+        ));
     }
 
     // Per-object descriptor validation — parse and cache in ObjectContext
     for (i, obj) in objects.iter_mut().enumerate() {
-        if check_canonical {
-            if let Err(e) = metadata::verify_canonical_cbor(obj.cbor_bytes) {
-                issues.push(warn(
-                    IssueCode::DescriptorCborNonCanonical,
-                    ValidationLevel::Metadata,
-                    Some(i),
-                    None,
-                    format!("descriptor CBOR is not canonical: {e}"),
-                ));
-            }
+        if check_canonical && let Err(e) = metadata::verify_canonical_cbor(obj.cbor_bytes) {
+            issues.push(warn(
+                IssueCode::DescriptorCborNonCanonical,
+                ValidationLevel::Metadata,
+                Some(i),
+                None,
+                format!("descriptor CBOR is not canonical: {e}"),
+            ));
         }
 
         let desc = match metadata::cbor_to_object_descriptor(obj.cbor_bytes) {

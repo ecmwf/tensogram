@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use tensogram_core::{
-    validate_file, FileIssue, FileValidationReport, IssueSeverity, ValidateOptions,
-    ValidationReport,
+    FileIssue, FileValidationReport, IssueSeverity, ValidateOptions, ValidationReport,
+    validate_file,
 };
 
 /// Custom error to signal validation failure (exit code 1) without process::exit.

@@ -14,10 +14,10 @@ use eccodes::{CodesFile, FallibleIterator, KeyRead, ProductKind};
 
 use tensogram_core::pipeline::apply_pipeline;
 use tensogram_core::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
-use tensogram_core::{encode, DataPipeline, Dtype, EncodeOptions};
+use tensogram_core::{DataPipeline, Dtype, EncodeOptions, encode};
 
 use crate::error::GribError;
-use crate::metadata::{extract_all_namespace_keys, extract_mars_keys, GribKeySet};
+use crate::metadata::{GribKeySet, extract_all_namespace_keys, extract_mars_keys};
 
 /// Options for GRIB → Tensogram conversion.
 #[derive(Debug, Clone)]
@@ -104,16 +104,18 @@ pub fn convert_grib_file(path: &Path, options: &ConvertOptions) -> Result<Vec<Ve
 
         let ni: i64 = msg.read_key("Ni").unwrap_or(0);
         let nj: i64 = msg.read_key("Nj").unwrap_or(0);
-        let shape = if ni > 0 && nj > 0 {
-            let nj = u64::try_from(nj)
-                .map_err(|_| GribError::InvalidData("Nj out of u64 range".into()))?;
-            let ni = u64::try_from(ni)
-                .map_err(|_| GribError::InvalidData("Ni out of u64 range".into()))?;
-            vec![nj, ni] // row-major: [lat, lon]
-        } else {
-            vec![u64::try_from(values.len())
-                .map_err(|_| GribError::InvalidData("numberOfPoints out of u64 range".into()))?]
-        };
+        let shape =
+            if ni > 0 && nj > 0 {
+                let nj = u64::try_from(nj)
+                    .map_err(|_| GribError::InvalidData("Nj out of u64 range".into()))?;
+                let ni = u64::try_from(ni)
+                    .map_err(|_| GribError::InvalidData("Ni out of u64 range".into()))?;
+                vec![nj, ni] // row-major: [lat, lon]
+            } else {
+                vec![u64::try_from(values.len()).map_err(|_| {
+                    GribError::InvalidData("numberOfPoints out of u64 range".into())
+                })?]
+            };
 
         grib_messages.push(GribExtracted {
             keys,
@@ -152,10 +154,10 @@ fn convert_one_to_one(
         if !msg.keys.keys.is_empty() {
             entry.insert("mars".to_string(), btree_to_cbor_map(&msg.keys.keys));
         }
-        if let Some(grib) = &msg.grib_keys {
-            if !grib.is_empty() {
-                entry.insert("grib".to_string(), nested_btree_to_cbor_map(grib));
-            }
+        if let Some(grib) = &msg.grib_keys
+            && !grib.is_empty()
+        {
+            entry.insert("grib".to_string(), nested_btree_to_cbor_map(grib));
         }
 
         let global_meta = GlobalMetadata {
@@ -191,10 +193,10 @@ fn convert_merge_all(
             if !msg.keys.keys.is_empty() {
                 entry.insert("mars".to_string(), btree_to_cbor_map(&msg.keys.keys));
             }
-            if let Some(grib) = &msg.grib_keys {
-                if !grib.is_empty() {
-                    entry.insert("grib".to_string(), nested_btree_to_cbor_map(grib));
-                }
+            if let Some(grib) = &msg.grib_keys
+                && !grib.is_empty()
+            {
+                entry.insert("grib".to_string(), nested_btree_to_cbor_map(grib));
             }
             entry
         })

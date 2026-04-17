@@ -20,8 +20,8 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode, messages, objects, objects_metadata, ByteOrder, DataObjectDescriptor, DecodeOptions,
-    Dtype, EncodeOptions, GlobalMetadata, TensogramFile,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
+    TensogramFile, decode, messages, objects, objects_metadata,
 };
 
 fn make_message(param: &str, fill: u8) -> (GlobalMetadata, DataObjectDescriptor, Vec<u8>) {
@@ -165,10 +165,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn get_text<'a>(map: &'a Value, key: &str) -> &'a str {
     if let Value::Map(entries) = map {
         for (k, v) in entries {
-            if matches!(k, Value::Text(s) if s == key) {
-                if let Value::Text(t) = v {
-                    return t;
-                }
+            if matches!(k, Value::Text(s) if s == key)
+                && let Value::Text(t) = v
+            {
+                return t;
             }
         }
     }

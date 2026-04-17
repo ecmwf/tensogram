@@ -19,8 +19,8 @@
 use std::collections::BTreeMap;
 
 use tensogram_core::{
-    decode, encode, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
-    GlobalMetadata, HashAlgorithm, TensogramError,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
+    HashAlgorithm, TensogramError, decode, encode,
 };
 
 fn make_descriptor() -> DataObjectDescriptor {
