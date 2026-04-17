@@ -3,6 +3,10 @@ name: Publish tensogram to PyPI
 on:
   workflow_dispatch:
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   build-wheels-linux:
     name: Build wheels (Linux x86_64)
@@ -59,7 +63,13 @@ jobs:
           path: python/bindings/dist/
 
   build-wheels-freethreaded:
-    name: Build free-threaded wheel (Linux x86_64)
+    name: Build free-threaded wheel (Linux ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { python: "cpython-3.13+freethreaded", artifact: "cp313t" }
+          - { python: "cpython-3.14+freethreaded", artifact: "cp314t" }
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -72,8 +82,8 @@ jobs:
 
       - name: Install free-threaded Python and maturin
         run: |
-          uv python install cpython-3.13+freethreaded
-          PYTHON=$(uv python find cpython-3.13+freethreaded)
+          uv python install ${{ matrix.python }}
+          PYTHON=$(uv python find ${{ matrix.python }})
           echo "FREETHREADED_PYTHON=$PYTHON" >> "$GITHUB_ENV"
           pip install maturin
 
@@ -83,7 +93,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-freethreaded
+          name: wheels-freethreaded-${{ matrix.artifact }}
           path: python/bindings/dist/
 
   upload:
@@ -91,17 +101,17 @@ jobs:
     needs: [build-wheels-linux, build-wheels-macos, build-wheels-freethreaded]
     runs-on: ubuntu-latest
     environment: pypi
+    permissions:
+      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist/
           merge-multiple: true
 
-      - name: Validate and upload to PyPI
-        run: |
-          pip install twine
-          twine check --strict dist/* || echo "::warning::twine check reported issues (likely PEP 639 license-expression — safe to proceed)"
-          twine upload dist/*
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+      - name: List wheels
+        run: ls -la dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
