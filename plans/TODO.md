@@ -138,11 +138,14 @@ For speculative ideas, see `IDEAS.md`.
     - support integration with Python array interface as Earthkit data does
     - add this code to the tensogram-xarray module, such that the earthkit extension can use to export to xarray
 - [ ] **torch**
-    - convenience methods for tensogram as/from torch, to simplify the numpy intermediary
+    - convenience methods for tensogram as/from torch, to avoid the numpy intermediary. Wilder ideas and optimizations are additionally given in IDEAS.md
 - [ ] **nvidia stack**
     - cuFile or similar interface
 - [ ] **arrow/parquet**
     - analyze where we can integrate with arrow/parquet stack and implement: file reading, streaming data conversion (in both directions -- offering tensogram via arrow streaming api, as well as converting arrow streams into tensogram messages)
+- [ ] **mlx**
+    - similarly to torch, conveninece methods for tensogram as/from mlx frame, to avoid the numpy intermediary
+
 
 ## Documentation
 

@@ -22,7 +22,6 @@ implement until promoted to `TODO.md`.
 ## Bridges
 
 - [ ] Tensogram as a storage backend for NetCDF
-- [ ] Tensogram-Arrow conversion
 
 ## Languages
 
@@ -44,7 +43,7 @@ implement until promoted to `TODO.md`.
     - also check compute-shader decoding (maybe encoding too) -- wonder how fast that would go vs threads
 
 - [ ] GPU direct loading
-    - check out the https://github.com/rapidsai/kvikio library -- possibly we want to utilize GDS/RDMA, for direct IO to GPU. There are 2-3x gains on a puny laptop when comparing kvikio to vanilla torch.load. We should be able to move tensogram messages to GPU avoiding the CPU (fully or partially, depending on HW capabilities) in a manner similar to kvikio, resulting in a cuFile/tensor
+    - check out the https://github.com/rapidsai/kvikio library -- possibly we want to utilize GDS/RDMA, for direct IO to GPU. There are 2-3x gains even on a puny laptop when comparing kvikio to vanilla torch.load, and reportedly much bigger ones on H100/A100 systems. We should be able to move tensogram messages to GPU avoiding the CPU (fully or partially, depending on HW capabilities) in a manner similar to kvikio, resulting in a cuFile/tensor
 
 - [ ] SIMD payload alignment: optional padding for 16 / 32 / 64-byte
   aligned payloads.
