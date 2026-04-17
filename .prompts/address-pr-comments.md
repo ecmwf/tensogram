@@ -14,7 +14,7 @@ First, fetch all comments in **unresolved** threads and reviews:
 ```bash
 gh api graphql -f query='
 {
-  repository(owner: "ecmwf", name: "forecast-in-a-box") {
+  repository(owner: "ecmwf", name: "tensogram") {
     pullRequest(number: PR_NUMBER) {
       reviewThreads(first: 50) {
         nodes {
