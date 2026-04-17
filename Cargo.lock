@@ -2163,6 +2163,7 @@ dependencies = [
  "eccodes-sys",
  "tensogram-core",
  "tensogram-encodings",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -2222,6 +2223,7 @@ dependencies = [
  "tensogram-szip",
  "thiserror",
  "tracing",
+ "xxhash-rust",
  "zfp-sys-cc",
  "zstd",
 ]

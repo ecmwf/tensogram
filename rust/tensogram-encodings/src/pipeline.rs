@@ -257,12 +257,36 @@ pub struct PipelineConfig {
     /// and the small-message threshold; direct pipeline callers may
     /// leave it at `0`.
     pub intra_codec_threads: u32,
+    /// Opt-in: compute xxh3-64 over the final encoded bytes inline with
+    /// encoding, exposing the digest via [`PipelineResult::hash`].
+    ///
+    /// - `false` (default) — the pipeline does no hashing; callers that
+    ///   need a hash must walk the output buffer themselves with
+    ///   `xxhash_rust::xxh3::xxh3_64`.
+    /// - `true` — the pipeline drives an `Xxh3Default` hasher in lockstep
+    ///   with the codec output, eliminating a second pass over the
+    ///   encoded buffer.  The digest is bit-identical to
+    ///   `xxhash_rust::xxh3::xxh3_64(&encoded_bytes)` by construction.
+    ///
+    /// Hashing always runs in the calling thread *after* any internal
+    /// codec parallelism has joined; it never participates in the
+    /// intra-codec thread budget.  For transparent codecs the hash is
+    /// byte-identical across `intra_codec_threads` values; for opaque
+    /// codecs the hash tracks the codec's output bytes (which may reorder
+    /// by worker-completion order).
+    pub compute_hash: bool,
 }
 
 pub struct PipelineResult {
     pub encoded_bytes: Vec<u8>,
     /// Block offsets produced by compressors that support random access (szip, blosc2).
     pub block_offsets: Option<Vec<u64>>,
+    /// xxh3-64 digest over `encoded_bytes`, produced inline with encoding
+    /// when [`PipelineConfig::compute_hash`] was `true`.  `None` otherwise.
+    ///
+    /// The digest is bit-identical to `xxhash_rust::xxh3::xxh3_64(&encoded_bytes)`
+    /// by construction (both use seed 0 and the default xxh3 secret).
+    pub hash: Option<u64>,
 }
 
 /// Build an szip compressor, dispatching between FFI and pure-Rust at runtime.
@@ -412,12 +436,68 @@ fn build_compressor(
     }
 }
 
-/// Full forward pipeline: encode → filter → compress
+/// Copy `src` into a freshly allocated `Vec<u8>` while updating `hasher` in
+/// lockstep — one pass over the data.
+///
+/// When `hasher` is `None` this is a plain `src.to_vec()`.  When `hasher` is
+/// `Some`, the function walks `src` in 64 KiB chunks: each chunk is first
+/// fed to the hasher (bringing the bytes into L1/L2) and then appended to
+/// the destination `Vec` (still cache-hot).  This avoids the second DRAM
+/// read that `src.to_vec()` followed by `xxh3_64(&dst)` would incur on
+/// buffers larger than L3.
+///
+/// The chunk size is a power-of-two that comfortably fits inside a typical
+/// L2 cache while amortising the per-chunk call overhead of
+/// `Xxh3Default::update`.
+#[inline]
+fn copy_and_hash(src: &[u8], hasher: Option<&mut xxhash_rust::xxh3::Xxh3Default>) -> Vec<u8> {
+    match hasher {
+        None => src.to_vec(),
+        Some(h) => {
+            const CHUNK: usize = 64 * 1024;
+            let mut dst = Vec::with_capacity(src.len());
+            let mut offset = 0;
+            while offset < src.len() {
+                let end = (offset + CHUNK).min(src.len());
+                let chunk = &src[offset..end];
+                h.update(chunk);
+                dst.extend_from_slice(chunk);
+                offset = end;
+            }
+            dst
+        }
+    }
+}
+
+/// Feed `bytes` to an optional hasher.  Used at each codec exit point in
+/// `encode_pipeline` — the codec just wrote those bytes, so they are
+/// maximally cache-hot; the hasher reads them from L2/L3 rather than DRAM.
+#[inline]
+fn update_hasher(bytes: &[u8], hasher: Option<&mut xxhash_rust::xxh3::Xxh3Default>) {
+    if let Some(h) = hasher {
+        h.update(bytes);
+    }
+}
+
+/// Full forward pipeline: encode → filter → compress.
+///
+/// When `config.compute_hash` is `true`, the xxh3-64 digest of the final
+/// encoded bytes is produced inline with the codec output (no second pass
+/// over the buffer) and returned via `PipelineResult.hash`.  The digest is
+/// bit-identical to what `xxhash_rust::xxh3::xxh3_64(&encoded_bytes)` would
+/// return, by construction — both use seed 0 and the default secret.
+///
+/// Hashing runs entirely in the calling thread *after* any intra-codec
+/// parallelism has joined.  The hasher is never shared across threads.
 #[tracing::instrument(skip(data, config), fields(data_len = data.len(), encoding = %config.encoding))]
 pub fn encode_pipeline(
     data: &[u8],
     config: &PipelineConfig,
 ) -> Result<PipelineResult, PipelineError> {
+    let mut hasher = config
+        .compute_hash
+        .then(xxhash_rust::xxh3::Xxh3Default::new);
+
     // Step 1: Encoding — Cow avoids cloning when encoding is None
     let encoded: Cow<'_, [u8]> = match &config.encoding {
         EncodingType::None => Cow::Borrowed(data),
@@ -442,31 +522,52 @@ pub fn encode_pipeline(
 
     // Step 3: Compression
     let compressor = build_compressor(&config.compression, config)?;
-    match compressor {
-        None => Ok(PipelineResult {
-            encoded_bytes: filtered.into_owned(),
-            block_offsets: None,
-        }),
+    let (encoded_bytes, block_offsets) = match compressor {
+        None => {
+            // No compression: if `filtered` is still borrowed from `data`
+            // (passthrough pipeline) we fuse the copy with hashing to
+            // avoid a second walk over the source.  Otherwise it is
+            // already owned and we just hash the Vec in place.
+            let owned = match filtered {
+                Cow::Borrowed(src) => copy_and_hash(src, hasher.as_mut()),
+                Cow::Owned(buf) => {
+                    update_hasher(&buf, hasher.as_mut());
+                    buf
+                }
+            };
+            (owned, None)
+        }
         Some(compressor) => {
             let CompressResult {
                 data: compressed,
                 block_offsets,
             } = compressor.compress(&filtered)?;
-            Ok(PipelineResult {
-                encoded_bytes: compressed,
-                block_offsets,
-            })
+            update_hasher(&compressed, hasher.as_mut());
+            (compressed, block_offsets)
         }
-    }
+    };
+
+    Ok(PipelineResult {
+        encoded_bytes,
+        block_offsets,
+        hash: hasher.map(|h| h.digest()),
+    })
 }
 
 /// Encode from f64 values directly, avoiding the bytes→f64 conversion overhead
 /// that `encode_pipeline` pays when the caller already has typed values.
+///
+/// Hash handling is identical to [`encode_pipeline`] — see that function's
+/// documentation for the `compute_hash` contract.
 #[tracing::instrument(skip(values, config), fields(num_values = values.len(), encoding = %config.encoding))]
 pub fn encode_pipeline_f64(
     values: &[f64],
     config: &PipelineConfig,
 ) -> Result<PipelineResult, PipelineError> {
+    let mut hasher = config
+        .compute_hash
+        .then(xxhash_rust::xxh3::Xxh3Default::new);
+
     let encoded: Cow<'_, [u8]> = match &config.encoding {
         EncodingType::None => Cow::Owned(f64_to_bytes(values, config.byte_order)),
         EncodingType::SimplePacking(params) => Cow::Owned(simple_packing::encode_with_threads(
@@ -485,22 +586,30 @@ pub fn encode_pipeline_f64(
     };
 
     let compressor = build_compressor(&config.compression, config)?;
-    match compressor {
-        None => Ok(PipelineResult {
-            encoded_bytes: filtered.into_owned(),
-            block_offsets: None,
-        }),
+    let (encoded_bytes, block_offsets) = match compressor {
+        None => {
+            // `encoded` is always owned in this function (both branches of
+            // the match above construct a Cow::Owned), so `into_owned` is
+            // a zero-cost unwrap.
+            let owned = filtered.into_owned();
+            update_hasher(&owned, hasher.as_mut());
+            (owned, None)
+        }
         Some(compressor) => {
             let CompressResult {
                 data: compressed,
                 block_offsets,
             } = compressor.compress(&filtered)?;
-            Ok(PipelineResult {
-                encoded_bytes: compressed,
-                block_offsets,
-            })
+            update_hasher(&compressed, hasher.as_mut());
+            (compressed, block_offsets)
         }
-    }
+    };
+
+    Ok(PipelineResult {
+        encoded_bytes,
+        block_offsets,
+        hash: hasher.map(|h| h.digest()),
+    })
 }
 
 /// Full reverse pipeline: decompress → unshuffle → decode → native byteswap.
@@ -716,6 +825,7 @@ mod tests {
             swap_unit_size: 8,
             compression_backend: CompressionBackend::default(),
             intra_codec_threads: 0,
+            compute_hash: false,
         };
         let result = encode_pipeline(&data, &config).unwrap();
         assert_eq!(result.encoded_bytes, data);
@@ -739,6 +849,7 @@ mod tests {
             swap_unit_size: 8,
             compression_backend: CompressionBackend::default(),
             intra_codec_threads: 0,
+            compute_hash: false,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -763,6 +874,7 @@ mod tests {
             swap_unit_size: 4,
             compression_backend: CompressionBackend::default(),
             intra_codec_threads: 0,
+            compute_hash: false,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -794,6 +906,7 @@ mod tests {
             swap_unit_size: 1,
             compression_backend: CompressionBackend::default(),
             intra_codec_threads: 0,
+            compute_hash: false,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -877,6 +990,7 @@ mod tests {
             swap_unit_size: 4,
             compression_backend: CompressionBackend::default(),
             intra_codec_threads: 0,
+            compute_hash: false,
         };
 
         let result = encode_pipeline(&be_bytes, &config).unwrap();
@@ -909,6 +1023,7 @@ mod tests {
             swap_unit_size: 8,
             compression_backend: CompressionBackend::default(),
             intra_codec_threads: 0,
+            compute_hash: false,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -951,6 +1066,7 @@ mod tests {
             swap_unit_size: 4,
             compression_backend: CompressionBackend::default(),
             intra_codec_threads: 0,
+            compute_hash: false,
         };
 
         let result = encode_pipeline(&data, &config).unwrap();
@@ -974,6 +1090,7 @@ mod tests {
             swap_unit_size: 2,
             compression_backend: CompressionBackend::default(),
             intra_codec_threads: 0,
+            compute_hash: false,
         };
         let result = encode_pipeline(&be_bytes, &config).unwrap();
         let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
@@ -995,6 +1112,7 @@ mod tests {
             swap_unit_size: 8,
             compression_backend: CompressionBackend::default(),
             intra_codec_threads: 0,
+            compute_hash: false,
         };
         let result = encode_pipeline(&be_bytes, &config).unwrap();
         let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
@@ -1020,6 +1138,7 @@ mod tests {
             swap_unit_size: 4, // complex64: swap each float32 component
             compression_backend: CompressionBackend::default(),
             intra_codec_threads: 0,
+            compute_hash: false,
         };
         let result = encode_pipeline(&be_bytes, &config).unwrap();
         let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
@@ -1043,9 +1162,205 @@ mod tests {
             swap_unit_size: 1,
             compression_backend: CompressionBackend::default(),
             intra_codec_threads: 0,
+            compute_hash: false,
         };
         let result = encode_pipeline(&data, &config).unwrap();
         let native = decode_pipeline(&result.encoded_bytes, &config, true).unwrap();
         assert_eq!(native, data); // no swap for single-byte types
+    }
+
+    // -----------------------------------------------------------------------
+    // Hash-while-encoding tests — guard the invariant that
+    // PipelineResult.hash (when compute_hash = true) is byte-equivalent to
+    // xxh3_64(encoded_bytes) computed post-hoc.
+    // -----------------------------------------------------------------------
+
+    /// Helper: minimal passthrough config with a flag for hash.
+    fn passthrough_config(num_values: usize, compute_hash: bool) -> PipelineConfig {
+        PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values,
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 1,
+            swap_unit_size: 1,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash,
+        }
+    }
+
+    #[test]
+    fn streaming_and_oneshot_xxh3_agree() {
+        // Regression guard against xxhash-rust API drift: our fused path
+        // relies on `Xxh3Default::new().update(chunks).digest()` producing
+        // bit-identical output to `xxh3_64(concat(chunks))`.  If this ever
+        // diverges, the hash-while-encoding optimisation would silently
+        // corrupt hash values.
+        use xxhash_rust::xxh3::{Xxh3Default, xxh3_64};
+
+        for size in [0usize, 1, 239, 240, 1024 * 1024 + 17] {
+            let data: Vec<u8> = (0..size).map(|i| (i * 31 + 7) as u8).collect();
+
+            // Full one-shot.
+            let one_shot = xxh3_64(&data);
+
+            // Streaming, 64 KiB chunks (matches copy_and_hash).
+            let mut h = Xxh3Default::new();
+            for chunk in data.chunks(64 * 1024) {
+                h.update(chunk);
+            }
+            assert_eq!(h.digest(), one_shot, "streaming vs one-shot at size {size}");
+
+            // Streaming, 1-byte chunks — worst case for internal buffering.
+            let mut h = Xxh3Default::new();
+            for chunk in data.chunks(1) {
+                h.update(chunk);
+            }
+            assert_eq!(
+                h.digest(),
+                one_shot,
+                "streaming 1-byte chunks vs one-shot at size {size}"
+            );
+        }
+    }
+
+    #[test]
+    fn pipeline_hash_none_when_disabled() {
+        let data: Vec<u8> = (0..64).collect();
+        let config = passthrough_config(data.len(), /* compute_hash = */ false);
+        let result = encode_pipeline(&data, &config).unwrap();
+        assert!(
+            result.hash.is_none(),
+            "compute_hash = false must leave PipelineResult.hash = None"
+        );
+    }
+
+    #[test]
+    fn pipeline_hash_matches_post_hoc_for_passthrough() {
+        use xxhash_rust::xxh3::xxh3_64;
+
+        // Exercise the sizes that hit each branch of `copy_and_hash` — below
+        // one chunk, exactly one chunk, and multiple chunks.
+        for size in [0usize, 1, 64 * 1024 - 1, 64 * 1024, 64 * 1024 + 1, 250_000] {
+            let data: Vec<u8> = (0..size).map(|i| (i as u32 ^ 0xA5A5A5A5) as u8).collect();
+            let config = passthrough_config(size, true);
+            let result = encode_pipeline(&data, &config).unwrap();
+            let expected = xxh3_64(&result.encoded_bytes);
+            assert_eq!(
+                result.hash,
+                Some(expected),
+                "passthrough hash-while-encoding mismatch at size {size}"
+            );
+            assert_eq!(
+                result.encoded_bytes, data,
+                "passthrough must still produce identical bytes at size {size}"
+            );
+        }
+    }
+
+    #[test]
+    fn pipeline_hash_matches_post_hoc_for_simple_packing() {
+        use xxhash_rust::xxh3::xxh3_64;
+
+        let values: Vec<f64> = (0..10_000).map(|i| 200.0 + i as f64 * 0.1).collect();
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let params = simple_packing::compute_params(&values, 16, 0).unwrap();
+
+        let config = PipelineConfig {
+            encoding: EncodingType::SimplePacking(params),
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: values.len(),
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 8,
+            swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: true,
+        };
+        let result = encode_pipeline(&data, &config).unwrap();
+        let expected = xxh3_64(&result.encoded_bytes);
+        assert_eq!(result.hash, Some(expected));
+    }
+
+    #[cfg(feature = "lz4")]
+    #[test]
+    fn pipeline_hash_matches_post_hoc_for_lz4() {
+        use xxhash_rust::xxh3::xxh3_64;
+
+        let data: Vec<u8> = (0..16_000).map(|i| (i % 257) as u8).collect();
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::Lz4,
+            num_values: data.len(),
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 1,
+            swap_unit_size: 1,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: true,
+        };
+        let result = encode_pipeline(&data, &config).unwrap();
+        let expected = xxh3_64(&result.encoded_bytes);
+        assert_eq!(result.hash, Some(expected));
+    }
+
+    #[test]
+    fn pipeline_f64_hash_matches_post_hoc() {
+        use xxhash_rust::xxh3::xxh3_64;
+
+        let values: Vec<f64> = (0..1_000).map(|i| (i as f64).sqrt()).collect();
+        let config = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: values.len(),
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 8,
+            swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: true,
+        };
+        let result = encode_pipeline_f64(&values, &config).unwrap();
+        let expected = xxh3_64(&result.encoded_bytes);
+        assert_eq!(result.hash, Some(expected));
+    }
+
+    #[test]
+    fn pipeline_hash_byte_identical_across_threads_transparent() {
+        // Transparent codec (simple_packing): hash at threads=0 must equal
+        // hash at threads=N for every N.  Opaque codecs are checked in the
+        // integration suite (they allow per-run byte differences).
+        let values: Vec<f64> = (0..50_000)
+            .map(|i| 280.0 + (i as f64 * 0.001).sin())
+            .collect();
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let params = simple_packing::compute_params(&values, 24, 0).unwrap();
+
+        let mut hashes = Vec::new();
+        for threads in [0u32, 1, 2, 4] {
+            let config = PipelineConfig {
+                encoding: EncodingType::SimplePacking(params.clone()),
+                filter: FilterType::None,
+                compression: CompressionType::None,
+                num_values: values.len(),
+                byte_order: ByteOrder::Little,
+                dtype_byte_width: 8,
+                swap_unit_size: 8,
+                compression_backend: CompressionBackend::default(),
+                intra_codec_threads: threads,
+                compute_hash: true,
+            };
+            let result = encode_pipeline(&data, &config).unwrap();
+            hashes.push(result.hash);
+        }
+        assert!(
+            hashes.windows(2).all(|w| w[0] == w[1]),
+            "transparent simple_packing must produce byte-identical hashes across thread counts: {hashes:?}"
+        );
     }
 }

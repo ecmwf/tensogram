@@ -179,8 +179,9 @@ Each data object specifies an independent pipeline: **encode → filter → comp
 
 - **Algorithm:** xxh3 (64-bit, non-cryptographic, ~30 GB/s)
 - **Scope:** Per-object payload, computed over final encoded bytes (after full pipeline)
-- **Encoding:** Hash computation is on by default (negligible overhead vs compression)
+- **Encoding:** Hash computation is on by default (negligible overhead vs compression).  The hash is produced **inline with encoding** — the pipeline drives an `Xxh3Default` streaming hasher in lockstep with codec output, so the encoded payload is walked exactly once for both encoding and hashing.  See `plans/DONE.md` → *Hash-while-encoding* for the design and benchmark numbers.
 - **Decoding:** Hash verification is off by default. Enabled via option. Reflects ECMWF's operational reality where transport-layer error correction is in place.
+- **Threading invariant:** hashing runs in the calling thread *after* any intra-codec parallelism (axis B) has joined, and each object's hasher is owned by one thread (axis A).  Transparent codecs produce byte-identical hashes across thread counts; opaque codecs (blosc2, zstd with workers) hash their worker-completion-ordered output and round-trip losslessly.  This matches the determinism contract of the multi-threaded pipeline itself.
 
 ### Per-Object Byte Order
 

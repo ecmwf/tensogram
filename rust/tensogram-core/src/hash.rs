@@ -27,16 +27,40 @@ impl HashAlgorithm {
             _ => Err(TensogramError::Metadata(format!("unknown hash type: {s}"))),
         }
     }
+
+    /// Length in characters of the hex-encoded digest string produced by
+    /// [`compute_hash`] for this algorithm.
+    ///
+    /// Used by the streaming encoder to size the CBOR descriptor before
+    /// the payload has been hashed — the digest must always serialise to
+    /// the same number of bytes regardless of value, otherwise the frame
+    /// header's `total_length` would be wrong.  Adding a new variant
+    /// forces an explicit answer here: the match is exhaustive at
+    /// compile time.
+    pub fn hex_digest_len(&self) -> usize {
+        match self {
+            HashAlgorithm::Xxh3 => 16, // 64 bits → 16 hex chars
+        }
+    }
 }
 
 /// Compute a hash of the given data, returning the hex-encoded digest.
 pub fn compute_hash(data: &[u8], algorithm: HashAlgorithm) -> String {
     match algorithm {
-        HashAlgorithm::Xxh3 => {
-            let hash = xxhash_rust::xxh3::xxh3_64(data);
-            format!("{hash:016x}")
-        }
+        HashAlgorithm::Xxh3 => format_xxh3_digest(xxhash_rust::xxh3::xxh3_64(data)),
     }
+}
+
+/// Format a raw xxh3-64 digest into the canonical 16-char hex string used
+/// in [`HashDescriptor::value`].
+///
+/// Exposed `pub(crate)` so that the buffered encoder can reuse this
+/// formatting when it consumes the digest produced by the
+/// `tensogram-encodings` pipeline (see
+/// [`pipeline::PipelineResult::hash`]).
+#[inline]
+pub(crate) fn format_xxh3_digest(digest: u64) -> String {
+    format!("{digest:016x}")
 }
 
 /// Verify a hash descriptor against data.

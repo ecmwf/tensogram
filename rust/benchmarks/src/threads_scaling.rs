@@ -52,6 +52,7 @@ fn raw_case(name: impl Into<String>, compression: CompressionType, num_values: u
                 swap_unit_size: 8,
                 compression_backend: Default::default(),
                 intra_codec_threads: threads,
+                compute_hash: false,
             })
         }),
         use_f64_path: false,
@@ -81,6 +82,7 @@ fn sp_case(
                 swap_unit_size: 8,
                 compression_backend: Default::default(),
                 intra_codec_threads: threads,
+                compute_hash: false,
             })
         }),
         use_f64_path: true,

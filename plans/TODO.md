@@ -192,10 +192,17 @@ For speculative ideas, see `IDEAS.md`.
   tests.  See `DONE.md` for the full breakdown and
   `docs/src/guide/multi-threaded-pipeline.md` for the API reference.
 
-- [ ] **hash-while-encoding**:
-  - explore a possible optimisation to compute the xxhash while the encoding is happening
-  - this would save a second pass through the buffer
-  - analyse if this makes sense and if it brings a benefit
+- [x] ~~**hash-while-encoding**~~ → xxh3-64 hashing folded into the
+  encoding pipeline via opt-in `PipelineConfig.compute_hash` and
+  `PipelineResult.hash`.  `encode_one_object` and `StreamingEncoder`
+  both consume the inline digest.  Streaming path now writes the data
+  object frame directly to the sink while hashing, reducing payload
+  reads from 3 (hash → frame memcpy → stream write) to 1.  Wire format
+  and golden files unchanged.  Bench (`hash_overhead.rs`) on 128 MiB
+  shows ~11% speedup on `none+none` (recovering ~24% of hash overhead)
+  and within-noise on heavy pipelines where encode dominates.  See
+  `plans/DONE.md` for the full breakdown; the design memo
+  `HASH_WHILE_ENCODING.md` at repo root may be removed at release time.
  
 - [x] ~~minimise-mem-alloc~~ → documented in DESIGN.md "Memory Strategy" section. Pipeline uses `Cow` for zero-copy when no encoding/filter/compression. Metadata-only ops never touch payloads. xarray/zarr use lazy loading.
 

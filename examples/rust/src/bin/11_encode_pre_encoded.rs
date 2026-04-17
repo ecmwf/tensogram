@@ -85,6 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         swap_unit_size: 8, // f64
         compression_backend: Default::default(),
         intra_codec_threads: 0,
+        compute_hash: false,
     };
     let packed = pipeline::encode_pipeline(&raw_bytes, &config)?;
     let packed_bytes = packed.encoded_bytes;

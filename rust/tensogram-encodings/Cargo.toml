@@ -36,6 +36,7 @@ threads = ["dep:rayon"]
 thiserror.workspace = true
 serde.workspace = true
 tracing.workspace = true
+xxhash-rust.workspace = true
 libaec-sys = { workspace = true, optional = true }
 tensogram-szip = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }

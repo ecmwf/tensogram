@@ -193,6 +193,35 @@ about cache keys, deduplication hashes, or reproducible builds
 breaking.  The invariant is tested at every layer — Rust, Python,
 C FFI, C++ wrapper — with a sweep over `{0, 1, 2, 4, 8}`.
 
+### Interaction with integrity hashing
+
+The xxh3-64 integrity hash attached to every data object
+(`EncodeOptions.hash_algorithm = Some(Xxh3)`, on by default) is a
+pure function of the final encoded bytes.  Hashing runs in the
+calling thread *after* any intra-codec parallelism has joined;
+each object owns its own `Xxh3Default` hasher on the stack and the
+hasher is never shared across threads.
+
+As a consequence the hash follows the same contract as the encoded
+bytes:
+
+| Codec class | Encoded bytes across thread counts | Hash across thread counts |
+| ----------- | ---------------------------------- | ------------------------- |
+| Transparent | Byte-identical                     | Byte-identical            |
+| Opaque      | May reorder compressed blocks      | May differ per-run        |
+
+For opaque codecs the hash is still *internally consistent* —
+`descriptor.hash == xxh3_64(encoded_payload)` always holds for the
+bytes that were actually written — it just may not match a hash
+computed at a different thread count.  `verify_hash` on decode
+always succeeds regardless of the `threads` value used at encode
+time.
+
+Since the hash is folded into the codec output in lockstep (see
+`plans/DONE.md` → *Hash-while-encoding*), turning on `threads` has
+no additional hash-computation cost beyond what threading already
+does to the encoded bytes themselves.
+
 ## Environment variable override
 
 `TENSOGRAM_THREADS` is consulted only when the caller-provided
