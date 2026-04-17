@@ -20,8 +20,9 @@ jobs:
         with:
           working-directory: python/bindings
           target: x86_64
-          manylinux: auto
+          manylinux: manylinux_2_28
           args: --release --out dist --find-interpreter
+          before-script-linux: yum install -y clang-devel
           sccache: true
 
       - uses: actions/upload-artifact@v4
@@ -30,16 +31,12 @@ jobs:
           path: python/bindings/dist/
 
   build-wheels-macos:
-    name: Build wheel (macOS ${{ matrix.target }} Python ${{ matrix.python }})
+    name: Build wheel (macOS arm64 Python ${{ matrix.python }})
     strategy:
       fail-fast: false
       matrix:
-        target: [x86_64, aarch64]
         python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
-        include:
-          - { target: x86_64,  os: macos-13 }
-          - { target: aarch64, os: macos-14 }
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,13 +49,13 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: python/bindings
-          target: ${{ matrix.target }}
+          target: aarch64
           args: --release --out dist --interpreter python${{ matrix.python }}
           sccache: true
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-macos-${{ matrix.target }}-py${{ matrix.python }}
+          name: wheels-macos-arm64-py${{ matrix.python }}
           path: python/bindings/dist/
 
   build-wheels-freethreaded:
