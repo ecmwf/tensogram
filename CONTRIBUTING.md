@@ -4,7 +4,7 @@ Thank you for your interest in contributing. This guide will get you from zero t
 
 ## Prerequisites
 
-- **Rust 1.75+** (`rustup install stable`)
+- **Rust 1.85+** (`rustup install stable`)
 - **C compiler** (for libaec, zfp, blosc2 FFI dependencies)
 - Optional: Python 3.9+ and `uv` for Python bindings (`pip install uv` or https://docs.astral.sh/uv/getting-started/installation/)
 - Optional: Node ≥ 20 and `wasm-pack` (`cargo install wasm-pack`) for the TypeScript wrapper
