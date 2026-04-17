@@ -10,8 +10,28 @@ If no number given, detect the current branch's open PR.
 ## Process
 
 ### 1. Fetch Reviews
+First, fetch all comments in **unresolved** threads and reviews:
 ```bash
-gh pr view <NUMBER> --json reviews,comments
+gh api graphql -f query='
+{
+  repository(owner: "ecmwf", name: "tensogram") {
+    pullRequest(number: PR_NUMBER) {
+      reviewThreads(first: 50) {
+        nodes {
+          isResolved
+          comments(first: 1) {
+            nodes { path line originalLine body }
+          }
+        }
+      }
+    }
+  }
+}' | jq -r '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | "File: \(.comments.nodes[0].path)\nLine: \(.comments.nodes[0].line // .comments.nodes[0].originalLine)\nComment: \(.comments.nodes[0].body)\n---"'
+```
+This provides the actual inline review comments which `gh pr view` doesn't show properly, and filters out resolved threads.
+
+Also obtain reviews and root-level comments with
+```
 gh api repos/{owner}/{repo}/pulls/<NUMBER>/comments
 gh api repos/{owner}/{repo}/pulls/<NUMBER>/reviews
 ```
