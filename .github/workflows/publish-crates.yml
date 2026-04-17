@@ -36,15 +36,23 @@ jobs:
             python3 -c "import sys,json; pkgs=json.load(sys.stdin)['packages']; print([p['version'] for p in pkgs if p['name']=='$CRATE'][0])" 2>/dev/null || true)
 
           if [ -z "$VERSION" ]; then
-            # Excluded crate — read version from manifest
             MANIFEST=$(find rust -name Cargo.toml -path "*/$CRATE/*" | head -1)
             VERSION=$(grep '^version' "$MANIFEST" | head -1 | sed 's/.*"\(.*\)"/\1/')
           fi
 
+          # Sparse index path: 1-char → 1/, 2-char → 2/, 3-char → 3/first-char/,
+          # 4+ chars → first-two/next-two/
+          sparse_index_path() {
+            local name="$1" len=${#1}
+            if [ "$len" -le 2 ]; then echo "$len/$name"
+            elif [ "$len" -eq 3 ]; then echo "3/${name:0:1}/$name"
+            else echo "${name:0:2}/${name:2:2}/$name"
+            fi
+          }
+          INDEX_URL="https://index.crates.io/$(sparse_index_path "$CRATE")"
+
           echo "::group::$CRATE@$VERSION"
-          HTTP=$(curl -sS -o /dev/null -w "%{http_code}" \
-            "https://crates.io/api/v1/crates/$CRATE/$VERSION" 2>/dev/null || echo "000")
-          if [ "$HTTP" = "200" ]; then
+          if curl -sfS "$INDEX_URL" 2>/dev/null | grep -q "\"vers\":\"$VERSION\""; then
             echo "Already published — skipping"
             echo "::endgroup::"
             exit 0
@@ -53,16 +61,14 @@ jobs:
           cargo publish "$@"
           echo "::endgroup::"
 
-          # Wait for crates.io index
-          echo "Waiting for crates.io index ..."
-          for i in $(seq 1 30); do
-            CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
-              "https://crates.io/api/v1/crates/$CRATE/$VERSION" 2>/dev/null || echo "000")
-            if [ "$CODE" = "200" ]; then
-              echo "Indexed after ${i}0s"
+          echo "Waiting for sparse index ..."
+          for i in $(seq 1 60); do
+            if curl -sfS -H "Accept: application/json" \
+                "$INDEX_URL" 2>/dev/null | grep -q "\"vers\":\"$VERSION\""; then
+              echo "Indexed after ${i}s"
               exit 0
             fi
-            sleep 10
+            sleep 1
           done
           echo "::warning::Index poll timed out for $CRATE — continuing anyway"
           SCRIPT
