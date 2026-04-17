@@ -34,11 +34,7 @@ pub(crate) fn preprocess_unsigned(samples: &[u32], xmax: u32) -> (u32, Vec<u32>)
 
         let d = if x_curr >= x_prev {
             let delta = x_curr - x_prev;
-            if delta <= x_prev {
-                2 * delta
-            } else {
-                x_curr
-            }
+            if delta <= x_prev { 2 * delta } else { x_curr }
         } else {
             let delta = x_prev - x_curr;
             if delta <= xmax - x_prev {

@@ -12,8 +12,8 @@
 //! produce clean errors (not panics).
 
 use tensogram_szip::{
-    aec_compress, aec_decompress, aec_decompress_range, AecParams, AEC_DATA_PREPROCESS,
-    AEC_NOT_ENFORCE, AEC_RESTRICTED,
+    AEC_DATA_PREPROCESS, AEC_NOT_ENFORCE, AEC_RESTRICTED, AecParams, aec_compress, aec_decompress,
+    aec_decompress_range,
 };
 
 fn default_params() -> AecParams {

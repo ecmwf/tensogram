@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use tensogram_core::{decode, encode, DecodeOptions, EncodeOptions, TensogramFile, RESERVED_KEY};
+use tensogram_core::{DecodeOptions, EncodeOptions, RESERVED_KEY, TensogramFile, decode, encode};
 
 /// Reshuffle frames inside messages: move footer frames to header position.
 ///
@@ -67,8 +67,8 @@ pub fn run(input: &Path, output: &Path, threads: u32) -> Result<(), Box<dyn std:
 mod tests {
     use super::*;
     use tensogram_core::{
-        decode, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
-        GlobalMetadata,
+        ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
+        decode,
     };
 
     fn make_test_file(dir: &std::path::Path) -> std::path::PathBuf {

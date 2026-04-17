@@ -21,8 +21,8 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode, decode_metadata, encode, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype,
-    EncodeOptions, GlobalMetadata,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, decode,
+    decode_metadata, encode,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -78,10 +78,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fn get_mars_key<'a>(map: &'a Value, key: &str) -> Option<&'a str> {
         if let Value::Map(entries) = map {
             for (k, v) in entries {
-                if matches!(k, Value::Text(s) if s == key) {
-                    if let Value::Text(t) = v {
-                        return Some(t);
-                    }
+                if matches!(k, Value::Text(s) if s == key)
+                    && let Value::Text(t) = v
+                {
+                    return Some(t);
                 }
             }
         }

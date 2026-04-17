@@ -205,10 +205,8 @@ pub fn encode_with_threads(
     #[cfg(not(feature = "threads"))]
     let parallel = false;
 
-    if !parallel {
-        if let Some(i) = values.iter().position(|v| v.is_nan()) {
-            return Err(PackingError::NanValue(i));
-        }
+    if !parallel && let Some(i) = values.iter().position(|v| v.is_nan()) {
+        return Err(PackingError::NanValue(i));
     }
 
     if params.bits_per_value == 0 {

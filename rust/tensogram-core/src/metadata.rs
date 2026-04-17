@@ -94,7 +94,7 @@ pub fn cbor_to_index(cbor_bytes: &[u8]) -> Result<IndexFrame> {
         _ => {
             return Err(TensogramError::Metadata(
                 "index CBOR is not a map".to_string(),
-            ))
+            ));
         }
     };
 
@@ -164,7 +164,7 @@ pub fn cbor_to_hash_frame(cbor_bytes: &[u8]) -> Result<HashFrame> {
         _ => {
             return Err(TensogramError::Metadata(
                 "hash frame CBOR is not a map".to_string(),
-            ))
+            ));
         }
     };
 
@@ -187,7 +187,7 @@ pub fn cbor_to_hash_frame(cbor_bytes: &[u8]) -> Result<HashFrame> {
                     _ => {
                         return Err(TensogramError::Metadata(
                             "hash_type must be text".to_string(),
-                        ))
+                        ));
                     }
                 };
             }
@@ -205,7 +205,7 @@ pub fn cbor_to_hash_frame(cbor_bytes: &[u8]) -> Result<HashFrame> {
                     _ => {
                         return Err(TensogramError::Metadata(
                             "hashes must be an array".to_string(),
-                        ))
+                        ));
                     }
                 };
             }
@@ -406,13 +406,13 @@ fn verify_canonical_value(value: &ciborium::Value) -> Result<()> {
                     TensogramError::Metadata(format!("CBOR key serialisation failed: {e}"))
                 })?;
 
-                if let Some(ref prev) = prev_key_bytes {
-                    if key_bytes <= *prev {
-                        return Err(TensogramError::Metadata(format!(
-                            "CBOR map keys not in canonical order: key {:?} should come before {:?}",
-                            prev, key_bytes
-                        )));
-                    }
+                if let Some(ref prev) = prev_key_bytes
+                    && key_bytes <= *prev
+                {
+                    return Err(TensogramError::Metadata(format!(
+                        "CBOR map keys not in canonical order: key {:?} should come before {:?}",
+                        prev, key_bytes
+                    )));
                 }
                 prev_key_bytes = Some(key_bytes);
 

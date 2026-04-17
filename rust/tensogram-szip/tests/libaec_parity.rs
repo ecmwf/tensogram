@@ -17,8 +17,8 @@
 //! Source: https://gitlab.dkrz.de/dkrz-sw/libaec/-/tree/master/tests
 
 use tensogram_szip::{
-    aec_compress, aec_decompress, aec_decompress_range, AecParams, AEC_DATA_3BYTE, AEC_DATA_MSB,
-    AEC_DATA_PREPROCESS, AEC_DATA_SIGNED,
+    AEC_DATA_3BYTE, AEC_DATA_MSB, AEC_DATA_PREPROCESS, AEC_DATA_SIGNED, AecParams, aec_compress,
+    aec_decompress, aec_decompress_range,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -511,11 +511,7 @@ mod rsi_block_access {
         }
         let size = {
             let nb = (bps as usize).div_ceil(8);
-            if nb == 3 {
-                3
-            } else {
-                nb
-            }
+            if nb == 3 { 3 } else { nb }
         };
         let rsi_bytes = rsi as usize * bs as usize * size;
         for (idx, _) in offsets.iter().enumerate() {
@@ -553,11 +549,7 @@ mod rsi_block_access {
                     for &bps in &bps_list {
                         let size = {
                             let nb = (bps as usize).div_ceil(8);
-                            if nb == 3 {
-                                3
-                            } else {
-                                nb
-                            }
+                            if nb == 3 { 3 } else { nb }
                         };
 
                         // Zero data
@@ -584,11 +576,7 @@ mod rsi_block_access {
         for &bps in &[8u32, 16, 24, 32] {
             let size = {
                 let nb = (bps as usize).div_ceil(8);
-                if nb == 3 {
-                    3
-                } else {
-                    nb
-                }
+                if nb == 3 { 3 } else { nb }
             };
             let data = make_incr(nvalues, bps, size, false);
             test_config(nvalues, 128, 16, bps, &data);

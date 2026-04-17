@@ -12,8 +12,8 @@ use crate::error::{Result, TensogramError};
 use crate::metadata::{self, RESERVED_KEY};
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashFrame, IndexFrame};
 use crate::wire::{
-    DataObjectFlags, FrameHeader, FrameType, MessageFlags, Postamble, Preamble,
-    DATA_OBJECT_FOOTER_SIZE, FRAME_END, FRAME_HEADER_SIZE, MAGIC, POSTAMBLE_SIZE, PREAMBLE_SIZE,
+    DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END, FRAME_HEADER_SIZE, FrameHeader, FrameType,
+    MAGIC, MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE, Postamble, Preamble,
 };
 
 // ── Frame-level primitives ───────────────────────────────────────────────────
@@ -876,62 +876,60 @@ pub fn scan_file(file: &mut (impl std::io::Read + std::io::Seek)) -> Result<Vec<
             break;
         }
 
-        if &preamble_buf[..MAGIC.len()] == MAGIC {
-            if let Ok(preamble) = Preamble::read_from(&preamble_buf) {
-                if preamble.total_length > 0 {
-                    let Ok(total) = usize::try_from(preamble.total_length) else {
-                        pos += 1;
+        if &preamble_buf[..MAGIC.len()] == MAGIC
+            && let Ok(preamble) = Preamble::read_from(&preamble_buf)
+        {
+            if preamble.total_length > 0 {
+                let Ok(total) = usize::try_from(preamble.total_length) else {
+                    pos += 1;
+                    continue;
+                };
+                if pos + total <= file_len {
+                    // Read end magic to validate
+                    let end_magic_offset = pos + total - 8;
+                    file.seek(SeekFrom::Start(end_magic_offset as u64))?;
+                    let mut end_buf = [0u8; 8];
+                    if file.read_exact(&mut end_buf).is_ok() && &end_buf == crate::wire::END_MAGIC {
+                        messages.push((pos, total));
+                        pos += total;
                         continue;
-                    };
-                    if pos + total <= file_len {
-                        // Read end magic to validate
-                        let end_magic_offset = pos + total - 8;
-                        file.seek(SeekFrom::Start(end_magic_offset as u64))?;
-                        let mut end_buf = [0u8; 8];
-                        if file.read_exact(&mut end_buf).is_ok()
-                            && &end_buf == crate::wire::END_MAGIC
-                        {
-                            messages.push((pos, total));
-                            pos += total;
-                            continue;
-                        }
                     }
-                } else {
-                    // Streaming mode: scan forward for END_MAGIC
-                    // Read in chunks to find the terminator
-                    let mut search_pos = pos + PREAMBLE_SIZE;
-                    let mut found = false;
-                    let chunk_size = 4096;
-                    let mut chunk = vec![0u8; chunk_size];
+                }
+            } else {
+                // Streaming mode: scan forward for END_MAGIC
+                // Read in chunks to find the terminator
+                let mut search_pos = pos + PREAMBLE_SIZE;
+                let mut found = false;
+                let chunk_size = 4096;
+                let mut chunk = vec![0u8; chunk_size];
 
-                    while search_pos + 8 <= file_len {
-                        file.seek(SeekFrom::Start(search_pos as u64))?;
-                        let to_read = (file_len - search_pos).min(chunk_size);
-                        let buf = &mut chunk[..to_read];
-                        if file.read_exact(buf).is_err() {
+                while search_pos + 8 <= file_len {
+                    file.seek(SeekFrom::Start(search_pos as u64))?;
+                    let to_read = (file_len - search_pos).min(chunk_size);
+                    let buf = &mut chunk[..to_read];
+                    if file.read_exact(buf).is_err() {
+                        break;
+                    }
+
+                    // Search for END_MAGIC in this chunk
+                    for i in 0..to_read.saturating_sub(7) {
+                        if &buf[i..i + 8] == crate::wire::END_MAGIC {
+                            let end_pos = search_pos + i;
+                            let msg_len = end_pos + 8 - pos;
+                            messages.push((pos, msg_len));
+                            pos = end_pos + 8;
+                            found = true;
                             break;
                         }
-
-                        // Search for END_MAGIC in this chunk
-                        for i in 0..to_read.saturating_sub(7) {
-                            if &buf[i..i + 8] == crate::wire::END_MAGIC {
-                                let end_pos = search_pos + i;
-                                let msg_len = end_pos + 8 - pos;
-                                messages.push((pos, msg_len));
-                                pos = end_pos + 8;
-                                found = true;
-                                break;
-                            }
-                        }
-                        if found {
-                            break;
-                        }
-                        // Overlap by 7 bytes to catch END_MAGIC spanning chunks
-                        search_pos += to_read.saturating_sub(7);
                     }
                     if found {
-                        continue;
+                        break;
                     }
+                    // Overlap by 7 bytes to catch END_MAGIC spanning chunks
+                    search_pos += to_read.saturating_sub(7);
+                }
+                if found {
+                    continue;
                 }
             }
         }

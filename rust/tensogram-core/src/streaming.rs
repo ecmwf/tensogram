@@ -10,18 +10,17 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 use crate::encode::{
-    build_pipeline_config, populate_base_entries, populate_reserved_provenance,
+    EncodeOptions, build_pipeline_config, populate_base_entries, populate_reserved_provenance,
     validate_no_szip_offsets_for_non_szip, validate_object, validate_szip_block_offsets,
-    EncodeOptions,
 };
 use crate::error::{Result, TensogramError};
 use crate::framing::EncodedObject;
-use crate::hash::{compute_hash, HashAlgorithm};
+use crate::hash::{HashAlgorithm, compute_hash};
 use crate::metadata::{self, RESERVED_KEY};
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashDescriptor, HashFrame, IndexFrame};
 use crate::wire::{
-    FrameHeader, FrameType, MessageFlags, Postamble, Preamble, FRAME_END, FRAME_HEADER_SIZE,
-    PREAMBLE_SIZE,
+    FRAME_END, FRAME_HEADER_SIZE, FrameHeader, FrameType, MessageFlags, PREAMBLE_SIZE, Postamble,
+    Preamble,
 };
 use tensogram_encodings::pipeline;
 
@@ -389,11 +388,11 @@ impl<W: Write> StreamingEncoder<W> {
                 )));
             }
             for (i, prec) in self.preceder_payloads.iter().enumerate() {
-                if let Some(prec_map) = prec {
-                    if i < enriched_meta.base.len() {
-                        for (k, v) in prec_map {
-                            enriched_meta.base[i].insert(k.clone(), v.clone());
-                        }
+                if let Some(prec_map) = prec
+                    && i < enriched_meta.base.len()
+                {
+                    for (k, v) in prec_map {
+                        enriched_meta.base[i].insert(k.clone(), v.clone());
                     }
                 }
             }
@@ -503,10 +502,10 @@ fn write_padding(writer: &mut impl Write, bytes_written: &mut u64) -> std::io::R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decode::{decode, DecodeOptions};
-    use crate::encode::{encode, EncodeOptions};
-    use crate::types::{ByteOrder, DataObjectDescriptor};
     use crate::Dtype;
+    use crate::decode::{DecodeOptions, decode};
+    use crate::encode::{EncodeOptions, encode};
+    use crate::types::{ByteOrder, DataObjectDescriptor};
     use std::collections::BTreeMap;
 
     fn make_descriptor(shape: Vec<u64>) -> DataObjectDescriptor {

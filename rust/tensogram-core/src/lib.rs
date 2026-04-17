@@ -30,19 +30,19 @@ pub mod validate;
 pub mod wire;
 
 pub use decode::{
-    decode, decode_descriptors, decode_metadata, decode_object, decode_range,
-    decode_range_from_payload, DecodeOptions,
+    DecodeOptions, decode, decode_descriptors, decode_metadata, decode_object, decode_range,
+    decode_range_from_payload,
 };
 pub use dtype::Dtype;
-pub use encode::{encode, encode_pre_encoded, EncodeOptions};
+pub use encode::{EncodeOptions, encode, encode_pre_encoded};
 pub use error::{Result, TensogramError};
 pub use file::TensogramFile;
 pub use framing::{scan, scan_file};
-pub use hash::{compute_hash, verify_hash, HashAlgorithm};
-pub use iter::{messages, objects, objects_metadata, FileMessageIter, MessageIter, ObjectIter};
-pub use metadata::{compute_common, verify_canonical_cbor, RESERVED_KEY};
+pub use hash::{HashAlgorithm, compute_hash, verify_hash};
+pub use iter::{FileMessageIter, MessageIter, ObjectIter, messages, objects, objects_metadata};
+pub use metadata::{RESERVED_KEY, compute_common, verify_canonical_cbor};
 pub use parallel::{DEFAULT_PARALLEL_THRESHOLD_BYTES, ENV_THREADS};
-pub use pipeline::{apply_pipeline, DataPipeline};
+pub use pipeline::{DataPipeline, apply_pipeline};
 pub use streaming::StreamingEncoder;
 pub use tensogram_encodings::pipeline::CompressionBackend;
 pub use types::{
@@ -50,8 +50,8 @@ pub use types::{
     IndexFrame,
 };
 pub use validate::{
-    validate_buffer, validate_file, validate_message, FileIssue, FileValidationReport, IssueCode,
-    IssueSeverity, ValidateOptions, ValidationIssue, ValidationLevel, ValidationReport,
+    FileIssue, FileValidationReport, IssueCode, IssueSeverity, ValidateOptions, ValidationIssue,
+    ValidationLevel, ValidationReport, validate_buffer, validate_file, validate_message,
 };
 pub use wire::{FrameType, MessageFlags};
 

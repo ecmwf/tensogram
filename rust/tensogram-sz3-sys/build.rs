@@ -93,9 +93,14 @@ fn main() {
         }
     }
 
-    // OpenMP support (optional)
+    let target = env::var("TARGET").unwrap_or_default();
+
     if cfg!(feature = "openmp") {
-        build.flag("-fopenmp");
+        if target.contains("msvc") {
+            build.flag("/openmp");
+        } else {
+            build.flag("-fopenmp");
+        }
     }
 
     build.compile("sz3_ffi");
@@ -106,18 +111,26 @@ fn main() {
     println!("cargo:rerun-if-changed=cpp/sz3_ffi.cpp");
     println!("cargo:rerun-if-changed=build.rs");
 
-    // The zstd-sys crate already links libzstd into the final binary through
-    // its own build script.  We depend on it in Cargo.toml, so Cargo ensures
-    // it is linked.  No additional `rustc-link-lib=zstd` is needed here.
-
-    // Link C++ standard library
-    let target = env::var("TARGET").unwrap_or_default();
     if target.contains("apple") || target.contains("freebsd") {
         println!("cargo:rustc-link-lib=c++");
     } else if target.contains("linux") || target.contains("android") {
         println!("cargo:rustc-link-lib=stdc++");
     }
-    // On Windows with MSVC the C++ stdlib is linked automatically.
+
+    if cfg!(feature = "openmp") {
+        if target.contains("msvc") {
+            // MSVC links the OpenMP runtime automatically via /openmp
+        } else if target.contains("apple") {
+            println!("cargo:rustc-link-lib=omp");
+        } else if target.contains("linux") || target.contains("android") {
+            println!("cargo:rustc-link-lib=gomp");
+        } else {
+            panic!(
+                "openmp feature is not supported on target '{target}'; \
+                 disable it or add linker configuration for this platform"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

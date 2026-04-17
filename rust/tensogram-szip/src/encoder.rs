@@ -18,11 +18,11 @@
 //! and the encoder processes entries `[ref..block_size)` where `ref=1`
 //! for the first block (skipping the dummy) and `ref=0` thereafter.
 
+use crate::AecError;
+use crate::AecParams;
 use crate::bitstream::BitWriter;
 use crate::params;
 use crate::preprocessor;
-use crate::AecError;
-use crate::AecParams;
 
 /// Encode data using the CCSDS 121.0-B-3 adaptive entropy coder.
 ///

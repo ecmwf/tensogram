@@ -18,8 +18,8 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode, encode_pre_encoded, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype,
-    EncodeOptions, GlobalMetadata,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, decode,
+    encode_pre_encoded,
 };
 use tensogram_encodings::pipeline::{CompressionType, EncodingType, FilterType, PipelineConfig};
 use tensogram_encodings::{pipeline, simple_packing};

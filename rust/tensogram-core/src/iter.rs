@@ -70,7 +70,7 @@ pub fn objects(buf: &[u8], options: DecodeOptions) -> Result<ObjectIter> {
 
 /// Return an iterator over the [`DataObjectDescriptor`]s in a message without
 /// decoding any payload data.
-pub fn objects_metadata(buf: &[u8]) -> Result<impl Iterator<Item = DataObjectDescriptor>> {
+pub fn objects_metadata(buf: &[u8]) -> Result<impl Iterator<Item = DataObjectDescriptor> + use<>> {
     let msg = framing::decode_message(buf)?;
     Ok(msg
         .objects
@@ -138,12 +138,11 @@ impl Iterator for ObjectIter {
         let (ref desc, ref payload_bytes) = self.objects[i];
 
         // Verify hash if requested
-        if self.options.verify_hash {
-            if let Some(ref hash_desc) = desc.hash {
-                if let Err(e) = crate::hash::verify_hash(payload_bytes, hash_desc) {
-                    return Some(Err(e));
-                }
-            }
+        if self.options.verify_hash
+            && let Some(ref hash_desc) = desc.hash
+            && let Err(e) = crate::hash::verify_hash(payload_bytes, hash_desc)
+        {
+            return Some(Err(e));
         }
 
         let shape_product = match desc
@@ -155,7 +154,7 @@ impl Iterator for ObjectIter {
             None => {
                 return Some(Err(crate::error::TensogramError::Metadata(
                     "shape product overflow".to_string(),
-                )))
+                )));
             }
         };
         let num_elements = match usize::try_from(shape_product) {
@@ -163,7 +162,7 @@ impl Iterator for ObjectIter {
             Err(_) => {
                 return Some(Err(crate::error::TensogramError::Metadata(
                     "element count overflows usize".to_string(),
-                )))
+                )));
             }
         };
 
@@ -254,7 +253,7 @@ mod tests {
     use super::*;
     use crate::decode::DecodeOptions;
     use crate::dtype::Dtype;
-    use crate::encode::{encode, EncodeOptions};
+    use crate::encode::{EncodeOptions, encode};
     use crate::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
     use std::collections::BTreeMap;
 

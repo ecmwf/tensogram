@@ -12,7 +12,7 @@
 //! Run with: cargo test -p tensogram-szip --test ffi_crosscheck
 
 use tensogram_szip::{
-    AecParams, AEC_DATA_MSB, AEC_DATA_PREPROCESS, AEC_DATA_SIGNED, AEC_NOT_ENFORCE,
+    AEC_DATA_MSB, AEC_DATA_PREPROCESS, AEC_DATA_SIGNED, AEC_NOT_ENFORCE, AecParams,
 };
 
 // ── Helpers: libaec FFI wrappers ─────────────────────────────────────────────

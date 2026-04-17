@@ -40,8 +40,8 @@ mod preprocessor;
 
 pub use error::AecError;
 pub use params::{
-    AecParams, AEC_ALLOW_K13, AEC_DATA_3BYTE, AEC_DATA_MSB, AEC_DATA_PREPROCESS, AEC_DATA_SIGNED,
-    AEC_NOT_ENFORCE, AEC_PAD_RSI, AEC_RESTRICTED,
+    AEC_ALLOW_K13, AEC_DATA_3BYTE, AEC_DATA_MSB, AEC_DATA_PREPROCESS, AEC_DATA_SIGNED,
+    AEC_NOT_ENFORCE, AEC_PAD_RSI, AEC_RESTRICTED, AecParams,
 };
 
 /// Compress data using CCSDS 121.0-B-3 adaptive entropy coding.

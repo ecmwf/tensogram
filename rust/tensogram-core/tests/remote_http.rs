@@ -11,8 +11,8 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use http_body_util::Full;
 use hyper::body::Bytes;
@@ -26,7 +26,7 @@ use tensogram_core::decode::DecodeOptions;
 use tensogram_core::encode::{self, EncodeOptions};
 use tensogram_core::file::TensogramFile;
 use tensogram_core::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
-use tensogram_core::{is_remote_url, Dtype};
+use tensogram_core::{Dtype, is_remote_url};
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
 

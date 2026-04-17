@@ -25,8 +25,8 @@ use std::collections::BTreeMap;
 
 use ciborium::Value;
 use tensogram_core::{
-    decode_metadata, scan, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
-    GlobalMetadata, TensogramFile,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
+    TensogramFile, decode_metadata, scan,
 };
 
 fn make_forecast_message(
@@ -169,10 +169,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn get_text<'a>(map: &'a Value, key: &str) -> &'a str {
     if let Value::Map(entries) = map {
         for (k, v) in entries {
-            if matches!(k, Value::Text(s) if s == key) {
-                if let Value::Text(t) = v {
-                    return t;
-                }
+            if matches!(k, Value::Text(s) if s == key)
+                && let Value::Text(t) = v
+            {
+                return t;
             }
         }
     }
@@ -182,11 +182,11 @@ fn get_text<'a>(map: &'a Value, key: &str) -> &'a str {
 fn get_int(map: &Value, key: &str) -> i64 {
     if let Value::Map(entries) = map {
         for (k, v) in entries {
-            if matches!(k, Value::Text(s) if s == key) {
-                if let Value::Integer(i) = v {
-                    let n: i128 = (*i).into();
-                    return n as i64;
-                }
+            if matches!(k, Value::Text(s) if s == key)
+                && let Value::Integer(i) = v
+            {
+                let n: i128 = (*i).into();
+                return n as i64;
             }
         }
     }

@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use tensogram_core::{decode_metadata, TensogramFile};
+use tensogram_core::{TensogramFile, decode_metadata};
 
 /// Print summary information for one or more Tensogram files.
 pub fn run(files: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {

@@ -20,8 +20,8 @@
 use std::collections::BTreeMap;
 
 use tensogram_core::{
-    decode, decode_metadata, decode_object, decode_range, encode, ByteOrder, DataObjectDescriptor,
-    DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, decode,
+    decode_metadata, decode_object, decode_range, encode,
 };
 
 fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {

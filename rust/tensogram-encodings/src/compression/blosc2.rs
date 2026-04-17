@@ -58,11 +58,7 @@ pub struct Blosc2Compressor {
 /// where an explicit 1 is the canonical single-threaded setting.
 #[inline]
 fn blosc2_nthreads(n: u32) -> usize {
-    if n == 0 {
-        1
-    } else {
-        n as usize
-    }
+    if n == 0 { 1 } else { n as usize }
 }
 
 impl Blosc2Compressor {

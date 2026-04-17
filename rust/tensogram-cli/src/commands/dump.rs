@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use tensogram_core::{decode, decode_metadata, DecodeOptions, TensogramFile};
+use tensogram_core::{DecodeOptions, TensogramFile, decode, decode_metadata};
 
 use crate::filter;
 use crate::output;
@@ -38,10 +38,10 @@ pub fn run(
             // Decode metadata first for cheap filtering
             let metadata = decode_metadata(&msg)?;
 
-            if let Some(ref clause) = clause {
-                if !filter::matches(&metadata, clause) {
-                    continue;
-                }
+            if let Some(ref clause) = clause
+                && !filter::matches(&metadata, clause)
+            {
+                continue;
             }
 
             // Decode full message to access per-object descriptors

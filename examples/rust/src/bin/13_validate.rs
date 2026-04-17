@@ -14,8 +14,8 @@
 use std::collections::BTreeMap;
 
 use tensogram_core::{
-    encode, validate_message, ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions,
-    GlobalMetadata, ValidateOptions, ValidationLevel,
+    ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata, ValidateOptions,
+    ValidationLevel, encode, validate_message,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

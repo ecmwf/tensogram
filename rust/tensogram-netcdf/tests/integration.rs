@@ -14,8 +14,8 @@
 // DecodedObject = (DataObjectDescriptor, Vec<u8>)
 // Access descriptor via .0, data bytes via .1
 
-use tensogram_core::{decode, DecodeOptions, Dtype};
-use tensogram_netcdf::{convert_netcdf_file, ConvertOptions, DataPipeline, NetcdfError, SplitBy};
+use tensogram_core::{DecodeOptions, Dtype, decode};
+use tensogram_netcdf::{ConvertOptions, DataPipeline, NetcdfError, SplitBy, convert_netcdf_file};
 
 fn testdata(name: &str) -> std::path::PathBuf {
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

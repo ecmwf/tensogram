@@ -16,11 +16,11 @@
 //! 2. For split/SE/zero: read reference AFTER ID (if first block)
 //! 3. For uncomp: reference is embedded in block data (no separate read)
 
+use crate::AecError;
+use crate::AecParams;
 use crate::bitstream::BitReader;
 use crate::params;
 use crate::preprocessor;
-use crate::AecError;
-use crate::AecParams;
 
 /// Second Extension lookup table.
 struct SeTable {

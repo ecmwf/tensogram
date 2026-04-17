@@ -14,8 +14,8 @@
 use std::path::{Path, PathBuf};
 
 use ciborium::Value as CborValue;
-use tensogram_core::{decode, DecodeOptions};
-use tensogram_grib::{convert_grib_file, ConvertOptions, Grouping};
+use tensogram_core::{DecodeOptions, decode};
+use tensogram_grib::{ConvertOptions, Grouping, convert_grib_file};
 
 /// Path to the testdata directory.
 fn testdata() -> PathBuf {

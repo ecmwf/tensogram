@@ -14,8 +14,8 @@
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use tensogram_szip::{
-    aec_compress, aec_compress_no_offsets, aec_decompress, AecParams, AEC_DATA_MSB,
-    AEC_DATA_PREPROCESS, AEC_DATA_SIGNED, AEC_RESTRICTED,
+    AEC_DATA_MSB, AEC_DATA_PREPROCESS, AEC_DATA_SIGNED, AEC_RESTRICTED, AecParams, aec_compress,
+    aec_compress_no_offsets, aec_decompress,
 };
 
 // ── Strategies ──────────────────────────────────────────────────────────────
@@ -44,16 +44,12 @@ fn arb_params() -> impl Strategy<Value = AecParams> {
         })
 }
 
-fn arb_data(params: &AecParams) -> impl Strategy<Value = Vec<u8>> {
+fn arb_data(params: &AecParams) -> impl Strategy<Value = Vec<u8>> + use<> {
     let bps = params.bits_per_sample;
     let msb = params.flags & AEC_DATA_MSB != 0;
     let byte_width = {
         let nbytes = (bps as usize).div_ceil(8);
-        if nbytes == 3 {
-            3
-        } else {
-            nbytes
-        }
+        if nbytes == 3 { 3 } else { nbytes }
     };
     let mask = if bps == 32 {
         u32::MAX

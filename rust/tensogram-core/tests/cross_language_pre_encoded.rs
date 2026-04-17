@@ -29,8 +29,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use tensogram_core::{
-    decode, encode_pre_encoded, ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions,
-    GlobalMetadata,
+    ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata, decode,
+    encode_pre_encoded,
 };
 
 // ── Deterministic input ────────────────────────────────────────────────────

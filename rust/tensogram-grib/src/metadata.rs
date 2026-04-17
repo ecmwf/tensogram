@@ -58,10 +58,10 @@ fn read_namespace_keys(
     // Phase 2: read each key's value dynamically.
     let mut keys = BTreeMap::new();
     for key_name in &key_names {
-        if let Ok(val) = msg.read_key_dynamic(key_name) {
-            if let Some(cbor) = dynamic_to_cbor(val) {
-                keys.insert(key_name.clone(), cbor);
-            }
+        if let Ok(val) = msg.read_key_dynamic(key_name)
+            && let Some(cbor) = dynamic_to_cbor(val)
+        {
+            keys.insert(key_name.clone(), cbor);
         }
     }
 

@@ -97,7 +97,7 @@ fn dtype_swap_unit_size_all_variants() {
     // Complex types: swap each scalar component independently
     assert_eq!(Dtype::Complex64.swap_unit_size(), 4); // two float32
     assert_eq!(Dtype::Complex128.swap_unit_size(), 8); // two float64
-                                                       // Bitmask: no swap
+    // Bitmask: no swap
     assert_eq!(Dtype::Bitmask.swap_unit_size(), 0);
 }
 
@@ -562,10 +562,12 @@ fn unknown_compression_rejected() {
 
     let result = encode(&meta, &[(&desc, &data)], &EncodeOptions::default());
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("unknown compression"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("unknown compression")
+    );
 }
 
 #[test]
@@ -1115,10 +1117,12 @@ fn blosc2_unknown_codec_rejected() {
         &EncodeOptions::default(),
     );
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("unknown blosc2 codec"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("unknown blosc2 codec")
+    );
 }
 
 #[test]
@@ -1315,10 +1319,12 @@ fn sz3_missing_mode_rejected() {
         &EncodeOptions::default(),
     );
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("sz3_error_bound_mode"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("sz3_error_bound_mode")
+    );
 }
 
 #[test]
@@ -1337,10 +1343,12 @@ fn sz3_unknown_mode_rejected() {
         &EncodeOptions::default(),
     );
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("unknown sz3_error_bound_mode"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("unknown sz3_error_bound_mode")
+    );
 }
 
 // ── 27. Shuffle filter with compression ──────────────────────────────────────

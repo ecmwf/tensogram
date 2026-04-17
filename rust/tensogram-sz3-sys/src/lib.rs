@@ -43,7 +43,7 @@ pub struct SZ3_Config {
 // ---------------------------------------------------------------------------
 
 macro_rules! impl_sz3_type {
-    ($mod_name:ident, $rust_ty:ty, $data_type:expr, $suffix:ident) => {
+    ($mod_name:ident, $rust_ty:ty, $data_type:expr_2021, $suffix:ident) => {
         pub mod $mod_name {
             use super::SZ3_Config;
 
@@ -53,7 +53,7 @@ macro_rules! impl_sz3_type {
             /// SZ3 `dataType` discriminant for this type.
             pub const DATA_TYPE_TYPE: u8 = $data_type;
 
-            extern "C" {
+            unsafe extern "C" {
                 #[link_name = concat!("sz3_compress_size_bound_", stringify!($suffix))]
                 pub fn compress_size_bound(config: SZ3_Config) -> usize;
 
@@ -91,7 +91,7 @@ impl_sz3_type!(impl_i64, i64, 9, i64);
 // Top-level helpers
 // ---------------------------------------------------------------------------
 
-extern "C" {
+unsafe extern "C" {
     /// Parse a compressed SZ3 blob and return its configuration **without**
     /// decompressing the payload.  The returned `SZ3_Config::dims` pointer is
     /// heap-allocated; free it with [`sz3_dealloc_size_t`].

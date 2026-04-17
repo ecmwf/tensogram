@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use tensogram_grib::{convert_grib_file, ConvertOptions, DataPipeline, Grouping};
+use tensogram_grib::{ConvertOptions, DataPipeline, Grouping, convert_grib_file};
 
 use crate::encoding_args::PipelineArgs;
 

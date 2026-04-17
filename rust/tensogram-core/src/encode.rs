@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use crate::dtype::Dtype;
 use crate::error::{Result, TensogramError};
 use crate::framing::{self, EncodedObject};
-use crate::hash::{compute_hash, HashAlgorithm};
+use crate::hash::{HashAlgorithm, compute_hash};
 use crate::metadata::RESERVED_KEY;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashDescriptor};
 #[cfg(feature = "blosc2")]
@@ -543,7 +543,7 @@ pub(crate) fn build_pipeline_config_with_backend(
         other => {
             return Err(TensogramError::Encoding(format!(
                 "unknown encoding: {other}"
-            )))
+            )));
         }
     };
 
@@ -611,7 +611,7 @@ pub(crate) fn build_pipeline_config_with_backend(
                 other => {
                     return Err(TensogramError::Encoding(format!(
                         "unknown blosc2 codec: {other}"
-                    )))
+                    )));
                 }
             };
             let clevel_i64 = get_i64_param(&desc.params, "blosc2_clevel").unwrap_or(5);
@@ -640,7 +640,7 @@ pub(crate) fn build_pipeline_config_with_backend(
                 _ => {
                     return Err(TensogramError::Metadata(
                         "missing required parameter: zfp_mode".to_string(),
-                    ))
+                    ));
                 }
             };
             let mode = match mode_str.as_str() {
@@ -662,7 +662,7 @@ pub(crate) fn build_pipeline_config_with_backend(
                 other => {
                     return Err(TensogramError::Encoding(format!(
                         "unknown zfp_mode: {other}"
-                    )))
+                    )));
                 }
             };
             CompressionType::Zfp { mode }
@@ -674,7 +674,7 @@ pub(crate) fn build_pipeline_config_with_backend(
                 _ => {
                     return Err(TensogramError::Metadata(
                         "missing required parameter: sz3_error_bound_mode".to_string(),
-                    ))
+                    ));
                 }
             };
             let bound_val = get_f64_param(&desc.params, "sz3_error_bound")?;
@@ -685,7 +685,7 @@ pub(crate) fn build_pipeline_config_with_backend(
                 other => {
                     return Err(TensogramError::Encoding(format!(
                         "unknown sz3_error_bound_mode: {other}"
-                    )))
+                    )));
                 }
             };
             CompressionType::Sz3 { error_bound }
@@ -693,7 +693,7 @@ pub(crate) fn build_pipeline_config_with_backend(
         other => {
             return Err(TensogramError::Encoding(format!(
                 "unknown compression: {other}"
-            )))
+            )));
         }
     };
 
@@ -883,7 +883,7 @@ pub(crate) fn validate_no_szip_offsets_for_non_szip(desc: &DataObjectDescriptor)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decode::{decode, DecodeOptions};
+    use crate::decode::{DecodeOptions, decode};
     use crate::types::{ByteOrder, GlobalMetadata};
     use std::collections::BTreeMap;
 

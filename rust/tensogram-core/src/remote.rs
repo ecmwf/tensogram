@@ -13,7 +13,9 @@
 
 use std::collections::BTreeMap;
 use std::ops::Range;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+#[cfg(feature = "async")]
+use std::sync::MutexGuard;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use bytes::Bytes;
 use object_store::path::Path as ObjectPath;
@@ -26,8 +28,8 @@ use crate::framing;
 use crate::metadata;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, IndexFrame};
 use crate::wire::{
-    DataObjectFlags, FrameHeader, FrameType, MessageFlags, Postamble, Preamble,
-    DATA_OBJECT_FOOTER_SIZE, FRAME_END, FRAME_HEADER_SIZE, MAGIC, POSTAMBLE_SIZE, PREAMBLE_SIZE,
+    DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END, FRAME_HEADER_SIZE, FrameHeader, FrameType,
+    MAGIC, MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE, Postamble, Preamble,
 };
 
 // ── URL scheme detection ─────────────────────────────────────────────────────
@@ -182,6 +184,7 @@ impl RemoteBackend {
         &self.source_url
     }
 
+    #[cfg(feature = "async")]
     fn lock_state(&self) -> Result<MutexGuard<'_, RemoteState>> {
         self.state
             .lock()

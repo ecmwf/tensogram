@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use tensogram_core::{decode, encode, DecodeOptions, EncodeOptions, TensogramFile, RESERVED_KEY};
+use tensogram_core::{DecodeOptions, EncodeOptions, RESERVED_KEY, TensogramFile, decode, encode};
 
 /// Split a multi-object message into separate single-object messages.
 ///
@@ -272,17 +272,21 @@ mod tests {
         // Verify first split has param=2t
         let msg0 = std::fs::read(dir.path().join("split_meta_0000.tgm")).unwrap();
         let meta0 = tensogram_core::decode_metadata(&msg0).unwrap();
-        assert!(meta0
-            .base
-            .iter()
-            .any(|e| e.get("param") == Some(&ciborium::Value::Text("2t".into()))));
+        assert!(
+            meta0
+                .base
+                .iter()
+                .any(|e| e.get("param") == Some(&ciborium::Value::Text("2t".into())))
+        );
 
         // Verify second split has param=msl
         let msg1 = std::fs::read(dir.path().join("split_meta_0001.tgm")).unwrap();
         let meta1 = tensogram_core::decode_metadata(&msg1).unwrap();
-        assert!(meta1
-            .base
-            .iter()
-            .any(|e| e.get("param") == Some(&ciborium::Value::Text("msl".into()))));
+        assert!(
+            meta1
+                .base
+                .iter()
+                .any(|e| e.get("param") == Some(&ciborium::Value::Text("msl".into())))
+        );
     }
 }
