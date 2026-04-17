@@ -1,13 +1,21 @@
 [package]
 name = "tensogram-sz3"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
+rust-version = "1.85"
 license = "Apache-2.0"
 description = "High-level SZ3 compression API for Tensogram"
+repository = "https://github.com/ecmwf/tensogram"
+homepage = "https://sites.ecmwf.int/docs/tensogram/main"
+documentation = "https://docs.rs/tensogram-sz3"
+readme = "README.md"
+keywords = ["sz3", "compression", "lossy", "scientific-data", "tensogram"]
+categories = ["science", "compression"]
+authors = ["ECMWF <software-support@ecmwf.int>"]
 
 [dependencies]
-tensogram-sz3-sys = { path = "../tensogram-sz3-sys" }
-thiserror = "1"
+tensogram-sz3-sys = { path = "../tensogram-sz3-sys", version = "=0.14.0" }
+thiserror.workspace = true
 # zstd-sys is needed to ensure the zstd symbols that tensogram-sz3-sys's C++
 # code references are available at link time.
 zstd-sys = "2"

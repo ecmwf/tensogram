@@ -1,7 +1,20 @@
 [package]
 name = "tensogram-encodings"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Encoding pipeline and compression codec registry for the Tensogram message format"
+repository = "https://github.com/ecmwf/tensogram"
+homepage = "https://sites.ecmwf.int/docs/tensogram/main"
+documentation = "https://docs.rs/tensogram-encodings"
+readme = "README.md"
+keywords = ["tensogram", "encoding", "compression", "codec", "scientific-data"]
+categories = ["science", "encoding", "compression"]
+authors = ["ECMWF <software-support@ecmwf.int>"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 default = ["szip", "zstd", "lz4", "blosc2", "zfp", "sz3", "threads"]

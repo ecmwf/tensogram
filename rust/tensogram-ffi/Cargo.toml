@@ -1,14 +1,25 @@
 [package]
 name = "tensogram-ffi"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "C FFI bindings for the Tensogram N-tensor message format library"
+repository = "https://github.com/ecmwf/tensogram"
+homepage = "https://sites.ecmwf.int/docs/tensogram/main"
+documentation = "https://docs.rs/tensogram-ffi"
+readme = "README.md"
+keywords = ["tensogram", "ffi", "c-api", "scientific-data", "bindings"]
+categories = ["science", "api-bindings"]
+authors = ["ECMWF <software-support@ecmwf.int>"]
+include = ["src/**", "build.rs", "cbindgen.toml", "tensogram.h", "Cargo.toml", "README.md", "LICENSE"]
 
 [lib]
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-tensogram-core = { path = "../tensogram-core" }
-tensogram-encodings = { path = "../tensogram-encodings" }
+tensogram-core = { path = "../tensogram-core", version = "=0.14.0" }
+tensogram-encodings = { path = "../tensogram-encodings", version = "=0.14.0" }
 serde_json = "1"
 ciborium.workspace = true
 serde.workspace = true

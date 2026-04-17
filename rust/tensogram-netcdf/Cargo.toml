@@ -1,12 +1,21 @@
 [package]
 name = "tensogram-netcdf"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
 description = "NetCDF to Tensogram format converter"
+repository = "https://github.com/ecmwf/tensogram"
+homepage = "https://sites.ecmwf.int/docs/tensogram/main"
+documentation = "https://sites.ecmwf.int/docs/tensogram/main"
+readme = "README.md"
+keywords = ["tensogram", "netcdf", "scientific-data", "climate", "weather"]
+categories = ["science"]
+authors = ["ECMWF <software-support@ecmwf.int>"]
 
 [dependencies]
-tensogram-core = { path = "../tensogram-core" }
-tensogram-encodings = { path = "../tensogram-encodings" }
+tensogram-core = { path = "../tensogram-core", version = "=0.14.0" }
+tensogram-encodings = { path = "../tensogram-encodings", version = "=0.14.0" }
 netcdf = { version = "0.12", default-features = false }
 thiserror = "2"
 ciborium = "0.2"

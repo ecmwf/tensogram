@@ -1,14 +1,26 @@
 [package]
 name = "tensogram-wasm"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
 description = "WebAssembly bindings for the Tensogram N-tensor message format"
+repository = "https://github.com/ecmwf/tensogram"
+homepage = "https://sites.ecmwf.int/docs/tensogram/main"
+documentation = "https://sites.ecmwf.int/docs/tensogram/main"
+readme = "README.md"
+keywords = ["tensogram", "wasm", "webassembly", "scientific-data", "tensor"]
+categories = ["science", "wasm"]
+authors = ["ECMWF <software-support@ecmwf.int>"]
+
+[package.metadata.docs.rs]
+default-target = "wasm32-unknown-unknown"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-tensogram-core = { path = "../tensogram-core", default-features = false, features = [
+tensogram-core = { path = "../tensogram-core", version = "=0.14.0", default-features = false, features = [
     "lz4",
     "szip-pure",
     "zstd-pure",

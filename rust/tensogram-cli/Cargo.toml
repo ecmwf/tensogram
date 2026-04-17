@@ -1,7 +1,17 @@
 [package]
 name = "tensogram-cli"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "CLI for inspecting, converting, and manipulating Tensogram .tgm files"
+repository = "https://github.com/ecmwf/tensogram"
+homepage = "https://sites.ecmwf.int/docs/tensogram/main"
+documentation = "https://sites.ecmwf.int/docs/tensogram/main"
+readme = "README.md"
+keywords = ["tensogram", "cli", "scientific-data", "tensor", "weather"]
+categories = ["science", "command-line-utilities"]
+authors = ["ECMWF <software-support@ecmwf.int>"]
 
 [[bin]]
 name = "tensogram"
@@ -13,9 +23,9 @@ grib = ["dep:tensogram-grib"]
 netcdf = ["dep:tensogram-netcdf"]
 
 [dependencies]
-tensogram-core = { path = "../tensogram-core" }
-tensogram-grib = { path = "../tensogram-grib", optional = true }
-tensogram-netcdf = { path = "../tensogram-netcdf", optional = true }
+tensogram-core = { path = "../tensogram-core", version = "=0.14.0" }
+tensogram-grib = { path = "../tensogram-grib", version = "=0.14.0", optional = true }
+tensogram-netcdf = { path = "../tensogram-netcdf", version = "=0.14.0", optional = true }
 ciborium.workspace = true
 clap.workspace = true
 serde.workspace = true
