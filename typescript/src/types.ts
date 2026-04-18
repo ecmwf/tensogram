@@ -9,7 +9,7 @@
 /**
  * Public type definitions for `@ecmwf/tensogram`.
  *
- * These mirror the Rust types in `tensogram-core::types` and the wire
+ * These mirror the Rust types in `tensogram::types` and the wire
  * format defined in `plans/WIRE_FORMAT.md`. They are hand-written rather
  * than auto-generated from Rust because `ciborium::Value` — which holds
  * free-form metadata — does not map cleanly to any of the existing Rust→TS

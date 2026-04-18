@@ -10,10 +10,10 @@ crate-type = ["cdylib"]
 
 [features]
 default = ["async"]
-async = ["tensogram/async", "dep:pyo3-async-runtimes"]
+async = ["tensogram-lib/async", "dep:pyo3-async-runtimes"]
 
 [dependencies]
-tensogram = { path = "../../rust/tensogram", features = ["remote"] }
+tensogram-lib = { package = "tensogram", path = "../../rust/tensogram", features = ["remote"] }
 tensogram-encodings = { path = "../../rust/tensogram-encodings" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 numpy = "0.28"

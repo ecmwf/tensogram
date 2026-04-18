@@ -23,10 +23,10 @@ use pyo3::types::{PyBytes, PyDict, PyList};
 #[cfg(feature = "async")]
 use std::sync::Arc;
 
-use tensogram::validate::{
+use tensogram_lib::validate::{
     validate_file as core_validate_file, validate_message, ValidateOptions, ValidationLevel,
 };
-use tensogram::{
+use tensogram_lib::{
     decode, decode_descriptors, decode_metadata, decode_object, decode_range, encode,
     encode_pre_encoded, scan, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
     GlobalMetadata, HashAlgorithm, StreamingEncoder, TensogramError, TensogramFile, RESERVED_KEY,
@@ -707,7 +707,7 @@ impl PyTensogramFile {
             .detach(|| {
                 let f = TensogramFile::open(&path)?;
                 let c = f.message_count()?;
-                Ok::<_, tensogram::TensogramError>((f, c))
+                Ok::<_, tensogram_lib::TensogramError>((f, c))
             })
             .map_err(to_py_err)?;
         Ok(PyFileIter {
@@ -1929,7 +1929,7 @@ impl PyAsyncTensogramFileIter {
 #[pyfunction]
 #[pyo3(name = "is_remote_url")]
 fn py_is_remote_url(source: &str) -> bool {
-    tensogram::is_remote_url(source)
+    tensogram_lib::is_remote_url(source)
 }
 
 #[pymodule(gil_used = false)]

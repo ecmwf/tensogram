@@ -8,7 +8,7 @@
  * by the Rust, Python, and C++ suites from TypeScript, and assert
  * identical observable behaviour.
  *
- * The golden files live under `rust/tensogram-core/tests/golden/*.tgm`
+ * The golden files live under `rust/tensogram/tests/golden/*.tgm`
  * and are committed to the repo. They are regenerated from Rust only
  * when explicitly requested via the `regenerate_golden_files` Rust
  * test — so running this file verifies that the TS wrapper agrees
@@ -27,7 +27,7 @@ import {
 } from '../src/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const GOLDEN_DIR = join(__dirname, '../../rust/tensogram-core/tests/golden');
+const GOLDEN_DIR = join(__dirname, '../../rust/tensogram/tests/golden');
 
 function loadGolden(name: string): Uint8Array {
   const buf = readFileSync(join(GOLDEN_DIR, name));
