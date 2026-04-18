@@ -16,7 +16,7 @@ use tensogram_encodings::{ByteOrder, CompressionType, EncodingType, FilterType, 
 
 use crate::constants::AEC_DATA_PREPROCESS;
 use crate::datagen::generate_weather_field;
-use crate::report::{compute_fidelity, compute_timing_stats, BenchmarkResult};
+use crate::report::{BenchmarkResult, compute_fidelity, compute_timing_stats};
 use crate::{BenchmarkError, BenchmarkRun, CaseFailure};
 
 // ── ecCodes C API (raw) ──────────────────────────────────────────────────────
