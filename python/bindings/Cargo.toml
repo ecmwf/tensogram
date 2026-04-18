@@ -16,7 +16,7 @@ async = ["tensogram-lib/async", "dep:pyo3-async-runtimes"]
 # libeccodes / libnetcdf at build time. When the feature is off,
 # `tensogram.convert_grib()` / `tensogram.convert_netcdf()` still
 # exist in the Python module but raise a `RuntimeError` at call
-# time (see `src/lib.rs::convert_grib` for the stub implementation).
+# time (see `src/lib.rs::py_convert_grib` for the stub implementation).
 grib = ["dep:tensogram-grib"]
 netcdf = ["dep:tensogram-netcdf"]
 

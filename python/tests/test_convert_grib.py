@@ -255,8 +255,12 @@ def test_convert_grib_buffer_handles_leading_garbage() -> None:
 
 @requires_grib
 def test_convert_grib_unknown_compression_is_actionable() -> None:
-    """An unknown compression name lists the valid choices in the error message."""
-    with pytest.raises(RuntimeError, match="unknown compression"):
+    """An unknown compression name raises ValueError and lists the valid choices.
+
+    Bad pipeline input is a caller-provided value, so it routes through
+    :class:`ValueError`, not :class:`RuntimeError`.
+    """
+    with pytest.raises(ValueError, match="unknown compression"):
         tensogram.convert_grib(str(_testdata("2t.grib2")), compression="snappy")
 
 
@@ -314,20 +318,40 @@ def test_convert_grib_buffer_accepts_memoryview() -> None:
     assert messages
 
 
+@requires_grib
+def test_convert_grib_buffer_accepts_numpy_uint8() -> None:
+    """``numpy.uint8[:]`` is accepted via the Python buffer protocol."""
+    with open(_testdata("2t.grib2"), "rb") as fh:
+        data = fh.read()
+    messages = tensogram.convert_grib_buffer(np.frombuffer(data, dtype=np.uint8))
+    assert messages
+
+
 # ── Error paths ─────────────────────────────────────────────────────────────
 
 
 @requires_grib
 def test_convert_grib_missing_file_errors(tmp_path: Path) -> None:
-    """A missing path raises RuntimeError from the converter."""
-    with pytest.raises(RuntimeError):
+    """A missing path raises :class:`FileNotFoundError` (subclass of :class:`OSError`).
+
+    The converter pre-checks path existence so callers can rely on a
+    standard Python I/O exception regardless of what ecCodes returns
+    from its own `new_from_file`.
+    """
+    with pytest.raises(FileNotFoundError):
         tensogram.convert_grib(str(tmp_path / "does_not_exist.grib2"))
 
 
 @requires_grib
 def test_convert_grib_buffer_rejects_garbage() -> None:
-    """Non-GRIB bytes surface a RuntimeError rather than a panic."""
-    with pytest.raises(RuntimeError):
+    """Non-GRIB bytes surface a typed exception rather than a panic.
+
+    The exact exception depends on whether ecCodes rejects the buffer
+    outright (RuntimeError from `CodesError`) or accepts it and returns
+    zero messages (`ValueError` from `GribError::NoMessages`) — assert
+    on the base class that covers both.
+    """
+    with pytest.raises((ValueError, RuntimeError)):
         tensogram.convert_grib_buffer(b"this is clearly not a GRIB message")
 
 

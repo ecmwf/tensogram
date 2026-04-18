@@ -433,11 +433,16 @@ def test_py_api_pipeline_arguments(tmp_path: Path) -> None:
 
 @requires_netcdf
 def test_py_api_record_split_requires_unlimited(tmp_path: Path) -> None:
-    """split_by='record' raises when the file has no unlimited dimension."""
+    """split_by='record' raises :class:`ValueError` when no unlimited dimension.
+
+    This is a caller-input mismatch (requested ``split_by="record"``
+    against a file that does not support it), hence ``ValueError`` and
+    not ``RuntimeError``.
+    """
     nc_path = tmp_path / "no_unlimited_api.nc"
     _write_simple_f64(nc_path)
 
-    with pytest.raises(RuntimeError, match="unlimited"):
+    with pytest.raises(ValueError, match="unlimited"):
         tensogram.convert_netcdf(str(nc_path), split_by="record")
 
 
@@ -458,8 +463,12 @@ def test_py_api_invalid_hash() -> None:
 
 @requires_netcdf
 def test_py_api_missing_file(tmp_path: Path) -> None:
-    """A missing file raises RuntimeError (from the Rust converter)."""
-    with pytest.raises(RuntimeError):
+    """A missing file raises :class:`FileNotFoundError`.
+
+    Matches the Pythonic convention that missing paths are ``OSError``
+    subclasses, not opaque ``RuntimeError``.
+    """
+    with pytest.raises(FileNotFoundError):
         tensogram.convert_netcdf(str(tmp_path / "does_not_exist.nc"))
 
 

@@ -532,8 +532,13 @@ with open("forecast.tgm", "wb") as fh:
 - `bits` outside `1..=64` silently falls back to `encoding="none"` and
   emits a warning to stderr. Validate your inputs before calling if
   fail-fast is important.
-- Unknown `compression` / `encoding` names raise `RuntimeError` with the
+- Unknown `compression` / `encoding` names raise `ValueError` with the
   list of valid choices in the message.
+- Unknown `grouping` / `split_by` / `hash` values raise `ValueError`.
+- Missing input paths raise `FileNotFoundError`.
+- Building the wheel without the `grib` / `netcdf` feature causes the
+  corresponding function to raise `RuntimeError` at call time with
+  rebuild instructions.
 
 Requires `libeccodes` at the OS level **and** the wheel built with
 `--features grib` (`maturin develop --features grib`). Official PyPI
@@ -594,10 +599,11 @@ with `--features netcdf`.
 
 | Exception | When |
 |-----------|------|
-| `ValueError` | Invalid parameters, unknown dtype, NaN in simple packing, unknown validation level, invalid `grouping` / `split_by` / `hash` |
-| `OSError` | File I/O errors, including missing paths |
-| `RuntimeError` | Hash mismatch during `decode(..., verify_hash=True)`; ecCodes / libnetcdf read errors; calling `convert_grib` / `convert_netcdf` on a wheel built without the feature |
-| `KeyError` | Missing metadata key via `meta["key"]` |
+| `FileNotFoundError` | `convert_grib(path)` / `convert_netcdf(path)` called with a non-existent path (subclass of `OSError`). |
+| `OSError` | Other file I/O failures (permission denied, disk error, etc.). |
+| `ValueError` | Invalid parameters; unknown dtype; NaN in simple packing; unknown validation level; invalid `grouping` / `split_by` / `hash`; unknown codec / bit width in the conversion pipeline; empty/non-GRIB input buffer; `split_by="record"` on a NetCDF without an unlimited dimension. |
+| `RuntimeError` | Hash mismatch during `decode(..., verify_hash=True)`; calling `convert_grib` / `convert_grib_buffer` / `convert_netcdf` on a wheel built without the feature; internal ecCodes / libnetcdf C-library failures that cannot be classified as caller-input errors. |
+| `KeyError` | Missing metadata key via `meta["key"]`. |
 
 ## Supported dtypes
 

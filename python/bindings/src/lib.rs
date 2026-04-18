@@ -16,6 +16,11 @@ use std::path::Path;
 
 use numpy::PyArrayMethods;
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
+// `PyFileNotFoundError` is only referenced from the GRIB/NetCDF converter
+// error-mapping helpers, which are themselves cfg-gated.  Gate the import
+// so `--no-default-features --features async` builds do not warn.
+#[cfg(any(feature = "grib", feature = "netcdf"))]
+use pyo3::exceptions::PyFileNotFoundError;
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyBytes, PyDict, PyList};
@@ -2054,6 +2059,57 @@ fn build_netcdf_options(
     })
 }
 
+/// Map a [`tensogram_grib::GribError`] to the most appropriate Python
+/// exception. The routing follows the same convention as the rest of
+/// the bindings (see `map_tensogram_error`):
+///
+/// - [`std::io::ErrorKind::NotFound`] → [`FileNotFoundError`]
+///   (subclass of [`OSError`])
+/// - Other [`GribError::Io`] variants → [`OSError`]
+/// - Caller-input problems ([`GribError::NoMessages`],
+///   [`GribError::InvalidData`], [`GribError::Encode`]) → [`ValueError`]
+/// - Everything else (ecCodes C-library internal failures) → [`RuntimeError`]
+#[cfg(feature = "grib")]
+fn grib_error_to_pyerr(e: tensogram_grib::GribError) -> PyErr {
+    use tensogram_grib::GribError;
+    match &e {
+        GribError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
+            PyFileNotFoundError::new_err(e.to_string())
+        }
+        GribError::Io(_) => PyIOError::new_err(e.to_string()),
+        GribError::NoMessages | GribError::InvalidData(_) | GribError::Encode(_) => {
+            PyValueError::new_err(e.to_string())
+        }
+        GribError::EcCodes(_) => PyRuntimeError::new_err(e.to_string()),
+    }
+}
+
+/// Map a [`tensogram_netcdf::NetcdfError`] to the most appropriate Python
+/// exception. Same routing convention as [`grib_error_to_pyerr`]:
+///
+/// - [`std::io::ErrorKind::NotFound`] → [`FileNotFoundError`]
+/// - Other [`NetcdfError::Io`] variants → [`OSError`]
+/// - Caller-input problems → [`ValueError`] (including
+///   [`NetcdfError::NoUnlimitedDimension`] which is raised when the
+///   caller asks for `split_by="record"` against a file without one)
+/// - libnetcdf C-library errors → [`RuntimeError`]
+#[cfg(feature = "netcdf")]
+fn netcdf_error_to_pyerr(e: tensogram_netcdf::NetcdfError) -> PyErr {
+    use tensogram_netcdf::NetcdfError;
+    match &e {
+        NetcdfError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
+            PyFileNotFoundError::new_err(e.to_string())
+        }
+        NetcdfError::Io(_) => PyIOError::new_err(e.to_string()),
+        NetcdfError::NoVariables
+        | NetcdfError::InvalidData(_)
+        | NetcdfError::Encode(_)
+        | NetcdfError::UnsupportedType { .. }
+        | NetcdfError::NoUnlimitedDimension { .. } => PyValueError::new_err(e.to_string()),
+        NetcdfError::Netcdf(_) => PyRuntimeError::new_err(e.to_string()),
+    }
+}
+
 /// Wrap a list of Tensogram wire-format messages into a Python
 /// `list[bytes]` for return from the `convert_grib` / `convert_netcdf`
 /// PyO3 wrappers.
@@ -2069,6 +2125,15 @@ fn messages_to_pybytes_list(py: Python<'_>, messages: Vec<Vec<u8>>) -> PyResult<
 /// Returns a list of `bytes`, one per produced Tensogram message.
 /// Concatenate them (`b"".join(result)`) to get a complete multi-message
 /// file, or write them sequentially to an open file handle.
+///
+/// # Python exceptions raised
+/// - [`FileNotFoundError`] — `path` does not exist.
+/// - [`OSError`] — other I/O failure (permission denied, etc.).
+/// - [`ValueError`] — unknown `grouping` / `hash`; unknown codec name or
+///   bit width in the pipeline; the buffer contained zero GRIB messages;
+///   any other caller-input problem.
+/// - [`RuntimeError`] — the `grib` Cargo feature is disabled, or an
+///   ecCodes C-library internal error bubbled up.
 ///
 /// # Arguments
 /// - `path`: filesystem path to the GRIB file.
@@ -2087,8 +2152,9 @@ fn messages_to_pybytes_list(py: Python<'_>, messages: Vec<Vec<u8>>) -> PyResult<
 ///   `"szip"`.
 /// - `compression_level`: codec-specific integer (e.g. zstd 1..=22).
 ///   Defaults to the codec's own default when `None`.
-/// - `threads`: parallelism budget (0 = sequential, uses `TENSOGRAM_THREADS`
-///   env var if set).
+/// - `threads`: parallelism budget. `0` uses the default behaviour and may
+///   be overridden by `TENSOGRAM_THREADS=N`; use `1` to force
+///   single-threaded execution.
 /// - `hash`: `"xxh3"` (default) or `None` to skip hashing.
 #[pyfunction]
 #[pyo3(name = "convert_grib", signature = (
@@ -2133,9 +2199,19 @@ fn py_convert_grib(
         )?;
         let path_buf = std::path::PathBuf::from(path);
 
+        // Pre-check path existence so callers receive a standard Python
+        // FileNotFoundError rather than whatever ecCodes happens to
+        // surface on a missing path (typically CodesError::LibcNonZero,
+        // which would otherwise map to RuntimeError).
+        if !path_buf.exists() {
+            return Err(PyFileNotFoundError::new_err(format!(
+                "no such file: {path}"
+            )));
+        }
+
         let messages = py
             .detach(|| tensogram_grib::convert_grib_file(&path_buf, &options))
-            .map_err(|e| PyRuntimeError::new_err(format!("convert_grib failed: {e}")))?;
+            .map_err(grib_error_to_pyerr)?;
         messages_to_pybytes_list(py, messages)
     }
     #[cfg(not(feature = "grib"))]
@@ -2162,6 +2238,13 @@ fn py_convert_grib(
 /// In-memory equivalent of [`convert_grib`].  Accepts any Python
 /// bytes-like object (`bytes`, `bytearray`, memoryview, `numpy.uint8[:]`)
 /// and releases the GIL during the conversion itself.
+///
+/// # Python exceptions raised
+/// - [`ValueError`] — `buffer` is not a bytes-like object; the buffer
+///   contained zero GRIB messages; or any other caller-input problem
+///   (same taxonomy as [`convert_grib`]).
+/// - [`RuntimeError`] — the `grib` Cargo feature is disabled, or an
+///   ecCodes C-library internal error bubbled up.
 ///
 /// Useful when:
 /// - you already have GRIB bytes in memory (e.g. from a byte-range
@@ -2223,7 +2306,7 @@ fn py_convert_grib_buffer(
 
         let messages = py
             .detach(|| tensogram_grib::convert_grib_buffer(owned, &options))
-            .map_err(|e| PyRuntimeError::new_err(format!("convert_grib_buffer failed: {e}")))?;
+            .map_err(grib_error_to_pyerr)?;
         messages_to_pybytes_list(py, messages)
     }
     #[cfg(not(feature = "grib"))]
@@ -2249,6 +2332,16 @@ fn py_convert_grib_buffer(
 ///
 /// Returns a list of `bytes`, one per produced Tensogram message.
 ///
+/// # Python exceptions raised
+/// - [`FileNotFoundError`] — `path` does not exist.
+/// - [`OSError`] — other I/O failure.
+/// - [`ValueError`] — unknown `split_by` / `hash`; unknown codec name or
+///   bit width; the file contains no variables; `split_by="record"` was
+///   requested on a file without an unlimited dimension; any other
+///   caller-input problem.
+/// - [`RuntimeError`] — the `netcdf` Cargo feature is disabled, or a
+///   libnetcdf C-library internal error bubbled up.
+///
 /// # Arguments
 /// - `path`: filesystem path to the NetCDF file (`.nc`, NetCDF-3 classic
 ///   or NetCDF-4/HDF5).
@@ -2262,7 +2355,9 @@ fn py_convert_grib_buffer(
 ///   16 when `encoding="simple_packing"` and `bits=None`. See
 ///   [`convert_grib`] for the full behaviour.
 /// - `filter` / `compression` / `compression_level`: see [`convert_grib`].
-/// - `threads`: parallelism budget (0 = sequential).
+/// - `threads`: parallelism budget. `0` uses the default behaviour and may
+///   be overridden by `TENSOGRAM_THREADS=N`; use `1` to force
+///   single-threaded execution.
 /// - `hash`: `"xxh3"` (default) or `None` to skip hashing.
 #[pyfunction]
 #[pyo3(name = "convert_netcdf", signature = (
@@ -2307,9 +2402,16 @@ fn py_convert_netcdf(
         )?;
         let path_buf = std::path::PathBuf::from(path);
 
+        // Pre-check path existence — same reasoning as `py_convert_grib`.
+        if !path_buf.exists() {
+            return Err(PyFileNotFoundError::new_err(format!(
+                "no such file: {path}"
+            )));
+        }
+
         let messages = py
             .detach(|| tensogram_netcdf::convert_netcdf_file(&path_buf, &options))
-            .map_err(|e| PyRuntimeError::new_err(format!("convert_netcdf failed: {e}")))?;
+            .map_err(netcdf_error_to_pyerr)?;
         messages_to_pybytes_list(py, messages)
     }
     #[cfg(not(feature = "netcdf"))]
