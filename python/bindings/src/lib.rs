@@ -2109,7 +2109,11 @@ fn build_grib_options(
         grouping,
         preserve_all_keys,
         pipeline: build_data_pipeline(encoding, bits, filter, compression, compression_level),
-        encode_options: make_encode_options(hash, threads)?,
+        // Strict-finite flags are not exposed through the Python
+        // `convert_grib` surface (yet); the CLI `tensogram convert-grib
+        // --reject-nan` path uses its own builder.  Hardcoded false so
+        // converter behaviour matches pre-0.15 exactly.
+        encode_options: make_encode_options(hash, threads, false, false)?,
     })
 }
 
@@ -2143,7 +2147,8 @@ fn build_netcdf_options(
         split_by,
         cf,
         pipeline: build_data_pipeline(encoding, bits, filter, compression, compression_level),
-        encode_options: make_encode_options(hash, threads)?,
+        // Strict-finite flags: see convert_grib for rationale.
+        encode_options: make_encode_options(hash, threads, false, false)?,
     })
 }
 
