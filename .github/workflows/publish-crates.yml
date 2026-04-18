@@ -36,8 +36,13 @@ jobs:
             python3 -c "import sys,json; pkgs=json.load(sys.stdin)['packages']; print([p['version'] for p in pkgs if p['name']=='$CRATE'][0])" 2>/dev/null || true)
 
           if [ -z "$VERSION" ]; then
-            MANIFEST=$(find rust -name Cargo.toml -path "*/$CRATE/*" | head -1)
-            VERSION=$(grep '^version' "$MANIFEST" | head -1 | sed 's/.*"\(.*\)"/\1/')
+            # Excluded crate — extract version from the --manifest-path argument
+            for arg in "$@"; do
+              if [ -f "$arg" ] && echo "$arg" | grep -q "Cargo.toml"; then
+                VERSION=$(grep '^version' "$arg" | head -1 | sed 's/.*"\(.*\)"/\1/')
+                break
+              fi
+            done
           fi
 
           # Sparse index path: 1-char → 1/, 2-char → 2/, 3-char → 3/first-char/,
