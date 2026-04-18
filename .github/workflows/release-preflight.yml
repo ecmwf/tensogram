@@ -37,6 +37,8 @@ jobs:
         with:
           submodules: true
 
+      - run: mkdir -p "$TMPDIR"
+
       - name: Check version consistency
         run: |
           EXPECTED="${{ inputs.version }}"
