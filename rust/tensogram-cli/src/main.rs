@@ -41,11 +41,14 @@ struct Cli {
     /// Reject float payloads containing NaN before the encoding pipeline
     /// runs.  Default off.
     ///
-    /// Applies to every encoding-capable subcommand
-    /// (merge, copy, split, reshuffle, set, convert-grib, convert-netcdf).
-    /// Fails with an encoding error on the first NaN — see the
-    /// `docs/src/reference/strict-finite.md` guide.  Pass
-    /// `--reject-nan` at the command line or set
+    /// Applies to every encoding-capable subcommand that re-runs the
+    /// pipeline on user data: `merge`, `split`, `reshuffle`,
+    /// `convert-grib`, `convert-netcdf`.  `copy` (raw byte copy) and
+    /// `set` (metadata-only) are no-ops under this flag.
+    ///
+    /// Fails with an encoding error on the first NaN — see
+    /// `docs/src/guide/strict-finite.md` for the full semantics.
+    /// Pass `--reject-nan` at the command line or set
     /// `TENSOGRAM_REJECT_NAN=1` in the environment.
     #[arg(
         long,

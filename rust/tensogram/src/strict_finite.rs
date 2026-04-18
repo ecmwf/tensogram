@@ -67,24 +67,16 @@ pub(crate) fn scan(
     if !reject_nan && !reject_inf {
         return Ok(());
     }
-    match dtype {
-        Dtype::Int8
-        | Dtype::Int16
-        | Dtype::Int32
-        | Dtype::Int64
-        | Dtype::Uint8
-        | Dtype::Uint16
-        | Dtype::Uint32
-        | Dtype::Uint64
-        | Dtype::Bitmask => return Ok(()),
-        _ => {}
-    }
-
     // Use the parallel path only when the feature is compiled in and
     // the caller asked for it AND the input is large enough.  Small
     // payloads are always scanned sequentially.
     let go_parallel = parallel && data.len() >= PAR_CHUNK_BYTES;
 
+    // Single exhaustive match: float dtypes dispatch to their scanner,
+    // integer and bitmask short-circuit.  Keeping the integer / bitmask
+    // arms explicit (rather than `_ =>`) makes adding a future dtype a
+    // compile-time decision point — the author must consciously choose
+    // whether it's scannable.
     match dtype {
         Dtype::Float32 => scan_dispatch(
             data,
@@ -140,8 +132,6 @@ pub(crate) fn scan(
             go_parallel,
             scan_complex128_seq,
         ),
-        // Non-float types were handled above; keep the match exhaustive
-        // so adding a future dtype is a compile-time decision point.
         Dtype::Int8
         | Dtype::Int16
         | Dtype::Int32
@@ -205,10 +195,10 @@ fn scan_f32_seq(
     reject_inf: bool,
     base_index: usize,
 ) -> Result<()> {
+    // Slice-pattern destructuring below is infallible under
+    // `chunks_exact`'s spec; the `else` branches in every scanner are
+    // defensive no-op fallbacks, not expected paths.
     for (i, chunk) in data.chunks_exact(4).enumerate() {
-        // chunks_exact(4) guarantees chunk.len() == 4 so the pattern
-        // match is infallible.  The `else` branch keeps us panic-free
-        // if std behaviour ever diverges from spec.
         let &[b0, b1, b2, b3] = chunk else {
             continue;
         };
@@ -392,7 +382,6 @@ fn scan_complex128_seq(
 ) -> Result<()> {
     // complex128 = (f64 real, f64 imaginary) = 16 bytes.
     for (i, chunk) in data.chunks_exact(16).enumerate() {
-        // The slice pattern is long but keeps us panic-free.
         let &[
             r0,
             r1,
