@@ -29,6 +29,9 @@ jobs:
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     container:
       image: eccr.ecmwf.int/tensogram/ci:1.2.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
