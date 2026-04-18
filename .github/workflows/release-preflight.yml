@@ -79,8 +79,12 @@ jobs:
             check_version "$pytoml" "$VER"
           done
 
-          TSVER=$(python3 -c "import json; print(json.load(open('typescript/package.json'))['version'])")
-          check_version "typescript/package.json" "$TSVER"
+          for pkgjson in \
+            typescript/package.json \
+            examples/typescript/package.json; do
+            VER=$(grep -m1 '"version"' "$pkgjson" | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+            check_version "$pkgjson" "$VER"
+          done
 
           if [ "$ERRORS" -gt 0 ]; then
             echo "::error::$ERRORS version mismatches found"
