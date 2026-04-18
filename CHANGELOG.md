@@ -5,6 +5,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- **Strict-finite encode checks** — two new `EncodeOptions` flags,
+  `reject_nan` and `reject_inf`, that scan float payloads before the
+  encoding pipeline runs and bail out on the first NaN / Inf with a
+  clean `EncodingError` carrying the element index and dtype. Both
+  default to `false` (backwards-compatible). Integer and bitmask
+  dtypes skip the scan (zero cost). The guarantee is
+  pipeline-independent — applies to `encoding="none"`,
+  `"simple_packing"`, and every compressor. Primary motivation: close
+  the silent-corruption gotcha where `simple_packing::compute_params`
+  accepted `Inf` input and produced numerically-useless parameters
+  that decoded to NaN everywhere (see `plans/RESEARCH_NAN_HANDLING.md`
+  §3.1; also now independently guarded at the simple_packing layer).
+  Exposed across every language surface (Rust, Python, TS, C FFI,
+  C++) with cross-language parity tests. CLI global flags
+  `--reject-nan` / `--reject-inf` plus `TENSOGRAM_REJECT_NAN` /
+  `TENSOGRAM_REJECT_INF` env vars for ops rollouts. Env-var values
+  are bool-ish: `1`/`true`/`yes`/`on` enable, `0`/`false`/`no`/`off`
+  disable. New `docs/src/guide/strict-finite.md` covers the full
+  semantics.
+- **NaN-handling research memo** —
+  `plans/RESEARCH_NAN_HANDLING.md` catalogues every path through the
+  library where NaN/Inf can appear on the encode side, documents the
+  15 gaps/gotchas (from the newly closed §3.1 silent-Inf-corruption
+  to the still-open §3.3 zfp/sz3 undefined behaviour), and proposes
+  tiered future work.
+
 ### Added — TypeScript wrapper: streaming `StreamingEncoder`
 
 - **`StreamingEncoderOptions.onBytes`** — an optional synchronous
@@ -29,22 +56,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   callback-throw propagation, non-function rejection, buffered-vs-
   streaming mode detection, and `hash: false` compatibility.
 - New example `examples/typescript/14_streaming_callback.ts`.
-
-### Changed — Rust core (affects all language bindings)
-
-- **`tensogram_encodings::simple_packing` now rejects ±Infinity values
-  alongside NaN.**  Simple-packing's `binary_scale_factor` is computed
-  from `(max − min) / max_packed` — an infinite range produced a
-  nonsensical `i32::MAX`-saturated scale factor and garbage output.
-  The guard was previously only in the TS wrapper (Pass 3); it is now
-  in the Rust core so Python, C FFI, C++, and WASM all benefit
-  simultaneously.  New `PackingError::InfiniteValue(usize)` variant
-  reports the index of the first offending sample (first-offender
-  guarantee in sequential mode; non-deterministic choice in parallel
-  mode, matching the existing NaN contract).  The previous TS-side
-  `Number.isFinite` check in `simplePackingComputeParams` is kept as
-  defence-in-depth so callers still see a clean
-  `InvalidArgumentError` without a WASM round-trip.
 
 ### Added — Python bindings
 
@@ -107,6 +118,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   the polyfill.  `typedArrayFor('bfloat16')` returns
   `Bfloat16Array`.  `typedArrayFor('complex64' | 'complex128')`
   returns `ComplexArray`.
+
+### Changed
+- **FFI signature extension** — `tgm_encode`, `tgm_file_append`, and
+  `tgm_streaming_encoder_create` now take two additional
+  `reject_nan` / `reject_inf` bool parameters. `tgm_encode_pre_encoded`
+  intentionally does not — pre-encoded bytes are opaque to the library.
+  Pre-0.15 C callers will see a compile error from the regenerated
+  header; pass `false, false` to preserve old behaviour.
+- **Pre-encoded APIs reject the strict-finite flags loudly.**
+  Setting `reject_nan` or `reject_inf` on `encode_pre_encoded` or
+  `StreamingEncoder::write_object_pre_encoded` now returns an
+  `EncodingError` rather than silently discarding the flag. Pre-encoded
+  bytes are opaque to the library and cannot be meaningfully scanned;
+  failing loudly brings Rust and C++ behaviour in line with Python
+  (which raised `TypeError` from day one). Cross-language uniformity
+  achieved.
+
+### Changed — Rust core (affects all language bindings)
+
+- **`tensogram_encodings::simple_packing` now rejects ±Infinity values
+  alongside NaN.**  Simple-packing's `binary_scale_factor` is computed
+  from `(max − min) / max_packed` — an infinite range produced a
+  nonsensical `i32::MAX`-saturated scale factor and garbage output.
+  The guard was previously only in the TS wrapper (Pass 3); it is now
+  in the Rust core so Python, C FFI, C++, and WASM all benefit
+  simultaneously.  New `PackingError::InfiniteValue(usize)` variant
+  reports the index of the first offending sample (first-offender
+  guarantee in sequential mode; non-deterministic choice in parallel
+  mode, matching the existing NaN contract).  The previous TS-side
+  `Number.isFinite` check in `simplePackingComputeParams` is kept as
+  defence-in-depth so callers still see a clean
+  `InvalidArgumentError` without a WASM round-trip.  This is now
+  defence-in-depth alongside the new pipeline-independent
+  `reject_inf` `EncodeOptions` flag — both guards fire for the same
+  input but through different code paths.
 
 ### Changed — TypeScript wrapper
 

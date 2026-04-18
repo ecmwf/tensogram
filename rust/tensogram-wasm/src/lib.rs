@@ -101,12 +101,18 @@ pub fn scan(buf: &[u8]) -> Result<JsValue, JsError> {
 /// @param metadata_js - GlobalMetadata as a plain JS object
 /// @param objects_js - Array of {descriptor, data} objects where data is a TypedArray
 /// @param hash - Whether to compute integrity hashes (default: true)
+/// @param reject_nan - If true, reject float payloads containing any NaN
+///   before the pipeline runs. Default: false. See the Rust
+///   `EncodeOptions::reject_nan` docs for full semantics.
+/// @param reject_inf - Same for +Inf / -Inf. Default: false.
 /// @returns Uint8Array containing the encoded .tgm message
 #[wasm_bindgen]
 pub fn encode(
     metadata_js: JsValue,
     objects_js: js_sys::Array,
     hash: Option<bool>,
+    reject_nan: Option<bool>,
+    reject_inf: Option<bool>,
 ) -> Result<js_sys::Uint8Array, JsError> {
     let metadata: core::GlobalMetadata =
         serde_wasm_bindgen::from_value(metadata_js).map_err(js_err)?;
@@ -116,7 +122,12 @@ pub fn encode(
         .zip(data_vec.iter())
         .map(|(d, v)| (d, v.as_slice()))
         .collect();
-    let encoded = core::encode(&metadata, &pairs, &build_encode_options(hash)).map_err(js_err)?;
+    let encoded = core::encode(
+        &metadata,
+        &pairs,
+        &build_encode_options(hash, reject_nan, reject_inf),
+    )
+    .map_err(js_err)?;
     // Return a JS-owned copy.  We must not use `view_as_u8` here because
     // `encoded` is a local Vec that will be dropped when this function
     // returns — a view into it would be a dangling pointer.

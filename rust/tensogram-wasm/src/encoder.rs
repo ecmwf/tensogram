@@ -203,10 +203,12 @@ impl StreamingEncoder {
         metadata_js: JsValue,
         hash: Option<bool>,
         on_bytes: Option<js_sys::Function>,
+        reject_nan: Option<bool>,
+        reject_inf: Option<bool>,
     ) -> Result<StreamingEncoder, JsError> {
         let metadata: core::GlobalMetadata =
             serde_wasm_bindgen::from_value(metadata_js).map_err(js_err)?;
-        let options = build_encode_options(hash);
+        let options = build_encode_options(hash, reject_nan, reject_inf);
         let inner = match on_bytes {
             Some(cb) => {
                 let sink = JsCallbackWriter::new(cb);

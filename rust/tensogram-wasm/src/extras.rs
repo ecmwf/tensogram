@@ -166,8 +166,12 @@ pub fn encode_pre_encoded(
         .zip(data_vec.iter())
         .map(|(d, v)| (d, v.as_slice()))
         .collect();
+    // encode_pre_encoded rejects strict-finite flags at the Rust
+    // level; we hardcode them off here so the WASM surface can't
+    // forward them accidentally.
     let encoded =
-        core::encode_pre_encoded(&metadata, &pairs, &build_encode_options(hash)).map_err(js_err)?;
+        core::encode_pre_encoded(&metadata, &pairs, &build_encode_options(hash, None, None))
+            .map_err(js_err)?;
     Ok(js_sys::Uint8Array::from(encoded.as_slice()))
 }
 

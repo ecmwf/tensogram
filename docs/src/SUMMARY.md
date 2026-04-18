@@ -28,6 +28,7 @@
 - [Jupyter Notebook Walk-through](guide/jupyter-notebooks.md)
 - [Encoding Data](guide/encoding.md)
 - [Pre-Encoded Data API (Advanced)](guide/encode-pre-encoded.md)
+- [Strict-Finite Encode Checks](guide/strict-finite.md)
 - [Decoding Data](guide/decoding.md)
 - [Working with Files](guide/file-api.md)
 - [Remote Access (S3, GCS, Azure, HTTP)](guide/remote-access.md)

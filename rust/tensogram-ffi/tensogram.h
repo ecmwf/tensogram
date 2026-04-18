@@ -118,6 +118,13 @@ void tgm_bytes_free(tgm_bytes_t buf);
  *
  * `hash_algo`: null-terminated string ("xxh3") or NULL for no hash.
  *
+ * `reject_nan` / `reject_inf`: when `true`, the encoder scans float
+ * payloads before the pipeline runs and returns
+ * [`TgmError::Encoding`] on the first NaN / Inf.  Pass `false` to
+ * preserve the current behaviour.  See the Rust
+ * `EncodeOptions::reject_nan` docs for full semantics.  Integer
+ * dtypes are not scanned.
+ *
  * On success returns `TgmError::Ok` and fills `out` with the encoded bytes.
  * The caller must free `out` with `tgm_bytes_free`.
  */
@@ -127,6 +134,8 @@ tgm_error tgm_encode(const char *metadata_json,
                      size_t num_objects,
                      const char *hash_algo,
                      uint32_t threads,
+                     bool reject_nan,
+                     bool reject_inf,
                      tgm_bytes_t *out);
 
 /**
@@ -431,6 +440,7 @@ const char *tgm_file_path(const tgm_file_t *file);
 /**
  * Encode and append a message to the file.
  * Same JSON schema as `tgm_encode` for `metadata_json`.
+ * `reject_nan` / `reject_inf` match `tgm_encode`'s semantics.
  */
 tgm_error tgm_file_append(tgm_file_t *file,
                           const char *metadata_json,
@@ -438,7 +448,9 @@ tgm_error tgm_file_append(tgm_file_t *file,
                           const size_t *data_lens,
                           size_t num_objects,
                           const char *hash_algo,
-                          uint32_t threads);
+                          uint32_t threads,
+                          bool reject_nan,
+                          bool reject_inf);
 
 /**
  * Close a file handle and release resources.
@@ -572,6 +584,8 @@ tgm_error tgm_streaming_encoder_create(const char *path,
                                        const char *metadata_json,
                                        const char *hash_algo,
                                        uint32_t threads,
+                                       bool reject_nan,
+                                       bool reject_inf,
                                        tgm_streaming_encoder_t **out);
 
 /**

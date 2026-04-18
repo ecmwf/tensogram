@@ -30,10 +30,11 @@ import type { EncodeInput, EncodeOptions, GlobalMetadata } from './types.js';
  * @param metadata - Global metadata (`version: 2` required)
  * @param objects  - Data objects; each `data` is any `ArrayBufferView`
  *                   (`TypedArray`, `DataView`, ...) in native byte order
- * @param options  - Optional hash selection
+ * @param options  - Optional hash selection and strict-finite flags
  * @returns Wire-format bytes as a `Uint8Array`
  * @throws {MetadataError} if metadata is malformed
  * @throws {EncodingError} if a pipeline stage rejects the input (e.g. NaN in simple_packing)
+ *                         or if the strict-finite check catches a NaN/Inf
  * @throws {CompressionError} if a compression codec fails
  */
 export function encode(
@@ -52,7 +53,13 @@ export function encode(
 
   // Default to hashing. Opt out explicitly with `{ hash: false }`.
   const hash = options?.hash !== false;
-  return rethrowTyped(() => wbg.encode(metadata, objArray, hash));
+  // Strict-finite flags default to false, matching the Rust and Python
+  // APIs. See EncodeOptions doc for full semantics.
+  const rejectNan = options?.rejectNan === true;
+  const rejectInf = options?.rejectInf === true;
+  return rethrowTyped(() =>
+    wbg.encode(metadata, objArray, hash, rejectNan, rejectInf),
+  );
 }
 
 function assertValidObjects(objects: readonly EncodeInput[]): void {
