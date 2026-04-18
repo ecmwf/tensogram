@@ -97,11 +97,11 @@ jobs:
 
       - name: "6/11 — tensogram-grib"
         env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
-        run: /tmp/publish-crate.sh tensogram-grib --manifest-path rust/tensogram-grib/Cargo.toml --no-verify
+        run: /tmp/publish-crate.sh tensogram-grib --manifest-path rust/tensogram-grib/Cargo.toml --no-verify --allow-dirty
 
       - name: "7/11 — tensogram-netcdf"
         env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
-        run: /tmp/publish-crate.sh tensogram-netcdf --manifest-path rust/tensogram-netcdf/Cargo.toml --no-verify
+        run: /tmp/publish-crate.sh tensogram-netcdf --manifest-path rust/tensogram-netcdf/Cargo.toml --no-verify --allow-dirty
 
       - name: "8/11 — tensogram-ffi"
         env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
@@ -113,8 +113,8 @@ jobs:
 
       - name: "10/11 — tensogram-wasm"
         env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
-        run: /tmp/publish-crate.sh tensogram-wasm --manifest-path rust/tensogram-wasm/Cargo.toml --no-verify
+        run: /tmp/publish-crate.sh tensogram-wasm --manifest-path rust/tensogram-wasm/Cargo.toml --no-verify --allow-dirty
 
       - name: "11/11 — tensogram-core (redirect)"
         env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
-        run: /tmp/publish-crate.sh tensogram-core --manifest-path rust/tensogram-core-redirect/Cargo.toml --no-verify
+        run: /tmp/publish-crate.sh tensogram-core --manifest-path rust/tensogram-core-redirect/Cargo.toml --no-verify --allow-dirty
