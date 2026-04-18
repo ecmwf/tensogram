@@ -307,3 +307,91 @@ For speculative ideas, see `IDEAS.md`.
 
 - [x] ~~code coverage~~ → All CLI subcommands have dedicated tests (ls, dump, get, set, copy, merge, split, reshuffle, validate, convert-grib, convert-netcdf). Encodings: `simple_packing` and `zfp` covered. FFI exercised through the C++ wrapper test suite.
 - [x] ~~add logging trace~~ → `tracing` crate instrumented on encode/decode/scan/file/pipeline. Activate with `TENSOGRAM_LOG=debug`
+
+- [ ] **python-bindings-clippy-warning**:
+  - `python/bindings/src/lib.rs::py_decode_range` triggers
+    `clippy::too_many_arguments` (8 args, limit 7). Pre-existing, not
+    enforced by the current CI matrix (which does not run clippy on the
+    `python/bindings` crate — it is excluded from the workspace).
+  - Either add `#[allow(clippy::too_many_arguments)]` on that
+    `#[pyfunction]` (consistent with other long-signature pyfns in the
+    same file), or refactor the argument list into a `DecodeRangeOptions`
+    struct mirroring `EncodeOptions`/`DecodeOptions` on the core side.
+  - While here, add a standalone CI step `cargo clippy --manifest-path
+    python/bindings/Cargo.toml --features grib,netcdf --all-targets
+    -- -D warnings` so future regressions are caught.
+
+## Cross-Language Parity
+
+- [x] ~~**converter-python-parity (v0.15)**~~ — `tensogram.convert_grib(path)`,
+  `tensogram.convert_grib_buffer(bytes)`, and `tensogram.convert_netcdf(path)`
+  PyO3 wrappers + opt-in `grib`/`netcdf` Cargo features + runtime probes
+  `tensogram.__has_grib__` / `__has_netcdf__` + feature-disabled
+  `RuntimeError` stubs. Examples `12_convert_netcdf.py` /
+  `17_convert_grib.py` updated to use the native API.
+
+- [ ] **converter-ffi-cpp-parity**:
+  - Mirror the v0.15 Python converter API in the C FFI (`rust/tensogram-ffi`)
+    and the header-only C++ wrapper (`cpp/include/tensogram.hpp`). The
+    Python bindings already exist; the C/C++ surface currently only
+    reaches GRIB/NetCDF via the CLI `tensogram convert-grib` /
+    `convert-netcdf` subcommands, which is awkward for in-process use
+    (requires PATH + subprocess + filesystem staging).
+  - Proposed FFI surface (mirrors PyO3 signatures):
+    ```c
+    tgm_error tgm_convert_grib(
+        const char*               path,
+        const TgmConvertGribOpts* options,   /* nullable → all defaults */
+        TgmBytes*                 out_msgs   /* array of buffers */
+    );
+    tgm_error tgm_convert_grib_buffer(
+        const uint8_t*            data,
+        size_t                    len,
+        const TgmConvertGribOpts* options,
+        TgmBytes*                 out_msgs
+    );
+    tgm_error tgm_convert_netcdf(
+        const char*                 path,
+        const TgmConvertNetcdfOpts* options,
+        TgmBytes*                   out_msgs
+    );
+    ```
+    where `TgmConvertGribOpts` / `TgmConvertNetcdfOpts` are `#[repr(C)]`
+    structs carrying the same keyword arguments as the Python signature
+    (`grouping`, `preserve_all_keys`, `split_by`, `cf`, pipeline fields,
+    `threads`, `hash`), and `TgmBytes*` is an array of the existing
+    `TgmBytes` buffer type returned by `tgm_encode`.
+  - C++ wrapper should expose `tensogram::convert_grib(path, options)`,
+    `tensogram::convert_grib_buffer(std::span<const std::byte>, options)`,
+    `tensogram::convert_netcdf(path, options)` returning
+    `std::vector<std::vector<std::byte>>` and throwing the existing
+    typed exception hierarchy on error.
+  - Feature-gating: same pattern as PyO3 — always compile the functions;
+    return `TGM_ERROR_FEATURE_DISABLED` (new variant) when the wheel
+    was built without `grib` / `netcdf` so C callers get a clean
+    runtime signal rather than a link error.
+  - Examples to add: `examples/cpp/17_convert_grib.cpp`,
+    `examples/rust/src/bin/17_convert_grib.rs` (both feature-gated).
+  - Tests: extend `cpp/tests/test_convert_grib.cpp` and
+    `rust/tensogram-ffi` unit tests with buffer + file parity checks.
+  - Docs: update `docs/src/guide/cpp-api.md` + reference pages.
+
+- [ ] **converter-cli-stdin**:
+  - CLI `tensogram convert-grib` currently only accepts a filesystem
+    path; `convert-grib-buffer` has no CLI analogue. Add `--stdin`
+    (or `-` as a pseudo-path) so a pipe like
+    `curl ... | tensogram convert-grib --stdin --encoding simple_packing
+    --bits 16 --compression szip -o out.tgm` works without staging the
+    GRIB bytes through a temp file. Mirrors the Python
+    `convert_grib_buffer` ergonomics at the shell level.
+
+## Consistency
+
+- [ ] **encode-options-error-wording**:
+  - `python/bindings/src/lib.rs::make_encode_options` emits `"unknown
+    hash: {other}"` when the caller passes an unknown hash name. Other
+    PyO3-level validation errors in the same file follow the richer
+    `"X must be Y or Z, got W"` pattern (see `build_grib_options`,
+    `build_netcdf_options`, `py_validate`). Harmonise the hash error
+    to that pattern (and list the currently-supported algorithms:
+    `"none" | "xxh3"`) so the API surface is uniformly self-documenting.

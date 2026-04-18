@@ -1,0 +1,13 @@
+name: tensogram-jupyter
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pip
+  - jupyterlab>=4
+  - ipykernel
+  - numpy>=1.26
+  - matplotlib>=3.8
+  - netcdf4>=1.6
+  - pip:
+      - tensogram[xarray]>=0.15.0,<0.16

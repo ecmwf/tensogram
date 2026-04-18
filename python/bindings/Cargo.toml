@@ -11,10 +11,20 @@ crate-type = ["cdylib"]
 [features]
 default = ["async"]
 async = ["tensogram-lib/async", "dep:pyo3-async-runtimes"]
+# Opt-in wrappers for GRIB / NetCDF conversion. These pull in the
+# `tensogram-grib` / `tensogram-netcdf` crates which link against
+# libeccodes / libnetcdf at build time. When the feature is off,
+# `tensogram.convert_grib()` / `tensogram.convert_netcdf()` still
+# exist in the Python module but raise a `RuntimeError` at call
+# time (see `src/lib.rs::convert_grib` for the stub implementation).
+grib = ["dep:tensogram-grib"]
+netcdf = ["dep:tensogram-netcdf"]
 
 [dependencies]
 tensogram-lib = { package = "tensogram", path = "../../rust/tensogram", features = ["remote"] }
 tensogram-encodings = { path = "../../rust/tensogram-encodings" }
+tensogram-grib = { path = "../../rust/tensogram-grib", optional = true }
+tensogram-netcdf = { path = "../../rust/tensogram-netcdf", optional = true }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 numpy = "0.28"
 ciborium = "0.2"

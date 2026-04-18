@@ -25,6 +25,7 @@
 # Developer Guide
 
 - [Quick Start](guide/quickstart.md)
+- [Jupyter Notebook Walk-through](guide/jupyter-notebooks.md)
 - [Encoding Data](guide/encoding.md)
 - [Pre-Encoded Data API (Advanced)](guide/encode-pre-encoded.md)
 - [Decoding Data](guide/decoding.md)

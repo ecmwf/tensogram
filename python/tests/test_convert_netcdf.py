@@ -49,22 +49,44 @@ def _repo_root() -> Path:
 
 @pytest.fixture(scope="module")
 def tensogram_binary() -> str:
-    """Locate the tensogram CLI binary built with the `netcdf` feature.
+    """Locate a tensogram CLI binary *that was built with the `netcdf` feature*.
 
-    Skips the test module if the binary cannot be found.
+    A binary without the ``netcdf`` feature does not expose the
+    ``convert-netcdf`` subcommand — probe with ``binary --help`` and
+    skip cleanly when it is missing, instead of letting every test in
+    this module fail with a cryptic "unrecognized subcommand" error.
     """
     root = _repo_root()
     candidates = [
         root / "target" / "debug" / "tensogram",
         root / "target" / "release" / "tensogram",
     ]
-    for c in candidates:
-        if c.exists() and os.access(c, os.X_OK):
-            return str(c)
+    paths: list[str] = [str(c) for c in candidates if c.exists() and os.access(c, os.X_OK)]
     found = shutil.which("tensogram")
     if found:
-        return found
-    pytest.skip("tensogram binary not found. Run: cargo build -p tensogram-cli --features netcdf")
+        paths.append(found)
+
+    for path in paths:
+        # `binary help <subcommand>` is a clap standard: exit-0 when the
+        # subcommand is compiled in, exit-nonzero when it is not. More
+        # precise than scanning `--help` text (the `--threads` flag's
+        # own docstring mentions `convert-netcdf` by name).
+        try:
+            result = subprocess.run(
+                [path, "help", "convert-netcdf"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+        if result.returncode == 0:
+            return path
+
+    pytest.skip(
+        "tensogram binary with `netcdf` feature not found. "
+        "Run: cargo build -p tensogram-cli --features netcdf"
+    )
 
 
 def _write_simple_f64(path: Path) -> np.ndarray:
@@ -314,3 +336,136 @@ def test_simple_packing_flag_round_trips(tmp_path: Path, tensogram_binary: str) 
     # 24-bit packing on data with std≈1 has quantization step << 1e-5,
     # so the decoded values should be very close to the originals.
     np.testing.assert_allclose(arr, expected, atol=1e-5)
+
+
+# ── Python API tests: tensogram.convert_netcdf(...) ──────────────────────────
+#
+# The tests above exercise the CLI binary. The tests below exercise the
+# PyO3 binding added in v0.15.  When the wheel was built without the
+# `netcdf` feature, `convert_netcdf` raises RuntimeError — we skip the
+# whole block in that case.  When the feature is built in but libnetcdf
+# is otherwise broken, the import-time linker would have failed already.
+
+
+def _has_netcdf_feature() -> bool:
+    """True when the bindings were compiled with `--features netcdf`."""
+    return bool(getattr(tensogram, "__has_netcdf__", False))
+
+
+requires_netcdf = pytest.mark.skipif(
+    not _has_netcdf_feature(),
+    reason="tensogram was built without the 'netcdf' feature",
+)
+
+
+@requires_netcdf
+def test_py_api_simple_roundtrip(tmp_path: Path) -> None:
+    """convert_netcdf() returns bytes that round-trip through decode()."""
+    nc_path = tmp_path / "simple_api.nc"
+    expected = _write_simple_f64(nc_path)
+
+    messages = tensogram.convert_netcdf(str(nc_path))
+    assert isinstance(messages, list)
+    assert len(messages) == 1, "default split_by='file' → single message"
+    assert isinstance(messages[0], bytes)
+
+    _meta, objects = tensogram.decode(messages[0])
+    assert len(objects) == 1
+    _desc, arr = objects[0]
+    assert arr.dtype == np.float64
+    np.testing.assert_array_equal(arr, expected)
+
+
+@requires_netcdf
+def test_py_api_packed_unpacks_to_float64(tmp_path: Path) -> None:
+    """int16 + scale_factor + add_offset → unpacked f64 through the Python API."""
+    nc_path = tmp_path / "packed_api.nc"
+    expected = _write_packed_temperature(nc_path)
+
+    messages = tensogram.convert_netcdf(str(nc_path))
+    _meta, objects = tensogram.decode(messages[0])
+    _desc, arr = objects[0]
+    assert arr.dtype == np.float64
+    np.testing.assert_allclose(arr, expected, atol=0.02)
+
+
+@requires_netcdf
+def test_py_api_cf_flag(tmp_path: Path) -> None:
+    """cf=True populates base[i]['cf']."""
+    nc_path = tmp_path / "cf_api.nc"
+    _write_packed_temperature(nc_path)
+
+    messages = tensogram.convert_netcdf(str(nc_path), cf=True)
+    meta, _ = tensogram.decode(messages[0])
+    cf_entries = [e for e in meta.base if isinstance(e.get("cf"), dict)]
+    assert cf_entries
+    assert cf_entries[0]["cf"].get("standard_name") == "air_temperature"
+
+
+@requires_netcdf
+def test_py_api_split_by_variable(tmp_path: Path) -> None:
+    """split_by='variable' produces one message per variable."""
+    nc_path = tmp_path / "three_api.nc"
+    _write_three_variables(nc_path)
+
+    messages = tensogram.convert_netcdf(str(nc_path), split_by="variable")
+    assert len(messages) == 3
+
+
+@requires_netcdf
+def test_py_api_pipeline_arguments(tmp_path: Path) -> None:
+    """The full encoding pipeline is plumbed through the Python API."""
+    nc_path = tmp_path / "pipe_api.nc"
+    expected = _write_simple_f64(nc_path)
+
+    messages = tensogram.convert_netcdf(
+        str(nc_path),
+        encoding="simple_packing",
+        bits=24,
+        compression="zstd",
+    )
+    _, objects = tensogram.decode(messages[0])
+    desc, arr = objects[0]
+    assert desc.encoding == "simple_packing"
+    assert desc.compression == "zstd"
+    np.testing.assert_allclose(arr, expected, atol=1e-5)
+
+
+@requires_netcdf
+def test_py_api_record_split_requires_unlimited(tmp_path: Path) -> None:
+    """split_by='record' raises when the file has no unlimited dimension."""
+    nc_path = tmp_path / "no_unlimited_api.nc"
+    _write_simple_f64(nc_path)
+
+    with pytest.raises(RuntimeError, match="unlimited"):
+        tensogram.convert_netcdf(str(nc_path), split_by="record")
+
+
+@requires_netcdf
+def test_py_api_invalid_split_by() -> None:
+    """Unknown split_by value raises ValueError before touching the C lib."""
+    with pytest.raises(ValueError, match="split_by"):
+        tensogram.convert_netcdf("/does/not/matter.nc", split_by="nonsense")
+
+
+@requires_netcdf
+def test_py_api_invalid_hash() -> None:
+    """Unknown hash algorithm raises ValueError."""
+    nc_path = Path("/does/not/matter.nc")
+    with pytest.raises(ValueError, match="hash"):
+        tensogram.convert_netcdf(str(nc_path), hash="md5")
+
+
+@requires_netcdf
+def test_py_api_missing_file(tmp_path: Path) -> None:
+    """A missing file raises RuntimeError (from the Rust converter)."""
+    with pytest.raises(RuntimeError):
+        tensogram.convert_netcdf(str(tmp_path / "does_not_exist.nc"))
+
+
+def test_py_api_stub_when_feature_missing() -> None:
+    """If the feature is off, the stub raises RuntimeError with clear guidance."""
+    if _has_netcdf_feature():
+        pytest.skip("feature is enabled in this build")
+    with pytest.raises(RuntimeError, match="built without NetCDF support"):
+        tensogram.convert_netcdf("anything.nc")
