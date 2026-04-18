@@ -1,6 +1,6 @@
 [package]
 name = "tensogram-core"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2024"
 rust-version = "1.87"
 license = "Apache-2.0"
@@ -14,7 +14,7 @@ categories = ["science"]
 authors = ["ECMWF <software@ecmwf.int>"]
 
 [dependencies]
-tensogram = { version = "=0.15.0" }
+tensogram = { version = "=0.16.0" }
 
 [features]
 default = ["szip", "zstd", "lz4", "blosc2", "zfp", "sz3", "threads"]

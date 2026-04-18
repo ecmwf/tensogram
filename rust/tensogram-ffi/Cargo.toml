@@ -1,6 +1,6 @@
 [package]
 name = "tensogram-ffi"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2024"
 rust-version = "1.87"
 license = "Apache-2.0"
@@ -18,8 +18,8 @@ include = ["src/**", "build.rs", "cbindgen.toml", "tensogram.h", "Cargo.toml", "
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-tensogram = { path = "../tensogram", version = "=0.15.0" }
-tensogram-encodings = { path = "../tensogram-encodings", version = "=0.15.0" }
+tensogram = { path = "../tensogram", version = "=0.16.0" }
+tensogram-encodings = { path = "../tensogram-encodings", version = "=0.16.0" }
 serde_json = "1"
 ciborium.workspace = true
 serde.workspace = true

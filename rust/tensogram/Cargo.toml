@@ -1,6 +1,6 @@
 [package]
 name = "tensogram"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2024"
 rust-version = "1.87"
 license = "Apache-2.0"
@@ -38,7 +38,7 @@ sz3 = ["tensogram-encodings/sz3"]
 threads = ["dep:rayon", "tensogram-encodings/threads"]
 
 [dependencies]
-tensogram-encodings = { path = "../tensogram-encodings", version = "=0.15.0", default-features = false }
+tensogram-encodings = { path = "../tensogram-encodings", version = "=0.16.0", default-features = false }
 thiserror.workspace = true
 ciborium = { workspace = true }
 serde.workspace = true

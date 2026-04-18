@@ -7,6 +7,7 @@
 **/target
 **/pkg
 **/build/
+python/**/dist/
 python/bindings/Cargo.lock
 
 /docs/book

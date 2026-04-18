@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.16.0] - 2026-04-18
 
 ### Added
 - **Strict-finite encode checks** — two new `EncodeOptions` flags,
@@ -193,6 +193,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - `tensogram-wasm` exports `decode_range`, `encode_pre_encoded`,
   `compute_hash`, `simple_packing_compute_params`, `validate_buffer`,
   and the `StreamingEncoder` class.
+
+### Stats
+
+- Rust workspace: 1324 tests passing. `tensogram-grib` 17 tests,
+  `tensogram-netcdf` 44 tests (feature-gated suites run separately).
+- Python: 538 + 201 + 224 tests across `python/tests/`,
+  `python/tensogram-xarray/tests/`, and `python/tensogram-zarr/tests/`.
+- C++: 154 tests. WASM: 161 tests. TypeScript (vitest): 326 tests.
+- All examples build cleanly (`cargo build --workspace`); mdbook docs
+  build cleanly.
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets
+  --all-features -- -D warnings`, and `ruff format --check` all green.
 
 ## [0.15.0] - 2026-04-18
 
