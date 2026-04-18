@@ -38,7 +38,7 @@ Three approaches were considered:
 
 Default Rust workspace:
 
-- `tensogram-core` — message encode/decode, CBOR metadata, framing, buffer + file API, iterators, validation (Levels 1-4), remote object-store access
+- `tensogram` — message encode/decode, CBOR metadata, framing, buffer + file API, iterators, validation (Levels 1-4), remote object-store access
 - `tensogram-encodings` — encoding pipeline, filters, compression codecs (all feature-gated, both C-FFI and pure-Rust variants)
 - `tensogram-ffi` — C-compatible FFI surface, auto-generated `tensogram.h` via cbindgen
 - `tensogram-cli` — CLI binary (`tensogram` command with subcommands)
@@ -111,7 +111,7 @@ Common options:
 
 `convert-grib` and `convert-netcdf` share a common pipeline flag set
 (`--encoding/--bits/--filter/--compression/--compression-level`) via
-`tensogram-core::pipeline::apply_pipeline`, so both converters produce
+`tensogram::pipeline::apply_pipeline`, so both converters produce
 byte-identical descriptors for the same options.
 
 ## Key Design Decisions

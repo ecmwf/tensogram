@@ -214,7 +214,7 @@ For speculative ideas, see `IDEAS.md`.
 ## Validation
 
 - [x] **tensogram-validate PR 1** — core library API + CLI (Levels 1-3):
-  - `validate_message(buf, options) -> ValidationReport` and `validate_file(path, options)` in tensogram-core.
+  - `validate_message(buf, options) -> ValidationReport` and `validate_file(path, options)` in tensogram.
   - Level 1 (Structure): raw byte walking — magic, preamble, frame headers/ENDF, total_length, postamble, first_footer_offset, frame ordering, preceder legality, preamble flags vs observed, overflow-safe arithmetic.
   - Level 2 (Metadata): raw CBOR parsing from frame payloads (before decode_message normalization), required keys, dtype/encoding/filter/compression recognized, shape/strides/ndim consistency, index/hash frame consistency.
   - Level 3 (Integrity): xxh3 hash verification (descriptor + hash frame fallback), decode pipeline execution for compressed objects. Unknown hash algorithms produce warnings. `hash_verified` only true when ALL objects verified.
