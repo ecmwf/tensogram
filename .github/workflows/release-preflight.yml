@@ -97,16 +97,27 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --check
 
-      - name: cargo clippy (workspace)
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: cargo clippy
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo clippy -p tensogram --all-targets --features "remote,async" -- -D warnings
+          cargo clippy -p tensogram-cli --all-targets --features "grib,netcdf" -- -D warnings
+          cargo clippy --manifest-path rust/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
 
       - name: cargo test (workspace)
         run: cargo test --workspace
+
+      - name: cargo test (feature coverage)
+        run: |
+          cargo test -p tensogram --features remote
+          cargo test -p tensogram --features "remote,async"
 
       - name: cargo test (excluded crates)
         run: |
           cargo test --manifest-path rust/tensogram-grib/Cargo.toml
           cargo test --manifest-path rust/tensogram-netcdf/Cargo.toml
+          cargo test -p tensogram-cli --features grib
+          cargo test -p tensogram-cli --features netcdf
 
       - name: Verify crate tarballs
         run: |
