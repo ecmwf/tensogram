@@ -31,6 +31,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   15 gaps/gotchas (from the newly closed §3.1 silent-Inf-corruption
   to the still-open §3.3 zfp/sz3 undefined behaviour), and proposes
   tiered future work.
+- `docs/src/guide/vocabularies.md` — a developer-guide page listing example
+  application vocabularies (MARS, CF, BIDS, DICOM, custom) and conventions
+  for wiring them into Tensogram metadata.
+- `examples/{rust,python,cpp,typescript}/02b_generic_metadata.*` — sibling
+  examples to the MARS-based `02_mars_metadata.*` set, showing that the
+  per-object metadata mechanism works with any application namespace.
 
 ### Added — TypeScript wrapper: streaming `StreamingEncoder`
 
@@ -120,6 +126,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   returns `ComplexArray`.
 
 ### Changed
+
+- **Documentation reframed for the broader scientific-computing community.**
+  The motivation, introduction, README, and concept pages now present
+  Tensogram as a general-purpose N-tensor message format for scientific data
+  at scale, with ECMWF weather-forecasting workloads as one well-validated
+  use case rather than the founding motivation. GRIB and NetCDF remain
+  first-class importers; MARS vocabulary remains a fully supported example.
+  No API, wire-format, or behavioural changes.
+- `tensogram-grib` and `tensogram-netcdf` are now framed as *importers* (one-way
+  GRIB → Tensogram / NetCDF → Tensogram), not "converters". CLI subcommands
+  `convert-grib` and `convert-netcdf` keep the same names and flags.
+- `tensogram-benchmarks`: `datagen::generate_weather_field` renamed to
+  `generate_smooth_field` to reflect that the generator is domain-neutral
+  (its output matches the statistical profile of any smooth bounded-range
+  scientific field — temperature, pressure, intensity, density). Callers
+  inside the benchmarks crate updated accordingly; benchmark outputs and
+  numerical results are unchanged.
 - **FFI signature extension** — `tgm_encode`, `tgm_file_append`, and
   `tgm_streaming_encoder_create` now take two additional
   `reject_nan` / `reject_inf` bool parameters. `tgm_encode_pre_encoded`

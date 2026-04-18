@@ -1,14 +1,14 @@
 # Brainstorming: Future Directions for Tensogram
 
 > This document captures speculative, exploratory, and ambitious ideas
-> for where Tensogram could go — including directions that reach beyond
-> ECMWF's internal operational pipeline. Nothing here is accepted for
+> for where Tensogram could go. Nothing here is accepted for
 > implementation. Ideas that mature and get decided belong in `TODO.md`.
 > Ideas that stay speculative belong in `IDEAS.md`.
 >
 > The central question framing this document:
-> **Can Tensogram become the standard binary tensor message format for
-> scientific computing, not just ECMWF's internal format?**
+> **Can Tensogram become a shared binary tensor message format across
+> scientific domains — weather, imaging, genomics, physics, materials,
+> ML — rather than one more domain-specific artefact?**
 >
 > The format is technically ready for that ambition. What it lacks is
 > discoverability, tooling, and community. The ideas below address all
@@ -66,8 +66,9 @@ missing piece is the chunked-reassembly protocol and reference
 implementations for at least one broker.
 
 Questions to resolve:
-- What message queue infrastructure does ECMWF's operational pipeline
-  use today?
+- Which broker(s) are most common in target communities (Kafka in
+  data-platform shops, AMQP in scientific facilities, NATS in
+  emerging stacks)?
 - Is there value in a pure-Rust Kafka/AMQP adapter crate, or is this
   better handled as a Python integration?
 
@@ -99,8 +100,10 @@ A forecast field derived from a model output derived from observations
   that maps UUIDs to file paths/URLs
 
 This costs nothing in the wire format (it's just a CBOR list in
-`_reserved_`) and gives ECMWF reproducibility and audit trails for
-free.
+`_reserved_`) and gives reproducibility and audit trails for free,
+which matters across many scientific domains (reproducible weather
+forecasts, medical imaging audits, genomics pipelines with FDA
+traceability, etc.).
 
 Questions to resolve:
 - Should lineage be in `_reserved_` (library-managed) or `_extra_`
@@ -126,8 +129,9 @@ Implementation options:
   format must stay unchanged
 
 Questions to resolve:
-- Is data authenticity a real requirement for ECMWF published products?
-- Who holds the signing keys — ECMWF infra team or per-pipeline?
+- Which communities have a real requirement for data authenticity (published
+  weather products, medical imaging, archival scientific records)?
+- Key-holder model — institutional, per-pipeline, per-instrument?
 
 ### B3. Inline Schema Definition (Schema Frame)
 
@@ -173,7 +177,8 @@ CLI integration: `tensogram validate --schema product.tgms <file>`
 ### C1. Delta Encoding
 
 Simple packing quantizes absolute values. For time-series or spatially
-correlated fields (which ECMWF's gridded data is, almost universally),
+correlated fields — which describes gridded weather data, sensor time
+series, imaging slices, spectra, and most scientific fields —
 storing *differences* between adjacent elements before packing can
 dramatically improve compression ratio.
 
@@ -354,7 +359,8 @@ remains vocabulary-agnostic.
 
 A hosted Jupyter/Marimo notebook environment where anyone can:
 - Write Python code that encodes and decodes Tensogram messages
-- Load real ECMWF open data (already public: IFS 0.25°)
+- Load real open datasets (ECMWF IFS 0.25° weather data, sample
+  medical imaging volumes, reference genomics tensors, etc.)
 - Explore the xarray and Zarr backends interactively
 - Share notebook links
 
@@ -385,9 +391,9 @@ research literature.
 
 A lightweight RFC process — a `tips/` directory in the repo where
 numbered TIP documents propose wire format changes, new codec
-interfaces, vocabulary conventions, or tooling directions. Community
-members (inside or outside ECMWF) can open a TIP, discuss it, and
-have it accepted or rejected with a written rationale.
+interfaces, vocabulary conventions, or tooling directions. Any
+community member can open a TIP, discuss it, and have it accepted
+or rejected with a written rationale.
 
 This is how Python (PEPs), Rust (RFCs), and Zarr (ZEPs) govern
 evolution. It signals that the project is open to external
@@ -426,11 +432,11 @@ Priority order based on who does scientific computing:
 
 | Language | Why it matters | Complexity |
 |----------|---------------|------------|
-| **Julia** | Growing ML/scientific community, native array types, active NWP use | Medium (Julia C FFI is straightforward) |
-| **R** | Large statistical/climate science community | Medium (Rcpp or direct C FFI) |
-| **Fortran** | Legacy NWP code at ECMWF and peer centres | Low (ISO_C_BINDING over existing C FFI) |
+| **Julia** | Growing ML/scientific community, native array types, active use in NWP, astronomy, and computational biology | Medium (Julia C FFI is straightforward) |
+| **R** | Large statistical, climate, and bioinformatics communities | Medium (Rcpp or direct C FFI) |
+| **Fortran** | Legacy numerical scientific code at weather centres, national labs, HPC sites | Low (ISO_C_BINDING over existing C FFI) |
 | **Go** | Cloud infrastructure, emerging scientific tools | Medium (cgo over C FFI) |
-| **Java/Kotlin** | ECMWF's web services and data portals | Medium (JNI or JNA over C FFI) |
+| **Java/Kotlin** | Scientific-data web services and portals at research institutions | Medium (JNI or JNA over C FFI) |
 
 The C FFI already exists. Each of these is essentially a thin wrapper
 layer — the hard Rust work is already done.
@@ -479,8 +485,9 @@ decodes directly into the pre-allocated ONNX Runtime input buffer
 without an intermediate NumPy array. Zero-copy ML inference from
 Tensogram messages.
 
-Relevant if ECMWF's ML models are deployed as ONNX graphs and consume
-Tensogram-encoded gridded data.
+Relevant wherever ML models are deployed as ONNX graphs and consume
+Tensogram-encoded tensor inputs (AI weather models, medical-imaging
+classifiers, genomics feature pipelines, etc.).
 
 ### G5. Kerchunk / Virtualizarr Compatibility
 
@@ -536,23 +543,23 @@ derived data.
 ## The Central Bet
 
 All of the above ideas share a common enabling assumption: that
-**Tensogram becomes openly adopted beyond ECMWF**. The technical
-quality of the format is already there. The things that would make
-external adoption real:
+**Tensogram is adopted broadly across scientific-computing
+communities**, not just in any one institution or domain. The
+technical quality of the format is already there. The things that
+would make that real:
 
 1. **Zero-install browser explorer (E1)** — makes the format tangible
-   to anyone in seconds, no installation required
+   to anyone in seconds, no installation required.
 2. **Conformance test suite (F2)** — signals that this is a real
-   standard, not a Rust library with documentation
-3. **Julia and R bindings (F4)** — reaches the scientific computing
-   communities most likely to adopt a new format
-4. **TIP process (F1)** — signals that outside voices shape the roadmap
+   standard, not a Rust library with documentation.
+3. **Julia and R bindings (F4)** — reaches the scientific-computing
+   communities most likely to adopt a new format.
+4. **TIP process (F1)** — signals that outside voices shape the roadmap.
 5. **DLPack / Arrow integration (G1, G3)** — plugs into the ML and
-   data tool ecosystems that have momentum right now
+   data-tool ecosystems that have momentum right now.
 
 The Tensogram wire format is elegant, the implementation is robust,
-and the vocabulary-agnostic design means there is no ECMWF-specific
-vocabulary baked in that would deter external adopters. The format is
-genuinely general-purpose. The question is whether the surrounding
-ecosystem (tooling, bindings, community process) gets built out to
-match.
+and the vocabulary-agnostic design means no domain-specific vocabulary
+is baked into the bytes. The format is genuinely general-purpose. The
+question is whether the surrounding ecosystem (tooling, bindings,
+community process) gets built out to match.

@@ -1,6 +1,6 @@
 # NetCDF CF Metadata Mapping
 
-When `tensogram convert-netcdf --cf` is set, the converter walks each
+When `tensogram convert-netcdf --cf` is set, the importer walks each
 NetCDF variable and lifts a fixed set of 16 [CF Conventions
 v1.10](https://cfconventions.org/cf-conventions/v1.10/cf-conventions.html)
 attributes into a `cf` sub-map under the corresponding `base[i]` entry. The
@@ -105,5 +105,5 @@ GitHub project and we'll evaluate it.
 - [CF Conventions §3](https://cfconventions.org/cf-conventions/v1.10/cf-conventions.html#description-of-the-data) — variable attributes.
 - [CF Conventions §8](https://cfconventions.org/cf-conventions/v1.10/cf-conventions.html#reduction-of-dataset-size) — packed data, scale_factor / add_offset.
 - [CF Standard Name Table](https://cfconventions.org/Data/cf-standard-names/current/build/cf-standard-name-table.html) — the controlled vocabulary referenced by `standard_name`.
-- [NetCDF Conversion](../guide/convert-netcdf.md) — main user guide for
+- [NetCDF Import](../guide/convert-netcdf.md) — main user guide for
   `tensogram convert-netcdf`.

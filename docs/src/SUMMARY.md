@@ -25,6 +25,7 @@
 # Developer Guide
 
 - [Quick Start](guide/quickstart.md)
+- [Vocabularies](guide/vocabularies.md)
 - [Jupyter Notebook Walk-through](guide/jupyter-notebooks.md)
 - [Encoding Data](guide/encoding.md)
 - [Pre-Encoded Data API (Advanced)](guide/encode-pre-encoded.md)
@@ -69,14 +70,14 @@
 
 ---
 
-# GRIB Conversion
+# GRIB Import
 
 - [Overview](grib/overview.md)
 - [MARS Key Mapping](grib/metadata-mapping.md)
 
 ---
 
-# NetCDF Conversion
+# NetCDF Import
 
 - [Overview](guide/convert-netcdf.md)
 - [CF Metadata Mapping](reference/netcdf-cf-mapping.md)

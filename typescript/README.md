@@ -1,7 +1,8 @@
 # @ecmwf/tensogram
 
 TypeScript bindings for [Tensogram](https://github.com/ecmwf/tensogram),
-ECMWF's binary message format for N-dimensional scientific tensors.
+a binary message format for N-dimensional scientific tensors. Tensogram is
+developed and maintained by ECMWF.
 
 Wraps the Rust core (via WebAssembly) with a typed, idiomatic TS API:
 

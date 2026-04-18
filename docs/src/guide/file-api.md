@@ -41,13 +41,15 @@ let desc = DataObjectDescriptor {
 
 Each `append` encodes one message and appends it to the end of the file. You can call it as many times as you like — each message is independent and self-describing.
 
-Typical pattern for writing a multi-parameter forecast file:
+Typical pattern for writing a multi-message file (one message per
+parameter, run, subject, sample, experiment — whatever your pipeline
+produces):
 
 ```rust
 let mut file = TensogramFile::create("output.tgm")?;
 
-for param in ["2t", "10u", "10v", "msl"] {
-    let (global, desc, data) = produce_field(param);
+for key in ["2t", "10u", "10v", "msl"] {
+    let (global, desc, data) = produce_field(key);
     file.append(&global, &[(&desc, &data)], &EncodeOptions::default())?;
 }
 ```

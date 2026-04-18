@@ -1,6 +1,6 @@
 # MARS Key Mapping
 
-The converter reads the following MARS namespace keys from each GRIB message using ecCodes' `read_key_dynamic` API.
+The importer reads the following MARS namespace keys from each GRIB message using ecCodes' `read_key_dynamic` API.
 
 ## Keys Extracted
 

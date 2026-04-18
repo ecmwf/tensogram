@@ -234,7 +234,7 @@ hand-rolled `ReadableStream`.
 ```ts
 import { decodeStream } from '@ecmwf/tensogram';
 
-const res = await fetch('/forecast.tgm');
+const res = await fetch('/data.tgm');
 for await (const frame of decodeStream(res.body!)) {
   render(frame.descriptor.shape, frame.data());
   frame.close();
@@ -274,10 +274,10 @@ already in memory.
 import { TensogramFile } from '@ecmwf/tensogram';
 
 // Node: from the local file system
-const file = await TensogramFile.open('/data/forecast.tgm');
+const file = await TensogramFile.open('/data/input.tgm');
 
 // Browser or Node: over HTTPS
-const file = await TensogramFile.fromUrl('https://example.com/forecast.tgm');
+const file = await TensogramFile.fromUrl('https://example.com/input.tgm');
 
 // Any runtime: from pre-loaded bytes
 const file = TensogramFile.fromBytes(uint8ArrayFromSomewhere);
@@ -303,7 +303,7 @@ interface TensogramFile extends AsyncIterable<DecodedMessage> {
 Usage:
 
 ```ts
-const file = await TensogramFile.open('/data/forecast.tgm');
+const file = await TensogramFile.open('/data/input.tgm');
 try {
   console.log(`${file.messageCount} messages, ${file.byteLength} bytes`);
 
@@ -504,7 +504,8 @@ understanding that these module paths are not part of the stable API.
 See `examples/typescript/` in the repository for runnable scripts:
 
 - `01_encode_decode.ts` — basic round-trip
-- `02_mars_metadata.ts` — MARS keys on per-object `base[i]` entries
+- `02_mars_metadata.ts` — per-object metadata using the MARS vocabulary
+- `02b_generic_metadata.ts` — per-object metadata using a generic application namespace
 - `03_multi_object.ts` — multiple dtypes in one message
 - `04_decode_range.ts` — partial sub-tensor decode
 - `05_streaming_fetch.ts` — progressive decode over a `ReadableStream`
@@ -550,7 +551,7 @@ Specifically, `typescript/tests/golden.test.ts` decodes:
 - `mapTensogramError` never throws for any finite-string input and
   always returns a `TensogramError` subclass;
 - `encode → decode` is bit-exact for random Float32 shapes across
-  random MARS metadata;
+  random application metadata;
 - `decode` on random byte input either succeeds with a structurally
   valid message or throws a typed `TensogramError` — never panics;
 - `float32 → float16 → float32` round-trip stays within half-precision

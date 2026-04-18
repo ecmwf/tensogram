@@ -40,7 +40,7 @@ Each stage is **independently configurable per object** via fields in the `DataO
 
 ## Stage 1: Encoding
 
-Encoding transforms values to reduce the number of bits needed to represent them. The only supported encoding right now is `simple_packing` -- a GRIB-style lossy quantization that maps a range of floating-point values onto N-bit integers.
+Encoding transforms values to reduce the number of bits needed to represent them. The only supported encoding right now is `simple_packing` — a lossy quantisation that maps a bounded range of floating-point values onto N-bit integers. The bit layout matches GRIB 2 simple_packing so quantised payloads are interoperable with existing GRIB tooling.
 
 | Value | Meaning |
 |---|---|
@@ -78,10 +78,10 @@ See [Compression](../encodings/compression.md) for full details on each compress
 
 | Use case | encoding | filter | compression |
 |---|---|---|---|
-| Exact integers (land mask) | `none` | `none` | `none` |
-| Lossy floats (temperature) | `simple_packing` | `none` | `szip` |
+| Exact integers (e.g. a mask) | `none` | `none` | `none` |
+| Lossy bounded-range floats | `simple_packing` | `none` | `szip` |
 | Best lossless (floats) | `none` | `shuffle` | `szip` or `blosc2` |
-| GRIB-compatible packing | `simple_packing` | `none` | `szip` |
+| GRIB 2 CCSDS-interoperable | `simple_packing` | `none` | `szip` |
 | Real-time streaming | `none` | `none` | `lz4` |
 | Archival storage | `none` | `shuffle` | `zstd` |
 | ML model weights | `none` | `none` | `blosc2` |

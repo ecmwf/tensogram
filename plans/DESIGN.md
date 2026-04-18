@@ -8,7 +8,7 @@ Repo: ecmwf/tensogram
 
 ## Design Premises
 
-1. **CBOR for all metadata** — free-form string keys, strongly-typed values (RFC 8949). The library is vocabulary-agnostic; ECMWF's MARS language vocabulary is the application layer's concern. CBOR chosen for flexibility over fixed binary structs because messages are tens to hundreds of MiB where CBOR parsing overhead is negligible compared to payload decode. Every message includes a `version` entry for forward compatibility.
+1. **CBOR for all metadata** — free-form string keys, strongly-typed values (RFC 8949). The library is vocabulary-agnostic; domain vocabularies (MARS at ECMWF, CF conventions, BIDS in neuroimaging, DICOM in medical imaging, in-house taxonomies) are the application layer's concern. CBOR chosen for flexibility over fixed binary structs because messages are tens to hundreds of MiB where CBOR parsing overhead is negligible compared to payload decode. Every message includes a `version` entry for forward compatibility.
 
 2. **Self-describing messages, externally-managed vocabulary** — each message carries enough CBOR metadata to be interpreted, but the library doesn't validate or interpret vocabulary semantics.
 
@@ -25,12 +25,12 @@ Repo: ecmwf/tensogram
 Three approaches were considered:
 
 - **A: Pure C99** (tinycbor + libaec) — maximum portability but tedious buffer management and no higher-level language support.
-- **B: C++17 core with C API** — RAII buffer management, easy extensibility, integrates with ECMWF build infrastructure. Adds C++ build complexity.
+- **B: C++17 core with C API** — RAII buffer management, easy extensibility; comfortable for teams already invested in C++ build infrastructure. Adds C++ build complexity.
 - **C: Rust core with multi-language APIs** — memory safety guaranteed by compiler, excellent tooling, exposes Rust native + C FFI + Python (PyO3) APIs.
 
-**Chosen: Approach C (Rust core).** The value of memory safety for a binary format library running in production pipelines outweighs adoption friction. The multi-language API surface (Rust + C FFI for C++ interop + Python via PyO3) covers the full ECMWF development stack.
+**Chosen: Approach C (Rust core).** The value of memory safety for a binary format library running in production pipelines outweighs adoption friction. The multi-language API surface (Rust + C FFI for C++ interop + Python via PyO3, plus WebAssembly/TypeScript) covers common scientific-computing language stacks.
 
-**Adoption risk mitigation:** The wire format and CBOR metadata schema are language-agnostic. If Rust proves infeasible at ECMWF, the design can be re-implemented in C++17 with the same C API. Cross-language golden test files ensure any reimplementation produces identical output.
+**Adoption risk mitigation:** The wire format and CBOR metadata schema are language-agnostic. A reimplementation in C++17 or any other language would produce identical output if it passes the cross-language golden test files shipped alongside the Rust implementation.
 
 ## Architecture
 
@@ -130,7 +130,7 @@ byte-identical descriptors for the same options.
   - Encoding-specific parameters (in `params` map)
   - Optional integrity `hash`
 
-MARS keys and application metadata live in `base[i]["mars"]` (per-object). The encoder auto-populates `_reserved_.tensor` (ndim/shape/strides/dtype) in each `base[i]` entry. The descriptor carries only what's needed to decode the payload. A `compute_common()` utility can extract shared keys from base entries when needed (e.g. for display or merge operations) — commonalities are computed in software, not encoded in the wire format.
+Application metadata (for example MARS keys, CF attributes, BIDS entities, or any domain-specific namespace) lives in `base[i][<namespace>]` per-object. The encoder auto-populates `_reserved_.tensor` (ndim/shape/strides/dtype) in each `base[i]` entry. The descriptor carries only what's needed to decode the payload. A `compute_common()` utility can extract shared keys from base entries when needed (e.g. for display or merge operations) — commonalities are computed in software, not encoded in the wire format.
 
 ### Data Types
 
@@ -180,7 +180,7 @@ Each data object specifies an independent pipeline: **encode → filter → comp
 - **Algorithm:** xxh3 (64-bit, non-cryptographic, ~30 GB/s)
 - **Scope:** Per-object payload, computed over final encoded bytes (after full pipeline)
 - **Encoding:** Hash computation is on by default (negligible overhead vs compression).  The hash is produced **inline with encoding** — the pipeline drives an `Xxh3Default` streaming hasher in lockstep with codec output, so the encoded payload is walked exactly once for both encoding and hashing.  See `plans/DONE.md` → *Hash-while-encoding* for the design and benchmark numbers.
-- **Decoding:** Hash verification is off by default. Enabled via option. Reflects ECMWF's operational reality where transport-layer error correction is in place.
+- **Decoding:** Hash verification is off by default. Enabled via option. Off by default because most transports already provide error correction (TCP, HTTPS, object-store ETag validation); enable it when the consumer wants end-to-end integrity.
 - **Threading invariant:** hashing runs in the calling thread *after* any intra-codec parallelism (axis B) has joined, and each object's hasher is owned by one thread (axis A).  Transparent codecs produce byte-identical hashes across thread counts; opaque codecs (blosc2, zstd with workers) hash their worker-completion-ordered output and round-trip losslessly.  This matches the determinism contract of the multi-threaded pipeline itself.
 
 ### Per-Object Byte Order
@@ -280,7 +280,7 @@ Decoding of actual data into tensors is delayed until absolutely necessary.
 
 ## Distribution
 
-- **Rust crate:** crates.io or ECMWF internal registry
+- **Rust crate:** [crates.io](https://crates.io/crates/tensogram)
 - **Python package:** PyPI via maturin (wheel with compiled Rust core)
 - **C/C++ library:** Static/shared library + headers via CMake
 - **CLI binary:** cargo install, GitHub Releases, optionally Homebrew

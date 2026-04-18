@@ -56,8 +56,8 @@ repeatable.
 | `tensogram-sz3` | 3 | Safe high-level SZ3 API |
 | `tensogram-encodings` | 4 | Encoding pipeline — the codec registry all higher crates use |
 | `tensogram-core` | 5 | **The primary library.** Encode, decode, file I/O, streaming |
-| `tensogram-grib` | 6 | GRIB→tensogram converter (requires system ecCodes at build time) |
-| `tensogram-netcdf` | 7 | NetCDF→tensogram converter (requires system libnetcdf at build time) |
+| `tensogram-grib` | 6 | GRIB→tensogram importer (requires system ecCodes at build time) |
+| `tensogram-netcdf` | 7 | NetCDF→tensogram importer (requires system libnetcdf at build time) |
 | `tensogram-ffi` | 8 | C FFI layer — produces `libtensogram.so`/`.a` + generated header |
 | `tensogram-cli` | 9 | The `tensogram` CLI binary (`cargo install tensogram-cli`) |
 | `tensogram-wasm` | 10 | WebAssembly bindings via wasm-bindgen (also usable as `rlib`) |
@@ -284,8 +284,8 @@ Suggested per-crate descriptions:
 | `tensogram-sz3` | (keep existing) "High-level SZ3 compression API for Tensogram" |
 | `tensogram-encodings` | "Encoding pipeline and compression codec registry for the Tensogram message format" |
 | `tensogram-core` | "Fast binary N-tensor message format for scientific data — encode, decode, file I/O, streaming" |
-| `tensogram-grib` | "GRIB to Tensogram format converter using ecCodes" |
-| `tensogram-netcdf` | "NetCDF to Tensogram format converter" |
+| `tensogram-grib` | "GRIB to Tensogram format importer using ecCodes" |
+| `tensogram-netcdf` | "NetCDF to Tensogram format importer" |
 | `tensogram-ffi` | "C FFI bindings for the Tensogram N-tensor message format library" |
 | `tensogram-cli` | "CLI for inspecting, converting, and manipulating Tensogram .tgm files" |
 | `tensogram-wasm` | (keep existing) "WebAssembly bindings for the Tensogram N-tensor message format" |

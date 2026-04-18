@@ -4,25 +4,37 @@
 
 # Introduction
 
-Tensogram is a binary message format for **N-dimensional scientific tensors** — the kind of data that appears in weather forecasting, climate modelling, and machine learning pipelines. Think of it as a modern, flexible replacement for GRIB: it carries its own metadata, supports arbitrary tensor dimensions, and is fast to encode and decode.
+Tensogram is a binary message format for **N-dimensional scientific tensors** —
+the kind of data that appears in weather and climate forecasting, Earth
+observation, medical and microscopy imaging, genomics, particle physics,
+materials simulation, and machine-learning pipelines. It carries its own
+metadata, supports arbitrary tensor dimensions, and is fast to encode and
+decode.
 
-## Why Tensogram?
+## What Tensogram gives you
 
-GRIB (the format ECMWF uses today) is great for exchanging data with the outside world, but it has two structural limits:
+- **Self-describing messages.** Every message carries the metadata needed to
+  decode it — shape, dtype, encoding pipeline, application annotations — using
+  CBOR. No external schema required.
+- **Any number of dimensions.** A single message can carry multiple tensors,
+  each with its own shape, dtype, and encoding. A 3-D spectrum, a 2-D field,
+  and a 4-D ensemble tensor can coexist in one message.
+- **Vocabulary-agnostic.** The library never interprets metadata keys.
+  Application layers (MARS at ECMWF, CF in climate, BIDS in neuroimaging, your
+  in-house taxonomy) own key names.
+- **Transport and file in one format.** The same bytes that traverse a socket
+  can be appended to a `.tgm` file; both support O(1) random access to any
+  object.
+- **Interop with existing formats.** Importers for GRIB and NetCDF let you
+  bring existing data into Tensogram pipelines without a lossy re-modelling
+  step.
+- **Partial range decode.** Extract sub-tensor slices without decoding the
+  whole object — useful for remote data at scale.
 
-- **Vocabulary is WMO-controlled.** Adding a new parameter type requires international negotiation that takes months to years.
-- **Only 1-dimensional fields.** A sea wave spectrum (which is naturally a 3-tensor of lat × lon × frequency) must be flattened into many separate GRIB messages with ad-hoc conventions baked into application code.
-
-Tensogram solves both. The metadata is CBOR (a compact binary version of JSON) so you can add any key you like without asking anyone's permission. And a single message can carry multiple N-dimensional tensor objects.
-
-## What Tensogram Is — and Is Not
-
-| | Tensogram |
-|---|---|
-| **Unit** | A *message* — a self-contained binary blob with metadata and one or more tensors |
-| **Transmissible** | Yes — over TCP, HTTP, message queues, or files |
-| **File format** | Not intrinsically, but multiple messages can be appended to a `.tgm` file |
-| **Vocabulary-aware** | No — the library is vocabulary-agnostic. Your application layer (e.g. MARS) owns the key names |
+Tensogram is developed and maintained by ECMWF and is used in operational
+weather-forecasting workloads, but nothing in the format is weather-specific.
+The design targets the N-tensor-at-scale problem common to many scientific
+domains.
 
 ## Crate Layout
 
@@ -43,7 +55,7 @@ tensogram/
 ```
 
 On top of those, the repository ships several opt-in crates — the
-`tensogram-grib` / `tensogram-netcdf` converters (exposed as the
+`tensogram-grib` / `tensogram-netcdf` importers (exposed as the
 `convert-grib` / `convert-netcdf` CLI subcommands), the `tensogram-wasm`
 WebAssembly bindings, and the pure-Rust `tensogram-szip` /
 `tensogram-sz3` / `tensogram-sz3-sys` compression crates — together

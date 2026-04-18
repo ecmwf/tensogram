@@ -4,7 +4,11 @@ status: HISTORICAL
 # Iteration 0 Plan (Historical)
 
 > **Note:** This document records the initial planning decisions made at project inception (2026-04-01).
-> It is preserved as historical context. For the current state of the project, see:
+> It is preserved as historical context — the framing below is ECMWF-internal and
+> reflects the original scope. The project's scope has since broadened to
+> position Tensogram as a general-purpose N-tensor message format for
+> scientific computing at scale, with ECMWF weather-forecasting workloads as
+> one important validated use case. For the current state of the project, see:
 > - `MOTIVATION.md` — why Tensogram exists and what we're building
 > - `DESIGN.md` — design rationale and key decisions
 > - `DONE.md` — current implementation status

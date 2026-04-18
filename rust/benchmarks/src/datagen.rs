@@ -6,11 +6,13 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
-//! Deterministic synthetic weather data generator.
+//! Deterministic synthetic scientific-field generator.
 //!
-//! Produces smooth, spatially correlated float64 fields that resemble
-//! real meteorological data (temperature grids). Smooth fields compress
-//! far better than random noise, giving realistic benchmark ratios.
+//! Produces smooth, spatially correlated float64 fields that match the
+//! statistical profile of many real scientific measurements — temperature
+//! grids, pressure fields, intensity maps, density fields, etc. Smooth
+//! fields compress far better than random noise, so they give realistic
+//! benchmark ratios for codecs targeting scientific data.
 //!
 //! The generator is intentionally zero-dependency — it implements a simple
 //! SplitMix64 PRNG rather than pulling in `rand`.
@@ -46,11 +48,12 @@ impl SplitMix64 {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Generate a weather-like float64 field of `num_points` values.
+/// Generate a smooth scientific-like float64 field of `num_points` values.
 ///
-/// The returned values model a 2D temperature grid (Kelvin) with:
-/// - A smooth large-scale sinusoidal pattern (base ≈ 280 K, amplitude ≈ 30 K)
-/// - Small random noise (±0.1 K) to mimic observation/model imperfections
+/// The returned values are shaped like a bounded-range 2-D physical field
+/// (e.g. temperature grid in Kelvin, intensity image, pressure field):
+/// - A smooth large-scale sinusoidal pattern (base ≈ 280, amplitude ≈ 30)
+/// - Small random noise (±0.1) to mimic observation/model imperfections
 ///
 /// The function is pure and deterministic for a given platform/toolchain:
 /// the same `seed` produces the same output in the same environment. Because
@@ -60,7 +63,7 @@ impl SplitMix64 {
 /// # Arguments
 /// * `num_points` – exact number of values to generate
 /// * `seed` – PRNG seed for full reproducibility
-pub fn generate_weather_field(num_points: usize, seed: u64) -> Vec<f64> {
+pub fn generate_smooth_field(num_points: usize, seed: u64) -> Vec<f64> {
     if num_points == 0 {
         return Vec::new();
     }
@@ -102,29 +105,29 @@ mod tests {
 
     #[test]
     fn test_determinism() {
-        let a = generate_weather_field(1000, 42);
-        let b = generate_weather_field(1000, 42);
+        let a = generate_smooth_field(1000, 42);
+        let b = generate_smooth_field(1000, 42);
         assert_eq!(a, b, "same seed must produce identical output");
     }
 
     #[test]
     fn test_different_seeds_differ() {
-        let a = generate_weather_field(1000, 42);
-        let b = generate_weather_field(1000, 99);
+        let a = generate_smooth_field(1000, 42);
+        let b = generate_smooth_field(1000, 99);
         assert_ne!(a, b, "different seeds must produce different output");
     }
 
     #[test]
     fn test_length() {
         for n in [0usize, 1, 100, 999, 1000, 1024, 10000] {
-            let v = generate_weather_field(n, 42);
+            let v = generate_smooth_field(n, 42);
             assert_eq!(v.len(), n, "length mismatch for n={n}");
         }
     }
 
     #[test]
     fn test_physical_range() {
-        let v = generate_weather_field(10_000, 42);
+        let v = generate_smooth_field(10_000, 42);
         for (i, &val) in v.iter().enumerate() {
             assert!(
                 (240.0..=320.0).contains(&val),
@@ -136,7 +139,7 @@ mod tests {
     #[test]
     fn test_first_values_stable() {
         // Pin the first few values to guard against accidental PRNG changes.
-        let v = generate_weather_field(5, 42);
+        let v = generate_smooth_field(5, 42);
         assert_eq!(v.len(), 5);
         // Values should be in the physical range and finite.
         for val in &v {
@@ -148,7 +151,7 @@ mod tests {
     #[test]
     fn test_single_point() {
         // num_points=1: ncols=1, nrows=1, sin(0)=0, cos(0)=1 → base + noise.
-        let v = generate_weather_field(1, 42);
+        let v = generate_smooth_field(1, 42);
         assert_eq!(v.len(), 1);
         assert!(v[0].is_finite());
         // sin(0)=0 so signal is 0, value ≈ 280.0 ± 0.1.
@@ -163,7 +166,7 @@ mod tests {
     fn test_extreme_seeds() {
         // Seed 0 and u64::MAX must produce valid, finite, in-range values.
         for seed in [0u64, u64::MAX] {
-            let v = generate_weather_field(100, seed);
+            let v = generate_smooth_field(100, seed);
             assert_eq!(v.len(), 100);
             for (i, &val) in v.iter().enumerate() {
                 assert!(val.is_finite(), "seed={seed} index={i}: non-finite {val}");

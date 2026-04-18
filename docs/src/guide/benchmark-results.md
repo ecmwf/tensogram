@@ -20,8 +20,9 @@ For methodology, flags, and how to re-run, see [Benchmarks](benchmarks.md).
 
 ## Codec Matrix
 
-16 million float64 values (122 MiB). The test data is a synthetic temperature-like
-field with values in the range 250–310.
+16 million float64 values (122 MiB). The test data is a synthetic smooth
+scientific-like field with values in the range 250–310 (a profile that also
+matches real temperature grids and other bounded-range physical measurements).
 
 #### How fidelity is measured
 
@@ -120,15 +121,17 @@ These operate directly on raw f64 bytes without quantization.
 - In this benchmark, higher ZFP rates gave proportionally smaller errors.
   ZFP fixed-rate modes always hit their target ratio exactly (25% / 37.5% / 50%).
 
-## GRIB Comparison
+## Reference Comparison: ecCodes GRIB Encoding
 
-[GRIB](https://en.wikipedia.org/wiki/GRIB) is the standard binary format used in
-operational weather forecasting. The most widely used GRIB encoder is
-[ecCodes](https://confluence.ecmwf.int/display/ECC) from ECMWF.
+[GRIB](https://en.wikipedia.org/wiki/GRIB) is a binary format widely used in
+operational weather forecasting, and
+[ecCodes](https://confluence.ecmwf.int/display/ECC) (from ECMWF) is a common
+implementation. Comparing against it gives a concrete, reproducible reference
+point for Tensogram's quantisation + entropy-coding pipeline.
 
-This benchmark compares Tensogram's 24-bit SimplePacking + szip against ecCodes'
-built-in packing methods on the same data. Both sides are timed end-to-end: from a
-float64 array to serialized compressed bytes (encode), and back (decode).
+This benchmark runs Tensogram's 24-bit SimplePacking + szip and ecCodes'
+built-in packing methods on the same input. Both sides are timed end-to-end:
+from a float64 array to serialised compressed bytes (encode), and back (decode).
 
 10 million float64 values (76 MiB), 24-bit packing. Different dataset size from the
 codec matrix above.

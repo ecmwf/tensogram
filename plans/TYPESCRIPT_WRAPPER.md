@@ -170,6 +170,7 @@ examples/typescript/                    ← new dir (mirrors examples/{rust,pyth
 ├── README.md
 ├── 01_encode_decode.ts
 ├── 02_mars_metadata.ts
+├── 02b_generic_metadata.ts
 ├── 03_simple_packing.ts
 ├── 04_multi_object.ts
 ├── 05_streaming_fetch.ts
@@ -302,9 +303,10 @@ Hand-written types, loose where necessary:
   (`reference_value`, `zstd_level`, `szip_block_offsets`, ...) without
   enumerating them at the top level.
 - `GlobalMetadata.base` entries are `Record<string, CborValue>`.
-  Application-layer shapes (`mars`, `grib`, `cf`, `netcdf`) are
-  **not** typed statically — consumers can cast with `as` if they want
-  strict MARS typing in their own code.
+  Application-layer shapes (`mars`, `grib`, `cf`, `netcdf`, `bids`,
+  `dicom`, or any custom vocabulary) are **not** typed statically —
+  consumers can cast with `as` if they want strict vocabulary typing in
+  their own code.
 - `CborValue` is the recursive union
   `string | number | boolean | null | CborValue[] | { [k: string]: CborValue }`.
 
@@ -374,8 +376,8 @@ Scope C.3 / C.4 in `plans/TODO.md`.
 | `streaming_decoder` | ✓ | ✓ | ✓ | ✓ | ✓ (`decodeStream`) |
 | File open / message / iter | ✓ | ✓ | ✓ | ✓ | ✓ (`TensogramFile`) |
 | Remote fetch | ✓ | ✓ | — | — | ✓ (`.fromUrl` + HTTP Range backend) |
-| `metadata_get_key` | ✓ | ✓ | ✓ | ✓ | ✓ (`getMetaKey`) |
-| `compute_common` | ✓ | ✓ | — | — | ✓ |
+| `metadata_get_key` (dotted path) | — | — | ✓ (typed: `_get_string/_int/_float`) | ✓ (typed: `get_string/get_int/get_float`) | ✓ (`getMetaKey`) |
+| `compute_common` | ✓ | — | — | — | ✓ |
 | `decode_range` | ✓ | ✓ | ✓ | ✓ | ✓ (`decodeRange`) |
 | `streaming_encoder` | ✓ | ✓ | ✓ | ✓ | ✓ (`StreamingEncoder`) |
 | `file_append` | ✓ | ✓ | ✓ | ✓ | ✓ (Node local-path only) |
@@ -384,6 +386,20 @@ Scope C.3 / C.4 in `plans/TODO.md`.
 | `encode_pre_encoded` | ✓ | ✓ | ✓ | ✓ | ✓ (`encodePreEncoded`) |
 | `simple_packing_params` | ✓ | ✓ (`compute_packing_params`) | ✓ | ✓ | ✓ (`simplePackingComputeParams`) |
 | First-class `float16` / `bfloat16` / `complex*` | ✓ | ✓ (numpy dtypes) | — (opaque bytes) | — (opaque bytes) | ✓ (Scope C.2 view classes) |
+
+Notes on `metadata_get_key` and `compute_common`:
+
+- The Rust crate and Python package deliberately do **not** expose a
+  dotted-path key helper — callers use nested access on `meta.base[i]`,
+  `meta.extra`, and (Python only) `meta["ns"]["field"]` instead. The CLI,
+  C FFI, C++ wrapper, and TypeScript package all accept a full dotted
+  path with first-match-across-`base[i]` + `_extra_`-fallback semantics.
+  See [`docs/src/guide/vocabularies.md`](../../docs/src/guide/vocabularies.md)
+  for cross-binding examples.
+- `compute_common` is currently Rust + TypeScript only. The Python
+  package does not re-export it; callers needing a common-map can walk
+  `meta.base` manually or shell out to the CLI. Adding a Python binding
+  is a mechanical follow-up if the need arises.
 
 ## Scope-C.1 wire details
 

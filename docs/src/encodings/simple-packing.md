@@ -1,8 +1,13 @@
 # Simple Packing
 
-Simple packing is a **lossy compression** technique inherited from GRIB. It quantizes a range of floating-point values into N-bit integers, dramatically reducing payload size at the cost of precision.
+Simple packing is a **lossy quantisation** technique derived from GRIB's
+simple-packing method. It quantises a range of floating-point values into
+N-bit integers, dramatically reducing payload size at the cost of precision.
 
-A 16-bit simple_packing payload is 8x smaller than the equivalent float64 and 4x smaller than float32, with precision loss typically well below instrument noise in weather data.
+A 16-bit simple_packing payload is 8× smaller than the equivalent float64 and
+4× smaller than float32, with precision loss typically below instrument noise
+for most bounded-range scientific measurements (temperatures, voltages,
+pressures, intensity counts).
 
 ## How It Works
 
@@ -55,7 +60,7 @@ If all values are identical (range = 0), `compute_params()` succeeds and stores 
 
 ### bits_per_value Range
 
-Valid range: **0 to 64**. More than 64 bits is rejected. Zero bits is accepted — `compute_params` stores the first value as the reference value (not the minimum) and `encode` produces an empty byte buffer. Decode reconstructs the reference value for every element, so this is only lossless for constant fields. The practical range for weather data is 8–24 bits.
+Valid range: **0 to 64**. More than 64 bits is rejected. Zero bits is accepted — `compute_params` stores the first value as the reference value (not the minimum) and `encode` produces an empty byte buffer. Decode reconstructs the reference value for every element, so this is only lossless for constant fields. Typical range for scientific floating-point data is 8–24 bits.
 
 | bits_per_value | Packed values | Precision vs float64 |
 |---|---|---|
@@ -112,15 +117,18 @@ Decodes a packed buffer back to f64 values. The `num_values` parameter is requir
 
 ## Precision Example
 
-Temperature data over Europe: range 220–310 K.
+Consider a bounded-range scalar field spanning 90 units (e.g. a temperature
+field 220–310 K, a pressure field 950–1040 hPa, or any analogous bounded
+scientific quantity):
 
 | bits_per_value | Step size | Max error |
 |---|---|---|
-| 8 | 0.353 K | ±0.18 K |
-| 12 | 0.022 K | ±0.011 K |
-| 16 | 0.00137 K | ±0.00069 K |
+| 8 | 0.353 units | ±0.18 units |
+| 12 | 0.022 units | ±0.011 units |
+| 16 | 0.00137 units | ±0.00069 units |
 
-At 16 bits, the error is smaller than any practical sensor precision.
+At 16 bits, the error is smaller than most practical sensor precisions. The
+same analysis applies to any physical quantity with a bounded dynamic range.
 
 ## Full Integration Example
 

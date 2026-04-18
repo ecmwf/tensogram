@@ -6,14 +6,14 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
-//! Shared encoding/filter/compression pipeline helpers for converters.
+//! Shared encoding/filter/compression pipeline helpers for importers.
 //!
 //! Both `tensogram-grib` and `tensogram-netcdf` accept the same set of CLI
 //! flags (`--encoding` / `--bits` / `--filter` / `--compression` /
 //! `--compression-level`) and translate them into
 //! [`DataObjectDescriptor`] fields + `params` map entries in exactly the
 //! same way. This module centralises that translation so the two
-//! converters cannot drift out of sync.
+//! importers cannot drift out of sync.
 //!
 //! ## Usage
 //!
@@ -106,7 +106,7 @@ impl Default for DataPipeline {
 /// Returns a human-readable error string when `pipeline.encoding`,
 /// `pipeline.filter`, or `pipeline.compression` is not one of the
 /// recognised values. Callers wrap this string into their own
-/// converter-specific error type (`GribError::InvalidData` /
+/// importer-specific error type (`GribError::InvalidData` /
 /// `NetcdfError::InvalidData`).
 ///
 /// Soft failures (`simple_packing` rejecting `NaN`-containing data, or

@@ -7,14 +7,18 @@
 // does it submit to any jurisdiction.
 
 /**
- * Example 02 — MARS metadata on per-object `base[i]` entries (TypeScript)
+ * Example 02 — Per-object metadata with the MARS vocabulary (TypeScript)
  *
  * Mirrors `examples/python/02_mars_metadata.py`.
  *
- * Each data object gets its own `base[i]` entry holding its MARS keys
- * independently. `getMetaKey` looks up dotted paths using first-match
- * semantics; `computeCommon` extracts keys that are shared across every
- * object's metadata.
+ * Each data object gets its own `base[i]` entry with application metadata.
+ * This example uses the ECMWF MARS vocabulary for concreteness; the same
+ * pattern works with any namespace (CF, BIDS, DICOM, custom). See
+ * `02b_generic_metadata.ts` for a non-MARS example.
+ *
+ * `getMetaKey` looks up dotted paths using first-match semantics;
+ * `computeCommon` extracts keys that are shared across every object's
+ * metadata.
  */
 
 import {

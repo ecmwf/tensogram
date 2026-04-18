@@ -5,7 +5,7 @@ for `.tgm` files.  Once installed, you can open tensogram data with:
 
 ```python
 import xarray as xr
-ds = xr.open_dataset("forecast.tgm", engine="tensogram")
+ds = xr.open_dataset("data.tgm", engine="tensogram")
 ```
 
 This chapter explains the conversion philosophy, the mapping rules, and
@@ -20,15 +20,16 @@ Tensogram and xarray have fundamentally different data models:
 
 | Concept | Tensogram | xarray |
 |---------|-----------|--------|
-| Dimensions | Unnamed, positional (`shape = [721, 1440]`) | Named (`"latitude"`, `"longitude"`) |
+| Dimensions | Unnamed, positional (`shape = [512, 512]`) | Named (`"x"`, `"y"`, `"latitude"`, `"time"`) |
 | Coordinates | Not built-in; application metadata | Arrays of values labelling each dimension |
 | Variables | Data objects, indexed by position | Named DataArrays inside a Dataset |
 | Attributes | CBOR maps at message and per-object level | Key-value dicts on Dataset and DataArray |
 
 Tensogram is **vocabulary-agnostic** by design.  The library never interprets
-metadata keys -- it does not know what `"mars.param"` or `"date"` means.
-xarray, on the other hand, requires named dimensions and coordinate arrays
-to enable its powerful label-based indexing and alignment.
+metadata keys -- it does not know what `"mars.param"`, `"bids.subject"`, or
+`"product.name"` means.  xarray, on the other hand, requires named dimensions
+and coordinate arrays to enable its powerful label-based indexing and
+alignment.
 
 The `tensogram-xarray` backend bridges this gap.  It applies a set of rules
 to translate tensogram structure into xarray structure, and lets you override

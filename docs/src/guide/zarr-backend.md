@@ -18,18 +18,20 @@ import zarr
 from tensogram_zarr import TensogramStore
 
 # Open existing .tgm file as a read-only Zarr store
-store = TensogramStore.open_tgm("forecast.tgm")
+store = TensogramStore.open_tgm("data.tgm")
 root = zarr.open_group(store=store, mode="r")
 
 # Browse available arrays
 for name, arr in root.members():
     print(f"{name}: shape={arr.shape}, dtype={arr.dtype}")
 
-# Read data (decoded eagerly at store open, served from memory)
+# Read an array (decoded eagerly at store open, served from memory)
 temperature = root["2t"][:]
 print(temperature.shape, temperature.mean())
 
-# Access group-level metadata (from GlobalMetadata)
+# Access group-level metadata (from GlobalMetadata _extra_)
+# The example below shows a MARS namespace; the attributes dict reflects
+# whatever namespaces the producer put in the message's GlobalMetadata.
 print(root.attrs["mars"])  # {'class': 'od', 'type': 'fc', ...}
 ```
 
@@ -61,7 +63,7 @@ graph LR
 Key design decisions:
 
 - Each TGM data object becomes **one Zarr array** with a **single chunk** (chunk shape = array shape)
-- Variable names are resolved from metadata: `mars.param`, `name`, or fallback `object_N`
+- Variable names are resolved from metadata via a default lookup path (`name`, `mars.param`, `param`, `mars.shortName`, `shortName`), or a custom dot-path you supply
 - TGM encoding metadata is preserved in Zarr array attributes under `_tensogram_*` keys
 - Duplicate variable names get a numeric suffix (`field`, `field_1`)
 
@@ -76,10 +78,17 @@ By default, the store tries these metadata paths to name arrays:
 5. `shortName`
 6. Falls back to `object_<index>`
 
-You can override with a custom key:
+You can override with any dot-path, including non-MARS vocabularies:
 
 ```python
-store = TensogramStore.open_tgm("data.tgm", variable_key="mars.param")
+# Weather pipeline using MARS
+store = TensogramStore.open_tgm("weather.tgm", variable_key="mars.param")
+
+# Neuroimaging pipeline using BIDS
+store = TensogramStore.open_tgm("scans.tgm", variable_key="bids.task")
+
+# Custom vocabulary
+store = TensogramStore.open_tgm("data.tgm", variable_key="product.name")
 ```
 
 ## Multi-message files

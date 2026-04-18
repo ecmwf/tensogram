@@ -31,7 +31,8 @@ uv pip install -e python/tensogram-zarr/
 | File | Topic |
 |------|-------|
 | `01_encode_decode.py` | Basic encode/decode round-trip |
-| `02_mars_metadata.py` | MARS-style metadata in per-object `base` entries |
+| `02_mars_metadata.py` | Per-object metadata using the ECMWF MARS vocabulary (example) |
+| `02b_generic_metadata.py` | Per-object metadata using a generic application namespace |
 | `03_simple_packing.py` | Simple-packing encoding for integer quantization |
 | `04_multi_object.py` | Multi-object messages, `decode_object`, `decode_range` |
 | `05_file_api.py` | `TensogramFile` for multi-message `.tgm` files |

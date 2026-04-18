@@ -136,11 +136,11 @@ split command
   └─ Single-object: pass through; multi-object: split per-object base metadata
 ```
 
-### Converter Operations (convert-grib / convert-netcdf)
+### Importer Operations (convert-grib / convert-netcdf)
 
-Both converter crates (`tensogram-grib`, `tensogram-netcdf`) use typed
+Both importer crates (`tensogram-grib`, `tensogram-netcdf`) use typed
 error enums and never panic on invalid or exotic input. Anything the
-converter can't represent cleanly is either surfaced as a typed error
+importer can't represent cleanly is either surfaced as a typed error
 or skipped with a `warning: …` line on stderr so the operator can see
 what was dropped.
 
@@ -172,7 +172,7 @@ tensogram-netcdf errors (rust/tensogram-netcdf/src/error.rs)
   │       - unknown --encoding / --filter / --compression names
   │       - simple_packing compute_params failures on edge-case data
   │       - extract_variable_record invariant violations (should be
-  │         unreachable; if it fires the converter is buggy)
+  │         unreachable; if it fires the importer is buggy)
   │
   ├─ NetcdfError::Encode(String)
   │     tensogram rejected the pipeline. Common cause:
@@ -181,7 +181,7 @@ tensogram-netcdf errors (rust/tensogram-netcdf/src/error.rs)
   │     simple_packing first.
   │
   └─ NetcdfError::Io(std::io::Error)
-        Reserved for future use — the current converter reads
+        Reserved for future use — the current importer reads
         through libnetcdf and writes through the CLI wrapper, so
         stdlib I/O errors don't currently reach this variant.
 ```
@@ -208,7 +208,7 @@ tensogram-grib errors (rust/tensogram-grib/src/error.rs)
   │
   ├─ GribError::Eccodes(String) — ecCodes C library error
   ├─ GribError::NoMessages — empty GRIB file
-  ├─ GribError::MissingKey — required MARS key absent
+  ├─ GribError::MissingKey — required ecCodes/MARS namespace key absent
   ├─ GribError::InvalidShape — grid dimension mismatch
   └─ GribError::Encode — tensogram encode failure
 ```
@@ -414,7 +414,7 @@ extreme scale factors — filter them before packing.
 `TensogramFile.open()` raises **OSError** (Python), **io\_error** (C++),
 or returns `TGM_ERROR_IO` (C) for any file system failure.
 
-### NetCDF Converter — `--split-by=record` on Files Without Unlimited Dim
+### NetCDF Importer — `--split-by=record` on Files Without Unlimited Dim
 
 `tensogram convert-netcdf --split-by record foo.nc` where `foo.nc` has
 no unlimited dimension hard-errors with
@@ -422,7 +422,7 @@ no unlimited dimension hard-errors with
 message includes the path so the caller can identify which file in a
 multi-input batch triggered it.
 
-### NetCDF Converter — `simple_packing` on Mixed-dtype Files
+### NetCDF Importer — `simple_packing` on Mixed-dtype Files
 
 `--encoding simple_packing` is f64-only by design. Mixed files (a
 typical CF temperature file has `f32` lat/lon coordinates alongside
@@ -433,14 +433,14 @@ variable contains NaN values (common with unpacked fill values) —
 `simple_packing::compute_params` rejects NaN, so that variable
 falls back to `encoding="none"` with a warning.
 
-### NetCDF Converter — Unknown Codec Name
+### NetCDF Importer — Unknown Codec Name
 
 `--encoding foo`, `--filter bar`, `--compression baz` all hard-error
 with `NetcdfError::InvalidData` listing the expected values. The
 pre-validation fires inside `apply_pipeline` so the error surfaces
 immediately, before any data is read from disk.
 
-### NetCDF Converter — szip on Raw f64
+### NetCDF Importer — szip on Raw f64
 
 libaec szip caps at 32 bits per sample, but raw `f64` gives
 `bits_per_sample = 64`, so `--compression szip` on unencoded f64

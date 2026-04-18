@@ -53,7 +53,10 @@ pip install tensogram[zarr]     # Zarr v3 store only
 cargo install tensogram-cli
 ```
 
-## Encode a Temperature Field
+## Encode a 2-D Float Field
+
+This example encodes a 100×200 `float32` grid — representative of many
+scientific 2-D fields (temperature, pressure, intensity, density, …).
 
 ```rust
 use std::collections::BTreeMap;
@@ -63,8 +66,9 @@ use tensogram::{
 };
 
 fn main() {
-    // 1. Make some fake temperature data: 100×200 float32 grid
-    //    In production, this would come from your model output.
+    // 1. Make some synthetic data: 100×200 float32 grid
+    //    In production, this would come from your model output, sensor,
+    //    or upstream pipeline.
     let shape = vec![100u64, 200];
     let strides = vec![200u64, 1]; // C-contiguous (row-major)
     let num_elements = 100 * 200;
@@ -110,14 +114,23 @@ fn main() {
 }
 ```
 
-## Add MARS Metadata
+## Add Application Metadata
 
-Real messages need application-layer metadata so downstream tools know what the data represents. Per-object metadata goes into the `base` array — one entry per data object:
+Real messages need application-layer metadata so downstream tools know what
+the data represents. Per-object metadata goes into the `base` array — one
+entry per data object — and is organised under a **namespace** key so that
+multiple vocabularies can coexist.
+
+The example below uses ECMWF's MARS vocabulary for concreteness. The same
+mechanism works with any vocabulary: CF conventions (`"cf"`), BIDS
+(`"bids"`), DICOM (`"dicom"`), or your own (`"product"`, `"experiment"`,
+`"device"`, …).
 
 ```rust
 use ciborium::Value;
 
-// Build mars namespace for the object: mars.class = "od", mars.param = "2t"
+// Build a "mars" namespace for the object — one concrete vocabulary example.
+// You can just as easily use "bids", "dicom", "product", or any custom name.
 let mars_map = vec![
     (Value::Text("class".into()), Value::Text("od".into())),
     (Value::Text("date".into()),  Value::Text("20260401".into())),

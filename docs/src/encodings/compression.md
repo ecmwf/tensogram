@@ -154,7 +154,7 @@ flowchart TD
 
 | Use case | Recommended | Why |
 |---|---|---|
-| GRIB-style weather fields | `simple_packing` + `szip` | Matches GRIB pipeline, RSI random access |
+| Quantised floats with partial-access support | `simple_packing` + `szip` | RSI-block random access; interoperable with GRIB 2 CCSDS packing |
 | Real-time streaming | `lz4` | Fastest decompression, low latency |
 | Archival storage | `zstd` (level 9-15) | Best lossless ratio |
 | ML model weights | `blosc2` | Chunk random access, good for large tensors |

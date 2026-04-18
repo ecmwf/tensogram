@@ -7,7 +7,7 @@
 // does it submit to any jurisdiction.
 
 use tensogram_benchmarks::codec_matrix::run_codec_matrix;
-use tensogram_benchmarks::datagen::generate_weather_field;
+use tensogram_benchmarks::datagen::generate_smooth_field;
 use tensogram_benchmarks::report::{
     BenchmarkResult, Fidelity, TimingStats, compute_fidelity, format_table,
 };
@@ -24,29 +24,29 @@ fn make_stats(ms: f64) -> TimingStats {
 
 #[test]
 fn datagen_determinism() {
-    let a = generate_weather_field(1000, 42);
-    let b = generate_weather_field(1000, 42);
+    let a = generate_smooth_field(1000, 42);
+    let b = generate_smooth_field(1000, 42);
     assert_eq!(a, b, "same seed must produce identical output");
 }
 
 #[test]
 fn datagen_different_seeds_differ() {
-    let a = generate_weather_field(1000, 1);
-    let b = generate_weather_field(1000, 2);
+    let a = generate_smooth_field(1000, 1);
+    let b = generate_smooth_field(1000, 2);
     assert_ne!(a, b, "different seeds must produce different output");
 }
 
 #[test]
 fn datagen_exact_length() {
     for n in [0usize, 1, 100, 999, 1000, 1024] {
-        let v = generate_weather_field(n, 42);
+        let v = generate_smooth_field(n, 42);
         assert_eq!(v.len(), n, "length mismatch for n={n}");
     }
 }
 
 #[test]
 fn datagen_physical_range() {
-    let v = generate_weather_field(1000, 42);
+    let v = generate_smooth_field(1000, 42);
     for (i, &val) in v.iter().enumerate() {
         assert!(val.is_finite(), "non-finite value at index {i}: {val}");
         assert!(

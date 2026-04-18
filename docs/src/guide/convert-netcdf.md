@@ -1,9 +1,10 @@
-# NetCDF Conversion
+# NetCDF Import
 
-Tensogram ships `tensogram-netcdf`, a dedicated crate for converting NetCDF
-(both Classic and NetCDF-4) files to Tensogram messages. This lets you bring
-existing climate, weather, and oceanographic datasets into the Tensogram
-ecosystem with their CF metadata preserved.
+Tensogram ships `tensogram-netcdf`, a dedicated crate for importing NetCDF
+(both Classic and NetCDF-4) files into Tensogram messages. NetCDF is widely
+used in climate, ocean, atmospheric, and Earth-observation science, but the
+importer treats any NetCDF file the same way — the mapping is structural, not
+domain-specific.
 
 The crate is exposed through the CLI as `tensogram convert-netcdf` and through
 a thin Rust library API. Conversion is one-way: NetCDF → Tensogram. There is
@@ -44,13 +45,13 @@ tensogram convert-netcdf --help
 
 ```bash
 # Convert one file
-tensogram convert-netcdf forecast.nc -o forecast.tgm
+tensogram convert-netcdf input.nc -o output.tgm
 
 # Convert multiple files into a single output
 tensogram convert-netcdf jan.nc feb.nc mar.nc -o q1.tgm
 
 # Stream to stdout (useful for piping)
-tensogram convert-netcdf forecast.nc | tensogram info /dev/stdin
+tensogram convert-netcdf input.nc | tensogram info /dev/stdin
 ```
 
 ## Command-line options
@@ -67,7 +68,7 @@ tensogram convert-netcdf forecast.nc | tensogram info /dev/stdin
 | `--compression-level N` | codec default | Level for `zstd` (1–22) and `blosc2` (0–9). |
 
 The `--encoding`/`--bits`/`--filter`/`--compression`/`--compression-level`
-flags are the same set used by `tensogram convert-grib`. Both converters share
+flags are the same set used by `tensogram convert-grib`. Both importers share
 a `PipelineArgs` struct so the two commands stay symmetric.
 
 ## How variables become objects
@@ -123,7 +124,7 @@ calendar dates. The CF `units` string (`"days since 1970-01-01"`) and
 ## NetCDF-4 groups
 
 Tensogram extracts only the **root group** of a NetCDF-4 file. If sub-groups
-are detected the converter prints a warning to stderr and continues with the
+are detected the importer prints a warning to stderr and continues with the
 root variables. Sub-group support is intentionally out of scope for v1 — most
 operational datasets keep their data variables at the root anyway.
 
@@ -239,7 +240,7 @@ copy makes CF-aware tooling cheaper because it can ignore the verbose
 
 ## Library API
 
-If you'd rather call the converter directly from Rust:
+If you'd rather call the importer directly from Rust:
 
 ```rust
 use std::path::Path;
@@ -264,13 +265,13 @@ let messages = convert_netcdf_file(Path::new("forecast.nc"), &options)?;
 
 **Note:** `DataPipeline` is defined in `tensogram::pipeline` and
 re-exported from both `tensogram_netcdf` and `tensogram_grib`. The
-underlying `apply_pipeline` helper is the same for both converters,
+underlying `apply_pipeline` helper is the same for both importers,
 guaranteeing that `convert-grib` and `convert-netcdf` produce
 byte-identical descriptor fields for equivalent flag combinations.
 
 ## See also
 
-- [GRIB Conversion](../grib/overview.md) — sister converter with the same
+- [GRIB Import](../grib/overview.md) — sister importer with the same
   pipeline-flag semantics.
 - [Simple Packing](../encodings/simple-packing.md), [Shuffle](../encodings/shuffle.md), [Compression](../encodings/compression.md) — the encoding stages applied to each object.
 - [CF Metadata Mapping](../reference/netcdf-cf-mapping.md) — full table of the

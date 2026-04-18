@@ -138,7 +138,7 @@ Each `base[i]` entry is fully self-contained. The only key that varies between t
 
 ### Optional: Full GRIB Namespace Keys
 
-When the GRIB converter runs with `preserve_all_keys` (CLI: `--all-keys`), all non-mars ecCodes namespace keys are stored under a `"grib"` sub-object within each `base[i]` entry:
+When the GRIB importer runs with `preserve_all_keys` (CLI: `--all-keys`), all non-mars ecCodes namespace keys are stored under a `"grib"` sub-object within each `base[i]` entry:
 
 ```json
 {

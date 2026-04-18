@@ -16,7 +16,7 @@ use tensogram_encodings::{
 };
 
 use crate::constants::AEC_DATA_PREPROCESS;
-use crate::datagen::generate_weather_field;
+use crate::datagen::generate_smooth_field;
 use crate::report::{BenchmarkResult, compute_fidelity, compute_timing_stats};
 use crate::{BenchmarkError, BenchmarkRun, CaseFailure};
 
@@ -323,8 +323,8 @@ pub fn run_codec_matrix(
     // Round up to next multiple of 4 for szip alignment (at most 3 extra values).
     let num_points = num_points.next_multiple_of(4);
 
-    eprintln!("Generating {num_points} weather-like float64 values (seed={seed})...");
-    let values = generate_weather_field(num_points, seed);
+    eprintln!("Generating {num_points} smooth scientific-like float64 values (seed={seed})...");
+    let values = generate_smooth_field(num_points, seed);
     let data_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     let original_bytes = data_bytes.len();
 
