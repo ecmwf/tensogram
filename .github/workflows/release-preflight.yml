@@ -148,20 +148,33 @@ jobs:
           cargo publish --dry-run -p tensogram-szip
           cargo publish --dry-run -p tensogram-sz3-sys
 
-      - name: Build Python wheel
+      - name: Set up Python + build tooling (via uv)
         run: |
-          pip install maturin
+          uv python install 3.13
+          uv venv .venv --python 3.13
+          . .venv/bin/activate
+          uv pip install maturin build twine
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Build Python wheel (native extension)
+        run: |
+          . .venv/bin/activate
           cd python/bindings
-          maturin build --release
+          maturin build --release --features grib,netcdf
 
       - name: Build pure Python packages
         run: |
-          pip install build twine
+          . .venv/bin/activate
           python -m build python/tensogram-xarray/
           python -m build python/tensogram-zarr/
 
       - name: Validate Python packages
-        run: twine check python/bindings/target/wheels/*.whl python/tensogram-xarray/dist/* python/tensogram-zarr/dist/*
+        run: |
+          . .venv/bin/activate
+          twine check \
+            python/bindings/target/wheels/*.whl \
+            python/tensogram-xarray/dist/* \
+            python/tensogram-zarr/dist/*
 
       - name: sccache stats
         if: always()
