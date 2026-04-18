@@ -3,6 +3,78 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.15.0] - 2026-04-18
+
+### Changed
+- **Crate renamed** — `tensogram-core` → `tensogram`. Users now
+  `cargo add tensogram` instead of `cargo add tensogram-core`.
+  Rust imports change from `use tensogram_core::` to `use tensogram::`.
+- **Backwards-compatible redirect** — `tensogram-core@0.15.0` is published
+  as a thin re-export crate with all features forwarded; existing users
+  can upgrade at their own pace.
+
+### Added
+- **Hash-while-encoding** — xxh3-64 digest computed inline during the
+  encode pipeline with zero extra passes over the data. New
+  `compute_hash` field on `PipelineConfig`.
+- **Installation docs** — README and documentation now include install
+  instructions for Rust (`cargo add tensogram`), Python
+  (`pip install tensogram[all]`), and CLI (`cargo install tensogram-cli`).
+- **Registry badges** — crates.io and PyPI badges in the README header.
+- **CLI subcommands** — additional CLI commands added.
+
+### Fixed
+- Publish workflow: sparse index polling (replaces slow HTTP API polling),
+  `--allow-dirty` for excluded crates, `--find-interpreter` for manylinux,
+  `pypa/gh-action-pypi-publish` replacing twine (PEP 639 compatibility).
+- Python version pins corrected (`>=0.15.0,<0.16`).
+- TypeScript golden test paths updated for renamed directory.
+- Python bindings crate name ambiguity resolved via dependency rename.
+- Benchmarks `PipelineConfig` updated for `compute_hash` field.
+
+## [0.14.0] - 2026-04-17
+
+First public release on [crates.io](https://crates.io/crates/tensogram-core)
+and [PyPI](https://pypi.org/project/tensogram/).
+
+### Added
+- **crates.io publishing** — 10 Rust crates published with full package
+  metadata (license, description, repository, homepage, documentation,
+  readme, keywords, categories, authors, rust-version).
+- **PyPI publishing** — 14 Python wheels (Linux x86_64, macOS arm64,
+  Python 3.9–3.14 including free-threaded 3.13t and 3.14t).
+- **Publish workflows** — `publish-crates.yml` (sequential with index
+  polling), `publish-pypi-tensogram.yml` (maturin + pypa/gh-action-pypi-publish),
+  `publish-pypi-extras.yml` (xarray + zarr via reusable workflow),
+  `release-preflight.yml` (validation).
+- **Per-crate READMEs** — all 10 Rust crates and the Python bindings
+  package have crate-level README files for crates.io/PyPI.
+- **Composite LICENSES.md** — `tensogram-sz3-sys` ships a composite
+  license file covering Apache-2.0 (wrapper), Argonne BSD (SZ3), and
+  Boost-1.0 (ska_hash).
+- **Python extras** — `pip install tensogram[xarray]`,
+  `pip install tensogram[zarr]`, `pip install tensogram[all]`.
+- **Make-release command** extended with registry publishing steps,
+  inter-crate dependency version pin bumping, and excluded-crate tests.
+
+### Changed
+- **Edition 2024** — workspace migrated from Rust 2021 to 2024 edition
+  (resolver 3).
+- **MSRV 1.87** — `rust-version` set across all publishable crates
+  (edition 2024 floor + `is_multiple_of` stabilisation).
+- **thiserror v2** — `tensogram-sz3` migrated from thiserror v1 to v2
+  via workspace inheritance, eliminating duplicate versions in the
+  dependency tree.
+- **Inter-crate version pins** — all path dependencies now carry
+  exact version pins (`version = "=X.Y.Z"`) required by `cargo publish`.
+
+### Fixed
+- FFI: narrowed unsafe blocks to only raw-pointer operations.
+- FFI: fail hard when cbindgen cannot generate the C header.
+- sz3-sys: link OpenMP runtime correctly on all supported platforms.
+- Core: gate async-only `lock_state` behind `cfg(feature = "async")`.
+- Added Apache 2.0 / ECMWF license headers to remaining source files.
+
 ## [0.13.0] - 2026-04-17
 
 ### Added
