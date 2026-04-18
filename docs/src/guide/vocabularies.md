@@ -154,38 +154,89 @@ provenance tracker.
 
 ## Looking up keys
 
-All language bindings provide a dotted-path lookup helper that works across
-any namespace:
+The dotted-path helpers exposed by each binding vary. The CLI, the C FFI
+(`tgm_metadata_get_string` / `_get_int` / `_get_float`), the C++ wrapper
+(`metadata::get_string` / `get_int` / `get_float`), and the TypeScript
+package (`getMetaKey`) all accept a full dotted path. The Rust crate and
+the Python package do not expose a dotted-path helper at this time; use
+direct nested access instead.
 
-```rust
-// Rust
-let param = tensogram::metadata::get_key(&meta, "mars.param");
-let units = tensogram::metadata::get_key(&meta, "cf.units");
-```
-
-```python
-# Python
-param = meta["mars"]["param"]         # dict-style
-param = meta.get_key("mars.param")    # dot-path
-```
+### TypeScript — dotted path
 
 ```ts
-// TypeScript
 import { getMetaKey } from '@ecmwf/tensogram';
-const param = getMetaKey(meta, 'mars.param');
+
+const param   = getMetaKey(meta, 'mars.param');
 const subject = getMetaKey(meta, 'bids.subject');
 ```
 
+### CLI — dotted path
+
 ```bash
-# CLI
+# Filter messages on a namespaced key
 tensogram ls data.tgm -w "mars.param=2t/10u"
 tensogram ls data.tgm -w "bids.subject=sub-01"
+
+# Print specific keys
 tensogram get -p "cf.standard_name,cf.units" data.tgm
 ```
 
-Lookup semantics: first match across `base[0]`, `base[1]`, ... (skipping
-`_reserved_` within each entry), then fall back to the message-level
-`_extra_` map.
+### Python — dict-style nested access
+
+```python
+# Metadata.__getitem__ does a top-level search across base[i] (skipping
+# _reserved_) and falls back to the message-level _extra_ map. The returned
+# value is a plain Python dict, so the next lookup is standard dict access.
+param   = meta["mars"]["param"]
+subject = meta["bids"]["subject"]
+
+# meta.base[i], meta.reserved, and meta.extra are also available directly
+# if you want the raw per-object / reserved / extra dicts.
+first_base = meta.base[0]
+```
+
+### Rust — pattern-match on `ciborium::Value`
+
+```rust
+use ciborium::Value;
+use tensogram::GlobalMetadata;
+
+// `meta.base` is `Vec<BTreeMap<String, Value>>`. Find the namespace on
+// the first-matching base entry, then pull a text field from the nested
+// map. Falls back to `meta.extra` for message-level annotations.
+fn get_text<'a>(meta: &'a GlobalMetadata,
+                namespace: &str, field: &str) -> Option<&'a str> {
+    let pull = |map: &'a [(Value, Value)]| -> Option<&'a str> {
+        map.iter().find_map(|(k, v)| match (k, v) {
+            (Value::Text(k), Value::Text(v)) if k == field => Some(v.as_str()),
+            _ => None,
+        })
+    };
+    for entry in &meta.base {
+        if let Some(Value::Map(items)) = entry.get(namespace)
+            && let Some(val) = pull(items)
+        {
+            return Some(val);
+        }
+    }
+    if let Some(Value::Map(items)) = meta.extra.get(namespace) {
+        return pull(items);
+    }
+    None
+}
+
+let param = get_text(&meta, "mars", "param");
+```
+
+Tensogram keeps the Rust surface small on purpose. If your pipeline needs
+dotted-path lookup in Rust, wrap the snippet above in a helper of your
+own, or call out to the CLI.
+
+### Lookup semantics (all bindings that support dotted paths)
+
+First match across `base[0]`, `base[1]`, … (skipping `_reserved_` within
+each entry), then fall back to the message-level `_extra_` map. An
+explicit `_extra_.key` (or `extra.key`) prefix bypasses the base search.
 
 ## See also
 

@@ -21,7 +21,17 @@
 #include <vector>
 
 int main() {
-    // -- Encode with MARS metadata --
+    // -- Encode with per-object MARS metadata --
+    //
+    // `base` is a JSON array with one entry per data object. Each entry
+    // holds ALL metadata for that object (first-match lookup semantics,
+    // no common/varying split on the wire). Here we have a single object
+    // so `base` has one entry.
+    //
+    // Top-level keys outside `"version"`, `"descriptors"`, and `"base"`
+    // are treated as message-level `_extra_` annotations — use those
+    // for provenance notes that apply to the whole message, not to an
+    // individual object.
     const std::string metadata_json = R"({
         "version": 2,
         "descriptors": [{
@@ -35,13 +45,16 @@ int main() {
             "filter": "none",
             "compression": "none"
         }],
-        "mars": {
-            "class": "od",
-            "date": "20260401",
-            "step": "6",
-            "time": "0000",
-            "type": "fc"
-        }
+        "base": [{
+            "mars": {
+                "class": "od",
+                "date": "20260401",
+                "step": "6",
+                "time": "0000",
+                "type": "fc"
+            }
+        }],
+        "source": "ifs-cycle49r2"
     })";
 
     std::vector<float> data(721 * 1440, 273.15f);
@@ -55,16 +68,26 @@ int main() {
     // -- Decode metadata only (no payload) --
     auto meta = tensogram::decode_metadata(encoded.data(), encoded.size());
 
-    // -- Read keys using dot-notation --
-    std::printf("version   = %llu\n",
+    // -- Read per-object keys using dot-notation --
+    //
+    // `get_string("mars.class")` searches base entries first (skipping
+    // `_reserved_`), then falls back to the message-level _extra_ map.
+    std::printf("version    = %llu\n",
                 static_cast<unsigned long long>(meta.version()));
+    std::printf("num_objects = %zu\n", meta.num_objects());
     std::printf("mars.class = %s\n", meta.get_string("mars.class").c_str());
     std::printf("mars.date  = %s\n", meta.get_string("mars.date").c_str());
     std::printf("mars.type  = %s\n", meta.get_string("mars.type").c_str());
     std::printf("mars.step  = %s\n", meta.get_string("mars.step").c_str());
 
+    // Message-level _extra_ key — resolves via the fallback branch.
+    std::printf("source (extra) = %s\n",
+                meta.get_string("source").c_str());
+
+    assert(meta.num_objects() == 1);
     assert(meta.get_string("mars.class") == "od");
     assert(meta.get_string("mars.date") == "20260401");
+    assert(meta.get_string("source") == "ifs-cycle49r2");
     std::printf("All assertions passed.\n");
 
     // -- Also demonstrate full-message decode with metadata extraction --
