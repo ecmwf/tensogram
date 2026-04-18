@@ -153,7 +153,7 @@ jobs:
           uv python install 3.13
           uv venv .venv --python 3.13
           . .venv/bin/activate
-          uv pip install maturin build twine
+          uv pip install "maturin[patchelf]" build twine
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Build Python wheel (native extension)
