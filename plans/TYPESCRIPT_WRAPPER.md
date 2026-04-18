@@ -373,8 +373,8 @@ core read/write path. Remaining gaps, all tracked as Scope-C items:
 | `streaming_decoder` | ✓ | ✓ | ✓ | ✓ | ✓ (`decodeStream`) |
 | File open / message / iter | ✓ | ✓ | ✓ | ✓ | ✓ (`TensogramFile`) |
 | Remote fetch | ✓ | ✓ | — | — | ✓ (`.fromUrl`) |
-| `metadata_get_key` | ✓ | ✓ | ✓ | ✓ | ✓ (`getMetaKey`) |
-| `compute_common` | ✓ | ✓ | — | — | ✓ |
+| `metadata_get_key` (dotted path) | — | — | ✓ (typed: `_get_string/_int/_float`) | ✓ (typed: `get_string/get_int/get_float`) | ✓ (`getMetaKey`) |
+| `compute_common` | ✓ | — | — | — | ✓ |
 | **`decode_range`** | ✓ | ✓ | ✓ | ✓ | **—** |
 | **`streaming_encoder`** | ✓ | ✓ | ✓ | ✓ | **—** |
 | **`file_append`** | ✓ | ✓ | ✓ | ✓ | **—** |
@@ -386,6 +386,20 @@ core read/write path. Remaining gaps, all tracked as Scope-C items:
 The gaps above are all intentional: Scope B focused on read-path ergonomics;
 Scope C extends the wrapper to write-path tooling, validation, and utility
 helpers. See `plans/TODO.md` for the enumerated Scope-C task list.
+
+Notes on `metadata_get_key` and `compute_common`:
+
+- The Rust crate and Python package deliberately do **not** expose a
+  dotted-path key helper — callers use nested access on `meta.base[i]`,
+  `meta.extra`, and (Python only) `meta["ns"]["field"]` instead. The CLI,
+  C FFI, C++ wrapper, and TypeScript package all accept a full dotted
+  path with first-match-across-`base[i]` + `_extra_`-fallback semantics.
+  See [`docs/src/guide/vocabularies.md`](../docs/src/guide/vocabularies.md)
+  for cross-binding examples.
+- `compute_common` is currently Rust + TypeScript only. The Python
+  package does not re-export it; callers needing a common-map can walk
+  `meta.base` manually or shell out to the CLI. Adding a Python binding
+  is a mechanical follow-up if the need arises.
 
 ## Open items & follow-ups (post-Scope B)
 
