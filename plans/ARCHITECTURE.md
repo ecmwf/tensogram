@@ -13,52 +13,53 @@ followed, see [DONE.md](DONE.md).
 ## High-Level Structure
 
 ```
-                     ┌─────────────────────────────────────┐
-                     │         User Application            │
-                     │  (Rust / Python / C++ / Web / CLI)  │
-                     └────────────┬────────────────────────┘
-                                  │
-            ┌──────────┬──────────┼──────────┬──────────┐
-            │          │          │          │          │
-     ┌──────▼────┐ ┌───▼──────┐ ┌─▼────────┐ ┌▼────────┐ ┌▼────────┐
-     │ tensogram │ │tensogram-│ │tensogram-│ │tensogram│ │tensogram│
-     │  (PyO3)   │ │   ffi    │ │   wasm   │ │  -cli   │ │ -xarray │
-     │           │ │  (C hdr) │ │ (wasm-bg)│ │  (clap) │ │  /zarr  │
-     └──────┬────┘ └────┬─────┘ └────┬─────┘ └────┬────┘ └────┬────┘
-            │           │            │            │           │
-            └───────────┴────────────┴────────────┴───────────┘
-                                  │
-                      ┌───────────▼───────────┐
-                      │   tensogram      │
-                      │                       │
-                      │  encode / decode      │
-                      │  framing / wire       │
-                      │  file / iter          │
-                      │  metadata / hash      │
-                      │  remote / validate    │
-                      └───────────┬───────────┘
-                                  │
-                      ┌───────────▼───────────┐
-                      │ tensogram-encodings   │
-                      │                       │
-                      │  simple_packing       │
-                      │  shuffle filter       │
-                      │  compression pipeline │
-                      └───────────┬───────────┘
-                                  │
-            ┌────────────┬────────┴───────┬────────────┐
-            │            │                │            │
-     ┌──────▼────┐ ┌─────▼──────┐ ┌───────▼─────┐ ┌────▼─────────┐
-     │ tensogram │ │ tensogram- │ │ libaec /    │ │ lz4 / blosc2 │
-     │  -szip    │ │    -sz3    │ │  zstd / zfp │ │  / ruzstd    │
-     │ (pure Rs) │ │ (C++ shim) │ │  (C FFI)    │ │  (optional)  │
-     └───────────┘ └─────┬──────┘ └─────────────┘ └──────────────┘
+                   ┌────────────────────────────────────────┐
+                   │            User Application            │
+                   │   (Rust / Python / C++ / Web / CLI)    │
+                   └───────────────────┬────────────────────┘
+                                       │
+        ┌─────────────┬─────────────┬──┴──────────┬──────────────┐
+        │             │             │             │              │
+ ┌──────▼──────┐ ┌────▼────┐ ┌──────▼──────┐ ┌────▼────┐ ┌───────▼────────┐
+ │  tensogram  │ │tensogram│ │  tensogram  │ │tensogram│ │   tensogram-   │
+ │   -python   │ │   -ffi  │ │    -wasm    │ │   -cli  │ │  xarray, -zarr │
+ │    (PyO3)   │ │ (C hdr) │ │  (wasm-bg)  │ │  (clap) │ │  (pure Python) │
+ └──────┬──────┘ └────┬────┘ └──────┬──────┘ └────┬────┘ └───────┬────────┘
+        │             │             │             │              │
+        └─────────────┴─────────────┼─────────────┴──────────────┘
+                                    │
+                        ┌───────────▼───────────┐
+                        │      tensogram        │
+                        │                       │
+                        │  encode / decode      │
+                        │  framing / wire       │
+                        │  file / iter          │
+                        │  metadata / hash      │
+                        │  remote / validate    │
+                        └───────────┬───────────┘
+                                    │
+                        ┌───────────▼───────────┐
+                        │  tensogram-encodings  │
+                        │                       │
+                        │  simple_packing       │
+                        │  shuffle filter       │
+                        │  compression pipeline │
+                        └───────────┬───────────┘
+                                    │
+        ┌────────────────┬──────────┴──────────┬────────────────┐
+        │                │                     │                │
+ ┌──────▼──────┐ ┌───────▼───────┐ ┌───────────▼─────┐ ┌────────▼─────────┐
+ │  tensogram  │ │  tensogram    │ │  libaec /       │ │  lz4 / blosc2 /  │
+ │    -szip    │ │    -sz3       │ │  zstd / zfp     │ │  ruzstd          │
+ │ (pure Rust) │ │  (safe API)   │ │  (C libraries)  │ │  (Rust crates)   │
+ └─────────────┘ └───────┬───────┘ └─────────────────┘ └──────────────────┘
                          │
-                   ┌─────▼──────┐
-                   │ tensogram- │
-                   │  -sz3-sys  │
-                   │ (C++ shim) │
-                   └────────────┘
+                 ┌───────▼───────┐
+                 │  tensogram    │
+                 │   -sz3-sys    │
+                 │  (vendored    │
+                 │   C++ shim)   │
+                 └───────────────┘
 ```
 
 ## Workspace Crates
@@ -69,16 +70,23 @@ WebAssembly tooling, or external system libraries.
 
 ### Default-workspace Rust crates
 
+Public library crates (published to [crates.io](https://crates.io/crates/tensogram)):
+
 | Crate | Purpose | Depends on |
 |-------|---------|------------|
 | `tensogram` | Wire format, framing, encode/decode, file API, iterators, validation, remote object store | `tensogram-encodings` |
-| `tensogram-encodings` | Encoding pipeline: simple packing, shuffle, compression codecs (szip, zstd, lz4, blosc2, zfp, sz3 — all feature-gated) | (standalone) |
-| `tensogram-cli` | Command-line tool (`info/ls/dump/get/set/copy/merge/split/reshuffle/validate`, plus feature-gated `convert-grib`/`convert-netcdf`) | `tensogram` |
+| `tensogram-encodings` | Encoding pipeline: simple packing, shuffle, compression codecs (szip, zstd, lz4, blosc2, zfp, sz3 — all feature-gated) | — |
+| `tensogram-cli` | Command-line tool (`info`, `ls`, `dump`, `get`, `set`, `copy`, `merge`, `split`, `reshuffle`, `validate`, plus feature-gated `convert-grib`, `convert-netcdf`) | `tensogram` |
 | `tensogram-ffi` | C FFI surface with opaque handles and `tensogram.h` via cbindgen | `tensogram` |
-| `tensogram-szip` | Pure-Rust CCSDS 121.0-B-3 szip codec (used via the `szip-pure` feature, e.g. for WebAssembly) | (standalone) |
-| `tensogram-sz3` | High-level SZ3 API matching the published `sz3` crate interface | `tensogram-sz3-sys` |
-| `tensogram-sz3-sys` | Clean-room FFI shim wrapping the BSD-licensed SZ3 C++ library (Apache-2.0 / MIT) | (native C++ build) |
-| `tensogram-benchmarks` | Benchmark suite in `rust/benchmarks` (`codec-matrix`, `grib-comparison` binaries) | `tensogram`, `tensogram-encodings` |
+| `tensogram-szip` | Pure-Rust CCSDS 121.0-B-3 szip codec (used via the `szip-pure` feature, e.g. for WebAssembly) | — |
+| `tensogram-sz3` | Safe high-level SZ3 lossy-compression API | `tensogram-sz3-sys` |
+| `tensogram-sz3-sys` | `-sys` crate vendoring the SZ3 C++ library (Apache-2.0 wrapper; Argonne BSD + Boost-1.0 for vendored source — see `LICENSES.md`) | (native C++ build) |
+
+Internal crates (not published):
+
+| Crate | Purpose | Depends on |
+|-------|---------|------------|
+| `tensogram-benchmarks` | Benchmark suite in `rust/benchmarks` (`codec-matrix`, `grib-comparison`, `threads-scaling`, `hash-overhead` binaries) | `tensogram`, `tensogram-encodings` |
 | `tensogram-rust-examples` | Runnable Rust examples in `examples/rust` (numbered `NN_description.rs`) | `tensogram` |
 
 ### Excluded-from-default-workspace crates
@@ -156,7 +164,7 @@ src/
                   fidelity) with stable IssueCode enum
 ```
 
-## Wire Format (v2)
+## Wire Format
 
 A message is a self-contained binary blob:
 
