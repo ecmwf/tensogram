@@ -24,7 +24,7 @@ pub mod converter;
 pub mod error;
 pub mod metadata;
 
-pub use converter::{ConvertOptions, Grouping, convert_grib_file};
+pub use converter::{ConvertOptions, Grouping, convert_grib_buffer, convert_grib_file};
 pub use error::GribError;
 // `DataPipeline` lives in `tensogram::pipeline` — both GRIB and
 // NetCDF importers share the same type so they cannot drift. Re-export

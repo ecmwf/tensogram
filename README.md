@@ -137,7 +137,7 @@ ds = xr.open_dataset("data.tgm", engine="tensogram")  # lazy-loaded
 group = zarr.open_group(store=TensogramStore.open_dir("somedir/"), mode="r")  # loads somedir/*.tgm
 ```
 
-See `examples/python/` for encode/decode, metadata, packing, file API, iterators, xarray, zarr, and streaming consumer patterns.
+See `examples/python/` for encode/decode, metadata, packing, file API, iterators, xarray, zarr, and streaming consumer patterns. For **narrative walk-throughs** with live visualisations, see `examples/jupyter/` — five Jupyter notebooks covering quickstart/MARS, encoding pipeline fidelity, GRIB conversion, NetCDF → xarray, and validation + multi-threaded encoding.
 
 ## Build & Test
 

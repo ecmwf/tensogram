@@ -16,6 +16,11 @@ use std::path::Path;
 
 use numpy::PyArrayMethods;
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
+// `PyFileNotFoundError` is only referenced from the GRIB/NetCDF converter
+// error-mapping helpers, which are themselves cfg-gated.  Gate the import
+// so `--no-default-features --features async` builds do not warn.
+#[cfg(any(feature = "grib", feature = "netcdf"))]
+use pyo3::exceptions::PyFileNotFoundError;
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyBytes, PyDict, PyList};
@@ -24,12 +29,13 @@ use pyo3::types::{PyBytes, PyDict, PyList};
 use std::sync::Arc;
 
 use tensogram_lib::validate::{
-    validate_file as core_validate_file, validate_message, ValidateOptions, ValidationLevel,
+    ValidateOptions, ValidationLevel, validate_file as core_validate_file, validate_message,
 };
 use tensogram_lib::{
-    decode, decode_descriptors, decode_metadata, decode_object, decode_range, encode,
-    encode_pre_encoded, scan, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
-    GlobalMetadata, HashAlgorithm, StreamingEncoder, TensogramError, TensogramFile, RESERVED_KEY,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
+    HashAlgorithm, RESERVED_KEY, StreamingEncoder, TensogramError, TensogramFile, decode,
+    decode_descriptors, decode_metadata, decode_object, decode_range, encode, encode_pre_encoded,
+    scan,
 };
 
 type PyObject = Py<PyAny>;
@@ -410,7 +416,16 @@ impl PyTensogramFile {
     ///         Each descriptor_dict requires ``type``, ``shape``, ``dtype`` and
     ///         optionally ``byte_order``, ``encoding``, ``filter``, ``compression``.
     ///     hash: ``"xxh3"`` (default) or ``None`` to skip hashing.
-    #[pyo3(signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3"), threads=0))]
+    ///     threads: thread budget (0 = sequential / env fallback).
+    ///     reject_nan: if ``True``, reject float payloads containing any
+    ///         NaN before the pipeline runs.  Raises ``ValueError``.
+    ///         Default ``False`` preserves the current behaviour.
+    ///     reject_inf: same, but for ``+Inf`` / ``-Inf``.  Default
+    ///         ``False``.  See :func:`encode` for the full semantics.
+    #[pyo3(
+        signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3"), threads=0, reject_nan=false, reject_inf=false)
+    )]
+    #[allow(clippy::too_many_arguments)]
     fn append(
         &mut self,
         py: Python<'_>,
@@ -418,13 +433,15 @@ impl PyTensogramFile {
         descriptors_and_data: &Bound<'_, PyList>,
         hash: Option<&str>,
         threads: u32,
+        reject_nan: bool,
+        reject_inf: bool,
     ) -> PyResult<()> {
         let global_meta = dict_to_global_metadata(global_meta_dict)?;
         let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
         let refs: Vec<(&DataObjectDescriptor, &[u8])> =
             pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
-        let options = make_encode_options(hash, threads)?;
+        let options = make_encode_options(hash, threads, reject_nan, reject_inf)?;
         py.detach(|| self.file.append(&global_meta, &refs, &options))
             .map_err(to_py_err)
     }
@@ -507,12 +524,10 @@ impl PyTensogramFile {
             .detach(|| self.file.decode_object(msg_index, obj_index, &options))
             .map_err(to_py_err)?;
         let arr = bytes_to_numpy(py, &desc, &data)?;
-        let py_desc = PyDataObjectDescriptor {
-            inner: desc,
-        }
-        .into_pyobject(py)?
-        .into_any()
-        .unbind();
+        let py_desc = PyDataObjectDescriptor { inner: desc }
+            .into_pyobject(py)?
+            .into_any()
+            .unbind();
         let result = PyDict::new(py);
         result.set_item("metadata", PyMetadata { inner: meta }.into_pyobject(py)?)?;
         result.set_item("descriptor", py_desc)?;
@@ -580,17 +595,12 @@ impl PyTensogramFile {
             .into_iter()
             .map(|(meta, desc, data)| {
                 let arr = bytes_to_numpy(py, &desc, &data)?;
-                let py_desc = PyDataObjectDescriptor {
-                    inner: desc,
-                }
-                .into_pyobject(py)?
-                .into_any()
-                .unbind();
+                let py_desc = PyDataObjectDescriptor { inner: desc }
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind();
                 let result = PyDict::new(py);
-                result.set_item(
-                    "metadata",
-                    PyMetadata { inner: meta }.into_pyobject(py)?,
-                )?;
+                result.set_item("metadata", PyMetadata { inner: meta }.into_pyobject(py)?)?;
                 result.set_item("descriptor", py_desc)?;
                 result.set_item("data", arr)?;
                 Ok(result.into_any().unbind())
@@ -840,20 +850,25 @@ impl PyFileIter {
 /// Returns:
 ///     ``bytes`` — the complete wire-format message.
 #[pyfunction]
-#[pyo3(name = "encode", signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3"), threads=0))]
+#[pyo3(
+    name = "encode",
+    signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3"), threads=0, reject_nan=false, reject_inf=false)
+)]
 fn py_encode<'py>(
     py: Python<'py>,
     global_meta_dict: &Bound<'_, PyDict>,
     descriptors_and_data: &Bound<'_, PyList>,
     hash: Option<&str>,
     threads: u32,
+    reject_nan: bool,
+    reject_inf: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let global_meta = dict_to_global_metadata(global_meta_dict)?;
     let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
     let refs: Vec<(&DataObjectDescriptor, &[u8])> =
         pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
-    let options = make_encode_options(hash, threads)?;
+    let options = make_encode_options(hash, threads, reject_nan, reject_inf)?;
     let msg = py.detach(|| encode(&global_meta, &refs, &options).map_err(to_py_err))?;
     Ok(PyBytes::new(py, &msg))
 }
@@ -891,7 +906,11 @@ fn py_encode_pre_encoded<'py>(
     let refs: Vec<(&DataObjectDescriptor, &[u8])> =
         pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
-    let options = make_encode_options(hash, threads)?;
+    // `reject_nan` / `reject_inf` are intentionally not exposed here:
+    // pre-encoded bytes are opaque to the library, so scanning them as
+    // raw floats would be incorrect.  See `plans/RESEARCH_NAN_HANDLING.md`
+    // §3.1 for why the strict flags are raw-input-only.
+    let options = make_encode_options(hash, threads, false, false)?;
     let msg = py.detach(|| encode_pre_encoded(&global_meta, &refs, &options).map_err(to_py_err))?;
     Ok(PyBytes::new(py, &msg))
 }
@@ -996,6 +1015,11 @@ fn py_decode_object(
 ///     ``list[ndarray]`` (default) or ``ndarray`` (when ``join=True``).
 #[pyfunction]
 #[pyo3(name = "decode_range", signature = (buf, object_index, ranges, join=false, verify_hash=false, native_byte_order=true, threads=0))]
+// The argument list is the public Python ABI — each one is a documented
+// keyword argument that other bindings (Rust core, FFI, WASM) also
+// expose.  Collapsing them into an options struct would break the
+// Pythonic kwargs calling convention.
+#[allow(clippy::too_many_arguments)]
 fn py_decode_range(
     py: Python<'_>,
     buf: PyBackedBytes,
@@ -1113,6 +1137,40 @@ impl PyBufferIter {
     }
 }
 
+/// Compute a hash digest over arbitrary bytes.
+///
+/// Mirrors Rust :func:`tensogram::compute_hash`, the WASM
+/// ``compute_hash`` export, and ``tgm_compute_hash`` in the C FFI.
+/// Useful for verifying an encoded payload against the hash recorded
+/// in a descriptor, or for pre-computing a hash before calling
+/// :func:`encode_pre_encoded`.
+///
+/// Args:
+///     data: Bytes to hash — ``bytes`` or ``bytearray``.  Zero-copy
+///         for ``bytes`` via :class:`PyBackedBytes`.  For other
+///         buffer-protocol objects (``memoryview``, ``numpy.ndarray``,
+///         etc.) call ``bytes(obj)`` / ``obj.tobytes()`` first.
+///     algo: Algorithm name.  ``"xxh3"`` is the only supported value
+///         today and the default.
+///
+/// Returns:
+///     The hex-encoded digest as a ``str`` (16 characters for xxh3-64).
+///
+/// Raises:
+///     TypeError: If ``data`` is not ``bytes`` or ``bytearray``.
+///     ValueError: If ``algo`` is not a recognised algorithm name.
+///
+/// Example::
+///
+///     >>> tensogram.compute_hash(b"hello world")
+///     'd447b1ea40e6988b'
+#[pyfunction]
+#[pyo3(name = "compute_hash", signature = (data, algo="xxh3"))]
+fn py_compute_hash(data: PyBackedBytes, algo: &str) -> PyResult<String> {
+    let algorithm = HashAlgorithm::parse(algo).map_err(to_py_err)?;
+    Ok(tensogram_lib::compute_hash(&data, algorithm))
+}
+
 /// Compute simple-packing parameters for a float64 array.
 ///
 /// Args:
@@ -1181,15 +1239,24 @@ impl PyStreamingEncoder {
     ///         :meth:`write_object` (axis B only — streaming encoding
     ///         does not have cross-object parallelism by design).
     ///         Default ``0`` preserves the sequential path.
+    ///     reject_nan: if ``True``, every :meth:`write_object` call
+    ///         rejects float payloads containing any NaN before the
+    ///         pipeline runs.  See :func:`encode` for the full semantics.
+    ///         The flag is captured at construction — mid-stream changes
+    ///         to the encoder's contract are not possible.  Default
+    ///         ``False``.
+    ///     reject_inf: same, for ``+Inf`` / ``-Inf``.  Default ``False``.
     #[new]
-    #[pyo3(signature = (global_meta_dict, hash=Some("xxh3"), threads=0))]
+    #[pyo3(signature = (global_meta_dict, hash=Some("xxh3"), threads=0, reject_nan=false, reject_inf=false))]
     fn new(
         global_meta_dict: &Bound<'_, PyDict>,
         hash: Option<&str>,
         threads: u32,
+        reject_nan: bool,
+        reject_inf: bool,
     ) -> PyResult<Self> {
         let global_meta = dict_to_global_metadata(global_meta_dict)?;
-        let options = make_encode_options(hash, threads)?;
+        let options = make_encode_options(hash, threads, reject_nan, reject_inf)?;
         let inner = StreamingEncoder::new(Vec::new(), &global_meta, &options).map_err(to_py_err)?;
         Ok(Self { inner: Some(inner) })
     }
@@ -1614,12 +1681,10 @@ impl PyAsyncTensogramFile {
                 .map_err(to_py_err)?;
             Python::attach(|py| {
                 let arr = bytes_to_numpy(py, &desc, &data)?;
-                let py_desc = PyDataObjectDescriptor {
-                    inner: desc,
-                }
-                .into_pyobject(py)?
-                .into_any()
-                .unbind();
+                let py_desc = PyDataObjectDescriptor { inner: desc }
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind();
                 let result = PyDict::new(py);
                 result.set_item("metadata", PyMetadata { inner: meta }.into_pyobject(py)?)?;
                 result.set_item("descriptor", py_desc)?;
@@ -1746,17 +1811,13 @@ impl PyAsyncTensogramFile {
                     .into_iter()
                     .map(|(meta, desc, data)| {
                         let arr = bytes_to_numpy(py, &desc, &data)?;
-                        let py_desc = PyDataObjectDescriptor {
-                            inner: desc,
-                        }
-                        .into_pyobject(py)?
-                        .into_any()
-                        .unbind();
+                        let py_desc = PyDataObjectDescriptor { inner: desc }
+                            .into_pyobject(py)?
+                            .into_any()
+                            .unbind();
                         let result = PyDict::new(py);
-                        result.set_item(
-                            "metadata",
-                            PyMetadata { inner: meta }.into_pyobject(py)?,
-                        )?;
+                        result
+                            .set_item("metadata", PyMetadata { inner: meta }.into_pyobject(py)?)?;
                         result.set_item("descriptor", py_desc)?;
                         result.set_item("data", arr)?;
                         Ok(result.into_any().unbind())
@@ -1926,10 +1987,543 @@ impl PyAsyncTensogramFileIter {
     }
 }
 
+/// Check whether a source string looks like a remote URL.
+///
+/// Returns ``True`` for sources starting with ``http://``, ``https://``,
+/// ``s3://``, ``gs://``, or ``az://``; ``False`` for everything else
+/// (local paths, unrecognised schemes).  Used by
+/// :class:`TensogramFile` to dispatch between the local-file and
+/// remote backends.
+///
+/// Args:
+///     source: The source string to classify.
+///
+/// Returns:
+///     ``True`` if ``source`` has a recognised remote scheme prefix.
+///
+/// Example::
+///
+///     >>> tensogram.is_remote_url("s3://bucket/key.tgm")
+///     True
+///     >>> tensogram.is_remote_url("/local/path.tgm")
+///     False
 #[pyfunction]
 #[pyo3(name = "is_remote_url")]
 fn py_is_remote_url(source: &str) -> bool {
     tensogram_lib::is_remote_url(source)
+}
+
+// ---------------------------------------------------------------------------
+// GRIB / NetCDF conversion wrappers
+//
+// These wrap `tensogram-grib::convert_grib_file` / `convert_grib_buffer` and
+// `tensogram-netcdf::convert_netcdf_file`.  They are *always* compiled into
+// the Python module — when the `grib` / `netcdf` cargo feature is off, the
+// function raises a `RuntimeError` at call time explaining how to rebuild
+// the wheel with support enabled.  This matches the convention established
+// by `tensogram.encode()` / `tensogram.decode()` (no feature-gated visibility
+// on the Python side).
+//
+// The official manylinux PyPI wheels do NOT ship with these features enabled
+// because libeccodes / libnetcdf are not part of the `manylinux_2_28` base
+// image.  Users who need GRIB / NetCDF conversion either:
+//   - install the C libraries + rebuild from source
+//     (`maturin develop --features grib,netcdf`), or
+//   - use the `tensogram` CLI binary which is distributed with these
+//     features enabled on the platforms where they are supported.
+// ---------------------------------------------------------------------------
+
+/// Short-hand for the three converter-stub branches used when a Cargo
+/// feature is off.  Eats the parameters (so clippy does not flag them
+/// as unused) and returns the documented `RuntimeError`.
+///
+/// The macro is unused when BOTH `grib` and `netcdf` are on, which is the
+/// common case — silence the warning rather than gate the definition on
+/// a complex cfg expression.
+#[allow(unused_macros)]
+macro_rules! feature_disabled_stub {
+    ($msg:expr, $( $arg:ident ),* $(,)?) => {{
+        $( let _ = $arg; )*
+        Err(PyRuntimeError::new_err($msg))
+    }};
+}
+
+/// Build a [`tensogram_lib::DataPipeline`] from the shared pipeline
+/// arguments (`encoding`, `bits`, `filter`, `compression`,
+/// `compression_level`) exposed by the `convert_grib` and
+/// `convert_netcdf` PyO3 wrappers.
+///
+/// Pure structural construction — all value-level validation (e.g.
+/// rejecting an unknown codec name) happens later inside
+/// `tensogram_encodings::pipeline::apply_pipeline`.  This helper only
+/// converts the caller's `&str` arguments into the owned `String`
+/// fields that `DataPipeline` stores.
+///
+/// Only compiled when at least one of the GRIB / NetCDF converters is
+/// enabled; without those features the public `convert_grib` /
+/// `convert_netcdf` entry points are stubs that never reach this code
+/// path.
+#[cfg(any(feature = "grib", feature = "netcdf"))]
+fn build_data_pipeline(
+    encoding: &str,
+    bits: Option<u32>,
+    filter: &str,
+    compression: &str,
+    compression_level: Option<i32>,
+) -> tensogram_lib::DataPipeline {
+    tensogram_lib::DataPipeline {
+        encoding: encoding.to_string(),
+        bits,
+        filter: filter.to_string(),
+        compression: compression.to_string(),
+        compression_level,
+    }
+}
+
+/// Build a `tensogram_grib::ConvertOptions` from the PyO3-level arguments,
+/// rejecting unknown `grouping` / `hash` strings up front.
+#[cfg(feature = "grib")]
+#[allow(clippy::too_many_arguments)]
+fn build_grib_options(
+    grouping: &str,
+    preserve_all_keys: bool,
+    encoding: &str,
+    bits: Option<u32>,
+    filter: &str,
+    compression: &str,
+    compression_level: Option<i32>,
+    threads: u32,
+    hash: Option<&str>,
+) -> PyResult<tensogram_grib::ConvertOptions> {
+    let grouping = match grouping {
+        "one_to_one" => tensogram_grib::Grouping::OneToOne,
+        "merge_all" => tensogram_grib::Grouping::MergeAll,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "grouping must be 'one_to_one' or 'merge_all', got {other:?}"
+            )));
+        }
+    };
+
+    Ok(tensogram_grib::ConvertOptions {
+        grouping,
+        preserve_all_keys,
+        pipeline: build_data_pipeline(encoding, bits, filter, compression, compression_level),
+        // Strict-finite flags are not exposed through the Python
+        // `convert_grib` surface (yet); the CLI `tensogram convert-grib
+        // --reject-nan` path uses its own builder.  Hardcoded false so
+        // converter behaviour matches pre-0.15 exactly.
+        encode_options: make_encode_options(hash, threads, false, false)?,
+    })
+}
+
+/// Build a `tensogram_netcdf::ConvertOptions` from the PyO3-level arguments,
+/// rejecting unknown `split_by` / `hash` strings up front.
+#[cfg(feature = "netcdf")]
+#[allow(clippy::too_many_arguments)]
+fn build_netcdf_options(
+    split_by: &str,
+    cf: bool,
+    encoding: &str,
+    bits: Option<u32>,
+    filter: &str,
+    compression: &str,
+    compression_level: Option<i32>,
+    threads: u32,
+    hash: Option<&str>,
+) -> PyResult<tensogram_netcdf::ConvertOptions> {
+    let split_by = match split_by {
+        "file" => tensogram_netcdf::SplitBy::File,
+        "variable" => tensogram_netcdf::SplitBy::Variable,
+        "record" => tensogram_netcdf::SplitBy::Record,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "split_by must be 'file', 'variable' or 'record', got {other:?}"
+            )));
+        }
+    };
+
+    Ok(tensogram_netcdf::ConvertOptions {
+        split_by,
+        cf,
+        pipeline: build_data_pipeline(encoding, bits, filter, compression, compression_level),
+        // Strict-finite flags: see convert_grib for rationale.
+        encode_options: make_encode_options(hash, threads, false, false)?,
+    })
+}
+
+/// Map a [`tensogram_grib::GribError`] to the most appropriate Python
+/// exception. The routing follows the same convention as the rest of
+/// the bindings (see `map_tensogram_error`):
+///
+/// - [`std::io::ErrorKind::NotFound`] → [`FileNotFoundError`]
+///   (subclass of [`OSError`])
+/// - Other [`GribError::Io`] variants → [`OSError`]
+/// - Caller-input problems ([`GribError::NoMessages`],
+///   [`GribError::InvalidData`], [`GribError::Encode`]) → [`ValueError`]
+/// - Everything else (ecCodes C-library internal failures) → [`RuntimeError`]
+#[cfg(feature = "grib")]
+fn grib_error_to_pyerr(e: tensogram_grib::GribError) -> PyErr {
+    use tensogram_grib::GribError;
+    match &e {
+        GribError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
+            PyFileNotFoundError::new_err(e.to_string())
+        }
+        GribError::Io(_) => PyIOError::new_err(e.to_string()),
+        GribError::NoMessages | GribError::InvalidData(_) | GribError::Encode(_) => {
+            PyValueError::new_err(e.to_string())
+        }
+        GribError::EcCodes(_) => PyRuntimeError::new_err(e.to_string()),
+    }
+}
+
+/// Map a [`tensogram_netcdf::NetcdfError`] to the most appropriate Python
+/// exception. Same routing convention as [`grib_error_to_pyerr`]:
+///
+/// - [`std::io::ErrorKind::NotFound`] → [`FileNotFoundError`]
+/// - Other [`NetcdfError::Io`] variants → [`OSError`]
+/// - Caller-input problems → [`ValueError`] (including
+///   [`NetcdfError::NoUnlimitedDimension`] which is raised when the
+///   caller asks for `split_by="record"` against a file without one)
+/// - libnetcdf C-library errors → [`RuntimeError`]
+#[cfg(feature = "netcdf")]
+fn netcdf_error_to_pyerr(e: tensogram_netcdf::NetcdfError) -> PyErr {
+    use tensogram_netcdf::NetcdfError;
+    match &e {
+        NetcdfError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
+            PyFileNotFoundError::new_err(e.to_string())
+        }
+        NetcdfError::Io(_) => PyIOError::new_err(e.to_string()),
+        NetcdfError::NoVariables
+        | NetcdfError::InvalidData(_)
+        | NetcdfError::Encode(_)
+        | NetcdfError::UnsupportedType { .. }
+        | NetcdfError::NoUnlimitedDimension { .. } => PyValueError::new_err(e.to_string()),
+        NetcdfError::Netcdf(_) => PyRuntimeError::new_err(e.to_string()),
+    }
+}
+
+/// Wrap a list of Tensogram wire-format messages into a Python
+/// `list[bytes]` for return from the `convert_grib` / `convert_netcdf`
+/// PyO3 wrappers.
+#[cfg(any(feature = "grib", feature = "netcdf"))]
+fn messages_to_pybytes_list(py: Python<'_>, messages: Vec<Vec<u8>>) -> PyResult<PyObject> {
+    let items: Vec<Bound<'_, PyBytes>> =
+        messages.into_iter().map(|m| PyBytes::new(py, &m)).collect();
+    Ok(PyList::new(py, items)?.into_any().unbind())
+}
+
+/// Convert a GRIB file to Tensogram wire-format messages.
+///
+/// Returns a list of `bytes`, one per produced Tensogram message.
+/// Concatenate them (`b"".join(result)`) to get a complete multi-message
+/// file, or write them sequentially to an open file handle.
+///
+/// # Python exceptions raised
+/// - [`FileNotFoundError`] — `path` does not exist.
+/// - [`OSError`] — other I/O failure (permission denied, etc.).
+/// - [`ValueError`] — unknown `grouping` / `hash`; unknown codec name or
+///   bit width in the pipeline; the buffer contained zero GRIB messages;
+///   any other caller-input problem.
+/// - [`RuntimeError`] — the `grib` Cargo feature is disabled, or an
+///   ecCodes C-library internal error bubbled up.
+///
+/// # Arguments
+/// - `path`: filesystem path to the GRIB file.
+/// - `grouping`: `"merge_all"` (default — one Tensogram message per file
+///   with N data objects) or `"one_to_one"` (one Tensogram message per
+///   GRIB message).
+/// - `preserve_all_keys`: when `True`, lift every ecCodes namespace key
+///   into `base[i]["grib"]`.  Default `False` (MARS keys only).
+/// - `encoding`: `"none"` (default) or `"simple_packing"`.
+/// - `bits`: bits-per-value for `simple_packing` (1..=64). Defaults to
+///   16 when `encoding="simple_packing"` and `bits=None`; ignored for
+///   `encoding="none"`. Values outside `1..=64` cause the encoder to
+///   emit a warning to stderr and silently fall back to `encoding="none"`.
+/// - `filter`: `"none"` (default) or `"shuffle"`.
+/// - `compression`: `"none"` (default), `"zstd"`, `"lz4"`, `"blosc2"`,
+///   `"szip"`.
+/// - `compression_level`: codec-specific integer (e.g. zstd 1..=22).
+///   Defaults to the codec's own default when `None`.
+/// - `threads`: parallelism budget. `0` uses the default behaviour and may
+///   be overridden by `TENSOGRAM_THREADS=N`; use `1` to force
+///   single-threaded execution.
+/// - `hash`: `"xxh3"` (default) or `None` to skip hashing.
+#[pyfunction]
+#[pyo3(name = "convert_grib", signature = (
+    path,
+    *,
+    grouping = "merge_all",
+    preserve_all_keys = false,
+    encoding = "none",
+    bits = None,
+    filter = "none",
+    compression = "none",
+    compression_level = None,
+    threads = 0,
+    hash = Some("xxh3"),
+))]
+#[allow(clippy::too_many_arguments)]
+fn py_convert_grib(
+    py: Python<'_>,
+    path: &str,
+    grouping: &str,
+    preserve_all_keys: bool,
+    encoding: &str,
+    bits: Option<u32>,
+    filter: &str,
+    compression: &str,
+    compression_level: Option<i32>,
+    threads: u32,
+    hash: Option<&str>,
+) -> PyResult<PyObject> {
+    #[cfg(feature = "grib")]
+    {
+        let options = build_grib_options(
+            grouping,
+            preserve_all_keys,
+            encoding,
+            bits,
+            filter,
+            compression,
+            compression_level,
+            threads,
+            hash,
+        )?;
+        let path_buf = std::path::PathBuf::from(path);
+
+        // Pre-check path existence so callers receive a standard Python
+        // FileNotFoundError rather than whatever ecCodes happens to
+        // surface on a missing path (typically CodesError::LibcNonZero,
+        // which would otherwise map to RuntimeError).
+        if !path_buf.exists() {
+            return Err(PyFileNotFoundError::new_err(format!(
+                "no such file: {path}"
+            )));
+        }
+
+        let messages = py
+            .detach(|| tensogram_grib::convert_grib_file(&path_buf, &options))
+            .map_err(grib_error_to_pyerr)?;
+        messages_to_pybytes_list(py, messages)
+    }
+    #[cfg(not(feature = "grib"))]
+    feature_disabled_stub!(
+        "tensogram was built without GRIB support. Install libeccodes \
+         (`brew install eccodes` or `apt install libeccodes-dev`) and \
+         rebuild the Python bindings with `maturin develop --features grib`.",
+        py,
+        path,
+        grouping,
+        preserve_all_keys,
+        encoding,
+        bits,
+        filter,
+        compression,
+        compression_level,
+        threads,
+        hash,
+    )
+}
+
+/// Convert a GRIB byte buffer to Tensogram wire-format messages.
+///
+/// In-memory equivalent of [`convert_grib`].  Accepts any Python
+/// bytes-like object (`bytes`, `bytearray`, memoryview, `numpy.uint8[:]`)
+/// and releases the GIL during the conversion itself.
+///
+/// # Python exceptions raised
+/// - [`ValueError`] — `buffer` is not a bytes-like object; the buffer
+///   contained zero GRIB messages; or any other caller-input problem
+///   (same taxonomy as [`convert_grib`]).
+/// - [`RuntimeError`] — the `grib` Cargo feature is disabled, or an
+///   ecCodes C-library internal error bubbled up.
+///
+/// Useful when:
+/// - you already have GRIB bytes in memory (e.g. from a byte-range
+///   HTTP fetch), and
+/// - you do not want to stage the bytes through the filesystem.
+#[pyfunction]
+#[pyo3(name = "convert_grib_buffer", signature = (
+    buffer,
+    *,
+    grouping = "merge_all",
+    preserve_all_keys = false,
+    encoding = "none",
+    bits = None,
+    filter = "none",
+    compression = "none",
+    compression_level = None,
+    threads = 0,
+    hash = Some("xxh3"),
+))]
+#[allow(clippy::too_many_arguments)]
+fn py_convert_grib_buffer(
+    py: Python<'_>,
+    buffer: &Bound<'_, PyAny>,
+    grouping: &str,
+    preserve_all_keys: bool,
+    encoding: &str,
+    bits: Option<u32>,
+    filter: &str,
+    compression: &str,
+    compression_level: Option<i32>,
+    threads: u32,
+    hash: Option<&str>,
+) -> PyResult<PyObject> {
+    #[cfg(feature = "grib")]
+    {
+        // Accept any Python bytes-like object. PyO3's `extract::<Vec<u8>>`
+        // goes through the buffer protocol, so `bytes`, `bytearray`,
+        // `memoryview`, and numpy `uint8` arrays all work. We need an owned
+        // `Vec<u8>` because ecCodes' `new_from_memory` takes ownership
+        // (it hands the buffer to `fmemopen(3)`).
+        let owned: Vec<u8> = buffer.extract().map_err(|_| {
+            PyValueError::new_err(
+                "convert_grib_buffer expects a bytes-like object \
+                 (bytes, bytearray, memoryview, numpy.uint8[:])",
+            )
+        })?;
+
+        let options = build_grib_options(
+            grouping,
+            preserve_all_keys,
+            encoding,
+            bits,
+            filter,
+            compression,
+            compression_level,
+            threads,
+            hash,
+        )?;
+
+        let messages = py
+            .detach(|| tensogram_grib::convert_grib_buffer(owned, &options))
+            .map_err(grib_error_to_pyerr)?;
+        messages_to_pybytes_list(py, messages)
+    }
+    #[cfg(not(feature = "grib"))]
+    feature_disabled_stub!(
+        "tensogram was built without GRIB support. Install libeccodes \
+         (`brew install eccodes` or `apt install libeccodes-dev`) and \
+         rebuild the Python bindings with `maturin develop --features grib`.",
+        py,
+        buffer,
+        grouping,
+        preserve_all_keys,
+        encoding,
+        bits,
+        filter,
+        compression,
+        compression_level,
+        threads,
+        hash,
+    )
+}
+
+/// Convert a NetCDF file to Tensogram wire-format messages.
+///
+/// Returns a list of `bytes`, one per produced Tensogram message.
+///
+/// # Python exceptions raised
+/// - [`FileNotFoundError`] — `path` does not exist.
+/// - [`OSError`] — other I/O failure.
+/// - [`ValueError`] — unknown `split_by` / `hash`; unknown codec name or
+///   bit width; the file contains no variables; `split_by="record"` was
+///   requested on a file without an unlimited dimension; any other
+///   caller-input problem.
+/// - [`RuntimeError`] — the `netcdf` Cargo feature is disabled, or a
+///   libnetcdf C-library internal error bubbled up.
+///
+/// # Arguments
+/// - `path`: filesystem path to the NetCDF file (`.nc`, NetCDF-3 classic
+///   or NetCDF-4/HDF5).
+/// - `split_by`: `"file"` (default — one Tensogram message with N
+///   variables), `"variable"` (one message per variable), or `"record"`
+///   (one message per unlimited-dimension record).
+/// - `cf`: when `True`, lift the 16 allow-listed CF attributes into
+///   `base[i]["cf"]`.
+/// - `encoding`: `"none"` (default) or `"simple_packing"`.
+/// - `bits`: bits-per-value for `simple_packing` (1..=64). Defaults to
+///   16 when `encoding="simple_packing"` and `bits=None`. See
+///   [`convert_grib`] for the full behaviour.
+/// - `filter` / `compression` / `compression_level`: see [`convert_grib`].
+/// - `threads`: parallelism budget. `0` uses the default behaviour and may
+///   be overridden by `TENSOGRAM_THREADS=N`; use `1` to force
+///   single-threaded execution.
+/// - `hash`: `"xxh3"` (default) or `None` to skip hashing.
+#[pyfunction]
+#[pyo3(name = "convert_netcdf", signature = (
+    path,
+    *,
+    split_by = "file",
+    cf = false,
+    encoding = "none",
+    bits = None,
+    filter = "none",
+    compression = "none",
+    compression_level = None,
+    threads = 0,
+    hash = Some("xxh3"),
+))]
+#[allow(clippy::too_many_arguments)]
+fn py_convert_netcdf(
+    py: Python<'_>,
+    path: &str,
+    split_by: &str,
+    cf: bool,
+    encoding: &str,
+    bits: Option<u32>,
+    filter: &str,
+    compression: &str,
+    compression_level: Option<i32>,
+    threads: u32,
+    hash: Option<&str>,
+) -> PyResult<PyObject> {
+    #[cfg(feature = "netcdf")]
+    {
+        let options = build_netcdf_options(
+            split_by,
+            cf,
+            encoding,
+            bits,
+            filter,
+            compression,
+            compression_level,
+            threads,
+            hash,
+        )?;
+        let path_buf = std::path::PathBuf::from(path);
+
+        // Pre-check path existence — same reasoning as `py_convert_grib`.
+        if !path_buf.exists() {
+            return Err(PyFileNotFoundError::new_err(format!(
+                "no such file: {path}"
+            )));
+        }
+
+        let messages = py
+            .detach(|| tensogram_netcdf::convert_netcdf_file(&path_buf, &options))
+            .map_err(netcdf_error_to_pyerr)?;
+        messages_to_pybytes_list(py, messages)
+    }
+    #[cfg(not(feature = "netcdf"))]
+    feature_disabled_stub!(
+        "tensogram was built without NetCDF support. Install libnetcdf \
+         (`brew install netcdf` or `apt install libnetcdf-dev`) and \
+         rebuild the Python bindings with `maturin develop --features netcdf`.",
+        py,
+        path,
+        split_by,
+        cf,
+        encoding,
+        bits,
+        filter,
+        compression,
+        compression_level,
+        threads,
+        hash,
+    )
 }
 
 #[pymodule(gil_used = false)]
@@ -1946,7 +2540,11 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_iter_messages, m)?)?;
     m.add_function(wrap_pyfunction!(py_validate, m)?)?;
     m.add_function(wrap_pyfunction!(py_validate_file, m)?)?;
+    m.add_function(wrap_pyfunction!(py_compute_hash, m)?)?;
     m.add_function(wrap_pyfunction!(compute_packing_params, m)?)?;
+    m.add_function(wrap_pyfunction!(py_convert_grib, m)?)?;
+    m.add_function(wrap_pyfunction!(py_convert_grib_buffer, m)?)?;
+    m.add_function(wrap_pyfunction!(py_convert_netcdf, m)?)?;
     m.add_class::<PyMetadata>()?;
     m.add_class::<PyDataObjectDescriptor>()?;
     m.add_class::<PyTensogramFile>()?;
@@ -1957,6 +2555,15 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAsyncTensogramFile>()?;
     #[cfg(feature = "async")]
     m.add_class::<PyAsyncTensogramFileIter>()?;
+
+    // Feature-flag probes for Python consumers. Useful for tests and for
+    // branching behaviour in notebooks / examples so they can skip cleanly
+    // when the wheel was built without a converter feature:
+    //   if tensogram.__has_grib__:
+    //       msgs = tensogram.convert_grib(...)
+    m.add("__has_grib__", cfg!(feature = "grib"))?;
+    m.add("__has_netcdf__", cfg!(feature = "netcdf"))?;
+
     Ok(())
 }
 
@@ -1964,7 +2571,12 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_encode_options(hash: Option<&str>, threads: u32) -> PyResult<EncodeOptions> {
+fn make_encode_options(
+    hash: Option<&str>,
+    threads: u32,
+    reject_nan: bool,
+    reject_inf: bool,
+) -> PyResult<EncodeOptions> {
     let hash_algorithm = match hash {
         None => None,
         Some("xxh3") => Some(HashAlgorithm::Xxh3),
@@ -1973,6 +2585,8 @@ fn make_encode_options(hash: Option<&str>, threads: u32) -> PyResult<EncodeOptio
     Ok(EncodeOptions {
         hash_algorithm,
         threads,
+        reject_nan,
+        reject_inf,
         ..Default::default()
     })
 }
@@ -2243,7 +2857,7 @@ fn dict_to_data_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<DataObje
             other => {
                 return Err(PyValueError::new_err(format!(
                     "unknown byte_order: '{other}', expected 'little' or 'big'"
-                )))
+                )));
             }
         },
     };
@@ -2315,14 +2929,12 @@ fn compute_strides(shape: &[u64]) -> PyResult<Vec<u64>> {
     }
     let mut strides = vec![1u64; shape.len()];
     for i in (0..shape.len() - 1).rev() {
-        strides[i] = strides[i + 1]
-            .checked_mul(shape[i + 1])
-            .ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "strides overflow: cannot compute strides for shape {:?}",
-                    shape
-                ))
-            })?;
+        strides[i] = strides[i + 1].checked_mul(shape[i + 1]).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "strides overflow: cannot compute strides for shape {:?}",
+                shape
+            ))
+        })?;
     }
     Ok(strides)
 }

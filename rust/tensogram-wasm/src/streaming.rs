@@ -68,6 +68,12 @@ pub struct StreamingDecoder {
     max_buffer: usize,
 }
 
+impl Default for StreamingDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[wasm_bindgen]
 impl StreamingDecoder {
     /// Create a new streaming decoder.

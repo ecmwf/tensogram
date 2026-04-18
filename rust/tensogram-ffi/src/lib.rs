@@ -437,6 +437,7 @@ unsafe fn collect_data_slices<'a>(
 ///
 /// All pointer arguments must satisfy the same contracts as the public FFI
 /// functions that delegate to this helper.
+#[allow(clippy::too_many_arguments)]
 unsafe fn parse_encode_args<'a>(
     json_str: &str,
     data_ptrs: *const *const u8,
@@ -444,6 +445,8 @@ unsafe fn parse_encode_args<'a>(
     num_objects: usize,
     hash_algo: *const c_char,
     threads: u32,
+    reject_nan: bool,
+    reject_inf: bool,
 ) -> Result<ParsedEncode<'a>, (TgmError, String)> {
     let (global_metadata, descriptors) =
         parse_encode_json(json_str).map_err(|e| (TgmError::Metadata, e))?;
@@ -464,6 +467,8 @@ unsafe fn parse_encode_args<'a>(
     let options = EncodeOptions {
         hash_algorithm,
         threads,
+        reject_nan,
+        reject_inf,
         ..Default::default()
     };
 
@@ -490,9 +495,17 @@ unsafe fn parse_encode_args<'a>(
 ///
 /// `hash_algo`: null-terminated string ("xxh3") or NULL for no hash.
 ///
+/// `reject_nan` / `reject_inf`: when `true`, the encoder scans float
+/// payloads before the pipeline runs and returns
+/// [`TgmError::Encoding`] on the first NaN / Inf.  Pass `false` to
+/// preserve the current behaviour.  See the Rust
+/// `EncodeOptions::reject_nan` docs for full semantics.  Integer
+/// dtypes are not scanned.
+///
 /// On success returns `TgmError::Ok` and fills `out` with the encoded bytes.
 /// The caller must free `out` with `tgm_bytes_free`.
 #[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
 pub extern "C" fn tgm_encode(
     metadata_json: *const c_char,
     data_ptrs: *const *const u8,
@@ -500,6 +513,8 @@ pub extern "C" fn tgm_encode(
     num_objects: usize,
     hash_algo: *const c_char,
     threads: u32,
+    reject_nan: bool,
+    reject_inf: bool,
     out: *mut TgmBytes,
 ) -> TgmError {
     if metadata_json.is_null() || out.is_null() {
@@ -523,6 +538,8 @@ pub extern "C" fn tgm_encode(
             num_objects,
             hash_algo,
             threads,
+            reject_nan,
+            reject_inf,
         )
     } {
         Ok(p) => p,
@@ -613,6 +630,8 @@ pub extern "C" fn tgm_encode_pre_encoded(
         }
     };
 
+    // `encode_pre_encoded` is opaque — the strict-finite scan does not
+    // apply.  See plans/RESEARCH_NAN_HANDLING.md §3.1 for why.
     let parsed = match unsafe {
         parse_encode_args(
             json_str,
@@ -621,6 +640,8 @@ pub extern "C" fn tgm_encode_pre_encoded(
             num_objects,
             hash_algo,
             threads,
+            false,
+            false,
         )
     } {
         Ok(p) => p,
@@ -1563,7 +1584,9 @@ pub extern "C" fn tgm_file_path(file: *const TgmFile) -> *const c_char {
 
 /// Encode and append a message to the file.
 /// Same JSON schema as `tgm_encode` for `metadata_json`.
+/// `reject_nan` / `reject_inf` match `tgm_encode`'s semantics.
 #[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
 pub extern "C" fn tgm_file_append(
     file: *mut TgmFile,
     metadata_json: *const c_char,
@@ -1572,6 +1595,8 @@ pub extern "C" fn tgm_file_append(
     num_objects: usize,
     hash_algo: *const c_char,
     threads: u32,
+    reject_nan: bool,
+    reject_inf: bool,
 ) -> TgmError {
     if file.is_null() || metadata_json.is_null() {
         set_last_error("null argument");
@@ -1594,6 +1619,8 @@ pub extern "C" fn tgm_file_append(
             num_objects,
             hash_algo,
             threads,
+            reject_nan,
+            reject_inf,
         )
     } {
         Ok(p) => p,
@@ -2724,7 +2751,9 @@ mod tests {
             &data_len as *const usize,
             1,
             ptr::null(), // no hash
-            0,           // threads
+            0,
+            false,
+            false, // threads
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok), "tgm_encode failed");
@@ -2767,6 +2796,8 @@ mod tests {
             1,
             hash_algo.as_ptr(),
             0,
+            false,
+            false,
             &mut out,
         );
         assert!(
@@ -2958,6 +2989,8 @@ mod tests {
             0,
             ptr::null(),
             0,
+            false,
+            false,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -2973,6 +3006,8 @@ mod tests {
             0,
             ptr::null(),
             0,
+            false,
+            false,
             ptr::null_mut(),
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -2995,7 +3030,9 @@ mod tests {
             &data_len as *const usize,
             1, // mismatch!
             ptr::null(),
-            0, // threads
+            0,
+            false,
+            false, // threads
             &mut out,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -3015,6 +3052,8 @@ mod tests {
             0,
             ptr::null(),
             0,
+            false,
+            false,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Metadata));
@@ -3633,6 +3672,8 @@ mod tests {
             1,
             ptr::null(),
             0,
+            false,
+            false,
         );
         assert!(matches!(err, super::TgmError::Ok));
 
@@ -3738,6 +3779,8 @@ mod tests {
             0,
             ptr::null(),
             0,
+            false,
+            false,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
 
@@ -3794,7 +3837,9 @@ mod tests {
             c_path.as_ptr(),
             meta_json.as_ptr(),
             ptr::null(), // no hash
-            0,           // threads
+            0,
+            false,
+            false, // threads
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -3869,14 +3914,23 @@ mod tests {
             meta.as_ptr(),
             ptr::null(),
             0,
+            false,
+            false,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
 
         // create with null metadata
         let p = CString::new("/tmp/dummy.tgm").unwrap();
-        let err =
-            super::tgm_streaming_encoder_create(p.as_ptr(), ptr::null(), ptr::null(), 0, &mut enc);
+        let err = super::tgm_streaming_encoder_create(
+            p.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            0,
+            false,
+            false,
+            &mut enc,
+        );
         assert!(matches!(err, super::TgmError::InvalidArg));
 
         // create with null out
@@ -3885,6 +3939,8 @@ mod tests {
             meta.as_ptr(),
             ptr::null(),
             0,
+            false,
+            false,
             ptr::null_mut(),
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -3929,6 +3985,8 @@ mod tests {
             meta_json.as_ptr(),
             ptr::null(),
             0,
+            false,
+            false,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -3961,6 +4019,8 @@ mod tests {
             meta_json.as_ptr(),
             ptr::null(),
             0,
+            false,
+            false,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4183,6 +4243,8 @@ mod tests {
             0,
             ptr::null(),
             0,
+            false,
+            false,
             &mut out,
         );
 
@@ -4554,6 +4616,8 @@ mod tests {
             0,
             ptr::null(),
             0,
+            false,
+            false,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4589,6 +4653,8 @@ mod tests {
             meta_json.as_ptr(),
             hash_algo.as_ptr(),
             0,
+            false,
+            false,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4641,6 +4707,8 @@ mod tests {
             meta_json.as_ptr(),
             bad_algo.as_ptr(),
             0,
+            false,
+            false,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -4662,6 +4730,8 @@ mod tests {
             bad_meta.as_ptr(),
             ptr::null(),
             0,
+            false,
+            false,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Metadata));
@@ -4705,6 +4775,8 @@ mod tests {
             2,
             ptr::null(),
             0,
+            false,
+            false,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4774,6 +4846,8 @@ mod tests {
             1,
             ptr::null(),
             0,
+            false,
+            false,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4846,6 +4920,8 @@ mod tests {
             meta_json.as_ptr(),
             ptr::null(),
             0,
+            false,
+            false,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4910,6 +4986,8 @@ mod tests {
             0,
             bad_algo.as_ptr(),
             0,
+            false,
+            false,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -4972,7 +5050,9 @@ mod tests {
             data_lens.as_ptr(),
             1,
             ptr::null(), // no hash
-            0,           // threads
+            0,
+            false,
+            false, // threads
             &mut out,
         );
         assert!(
@@ -5209,6 +5289,8 @@ mod tests {
             1,
             ptr::null(),
             /* threads */ 0,
+            false,
+            false,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -5401,11 +5483,14 @@ fn parse_streaming_metadata_json(json_str: &str) -> Result<GlobalMetadata, Strin
 /// Free with `tgm_streaming_encoder_free` or finalize with
 /// `tgm_streaming_encoder_finish`.
 #[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
 pub extern "C" fn tgm_streaming_encoder_create(
     path: *const c_char,
     metadata_json: *const c_char,
     hash_algo: *const c_char,
     threads: u32,
+    reject_nan: bool,
+    reject_inf: bool,
     out: *mut *mut TgmStreamingEncoder,
 ) -> TgmError {
     if path.is_null() || metadata_json.is_null() || out.is_null() {
@@ -5467,6 +5552,8 @@ pub extern "C" fn tgm_streaming_encoder_create(
     let options = EncodeOptions {
         hash_algorithm,
         threads,
+        reject_nan,
+        reject_inf,
         ..Default::default()
     };
     let writer = std::io::BufWriter::new(file);

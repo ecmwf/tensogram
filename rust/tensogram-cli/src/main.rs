@@ -38,6 +38,44 @@ struct Cli {
     #[arg(long, global = true, default_value_t = 0, env = "TENSOGRAM_THREADS")]
     threads: u32,
 
+    /// Reject float payloads containing NaN before the encoding pipeline
+    /// runs.  Default off.
+    ///
+    /// Applies to every encoding-capable subcommand that re-runs the
+    /// pipeline on user data: `merge`, `split`, `reshuffle`,
+    /// `convert-grib`, `convert-netcdf`.  `copy` (raw byte copy) and
+    /// `set` (metadata-only) are no-ops under this flag.
+    ///
+    /// Fails with an encoding error on the first NaN — see
+    /// `docs/src/guide/strict-finite.md` for the full semantics.
+    /// Pass `--reject-nan` at the command line or set
+    /// `TENSOGRAM_REJECT_NAN=1` (or `true` / `yes` / `on`) in the
+    /// environment; `0` / `false` / `no` / `off` / unset is off.
+    #[arg(
+        long,
+        global = true,
+        default_value_t = false,
+        env = "TENSOGRAM_REJECT_NAN",
+        value_parser = clap::builder::BoolishValueParser::new(),
+    )]
+    reject_nan: bool,
+
+    /// Reject float payloads containing `+Inf` / `-Inf` before the
+    /// encoding pipeline runs.  Default off.
+    ///
+    /// Same scope as `--reject-nan`.  Primary motivation: the
+    /// `simple_packing` encoding silently corrupts Inf input — turning
+    /// this flag on catches the problem at encode time.  Env-var
+    /// parsing follows the same bool-ish convention as `--reject-nan`.
+    #[arg(
+        long,
+        global = true,
+        default_value_t = false,
+        env = "TENSOGRAM_REJECT_INF",
+        value_parser = clap::builder::BoolishValueParser::new(),
+    )]
+    reject_inf: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -198,6 +236,8 @@ fn main() {
 
     let cli = Cli::parse();
     let threads = cli.threads;
+    let reject_nan = cli.reject_nan;
+    let reject_inf = cli.reject_inf;
 
     let result = match cli.command {
         Commands::Info { files } => commands::info::run(&files),
@@ -233,9 +273,13 @@ fn main() {
             inputs,
             output,
             strategy,
-        } => commands::merge::run(&inputs, &output, &strategy, threads),
-        Commands::Split { input, output } => commands::split::run(&input, &output, threads),
-        Commands::Reshuffle { input, output } => commands::reshuffle::run(&input, &output, threads),
+        } => commands::merge::run(&inputs, &output, &strategy, threads, reject_nan, reject_inf),
+        Commands::Split { input, output } => {
+            commands::split::run(&input, &output, threads, reject_nan, reject_inf)
+        }
+        Commands::Reshuffle { input, output } => {
+            commands::reshuffle::run(&input, &output, threads, reject_nan, reject_inf)
+        }
         Commands::Validate {
             files,
             quick,
@@ -276,6 +320,8 @@ fn main() {
             all_keys,
             &pipeline,
             threads,
+            reject_nan,
+            reject_inf,
         ),
         #[cfg(feature = "netcdf")]
         Commands::ConvertNetcdf {
@@ -291,6 +337,8 @@ fn main() {
             cf,
             &pipeline,
             threads,
+            reject_nan,
+            reject_inf,
         ),
     };
 

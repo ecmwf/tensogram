@@ -42,10 +42,14 @@ uv pip install -e python/tensogram-zarr/
 | `08_zarr_backend.py` | Reading and writing `.tgm` files through Zarr v3 |
 | `09_dask_distributed.py` | Dask distributed computing over 4-D tensors |
 | `11_encode_pre_encoded.py` | Pre-encoded data API for already-framed payloads |
-| `12_convert_netcdf.py` | Convert NetCDF → Tensogram via the CLI (uses `netCDF4` + `subprocess`) |
+| `12_convert_netcdf.py` | Convert NetCDF → Tensogram via the Python API (`tensogram.convert_netcdf`) |
 | `13_validate.py` | Message and file validation at different levels |
 | `14_remote_access.py` | Remote file access over HTTP with `open_remote` and file-level decode APIs |
 | `15_async_operations.py` | Async open, decode, and `asyncio.gather` with `AsyncTensogramFile` |
+| `17_convert_grib.py` | Convert GRIB → Tensogram via `tensogram.convert_grib` (file) and `tensogram.convert_grib_buffer` (in-memory) |
+
+For **narrative walk-throughs** with live plots and prose explanations,
+see the companion notebooks under `../jupyter/`.
 
 ## Module Structure
 
