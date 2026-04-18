@@ -400,7 +400,7 @@ every feature of the wire format, with a machine-readable manifest
 describing what each file tests and what the expected decode outputs
 are. Any implementation in any language passes or fails the suite.
 
-This is different from the golden files in `tensogram-core/tests/golden/`
+This is different from the golden files in `tensogram/tests/golden/`
 (which test the Rust implementation) — it's a language-neutral
 specification artifact. It would lower the barrier to writing a new
 implementation in Julia, R, Java, etc., and would prove that

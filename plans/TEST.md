@@ -12,7 +12,7 @@ Repo: ecmwf/tensogram
 
 | Component | Where tests live | Shape |
 |-----------|------------------|-------|
-| `tensogram-core` | `src/*.rs` unit + `tests/{integration,adversarial,edge_cases,golden_files,integration_pre_encoded,cross_language_pre_encoded,remote_http}.rs` | Unit + integration + adversarial + edge case + golden-file + remote HTTP |
+| `tensogram` | `src/*.rs` unit + `tests/{integration,adversarial,edge_cases,golden_files,integration_pre_encoded,cross_language_pre_encoded,remote_http}.rs` | Unit + integration + adversarial + edge case + golden-file + remote HTTP |
 | `tensogram-encodings` | `src/*.rs` unit | Unit — packing, shuffle, pipeline dispatch |
 | `tensogram-szip` | `src/*.rs` unit + `tests/{libaec_parity,proptest_roundtrip,stress,error_paths,ffi_crosscheck}.rs` | Unit + property-based + stress + FFI cross-validation against libaec |
 | `tensogram-sz3` | `src/*.rs` unit | Unit for the SZ3 Rust API over the clean-room shim |
@@ -34,7 +34,7 @@ languages — these numbers are the source of truth.
 
 ## Affected components
 
-- **`tensogram-core`**: encode, decode, `decode_metadata`,
+- **`tensogram`**: encode, decode, `decode_metadata`,
   `decode_descriptors`, `decode_object`, `decode_range`, scan,
   streaming, file, iterators, validation (Levels 1-4), remote access.
 - **`tensogram-encodings`**: `simple_packing`, shuffle filter,
@@ -139,7 +139,7 @@ languages — these numbers are the source of truth.
 
 ## Golden test files
 
-Canonical `.tgm` files in `rust/tensogram-core/tests/golden/`:
+Canonical `.tgm` files in `rust/tensogram/tests/golden/`:
 
 - `simple_f32.tgm` — single float32 object.
 - `multi_object.tgm` — 3 dtypes: u8, i32, f64.

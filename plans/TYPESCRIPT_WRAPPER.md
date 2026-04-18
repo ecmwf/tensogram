@@ -38,7 +38,7 @@ Included:
 - `TensogramFile.fromUrl(url)` (browser / fetch with Range requests).
 - `getMetaKey(meta, "mars.param")` — first-match across `base[*]` then
   `_extra_`, same semantics as Rust / Python / CLI.
-- `computeCommon(meta)` — TS mirror of `tensogram_core::compute_common`.
+- `computeCommon(meta)` — TS mirror of `tensogram::compute_common`.
 - Error class hierarchy mirroring the seven `TensogramError` variants.
 - Examples in `examples/typescript/`.
 
@@ -75,7 +75,7 @@ Not included (explicitly):
                   └────────────────┬─────────────────┘
                                    │
                   ┌────────────────▼─────────────────┐
-                  │  tensogram-core (Rust) via WASM  │
+                  │  tensogram (Rust) via WASM  │
                   └──────────────────────────────────┘
 ```
 
@@ -162,7 +162,7 @@ typescript/                             ← new top-level dir
 │   ├── errors.test.ts
 │   ├── streaming.test.ts               ← phase 3
 │   ├── file.node.test.ts               ← phase 4
-│   └── golden.test.ts                  ← rust/tensogram-core/tests/golden/* parity
+│   └── golden.test.ts                  ← rust/tensogram/tests/golden/* parity
 ├── wasm/                               ← wasm-pack output, gitignored
 └── dist/                               ← tsc output, gitignored
 
@@ -338,7 +338,7 @@ chasing upstream tooling regressions.
 | Type correctness | `tsc --strict --noEmit` | No `any` leakage, all discriminated unions exhaustive |
 | Bundle size | `size-limit` (follow-up) | Track WASM + JS glue growth over time |
 
-The golden files in `rust/tensogram-core/tests/golden/` (e.g.
+The golden files in `rust/tensogram/tests/golden/` (e.g.
 `simple_f32.tgm`, `multi_object.tgm`, `mars_metadata.tgm`,
 `multi_message.tgm`, `hash_xxh3.tgm`) are byte-for-byte deterministic
 and already used by the Rust, Python, and C++ suites for cross-language
@@ -352,7 +352,7 @@ on the cross-language parity matrix.
   the published surface.
 - **vitest** must pass on Node 20 and 22.
 - **Golden-file parity** tests must pass byte-for-byte against
-  `rust/tensogram-core/tests/golden/*.tgm`.
+  `rust/tensogram/tests/golden/*.tgm`.
 - **Property-based round-trip** must survive 1,000 generated shape /
   dtype combinations per dtype.
 - **CI** runs all of the above on every PR that touches
