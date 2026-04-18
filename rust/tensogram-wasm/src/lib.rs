@@ -8,8 +8,10 @@
 
 //! WebAssembly bindings for the Tensogram N-tensor message format.
 //!
-//! Provides encode, decode, scan, and streaming decode functions
-//! accessible from JavaScript/TypeScript via wasm-bindgen.
+//! Provides encode, decode, scan, streaming decode, range decode, hash,
+//! validation, pre-encoded encode, `simple_packing` params, and a
+//! frame-at-a-time `StreamingEncoder` — accessible from JavaScript /
+//! TypeScript via `wasm-bindgen`.
 //!
 //! Tensor payloads are returned as zero-copy TypedArray views into
 //! WASM linear memory for 60fps visualisation performance.
@@ -20,10 +22,12 @@
 //! Attempts to decode blosc2/zfp/sz3 compressed data will return an error.
 
 mod convert;
+mod encoder;
+mod extras;
 mod streaming;
 
 use convert::*;
-use tensogram::{self as core, DecodeOptions, EncodeOptions};
+use tensogram::{self as core, DecodeOptions};
 use wasm_bindgen::prelude::*;
 
 // ── Decode API ───────────────────────────────────────────────────────────────
@@ -104,54 +108,16 @@ pub fn encode(
     objects_js: js_sys::Array,
     hash: Option<bool>,
 ) -> Result<js_sys::Uint8Array, JsError> {
-    use core::hash::HashAlgorithm;
-    use core::types::{DataObjectDescriptor, GlobalMetadata};
-
-    let metadata: GlobalMetadata =
-        serde_wasm_bindgen::from_value(metadata_js).map_err(|e| JsError::new(&e.to_string()))?;
-
-    let mut descriptors = Vec::new();
-    let mut data_vec: Vec<Vec<u8>> = Vec::new();
-
-    for i in 0..objects_js.length() {
-        let obj = objects_js.get(i);
-        let desc_val = js_sys::Reflect::get(&obj, &"descriptor".into())
-            .map_err(|_| JsError::new("each object must have a 'descriptor' field"))?;
-        let data_val = js_sys::Reflect::get(&obj, &"data".into())
-            .map_err(|_| JsError::new("each object must have a 'data' field"))?;
-
-        let desc: DataObjectDescriptor =
-            serde_wasm_bindgen::from_value(desc_val).map_err(|e| JsError::new(&e.to_string()))?;
-
-        // Accept any TypedArray — view the underlying ArrayBuffer as raw bytes.
-        let data_bytes = typed_array_to_bytes(&data_val).ok_or_else(|| {
-            JsError::new(
-                "data must be a TypedArray (Uint8Array, Float32Array, Float64Array, or Int32Array)",
-            )
-        })?;
-
-        descriptors.push(desc);
-        data_vec.push(data_bytes);
-    }
-
-    let options = EncodeOptions {
-        hash_algorithm: if hash.unwrap_or(true) {
-            Some(HashAlgorithm::Xxh3)
-        } else {
-            None
-        },
-        emit_preceders: false,
-        ..Default::default()
-    };
-
+    let metadata: core::GlobalMetadata =
+        serde_wasm_bindgen::from_value(metadata_js).map_err(js_err)?;
+    let (descriptors, data_vec) = extract_descriptor_data_pairs(&objects_js)?;
     let pairs: Vec<(&core::DataObjectDescriptor, &[u8])> = descriptors
         .iter()
         .zip(data_vec.iter())
         .map(|(d, v)| (d, v.as_slice()))
         .collect();
-    let encoded = core::encode(&metadata, &pairs, &options).map_err(js_err)?;
-
-    // Return a JS-owned copy.  We must not use view_as_u8 here because
+    let encoded = core::encode(&metadata, &pairs, &build_encode_options(hash)).map_err(js_err)?;
+    // Return a JS-owned copy.  We must not use `view_as_u8` here because
     // `encoded` is a local Vec that will be dropped when this function
     // returns — a view into it would be a dangling pointer.
     Ok(js_sys::Uint8Array::from(encoded.as_slice()))
@@ -252,50 +218,12 @@ impl DecodedMessage {
 
 pub use streaming::StreamingDecoder;
 
-// ── Internal helpers ─────────────────────────────────────────────────────────
+// ── StreamingEncoder re-export ───────────────────────────────────────────────
 
-fn js_err(e: core::TensogramError) -> JsError {
-    JsError::new(&e.to_string())
-}
+pub use encoder::StreamingEncoder;
 
-/// Extract raw bytes from any supported TypedArray by viewing its ArrayBuffer.
-///
-/// Correctly respects `byteOffset` and `byteLength` so that subarrays /
-/// views only yield the intended region (no data leak from the underlying
-/// ArrayBuffer).
-///
-/// Returns `None` if `val` is not a recognised TypedArray type.
-fn typed_array_to_bytes(val: &JsValue) -> Option<Vec<u8>> {
-    if let Some(arr) = val.dyn_ref::<js_sys::Uint8Array>() {
-        Some(arr.to_vec())
-    } else if let Some(arr) = val.dyn_ref::<js_sys::Float32Array>() {
-        Some(
-            js_sys::Uint8Array::new_with_byte_offset_and_length(
-                &arr.buffer(),
-                arr.byte_offset(),
-                arr.byte_length(),
-            )
-            .to_vec(),
-        )
-    } else if let Some(arr) = val.dyn_ref::<js_sys::Float64Array>() {
-        Some(
-            js_sys::Uint8Array::new_with_byte_offset_and_length(
-                &arr.buffer(),
-                arr.byte_offset(),
-                arr.byte_length(),
-            )
-            .to_vec(),
-        )
-    } else if let Some(arr) = val.dyn_ref::<js_sys::Int32Array>() {
-        Some(
-            js_sys::Uint8Array::new_with_byte_offset_and_length(
-                &arr.buffer(),
-                arr.byte_offset(),
-                arr.byte_length(),
-            )
-            .to_vec(),
-        )
-    } else {
-        None
-    }
-}
+// ── Scope-C exports (decode_range, compute_hash, validate, …) ───────────────
+
+pub use extras::{
+    compute_hash, decode_range, encode_pre_encoded, simple_packing_compute_params, validate_buffer,
+};

@@ -112,7 +112,7 @@ async function sectionFromUrl(): Promise<void> {
   }
 }
 
-function sectionFromBytes(): void {
+async function sectionFromBytes(): Promise<void> {
   console.log('\n─── 3. TensogramFile.fromBytes (in-memory) ──────────────');
   const bytes = buildMessage([42, 43, 44]);
   const file = TensogramFile.fromBytes(bytes);
@@ -120,7 +120,10 @@ function sectionFromBytes(): void {
     console.log(`  source:       ${file.source}`);
     console.log(`  messageCount: ${file.messageCount}`);
 
-    const raw = file.rawMessage(0);
+    // `rawMessage` is async since Scope C — the lazy HTTP backend needs
+    // to issue a Range request in the remote case; in-memory backends
+    // resolve synchronously under the hood but the signature is unified.
+    const raw = await file.rawMessage(0);
     console.log(`  rawMessage(0) length: ${raw.byteLength}`);
     console.log(`  magic:                ${new TextDecoder().decode(raw.subarray(0, 8))}`);
   } finally {
@@ -132,7 +135,7 @@ async function main(): Promise<void> {
   await init();
   await sectionOpen();
   await sectionFromUrl();
-  sectionFromBytes();
+  await sectionFromBytes();
 }
 
 main().catch((err: unknown) => {
