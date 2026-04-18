@@ -69,6 +69,46 @@ pub struct EncodeOptions {
     /// Set to `Some(0)` to force the parallel path for testing; set to
     /// `Some(usize::MAX)` to force sequential.
     pub parallel_threshold_bytes: Option<usize>,
+    /// Reject NaN values in float payloads before the encoding pipeline
+    /// runs.  Default `false` (backwards-compatible).
+    ///
+    /// When `true`, raw input for float dtypes
+    /// (`float16`/`bfloat16`/`float32`/`float64`/`complex64`/`complex128`)
+    /// is scanned element-by-element.  On first NaN the encode fails
+    /// with [`TensogramError::Encoding`] carrying the element index and
+    /// dtype.  Integer and bitmask dtypes are skipped (zero cost).
+    ///
+    /// Applies **before** any pipeline stage, so the contract is
+    /// pipeline-independent: callers get the same guarantee whether
+    /// they pick `encoding="none"`, `"simple_packing"`, or a lossy
+    /// float compressor.  This is the primary user-visible mitigation
+    /// for the corners documented in `plans/RESEARCH_NAN_HANDLING.md`
+    /// §3.1 (silent Inf corruption in `simple_packing`) and §3.3
+    /// (undefined NaN behaviour in `zfp`/`sz3`).
+    ///
+    /// Does **not** apply to [`encode_pre_encoded`] — pre-encoded bytes
+    /// are opaque and the caller accepted their own contract by
+    /// choosing that API.
+    ///
+    /// Parallel scans (when `threads > 0` and input exceeds the
+    /// parallel threshold) short-circuit per worker, so the reported
+    /// element index may not be the globally first NaN.  Pass
+    /// `threads = 0` for deterministic first-index reporting.
+    pub reject_nan: bool,
+    /// Reject `+Inf` / `-Inf` values in float payloads before the
+    /// encoding pipeline runs.  Default `false` (backwards-compatible).
+    ///
+    /// Same semantics as [`reject_nan`](Self::reject_nan) but for
+    /// infinities.  The error message includes the sign (`+Inf` or
+    /// `-Inf`) alongside the element index and dtype.
+    ///
+    /// Closes the silent-corruption gotcha documented in
+    /// `plans/RESEARCH_NAN_HANDLING.md` §3.1: `simple_packing::compute_params`
+    /// accepts Inf input and produces numerically-useless parameters
+    /// (`binary_scale_factor = i32::MAX`) that silently decode to NaN
+    /// everywhere.  Turning this flag on catches the problem at encode
+    /// time.
+    pub reject_inf: bool,
 }
 
 impl Default for EncodeOptions {
@@ -79,6 +119,8 @@ impl Default for EncodeOptions {
             compression_backend: pipeline::CompressionBackend::default(),
             threads: 0,
             parallel_threshold_bytes: None,
+            reject_nan: false,
+            reject_inf: false,
         }
     }
 }
@@ -152,6 +194,26 @@ fn encode_one_object(
     intra_codec_threads: u32,
 ) -> Result<EncodedObject> {
     validate_object(desc, data.len())?;
+
+    // Strict-finite pre-pipeline scan (Raw mode only — pre-encoded
+    // bytes are opaque and the caller already accepted that contract).
+    // Short-circuits to Ok when both flags are off or the dtype is
+    // integer/bitmask; see `strict_finite` for the full semantics.
+    if matches!(mode, EncodeMode::Raw) && (options.reject_nan || options.reject_inf) {
+        let parallel = crate::parallel::should_parallelise(
+            intra_codec_threads,
+            data.len(),
+            options.parallel_threshold_bytes,
+        );
+        crate::strict_finite::scan(
+            data,
+            desc.dtype,
+            desc.byte_order,
+            options.reject_nan,
+            options.reject_inf,
+            parallel,
+        )?;
+    }
 
     let shape_product = desc
         .shape

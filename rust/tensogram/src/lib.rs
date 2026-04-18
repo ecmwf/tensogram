@@ -25,6 +25,7 @@ pub mod pipeline;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub mod streaming;
+pub(crate) mod strict_finite;
 pub mod types;
 pub mod validate;
 pub mod wire;

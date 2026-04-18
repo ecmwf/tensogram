@@ -97,12 +97,18 @@ pub fn scan(buf: &[u8]) -> Result<JsValue, JsError> {
 /// @param metadata_js - GlobalMetadata as a plain JS object
 /// @param objects_js - Array of {descriptor, data} objects where data is a TypedArray
 /// @param hash - Whether to compute integrity hashes (default: true)
+/// @param reject_nan - If true, reject float payloads containing any NaN
+///   before the pipeline runs. Default: false. See the Rust
+///   `EncodeOptions::reject_nan` docs for full semantics.
+/// @param reject_inf - Same for +Inf / -Inf. Default: false.
 /// @returns Uint8Array containing the encoded .tgm message
 #[wasm_bindgen]
 pub fn encode(
     metadata_js: JsValue,
     objects_js: js_sys::Array,
     hash: Option<bool>,
+    reject_nan: Option<bool>,
+    reject_inf: Option<bool>,
 ) -> Result<js_sys::Uint8Array, JsError> {
     use core::hash::HashAlgorithm;
     use core::types::{DataObjectDescriptor, GlobalMetadata};
@@ -141,6 +147,8 @@ pub fn encode(
             None
         },
         emit_preceders: false,
+        reject_nan: reject_nan.unwrap_or(false),
+        reject_inf: reject_inf.unwrap_or(false),
         ..Default::default()
     };
 

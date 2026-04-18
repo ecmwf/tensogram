@@ -262,6 +262,36 @@ export interface EncodeOptions {
    * Pass `false` to disable hashing entirely.
    */
   hash?: 'xxh3' | false;
+  /**
+   * Reject NaN values in float payloads before the encoding pipeline
+   * runs. Default `false` (backwards-compatible).
+   *
+   * When `true`, raw input for float dtypes (float16, bfloat16,
+   * float32, float64, complex64, complex128) is scanned element by
+   * element. On the first NaN, `encode()` throws an
+   * {@link EncodingError} with the element index and dtype. Integer
+   * and bitmask dtypes are skipped (zero cost).
+   *
+   * The check runs **before** any pipeline stage, so the contract is
+   * pipeline-independent: callers get the same guarantee whether they
+   * pick `encoding="none"`, `"simple_packing"`, or a compressor.
+   *
+   * Parallel scans (WASM is single-threaded today, but Rust
+   * multi-threaded callers should note) may report a
+   * not-globally-first NaN index. Sequential callers always get the
+   * globally-first index.
+   */
+  rejectNan?: boolean;
+  /**
+   * Reject `+Inf` / `-Inf` values in float payloads before the encoding
+   * pipeline runs. Default `false`.
+   *
+   * Primary motivation: `simple_packing` does not reject Inf in its
+   * input and silently produces numerically-useless parameters that
+   * decode to NaN everywhere. Turning this flag on catches the
+   * problem at encode time with a clean {@link EncodingError}.
+   */
+  rejectInf?: boolean;
 }
 
 /** Options for `decode()` / `decodeObject()`. */

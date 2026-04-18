@@ -13,6 +13,7 @@ use tensogram_grib::{ConvertOptions, DataPipeline, Grouping, convert_grib_file};
 
 use crate::encoding_args::PipelineArgs;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     inputs: &[impl AsRef<Path>],
     output: Option<&str>,
@@ -20,6 +21,8 @@ pub fn run(
     all_keys: bool,
     pipeline: &PipelineArgs,
     threads: u32,
+    reject_nan: bool,
+    reject_inf: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if inputs.is_empty() {
         return Err("no input files specified".into());
@@ -43,6 +46,8 @@ pub fn run(
         },
         encode_options: tensogram::EncodeOptions {
             threads,
+            reject_nan,
+            reject_inf,
             ..Default::default()
         },
     };

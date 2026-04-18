@@ -77,6 +77,13 @@ pub struct StreamingEncoder<W: Write> {
     intra_codec_threads: u32,
     /// Snapshot of the parallel-threshold option for the same reason.
     parallel_threshold_bytes: Option<usize>,
+    /// Snapshot of `EncodeOptions.reject_nan` captured at construction
+    /// so that mid-message option changes do not leak between frames.
+    /// One message = one contract.
+    reject_nan: bool,
+    /// Snapshot of `EncodeOptions.reject_inf` — see
+    /// [`reject_nan`](Self::reject_nan) for the rationale.
+    reject_inf: bool,
 }
 
 impl<W: Write> StreamingEncoder<W> {
@@ -138,6 +145,8 @@ impl<W: Write> StreamingEncoder<W> {
             preceder_payloads: Vec::new(),
             intra_codec_threads,
             parallel_threshold_bytes: options.parallel_threshold_bytes,
+            reject_nan: options.reject_nan,
+            reject_inf: options.reject_inf,
         })
     }
 
@@ -212,6 +221,20 @@ impl<W: Write> StreamingEncoder<W> {
             data.len(),
             self.parallel_threshold_bytes,
         );
+
+        // Strict-finite scan, consistent with buffered `encode()`.
+        // Only `write_object` runs the scan; `write_object_pre_encoded`
+        // treats its input as opaque (matching buffered `encode_pre_encoded`).
+        if self.reject_nan || self.reject_inf {
+            crate::strict_finite::scan(
+                data,
+                desc.dtype,
+                desc.byte_order,
+                self.reject_nan,
+                self.reject_inf,
+                parallel,
+            )?;
+        }
         let intra = if parallel {
             self.intra_codec_threads
         } else {
@@ -784,11 +807,8 @@ mod tests {
         let desc = make_descriptor(vec![4]);
         let data = vec![42u8; 4 * 4];
         let options = EncodeOptions {
-            compression_backend: Default::default(),
             hash_algorithm: Some(HashAlgorithm::Xxh3),
-            emit_preceders: false,
-            threads: 0,
-            parallel_threshold_bytes: None,
+            ..Default::default()
         };
 
         // Buffered encode
@@ -835,11 +855,8 @@ mod tests {
         let desc = make_descriptor(vec![4]);
         let data = vec![42u8; 4 * 4];
         let options = EncodeOptions {
-            compression_backend: Default::default(),
             hash_algorithm: Some(HashAlgorithm::Xxh3),
-            emit_preceders: false,
-            threads: 0,
-            parallel_threshold_bytes: None,
+            ..Default::default()
         };
 
         let buf = Vec::new();
@@ -860,11 +877,8 @@ mod tests {
     fn streaming_no_objects() {
         let meta = GlobalMetadata::default();
         let options = EncodeOptions {
-            compression_backend: Default::default(),
             hash_algorithm: None,
-            emit_preceders: false,
-            threads: 0,
-            parallel_threshold_bytes: None,
+            ..Default::default()
         };
 
         let buf = Vec::new();

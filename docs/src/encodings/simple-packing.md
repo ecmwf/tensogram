@@ -38,6 +38,10 @@ flowchart TD
 
 `compute_params()` and `encode()` return an error if the data contains any NaN values. Simple packing has no representation for NaN (unlike IEEE 754 floats). Remove or replace NaN values before encoding.
 
+For **domain-strict workflows** that also need to reject `+Inf` / `-Inf` (which simple_packing accepts but silently corrupts — see [§3.1 of the NaN research memo][memo]), use the pipeline-independent [strict-finite encode flags](../guide/strict-finite.md): `reject_nan` and `reject_inf`. They run upstream of the encoding pipeline and give the same contract regardless of `encoding` / `filter` / `compression`.
+
+[memo]: https://github.com/ecmwf/tensogram/blob/main/plans/RESEARCH_NAN_HANDLING.md
+
 ```rust
 // This will fail:
 let values = vec![1.0f64, 2.0, f64::NAN, 4.0];

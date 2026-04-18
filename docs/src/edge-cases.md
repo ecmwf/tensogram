@@ -24,6 +24,20 @@ Simple packing cannot represent NaN. The quantization formula maps the range `[m
 
 **Solution:** Replace NaN values with a sentinel (e.g. the minimum representable value, or a separate bitmask object) before encoding.
 
+## Inf in Simple Packing — Silent Corruption
+
+**Subtle gotcha** — simple_packing's `compute_params` scans for NaN but **not** for Inf. Passing `[1.0, +Inf, 3.0]`:
+
+- `range = max - min = +Inf`, which produces `binary_scale_factor = i32::MAX` (saturating cast from `Inf as i32`).
+- Encoding yields all-zero packed integers.
+- Decoding reconstructs `NaN` at every position (because `Inf × 0 = NaN` in IEEE 754).
+
+**Net effect:** every decoded value silently becomes NaN.
+
+**Mitigation:** turn on [the `reject_inf` strict-finite flag](guide/strict-finite.md). It catches Inf upstream of the simple_packing encoder and fails with a clean `EncodingError` before the corruption path runs.
+
+**Also:** `extract_simple_packing_params` catches a non-finite `reference_value` in the descriptor, so callers going through the high-level `encode()` API are protected when the computed reference happens to be `±Inf` (e.g. data like `[1.0, -Inf]`). But for data like `[1.0, +Inf, 3.0]` the reference is `1.0` (finite) and only `binary_scale_factor` overflows — that's not caught without the strict flag.
+
 ## Decode Range on Compressed Data
 
 `decode_range()` supports partial range decode for compressors that have random access capability: szip (via RSI block offsets), blosc2 (via chunk-based access), and zfp fixed-rate mode. Stream compressors (zstd, lz4, sz3) return `CompressionError::RangeNotSupported`.

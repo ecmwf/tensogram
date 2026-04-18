@@ -3,6 +3,40 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+- **Strict-finite encode checks** — two new `EncodeOptions` flags,
+  `reject_nan` and `reject_inf`, that scan float payloads before the
+  encoding pipeline runs and bail out on the first NaN / Inf with a
+  clean `EncodingError` carrying the element index and dtype. Both
+  default to `false` (backwards-compatible). Integer and bitmask
+  dtypes skip the scan (zero cost). The guarantee is
+  pipeline-independent — applies to `encoding="none"`,
+  `"simple_packing"`, and every compressor. Primary motivation: close
+  the silent-corruption gotcha where `simple_packing::compute_params`
+  accepts `Inf` input and produces numerically-useless parameters
+  that decode to NaN everywhere (see `plans/RESEARCH_NAN_HANDLING.md`
+  §3.1). Exposed across every language surface (Rust, Python, TS,
+  C FFI, C++) with cross-language parity tests. CLI global flags
+  `--reject-nan` / `--reject-inf` plus `TENSOGRAM_REJECT_NAN` /
+  `TENSOGRAM_REJECT_INF` env vars for ops rollouts. New
+  `docs/src/guide/strict-finite.md` covers the full semantics.
+- **NaN-handling research memo** —
+  `plans/RESEARCH_NAN_HANDLING.md` catalogues every path through the
+  library where NaN/Inf can appear on the encode side, documents the
+  15 gaps/gotchas (from the newly closed §3.1 silent-Inf-corruption
+  to the still-open §3.3 zfp/sz3 undefined behaviour), and proposes
+  tiered future work.
+
+### Changed
+- **FFI signature extension** — `tgm_encode`, `tgm_file_append`, and
+  `tgm_streaming_encoder_create` now take two additional
+  `reject_nan` / `reject_inf` bool parameters. `tgm_encode_pre_encoded`
+  intentionally does not — pre-encoded bytes are opaque to the library.
+  Pre-0.15 C callers will see a compile error from the regenerated
+  header; pass `false, false` to preserve old behaviour.
+
 ## [0.15.0] - 2026-04-18
 
 ### Changed

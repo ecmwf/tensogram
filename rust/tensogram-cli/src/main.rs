@@ -38,6 +38,37 @@ struct Cli {
     #[arg(long, global = true, default_value_t = 0, env = "TENSOGRAM_THREADS")]
     threads: u32,
 
+    /// Reject float payloads containing NaN before the encoding pipeline
+    /// runs.  Default off.
+    ///
+    /// Applies to every encoding-capable subcommand
+    /// (merge, copy, split, reshuffle, set, convert-grib, convert-netcdf).
+    /// Fails with an encoding error on the first NaN — see the
+    /// `docs/src/reference/strict-finite.md` guide.  Pass
+    /// `--reject-nan` at the command line or set
+    /// `TENSOGRAM_REJECT_NAN=1` in the environment.
+    #[arg(
+        long,
+        global = true,
+        default_value_t = false,
+        env = "TENSOGRAM_REJECT_NAN"
+    )]
+    reject_nan: bool,
+
+    /// Reject float payloads containing `+Inf` / `-Inf` before the
+    /// encoding pipeline runs.  Default off.
+    ///
+    /// Same scope as `--reject-nan`.  Primary motivation: the
+    /// `simple_packing` encoding silently corrupts Inf input — turning
+    /// this flag on catches the problem at encode time.
+    #[arg(
+        long,
+        global = true,
+        default_value_t = false,
+        env = "TENSOGRAM_REJECT_INF"
+    )]
+    reject_inf: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -198,6 +229,8 @@ fn main() {
 
     let cli = Cli::parse();
     let threads = cli.threads;
+    let reject_nan = cli.reject_nan;
+    let reject_inf = cli.reject_inf;
 
     let result = match cli.command {
         Commands::Info { files } => commands::info::run(&files),
@@ -233,9 +266,13 @@ fn main() {
             inputs,
             output,
             strategy,
-        } => commands::merge::run(&inputs, &output, &strategy, threads),
-        Commands::Split { input, output } => commands::split::run(&input, &output, threads),
-        Commands::Reshuffle { input, output } => commands::reshuffle::run(&input, &output, threads),
+        } => commands::merge::run(&inputs, &output, &strategy, threads, reject_nan, reject_inf),
+        Commands::Split { input, output } => {
+            commands::split::run(&input, &output, threads, reject_nan, reject_inf)
+        }
+        Commands::Reshuffle { input, output } => {
+            commands::reshuffle::run(&input, &output, threads, reject_nan, reject_inf)
+        }
         Commands::Validate {
             files,
             quick,
@@ -276,6 +313,8 @@ fn main() {
             all_keys,
             &pipeline,
             threads,
+            reject_nan,
+            reject_inf,
         ),
         #[cfg(feature = "netcdf")]
         Commands::ConvertNetcdf {
@@ -291,6 +330,8 @@ fn main() {
             cf,
             &pipeline,
             threads,
+            reject_nan,
+            reject_inf,
         ),
     };
 

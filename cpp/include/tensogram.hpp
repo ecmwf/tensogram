@@ -196,6 +196,24 @@ struct encode_options {
     ///   for opaque codecs (blosc2, zstd with workers) the compressed bytes
     ///   may differ but round-trip losslessly.
     std::uint32_t threads = 0;
+    /// Reject NaN values in float payloads before the encoding pipeline
+    /// runs.  Default `false` (backwards-compatible).
+    ///
+    /// When `true`, raw input for float dtypes
+    /// (`float16`/`bfloat16`/`float32`/`float64`/`complex64`/`complex128`)
+    /// is scanned element by element.  On the first NaN, encode fails
+    /// with `encoding_error`.  Integer and bitmask dtypes are skipped
+    /// (zero cost).  The check runs **before** the pipeline so the
+    /// guarantee is pipeline-independent.
+    bool reject_nan = false;
+    /// Reject `+Inf` / `-Inf` values in float payloads before the
+    /// encoding pipeline runs.  Default `false`.
+    ///
+    /// See `plans/RESEARCH_NAN_HANDLING.md` §3.1 for the user-visible
+    /// corner this closes: `simple_packing` accepts Inf input and
+    /// silently produces numerically-useless params that decode to NaN
+    /// everywhere.  Turning this flag on catches the problem up front.
+    bool reject_inf = false;
 };
 
 /// Options controlling message decoding.
@@ -593,7 +611,8 @@ public:
                                                      : opts.hash_algo.c_str();
         detail::check(tgm_file_append(handle_.get(), metadata_json.c_str(),
                                        sg.ptrs.data(), sg.lens.data(),
-                                       objects.size(), hash, opts.threads));
+                                       objects.size(), hash, opts.threads,
+                                       opts.reject_nan, opts.reject_inf));
     }
 
     /// File path as a string.
@@ -785,7 +804,8 @@ public:
         const char* hash = opts.hash_algo.empty() ? nullptr
                                                     : opts.hash_algo.c_str();
         detail::check(tgm_streaming_encoder_create(
-            path.c_str(), metadata_json.c_str(), hash, opts.threads, &raw));
+            path.c_str(), metadata_json.c_str(), hash, opts.threads,
+            opts.reject_nan, opts.reject_inf, &raw));
         handle_.reset(raw);
     }
 
@@ -883,7 +903,9 @@ private:
     tgm_bytes_t bytes{};
     detail::check(tgm_encode(metadata_json.c_str(),
                               sg.ptrs.data(), sg.lens.data(), objects.size(),
-                              hash, opts.threads, &bytes));
+                              hash, opts.threads,
+                              opts.reject_nan, opts.reject_inf,
+                              &bytes));
     std::vector<std::uint8_t> result(bytes.data, bytes.data + bytes.len);
     tgm_bytes_free(bytes);
     return result;

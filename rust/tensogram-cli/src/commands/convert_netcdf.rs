@@ -13,6 +13,7 @@ use tensogram_netcdf::{ConvertOptions, DataPipeline, SplitBy, convert_netcdf_fil
 
 use crate::encoding_args::PipelineArgs;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     inputs: &[impl AsRef<Path>],
     output: Option<&str>,
@@ -20,6 +21,8 @@ pub fn run(
     cf: bool,
     pipeline: &PipelineArgs,
     threads: u32,
+    reject_nan: bool,
+    reject_inf: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if inputs.is_empty() {
         return Err("no input files specified".into());
@@ -42,6 +45,8 @@ pub fn run(
         cf,
         encode_options: tensogram::EncodeOptions {
             threads,
+            reject_nan,
+            reject_inf,
             ..Default::default()
         },
         pipeline: DataPipeline {
