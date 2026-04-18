@@ -39,6 +39,13 @@ jobs:
 
       - run: mkdir -p "$TMPDIR"
 
+      - name: Install system dependencies (libeccodes + libnetcdf + libhdf5)
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libeccodes-dev libnetcdf-dev libhdf5-dev
+          apt-get clean && rm -rf /var/lib/apt/lists/*
+
       - name: Check version consistency
         run: |
           EXPECTED="${{ inputs.version }}"
