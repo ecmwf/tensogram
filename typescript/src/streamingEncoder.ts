@@ -197,13 +197,14 @@ export class StreamingEncoder {
    * an empty `Uint8Array` (zero-length marker, not a failure — every
    * byte has already been delivered).
    *
-   * The encoder is closed after this call; any further method raises
-   * `InvalidArgumentError`.
+   * The encoder is closed after this call (WASM handle freed,
+   * `FinalizationRegistry` unregistered); any further method raises
+   * `InvalidArgumentError`.  Idempotent with a subsequent `close()`.
    */
   finish(): Uint8Array {
     this.#assertOpen();
     const bytes = rethrowTyped(() => this.#handle.finish());
-    this.#markClosed();
+    this.#closeHandle();
     return bytes;
   }
 
@@ -224,17 +225,24 @@ export class StreamingEncoder {
    */
   close(): void {
     if (this.#closed) return;
-    this.#markClosed();
+    this.#closeHandle();
+  }
+
+  /**
+   * Unified teardown path shared by `finish()` and `close()`.  Marks
+   * the instance closed, unregisters the `FinalizationRegistry` hook
+   * (so it won't double-free via GC), and releases the WASM handle.
+   * Only fires once — both `finish()` and `close()` guard on
+   * `#closed` via `#assertOpen()` / the early return respectively.
+   */
+  #closeHandle(): void {
+    this.#closed = true;
+    registry.unregister(this);
     try {
       this.#handle.free();
     } catch {
-      /* best effort */
+      /* best effort — WASM may have already freed internally */
     }
-  }
-
-  #markClosed(): void {
-    this.#closed = true;
-    registry.unregister(this);
   }
 
   #assertOpen(): void {

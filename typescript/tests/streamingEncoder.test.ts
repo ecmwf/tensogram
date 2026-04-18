@@ -154,6 +154,22 @@ describe('Scope C.1 — StreamingEncoder', () => {
     expect(() => enc.close()).not.toThrow();
   });
 
+  it('finish() releases the WASM handle exactly once (close() afterwards is a no-op)', () => {
+    // Regression for a leak where finish() closed the encoder + unregistered
+    // the FinalizationRegistry hook but never called .free() on the handle.
+    // A subsequent close() short-circuited on the "already closed" guard, so
+    // the handle leaked permanently.  finish() must release the handle itself.
+    const enc = new StreamingEncoder(defaultMeta());
+    enc.writeObject(makeDescriptor([1], 'uint8'), new Uint8Array([42]));
+    enc.finish();
+    // close() after finish() must be callable without throwing and without
+    // double-freeing the WASM handle (tolerated via the try/catch in the
+    // shared teardown path).
+    expect(() => enc.close()).not.toThrow();
+    // Calling close() a second time is also fine.
+    expect(() => enc.close()).not.toThrow();
+  });
+
   it('writeObjectPreEncoded writes verbatim bytes', () => {
     const values = new Float32Array([1, 2, 3, 4]);
     const bytes = new Uint8Array(values.buffer, values.byteOffset, values.byteLength);

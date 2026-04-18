@@ -44,8 +44,17 @@ import type {
  *                   descriptor's `encoding`/`filter`/`compression`.
  * @param options  - `hash: "xxh3" | false`.  Default `"xxh3"`.
  * @returns        - `Uint8Array` wire-format message.
- * @throws {MetadataError}     if metadata or any descriptor is malformed
- * @throws {InvalidArgumentError} on bad argument types
+ * @throws {InvalidArgumentError} when the client-side validator
+ *   rejects `metadata` (bad shape, client-written `_reserved_`) or
+ *   a descriptor (missing `type` / `shape` / unknown `dtype` / bad
+ *   `byte_order`) or an object entry (not a `{descriptor, data}`
+ *   pair, `data` not a `Uint8Array`).
+ * @throws {MetadataError} when the WASM layer rejects the
+ *   descriptors or metadata after the client-side validator
+ *   has accepted them (e.g. malformed CBOR, unsupported
+ *   descriptor combination).
+ * @throws {EncodingError} when pre-encoded szip block offsets fail
+ *   the library's monotonicity / bit-bound checks.
  */
 export function encodePreEncoded(
   metadata: GlobalMetadata,

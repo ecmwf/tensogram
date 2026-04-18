@@ -81,17 +81,23 @@ export function decodeRange(
       },
   );
 
+  // The WASM side already materialised each part via `Uint8Array::from`,
+  // which copies the bytes from WASM linear memory into a JS-heap
+  // `Uint8Array`.  We pass `copy: false` to `typedArrayFor` so it can
+  // view those bytes zero-copy — an aligned copy is still made
+  // internally when `byteOffset % element_width != 0`, which is rare
+  // (the WASM side allocates at offset 0).
   const rawParts = result.parts;
   if (opts?.join) {
     const joined = concat(rawParts);
     return {
       descriptor: result.descriptor,
-      parts: [typedArrayFor(result.descriptor.dtype, joined, /* copy */ true)],
+      parts: [typedArrayFor(result.descriptor.dtype, joined, /* copy */ false)],
     };
   }
 
   const typedParts: TypedArray[] = rawParts.map((p) =>
-    typedArrayFor(result.descriptor.dtype, p, /* copy */ true),
+    typedArrayFor(result.descriptor.dtype, p, /* copy */ false),
   );
   return { descriptor: result.descriptor, parts: typedParts };
 }

@@ -17,9 +17,17 @@
  *
  * The WASM side returns a JSON string; we parse it once here so callers
  * see typed {@link ValidationReport} / {@link FileValidationReport}
- * objects.  JSON is the neutral bridge because it preserves large
- * integers unambiguously (issue `byte_offset` can exceed 2^32 in
- * pathological file-level reports).
+ * objects.  JSON is the neutral bridge for two reasons:
+ *
+ * 1. `serde_wasm_bindgen`'s default conversion of Rust `u64` values
+ *    goes through JavaScript `BigInt`, which is awkward for callers
+ *    that want plain `number` offsets.  JSON numbers are parsed as
+ *    JS `number`, so `byte_offset` arrives ergonomic.
+ * 2. JS `number` (IEEE-754 f64) handles integers losslessly up to
+ *    `Number.MAX_SAFE_INTEGER` (2^53 − 1 ≈ 9 PiB), which is far
+ *    beyond the > 2^32 (4 GiB) byte offsets realistic Tensogram
+ *    files and messages will reach.  If we ever need to cover the
+ *    9 PiB–to–u64::MAX range we'll switch to string-encoded offsets.
  */
 
 import { getWbg } from './init.js';
