@@ -211,9 +211,19 @@ mod tests {
     #[test]
     fn convert_no_inputs_errors() {
         let empty: Vec<String> = vec![];
-        assert!(run(&empty, None, "file", false, &default_pipeline(), 0,
- false,
- false,).is_err());
+        assert!(
+            run(
+                &empty,
+                None,
+                "file",
+                false,
+                &default_pipeline(),
+                0,
+                false,
+                false,
+            )
+            .is_err()
+        );
     }
 
     #[test]
