@@ -17,7 +17,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
 ]
 dependencies = [
-    "tensogram>=0.15.0,<0.15",
+    "tensogram>=0.15.0,<0.16",
     "zarr>=3.0",
     "numpy",
 ]
