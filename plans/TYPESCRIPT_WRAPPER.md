@@ -75,7 +75,7 @@ Not included (explicitly):
                   └────────────────┬─────────────────┘
                                    │
                   ┌────────────────▼─────────────────┐
-                  │  tensogram (Rust) via WASM  │
+                  │    tensogram (Rust) via WASM     │
                   └──────────────────────────────────┘
 ```
 
