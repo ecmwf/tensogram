@@ -62,7 +62,7 @@ Update ALL of these locations (they MUST all match):
   tensogram-sz3-sys, tensogram-szip, tensogram-cli, tensogram-ffi, tensogram-python,
   tensogram-grib, tensogram-netcdf, tensogram-wasm, benchmarks, examples/rust
 - `pyproject.toml` in EVERY Python package: python/bindings, python/tensogram-xarray,
-  python/tensogram-zarr
+  python/tensogram-zarr, examples/jupyter
 - `typescript/package.json`
 - `CHANGELOG.md` — add new release entry header with today's date
 
@@ -76,6 +76,8 @@ dependencies). These locations contain exact version pins that must match:
 - `rust/tensogram-cli/Cargo.toml` deps on tensogram + tensogram-grib + tensogram-netcdf
 - `rust/tensogram-ffi/Cargo.toml` deps on tensogram + tensogram-encodings
 - `rust/tensogram-wasm/Cargo.toml` dep on tensogram
+- `examples/jupyter/pyproject.toml` dependency pins on `tensogram` and
+  `tensogram[xarray]` (uses `>=X.Y.Z,<X.(Y+1).0` — bump both bounds)
 
 Verify no stale version strings remain in first-party files only:
 ```bash
@@ -85,7 +87,8 @@ grep -r 'version = "OLD_VERSION"' --include='Cargo.toml' \
 grep 'version = "OLD_VERSION"' \
   python/bindings/pyproject.toml \
   python/tensogram-xarray/pyproject.toml \
-  python/tensogram-zarr/pyproject.toml
+  python/tensogram-zarr/pyproject.toml \
+  examples/jupyter/pyproject.toml
 ```
 
 **WARNING**: Do NOT grep all `pyproject.toml` files recursively — the vendored
