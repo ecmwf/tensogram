@@ -39,6 +39,37 @@ export { TensogramFile } from './file.js';
 export { getMetaKey, computeCommon, cborValuesEqual } from './metadata.js';
 export { DTYPE_BYTE_WIDTH, payloadByteSize, shapeElementCount, typedArrayFor, isDtype, SUPPORTED_DTYPES } from './dtype.js';
 
+// ── Scope C.1 — API parity ────────────────────────────────────────────────
+export { decodeRange } from './range.js';
+export { computeHash } from './hash.js';
+export type { HashAlgorithm } from './hash.js';
+export { simplePackingComputeParams } from './simplePacking.js';
+export { validate, validateBuffer, validateFile } from './validate.js';
+export { encodePreEncoded } from './encodePreEncoded.js';
+export { StreamingEncoder } from './streamingEncoder.js';
+
+// ── Scope C.2 — first-class half-precision / complex dtypes ───────────────
+//
+// Raw bit-twiddling helpers (`halfBitsToFloat`, `floatToHalfBits`,
+// `bfloat16BitsToFloat`, `floatToBfloat16Bits`) and the internal
+// `isComplexDtype` guard are deliberately NOT re-exported here — they
+// are implementation details of the view classes.  Callers that need
+// bits should reach them through a view's `.bits` accessor; callers
+// that need to route on dtype should pattern-match on the descriptor's
+// `dtype` string directly.
+export {
+  Float16Polyfill,
+  float16FromBytes,
+  getFloat16ArrayCtor,
+  hasNativeFloat16Array,
+} from './float16.js';
+export type { Float16ArrayLike, Float16Ctor } from './float16.js';
+
+export { Bfloat16Array, bfloat16FromBytes } from './bfloat16.js';
+
+export { ComplexArray, complexFromBytes } from './complex.js';
+export type { ComplexDtype, ComplexPair, ComplexStorage } from './complex.js';
+
 export {
   TensogramError,
   FramingError,
@@ -54,6 +85,7 @@ export {
 } from './errors.js';
 
 export type {
+  AppendOptions,
   BaseEntry,
   ByteOrder,
   CborValue,
@@ -63,18 +95,33 @@ export type {
   DecodedMessage,
   DecodedObject,
   DecodeOptions,
-  DecodeStreamOptions,
+  DecodeRangeOptions,
+  DecodeRangeResult,
   Dtype,
   EncodeInput,
   EncodeOptions,
+  EncodePreEncodedOptions,
   Encoding,
+  FileIssue,
   FileSource,
+  FileValidationReport,
   Filter,
   FromUrlOptions,
   GlobalMetadata,
   HashDescriptor,
+  IssueCode,
+  IssueSeverity,
   MessagePosition,
   OpenFileOptions,
+  PreEncodedInput,
+  RangePair,
+  SimplePackingParams,
   StreamDecodeError,
+  StreamingEncoderOptions,
   TypedArray,
+  ValidateMode,
+  ValidateOptions,
+  ValidationIssue,
+  ValidationLevel,
+  ValidationReport,
 } from './types.js';

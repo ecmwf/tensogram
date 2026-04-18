@@ -10,7 +10,7 @@
 
 from collections import namedtuple
 
-from .tensogram import *  # noqa: F401, F403
+from .tensogram import *  # noqa: F403
 
 Message = namedtuple("Message", ["metadata", "objects"])
 """Decoded message with named fields.

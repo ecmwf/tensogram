@@ -291,6 +291,115 @@ Design doc: `plans/TYPESCRIPT_WRAPPER.md`. User guide:
   `06_file_api`, `07_hash_and_errors`). The package references the
   local `typescript/` package via a `file:` dependency.
 
+## TypeScript wrapper — Scope C.1 (API-surface parity)
+
+Closes the parity gap with Rust / Python / FFI / C++ for every
+concept on the cross-language matrix in
+`plans/TYPESCRIPT_WRAPPER.md`.  Changes are additive on the WASM
+side; the only breaking change on the TS side is that
+`TensogramFile#rawMessage` is now async (needed for the lazy HTTP
+backend).
+
+| Component | What changed |
+|-----------|-------------|
+| `tensogram-wasm/src/encoder.rs` | New `StreamingEncoder` class backed by a `Vec<u8>` sink, with `write_object`, `write_object_pre_encoded`, `write_preceder`, `object_count`, `bytes_written`, `finish`.  Hand-off from Rust core `StreamingEncoder<Vec<u8>>`. |
+| `tensogram-wasm/src/extras.rs` | New module with `decode_range`, `encode_pre_encoded`, `compute_hash`, `simple_packing_compute_params`, `validate_buffer` exports.  `decode_range` accepts `BigUint64Array` pairs on the boundary; `validate_buffer` returns a JSON string so large integers are lossless. |
+| `tensogram-wasm/src/convert.rs` | `typed_array_or_u8_to_bytes` covers every `ArrayBufferView` + `DataView` + `Uint8Array`, used by every new write path.  Old `typed_array_to_bytes` removed from `lib.rs`. |
+| `tensogram-wasm/Cargo.toml` | Adds `tensogram-encodings` (for `simple_packing::compute_params`) and `serde_json` (for the JSON-returning validate export). |
+| `rust/tensogram-wasm/tests/wasm_tests.rs` | 22 new `wasm_bindgen_test`s covering every new export and the StreamingEncoder lifecycle. |
+| `typescript/src/range.ts` | `decodeRange(buf, objIndex, ranges, opts?)`.  Packs `number`/`bigint` pairs into `BigUint64Array`, returns dtype-typed `parts` views.  `join: true` concatenates at the byte level before dtype wrap. |
+| `typescript/src/hash.ts` | `computeHash(bytes, algo?)` returning the hex digest string.  Unknown algorithm → `MetadataError`. |
+| `typescript/src/simplePacking.ts` | `simplePackingComputeParams(values, bits, decScale?)` returning snake-cased params that spread directly into a descriptor. |
+| `typescript/src/validate.ts` | `validate(buf, opts?)` — single message.  `validateBuffer(buf, opts?)` — multi-message with gap detection.  `validateFile(path, opts?)` — Node-only convenience (reads file via `node:fs/promises`, then delegates to `validateBuffer`).  All three parse the JSON the WASM side returns. |
+| `typescript/src/encodePreEncoded.ts` | `encodePreEncoded(meta, objects, opts?)`.  Validates descriptor shape before the WASM call, forwards the pre-encoded bytes verbatim. |
+| `typescript/src/streamingEncoder.ts` | `StreamingEncoder` class (single-use) with `writeObject`, `writePreceder`, `writeObjectPreEncoded`, `finish`, `close`, `objectCount`, `bytesWritten`.  `FinalizationRegistry` cleanup fallback for missed `close()`. |
+| `typescript/src/file.ts` | Rewritten backend model: `InMemoryBackend` (fromBytes), `LocalFileBackend` (open, with path stored for append), `LazyHttpBackend` (fromUrl, HTTP Range).  `rawMessage` is now async — was sync in Scope B.  `append(meta, objects, opts?)` appends to the on-disk file, refreshes the mirror + position index from disk, only permitted on `LocalFileBackend`.  `fromUrl` does a `HEAD` probe; when Accept-Ranges + Content-Length are advertised it uses Range reads per preamble during scan and on-demand Range fetches per message afterwards (with a 32-entry LRU).  Streaming-mode messages (`total_length == 0`) and non-Range servers transparently fall back to eager GET. |
+| `typescript/src/index.ts` | Re-exports the new functions, classes, and types. |
+| `typescript/tests/` | Per-module test files: `range.test.ts`, `hash.test.ts`, `simplePacking.test.ts`, `validate.test.ts`, `encodePreEncoded.test.ts`, `streamingEncoder.test.ts`, `append.test.ts`, `lazyFromUrl.test.ts`.  Golden-file parity: the validate suite decodes every golden `.tgm` fixture. |
+| `examples/typescript/` | `04_decode_range.ts`, `08_validate.ts`, `11_encode_pre_encoded.ts`, `12_streaming_encoder.ts`, `13_range_access.ts`.  `06_file_api.ts` updated for the async `rawMessage` signature. |
+| `docs/src/guide/typescript-api.md` | New sections on pre-encoded bytes, validate, streaming encoder, append, lazy Range access, and the Scope-C API additions table.  Cross-language parity matrix refreshed. |
+| `plans/TYPESCRIPT_WRAPPER.md` | Parity matrix now shows every Scope-C.1 entry as ✓; Scope-C.3 / C.4 items moved into the follow-ups section. |
+
+## TypeScript wrapper — Scope C.2 (half-precision + complex dtypes)
+
+Upgrades `typedArrayFor(dtype)` so `float16`, `bfloat16`, `complex64`,
+`complex128` return first-class view classes — callers no longer
+need to know the raw bit layout or interleaving.
+
+| Component | What changed |
+|-----------|-------------|
+| `typescript/src/float16.ts` | `Float16Polyfill` with the observable behaviour of the TC39 Stage-3 `Float16Array` proposal: round-ties-to-even narrow, NaN / ±Inf / ±0 / subnormal preservation.  Storage is a `Uint16Array` of bits (WeakMap-backed private slot so `wrapBits` can build zero-copy instances).  `hasNativeFloat16Array()` / `getFloat16ArrayCtor()` let callers control native-vs-polyfill.  `float16FromBytes(bytes)` zero-copies on aligned input, falls back to an aligned copy for odd-offset buffers. |
+| `typescript/src/bfloat16.ts` | `Bfloat16Array` — 1-8-7 layout matching ML frameworks.  Widen is "shift left by 16 into float32"; narrow uses round-to-nearest-even on the 16 dropped bits.  Mirror of the Float16Polyfill API. |
+| `typescript/src/complex.ts` | `ComplexArray(dtype, storage)` view over an interleaved `Float32Array` (complex64) or `Float64Array` (complex128).  `.real(i)`, `.imag(i)`, `.get(i) → {re, im}`, `.set(i, re, im)`, iteration, `.toArray()`.  `complexFromBytes(dtype, bytes)` zero-copies on aligned input. |
+| `typescript/src/dtype.ts` | Routing updated — `float16` → native `Float16Array` when present, polyfill otherwise; `bfloat16` → `Bfloat16Array`; `complex64` / `complex128` → `ComplexArray`. |
+| `typescript/src/types.ts` | `TypedArray` union extended with structural aliases for the three view classes.  Structural aliases avoid a circular import. |
+| `typescript/tests/float16.test.ts` | Bit-conversion invariants (±0, ±Inf, NaN, subnormals, range-saturation, round-to-nearest-even), array API (constructor shapes, `.bits`, `.set`, `.fill`, `.slice`, `.subarray`, `.toFloat32Array`, iteration), native-vs-polyfill detection, `encode → decode` bit-exact round-trip for the dtype, `fast-check` property: `f32 → f16 → f32` within half-precision ulp. |
+| `typescript/tests/bfloat16.test.ts` | Same shape as float16, adapted for bfloat16 layout + ulp. |
+| `typescript/tests/complex.test.ts` | `.real` / `.imag` / `.get` / `.set` / iteration / `.toArray()`; round-trip through `encode → decode` for complex64 and complex128; property-based invariant that interleaved storage round-trips byte-exactly. |
+| `typescript/tests/dtype.test.ts` | Updated assertions — `typedArrayFor('float16')` now returns `Float16Polyfill` or native; `bfloat16` returns `Bfloat16Array`; `complex*` returns `ComplexArray`. |
+| `typescript/src/index.ts` | Exports the new classes + factories + detection helpers. |
+| `docs/src/guide/typescript-api.md` | "First-class half-precision and complex dtypes" section documents the new view types and the Scope-B → C.2 migration note. |
+
+### What did NOT change
+
+- Wire format — every `.tgm` byte is identical to pre-change output
+  across every Scope-C addition.
+- Existing golden `.tgm` fixtures in `rust/tensogram/tests/golden/`
+  continue to validate and decode unchanged across Rust, Python, C++,
+  and TypeScript.
+- Scope-B TS tests (145 of them) still pass — the only breakage was
+  the intentional `rawMessage` async change, which was mechanical.
+
+## TypeScript wrapper — streaming `StreamingEncoder` (Pass 6)
+
+Closes the "callback-per-frame" gap flagged in Pass 4's focus list.
+Consumers that need true no-buffering streaming (browser upload,
+WebSocket push, any sink that needs bytes as soon as they're
+produced) now pass an `onBytes` callback at construction time.
+
+| Component | What changed |
+|-----------|-------------|
+| `rust/tensogram-wasm/src/encoder.rs` | New `JsCallbackWriter` struct that implements `std::io::Write` by calling into a held `js_sys::Function`; errors thrown by the JS callback surface as `std::io::Error::other(...)` which the core wraps into `TensogramError::Io`.  New `Inner` enum with `Buffered(StreamingEncoder<Vec<u8>>)` / `Streaming(StreamingEncoder<JsCallbackWriter>)` variants; the exported class dispatches every method through the enum.  Constructor gained a third optional argument `on_bytes: Option<js_sys::Function>`. |
+| `typescript/src/types.ts` | `StreamingEncoderOptions.onBytes` field added with full docstring covering the synchronous-only contract, chunk-ownership rules (copy before next write), and error-propagation semantics. |
+| `typescript/src/streamingEncoder.ts` | Constructor validates that `opts.onBytes` (if supplied) is callable, forwards it to the WASM layer, and records the mode in a `#streaming` private field.  New `streaming: boolean` getter for consumers that need to branch on mode.  `finish()` docstring updated to explain the empty-`Uint8Array` return in streaming mode. |
+| `typescript/tests/streamingEncoder.test.ts` | 9 new tests: construction-time byte delivery (preamble magic check), empty `finish()` return in streaming mode, decoded-bytes parity between buffered and streaming outputs, `bytesWritten` tracking, multi-object delivery, callback-throw propagation, non-function rejection, `streaming` getter, `hash: false` compatibility. |
+| `rust/tensogram-wasm/tests/wasm_tests.rs` | 5 new `wasm_bindgen_test`s: round-trip, construction-time delivery + magic check, bytes-written tracking, callback-throw propagation, non-function rejection.  All existing tests updated to pass `None` for the new constructor arg. |
+| `examples/typescript/14_streaming_callback.ts` | Runnable example: collects chunks into a JS array, reassembles via concatenation, decodes to prove semantic equivalence with the buffered path. |
+| `docs/src/guide/typescript-api.md` | New "Streaming `StreamingEncoder` (no full-message buffering)" section covering the full contract (synchronous, chunk ownership, error propagation, mode detection). |
+| `plans/TYPESCRIPT_WRAPPER.md` | Follow-up list notes that Python / FFI / C++ remain buffered-only and documents the extension pattern for future parity. |
+| `CHANGELOG.md` | New entry under "Added — TypeScript wrapper: streaming `StreamingEncoder`". |
+
+## `simple_packing` — Infinity rejection in the Rust core
+
+The TypeScript wrapper's `simplePackingComputeParams` Pass-3 guard
+against ±Infinity was a band-aid over a real core-level gap:
+`tensogram_encodings::simple_packing::compute_params` and `encode`
+silently produced `binary_scale_factor = i32::MAX` (garbage) when fed
+infinite samples.  Pass 5 pushed the guard upstream so every binding
+benefits uniformly.
+
+| Component | What changed |
+|-----------|-------------|
+| `rust/tensogram-encodings/src/simple_packing.rs` | New `PackingError::InfiniteValue(usize)` variant reports the first infinite sample's index (matching the NaN contract).  A new shared `validate_sample(v, i) -> Result<(), PackingError>` helper lives next to `scan_min_max`; both the min/max scan and the encode loops (sequential, parallel-aligned, parallel-generic, sequential-tail) now use it as the single source of truth for the "is this value encodable?" predicate. |
+| `rust/tensogram-encodings/src/simple_packing.rs` tests | New `test_positive_infinity_rejected_in_compute_params`, `test_negative_infinity_rejected_in_compute_params`, `test_infinity_rejected_in_encode` — cover both f64 infinity polarities through both the compute and encode paths. |
+| `python/tests/test_tensogram.py::TestPackingParamsCoverage` | `test_inf_accepted_but_nonsensical` (which documented the old buggy behaviour) replaced by `test_positive_infinity_rejected` + `test_negative_infinity_rejected` — mirrors the Rust core tests and pins the cross-language contract. |
+| TS wrapper | Existing Pass-3 guard in `typescript/src/simplePacking.ts` retained as defence-in-depth — callers still see a clean `InvalidArgumentError` without a WASM round-trip, and the check now acts as a belt-and-braces backup over the core guarantee. |
+| CHANGELOG | Entry under "Changed — Rust core (affects all language bindings)". |
+
+## Python bindings — `compute_hash` parity
+
+Adds `tensogram.compute_hash(data, algo="xxh3")` to close the
+cross-language parity gap — Rust, WASM, FFI, C++, and TypeScript all
+exposed equivalent functionality; Python was the only binding without
+it.
+
+| Component | What changed |
+|-----------|-------------|
+| `python/bindings/src/lib.rs` | New `py_compute_hash` function wrapping `tensogram_lib::compute_hash`.  Accepts `PyBackedBytes` (zero-copy over `bytes` / `bytearray`); unknown algorithm names route through the existing `to_py_err` for a clean `ValueError`. |
+| `python/tests/test_compute_hash.py` | 18 tests covering shape (16-char lowercase hex), determinism, known vector (xxh3 of `b"hello world"`), empty buffer (known constant `2d06800538d394c2`), `bytes` / `bytearray` acceptance, explicit rejection of `memoryview` / `numpy.ndarray` with a documented conversion path, unknown-algo `ValueError`, and byte-level parity with the hash stamped by `encode` on a no-pipeline object.  The parity test pins Python's `compute_hash` to the same byte-level contract as the Rust core, WASM, FFI, and TypeScript implementations — any drift fails the test simultaneously. |
+| `CHANGELOG.md` | New entry under Python bindings. |
+| `plans/TYPESCRIPT_WRAPPER.md` | Parity matrix now shows ✓ for Python's `compute_hash`. |
+
 ## `tensogram-benchmarks`
 
 Separate workspace crate providing a codec-matrix benchmark and a

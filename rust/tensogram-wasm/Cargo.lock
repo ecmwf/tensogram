@@ -456,8 +456,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "tensogram-core"
-version = "0.14.0"
+name = "tensogram"
+version = "0.15.0"
 dependencies = [
  "ciborium",
  "serde",
@@ -470,7 +470,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-encodings"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "lz4_flex",
  "ruzstd",
@@ -478,25 +478,28 @@ dependencies = [
  "tensogram-szip",
  "thiserror",
  "tracing",
+ "xxhash-rust",
 ]
 
 [[package]]
 name = "tensogram-szip"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "tensogram-wasm"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "ciborium",
  "getrandom 0.2.17",
  "js-sys",
  "serde",
  "serde-wasm-bindgen",
- "tensogram-core",
+ "serde_json",
+ "tensogram",
+ "tensogram-encodings",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-test",

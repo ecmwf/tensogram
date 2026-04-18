@@ -360,8 +360,11 @@ on the cross-language parity matrix.
 
 ## Cross-language parity matrix
 
-Scope B brought TS to parity with the other language surfaces for the
-core read/write path. Remaining gaps, all tracked as Scope-C items:
+Scopes B + C.1 closed the read-path and write-path API gaps; C.2
+closed the half-precision / complex dtype ergonomics gap.  The
+remaining entries on the list — npm publishing, browser CI, bundle
+budgets, Zarr.js — are distribution and ecosystem tasks tracked under
+Scope C.3 / C.4 in `plans/TODO.md`.
 
 | Concept | Rust | Python | FFI | C++ | TypeScript |
 |---|---|---|---|---|---|
@@ -370,35 +373,77 @@ core read/write path. Remaining gaps, all tracked as Scope-C items:
 | `scan` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `streaming_decoder` | ✓ | ✓ | ✓ | ✓ | ✓ (`decodeStream`) |
 | File open / message / iter | ✓ | ✓ | ✓ | ✓ | ✓ (`TensogramFile`) |
-| Remote fetch | ✓ | ✓ | — | — | ✓ (`.fromUrl`) |
+| Remote fetch | ✓ | ✓ | — | — | ✓ (`.fromUrl` + HTTP Range backend) |
 | `metadata_get_key` | ✓ | ✓ | ✓ | ✓ | ✓ (`getMetaKey`) |
 | `compute_common` | ✓ | ✓ | — | — | ✓ |
-| **`decode_range`** | ✓ | ✓ | ✓ | ✓ | **—** |
-| **`streaming_encoder`** | ✓ | ✓ | ✓ | ✓ | **—** |
-| **`file_append`** | ✓ | ✓ | ✓ | ✓ | **—** |
-| **`validate_buffer` / `validate_file`** | ✓ | ✓ | ✓ | ✓ | **—** |
-| **`compute_hash`** | ✓ | ✓ | ✓ | ✓ | **—** |
-| **`encode_pre_encoded`** | ✓ | ✓ | ✓ | ✓ | **—** |
-| **`simple_packing_params`** | ✓ | ✓ | ✓ | ✓ | **—** |
+| `decode_range` | ✓ | ✓ | ✓ | ✓ | ✓ (`decodeRange`) |
+| `streaming_encoder` | ✓ | ✓ | ✓ | ✓ | ✓ (`StreamingEncoder`) |
+| `file_append` | ✓ | ✓ | ✓ | ✓ | ✓ (Node local-path only) |
+| `validate_buffer` / `validate_file` | ✓ | ✓ | ✓ | ✓ | ✓ (`validate` / `validateBuffer` / `validateFile`) |
+| `compute_hash` | ✓ | ✓ (`compute_hash`) | ✓ | ✓ | ✓ (`computeHash`) |
+| `encode_pre_encoded` | ✓ | ✓ | ✓ | ✓ | ✓ (`encodePreEncoded`) |
+| `simple_packing_params` | ✓ | ✓ (`compute_packing_params`) | ✓ | ✓ | ✓ (`simplePackingComputeParams`) |
+| First-class `float16` / `bfloat16` / `complex*` | ✓ | ✓ (numpy dtypes) | — (opaque bytes) | — (opaque bytes) | ✓ (Scope C.2 view classes) |
 
-The gaps above are all intentional: Scope B focused on read-path ergonomics;
-Scope C extends the wrapper to write-path tooling, validation, and utility
-helpers. See `plans/TODO.md` for the enumerated Scope-C task list.
+## Scope-C.1 wire details
 
-## Open items & follow-ups (post-Scope B)
+WASM-side additions live in `rust/tensogram-wasm`:
 
-- Publishing pipeline: choose npm org, set up `npm publish` from CI on
-  tagged releases, align version with `VERSION` file.
-- Scope-C API surface (see parity matrix above): `validate`,
-  `encodePreEncoded`, `decodeRange`, `StreamingEncoder`,
-  `TensogramFile#append`, `computeHash`, `simplePackingComputeParams`.
-- `float16` / `bfloat16` / `complex*` first-class support (likely via
-  a small runtime helper; JS has no native half-precision TypedArray).
-- Bundle-size budget (`size-limit`) in CI.
-- Dual `--target web` + `--target nodejs` build for tighter Node
-  compatibility (currently Node ≥ 20 required).
-- Zarr.js integration mirroring `tensogram-zarr`.
+- `encoder.rs` — `StreamingEncoder` class backed by `Vec<u8>`.
+- `extras.rs` — `decode_range`, `encode_pre_encoded`, `compute_hash`,
+  `simple_packing_compute_params`, `validate_buffer`.
+- `convert.rs` gains `typed_array_or_u8_to_bytes` covering every
+  `ArrayBufferView` + `DataView`, used by the new write paths.
+
+TS-side surface (`typescript/src/`):
+
+- `range.ts`, `hash.ts`, `simplePacking.ts`, `validate.ts`,
+  `encodePreEncoded.ts`, `streamingEncoder.ts` — one module per
+  concept, each with its own dedicated test file.
+- `file.ts` rewritten to support two new paths: `append` (Node local
+  file) and a lazy Range-based `fromUrl` backend with transparent
+  eager fallback.
+
+### `rawMessage` is now async
+
+`TensogramFile#rawMessage(index)` returns `Promise<Uint8Array>` (was
+sync in Scope B).  The signature change lets the lazy HTTP backend
+issue the `Range` GET on first access; existing callers add `await`.
+
+## Scope-C.2 wire details
+
+- `typescript/src/float16.ts` — `Float16Polyfill` with TC39-accurate
+  semantics (round-ties-to-even narrow, NaN / ±Inf / subnormal
+  preservation), plus `halfBitsToFloat` / `floatToHalfBits` /
+  `hasNativeFloat16Array` / `getFloat16ArrayCtor` / `float16FromBytes`
+  zero-copy factory.
+- `typescript/src/bfloat16.ts` — matching `Bfloat16Array` view with
+  the 1-8-7 layout used by ML frameworks.
+- `typescript/src/complex.ts` — `ComplexArray` view over interleaved
+  Float32 / Float64 storage, with `.real(i)`, `.imag(i)`, `.get(i)`,
+  iteration.
+- `typescript/src/dtype.ts` — `typedArrayFor` updated to route these
+  dtypes through the view classes.  Callers who still want raw bits
+  / interleaved storage reach them via `.bits` / `.data`.
+
+## Open items & follow-ups
+
+- **Scope C.3** — npm publish pipeline, browser CI via
+  Vitest-browser + Playwright, `size-limit` bundle budget, vitest
+  bench on hot paths.  See `plans/TODO.md`.
+- **Scope C.4** — `@ecmwf/tensogram-zarr` mirror of the Python
+  `tensogram-zarr` package.
+- Dual `--target web` + `--target nodejs` wasm-pack build for tighter
+  Node compatibility (currently Node ≥ 20 required).
 - Integration with `earthkit-data` if a JS loader is ever needed.
+- Callback-per-frame sinks in Python / C FFI / C++ — the WASM/TS
+  surface gained this via `onBytes` in Pass 6, but other bindings
+  remain buffered-only.  Extension pattern: a per-language sink
+  abstraction (Python file-like / `io.BufferedWriter`, FFI
+  function-pointer, C++ `std::ostream&`) wrapping the Rust core's
+  `StreamingEncoder<W: Write>` generic just like `JsCallbackWriter`
+  does for WASM.  Would close cross-language parity for the
+  streaming-sink capability.
 
 ## Risks & mitigations
 

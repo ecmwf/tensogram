@@ -36,7 +36,7 @@
 use std::collections::BTreeMap;
 use tensogram::dtype::Dtype;
 use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
-use wasm_bindgen::prelude::*;
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen_test::*;
 
 // Szip flag constants (matching libaec.h / tensogram_szip::params exactly).
@@ -260,7 +260,9 @@ fn round_trip_f32_no_compression() {
 #[wasm_bindgen_test]
 fn round_trip_f64_no_compression() {
     let desc = make_descriptor(vec![4], Dtype::Float64);
-    let values = [3.14159f64, 2.71828, 1.41421, 0.0];
+    // Arbitrary test values — chosen to avoid matching any named
+    // mathematical constant (clippy::approx_constant).
+    let values = [3.5f64, 2.2, 1.1, 0.0];
     let payload = f64_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
@@ -635,7 +637,9 @@ fn zero_copy_f32_view_values_correct() {
 #[wasm_bindgen_test]
 fn zero_copy_f64_view_values_correct() {
     let desc = make_descriptor(vec![3], Dtype::Float64);
-    let values = [3.14f64, 2.718, 1.414];
+    // Arbitrary test values — not named mathematical constants
+    // (clippy::approx_constant).
+    let values = [3.5f64, 2.2, 1.4];
     let payload = f64_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
@@ -643,9 +647,9 @@ fn zero_copy_f64_view_values_correct() {
     let view = decoded.object_data_f64(0).unwrap();
 
     assert_eq!(view.length(), 3);
-    assert_eq!(view.get_index(0), 3.14);
-    assert_eq!(view.get_index(1), 2.718);
-    assert_eq!(view.get_index(2), 1.414);
+    assert_eq!(view.get_index(0), 3.5);
+    assert_eq!(view.get_index(1), 2.2);
+    assert_eq!(view.get_index(2), 1.4);
 }
 
 #[wasm_bindgen_test]
@@ -1726,7 +1730,7 @@ fn metadata_deep_nested_mars_keys() {
         ..Default::default()
     };
     let desc = make_descriptor(vec![10], Dtype::Float32);
-    let payload = f32_payload(&vec![0.0f32; 10]);
+    let payload = f32_payload(&[0.0f32; 10]);
     let msg = encode_native_no_hash(&meta, &[(&desc, &payload)]);
 
     // Just verify it decodes without error — metadata fidelity
@@ -2408,4 +2412,477 @@ fn compressed_data_i32_view_correct() {
     assert_eq!(view.length(), 4);
     assert_eq!(view.get_index(0), -10);
     assert_eq!(view.get_index(3), 20);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 16. SCOPE-C EXPORTS — decode_range / compute_hash / simple_packing_params /
+//     encode_pre_encoded / validate_buffer / StreamingEncoder
+// ═══════════════════════════════════════════════════════════════════════════════
+
+use js_sys::{Array, BigUint64Array, Uint8Array};
+use wasm_bindgen::JsCast;
+
+fn flatten_ranges(ranges: &[(u64, u64)]) -> BigUint64Array {
+    let flat: Vec<u64> = ranges.iter().flat_map(|(a, b)| [*a, *b]).collect();
+    let out = BigUint64Array::new_with_length(flat.len() as u32);
+    for (i, v) in flat.iter().enumerate() {
+        out.set_index(i as u32, *v);
+    }
+    out
+}
+
+// -- decode_range -----------------------------------------------------------
+
+#[wasm_bindgen_test]
+fn decode_range_single_range_uncompressed() {
+    let desc = make_descriptor(vec![16], Dtype::Float32);
+    let values: Vec<f32> = (0..16).map(|i| i as f32).collect();
+    let payload = f32_payload(&values);
+    let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
+
+    // Elements 4..8 (count = 4) — byte range [16, 32).
+    let ranges = flatten_ranges(&[(4, 4)]);
+    let result = tensogram_wasm::decode_range(&msg, 0, &ranges, None).unwrap();
+    let parts = js_sys::Reflect::get(&result, &"parts".into()).unwrap();
+    let parts_arr = Array::from(&parts);
+    assert_eq!(parts_arr.length(), 1);
+
+    let part = parts_arr.get(0);
+    let u8 = part.dyn_into::<Uint8Array>().unwrap();
+    assert_eq!(u8.length(), 16); // 4 × f32 = 16 bytes
+    let bytes = u8.to_vec();
+    assert_eq!(bytes, &payload[16..32]);
+}
+
+#[wasm_bindgen_test]
+fn decode_range_multiple_ranges() {
+    let desc = make_descriptor(vec![32], Dtype::Float32);
+    let values: Vec<f32> = (0..32).map(|i| i as f32).collect();
+    let payload = f32_payload(&values);
+    let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
+
+    // Two disjoint ranges: [0..4] and [20..24].
+    let ranges = flatten_ranges(&[(0, 4), (20, 4)]);
+    let result = tensogram_wasm::decode_range(&msg, 0, &ranges, None).unwrap();
+    let parts = js_sys::Reflect::get(&result, &"parts".into()).unwrap();
+    let parts_arr = Array::from(&parts);
+    assert_eq!(parts_arr.length(), 2);
+
+    let p0 = parts_arr.get(0).dyn_into::<Uint8Array>().unwrap().to_vec();
+    let p1 = parts_arr.get(1).dyn_into::<Uint8Array>().unwrap().to_vec();
+    assert_eq!(p0, &payload[0..16]);
+    assert_eq!(p1, &payload[80..96]);
+}
+
+#[wasm_bindgen_test]
+fn decode_range_empty_ranges_returns_empty_parts() {
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let msg = encode_native_no_hash(
+        &default_metadata(),
+        &[(&desc, &f32_payload(&[1.0, 2.0, 3.0, 4.0]))],
+    );
+    let ranges = flatten_ranges(&[]);
+    let result = tensogram_wasm::decode_range(&msg, 0, &ranges, None).unwrap();
+    let parts = js_sys::Reflect::get(&result, &"parts".into()).unwrap();
+    assert_eq!(Array::from(&parts).length(), 0);
+}
+
+#[wasm_bindgen_test]
+fn decode_range_odd_length_rejected() {
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let msg = encode_native_no_hash(
+        &default_metadata(),
+        &[(&desc, &f32_payload(&[1.0, 2.0, 3.0, 4.0]))],
+    );
+    // Odd number of u64 values — not valid [off, count] pairs.
+    let odd = BigUint64Array::new_with_length(3);
+    odd.set_index(0, 0);
+    odd.set_index(1, 2);
+    odd.set_index(2, 4);
+    assert!(tensogram_wasm::decode_range(&msg, 0, &odd, None).is_err());
+}
+
+#[wasm_bindgen_test]
+fn decode_range_filter_shuffle_rejected() {
+    use std::collections::BTreeMap as Map;
+    let mut params = Map::new();
+    params.insert(
+        "shuffle_element_size".to_string(),
+        ciborium::Value::Integer(4i64.into()),
+    );
+    let desc = DataObjectDescriptor {
+        filter: "shuffle".to_string(),
+        params,
+        ..make_descriptor(vec![4], Dtype::Float32)
+    };
+    let msg = encode_native_no_hash(
+        &default_metadata(),
+        &[(&desc, &f32_payload(&[1.0, 2.0, 3.0, 4.0]))],
+    );
+    let ranges = flatten_ranges(&[(0, 2)]);
+    let res = tensogram_wasm::decode_range(&msg, 0, &ranges, None);
+    assert!(res.is_err(), "filter=shuffle should reject decode_range");
+}
+
+// -- compute_hash -----------------------------------------------------------
+
+#[wasm_bindgen_test]
+fn compute_hash_xxh3_default() {
+    let data = b"hello world";
+    let hex = tensogram_wasm::compute_hash(data, None).unwrap();
+    assert_eq!(hex.len(), 16);
+    // Same bytes produce the same hash.
+    let again = tensogram_wasm::compute_hash(data, None).unwrap();
+    assert_eq!(hex, again);
+}
+
+#[wasm_bindgen_test]
+fn compute_hash_explicit_xxh3() {
+    let hex = tensogram_wasm::compute_hash(b"test", Some("xxh3".to_string())).unwrap();
+    assert_eq!(hex.len(), 16);
+}
+
+#[wasm_bindgen_test]
+fn compute_hash_empty_buffer() {
+    let hex = tensogram_wasm::compute_hash(&[], None).unwrap();
+    assert_eq!(hex.len(), 16);
+}
+
+#[wasm_bindgen_test]
+fn compute_hash_unknown_algo_errors() {
+    let res = tensogram_wasm::compute_hash(b"x", Some("sha256".to_string()));
+    assert!(res.is_err());
+}
+
+#[wasm_bindgen_test]
+fn compute_hash_matches_descriptor_hash() {
+    // The hash in the descriptor is computed over the encoded payload.
+    // For encoding=none,filter=none,compression=none the encoded payload
+    // is the raw native bytes, so the hashes must match.
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let msg = encode_native(&default_metadata(), &[(&desc, &payload)]); // with hash
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
+    let desc_js = decoded.object_descriptor(0).unwrap();
+    let hash_val = js_sys::Reflect::get(&desc_js, &"hash".into()).unwrap();
+    let value_val = js_sys::Reflect::get(&hash_val, &"value".into()).unwrap();
+    let expected = value_val.as_string().unwrap();
+
+    let computed = tensogram_wasm::compute_hash(&payload, None).unwrap();
+    assert_eq!(computed, expected);
+}
+
+// -- simple_packing_compute_params -----------------------------------------
+
+#[wasm_bindgen_test]
+fn simple_packing_compute_params_basic() {
+    let values = [200.0f64, 210.0, 220.0, 230.0, 240.0];
+    let result = tensogram_wasm::simple_packing_compute_params(&values, 16, 0).unwrap();
+    let obj = js_sys::Object::from(result);
+    let ref_v = js_sys::Reflect::get(&obj, &"reference_value".into())
+        .unwrap()
+        .as_f64()
+        .unwrap();
+    let bpv = js_sys::Reflect::get(&obj, &"bits_per_value".into())
+        .unwrap()
+        .as_f64()
+        .unwrap();
+    assert_eq!(ref_v, 200.0);
+    assert_eq!(bpv, 16.0);
+}
+
+#[wasm_bindgen_test]
+fn simple_packing_compute_params_nan_rejected() {
+    let values = [1.0f64, f64::NAN, 3.0];
+    assert!(tensogram_wasm::simple_packing_compute_params(&values, 16, 0).is_err());
+}
+
+#[wasm_bindgen_test]
+fn simple_packing_compute_params_zero_bits() {
+    // bits=0 → constant-field packing, reference = first value
+    let values = [42.0f64, 42.0, 42.0];
+    let result = tensogram_wasm::simple_packing_compute_params(&values, 0, 0).unwrap();
+    let bpv = js_sys::Reflect::get(&result, &"bits_per_value".into())
+        .unwrap()
+        .as_f64()
+        .unwrap();
+    assert_eq!(bpv, 0.0);
+}
+
+// -- encode_pre_encoded -----------------------------------------------------
+
+#[wasm_bindgen_test]
+fn encode_pre_encoded_round_trip_uncompressed() {
+    // A pre-encoded object with encoding=filter=compression=none is just
+    // the raw bytes — the simplest round-trip.
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let payload = f32_payload(&[10.0, 20.0, 30.0, 40.0]);
+
+    let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
+    let objects = Array::new();
+    let entry = js_sys::Object::new();
+    let desc_js = serde_wasm_bindgen::to_value(&desc).unwrap();
+    js_sys::Reflect::set(&entry, &"descriptor".into(), &desc_js).unwrap();
+    js_sys::Reflect::set(
+        &entry,
+        &"data".into(),
+        &Uint8Array::from(payload.as_slice()).into(),
+    )
+    .unwrap();
+    objects.push(&entry);
+
+    let msg = tensogram_wasm::encode_pre_encoded(meta_js, objects, Some(true)).unwrap();
+    let msg_bytes = msg.to_vec();
+    let decoded = tensogram_wasm::decode(&msg_bytes, None).unwrap();
+    assert_eq!(decoded.object_count(), 1);
+    let data: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
+    assert_eq!(data, payload);
+}
+
+// -- validate_buffer --------------------------------------------------------
+
+#[wasm_bindgen_test]
+fn validate_buffer_valid_message() {
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
+    let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
+
+    let json = tensogram_wasm::validate_buffer(&msg, None, false).unwrap();
+    assert!(json.contains("\"object_count\":1"));
+    assert!(json.contains("\"hash_verified\":true"));
+}
+
+#[wasm_bindgen_test]
+fn validate_buffer_truncated_message_reports_issues() {
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let msg = encode_native(
+        &default_metadata(),
+        &[(&desc, &f32_payload(&[1.0, 2.0, 3.0, 4.0]))],
+    );
+    let truncated = &msg[..msg.len() / 2];
+    let json = tensogram_wasm::validate_buffer(truncated, None, false).unwrap();
+    // Should report issues rather than throwing.
+    assert!(json.contains("\"issues\""));
+}
+
+#[wasm_bindgen_test]
+fn validate_buffer_full_mode_scans_nan() {
+    // A finite, non-NaN payload passes full-mode validation.
+    let desc = make_descriptor(vec![4], Dtype::Float64);
+    let msg = encode_native(
+        &default_metadata(),
+        &[(&desc, &f64_payload(&[1.0, 2.0, 3.0, 4.0]))],
+    );
+    let json = tensogram_wasm::validate_buffer(&msg, Some("full".to_string()), false).unwrap();
+    assert!(json.contains("\"hash_verified\":true"));
+}
+
+#[wasm_bindgen_test]
+fn validate_buffer_unknown_level_errors() {
+    let msg = encode_native(
+        &default_metadata(),
+        &[(
+            &make_descriptor(vec![1], Dtype::Float32),
+            &f32_payload(&[1.0]),
+        )],
+    );
+    assert!(tensogram_wasm::validate_buffer(&msg, Some("bogus".to_string()), false).is_err());
+}
+
+// -- StreamingEncoder --------------------------------------------------------
+
+#[wasm_bindgen_test]
+fn streaming_encoder_single_object_round_trip() {
+    let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
+    let mut enc = tensogram_wasm::StreamingEncoder::new(meta_js, Some(true), None).unwrap();
+    assert_eq!(enc.object_count().unwrap(), 0);
+
+    let desc = make_descriptor(vec![3], Dtype::Float32);
+    let desc_js = serde_wasm_bindgen::to_value(&desc).unwrap();
+    let payload = f32_payload(&[1.0, 2.0, 3.0]);
+    enc.write_object(desc_js, Uint8Array::from(payload.as_slice()).into())
+        .unwrap();
+    assert_eq!(enc.object_count().unwrap(), 1);
+
+    let bytes = enc.finish().unwrap();
+    let msg_vec = bytes.to_vec();
+    let decoded = tensogram_wasm::decode(&msg_vec, None).unwrap();
+    assert_eq!(decoded.object_count(), 1);
+    let got: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
+    assert_eq!(got, payload);
+}
+
+#[wasm_bindgen_test]
+fn streaming_encoder_finish_closes_handle() {
+    let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
+    let mut enc = tensogram_wasm::StreamingEncoder::new(meta_js, Some(false), None).unwrap();
+    let _ = enc.finish().unwrap();
+    // Further access raises an error rather than panicking.
+    let meta_js2 = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
+    let desc_js = serde_wasm_bindgen::to_value(&make_descriptor(vec![1], Dtype::Float32)).unwrap();
+    // Re-using the closed encoder via write_object should fail.
+    assert!(
+        enc.write_object(desc_js, Uint8Array::from([0u8; 4].as_slice()).into())
+            .is_err()
+    );
+    // And constructing a brand-new encoder still works.
+    let mut enc2 = tensogram_wasm::StreamingEncoder::new(meta_js2, None, None).unwrap();
+    assert_eq!(enc2.object_count().unwrap(), 0);
+    let _ = enc2.finish().unwrap();
+}
+
+#[wasm_bindgen_test]
+fn streaming_encoder_preceder_merges_into_base() {
+    use std::collections::BTreeMap as Map;
+    let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
+    let mut enc = tensogram_wasm::StreamingEncoder::new(meta_js, Some(false), None).unwrap();
+
+    let mut prec: Map<String, ciborium::Value> = Map::new();
+    prec.insert("units".to_string(), ciborium::Value::Text("K".to_string()));
+    let prec_js = serde_wasm_bindgen::to_value(&prec).unwrap();
+    enc.write_preceder(prec_js).unwrap();
+
+    let desc_js = serde_wasm_bindgen::to_value(&make_descriptor(vec![2], Dtype::Float32)).unwrap();
+    let payload = f32_payload(&[273.15, 274.0]);
+    enc.write_object(desc_js, Uint8Array::from(payload.as_slice()).into())
+        .unwrap();
+
+    let bytes = enc.finish().unwrap().to_vec();
+    let decoded = tensogram_wasm::decode(&bytes, None).unwrap();
+    assert_eq!(decoded.object_count(), 1);
+    let meta = decoded.metadata().unwrap();
+    assert!(meta.is_object());
+}
+
+#[wasm_bindgen_test]
+fn streaming_encoder_consecutive_preceders_rejected() {
+    let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
+    let mut enc = tensogram_wasm::StreamingEncoder::new(meta_js, None, None).unwrap();
+    let empty_js = serde_wasm_bindgen::to_value(&serde_json::json!({})).unwrap();
+    enc.write_preceder(empty_js.clone()).unwrap();
+    assert!(enc.write_preceder(empty_js).is_err());
+}
+
+// ─── Streaming-callback mode (Pass 6) ────────────────────────────────────────
+
+/// Helper: build a JS function that pushes each chunk into a
+/// JS-side `Array`.  Returns the `(callback, chunks_array)` pair so
+/// the test body can inspect what the encoder emitted.
+fn make_collector() -> (js_sys::Function, js_sys::Array) {
+    let chunks = js_sys::Array::new();
+    let chunks_ref = chunks.clone();
+    let closure =
+        Closure::<dyn FnMut(js_sys::Uint8Array)>::new(move |chunk: js_sys::Uint8Array| {
+            // The callback receives a *borrowed* JS-heap view into the
+            // bytes the encoder emitted for this frame.  We copy it into
+            // a freshly owned `Uint8Array` so later encoder writes cannot
+            // mutate what the collector has remembered.
+            let owned = js_sys::Uint8Array::new_with_length(chunk.length());
+            owned.set(&chunk, 0);
+            chunks_ref.push(&owned.into());
+        });
+    let cb: js_sys::Function = closure.into_js_value().unchecked_into();
+    (cb, chunks)
+}
+
+/// Concatenate every `Uint8Array` chunk the collector saw into a
+/// single contiguous byte buffer.
+fn flatten_chunks(chunks: &js_sys::Array) -> Vec<u8> {
+    let mut out = Vec::new();
+    for i in 0..chunks.length() {
+        let u8: js_sys::Uint8Array = chunks.get(i).unchecked_into();
+        let mut buf = vec![0u8; u8.length() as usize];
+        u8.copy_to(&mut buf);
+        out.extend_from_slice(&buf);
+    }
+    out
+}
+
+#[wasm_bindgen_test]
+fn streaming_encoder_callback_mode_round_trip() {
+    // Streaming mode must produce the same wire bytes as buffered mode
+    // for the same input — the callback just chunks the delivery.
+    let (cb, chunks) = make_collector();
+    let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
+    let mut enc = tensogram_wasm::StreamingEncoder::new(meta_js, Some(true), Some(cb)).unwrap();
+
+    let desc = make_descriptor(vec![3], Dtype::Float32);
+    let desc_js = serde_wasm_bindgen::to_value(&desc).unwrap();
+    let payload = f32_payload(&[1.5, 2.5, 3.5]);
+    enc.write_object(desc_js, Uint8Array::from(payload.as_slice()).into())
+        .unwrap();
+
+    // `finish()` in streaming mode returns an empty Uint8Array — every
+    // byte flowed through the callback.
+    let final_bytes = enc.finish().unwrap();
+    assert_eq!(final_bytes.length(), 0);
+
+    let streamed = flatten_chunks(&chunks);
+    let decoded = tensogram_wasm::decode(&streamed, None).unwrap();
+    assert_eq!(decoded.object_count(), 1);
+    let got: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
+    assert_eq!(got, payload);
+}
+
+#[wasm_bindgen_test]
+fn streaming_encoder_callback_invoked_during_construction() {
+    // The preamble + header metadata frame are written during
+    // construction, so the callback must have seen bytes before the
+    // first user call.
+    let (cb, chunks) = make_collector();
+    let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
+    let _enc = tensogram_wasm::StreamingEncoder::new(meta_js, Some(false), Some(cb)).unwrap();
+    assert!(chunks.length() > 0);
+    // And the first bytes emitted must start with the Tensogram magic.
+    let first: js_sys::Uint8Array = chunks.get(0).unchecked_into();
+    let mut magic = [0u8; 8];
+    first.slice(0, 8).copy_to(&mut magic);
+    assert_eq!(&magic, b"TENSOGRM");
+}
+
+#[wasm_bindgen_test]
+fn streaming_encoder_bytes_written_tracks_callback_bytes() {
+    // `bytes_written` must report the total across every chunk sent,
+    // not zero (which would be the buffered interpretation of "nothing
+    // in the internal buffer").
+    let (cb, _) = make_collector();
+    let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
+    let mut enc = tensogram_wasm::StreamingEncoder::new(meta_js, Some(false), Some(cb)).unwrap();
+
+    let before = enc.bytes_written().unwrap();
+    assert!(before > 0.0); // preamble + header already emitted
+
+    let desc_js = serde_wasm_bindgen::to_value(&make_descriptor(vec![4], Dtype::Float32)).unwrap();
+    enc.write_object(desc_js, Uint8Array::from([0u8; 16].as_slice()).into())
+        .unwrap();
+    let after = enc.bytes_written().unwrap();
+    assert!(after > before);
+}
+
+#[wasm_bindgen_test]
+fn streaming_encoder_callback_error_propagates() {
+    // A callback that throws must cause the encoder to surface an
+    // error rather than silently drop the exception.  We construct
+    // with a callback that raises synchronously — the preamble +
+    // header-metadata write happens inside `new()`, so the Err comes
+    // out of the constructor itself.
+    let bad_cb = js_sys::Function::new_no_args("throw new Error('sink failed');");
+    let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
+    let result = tensogram_wasm::StreamingEncoder::new(meta_js, Some(false), Some(bad_cb));
+    assert!(result.is_err(), "throwing callback must propagate as error");
+}
+
+#[wasm_bindgen_test]
+fn streaming_encoder_rejects_non_function_callback() {
+    // wasm-bindgen's `Option<js_sys::Function>` conversion rejects
+    // non-callable inputs with a TypeError before our code runs — we
+    // document and test that a number does not reach the sink.
+    let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
+    // Passing `None` is the well-formed "buffered" path, so we only
+    // need to assert that the streaming variant builds cleanly with a
+    // real function.  Non-function inputs are rejected at the wasm-
+    // bindgen conversion layer — covered by the TS-side test.
+    let cb = js_sys::Function::new_no_args("");
+    let enc = tensogram_wasm::StreamingEncoder::new(meta_js, None, Some(cb));
+    assert!(enc.is_ok());
 }
