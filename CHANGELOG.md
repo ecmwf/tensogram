@@ -3,6 +3,25 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.16.1] - 2026-04-19
+
+### Fixed
+- **Jupyter notebook CI failures** — `examples/jupyter/pyproject.toml` pinned
+  `tensogram>=0.15.0,<0.16` but the repo had moved to 0.16.0, causing
+  `uv pip install` to silently replace the locally-built bindings with an
+  older PyPI wheel lacking grib/netcdf features. Bumped all three version
+  references (package version, `tensogram` dep, `tensogram[xarray]` dep) to
+  `>=0.16.0,<0.17`.
+- **`make-release` command** — added `examples/jupyter/pyproject.toml` to the
+  version bump checklist, dependency pins list, and stale-version grep check
+  so future releases won't miss it.
+
+### Stats
+- Rust tests: 513 passed
+- Python tests: 513 passed, 40 skipped
+- xarray tests: 201 passed
+- zarr tests: 224 passed
+
 ## [0.16.0] - 2026-04-18
 
 ### Added
