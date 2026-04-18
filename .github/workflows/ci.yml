@@ -50,7 +50,7 @@ jobs:
         run: |
           cargo fmt --check
           cargo clippy --workspace --all-targets -- -D warnings
-          cargo clippy -p tensogram-core --all-targets --features "remote,async" -- -D warnings
+          cargo clippy -p tensogram --all-targets --features "remote,async" -- -D warnings
 
       - name: sccache stats
         if: always()
@@ -76,8 +76,8 @@ jobs:
       - name: Test
         run: |
           cargo test --workspace
-          cargo test -p tensogram-core --features remote
-          cargo test -p tensogram-core --features "remote,async"
+          cargo test -p tensogram --features remote
+          cargo test -p tensogram --features "remote,async"
 
       - name: sccache stats
         if: always()
@@ -221,7 +221,7 @@ jobs:
       - name: Clippy
         run: |
           cargo clippy --workspace --all-targets -- -D warnings
-          cargo clippy -p tensogram-core --all-targets --features "remote,async" -- -D warnings
+          cargo clippy -p tensogram --all-targets --features "remote,async" -- -D warnings
           cargo clippy -p tensogram-cli --all-targets --features "grib,netcdf" -- -D warnings
           cargo clippy --manifest-path rust/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
 
@@ -229,10 +229,10 @@ jobs:
         run: cargo test --workspace
 
       - name: Test (remote feature)
-        run: cargo test -p tensogram-core --features remote
+        run: cargo test -p tensogram --features remote
 
       - name: Test (remote + async features)
-        run: cargo test -p tensogram-core --features "remote,async"
+        run: cargo test -p tensogram --features "remote,async"
 
       - name: Test (GRIB)
         run: |

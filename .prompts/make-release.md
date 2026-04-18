@@ -22,7 +22,7 @@ git diff --stat origin/main  # must be empty
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
-cargo test -p tensogram-core --features "remote,async"
+cargo test -p tensogram --features "remote,async"
 cargo test --manifest-path rust/tensogram-grib/Cargo.toml
 cargo test --manifest-path rust/tensogram-netcdf/Cargo.toml
 ```
@@ -58,7 +58,7 @@ Read the current version from `VERSION` file. Bump to the target version.
 
 Update ALL of these locations (they MUST all match):
 - `VERSION` (the source of truth)
-- `Cargo.toml` in EVERY crate: tensogram-core, tensogram-encodings, tensogram-sz3,
+- `Cargo.toml` in EVERY crate: tensogram, tensogram-encodings, tensogram-sz3,
   tensogram-sz3-sys, tensogram-szip, tensogram-cli, tensogram-ffi, tensogram-python,
   tensogram-grib, tensogram-netcdf, tensogram-wasm, benchmarks, examples/rust
 - `pyproject.toml` in EVERY Python package: python/bindings, python/tensogram-xarray,
@@ -70,12 +70,12 @@ Also bump inter-crate dependency version pins (`version = "=X.Y.Z"` in path
 dependencies). These locations contain exact version pins that must match:
 - Root `Cargo.toml` workspace deps (tensogram-szip, tensogram-sz3, tensogram-sz3-sys)
 - `rust/tensogram-sz3/Cargo.toml` dep on tensogram-sz3-sys
-- `rust/tensogram-core/Cargo.toml` dep on tensogram-encodings
-- `rust/tensogram-grib/Cargo.toml` deps on tensogram-core + tensogram-encodings
-- `rust/tensogram-netcdf/Cargo.toml` deps on tensogram-core + tensogram-encodings
-- `rust/tensogram-cli/Cargo.toml` deps on tensogram-core + tensogram-grib + tensogram-netcdf
-- `rust/tensogram-ffi/Cargo.toml` deps on tensogram-core + tensogram-encodings
-- `rust/tensogram-wasm/Cargo.toml` dep on tensogram-core
+- `rust/tensogram/Cargo.toml` dep on tensogram-encodings
+- `rust/tensogram-grib/Cargo.toml` deps on tensogram + tensogram-encodings
+- `rust/tensogram-netcdf/Cargo.toml` deps on tensogram + tensogram-encodings
+- `rust/tensogram-cli/Cargo.toml` deps on tensogram + tensogram-grib + tensogram-netcdf
+- `rust/tensogram-ffi/Cargo.toml` deps on tensogram + tensogram-encodings
+- `rust/tensogram-wasm/Cargo.toml` dep on tensogram
 
 Verify no stale version strings remain in first-party files only:
 ```bash
@@ -120,7 +120,7 @@ git push --tags
 Trigger each workflow manually and wait for completion between steps:
 
 1. Run `publish-crates.yml` (workflow_dispatch) — publishes 10 Rust crates
-2. Smoke test: `cargo add tensogram-core@X.Y.Z` in a fresh project, `cargo build`
+2. Smoke test: `cargo add tensogram@X.Y.Z` in a fresh project, `cargo build`
 3. Run `publish-pypi-tensogram.yml` (workflow_dispatch) — native Python wheels
 4. Wait for PyPI propagation, then smoke test: `pip install tensogram==X.Y.Z`
 5. Run `publish-pypi-extras.yml` (dispatch from the release tag) — xarray + zarr

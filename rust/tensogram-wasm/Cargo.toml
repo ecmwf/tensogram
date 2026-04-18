@@ -1,6 +1,6 @@
 [package]
 name = "tensogram-wasm"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2024"
 rust-version = "1.87"
 license = "Apache-2.0"
@@ -20,7 +20,7 @@ default-target = "wasm32-unknown-unknown"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-tensogram-core = { path = "../tensogram-core", version = "=0.14.0", default-features = false, features = [
+tensogram = { path = "../tensogram", version = "=0.15.0", default-features = false, features = [
     "lz4",
     "szip-pure",
     "zstd-pure",

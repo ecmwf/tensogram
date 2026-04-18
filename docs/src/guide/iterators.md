@@ -22,7 +22,7 @@ graph TD
 Iterate over messages in a `&[u8]` byte buffer. Zero-copy: yields slices pointing into the original buffer.
 
 ```rust
-use tensogram_core::{messages, decode, DecodeOptions};
+use tensogram::{messages, decode, DecodeOptions};
 
 let buf: Vec<u8> = std::fs::read("multi.tgm")?;
 
@@ -41,7 +41,7 @@ The iterator calls `scan()` once on construction, then yields `&[u8]` slices in 
 Iterate over the decoded objects (tensors) inside a single message. Each item is a `(DataObjectDescriptor, Vec<u8>)` tuple:
 
 ```rust
-use tensogram_core::{objects, DecodeOptions};
+use tensogram::{objects, DecodeOptions};
 
 for result in objects(&msg_bytes, DecodeOptions::default())? {
     let (descriptor, data) = result?;
@@ -55,7 +55,7 @@ Each object is decoded through the full pipeline on demand — objects you don't
 For metadata-only access (no payload decode), use `objects_metadata`. This returns `DataObjectDescriptor`s without decoding any payloads:
 
 ```rust
-use tensogram_core::objects_metadata;
+use tensogram::objects_metadata;
 
 for desc in objects_metadata(&msg_bytes)? {
     println!("shape={:?} dtype={} byte_order={}", desc.shape, desc.dtype, desc.byte_order);
@@ -67,7 +67,7 @@ for desc in objects_metadata(&msg_bytes)? {
 Iterate over messages stored in a `.tgm` file with seek-based lazy I/O:
 
 ```rust
-use tensogram_core::{TensogramFile, objects, DecodeOptions};
+use tensogram::{TensogramFile, objects, DecodeOptions};
 
 let mut file = TensogramFile::open("forecast.tgm")?;
 for raw in file.iter()? {

@@ -7,7 +7,7 @@
 // does it submit to any jurisdiction.
 
 use std::collections::BTreeMap;
-use tensogram_core::*;
+use tensogram::*;
 use tensogram_encodings::simple_packing;
 
 fn make_float32_descriptor(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescriptor) {

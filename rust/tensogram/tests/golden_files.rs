@@ -18,11 +18,11 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use tensogram_core::decode::{self, DecodeOptions};
-use tensogram_core::dtype::Dtype;
-use tensogram_core::encode::{self, EncodeOptions};
-use tensogram_core::framing;
-use tensogram_core::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
+use tensogram::decode::{self, DecodeOptions};
+use tensogram::dtype::Dtype;
+use tensogram::encode::{self, EncodeOptions};
+use tensogram::framing;
+use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
 
 fn golden_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
@@ -173,7 +173,7 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
             payload.extend_from_slice(&v.to_be_bytes());
         }
         let opts = EncodeOptions {
-            hash_algorithm: Some(tensogram_core::hash::HashAlgorithm::Xxh3),
+            hash_algorithm: Some(tensogram::hash::HashAlgorithm::Xxh3),
             ..Default::default()
         };
         let msg = encode::encode(&meta, &[(&desc, &payload)], &opts).unwrap();
@@ -189,7 +189,7 @@ fn test_golden_files_are_deterministic() {
     // messages and compare metadata + payload data. Byte-exact comparison
     // is not possible because provenance fields (uuid, time) are
     // nondeterministic.
-    use tensogram_core::decode::{DecodeOptions, decode};
+    use tensogram::decode::{DecodeOptions, decode};
 
     let dir = golden_dir();
     let decode_opts = DecodeOptions::default();
@@ -199,8 +199,8 @@ fn test_golden_files_are_deterministic() {
             .unwrap_or_else(|e| panic!("golden file {filename} missing from repo: {e}"));
 
         // Multi-message files: compare message count via scan
-        let committed_entries = tensogram_core::scan(&committed);
-        let generated_entries = tensogram_core::scan(&generated);
+        let committed_entries = tensogram::scan(&committed);
+        let generated_entries = tensogram::scan(&generated);
 
         assert_eq!(
             committed_entries.len(),
@@ -235,7 +235,7 @@ fn test_golden_files_are_deterministic() {
 }
 
 /// Write golden files to disk. Run manually when the encoder changes:
-///   cargo test -p tensogram-core --test golden_files -- --ignored regenerate
+///   cargo test -p tensogram --test golden_files -- --ignored regenerate
 #[test]
 #[ignore]
 fn regenerate_golden_files() {

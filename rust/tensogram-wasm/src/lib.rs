@@ -23,7 +23,7 @@ mod convert;
 mod streaming;
 
 use convert::*;
-use tensogram_core::{self as core, DecodeOptions, EncodeOptions};
+use tensogram::{self as core, DecodeOptions, EncodeOptions};
 use wasm_bindgen::prelude::*;
 
 // ── Decode API ───────────────────────────────────────────────────────────────

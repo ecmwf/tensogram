@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 
-use tensogram_core::{
+use tensogram::{
     DataObjectDescriptor, DecodeOptions, EncodeOptions, GlobalMetadata, RESERVED_KEY,
     TensogramFile, decode, decode_metadata, encode,
 };
@@ -250,7 +250,7 @@ fn insert_nested_cbor_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tensogram_core::{ByteOrder, DataObjectDescriptor, Dtype, GlobalMetadata, encode};
+    use tensogram::{ByteOrder, DataObjectDescriptor, Dtype, GlobalMetadata, encode};
 
     fn make_global_meta() -> GlobalMetadata {
         GlobalMetadata {

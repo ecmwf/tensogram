@@ -31,7 +31,7 @@ The primary four Rust crates make up the default workspace build:
 ```
 tensogram/
 ├── rust/
-│   ├── tensogram-core        ← encode, decode, framing, file API,
+│   ├── tensogram        ← encode, decode, framing, file API,
 │   │                            validation, remote object store
 │   ├── tensogram-encodings   ← simple_packing, shuffle, compression
 │   ├── tensogram-cli         ← `tensogram` command-line tool
@@ -52,7 +52,7 @@ and `tensogram-zarr` (Zarr v3 store backend), and a `tensogram-benchmarks`
 crate. See [`plans/ARCHITECTURE.md`](https://github.com/ecmwf/tensogram/blob/main/plans/ARCHITECTURE.md)
 for the full crate list and build recipes.
 
-Most users interact with `tensogram-core` and the CLI. The encodings
+Most users interact with `tensogram` and the CLI. The encodings
 crate is used internally by the core but is also importable directly
 if you need to call the encoding functions outside of a full message.
 
@@ -60,7 +60,7 @@ if you need to call the encoding functions outside of a full message.
 
 ```rust
 use std::collections::BTreeMap;
-use tensogram_core::{
+use tensogram::{
     encode, decode, GlobalMetadata, DataObjectDescriptor,
     ByteOrder, Dtype, EncodeOptions, DecodeOptions,
 };

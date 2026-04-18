@@ -29,7 +29,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use tempfile::tempdir;
-use tensogram_core::{TensogramFile, decode_metadata};
+use tensogram::{TensogramFile, decode_metadata};
 use tensogram_netcdf::{ConvertOptions, DataPipeline, SplitBy, convert_netcdf_file};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

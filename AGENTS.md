@@ -115,7 +115,7 @@ This project contains Rust, Python, C, C++ and TypeScript code
       (currently `typescript/` and `examples/typescript/`; the list grows if
       new JS packages land).
     - `CHANGELOG.md` (new release entry header).
-  The provenance encoder in `rust/tensogram-core/src/encode.rs` reads the version via
+  The provenance encoder in `rust/tensogram/src/encode.rs` reads the version via
   `env!("CARGO_PKG_VERSION")` which comes from Cargo.toml — so keeping Cargo.toml in sync
   with VERSION is critical for correct provenance in encoded messages.
   If ANY of these are out of sync, the release is broken. Always grep for the old version

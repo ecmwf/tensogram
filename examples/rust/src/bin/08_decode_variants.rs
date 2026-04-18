@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use tensogram_core::{
+use tensogram::{
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, decode,
     decode_metadata, decode_object, decode_range, encode,
 };

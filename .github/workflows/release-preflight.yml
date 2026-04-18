@@ -50,7 +50,7 @@ jobs:
           check_version "VERSION" "$(cat VERSION)"
 
           for toml in \
-            rust/tensogram-core/Cargo.toml \
+            rust/tensogram/Cargo.toml \
             rust/tensogram-encodings/Cargo.toml \
             rust/tensogram-szip/Cargo.toml \
             rust/tensogram-sz3/Cargo.toml \
@@ -101,7 +101,7 @@ jobs:
       - name: Verify crate tarballs
         run: |
           for crate in tensogram-szip tensogram-sz3-sys tensogram-sz3 \
-                       tensogram-encodings tensogram-core tensogram-ffi \
+                       tensogram-encodings tensogram tensogram-ffi \
                        tensogram-cli; do
             echo "::group::cargo package -p $crate"
             cargo package -p "$crate" --list

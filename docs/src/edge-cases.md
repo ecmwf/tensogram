@@ -78,7 +78,7 @@ If you need to compare metadata across languages or implementations, always comp
 You can verify that any CBOR output is canonical using the `verify_canonical_cbor()` utility:
 
 ```rust
-use tensogram_core::verify_canonical_cbor;
+use tensogram::verify_canonical_cbor;
 
 let cbor_bytes = /* ... */;
 verify_canonical_cbor(&cbor_bytes)?; // Returns Ok(()) if canonical, Err if not
@@ -279,7 +279,7 @@ In `OneToOne` mode, each GRIB message becomes one Tensogram message. All MARS na
 
 In `MergeAll` mode, N GRIB fields become one Tensogram message with N data objects. Each `base[i]` holds ALL metadata for that object independently — there is no common/varying partitioning at encode time. This means metadata keys are duplicated across base entries.
 
-**Performance note:** With 1000 GRIB fields, this means 1000 copies of common keys (class, type, stream, expver, date, time, etc.). This is by design — the wire format prioritizes simplicity and independent object access over byte savings. Use `tensogram_core::compute_common()` at display/merge time to extract shared keys.
+**Performance note:** With 1000 GRIB fields, this means 1000 copies of common keys (class, type, stream, expver, date, time, etc.). This is by design — the wire format prioritizes simplicity and independent object access over byte savings. Use `tensogram::compute_common()` at display/merge time to extract shared keys.
 
 ### Different Grid Types in MergeAll
 
@@ -393,7 +393,7 @@ The `_reserved_` keys within base entries are included in JSON output for transp
 
 ## Metadata Refactor: Detailed Edge Cases
 
-The following edge cases were identified during systematic review of the Rust core crate (`tensogram-core`) after the metadata refactor.
+The following edge cases were identified during systematic review of the Rust core crate (`tensogram`) after the metadata refactor.
 
 ### base Array Count Validation
 

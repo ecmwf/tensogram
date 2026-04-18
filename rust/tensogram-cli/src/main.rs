@@ -187,7 +187,7 @@ enum Commands {
 
 fn main() {
     // Activate tracing output via TENSOGRAM_LOG env var.
-    // Examples: TENSOGRAM_LOG=debug, TENSOGRAM_LOG=tensogram_core=trace
+    // Examples: TENSOGRAM_LOG=debug, TENSOGRAM_LOG=tensogram=trace
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("TENSOGRAM_LOG")
@@ -245,13 +245,13 @@ fn main() {
             json,
         } => {
             let max_level = if quick {
-                tensogram_core::ValidationLevel::Structure
+                tensogram::ValidationLevel::Structure
             } else if full {
-                tensogram_core::ValidationLevel::Fidelity
+                tensogram::ValidationLevel::Fidelity
             } else {
-                tensogram_core::ValidationLevel::Integrity
+                tensogram::ValidationLevel::Integrity
             };
-            let options = tensogram_core::ValidateOptions {
+            let options = tensogram::ValidateOptions {
                 max_level,
                 check_canonical: canonical,
                 checksum_only: checksum,

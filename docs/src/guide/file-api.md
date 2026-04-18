@@ -5,7 +5,7 @@ The `TensogramFile` struct provides a high-level API for reading and writing `.t
 ## Creating a File
 
 ```rust
-use tensogram_core::{TensogramFile, EncodeOptions};
+use tensogram::{TensogramFile, EncodeOptions};
 
 let mut file = TensogramFile::create("forecast.tgm")?;
 ```
@@ -16,7 +16,7 @@ This creates (or truncates) the file. No data is written yet.
 
 ```rust
 use std::collections::BTreeMap;
-use tensogram_core::{
+use tensogram::{
     GlobalMetadata, DataObjectDescriptor, ByteOrder, Dtype, EncodeOptions,
 };
 
@@ -67,7 +67,7 @@ The first access triggers a streaming scan that reads preamble-sized chunks and 
 ## Reading Messages
 
 ```rust
-use tensogram_core::{decode, DecodeOptions};
+use tensogram::{decode, DecodeOptions};
 
 // Read raw bytes of message 3
 let raw_bytes = file.read_message(3)?;
@@ -89,7 +89,7 @@ let mut file = TensogramFile::open("forecast.tgm")?;
 
 for raw in file.iter()? {
     let raw = raw?;
-    let meta = tensogram_core::decode_metadata(&raw)?;
+    let meta = tensogram::decode_metadata(&raw)?;
     println!("version: {}", meta.version);
 }
 ```
@@ -141,11 +141,11 @@ Enable the `remote` feature to open `.tgm` files on S3, GCS, Azure, or HTTP with
 
 ```toml
 [dependencies]
-tensogram-core = { path = "...", features = ["remote"] }
+tensogram = { path = "...", features = ["remote"] }
 ```
 
 ```rust
-use tensogram_core::{TensogramFile, DecodeOptions};
+use tensogram::{TensogramFile, DecodeOptions};
 
 let mut file = TensogramFile::open_source("s3://bucket/forecast.tgm")?;
 
@@ -161,7 +161,7 @@ Enable the `mmap` feature to use memory-mapped file access:
 
 ```toml
 [dependencies]
-tensogram-core = { path = "...", features = ["mmap"] }
+tensogram = { path = "...", features = ["mmap"] }
 ```
 
 ```rust
@@ -182,7 +182,7 @@ Enable the `async` feature for tokio-based non-blocking file operations:
 
 ```toml
 [dependencies]
-tensogram-core = { path = "...", features = ["async"] }
+tensogram = { path = "...", features = ["async"] }
 ```
 
 ```rust

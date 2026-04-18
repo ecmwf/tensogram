@@ -12,12 +12,12 @@
 //!
 //! ```ignore
 //! // Iterate over messages in a byte buffer (zero-copy)
-//! for msg in tensogram_core::iter::messages(&buf) {
-//!     let (meta, objs) = tensogram_core::decode(msg, &Default::default())?;
+//! for msg in tensogram::iter::messages(&buf) {
+//!     let (meta, objs) = tensogram::decode(msg, &Default::default())?;
 //! }
 //!
 //! // Iterate over objects in a single message
-//! for result in tensogram_core::iter::objects(&msg_bytes, Default::default())? {
+//! for result in tensogram::iter::objects(&msg_bytes, Default::default())? {
 //!     let (descriptor, data) = result?;
 //! }
 //!

@@ -26,7 +26,7 @@
 
 use std::collections::BTreeMap;
 
-use tensogram_core::{
+use tensogram::{
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, decode,
     encode,
 };
@@ -37,7 +37,7 @@ use tensogram_core::{
 /// ignores the top-level `_reserved_` provenance fields (uuid, time,
 /// encoder version) which change on every encode call.
 fn encoded_payloads(buf: &[u8]) -> Vec<Vec<u8>> {
-    let msg = tensogram_core::framing::decode_message(buf).expect("decode_message");
+    let msg = tensogram::framing::decode_message(buf).expect("decode_message");
     msg.objects
         .iter()
         .map(|(_, payload, _)| payload.to_vec())
@@ -352,7 +352,7 @@ fn encode_zero_length_payload_any_threads_ok() {
 /// `Ok(vec![])` regardless of `threads`.
 #[test]
 fn decode_range_empty_slice_any_threads_ok() {
-    use tensogram_core::decode_range;
+    use tensogram::decode_range;
 
     let meta = GlobalMetadata::default();
     let desc = make_descriptor(vec![1024], Dtype::Float64);

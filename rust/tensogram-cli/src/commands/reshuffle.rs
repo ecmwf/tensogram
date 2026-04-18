@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use tensogram_core::{DecodeOptions, EncodeOptions, RESERVED_KEY, TensogramFile, decode, encode};
+use tensogram::{DecodeOptions, EncodeOptions, RESERVED_KEY, TensogramFile, decode, encode};
 
 /// Reshuffle frames inside messages: move footer frames to header position.
 ///
@@ -66,14 +66,14 @@ pub fn run(input: &Path, output: &Path, threads: u32) -> Result<(), Box<dyn std:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tensogram_core::{
+    use tensogram::{
         ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
         decode,
     };
 
     fn make_test_file(dir: &std::path::Path) -> std::path::PathBuf {
         let path = dir.join("reshuffle_input.tgm");
-        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let mut f = tensogram::TensogramFile::create(&path).unwrap();
         let desc = DataObjectDescriptor {
             obj_type: "ntensor".into(),
             ndim: 1,
@@ -107,7 +107,7 @@ mod tests {
         run(&input, &output, 0).unwrap();
 
         // Verify output is valid and has same content
-        let f = tensogram_core::TensogramFile::open(&output).unwrap();
+        let f = tensogram::TensogramFile::open(&output).unwrap();
         assert_eq!(f.message_count().unwrap(), 2);
         let msg = f.read_message(0).unwrap();
         let (meta, objs) = decode(&msg, &DecodeOptions::default()).unwrap();

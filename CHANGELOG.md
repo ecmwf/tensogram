@@ -9,7 +9,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - **Multi-threaded coding pipeline** — caller-controlled `threads: u32`
   option on `EncodeOptions` / `DecodeOptions` (default `0` = sequential,
   identical to 0.12.0).  New module
-  `tensogram_core::parallel` wraps a scoped rayon pool, resolves the
+  `tensogram::parallel` wraps a scoped rayon pool, resolves the
   effective budget from the option or the `TENSOGRAM_THREADS`
   environment variable, and dispatches along one of two axes:
   - **Axis B (preferred)** — intra-codec parallelism for `blosc2`
@@ -48,7 +48,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   invariant for transparent pipelines and the lossless
   round-trip for opaque pipelines across thread counts.
 - **Determinism tests** at every layer: Rust integration suite
-  (`rust/tensogram-core/tests/threads_determinism.rs`, 7 tests),
+  (`rust/tensogram/tests/threads_determinism.rs`, 7 tests),
   Python (`python/tests/test_threads.py`, 12 tests), per-codec
   unit tests (`blosc2_nthreads_round_trip_lossless`,
   `zstd_nb_workers_round_trip_lossless`,
@@ -59,7 +59,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - **Version bumped to 0.13.0** across all Rust crates, Python
   packages, C++ headers, and the top-level `VERSION` file.
 - New cargo feature `threads` (default-on native, off on
-  `wasm32`) in both `tensogram-core` and `tensogram-encodings`
+  `wasm32`) in both `tensogram` and `tensogram-encodings`
   controlling the rayon dependency.
 - `zstd` crate gains the `zstdmt` feature on the workspace
   dependency so libzstd is built with thread support.
@@ -352,7 +352,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `--split-by {file,variable,record}`, `--cf`, plus the shared
   encoding pipeline flags. `--split-by=record` walks the unlimited
   dimension and replicates static variables into every record message.
-- **Shared `tensogram_core::pipeline` module** — single source of truth
+- **Shared `tensogram::pipeline` module** — single source of truth
   for `DataPipeline` and `apply_pipeline()`. Both `tensogram-grib` and
   `tensogram-netcdf` re-export `DataPipeline` and delegate to the same
   helper, so the `--encoding/--bits/--filter/--compression/--compression-level`
@@ -390,7 +390,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `--compression` — invalid values fail fast at arg-parse time with a
   "did you mean?" suggestion instead of propagating into the
   converter as an `InvalidData` error at run time.
-- **17 new `tensogram-core::pipeline` unit tests** covering every
+- **17 new `tensogram::pipeline` unit tests** covering every
   encoding/filter/compression stage, default pass-through, NaN skip,
   non-f64 skip, unknown-codec errors, and shuffle element-size
   derivation for both raw and simple-packed payloads.
@@ -405,7 +405,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   release the `--encoding`/`--bits`/`--filter`/`--compression` flags
   were parsed and silently dropped. Default remains `none/none/none`
   so existing `convert-grib` invocations produce byte-identical output.
-- **`DataPipeline` now lives in `tensogram-core::pipeline`** — re-exported from `tensogram_grib` and `tensogram_netcdf` so existing `use tensogram_{grib,netcdf}::DataPipeline` callers keep
+- **`DataPipeline` now lives in `tensogram::pipeline`** — re-exported from `tensogram_grib` and `tensogram_netcdf` so existing `use tensogram_{grib,netcdf}::DataPipeline` callers keep
   compiling. The ~150 lines of previously-duplicated `apply_pipeline`
   logic in the two converters are now a single helper.
 - **`tensogram-netcdf` panic-free audit** — zero `unwrap`/`expect`/
@@ -430,7 +430,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Stats
 - 69 `tensogram-netcdf` tests (44 integration + 24 unit + 1 doctest)
 - 124 `tensogram-cli` tests with `--features netcdf`
-- 17 new `tensogram-core::pipeline` unit tests
+- 17 new `tensogram::pipeline` unit tests
 - 8 Python end-to-end round-trip tests
 - 630 workspace tests, 271 Python tests, 124 C++ tests — all green
 - 95.54% region / 94.80% line coverage on `tensogram-netcdf`

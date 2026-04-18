@@ -7,7 +7,7 @@
 // does it submit to any jurisdiction.
 
 use std::collections::BTreeMap;
-use tensogram_core::*;
+use tensogram::*;
 
 fn make_simple_float32_pair(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescriptor) {
     let strides: Vec<u64> = if shape.is_empty() {

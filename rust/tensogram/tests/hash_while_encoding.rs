@@ -28,11 +28,11 @@
 use std::collections::BTreeMap;
 use std::io::Cursor;
 
-use tensogram_core::framing;
-use tensogram_core::hash::{HashAlgorithm, compute_hash};
-use tensogram_core::streaming::StreamingEncoder;
-use tensogram_core::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
-use tensogram_core::{DecodeOptions, Dtype, EncodeOptions, decode, encode};
+use tensogram::framing;
+use tensogram::hash::{HashAlgorithm, compute_hash};
+use tensogram::streaming::StreamingEncoder;
+use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
+use tensogram::{DecodeOptions, Dtype, EncodeOptions, decode, encode};
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -389,8 +389,8 @@ fn buffered_and_streaming_wire_bytes_differ_by_design() {
 /// algorithm trips that check on the happy path.
 #[test]
 fn streaming_hash_algorithms_have_fixed_cbor_length() {
-    use tensogram_core::metadata::object_descriptor_to_cbor;
-    use tensogram_core::types::HashDescriptor;
+    use tensogram::metadata::object_descriptor_to_cbor;
+    use tensogram::types::HashDescriptor;
 
     // Try a spread of descriptor shapes so we catch both "small CBOR"
     // and "large CBOR with many params" cases.

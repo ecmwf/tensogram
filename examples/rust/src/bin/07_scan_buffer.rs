@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 
 use ciborium::Value;
-use tensogram_core::{
+use tensogram::{
     ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata, decode_metadata, encode,
     scan,
 };

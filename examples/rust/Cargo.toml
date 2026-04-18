@@ -1,6 +1,6 @@
 [package]
 name = "tensogram-rust-examples"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2024"
 publish = false
 
@@ -61,10 +61,10 @@ required-features = ["remote"]
 [features]
 default = []
 netcdf = ["dep:tensogram-netcdf"]
-remote = ["tensogram-core/remote"]
+remote = ["tensogram/remote"]
 
 [dependencies]
-tensogram-core = { path = "../../rust/tensogram-core" }
+tensogram = { path = "../../rust/tensogram" }
 tensogram-encodings = { path = "../../rust/tensogram-encodings" }
 tensogram-netcdf = { path = "../../rust/tensogram-netcdf", optional = true }
 ciborium = "0.2"

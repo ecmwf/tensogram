@@ -13,9 +13,9 @@ use ciborium::Value as CborValue;
 use netcdf::AttributeValue;
 use netcdf::types::{FloatType, IntType, NcVariableType};
 
-use tensogram_core::pipeline::apply_pipeline;
-use tensogram_core::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
-use tensogram_core::{DataPipeline, Dtype, encode};
+use tensogram::pipeline::apply_pipeline;
+use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
+use tensogram::{DataPipeline, Dtype, encode};
 
 use crate::error::NetcdfError;
 use crate::metadata::{attr_value_to_cbor, extract_cf_attrs, extract_var_attrs};
@@ -38,9 +38,9 @@ pub enum SplitBy {
 pub struct ConvertOptions {
     /// How to group variables into Tensogram messages. See [`SplitBy`].
     pub split_by: SplitBy,
-    /// Encode-side knobs passed verbatim to `tensogram_core::encode`.
+    /// Encode-side knobs passed verbatim to `tensogram::encode`.
     /// Most callers can leave this at `Default`.
-    pub encode_options: tensogram_core::EncodeOptions,
+    pub encode_options: tensogram::EncodeOptions,
     /// When `true`, lift the 16 allow-listed CF attributes into
     /// `base[i]["cf"]`. The full attribute dump is always available
     /// under `base[i]["netcdf"]` regardless.
@@ -387,7 +387,7 @@ fn build_descriptor(
             None
         };
 
-    // Delegate to the shared helper in tensogram-core::pipeline; map
+    // Delegate to the shared helper in tensogram::pipeline; map
     // its human-readable error string into NetcdfError::InvalidData.
     apply_pipeline(&mut desc, f64_values.as_deref(), pipeline, &ev.name)
         .map_err(NetcdfError::InvalidData)?;
@@ -397,7 +397,7 @@ fn build_descriptor(
 
 fn encode_as_one_message(
     extracted: &[ExtractedVar],
-    encode_options: &tensogram_core::EncodeOptions,
+    encode_options: &tensogram::EncodeOptions,
     pipeline: &DataPipeline,
 ) -> Result<Vec<Vec<u8>>, NetcdfError> {
     let base: Vec<BTreeMap<String, CborValue>> =
@@ -425,7 +425,7 @@ fn encode_as_one_message(
 
 fn encode_one_per_variable(
     extracted: &[ExtractedVar],
-    encode_options: &tensogram_core::EncodeOptions,
+    encode_options: &tensogram::EncodeOptions,
     pipeline: &DataPipeline,
 ) -> Result<Vec<Vec<u8>>, NetcdfError> {
     let mut results = Vec::with_capacity(extracted.len());

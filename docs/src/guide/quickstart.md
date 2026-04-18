@@ -6,14 +6,14 @@ This page walks you through encoding and decoding a real tensor — a 2D tempera
 
 ```toml
 [dependencies]
-tensogram-core = { path = "../rust/tensogram-core" }
+tensogram = { path = "../rust/tensogram" }
 ```
 
 ## Encode a Temperature Field
 
 ```rust
 use std::collections::BTreeMap;
-use tensogram_core::{
+use tensogram::{
     encode, decode, GlobalMetadata, DataObjectDescriptor,
     ByteOrder, Dtype, EncodeOptions, DecodeOptions,
 };

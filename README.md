@@ -101,7 +101,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint
 
 **Optional features:**
 ```bash
-cargo build -p tensogram-core --features mmap,async,remote
+cargo build -p tensogram --features mmap,async,remote
 ```
 
 **C++ wrapper** (`cpp/include/tensogram.hpp`):
@@ -174,7 +174,7 @@ Then open `http://localhost:3000`.
 
 ```
 rust/
-├── tensogram-core/       Core encode/decode library
+├── tensogram/       Core encode/decode library
 ├── tensogram-encodings/  Encoding pipeline + compression codecs
 ├── tensogram-cli/        CLI binary (tensogram command)
 ├── tensogram-ffi/        C FFI layer

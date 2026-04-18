@@ -111,7 +111,7 @@ pub(crate) fn extract_all_namespace_keys(
 // functions were removed during the metadata-major-refactor.  The new model
 // stores ALL metadata per object in `base[i]` independently — no
 // common/varying split is needed at encode time.  Use
-// `tensogram_core::compute_common()` at display/merge time if you need to
+// `tensogram::compute_common()` at display/merge time if you need to
 // extract shared keys from base entries.
 
 // Tests for extract_mars_keys / extract_all_namespace_keys require real

@@ -41,7 +41,7 @@ pub fn run(
             compression: pipeline.compression.clone(),
             compression_level: pipeline.compression_level,
         },
-        encode_options: tensogram_core::EncodeOptions {
+        encode_options: tensogram::EncodeOptions {
             threads,
             ..Default::default()
         },
@@ -105,7 +105,7 @@ mod tests {
             0,
         )
         .unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         assert!(f.message_count().unwrap() >= 1);
     }
 
@@ -122,7 +122,7 @@ mod tests {
             0,
         )
         .unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         assert!(f.message_count().unwrap() >= 1);
     }
 
@@ -139,9 +139,9 @@ mod tests {
             0,
         )
         .unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
-        let meta = tensogram_core::decode_metadata(&msg).unwrap();
+        let meta = tensogram::decode_metadata(&msg).unwrap();
         assert!(
             meta.base.iter().any(|entry| entry.contains_key("grib")),
             "all_keys should produce grib namespace in base entries"
@@ -161,7 +161,7 @@ mod tests {
             0,
         )
         .unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         assert!(
             f.message_count().unwrap() >= 2,
             "two input files should produce at least 2 messages"
@@ -200,7 +200,7 @@ mod tests {
             0,
         )
         .unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         assert!(f.message_count().unwrap() >= 1);
     }
 
@@ -217,9 +217,9 @@ mod tests {
             0,
         )
         .unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
-        let meta = tensogram_core::decode_metadata(&msg).unwrap();
+        let meta = tensogram::decode_metadata(&msg).unwrap();
         assert!(meta.base.iter().any(|e| e.contains_key("grib")));
         assert!(meta.base.iter().any(|e| e.contains_key("mars")));
     }
@@ -237,12 +237,11 @@ mod tests {
             0,
         )
         .unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
-        let (_, objects) =
-            tensogram_core::decode(&msg, &tensogram_core::DecodeOptions::default()).unwrap();
+        let (_, objects) = tensogram::decode(&msg, &tensogram::DecodeOptions::default()).unwrap();
         let (desc, data) = &objects[0];
-        assert_eq!(desc.dtype, tensogram_core::Dtype::Float64);
+        assert_eq!(desc.dtype, tensogram::Dtype::Float64);
         assert!(!data.is_empty());
         assert!(!desc.shape.is_empty());
     }

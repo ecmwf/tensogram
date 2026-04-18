@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use tensogram_core::{TensogramFile, decode_metadata};
+use tensogram::{TensogramFile, decode_metadata};
 
 use crate::filter::{self, lookup_key};
 
@@ -60,11 +60,11 @@ pub fn run(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use tensogram_core::{ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata};
+    use tensogram::{ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata};
 
     fn make_test_file(dir: &std::path::Path) -> PathBuf {
         let path = dir.join("get_test.tgm");
-        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let mut f = tensogram::TensogramFile::create(&path).unwrap();
         let desc = DataObjectDescriptor {
             obj_type: "ntensor".into(),
             ndim: 1,

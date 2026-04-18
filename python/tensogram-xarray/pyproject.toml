@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tensogram-xarray"
-version = "0.14.0"
+version = "0.15.0"
 description = "xarray backend engine for tensogram .tgm files"
 requires-python = ">=3.9"
 license = "Apache-2.0"
@@ -17,7 +17,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
 ]
 dependencies = [
-    "tensogram>=0.14.0,<0.15",
+    "tensogram>=0.15.0,<0.15",
     "xarray>=2022.06",
     "numpy",
 ]

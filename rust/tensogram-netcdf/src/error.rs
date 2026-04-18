@@ -19,7 +19,7 @@ pub enum NetcdfError {
     #[error("no variables found in input")]
     NoVariables,
 
-    /// Encode error from tensogram-core.
+    /// Encode error from tensogram.
     #[error("encode error: {0}")]
     Encode(String),
 

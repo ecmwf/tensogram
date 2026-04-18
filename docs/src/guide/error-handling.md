@@ -175,7 +175,7 @@ tensogram-netcdf errors (rust/tensogram-netcdf/src/error.rs)
   │         unreachable; if it fires the converter is buggy)
   │
   ├─ NetcdfError::Encode(String)
-  │     tensogram-core rejected the pipeline. Common cause:
+  │     tensogram rejected the pipeline. Common cause:
   │     szip on raw f64 (bits_per_sample=64 exceeds libaec's
   │     32-bit cap). Fix: add --filter shuffle or --encoding
   │     simple_packing first.
@@ -210,7 +210,7 @@ tensogram-grib errors (rust/tensogram-grib/src/error.rs)
   ├─ GribError::NoMessages — empty GRIB file
   ├─ GribError::MissingKey — required MARS key absent
   ├─ GribError::InvalidShape — grid dimension mismatch
-  └─ GribError::Encode — tensogram-core encode failure
+  └─ GribError::Encode — tensogram encode failure
 ```
 
 ## Language-Specific Patterns
@@ -218,7 +218,7 @@ tensogram-grib errors (rust/tensogram-grib/src/error.rs)
 ### Rust
 
 ```rust
-use tensogram_core::{decode, DecodeOptions, TensogramError};
+use tensogram::{decode, DecodeOptions, TensogramError};
 
 match decode(&buffer, &DecodeOptions::default()) {
     Ok((meta, objects)) => { /* use data */ }
@@ -445,7 +445,7 @@ immediately, before any data is read from disk.
 libaec szip caps at 32 bits per sample, but raw `f64` gives
 `bits_per_sample = 64`, so `--compression szip` on unencoded f64
 produces a low-level `aec_encode_init failed` error from
-`tensogram-core` wrapped in `NetcdfError::Encode`. Fix:
+`tensogram` wrapped in `NetcdfError::Encode`. Fix:
 
 - Combine with `--encoding simple_packing --bits N` (N ≤ 32), or
 - Combine with `--filter shuffle` (which makes the element size 8 bits).
@@ -460,7 +460,7 @@ encoders that use new hash algorithms.
 
 ## No-Panic Guarantee
 
-All Rust library code in `tensogram-core`, `tensogram-encodings`, and
+All Rust library code in `tensogram`, `tensogram-encodings`, and
 `tensogram-ffi` is free from `panic!()`, `unwrap()`, `expect()`, `todo!()`,
 and `unimplemented!()` in non-test code paths. The library guarantees:
 

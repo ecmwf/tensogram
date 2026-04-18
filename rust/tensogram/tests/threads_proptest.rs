@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 
-use tensogram_core::{
+use tensogram::{
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, decode,
     encode,
 };
@@ -113,7 +113,7 @@ fn make_payload(len: usize, seed: u8) -> Vec<u8> {
 /// Extract per-object encoded payload bytes — used for transparent
 /// byte-identity checks.
 fn encoded_payloads(buf: &[u8]) -> Vec<Vec<u8>> {
-    tensogram_core::framing::decode_message(buf)
+    tensogram::framing::decode_message(buf)
         .unwrap()
         .objects
         .iter()

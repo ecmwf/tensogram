@@ -1,6 +1,6 @@
 [package]
 name = "tensogram-cli"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2024"
 rust-version = "1.87"
 license = "Apache-2.0"
@@ -23,9 +23,9 @@ grib = ["dep:tensogram-grib"]
 netcdf = ["dep:tensogram-netcdf"]
 
 [dependencies]
-tensogram-core = { path = "../tensogram-core", version = "=0.14.0" }
-tensogram-grib = { path = "../tensogram-grib", version = "=0.14.0", optional = true }
-tensogram-netcdf = { path = "../tensogram-netcdf", version = "=0.14.0", optional = true }
+tensogram = { path = "../tensogram", version = "=0.15.0" }
+tensogram-grib = { path = "../tensogram-grib", version = "=0.15.0", optional = true }
+tensogram-netcdf = { path = "../tensogram-netcdf", version = "=0.15.0", optional = true }
 ciborium.workspace = true
 clap.workspace = true
 serde.workspace = true

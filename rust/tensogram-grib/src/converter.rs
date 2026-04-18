@@ -12,9 +12,9 @@ use std::path::Path;
 use ciborium::Value as CborValue;
 use eccodes::{CodesFile, FallibleIterator, KeyRead, ProductKind};
 
-use tensogram_core::pipeline::apply_pipeline;
-use tensogram_core::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
-use tensogram_core::{DataPipeline, Dtype, EncodeOptions, encode};
+use tensogram::pipeline::apply_pipeline;
+use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
+use tensogram::{DataPipeline, Dtype, EncodeOptions, encode};
 
 use crate::error::GribError;
 use crate::metadata::{GribKeySet, extract_all_namespace_keys, extract_mars_keys};
@@ -248,7 +248,7 @@ fn nested_btree_to_cbor_map(map: &BTreeMap<String, BTreeMap<String, CborValue>>)
 
 /// Build a `DataObjectDescriptor` + raw f64 bytes from GRIB values,
 /// applying the configured encoding/filter/compression pipeline via the
-/// shared [`tensogram_core::pipeline::apply_pipeline`] helper.
+/// shared [`tensogram::pipeline::apply_pipeline`] helper.
 ///
 /// Byte order is little-endian: ecCodes returns native f64 values which
 /// we serialize as LE bytes. MARS keys are carried in

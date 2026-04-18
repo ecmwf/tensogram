@@ -11,7 +11,7 @@ Run ALL of the following. If ANY step fails, STOP and report the failure.
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
-cargo test -p tensogram-core --features "remote,async"
+cargo test -p tensogram --features "remote,async"
 ```
 
 ### 2. Python

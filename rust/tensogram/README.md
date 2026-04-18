@@ -1,4 +1,4 @@
-# tensogram-core
+# tensogram
 
 The primary Tensogram library for fast binary N-tensor message format.
 
@@ -7,7 +7,7 @@ This crate provides encode, decode, file I/O, and streaming capabilities for sci
 ## Usage
 
 ```rust
-use tensogram_core::{encode, decode, EncodeOptions, DecodeOptions};
+use tensogram::{encode, decode, EncodeOptions, DecodeOptions};
 
 let message = encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
 let (_, objects) = decode(&message, &DecodeOptions::default())?;
@@ -15,7 +15,7 @@ let (_, objects) = decode(&message, &DecodeOptions::default())?;
 
 ```rust
 // File API with partial decode
-use tensogram_core::{TensogramFile, decode_range};
+use tensogram::{TensogramFile, decode_range};
 
 let file = TensogramFile::open("data.tgm")?;
 let slice = decode_range(&file, 0, &[0..100, 50..150])?;
@@ -25,7 +25,7 @@ let slice = decode_range(&file, 0, &[0..100, 50..150])?;
 
 ```toml
 [dependencies]
-tensogram-core = { version = "0.14", features = ["mmap", "async", "remote"] }
+tensogram = { version = "0.14", features = ["mmap", "async", "remote"] }
 ```
 
 ## Documentation

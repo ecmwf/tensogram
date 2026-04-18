@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use tensogram_core::{GlobalMetadata, RESERVED_KEY};
+use tensogram::{GlobalMetadata, RESERVED_KEY};
 
 /// A parsed where-clause filter.
 #[derive(Debug)]

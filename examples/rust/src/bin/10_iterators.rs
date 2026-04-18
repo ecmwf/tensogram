@@ -19,7 +19,7 @@
 use std::collections::BTreeMap;
 
 use ciborium::Value;
-use tensogram_core::{
+use tensogram::{
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
     TensogramFile, decode, messages, objects, objects_metadata,
 };
@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enumerate()
         .map(|(i, &p)| {
             let (meta, desc, data) = make_message(p, i as u8);
-            tensogram_core::encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap()
+            tensogram::encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap()
         })
         .collect();
 

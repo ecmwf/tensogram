@@ -40,7 +40,7 @@ pub fn run(
     let options = ConvertOptions {
         split_by,
         cf,
-        encode_options: tensogram_core::EncodeOptions {
+        encode_options: tensogram::EncodeOptions {
             threads,
             ..Default::default()
         },
@@ -111,7 +111,7 @@ mod tests {
             0,
         )
         .unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         assert_eq!(f.message_count().unwrap(), 1);
     }
 
@@ -128,7 +128,7 @@ mod tests {
             0,
         )
         .unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         // multi_var.nc has 3 numeric vars (char skipped)
         assert!(f.message_count().unwrap() >= 3);
     }
@@ -146,7 +146,7 @@ mod tests {
             0,
         )
         .unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         assert_eq!(f.message_count().unwrap(), 5);
     }
 
@@ -163,9 +163,9 @@ mod tests {
             0,
         )
         .unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
-        let meta = tensogram_core::decode_metadata(&msg).unwrap();
+        let meta = tensogram::decode_metadata(&msg).unwrap();
         // At least one base entry should have a "cf" key
         assert!(
             meta.base.iter().any(|e| e.contains_key("cf")),
@@ -186,7 +186,7 @@ mod tests {
             0,
         )
         .unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         assert!(
             f.message_count().unwrap() >= 2,
             "two input files should produce at least 2 messages"
@@ -267,10 +267,10 @@ mod tests {
             0,
         )
         .unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         assert_eq!(f.message_count().unwrap(), 1);
         let msg = f.read_message(0).unwrap();
-        let meta = tensogram_core::decode_metadata(&msg).unwrap();
+        let meta = tensogram::decode_metadata(&msg).unwrap();
         // Only root_var should be present, not predicted (sub-group)
         let has_root_var = meta.base.iter().any(|e| {
             e.get("name").and_then(|v| {
@@ -297,7 +297,7 @@ mod tests {
             0,
         )
         .unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         assert!(f.message_count().unwrap() >= 1);
     }
 
@@ -319,10 +319,9 @@ mod tests {
     }
 
     fn first_descriptor_fields(out: &std::path::Path) -> (String, String, String) {
-        let f = tensogram_core::TensogramFile::open(out).unwrap();
+        let f = tensogram::TensogramFile::open(out).unwrap();
         let msg = f.read_message(0).unwrap();
-        let (_, objects) =
-            tensogram_core::decode(&msg, &tensogram_core::DecodeOptions::default()).unwrap();
+        let (_, objects) = tensogram::decode(&msg, &tensogram::DecodeOptions::default()).unwrap();
         let desc = &objects[0].0;
         (
             desc.encoding.clone(),
