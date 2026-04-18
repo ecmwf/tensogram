@@ -89,7 +89,12 @@ fn compute_strides(shape: &[u64]) -> Vec<u64> {
 
 ## Multiple Objects in One Message
 
-A common use case: a sea wave spectrum message carries one tensor for the spectrum itself and a second tensor for land/sea mask metadata:
+A message can carry several related tensors. Two concrete examples:
+
+- A **wave-spectrum message** with the spectrum itself as a 3-tensor and a
+  land/sea mask as a 2-tensor.
+- A **medical-imaging message** with a 4-D time-series volume, a 3-D
+  segmentation mask, and a 1-D array of acquisition timestamps.
 
 ```mermaid
 block-beta
@@ -98,6 +103,9 @@ block-beta
     B["Object 1\nLand mask\nuint8 · 721×1440\nencoding: none"]:1
 ```
 
-Both objects live in the same message. Each object has its own `DataObjectDescriptor` embedded in its frame and its own entry in `GlobalMetadata.base` holding all MARS keys for that object. They can use completely different encoding pipelines.
+All objects live in the same message. Each object has its own
+`DataObjectDescriptor` embedded in its frame and its own entry in
+`GlobalMetadata.base` holding per-object application metadata. Different
+objects can use completely different encoding pipelines.
 
 > **Edge case:** The number of `DataObjectDescriptor` entries and the data slices passed to `encode()` must be equal. The encoder returns an error if they do not match.

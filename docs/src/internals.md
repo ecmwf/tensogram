@@ -93,7 +93,9 @@ The `encode_message()` function delegates to five focused helpers:
 
 ## simple_packing Bit Layout
 
-Values are packed MSB-first (most significant bit first), matching the GRIB 2 simple packing specification:
+Values are packed MSB-first (most significant bit first), following the same
+bit layout as the GRIB 2 simple_packing specification so that quantised payloads
+are interoperable with existing GRIB tooling:
 
 ```text
 Element 0: bits [0 .. B-1]

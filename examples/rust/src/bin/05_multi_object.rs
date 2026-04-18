@@ -11,11 +11,16 @@
 //! A single Tensogram message can carry several tensors.  Each object has
 //! its own shape, dtype, encoding pipeline, and per-object metadata.
 //!
-//! Real-world use case: a sea wave spectrum message carries
-//!   Object 0 — the wave spectrum proper (float32, 3-tensor: lat × lon × freq)
-//!   Object 1 — land/sea mask (uint8, 2-tensor: lat × lon)
+//! Real-world examples:
+//!   * A wave-spectrum message carrying a 3-tensor spectrum and a 2-tensor
+//!     land/sea mask (the pattern demonstrated below).
+//!   * A medical-imaging message carrying a 4-D time-series volume, a 3-D
+//!     segmentation mask, and a 1-D array of acquisition timestamps.
+//!   * An ML-pipeline message carrying a batch of input features, a label
+//!     tensor, and a validity bitmask.
 //!
-//! Both share the same forecast context metadata (date, step, domain).
+//! This example uses weather metadata (MARS) as concrete context, but the
+//! same mechanism works with any application vocabulary.
 
 use std::collections::BTreeMap;
 

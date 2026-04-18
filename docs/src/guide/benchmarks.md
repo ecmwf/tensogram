@@ -70,13 +70,15 @@ Errors are absolute, in the same units as the input data.
 - Throughput (MB/s) is the most useful speed metric — it accounts for data size and
   lets you compare across different payload sizes.
 
-## GRIB Comparison Benchmark
+## Reference Comparison: ecCodes GRIB Encoding
 
-Compares Tensogram's 24-bit SimplePacking + szip against
-[ecCodes](https://confluence.ecmwf.int/display/ECC) (ECMWF's operational GRIB
-encoder) on 10 million float64 values. Both sides are timed symmetrically:
-encoding measures the full path from a float64 array to compressed bytes, and
-decoding measures the reverse.
+Scientific codecs are easiest to understand alongside an established reference.
+[ecCodes](https://confluence.ecmwf.int/display/ECC) is a widely-deployed GRIB
+encoder used throughout operational weather forecasting. This benchmark
+compares Tensogram's 24-bit SimplePacking + szip pipeline against ecCodes'
+built-in packing methods on 10 million float64 values. Both sides are timed
+symmetrically: encoding measures the full path from a float64 array to
+compressed bytes, and decoding measures the reverse.
 
 ### Requirements
 
@@ -101,7 +103,7 @@ cargo run --release -p tensogram-benchmarks --bin grib-comparison --features ecc
 
 | Method | Description |
 |--------|-------------|
-| ecCodes CCSDS **(reference)** | CCSDS packing — the standard used in operational weather data distribution |
+| ecCodes CCSDS **(reference)** | CCSDS packing via ecCodes — a widely-deployed operational reference |
 | ecCodes simple packing | Basic fixed-bit-width packing without entropy coding |
 | Tensogram 24-bit + szip | Tensogram's SimplePacking at 24 bits followed by szip entropy coding |
 
@@ -111,7 +113,7 @@ For actual results, see [Benchmark Results](benchmark-results.md).
 
 ```mermaid
 flowchart TD
-    G[Generate weather field] --> W[Warm-up iterations]
+    G[Generate synthetic field] --> W[Warm-up iterations]
     W --> T[Timed iterations]
     T --> E[Encode]
     E --> D[Decode]

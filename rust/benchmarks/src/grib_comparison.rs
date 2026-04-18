@@ -15,7 +15,7 @@ use tensogram_encodings::simple_packing::compute_params;
 use tensogram_encodings::{ByteOrder, CompressionType, EncodingType, FilterType, PipelineConfig};
 
 use crate::constants::AEC_DATA_PREPROCESS;
-use crate::datagen::generate_weather_field;
+use crate::datagen::generate_smooth_field;
 use crate::report::{BenchmarkResult, compute_fidelity, compute_timing_stats};
 use crate::{BenchmarkError, BenchmarkRun, CaseFailure};
 
@@ -397,8 +397,8 @@ pub fn run_grib_comparison(
         return Err(BenchmarkError::Validation("warmup must be > 0".to_string()));
     }
 
-    eprintln!("Generating {num_points} weather-like float64 values (seed={seed})...");
-    let values = generate_weather_field(num_points, seed);
+    eprintln!("Generating {num_points} smooth scientific-like float64 values (seed={seed})...");
+    let values = generate_smooth_field(num_points, seed);
     let original_bytes = num_points * 8;
 
     let bits = 24i64;

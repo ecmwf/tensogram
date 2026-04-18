@@ -2,69 +2,125 @@
 
 ## The Problem
 
-ECMWF's operational weather forecasting pipelines rely primarily on GRIB (1 and 2) for encoding and transmitting meteorological data. GRIB is an international standard developed by WMO, which means vocabulary evolution — new parameter types, metadata concepts, level types — requires international negotiation. This process takes months. The result: concrete delays in implementing new processed products that don't match existing WMO descriptions.
+Scientific computing routinely produces and moves N-dimensional tensor data at
+scale — weather and climate forecasts, Earth observation, medical and microscopy
+imaging, genomics pipelines, particle-physics detector frames, materials
+simulation, satellite imagery, machine-learning inputs, weights and outputs.
+Moving that data between producers and consumers hits three recurring friction
+points:
 
-Additionally, GRIB is fundamentally limited to 1-Tensors (single fields). Multi-dimensional data like sea wave spectra — which should be represented as a 3-tensor (spatial lat-lon, parameter, frequency) — must be flattened into sequences of GRIB messages with ad-hoc conventions, creating persistent technical debt. New AI/ML weather models produce N-dimensional tensors that don't map cleanly to GRIB's 1-tensor model either.
+1. **Metadata vocabulary is tightly coupled to the transport.** Adding a new
+   field type, coordinate, or provenance annotation often means waiting on a
+   standards body or negotiating a convention with collaborators. Pipelines
+   stall while the vocabulary catches up.
+2. **Tensor shape is constrained by the format, not the data.** Formats
+   designed around 1-D columns or 2-D fields force higher-dimensional data
+   into sequences of messages with ad-hoc external conventions that every
+   consumer must re-implement. Sea wave spectra, multi-echo MRI acquisitions,
+   ensemble forecast members, and hyperspectral cubes all live naturally as
+   N-tensors.
+3. **Transport, file, and partial-access use different code paths.** A single
+   format that works equally well over a TCP stream, as an appendable file,
+   and as a byte-range read against a cloud object store is rare.
 
-## Why Not Extend Existing Formats?
+Tensogram is a binary message format designed around these three frictions.
+Metadata ships with the data. Any number of tensor dimensions is supported
+per object. The same bytes work on a socket, as a `.tgm` file, or as a range
+read from S3 / GCS / Azure / HTTP.
 
-- **GRIB 1 & 2:** Primary workhorse for all operational data. Good tooling ecosystem (ecCodes). But vocabulary is WMO-regulated and structurally limited to 1-tensors.
-- **NetCDF / HDF5:** Minimal internal use, mostly for static data. Metadata is flexible but the format is file-oriented, not message-oriented.
-- **BUFR / ODB:** Separate column formats for observations. Possible future unification target, but explicitly deferred.
+## What we are building
 
-GRIB remains the right choice for external clients and archival (strict international format). Tensogram is for the internal operational pipeline where speed of vocabulary evolution and N-dimensional tensor support matter.
+A **binary message format library** for N-dimensional scientific tensors. Not
+a file format — a network-transmissible message format that can also be
+appended to files.
 
-## Demand Evidence
+### Core properties
 
-- **Concrete delays:** Implementation of new processed products blocked by WMO vocabulary evolution wait times.
-- **Technical debt:** Developers work around GRIB's limitations, creating accumulating workarounds that become permanent fixtures.
-- **Developer consensus:** A retreat and brainstorming session among developers concluded that a flexible internal format is needed.
-- **Structural limitation:** Sea wave spectra (a 3-tensor) are currently split across multiple GRIB messages with ad-hoc conventions.
-- **ML model outputs:** New AI/ML weather models produce N-dimensional tensors that don't map to GRIB's 1-tensor model.
+1. **N-dimensional tensors** — encode any number of dimensions, not just 1-D
+   or 2-D fields.
+2. **Multiple tensors per message** — each with its own shape, dtype, and
+   encoding pipeline.
+3. **Self-describing messages** — CBOR metadata carries everything needed to
+   interpret the data.
+4. **Vocabulary-agnostic** — the library does not validate or interpret
+   metadata semantics. Domain vocabularies (MARS at ECMWF, CF conventions,
+   BIDS in neuroimaging, DICOM in medical imaging, or in-house namespaces)
+   are the application layer's concern.
+5. **Encoding pipeline per object** — encode → filter → compress, each step
+   configurable per tensor.
+6. **Partial range decode** — extract sub-tensors without decoding the full
+   payload.
+7. **Cross-language** — Rust core with C FFI, C++ wrapper, Python/NumPy
+   bindings, and WebAssembly/TypeScript bindings.
 
-## What We're Building
+## Target communities
 
-A **binary message format library** for N-dimensional scientific tensors. Not a file format — a network-transmissible message format that can also be appended to files.
+Anywhere N-dimensional scientific tensors are produced, transported, or
+archived:
 
-### Core Properties
+- Numerical weather prediction and climate modelling
+- Earth observation and remote sensing
+- Medical imaging pipelines (volumetric and time-resolved)
+- Genomics and omics tensors
+- Particle physics and accelerator facility data
+- AI / ML model inputs, weights, and outputs
+- Computational chemistry and materials simulation
+- Any pipeline moving large N-tensors between producers and consumers
 
-1. **N-dimensional tensors** — encode any number of dimensions, not just 2D fields
-2. **Multiple tensors per message** — each with its own shape, dtype, and encoding pipeline
-3. **Self-describing messages** — CBOR metadata carries everything needed to interpret the data
-4. **Vocabulary-agnostic** — the library doesn't validate or interpret metadata semantics; ECMWF's MARS vocabulary is the application layer's concern
-5. **Encoding pipeline per object** — encode → filter → compress, each step configurable per tensor
-6. **Partial range decode** — extract sub-tensors without decoding the full payload
-7. **Cross-language** — Rust core with C FFI, C++ wrapper, and Python/NumPy bindings
+The library makes no assumption about domain. ECMWF provides initial
+production validation through operational weather-forecasting workloads, but
+nothing in the format is weather-specific.
 
-### Target Users
+## Adoption wedges (priority order)
 
-ECMWF developers working on operational weather forecasting pipelines — the teams producing, processing, and consuming gridded forecast data internally.
+1. **Existing data that is awkward to transport in current formats** —
+   sequences of 2-D fields that are naturally 3-D or higher tensors,
+   time-resolved imaging stacks, spectra, ensemble members. This is the
+   sharpest wedge: existing data, existing pain.
+2. **AI/ML pipelines** where inputs, weights, and outputs are native
+   N-tensors that do not fit neatly into legacy scientific formats.
+3. **New data products** whose metadata vocabularies are not yet standardised
+   and benefit from self-describing CBOR.
 
-### Adoption Wedge (Priority Order)
+## Constraints
 
-1. **Existing products with structural limitations** — data like sea wave spectra that GRIB flattens. This is the sharpest wedge: existing data, existing pain, existing customers.
-2. **ML model outputs** — N-dimensional tensors from AI weather models.
-3. **New processed products** — data products with parameters that lack WMO vocabulary definitions.
+- Production-ready for high-throughput scientific pipelines.
+- Transportable over network and appendable to files.
+- Minimal mandatory dependencies; heavy codecs are optional and feature-gated.
+- Vocabulary externally managed by the application layer.
+- Forward-compatible via a single version integer.
 
-### Constraints
+## Relation to existing formats
 
-- Must be production-ready for ECMWF operational pipelines
-- Network-transmissible message format (but appendable to files)
-- Limited dependencies — lightweight enough to embed in pipeline components
-- Must support existing encoding approaches (simple_packing, szip/libaec) for compatibility
-- Vocabulary remains externally managed — library is vocabulary-agnostic
-- Must support forward evolution via version metadata
+Tensogram complements rather than replaces existing formats. It provides
+**importers** for GRIB (via ecCodes) and NetCDF (via libnetcdf) so that data
+in those formats can be brought into Tensogram pipelines without a lossy
+re-modelling step. Going the other way — Tensogram → other — is out of scope
+because Tensogram's data model is a superset of 1-D and 2-D formats and a
+faithful down-conversion is often impossible.
 
-## What We're Not Building (Yet)
+Existing formats remain appropriate for external distribution, archival, and
+standards-driven exchange. Tensogram targets the internal pipeline layer
+where speed of vocabulary evolution and N-dimensional tensor support matter.
 
-- **BUFR/ODB replacement** — observation data unification is deferred
-- **Zarr v3 backend** — possible future direction
-- **External format** — Tensogram is internal; GRIB remains for external distribution
+## What we are not building (yet)
 
-## Success Criteria
+- **Tensogram → other-format writers.** Initial scope is one-way import.
+- **Observation / column formats** (BUFR, ODB, Arrow-like tabular data).
+  Potentially a future direction.
+- **Domain-specific vocabularies.** MARS, CF conventions, DICOM, BIDS, and
+  so on live above the library.
 
-1. **Correctness:** Round-trip encoding/decoding with bit-exact results (lossless) or verified quantization tolerance (lossy)
-2. **Flexibility demonstrated:** Encode a sea wave spectrum as a 3-tensor, an ML output as an N-tensor, and a 2D field — all using the same library
-3. **Cross-language interop:** Messages encoded in Rust decode in Python and C++, and vice versa
-4. **Production readiness:** No memory safety issues, comprehensive test suite, documented API
-5. **Performance baseline:** Encode/decode throughput measured for reference data sizes
+## Success criteria
+
+1. **Correctness:** round-trip encoding/decoding with bit-exact results
+   (lossless) or verified quantisation tolerance (lossy).
+2. **Flexibility demonstrated:** encode an N-dimensional scientific tensor
+   (wave spectrum, imaging volume, ML output, 2-D field) with the same
+   library and the same API.
+3. **Cross-language interop:** messages encoded in Rust decode identically
+   in Python, C++, and TypeScript/WASM.
+4. **Production readiness:** no memory safety issues, comprehensive test
+   suite, documented API.
+5. **Performance baseline:** encode/decode throughput measured against
+   established references for representative data sizes.

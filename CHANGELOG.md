@@ -3,6 +3,36 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed
+
+- **Documentation reframed for the broader scientific-computing community.**
+  The motivation, introduction, README, and concept pages now present
+  Tensogram as a general-purpose N-tensor message format for scientific data
+  at scale, with ECMWF weather-forecasting workloads as one well-validated
+  use case rather than the founding motivation. GRIB and NetCDF remain
+  first-class importers; MARS vocabulary remains a fully supported example.
+  No API, wire-format, or behavioural changes.
+- `tensogram-grib` and `tensogram-netcdf` are now framed as *importers* (one-way
+  GRIB → Tensogram / NetCDF → Tensogram), not "converters". CLI subcommands
+  `convert-grib` and `convert-netcdf` keep the same names and flags.
+- `tensogram-benchmarks`: `datagen::generate_weather_field` renamed to
+  `generate_smooth_field` to reflect that the generator is domain-neutral
+  (its output matches the statistical profile of any smooth bounded-range
+  scientific field — temperature, pressure, intensity, density). Callers
+  inside the benchmarks crate updated accordingly; benchmark outputs and
+  numerical results are unchanged.
+
+### Added
+
+- `docs/src/guide/vocabularies.md` — a developer-guide page listing example
+  application vocabularies (MARS, CF, BIDS, DICOM, custom) and conventions
+  for wiring them into Tensogram metadata.
+- `examples/{rust,python,cpp,typescript}/02b_generic_metadata.*` — sibling
+  examples to the MARS-based `02_mars_metadata.*` set, showing that the
+  per-object metadata mechanism works with any application namespace.
+
 ## [0.15.0] - 2026-04-18
 
 ### Changed

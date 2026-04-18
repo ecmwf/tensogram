@@ -6,13 +6,15 @@
 # granted to it by virtue of its status as an intergovernmental organisation nor
 # does it submit to any jurisdiction.
 
-"""Example 02 — MARS-namespaced metadata (Python)
+"""Example 02 — Per-object metadata with the MARS vocabulary (Python)
 
-Shows how to attach ECMWF MARS vocabulary keys as per-object metadata
-and at message level, then read them back with decode_metadata().
+Shows how to attach application-layer metadata keys to individual data
+objects, using the ECMWF MARS vocabulary as a concrete example. The same
+pattern works with any namespace (CF conventions, BIDS, DICOM, or an
+in-house vocabulary) — see `02b_generic_metadata.py` for a non-MARS example.
 
 NOTE: Requires building tensogram-python first:
-    cd crates/tensogram-python && maturin develop
+    cd python/bindings && maturin develop
 """
 
 import numpy as np

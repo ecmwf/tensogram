@@ -268,8 +268,8 @@ scope for this PR**.  Reasons:
 
 New criterion benchmark in `rust/benchmarks/benches/hash_overhead.rs`:
 
-* Workload: 16 Mi `f64` values (128 MiB raw), weather-like sinusoidal
-  data (matches the existing benchmarks for comparability).
+* Workload: 16 Mi `f64` values (128 MiB raw), smooth scientific-like
+  sinusoidal data (matches the existing benchmarks for comparability).
 * Pipelines: `none+none`, `none+lz4`, `sp(24)+szip`, `sp(24)+zstd(3)`.
 * Groups per pipeline:
   1. `baseline_no_hash` — current behaviour, `hash_algorithm = None`.

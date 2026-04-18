@@ -70,8 +70,10 @@ To use simple_packing, you need to compute the quantization parameters first, th
 use tensogram_encodings::simple_packing;
 use ciborium::Value;
 
-// Your original values as f64 (simple_packing always works on f64)
-let values: Vec<f64> = temperature_data.iter().map(|&x| x as f64).collect();
+// Your original values as f64 (simple_packing always works on f64).
+// source_data might be a temperature grid, pressure field, intensity
+// image, or any other bounded-range scalar field.
+let values: Vec<f64> = source_data.iter().map(|&x| x as f64).collect();
 
 // Compute quantization parameters for 16 bits per value
 let params = simple_packing::compute_params(&values, 16, 0)?;

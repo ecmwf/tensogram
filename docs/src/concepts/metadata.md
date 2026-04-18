@@ -26,7 +26,8 @@ GlobalMetadata {
 }
 ```
 
-In CBOR, this looks like:
+In CBOR, this looks like (using ECMWF MARS keys as one concrete example
+vocabulary):
 
 ```json
 {
@@ -44,6 +45,33 @@ In CBOR, this looks like:
   }
 }
 ```
+
+The same mechanism works for any application vocabulary. A neuroimaging
+pipeline might use a BIDS namespace:
+
+```json
+{
+  "version": 2,
+  "base": [{
+    "bids": { "subject": "sub-01", "session": "ses-01",
+              "task": "rest", "run": 1 }
+  }]
+}
+```
+
+A materials-simulation pipeline might use a custom namespace:
+
+```json
+{
+  "version": 2,
+  "base": [{
+    "material": { "composition": "Fe3O4", "lattice": "cubic", "T_K": 300.0 }
+  }]
+}
+```
+
+The library does not know or care which vocabulary is used — it simply
+stores, serialises, and returns the keys you supply.
 
 The `version` field is required (u16). The `base` array holds per-object metadata. `_extra_` is a **free-form** catch-all -- you can add any key using any CBOR value type. The library does not interpret or validate these keys. Your application layer assigns meaning.
 
@@ -103,7 +131,9 @@ Here, `reference_value` and `bits_per_value` live in the `params` map. Applicati
 
 ## Namespaced Keys
 
-Convention: application-layer keys are grouped under a **namespace** key. ECMWF's MARS vocabulary lives under `"mars"`:
+Convention: application-layer keys are grouped under a **namespace** key, so
+that multiple vocabularies can coexist in the same message. For example, ECMWF's
+MARS vocabulary lives under `"mars"`:
 
 ```json
 {
@@ -119,18 +149,24 @@ Convention: application-layer keys are grouped under a **namespace** key. ECMWF'
 }
 ```
 
-This convention applies at both levels -- global metadata and per-object params.
+Other pipelines use other namespaces — `"cf"` for CF conventions, `"bids"` for
+neuroimaging, `"dicom"` for medical imaging, or anything your application
+defines. This convention applies at both levels — global metadata and
+per-object params.
 
 ## Filtering with the CLI
 
-The `-w` flag on `ls`, `dump`, `get`, and `copy` uses dot-notation to filter messages:
+The `-w` flag on `ls`, `dump`, `get`, and `copy` uses dot-notation to filter
+messages on any namespace. The examples below use the MARS vocabulary, but the
+same syntax works with any application namespace (e.g. `bids.subject`,
+`dicom.Modality`, `product.name`):
 
 ```bash
 # Only messages where mars.param equals "2t" or "10u"
-tensogram ls forecast.tgm -w "mars.param=2t/10u"
+tensogram ls data.tgm -w "mars.param=2t/10u"
 
 # Exclude messages where mars.class equals "od"
-tensogram ls forecast.tgm -w "mars.class!=od"
+tensogram ls data.tgm -w "mars.class!=od"
 ```
 
 The `/` character separates OR values. Key lookup searches `base[i]` entries first (skipping `_reserved_`, first match across entries), then `_extra_` for backwards compatibility.
@@ -144,7 +180,7 @@ A preceder carries a `GlobalMetadata` CBOR with a single-entry `base` array for 
 ```json
 {
   "version": 2,
-  "base": [{"mars": {"param": "2t"}, "units": "K"}]
+  "base": [{"product": {"name": "temperature"}, "units": "K"}]
 }
 ```
 

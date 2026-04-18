@@ -184,9 +184,13 @@ Methodology: 5 runs per configuration, median reported. 200–500 warmup iterati
 > python rust/benchmarks/python/bench_threading.py --quick      # CI smoke test
 > ```
 
-## Tensogram Python vs ecCodes C
+## Reference Comparison: Tensogram (Python) vs ecCodes (C)
 
-This section compares **Tensogram called from Python** against **ecCodes called from C** (via Rust FFI) on the same workload: 10 million float64 weather values (80 MiB), 24-bit simple packing + szip compression. This is the standard pipeline used in operational weather forecasting.
+This section measures Tensogram's Python throughput against ecCodes' native C
+performance on the same pipeline — 10 million float64 values (80 MiB), 24-bit
+simple packing + szip compression — as a concrete reference point. The pipeline
+is common in operational weather forecasting and is representative of
+scientific-quantisation workloads more broadly.
 
 ### What we measured
 

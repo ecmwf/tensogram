@@ -22,7 +22,7 @@ use tensogram_encodings::{
 
 use crate::BenchmarkError;
 use crate::constants::AEC_DATA_PREPROCESS;
-use crate::datagen::generate_weather_field;
+use crate::datagen::generate_smooth_field;
 use crate::report::compute_timing_stats;
 
 type ConfigBuilder = Box<dyn Fn(u32, &[f64]) -> Result<PipelineConfig, BenchmarkError>>;
@@ -264,8 +264,8 @@ pub fn run_threads_scaling(
 
     let num_points = num_points.next_multiple_of(4);
 
-    eprintln!("Generating {num_points} weather-like float64 values (seed={seed})...");
-    let values = generate_weather_field(num_points, seed);
+    eprintln!("Generating {num_points} smooth scientific-like float64 values (seed={seed})...");
+    let values = generate_smooth_field(num_points, seed);
     let raw_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
 
     let cases = build_cases(num_points);

@@ -7,10 +7,12 @@
 // does it submit to any jurisdiction.
 
 /// @file 02_mars_metadata.cpp
-/// @brief Example 02 — MARS-namespaced metadata using the C++ wrapper.
+/// @brief Example 02 — Per-object metadata with MARS (C++ wrapper).
 ///
-/// Shows how to encode a message with MARS namespace keys and read them
-/// back using dot-notation key lookups on the metadata handle.
+/// Shows how to encode a message with MARS namespace keys and read them back
+/// using dot-notation key lookups on the metadata handle. MARS is used as a
+/// concrete example vocabulary; the same mechanism works with any namespace.
+/// See `02b_generic_metadata.cpp` for a non-MARS example.
 
 #include <tensogram.hpp>
 

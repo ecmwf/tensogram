@@ -42,7 +42,8 @@ npx tsx 01_encode_decode.ts
 | File | Topic |
 |---|---|
 | [`01_encode_decode.ts`](01_encode_decode.ts) | Basic round-trip encode / decode of a 2-D `Float32Array` |
-| [`02_mars_metadata.ts`](02_mars_metadata.ts) | Attach MARS keys via `base[i]` and use `getMetaKey` to read them |
+| [`02_mars_metadata.ts`](02_mars_metadata.ts) | Per-object metadata using the ECMWF MARS vocabulary, read back with `getMetaKey` |
+| [`02b_generic_metadata.ts`](02b_generic_metadata.ts) | Per-object metadata using a generic, non-MARS application namespace |
 | [`03_multi_object.ts`](03_multi_object.ts) | Multiple objects with different dtypes in one message |
 | [`05_streaming_fetch.ts`](05_streaming_fetch.ts) | Progressive decode over a `ReadableStream` (Phase 3) |
 | [`06_file_api.ts`](06_file_api.ts) | `TensogramFile` over Node fs, fetch, and in-memory bytes (Phase 4) |

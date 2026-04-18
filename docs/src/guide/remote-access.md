@@ -13,10 +13,10 @@ tensogram = { path = "...", features = ["remote"] }
 use tensogram::TensogramFile;
 
 // Auto-detect: local path or remote URL
-let mut file = TensogramFile::open_source("https://example.com/forecast.tgm")?;
+let mut file = TensogramFile::open_source("https://example.com/data.tgm")?;
 
 // S3
-let mut file = TensogramFile::open_source("s3://bucket/forecast.tgm")?;
+let mut file = TensogramFile::open_source("s3://bucket/data.tgm")?;
 ```
 
 `open_source` inspects the URL scheme and routes to the remote backend for `s3://`, `s3a://`, `gs://`, `az://`, `azure://`, `http://`, `https://`. Everything else is treated as a local path.
@@ -45,7 +45,7 @@ opts.insert("aws_access_key_id".to_string(), "AKIA...".to_string());
 opts.insert("aws_secret_access_key".to_string(), "...".to_string());
 opts.insert("region".to_string(), "eu-west-1".to_string());
 
-let mut file = TensogramFile::open_remote("s3://bucket/forecast.tgm", &opts)?;
+let mut file = TensogramFile::open_remote("s3://bucket/data.tgm", &opts)?;
 ```
 
 When no options are passed, credentials are read from the environment (e.g. `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`, `GOOGLE_APPLICATION_CREDENTIALS`).
@@ -56,17 +56,17 @@ When no options are passed, credentials are read from the environment (e.g. `AWS
 import tensogram
 
 # Auto-detect remote URL
-with tensogram.TensogramFile.open("s3://bucket/forecast.tgm") as f:
+with tensogram.TensogramFile.open("s3://bucket/data.tgm") as f:
     meta = f.file_decode_metadata(0)
     result = f.file_decode_object(0, 0)
     data = result["data"]  # numpy array
 
 # With explicit storage options
 with tensogram.TensogramFile.open_remote(
-    "s3://bucket/forecast.tgm",
+    "s3://bucket/data.tgm",
     {"region": "eu-west-1"}
 ) as f:
-    print(f.source())   # "s3://bucket/forecast.tgm"
+    print(f.source())   # "s3://bucket/data.tgm"
     print(f.is_remote()) # True
 ```
 
@@ -76,7 +76,7 @@ with tensogram.TensogramFile.open_remote(
 import xarray as xr
 
 ds = xr.open_dataset(
-    "s3://bucket/forecast.tgm",
+    "s3://bucket/data.tgm",
     engine="tensogram",
     storage_options={"region": "eu-west-1"},
 )
@@ -222,11 +222,11 @@ When both `remote` and `async` features are enabled, async open methods are also
 
 ```rust
 // Async open (auto-detects local vs remote) — requires remote + async
-let mut file = TensogramFile::open_source_async("s3://bucket/forecast.tgm").await?;
+let mut file = TensogramFile::open_source_async("s3://bucket/data.tgm").await?;
 
 // Async open with explicit storage options
 let mut file = TensogramFile::open_remote_async(
-    "s3://bucket/forecast.tgm",
+    "s3://bucket/data.tgm",
     &opts,
 ).await?;
 ```

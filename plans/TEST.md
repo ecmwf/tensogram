@@ -81,9 +81,9 @@ languages — these numbers are the source of truth.
   calls; `AsyncTensogramFile` concurrency via `Arc<TensogramFile>`.
 - Remote access via `object_store`: S3/GCS/Azure/HTTP; batched range
   reads; footer-indexed streaming files; remote-vs-local parity.
-- GRIB conversion: MARS key extraction, per-object independent
+- GRIB import: MARS key extraction, per-object independent
   `base[i]` entries, grouping modes, shared pipeline flags.
-- NetCDF conversion: NetCDF-3 + NetCDF-4 inputs, split modes, CF
+- NetCDF import: NetCDF-3 + NetCDF-4 inputs, split modes, CF
   lifting, shared pipeline flags.
 - xarray backend: lazy loading, N-D slicing, coordinate detection,
   multi-message merge, producer `dim_names` hints.

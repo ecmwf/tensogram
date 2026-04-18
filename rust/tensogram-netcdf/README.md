@@ -1,8 +1,11 @@
 # tensogram-netcdf
 
-NetCDF to Tensogram format converter.
+NetCDF importer for Tensogram.
 
-Converts NetCDF-3/4 files to Tensogram with CF metadata lifting.
+Imports NetCDF-3 and NetCDF-4 files into Tensogram messages, with optional
+CF-convention metadata lifting. Conversion is one-way (NetCDF → Tensogram).
+NetCDF is widely used in climate, ocean, atmospheric, and Earth-observation
+science; this crate brings those datasets into Tensogram pipelines.
 
 ## Requirements
 

@@ -6,11 +6,10 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
-//! NetCDF to Tensogram format converter.
+//! NetCDF to Tensogram format importer.
 //!
 //! Reads NetCDF files (classic and NetCDF-4) and converts variables to
-//! Tensogram wire format messages. One-way conversion only (read NetCDF,
-//! write Tensogram).
+//! Tensogram wire format messages. One-way only (NetCDF → Tensogram).
 //!
 //! # System requirement
 //!
@@ -37,7 +36,7 @@ pub mod metadata;
 pub use converter::{ConvertOptions, SplitBy, convert_netcdf_file};
 pub use error::NetcdfError;
 // `DataPipeline` lives in `tensogram::pipeline` — both GRIB and
-// NetCDF converters share the same type so they cannot drift. Re-export
+// NetCDF importers share the same type so they cannot drift. Re-export
 // it here so existing `use tensogram_netcdf::DataPipeline` callers keep
 // compiling.
 pub use tensogram::DataPipeline;

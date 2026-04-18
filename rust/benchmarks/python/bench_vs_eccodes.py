@@ -9,8 +9,9 @@
 
 """Compare Tensogram Python multi-threaded throughput against ecCodes C.
 
-Encodes and decodes 10M float64 weather values with 24-bit simple
-packing + szip — the standard pipeline for operational weather data.
+Encodes and decodes 10M float64 scientific values with 24-bit simple
+packing + szip — a pipeline commonly used in operational weather data
+and representative of scientific quantisation workloads more broadly.
 
 The ecCodes reference numbers come from the Rust benchmark binary
 (benchmarks/src/bin/grib_comparison.rs) which calls ecCodes C via FFI.

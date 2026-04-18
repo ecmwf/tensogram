@@ -87,4 +87,4 @@ Shuffle rearranges bytes but does not reduce the total byte count. It only helps
 
 ### Combining with simple_packing
 
-When using both `encoding: "simple_packing"` and `filter: "shuffle"`, the pipeline applies them in order: encode first, then shuffle. The simple_packing output is 1-byte-per-packed-chunk (MSB-first bits), so `shuffle_element_size` should be 1 in this case (no benefit from shuffling already-packed data). In practice, the combination is unusual — either use simple_packing alone (for weather data) or shuffle alone (before a lossless compressor).
+When using both `encoding: "simple_packing"` and `filter: "shuffle"`, the pipeline applies them in order: encode first, then shuffle. The simple_packing output is 1-byte-per-packed-chunk (MSB-first bits), so `shuffle_element_size` should be 1 in this case (no benefit from shuffling already-packed data). In practice, the combination is unusual — either use simple_packing alone (when quantising float values) or shuffle alone (before a lossless compressor).

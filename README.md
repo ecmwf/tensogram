@@ -24,7 +24,9 @@
 > [!IMPORTANT]
 > This software is **Emerging** and subject to ECMWF's guidelines on [Software Maturity](https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity).
 
-A library to encode and decode binary N-Tensor scientific data with semantic metadata close to the data, in a serialisable format that can be sent over the network, encoded into in-memory buffers and decoded with zero-copy.
+A library to encode and decode binary N-tensor scientific data with semantic metadata close to the data, in a serialisable format that can be sent over the network, encoded into in-memory buffers, and decoded with zero-copy.
+
+Tensogram is designed for scientific computing at scale — weather and climate, Earth observation, medical and microscopy imaging, genomics, particle physics, materials simulation, and machine learning. It is vocabulary-agnostic: the library never interprets metadata keys, so application layers (MARS, CF conventions, BIDS, DICOM, in-house namespaces) own meaning.
 
 Tensogram defines a network-transmissible binary message format, not a file format. Multiple messages can be appended to a file, each carrying its own begin/terminator codes.
 
@@ -46,8 +48,8 @@ Tensogram defines a network-transmissible binary message format, not a file form
 - **xarray backend** — `xr.open_dataset("file.tgm", engine="tensogram")` with lazy loading, coordinate auto-detection, and hypercube stacking via `open_datasets()`
 - **Dask integration** — parallel chunked computation via `xr.open_dataset(..., chunks={})` with per-chunk `decode_range` for efficient out-of-core processing
 - **Zarr v3 store** — `zarr.open_group(store=TensogramStore.open_tgm("file.tgm"), mode="r")` for standard Zarr API access with 14 bidirectionally-mapped dtypes
-- **GRIB conversion** — import GRIB data with MARS metadata preservation and configurable namespace extraction
-- **NetCDF conversion** — import NetCDF-3 and NetCDF-4 files with CF metadata lifting (`--cf`), packed data unpacking, and configurable encoding/compression pipeline shared with `convert-grib`
+- **GRIB import** — bring GRIB data into Tensogram with ecCodes-driven metadata lifting and configurable namespace extraction
+- **NetCDF import** — bring NetCDF-3 and NetCDF-4 files in with CF metadata lifting (`--cf`), packed-data unpacking, and a configurable encoding/compression pipeline shared with `convert-grib`
 - **CLI** — `tensogram info/ls/dump/get/set/copy/merge/split/reshuffle/convert-grib/convert-netcdf` with `--strategy first|last|error` merge conflict resolution
 - **Optional features** — `mmap` (zero-copy file reads), `async` (tokio I/O), `remote` (S3/GCS/Azure/HTTP)
 
@@ -81,7 +83,7 @@ pip install tensogram[all]
 cargo install tensogram-cli
 ```
 
-With GRIB/NetCDF converters (requires system libraries):
+With GRIB/NetCDF importers (requires system libraries):
 ```bash
 cargo install tensogram-cli --features grib,netcdf
 ```
@@ -104,14 +106,17 @@ let message = encode(&meta, &[(&desc, &raw)], &EncodeOptions::default())?;
 let (_, objects) = decode(&message, &DecodeOptions::default())?;
 ```
 
-See `examples/rust/` for MARS metadata, streaming, compression, file API, and more.
+See `examples/rust/` for metadata, streaming, compression, the file API, and more.
 
 ### Python
 
 ```python
 data = np.random.randn(100, 200).astype(np.float32)
+# The "product" key below is just an example namespace — the library is
+# vocabulary-agnostic, so any application-defined keys work the same way
+# (MARS, CF, BIDS, DICOM, or your own).
 msg = tensogram.encode(
-    {"version": 2, "base": [{"mars": {"param": "2t"}}]},
+    {"version": 2, "base": [{"product": {"name": "temperature", "units": "K"}}]},
     [({"type": "ntensor", "shape": [100, 200], "dtype": "float32",
        "encoding": "simple_packing", "compression": "szip"}, data)],
 )
@@ -122,7 +127,7 @@ arr = result.objects[0][1]  # numpy array
 ### xarray
 
 ```python
-ds = xr.open_dataset("forecast.tgm", engine="tensogram")  # lazy-loaded
+ds = xr.open_dataset("data.tgm", engine="tensogram")  # lazy-loaded
 ```
 
 ### Zarr v3
@@ -171,23 +176,27 @@ uv pip install -e "python/tensogram-xarray/[dask]"    # ~190 tests
 uv pip install -e python/tensogram-zarr/              # ~220 tests
 ```
 
-**GRIB conversion** (requires [ecCodes](https://confluence.ecmwf.int/display/ECC)):
+**GRIB import** (requires [ecCodes](https://confluence.ecmwf.int/display/ECC)):
 ```bash
 cargo build -p tensogram-cli --features grib
-tensogram convert-grib forecast.grib -o forecast.tgm
+tensogram convert-grib input.grib -o output.tgm
 ```
 
-**NetCDF conversion** (requires [libnetcdf](https://www.unidata.ucar.edu/software/netcdf/)):
+**NetCDF import** (requires [libnetcdf](https://www.unidata.ucar.edu/software/netcdf/)):
 ```bash
 cargo build -p tensogram-cli --features netcdf
-tensogram convert-netcdf --cf --compression zstd forecast.nc -o forecast.tgm
+tensogram convert-netcdf --cf --compression zstd input.nc -o output.tgm
 ```
 
-## Support
+## Support and community
 
-This software is developed by ECMWF and provided on a **best-effort** basis.
-No operational support is provided. For questions, bug reports, or feature
-requests please [open a GitHub issue](https://github.com/ecmwf/tensogram/issues).
+Tensogram is developed and maintained by ECMWF with community contributions
+welcome. The software is provided on a **best-effort** basis; no operational
+support is provided. For questions, bug reports, or feature requests please
+[open a GitHub issue](https://github.com/ecmwf/tensogram/issues) or a pull
+request. Contributions — bug fixes, documentation, new language bindings,
+integrations with domain tooling — are welcome.
+
 For general enquiries about ECMWF software, visit the
 [ECMWF Support Portal](https://support.ecmwf.int).
 
@@ -224,8 +233,8 @@ rust/
 ├── tensogram-szip/       Pure-Rust szip implementation
 ├── tensogram-sz3/        SZ3 lossy compressor bindings
 ├── tensogram-wasm/       WebAssembly bindings
-├── tensogram-grib/       GRIB converter (ecCodes, excluded from default build)
-├── tensogram-netcdf/     NetCDF converter (libnetcdf, excluded from default build)
+├── tensogram-grib/       GRIB importer (ecCodes, excluded from default build)
+├── tensogram-netcdf/     NetCDF importer (libnetcdf, excluded from default build)
 └── benchmarks/           Benchmark suite
 python/
 ├── bindings/             Python bindings (PyO3, excluded from default build)

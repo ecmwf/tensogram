@@ -9,7 +9,8 @@ C++17 interface over the C FFI.
 | File | Description |
 |------|-------------|
 | `01_encode_decode.cpp` | Basic encode/decode round-trip with a 2D float32 grid |
-| `02_mars_metadata.cpp` | MARS-namespaced metadata: encode, decode, dot-notation key lookup |
+| `02_mars_metadata.cpp` | Per-object metadata (ECMWF MARS vocabulary example): encode, decode, dot-notation key lookup |
+| `02b_generic_metadata.cpp` | Per-object metadata with a generic application namespace (non-MARS) |
 | `03_simple_packing.cpp` | Lossy quantization via simple_packing with error measurement |
 | `04_file_api.cpp` | File API: create, append, open, random-access decode |
 | `05_iterators.cpp` | All iterator patterns: buffer, file, object, and range-based for |

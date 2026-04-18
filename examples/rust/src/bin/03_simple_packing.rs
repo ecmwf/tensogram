@@ -10,7 +10,8 @@
 //!
 //! simple_packing quantises float64 values into N-bit integers (GRIB-style).
 //! At 16 bits per value the payload is 4x smaller than float32 and 8x smaller
-//! than float64, with precision loss well below instrument noise for weather data.
+//! than float64, with precision loss typically below instrument noise for most
+//! bounded-range scientific measurements (temperature, pressure, voltage, intensity).
 //!
 //! Steps:
 //!   1. Compute packing parameters from your data.

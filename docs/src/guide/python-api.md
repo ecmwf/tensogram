@@ -76,7 +76,7 @@ raw bytes → encoding → filter → compression → wire payload
 | Value | What it does | Use case |
 |-------|-------------|----------|
 | `"none"` | Pass-through (default) | Exact values, integer data |
-| `"simple_packing"` | Quantize floats to packed integers | Weather fields (GRIB-style) |
+| `"simple_packing"` | Quantize floats to packed integers | Bounded-range scalar fields (GRIB-compatible) |
 
 **Filter** rearranges bytes to improve compressibility:
 
@@ -119,7 +119,8 @@ desc = {"type": "ntensor", "shape": shape, "dtype": "float32",
 desc = {"type": "ntensor", "shape": shape, "dtype": "float32",
         "filter": "shuffle", "shuffle_element_size": 4, "compression": "zstd", "zstd_level": 12}
 
-# GRIB-style: quantize to 16-bit packed ints, then compress
+# Quantise a bounded-range float field to 16-bit packed ints, then compress
+# (the same pipeline GRIB 2 uses for simple_packing + CCSDS).
 # compute_packing_params expects a flat float64 array
 values = data.astype(np.float64).ravel()
 params = tensogram.compute_packing_params(values, bits_per_value=16, decimal_scale_factor=0)
@@ -512,7 +513,8 @@ See `examples/python/` for complete working examples:
 | Example | Topic |
 |---------|-------|
 | `01_encode_decode.py` | Basic round-trip |
-| `02_mars_metadata.py` | MARS-style per-object metadata |
+| `02_mars_metadata.py` | Per-object metadata (ECMWF MARS vocabulary example) |
+| `02b_generic_metadata.py` | Per-object metadata using a generic application namespace |
 | `03_simple_packing.py` | Simple-packing encoding |
 | `04_multi_object.py` | Multi-object messages, selective decode |
 | `05_file_api.py` | Multi-message `.tgm` files |
@@ -523,6 +525,6 @@ See `examples/python/` for complete working examples:
 | `09_dask_distributed.py` | Dask distributed computing over 4-D tensors |
 | `09_streaming_consumer.py` | Streaming consumer pattern |
 | `11_encode_pre_encoded.py` | Pre-encoded data API |
-| `12_convert_netcdf.py` | NetCDF → Tensogram conversion via CLI |
+| `12_convert_netcdf.py` | NetCDF → Tensogram import via CLI |
 | `13_validate.py` | Message and file validation |
 | `15_async_operations.py` | Async open, decode, and `asyncio.gather` |

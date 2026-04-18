@@ -170,6 +170,7 @@ examples/typescript/                    ← new dir (mirrors examples/{rust,pyth
 ├── README.md
 ├── 01_encode_decode.ts
 ├── 02_mars_metadata.ts
+├── 02b_generic_metadata.ts
 ├── 03_simple_packing.ts
 ├── 04_multi_object.ts
 ├── 05_streaming_fetch.ts
@@ -302,9 +303,10 @@ Hand-written types, loose where necessary:
   (`reference_value`, `zstd_level`, `szip_block_offsets`, ...) without
   enumerating them at the top level.
 - `GlobalMetadata.base` entries are `Record<string, CborValue>`.
-  Application-layer shapes (`mars`, `grib`, `cf`, `netcdf`) are
-  **not** typed statically — consumers can cast with `as` if they want
-  strict MARS typing in their own code.
+  Application-layer shapes (`mars`, `grib`, `cf`, `netcdf`, `bids`,
+  `dicom`, or any custom vocabulary) are **not** typed statically —
+  consumers can cast with `as` if they want strict vocabulary typing in
+  their own code.
 - `CborValue` is the recursive union
   `string | number | boolean | null | CborValue[] | { [k: string]: CborValue }`.
 

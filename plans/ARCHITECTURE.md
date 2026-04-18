@@ -208,9 +208,12 @@ descriptor. This supports streaming (write objects as they arrive, add
 index/hash in footer) and independent evolution of frame types.
 
 **Vocabulary-agnostic.** The library never interprets metadata keys.
-ECMWF uses MARS namespace keys (`mars.class`, `mars.param`), but that
-is an application-layer concern. The library just stores and retrieves
-`BTreeMap<String, ciborium::Value>`.
+Different communities use different namespaces — ECMWF's MARS
+(`mars.class`, `mars.param`), CF conventions in climate data,
+BIDS in neuroimaging, DICOM in medical imaging, or domain-specific
+namespaces. The library treats all of these the same: it stores
+and retrieves `BTreeMap<String, ciborium::Value>` and leaves
+interpretation to the application layer.
 
 **Deterministic encoding.** All CBOR output is canonicalized (RFC 8949
 section 4.2). Two messages with the same content produce identical

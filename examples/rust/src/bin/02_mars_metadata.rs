@@ -6,12 +6,14 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
-//! Example 02 — MARS-namespaced metadata
+//! Example 02 — Per-object metadata (MARS vocabulary example)
 //!
-//! Shows how to attach ECMWF MARS vocabulary keys to a message and to
-//! individual objects, then read them back after decoding.
+//! Shows how to attach application-layer metadata keys to individual data
+//! objects, using the ECMWF MARS vocabulary as a concrete example. The same
+//! pattern works with any namespace (CF conventions, BIDS, DICOM, or an
+//! in-house vocabulary) — see `02b_generic_metadata` for a non-MARS example.
 //!
-//! - Per-object MARS keys live in `base[i]["mars"]`.
+//! - Per-object metadata lives in `base[i][<namespace>]`.
 //! - Each base entry holds ALL metadata for that object independently.
 //!
 //! The library is vocabulary-agnostic: it stores and returns whatever keys

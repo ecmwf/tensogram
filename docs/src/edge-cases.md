@@ -269,7 +269,11 @@ When multiple objects resolve to the same name, suffixes `_1`, `_2`, etc. are ap
 
 Slashes and backslashes in resolved variable names are replaced with underscores to prevent spurious directory nesting in the Zarr virtual key space. Empty names are replaced with `"_"`.
 
-## GRIB Converter Edge Cases
+## GRIB Importer Edge Cases
+
+This section covers behaviour specific to the `tensogram-grib` importer and
+the `tensogram convert-grib` CLI — these notes apply when you are bringing
+GRIB data into Tensogram, not to Tensogram itself.
 
 ### Single GRIB to base[0] Has ALL MARS Keys
 
@@ -315,7 +319,7 @@ All lookup functions (`__getitem__` in Python, `tgm_metadata_get_string` in FFI,
 2. If not found in any base entry, search `_extra_`.
 3. If not found → `None` (FFI/CLI) or `KeyError` (Python).
 
-**Implication:** If `base[0]` has `mars.param=2t` and `base[1]` has `mars.param=msl`, lookups return `"2t"` (the first match). This is message-level lookup, not per-object.
+**Implication:** If `base[0]` has `product.name="temperature"` and `base[1]` has `product.name="pressure"`, lookups return `"temperature"` (the first match). This is message-level lookup, not per-object. The same applies to any namespace (MARS, BIDS, DICOM, etc.).
 
 ### _reserved_ is Hidden from Dict Access
 

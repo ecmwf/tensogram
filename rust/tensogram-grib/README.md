@@ -1,8 +1,11 @@
 # tensogram-grib
 
-GRIB to Tensogram format converter using ecCodes.
+GRIB importer for Tensogram, built on ecCodes.
 
-Converts GRIB files to Tensogram format, preserving MARS metadata.
+Imports GRIB files into Tensogram messages while preserving MARS-namespace
+metadata. Conversion is one-way (GRIB → Tensogram). GRIB is widely used in
+operational weather forecasting; this crate lets you bring existing GRIB data
+into Tensogram pipelines.
 
 ## Requirements
 

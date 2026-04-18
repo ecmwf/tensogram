@@ -45,8 +45,8 @@ tensogram/
 │   ├── tensogram-szip/         # Pure-Rust CCSDS szip codec (for WebAssembly)
 │   ├── tensogram-sz3/          # SZ3 Rust API over the clean-room shim
 │   ├── tensogram-sz3-sys/      # Clean-room C++ FFI shim for SZ3
-│   ├── tensogram-grib/         # GRIB→Tensogram converter (ecCodes; opt-in)
-│   ├── tensogram-netcdf/       # NetCDF→Tensogram converter (libnetcdf; opt-in)
+│   ├── tensogram-grib/         # GRIB→Tensogram importer (ecCodes; opt-in)
+│   ├── tensogram-netcdf/       # NetCDF→Tensogram importer (libnetcdf; opt-in)
 │   ├── tensogram-wasm/         # WebAssembly bindings (wasm-pack; opt-in)
 │   └── benchmarks/             # Benchmark suite
 ├── python/
@@ -143,8 +143,8 @@ runners to tell you the current numbers.
 | Property-based | `rust/tensogram-szip/tests/proptest_roundtrip.rs` | Proptest round-trip for the pure-Rust szip codec |
 | Stress / parity | `rust/tensogram-szip/tests/stress.rs`, `libaec_parity.rs`, `ffi_crosscheck.rs` | Cross-validation against libaec |
 | Remote HTTP | `rust/tensogram/tests/remote_http.rs` | Mock HTTP server exercising the `remote` feature |
-| CLI | `rust/tensogram-cli/src/commands/*.rs` + `rust/benchmarks/tests/smoke.rs` | Subcommand behaviour (needs `--features netcdf,grib` for converter coverage) |
-| Converters | `rust/tensogram-grib/tests/`, `rust/tensogram-netcdf/tests/` | Integration against real GRIB / NetCDF fixtures |
+| CLI | `rust/tensogram-cli/src/commands/*.rs` + `rust/benchmarks/tests/smoke.rs` | Subcommand behaviour (needs `--features netcdf,grib` for importer coverage) |
+| Importers | `rust/tensogram-grib/tests/`, `rust/tensogram-netcdf/tests/` | Integration against real GRIB / NetCDF fixtures |
 | WebAssembly | `rust/tensogram-wasm/` + `wasm-bindgen-test` | Browser / Node.js decode paths |
 | Python | `python/tests/` (+ `test_async.py`, `test_validate.py`, `test_remote.py`, `test_convert_netcdf.py`) | Full pytest suite covering the PyO3 bindings |
 | xarray | `python/tensogram-xarray/tests/` | Backend engine, coordinate detection, hypercube stacking |

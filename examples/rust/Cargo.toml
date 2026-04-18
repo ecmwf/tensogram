@@ -13,6 +13,10 @@ name = "02_mars_metadata"
 path = "src/bin/02_mars_metadata.rs"
 
 [[bin]]
+name = "02b_generic_metadata"
+path = "src/bin/02b_generic_metadata.rs"
+
+[[bin]]
 name = "03_simple_packing"
 path = "src/bin/03_simple_packing.rs"
 
