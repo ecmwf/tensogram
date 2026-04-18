@@ -322,6 +322,22 @@ fn encode_inner(
         ));
     }
 
+    // Strict-finite flags are raw-input-only — pre-encoded bytes are
+    // opaque to the library and cannot be meaningfully scanned for
+    // NaN/Inf.  Failing loudly here prevents a silent-ignore footgun
+    // where a caller mistakenly expects pre-encoded payloads to be
+    // checked.  (Python's binding already raises TypeError; this
+    // mirrors that behaviour for Rust, C FFI, and C++.)
+    if matches!(mode, EncodeMode::PreEncoded) && (options.reject_nan || options.reject_inf) {
+        return Err(TensogramError::Encoding(
+            "reject_nan / reject_inf do not apply to encode_pre_encoded: \
+             pre-encoded bytes are opaque to the library. Clear these \
+             flags before calling encode_pre_encoded, or use encode() \
+             on raw data."
+                .to_string(),
+        ));
+    }
+
     // ── Thread-budget dispatch (axis-B-first policy) ────────────────────
     //
     // Resolve the effective thread budget (explicit option > env var),
@@ -423,8 +439,12 @@ pub fn encode(
 /// - Compute a fresh xxh3 hash over the caller's bytes (overwrites any caller-supplied hash)
 /// - Preserve caller-supplied `szip_block_offsets` in descriptor params
 ///
-/// Callers must NOT set `emit_preceders = true` — use `StreamingEncoder::write_preceder()`
-/// for streaming preceder support.
+/// Callers must NOT set:
+/// - `emit_preceders = true` — use `StreamingEncoder::write_preceder()` for streaming
+///   preceder support.
+/// - `reject_nan = true` or `reject_inf = true` — these flags are raw-input-only;
+///   pre-encoded bytes are opaque to the library and cannot be scanned.  Setting
+///   either flag returns [`TensogramError::Encoding`].
 #[tracing::instrument(name = "encode_pre_encoded", skip_all, fields(num_objects = descriptors.len()))]
 pub fn encode_pre_encoded(
     global_metadata: &GlobalMetadata,

@@ -512,25 +512,49 @@ fn nan_passes_lz4_compression_when_flag_off() {
     assert_eq!(decoded[0].1, data);
 }
 
-// ── 9. encode_pre_encoded: documented behaviour — strict flags do NOT apply ─
+// ── 9. encode_pre_encoded: strict flags are explicitly rejected ─────────────
 
 #[test]
-fn encode_pre_encoded_does_not_scan_strict_flags() {
-    // Pre-encoded bytes are opaque to us — we don't know the logical
-    // float representation. Document: the strict flags are for raw
-    // (unencoded) input only. Callers who pre-encode have already
-    // accepted that contract.
-    //
-    // Using encoding="none" here so the "pre-encoded" bytes are, in
-    // fact, decodable as float32 — but the encode path doesn't scan.
+fn encode_pre_encoded_errors_when_reject_nan_is_set() {
+    // Pre-encoded bytes are opaque to the library; the strict flags
+    // cannot be meaningfully applied.  Rather than silently discarding
+    // the caller's intent, the API returns a clear error — mirroring
+    // the Python binding (which raises TypeError on the kwarg).
+    let data = f32_bytes(&[1.0, 2.0], ByteOrder::native());
+    let desc = make_descriptor(vec![2], Dtype::Float32, ByteOrder::native(), "none", "none");
+    let err = encode_pre_encoded(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &strict_opts(true, false),
+    )
+    .unwrap_err();
+    assert_encoding_error_mentions(&err, &["reject_nan", "encode_pre_encoded"]);
+}
+
+#[test]
+fn encode_pre_encoded_errors_when_reject_inf_is_set() {
+    let data = f32_bytes(&[1.0, 2.0], ByteOrder::native());
+    let desc = make_descriptor(vec![2], Dtype::Float32, ByteOrder::native(), "none", "none");
+    let err = encode_pre_encoded(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &strict_opts(false, true),
+    )
+    .unwrap_err();
+    assert_encoding_error_mentions(&err, &["reject_inf", "encode_pre_encoded"]);
+}
+
+#[test]
+fn encode_pre_encoded_accepts_default_options() {
+    // Regression: the check must not fire when flags are off (default).
     let data = f32_bytes(&[1.0, f32::NAN], ByteOrder::native());
     let desc = make_descriptor(vec![2], Dtype::Float32, ByteOrder::native(), "none", "none");
     encode_pre_encoded(
         &make_global_meta(),
         &[(&desc, &data)],
-        &strict_opts(true, true),
+        &EncodeOptions::default(),
     )
-    .expect("encode_pre_encoded must not apply strict flags");
+    .expect("encode_pre_encoded with default options must succeed");
 }
 
 // ── 10. StreamingEncoder honours strict flags ──────────────────────────────
@@ -582,6 +606,57 @@ fn streaming_encoder_default_passes_nan() {
         enc.finish().unwrap();
     }
     assert!(!buf.is_empty());
+}
+
+#[test]
+fn streaming_write_object_pre_encoded_errors_when_reject_nan_is_set() {
+    // When the StreamingEncoder was configured with reject_nan=true,
+    // write_object_pre_encoded must fail loudly — pre-encoded bytes
+    // are opaque and the flag cannot be meaningfully enforced.  This
+    // mirrors the buffered encode_pre_encoded contract.
+    let data = f32_bytes(&[1.0, 2.0], ByteOrder::native());
+    let desc = make_descriptor(vec![2], Dtype::Float32, ByteOrder::native(), "none", "none");
+    let mut buf = Vec::new();
+    let mut enc = StreamingEncoder::new(
+        Cursor::new(&mut buf),
+        &make_global_meta(),
+        &strict_opts(true, false),
+    )
+    .unwrap();
+    let err = enc.write_object_pre_encoded(&desc, &data).unwrap_err();
+    assert_encoding_error_mentions(&err, &["reject_nan", "write_object_pre_encoded"]);
+}
+
+#[test]
+fn streaming_write_object_pre_encoded_errors_when_reject_inf_is_set() {
+    let data = f64_bytes(&[1.0, 2.0], ByteOrder::native());
+    let desc = make_descriptor(vec![2], Dtype::Float64, ByteOrder::native(), "none", "none");
+    let mut buf = Vec::new();
+    let mut enc = StreamingEncoder::new(
+        Cursor::new(&mut buf),
+        &make_global_meta(),
+        &strict_opts(false, true),
+    )
+    .unwrap();
+    let err = enc.write_object_pre_encoded(&desc, &data).unwrap_err();
+    assert_encoding_error_mentions(&err, &["reject_inf", "write_object_pre_encoded"]);
+}
+
+#[test]
+fn streaming_write_object_pre_encoded_succeeds_with_default_options() {
+    // Regression: the check must not fire when flags are off.
+    let data = f32_bytes(&[1.0, 2.0], ByteOrder::native());
+    let desc = make_descriptor(vec![2], Dtype::Float32, ByteOrder::native(), "none", "none");
+    let mut buf = Vec::new();
+    let mut enc = StreamingEncoder::new(
+        Cursor::new(&mut buf),
+        &make_global_meta(),
+        &EncodeOptions::default(),
+    )
+    .unwrap();
+    enc.write_object_pre_encoded(&desc, &data)
+        .expect("default options must accept pre-encoded writes");
+    enc.finish().unwrap();
 }
 
 // ── 11. Multi-object messages ───────────────────────────────────────────────

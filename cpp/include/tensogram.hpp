@@ -947,6 +947,19 @@ private:
     const std::vector<std::pair<const std::uint8_t*, std::size_t>>& objects,
     const encode_options& opts = {})
 {
+    // Strict-finite flags are raw-input-only — pre-encoded bytes are
+    // opaque to the library and cannot be meaningfully scanned for
+    // NaN/Inf.  The underlying C FFI does not accept these flags, but
+    // we catch the case here to give the C++ caller a clear error
+    // rather than silently discarding their intent.
+    if (opts.reject_nan || opts.reject_inf) {
+        throw encoding_error(
+            TGM_ERROR_ENCODING,
+            "reject_nan / reject_inf do not apply to encode_pre_encoded: "
+            "pre-encoded bytes are opaque to the library. Clear these "
+            "fields before calling encode_pre_encoded, or use encode() "
+            "on raw data.");
+    }
     detail::scatter_gather sg(objects);
     const char* hash = opts.hash_algo.empty() ? nullptr : opts.hash_algo.c_str();
     tgm_bytes_t bytes{};

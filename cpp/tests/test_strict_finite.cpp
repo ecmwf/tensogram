@@ -269,6 +269,47 @@ TEST(StrictFinite, FileAppendRejectsNan) {
     );
 }
 
+// ── encode_pre_encoded rejects strict flags ────────────────────────────
+
+TEST(StrictFinite, EncodePreEncodedErrorsWhenRejectNanIsSet) {
+    // Mirrors the Rust and Python contracts: pre-encoded bytes are
+    // opaque, so the strict flags cannot be meaningfully applied.
+    // Setting them on encode_pre_encoded must throw rather than
+    // silently discarding the caller's intent.
+    std::vector<float> values = {1.0f, 2.0f};
+    tensogram::encode_options opts;
+    opts.reject_nan = true;
+    try {
+        tensogram::encode_pre_encoded(
+            f32_descriptor_json(values.size()), bytes_pair(values), opts);
+        FAIL() << "expected encoding_error";
+    } catch (const tensogram::encoding_error& e) {
+        std::string msg{e.what()};
+        EXPECT_NE(msg.find("reject_nan"), std::string::npos);
+        EXPECT_NE(msg.find("encode_pre_encoded"), std::string::npos);
+    }
+}
+
+TEST(StrictFinite, EncodePreEncodedErrorsWhenRejectInfIsSet) {
+    std::vector<float> values = {1.0f, 2.0f};
+    tensogram::encode_options opts;
+    opts.reject_inf = true;
+    EXPECT_THROW(
+        tensogram::encode_pre_encoded(
+            f32_descriptor_json(values.size()), bytes_pair(values), opts),
+        tensogram::encoding_error
+    );
+}
+
+TEST(StrictFinite, EncodePreEncodedAcceptsDefaultOptions) {
+    // Regression: the check must not fire when flags are off (default).
+    std::vector<float> values = {1.0f, std::nanf("")};
+    EXPECT_NO_THROW(
+        tensogram::encode_pre_encoded(
+            f32_descriptor_json(values.size()), bytes_pair(values))
+    );
+}
+
 // ── Interaction with simple_packing: §3.1 gotcha mitigation ───────────
 
 TEST(StrictFinite, RejectInfBlocksSimplePackingSilentCorruption) {

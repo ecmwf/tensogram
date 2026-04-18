@@ -181,7 +181,19 @@ pass `threads = 0` (sequential).
 
 ## What's not covered
 
-- **Pre-encoded bytes** (`encode_pre_encoded`). Opaque to the library.
+- **Pre-encoded bytes** (`encode_pre_encoded`,
+  `write_object_pre_encoded`). Opaque to the library. Setting either
+  strict flag on these APIs **returns an error** rather than silently
+  discarding the flag:
+    - Rust: `TensogramError::Encoding("reject_nan / reject_inf do not apply to encode_pre_encoded…")`
+    - C++: `tensogram::encoding_error` with the same message
+    - Python: `TypeError` — the kwargs are not exposed on
+      `encode_pre_encoded` at all
+    - C FFI: `tgm_encode_pre_encoded` does not take the parameters
+  This mismatch is by design — pre-encoded payloads have already
+  committed to their representation and the caller accepted that
+  contract. Cross-language uniformity is achieved by refusing the
+  misuse rather than silently dropping it.
 - **Metadata NaN** — NaN values in CBOR metadata (e.g. a
   scalar attribute) are unrelated. The strict flags only scan data
   payloads. See [CBOR Metadata Schema](../format/cbor-metadata.md)

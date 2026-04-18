@@ -200,9 +200,16 @@ def test_reject_nan_fires_before_lz4():
 
 
 def test_encode_pre_encoded_has_no_strict_flags():
-    """encode_pre_encoded intentionally does not accept reject_nan /
-    reject_inf — pre-encoded bytes are opaque and the caller owns
-    that contract.  Passing the kwarg raises TypeError."""
+    """``encode_pre_encoded`` intentionally does not accept
+    ``reject_nan`` / ``reject_inf`` kwargs.  Passing them raises
+    ``TypeError`` at the Python binding layer, before reaching Rust.
+
+    At the Rust layer, the buffered and streaming pre-encoded APIs
+    also error if these flags are set on ``EncodeOptions`` — see
+    ``rust/tensogram/tests/strict_finite.rs::encode_pre_encoded_errors_when_reject_nan_is_set``
+    for the parity contract.  Python users never hit that path because
+    the kwargs cannot be passed through this binding.
+    """
     data = np.array([1.0, np.nan], dtype=np.float32).tobytes()
     desc = _desc([2], "float32")
     with pytest.raises(TypeError):

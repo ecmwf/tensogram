@@ -295,6 +295,21 @@ impl<W: Write> StreamingEncoder<W> {
         descriptor: &DataObjectDescriptor,
         pre_encoded_bytes: &[u8],
     ) -> Result<()> {
+        // Strict-finite flags are raw-input-only.  If the caller
+        // configured the encoder with reject_nan / reject_inf and then
+        // writes a pre-encoded object, the flags cannot be meaningfully
+        // enforced on opaque bytes — fail loudly rather than silently
+        // ignoring, matching the buffered encode_pre_encoded contract.
+        if self.reject_nan || self.reject_inf {
+            return Err(TensogramError::Encoding(
+                "reject_nan / reject_inf do not apply to \
+                 write_object_pre_encoded: pre-encoded bytes are opaque. \
+                 Construct the StreamingEncoder with these flags cleared, \
+                 or use write_object() on raw data."
+                    .to_string(),
+            ));
+        }
+
         validate_object(descriptor, pre_encoded_bytes.len())?;
 
         let shape_product = descriptor
