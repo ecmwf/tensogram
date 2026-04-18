@@ -56,6 +56,26 @@ Most users interact with `tensogram` and the CLI. The encodings
 crate is used internally by the core but is also importable directly
 if you need to call the encoding functions outside of a full message.
 
+## Installation
+
+**Rust:**
+```bash
+cargo add tensogram
+```
+
+**Python:**
+```bash
+pip install tensogram          # core
+pip install tensogram[all]     # with xarray + zarr backends
+```
+
+**CLI:**
+```bash
+cargo install tensogram-cli
+```
+
+See the [Quick Start](guide/quickstart.md) for feature flags, optional dependencies, and detailed setup.
+
 ## Quick Example
 
 ```rust

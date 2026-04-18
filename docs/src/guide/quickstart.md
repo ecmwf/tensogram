@@ -2,11 +2,55 @@
 
 This page walks you through encoding and decoding a real tensor — a 2D temperature field — in about 20 lines of Rust.
 
-## Add the Dependency
+## Installation
+
+### Rust
+
+```bash
+cargo add tensogram
+```
+
+Or add it to your `Cargo.toml` manually:
 
 ```toml
 [dependencies]
-tensogram = { path = "../rust/tensogram" }
+tensogram = "0.15"
+```
+
+Optional features:
+
+| Feature | What it adds |
+|---------|-------------|
+| `mmap` | Zero-copy memory-mapped file reads |
+| `async` | Async I/O via tokio |
+| `remote` | Read from S3, GCS, Azure Blob, or HTTP |
+| `szip-pure` | Pure-Rust szip (no C dependency) |
+| `zstd-pure` | Pure-Rust zstd (no C dependency) |
+
+All compression codecs (szip, zstd, lz4, blosc2, zfp, sz3) and multi-threading are enabled by default.
+
+```bash
+cargo add tensogram --features mmap,async,remote
+```
+
+### Python
+
+```bash
+pip install tensogram
+```
+
+With xarray and Zarr backends:
+
+```bash
+pip install tensogram[all]      # everything
+pip install tensogram[xarray]   # xarray backend only
+pip install tensogram[zarr]     # Zarr v3 store only
+```
+
+### CLI
+
+```bash
+cargo install tensogram-cli
 ```
 
 ## Encode a Temperature Field
