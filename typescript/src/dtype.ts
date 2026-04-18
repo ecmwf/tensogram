@@ -13,16 +13,24 @@
  * sentinel with byte-width `0`; its payload size is
  * `ceil(num_elements / 8)`, computed from the descriptor.
  *
- * For dtypes that JS has no native `TypedArray` for (`float16`,
- * `bfloat16`, `complex*`) we expose a surrogate `TypedArray` and
- * leave higher-level conversion to the consumer:
+ * Dtypes JS has no native TypedArray for get first-class view classes
+ * from `./float16.ts`, `./bfloat16.ts`, and `./complex.ts`:
  *
- * - `float16` / `bfloat16` → `Uint16Array` (raw half-precision bits)
- * - `complex64`  → `Float32Array` with interleaved `[re, im, re, im, ...]`
- * - `complex128` → `Float64Array` with interleaved `[re, im, re, im, ...]`
+ * - `float16` → native `Float16Array` when the host ships one (TC39
+ *   Stage-3), otherwise `Float16Polyfill` — same API.
+ * - `bfloat16` → `Bfloat16Array` (always polyfilled; no native type).
+ * - `complex64` / `complex128` → `ComplexArray` with `.real(i)` /
+ *   `.imag(i)` / `.get(i) → { re, im }` / iteration.
+ *
+ * Callers who want the raw binary16 / bfloat16 bits can reach through
+ * the view's `.bits` accessor; complex callers who want the
+ * interleaved storage can use the view's `.data`.
  */
 
 import { InvalidArgumentError } from './errors.js';
+import { bfloat16FromBytes } from './bfloat16.js';
+import { complexFromBytes } from './complex.js';
+import { float16FromBytes } from './float16.js';
 import type { Dtype, TypedArray } from './types.js';
 
 /** Byte width per scalar element. `0` for `bitmask` (sub-byte packed). */
@@ -65,19 +73,24 @@ export function shapeElementCount(shape: readonly number[]): number {
 }
 
 /**
- * Given a dtype and raw payload bytes, construct the appropriate
- * `TypedArray` view.
+ * Given a dtype and raw payload bytes, construct the appropriate view.
  *
- * For complex dtypes the returned array contains interleaved real /
- * imaginary components — e.g. `complex64` yields a `Float32Array` of
- * length `2 × num_elements`. Consumers that want a pair of separate
- * real / imag arrays can destructure as they see fit.
+ * For 10 of the 15 dtypes this is a plain `TypedArray`.  The five
+ * non-native dtypes get their own view classes:
+ *
+ * - `float16` → `Float16Array` (native) or `Float16Polyfill`
+ * - `bfloat16` → `Bfloat16Array`
+ * - `complex64` / `complex128` → `ComplexArray`
+ * - `bitmask` → `Uint8Array` of packed bits (unchanged)
  *
  * @param dtype - element type
  * @param bytes - raw payload bytes in native byte order
  * @param copy  - if true (default), copies into a fresh JS-heap buffer;
  *                if false, returns a zero-copy view over `bytes.buffer`
- *                that is invalidated when the underlying buffer moves
+ *                (invalidated when WASM memory grows).  For the
+ *                non-native dtypes, zero-copy only applies to the
+ *                backing storage — the view class itself is still a
+ *                JS-heap object.
  */
 export function typedArrayFor(dtype: Dtype, bytes: Uint8Array, copy = true): TypedArray {
   const source = copy ? new Uint8Array(bytes) : bytes;
@@ -93,10 +106,9 @@ export function typedArrayFor(dtype: Dtype, bytes: Uint8Array, copy = true): Typ
 
   switch (dtype) {
     case 'float16':
-    case 'bfloat16': {
-      const aligned = needAligned(2);
-      return new Uint16Array(aligned.buffer, aligned.byteOffset, aligned.byteLength / 2);
-    }
+      return float16FromBytes(needAligned(2));
+    case 'bfloat16':
+      return bfloat16FromBytes(needAligned(2));
     case 'float32': {
       const aligned = needAligned(4);
       return new Float32Array(aligned.buffer, aligned.byteOffset, aligned.byteLength / 4);
@@ -105,14 +117,10 @@ export function typedArrayFor(dtype: Dtype, bytes: Uint8Array, copy = true): Typ
       const aligned = needAligned(8);
       return new Float64Array(aligned.buffer, aligned.byteOffset, aligned.byteLength / 8);
     }
-    case 'complex64': {
-      const aligned = needAligned(4);
-      return new Float32Array(aligned.buffer, aligned.byteOffset, aligned.byteLength / 4);
-    }
-    case 'complex128': {
-      const aligned = needAligned(8);
-      return new Float64Array(aligned.buffer, aligned.byteOffset, aligned.byteLength / 8);
-    }
+    case 'complex64':
+      return complexFromBytes('complex64', needAligned(4));
+    case 'complex128':
+      return complexFromBytes('complex128', needAligned(8));
     case 'int8':
       return new Int8Array(source.buffer, source.byteOffset, source.byteLength);
     case 'int16': {

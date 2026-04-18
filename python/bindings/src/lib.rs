@@ -24,12 +24,13 @@ use pyo3::types::{PyBytes, PyDict, PyList};
 use std::sync::Arc;
 
 use tensogram_lib::validate::{
-    validate_file as core_validate_file, validate_message, ValidateOptions, ValidationLevel,
+    ValidateOptions, ValidationLevel, validate_file as core_validate_file, validate_message,
 };
 use tensogram_lib::{
-    decode, decode_descriptors, decode_metadata, decode_object, decode_range, encode,
-    encode_pre_encoded, scan, ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions,
-    GlobalMetadata, HashAlgorithm, StreamingEncoder, TensogramError, TensogramFile, RESERVED_KEY,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
+    HashAlgorithm, RESERVED_KEY, StreamingEncoder, TensogramError, TensogramFile, decode,
+    decode_descriptors, decode_metadata, decode_object, decode_range, encode, encode_pre_encoded,
+    scan,
 };
 
 type PyObject = Py<PyAny>;
@@ -507,12 +508,10 @@ impl PyTensogramFile {
             .detach(|| self.file.decode_object(msg_index, obj_index, &options))
             .map_err(to_py_err)?;
         let arr = bytes_to_numpy(py, &desc, &data)?;
-        let py_desc = PyDataObjectDescriptor {
-            inner: desc,
-        }
-        .into_pyobject(py)?
-        .into_any()
-        .unbind();
+        let py_desc = PyDataObjectDescriptor { inner: desc }
+            .into_pyobject(py)?
+            .into_any()
+            .unbind();
         let result = PyDict::new(py);
         result.set_item("metadata", PyMetadata { inner: meta }.into_pyobject(py)?)?;
         result.set_item("descriptor", py_desc)?;
@@ -580,17 +579,12 @@ impl PyTensogramFile {
             .into_iter()
             .map(|(meta, desc, data)| {
                 let arr = bytes_to_numpy(py, &desc, &data)?;
-                let py_desc = PyDataObjectDescriptor {
-                    inner: desc,
-                }
-                .into_pyobject(py)?
-                .into_any()
-                .unbind();
+                let py_desc = PyDataObjectDescriptor { inner: desc }
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind();
                 let result = PyDict::new(py);
-                result.set_item(
-                    "metadata",
-                    PyMetadata { inner: meta }.into_pyobject(py)?,
-                )?;
+                result.set_item("metadata", PyMetadata { inner: meta }.into_pyobject(py)?)?;
                 result.set_item("descriptor", py_desc)?;
                 result.set_item("data", arr)?;
                 Ok(result.into_any().unbind())
@@ -996,6 +990,11 @@ fn py_decode_object(
 ///     ``list[ndarray]`` (default) or ``ndarray`` (when ``join=True``).
 #[pyfunction]
 #[pyo3(name = "decode_range", signature = (buf, object_index, ranges, join=false, verify_hash=false, native_byte_order=true, threads=0))]
+// The argument list is the public Python ABI — each one is a documented
+// keyword argument that other bindings (Rust core, FFI, WASM) also
+// expose.  Collapsing them into an options struct would break the
+// Pythonic kwargs calling convention.
+#[allow(clippy::too_many_arguments)]
 fn py_decode_range(
     py: Python<'_>,
     buf: PyBackedBytes,
@@ -1111,6 +1110,40 @@ impl PyBufferIter {
             self.index, remaining
         )
     }
+}
+
+/// Compute a hash digest over arbitrary bytes.
+///
+/// Mirrors Rust :func:`tensogram::compute_hash`, the WASM
+/// ``compute_hash`` export, and ``tgm_compute_hash`` in the C FFI.
+/// Useful for verifying an encoded payload against the hash recorded
+/// in a descriptor, or for pre-computing a hash before calling
+/// :func:`encode_pre_encoded`.
+///
+/// Args:
+///     data: Bytes to hash — ``bytes`` or ``bytearray``.  Zero-copy
+///         for ``bytes`` via :class:`PyBackedBytes`.  For other
+///         buffer-protocol objects (``memoryview``, ``numpy.ndarray``,
+///         etc.) call ``bytes(obj)`` / ``obj.tobytes()`` first.
+///     algo: Algorithm name.  ``"xxh3"`` is the only supported value
+///         today and the default.
+///
+/// Returns:
+///     The hex-encoded digest as a ``str`` (16 characters for xxh3-64).
+///
+/// Raises:
+///     TypeError: If ``data`` is not ``bytes`` or ``bytearray``.
+///     ValueError: If ``algo`` is not a recognised algorithm name.
+///
+/// Example::
+///
+///     >>> tensogram.compute_hash(b"hello world")
+///     'd447b1ea40e6988b'
+#[pyfunction]
+#[pyo3(name = "compute_hash", signature = (data, algo="xxh3"))]
+fn py_compute_hash(data: PyBackedBytes, algo: &str) -> PyResult<String> {
+    let algorithm = HashAlgorithm::parse(algo).map_err(to_py_err)?;
+    Ok(tensogram_lib::compute_hash(&data, algorithm))
 }
 
 /// Compute simple-packing parameters for a float64 array.
@@ -1614,12 +1647,10 @@ impl PyAsyncTensogramFile {
                 .map_err(to_py_err)?;
             Python::attach(|py| {
                 let arr = bytes_to_numpy(py, &desc, &data)?;
-                let py_desc = PyDataObjectDescriptor {
-                    inner: desc,
-                }
-                .into_pyobject(py)?
-                .into_any()
-                .unbind();
+                let py_desc = PyDataObjectDescriptor { inner: desc }
+                    .into_pyobject(py)?
+                    .into_any()
+                    .unbind();
                 let result = PyDict::new(py);
                 result.set_item("metadata", PyMetadata { inner: meta }.into_pyobject(py)?)?;
                 result.set_item("descriptor", py_desc)?;
@@ -1746,17 +1777,13 @@ impl PyAsyncTensogramFile {
                     .into_iter()
                     .map(|(meta, desc, data)| {
                         let arr = bytes_to_numpy(py, &desc, &data)?;
-                        let py_desc = PyDataObjectDescriptor {
-                            inner: desc,
-                        }
-                        .into_pyobject(py)?
-                        .into_any()
-                        .unbind();
+                        let py_desc = PyDataObjectDescriptor { inner: desc }
+                            .into_pyobject(py)?
+                            .into_any()
+                            .unbind();
                         let result = PyDict::new(py);
-                        result.set_item(
-                            "metadata",
-                            PyMetadata { inner: meta }.into_pyobject(py)?,
-                        )?;
+                        result
+                            .set_item("metadata", PyMetadata { inner: meta }.into_pyobject(py)?)?;
                         result.set_item("descriptor", py_desc)?;
                         result.set_item("data", arr)?;
                         Ok(result.into_any().unbind())
@@ -1926,6 +1953,26 @@ impl PyAsyncTensogramFileIter {
     }
 }
 
+/// Check whether a source string looks like a remote URL.
+///
+/// Returns ``True`` for sources starting with ``http://``, ``https://``,
+/// ``s3://``, ``gs://``, or ``az://``; ``False`` for everything else
+/// (local paths, unrecognised schemes).  Used by
+/// :class:`TensogramFile` to dispatch between the local-file and
+/// remote backends.
+///
+/// Args:
+///     source: The source string to classify.
+///
+/// Returns:
+///     ``True`` if ``source`` has a recognised remote scheme prefix.
+///
+/// Example::
+///
+///     >>> tensogram.is_remote_url("s3://bucket/key.tgm")
+///     True
+///     >>> tensogram.is_remote_url("/local/path.tgm")
+///     False
 #[pyfunction]
 #[pyo3(name = "is_remote_url")]
 fn py_is_remote_url(source: &str) -> bool {
@@ -1946,6 +1993,7 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_iter_messages, m)?)?;
     m.add_function(wrap_pyfunction!(py_validate, m)?)?;
     m.add_function(wrap_pyfunction!(py_validate_file, m)?)?;
+    m.add_function(wrap_pyfunction!(py_compute_hash, m)?)?;
     m.add_function(wrap_pyfunction!(compute_packing_params, m)?)?;
     m.add_class::<PyMetadata>()?;
     m.add_class::<PyDataObjectDescriptor>()?;
@@ -2243,7 +2291,7 @@ fn dict_to_data_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<DataObje
             other => {
                 return Err(PyValueError::new_err(format!(
                     "unknown byte_order: '{other}', expected 'little' or 'big'"
-                )))
+                )));
             }
         },
     };
@@ -2315,14 +2363,12 @@ fn compute_strides(shape: &[u64]) -> PyResult<Vec<u64>> {
     }
     let mut strides = vec![1u64; shape.len()];
     for i in (0..shape.len() - 1).rev() {
-        strides[i] = strides[i + 1]
-            .checked_mul(shape[i + 1])
-            .ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "strides overflow: cannot compute strides for shape {:?}",
-                    shape
-                ))
-            })?;
+        strides[i] = strides[i + 1].checked_mul(shape[i + 1]).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "strides overflow: cannot compute strides for shape {:?}",
+                shape
+            ))
+        })?;
     }
     Ok(strides)
 }

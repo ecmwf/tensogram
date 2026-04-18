@@ -3,6 +3,128 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added — TypeScript wrapper: streaming `StreamingEncoder`
+
+- **`StreamingEncoderOptions.onBytes`** — an optional synchronous
+  `(chunk: Uint8Array) => void` callback.  When supplied, every chunk
+  of wire-format bytes the encoder produces is forwarded to the
+  callback as it is produced; no internal buffering is performed and
+  `finish()` returns an empty `Uint8Array`.  Closes the "true no-
+  buffering stream" gap flagged in the Pass-4 focus list — useful for
+  browser uploads, WebSocket pushes, or any sink that needs bytes
+  incrementally.
+- **`StreamingEncoder#streaming` getter** reports whether an `onBytes`
+  callback was supplied (so call sites that need to branch on mode
+  don't have to remember their own options).
+- **WASM**: new `JsCallbackWriter` (`std::io::Write` into a
+  `js_sys::Function`) plus an `Inner::Buffered` / `Inner::Streaming`
+  enum dispatcher inside the exported `StreamingEncoder` class.  The
+  constructor gained a third optional argument `on_bytes:
+  Option<js_sys::Function>`; buffered-mode callers pass `None` /
+  omit it and see no behavioural change.
+- 9 new TS tests and 5 new wasm-bindgen tests covering construction-
+  time delivery, multi-object chunking, bytes-written parity,
+  callback-throw propagation, non-function rejection, buffered-vs-
+  streaming mode detection, and `hash: false` compatibility.
+- New example `examples/typescript/14_streaming_callback.ts`.
+
+### Changed — Rust core (affects all language bindings)
+
+- **`tensogram_encodings::simple_packing` now rejects ±Infinity values
+  alongside NaN.**  Simple-packing's `binary_scale_factor` is computed
+  from `(max − min) / max_packed` — an infinite range produced a
+  nonsensical `i32::MAX`-saturated scale factor and garbage output.
+  The guard was previously only in the TS wrapper (Pass 3); it is now
+  in the Rust core so Python, C FFI, C++, and WASM all benefit
+  simultaneously.  New `PackingError::InfiniteValue(usize)` variant
+  reports the index of the first offending sample (first-offender
+  guarantee in sequential mode; non-deterministic choice in parallel
+  mode, matching the existing NaN contract).  The previous TS-side
+  `Number.isFinite` check in `simplePackingComputeParams` is kept as
+  defence-in-depth so callers still see a clean
+  `InvalidArgumentError` without a WASM round-trip.
+
+### Added — Python bindings
+
+- `tensogram.compute_hash(data, algo="xxh3")` — hex digest over
+  arbitrary bytes.  Closes the cross-language parity gap vs Rust,
+  WASM, C FFI, and C++ (all of which already exposed an equivalent).
+  Accepts `bytes` and `bytearray` zero-copy via `PyBackedBytes`;
+  other buffer-protocol objects (`memoryview`, `numpy.ndarray`, …)
+  must be converted via `bytes(obj)` / `obj.tobytes()` first.
+  Default algorithm `"xxh3"`; unknown names raise `ValueError`.
+
+### Added — TypeScript wrapper Scope C.1 (API-surface parity)
+
+- `decodeRange(buf, objIndex, ranges, opts?)` — partial sub-tensor
+  decode mirroring Rust `decode_range`, Python `file_decode_range`,
+  and `tgm_decode_range`.  `ranges` is an array of `[offset, count]`
+  pairs (numbers or bigints); the result carries one dtype-typed view
+  per range, or a single concatenated view when `join: true`.
+- `computeHash(bytes, algo?)` — standalone hex-digest computation,
+  matching the digest stamped by `encode()` on the same bytes.
+- `simplePackingComputeParams(values, bits, decScale?)` — GRIB-style
+  simple-packing parameter computation.  Returns snake-case keys so
+  the result spreads directly into a descriptor.
+- `encodePreEncoded(meta, objects, opts?)` — wrap already-encoded
+  payloads into a wire-format message without re-running the
+  encoding pipeline.  The library recomputes the payload hash.
+- `validate(buf, opts?)` / `validateBuffer(buf, opts?)` / `validateFile(path, opts?)` —
+  structural / metadata / integrity / fidelity validation with modes
+  `quick`, `default`, `checksum`, `full`.  Returns a typed
+  `ValidationReport` / `FileValidationReport`; never throws on bad
+  input.
+- `StreamingEncoder` class — frame-at-a-time message construction
+  (`writeObject`, `writePreceder`, `writeObjectPreEncoded`, `finish`).
+  Backed by an in-memory `Vec<u8>` sink on the WASM side, matching
+  Python's `StreamingEncoder`.
+- `TensogramFile#append(meta, objects, opts?)` — Node-only local-
+  file-path append.  Rejects `fromBytes` / `fromUrl`-backed files
+  with `InvalidArgumentError` to match the Rust / Python / FFI / C++
+  contract.
+- **Lazy `TensogramFile.fromUrl`** — a `HEAD` probe detects
+  `Accept-Ranges: bytes` + `Content-Length`; when present, the file
+  lazily scans preambles and fetches message payloads on demand via
+  HTTP `Range` requests (small LRU cache).  Falls back transparently
+  to a single eager GET when Range isn't supported.
+
+### Added — TypeScript wrapper Scope C.2 (first-class dtypes)
+
+- `Float16Polyfill` — TC39-Stage-3-accurate `Float16Array`-shaped
+  polyfill.  Round-ties-to-even narrow, NaN / ±Inf / ±0 / subnormal
+  preservation.  Used when the host runtime lacks
+  `globalThis.Float16Array`.
+- `Bfloat16Array` — view class for the 1-8-7 brain-float layout.
+- `ComplexArray` — view class over interleaved Float32 / Float64
+  storage with `.real(i)`, `.imag(i)`, `.get(i) → {re, im}`, and
+  iteration.
+- `hasNativeFloat16Array()`, `getFloat16ArrayCtor()`,
+  `float16FromBytes()`, `bfloat16FromBytes()`, `complexFromBytes()`
+  factories for zero-copy construction.
+- `typedArrayFor('float16')` now returns a native `Float16Array` or
+  the polyfill.  `typedArrayFor('bfloat16')` returns
+  `Bfloat16Array`.  `typedArrayFor('complex64' | 'complex128')`
+  returns `ComplexArray`.
+
+### Changed — TypeScript wrapper
+
+- **BREAKING: `TensogramFile#rawMessage(index)`** is now `async`
+  (returns `Promise<Uint8Array>`).  Needed so the lazy HTTP backend
+  can issue a `Range` GET on first access.  Existing call sites add
+  `await`.
+- **BREAKING: `typedArrayFor` for half-precision and complex dtypes**
+  returns view classes, not raw `Uint16Array` / interleaved
+  `Float32Array`.  Consumers that need the raw bits reach them via
+  `.bits` (half-precision) or `.data` (complex).
+
+### Added — WASM
+
+- `tensogram-wasm` exports `decode_range`, `encode_pre_encoded`,
+  `compute_hash`, `simple_packing_compute_params`, `validate_buffer`,
+  and the `StreamingEncoder` class.
+
 ## [0.15.0] - 2026-04-18
 
 ### Changed

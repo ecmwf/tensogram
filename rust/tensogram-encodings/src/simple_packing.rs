@@ -12,6 +12,12 @@ use thiserror::Error;
 pub enum PackingError {
     #[error("NaN value encountered at index {0}")]
     NanValue(usize),
+    /// A ±Infinity value was encountered.  Simple-packing's scale-factor
+    /// computation would otherwise produce a meaningless (infinite or
+    /// `i32::MAX`-saturated) `binary_scale_factor`, so infinities are
+    /// rejected alongside NaN.  Report the first offending index.
+    #[error("infinite value encountered at index {0}")]
+    InfiniteValue(usize),
     #[error("bits_per_value {0} exceeds maximum of 64")]
     BitsPerValueTooLarge(u32),
     #[error("insufficient data: expected at least {expected} bytes, got {actual}")]
@@ -36,8 +42,29 @@ pub enum PackingError {
 #[cfg(feature = "threads")]
 const PARALLEL_MIN_VALUES: usize = 8192;
 
-/// Run a min/max scan over `values`, returning `Err(NanValue)` on the
-/// first NaN observed (or any NaN when running in parallel).
+/// Classify `v` for simple-packing validation.  Finite values flow
+/// through; NaN and ±Infinity are rejected with an index-qualified
+/// error.  Inlined so the sequential and parallel scans share one
+/// source of truth for the "what counts as an encodable value?"
+/// predicate.
+#[inline]
+fn validate_sample(v: f64, i: usize) -> Result<(), PackingError> {
+    if v.is_nan() {
+        Err(PackingError::NanValue(i))
+    } else if v.is_infinite() {
+        Err(PackingError::InfiniteValue(i))
+    } else {
+        Ok(())
+    }
+}
+
+/// Run a min/max scan over `values`, returning the first
+/// `NanValue`/`InfiniteValue` error observed.
+///
+/// In parallel mode (`threads >= 2`), work-stealing means the reported
+/// index is whichever offending sample the first-to-fail worker saw —
+/// not necessarily the globally-first one.  Sequential mode preserves
+/// the first-offender guarantee.
 fn scan_min_max(
     values: &[f64],
     #[allow(unused_variables)] threads: u32,
@@ -46,23 +73,14 @@ fn scan_min_max(
     {
         if threads >= 2 && values.len() >= PARALLEL_MIN_VALUES {
             use rayon::prelude::*;
-            // Short-circuit on NaN: `try_fold` stops as soon as one
-            // worker sees a NaN.  The reported index is from whichever
-            // chunk that worker owned — not necessarily the globally-
-            // first NaN.  This trade-off was accepted for
-            // `threads > 0` callers; sequential callers see the
-            // original first-NaN behaviour.
             return values
                 .par_iter()
                 .enumerate()
                 .try_fold(
                     || (f64::INFINITY, f64::NEG_INFINITY),
                     |(mn, mx), (i, &v)| {
-                        if v.is_nan() {
-                            Err(PackingError::NanValue(i))
-                        } else {
-                            Ok((mn.min(v), mx.max(v)))
-                        }
+                        validate_sample(v, i)?;
+                        Ok((mn.min(v), mx.max(v)))
                     },
                 )
                 .try_reduce(
@@ -72,13 +90,11 @@ fn scan_min_max(
         }
     }
 
-    // Sequential scan — preserves first-NaN-index semantics.
+    // Sequential scan — preserves first-offender-index semantics.
     let mut min_val = f64::INFINITY;
     let mut max_val = f64::NEG_INFINITY;
     for (i, &v) in values.iter().enumerate() {
-        if v.is_nan() {
-            return Err(PackingError::NanValue(i));
-        }
+        validate_sample(v, i)?;
         if v < min_val {
             min_val = v;
         }
@@ -197,16 +213,18 @@ pub fn encode_with_threads(
         return Err(PackingError::BitsPerValueTooLarge(params.bits_per_value));
     }
 
-    // NaN scan.  When parallel, this is fused into the packing loop
-    // below; sequential goes through the original fast check so that
-    // the first-NaN-index guarantee holds.
+    // NaN / Inf scan.  When parallel, this is fused into the packing
+    // loop below; sequential goes through the fast check so the
+    // first-offender-index guarantee holds.
     #[cfg(feature = "threads")]
     let parallel = threads >= 2 && values.len() >= PARALLEL_MIN_VALUES;
     #[cfg(not(feature = "threads"))]
     let parallel = false;
 
-    if !parallel && let Some(i) = values.iter().position(|v| v.is_nan()) {
-        return Err(PackingError::NanValue(i));
+    if !parallel {
+        for (i, &v) in values.iter().enumerate() {
+            validate_sample(v, i)?;
+        }
     }
 
     if params.bits_per_value == 0 {
@@ -342,9 +360,7 @@ fn encode_aligned_par<const N: usize>(
     out.par_chunks_exact_mut(N)
         .zip(values.par_iter().enumerate())
         .try_for_each(|(chunk, (i, &v))| -> Result<(), PackingError> {
-            if v.is_nan() {
-                return Err(PackingError::NanValue(i));
-            }
+            validate_sample(v, i)?;
             let q = (((v - refv) * scale).round() as u64).min(max_packed);
             splat_aligned::<N>(chunk, q);
             Ok(())
@@ -402,13 +418,12 @@ fn encode_generic_par(
         .try_for_each(|(vchunk, bchunk)| -> Result<(), PackingError> {
             let mut bit_pos: u64 = 0;
             for (local_i, &value) in vchunk.iter().enumerate() {
-                if value.is_nan() {
-                    // Index is chunk-local — we cannot easily recover
-                    // the global one under par without extra bookkeeping.
-                    // The caller explicitly opted into threads=N; doc'd
-                    // non-determinism of reported NaN index is accepted.
-                    return Err(PackingError::NanValue(local_i));
-                }
+                // Index is chunk-local — recovering the global index
+                // under parallel reduction would add bookkeeping for
+                // little benefit.  Callers that opt into `threads > 0`
+                // accept the doc'd non-determinism of the reported
+                // offender index.
+                validate_sample(value, local_i)?;
                 let packed = (((value - refv) * scale).round() as u64).min(max_packed);
                 write_bits(bchunk, bit_pos, packed, bpv);
                 bit_pos += bpv as u64;
@@ -423,9 +438,7 @@ fn encode_generic_par(
         let tail_bytes = &mut output[tail_byte_start..];
         let mut bit_pos: u64 = 0;
         for (i, &value) in tail_values.iter().enumerate() {
-            if value.is_nan() {
-                return Err(PackingError::NanValue(full_chunks * values_per_chunk + i));
-            }
+            validate_sample(value, full_chunks * values_per_chunk + i)?;
             let packed = (((value - refv) * scale).round() as u64).min(max_packed);
             write_bits(tail_bytes, bit_pos, packed, bpv);
             bit_pos += bpv as u64;
@@ -970,6 +983,39 @@ mod tests {
         assert!(matches!(
             encode(&values, &params),
             Err(PackingError::NanValue(1))
+        ));
+    }
+
+    #[test]
+    fn test_positive_infinity_rejected_in_compute_params() {
+        let values = vec![1.0, f64::INFINITY, 3.0];
+        assert!(matches!(
+            compute_params(&values, 16, 0),
+            Err(PackingError::InfiniteValue(1))
+        ));
+    }
+
+    #[test]
+    fn test_negative_infinity_rejected_in_compute_params() {
+        let values = vec![f64::NEG_INFINITY, 1.0, 2.0];
+        assert!(matches!(
+            compute_params(&values, 16, 0),
+            Err(PackingError::InfiniteValue(0))
+        ));
+    }
+
+    #[test]
+    fn test_infinity_rejected_in_encode() {
+        let values = vec![1.0, 2.0, f64::INFINITY];
+        let params = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 16,
+        };
+        assert!(matches!(
+            encode(&values, &params),
+            Err(PackingError::InfiniteValue(2))
         ));
     }
 
