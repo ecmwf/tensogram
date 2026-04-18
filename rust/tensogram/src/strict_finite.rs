@@ -34,6 +34,27 @@
 //! Integer and bitmask dtypes have no NaN/Inf representation by
 //! construction, so the scan short-circuits to `Ok(())` for them —
 //! zero cost regardless of flags.
+//!
+//! ## Byte-order convention
+//!
+//! The scan interprets input bytes using the **descriptor's declared
+//! `byte_order`**, matching the convention used by
+//! `simple_packing::encode_with_threads`.  Most callers pass native
+//! bytes with `byte_order = ByteOrder::native()`, in which case the
+//! question is moot.  Callers who pass cross-endian bytes must declare
+//! the matching `byte_order` for the scan to interpret them correctly.
+//!
+//! Known limitation: the `zfp` and `sz3` compressors on the encode
+//! side read input bytes as `from_ne_bytes` regardless of the
+//! descriptor's declared byte order (see
+//! `rust/tensogram-encodings/src/compression/{zfp,sz3}.rs`).  A caller
+//! who passes native bytes with a cross-endian `byte_order` would see
+//! `zfp`/`sz3` compress them correctly but the strict scan may
+//! misinterpret the bits.  In practice this only matters for users who
+//! mix a non-native `byte_order` declaration with zfp/sz3 — a narrow
+//! combination — and the consequence is at worst a false negative
+//! (the scan fails to catch some NaN/Inf bit patterns), never a false
+//! positive.
 
 use crate::dtype::Dtype;
 use crate::error::{Result, TensogramError};

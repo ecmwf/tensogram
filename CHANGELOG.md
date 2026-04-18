@@ -20,8 +20,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   §3.1). Exposed across every language surface (Rust, Python, TS,
   C FFI, C++) with cross-language parity tests. CLI global flags
   `--reject-nan` / `--reject-inf` plus `TENSOGRAM_REJECT_NAN` /
-  `TENSOGRAM_REJECT_INF` env vars for ops rollouts. New
-  `docs/src/guide/strict-finite.md` covers the full semantics.
+  `TENSOGRAM_REJECT_INF` env vars for ops rollouts. Env-var values
+  are bool-ish: `1`/`true`/`yes`/`on` enable, `0`/`false`/`no`/`off`
+  disable. New `docs/src/guide/strict-finite.md` covers the full
+  semantics.
 - **NaN-handling research memo** —
   `plans/RESEARCH_NAN_HANDLING.md` catalogues every path through the
   library where NaN/Inf can appear on the encode side, documents the
@@ -36,6 +38,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   intentionally does not — pre-encoded bytes are opaque to the library.
   Pre-0.15 C callers will see a compile error from the regenerated
   header; pass `false, false` to preserve old behaviour.
+- **Pre-encoded APIs reject the strict-finite flags loudly.**
+  Setting `reject_nan` or `reject_inf` on `encode_pre_encoded` or
+  `StreamingEncoder::write_object_pre_encoded` now returns an
+  `EncodingError` rather than silently discarding the flag. Pre-encoded
+  bytes are opaque to the library and cannot be meaningfully scanned;
+  failing loudly brings Rust and C++ behaviour in line with Python
+  (which raised `TypeError` from day one). Cross-language uniformity
+  achieved.
 
 ## [0.15.0] - 2026-04-18
 

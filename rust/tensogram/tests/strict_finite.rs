@@ -778,3 +778,83 @@ fn reject_nan_signalling_nan_is_also_rejected() {
     .unwrap_err();
     assert!(err.to_string().contains("NaN"));
 }
+
+// ── 14. Multi-dimensional tensors ───────────────────────────────────────────
+
+#[test]
+fn reject_nan_reports_flat_index_for_3d_tensor() {
+    // 3-D tensor: shape=[2, 3, 4], row-major, NaN at (1, 1, 2).
+    // Flat index = 1*(3*4) + 1*4 + 2 = 12 + 4 + 2 = 18.
+    let mut values = vec![1.0_f64; 24];
+    values[18] = f64::NAN;
+    let data = f64_bytes(&values, ByteOrder::native());
+    let desc = make_descriptor(
+        vec![2, 3, 4],
+        Dtype::Float64,
+        ByteOrder::native(),
+        "none",
+        "none",
+    );
+    let err = encode(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &strict_opts(true, false),
+    )
+    .unwrap_err();
+    assert_encoding_error_mentions(&err, &["NaN", "element 18", "float64"]);
+}
+
+#[test]
+fn reject_inf_reports_flat_index_for_2d_float32() {
+    // 2-D tensor: shape=[10, 5], row-major, +Inf at (3, 2).
+    // Flat index = 3*5 + 2 = 17.
+    let mut values = vec![1.0_f32; 50];
+    values[17] = f32::INFINITY;
+    let data = f32_bytes(&values, ByteOrder::native());
+    let desc = make_descriptor(
+        vec![10, 5],
+        Dtype::Float32,
+        ByteOrder::native(),
+        "none",
+        "none",
+    );
+    let err = encode(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &strict_opts(false, true),
+    )
+    .unwrap_err();
+    assert_encoding_error_mentions(&err, &["+Inf", "element 17"]);
+}
+
+// ── 15. Multi-object encoding with axis-A parallelism ──────────────────────
+
+#[cfg(feature = "threads")]
+#[test]
+fn reject_nan_axis_a_parallel_catches_bad_object() {
+    // Axis A = par_iter across objects.  With threads=4 and multiple
+    // objects, object encodings run in parallel.  One of them has NaN
+    // and should trigger the strict-finite rejection regardless of
+    // which worker handled it.
+    let clean = f64_bytes(&[1.0, 2.0, 3.0, 4.0], ByteOrder::native());
+    let mut dirty_vals = vec![1.0_f64; 4];
+    dirty_vals[2] = f64::NAN;
+    let dirty = f64_bytes(&dirty_vals, ByteOrder::native());
+    let desc = make_descriptor(vec![4], Dtype::Float64, ByteOrder::native(), "none", "none");
+    let opts = EncodeOptions {
+        reject_nan: true,
+        threads: 4,
+        ..Default::default()
+    };
+    // Mix several clean objects with one dirty one; axis A should pick
+    // whichever ordering the scheduler chooses but MUST still report
+    // the NaN.
+    let objects: Vec<(&DataObjectDescriptor, &[u8])> = vec![
+        (&desc, &clean),
+        (&desc, &clean),
+        (&desc, &dirty),
+        (&desc, &clean),
+    ];
+    let err = encode(&make_global_meta(), &objects, &opts).unwrap_err();
+    assert!(err.to_string().contains("NaN"));
+}

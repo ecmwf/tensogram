@@ -207,6 +207,31 @@ fn tensogram_reject_inf_env_var_honoured() {
     );
 }
 
+// ── Env var = 0 / false is explicit opt-out ─────────────────────────────
+
+#[test]
+fn tensogram_reject_nan_env_var_zero_disables() {
+    // `TENSOGRAM_REJECT_NAN=0` must be treated as off, not on.
+    // Clap's bool env parsing: "0" / "false" → false, "1" / "true" → true.
+    let dir = tempfile::tempdir().unwrap();
+    let input = make_nan_file(dir.path());
+    let output = dir.path().join("out.tgm");
+    let status = Command::new(cli_binary())
+        .env("TENSOGRAM_REJECT_NAN", "0")
+        .args([
+            "merge",
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .status()
+        .expect("spawn tensogram");
+    assert!(
+        status.success(),
+        "merge with TENSOGRAM_REJECT_NAN=0 must accept NaN (explicit opt-out)"
+    );
+}
+
 // ── Orthogonality — reject_inf does not fail on NaN ───────────────────────
 
 #[test]

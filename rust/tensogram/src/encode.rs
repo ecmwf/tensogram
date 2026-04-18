@@ -86,9 +86,13 @@ pub struct EncodeOptions {
     /// §3.1 (silent Inf corruption in `simple_packing`) and §3.3
     /// (undefined NaN behaviour in `zfp`/`sz3`).
     ///
-    /// Does **not** apply to [`encode_pre_encoded`] — pre-encoded bytes
-    /// are opaque and the caller accepted their own contract by
-    /// choosing that API.
+    /// Setting this flag on [`encode_pre_encoded`] or
+    /// [`StreamingEncoder::write_object_pre_encoded`](crate::streaming::StreamingEncoder::write_object_pre_encoded)
+    /// returns [`TensogramError::Encoding`] — pre-encoded bytes are
+    /// opaque to the library and cannot be meaningfully scanned.
+    /// Callers who want the strict contract must use [`encode`] or
+    /// [`StreamingEncoder::write_object`](crate::streaming::StreamingEncoder::write_object)
+    /// on raw input.
     ///
     /// Parallel scans (when `threads > 0` and input exceeds the
     /// parallel threshold) short-circuit per worker, so the reported

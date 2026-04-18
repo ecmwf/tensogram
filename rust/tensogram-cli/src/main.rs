@@ -49,12 +49,14 @@ struct Cli {
     /// Fails with an encoding error on the first NaN — see
     /// `docs/src/guide/strict-finite.md` for the full semantics.
     /// Pass `--reject-nan` at the command line or set
-    /// `TENSOGRAM_REJECT_NAN=1` in the environment.
+    /// `TENSOGRAM_REJECT_NAN=1` (or `true` / `yes` / `on`) in the
+    /// environment; `0` / `false` / `no` / `off` / unset is off.
     #[arg(
         long,
         global = true,
         default_value_t = false,
-        env = "TENSOGRAM_REJECT_NAN"
+        env = "TENSOGRAM_REJECT_NAN",
+        value_parser = clap::builder::BoolishValueParser::new(),
     )]
     reject_nan: bool,
 
@@ -63,12 +65,14 @@ struct Cli {
     ///
     /// Same scope as `--reject-nan`.  Primary motivation: the
     /// `simple_packing` encoding silently corrupts Inf input — turning
-    /// this flag on catches the problem at encode time.
+    /// this flag on catches the problem at encode time.  Env-var
+    /// parsing follows the same bool-ish convention as `--reject-nan`.
     #[arg(
         long,
         global = true,
         default_value_t = false,
-        env = "TENSOGRAM_REJECT_INF"
+        env = "TENSOGRAM_REJECT_INF",
+        value_parser = clap::builder::BoolishValueParser::new(),
     )]
     reject_inf: bool,
 
