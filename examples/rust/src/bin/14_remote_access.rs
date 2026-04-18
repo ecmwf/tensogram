@@ -18,7 +18,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::Arc;
 
-use tensogram_core::{
+use tensogram::{
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
     TensogramFile,
 };
@@ -43,8 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hash: None,
     };
     let data = vec![0u8; 72 * 144 * 4];
-    let tgm_bytes =
-        tensogram_core::encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
+    let tgm_bytes = tensogram::encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
     println!("Encoded {} bytes", tgm_bytes.len());
 
     let tgm = Arc::new(tgm_bytes);
@@ -57,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Serving at {url}");
 
-    assert!(tensogram_core::remote::is_remote_url(&url));
+    assert!(tensogram::remote::is_remote_url(&url));
     println!("is_remote_url = true");
 
     let file = TensogramFile::open_source(&url)?;

@@ -1,6 +1,6 @@
 [package]
 name = "tensogram-benchmarks"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2024"
 publish = false
 description = "Performance benchmarks for the Tensogram encoding pipeline"
@@ -36,7 +36,7 @@ eccodes = ["dep:eccodes", "dep:eccodes-sys"]
 
 [dependencies]
 tensogram-encodings = { path = "../tensogram-encodings" }
-tensogram-core = { path = "../tensogram-core" }
+tensogram = { path = "../tensogram" }
 ciborium = { workspace = true }
 clap = { workspace = true }
 eccodes = { version = "0.14", default-features = false, optional = true }

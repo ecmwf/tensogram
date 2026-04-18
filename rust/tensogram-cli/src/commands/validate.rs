@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use tensogram_core::{
+use tensogram::{
     FileIssue, FileValidationReport, IssueSeverity, ValidateOptions, ValidationReport,
     validate_file,
 };
@@ -172,7 +172,7 @@ impl JsonFileReport {
 mod tests {
     use super::*;
     use std::path::Path;
-    use tensogram_core::{
+    use tensogram::{
         ByteOrder, DataObjectDescriptor, EncodeOptions, GlobalMetadata, TensogramFile,
     };
 
@@ -184,7 +184,7 @@ mod tests {
             ndim: 1,
             shape: vec![4],
             strides: vec![8],
-            dtype: tensogram_core::Dtype::Float64,
+            dtype: tensogram::Dtype::Float64,
             byte_order: ByteOrder::Big,
             encoding: "none".into(),
             filter: "none".into(),
@@ -207,7 +207,7 @@ mod tests {
 
     fn quick_opts() -> ValidateOptions {
         ValidateOptions {
-            max_level: tensogram_core::ValidationLevel::Structure,
+            max_level: tensogram::ValidationLevel::Structure,
             ..default_opts()
         }
     }
@@ -294,7 +294,7 @@ mod tests {
 
     fn full_opts() -> ValidateOptions {
         ValidateOptions {
-            max_level: tensogram_core::ValidationLevel::Fidelity,
+            max_level: tensogram::ValidationLevel::Fidelity,
             ..default_opts()
         }
     }
@@ -311,7 +311,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = make_test_file(dir.path(), "full_canonical.tgm", 1);
         let opts = ValidateOptions {
-            max_level: tensogram_core::ValidationLevel::Fidelity,
+            max_level: tensogram::ValidationLevel::Fidelity,
             check_canonical: true,
             ..default_opts()
         };

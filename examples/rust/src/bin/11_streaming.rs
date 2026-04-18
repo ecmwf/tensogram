@@ -18,8 +18,8 @@
 use std::collections::BTreeMap;
 use std::io::BufWriter;
 
-use tensogram_core::streaming::StreamingEncoder;
-use tensogram_core::{
+use tensogram::streaming::StreamingEncoder;
+use tensogram::{
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, decode,
 };
 

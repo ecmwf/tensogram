@@ -251,9 +251,9 @@ pub struct PipelineConfig {
     ///   simple_packing, shuffle); others ignore it.  Output bytes are
     ///   byte-identical regardless of `N`.
     ///
-    /// Callers should expect this to be set by the `tensogram-core`
+    /// Callers should expect this to be set by the `tensogram`
     /// layer after consulting
-    /// [`EncodeOptions.threads`](../../../tensogram_core/encode/struct.EncodeOptions.html#structfield.threads)
+    /// [`EncodeOptions.threads`](../../../tensogram/encode/struct.EncodeOptions.html#structfield.threads)
     /// and the small-message threshold; direct pipeline callers may
     /// leave it at `0`.
     pub intra_codec_threads: u32,

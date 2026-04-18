@@ -34,7 +34,7 @@ For each fenced code block in the selected docs:
 
 **Python:** write to a temp `.py` file, run `python <file>`. 30s timeout per block.
 
-**Rust:** only `fn main()` blocks with complete `use` statements. Create a temp Cargo project **inside the repo root** (so path dependencies resolve) with `tensogram-core` as a path dependency, `cargo build` it. Clean up after.
+**Rust:** only `fn main()` blocks with complete `use` statements. Create a temp Cargo project **inside the repo root** (so path dependencies resolve) with `tensogram` as a path dependency, `cargo build` it. Clean up after.
 
 **Bash:** only commands that can run without user-specific data. Run and check exit code 0.
 
@@ -47,7 +47,7 @@ Record pass/fail/skip for every block.
 Read each doc file and find verifiable factual claims — these are inline code spans (`` `EncodeOptions` ``), numbers ("200 tests"), and table cells, not prose paragraphs. For each one, check the source.
 
 **What to check:**
-- **API signatures** — struct names, field names, function names, parameter names, return types mentioned in docs → verify they exist and match in `rust/` source (e.g. `rust/tensogram-core/src/`, `rust/tensogram-encodings/src/`) using LSP or reading the source directly
+- **API signatures** — struct names, field names, function names, parameter names, return types mentioned in docs → verify they exist and match in `rust/` source (e.g. `rust/tensogram/src/`, `rust/tensogram-encodings/src/`) using LSP or reading the source directly
 - **Enum/constant values** — dtype names, encoding names, compression names, magic bytes, terminators → verify against actual definitions
 - **Default values** — "default hash is xxh3", "row-major by default" etc. → check `Default` impls
 - **Numerical claims** — test counts, dtype counts, supported compression count → run the actual count

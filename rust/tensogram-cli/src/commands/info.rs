@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use tensogram_core::{TensogramFile, decode_metadata};
+use tensogram::{TensogramFile, decode_metadata};
 
 /// Print summary information for one or more Tensogram files.
 pub fn run(files: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
@@ -34,17 +34,17 @@ pub fn run(files: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tensogram_core::{ByteOrder, DataObjectDescriptor, EncodeOptions, GlobalMetadata};
+    use tensogram::{ByteOrder, DataObjectDescriptor, EncodeOptions, GlobalMetadata};
 
     fn make_test_file(dir: &std::path::Path, n_messages: usize) -> PathBuf {
         let path = dir.join("test.tgm");
-        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let mut f = tensogram::TensogramFile::create(&path).unwrap();
         let desc = DataObjectDescriptor {
             obj_type: "ntensor".into(),
             ndim: 1,
             shape: vec![4],
             strides: vec![1],
-            dtype: tensogram_core::Dtype::Float32,
+            dtype: tensogram::Dtype::Float32,
             byte_order: ByteOrder::Big,
             encoding: "none".into(),
             filter: "none".into(),

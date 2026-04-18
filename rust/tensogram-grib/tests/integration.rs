@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use ciborium::Value as CborValue;
-use tensogram_core::{DecodeOptions, decode};
+use tensogram::{DecodeOptions, decode};
 use tensogram_grib::{ConvertOptions, Grouping, convert_grib_file};
 
 /// Path to the testdata directory.
@@ -43,7 +43,7 @@ fn cbor_map_get<'a>(map: &'a CborValue, key: &str) -> Option<&'a CborValue> {
 ///
 /// For single-object messages, base[0] holds all metadata.
 /// For multi-object messages with identical mars keys, we look at base[0].
-fn get_mars_from_base(meta: &tensogram_core::GlobalMetadata) -> &CborValue {
+fn get_mars_from_base(meta: &tensogram::GlobalMetadata) -> &CborValue {
     meta.base
         .first()
         .expect("base must have at least one entry")
@@ -113,7 +113,7 @@ fn test_2t_round_trip() {
     let (_, objects) = decode(&messages[0], &decode_opts()).expect("decode");
     let (desc, raw_bytes) = &objects[0];
 
-    assert_eq!(desc.dtype, tensogram_core::Dtype::Float64);
+    assert_eq!(desc.dtype, tensogram::Dtype::Float64);
     let expected_elements: usize = desc.shape.iter().product::<u64>() as usize;
     assert_eq!(
         raw_bytes.len(),

@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use tensogram_core::{DecodeOptions, EncodeOptions, RESERVED_KEY, TensogramFile, decode, encode};
+use tensogram::{DecodeOptions, EncodeOptions, RESERVED_KEY, TensogramFile, decode, encode};
 
 /// Split a multi-object message into separate single-object messages.
 ///
@@ -127,11 +127,11 @@ mod tests {
 
     // ── Integration tests ──
 
-    use tensogram_core::{ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata};
+    use tensogram::{ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata};
 
     fn make_multi_object_file(dir: &std::path::Path) -> PathBuf {
         let path = dir.join("split_input.tgm");
-        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let mut f = tensogram::TensogramFile::create(&path).unwrap();
         let desc1 = DataObjectDescriptor {
             obj_type: "ntensor".into(),
             ndim: 1,
@@ -170,10 +170,9 @@ mod tests {
         assert!(dir.path().join("split_0000.tgm").exists());
         assert!(dir.path().join("split_0001.tgm").exists());
         // Verify each split file has 1 object
-        let f0 = tensogram_core::TensogramFile::open(dir.path().join("split_0000.tgm")).unwrap();
+        let f0 = tensogram::TensogramFile::open(dir.path().join("split_0000.tgm")).unwrap();
         let msg = f0.read_message(0).unwrap();
-        let (_, objs) =
-            tensogram_core::decode(&msg, &tensogram_core::DecodeOptions::default()).unwrap();
+        let (_, objs) = tensogram::decode(&msg, &tensogram::DecodeOptions::default()).unwrap();
         assert_eq!(objs.len(), 1);
     }
 
@@ -192,7 +191,7 @@ mod tests {
         // Single-object message should pass through as-is
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("single.tgm");
-        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let mut f = tensogram::TensogramFile::create(&path).unwrap();
         let desc = DataObjectDescriptor {
             obj_type: "ntensor".into(),
             ndim: 1,
@@ -222,10 +221,9 @@ mod tests {
         assert!(!dir.path().join("split_0001.tgm").exists());
 
         // Verify the single file has 1 object
-        let f = tensogram_core::TensogramFile::open(dir.path().join("split_0000.tgm")).unwrap();
+        let f = tensogram::TensogramFile::open(dir.path().join("split_0000.tgm")).unwrap();
         let msg = f.read_message(0).unwrap();
-        let (_, objs) =
-            tensogram_core::decode(&msg, &tensogram_core::DecodeOptions::default()).unwrap();
+        let (_, objs) = tensogram::decode(&msg, &tensogram::DecodeOptions::default()).unwrap();
         assert_eq!(objs.len(), 1);
     }
 
@@ -234,7 +232,7 @@ mod tests {
         // Multi-object message with per-object base metadata
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("split_meta.tgm");
-        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let mut f = tensogram::TensogramFile::create(&path).unwrap();
         let desc = DataObjectDescriptor {
             obj_type: "ntensor".into(),
             ndim: 1,
@@ -271,7 +269,7 @@ mod tests {
 
         // Verify first split has param=2t
         let msg0 = std::fs::read(dir.path().join("split_meta_0000.tgm")).unwrap();
-        let meta0 = tensogram_core::decode_metadata(&msg0).unwrap();
+        let meta0 = tensogram::decode_metadata(&msg0).unwrap();
         assert!(
             meta0
                 .base
@@ -281,7 +279,7 @@ mod tests {
 
         // Verify second split has param=msl
         let msg1 = std::fs::read(dir.path().join("split_meta_0001.tgm")).unwrap();
-        let meta1 = tensogram_core::decode_metadata(&msg1).unwrap();
+        let meta1 = tensogram::decode_metadata(&msg1).unwrap();
         assert!(
             meta1
                 .base

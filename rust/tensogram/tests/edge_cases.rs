@@ -13,7 +13,7 @@
 //! decode_range edge cases, all compressor configurations, and dtype coverage.
 
 use std::collections::BTreeMap;
-use tensogram_core::*;
+use tensogram::*;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -413,7 +413,7 @@ fn unknown_hash_algorithm_skips_verification() {
         value: "fake_hash_value".to_string(),
     };
     // Should succeed (skip verification) rather than error
-    assert!(tensogram_core::verify_hash(b"any data", &descriptor).is_ok());
+    assert!(tensogram::verify_hash(b"any data", &descriptor).is_ok());
 }
 
 // ── 9. decode_range edge cases ───────────────────────────────────────────────
@@ -879,7 +879,7 @@ fn hash_mismatch_detected_on_verify() {
         hash_type: "xxh3".to_string(),
         value: "0000000000000000".to_string(),
     };
-    let result = tensogram_core::verify_hash(&data, &bad_hash);
+    let result = tensogram::verify_hash(&data, &bad_hash);
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("hash mismatch"));
@@ -916,8 +916,8 @@ fn metadata_namespaces_roundtrip() {
         ndim: 1,
         shape: vec![1],
         strides: vec![1],
-        dtype: tensogram_core::Dtype::Uint8,
-        byte_order: tensogram_core::ByteOrder::Big,
+        dtype: tensogram::Dtype::Uint8,
+        byte_order: tensogram::ByteOrder::Big,
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
@@ -1559,14 +1559,14 @@ fn hash_algorithm_as_str() {
 #[test]
 fn hash_algorithm_parse_valid() {
     assert_eq!(
-        tensogram_core::hash::HashAlgorithm::parse("xxh3").unwrap(),
+        tensogram::hash::HashAlgorithm::parse("xxh3").unwrap(),
         HashAlgorithm::Xxh3
     );
 }
 
 #[test]
 fn hash_algorithm_parse_invalid() {
-    let result = tensogram_core::hash::HashAlgorithm::parse("md5");
+    let result = tensogram::hash::HashAlgorithm::parse("md5");
     assert!(result.is_err());
 }
 
@@ -1575,15 +1575,15 @@ fn hash_algorithm_parse_invalid() {
 #[test]
 fn compute_hash_deterministic() {
     let data = b"hello tensogram";
-    let h1 = tensogram_core::compute_hash(data, HashAlgorithm::Xxh3);
-    let h2 = tensogram_core::compute_hash(data, HashAlgorithm::Xxh3);
+    let h1 = tensogram::compute_hash(data, HashAlgorithm::Xxh3);
+    let h2 = tensogram::compute_hash(data, HashAlgorithm::Xxh3);
     assert_eq!(h1, h2);
     assert_eq!(h1.len(), 16); // 64-bit hex
 }
 
 #[test]
 fn compute_hash_empty_data() {
-    let h = tensogram_core::compute_hash(b"", HashAlgorithm::Xxh3);
+    let h = tensogram::compute_hash(b"", HashAlgorithm::Xxh3);
     assert_eq!(h.len(), 16);
 }
 

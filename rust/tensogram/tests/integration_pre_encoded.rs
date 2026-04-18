@@ -29,8 +29,8 @@
 
 use std::collections::BTreeMap;
 
-use tensogram_core::framing;
-use tensogram_core::{
+use tensogram::framing;
+use tensogram::{
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
     HashDescriptor, StreamingEncoder, decode, decode_range, encode, encode_pre_encoded,
 };
@@ -536,7 +536,7 @@ fn test_encode_pre_encoded_overwrites_caller_hash() {
 
     // The library hashes the encoded payload bytes, which for encoding=none
     // are exactly the bytes the caller passed in.
-    let expected = tensogram_core::compute_hash(&raw, tensogram_core::HashAlgorithm::Xxh3);
+    let expected = tensogram::compute_hash(&raw, tensogram::HashAlgorithm::Xxh3);
     assert_eq!(
         embedded.value, expected,
         "embedded hash must equal xxh3 of payload bytes"
@@ -551,7 +551,7 @@ fn test_encode_pre_encoded_rejects_emit_preceders() {
     let desc = make_raw_desc(4, Dtype::Float32, "none", BTreeMap::new());
     let meta = GlobalMetadata::default();
     let opts = EncodeOptions {
-        hash_algorithm: Some(tensogram_core::HashAlgorithm::Xxh3),
+        hash_algorithm: Some(tensogram::HashAlgorithm::Xxh3),
         emit_preceders: true,
         ..Default::default()
     };
@@ -1194,7 +1194,7 @@ fn test_streaming_pre_encoded_with_preceder() {
     // Streaming: write_object_pre_encoded after writing a preceder.
     let meta = GlobalMetadata::default();
     let opts = EncodeOptions {
-        hash_algorithm: Some(tensogram_core::HashAlgorithm::Xxh3),
+        hash_algorithm: Some(tensogram::HashAlgorithm::Xxh3),
         emit_preceders: true,
         ..Default::default()
     };

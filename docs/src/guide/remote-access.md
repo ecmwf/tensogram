@@ -4,13 +4,13 @@ Enable the `remote` feature to open `.tgm` files on HTTP, S3, GCS, or Azure with
 
 ```toml
 [dependencies]
-tensogram-core = { path = "...", features = ["remote"] }
+tensogram = { path = "...", features = ["remote"] }
 ```
 
 ## Opening a Remote File
 
 ```rust
-use tensogram_core::TensogramFile;
+use tensogram::TensogramFile;
 
 // Auto-detect: local path or remote URL
 let mut file = TensogramFile::open_source("https://example.com/forecast.tgm")?;
@@ -26,7 +26,7 @@ The Rust `open()` method is unchanged and always opens a local file. In Python, 
 You can also check whether a string is a remote URL without opening:
 
 ```rust
-use tensogram_core::is_remote_url;
+use tensogram::is_remote_url;
 
 assert!(is_remote_url("s3://bucket/file.tgm"));
 assert!(!is_remote_url("/local/path/file.tgm"));
@@ -38,7 +38,7 @@ Pass an explicit options map for fine-grained control:
 
 ```rust
 use std::collections::BTreeMap;
-use tensogram_core::TensogramFile;
+use tensogram::TensogramFile;
 
 let mut opts = BTreeMap::new();
 opts.insert("aws_access_key_id".to_string(), "AKIA...".to_string());
@@ -98,7 +98,7 @@ All backends are provided by the [`object_store`](https://crates.io/crates/objec
 Three methods provide selective access without downloading full messages:
 
 ```rust
-use tensogram_core::DecodeOptions;
+use tensogram::DecodeOptions;
 
 // Metadata only — triggers layout discovery on first call, then cached
 let meta = file.decode_metadata(0)?;
@@ -170,7 +170,7 @@ sequenceDiagram
 ## Checking if a File is Remote
 
 ```rust
-use tensogram_core::TensogramFile;
+use tensogram::TensogramFile;
 
 let file = TensogramFile::open_source("s3://bucket/data.tgm")?;
 assert!(file.is_remote());
@@ -209,7 +209,7 @@ The sync bridge adapts to the calling context:
 The `async` feature enables async methods for decode, read, and metadata extraction. These work for both local and remote files:
 
 ```rust
-use tensogram_core::{TensogramFile, DecodeOptions};
+use tensogram::{TensogramFile, DecodeOptions};
 
 // Async decode methods (feature = "async")
 let meta = file.decode_metadata_async(0).await?;
@@ -235,7 +235,7 @@ For remote backends, async methods directly `await` object store operations, byp
 
 ```toml
 [dependencies]
-tensogram-core = { path = "...", features = ["remote", "async"] }
+tensogram = { path = "...", features = ["remote", "async"] }
 ```
 
 ## Range Reads

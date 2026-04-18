@@ -34,8 +34,8 @@
 //! If any test here fails, something visible to web apps has broken.
 
 use std::collections::BTreeMap;
-use tensogram_core::dtype::Dtype;
-use tensogram_core::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
+use tensogram::dtype::Dtype;
+use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
 
@@ -89,7 +89,7 @@ fn default_metadata() -> GlobalMetadata {
 
 /// Encode a message using the Rust core API (inside WASM).
 fn encode_native(meta: &GlobalMetadata, descriptors: &[(&DataObjectDescriptor, &[u8])]) -> Vec<u8> {
-    tensogram_core::encode(meta, descriptors, &tensogram_core::EncodeOptions::default()).unwrap()
+    tensogram::encode(meta, descriptors, &tensogram::EncodeOptions::default()).unwrap()
 }
 
 /// Encode a message with hash disabled.
@@ -97,10 +97,10 @@ fn encode_native_no_hash(
     meta: &GlobalMetadata,
     descriptors: &[(&DataObjectDescriptor, &[u8])],
 ) -> Vec<u8> {
-    tensogram_core::encode(
+    tensogram::encode(
         meta,
         descriptors,
-        &tensogram_core::EncodeOptions {
+        &tensogram::EncodeOptions {
             hash_algorithm: None,
             emit_preceders: false,
             ..Default::default()

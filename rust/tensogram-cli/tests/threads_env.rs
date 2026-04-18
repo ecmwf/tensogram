@@ -22,7 +22,7 @@
 use std::io::Write;
 use std::process::Command;
 
-use tensogram_core::{DataObjectDescriptor, EncodeOptions, GlobalMetadata};
+use tensogram::{DataObjectDescriptor, EncodeOptions, GlobalMetadata};
 
 fn make_input_file(dir: &std::path::Path) -> std::path::PathBuf {
     use ciborium::Value;
@@ -35,8 +35,8 @@ fn make_input_file(dir: &std::path::Path) -> std::path::PathBuf {
         ndim: 1,
         shape: vec![100_000],
         strides: vec![1],
-        dtype: tensogram_core::Dtype::Float64,
-        byte_order: tensogram_core::ByteOrder::native(),
+        dtype: tensogram::Dtype::Float64,
+        byte_order: tensogram::ByteOrder::native(),
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "blosc2".to_string(),
@@ -52,7 +52,7 @@ fn make_input_file(dir: &std::path::Path) -> std::path::PathBuf {
         .flat_map(|i| (250.0f64 + (i as f64).sin() * 30.0).to_ne_bytes())
         .collect();
 
-    let msg = tensogram_core::encode(
+    let msg = tensogram::encode(
         &GlobalMetadata::default(),
         &[(&desc, &data)],
         &EncodeOptions::default(),
@@ -86,7 +86,7 @@ fn env_var_budget_produces_valid_output() {
     assert!(status.success(), "tensogram copy failed");
 
     // Output file must be readable and have the same number of messages.
-    let f = tensogram_core::TensogramFile::open(&output).unwrap();
+    let f = tensogram::TensogramFile::open(&output).unwrap();
     assert_eq!(f.message_count().unwrap(), 1);
 }
 
@@ -112,7 +112,7 @@ fn explicit_flag_overrides_env_var() {
         .expect("spawn tensogram");
     assert!(status.success(), "tensogram --threads copy failed");
 
-    let f = tensogram_core::TensogramFile::open(&output).unwrap();
+    let f = tensogram::TensogramFile::open(&output).unwrap();
     assert_eq!(f.message_count().unwrap(), 1);
 }
 
@@ -130,7 +130,7 @@ fn threads_zero_runs_sequentially() {
         .expect("spawn tensogram");
     assert!(status.success());
 
-    let f = tensogram_core::TensogramFile::open(&output).unwrap();
+    let f = tensogram::TensogramFile::open(&output).unwrap();
     assert_eq!(f.message_count().unwrap(), 1);
 }
 
@@ -150,7 +150,7 @@ fn invalid_env_var_falls_back() {
     // Clap will reject the malformed env var with a non-zero exit.
     // The point is: it must not panic or produce corrupt output.
     if status.success() {
-        let f = tensogram_core::TensogramFile::open(&output).unwrap();
+        let f = tensogram::TensogramFile::open(&output).unwrap();
         assert_eq!(f.message_count().unwrap(), 1);
     }
     // No assert on status — either clean rejection or clean success.

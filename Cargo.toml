@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
-    "rust/tensogram-core",
+    "rust/tensogram",
     "rust/tensogram-encodings",
     "rust/tensogram-sz3",
     "rust/tensogram-sz3-sys",
@@ -15,6 +15,7 @@ members = [
 # require the Python linker). It is excluded from default workspace builds.
 exclude = [
     "python/bindings",
+    "rust/tensogram-core-redirect",
     "rust/tensogram-grib",
     "rust/tensogram-netcdf",
     "rust/tensogram-wasm",
@@ -30,15 +31,15 @@ tracing = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
 serde_json = "1"
 libaec-sys = "0.1"
-tensogram-szip = { path = "rust/tensogram-szip", version = "=0.14.0" }
+tensogram-szip = { path = "rust/tensogram-szip", version = "=0.15.0" }
 zstd = { version = "0.13", features = ["zstdmt"] }
 ruzstd = "0.8"
 lz4_flex = "0.11"
 blosc2 = { version = "0.2", default-features = false, features = ["zstd", "zlib"] }
 blosc2-sys = { package = "blosc2-rs-sys", version = "0.1" }
 zfp-sys-cc = "0.2"
-tensogram-sz3 = { path = "rust/tensogram-sz3", version = "=0.14.0" }
-tensogram-sz3-sys = { path = "rust/tensogram-sz3-sys", version = "=0.14.0" }
+tensogram-sz3 = { path = "rust/tensogram-sz3", version = "=0.15.0" }
+tensogram-sz3-sys = { path = "rust/tensogram-sz3-sys", version = "=0.15.0" }
 proptest = "1"
 rayon = "1"
 

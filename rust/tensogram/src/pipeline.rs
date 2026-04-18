@@ -18,9 +18,9 @@
 //! ## Usage
 //!
 //! ```no_run
-//! use tensogram_core::pipeline::{apply_pipeline, DataPipeline};
-//! use tensogram_core::types::{ByteOrder, DataObjectDescriptor};
-//! use tensogram_core::Dtype;
+//! use tensogram::pipeline::{apply_pipeline, DataPipeline};
+//! use tensogram::types::{ByteOrder, DataObjectDescriptor};
+//! use tensogram::Dtype;
 //! use std::collections::BTreeMap;
 //!
 //! let mut desc = DataObjectDescriptor {
@@ -228,7 +228,7 @@ pub fn apply_pipeline(
         "szip" => {
             desc.compression = "szip".to_string();
             // Sensible szip defaults consistent with the rest of the
-            // codebase (see `tensogram-core` tests + examples).
+            // codebase (see `tensogram` tests + examples).
             desc.params
                 .insert("szip_rsi".to_string(), CborValue::Integer(128.into()));
             desc.params

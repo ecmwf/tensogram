@@ -6,7 +6,7 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
-use tensogram_core::{DataObjectDescriptor, GlobalMetadata};
+use tensogram::{DataObjectDescriptor, GlobalMetadata};
 
 use crate::filter::lookup_key;
 
@@ -221,8 +221,8 @@ mod tests {
             ndim: 1,
             shape: vec![4],
             strides: vec![1],
-            dtype: tensogram_core::Dtype::Float32,
-            byte_order: tensogram_core::ByteOrder::Big,
+            dtype: tensogram::Dtype::Float32,
+            byte_order: tensogram::ByteOrder::Big,
             encoding: "none".into(),
             filter: "none".into(),
             compression: "none".into(),

@@ -13,7 +13,7 @@
 
 //! Tensogram C FFI
 //!
-//! Exposes the tensogram-core library to C and C++ callers via opaque handles,
+//! Exposes the tensogram library to C and C++ callers via opaque handles,
 //! typed accessor functions, and a flat C ABI.
 //!
 //! Memory ownership rules:
@@ -40,10 +40,10 @@ use std::path::Path;
 use std::ptr;
 use std::slice;
 
-use tensogram_core::validate::{
+use tensogram::validate::{
     ValidateOptions, ValidationLevel, validate_file as core_validate_file, validate_message,
 };
-use tensogram_core::{
+use tensogram::{
     DataObjectDescriptor, DecodeOptions, EncodeOptions, GlobalMetadata, HashAlgorithm,
     RESERVED_KEY, StreamingEncoder, TensogramError, TensogramFile, decode, decode_metadata,
     decode_object, decode_range, encode, encode_pre_encoded, scan,
@@ -306,8 +306,8 @@ fn build_message_caches(objects: &[(DataObjectDescriptor, Vec<u8>)]) -> MessageC
         .iter()
         .map(|(desc, _)| {
             let s = match desc.byte_order {
-                tensogram_core::ByteOrder::Big => "big",
-                tensogram_core::ByteOrder::Little => "little",
+                tensogram::ByteOrder::Big => "big",
+                tensogram::ByteOrder::Little => "little",
             };
             CString::new(s).unwrap_or_default()
         })
@@ -1895,7 +1895,7 @@ pub extern "C" fn tgm_buffer_iter_free(iter: *mut TgmBufferIter) {
 
 /// Opaque handle for iterating over messages in a file.
 pub struct TgmFileIter {
-    inner: tensogram_core::FileMessageIter,
+    inner: tensogram::FileMessageIter,
 }
 
 /// Create a file message iterator from an open TgmFile.
@@ -1971,7 +1971,7 @@ pub extern "C" fn tgm_file_iter_free(iter: *mut TgmFileIter) {
 
 /// Opaque handle for iterating over objects within a single message.
 pub struct TgmObjectIter {
-    inner: tensogram_core::ObjectIter,
+    inner: tensogram::ObjectIter,
     /// Global metadata parsed from the message header, cloned into each
     /// yielded `TgmMessage` to preserve the original version and extra fields.
     global_metadata: GlobalMetadata,
@@ -2005,7 +2005,7 @@ pub extern "C" fn tgm_object_iter_create(
     // each yielded TgmMessage instead of fabricating a default.
     let global_metadata = decode_metadata(data).unwrap_or_default();
 
-    match tensogram_core::objects(data, options) {
+    match tensogram::objects(data, options) {
         Ok(inner) => {
             let iter = Box::new(TgmObjectIter {
                 inner,
@@ -2589,8 +2589,8 @@ mod tests {
             ndim: 1,
             shape: vec![4],
             strides: vec![1],
-            dtype: tensogram_core::Dtype::Float32,
-            byte_order: tensogram_core::ByteOrder::native(),
+            dtype: tensogram::Dtype::Float32,
+            byte_order: tensogram::ByteOrder::native(),
             encoding: "none".to_string(),
             filter: "none".to_string(),
             compression: "none".to_string(),
@@ -2601,7 +2601,7 @@ mod tests {
             .iter()
             .flat_map(|v| v.to_ne_bytes())
             .collect();
-        tensogram_core::encode(&meta, &[(&desc, data.as_slice())], &Default::default()).unwrap()
+        tensogram::encode(&meta, &[(&desc, data.as_slice())], &Default::default()).unwrap()
     }
 
     #[test]
@@ -5318,7 +5318,7 @@ pub extern "C" fn tgm_compute_hash(
     };
 
     let input = unsafe { slice::from_raw_parts(data, data_len) };
-    let hex = tensogram_core::hash::compute_hash(input, algorithm);
+    let hex = tensogram::hash::compute_hash(input, algorithm);
     // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
     let mut bytes = hex.into_bytes().into_boxed_slice().into_vec();
     let result = TgmBytes {

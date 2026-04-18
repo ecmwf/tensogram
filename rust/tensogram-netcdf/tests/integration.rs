@@ -14,7 +14,7 @@
 // DecodedObject = (DataObjectDescriptor, Vec<u8>)
 // Access descriptor via .0, data bytes via .1
 
-use tensogram_core::{DecodeOptions, Dtype, decode};
+use tensogram::{DecodeOptions, Dtype, decode};
 use tensogram_netcdf::{ConvertOptions, DataPipeline, NetcdfError, SplitBy, convert_netcdf_file};
 
 fn testdata(name: &str) -> std::path::PathBuf {
@@ -25,8 +25,8 @@ fn testdata(name: &str) -> std::path::PathBuf {
 }
 
 type DecodedMsg = (
-    tensogram_core::types::GlobalMetadata,
-    Vec<tensogram_core::types::DecodedObject>,
+    tensogram::types::GlobalMetadata,
+    Vec<tensogram::types::DecodedObject>,
 );
 
 fn decode_first(msgs: &[Vec<u8>]) -> DecodedMsg {

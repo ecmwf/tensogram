@@ -24,7 +24,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use tensogram_core::{
+use tensogram::{
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, decode,
     encode, framing,
 };
@@ -132,7 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // blosc2 with nthreads > 0 produces a different compressed byte
     // stream (blocks land in worker completion order) but always
     // round-trips to the same data.  blosc2 is part of the default
-    // tensogram-core feature set, so no cfg gate is needed here.
+    // tensogram feature set, so no cfg gate is needed here.
 
     use ciborium::Value;
     let mut blosc2_desc = desc.clone();

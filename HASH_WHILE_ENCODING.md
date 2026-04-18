@@ -55,7 +55,7 @@ Add an opt-in hash output to `tensogram-encodings::pipeline`:
 pub struct PipelineConfig {
     // …existing fields…
     /// Compute xxh3-64 over the final encoded bytes inline with encoding.
-    /// Set by the `tensogram-core` layer when `EncodeOptions.hash_algorithm
+    /// Set by the `tensogram` layer when `EncodeOptions.hash_algorithm
     /// == Some(Xxh3)`.  Leaving this `false` preserves pre-PR behaviour
     /// exactly.
     pub compute_hash: bool,
@@ -98,7 +98,7 @@ the hasher runs on the calling thread with no synchronisation.
 
 ### 2B. Buffered encoder — use pipeline hash
 
-In `tensogram-core::encode::encode_one_object`, the `EncodeMode::Raw`
+In `tensogram::encode::encode_one_object`, the `EncodeMode::Raw`
 branch sets `config.compute_hash = options.hash_algorithm.is_some()`
 before calling the pipeline, and populates the descriptor from
 `PipelineResult.hash` instead of calling `compute_hash` a second time.
@@ -210,9 +210,9 @@ scope for this PR**.  Reasons:
 * `rust/tensogram-encodings/src/pipeline.rs` — `PipelineConfig.compute_hash`,
   `PipelineResult.hash`, `copy_and_hash` helper, inline hashing in both
   `encode_pipeline` and `encode_pipeline_f64`.
-* `rust/tensogram-core/src/encode.rs` — `encode_one_object` wires
+* `rust/tensogram/src/encode.rs` — `encode_one_object` wires
   `compute_hash` through and reads back `PipelineResult.hash`.
-* `rust/tensogram-core/src/streaming.rs` — `write_object_inner` refactored
+* `rust/tensogram/src/streaming.rs` — `write_object_inner` refactored
   to use the new fused `write_data_object_frame_hashed` helper.
 * `rust/benchmarks/` — new `hash_overhead` criterion benchmark comparing
   the two-pass baseline against the fused path on
@@ -226,7 +226,7 @@ scope for this PR**.  Reasons:
 
 **Unchanged**:
 
-* Public APIs of `tensogram-core`, `tensogram-ffi`, `tensogram-cli`,
+* Public APIs of `tensogram`, `tensogram-ffi`, `tensogram-cli`,
   `tensogram-wasm`, Python bindings, C++ wrapper, TypeScript wrapper.
 * `EncodeOptions`, `DecodeOptions`, `HashDescriptor`, `compute_hash`,
   `verify_hash`.

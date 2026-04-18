@@ -167,7 +167,7 @@ Returns `undefined` if the key is missing (never throws).
 
 ### `computeCommon(meta)`
 
-Mirror of `tensogram_core::compute_common`. Returns a
+Mirror of `tensogram::compute_common`. Returns a
 `Record<string, CborValue>` of keys that are present with identical
 values in every entry of `meta.base`. Useful for display and merge
 operations.
@@ -384,7 +384,7 @@ architecture, phases, test strategy, memory model, and open follow-ups.
 
 This TypeScript package decodes the **same golden `.tgm` files** used
 by the Rust, Python, and C++ test suites. The committed files at
-`rust/tensogram-core/tests/golden/*.tgm` are decoded by each language's
+`rust/tensogram/tests/golden/*.tgm` are decoded by each language's
 test runner; any drift in wire-format semantics fails all four suites.
 
 Specifically, `typescript/tests/golden.test.ts` decodes:

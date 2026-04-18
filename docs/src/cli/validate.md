@@ -121,7 +121,7 @@ The same validation is available programmatically:
 
 ```rust
 use std::path::Path;
-use tensogram_core::{validate_message, validate_file, ValidateOptions};
+use tensogram::{validate_message, validate_file, ValidateOptions};
 
 // Validate a single message buffer
 let report = validate_message(&bytes, &ValidateOptions::default());

@@ -1,13 +1,13 @@
 [package]
-name = "tensogram-core"
-version = "0.14.0"
+name = "tensogram"
+version = "0.15.0"
 edition = "2024"
 rust-version = "1.87"
 license = "Apache-2.0"
 description = "Fast binary N-tensor message format for scientific data — encode, decode, file I/O, streaming"
 repository = "https://github.com/ecmwf/tensogram"
 homepage = "https://sites.ecmwf.int/docs/tensogram/main"
-documentation = "https://docs.rs/tensogram-core"
+documentation = "https://docs.rs/tensogram"
 readme = "README.md"
 keywords = ["tensogram", "tensor", "scientific-data", "encoding", "serialization"]
 categories = ["science", "encoding"]
@@ -38,7 +38,7 @@ sz3 = ["tensogram-encodings/sz3"]
 threads = ["dep:rayon", "tensogram-encodings/threads"]
 
 [dependencies]
-tensogram-encodings = { path = "../tensogram-encodings", version = "=0.14.0", default-features = false }
+tensogram-encodings = { path = "../tensogram-encodings", version = "=0.15.0", default-features = false }
 thiserror.workspace = true
 ciborium = { workspace = true }
 serde.workspace = true

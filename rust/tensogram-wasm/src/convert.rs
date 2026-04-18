@@ -6,7 +6,7 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
-//! Conversion utilities between tensogram-core types and JS values.
+//! Conversion utilities between tensogram types and JS values.
 //!
 //! Uses `serde-wasm-bindgen` for metadata (CBOR → JS objects) and
 //! `wasm_bindgen::memory()` + byte offsets for zero-copy TypedArray

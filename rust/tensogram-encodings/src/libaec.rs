@@ -452,7 +452,7 @@ mod tests {
     fn corrupted_data_produces_wrong_output() {
         // libaec may not always return an error for corrupt data, but the
         // decompressed output will differ from the original — this is caught
-        // by the hash verification layer in tensogram-core, not the compressor
+        // by the hash verification layer in tensogram, not the compressor
         let data: Vec<u8> = (0..2048).map(|i| (i % 256) as u8).collect();
         let params = default_params(8);
         let (mut compressed, _) = aec_compress(&data, &params).unwrap();

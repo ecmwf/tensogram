@@ -21,7 +21,7 @@ All four bindings expose a `threads: u32` option on encode and decode
 entry points:
 
 ```rust
-use tensogram_core::{encode, decode, EncodeOptions, DecodeOptions};
+use tensogram::{encode, decode, EncodeOptions, DecodeOptions};
 
 // Encode with a 4-thread pool:
 let msg = encode(&meta, &descriptors, &EncodeOptions {
@@ -170,7 +170,7 @@ These stages produce the **same encoded bytes** regardless of
 
 Encoded payload bytes are bit-exact identical for `threads ∈ {0, 1, 2,
 4, 8, 16, ...}`.  This is exercised by the
-`rust/tensogram-core/tests/threads_determinism.rs` integration suite.
+`rust/tensogram/tests/threads_determinism.rs` integration suite.
 
 ### Opaque codecs — lossless round-trip, may differ
 

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 
-use tensogram_core::{
+use tensogram::{
     DecodeOptions, EncodeOptions, GlobalMetadata, RESERVED_KEY, TensogramFile, decode, encode,
 };
 
@@ -86,7 +86,7 @@ pub fn run(
     let strategy = MergeStrategy::parse(strategy_str)?;
 
     let mut merged_meta: Option<GlobalMetadata> = None;
-    let mut all_objects: Vec<(tensogram_core::DataObjectDescriptor, Vec<u8>)> = Vec::new();
+    let mut all_objects: Vec<(tensogram::DataObjectDescriptor, Vec<u8>)> = Vec::new();
 
     for input in inputs {
         let file = TensogramFile::open(input.as_ref())?;
@@ -129,7 +129,7 @@ pub fn run(
         entry.remove(RESERVED_KEY);
     }
 
-    let refs: Vec<(&tensogram_core::DataObjectDescriptor, &[u8])> =
+    let refs: Vec<(&tensogram::DataObjectDescriptor, &[u8])> =
         all_objects.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
     let encoded = encode(
@@ -244,14 +244,14 @@ mod tests {
 
     fn make_test_file(dir: &std::path::Path, name: &str, param: &str) -> std::path::PathBuf {
         let path = dir.join(name);
-        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
-        let desc = tensogram_core::DataObjectDescriptor {
+        let mut f = tensogram::TensogramFile::create(&path).unwrap();
+        let desc = tensogram::DataObjectDescriptor {
             obj_type: "ntensor".into(),
             ndim: 1,
             shape: vec![4],
             strides: vec![1],
-            dtype: tensogram_core::Dtype::Float32,
-            byte_order: tensogram_core::ByteOrder::Big,
+            dtype: tensogram::Dtype::Float32,
+            byte_order: tensogram::ByteOrder::Big,
             encoding: "none".into(),
             filter: "none".into(),
             compression: "none".into(),
@@ -264,7 +264,7 @@ mod tests {
             "param".to_string(),
             ciborium::Value::Text(param.to_string()),
         );
-        let meta = tensogram_core::GlobalMetadata {
+        let meta = tensogram::GlobalMetadata {
             version: 2,
             extra,
             ..Default::default()
@@ -272,7 +272,7 @@ mod tests {
         f.append(
             &meta,
             &[(&desc, &data)],
-            &tensogram_core::EncodeOptions::default(),
+            &tensogram::EncodeOptions::default(),
         )
         .unwrap();
         path
@@ -285,7 +285,7 @@ mod tests {
         let b = make_test_file(dir.path(), "b.tgm", "msl");
         let out = dir.path().join("merged.tgm");
         run(&[a, b], &out, "first", 0).unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         assert_eq!(f.message_count().unwrap(), 1); // merged into 1 message
     }
 
@@ -315,9 +315,9 @@ mod tests {
         let out = dir.path().join("merged_base.tgm");
         run(&[a, b], &out, "first", 0).unwrap();
 
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
-        let meta = tensogram_core::decode_metadata(&msg).unwrap();
+        let meta = tensogram::decode_metadata(&msg).unwrap();
         // Should have 2 base entries (one from each file)
         assert_eq!(meta.base.len(), 2);
     }
@@ -328,14 +328,14 @@ mod tests {
         param: &str,
     ) -> std::path::PathBuf {
         let path = dir.join(name);
-        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
-        let desc = tensogram_core::DataObjectDescriptor {
+        let mut f = tensogram::TensogramFile::create(&path).unwrap();
+        let desc = tensogram::DataObjectDescriptor {
             obj_type: "ntensor".into(),
             ndim: 1,
             shape: vec![4],
             strides: vec![1],
-            dtype: tensogram_core::Dtype::Float32,
-            byte_order: tensogram_core::ByteOrder::Big,
+            dtype: tensogram::Dtype::Float32,
+            byte_order: tensogram::ByteOrder::Big,
             encoding: "none".into(),
             filter: "none".into(),
             compression: "none".into(),
@@ -348,7 +348,7 @@ mod tests {
             "param".to_string(),
             ciborium::Value::Text(param.to_string()),
         );
-        let meta = tensogram_core::GlobalMetadata {
+        let meta = tensogram::GlobalMetadata {
             version: 2,
             base: vec![base],
             ..Default::default()
@@ -356,7 +356,7 @@ mod tests {
         f.append(
             &meta,
             &[(&desc, &data)],
-            &tensogram_core::EncodeOptions::default(),
+            &tensogram::EncodeOptions::default(),
         )
         .unwrap();
         path
@@ -370,9 +370,9 @@ mod tests {
         let out = dir.path().join("merged_strip.tgm");
         run(&[a], &out, "first", 0).unwrap();
 
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
-        let meta = tensogram_core::decode_metadata(&msg).unwrap();
+        let meta = tensogram::decode_metadata(&msg).unwrap();
         // _reserved_ at message level should be regenerated (encoder adds fresh)
         // The key point: _reserved_ in base entries should NOT contain old data
         // from the input since we strip it before re-encoding

@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use tensogram_core::{
+use tensogram::{
     ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata, ValidateOptions,
     ValidationLevel, encode, validate_message,
 };

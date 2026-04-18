@@ -121,7 +121,7 @@ At 16 bits, the error is smaller than any practical sensor precision.
 ## Full Integration Example
 
 ```rust
-use tensogram_core::{encode, decode, GlobalMetadata, DataObjectDescriptor,
+use tensogram::{encode, decode, GlobalMetadata, DataObjectDescriptor,
                      ByteOrder, Dtype, EncodeOptions, DecodeOptions};
 use tensogram_encodings::simple_packing;
 use ciborium::Value;

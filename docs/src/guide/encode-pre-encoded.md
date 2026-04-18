@@ -105,7 +105,7 @@ size. Wrap such payloads in at least `simple_packing` or another encoding.
 ## Worked example: simple_packing + szip with decode_range
 
 ```rust
-use tensogram_core::{
+use tensogram::{
     encode_pre_encoded, DataObjectDescriptor, EncodeOptions,
     GlobalMetadata, ByteOrder, Dtype,
 };

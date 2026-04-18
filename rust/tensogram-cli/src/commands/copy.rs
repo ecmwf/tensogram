@@ -9,7 +9,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use tensogram_core::{TensogramFile, decode_metadata};
+use tensogram::{TensogramFile, decode_metadata};
 
 use crate::filter::{self, lookup_key};
 
@@ -73,7 +73,7 @@ pub fn run(
 ///
 /// For multi-object messages, each placeholder resolves to global metadata keys only.
 /// That keeps split filenames stable.
-fn expand_placeholders(template: &str, metadata: &tensogram_core::GlobalMetadata) -> String {
+fn expand_placeholders(template: &str, metadata: &tensogram::GlobalMetadata) -> String {
     let mut result = template.to_string();
     // Find all [key] patterns
     while let Some(start) = result.find('[') {
@@ -98,7 +98,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use tensogram_core::GlobalMetadata;
+    use tensogram::GlobalMetadata;
 
     fn metadata_without_param() -> GlobalMetadata {
         GlobalMetadata {
@@ -117,11 +117,11 @@ mod tests {
 
     // ── Integration tests ──
 
-    use tensogram_core::{ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions};
+    use tensogram::{ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions};
 
     fn make_test_file(dir: &std::path::Path) -> PathBuf {
         let path = dir.join("copy_input.tgm");
-        let mut f = tensogram_core::TensogramFile::create(&path).unwrap();
+        let mut f = tensogram::TensogramFile::create(&path).unwrap();
         let desc = DataObjectDescriptor {
             obj_type: "ntensor".into(),
             ndim: 1,
@@ -166,7 +166,7 @@ mod tests {
         let input = make_test_file(dir.path());
         let out = dir.path().join("copy_out.tgm");
         run(&input, out.to_str().unwrap(), None).unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         assert_eq!(f.message_count().unwrap(), 2);
     }
 
@@ -176,7 +176,7 @@ mod tests {
         let input = make_test_file(dir.path());
         let out = dir.path().join("filtered.tgm");
         run(&input, out.to_str().unwrap(), Some("param=2t")).unwrap();
-        let f = tensogram_core::TensogramFile::open(&out).unwrap();
+        let f = tensogram::TensogramFile::open(&out).unwrap();
         assert_eq!(f.message_count().unwrap(), 1);
     }
 

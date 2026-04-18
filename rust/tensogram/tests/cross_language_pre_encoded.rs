@@ -28,7 +28,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use tensogram_core::{
+use tensogram::{
     ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata, decode,
     encode_pre_encoded,
 };
@@ -91,7 +91,7 @@ fn rust_encode_decode_sha256() -> String {
 
 /// Find the project root from CARGO_MANIFEST_DIR.
 fn project_root() -> PathBuf {
-    // CARGO_MANIFEST_DIR for this crate is crates/tensogram-core
+    // CARGO_MANIFEST_DIR for this crate is crates/tensogram
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
         .parent()

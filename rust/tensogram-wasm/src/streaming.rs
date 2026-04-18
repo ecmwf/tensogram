@@ -30,7 +30,7 @@
 //! ```
 
 use crate::convert::*;
-use tensogram_core as core;
+use tensogram as core;
 use wasm_bindgen::prelude::*;
 
 /// Default maximum buffer size: 256 MiB.  Prevents unbounded memory

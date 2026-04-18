@@ -2153,38 +2153,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "tensogram-benchmarks"
-version = "0.14.0"
-dependencies = [
- "ciborium",
- "clap",
- "criterion",
- "eccodes",
- "eccodes-sys",
- "tensogram-core",
- "tensogram-encodings",
- "xxhash-rust",
-]
-
-[[package]]
-name = "tensogram-cli"
-version = "0.14.0"
-dependencies = [
- "ciborium",
- "clap",
- "serde",
- "serde_json",
- "tempfile",
- "tensogram-core",
- "tensogram-grib",
- "tensogram-netcdf",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "tensogram-core"
-version = "0.14.0"
+name = "tensogram"
+version = "0.15.0"
 dependencies = [
  "bytes",
  "ciborium",
@@ -2209,8 +2179,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "tensogram-benchmarks"
+version = "0.15.0"
+dependencies = [
+ "ciborium",
+ "clap",
+ "criterion",
+ "eccodes",
+ "eccodes-sys",
+ "tensogram",
+ "tensogram-encodings",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "tensogram-cli"
+version = "0.15.0"
+dependencies = [
+ "ciborium",
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tensogram",
+ "tensogram-grib",
+ "tensogram-netcdf",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tensogram-encodings"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "blosc2",
  "blosc2-rs-sys",
@@ -2230,53 +2230,53 @@ dependencies = [
 
 [[package]]
 name = "tensogram-ffi"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "cbindgen",
  "ciborium",
  "serde",
  "serde_json",
- "tensogram-core",
+ "tensogram",
  "tensogram-encodings",
 ]
 
 [[package]]
 name = "tensogram-grib"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "ciborium",
  "eccodes",
- "tensogram-core",
+ "tensogram",
  "tensogram-encodings",
  "thiserror",
 ]
 
 [[package]]
 name = "tensogram-netcdf"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "ciborium",
  "netcdf",
- "tensogram-core",
+ "tensogram",
  "tensogram-encodings",
  "thiserror",
 ]
 
 [[package]]
 name = "tensogram-rust-examples"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "ciborium",
  "serde_json",
  "tempfile",
- "tensogram-core",
+ "tensogram",
  "tensogram-encodings",
  "tensogram-netcdf",
 ]
 
 [[package]]
 name = "tensogram-sz3"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "tensogram-sz3-sys",
  "thiserror",
@@ -2285,7 +2285,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-sz3-sys"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "cc",
  "zstd-sys",
@@ -2293,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-szip"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "libaec-sys",
  "proptest",

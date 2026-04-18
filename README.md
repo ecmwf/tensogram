@@ -7,11 +7,17 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity#emerging">
-    <img src="https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity/emerging_badge.svg" alt="Emerging">
+  <a href="https://crates.io/crates/tensogram">
+    <img src="https://img.shields.io/crates/v/tensogram.svg" alt="crates.io">
+  </a>
+  <a href="https://pypi.org/project/tensogram/">
+    <img src="https://img.shields.io/pypi/v/tensogram.svg" alt="PyPI">
   </a>
   <a href="https://sites.ecmwf.int/docs/tensogram/main">
     <img src="https://img.shields.io/badge/docs-online-blue" alt="Documentation">
+  </a>
+  <a href="https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity#emerging">
+    <img src="https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity/emerging_badge.svg" alt="Emerging">
   </a>
 </p>
 
@@ -44,6 +50,43 @@ Tensogram defines a network-transmissible binary message format, not a file form
 - **NetCDF conversion** — import NetCDF-3 and NetCDF-4 files with CF metadata lifting (`--cf`), packed data unpacking, and configurable encoding/compression pipeline shared with `convert-grib`
 - **CLI** — `tensogram info/ls/dump/get/set/copy/merge/split/reshuffle/convert-grib/convert-netcdf` with `--strategy first|last|error` merge conflict resolution
 - **Optional features** — `mmap` (zero-copy file reads), `async` (tokio I/O), `remote` (S3/GCS/Azure/HTTP)
+
+## Installation
+
+### Rust
+
+```bash
+cargo add tensogram
+```
+
+With optional features:
+```bash
+cargo add tensogram --features mmap,async,remote
+```
+
+### Python
+
+```bash
+pip install tensogram
+```
+
+With xarray and Zarr backends:
+```bash
+pip install tensogram[all]
+```
+
+### CLI
+
+```bash
+cargo install tensogram-cli
+```
+
+With GRIB/NetCDF converters (requires system libraries):
+```bash
+cargo install tensogram-cli --features grib,netcdf
+```
+
+---
 
 ## Quick Start
 
@@ -101,7 +144,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings  # lint
 
 **Optional features:**
 ```bash
-cargo build -p tensogram-core --features mmap,async,remote
+cargo build -p tensogram --features mmap,async,remote
 ```
 
 **C++ wrapper** (`cpp/include/tensogram.hpp`):
@@ -174,7 +217,7 @@ Then open `http://localhost:3000`.
 
 ```
 rust/
-├── tensogram-core/       Core encode/decode library
+├── tensogram/       Core encode/decode library
 ├── tensogram-encodings/  Encoding pipeline + compression codecs
 ├── tensogram-cli/        CLI binary (tensogram command)
 ├── tensogram-ffi/        C FFI layer

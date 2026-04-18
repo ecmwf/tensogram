@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use tensogram_core::{
+use tensogram::{
     ByteOrder, DataObjectDescriptor, Dtype, EncodeOptions, GlobalMetadata, encode,
     encode_pre_encoded, framing,
 };

@@ -64,7 +64,7 @@ The `_reserved_` section at the message level holds library-managed provenance i
 }
 ```
 
-> **Note:** `_reserved_.encoder.version` is set to the library's crate version at compile time via `env!("CARGO_PKG_VERSION")` — the value above reflects the tensogram-core version in use.
+> **Note:** `_reserved_.encoder.version` is set to the library's crate version at compile time via `env!("CARGO_PKG_VERSION")` — the value above reflects the tensogram version in use.
 
 Within each `base[i]` entry, the encoder also auto-populates `_reserved_.tensor`:
 

@@ -1,6 +1,6 @@
 [package]
 name = "tensogram-python"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2024"
 publish = false
 
@@ -10,10 +10,10 @@ crate-type = ["cdylib"]
 
 [features]
 default = ["async"]
-async = ["tensogram-core/async", "dep:pyo3-async-runtimes"]
+async = ["tensogram-lib/async", "dep:pyo3-async-runtimes"]
 
 [dependencies]
-tensogram-core = { path = "../../rust/tensogram-core", features = ["remote"] }
+tensogram-lib = { package = "tensogram", path = "../../rust/tensogram", features = ["remote"] }
 tensogram-encodings = { path = "../../rust/tensogram-encodings" }
 pyo3 = { version = "0.28", features = ["extension-module"] }
 numpy = "0.28"

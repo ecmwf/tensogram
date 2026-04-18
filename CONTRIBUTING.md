@@ -34,7 +34,7 @@ If all of that passes, you're ready to go.
 ```
 tensogram/
 ├── rust/
-│   ├── tensogram-core/         # Core library: wire format, encode/decode,
+│   ├── tensogram/         # Core library: wire format, encode/decode,
 │   │                           #   file API, iterators, validation, remote
 │   ├── tensogram-encodings/    # Encoding pipeline: simple_packing, shuffle,
 │   │                           #   compression (szip, zstd, lz4, blosc2, zfp, sz3)
@@ -101,13 +101,13 @@ If your change touches file I/O or adds new public API:
 
 ```bash
 # Test with memory-mapped I/O support
-cargo test -p tensogram-core --features mmap
+cargo test -p tensogram --features mmap
 
 # Test with async support
-cargo test -p tensogram-core --features async
+cargo test -p tensogram --features async
 
 # Test with both
-cargo test -p tensogram-core --features mmap,async
+cargo test -p tensogram --features mmap,async
 ```
 
 ### 4. Update documentation
@@ -137,12 +137,12 @@ runners to tell you the current numbers.
 | Shape | Where it lives | Purpose |
 |-------|----------------|---------|
 | Unit | `#[cfg(test)]` modules alongside the code in each crate | Module-level behaviour tests |
-| Integration | `rust/tensogram-core/tests/integration*.rs` | Full encode/decode round-trips across dtypes and pipelines |
-| Adversarial | `rust/tensogram-core/tests/adversarial.rs`, `edge_cases.rs` | Corrupted inputs, boundary conditions, error paths |
-| Golden files | `rust/tensogram-core/tests/golden_files.rs` + `tests/golden/*.tgm` | Byte-for-byte cross-language determinism |
+| Integration | `rust/tensogram/tests/integration*.rs` | Full encode/decode round-trips across dtypes and pipelines |
+| Adversarial | `rust/tensogram/tests/adversarial.rs`, `edge_cases.rs` | Corrupted inputs, boundary conditions, error paths |
+| Golden files | `rust/tensogram/tests/golden_files.rs` + `tests/golden/*.tgm` | Byte-for-byte cross-language determinism |
 | Property-based | `rust/tensogram-szip/tests/proptest_roundtrip.rs` | Proptest round-trip for the pure-Rust szip codec |
 | Stress / parity | `rust/tensogram-szip/tests/stress.rs`, `libaec_parity.rs`, `ffi_crosscheck.rs` | Cross-validation against libaec |
-| Remote HTTP | `rust/tensogram-core/tests/remote_http.rs` | Mock HTTP server exercising the `remote` feature |
+| Remote HTTP | `rust/tensogram/tests/remote_http.rs` | Mock HTTP server exercising the `remote` feature |
 | CLI | `rust/tensogram-cli/src/commands/*.rs` + `rust/benchmarks/tests/smoke.rs` | Subcommand behaviour (needs `--features netcdf,grib` for converter coverage) |
 | Converters | `rust/tensogram-grib/tests/`, `rust/tensogram-netcdf/tests/` | Integration against real GRIB / NetCDF fixtures |
 | WebAssembly | `rust/tensogram-wasm/` + `wasm-bindgen-test` | Browser / Node.js decode paths |
@@ -151,7 +151,7 @@ runners to tell you the current numbers.
 | Zarr | `python/tensogram-zarr/tests/` | Zarr v3 store read/write path |
 | C++ wrapper | `cpp/tests/*.cpp` | RAII handle behaviour, exception mapping, cross-language round-trip |
 
-Golden binary files in `rust/tensogram-core/tests/golden/` are checked
+Golden binary files in `rust/tensogram/tests/golden/` are checked
 into the repo. If the wire format changes, regenerate them by running
 `cargo test --test golden_files`.
 

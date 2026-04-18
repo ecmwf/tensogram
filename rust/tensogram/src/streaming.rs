@@ -38,8 +38,8 @@ use tensogram_encodings::pipeline;
 /// ```no_run
 /// use std::io::BufWriter;
 /// use std::fs::File;
-/// use tensogram_core::streaming::StreamingEncoder;
-/// use tensogram_core::{GlobalMetadata, EncodeOptions};
+/// use tensogram::streaming::StreamingEncoder;
+/// use tensogram::{GlobalMetadata, EncodeOptions};
 ///
 /// let file = BufWriter::new(File::create("output.tgm").unwrap());
 /// let meta = GlobalMetadata::default();
