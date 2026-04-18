@@ -152,6 +152,65 @@ jobs:
         if: always()
         run: rm -rf "$TMPDIR" .venv target
 
+  # ── Linux: Jupyter notebooks (executes examples/jupyter/*.ipynb end-to-end) ──
+  notebooks:
+    name: Test (Jupyter notebooks)
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.2.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
+
+      # The CI image does not carry libeccodes / libnetcdf — installing
+      # them here keeps the image lean (they are only needed for this
+      # one job + the Jupyter notebooks on a user's machine).
+      - name: Install libeccodes + libnetcdf + libhdf5
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libeccodes-dev libnetcdf-dev libhdf5-dev
+          apt-get clean && rm -rf /var/lib/apt/lists/*
+
+      - name: Build bindings (with grib + netcdf features) and install notebook deps
+        run: |
+          uv python install 3.13
+          uv venv .venv --python 3.13
+          . .venv/bin/activate
+          uv pip install maturin numpy pytest nbformat
+          # Build the Python bindings with GRIB and NetCDF support.
+          cd python/bindings && maturin develop --features grib,netcdf && cd ../..
+          # Install xarray backend + notebook deps (editable).
+          uv pip install -e python/tensogram-xarray/
+          uv pip install -e "examples/jupyter[dev]"
+
+      - name: Structural guard (fast; fails if someone forgot nbstripout)
+        run: |
+          . .venv/bin/activate
+          python -m pytest python/tests/test_jupyter_structure.py -v
+
+      - name: Execute every notebook end-to-end (nbval-lax)
+        run: |
+          . .venv/bin/activate
+          python -m pytest --nbval-lax examples/jupyter/ -v
+
+      - name: Run the rewritten / new examples as smoke tests
+        run: |
+          . .venv/bin/activate
+          python examples/python/12_convert_netcdf.py
+          python examples/python/17_convert_grib.py
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-adv-stats
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" .venv target
+
   # ── Linux: free-threaded Python 3.13t ──────────────────────────
   test-python-ft:
     name: Test (Python 3.13t free-threaded)

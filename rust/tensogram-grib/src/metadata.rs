@@ -116,3 +116,115 @@ pub(crate) fn extract_all_namespace_keys(
 
 // Tests for extract_mars_keys / extract_all_namespace_keys require real
 // ecCodes handles and live in the integration test suite (tests/integration.rs).
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for [`dynamic_to_cbor`].
+    //!
+    //! The happy-path branches (`Str`, `Int`, `Float`) are already exercised
+    //! end-to-end by `tests/integration.rs` on real GRIB fixtures; these
+    //! cases fire so often that coverage shows high hit counts.  What
+    //! integration tests *cannot* reach are the skip branches — sentinel
+    //! strings, sentinel integers, NaN floats, and the array variants —
+    //! because none of our fixtures contain such keys.  This module pokes
+    //! those branches directly with synthesised `DynamicKeyType` values.
+
+    use super::*;
+
+    #[test]
+    fn str_non_sentinel_becomes_text() {
+        assert_eq!(
+            dynamic_to_cbor(DynamicKeyType::Str("2t".to_string())),
+            Some(CborValue::Text("2t".to_string())),
+        );
+    }
+
+    #[test]
+    fn str_missing_sentinel_returns_none() {
+        assert_eq!(
+            dynamic_to_cbor(DynamicKeyType::Str("MISSING".to_string())),
+            None,
+        );
+    }
+
+    #[test]
+    fn str_not_found_sentinel_returns_none() {
+        assert_eq!(
+            dynamic_to_cbor(DynamicKeyType::Str("not_found".to_string())),
+            None,
+        );
+    }
+
+    #[test]
+    fn int_non_sentinel_becomes_integer() {
+        assert_eq!(
+            dynamic_to_cbor(DynamicKeyType::Int(42)),
+            Some(CborValue::Integer(42_i64.into())),
+        );
+    }
+
+    #[test]
+    fn int_positive_sentinel_returns_none() {
+        // ecCodes' i32::MAX sentinel for "missing" integer keys.
+        assert_eq!(dynamic_to_cbor(DynamicKeyType::Int(2147483647)), None);
+    }
+
+    #[test]
+    fn int_negative_sentinel_returns_none() {
+        assert_eq!(dynamic_to_cbor(DynamicKeyType::Int(-2147483647)), None);
+    }
+
+    #[test]
+    fn float_finite_becomes_float() {
+        assert_eq!(
+            dynamic_to_cbor(DynamicKeyType::Float(1.5)),
+            Some(CborValue::Float(1.5)),
+        );
+    }
+
+    #[test]
+    fn float_nan_returns_none() {
+        assert_eq!(dynamic_to_cbor(DynamicKeyType::Float(f64::NAN)), None);
+    }
+
+    #[test]
+    fn float_positive_infinity_returns_none() {
+        assert_eq!(dynamic_to_cbor(DynamicKeyType::Float(f64::INFINITY)), None);
+    }
+
+    #[test]
+    fn float_negative_infinity_returns_none() {
+        assert_eq!(
+            dynamic_to_cbor(DynamicKeyType::Float(f64::NEG_INFINITY)),
+            None,
+        );
+    }
+
+    #[test]
+    fn float_array_returns_none() {
+        // Array variants are not carried through into the metadata map —
+        // they would blow up the CBOR size.  The current policy is to skip.
+        assert_eq!(
+            dynamic_to_cbor(DynamicKeyType::FloatArray(vec![1.0, 2.0, 3.0])),
+            None,
+        );
+    }
+
+    #[test]
+    fn int_array_returns_none() {
+        assert_eq!(
+            dynamic_to_cbor(DynamicKeyType::IntArray(vec![1, 2, 3])),
+            None,
+        );
+    }
+
+    #[test]
+    fn bytes_returns_none() {
+        // Bytes is the "binary section" variant — not representable as a
+        // scalar metadata value, skipped by design.
+        assert_eq!(
+            dynamic_to_cbor(DynamicKeyType::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])),
+            None,
+        );
+    }
+}
