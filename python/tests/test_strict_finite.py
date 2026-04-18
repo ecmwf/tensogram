@@ -60,17 +60,13 @@ def test_default_encode_accepts_inf_float64():
 def test_reject_nan_rejects_float32():
     data = np.array([1.0, 2.0, np.nan, 4.0], dtype=np.float32)
     with pytest.raises(ValueError, match=r"(?i)nan"):
-        tensogram.encode(
-            _meta(), [(_desc([4], "float32"), data)], reject_nan=True
-        )
+        tensogram.encode(_meta(), [(_desc([4], "float32"), data)], reject_nan=True)
 
 
 def test_reject_nan_rejects_float64():
     data = np.array([1.0, np.nan], dtype=np.float64)
     with pytest.raises(ValueError, match=r"(?i)nan"):
-        tensogram.encode(
-            _meta(), [(_desc([2], "float64"), data)], reject_nan=True
-        )
+        tensogram.encode(_meta(), [(_desc([2], "float64"), data)], reject_nan=True)
 
 
 def test_reject_nan_rejects_complex64_real_component():
@@ -101,17 +97,13 @@ def test_reject_nan_rejects_complex64_imag_component():
 def test_reject_inf_rejects_positive_inf():
     data = np.array([1.0, np.inf, 3.0], dtype=np.float32)
     with pytest.raises(ValueError, match=r"(?i)inf"):
-        tensogram.encode(
-            _meta(), [(_desc([3], "float32"), data)], reject_inf=True
-        )
+        tensogram.encode(_meta(), [(_desc([3], "float32"), data)], reject_inf=True)
 
 
 def test_reject_inf_rejects_negative_inf():
     data = np.array([1.0, 2.0, -np.inf], dtype=np.float64)
     with pytest.raises(ValueError, match=r"(?i)inf"):
-        tensogram.encode(
-            _meta(), [(_desc([3], "float64"), data)], reject_inf=True
-        )
+        tensogram.encode(_meta(), [(_desc([3], "float64"), data)], reject_inf=True)
 
 
 # ── Orthogonality ────────────────────────────────────────────────────────────
@@ -119,16 +111,12 @@ def test_reject_inf_rejects_negative_inf():
 
 def test_reject_inf_does_not_reject_nan():
     data = np.array([1.0, np.nan], dtype=np.float32)
-    tensogram.encode(
-        _meta(), [(_desc([2], "float32"), data)], reject_inf=True
-    )
+    tensogram.encode(_meta(), [(_desc([2], "float32"), data)], reject_inf=True)
 
 
 def test_reject_nan_does_not_reject_inf():
     data = np.array([1.0, np.inf], dtype=np.float32)
-    tensogram.encode(
-        _meta(), [(_desc([2], "float32"), data)], reject_nan=True
-    )
+    tensogram.encode(_meta(), [(_desc([2], "float32"), data)], reject_nan=True)
 
 
 def test_reject_both_catches_either():
@@ -213,9 +201,7 @@ def test_encode_pre_encoded_has_no_strict_flags():
     data = np.array([1.0, np.nan], dtype=np.float32).tobytes()
     desc = _desc([2], "float32")
     with pytest.raises(TypeError):
-        tensogram.encode_pre_encoded(
-            _meta(), [(desc, data)], reject_nan=True
-        )
+        tensogram.encode_pre_encoded(_meta(), [(desc, data)], reject_nan=True)
 
 
 # ── StreamingEncoder honours the flags ───────────────────────────────────────
@@ -304,9 +290,7 @@ def test_reject_nan_empty_array_passes():
 def test_error_message_mentions_dtype_and_index():
     data = np.array([1.0, 2.0, 3.0, np.nan, 5.0], dtype=np.float64)
     with pytest.raises(ValueError, match=r"NaN.*element 3.*float64") as excinfo:
-        tensogram.encode(
-            _meta(), [(_desc([5], "float64"), data)], reject_nan=True
-        )
+        tensogram.encode(_meta(), [(_desc([5], "float64"), data)], reject_nan=True)
     msg = str(excinfo.value)
     assert "NaN" in msg
     assert "element 3" in msg

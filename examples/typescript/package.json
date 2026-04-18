@@ -1,6 +1,6 @@
 {
   "name": "tensogram-typescript-examples",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "private": true,
   "description": "Runnable TypeScript examples for @ecmwf/tensogram",
   "type": "module",
