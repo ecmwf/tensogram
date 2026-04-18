@@ -16,7 +16,7 @@ use tensogram_encodings::{ByteOrder, CompressionType, EncodingType, FilterType, 
 
 use crate::constants::AEC_DATA_PREPROCESS;
 use crate::datagen::generate_weather_field;
-use crate::report::{BenchmarkResult, compute_fidelity, compute_timing_stats};
+use crate::report::{compute_fidelity, compute_timing_stats, BenchmarkResult};
 use crate::{BenchmarkError, BenchmarkRun, CaseFailure};
 
 // ── ecCodes C API (raw) ──────────────────────────────────────────────────────
@@ -321,6 +321,7 @@ fn time_tensogram_sp_szip(
             swap_unit_size: 8, // f64
             compression_backend: Default::default(),
             intra_codec_threads: 0,
+            compute_hash: false,
         })
     };
 
