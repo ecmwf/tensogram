@@ -90,7 +90,8 @@ describe('Phase 4 — TensogramFile', () => {
     it('throws ObjectError for out-of-range indices', async () => {
       await init();
       const file = TensogramFile.fromBytes(makeMessage([1]));
-      expect(() => file.rawMessage(5)).toThrow(ObjectError);
+      // rawMessage is async now (Scope C) — sync throws become rejections.
+      await expect(file.rawMessage(5)).rejects.toThrow(ObjectError);
       await expect(file.message(-1)).rejects.toThrow(ObjectError);
       await expect(file.message(1.5)).rejects.toThrow(ObjectError);
     });
@@ -100,7 +101,7 @@ describe('Phase 4 — TensogramFile', () => {
       const msg = makeMessage([42, 43, 44]);
       const file = TensogramFile.fromBytes(concatMessages(msg, makeMessage([99])));
 
-      const raw = file.rawMessage(0);
+      const raw = await file.rawMessage(0);
       const decoded = decode(new Uint8Array(raw));
       expect(Array.from(decoded.objects[0].data() as Float32Array)).toEqual([42, 43, 44]);
       decoded.close();
@@ -145,7 +146,7 @@ describe('Phase 4 — TensogramFile', () => {
       await init();
       const file = TensogramFile.fromBytes(makeMessage([1]));
       file.close();
-      expect(() => file.rawMessage(0)).toThrow(InvalidArgumentError);
+      await expect(file.rawMessage(0)).rejects.toThrow(InvalidArgumentError);
       await expect(file.message(0)).rejects.toThrow(InvalidArgumentError);
     });
 

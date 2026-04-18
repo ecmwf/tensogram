@@ -8,30 +8,32 @@
 # does it submit to any jurisdiction.
 
 """
-12 — convert-netcdf via the CLI
+12 — convert NetCDF to Tensogram (pure Python)
 
-End-to-end example: build a small NetCDF file with netCDF4, run
-`tensogram convert-netcdf` on it through subprocess, then read the
-resulting .tgm file back with the tensogram Python bindings.
+Builds a small CF-compliant NetCDF file with ``netCDF4``, calls
+``tensogram.convert_netcdf(...)`` directly (PyO3 binding — no subprocess!),
+then reads the resulting ``.tgm`` back with the ``tensogram`` Python API.
 
-The Python bindings do NOT expose `convert_netcdf_file()` directly in
-v1 — the intended pattern is to shell out to the CLI binary, which
-does support all the conversion flags. This example demonstrates that
-exact pattern.
+The original v0.14 version of this example shelled out to the
+``tensogram`` CLI binary via ``subprocess``; v0.15 ships a native Python
+binding for the converter, so the whole round-trip now lives in one
+Python process.
 
-Run:
-    cargo build -p tensogram-cli --features netcdf
+Run::
+
+    uv pip install netCDF4
+    cd python/bindings && maturin develop --features netcdf
     python examples/python/12_convert_netcdf.py
 
 Requires:
-    - netCDF4 (`uv pip install netCDF4`)
-    - libnetcdf installed at the OS level (brew install netcdf / apt install libnetcdf-dev)
-    - The `tensogram` CLI binary built with the `netcdf` feature
+    - ``netCDF4`` Python package
+    - ``libnetcdf`` + ``libhdf5`` installed at the OS level
+      (``brew install netcdf hdf5`` / ``apt install libnetcdf-dev``)
+    - ``tensogram`` bindings built with the ``netcdf`` feature
 """
 
-import os
-import shutil
-import subprocess
+from __future__ import annotations
+
 import sys
 import tempfile
 from pathlib import Path
@@ -43,31 +45,8 @@ try:
 except ImportError as e:
     print(f"Missing dependency: {e}", file=sys.stderr)
     print(
-        "Install with: uv pip install netCDF4 numpy && (cd python/bindings && maturin develop)",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-def find_tensogram_binary() -> str:
-    """Locate the tensogram binary, preferring the workspace target dir."""
-    # Walk up from this script to find the workspace root.
-    here = Path(__file__).resolve().parent
-    repo_root = here.parent.parent  # examples/python/ -> repo root
-    candidates = [
-        repo_root / "target" / "debug" / "tensogram",
-        repo_root / "target" / "release" / "tensogram",
-    ]
-    for c in candidates:
-        if c.exists() and os.access(c, os.X_OK):
-            return str(c)
-    # Fall back to PATH lookup.
-    found = shutil.which("tensogram")
-    if found:
-        return found
-    print(
-        "ERROR: tensogram binary not found. Run:\n"
-        "    cargo build -p tensogram-cli --features netcdf\n",
+        "Install with: uv pip install netCDF4 numpy && "
+        "(cd python/bindings && maturin develop --features netcdf)",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -127,44 +106,40 @@ def write_demo_netcdf(path: Path) -> None:
 
 
 def main() -> int:
-    binary = find_tensogram_binary()
+    if not getattr(tensogram, "__has_netcdf__", False):
+        print(
+            "ERROR: tensogram was built without the 'netcdf' feature.\n"
+            "Rebuild with: cd python/bindings && maturin develop --features netcdf",
+            file=sys.stderr,
+        )
+        return 1
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         nc_path = tmp / "demo.nc"
         tgm_path = tmp / "demo.tgm"
 
+        # ── 1. Produce the NetCDF input ─────────────────────────────────────
         print(f"1. Writing demo NetCDF to {nc_path}")
         write_demo_netcdf(nc_path)
         print(f"   ({nc_path.stat().st_size} bytes)")
 
+        # ── 2. Convert NetCDF → Tensogram via the Python API ────────────────
         print()
-        print("2. Running: tensogram convert-netcdf --cf --compression zstd")
-        result = subprocess.run(
-            [
-                binary,
-                "convert-netcdf",
-                "--cf",
-                "--compression",
-                "zstd",
-                str(nc_path),
-                "-o",
-                str(tgm_path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
+        print("2. tensogram.convert_netcdf(cf=True, compression='zstd')")
+        messages = tensogram.convert_netcdf(
+            str(nc_path),
+            cf=True,
+            compression="zstd",
         )
-        if result.returncode != 0:
-            print("   FAILED", file=sys.stderr)
-            print(result.stdout, file=sys.stderr)
-            print(result.stderr, file=sys.stderr)
-            return result.returncode
-        print(f"   {result.stdout.strip()}")
-        if result.stderr.strip():
-            print(f"   stderr: {result.stderr.strip()}")
-        print(f"   ({tgm_path.stat().st_size} bytes)")
+        # Write the messages out to a .tgm file.
+        with open(tgm_path, "wb") as fh:
+            for msg in messages:
+                fh.write(msg)
+        print(f"   produced {len(messages)} Tensogram message(s)")
+        print(f"   wrote {tgm_path} ({tgm_path.stat().st_size} bytes)")
 
+        # ── 3. Read the .tgm back and inspect ───────────────────────────────
         print()
         print("3. Reading the .tgm with tensogram Python bindings")
         with tensogram.TensogramFile.open(str(tgm_path)) as f:
@@ -175,9 +150,7 @@ def main() -> int:
                 print(f"   message[{idx}]: {len(objects)} object(s)")
                 for obj_idx, (desc, array) in enumerate(objects):
                     name_value = (
-                        meta.base[obj_idx].get("name", "?")
-                        if obj_idx < len(meta.base)
-                        else "?"
+                        meta.base[obj_idx].get("name", "?") if obj_idx < len(meta.base) else "?"
                     )
                     cf_keys = []
                     if obj_idx < len(meta.base):

@@ -482,14 +482,128 @@ else:
         print(f"[{issue['severity']}] {issue['code']}: {issue['description']}")
 ```
 
+## GRIB / NetCDF conversion
+
+Three PyO3-bound helpers wrap [`tensogram-grib`](https://github.com/ecmwf/tensogram/tree/main/rust/tensogram-grib)
+and [`tensogram-netcdf`](https://github.com/ecmwf/tensogram/tree/main/rust/tensogram-netcdf).
+They are always callable — when the Python wheel was built without
+the corresponding Cargo feature, each raises `RuntimeError` with a
+pointer to rebuild instructions.
+
+You can probe availability at runtime:
+
+```python
+import tensogram
+
+if tensogram.__has_grib__:
+    msgs = tensogram.convert_grib("forecast.grib2")
+
+if tensogram.__has_netcdf__:
+    msgs = tensogram.convert_netcdf("data.nc")
+```
+
+### `convert_grib(path, **options) -> list[bytes]`
+
+Convert a GRIB file (as many messages as it contains) to Tensogram
+wire format. Returns one `bytes` per output Tensogram message — join
+or write sequentially to produce a `.tgm` file.
+
+```python
+msgs = tensogram.convert_grib(
+    "forecast.grib2",
+    grouping="merge_all",      # "merge_all" | "one_to_one"
+    preserve_all_keys=False,   # lift every ecCodes namespace into base[i]["grib"]
+    encoding="simple_packing", # "none" | "simple_packing"
+    bits=16,                   # None -> defaults to 16; ignored for encoding="none"
+    filter="none",             # "none" | "shuffle"
+    compression="szip",        # "none" | "zstd" | "lz4" | "blosc2" | "szip"
+    compression_level=None,    # applies to zstd / blosc2 (None = codec default)
+    threads=0,                 # 0 = sequential; honours TENSOGRAM_THREADS env var
+    hash="xxh3",               # "xxh3" | None
+)
+with open("forecast.tgm", "wb") as fh:
+    for msg in msgs:
+        fh.write(msg)
+```
+
+**Pipeline defaults and edge cases:**
+
+- `bits=None` with `encoding="simple_packing"` defaults to **16 bits**.
+- `bits` outside `1..=64` silently falls back to `encoding="none"` and
+  emits a warning to stderr. Validate your inputs before calling if
+  fail-fast is important.
+- Unknown `compression` / `encoding` names raise `ValueError` with the
+  list of valid choices in the message.
+- Unknown `grouping` / `split_by` / `hash` values raise `ValueError`.
+- Missing input paths raise `FileNotFoundError`.
+- Building the wheel without the `grib` / `netcdf` feature causes the
+  corresponding function to raise `RuntimeError` at call time with
+  rebuild instructions.
+
+Requires `libeccodes` at the OS level **and** the wheel built with
+`--features grib` (`maturin develop --features grib`). Official PyPI
+wheels do not currently include the `grib` feature — see
+[Jupyter Notebook Walk-through](jupyter-notebooks.md#os-level-dependencies).
+
+### `convert_grib_buffer(buf, **options) -> list[bytes]`
+
+In-memory variant of `convert_grib`. Accepts any Python bytes-like
+object (`bytes`, `bytearray`, `memoryview`, `numpy.uint8[:]`).
+Useful when the GRIB bytes come from a byte-range HTTP fetch, a
+cache, or any other in-memory source — no filesystem staging needed.
+
+```python
+import requests
+
+# Byte-range download of a single GRIB message from data.ecmwf.int.
+resp = requests.get(
+    "https://data.ecmwf.int/forecasts/.../...grib2",
+    headers={"Range": "bytes=74573515-75234113"},
+)
+msgs = tensogram.convert_grib_buffer(
+    resp.content,
+    encoding="simple_packing", bits=16, compression="szip",
+)
+```
+
+`convert_grib` and `convert_grib_buffer` produce bit-identical
+**decoded** payloads for the same input. The encoded bytes may
+differ — each call stamps a fresh timestamp and UUID into
+`_reserved_`.
+
+### `convert_netcdf(path, **options) -> list[bytes]`
+
+Convert a NetCDF-3 or NetCDF-4 file to Tensogram. Packed variables
+(`scale_factor` / `add_offset`) are automatically unpacked to
+float64.
+
+```python
+msgs = tensogram.convert_netcdf(
+    "data.nc",
+    split_by="file",           # "file" | "variable" | "record"
+    cf=False,                  # lift 16 CF attributes into base[i]["cf"]
+    encoding="none",
+    bits=None,
+    filter="none",
+    compression="zstd",
+    compression_level=3,
+    threads=0,
+    hash="xxh3",
+)
+```
+
+Requires `libnetcdf` + `libhdf5` at the OS level and the wheel built
+with `--features netcdf`.
+
 ## Error Handling
 
 | Exception | When |
 |-----------|------|
-| `ValueError` | Invalid parameters, unknown dtype, NaN in simple packing, unknown validation level |
-| `OSError` | File I/O errors, including missing paths |
-| `RuntimeError` | Hash mismatch during `decode(..., verify_hash=True)` |
-| `KeyError` | Missing metadata key via `meta["key"]` |
+| `FileNotFoundError` | `convert_grib(path)` / `convert_netcdf(path)` called with a non-existent path (subclass of `OSError`). |
+| `OSError` | Other file I/O failures (permission denied, disk error, etc.). |
+| `ValueError` | Invalid parameters; unknown dtype; NaN in simple packing; unknown validation level; invalid `grouping` / `split_by` / `hash`; unknown codec / bit width in the conversion pipeline; empty/non-GRIB input buffer; `split_by="record"` on a NetCDF without an unlimited dimension. |
+| `RuntimeError` | Hash mismatch during `decode(..., verify_hash=True)`; calling `convert_grib` / `convert_grib_buffer` / `convert_netcdf` on a wheel built without the feature; internal ecCodes / libnetcdf C-library failures that cannot be classified as caller-input errors. |
+| `KeyError` | Missing metadata key via `meta["key"]`. |
 
 ## Supported dtypes
 
@@ -523,6 +637,12 @@ See `examples/python/` for complete working examples:
 | `09_dask_distributed.py` | Dask distributed computing over 4-D tensors |
 | `09_streaming_consumer.py` | Streaming consumer pattern |
 | `11_encode_pre_encoded.py` | Pre-encoded data API |
-| `12_convert_netcdf.py` | NetCDF → Tensogram conversion via CLI |
+| `12_convert_netcdf.py` | NetCDF → Tensogram conversion via the Python API |
 | `13_validate.py` | Message and file validation |
 | `15_async_operations.py` | Async open, decode, and `asyncio.gather` |
+| `17_convert_grib.py` | GRIB → Tensogram conversion (file + in-memory buffer) |
+
+For **narrative** walk-throughs with plots and explanations, see also
+`examples/jupyter/*.ipynb` — five journey notebooks covering
+quickstart/MARS, encoding pipeline fidelity, GRIB conversion, NetCDF
+conversion with xarray, and validation with multi-threaded encoding.

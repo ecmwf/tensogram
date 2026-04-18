@@ -13,6 +13,8 @@ python/bindings/Cargo.lock
 **/.venv
 **/.ruff_cache
 **/__pycache__
+**/.pytest_cache
+**/.ipynb_checkpoints
 *.so
 *.dylib
 *.pyd

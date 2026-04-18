@@ -347,14 +347,157 @@ Wraps an already-loaded `Uint8Array`. The buffer is defensively
 copied, so later mutation of the caller's buffer is invisible to
 the `TensogramFile`.
 
-### Range-based lazy access (Scope C)
+### Range-based lazy access
 
-This Scope-B implementation downloads the whole file before building
-its index. For very large `.tgm` files (several GB) where that's too
-expensive, a future release will add a lazy backend that reads only
-the footer index + the requested message via HTTP `Range` requests.
-The public interface above will not change. See
-`plans/TYPESCRIPT_WRAPPER.md` for details.
+Since Scope C, `TensogramFile.fromUrl` automatically probes the server
+for HTTP Range support.  When the `HEAD` response advertises
+`Accept-Ranges: bytes` and a finite `Content-Length`, the file
+switches to a **lazy backend**:
+
+- The initial open issues a small `HEAD` + one 24-byte Range read per
+  message preamble to build the boundary index.  **No payload data is
+  downloaded.**
+- `rawMessage(i)` / `message(i)` fetch just the requested message's
+  bytes via a `Range: bytes=offset-(offset+length-1)` GET.
+- A small LRU caches recently-fetched message bytes so repeat reads
+  are free.
+
+When the server omits `Accept-Ranges`, returns non-`200` on HEAD, or
+the file uses streaming-mode messages (`total_length=0` — the writer
+did not know the final length up front), the open falls back to a
+single eager GET.  Behaviour is indistinguishable to callers except in
+memory use and timing.
+
+Browser callers using `fromUrl` directly need CORS to expose the
+`Accept-Ranges`, `Content-Range`, and `Content-Length` headers.
+
+### Append (Node local file system)
+
+`TensogramFile#append(meta, objects, opts?)` encodes the new message
+in-memory, appends it to the on-disk file, refreshes the position
+index, and makes the new message reachable via `message(i)` on the
+same handle.  Only supported when the file was opened via
+`TensogramFile.open(path)` — `fromBytes`- and `fromUrl`-backed files
+throw `InvalidArgumentError`, matching the contract in the other
+language bindings.
+
+```ts
+const file = await TensogramFile.open('/data/forecast.tgm');
+try {
+  await file.append({ version: 2 }, [{ descriptor, data }]);
+  console.log(`now has ${file.messageCount} messages`);
+} finally {
+  file.close();
+}
+```
+
+## Scope-C API additions
+
+Scope C brought the TypeScript wrapper to full API parity with Rust /
+Python / FFI / C++.  The surface additions are:
+
+| Function / class | What it does |
+|---|---|
+| `decodeRange(buf, objIndex, ranges, opts?)` | Partial sub-tensor decode.  `ranges` is an array of `[offset, count]` pairs in element units; each returned `parts[i]` is a dtype-typed view.  Option `join: true` concatenates every range into a single view. |
+| `computeHash(bytes, algo?)` | Standalone `xxh3` hash — matches the digest stamped by `encode()` on the same bytes. |
+| `simplePackingComputeParams(values, bits, decScale?)` | GRIB-style simple-packing parameter computation.  Return shape uses snake-case keys so the result spreads directly into a descriptor. |
+| `validate(buf, opts?)` | Report-only validation (never throws on bad input).  Modes: `quick`, `default`, `checksum`, `full`. |
+| `validateBuffer(buf, opts?)` | Multi-message buffer: reports file-level gaps / trailing garbage plus per-message reports. |
+| `validateFile(path, opts?)` | Node-only helper: reads the file via `node:fs/promises` then delegates to `validateBuffer`. |
+| `encodePreEncoded(meta, objects, opts?)` | Wrap already-encoded bytes verbatim into a wire-format message.  The library still validates descriptor structure and stamps a fresh hash. |
+| `StreamingEncoder` | Frame-at-a-time construction.  Two modes: **buffered** (default, `finish()` returns the complete `Uint8Array`) or **streaming** via `opts.onBytes` callback (bytes flow through the callback as they're produced; `finish()` returns an empty `Uint8Array`). |
+| `TensogramFile#append` | Append a new message to a file opened via `TensogramFile.open(path)`.  Node-only. |
+
+## Streaming `StreamingEncoder` (no full-message buffering)
+
+For browser uploads, WebSocket pushes, or any sink that needs bytes as
+soon as they are produced, pass an `onBytes` callback to the
+`StreamingEncoder` constructor:
+
+```ts
+const enc = new StreamingEncoder({ version: 2 }, {
+  onBytes: (chunk) => uploadSocket.send(chunk),   // e.g. WebSocket.send
+});
+enc.writeObject(descriptor, new Float32Array([1, 2, 3]));
+enc.finish();    // flushes footer; returns empty Uint8Array in streaming mode
+enc.close();
+```
+
+Semantics:
+
+- The callback is invoked during construction (preamble + header
+  metadata frame), during each `writeObject` / `writeObjectPreEncoded`
+  (one data-object frame's bytes, potentially across multiple
+  invocations), and during `finish()` (footer frames + postamble).
+- Concatenating every chunk the callback sees (in order) yields a
+  message byte-for-byte identical to what buffered mode would
+  return.  Tested via round-trip with `decode()`.
+- The callback **must be synchronous** — `Promise` return values are
+  silently discarded because the Rust/WASM writer contract is
+  synchronous.  Buffer internally first if you need async work.
+- Each `chunk` is JS-owned and fresh per invocation.  Copy
+  (`new Uint8Array(chunk)` or `chunk.slice()`) if you need to keep it
+  past the next `writeObject` — the underlying `ArrayBuffer` is
+  invalidated when WASM memory grows.
+- If the callback throws, the exception surfaces as an `IoError` on
+  the next `writeObject` / `finish`.  The encoder state is undefined
+  after an error — call `close()` and start over.
+- `enc.streaming` (getter) reports whether an `onBytes` sink was
+  supplied — useful for code that needs to branch on mode.
+
+Parity note: the Rust core `StreamingEncoder<W: Write>` has always
+supported arbitrary sinks; the WASM/TS surface now exposes this
+capability to JS code.  Python / FFI / C++ bindings remain
+buffered-only; extending them would follow the same `JsCallbackWriter`
+pattern with a language-specific sink abstraction and is tracked in
+`plans/TYPESCRIPT_WRAPPER.md`.
+
+## First-class half-precision and complex dtypes
+
+Scope C also upgraded the dtype dispatch in {@link typedArrayFor}.
+`obj.data()` now returns a **first-class view** for dtypes JS does not
+have a native TypedArray for:
+
+| Dtype | `data()` return type |
+|---|---|
+| `float16` | `Float16Array` (native when available) or `Float16Polyfill` (TC39-accurate) |
+| `bfloat16` | `Bfloat16Array` — 1-8-7 layout, truncating-with-round-to-nearest-even narrow |
+| `complex64` / `complex128` | `ComplexArray` — `.real(i)`, `.imag(i)`, `.get(i) → {re, im}`, iteration |
+
+All three classes expose `.bits` / `.data` for zero-copy access to the
+underlying raw storage if you need it.
+
+```ts
+const m = decode(buf);
+const f16 = m.objects[0].data();           // Float16Array or polyfill
+const asFloat32 = f16.toFloat32Array();    // widened copy
+const bits = f16.bits;                      // raw binary16
+
+const cplx = m.objects[1].data() as ComplexArray;
+for (let i = 0; i < cplx.length; i++) {
+  console.log(cplx.real(i), cplx.imag(i));
+}
+```
+
+The polyfill is used automatically when the host runtime does not
+ship `globalThis.Float16Array`.  `hasNativeFloat16Array()` and
+`getFloat16ArrayCtor()` expose the detection machinery for callers
+that want direct control.
+
+> **Breaking change from Scope B:** Before Scope C, `obj.data()` on
+> `float16` / `bfloat16` returned a raw `Uint16Array` of bits, and
+> complex dtypes returned an interleaved `Float32Array` /
+> `Float64Array`.  Consumers that relied on that shape can reach the
+> same bytes via `.bits` (for f16/bf16) or `.data` (for complex).
+
+The low-level bit-conversion helpers (`halfBitsToFloat`,
+`floatToHalfBits`, `bfloat16BitsToFloat`, `floatToBfloat16Bits`) and
+the `isComplexDtype` type-guard are **internal** and are not re-exported
+from `@ecmwf/tensogram`.  Callers that need bit-level manipulation
+should grab the raw storage from a view's `.bits` / `.data` accessor
+and do the conversion themselves, or import directly from
+`@ecmwf/tensogram/float16`, `…/bfloat16`, `…/complex` with the
+understanding that these module paths are not part of the stable API.
 
 ## Examples
 
@@ -363,16 +506,22 @@ See `examples/typescript/` in the repository for runnable scripts:
 - `01_encode_decode.ts` — basic round-trip
 - `02_mars_metadata.ts` — MARS keys on per-object `base[i]` entries
 - `03_multi_object.ts` — multiple dtypes in one message
-- `05_streaming_fetch.ts` — progressive decode over a `ReadableStream` (Phase 3)
-- `06_file_api.ts` — `TensogramFile` over Node fs, fetch, and in-memory bytes (Phase 4)
+- `04_decode_range.ts` — partial sub-tensor decode
+- `05_streaming_fetch.ts` — progressive decode over a `ReadableStream`
+- `06_file_api.ts` — `TensogramFile` over Node fs, fetch, and in-memory bytes
 - `07_hash_and_errors.ts` — hash verification and typed errors
+- `08_validate.ts` — `validate(buf)` + `validateFile(path)`
+- `11_encode_pre_encoded.ts` — wrap already-encoded bytes
+- `12_streaming_encoder.ts` — frame-at-a-time encoder with preceders
+- `13_range_access.ts` — lazy `TensogramFile.fromUrl` over HTTP Range
+- `14_streaming_callback.ts` — `StreamingEncoder` with `onBytes` callback sink
 
 Run them with:
 
 ```bash
 cd examples/typescript
 npm install
-npx tsx 01_encode_decode.ts     # or 02, 03, 05, 06, 07
+npx tsx 01_encode_decode.ts     # or any other file
 ```
 
 ## Design notes
@@ -395,14 +544,19 @@ Specifically, `typescript/tests/golden.test.ts` decodes:
 - `multi_message.tgm` — two concatenated messages (via `scan()`)
 - `hash_xxh3.tgm` — verifyHash success + tamper detection
 
-`typescript/tests/property.test.ts` adds `fast-check` property tests
-pinning:
+`typescript/tests/property.test.ts` and the Scope-C dtype suites add
+`fast-check` property tests pinning:
 
 - `mapTensogramError` never throws for any finite-string input and
   always returns a `TensogramError` subclass;
 - `encode → decode` is bit-exact for random Float32 shapes across
   random MARS metadata;
 - `decode` on random byte input either succeeds with a structurally
-  valid message or throws a typed `TensogramError` — never panics.
+  valid message or throws a typed `TensogramError` — never panics;
+- `float32 → float16 → float32` round-trip stays within half-precision
+  ulp for any random value in a reasonable magnitude band;
+- `float32 → bfloat16 → float32` round-trip stays within bfloat16 ulp;
+- `complex64` encode → decode preserves `real(i)` / `imag(i)`
+  byte-for-byte across random shapes and values.
 
-The CI `typescript` job rebuilds and runs all 145 TS tests on every PR.
+The CI `typescript` job rebuilds and runs every TS test on every PR.

@@ -5,9 +5,14 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  decode,
+  Bfloat16Array,
+  ComplexArray,
   DTYPE_BYTE_WIDTH,
+  decode,
   encode,
+  Float16Polyfill,
+  getFloat16ArrayCtor,
+  hasNativeFloat16Array,
   init,
   isDtype,
   payloadByteSize,
@@ -65,7 +70,7 @@ describe('Phase 2 — dtype dispatch', () => {
     expect(shapeElementCount([3, 4, 5])).toBe(60);
   });
 
-  it('typedArrayFor returns the correct constructor per dtype', () => {
+  it('typedArrayFor returns the correct view per dtype', () => {
     const bytes = new Uint8Array(16);
     expect(typedArrayFor('float32', bytes)).toBeInstanceOf(Float32Array);
     expect(typedArrayFor('float64', bytes)).toBeInstanceOf(Float64Array);
@@ -78,11 +83,17 @@ describe('Phase 2 — dtype dispatch', () => {
     expect(typedArrayFor('uint32', bytes)).toBeInstanceOf(Uint32Array);
     expect(typedArrayFor('uint64', bytes)).toBeInstanceOf(BigUint64Array);
     expect(typedArrayFor('bitmask', bytes)).toBeInstanceOf(Uint8Array);
-    // Half-precision / complex → Uint16Array / Float32Array surrogates
-    expect(typedArrayFor('float16', bytes)).toBeInstanceOf(Uint16Array);
-    expect(typedArrayFor('bfloat16', bytes)).toBeInstanceOf(Uint16Array);
-    expect(typedArrayFor('complex64', bytes)).toBeInstanceOf(Float32Array);
-    expect(typedArrayFor('complex128', bytes)).toBeInstanceOf(Float64Array);
+    // Scope C.2 — first-class views
+    const f16 = typedArrayFor('float16', bytes);
+    // Either a native Float16Array (Node ≥ 22) or the polyfill.
+    if (hasNativeFloat16Array()) {
+      expect(f16).toBeInstanceOf(getFloat16ArrayCtor());
+    } else {
+      expect(f16).toBeInstanceOf(Float16Polyfill);
+    }
+    expect(typedArrayFor('bfloat16', bytes)).toBeInstanceOf(Bfloat16Array);
+    expect(typedArrayFor('complex64', bytes)).toBeInstanceOf(ComplexArray);
+    expect(typedArrayFor('complex128', bytes)).toBeInstanceOf(ComplexArray);
   });
 
   it('data() round-trips float64', async () => {

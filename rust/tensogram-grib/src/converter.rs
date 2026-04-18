@@ -7,6 +7,7 @@
 // does it submit to any jurisdiction.
 
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::path::Path;
 
 use ciborium::Value as CborValue;
@@ -70,18 +71,62 @@ pub(crate) struct GribExtracted {
 
 /// Convert all GRIB messages from a file path into Tensogram wire bytes.
 ///
-/// Reads GRIB messages using ecCodes, extracts payload via `values` key
-/// and MARS namespace keys (discovered dynamically), partitions keys into
-/// common vs per-object, and produces one or more Tensogram messages.
+/// Reads GRIB messages using ecCodes, extracts each message's `values`
+/// payload and its MARS namespace keys (discovered dynamically), and
+/// produces one or more Tensogram messages depending on
+/// [`ConvertOptions::grouping`].
 ///
-/// MARS keys are stored under `base[i]["mars"]` for each data object.
-/// The ecCodes `gridType` key is stored as `"grid"` within the mars namespace.
+/// MARS keys are stored under `base[i]["mars"]` for each data object —
+/// every `base[i]` entry is self-contained (see `plans/DESIGN.md`, the
+/// v0.6 metadata-major-refactor). The ecCodes `gridType` key is stored
+/// as `"grid"` within the mars namespace.
 ///
-/// When `preserve_all_keys` is enabled, all non-mars namespace keys are
-/// stored under `base[i]["grib"]` for each data object.
+/// When `preserve_all_keys` is enabled, all non-mars namespace keys
+/// (`ls`, `geography`, `time`, `vertical`, `parameter`, `statistics`)
+/// are also stored under `base[i]["grib"]` for each data object.
 pub fn convert_grib_file(path: &Path, options: &ConvertOptions) -> Result<Vec<Vec<u8>>, GribError> {
     let mut handle = CodesFile::new_from_file(path, ProductKind::GRIB)?;
+    let grib_messages = extract_messages(&mut handle, options.preserve_all_keys)?;
+    finish_conversion(grib_messages, options)
+}
 
+/// Convert all GRIB messages from an in-memory buffer into Tensogram wire bytes.
+///
+/// Identical semantics to [`convert_grib_file`], but reads from memory
+/// instead of a file path. Useful for byte-range downloads, in-memory
+/// staging pipelines, and Python bindings where callers already hold the
+/// GRIB bytes (e.g. from `requests.get(...).content` or a `BytesIO` buffer).
+///
+/// The `buffer` is consumed — ecCodes opens a `FILE*` over it via
+/// `fmemopen(3)` and holds the allocation for the lifetime of the handle.
+///
+/// # Errors
+///
+/// - [`GribError::CodesError`] — `fmemopen` failed, the buffer is not
+///   parseable GRIB, or an ecCodes call failed during message iteration.
+/// - [`GribError::NoMessages`] — the buffer contained zero valid GRIB
+///   messages (empty buffer, junk, or unrelated format).
+/// - [`GribError::InvalidData`] — a GRIB grid dimension overflowed `u64`
+///   (not reachable on 64-bit targets).
+/// - [`GribError::Encode`] — the Tensogram encode stage rejected the
+///   produced descriptors (e.g. bad pipeline arguments).
+pub fn convert_grib_buffer(
+    buffer: Vec<u8>,
+    options: &ConvertOptions,
+) -> Result<Vec<Vec<u8>>, GribError> {
+    let mut handle = CodesFile::new_from_memory(buffer, ProductKind::GRIB)?;
+    let grib_messages = extract_messages(&mut handle, options.preserve_all_keys)?;
+    finish_conversion(grib_messages, options)
+}
+
+/// Extract every GRIB message from `handle` into our intermediate
+/// [`GribExtracted`] form. Generic over the underlying storage type `D`
+/// so we can share this loop between the file-path and in-memory entry
+/// points (`CodesFile<File>` vs `CodesFile<Vec<u8>>`).
+fn extract_messages<D: Debug>(
+    handle: &mut CodesFile<D>,
+    preserve_all_keys: bool,
+) -> Result<Vec<GribExtracted>, GribError> {
     let mut grib_messages = Vec::new();
     let mut iter = handle.ref_message_iter();
     while let Some(mut msg) = iter.next()? {
@@ -96,7 +141,7 @@ pub fn convert_grib_file(path: &Path, options: &ConvertOptions) -> Result<Vec<Ve
         }
 
         // Optionally extract all non-mars namespace keys.
-        let grib_keys = if options.preserve_all_keys {
+        let grib_keys = if preserve_all_keys {
             Some(extract_all_namespace_keys(&mut msg)?)
         } else {
             None
@@ -124,7 +169,15 @@ pub fn convert_grib_file(path: &Path, options: &ConvertOptions) -> Result<Vec<Ve
             grib_keys,
         });
     }
+    Ok(grib_messages)
+}
 
+/// Finalise the conversion by checking we got at least one message and
+/// dispatching to the appropriate grouping strategy.
+fn finish_conversion(
+    grib_messages: Vec<GribExtracted>,
+    options: &ConvertOptions,
+) -> Result<Vec<Vec<u8>>, GribError> {
     if grib_messages.is_empty() {
         return Err(GribError::NoMessages);
     }
@@ -288,4 +341,126 @@ fn build_data_object(
 
     let data_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     Ok((desc, data_bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests for [`convert_grib_buffer`], including parity with
+    //! [`convert_grib_file`].
+    //!
+    //! The two entry points share `extract_messages` + `finish_conversion`
+    //! internally and diverge only at the `CodesFile` constructor
+    //! (`new_from_file` vs `new_from_memory`).  `buffer_matches_file`
+    //! locks in decoded-payload equality; the remaining tests exercise
+    //! the buffer path in isolation across grouping modes, flags, and
+    //! error cases.
+
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn testdata(name: &str) -> PathBuf {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("testdata");
+        path.push(name);
+        path
+    }
+
+    #[test]
+    fn buffer_matches_file() {
+        // Feed the same GRIB to both entry points and compare the
+        // produced Tensogram bytes. `extract_messages` is generic over
+        // `D: Debug`, so any divergence between the two code paths
+        // would surface here.
+        let path = testdata("2t.grib2");
+        let bytes = std::fs::read(&path).expect("read 2t.grib2");
+
+        let opts = ConvertOptions::default();
+        let from_file = convert_grib_file(&path, &opts).expect("convert file");
+        let from_buf = convert_grib_buffer(bytes, &opts).expect("convert buffer");
+
+        // NOTE: hashes and CBOR provenance fields (time, uuid) can differ
+        // between runs because `populate_reserved_provenance` stamps
+        // epoch-seconds + a random uuid. We compare the decoded payloads
+        // + descriptor shape/dtype/pipeline instead.
+        assert_eq!(from_file.len(), from_buf.len());
+        let opts = tensogram::DecodeOptions::default();
+        for (a, b) in from_file.iter().zip(from_buf.iter()) {
+            let (_, objs_a) = tensogram::decode(a, &opts).expect("decode file");
+            let (_, objs_b) = tensogram::decode(b, &opts).expect("decode buffer");
+            assert_eq!(objs_a.len(), objs_b.len());
+            for ((da, ba), (db, bb)) in objs_a.iter().zip(objs_b.iter()) {
+                assert_eq!(da.shape, db.shape);
+                assert_eq!(da.dtype, db.dtype);
+                assert_eq!(da.encoding, db.encoding);
+                assert_eq!(da.filter, db.filter);
+                assert_eq!(da.compression, db.compression);
+                assert_eq!(ba, bb, "payload bytes must match");
+            }
+        }
+    }
+
+    #[test]
+    fn buffer_rejects_garbage() {
+        // A non-GRIB buffer must produce a clean error, not a panic.
+        let garbage = b"this is not a grib message".to_vec();
+        let result = convert_grib_buffer(garbage, &ConvertOptions::default());
+        assert!(result.is_err(), "expected error on garbage input");
+    }
+
+    #[test]
+    fn buffer_merge_all_grouping() {
+        // Exercise the MergeAll path from memory — single output message
+        // with one object, since 2t.grib2 has one GRIB message.
+        let bytes = std::fs::read(testdata("2t.grib2")).expect("read 2t.grib2");
+        let opts = ConvertOptions {
+            grouping: Grouping::MergeAll,
+            ..Default::default()
+        };
+        let result = convert_grib_buffer(bytes, &opts).expect("convert buffer");
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn buffer_one_to_one_grouping() {
+        // Exercise the OneToOne path from memory. 2t.grib2 contains a
+        // single GRIB message so we should still get one output.
+        let bytes = std::fs::read(testdata("2t.grib2")).expect("read 2t.grib2");
+        let opts = ConvertOptions {
+            grouping: Grouping::OneToOne,
+            ..Default::default()
+        };
+        let result = convert_grib_buffer(bytes, &opts).expect("convert buffer");
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn buffer_preserve_all_keys() {
+        // Check that the `preserve_all_keys` flag routes through the
+        // buffer path identically to the file path.
+        let bytes = std::fs::read(testdata("2t.grib2")).expect("read 2t.grib2");
+        let opts = ConvertOptions {
+            preserve_all_keys: true,
+            ..Default::default()
+        };
+        let messages = convert_grib_buffer(bytes, &opts).expect("convert buffer");
+        let meta = tensogram::decode_metadata(&messages[0]).expect("decode metadata");
+        assert!(
+            meta.base.iter().any(|entry| entry.contains_key("grib")),
+            "preserve_all_keys should populate the grib sub-object"
+        );
+    }
+
+    #[test]
+    fn buffer_empty_returns_error() {
+        // An empty buffer must surface *some* error — not a panic and
+        // not a silent success.  We intentionally do NOT assert on the
+        // exact variant here: ecCodes' `fmemopen(3)` path on a zero-
+        // length buffer raises `CodesError::LibcNonZero` on some
+        // platforms before we ever get to the message iterator, so
+        // `GribError::NoMessages` is not guaranteed.  What matters is
+        // that the caller gets a clean `Result::Err`.
+        let result = convert_grib_buffer(Vec::new(), &ConvertOptions::default());
+        assert!(result.is_err(), "empty buffer must produce an error");
+    }
 }

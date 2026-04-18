@@ -234,7 +234,17 @@ export interface EncodeInput {
   data: ArrayBufferView;
 }
 
-/** Any concrete JavaScript `TypedArray`. */
+/**
+ * Any concrete JavaScript `TypedArray` plus the three Scope-C view
+ * classes used for dtypes JS has no native array for:
+ *
+ * - `Float16Polyfill` (or a native `Float16Array` when the host ships
+ *    one) for `float16`.
+ * - `Bfloat16Array` for `bfloat16`.
+ * - `ComplexArray` for `complex64` / `complex128`.
+ *
+ * Built-in TypedArrays still cover every other dtype.
+ */
 export type TypedArray =
   | Float32Array
   | Float64Array
@@ -245,7 +255,45 @@ export type TypedArray =
   | Uint8Array
   | Uint16Array
   | Uint32Array
-  | BigUint64Array;
+  | BigUint64Array
+  | HalfArrayLike
+  | BfloatArrayLike
+  | ComplexArrayLike;
+
+/**
+ * Lowest-common-denominator structural shape of the `float16` view —
+ * every member listed below is present on both the native TC39
+ * `Float16Array` and the `Float16Polyfill` from `./float16.ts`.
+ * Callers that need polyfill-only accessors (e.g. `.bits`,
+ * `.toFloat32Array()`) should check `instanceof Float16Polyfill`
+ * explicitly.
+ *
+ * Declared here rather than imported from `./float16.ts` so
+ * `types.ts` stays dependency-free and the module graph stays acyclic.
+ */
+export interface HalfArrayLike {
+  readonly BYTES_PER_ELEMENT: 2;
+  readonly length: number;
+  readonly byteLength: number;
+  readonly byteOffset: number;
+  readonly buffer: ArrayBufferLike;
+  at(index: number): number | undefined;
+  [Symbol.iterator](): IterableIterator<number>;
+}
+
+/** Structural shape of the `bfloat16` view.  See {@link HalfArrayLike}. */
+export type BfloatArrayLike = HalfArrayLike;
+
+/** Structural shape of the `complex64` / `complex128` view. */
+export interface ComplexArrayLike {
+  readonly dtype: 'complex64' | 'complex128';
+  readonly length: number;
+  readonly data: Float32Array | Float64Array;
+  real(i: number): number;
+  imag(i: number): number;
+  get(i: number): { re: number; im: number };
+  [Symbol.iterator](): IterableIterator<{ re: number; im: number }>;
+}
 
 /** A message offset + length pair returned by `scan()`. */
 export interface MessagePosition {
@@ -358,3 +406,196 @@ export interface OpenFileOptions {
 
 /** Where the bytes backing a {@link TensogramFile} came from. */
 export type FileSource = 'local' | 'remote' | 'buffer';
+
+// ── Scope-C additions ────────────────────────────────────────────────────────
+
+/**
+ * A single (offset, count) pair describing one sub-tensor slab to
+ * decode via {@link decodeRange}.  Both values are element counts, not
+ * bytes.  `bigint` is accepted for values above 2^53; `number` is fine
+ * for everyday sizes.
+ */
+export type RangePair = readonly [number | bigint, number | bigint];
+
+/** Options for {@link decodeRange}. */
+export interface DecodeRangeOptions {
+  /** If `true`, verifies the object's payload hash before decoding. */
+  verifyHash?: boolean;
+  /**
+   * If `true`, the resulting `parts` array has exactly one entry — the
+   * concatenation of every requested range.  Default `false` (one entry
+   * per range, in request order).
+   */
+  join?: boolean;
+}
+
+/** Result of {@link decodeRange}. */
+export interface DecodeRangeResult {
+  /** The descriptor of the object being sliced. */
+  readonly descriptor: DataObjectDescriptor;
+  /**
+   * One typed view per requested range (or a single view if `join: true`).
+   * The array type reflects `descriptor.dtype`.
+   */
+  readonly parts: readonly TypedArray[];
+}
+
+/** Options for {@link encodePreEncoded}. */
+export interface EncodePreEncodedOptions {
+  /**
+   * Hash algorithm.  Default `"xxh3"`.  Pass `false` to disable.  The
+   * hash is always recomputed from the caller's pre-encoded bytes — any
+   * `hash` field on the descriptor is ignored.
+   */
+  hash?: 'xxh3' | false;
+}
+
+/** A single (descriptor, pre-encoded bytes) pair for {@link encodePreEncoded}. */
+export interface PreEncodedInput {
+  descriptor: DataObjectDescriptor;
+  /**
+   * Pre-encoded bytes matching the descriptor's pipeline declaration.
+   * For `encoding: "simple_packing"` this must be the packed-integer
+   * output; for `compression: "szip"` it must be the szip-compressed
+   * bytes and the descriptor's params must include `szip_block_offsets`.
+   */
+  data: Uint8Array;
+}
+
+/** Simple-packing params produced by {@link simplePackingComputeParams}. */
+export interface SimplePackingParams {
+  /** First value the packed integer `0` represents. */
+  reference_value: number;
+  /** Power-of-2 scale (E).  Applied as `2^(-E)` during encode. */
+  binary_scale_factor: number;
+  /** Power-of-10 scale (D).  Applied as `10^D` during encode. */
+  decimal_scale_factor: number;
+  /** Width of each packed integer in bits (1–64; 0 for constant fields). */
+  bits_per_value: number;
+}
+
+/** Validation depth levels, matching the Rust `ValidationLevel` enum. */
+export type ValidationLevel = 'structure' | 'metadata' | 'integrity' | 'fidelity';
+
+/** Severity of a {@link ValidationIssue}. */
+export type IssueSeverity = 'error' | 'warning';
+
+/**
+ * Stable machine-readable issue code.  The full list lives in
+ * `rust/tensogram/src/validate/types.rs`; keeping this as `string` keeps
+ * the TS surface forward-compatible as new codes are added.
+ */
+export type IssueCode = string;
+
+/**
+ * A single finding from {@link validate} or {@link validateFile}.  The
+ * field names mirror the on-the-wire JSON shape emitted by the Rust
+ * core's `ValidationReport` (snake_case) so no renaming happens at
+ * the WASM boundary.
+ */
+export interface ValidationIssue {
+  /** Stable machine-readable identifier — e.g. `"truncated_message"`. */
+  code: IssueCode;
+  /** Which depth of validation surfaced the issue. */
+  level: ValidationLevel;
+  /** Severity: `"error"` fails the message, `"warning"` is informational. */
+  severity: IssueSeverity;
+  /** Index of the offending object, when applicable. */
+  object_index?: number;
+  /** Byte offset within the message buffer, when applicable. */
+  byte_offset?: number;
+  /** Human-readable description suitable for logs or UI. */
+  description: string;
+}
+
+/** Result of {@link validate}. */
+export interface ValidationReport {
+  readonly issues: readonly ValidationIssue[];
+  readonly object_count: number;
+  readonly hash_verified: boolean;
+}
+
+/** A file-level issue (not tied to a specific message). */
+export interface FileIssue {
+  byte_offset: number;
+  length: number;
+  description: string;
+}
+
+/** Result of {@link validateFile}. */
+export interface FileValidationReport {
+  readonly file_issues: readonly FileIssue[];
+  readonly messages: readonly ValidationReport[];
+}
+
+/** Human-facing validation mode.  Maps to the CLI's flag set. */
+export type ValidateMode = 'quick' | 'default' | 'checksum' | 'full';
+
+/** Options for {@link validate} / {@link validateFile}. */
+export interface ValidateOptions {
+  /** Validation depth.  Default `"default"`. */
+  mode?: ValidateMode;
+  /** Enable RFC 8949 canonical-CBOR-ordering checks.  Default `false`. */
+  canonical?: boolean;
+}
+
+/** Options for {@link TensogramFile#append}. */
+export interface AppendOptions {
+  /** Hash algorithm.  Default `"xxh3"`.  Pass `false` to disable. */
+  hash?: 'xxh3' | false;
+}
+
+/** Options for {@link StreamingEncoder}. */
+export interface StreamingEncoderOptions {
+  /** Hash algorithm.  Default `"xxh3"`.  Pass `false` to disable. */
+  hash?: 'xxh3' | false;
+  /**
+   * Reject NaN values in float payloads before the encoding pipeline
+   * runs.  Default `false` (backwards-compatible).  Captured at
+   * construction; applies to every `writeObject` call on this encoder.
+   * See {@link EncodeOptions.rejectNan} for full semantics.
+   *
+   * Setting this with `writeObjectPreEncoded` throws — pre-encoded
+   * bytes are opaque and the flag cannot be meaningfully enforced.
+   */
+  rejectNan?: boolean;
+  /**
+   * Reject `+Inf` / `-Inf` values in float payloads before the
+   * encoding pipeline runs.  Default `false`.  Same semantics as
+   * {@link StreamingEncoderOptions.rejectNan}.
+   */
+  rejectInf?: boolean;
+  /**
+   * Synchronous streaming sink.
+   *
+   * When set, each chunk of wire-format bytes the encoder produces is
+   * forwarded to this callback as it is produced — no full-message
+   * buffering is performed.  The callback is invoked during
+   * construction (preamble + header metadata frame), during each
+   * {@link StreamingEncoder.writeObject} / `writeObjectPreEncoded`
+   * (one data-object frame's bytes, potentially split across multiple
+   * invocations), and during {@link StreamingEncoder.finish} (footer
+   * frames + postamble).
+   *
+   * In this mode `finish()` returns an empty `Uint8Array` — every
+   * byte has already been delivered to the callback.  Concatenating
+   * every `chunk` the callback sees (in order) yields a message
+   * byte-for-byte identical to the one buffered mode would return.
+   *
+   * **Synchronous contract.**  The callback must complete its work
+   * synchronously.  `Promise` return values are silently discarded
+   * because the Rust/WASM writer contract is synchronous.  Use the
+   * buffered mode with a single `fetch` call if you need async work.
+   *
+   * **Chunk ownership.**  Each `chunk` is a fresh JS-owned
+   * `Uint8Array` whose buffer is invalidated when the WASM module's
+   * linear memory grows.  Copy (`chunk.slice()`) or consume it before
+   * the next `writeObject` call if you need to hold on to it.
+   *
+   * **Errors.**  If the callback throws, the exception surfaces as an
+   * `IoError` from the next `writeObject` / `finish` that triggers a
+   * flush.  The encoder state is undefined after an error — call
+   * {@link StreamingEncoder.close} and start over.
+   */
+  onBytes?: (chunk: Uint8Array) => void;
+}
