@@ -24,6 +24,7 @@ mod parallel;
 pub mod pipeline;
 #[cfg(feature = "remote")]
 pub mod remote;
+pub(crate) mod restore;
 pub mod streaming;
 pub(crate) mod substitute_and_mask;
 pub mod types;
@@ -31,8 +32,8 @@ pub mod validate;
 pub mod wire;
 
 pub use decode::{
-    DecodeOptions, decode, decode_descriptors, decode_metadata, decode_object, decode_range,
-    decode_range_from_payload,
+    DecodeOptions, DecodedMaskSet, DecodedObjectWithMasks, decode, decode_descriptors,
+    decode_metadata, decode_object, decode_range, decode_range_from_payload, decode_with_masks,
 };
 pub use dtype::Dtype;
 pub use encode::{EncodeOptions, encode, encode_pre_encoded};

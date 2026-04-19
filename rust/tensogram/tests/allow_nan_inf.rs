@@ -145,7 +145,7 @@ fn allow_nan_f64_produces_nan_mask_with_correct_positions() {
 }
 
 #[test]
-fn allow_nan_substitutes_positions_with_canonical_zero() {
+fn allow_nan_default_decode_restores_canonical_nan() {
     let data = f64_bytes(&[1.0, f64::NAN, 2.0, f64::NAN, 5.0]);
     let desc = make_descriptor(vec![5], Dtype::Float64);
     let options = EncodeOptions {
@@ -155,16 +155,42 @@ fn allow_nan_substitutes_positions_with_canonical_zero() {
     };
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
 
-    // Decoder returns the substituted payload (masks stripped via the
-    // mask-aware payload-slice boundary; reconstruction is Commit 6).
+    // Default decode (restore_non_finite=true) restores canonical NaN
+    // at the masked positions.  Finite values round-trip exactly.
     let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
     assert_eq!(objects.len(), 1);
     let decoded = &objects[0].1;
+    let got: Vec<f64> = decoded
+        .chunks_exact(8)
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+        .collect();
+    assert_eq!(got[0], 1.0);
+    assert!(got[1].is_nan(), "element 1 should restore to NaN");
+    assert_eq!(got[2], 2.0);
+    assert!(got[3].is_nan(), "element 3 should restore to NaN");
+    assert_eq!(got[4], 5.0);
+}
+
+#[test]
+fn allow_nan_restore_disabled_returns_substituted_zero() {
+    let data = f64_bytes(&[1.0, f64::NAN, 2.0, f64::NAN, 5.0]);
+    let desc = make_descriptor(vec![5], Dtype::Float64);
+    let enc_options = EncodeOptions {
+        allow_nan: true,
+        hash_algorithm: None,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &enc_options).unwrap();
+
+    // restore_non_finite=false returns the 0-substituted payload
+    // unchanged — the on-disk representation.
+    let decode_options = DecodeOptions {
+        restore_non_finite: false,
+        ..Default::default()
+    };
+    let (_, objects) = decode(&msg, &decode_options).unwrap();
     let expected = f64_bytes(&[1.0, 0.0, 2.0, 0.0, 5.0]);
-    assert_eq!(
-        decoded, &expected,
-        "NaN positions must be substituted with 0.0"
-    );
+    assert_eq!(objects[0].1, expected);
 }
 
 #[test]
@@ -304,7 +330,7 @@ fn small_mask_threshold_zero_disables_auto_fallback() {
 // ── Complex dtype priority rule ─────────────────────────────────────────────
 
 #[test]
-fn complex64_nan_in_either_component_masked_as_nan() {
+fn complex64_nan_restored_to_both_components() {
     // (NaN + 1i), (2 + NaN*i), (3 + 4i), (5 + 6i) →
     // elements 0 and 1 go to nan mask; 2 and 3 are finite.
     let data: Vec<u8> = [f32::NAN, 1.0, 2.0, f32::NAN, 3.0, 4.0, 5.0, 6.0]
@@ -322,20 +348,32 @@ fn complex64_nan_in_either_component_masked_as_nan() {
     let (_, descriptors) = decode_descriptors(&msg).unwrap();
     assert!(descriptors[0].masks.as_ref().unwrap().nan.is_some());
 
-    // Decoded payload must have the first two elements (both
-    // components) zeroed, and elements 2-3 untouched.
+    // Default decode: both real and imag components restore to NaN
+    // (documented lossy behaviour — bit-exact NaN payloads are NOT
+    // preserved; see plans/BITMASK_FRAME.md §7.1).
     let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
-    let expected: Vec<u8> = [0.0_f32, 0.0, 0.0, 0.0, 3.0, 4.0, 5.0, 6.0]
-        .iter()
-        .flat_map(|v| v.to_ne_bytes())
+    let f: Vec<f32> = objects[0]
+        .1
+        .chunks_exact(4)
+        .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
         .collect();
-    assert_eq!(objects[0].1, expected);
+    // Element 0 (real, imag) = (NaN, NaN)
+    assert!(f[0].is_nan());
+    assert!(f[1].is_nan());
+    // Element 1 (real, imag) = (NaN, NaN)
+    assert!(f[2].is_nan());
+    assert!(f[3].is_nan());
+    // Elements 2 and 3 untouched
+    assert_eq!(f[4], 3.0);
+    assert_eq!(f[5], 4.0);
+    assert_eq!(f[6], 5.0);
+    assert_eq!(f[7], 6.0);
 }
 
 // ── Float32 end-to-end ──────────────────────────────────────────────────────
 
 #[test]
-fn allow_nan_and_allow_inf_f32_end_to_end() {
+fn allow_nan_and_allow_inf_f32_end_to_end_restores_all_kinds() {
     let data = f32_bytes(&[1.0, f32::NAN, f32::INFINITY, 0.0, f32::NEG_INFINITY]);
     let desc = make_descriptor(vec![5], Dtype::Float32);
     let options = EncodeOptions {
@@ -350,9 +388,18 @@ fn allow_nan_and_allow_inf_f32_end_to_end() {
     let masks = descriptors[0].masks.as_ref().unwrap();
     assert!(masks.nan.is_some() && masks.pos_inf.is_some() && masks.neg_inf.is_some());
 
+    // Decode restores all three kinds.
     let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
-    let expected = f32_bytes(&[1.0, 0.0, 0.0, 0.0, 0.0]);
-    assert_eq!(objects[0].1, expected);
+    let got: Vec<f32> = objects[0]
+        .1
+        .chunks_exact(4)
+        .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
+        .collect();
+    assert_eq!(got[0], 1.0);
+    assert!(got[1].is_nan());
+    assert!(got[2].is_infinite() && got[2].is_sign_positive());
+    assert_eq!(got[3], 0.0);
+    assert!(got[4].is_infinite() && got[4].is_sign_negative());
 }
 
 // ── StreamingEncoder parity ─────────────────────────────────────────────────
@@ -382,10 +429,21 @@ fn streaming_allow_nan_produces_equivalent_frame() {
     // Both paths must produce identical mask metadata.
     assert_eq!(buffered_descs[0].masks, streamed_descs[0].masks);
 
-    // Both decoded payloads must contain the substituted zeros.
-    let (_, buffered_objects) = decode(&buffered, &DecodeOptions::default()).unwrap();
-    let (_, streamed_objects) = decode(&streamed, &DecodeOptions::default()).unwrap();
-    assert_eq!(buffered_objects[0].1, streamed_objects[0].1);
+    // Both decode paths restore NaN at the masked position.
+    let decode_opts = DecodeOptions::default();
+    let (_, buffered_objects) = decode(&buffered, &decode_opts).unwrap();
+    let (_, streamed_objects) = decode(&streamed, &decode_opts).unwrap();
+    let check = |bytes: &[u8]| {
+        let got: Vec<f64> = bytes
+            .chunks_exact(8)
+            .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(got[0], 1.0);
+        assert!(got[1].is_nan());
+        assert_eq!(got[2], 2.0);
+    };
+    check(&buffered_objects[0].1);
+    check(&streamed_objects[0].1);
 }
 
 // ── Hash verification still works with masks present ───────────────────────

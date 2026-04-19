@@ -106,7 +106,7 @@ fn bench_encode_paths(c: &mut Criterion) {
     {
         let decoded_msg =
             framing::decode_message(&wire_msg).expect("priming framing decode failed");
-        let (pre_desc, pre_bytes_slice, _) = &decoded_msg.objects[0];
+        let (pre_desc, pre_bytes_slice, _mask_region, _) = &decoded_msg.objects[0];
         gpu_desc = pre_desc.clone();
         gpu_bytes = pre_bytes_slice.to_vec();
     }

@@ -128,7 +128,7 @@ fn encoded_payloads(buf: &[u8]) -> Vec<Vec<u8>> {
         .unwrap()
         .objects
         .iter()
-        .map(|(_, p, _)| p.to_vec())
+        .map(|(_, p, _, _)| p.to_vec())
         .collect()
 }
 

@@ -212,10 +212,18 @@ pub fn encode_data_object_frame(
     Ok(out)
 }
 
-/// Decode a data object frame, returning the descriptor and payload slice.
+/// Decode a data object frame, returning the descriptor, the
+/// (trimmed) data-payload slice, the raw mask-region slice, and the
+/// total bytes consumed (including alignment padding).
+///
+/// The mask-region slice contains the bytes between the data payload
+/// and the CBOR descriptor — non-empty only when
+/// `descriptor.masks.is_some()`, per the `NTensorMaskedFrame` layout
+/// in `plans/BITMASK_FRAME.md` §3.2.  Callers that only care about
+/// the data payload can ignore it.
 ///
 /// `buf` must start at the frame header.
-pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u8], usize)> {
+pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u8], &[u8], usize)> {
     let fh = FrameHeader::read_from(buf)?;
     // Accept both legacy `NTensorFrame` (type 4) and the 0.17+
     // `NTensorMaskedFrame` (type 9).  When the bitmask work lands this
@@ -283,7 +291,7 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
 
     let cbor_after = fh.flags & DataObjectFlags::CBOR_AFTER_PAYLOAD != 0;
 
-    let (descriptor, payload_slice) = if cbor_after {
+    let (descriptor, payload_slice, mask_region) = if cbor_after {
         // Layout: header(16) | payload_region | cbor | cbor_offset(8) | ENDF(4)
         //
         // `payload_region` = [encoded_payload][mask_nan][mask_inf+][mask_inf-]
@@ -295,7 +303,11 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
         let cbor_slice = &buf[cbor_start..cbor_end];
         let desc = metadata::cbor_to_object_descriptor(cbor_slice)?;
         let payload_end = mask_aware_payload_end(payload_start, cbor_start, &desc)?;
-        (desc, &buf[payload_start..payload_end])
+        (
+            desc,
+            &buf[payload_start..payload_end],
+            &buf[payload_end..cbor_start],
+        )
     } else {
         // Layout: header(16) | cbor | payload_region | cbor_offset(8) | ENDF(4)
         // Use Cursor to measure exact consumed CBOR bytes on the wire.
@@ -315,7 +327,11 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
             TensogramError::Metadata(format!("failed to deserialize descriptor: {e}"))
         })?;
         let payload_end = mask_aware_payload_end(payload_start, cbor_offset_pos, &desc)?;
-        (desc, &buf[payload_start..payload_end])
+        (
+            desc,
+            &buf[payload_start..payload_end],
+            &buf[payload_end..cbor_offset_pos],
+        )
     };
 
     // Bytes consumed, including padding
@@ -325,7 +341,7 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
         consumed = aligned;
     }
 
-    Ok((descriptor, payload_slice, consumed))
+    Ok((descriptor, payload_slice, mask_region, consumed))
 }
 
 // ── Message-level encode (buffered mode) ─────────────────────────────────────
@@ -586,8 +602,12 @@ pub struct DecodedMessage<'a> {
     pub global_metadata: GlobalMetadata,
     pub index: Option<IndexFrame>,
     pub hash_frame: Option<HashFrame>,
-    /// (descriptor, payload_slice, frame_offset_in_message)
-    pub objects: Vec<(DataObjectDescriptor, &'a [u8], usize)>,
+    /// (descriptor, data_payload_slice, mask_region_slice, frame_offset_in_message)
+    ///
+    /// `mask_region_slice` is empty when the frame has no masks;
+    /// otherwise it holds the raw compressed mask bytes.  See
+    /// `plans/BITMASK_FRAME.md` §3.2 for the region layout.
+    pub objects: Vec<(DataObjectDescriptor, &'a [u8], &'a [u8], usize)>,
     /// Per-object preceder metadata, parallel to `objects`.
     /// `Some(map)` if a PrecederMetadata frame preceded that object.
     /// After decode, these entries are merged into `global_metadata.base`
@@ -667,7 +687,7 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
     let mut global_metadata: Option<GlobalMetadata> = None;
     let mut index: Option<IndexFrame> = None;
     let mut hash_frame: Option<HashFrame> = None;
-    let mut objects: Vec<(DataObjectDescriptor, &[u8], usize)> = Vec::new();
+    let mut objects: Vec<(DataObjectDescriptor, &[u8], &[u8], usize)> = Vec::new();
     let mut preceder_payloads: Vec<Option<BTreeMap<String, ciborium::Value>>> = Vec::new();
     let mut current_phase = DecodePhase::Headers;
 
@@ -761,8 +781,8 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
                 // `masks` sub-map — a no-op here in Commit 1 (decode_data_object_frame
                 // treats both types identically until the bitmask work lands
                 // in Commit 5).
-                let (desc, payload, consumed) = decode_data_object_frame(&buf[pos..])?;
-                objects.push((desc, payload, frame_start));
+                let (desc, payload, mask_region, consumed) = decode_data_object_frame(&buf[pos..])?;
+                objects.push((desc, payload, mask_region, frame_start));
                 // Consume the pending preceder (if any) for this object
                 preceder_payloads.push(pending_preceder.take());
                 pos += consumed;
@@ -1080,7 +1100,8 @@ mod tests {
 
         let frame = encode_data_object_frame(&desc, &payload, false).unwrap();
 
-        let (decoded_desc, decoded_payload, consumed) = decode_data_object_frame(&frame).unwrap();
+        let (decoded_desc, decoded_payload, _mask_region, consumed) =
+            decode_data_object_frame(&frame).unwrap();
         assert_eq!(decoded_desc.shape, vec![4]);
         assert_eq!(decoded_desc.dtype, Dtype::Float32);
         assert_eq!(decoded_payload, &payload[..]);
@@ -1094,7 +1115,8 @@ mod tests {
 
         let frame = encode_data_object_frame(&desc, &payload, true).unwrap();
 
-        let (decoded_desc, decoded_payload, _) = decode_data_object_frame(&frame).unwrap();
+        let (decoded_desc, decoded_payload, _mask_region, _) =
+            decode_data_object_frame(&frame).unwrap();
         assert_eq!(decoded_desc.shape, vec![2, 3]);
         assert_eq!(decoded_payload, &payload[..]);
     }

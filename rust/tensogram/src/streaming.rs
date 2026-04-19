@@ -952,7 +952,7 @@ mod tests {
                 .unwrap()
                 .objects
                 .iter()
-                .map(|(_, p, _)| p.to_vec())
+                .map(|(_, p, _, _)| p.to_vec())
                 .collect()
         };
 

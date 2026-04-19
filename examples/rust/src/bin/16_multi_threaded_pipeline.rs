@@ -34,7 +34,7 @@ fn encoded_payloads(msg: &[u8]) -> Vec<Vec<u8>> {
     decoded
         .objects
         .iter()
-        .map(|(_, payload, _)| payload.to_vec())
+        .map(|(_, payload, _, _)| payload.to_vec())
         .collect()
 }
 

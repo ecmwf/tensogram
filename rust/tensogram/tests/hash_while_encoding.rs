@@ -73,7 +73,7 @@ fn buffered_hash_equals_compute_hash_of_encoded_payload_passthrough() {
 
     let msg = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let decoded = framing::decode_message(&msg).unwrap();
-    let (got_desc, got_payload, _) = &decoded.objects[0];
+    let (got_desc, got_payload, _, _) = &decoded.objects[0];
 
     let h = got_desc
         .hash

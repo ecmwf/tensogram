@@ -190,7 +190,7 @@ fn encode_then_extract_payload(
     let (extracted_desc, payload_vec) = {
         let dec = framing::decode_message(&msg).expect("decode message");
         assert_eq!(dec.objects.len(), 1);
-        let (d, payload_slice, _offset) = &dec.objects[0];
+        let (d, payload_slice, _mask_region, _offset) = &dec.objects[0];
         (d.clone(), payload_slice.to_vec())
     };
     (msg, extracted_desc, payload_vec)
