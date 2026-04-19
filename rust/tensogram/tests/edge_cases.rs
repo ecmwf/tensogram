@@ -2638,8 +2638,9 @@ fn corrupt_data_object_frame_trailer_rejected() {
     let data = vec![42u8; 16];
     let mut encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
-    // Find the DataObject frame: "FR" followed by frame type 0x0004
-    let data_object_marker: &[u8] = &[b'F', b'R', 0x00, 0x04];
+    // Find the data-object frame: "FR" followed by frame type 0x0009
+    // (NTensorMaskedFrame is what 0.17+ encoders emit).
+    let data_object_marker: &[u8] = &[b'F', b'R', 0x00, 0x09];
     if let Some(frame_start) = encoded.windows(4).position(|w| w == data_object_marker) {
         // Read the total_length from the frame header (bytes 8-15)
         let total_len_bytes = &encoded[frame_start + 8..frame_start + 16];

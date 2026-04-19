@@ -617,7 +617,9 @@ impl RemoteBackend {
                     let idx = metadata::cbor_to_index(payload)?;
                     state.layouts[msg_idx].index = Some(idx);
                 }
-                FrameType::DataObject | FrameType::PrecederMetadata => {
+                FrameType::NTensorFrame
+                | FrameType::NTensorMaskedFrame
+                | FrameType::PrecederMetadata => {
                     break;
                 }
                 _ => {}
@@ -820,7 +822,7 @@ impl RemoteBackend {
         let header_bytes = self.get_range(frame_start..frame_start + FRAME_HEADER_SIZE as u64)?;
         let fh = FrameHeader::read_from(&header_bytes)?;
 
-        if fh.frame_type != FrameType::DataObject {
+        if !fh.frame_type.is_data_object() {
             return Err(TensogramError::Remote(format!(
                 "expected DataObject frame, got {:?}",
                 fh.frame_type
@@ -1731,7 +1733,7 @@ impl RemoteBackend {
             .await?;
         let fh = FrameHeader::read_from(&header_bytes)?;
 
-        if fh.frame_type != FrameType::DataObject {
+        if !fh.frame_type.is_data_object() {
             return Err(TensogramError::Remote(format!(
                 "expected DataObject frame, got {:?}",
                 fh.frame_type

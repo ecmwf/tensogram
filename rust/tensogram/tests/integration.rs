@@ -265,9 +265,9 @@ fn test_hash_verification_fails_on_corruption() {
     let mut encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // The v2 message layout: preamble(24) | header frames | data-object frame | footer frames | postamble(16).
-    // The DataObject frame is identified by the "FR" marker followed by frame-type byte 0x00 0x04.
-    // Find the data object frame and corrupt a byte inside its payload region.
-    let data_frame_marker: &[u8] = &[b'F', b'R', 0x00, 0x04];
+    // 0.17+ encoders emit NTensorMaskedFrame (type 9); identify the
+    // frame by its "FR" magic + frame-type bytes 0x00 0x09.
+    let data_frame_marker: &[u8] = &[b'F', b'R', 0x00, 0x09];
     let frame_start = encoded
         .windows(4)
         .position(|w| w == data_frame_marker)

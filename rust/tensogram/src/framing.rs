@@ -121,9 +121,14 @@ pub fn encode_data_object_frame(
 
     let mut out = Vec::with_capacity(total_length as usize);
 
-    // Frame header
+    // Frame header — 0.17+ emits `NTensorMaskedFrame` (type 9) for every
+    // new data-object frame.  Without a `masks` sub-map in the CBOR
+    // descriptor the on-wire layout matches pre-0.17 type 4 byte-for-byte
+    // except for the type number; legacy-read code paths treat the two
+    // variants identically until the bitmask work (Commit 5) adds the
+    // optional mask sections.
     let fh = FrameHeader {
-        frame_type: FrameType::DataObject,
+        frame_type: FrameType::NTensorMaskedFrame,
         version: 1,
         flags,
         total_length,
@@ -155,9 +160,14 @@ pub fn encode_data_object_frame(
 /// `buf` must start at the frame header.
 pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u8], usize)> {
     let fh = FrameHeader::read_from(buf)?;
-    if fh.frame_type != FrameType::DataObject {
+    // Accept both legacy `NTensorFrame` (type 4) and the 0.17+
+    // `NTensorMaskedFrame` (type 9).  When the bitmask work lands this
+    // function will fork: type 9 parses optional mask sections; type 4
+    // stays layout-compatible.  For now both layouts are byte-identical
+    // below the preamble.
+    if !fh.frame_type.is_data_object() {
         return Err(TensogramError::Framing(format!(
-            "expected DataObject frame, got {:?}",
+            "expected data-object frame (type 4 or 9), got {:?}",
             fh.frame_type
         )));
     }
@@ -537,9 +547,13 @@ fn frame_phase(ft: FrameType) -> DecodePhase {
         FrameType::HeaderMetadata | FrameType::HeaderIndex | FrameType::HeaderHash => {
             DecodePhase::Headers
         }
-        // PrecederMetadata lives alongside DataObject frames — it must appear
-        // immediately before the DataObject it describes, within the data phase.
-        FrameType::DataObject | FrameType::PrecederMetadata => DecodePhase::DataObjects,
+        // PrecederMetadata lives alongside data-object frames — it must appear
+        // immediately before the data-object frame it describes, within the
+        // data phase.  Both NTensorFrame (legacy) and NTensorMaskedFrame
+        // count as data-object frames.
+        FrameType::NTensorFrame | FrameType::NTensorMaskedFrame | FrameType::PrecederMetadata => {
+            DecodePhase::DataObjects
+        }
         FrameType::FooterHash | FrameType::FooterIndex | FrameType::FooterMetadata => {
             DecodePhase::Footers
         }
@@ -628,9 +642,9 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
 
         // A pending preceder must be followed by a DataObject, not a footer
         // or another preceder.
-        if pending_preceder.is_some() && fh.frame_type != FrameType::DataObject {
+        if pending_preceder.is_some() && !fh.frame_type.is_data_object() {
             return Err(TensogramError::Framing(format!(
-                "PrecederMetadata must be followed by a DataObject frame, got {:?}",
+                "PrecederMetadata must be followed by a data-object frame, got {:?}",
                 fh.frame_type
             )));
         }
@@ -677,7 +691,13 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
                 pending_preceder = Some(entry);
                 pos += consumed;
             }
-            FrameType::DataObject => {
+            FrameType::NTensorFrame | FrameType::NTensorMaskedFrame => {
+                // Both frame types share the same wire layout for the payload + CBOR
+                // sections; mask blobs (only present in type 9) live between
+                // payload and CBOR and are surfaced later via the descriptor's
+                // `masks` sub-map — a no-op here in Commit 1 (decode_data_object_frame
+                // treats both types identically until the bitmask work lands
+                // in Commit 5).
                 let (desc, payload, consumed) = decode_data_object_frame(&buf[pos..])?;
                 objects.push((desc, payload, frame_start));
                 // Consume the pending preceder (if any) for this object
@@ -687,10 +707,10 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
         }
     }
 
-    // A preceder at the end of the stream with no following DataObject is invalid
+    // A preceder at the end of the stream with no following data-object frame is invalid
     if pending_preceder.is_some() {
         return Err(TensogramError::Framing(
-            "dangling PrecederMetadata: no DataObject frame followed".to_string(),
+            "dangling PrecederMetadata: no data-object frame followed".to_string(),
         ));
     }
 
@@ -1173,7 +1193,7 @@ mod tests {
 
         for (content, frame_type) in frames {
             match frame_type {
-                FrameType::DataObject => {
+                FrameType::NTensorFrame => {
                     let frame = encode_data_object_frame(&desc, &payload, false).unwrap();
                     out.extend_from_slice(&frame);
                     let pad = (8 - (out.len() % 8)) % 8;
@@ -1217,7 +1237,7 @@ mod tests {
     fn test_decode_rejects_header_after_data_object() {
         // DataObject before HeaderMetadata — should fail
         let msg = build_raw_message(&[
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
             (&[], FrameType::HeaderMetadata),
         ]);
         let result = decode_message(&msg);
@@ -1247,7 +1267,7 @@ mod tests {
         let msg = build_raw_message(&[
             (&meta_cbor, FrameType::HeaderMetadata),
             (&hash_cbor, FrameType::FooterHash),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
         ]);
         let result = decode_message(&msg);
         assert!(
@@ -1261,7 +1281,7 @@ mod tests {
         // HeaderMetadata → DataObject — canonical order
         let msg = build_raw_message(&[
             (&[], FrameType::HeaderMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
         ]);
         let result = decode_message(&msg);
         assert!(
@@ -1343,7 +1363,7 @@ mod tests {
 
         let msg = build_raw_message(&[
             (&meta_cbor, FrameType::HeaderMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
             (&meta_cbor, FrameType::FooterMetadata),
         ]);
         let result = decode_message(&msg);
@@ -1381,7 +1401,7 @@ mod tests {
         let msg = build_raw_message(&[
             (&[], FrameType::HeaderMetadata),
             (&preceder_cbor, FrameType::PrecederMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
         ]);
         let decoded = decode_message(&msg).unwrap();
 
@@ -1403,14 +1423,14 @@ mod tests {
             (&[], FrameType::HeaderMetadata),
             (&preceder_cbor, FrameType::PrecederMetadata),
             (&preceder_cbor, FrameType::PrecederMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
         ]);
         let result = decode_message(&msg);
         assert!(result.is_err(), "consecutive preceders should be rejected");
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("PrecederMetadata") && err.contains("DataObject"),
-            "error should explain preceder must precede DataObject: {err}"
+            err.contains("PrecederMetadata") && err.contains("data-object"),
+            "error should explain preceder must precede a data-object frame: {err}"
         );
     }
 
@@ -1422,7 +1442,7 @@ mod tests {
         // Preceder at end of message without a following DataObject
         let msg = build_raw_message(&[
             (&[], FrameType::HeaderMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
             (&preceder_cbor, FrameType::PrecederMetadata),
         ]);
         let result = decode_message(&msg);
@@ -1447,7 +1467,7 @@ mod tests {
         let msg = build_raw_message(&[
             (&[], FrameType::HeaderMetadata),
             (&bad_cbor, FrameType::PrecederMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
         ]);
         let result = decode_message(&msg);
         assert!(
@@ -1474,7 +1494,7 @@ mod tests {
         let msg = build_raw_message(&[
             (&[], FrameType::HeaderMetadata),
             (&bad_cbor, FrameType::PrecederMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
         ]);
         let result = decode_message(&msg);
         assert!(
@@ -1520,8 +1540,8 @@ mod tests {
         let msg = build_raw_message(&[
             (&[], FrameType::HeaderMetadata),
             (&preceder_cbor, FrameType::PrecederMetadata),
-            (&[], FrameType::DataObject),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
+            (&[], FrameType::NTensorFrame),
         ]);
         let decoded = decode_message(&msg).unwrap();
 
@@ -1562,7 +1582,7 @@ mod tests {
         let msg = build_raw_message(&[
             (&[], FrameType::HeaderMetadata),
             (&preceder_cbor, FrameType::PrecederMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
             (&footer_cbor, FrameType::FooterMetadata),
         ]);
         let decoded = decode_message(&msg).unwrap();
@@ -1591,7 +1611,7 @@ mod tests {
 
         let msg = build_raw_message(&[
             (&footer_cbor, FrameType::HeaderMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
         ]);
         let result = decode_message(&msg);
         assert!(

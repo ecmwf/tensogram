@@ -2977,7 +2977,7 @@ mod tests {
             if fh_total < FRAME_HEADER_SIZE {
                 return None;
             }
-            if fh_type_raw == 4 {
+            if fh_type_raw == 4 || fh_type_raw == 9 {
                 return Some((pos, fh_total));
             }
             // Frames are 8-byte aligned on the wire.

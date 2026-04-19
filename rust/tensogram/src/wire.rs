@@ -37,15 +37,34 @@ pub enum FrameType {
     HeaderMetadata = 1,
     HeaderIndex = 2,
     HeaderHash = 3,
-    DataObject = 4,
+    /// Legacy n-tensor data-object frame (pre-0.17).  Read-only for
+    /// ≥0.17 decoders; new encoders emit [`FrameType::NTensorMaskedFrame`].
+    ///
+    /// The on-wire layout and CBOR schema are unchanged from pre-0.17.
+    /// When a type-9 decoder reads a type-4 frame, the descriptor is
+    /// interpreted as having no `masks` sub-map (equivalent to "all
+    /// values are finite" under the new default-reject semantics).
+    NTensorFrame = 4,
     FooterHash = 5,
     FooterIndex = 6,
     FooterMetadata = 7,
-    /// Per-object metadata frame that immediately precedes a DataObject frame.
-    /// Carries a GlobalMetadata CBOR with a single-entry `base` array
-    /// containing metadata for the next data object. `_reserved_` and
-    /// `_extra_` are empty in the preceder.
+    /// Per-object metadata frame that immediately precedes a data-object
+    /// frame (type 4 or 9).  Carries a GlobalMetadata CBOR with a
+    /// single-entry `base` array containing metadata for the next data
+    /// object. `_reserved_` and `_extra_` are empty in the preceder.
     PrecederMetadata = 8,
+    /// N-tensor data-object frame with optional companion bitmasks
+    /// identifying positions of NaN / +Inf / -Inf values in the
+    /// original input.
+    ///
+    /// Layout: same preamble as type 4, then the encoded payload (with
+    /// non-finite values substituted with `0.0`), then up to three
+    /// compressed bitmask blobs, then the CBOR descriptor (with an
+    /// optional `"masks"` sub-map carrying per-kind method / offset /
+    /// length), then the `u64 cbor_offset` + `ENDF` end-magic.
+    ///
+    /// See `plans/BITMASK_FRAME.md` for the full design.
+    NTensorMaskedFrame = 9,
 }
 
 impl FrameType {
@@ -54,13 +73,25 @@ impl FrameType {
             1 => Ok(FrameType::HeaderMetadata),
             2 => Ok(FrameType::HeaderIndex),
             3 => Ok(FrameType::HeaderHash),
-            4 => Ok(FrameType::DataObject),
+            4 => Ok(FrameType::NTensorFrame),
             5 => Ok(FrameType::FooterHash),
             6 => Ok(FrameType::FooterIndex),
             7 => Ok(FrameType::FooterMetadata),
             8 => Ok(FrameType::PrecederMetadata),
+            9 => Ok(FrameType::NTensorMaskedFrame),
             _ => Err(TensogramError::Framing(format!("unknown frame type: {v}"))),
         }
+    }
+
+    /// True for frames that carry an n-tensor data payload (types 4 and 9).
+    /// Callers that want to treat both variants uniformly (e.g. the
+    /// framing scanner) should use this instead of matching a single
+    /// variant.
+    pub fn is_data_object(self) -> bool {
+        matches!(
+            self,
+            FrameType::NTensorFrame | FrameType::NTensorMaskedFrame
+        )
     }
 }
 
@@ -295,7 +326,7 @@ mod tests {
     #[test]
     fn test_frame_header_round_trip() {
         let fh = FrameHeader {
-            frame_type: FrameType::DataObject,
+            frame_type: FrameType::NTensorFrame,
             version: 1,
             flags: DataObjectFlags::CBOR_AFTER_PAYLOAD,
             total_length: 1024,
@@ -305,7 +336,7 @@ mod tests {
         assert_eq!(buf.len(), FRAME_HEADER_SIZE);
 
         let parsed = FrameHeader::read_from(&buf).unwrap();
-        assert_eq!(parsed.frame_type, FrameType::DataObject);
+        assert_eq!(parsed.frame_type, FrameType::NTensorFrame);
         assert_eq!(parsed.version, 1);
         assert_eq!(parsed.flags, DataObjectFlags::CBOR_AFTER_PAYLOAD);
         assert_eq!(parsed.total_length, 1024);
@@ -347,11 +378,24 @@ mod tests {
     #[test]
     fn test_frame_type_parse() {
         assert_eq!(FrameType::from_u16(1).unwrap(), FrameType::HeaderMetadata);
-        assert_eq!(FrameType::from_u16(4).unwrap(), FrameType::DataObject);
+        assert_eq!(FrameType::from_u16(4).unwrap(), FrameType::NTensorFrame);
         assert_eq!(FrameType::from_u16(7).unwrap(), FrameType::FooterMetadata);
         assert_eq!(FrameType::from_u16(8).unwrap(), FrameType::PrecederMetadata);
+        assert_eq!(
+            FrameType::from_u16(9).unwrap(),
+            FrameType::NTensorMaskedFrame
+        );
         assert!(FrameType::from_u16(0).is_err());
-        assert!(FrameType::from_u16(9).is_err());
+        assert!(FrameType::from_u16(10).is_err());
+    }
+
+    #[test]
+    fn test_is_data_object() {
+        assert!(FrameType::NTensorFrame.is_data_object());
+        assert!(FrameType::NTensorMaskedFrame.is_data_object());
+        assert!(!FrameType::HeaderMetadata.is_data_object());
+        assert!(!FrameType::PrecederMetadata.is_data_object());
+        assert!(!FrameType::FooterHash.is_data_object());
     }
 
     #[test]
