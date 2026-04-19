@@ -196,6 +196,27 @@ struct encode_options {
     ///   for opaque codecs (blosc2, zstd with workers) the compressed bytes
     ///   may differ but round-trip losslessly.
     std::uint32_t threads = 0;
+    /// When true, NaN values in float / complex payloads are substituted
+    /// with `0.0` and recorded in a bitmask companion section of the
+    /// data-object frame.  When false (the default), any NaN input is a
+    /// hard encode error.  See `plans/BITMASK_FRAME.md`.
+    bool allow_nan = false;
+    /// When true, `+Inf` AND `-Inf` values are substituted with `0.0` and
+    /// recorded in per-sign bitmasks.  Default false (reject).
+    bool allow_inf = false;
+    /// Mask compression method for the NaN mask.  Empty string ("") uses
+    /// the library default ("roaring").  Accepts "none" | "rle" |
+    /// "roaring" | "lz4" | "zstd" | "blosc2".
+    std::string nan_mask_method = "";
+    /// Mask compression method for the +Inf mask.  Default "roaring".
+    std::string pos_inf_mask_method = "";
+    /// Mask compression method for the -Inf mask.  Default "roaring".
+    std::string neg_inf_mask_method = "";
+    /// Uncompressed byte-count threshold below which mask blobs are
+    /// written as "none" regardless of the requested method.  Default
+    /// 128.  Set to 0 to disable the fallback.  Negative values use the
+    /// library default.
+    std::ptrdiff_t small_mask_threshold_bytes = -1;
 };
 
 /// Options controlling message decoding.
@@ -209,7 +230,48 @@ struct decode_options {
     /// Thread budget for the multi-threaded decoding pipeline.
     /// See `encode_options::threads` for semantics.
     std::uint32_t threads = 0;
+    /// When true (the default) AND the message carries a mask companion,
+    /// decode writes canonical NaN / ±Inf at the masked positions.  Set
+    /// to false to receive the 0.0-substituted bytes as on disk.
+    bool restore_non_finite = true;
 };
+
+namespace detail {
+/// Build a TgmEncodeMaskOptions from encode_options or return nullptr
+/// when no mask policy was requested.  Lifetime of the returned
+/// struct is tied to the `holder` argument; the struct's string
+/// pointers alias strings owned by `opts`.
+struct mask_opts_holder {
+    TgmEncodeMaskOptions value;
+    bool active;
+};
+
+inline mask_opts_holder build_mask_opts(const encode_options& opts) {
+    mask_opts_holder h{};
+    // If none of the mask-specific fields are set, skip the options
+    // struct entirely — the FFI will use library defaults.
+    const bool any_mask_field = opts.allow_nan || opts.allow_inf
+        || !opts.nan_mask_method.empty()
+        || !opts.pos_inf_mask_method.empty()
+        || !opts.neg_inf_mask_method.empty()
+        || opts.small_mask_threshold_bytes >= 0;
+    if (!any_mask_field) {
+        h.active = false;
+        return h;
+    }
+    h.active = true;
+    h.value.allow_nan = opts.allow_nan;
+    h.value.allow_inf = opts.allow_inf;
+    h.value.nan_mask_method =
+        opts.nan_mask_method.empty() ? nullptr : opts.nan_mask_method.c_str();
+    h.value.pos_inf_mask_method =
+        opts.pos_inf_mask_method.empty() ? nullptr : opts.pos_inf_mask_method.c_str();
+    h.value.neg_inf_mask_method =
+        opts.neg_inf_mask_method.empty() ? nullptr : opts.neg_inf_mask_method.c_str();
+    h.value.small_mask_threshold_bytes = opts.small_mask_threshold_bytes;
+    return h;
+}
+}  // namespace detail
 
 // ============================================================
 // Forward declarations
@@ -591,9 +653,18 @@ public:
         detail::scatter_gather sg(objects);
         const char* hash = opts.hash_algo.empty() ? nullptr
                                                      : opts.hash_algo.c_str();
-        detail::check(tgm_file_append(handle_.get(), metadata_json.c_str(),
-                                       sg.ptrs.data(), sg.lens.data(),
-                                       objects.size(), hash, opts.threads));
+        auto mask_holder = detail::build_mask_opts(opts);
+        if (mask_holder.active) {
+            detail::check(tgm_file_append_with_options(
+                handle_.get(), metadata_json.c_str(),
+                sg.ptrs.data(), sg.lens.data(),
+                objects.size(), hash, opts.threads,
+                &mask_holder.value));
+        } else {
+            detail::check(tgm_file_append(handle_.get(), metadata_json.c_str(),
+                                           sg.ptrs.data(), sg.lens.data(),
+                                           objects.size(), hash, opts.threads));
+        }
     }
 
     /// File path as a string.
@@ -881,10 +952,20 @@ private:
     detail::scatter_gather sg(objects);
     const char* hash = opts.hash_algo.empty() ? nullptr : opts.hash_algo.c_str();
     tgm_bytes_t bytes{};
-    detail::check(tgm_encode(metadata_json.c_str(),
-                              sg.ptrs.data(), sg.lens.data(), objects.size(),
-                              hash, opts.threads,
-                              &bytes));
+    auto mask_holder = detail::build_mask_opts(opts);
+    const TgmEncodeMaskOptions* mask_ptr = mask_holder.active ? &mask_holder.value : nullptr;
+    if (mask_ptr != nullptr) {
+        detail::check(tgm_encode_with_options(metadata_json.c_str(),
+                                              sg.ptrs.data(), sg.lens.data(), objects.size(),
+                                              hash, opts.threads,
+                                              mask_ptr,
+                                              &bytes));
+    } else {
+        detail::check(tgm_encode(metadata_json.c_str(),
+                                 sg.ptrs.data(), sg.lens.data(), objects.size(),
+                                 hash, opts.threads,
+                                 &bytes));
+    }
     std::vector<std::uint8_t> result(bytes.data, bytes.data + bytes.len);
     tgm_bytes_free(bytes);
     return result;
@@ -948,9 +1029,23 @@ private:
                       const decode_options& opts)
 {
     tgm_message_t* raw = nullptr;
-    detail::check(tgm_decode(buf, len, opts.verify_hash ? 1 : 0,
-                              opts.native_byte_order ? 1 : 0,
-                              opts.threads, &raw));
+    // Pass the restore_non_finite flag via the TgmDecodeMaskOptions
+    // variant only when the caller asked for a non-default value.
+    // Default-constructed decode_options leaves restore_non_finite =
+    // true, which matches the library default; in that case we use
+    // the legacy entry point.
+    if (opts.restore_non_finite) {
+        detail::check(tgm_decode(buf, len, opts.verify_hash ? 1 : 0,
+                                  opts.native_byte_order ? 1 : 0,
+                                  opts.threads, &raw));
+    } else {
+        TgmDecodeMaskOptions mask_opts{};
+        mask_opts.restore_non_finite = false;
+        detail::check(tgm_decode_with_options(
+            buf, len, opts.verify_hash ? 1 : 0,
+            opts.native_byte_order ? 1 : 0, opts.threads,
+            &mask_opts, &raw));
+    }
     return message(raw);
 }
 

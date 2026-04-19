@@ -88,6 +88,40 @@ typedef struct {
 } tgm_bytes_t;
 
 /**
+ * Mask-companion options for encode entry points (see
+ * `plans/BITMASK_FRAME.md` §6.3).  Pass a pointer to this struct to
+ * opt into NaN / ±Inf substitution with bitmask companion frames.
+ *
+ * Each `*_mask_method` string is one of `"none"`, `"rle"`,
+ * `"roaring"`, `"lz4"`, `"zstd"`, or `"blosc2"`; pass `NULL` to use
+ * the library default (`"roaring"`).  Unknown names fall back to
+ * `"roaring"` silently; use the Rust `encode` entry point for
+ * strict validation.
+ *
+ * `small_mask_threshold_bytes` is the byte-count below which mask
+ * blobs are written as `"none"` regardless of the requested method
+ * (auto-fallback).  Pass `0` to disable the fallback.  Negative
+ * values use the library default (128).
+ */
+typedef struct {
+  bool allow_nan;
+  bool allow_inf;
+  const char *nan_mask_method;
+  const char *pos_inf_mask_method;
+  const char *neg_inf_mask_method;
+  ptrdiff_t small_mask_threshold_bytes;
+} TgmEncodeMaskOptions;
+
+/**
+ * Decode-side companion to [`TgmEncodeMaskOptions`].  Pass a pointer
+ * to opt out of canonical NaN / Inf restoration.  Pass `NULL` for
+ * the default `restore_non_finite = true`.
+ */
+typedef struct {
+  bool restore_non_finite;
+} TgmDecodeMaskOptions;
+
+/**
  * Scan result: array of (offset, length) pairs.
  */
 typedef struct {
@@ -133,6 +167,66 @@ tgm_error tgm_encode(const char *metadata_json,
                      const char *hash_algo,
                      uint32_t threads,
                      tgm_bytes_t *out);
+
+/**
+ * Encode with explicit NaN / Inf mask-companion options.
+ *
+ * Like [`tgm_encode`] but takes a [`TgmEncodeMaskOptions`] pointer
+ * (nullable — `NULL` behaves like [`tgm_encode`]'s default reject
+ * policy).  All other arguments are identical.
+ */
+tgm_error tgm_encode_with_options(const char *metadata_json,
+                                  const uint8_t *const *data_ptrs,
+                                  const size_t *data_lens,
+                                  size_t num_objects,
+                                  const char *hash_algo,
+                                  uint32_t threads,
+                                  const TgmEncodeMaskOptions *mask_options,
+                                  tgm_bytes_t *out);
+
+/**
+ * Decode with explicit NaN / Inf restoration options.
+ *
+ * Like [`tgm_decode`] but takes a [`TgmDecodeMaskOptions`] pointer
+ * (nullable — `NULL` behaves like [`tgm_decode`]'s default
+ * `restore_non_finite = true`).
+ */
+tgm_error tgm_decode_with_options(const uint8_t *buf,
+                                  size_t buf_len,
+                                  int32_t verify_hash,
+                                  int32_t native_byte_order,
+                                  uint32_t threads,
+                                  const TgmDecodeMaskOptions *mask_options,
+                                  tgm_message_t **out);
+
+/**
+ * Streaming-encoder constructor with NaN / Inf mask-companion options.
+ *
+ * Like [`tgm_streaming_encoder_create`] but takes a
+ * [`TgmEncodeMaskOptions`] pointer.  `NULL` behaves like the default
+ * reject policy.
+ */
+tgm_error tgm_streaming_encoder_create_with_options(const char *path,
+                                                    const char *metadata_json,
+                                                    const char *hash_algo,
+                                                    uint32_t threads,
+                                                    const TgmEncodeMaskOptions *mask_options,
+                                                    tgm_streaming_encoder_t **out);
+
+/**
+ * Append a message to a file with explicit NaN / Inf mask-companion options.
+ *
+ * Like [`tgm_file_append`] but takes a [`TgmEncodeMaskOptions`]
+ * pointer.  `NULL` behaves like the default reject policy.
+ */
+tgm_error tgm_file_append_with_options(tgm_file_t *file,
+                                       const char *metadata_json,
+                                       const uint8_t *const *data_ptrs,
+                                       const size_t *data_lens,
+                                       size_t num_objects,
+                                       const char *hash_algo,
+                                       uint32_t threads,
+                                       const TgmEncodeMaskOptions *mask_options);
 
 /**
  * Encode a Tensogram message from JSON metadata and pre-encoded payload bytes.
