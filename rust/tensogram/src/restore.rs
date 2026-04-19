@@ -58,12 +58,25 @@ pub(crate) fn restore_non_finite_into(
     };
 
     let n_elements = element_count(descriptor)?;
-    if descriptor.dtype.byte_width() == 0 {
+    let elem_size = descriptor.dtype.byte_width();
+    if elem_size == 0 {
         // Bitmask dtype — masks don't apply; guard against the
         // pathological case.
         return Err(TensogramError::Framing(
             "bitmask-companion masks cannot be restored on bitmask-dtype payloads".to_string(),
         ));
+    }
+    let expected_len = n_elements.checked_mul(elem_size).ok_or_else(|| {
+        TensogramError::Metadata("n_elements * elem_size overflows usize".to_string())
+    })?;
+    if decoded_payload.len() != expected_len {
+        return Err(TensogramError::Framing(format!(
+            "decoded payload length {} does not match descriptor n_elements * elem_size ({} * {} = {})",
+            decoded_payload.len(),
+            n_elements,
+            elem_size,
+            expected_len,
+        )));
     }
 
     // Mask-region offsets in the descriptor are relative to the
@@ -151,8 +164,11 @@ fn decode_one_mask_at(
         )));
     }
     let blob = &mask_region[start..end];
-    decode_blob(&md.method, blob, n_elements)
-        .map_err(|e| TensogramError::Encoding(format!("bitmask decode ({}): {e}", md.method)))
+    decode_blob(&md.method, blob, n_elements).map_err(|e| match e {
+        // `UnknownMethod` already names the method — avoid duplicating it.
+        bitmask::MaskError::UnknownMethod(_) => TensogramError::Encoding(e.to_string()),
+        other => TensogramError::Encoding(format!("bitmask decode ({}): {other}", md.method)),
+    })
 }
 
 fn u64_to_usize(v: u64, name: &str) -> Result<usize> {
@@ -188,6 +204,12 @@ enum Kind {
 /// Write the canonical bit pattern for `kind` at every position
 /// where `bits[i]` is `true`.  Byte order matches `byte_order`;
 /// element size and dispatch are driven by `dtype`.
+///
+/// Callers must ensure `buf.len() >= bits.len() * dtype.byte_width()`
+/// — [`restore_non_finite_into`] and [`restore_non_finite_into_ranges`]
+/// both validate this at entry.  A `debug_assert!` catches a caller
+/// bug in tests; release builds skip out-of-bounds positions rather
+/// than panicking.
 fn write_canonical_non_finite(
     buf: &mut [u8],
     dtype: Dtype,
@@ -196,19 +218,23 @@ fn write_canonical_non_finite(
     kind: Kind,
 ) {
     let elem_size = dtype.byte_width();
-    // Each present mask's length equals `n_elements`; `buf.len() ==
-    // n_elements * elem_size` for non-bitmask float dtypes.  Bitmask
-    // dtype is rejected upstream.
+    debug_assert!(
+        buf.len() >= bits.len() * elem_size,
+        "write_canonical_non_finite: buf {} < bits {} * elem_size {}",
+        buf.len(),
+        bits.len(),
+        elem_size,
+    );
     for (i, &is_set) in bits.iter().enumerate() {
         if !is_set {
             continue;
         }
         let start = i * elem_size;
         if start + elem_size > buf.len() {
-            // Defensive: a malformed mask that claims more elements
-            // than the payload can hold.  Skip rather than panic so
-            // a bad frame doesn't crash the process.
-            return;
+            // Debug-assert caught this above; release builds take the
+            // safe fallback (skip) so a bad caller can't crash the
+            // process.  All in-tree callers validate lengths upstream.
+            break;
         }
         match dtype {
             Dtype::Float32 => {
@@ -400,15 +426,35 @@ pub(crate) fn restore_non_finite_into_ranges(
         )));
     }
 
+    let elem_size = descriptor.dtype.byte_width();
+    if elem_size == 0 {
+        return Err(TensogramError::Framing(
+            "bitmask-companion masks cannot be restored on bitmask-dtype payloads".to_string(),
+        ));
+    }
+
     // For every (range, part) pair, slice each mask over the range
     // and apply canonical restoration per kind.  Kinds never overlap
     // on encode (complex priority rule) so the three passes are
     // independent.
     for (part, &(offset, count)) in parts.iter_mut().zip(ranges.iter()) {
         let start = u64_to_usize(offset, "range.offset")?;
+        let count = u64_to_usize(count, "range.count")?;
         let end = start
-            .checked_add(u64_to_usize(count, "range.count")?)
+            .checked_add(count)
             .ok_or_else(|| TensogramError::Framing("range offset+count overflow".to_string()))?;
+        let expected_part_len = count.checked_mul(elem_size).ok_or_else(|| {
+            TensogramError::Framing("range count * elem_size overflows usize".to_string())
+        })?;
+        if part.len() != expected_part_len {
+            return Err(TensogramError::Framing(format!(
+                "range part length {} does not match count * elem_size ({} * {} = {})",
+                part.len(),
+                count,
+                elem_size,
+                expected_part_len,
+            )));
+        }
         for (kind_bits, kind) in [
             (mask_set.nan.as_ref(), Kind::Nan),
             (mask_set.pos_inf.as_ref(), Kind::PosInf),
@@ -570,6 +616,109 @@ mod tests {
         let desc = make_descriptor(vec![4], Dtype::Float64);
         let set = decode_mask_set(&desc, &[]).unwrap();
         assert!(set.is_empty());
+    }
+
+    #[test]
+    fn restore_non_finite_into_rejects_bitmask_dtype() {
+        // Regression: bitmask-dtype descriptors must reject mask
+        // companions at entry — no silent zero-width processing.
+        let mut desc = make_descriptor(vec![4], Dtype::Bitmask);
+        desc.masks = Some(MasksMetadata {
+            nan: Some(MaskDescriptor {
+                method: "none".to_string(),
+                offset: 0,
+                length: 1,
+                params: BTreeMap::new(),
+            }),
+            ..Default::default()
+        });
+        let mut payload = vec![0u8; 1];
+        let err = restore_non_finite_into(&mut payload, &desc, &[0u8; 1], ByteOrder::native())
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("bitmask"), "got: {msg}");
+    }
+
+    #[test]
+    fn restore_non_finite_into_rejects_wrong_payload_length() {
+        // Regression for Pass 3 E2: catch the caller-bug silently
+        // skipped before — decoded payload shorter than
+        // n_elements * elem_size now hard-errors.
+        let mut desc = make_descriptor(vec![4], Dtype::Float64);
+        desc.masks = Some(MasksMetadata {
+            nan: Some(MaskDescriptor {
+                method: "none".to_string(),
+                offset: 32, // bytes for 4×f64
+                length: 1,
+                params: BTreeMap::new(),
+            }),
+            ..Default::default()
+        });
+        let mut short_payload = vec![0u8; 16]; // only 2×f64 — wrong
+        let mask_region: Vec<u8> = bitmask::codecs::encode_none(&[false, true, false, true]);
+        let err =
+            restore_non_finite_into(&mut short_payload, &desc, &mask_region, ByteOrder::native())
+                .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("decoded payload length"),
+            "expected length-mismatch error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn restore_non_finite_into_ranges_rejects_wrong_part_length() {
+        // Regression for Pass 3 E3: decode_range consumers that
+        // supply malformed per-range slices now see a clear error
+        // rather than silent corruption.
+        let mut desc = make_descriptor(vec![8], Dtype::Float64);
+        desc.masks = Some(MasksMetadata {
+            nan: Some(MaskDescriptor {
+                method: "none".to_string(),
+                offset: 64,
+                length: 1,
+                params: BTreeMap::new(),
+            }),
+            ..Default::default()
+        });
+        let mask_set = DecodedMaskSet {
+            nan: Some(vec![true; 8]),
+            pos_inf: None,
+            neg_inf: None,
+        };
+        // Wrong part length: range says count=4 but part holds 3×f64.
+        let mut parts = vec![vec![0u8; 24]];
+        let err = restore_non_finite_into_ranges(
+            &mut parts,
+            &desc,
+            &[(0, 4)],
+            &mask_set,
+            ByteOrder::native(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("range part length"), "got: {err}");
+    }
+
+    #[test]
+    fn decode_one_mask_at_unknown_method_error_is_not_duplicated() {
+        // Regression for Pass 3 E4: the "bitmask decode (method):"
+        // prefix must not duplicate the method name inside
+        // `UnknownMethod`'s own message.
+        let md = MaskDescriptor {
+            method: "bogus".to_string(),
+            offset: 0,
+            length: 1,
+            params: BTreeMap::new(),
+        };
+        let mask_region = vec![0u8; 1];
+        let err = decode_one_mask_at(&md, &mask_region, 0, 4).unwrap_err();
+        let msg = err.to_string();
+        // The method name appears exactly once.
+        let occurrences = msg.matches("bogus").count();
+        assert_eq!(
+            occurrences, 1,
+            "message should name method once, got: {msg}"
+        );
     }
 
     #[test]

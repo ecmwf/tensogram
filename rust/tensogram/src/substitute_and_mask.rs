@@ -336,7 +336,23 @@ fn run_sequential<'a>(
             &mut masks,
             &mut saw_any,
         )?,
-        _ => unreachable!("non-float dtypes short-circuit before dispatch"),
+        // Invariant: non-float dtypes short-circuit at the public
+        // entry point ([`substitute_and_mask`]).  Fire a debug
+        // assertion to surface the bug in tests but fall back to a
+        // safe zero-cost passthrough in release builds rather than
+        // panicking.
+        Dtype::Int8
+        | Dtype::Int16
+        | Dtype::Int32
+        | Dtype::Int64
+        | Dtype::Uint8
+        | Dtype::Uint16
+        | Dtype::Uint32
+        | Dtype::Uint64
+        | Dtype::Bitmask => {
+            debug_assert!(false, "non-float dtype {dtype:?} reached run_sequential");
+            return Ok((Cow::Borrowed(data), MaskSet::empty(n_elements)));
+        }
     }
 
     if !saw_any {

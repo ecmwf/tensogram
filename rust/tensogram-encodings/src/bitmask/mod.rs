@@ -134,7 +134,9 @@ impl MaskMethod {
 /// layer.
 #[derive(Debug, Error)]
 pub enum MaskError {
-    #[error("unknown mask method: {0:?} (expected rle | roaring | blosc2 | zstd | lz4 | none)")]
+    #[error(
+        "unknown mask method {0:?} (expected \"none\" | \"rle\" | \"roaring\" | \"lz4\" | \"zstd\" | \"blosc2\")"
+    )]
     UnknownMethod(String),
     #[error("mask method {method:?} requires feature {method:?} which is not compiled in")]
     FeatureDisabled { method: &'static str },

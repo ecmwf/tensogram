@@ -521,6 +521,95 @@ fn hash_verifies_against_substituted_payload() {
     assert_eq!(objects.len(), 1);
 }
 
+// ── Edge cases ──────────────────────────────────────────────────────────────
+
+#[test]
+fn zero_element_tensor_with_allow_nan_has_no_masks() {
+    // shape=[0] means no elements to classify.  The encoder must
+    // not emit a `masks` sub-map (there's nothing to mask).
+    let data: Vec<u8> = vec![];
+    let mut desc = make_descriptor(vec![0], Dtype::Float64);
+    // shape=[0] → strides=[1] per the helper; the encoder accepts it
+    // because shape-product * elem_size = 0 = data_len.
+    desc.strides = vec![1];
+    let options = EncodeOptions {
+        allow_nan: true,
+        allow_inf: true,
+        hash_algorithm: None,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+    let (_, descriptors) = decode_descriptors(&msg).unwrap();
+    assert!(
+        descriptors[0].masks.is_none(),
+        "zero-element tensor must not emit a mask sub-map"
+    );
+}
+
+#[test]
+fn all_nan_payload_round_trips() {
+    // Pathological but valid: every element is NaN.  The mask is
+    // all-ones, which is an efficient case for every codec
+    // (roaring one run-container, rle one long run, none one byte
+    // per 8 bits).
+    let data = f64_bytes(&[f64::NAN; 16]);
+    let desc = make_descriptor(vec![16], Dtype::Float64);
+    let options = EncodeOptions {
+        allow_nan: true,
+        hash_algorithm: None,
+        small_mask_threshold_bytes: 0,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+    let got: Vec<f64> = objects[0]
+        .1
+        .chunks_exact(8)
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+        .collect();
+    assert!(
+        got.iter().all(|v| v.is_nan()),
+        "all 16 elements must be NaN"
+    );
+}
+
+#[test]
+fn unknown_mask_method_at_decode_errors_clearly() {
+    // If a producer claims method="bogus" in a descriptor we must
+    // not silently misdecode — the decoder surfaces the method name
+    // exactly once in the error.
+    let data = f64_bytes(&[1.0, f64::NAN]);
+    let desc = make_descriptor(vec![2], Dtype::Float64);
+    let options = EncodeOptions {
+        allow_nan: true,
+        hash_algorithm: None,
+        small_mask_threshold_bytes: 0,
+        ..Default::default()
+    };
+    let mut msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+
+    // Corrupt the descriptor's NaN method name to a 7-char bogus
+    // string by tampering with the CBOR.  We know the encoder
+    // emitted `method: "roaring"` (7 ASCII chars) for the NaN
+    // mask — replace the bytes in-place so the CBOR tstr(7) length
+    // prefix stays valid.
+    let roaring = b"roaring";
+    let replacement = b"bogus!!"; // 7 chars — same length as "roaring"
+    assert_eq!(replacement.len(), roaring.len());
+    let needle_pos = msg
+        .windows(roaring.len())
+        .position(|w| w == roaring)
+        .expect("encoded message should contain \"roaring\"");
+    msg[needle_pos..needle_pos + roaring.len()].copy_from_slice(replacement);
+
+    let err = decode(&msg, &DecodeOptions::default()).unwrap_err();
+    let msg_str = err.to_string();
+    assert!(
+        msg_str.contains("unknown mask method"),
+        "expected unknown-method error, got: {msg_str}"
+    );
+}
+
 // ── Multiple objects per message, mixed finite / non-finite ─────────────────
 
 #[test]

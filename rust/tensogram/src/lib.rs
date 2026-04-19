@@ -46,10 +46,11 @@ pub use metadata::{RESERVED_KEY, compute_common, verify_canonical_cbor};
 pub use parallel::{DEFAULT_PARALLEL_THRESHOLD_BYTES, ENV_THREADS};
 pub use pipeline::{DataPipeline, apply_pipeline};
 pub use streaming::StreamingEncoder;
+pub use tensogram_encodings::bitmask::MaskMethod;
 pub use tensogram_encodings::pipeline::CompressionBackend;
 pub use types::{
     ByteOrder, DataObjectDescriptor, DecodedObject, GlobalMetadata, HashDescriptor, HashFrame,
-    IndexFrame,
+    IndexFrame, MaskDescriptor, MasksMetadata,
 };
 pub use validate::{
     FileIssue, FileValidationReport, IssueCode, IssueSeverity, ValidateOptions, ValidationIssue,

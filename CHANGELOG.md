@@ -70,10 +70,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   - CLI: removed `--reject-nan` / `--reject-inf` global flags and
     `TENSOGRAM_REJECT_NAN` / `TENSOGRAM_REJECT_INF` env vars (clap
     reports "unknown argument" if passed).
-  - Docs: deleted `docs/src/guide/strict-finite.md`; SUMMARY link
-    removed.  Affected pages (`edge-cases.md`, `error-handling.md`,
-    `python-api.md`, `simple-packing.md`) had inline mentions
-    scrubbed; full rewrite pending in a later commit.
+  - Docs: replaced `docs/src/guide/strict-finite.md` with
+    `docs/src/guide/nan-inf-handling.md`, which covers both the
+    default-reject policy and the `allow_nan` / `allow_inf` bitmask
+    opt-in.  Cross-references from `edge-cases.md`, `error-handling.md`,
+    `python-api.md`, `simple-packing.md`, `convert-netcdf.md`
+    updated.
 - **`encode_pre_encoded` no longer runs the finite check.** The
   pre-encoded API was previously a source of conflicting semantics
   (the flags errored if set on this path); it now unconditionally
