@@ -600,9 +600,10 @@ unsafe fn parse_encode_args<'a>(
 /// The caller must free `out` with `tgm_bytes_free`.
 ///
 /// 0.17+: encode rejects non-finite values (NaN / ±Inf) by default.
-/// The `allow_nan` / `allow_inf` opt-in will land on `EncodeOptions`
-/// in a subsequent commit; until then, any non-finite float value in
-/// the input causes `TgmError::Encoding`.
+/// Use [`tgm_encode_with_options`] with a
+/// [`TgmEncodeMaskOptions`] pointer (`allow_nan` / `allow_inf`) to
+/// opt into NaN / Inf substitution with bitmask companion frames;
+/// this entry point always uses the default reject policy.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_encode(
     metadata_json: *const c_char,

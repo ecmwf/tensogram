@@ -855,8 +855,15 @@ public:
         tgm_streaming_encoder_t* raw = nullptr;
         const char* hash = opts.hash_algo.empty() ? nullptr
                                                     : opts.hash_algo.c_str();
-        detail::check(tgm_streaming_encoder_create(
-            path.c_str(), metadata_json.c_str(), hash, opts.threads, &raw));
+        auto mask_holder = detail::build_mask_opts(opts);
+        if (mask_holder.active) {
+            detail::check(tgm_streaming_encoder_create_with_options(
+                path.c_str(), metadata_json.c_str(), hash, opts.threads,
+                &mask_holder.value, &raw));
+        } else {
+            detail::check(tgm_streaming_encoder_create(
+                path.c_str(), metadata_json.c_str(), hash, opts.threads, &raw));
+        }
         handle_.reset(raw);
     }
 

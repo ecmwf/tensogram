@@ -418,10 +418,12 @@ value for non-finite input — rejecting them up front prevents the
 silent corruption path where an `i32::MAX`-saturated
 `binary_scale_factor` decodes to NaN everywhere.
 
-For the pipeline-independent strict-finite check that applies the same
-contract to `encoding="none"` and to every compressor, see the
-strict-finite encoding (see docs) (`` /
-``).
+0.17+ extends this contract to every pipeline: `encoding="none"`
+(and every compressor) rejects NaN / ±Inf input by default.  The
+[NaN / Inf Handling](nan-inf-handling.md) guide covers the
+`allow_nan` / `allow_inf` opt-in that substitutes non-finite values
+with `0.0` and records their positions in a bitmask companion
+section.
 
 ### File Not Found / Permission Denied
 

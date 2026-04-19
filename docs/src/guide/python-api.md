@@ -520,7 +520,10 @@ msgs = tensogram.convert_grib(
     compression="szip",        # "none" | "zstd" | "lz4" | "blosc2" | "szip"
     compression_level=None,    # applies to zstd / blosc2 (None = codec default)
     threads=0,                 # 0 = sequential; honours TENSOGRAM_THREADS env var
-    hash="xxh3",               # "xxh3" | None,          # pipeline-independent NaN guard (see strict-finite.md),          # pipeline-independent Inf guard (see strict-finite.md)
+    hash="xxh3",               # "xxh3" | None
+    # NaN / Inf handling — see docs/src/guide/nan-inf-handling.md
+    allow_nan=False,           # False (default) rejects any NaN input
+    allow_inf=False,           # False (default) rejects any ±Inf input
 )
 with open("forecast.tgm", "wb") as fh:
     for msg in msgs:
@@ -563,8 +566,12 @@ resp = requests.get(
 )
 msgs = tensogram.convert_grib_buffer(
     resp.content,
-    encoding="simple_packing", bits=16, compression="szip",
-    # Pipeline-independent strict-finite guards (see strict-finite.md).,
+    encoding="simple_packing",
+    bits=16,
+    compression="szip",
+    # See [NaN / Inf Handling](nan-inf-handling.md) for the
+    # `allow_nan` / `allow_inf` opt-in if your data contains
+    # non-finite values.
 )
 ```
 
@@ -590,7 +597,10 @@ msgs = tensogram.convert_netcdf(
     compression="zstd",
     compression_level=3,
     threads=0,
-    hash="xxh3",          # hard-fail if any float payload has NaN,          # same, for ±Inf
+    hash="xxh3",
+    # NaN / Inf handling — see docs/src/guide/nan-inf-handling.md
+    allow_nan=False,           # False (default) rejects any NaN input
+    allow_inf=False,           # False (default) rejects any ±Inf input
 )
 ```
 

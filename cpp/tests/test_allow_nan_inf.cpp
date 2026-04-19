@@ -118,6 +118,43 @@ TEST(AllowNanInfTest, UnknownMaskMethodReturnsInvalidArg) {
         tensogram::invalid_arg_error);
 }
 
+TEST(AllowNanInfTest, StreamingEncoderHonoursAllowNan) {
+    // Regression: the C++ streaming_encoder used to ignore the
+    // allow_nan / allow_inf / mask-method fields on encode_options
+    // because it always called tgm_streaming_encoder_create
+    // (pre-Pass-5, pre-review-fix).  Must now route through
+    // tgm_streaming_encoder_create_with_options when any mask option
+    // is set.
+    const std::string path = std::tmpnam(nullptr);
+    std::vector<double> values = {1.0, std::nan(""), 3.0};
+    tensogram::encode_options opts;
+    opts.allow_nan = true;
+    opts.small_mask_threshold_bytes = 0;
+    {
+        tensogram::streaming_encoder enc(path, R"({"version":2})", opts);
+        const std::string desc_json =
+            R"({"type":"ndarray","ndim":1,"shape":[3],"strides":[8],)"
+            R"("dtype":"float64","byte_order":"little",)"
+            R"("encoding":"none","filter":"none","compression":"none"})";
+        enc.write_object(
+            desc_json,
+            reinterpret_cast<const std::uint8_t*>(values.data()),
+            values.size() * sizeof(double));
+        enc.finish();
+    }
+    // Read back via file open and verify NaN is restored.  If the
+    // streaming_encoder silently dropped allow_nan, the encode would
+    // have errored with 'NaN at element 1' instead.
+    tensogram::file f = tensogram::file::open(path);
+    ASSERT_EQ(f.message_count(), 1u);
+    auto msg = f.decode_message(0);
+    const double* out = reinterpret_cast<const double*>(msg.object(0).data());
+    EXPECT_DOUBLE_EQ(out[0], 1.0);
+    EXPECT_TRUE(std::isnan(out[1]));
+    EXPECT_DOUBLE_EQ(out[2], 3.0);
+    std::remove(path.c_str());
+}
+
 TEST(AllowNanInfTest, MaskMethodRleRoundTrip) {
     std::vector<double> values(128);
     for (std::size_t i = 0; i < 128; ++i) {

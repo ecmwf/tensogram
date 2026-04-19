@@ -55,8 +55,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   masks are present.
 - **Removed API surface** (hard break — no deprecation shim):
   - Rust: `EncodeOptions::reject_nan`, `EncodeOptions::reject_inf`,
-    the `tensogram::strict_finite` module (renamed to
-    `finite_check`, always-on).
+    and the `tensogram::strict_finite` module; non-finite handling
+    now uses the default-reject policy plus the
+    `tensogram::substitute_and_mask` / `allow_nan` / `allow_inf`
+    opt-in path where callers want mask-based preservation.
   - Python: `reject_nan` / `reject_inf` kwargs on `tensogram.encode`,
     `TensogramFile.append`, `StreamingEncoder`, `convert_grib`,
     `convert_grib_buffer`, `convert_netcdf`.

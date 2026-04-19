@@ -94,9 +94,10 @@ typedef struct {
  *
  * Each `*_mask_method` string is one of `"none"`, `"rle"`,
  * `"roaring"`, `"lz4"`, `"zstd"`, or `"blosc2"`; pass `NULL` to use
- * the library default (`"roaring"`).  Unknown names fall back to
- * `"roaring"` silently; use the Rust `encode` entry point for
- * strict validation.
+ * the library default (`"roaring"`).  Unknown names cause the
+ * owning `tgm_*_with_options` call to return
+ * [`TgmError::InvalidArg`] with a clear message via
+ * [`tgm_last_error`].
  *
  * `small_mask_threshold_bytes` is the byte-count below which mask
  * blobs are written as `"none"` regardless of the requested method
@@ -156,9 +157,10 @@ void tgm_bytes_free(tgm_bytes_t buf);
  * The caller must free `out` with `tgm_bytes_free`.
  *
  * 0.17+: encode rejects non-finite values (NaN / ±Inf) by default.
- * The `allow_nan` / `allow_inf` opt-in will land on `EncodeOptions`
- * in a subsequent commit; until then, any non-finite float value in
- * the input causes `TgmError::Encoding`.
+ * Use [`tgm_encode_with_options`] with a
+ * [`TgmEncodeMaskOptions`] pointer (`allow_nan` / `allow_inf`) to
+ * opt into NaN / Inf substitution with bitmask companion frames;
+ * this entry point always uses the default reject policy.
  */
 tgm_error tgm_encode(const char *metadata_json,
                      const uint8_t *const *data_ptrs,

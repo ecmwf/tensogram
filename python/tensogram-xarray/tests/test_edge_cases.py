@@ -17,11 +17,12 @@ shape/dtype sourcing after refactor.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import numpy as np
-import pytest
 import tensogram
 import xarray as xr
+
 from tensogram_xarray.mapping import resolve_variable_name
 from tensogram_xarray.merge import open_datasets
 from tensogram_xarray.scanner import scan_file

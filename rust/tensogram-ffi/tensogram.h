@@ -157,9 +157,10 @@ void tgm_bytes_free(tgm_bytes_t buf);
  * The caller must free `out` with `tgm_bytes_free`.
  *
  * 0.17+: encode rejects non-finite values (NaN / ±Inf) by default.
- * The `allow_nan` / `allow_inf` opt-in will land on `EncodeOptions`
- * in a subsequent commit; until then, any non-finite float value in
- * the input causes `TgmError::Encoding`.
+ * Use [`tgm_encode_with_options`] with a
+ * [`TgmEncodeMaskOptions`] pointer (`allow_nan` / `allow_inf`) to
+ * opt into NaN / Inf substitution with bitmask companion frames;
+ * this entry point always uses the default reject policy.
  */
 tgm_error tgm_encode(const char *metadata_json,
                      const uint8_t *const *data_ptrs,
