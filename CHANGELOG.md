@@ -14,6 +14,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `EncodeOptions`.  CLI parity (`tensogram convert-grib --reject-nan`)
   already existed; this closes the corresponding Python gap.
 
+### Changed — BREAKING (converter behaviour)
+
+- **`tensogram convert-grib` / `convert-netcdf` now hard-fail when
+  `--encoding simple_packing` is requested on data containing NaN or
+  Inf.** The previous behaviour (stderr warning + silent downgrade to
+  `encoding="none"`) hid real data-quality problems; the new behaviour
+  fails cleanly with an error that names the offending variable and
+  the sample index. Recovery options: (a) pick a non-simple_packing
+  encoding up front, (b) pre-process NaN/Inf out of the data, or (c)
+  use `tensogram.encode(..., reject_nan=True)` which surfaces the same
+  failure at encode time.  The non-f64-payload branch (structural
+  mismatch, not a data-quality problem) keeps its stderr-warning +
+  fallback behaviour unchanged.
+
 ## [0.16.1] - 2026-04-19
 
 ### Fixed

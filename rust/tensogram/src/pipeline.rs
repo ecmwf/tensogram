@@ -125,6 +125,11 @@ pub fn apply_pipeline(
         "none" => {}
         "simple_packing" => match values {
             None => {
+                // Non-f64 payloads cannot be simple-packed.  The dtype
+                // is the caller's choice and this branch is a sanity
+                // check, not a NaN/Inf failure — leave the stderr
+                // warning + fallback to `encoding="none"` so the rest
+                // of the conversion still succeeds.
                 eprintln!(
                     "warning: skipping simple_packing for {var_label} \
                      (not a float64 payload)"
@@ -132,35 +137,38 @@ pub fn apply_pipeline(
             }
             Some(values) => {
                 let bits = pipeline.bits.unwrap_or(16);
-                match simple_packing::compute_params(values, bits, 0) {
-                    Ok(params) => {
-                        desc.encoding = "simple_packing".to_string();
-                        desc.params.insert(
-                            "reference_value".to_string(),
-                            CborValue::Float(params.reference_value),
-                        );
-                        desc.params.insert(
-                            "binary_scale_factor".to_string(),
-                            CborValue::Integer((i64::from(params.binary_scale_factor)).into()),
-                        );
-                        desc.params.insert(
-                            "decimal_scale_factor".to_string(),
-                            CborValue::Integer((i64::from(params.decimal_scale_factor)).into()),
-                        );
-                        desc.params.insert(
-                            "bits_per_value".to_string(),
-                            CborValue::Integer((i64::from(params.bits_per_value)).into()),
-                        );
-                        applied_simple_packing = true;
-                    }
-                    Err(e) => {
-                        // Common cause: NaN values from unpacked fill_value.
-                        // simple_packing rejects NaN; the variable falls
-                        // back to encoding="none" so the conversion still
-                        // succeeds.
-                        eprintln!("warning: skipping simple_packing for {var_label}: {e}");
-                    }
-                }
+                // Hard-fail on NaN/Inf (pre-0.17 behaviour soft-
+                // downgraded silently to `encoding="none"` with only a
+                // stderr warning, which hid data-quality problems from
+                // callers).  If the variable contains non-finite
+                // values the user must either pick a different
+                // encoding or pre-process the data.
+                let params = simple_packing::compute_params(values, bits, 0).map_err(|e| {
+                    format!(
+                        "simple_packing failed for {var_label}: {e}. \
+                         The variable contains NaN or Inf which cannot be represented \
+                         by simple_packing. Pre-process the data or choose a \
+                         different encoding (e.g. encoding=\"none\")."
+                    )
+                })?;
+                desc.encoding = "simple_packing".to_string();
+                desc.params.insert(
+                    "reference_value".to_string(),
+                    CborValue::Float(params.reference_value),
+                );
+                desc.params.insert(
+                    "binary_scale_factor".to_string(),
+                    CborValue::Integer((i64::from(params.binary_scale_factor)).into()),
+                );
+                desc.params.insert(
+                    "decimal_scale_factor".to_string(),
+                    CborValue::Integer((i64::from(params.decimal_scale_factor)).into()),
+                );
+                desc.params.insert(
+                    "bits_per_value".to_string(),
+                    CborValue::Integer((i64::from(params.bits_per_value)).into()),
+                );
+                applied_simple_packing = true;
             }
         },
         other => {
@@ -335,15 +343,86 @@ mod tests {
     }
 
     #[test]
-    fn simple_packing_with_nan_values_skips_with_warning() {
+    fn simple_packing_with_nan_values_fails_hard() {
+        // Post-0.17: NaN in input to simple_packing is a hard failure.
+        // The converter no longer silently downgrades to encoding="none"
+        // because that hid data-quality problems from callers.
         let mut desc = mk_desc();
         let p = DataPipeline {
             encoding: "simple_packing".to_string(),
             ..Default::default()
         };
         let values = [1.0_f64, f64::NAN, 3.0];
-        apply_pipeline(&mut desc, Some(&values), &p, "nan_var").unwrap();
-        assert_eq!(desc.encoding, "none", "NaN → skip");
+        let err = apply_pipeline(&mut desc, Some(&values), &p, "nan_var").unwrap_err();
+        assert!(
+            err.contains("simple_packing"),
+            "error should name the encoding: {err}"
+        );
+        assert!(
+            err.contains("nan_var"),
+            "error should name the variable: {err}"
+        );
+        assert!(
+            err.contains("NaN"),
+            "error should name the trigger kind: {err}"
+        );
+    }
+
+    #[test]
+    fn simple_packing_with_inf_values_fails_hard() {
+        // Sibling of the NaN hard-fail.  `simple_packing::compute_params`
+        // rejects Inf in input (added in 0.16); this pins that the
+        // converter propagates rather than silently downgrading.
+        let mut desc = mk_desc();
+        let p = DataPipeline {
+            encoding: "simple_packing".to_string(),
+            ..Default::default()
+        };
+        let values = [1.0_f64, f64::INFINITY, 3.0];
+        let err = apply_pipeline(&mut desc, Some(&values), &p, "inf_var").unwrap_err();
+        assert!(
+            err.contains("simple_packing"),
+            "error should name the encoding: {err}"
+        );
+        assert!(
+            err.contains("inf_var"),
+            "error should name the variable: {err}"
+        );
+        // The underlying PackingError::InfiniteValue stringifies as "Inf value at index N".
+        assert!(
+            err.to_lowercase().contains("inf"),
+            "error should name the trigger kind: {err}"
+        );
+    }
+
+    #[test]
+    fn simple_packing_with_finite_data_still_succeeds() {
+        // Regression guard: the hard-fail must not break the happy path.
+        let mut desc = mk_desc();
+        let p = DataPipeline {
+            encoding: "simple_packing".to_string(),
+            bits: Some(12),
+            ..Default::default()
+        };
+        let values = [1.0_f64, 2.0, 3.0, 4.0];
+        apply_pipeline(&mut desc, Some(&values), &p, "clean_var").unwrap();
+        assert_eq!(desc.encoding, "simple_packing");
+        assert!(desc.params.contains_key("reference_value"));
+    }
+
+    #[test]
+    fn simple_packing_with_non_f64_payload_still_skips_with_warning() {
+        // The non-f64 branch is NOT a NaN/Inf failure — it's "variable
+        // is not float64, skip simple_packing".  That branch keeps its
+        // soft behaviour (stderr warning + encoding="none") because it
+        // reflects a structural mismatch, not a data-quality problem.
+        let mut desc = mk_desc();
+        let p = DataPipeline {
+            encoding: "simple_packing".to_string(),
+            ..Default::default()
+        };
+        apply_pipeline(&mut desc, None, &p, "int_var").unwrap();
+        assert_eq!(desc.encoding, "none");
     }
 
     #[test]
