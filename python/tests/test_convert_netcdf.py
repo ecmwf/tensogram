@@ -151,6 +151,37 @@ def _write_three_variables(path: Path) -> None:
             v[:] = np.full((4, 3), 1.0, dtype=np.float64)
 
 
+def _write_with_missing_values(path: Path) -> None:
+    """Write an int16 variable with a ``_FillValue`` that netCDF4 turns
+    into NaN on CF unpacking.
+
+    Used by the strict-finite parity tests to exercise the rejection
+    path that the converter otherwise soft-downgrades (today) or
+    hard-fails (after Workstream B).
+    """
+    with nc4.Dataset(path, "w", format="NETCDF4") as ds:
+        ds.Conventions = "CF-1.10"
+        ds.createDimension("y", 4)
+        ds.createDimension("x", 3)
+        var = ds.createVariable("sparse", "i2", ("y", "x"), fill_value=-32768)
+        var.scale_factor = 0.1
+        var.add_offset = 0.0
+        # Masked array — netCDF4 replaces the masked cells with the
+        # fill value on disk.  On read with CF unpacking, the fill
+        # value becomes NaN in the f64 output.
+        mask = [
+            [False, True, False],
+            [False, False, False],
+            [True, False, False],
+            [False, False, False],
+        ]
+        arr = np.ma.array(
+            np.full((4, 3), 1.0, dtype=np.float64),
+            mask=mask,
+        )
+        var[:] = arr
+
+
 def _run_convert(
     binary: str, *args: str, timeout: float = 30.0
 ) -> subprocess.CompletedProcess[str]:
@@ -470,6 +501,58 @@ def test_py_api_missing_file(tmp_path: Path) -> None:
     """
     with pytest.raises(FileNotFoundError):
         tensogram.convert_netcdf(str(tmp_path / "does_not_exist.nc"))
+
+
+# ── Strict-finite flag parity with CLI convert-netcdf ───────────────────────
+
+
+@requires_netcdf
+def test_py_api_reject_nan_catches_fill_value_substitution(tmp_path: Path) -> None:
+    """``reject_nan=True`` fires when CF unpacking substitutes ``_FillValue``
+    with NaN — the canonical NetCDF source of NaN in converted data."""
+    nc_path = tmp_path / "sparse.nc"
+    _write_with_missing_values(nc_path)
+    with pytest.raises(ValueError, match=r"(?i)nan"):
+        tensogram.convert_netcdf(str(nc_path), reject_nan=True)
+
+
+@requires_netcdf
+def test_py_api_reject_nan_off_by_default(tmp_path: Path) -> None:
+    """Default behaviour unchanged: NaN-bearing variables convert successfully."""
+    nc_path = tmp_path / "sparse_default.nc"
+    _write_with_missing_values(nc_path)
+    # Default encoding="none": NaN bits pass through byte-exactly.
+    messages = tensogram.convert_netcdf(str(nc_path))
+    assert isinstance(messages, list)
+    assert messages
+
+
+@requires_netcdf
+def test_py_api_reject_inf_accepts_kwarg(tmp_path: Path) -> None:
+    """``reject_inf=True`` is accepted and plumbed through.
+
+    NetCDF fixtures rarely contain Inf (CF uses fill-values, not
+    Inf), so the scan does not fire here; we just verify conversion
+    still completes with the kwarg set.
+    """
+    nc_path = tmp_path / "simple.nc"
+    _write_simple_f64(nc_path)
+    messages = tensogram.convert_netcdf(str(nc_path), reject_inf=True)
+    assert isinstance(messages, list)
+    assert messages
+
+
+@requires_netcdf
+def test_py_api_reject_nan_and_inf_together(tmp_path: Path) -> None:
+    """Both flags together on NaN-bearing data still rejects with ValueError."""
+    nc_path = tmp_path / "sparse_both.nc"
+    _write_with_missing_values(nc_path)
+    with pytest.raises(ValueError, match=r"(?i)nan"):
+        tensogram.convert_netcdf(
+            str(nc_path),
+            reject_nan=True,
+            reject_inf=True,
+        )
 
 
 def test_py_api_stub_when_feature_missing() -> None:

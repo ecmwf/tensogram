@@ -383,6 +383,88 @@ fn neg_infinity_reference_value_rejected() {
     assert!(result.is_err());
 }
 
+// ── 7b. Standalone-API safety net via the high-level `encode()` path ────────
+//
+// `simple_packing::encode_with_threads` now validates the params it
+// receives (see plans/RESEARCH_NAN_HANDLING.md §4.2.3).  The high-level
+// `tensogram::encode` delegates to it through the pipeline, so the
+// validation also fires when a caller supplies a malformed
+// `binary_scale_factor` via the descriptor params.
+
+#[test]
+fn unreasonable_binary_scale_factor_rejected() {
+    // Caller supplies a descriptor with `binary_scale_factor = i32::MAX`
+    // (the fingerprint of feeding Inf through `compute_params`'s range
+    // arithmetic).  Without the safety net, the decode silently
+    // reconstructs the constant `reference_value` — with it, the
+    // encode fails clearly.
+    let mut desc = make_simple_packing_desc(273.15);
+    desc.params.insert(
+        "binary_scale_factor".to_string(),
+        ciborium::Value::Integer((i64::from(i32::MAX)).into()),
+    );
+    let data: Vec<u8> = [270.0_f64, 275.0, 280.0, 285.0]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+
+    let err = encode(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("binary_scale_factor"),
+        "error must name the field: {err}"
+    );
+    assert!(err.contains("256"), "error must quote the threshold: {err}");
+}
+
+#[test]
+fn binary_scale_factor_at_threshold_accepted() {
+    // Threshold is inclusive: `|bsf| == 256` passes the safety net.
+    let mut desc = make_simple_packing_desc(0.0);
+    desc.params.insert(
+        "binary_scale_factor".to_string(),
+        ciborium::Value::Integer(256i64.into()),
+    );
+    let data: Vec<u8> = [1.0_f64, 2.0, 3.0, 4.0]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    encode(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .expect("bsf=256 must be accepted");
+}
+
+#[test]
+fn realistic_binary_scale_factor_accepted() {
+    // Regression guard: pin that the safety net's threshold does not
+    // block real-world weather/climate values.
+    for bsf in [-60_i64, -20, -1, 0, 1, 20, 60] {
+        let mut desc = make_simple_packing_desc(273.15);
+        desc.params.insert(
+            "binary_scale_factor".to_string(),
+            ciborium::Value::Integer(bsf.into()),
+        );
+        let data: Vec<u8> = [273.15_f64, 283.0, 293.0, 303.0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        encode(
+            &make_global_meta(),
+            &[(&desc, &data)],
+            &EncodeOptions::default(),
+        )
+        .unwrap_or_else(|e| panic!("realistic bsf {bsf} rejected: {e}"));
+    }
+}
+
 // ── 8. Unknown hash algorithm on decode ──────────────────────────────────────
 
 #[test]

@@ -723,10 +723,11 @@ fn unknown_filter_errors() {
 }
 
 #[test]
-fn simple_packing_skips_non_f64_variables() {
-    // multi_dtype.nc has int8/u16/f32/f64 variables. simple_packing should
-    // be applied to f64 only and silently passed through (with a stderr
-    // warning) for the others — the file conversion as a whole succeeds.
+fn simple_packing_on_multi_dtype_fails_on_nan_variable() {
+    // Post-0.17: simple_packing on a NetCDF that contains ANY NaN-bearing
+    // f64 variable now hard-fails (previously soft-downgraded with a
+    // warning, which hid data-quality problems).  `multi_dtype.nc` has
+    // a `f64_with_nan` variable so the whole-file conversion must error.
     let path = testdata("multi_dtype.nc");
     let opts = ConvertOptions {
         pipeline: DataPipeline {
@@ -736,35 +737,22 @@ fn simple_packing_skips_non_f64_variables() {
         },
         ..Default::default()
     };
-    let msgs = convert_netcdf_file(&path, &opts).unwrap();
-    let (meta, objects) = decode_first(&msgs);
-
-    // Find the "f64" variable and verify it has simple_packing.
-    // Find an integer variable and verify it does NOT.
-    let mut saw_packed_f64 = false;
-    let mut saw_unpacked_int = false;
-    for (i, obj) in objects.iter().enumerate() {
-        let name = match meta.base[i].get("name") {
-            Some(ciborium::Value::Text(s)) => s.as_str(),
-            _ => continue,
-        };
-        if name == "f64" {
-            assert_eq!(
-                obj.0.encoding, "simple_packing",
-                "f64 variable should be simple_packed"
-            );
-            saw_packed_f64 = true;
-        } else if name == "i32" || name == "i16" || name == "i8" {
-            assert_eq!(
-                obj.0.encoding, "none",
-                "{name} (non-f64) should NOT be simple_packed"
-            );
-            saw_unpacked_int = true;
-        }
-    }
-    assert!(saw_packed_f64, "should have seen the f64 variable");
-    assert!(saw_unpacked_int, "should have seen an int variable");
+    let err = convert_netcdf_file(&path, &opts).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("simple_packing") && msg.contains("f64_with_nan"),
+        "error must name encoding + offending variable: {msg}"
+    );
+    assert!(msg.contains("NaN"), "error must name the trigger kind: {msg}");
 }
+
+// Note: the pre-0.17 test `simple_packing_skips_non_f64_variables` was
+// removed.  Its fixture (`multi_dtype.nc`) contains a `f64_with_nan`
+// variable that now hard-fails simple_packing; the replacement
+// `simple_packing_on_multi_dtype_fails_on_nan_variable` covers the
+// new contract.  The "skip non-f64" branch is now covered by the unit
+// test `simple_packing_with_non_f64_payload_still_skips_with_warning`
+// in `rust/tensogram/src/pipeline.rs`.
 
 #[test]
 fn pipeline_round_trip_zstd_decodes_back_to_input() {

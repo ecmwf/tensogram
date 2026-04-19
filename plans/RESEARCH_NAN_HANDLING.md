@@ -596,13 +596,24 @@ how `verify_hash` is opt-in, and it gives users an explicit contract.
 
 Cost: ~100 LOC + tests + docs per codec.
 
-**4.2.2 Propagate "simple_packing downgrade" into metadata.**
+**4.2.2 Converter downgrade behaviour — IMPLEMENTED as hard-fail.**
+
+> **Status**: ✅ LANDED (0.17, commit `2410c162`).  The implementation
+> departed from the original "provenance-note" proposal below.  In
+> discussion with the maintainer, the soft-downgrade was deemed to
+> hide data-quality problems rather than surface them, so the
+> converter now **hard-fails** when `--encoding simple_packing` is
+> requested on data containing NaN or Inf.  See the
+> [convert-netcdf guide](../docs/src/guide/convert-netcdf.md#encoding-pipeline-flags)
+> for the user-facing contract.
+
+*Original proposal (kept for historical context — SUPERSEDED by the
+hard-fail above):*
 
 Addresses §3.8. When the converters (GRIB / NetCDF, via
 `apply_pipeline`) soft-downgrade a variable from `simple_packing` to
 `none` because of NaN, emit a provenance note in `base[i]["_extra_"]`
 or under a reserved key (pending §5 Q5 on `_reserved_` extensions).
-
 Concretely:
 
 ```json
@@ -617,26 +628,34 @@ Concretely:
 }
 ```
 
-Cost: ~30 LOC + schema doc + converter tests.
+**4.2.3 Standalone-API safety net — IMPLEMENTED.**
 
-**4.2.3 Standalone-API safety net.**
+> **Status**: ✅ LANDED (0.17, commit `281a99cc`).  See the
+> [strict-finite guide](../docs/src/guide/strict-finite.md#simple_packing-params-safety-net-always-on)
+> for the user-facing contract.
 
-Addresses §3.5. Have `simple_packing::compute_params` additionally
-validate that its output is itself finite and sane. Something like:
+Addresses §3.5. `simple_packing::encode_with_threads` now validates
+its [`SimplePackingParams`] input unconditionally at the top of every
+encode call:
 
-```rust
-let params = SimplePackingParams { reference_value, binary_scale_factor, ... };
-if !reference_value.is_finite() || binary_scale_factor.abs() > some_threshold {
-    return Err(PackingError::UnreasonableParams { ... });
-}
-Ok(params)
-```
+- `reference_value.is_finite()` else
+  `PackingError::InvalidParams { field: "reference_value", .. }`.
+- `|binary_scale_factor| <= MAX_REASONABLE_BINARY_SCALE` (public const,
+  value `256`) else
+  `PackingError::InvalidParams { field: "binary_scale_factor", .. }`.
+- `bits_per_value` extremes unchanged: `> 64` caught by the
+  pre-existing `BitsPerValueTooLarge`; `= 0` intentionally accepted
+  (legitimate constant-field encoding).
 
-Paired with §4.1.1 (reject Inf in data) this closes the standalone
-footgun entirely. The threshold choice is the design question — see
-§5 Q2.
+Cross-language parity: Rust unit + integration tests, Python, TS,
+C++.  Fires on every encode path including the high-level
+`tensogram::encode()` via delegation.
 
-Cost: ~20 LOC + tests.
+*Original proposal (for posterity):* Have `simple_packing::compute_params`
+additionally validate that its output is itself finite and sane. The
+final implementation lives on `encode_with_threads` instead (per
+maintainer's Q6 answer) so hand-crafted or mutated params are caught
+regardless of whether `compute_params` was ever called.
 
 ### 4.3 Tier 3 — wire-format / API changes (candidates for IDEAS)
 

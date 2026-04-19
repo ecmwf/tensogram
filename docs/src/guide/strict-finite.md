@@ -93,9 +93,26 @@ except ValueError as e:
     # rejected: EncodingError: strict-NaN check: NaN at element 1 of float32 array
 ```
 
-Both `tensogram.encode()`, `TensogramFile.append()`, and
-`StreamingEncoder(...)` accept `reject_nan=False` and
-`reject_inf=False` kwargs.
+The following Python entry points all accept
+`reject_nan=False` and `reject_inf=False` kwargs:
+
+- `tensogram.encode(...)`
+- `tensogram.TensogramFile.append(...)`
+- `tensogram.StreamingEncoder(...)`
+- `tensogram.convert_grib(...)` / `convert_grib_buffer(...)`
+- `tensogram.convert_netcdf(...)`
+
+Turning them on at the converter level gives you the same strict
+contract as the CLI:
+
+```python
+msgs = tensogram.convert_netcdf(
+    "sparse.nc",
+    encoding="simple_packing",
+    reject_nan=True,   # hard-fail on _FillValue → NaN substitution
+    reject_inf=True,   # hard-fail on any Inf in the payload
+)
+```
 
 ### TypeScript
 
@@ -202,6 +219,56 @@ pass `threads = 0` (sequential).
   `tensogram validate --full` or the library-level
   `ValidateOptions::Fidelity` level. The strict flags are an encode
   gate, not a decode gate — both complement each other.
+
+## `simple_packing` params safety net (always on)
+
+Independent of the strict-finite flags above, `simple_packing::encode`
+and `simple_packing::encode_with_threads` now validate their
+[`SimplePackingParams`] input against the values
+that would produce silently-wrong output:
+
+- `reference_value` must be finite (`NaN` / `±Inf` rejected).
+- `|binary_scale_factor|` must be ≤ `256` (the constant
+  [`MAX_REASONABLE_BINARY_SCALE`] is exposed as a public constant).
+  This threshold catches the `i32::MAX`-saturation fingerprint that
+  results from feeding `Inf` through `compute_params`'s range
+  arithmetic, while leaving ample headroom for real-world scientific
+  data (typical range: `[-60, 30]`).
+
+Validation runs unconditionally at the top of `encode_with_threads`;
+the high-level `tensogram::encode()` path hits the same check through
+delegation.  Errors surface as `PackingError::InvalidParams { field,
+reason }` at the Rust core and propagate unchanged through every
+language binding:
+
+```rust
+// Rust
+match encode(&values, &params) {
+    Err(PackingError::InvalidParams { field, reason }) => {
+        eprintln!("bad {field}: {reason}");
+    }
+    Ok(bytes) => /* ... */,
+    Err(other) => /* ... */,
+}
+```
+
+```python
+# Python
+import tensogram
+desc = {..., "binary_scale_factor": 2**31 - 1, ...}
+try:
+    tensogram.encode(meta, [(desc, data)])
+except ValueError as e:
+    # "binary_scale_factor: value 2147483647 is outside the reasonable range ±256; ..."
+    print(e)
+```
+
+**Legitimate edge cases that the safety net does NOT reject:**
+
+- `bits_per_value = 0` — a valid constant-field encoding; the
+  decoder reconstructs every value from `reference_value` alone and
+  the packed-int output is empty.  Saves bytes when a whole tensor
+  collapses to one value.
 
 ## Design notes
 

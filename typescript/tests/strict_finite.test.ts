@@ -251,4 +251,66 @@ describe('strict-finite — rejectNan / rejectInf', () => {
       encode(defaultMeta(), [{ descriptor: desc, data }]),
     ).not.toThrow();
   });
+
+  // ── Standalone-API safety net — see plans/RESEARCH_NAN_HANDLING.md §4.2.3 ──
+
+  describe('simple_packing params safety net', () => {
+    const simplePackingDesc = (
+      binaryScaleFactor: number,
+      bitsPerValue: number = 16,
+    ) => ({
+      ...makeDescriptor([4], 'float64'),
+      encoding: 'simple_packing',
+      reference_value: 273.15,
+      binary_scale_factor: binaryScaleFactor,
+      decimal_scale_factor: 0,
+      bits_per_value: bitsPerValue,
+    });
+
+    it('rejects binary_scale_factor = i32::MAX (silent-corruption fingerprint)', async () => {
+      await init();
+      const data = new Float64Array([273.15, 283.0, 293.0, 303.0]);
+      const desc = simplePackingDesc(2 ** 31 - 1);
+      expect(() => encode(defaultMeta(), [{ descriptor: desc, data }])).toThrow(
+        /binary_scale_factor/,
+      );
+    });
+
+    it('256 is accepted, 257 is rejected (threshold boundary)', async () => {
+      await init();
+      const data = new Float64Array([1.0, 2.0, 3.0, 4.0]);
+      expect(() =>
+        encode(defaultMeta(), [{ descriptor: simplePackingDesc(256), data }]),
+      ).not.toThrow();
+      expect(() =>
+        encode(defaultMeta(), [{ descriptor: simplePackingDesc(257), data }]),
+      ).toThrow(/binary_scale_factor/);
+    });
+
+    it('accepts realistic weather-data binary_scale_factor values', async () => {
+      await init();
+      const data = new Float64Array([273.15, 283.0, 293.0, 303.0]);
+      for (const bsf of [-60, -20, 0, 20, 60]) {
+        expect(() =>
+          encode(defaultMeta(), [{ descriptor: simplePackingDesc(bsf), data }]),
+        ).not.toThrow();
+      }
+    });
+
+    it('accepts bits_per_value = 0 for constant-field encoding', async () => {
+      await init();
+      const data = new Float64Array([42.0, 42.0, 42.0, 42.0]);
+      const desc = {
+        ...makeDescriptor([4], 'float64'),
+        encoding: 'simple_packing',
+        reference_value: 42.0,
+        binary_scale_factor: 0,
+        decimal_scale_factor: 0,
+        bits_per_value: 0,
+      };
+      expect(() =>
+        encode(defaultMeta(), [{ descriptor: desc, data }]),
+      ).not.toThrow();
+    });
+  });
 });

@@ -20,6 +20,18 @@ pub enum PackingError {
     InfiniteValue(usize),
     #[error("bits_per_value {0} exceeds maximum of 64")]
     BitsPerValueTooLarge(u32),
+    /// Standalone-API safety net: a [`SimplePackingParams`] field is
+    /// outside the range that `encode`/`encode_with_threads` can
+    /// produce meaningful output for.  Fires when a caller hand-crafts
+    /// or mutates params instead of deriving them from
+    /// [`compute_params`].  Always-on, raw-pipeline-only —
+    /// `tensogram::encode` callers also hit this through delegation.
+    ///
+    /// `field` names the offending field; `reason` explains the
+    /// specific rule violated.  See [`MAX_REASONABLE_BINARY_SCALE`] for
+    /// the `binary_scale_factor` threshold.
+    #[error("invalid {field}: {reason}")]
+    InvalidParams { field: &'static str, reason: String },
     #[error("insufficient data: expected at least {expected} bytes, got {actual}")]
     InsufficientData { expected: usize, actual: usize },
     #[error("output size overflow: {num_values} values × {bytes_per_value} bytes")]
@@ -33,6 +45,66 @@ pub enum PackingError {
     /// so the library remains panic-free even on developer error.
     #[error("internal error: aligned packing does not support byte width {0}")]
     UnsupportedAlignedWidth(usize),
+}
+
+/// Upper bound on `|binary_scale_factor|` that [`encode_with_threads`]
+/// will accept.  Real-world scientific data almost never needs more
+/// than a handful of bits of scaling (weather forecasts: `±60`,
+/// astronomy / genomics: similar).  A value of `±256` gives ample
+/// headroom while reliably catching the `i32::MAX`-saturation
+/// fingerprint that results from feeding non-finite values through
+/// `compute_params`'s range arithmetic.
+///
+/// Exposed as a constant (rather than baked into the check) so
+/// downstream callers can sanity-check their own params if they bypass
+/// the encoder — the same threshold applies.
+pub const MAX_REASONABLE_BINARY_SCALE: i32 = 256;
+
+/// Standalone-API safety net: validate that `params` are within the
+/// range `encode_with_threads` can produce meaningful output for.
+///
+/// Runs unconditionally at the top of every encode call.  Cheap —
+/// two scalar checks, no allocations on the happy path.
+///
+/// Covered failure modes (per `plans/RESEARCH_NAN_HANDLING.md` §4.2.3):
+/// - FM1: non-finite `reference_value` → silent corruption (decode
+///   recovers `Inf` / `NaN` everywhere).
+/// - FM2: `|binary_scale_factor| > MAX_REASONABLE_BINARY_SCALE` →
+///   silent flattening to `reference_value` (i32::MAX-saturation
+///   fingerprint from degenerate input).
+///
+/// Not covered here:
+/// - `bits_per_value > 64` — already [`PackingError::BitsPerValueTooLarge`].
+/// - `bits_per_value == 0` — a **legitimate** space optimisation for
+///   constant fields: the decoder reconstructs every value from
+///   `reference_value` alone and the packed-int output is empty.
+///   [`compute_params`] can produce it for a constant input, so
+///   rejecting it here would break the round-trip.
+fn validate_params(params: &SimplePackingParams) -> Result<(), PackingError> {
+    if !params.reference_value.is_finite() {
+        return Err(PackingError::InvalidParams {
+            field: "reference_value",
+            reason: format!("must be finite, got {}", params.reference_value),
+        });
+    }
+    // `saturating_abs` handles `i32::MIN` without panicking (debug)
+    // or silently returning a negative value (release).  `i32::MIN`
+    // clamps to `i32::MAX`, comfortably above the threshold.
+    if params.binary_scale_factor.saturating_abs() > MAX_REASONABLE_BINARY_SCALE {
+        return Err(PackingError::InvalidParams {
+            field: "binary_scale_factor",
+            reason: format!(
+                "value {} is outside the reasonable range ±{}; a value this \
+                 large usually indicates params were hand-crafted or computed \
+                 from degenerate input (e.g. Inf values). Recompute via \
+                 simple_packing::compute_params on finite data.",
+                params.binary_scale_factor, MAX_REASONABLE_BINARY_SCALE,
+            ),
+        });
+    }
+    // `bits_per_value > 64` is caught by `BitsPerValueTooLarge` below;
+    // `bits_per_value == 0` is valid for constant-field encodings.
+    Ok(())
 }
 
 /// Minimum number of values below which the parallel simple_packing
@@ -209,6 +281,12 @@ pub fn encode_with_threads(
     params: &SimplePackingParams,
     #[allow(unused_variables)] threads: u32,
 ) -> Result<Vec<u8>, PackingError> {
+    // Safety net: check params before any real work.  Catches
+    // hand-crafted or mutated params that would otherwise produce
+    // silently-wrong output (see `plans/RESEARCH_NAN_HANDLING.md`
+    // §4.2.3 for the full catalogue of failure modes).
+    validate_params(params)?;
+
     if params.bits_per_value > 64 {
         return Err(PackingError::BitsPerValueTooLarge(params.bits_per_value));
     }
@@ -1218,6 +1296,232 @@ mod tests {
             bits_per_value: 65,
         };
         assert!(encode(&[1.0], &params).is_err());
+    }
+
+    // ── Standalone-API safety-net tests (plans/RESEARCH_NAN_HANDLING.md §4.2.3) ──
+    //
+    // These pin the behaviour of `encode_with_threads`'s `validate_params`
+    // check for hand-crafted / mutated `SimplePackingParams` that would
+    // otherwise produce silently-wrong output.
+
+    #[test]
+    fn test_encode_rejects_nan_reference_value() {
+        // FM1: non-finite `reference_value` silently produces
+        // Inf/NaN-everywhere on decode.  The safety net catches it up
+        // front with a clear error.
+        let params = SimplePackingParams {
+            reference_value: f64::NAN,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 16,
+        };
+        let err = encode(&[1.0, 2.0], &params).unwrap_err();
+        match err {
+            PackingError::InvalidParams { field, reason } => {
+                assert_eq!(field, "reference_value");
+                assert!(reason.contains("finite"), "reason: {reason}");
+            }
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_encode_rejects_positive_inf_reference_value() {
+        let params = SimplePackingParams {
+            reference_value: f64::INFINITY,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 16,
+        };
+        assert!(matches!(
+            encode(&[1.0], &params),
+            Err(PackingError::InvalidParams {
+                field: "reference_value",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_encode_rejects_negative_inf_reference_value() {
+        let params = SimplePackingParams {
+            reference_value: f64::NEG_INFINITY,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 16,
+        };
+        assert!(matches!(
+            encode(&[1.0], &params),
+            Err(PackingError::InvalidParams {
+                field: "reference_value",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_encode_rejects_binary_scale_factor_above_threshold() {
+        // FM2: huge `binary_scale_factor` (the i32::MAX-saturation
+        // fingerprint from feeding Inf through compute_params).
+        // The safety net fires for `|bsf| > 256`.
+        let params = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 1024,
+            decimal_scale_factor: 0,
+            bits_per_value: 16,
+        };
+        let err = encode(&[1.0, 2.0], &params).unwrap_err();
+        match err {
+            PackingError::InvalidParams { field, reason } => {
+                assert_eq!(field, "binary_scale_factor");
+                assert!(reason.contains("1024"), "reason: {reason}");
+                assert!(reason.contains("256"), "reason: {reason}");
+            }
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_encode_rejects_binary_scale_factor_below_negative_threshold() {
+        let params = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: -1024,
+            decimal_scale_factor: 0,
+            bits_per_value: 16,
+        };
+        assert!(matches!(
+            encode(&[1.0], &params),
+            Err(PackingError::InvalidParams {
+                field: "binary_scale_factor",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_encode_rejects_i32_max_binary_scale_factor() {
+        // The specific signature of the §3.1 silent-Inf-corruption
+        // bug: `binary_scale_factor = i32::MAX`.
+        let params = SimplePackingParams {
+            reference_value: 1.0,
+            binary_scale_factor: i32::MAX,
+            decimal_scale_factor: 0,
+            bits_per_value: 16,
+        };
+        assert!(matches!(
+            encode(&[1.0], &params),
+            Err(PackingError::InvalidParams {
+                field: "binary_scale_factor",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_encode_rejects_i32_min_binary_scale_factor() {
+        // Regression: `i32::MIN.abs()` overflows (panics in debug,
+        // returns `i32::MIN` in release).  `saturating_abs` handles it.
+        // Either way: `i32::MIN` is massively out of the reasonable
+        // range, so rejection is the right answer.
+        let params = SimplePackingParams {
+            reference_value: 1.0,
+            binary_scale_factor: i32::MIN,
+            decimal_scale_factor: 0,
+            bits_per_value: 16,
+        };
+        assert!(matches!(
+            encode(&[1.0], &params),
+            Err(PackingError::InvalidParams {
+                field: "binary_scale_factor",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_safety_net_catches_compute_params_extreme_range() {
+        // End-to-end path: even with all-finite input, a caller who
+        // asks to pack `[f64::MIN, f64::MAX]` at 16 bits gets params
+        // with `binary_scale_factor ≈ i32::MAX` (log2(f64::MAX / 2^16)
+        // saturates the cast to i32).  This is the same signature as
+        // the Inf-corruption §3.1 path, only via a different origin.
+        // The safety net treats both the same: hard error with a
+        // "recompute from finite data" hint.  The remedy here is to
+        // use more bits or split the range; the message is accurate
+        // for both.
+        let values = [f64::MIN, f64::MAX];
+        let params = compute_params(&values, 16, 0).unwrap();
+        // compute_params succeeds but the params are unusable.
+        assert_eq!(params.binary_scale_factor, i32::MAX);
+        // encode catches it.
+        let err = encode(&values, &params).unwrap_err();
+        assert!(matches!(
+            err,
+            PackingError::InvalidParams {
+                field: "binary_scale_factor",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_encode_accepts_binary_scale_factor_at_threshold() {
+        // Threshold is inclusive: `|bsf| == 256` passes, `|bsf| == 257` fails.
+        let params_ok = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 256,
+            decimal_scale_factor: 0,
+            bits_per_value: 16,
+        };
+        // May not produce meaningful bits with this scale, but must not error.
+        assert!(encode(&[1.0, 2.0], &params_ok).is_ok());
+
+        let params_fail = SimplePackingParams {
+            binary_scale_factor: 257,
+            ..params_ok
+        };
+        assert!(encode(&[1.0, 2.0], &params_fail).is_err());
+    }
+
+    #[test]
+    fn test_encode_accepts_realistic_binary_scale_factor() {
+        // Weather data lives in [-60, 30]; pinning this to catch future
+        // tightening of the threshold below real-world needs.
+        for bsf in [-60, -30, -1, 0, 1, 30, 60] {
+            let params = SimplePackingParams {
+                reference_value: 273.15,
+                binary_scale_factor: bsf,
+                decimal_scale_factor: 0,
+                bits_per_value: 16,
+            };
+            assert!(
+                encode(&[273.15, 283.15, 293.15], &params).is_ok(),
+                "realistic bsf {bsf} must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn test_encode_bits_per_value_zero_still_valid() {
+        // Regression: `bits_per_value = 0` is a legitimate constant-field
+        // encoding (decoder reconstructs from `reference_value` alone).
+        // The safety net must NOT reject this.
+        let params = SimplePackingParams {
+            reference_value: 42.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 0,
+        };
+        let encoded = encode(&[42.0; 100], &params).unwrap();
+        assert!(encoded.is_empty(), "constant field → zero packed bytes");
+    }
+
+    #[test]
+    fn test_max_reasonable_binary_scale_constant_is_exposed() {
+        // `MAX_REASONABLE_BINARY_SCALE` is public so downstream callers
+        // can align their own validations.  This just pins the value
+        // so a future change is a conscious decision.
+        assert_eq!(MAX_REASONABLE_BINARY_SCALE, 256);
     }
 
     #[test]

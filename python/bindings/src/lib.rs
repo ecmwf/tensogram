@@ -2094,6 +2094,8 @@ fn build_grib_options(
     compression_level: Option<i32>,
     threads: u32,
     hash: Option<&str>,
+    reject_nan: bool,
+    reject_inf: bool,
 ) -> PyResult<tensogram_grib::ConvertOptions> {
     let grouping = match grouping {
         "one_to_one" => tensogram_grib::Grouping::OneToOne,
@@ -2109,11 +2111,7 @@ fn build_grib_options(
         grouping,
         preserve_all_keys,
         pipeline: build_data_pipeline(encoding, bits, filter, compression, compression_level),
-        // Strict-finite flags are not exposed through the Python
-        // `convert_grib` surface (yet); the CLI `tensogram convert-grib
-        // --reject-nan` path uses its own builder.  Hardcoded false so
-        // converter behaviour matches pre-0.15 exactly.
-        encode_options: make_encode_options(hash, threads, false, false)?,
+        encode_options: make_encode_options(hash, threads, reject_nan, reject_inf)?,
     })
 }
 
@@ -2131,6 +2129,8 @@ fn build_netcdf_options(
     compression_level: Option<i32>,
     threads: u32,
     hash: Option<&str>,
+    reject_nan: bool,
+    reject_inf: bool,
 ) -> PyResult<tensogram_netcdf::ConvertOptions> {
     let split_by = match split_by {
         "file" => tensogram_netcdf::SplitBy::File,
@@ -2147,8 +2147,7 @@ fn build_netcdf_options(
         split_by,
         cf,
         pipeline: build_data_pipeline(encoding, bits, filter, compression, compression_level),
-        // Strict-finite flags: see convert_grib for rationale.
-        encode_options: make_encode_options(hash, threads, false, false)?,
+        encode_options: make_encode_options(hash, threads, reject_nan, reject_inf)?,
     })
 }
 
@@ -2249,6 +2248,11 @@ fn messages_to_pybytes_list(py: Python<'_>, messages: Vec<Vec<u8>>) -> PyResult<
 ///   be overridden by `TENSOGRAM_THREADS=N`; use `1` to force
 ///   single-threaded execution.
 /// - `hash`: `"xxh3"` (default) or `None` to skip hashing.
+/// - `reject_nan`: if `True`, fail conversion with `ValueError` as soon as
+///   any float payload contains NaN.  Default `False`
+///   (backwards-compatible).  See the Rust `EncodeOptions::reject_nan`
+///   docs for full semantics.
+/// - `reject_inf`: same, for `+Inf` / `-Inf`.  Default `False`.
 #[pyfunction]
 #[pyo3(name = "convert_grib", signature = (
     path,
@@ -2262,6 +2266,8 @@ fn messages_to_pybytes_list(py: Python<'_>, messages: Vec<Vec<u8>>) -> PyResult<
     compression_level = None,
     threads = 0,
     hash = Some("xxh3"),
+    reject_nan = false,
+    reject_inf = false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn py_convert_grib(
@@ -2276,6 +2282,8 @@ fn py_convert_grib(
     compression_level: Option<i32>,
     threads: u32,
     hash: Option<&str>,
+    reject_nan: bool,
+    reject_inf: bool,
 ) -> PyResult<PyObject> {
     #[cfg(feature = "grib")]
     {
@@ -2289,6 +2297,8 @@ fn py_convert_grib(
             compression_level,
             threads,
             hash,
+            reject_nan,
+            reject_inf,
         )?;
         let path_buf = std::path::PathBuf::from(path);
 
@@ -2323,6 +2333,8 @@ fn py_convert_grib(
         compression_level,
         threads,
         hash,
+        reject_nan,
+        reject_inf,
     )
 }
 
@@ -2330,7 +2342,8 @@ fn py_convert_grib(
 ///
 /// In-memory equivalent of [`convert_grib`].  Accepts any Python
 /// bytes-like object (`bytes`, `bytearray`, memoryview, `numpy.uint8[:]`)
-/// and releases the GIL during the conversion itself.
+/// and releases the GIL during the conversion itself.  Accepts the
+/// same `reject_nan` / `reject_inf` kwargs as [`convert_grib`].
 ///
 /// # Python exceptions raised
 /// - [`ValueError`] — `buffer` is not a bytes-like object; the buffer
@@ -2356,6 +2369,8 @@ fn py_convert_grib(
     compression_level = None,
     threads = 0,
     hash = Some("xxh3"),
+    reject_nan = false,
+    reject_inf = false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn py_convert_grib_buffer(
@@ -2370,6 +2385,8 @@ fn py_convert_grib_buffer(
     compression_level: Option<i32>,
     threads: u32,
     hash: Option<&str>,
+    reject_nan: bool,
+    reject_inf: bool,
 ) -> PyResult<PyObject> {
     #[cfg(feature = "grib")]
     {
@@ -2395,6 +2412,8 @@ fn py_convert_grib_buffer(
             compression_level,
             threads,
             hash,
+            reject_nan,
+            reject_inf,
         )?;
 
         let messages = py
@@ -2418,6 +2437,8 @@ fn py_convert_grib_buffer(
         compression_level,
         threads,
         hash,
+        reject_nan,
+        reject_inf,
     )
 }
 
@@ -2452,6 +2473,11 @@ fn py_convert_grib_buffer(
 ///   be overridden by `TENSOGRAM_THREADS=N`; use `1` to force
 ///   single-threaded execution.
 /// - `hash`: `"xxh3"` (default) or `None` to skip hashing.
+/// - `reject_nan` / `reject_inf`: pipeline-independent strict-finite
+///   guards; see [`convert_grib`].  Particularly useful with
+///   `encoding="simple_packing"`, where NaN / Inf input is rejected
+///   at the codec level — turning `reject_nan` on surfaces the
+///   failure earlier and with the element index included.
 #[pyfunction]
 #[pyo3(name = "convert_netcdf", signature = (
     path,
@@ -2465,6 +2491,8 @@ fn py_convert_grib_buffer(
     compression_level = None,
     threads = 0,
     hash = Some("xxh3"),
+    reject_nan = false,
+    reject_inf = false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn py_convert_netcdf(
@@ -2479,6 +2507,8 @@ fn py_convert_netcdf(
     compression_level: Option<i32>,
     threads: u32,
     hash: Option<&str>,
+    reject_nan: bool,
+    reject_inf: bool,
 ) -> PyResult<PyObject> {
     #[cfg(feature = "netcdf")]
     {
@@ -2492,6 +2522,8 @@ fn py_convert_netcdf(
             compression_level,
             threads,
             hash,
+            reject_nan,
+            reject_inf,
         )?;
         let path_buf = std::path::PathBuf::from(path);
 
@@ -2523,6 +2555,8 @@ fn py_convert_netcdf(
         compression_level,
         threads,
         hash,
+        reject_nan,
+        reject_inf,
     )
 }
 

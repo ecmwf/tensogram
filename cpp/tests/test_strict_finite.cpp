@@ -344,3 +344,80 @@ TEST(StrictFinite, RejectInfBlocksSimplePackingSilentCorruption) {
         tensogram::encoding_error
     );
 }
+
+// ── Standalone-API safety net — plans/RESEARCH_NAN_HANDLING.md §4.2.3 ────
+
+namespace {
+
+// Build a simple_packing descriptor JSON with hand-crafted params.
+std::string simple_packing_json(
+    double reference_value,
+    long long binary_scale_factor,
+    long long bits_per_value = 16
+) {
+    return std::string{R"({
+        "version": 2,
+        "descriptors": [{
+            "type": "ntensor",
+            "ndim": 1,
+            "shape": [4],
+            "strides": [1],
+            "dtype": "float64",
+            "byte_order": "little",
+            "encoding": "simple_packing",
+            "filter": "none",
+            "compression": "none",
+            "reference_value": )"} + std::to_string(reference_value) +
+        R"(, "binary_scale_factor": )" + std::to_string(binary_scale_factor) +
+        R"(, "decimal_scale_factor": 0, "bits_per_value": )" +
+        std::to_string(bits_per_value) +
+        R"(}]})";
+}
+
+}  // namespace
+
+TEST(StrictFinite, SafetyNetRejectsHugeBinaryScaleFactor) {
+    // i32::MAX is the fingerprint of feeding Inf through compute_params's
+    // range arithmetic; the safety net in encode_with_threads catches it.
+    std::vector<double> values = {273.15, 283.0, 293.0, 303.0};
+    const std::string json = simple_packing_json(273.15, 2147483647LL);
+    try {
+        tensogram::encode(json, bytes_pair(values));
+        FAIL() << "expected encoding_error";
+    } catch (const tensogram::encoding_error& e) {
+        std::string msg{e.what()};
+        EXPECT_NE(msg.find("binary_scale_factor"), std::string::npos);
+        EXPECT_NE(msg.find("256"), std::string::npos);
+    }
+}
+
+TEST(StrictFinite, SafetyNetThresholdIs256) {
+    // Threshold is inclusive: 256 accepted, 257 rejected.
+    std::vector<double> values = {1.0, 2.0, 3.0, 4.0};
+
+    EXPECT_NO_THROW(
+        tensogram::encode(simple_packing_json(0.0, 256), bytes_pair(values))
+    );
+    EXPECT_THROW(
+        tensogram::encode(simple_packing_json(0.0, 257), bytes_pair(values)),
+        tensogram::encoding_error
+    );
+}
+
+TEST(StrictFinite, SafetyNetAcceptsRealisticBinaryScaleFactors) {
+    // Regression guard: real-world weather-data values must pass.
+    std::vector<double> values = {273.15, 283.0, 293.0, 303.0};
+    for (long long bsf : {-60LL, -20LL, 0LL, 20LL, 60LL}) {
+        EXPECT_NO_THROW(
+            tensogram::encode(simple_packing_json(273.15, bsf), bytes_pair(values))
+        ) << "realistic bsf " << bsf << " should pass";
+    }
+}
+
+TEST(StrictFinite, SafetyNetAcceptsConstantFieldEncoding) {
+    // bits_per_value=0 is a legitimate constant-field encoding.
+    // The safety net must not reject it.
+    std::vector<double> values = {42.0, 42.0, 42.0, 42.0};
+    const std::string json = simple_packing_json(42.0, 0, /*bits_per_value=*/0);
+    EXPECT_NO_THROW(tensogram::encode(json, bytes_pair(values)));
+}

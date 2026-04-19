@@ -521,6 +521,8 @@ msgs = tensogram.convert_grib(
     compression_level=None,    # applies to zstd / blosc2 (None = codec default)
     threads=0,                 # 0 = sequential; honours TENSOGRAM_THREADS env var
     hash="xxh3",               # "xxh3" | None
+    reject_nan=False,          # pipeline-independent NaN guard (see strict-finite.md)
+    reject_inf=False,          # pipeline-independent Inf guard (see strict-finite.md)
 )
 with open("forecast.tgm", "wb") as fh:
     for msg in msgs:
@@ -564,6 +566,8 @@ resp = requests.get(
 msgs = tensogram.convert_grib_buffer(
     resp.content,
     encoding="simple_packing", bits=16, compression="szip",
+    # Pipeline-independent strict-finite guards (see strict-finite.md).
+    reject_nan=True, reject_inf=True,
 )
 ```
 
@@ -590,8 +594,19 @@ msgs = tensogram.convert_netcdf(
     compression_level=3,
     threads=0,
     hash="xxh3",
+    reject_nan=False,          # hard-fail if any float payload has NaN
+    reject_inf=False,          # same, for ±Inf
 )
 ```
+
+> **Note on NaN and `--encoding simple_packing`.** Since 0.17 the
+> importer hard-fails on NaN or Inf in a variable targeted for
+> `simple_packing` (previous behaviour: stderr warning + fallback
+> to `encoding="none"`). If your NetCDF has `_FillValue` /
+> `missing_value` fields unpacked to NaN, either stick with the
+> default `encoding="none"` or pre-process the values. See the
+> [NetCDF Importer error-handling reference](error-handling.md#netcdf-importer--simple_packing-on-mixed-dtype-files)
+> for the full contract.
 
 Requires `libnetcdf` + `libhdf5` at the OS level and the wheel built
 with `--features netcdf`.

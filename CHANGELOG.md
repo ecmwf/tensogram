@@ -3,6 +3,65 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`simple_packing::encode` safety net handles `i32::MIN` correctly.**
+  Before: `params.binary_scale_factor.abs()` panics on debug builds
+  (integer-overflow) and silently returns `i32::MIN` (still negative)
+  on release, so the comparison `> 256` falsely accepts the
+  worst-case value, and the subsequent encode silently corrupts.
+  After: uses `saturating_abs()` which clamps `i32::MIN` to
+  `i32::MAX`, correctly rejecting it via
+  `PackingError::InvalidParams`.  Regression test added.
+
+### Added
+
+- **Strict-finite kwargs on Python converter functions.**
+  `tensogram.convert_grib`, `tensogram.convert_grib_buffer`, and
+  `tensogram.convert_netcdf` now accept `reject_nan: bool = False`
+  and `reject_inf: bool = False` kwargs that forward to the shared
+  `EncodeOptions`.  CLI parity (`tensogram convert-grib --reject-nan`)
+  already existed; this closes the corresponding Python gap.
+
+### Changed — BREAKING (converter behaviour)
+
+- **`tensogram convert-grib` / `convert-netcdf` now hard-fail when
+  `--encoding simple_packing` is requested on data containing NaN or
+  Inf.** The previous behaviour (stderr warning + silent downgrade to
+  `encoding="none"`) hid real data-quality problems; the new behaviour
+  fails cleanly with an error that names the offending variable and
+  the sample index. Recovery options: (a) pick a non-simple_packing
+  encoding up front, (b) pre-process NaN/Inf out of the data, or (c)
+  use `tensogram.encode(..., reject_nan=True)` which surfaces the same
+  failure at encode time.  The non-f64-payload branch (structural
+  mismatch, not a data-quality problem) keeps its stderr-warning +
+  fallback behaviour unchanged.
+
+### Added — simple_packing standalone-API safety net
+
+- **`simple_packing::encode_with_threads` now validates its
+  `SimplePackingParams` input** with an always-on safety net.  Catches
+  hand-crafted or mutated params that would otherwise produce
+  silently-wrong output:
+  - Non-finite `reference_value` (NaN / ±Inf) → new
+    `PackingError::InvalidParams { field: "reference_value", .. }`.
+  - `|binary_scale_factor| > 256` → new
+    `PackingError::InvalidParams { field: "binary_scale_factor", .. }`.
+    The threshold catches the `i32::MAX` fingerprint that results from
+    feeding Inf through `compute_params`.  Real-world weather data
+    (`|bsf| ≤ 60`) comfortably fits.  Exposed as the public constant
+    `MAX_REASONABLE_BINARY_SCALE = 256`.
+  - `bits_per_value = 0` remains valid (legitimate constant-field
+    encoding); `> 64` continues to be caught by the pre-existing
+    `BitsPerValueTooLarge`.
+  The validation fires on every encode path — direct Rust calls via
+  `simple_packing::encode()`, via the high-level `tensogram::encode()`,
+  via PyO3, WASM, C FFI, and C++ wrapper.  Cross-language parity tests
+  pin the behaviour. See `plans/RESEARCH_NAN_HANDLING.md` §4.2.3 for
+  the rationale and the failure-mode catalogue.
+
 ## [0.16.1] - 2026-04-19
 
 ### Fixed
