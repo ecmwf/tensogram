@@ -169,9 +169,15 @@ def _write_with_missing_values(path: Path) -> None:
         # Masked array — netCDF4 replaces the masked cells with the
         # fill value on disk.  On read with CF unpacking, the fill
         # value becomes NaN in the f64 output.
+        mask = [
+            [False, True, False],
+            [False, False, False],
+            [True, False, False],
+            [False, False, False],
+        ]
         arr = np.ma.array(
             np.full((4, 3), 1.0, dtype=np.float64),
-            mask=[[False, True, False], [False, False, False], [True, False, False], [False, False, False]],
+            mask=mask,
         )
         var[:] = arr
 
