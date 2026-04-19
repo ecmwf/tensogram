@@ -103,7 +103,7 @@ mod tests {
             false,
             false,
             &default_pipeline(),
-            0
+            0,
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -120,7 +120,7 @@ mod tests {
             true,
             false,
             &default_pipeline(),
-            0
+            0,
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -137,7 +137,7 @@ mod tests {
             false,
             true,
             &default_pipeline(),
-            0
+            0,
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -159,7 +159,7 @@ mod tests {
             false,
             false,
             &default_pipeline(),
-            0
+            0,
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -172,17 +172,7 @@ mod tests {
     #[test]
     fn convert_no_inputs_errors() {
         let empty: Vec<String> = vec![];
-        assert!(
-            run(
-                &empty,
-                None,
-                false,
-                false,
-                &default_pipeline(),
-                0
-            )
-            .is_err()
-        );
+        assert!(run(&empty, None, false, false, &default_pipeline(), 0).is_err());
     }
 
     #[test]
@@ -193,7 +183,7 @@ mod tests {
             false,
             false,
             &default_pipeline(),
-            0
+            0,
         );
         assert!(result.is_err());
     }
@@ -208,7 +198,7 @@ mod tests {
             false,
             false,
             &default_pipeline(),
-            0
+            0,
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -225,7 +215,7 @@ mod tests {
             true,
             true,
             &default_pipeline(),
-            0
+            0,
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -245,7 +235,7 @@ mod tests {
             true,
             false,
             &default_pipeline(),
-            0
+            0,
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
