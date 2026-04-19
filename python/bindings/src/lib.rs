@@ -417,15 +417,9 @@ impl PyTensogramFile {
     ///         optionally ``byte_order``, ``encoding``, ``filter``, ``compression``.
     ///     hash: ``"xxh3"`` (default) or ``None`` to skip hashing.
     ///     threads: thread budget (0 = sequential / env fallback).
-    ///     reject_nan: if ``True``, reject float payloads containing any
-    ///         NaN before the pipeline runs.  Raises ``ValueError``.
-    ///         Default ``False`` preserves the current behaviour.
-    ///     reject_inf: same, but for ``+Inf`` / ``-Inf``.  Default
-    ///         ``False``.  See :func:`encode` for the full semantics.
     #[pyo3(
-        signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3"), threads=0, reject_nan=false, reject_inf=false)
+        signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3"), threads=0)
     )]
-    #[allow(clippy::too_many_arguments)]
     fn append(
         &mut self,
         py: Python<'_>,
@@ -433,15 +427,13 @@ impl PyTensogramFile {
         descriptors_and_data: &Bound<'_, PyList>,
         hash: Option<&str>,
         threads: u32,
-        reject_nan: bool,
-        reject_inf: bool,
     ) -> PyResult<()> {
         let global_meta = dict_to_global_metadata(global_meta_dict)?;
         let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
         let refs: Vec<(&DataObjectDescriptor, &[u8])> =
             pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
-        let options = make_encode_options(hash, threads, reject_nan, reject_inf)?;
+        let options = make_encode_options(hash, threads)?;
         py.detach(|| self.file.append(&global_meta, &refs, &options))
             .map_err(to_py_err)
     }
@@ -852,7 +844,7 @@ impl PyFileIter {
 #[pyfunction]
 #[pyo3(
     name = "encode",
-    signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3"), threads=0, reject_nan=false, reject_inf=false)
+    signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3"), threads=0)
 )]
 fn py_encode<'py>(
     py: Python<'py>,
@@ -860,15 +852,13 @@ fn py_encode<'py>(
     descriptors_and_data: &Bound<'_, PyList>,
     hash: Option<&str>,
     threads: u32,
-    reject_nan: bool,
-    reject_inf: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let global_meta = dict_to_global_metadata(global_meta_dict)?;
     let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
     let refs: Vec<(&DataObjectDescriptor, &[u8])> =
         pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
-    let options = make_encode_options(hash, threads, reject_nan, reject_inf)?;
+    let options = make_encode_options(hash, threads)?;
     let msg = py.detach(|| encode(&global_meta, &refs, &options).map_err(to_py_err))?;
     Ok(PyBytes::new(py, &msg))
 }
@@ -906,11 +896,7 @@ fn py_encode_pre_encoded<'py>(
     let refs: Vec<(&DataObjectDescriptor, &[u8])> =
         pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
-    // `reject_nan` / `reject_inf` are intentionally not exposed here:
-    // pre-encoded bytes are opaque to the library, so scanning them as
-    // raw floats would be incorrect.  See `plans/RESEARCH_NAN_HANDLING.md`
-    // §3.1 for why the strict flags are raw-input-only.
-    let options = make_encode_options(hash, threads, false, false)?;
+    let options = make_encode_options(hash, threads)?;
     let msg = py.detach(|| encode_pre_encoded(&global_meta, &refs, &options).map_err(to_py_err))?;
     Ok(PyBytes::new(py, &msg))
 }
@@ -1239,24 +1225,15 @@ impl PyStreamingEncoder {
     ///         :meth:`write_object` (axis B only — streaming encoding
     ///         does not have cross-object parallelism by design).
     ///         Default ``0`` preserves the sequential path.
-    ///     reject_nan: if ``True``, every :meth:`write_object` call
-    ///         rejects float payloads containing any NaN before the
-    ///         pipeline runs.  See :func:`encode` for the full semantics.
-    ///         The flag is captured at construction — mid-stream changes
-    ///         to the encoder's contract are not possible.  Default
-    ///         ``False``.
-    ///     reject_inf: same, for ``+Inf`` / ``-Inf``.  Default ``False``.
     #[new]
-    #[pyo3(signature = (global_meta_dict, hash=Some("xxh3"), threads=0, reject_nan=false, reject_inf=false))]
+    #[pyo3(signature = (global_meta_dict, hash=Some("xxh3"), threads=0))]
     fn new(
         global_meta_dict: &Bound<'_, PyDict>,
         hash: Option<&str>,
         threads: u32,
-        reject_nan: bool,
-        reject_inf: bool,
     ) -> PyResult<Self> {
         let global_meta = dict_to_global_metadata(global_meta_dict)?;
-        let options = make_encode_options(hash, threads, reject_nan, reject_inf)?;
+        let options = make_encode_options(hash, threads)?;
         let inner = StreamingEncoder::new(Vec::new(), &global_meta, &options).map_err(to_py_err)?;
         Ok(Self { inner: Some(inner) })
     }
@@ -2094,8 +2071,6 @@ fn build_grib_options(
     compression_level: Option<i32>,
     threads: u32,
     hash: Option<&str>,
-    reject_nan: bool,
-    reject_inf: bool,
 ) -> PyResult<tensogram_grib::ConvertOptions> {
     let grouping = match grouping {
         "one_to_one" => tensogram_grib::Grouping::OneToOne,
@@ -2111,7 +2086,7 @@ fn build_grib_options(
         grouping,
         preserve_all_keys,
         pipeline: build_data_pipeline(encoding, bits, filter, compression, compression_level),
-        encode_options: make_encode_options(hash, threads, reject_nan, reject_inf)?,
+        encode_options: make_encode_options(hash, threads)?,
     })
 }
 
@@ -2129,8 +2104,6 @@ fn build_netcdf_options(
     compression_level: Option<i32>,
     threads: u32,
     hash: Option<&str>,
-    reject_nan: bool,
-    reject_inf: bool,
 ) -> PyResult<tensogram_netcdf::ConvertOptions> {
     let split_by = match split_by {
         "file" => tensogram_netcdf::SplitBy::File,
@@ -2147,7 +2120,7 @@ fn build_netcdf_options(
         split_by,
         cf,
         pipeline: build_data_pipeline(encoding, bits, filter, compression, compression_level),
-        encode_options: make_encode_options(hash, threads, reject_nan, reject_inf)?,
+        encode_options: make_encode_options(hash, threads)?,
     })
 }
 
@@ -2248,11 +2221,6 @@ fn messages_to_pybytes_list(py: Python<'_>, messages: Vec<Vec<u8>>) -> PyResult<
 ///   be overridden by `TENSOGRAM_THREADS=N`; use `1` to force
 ///   single-threaded execution.
 /// - `hash`: `"xxh3"` (default) or `None` to skip hashing.
-/// - `reject_nan`: if `True`, fail conversion with `ValueError` as soon as
-///   any float payload contains NaN.  Default `False`
-///   (backwards-compatible).  See the Rust `EncodeOptions::reject_nan`
-///   docs for full semantics.
-/// - `reject_inf`: same, for `+Inf` / `-Inf`.  Default `False`.
 #[pyfunction]
 #[pyo3(name = "convert_grib", signature = (
     path,
@@ -2266,8 +2234,6 @@ fn messages_to_pybytes_list(py: Python<'_>, messages: Vec<Vec<u8>>) -> PyResult<
     compression_level = None,
     threads = 0,
     hash = Some("xxh3"),
-    reject_nan = false,
-    reject_inf = false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn py_convert_grib(
@@ -2282,8 +2248,6 @@ fn py_convert_grib(
     compression_level: Option<i32>,
     threads: u32,
     hash: Option<&str>,
-    reject_nan: bool,
-    reject_inf: bool,
 ) -> PyResult<PyObject> {
     #[cfg(feature = "grib")]
     {
@@ -2297,8 +2261,6 @@ fn py_convert_grib(
             compression_level,
             threads,
             hash,
-            reject_nan,
-            reject_inf,
         )?;
         let path_buf = std::path::PathBuf::from(path);
 
@@ -2333,8 +2295,6 @@ fn py_convert_grib(
         compression_level,
         threads,
         hash,
-        reject_nan,
-        reject_inf,
     )
 }
 
@@ -2369,8 +2329,6 @@ fn py_convert_grib(
     compression_level = None,
     threads = 0,
     hash = Some("xxh3"),
-    reject_nan = false,
-    reject_inf = false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn py_convert_grib_buffer(
@@ -2385,8 +2343,6 @@ fn py_convert_grib_buffer(
     compression_level: Option<i32>,
     threads: u32,
     hash: Option<&str>,
-    reject_nan: bool,
-    reject_inf: bool,
 ) -> PyResult<PyObject> {
     #[cfg(feature = "grib")]
     {
@@ -2412,8 +2368,6 @@ fn py_convert_grib_buffer(
             compression_level,
             threads,
             hash,
-            reject_nan,
-            reject_inf,
         )?;
 
         let messages = py
@@ -2437,8 +2391,6 @@ fn py_convert_grib_buffer(
         compression_level,
         threads,
         hash,
-        reject_nan,
-        reject_inf,
     )
 }
 
@@ -2473,11 +2425,6 @@ fn py_convert_grib_buffer(
 ///   be overridden by `TENSOGRAM_THREADS=N`; use `1` to force
 ///   single-threaded execution.
 /// - `hash`: `"xxh3"` (default) or `None` to skip hashing.
-/// - `reject_nan` / `reject_inf`: pipeline-independent strict-finite
-///   guards; see [`convert_grib`].  Particularly useful with
-///   `encoding="simple_packing"`, where NaN / Inf input is rejected
-///   at the codec level — turning `reject_nan` on surfaces the
-///   failure earlier and with the element index included.
 #[pyfunction]
 #[pyo3(name = "convert_netcdf", signature = (
     path,
@@ -2491,8 +2438,6 @@ fn py_convert_grib_buffer(
     compression_level = None,
     threads = 0,
     hash = Some("xxh3"),
-    reject_nan = false,
-    reject_inf = false,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn py_convert_netcdf(
@@ -2507,8 +2452,6 @@ fn py_convert_netcdf(
     compression_level: Option<i32>,
     threads: u32,
     hash: Option<&str>,
-    reject_nan: bool,
-    reject_inf: bool,
 ) -> PyResult<PyObject> {
     #[cfg(feature = "netcdf")]
     {
@@ -2522,8 +2465,6 @@ fn py_convert_netcdf(
             compression_level,
             threads,
             hash,
-            reject_nan,
-            reject_inf,
         )?;
         let path_buf = std::path::PathBuf::from(path);
 
@@ -2555,8 +2496,6 @@ fn py_convert_netcdf(
         compression_level,
         threads,
         hash,
-        reject_nan,
-        reject_inf,
     )
 }
 
@@ -2605,12 +2544,7 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_encode_options(
-    hash: Option<&str>,
-    threads: u32,
-    reject_nan: bool,
-    reject_inf: bool,
-) -> PyResult<EncodeOptions> {
+fn make_encode_options(hash: Option<&str>, threads: u32) -> PyResult<EncodeOptions> {
     let hash_algorithm = match hash {
         None => None,
         Some("xxh3") => Some(HashAlgorithm::Xxh3),
@@ -2619,8 +2553,6 @@ fn make_encode_options(
     Ok(EncodeOptions {
         hash_algorithm,
         threads,
-        reject_nan,
-        reject_inf,
         ..Default::default()
     })
 }

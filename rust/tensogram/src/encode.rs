@@ -69,50 +69,6 @@ pub struct EncodeOptions {
     /// Set to `Some(0)` to force the parallel path for testing; set to
     /// `Some(usize::MAX)` to force sequential.
     pub parallel_threshold_bytes: Option<usize>,
-    /// Reject NaN values in float payloads before the encoding pipeline
-    /// runs.  Default `false` (backwards-compatible).
-    ///
-    /// When `true`, raw input for float dtypes
-    /// (`float16`/`bfloat16`/`float32`/`float64`/`complex64`/`complex128`)
-    /// is scanned element-by-element.  On first NaN the encode fails
-    /// with [`TensogramError::Encoding`] carrying the element index and
-    /// dtype.  Integer and bitmask dtypes are skipped (zero cost).
-    ///
-    /// Applies **before** any pipeline stage, so the contract is
-    /// pipeline-independent: callers get the same guarantee whether
-    /// they pick `encoding="none"`, `"simple_packing"`, or a lossy
-    /// float compressor.  This is the primary user-visible mitigation
-    /// for the corners documented in `plans/RESEARCH_NAN_HANDLING.md`
-    /// §3.1 (silent Inf corruption in `simple_packing`) and §3.3
-    /// (undefined NaN behaviour in `zfp`/`sz3`).
-    ///
-    /// Setting this flag on [`encode_pre_encoded`] or
-    /// [`StreamingEncoder::write_object_pre_encoded`](crate::streaming::StreamingEncoder::write_object_pre_encoded)
-    /// returns [`TensogramError::Encoding`] — pre-encoded bytes are
-    /// opaque to the library and cannot be meaningfully scanned.
-    /// Callers who want the strict contract must use [`encode`] or
-    /// [`StreamingEncoder::write_object`](crate::streaming::StreamingEncoder::write_object)
-    /// on raw input.
-    ///
-    /// Parallel scans (when `threads > 0` and input exceeds the
-    /// parallel threshold) short-circuit per worker, so the reported
-    /// element index may not be the globally first NaN.  Pass
-    /// `threads = 0` for deterministic first-index reporting.
-    pub reject_nan: bool,
-    /// Reject `+Inf` / `-Inf` values in float payloads before the
-    /// encoding pipeline runs.  Default `false` (backwards-compatible).
-    ///
-    /// Same semantics as [`reject_nan`](Self::reject_nan) but for
-    /// infinities.  The error message includes the sign (`+Inf` or
-    /// `-Inf`) alongside the element index and dtype.
-    ///
-    /// Closes the silent-corruption gotcha documented in
-    /// `plans/RESEARCH_NAN_HANDLING.md` §3.1: `simple_packing::compute_params`
-    /// accepts Inf input and produces numerically-useless parameters
-    /// (`binary_scale_factor = i32::MAX`) that silently decode to NaN
-    /// everywhere.  Turning this flag on catches the problem at encode
-    /// time.
-    pub reject_inf: bool,
 }
 
 impl Default for EncodeOptions {
@@ -123,8 +79,6 @@ impl Default for EncodeOptions {
             compression_backend: pipeline::CompressionBackend::default(),
             threads: 0,
             parallel_threshold_bytes: None,
-            reject_nan: false,
-            reject_inf: false,
         }
     }
 }
@@ -199,24 +153,19 @@ fn encode_one_object(
 ) -> Result<EncodedObject> {
     validate_object(desc, data.len())?;
 
-    // Strict-finite pre-pipeline scan (Raw mode only — pre-encoded
+    // Finite-value pre-pipeline check (Raw mode only — pre-encoded
     // bytes are opaque and the caller already accepted that contract).
-    // Short-circuits to Ok when both flags are off or the dtype is
-    // integer/bitmask; see `strict_finite` for the full semantics.
-    if matches!(mode, EncodeMode::Raw) && (options.reject_nan || options.reject_inf) {
+    // Always enabled in 0.17+: NaN / Inf in float payloads is a hard
+    // error by default.  The `allow_nan` / `allow_inf` opt-in that
+    // substitutes non-finite values with 0 and records them in masks
+    // (see `plans/BITMASK_FRAME.md`) lands in a subsequent commit.
+    if matches!(mode, EncodeMode::Raw) {
         let parallel = crate::parallel::should_parallelise(
             intra_codec_threads,
             data.len(),
             options.parallel_threshold_bytes,
         );
-        crate::strict_finite::scan(
-            data,
-            desc.dtype,
-            desc.byte_order,
-            options.reject_nan,
-            options.reject_inf,
-            parallel,
-        )?;
+        crate::finite_check::scan(data, desc.dtype, desc.byte_order, parallel)?;
     }
 
     let shape_product = desc
@@ -326,22 +275,6 @@ fn encode_inner(
         ));
     }
 
-    // Strict-finite flags are raw-input-only — pre-encoded bytes are
-    // opaque to the library and cannot be meaningfully scanned for
-    // NaN/Inf.  Failing loudly here prevents a silent-ignore footgun
-    // where a caller mistakenly expects pre-encoded payloads to be
-    // checked.  (Python's binding already raises TypeError; this
-    // mirrors that behaviour for Rust, C FFI, and C++.)
-    if matches!(mode, EncodeMode::PreEncoded) && (options.reject_nan || options.reject_inf) {
-        return Err(TensogramError::Encoding(
-            "reject_nan / reject_inf do not apply to encode_pre_encoded: \
-             pre-encoded bytes are opaque to the library. Clear these \
-             flags before calling encode_pre_encoded, or use encode() \
-             on raw data."
-                .to_string(),
-        ));
-    }
-
     // ── Thread-budget dispatch (axis-B-first policy) ────────────────────
     //
     // Resolve the effective thread budget (explicit option > env var),
@@ -446,9 +379,11 @@ pub fn encode(
 /// Callers must NOT set:
 /// - `emit_preceders = true` — use `StreamingEncoder::write_preceder()` for streaming
 ///   preceder support.
-/// - `reject_nan = true` or `reject_inf = true` — these flags are raw-input-only;
-///   pre-encoded bytes are opaque to the library and cannot be scanned.  Setting
-///   either flag returns [`TensogramError::Encoding`].
+///
+/// Unlike `encode()`, this path does NOT run the finite-value check — the caller's
+/// bytes are assumed to be already well-formed for the declared encoding and are
+/// written as-is.  If the pre-encoded bytes decode to NaN / Inf, that round-trips
+/// through the wire unchanged.
 #[tracing::instrument(name = "encode_pre_encoded", skip_all, fields(num_objects = descriptors.len()))]
 pub fn encode_pre_encoded(
     global_metadata: &GlobalMetadata,

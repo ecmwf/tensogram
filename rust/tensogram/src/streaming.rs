@@ -77,13 +77,6 @@ pub struct StreamingEncoder<W: Write> {
     intra_codec_threads: u32,
     /// Snapshot of the parallel-threshold option for the same reason.
     parallel_threshold_bytes: Option<usize>,
-    /// Snapshot of `EncodeOptions.reject_nan` captured at construction
-    /// so that mid-message option changes do not leak between frames.
-    /// One message = one contract.
-    reject_nan: bool,
-    /// Snapshot of `EncodeOptions.reject_inf` — see
-    /// [`reject_nan`](Self::reject_nan) for the rationale.
-    reject_inf: bool,
 }
 
 impl<W: Write> StreamingEncoder<W> {
@@ -145,8 +138,6 @@ impl<W: Write> StreamingEncoder<W> {
             preceder_payloads: Vec::new(),
             intra_codec_threads,
             parallel_threshold_bytes: options.parallel_threshold_bytes,
-            reject_nan: options.reject_nan,
-            reject_inf: options.reject_inf,
         })
     }
 
@@ -222,19 +213,12 @@ impl<W: Write> StreamingEncoder<W> {
             self.parallel_threshold_bytes,
         );
 
-        // Strict-finite scan, consistent with buffered `encode()`.
+        // Finite-value check, consistent with buffered `encode()`.
         // Only `write_object` runs the scan; `write_object_pre_encoded`
         // treats its input as opaque (matching buffered `encode_pre_encoded`).
-        if self.reject_nan || self.reject_inf {
-            crate::strict_finite::scan(
-                data,
-                desc.dtype,
-                desc.byte_order,
-                self.reject_nan,
-                self.reject_inf,
-                parallel,
-            )?;
-        }
+        // Always enabled in 0.17+; `allow_nan` / `allow_inf` bitmask
+        // opt-in comes in a subsequent commit.
+        crate::finite_check::scan(data, desc.dtype, desc.byte_order, parallel)?;
         let intra = if parallel {
             self.intra_codec_threads
         } else {
@@ -295,21 +279,6 @@ impl<W: Write> StreamingEncoder<W> {
         descriptor: &DataObjectDescriptor,
         pre_encoded_bytes: &[u8],
     ) -> Result<()> {
-        // Strict-finite flags are raw-input-only.  If the caller
-        // configured the encoder with reject_nan / reject_inf and then
-        // writes a pre-encoded object, the flags cannot be meaningfully
-        // enforced on opaque bytes — fail loudly rather than silently
-        // ignoring, matching the buffered encode_pre_encoded contract.
-        if self.reject_nan || self.reject_inf {
-            return Err(TensogramError::Encoding(
-                "reject_nan / reject_inf do not apply to \
-                 write_object_pre_encoded: pre-encoded bytes are opaque. \
-                 Construct the StreamingEncoder with these flags cleared, \
-                 or use write_object() on raw data."
-                    .to_string(),
-            ));
-        }
-
         validate_object(descriptor, pre_encoded_bytes.len())?;
 
         let shape_product = descriptor

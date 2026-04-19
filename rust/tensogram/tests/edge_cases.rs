@@ -58,6 +58,22 @@ fn encode_roundtrip(
     decode(&encoded, &DecodeOptions::default()).unwrap()
 }
 
+/// Produce `n_floats × 4` bytes of deterministic **finite** f32 values.
+///
+/// Many compression round-trip tests previously used
+/// `(0..N).map(|i| (i % 256) as u8).collect()` which happens to produce
+/// NaN bit patterns when interpreted as f32 (the byte pattern `0x7F_..`
+/// / `0xFF_..` lands inside the exponent slot).  Since 0.17 the encode
+/// path rejects non-finite floats by default; these tests use this
+/// helper instead to produce input that both round-trips byte-exactly
+/// through compression AND passes the finite-value pre-check.
+fn finite_f32_bytes(n_floats: usize) -> Vec<u8> {
+    (0..n_floats)
+        .map(|i| i as f32)
+        .flat_map(|v| v.to_ne_bytes())
+        .collect()
+}
+
 // ── 1. Dtype byte_width and Display coverage ─────────────────────────────────
 
 #[test]
@@ -1135,7 +1151,7 @@ fn zstd_roundtrip() {
     let mut params = BTreeMap::new();
     params.insert("zstd_level".to_string(), ciborium::Value::Integer(3.into()));
     let desc = make_compressed_descriptor(vec![100], Dtype::Float32, "zstd", params);
-    let data: Vec<u8> = (0..400).map(|i| (i % 256) as u8).collect();
+    let data = finite_f32_bytes(100);
     let (_, objects) = encode_roundtrip(&desc, &data);
     assert_eq!(objects[0].1, data);
 }
@@ -1144,7 +1160,7 @@ fn zstd_roundtrip() {
 fn zstd_default_level() {
     // When zstd_level is not specified, default to 3
     let desc = make_compressed_descriptor(vec![100], Dtype::Float32, "zstd", BTreeMap::new());
-    let data: Vec<u8> = (0..400).map(|i| (i % 256) as u8).collect();
+    let data = finite_f32_bytes(100);
     let (_, objects) = encode_roundtrip(&desc, &data);
     assert_eq!(objects[0].1, data);
 }
@@ -1152,7 +1168,7 @@ fn zstd_default_level() {
 #[test]
 fn lz4_roundtrip() {
     let desc = make_compressed_descriptor(vec![100], Dtype::Float32, "lz4", BTreeMap::new());
-    let data: Vec<u8> = (0..400).map(|i| (i % 256) as u8).collect();
+    let data = finite_f32_bytes(100);
     let (_, objects) = encode_roundtrip(&desc, &data);
     assert_eq!(objects[0].1, data);
 }
@@ -1160,7 +1176,7 @@ fn lz4_roundtrip() {
 #[test]
 fn blosc2_roundtrip_default_codec() {
     let desc = make_compressed_descriptor(vec![100], Dtype::Float32, "blosc2", BTreeMap::new());
-    let data: Vec<u8> = (0..400).map(|i| (i % 256) as u8).collect();
+    let data = finite_f32_bytes(100);
     let (_, objects) = encode_roundtrip(&desc, &data);
     assert_eq!(objects[0].1, data);
 }
@@ -1178,7 +1194,7 @@ fn blosc2_roundtrip_all_codecs() {
             ciborium::Value::Integer(3.into()),
         );
         let desc = make_compressed_descriptor(vec![100], Dtype::Float32, "blosc2", params);
-        let data: Vec<u8> = (0..400).map(|i| (i % 256) as u8).collect();
+        let data = finite_f32_bytes(100);
         let (_, objects) = encode_roundtrip(&desc, &data);
         assert_eq!(objects[0].1, data, "failed for blosc2 codec: {codec}");
     }
@@ -1368,7 +1384,7 @@ fn sz3_rel_roundtrip() {
     params.insert("sz3_error_bound".to_string(), ciborium::Value::Float(0.01));
     let desc = make_compressed_descriptor(vec![100], Dtype::Float64, "sz3", params);
     // Use non-zero data for relative error bound
-    let data: Vec<u8> = (0..800).map(|i| (i % 256) as u8).collect();
+    let data = finite_f32_bytes(200);
     let meta = make_global_meta();
     let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
@@ -1384,7 +1400,7 @@ fn sz3_psnr_roundtrip() {
     );
     params.insert("sz3_error_bound".to_string(), ciborium::Value::Float(40.0));
     let desc = make_compressed_descriptor(vec![100], Dtype::Float64, "sz3", params);
-    let data: Vec<u8> = (0..800).map(|i| (i % 256) as u8).collect();
+    let data = finite_f32_bytes(200);
     let meta = make_global_meta();
     let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
@@ -1447,7 +1463,7 @@ fn shuffle_with_lz4_roundtrip() {
     desc.compression = "lz4".to_string();
     desc.params = params;
 
-    let data: Vec<u8> = (0..400).map(|i| (i % 256) as u8).collect();
+    let data = finite_f32_bytes(100);
     let (_, objects) = encode_roundtrip(&desc, &data);
     assert_eq!(objects[0].1, data);
 }
@@ -1473,7 +1489,7 @@ fn szip_with_shuffle_roundtrip() {
     desc.compression = "szip".to_string();
     desc.params = params;
 
-    let data: Vec<u8> = (0..400).map(|i| (i % 256) as u8).collect();
+    let data = finite_f32_bytes(100);
     let (_, objects) = encode_roundtrip(&desc, &data);
     assert_eq!(objects[0].1, data);
 }
@@ -1492,7 +1508,7 @@ fn blosc2_with_shuffle_uses_typesize_1() {
     desc.compression = "blosc2".to_string();
     desc.params = params;
 
-    let data: Vec<u8> = (0..400).map(|i| (i % 256) as u8).collect();
+    let data = finite_f32_bytes(100);
     let (_, objects) = encode_roundtrip(&desc, &data);
     assert_eq!(objects[0].1, data);
 }
@@ -1504,7 +1520,7 @@ fn decode_range_zstd_not_supported() {
     let mut params = BTreeMap::new();
     params.insert("zstd_level".to_string(), ciborium::Value::Integer(3.into()));
     let desc = make_compressed_descriptor(vec![100], Dtype::Float32, "zstd", params);
-    let data: Vec<u8> = (0..400).map(|i| (i % 256) as u8).collect();
+    let data = finite_f32_bytes(100);
     let meta = make_global_meta();
     let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
@@ -1516,7 +1532,7 @@ fn decode_range_zstd_not_supported() {
 #[test]
 fn decode_range_lz4_not_supported() {
     let desc = make_compressed_descriptor(vec![100], Dtype::Float32, "lz4", BTreeMap::new());
-    let data: Vec<u8> = (0..400).map(|i| (i % 256) as u8).collect();
+    let data = finite_f32_bytes(100);
     let meta = make_global_meta();
     let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
@@ -2645,68 +2661,46 @@ fn corrupt_data_object_frame_trailer_rejected() {
     );
 }
 
-// ── 55. NaN/Inf/-0.0 bit-exact round-trip ────────────────────────────────────
+// ── 55. -0.0 and +0.0 round-trip (NaN / Inf no longer pass through default encode) ───
 
 #[test]
-fn float32_nan_inf_neg_zero_bit_exact_roundtrip() {
-    let special_values: [f32; 5] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.0f32, 0.0f32];
-    let data: Vec<u8> = special_values
-        .iter()
-        .flat_map(|v| v.to_ne_bytes())
-        .collect();
+fn float32_negative_zero_roundtrips_bit_exactly() {
+    // NaN / Inf used to round-trip bit-exactly through `encoding="none"` in
+    // pre-0.17 versions.  The 0.17 default-reject behaviour rejects them at
+    // encode time (see `tests/finite_check.rs`); bit-exact NaN/Inf round-trip
+    // via the bitmask opt-in is covered in the bitmask test matrix.
+    //
+    // What we still pin here: -0.0 vs +0.0 preservation — both are finite so
+    // the encode accepts them, and the bit pattern difference survives.
+    let values: [f32; 4] = [0.0f32, -0.0f32, 1.5, -1.5];
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
-    let desc = make_descriptor(vec![5], Dtype::Float32);
+    let desc = make_descriptor(vec![4], Dtype::Float32);
     let (_, objects) = encode_roundtrip(&desc, &data);
-    assert_eq!(objects.len(), 1);
-    assert_eq!(objects[0].1.len(), data.len());
-
-    // Verify bit-exact round-trip using to_bits()
-    let decoded_values: Vec<f32> = objects[0]
+    let decoded: Vec<f32> = objects[0]
         .1
         .chunks_exact(4)
         .map(|c| f32::from_ne_bytes(c.try_into().unwrap()))
         .collect();
-
-    assert_eq!(decoded_values.len(), 5);
-    for (orig, decoded) in special_values.iter().zip(decoded_values.iter()) {
-        assert_eq!(
-            orig.to_bits(),
-            decoded.to_bits(),
-            "bit-exact mismatch: orig={orig} (bits={:#010x}), decoded={decoded} (bits={:#010x})",
-            orig.to_bits(),
-            decoded.to_bits()
-        );
+    for (orig, got) in values.iter().zip(decoded.iter()) {
+        assert_eq!(orig.to_bits(), got.to_bits());
     }
 }
 
 #[test]
-fn float64_nan_inf_neg_zero_bit_exact_roundtrip() {
-    let special_values: [f64; 5] = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.0f64, 0.0f64];
-    let data: Vec<u8> = special_values
-        .iter()
-        .flat_map(|v| v.to_ne_bytes())
-        .collect();
+fn float64_negative_zero_roundtrips_bit_exactly() {
+    let values: [f64; 4] = [0.0f64, -0.0f64, 1.5, -1.5];
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
-    let desc = make_descriptor(vec![5], Dtype::Float64);
+    let desc = make_descriptor(vec![4], Dtype::Float64);
     let (_, objects) = encode_roundtrip(&desc, &data);
-    assert_eq!(objects.len(), 1);
-    assert_eq!(objects[0].1.len(), data.len());
-
-    let decoded_values: Vec<f64> = objects[0]
+    let decoded: Vec<f64> = objects[0]
         .1
         .chunks_exact(8)
         .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
         .collect();
-
-    assert_eq!(decoded_values.len(), 5);
-    for (orig, decoded) in special_values.iter().zip(decoded_values.iter()) {
-        assert_eq!(
-            orig.to_bits(),
-            decoded.to_bits(),
-            "bit-exact mismatch: orig={orig} (bits={:#018x}), decoded={decoded} (bits={:#018x})",
-            orig.to_bits(),
-            decoded.to_bits()
-        );
+    for (orig, got) in values.iter().zip(decoded.iter()) {
+        assert_eq!(orig.to_bits(), got.to_bits());
     }
 }
 

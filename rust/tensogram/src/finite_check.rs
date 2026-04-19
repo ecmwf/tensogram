@@ -6,17 +6,21 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
-//! Pipeline-independent strict-finite check for raw float input.
+//! Pipeline-independent finite-value check for raw float input.
 //!
-//! When [`EncodeOptions::reject_nan`](crate::EncodeOptions::reject_nan)
-//! or [`EncodeOptions::reject_inf`](crate::EncodeOptions::reject_inf) is
-//! set, this scan runs **before** any encoding/filter/compression stage
-//! and bails out on the first NaN or Inf it sees.
+//! Unconditionally scans raw float payloads before any pipeline stage
+//! runs and bails out on the first NaN or Inf with a
+//! [`TensogramError::Encoding`].  Non-float dtypes short-circuit to
+//! `Ok(())` — no cost.
 //!
-//! The guarantee is pipeline-independent — callers get the same
-//! contract regardless of which pipeline they picked.  See
-//! `plans/RESEARCH_NAN_HANDLING.md` §4.1 for motivation and the
-//! user-visible corners this closes.
+//! In 0.17 this replaces the opt-in `reject_nan` / `reject_inf` flags
+//! that shipped in 0.16: rejecting non-finite values is now the
+//! library's default encode policy.  Callers who need to ship NaN /
+//! Inf through the wire opt in via `EncodeOptions.allow_nan` /
+//! `allow_inf`, which upgrades the scan to a
+//! substitute-and-bitmask path (see `plans/BITMASK_FRAME.md`).
+//! Until the bitmask work lands, no opt-in exists — encode strictly
+//! rejects non-finite input regardless of configuration.
 //!
 //! ## Parallelism
 //!
@@ -33,7 +37,7 @@
 //!
 //! Integer and bitmask dtypes have no NaN/Inf representation by
 //! construction, so the scan short-circuits to `Ok(())` for them —
-//! zero cost regardless of flags.
+//! zero cost.
 //!
 //! ## Byte-order convention
 //!
@@ -49,9 +53,9 @@
 //! descriptor's declared byte order (see
 //! `rust/tensogram-encodings/src/compression/{zfp,sz3}.rs`).  A caller
 //! who passes native bytes with a cross-endian `byte_order` would see
-//! `zfp`/`sz3` compress them correctly but the strict scan may
-//! misinterpret the bits.  In practice this only matters for users who
-//! mix a non-native `byte_order` declaration with zfp/sz3 — a narrow
+//! `zfp`/`sz3` compress them correctly but this scan may misinterpret
+//! the bits.  In practice this only matters for users who mix a
+//! non-native `byte_order` declaration with zfp/sz3 — a narrow
 //! combination — and the consequence is at worst a false negative
 //! (the scan fails to catch some NaN/Inf bit patterns), never a false
 //! positive.
@@ -68,26 +72,18 @@ use tensogram_encodings::ByteOrder;
 const PAR_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Scan `data`, interpreted as elements of `dtype` laid out in
-/// `byte_order`, for NaN (if `reject_nan`) and Inf (if `reject_inf`).
+/// `byte_order`, for NaN and Inf values.  Always enabled.
 ///
 /// Returns [`TensogramError::Encoding`] on first occurrence with a
-/// message that names the kind (`"strict-NaN"` / `"strict-Inf"`), the
+/// message that names the kind (`"NaN"` / `"+Inf"` / `"-Inf"`), the
 /// element index, the dtype, and — for complex types — the component
-/// (`"real"` / `"imaginary"`) that triggered the rejection.
+/// (`"real"` / `"imaginary"`) that triggered the rejection.  The error
+/// message ends with an actionable hint pointing at the future
+/// `allow_nan` / `allow_inf` opt-in.
 ///
-/// Short-circuits to `Ok(())` when both flags are false, and when the
-/// dtype is integer or bitmask.
-pub(crate) fn scan(
-    data: &[u8],
-    dtype: Dtype,
-    byte_order: ByteOrder,
-    reject_nan: bool,
-    reject_inf: bool,
-    parallel: bool,
-) -> Result<()> {
-    if !reject_nan && !reject_inf {
-        return Ok(());
-    }
+/// Short-circuits to `Ok(())` when the dtype is integer or bitmask
+/// (no non-finite bit pattern possible).
+pub(crate) fn scan(data: &[u8], dtype: Dtype, byte_order: ByteOrder, parallel: bool) -> Result<()> {
     // Use the parallel path only when the feature is compiled in and
     // the caller asked for it AND the input is large enough.  Small
     // payloads are always scanned sequentially.
@@ -99,60 +95,12 @@ pub(crate) fn scan(
     // compile-time decision point — the author must consciously choose
     // whether it's scannable.
     match dtype {
-        Dtype::Float32 => scan_dispatch(
-            data,
-            4,
-            byte_order,
-            reject_nan,
-            reject_inf,
-            go_parallel,
-            scan_f32_seq,
-        ),
-        Dtype::Float64 => scan_dispatch(
-            data,
-            8,
-            byte_order,
-            reject_nan,
-            reject_inf,
-            go_parallel,
-            scan_f64_seq,
-        ),
-        Dtype::Float16 => scan_dispatch(
-            data,
-            2,
-            byte_order,
-            reject_nan,
-            reject_inf,
-            go_parallel,
-            scan_f16_seq,
-        ),
-        Dtype::Bfloat16 => scan_dispatch(
-            data,
-            2,
-            byte_order,
-            reject_nan,
-            reject_inf,
-            go_parallel,
-            scan_bf16_seq,
-        ),
-        Dtype::Complex64 => scan_dispatch(
-            data,
-            8,
-            byte_order,
-            reject_nan,
-            reject_inf,
-            go_parallel,
-            scan_complex64_seq,
-        ),
-        Dtype::Complex128 => scan_dispatch(
-            data,
-            16,
-            byte_order,
-            reject_nan,
-            reject_inf,
-            go_parallel,
-            scan_complex128_seq,
-        ),
+        Dtype::Float32 => scan_dispatch(data, 4, byte_order, go_parallel, scan_f32_seq),
+        Dtype::Float64 => scan_dispatch(data, 8, byte_order, go_parallel, scan_f64_seq),
+        Dtype::Float16 => scan_dispatch(data, 2, byte_order, go_parallel, scan_f16_seq),
+        Dtype::Bfloat16 => scan_dispatch(data, 2, byte_order, go_parallel, scan_bf16_seq),
+        Dtype::Complex64 => scan_dispatch(data, 8, byte_order, go_parallel, scan_complex64_seq),
+        Dtype::Complex128 => scan_dispatch(data, 16, byte_order, go_parallel, scan_complex128_seq),
         Dtype::Int8
         | Dtype::Int16
         | Dtype::Int32
@@ -173,16 +121,14 @@ fn scan_dispatch<F>(
     data: &[u8],
     element_size: usize,
     byte_order: ByteOrder,
-    reject_nan: bool,
-    reject_inf: bool,
     go_parallel: bool,
     seq_scan: F,
 ) -> Result<()>
 where
-    F: Fn(&[u8], ByteOrder, bool, bool, usize) -> Result<()> + Send + Sync + Copy,
+    F: Fn(&[u8], ByteOrder, usize) -> Result<()> + Send + Sync + Copy,
 {
     if !go_parallel {
-        return seq_scan(data, byte_order, reject_nan, reject_inf, 0);
+        return seq_scan(data, byte_order, 0);
     }
 
     #[cfg(feature = "threads")]
@@ -195,7 +141,7 @@ where
             .enumerate()
             .try_for_each(|(chunk_idx, chunk)| {
                 let base = chunk_idx * chunk_elements;
-                seq_scan(chunk, byte_order, reject_nan, reject_inf, base)
+                seq_scan(chunk, byte_order, base)
             })
     }
     #[cfg(not(feature = "threads"))]
@@ -203,19 +149,13 @@ where
         // Feature off: fall back to sequential.  Silent fallback is
         // the established pattern elsewhere in the parallel module.
         let _ = element_size; // keep the signature unified
-        seq_scan(data, byte_order, reject_nan, reject_inf, 0)
+        seq_scan(data, byte_order, 0)
     }
 }
 
 // ── Sequential scanners, one per dtype ─────────────────────────────────────
 
-fn scan_f32_seq(
-    data: &[u8],
-    byte_order: ByteOrder,
-    reject_nan: bool,
-    reject_inf: bool,
-    base_index: usize,
-) -> Result<()> {
+fn scan_f32_seq(data: &[u8], byte_order: ByteOrder, base_index: usize) -> Result<()> {
     // Slice-pattern destructuring below is infallible under
     // `chunks_exact`'s spec; the `else` branches in every scanner are
     // defensive no-op fallbacks, not expected paths.
@@ -228,10 +168,10 @@ fn scan_f32_seq(
             ByteOrder::Big => f32::from_be_bytes(bytes),
             ByteOrder::Little => f32::from_le_bytes(bytes),
         };
-        if reject_nan && val.is_nan() {
+        if val.is_nan() {
             return Err(nan_err(base_index + i, "float32", None));
         }
-        if reject_inf && val.is_infinite() {
+        if val.is_infinite() {
             return Err(inf_err(
                 base_index + i,
                 "float32",
@@ -243,13 +183,7 @@ fn scan_f32_seq(
     Ok(())
 }
 
-fn scan_f64_seq(
-    data: &[u8],
-    byte_order: ByteOrder,
-    reject_nan: bool,
-    reject_inf: bool,
-    base_index: usize,
-) -> Result<()> {
+fn scan_f64_seq(data: &[u8], byte_order: ByteOrder, base_index: usize) -> Result<()> {
     for (i, chunk) in data.chunks_exact(8).enumerate() {
         let &[b0, b1, b2, b3, b4, b5, b6, b7] = chunk else {
             continue;
@@ -259,10 +193,10 @@ fn scan_f64_seq(
             ByteOrder::Big => f64::from_be_bytes(bytes),
             ByteOrder::Little => f64::from_le_bytes(bytes),
         };
-        if reject_nan && val.is_nan() {
+        if val.is_nan() {
             return Err(nan_err(base_index + i, "float64", None));
         }
-        if reject_inf && val.is_infinite() {
+        if val.is_infinite() {
             return Err(inf_err(
                 base_index + i,
                 "float64",
@@ -274,13 +208,7 @@ fn scan_f64_seq(
     Ok(())
 }
 
-fn scan_f16_seq(
-    data: &[u8],
-    byte_order: ByteOrder,
-    reject_nan: bool,
-    reject_inf: bool,
-    base_index: usize,
-) -> Result<()> {
+fn scan_f16_seq(data: &[u8], byte_order: ByteOrder, base_index: usize) -> Result<()> {
     // IEEE 754 half: sign(1) + exponent(5) + mantissa(10).
     // exp == 0x1F → Inf (mantissa 0) or NaN (mantissa != 0).
     for (i, chunk) in data.chunks_exact(2).enumerate() {
@@ -296,10 +224,8 @@ fn scan_f16_seq(
         }
         let mantissa = bits & 0x03FF;
         if mantissa != 0 {
-            if reject_nan {
-                return Err(nan_err(base_index + i, "float16", None));
-            }
-        } else if reject_inf {
+            return Err(nan_err(base_index + i, "float16", None));
+        } else {
             let positive = (bits & 0x8000) == 0;
             return Err(inf_err(base_index + i, "float16", None, positive));
         }
@@ -307,13 +233,7 @@ fn scan_f16_seq(
     Ok(())
 }
 
-fn scan_bf16_seq(
-    data: &[u8],
-    byte_order: ByteOrder,
-    reject_nan: bool,
-    reject_inf: bool,
-    base_index: usize,
-) -> Result<()> {
+fn scan_bf16_seq(data: &[u8], byte_order: ByteOrder, base_index: usize) -> Result<()> {
     // BFloat16: sign(1) + exponent(8) + mantissa(7).
     // exp == 0xFF → Inf (mantissa 0) or NaN (mantissa != 0).
     for (i, chunk) in data.chunks_exact(2).enumerate() {
@@ -329,10 +249,8 @@ fn scan_bf16_seq(
         }
         let mantissa = bits & 0x7F;
         if mantissa != 0 {
-            if reject_nan {
-                return Err(nan_err(base_index + i, "bfloat16", None));
-            }
-        } else if reject_inf {
+            return Err(nan_err(base_index + i, "bfloat16", None));
+        } else {
             let positive = (bits & 0x8000) == 0;
             return Err(inf_err(base_index + i, "bfloat16", None, positive));
         }
@@ -340,13 +258,7 @@ fn scan_bf16_seq(
     Ok(())
 }
 
-fn scan_complex64_seq(
-    data: &[u8],
-    byte_order: ByteOrder,
-    reject_nan: bool,
-    reject_inf: bool,
-    base_index: usize,
-) -> Result<()> {
+fn scan_complex64_seq(data: &[u8], byte_order: ByteOrder, base_index: usize) -> Result<()> {
     // complex64 = (f32 real, f32 imaginary) = 8 bytes.
     for (i, chunk) in data.chunks_exact(8).enumerate() {
         let &[r0, r1, r2, r3, i0, i1, i2, i3] = chunk else {
@@ -364,43 +276,33 @@ fn scan_complex64_seq(
                 f32::from_le_bytes(imag_bytes),
             ),
         };
-        if reject_nan {
-            if real.is_nan() {
-                return Err(nan_err(base_index + i, "complex64", Some("real")));
-            }
-            if imag.is_nan() {
-                return Err(nan_err(base_index + i, "complex64", Some("imaginary")));
-            }
+        if real.is_nan() {
+            return Err(nan_err(base_index + i, "complex64", Some("real")));
         }
-        if reject_inf {
-            if real.is_infinite() {
-                return Err(inf_err(
-                    base_index + i,
-                    "complex64",
-                    Some("real"),
-                    real.is_sign_positive(),
-                ));
-            }
-            if imag.is_infinite() {
-                return Err(inf_err(
-                    base_index + i,
-                    "complex64",
-                    Some("imaginary"),
-                    imag.is_sign_positive(),
-                ));
-            }
+        if imag.is_nan() {
+            return Err(nan_err(base_index + i, "complex64", Some("imaginary")));
+        }
+        if real.is_infinite() {
+            return Err(inf_err(
+                base_index + i,
+                "complex64",
+                Some("real"),
+                real.is_sign_positive(),
+            ));
+        }
+        if imag.is_infinite() {
+            return Err(inf_err(
+                base_index + i,
+                "complex64",
+                Some("imaginary"),
+                imag.is_sign_positive(),
+            ));
         }
     }
     Ok(())
 }
 
-fn scan_complex128_seq(
-    data: &[u8],
-    byte_order: ByteOrder,
-    reject_nan: bool,
-    reject_inf: bool,
-    base_index: usize,
-) -> Result<()> {
+fn scan_complex128_seq(data: &[u8], byte_order: ByteOrder, base_index: usize) -> Result<()> {
     // complex128 = (f64 real, f64 imaginary) = 16 bytes.
     for (i, chunk) in data.chunks_exact(16).enumerate() {
         let &[
@@ -436,31 +338,27 @@ fn scan_complex128_seq(
                 f64::from_le_bytes(imag_bytes),
             ),
         };
-        if reject_nan {
-            if real.is_nan() {
-                return Err(nan_err(base_index + i, "complex128", Some("real")));
-            }
-            if imag.is_nan() {
-                return Err(nan_err(base_index + i, "complex128", Some("imaginary")));
-            }
+        if real.is_nan() {
+            return Err(nan_err(base_index + i, "complex128", Some("real")));
         }
-        if reject_inf {
-            if real.is_infinite() {
-                return Err(inf_err(
-                    base_index + i,
-                    "complex128",
-                    Some("real"),
-                    real.is_sign_positive(),
-                ));
-            }
-            if imag.is_infinite() {
-                return Err(inf_err(
-                    base_index + i,
-                    "complex128",
-                    Some("imaginary"),
-                    imag.is_sign_positive(),
-                ));
-            }
+        if imag.is_nan() {
+            return Err(nan_err(base_index + i, "complex128", Some("imaginary")));
+        }
+        if real.is_infinite() {
+            return Err(inf_err(
+                base_index + i,
+                "complex128",
+                Some("real"),
+                real.is_sign_positive(),
+            ));
+        }
+        if imag.is_infinite() {
+            return Err(inf_err(
+                base_index + i,
+                "complex128",
+                Some("imaginary"),
+                imag.is_sign_positive(),
+            ));
         }
     }
     Ok(())
@@ -502,120 +400,58 @@ mod tests {
     }
 
     #[test]
-    fn short_circuits_when_both_flags_off() {
-        // Even for NaN-bearing input, no scan should run if both flags are off.
-        let data = f32_bytes(&[f32::NAN, f32::INFINITY]);
-        scan(
-            &data,
-            Dtype::Float32,
-            ByteOrder::native(),
-            false,
-            false,
-            false,
-        )
-        .expect("both flags off must short-circuit");
-    }
-
-    #[test]
     fn integer_dtype_is_zero_cost() {
-        // 0xFFFFFFFF would be NaN if interpreted as f32.  Confirm uint32
-        // dtype does not get scanned.
+        // 0xFFFFFFFF would be NaN if interpreted as f32 — uint32 must
+        // not be scanned.
         let data: Vec<u8> = vec![0xFF; 64];
-        scan(&data, Dtype::Uint32, ByteOrder::native(), true, true, false)
+        scan(&data, Dtype::Uint32, ByteOrder::native(), false)
             .expect("integer dtypes must short-circuit");
     }
 
     #[test]
     fn bitmask_dtype_is_zero_cost() {
         let data: Vec<u8> = vec![0xFF; 16];
-        scan(
-            &data,
-            Dtype::Bitmask,
-            ByteOrder::native(),
-            true,
-            true,
-            false,
-        )
-        .expect("bitmask dtype must short-circuit");
+        scan(&data, Dtype::Bitmask, ByteOrder::native(), false)
+            .expect("bitmask dtype must short-circuit");
     }
 
     #[test]
     fn sequential_f32_reports_global_first_nan() {
         let data = f32_bytes(&[1.0, 2.0, 3.0, f32::NAN, 5.0, f32::NAN]);
-        let err = scan(
-            &data,
-            Dtype::Float32,
-            ByteOrder::native(),
-            true,
-            false,
-            false,
-        )
-        .unwrap_err();
+        let err = scan(&data, Dtype::Float32, ByteOrder::native(), false).unwrap_err();
         assert!(err.to_string().contains("element 3"));
     }
 
     #[test]
     fn sequential_f64_reports_positive_inf_sign() {
         let data = f64_bytes(&[1.0, f64::INFINITY]);
-        let err = scan(
-            &data,
-            Dtype::Float64,
-            ByteOrder::native(),
-            false,
-            true,
-            false,
-        )
-        .unwrap_err();
+        let err = scan(&data, Dtype::Float64, ByteOrder::native(), false).unwrap_err();
         assert!(err.to_string().contains("+Inf"));
     }
 
     #[test]
     fn sequential_f64_reports_negative_inf_sign() {
         let data = f64_bytes(&[1.0, f64::NEG_INFINITY]);
-        let err = scan(
-            &data,
-            Dtype::Float64,
-            ByteOrder::native(),
-            false,
-            true,
-            false,
-        )
-        .unwrap_err();
+        let err = scan(&data, Dtype::Float64, ByteOrder::native(), false).unwrap_err();
         assert!(err.to_string().contains("-Inf"));
     }
 
     #[test]
     fn float16_quiet_nan_detected() {
-        // 0x7E00 has exp=0x1F, mantissa != 0 → NaN
+        // exp=0x1F, mantissa != 0 → NaN (0x7E00).
         let bits: u16 = 0x7E00;
         let data: Vec<u8> = bits.to_ne_bytes().to_vec();
-        let err = scan(
-            &data,
-            Dtype::Float16,
-            ByteOrder::native(),
-            true,
-            false,
-            false,
-        )
-        .unwrap_err();
+        let err = scan(&data, Dtype::Float16, ByteOrder::native(), false).unwrap_err();
         assert!(err.to_string().contains("NaN"));
         assert!(err.to_string().contains("float16"));
     }
 
     #[test]
     fn float16_inf_detected() {
-        // 0x7C00 is +Inf: exp=0x1F, mantissa=0
+        // +Inf: exp=0x1F, mantissa=0 → 0x7C00.
         let bits: u16 = 0x7C00;
         let data: Vec<u8> = bits.to_ne_bytes().to_vec();
-        let err = scan(
-            &data,
-            Dtype::Float16,
-            ByteOrder::native(),
-            false,
-            true,
-            false,
-        )
-        .unwrap_err();
+        let err = scan(&data, Dtype::Float16, ByteOrder::native(), false).unwrap_err();
         assert!(err.to_string().contains("+Inf"));
     }
 
@@ -623,15 +459,7 @@ mod tests {
     fn bfloat16_quiet_nan_detected() {
         let bits: u16 = 0x7FC0;
         let data: Vec<u8> = bits.to_ne_bytes().to_vec();
-        let err = scan(
-            &data,
-            Dtype::Bfloat16,
-            ByteOrder::native(),
-            true,
-            false,
-            false,
-        )
-        .unwrap_err();
+        let err = scan(&data, Dtype::Bfloat16, ByteOrder::native(), false).unwrap_err();
         assert!(err.to_string().contains("NaN"));
     }
 
@@ -641,49 +469,24 @@ mod tests {
             .iter()
             .flat_map(|v| v.to_ne_bytes())
             .collect();
-        let err = scan(
-            &data,
-            Dtype::Complex64,
-            ByteOrder::native(),
-            true,
-            false,
-            false,
-        )
-        .unwrap_err();
+        let err = scan(&data, Dtype::Complex64, ByteOrder::native(), false).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("imaginary"), "got: {msg}");
     }
 
     #[test]
-    fn finite_data_passes_when_both_flags_on() {
+    fn finite_data_passes() {
         let data = f64_bytes(&[0.0, -0.0, 1.0, -1.0, f64::MIN, f64::MAX]);
-        scan(
-            &data,
-            Dtype::Float64,
-            ByteOrder::native(),
-            true,
-            true,
-            false,
-        )
-        .expect("finite data must pass both flags");
+        scan(&data, Dtype::Float64, ByteOrder::native(), false).expect("finite data must pass");
     }
 
     #[cfg(feature = "threads")]
     #[test]
     fn parallel_path_rejects_nan() {
-        // Above PAR_CHUNK_BYTES so the parallel branch is taken.
         let mut values = vec![1.0_f64; 16_384]; // 128 KiB
         values[9_001] = f64::NAN;
         let data = f64_bytes(&values);
-        let err = scan(
-            &data,
-            Dtype::Float64,
-            ByteOrder::native(),
-            true,
-            false,
-            true,
-        )
-        .unwrap_err();
+        let err = scan(&data, Dtype::Float64, ByteOrder::native(), true).unwrap_err();
         assert!(err.to_string().contains("NaN"));
     }
 }

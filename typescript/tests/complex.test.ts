@@ -177,7 +177,11 @@ describe('Scope C.2 — complex end-to-end round-trip', () => {
     initOnce();
     fc.assert(
       fc.property(
-        fc.array(fc.float({ noNaN: true }), { minLength: 2, maxLength: 16 }).filter((a) => a.length % 2 === 0),
+        // 0.17 default-reject bans NaN and ±Inf from encode input — pin
+        // the fast-check strategy to finite values only.  Until the
+        // bitmask opt-in lands, non-finite values can't be encoded
+        // through the main path.
+        fc.array(fc.float({ noNaN: true, noDefaultInfinity: true }), { minLength: 2, maxLength: 16 }).filter((a) => a.length % 2 === 0),
         (flat) => {
           const data = new Float32Array(flat);
           const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);

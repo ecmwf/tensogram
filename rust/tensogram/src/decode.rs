@@ -629,7 +629,9 @@ mod tests {
             "shuffle_element_size".to_string(),
             ciborium::Value::Integer(4.into()),
         );
-        let data: Vec<u8> = (0..400).map(|i| (i % 256) as u8).collect();
+        // Finite f32 data (avoid tripping the 0.17 default-reject
+        // finite-check with byte-pattern NaN bits).
+        let data: Vec<u8> = (0..100).flat_map(|i| (i as f32).to_ne_bytes()).collect();
 
         let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 

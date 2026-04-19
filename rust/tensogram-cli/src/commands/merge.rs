@@ -78,8 +78,6 @@ pub fn run(
     output: &Path,
     strategy_str: &str,
     threads: u32,
-    reject_nan: bool,
-    reject_inf: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if inputs.is_empty() {
         return Err("no input files specified".into());
@@ -139,8 +137,6 @@ pub fn run(
         &refs,
         &EncodeOptions {
             threads,
-            reject_nan,
-            reject_inf,
             ..Default::default()
         },
     )?;
@@ -288,7 +284,7 @@ mod tests {
         let a = make_test_file(dir.path(), "a.tgm", "2t");
         let b = make_test_file(dir.path(), "b.tgm", "msl");
         let out = dir.path().join("merged.tgm");
-        run(&[a, b], &out, "first", 0, false, false).unwrap();
+        run(&[a, b], &out, "first", 0).unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
         assert_eq!(f.message_count().unwrap(), 1); // merged into 1 message
     }
@@ -299,7 +295,7 @@ mod tests {
         let a = make_test_file(dir.path(), "a.tgm", "2t");
         let b = make_test_file(dir.path(), "b.tgm", "msl");
         let out = dir.path().join("merged.tgm");
-        run(&[a, b], &out, "last", 0, false, false).unwrap();
+        run(&[a, b], &out, "last", 0).unwrap();
     }
 
     #[test]
@@ -307,7 +303,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("merged.tgm");
         let empty: Vec<std::path::PathBuf> = vec![];
-        assert!(run(&empty, &out, "first", 0, false, false).is_err());
+        assert!(run(&empty, &out, "first", 0).is_err());
     }
 
     #[test]
@@ -317,7 +313,7 @@ mod tests {
         let a = make_test_file_with_base(dir.path(), "a.tgm", "2t");
         let b = make_test_file_with_base(dir.path(), "b.tgm", "msl");
         let out = dir.path().join("merged_base.tgm");
-        run(&[a, b], &out, "first", 0, false, false).unwrap();
+        run(&[a, b], &out, "first", 0).unwrap();
 
         let f = tensogram::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
@@ -372,7 +368,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = make_test_file_with_base(dir.path(), "a_strip.tgm", "2t");
         let out = dir.path().join("merged_strip.tgm");
-        run(&[a], &out, "first", 0, false, false).unwrap();
+        run(&[a], &out, "first", 0).unwrap();
 
         let f = tensogram::TensogramFile::open(&out).unwrap();
         let msg = f.read_message(0).unwrap();
@@ -402,7 +398,7 @@ mod tests {
         let b = make_test_file(dir.path(), "b_err.tgm", "msl");
         let out = dir.path().join("merged_err.tgm");
         // "error" strategy should fail on conflict
-        let result = run(&[a, b], &out, "error", 0, false, false);
+        let result = run(&[a, b], &out, "error", 0);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("conflicting"));
     }

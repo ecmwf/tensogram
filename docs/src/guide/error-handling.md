@@ -420,8 +420,8 @@ silent corruption path where an `i32::MAX`-saturated
 
 For the pipeline-independent strict-finite check that applies the same
 contract to `encoding="none"` and to every compressor, see the
-[strict-finite encode flags](strict-finite.md) (`reject_nan=True` /
-`reject_inf=True`).
+strict-finite encoding (see docs) (`` /
+``).
 
 ### File Not Found / Permission Denied
 

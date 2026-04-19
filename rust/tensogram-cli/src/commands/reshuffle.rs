@@ -16,13 +16,7 @@ use tensogram::{DecodeOptions, EncodeOptions, RESERVED_KEY, TensogramFile, decod
 /// Converts streaming-mode messages (footer-based index/hash) into
 /// random-access-mode messages (header-based index/hash).
 /// This is a decode → re-encode operation.
-pub fn run(
-    input: &Path,
-    output: &Path,
-    threads: u32,
-    reject_nan: bool,
-    reject_inf: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(input: &Path, output: &Path, threads: u32) -> Result<(), Box<dyn std::error::Error>> {
     let file = TensogramFile::open(input)?;
     let count = file.message_count()?;
 
@@ -54,8 +48,6 @@ pub fn run(
             &refs,
             &EncodeOptions {
                 threads,
-                reject_nan,
-                reject_inf,
                 ..Default::default()
             },
         )?;
@@ -112,7 +104,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let input = make_test_file(dir.path());
         let output = dir.path().join("reshuffled.tgm");
-        run(&input, &output, 0, false, false).unwrap();
+        run(&input, &output, 0).unwrap();
 
         // Verify output is valid and has same content
         let f = tensogram::TensogramFile::open(&output).unwrap();

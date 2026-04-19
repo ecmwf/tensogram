@@ -504,57 +504,6 @@ def test_py_api_missing_file(tmp_path: Path) -> None:
 
 
 # ── Strict-finite flag parity with CLI convert-netcdf ───────────────────────
-
-
-@requires_netcdf
-def test_py_api_reject_nan_catches_fill_value_substitution(tmp_path: Path) -> None:
-    """``reject_nan=True`` fires when CF unpacking substitutes ``_FillValue``
-    with NaN — the canonical NetCDF source of NaN in converted data."""
-    nc_path = tmp_path / "sparse.nc"
-    _write_with_missing_values(nc_path)
-    with pytest.raises(ValueError, match=r"(?i)nan"):
-        tensogram.convert_netcdf(str(nc_path), reject_nan=True)
-
-
-@requires_netcdf
-def test_py_api_reject_nan_off_by_default(tmp_path: Path) -> None:
-    """Default behaviour unchanged: NaN-bearing variables convert successfully."""
-    nc_path = tmp_path / "sparse_default.nc"
-    _write_with_missing_values(nc_path)
-    # Default encoding="none": NaN bits pass through byte-exactly.
-    messages = tensogram.convert_netcdf(str(nc_path))
-    assert isinstance(messages, list)
-    assert messages
-
-
-@requires_netcdf
-def test_py_api_reject_inf_accepts_kwarg(tmp_path: Path) -> None:
-    """``reject_inf=True`` is accepted and plumbed through.
-
-    NetCDF fixtures rarely contain Inf (CF uses fill-values, not
-    Inf), so the scan does not fire here; we just verify conversion
-    still completes with the kwarg set.
-    """
-    nc_path = tmp_path / "simple.nc"
-    _write_simple_f64(nc_path)
-    messages = tensogram.convert_netcdf(str(nc_path), reject_inf=True)
-    assert isinstance(messages, list)
-    assert messages
-
-
-@requires_netcdf
-def test_py_api_reject_nan_and_inf_together(tmp_path: Path) -> None:
-    """Both flags together on NaN-bearing data still rejects with ValueError."""
-    nc_path = tmp_path / "sparse_both.nc"
-    _write_with_missing_values(nc_path)
-    with pytest.raises(ValueError, match=r"(?i)nan"):
-        tensogram.convert_netcdf(
-            str(nc_path),
-            reject_nan=True,
-            reject_inf=True,
-        )
-
-
 def test_py_api_stub_when_feature_missing() -> None:
     """If the feature is off, the stub raises RuntimeError with clear guidance."""
     if _has_netcdf_feature():

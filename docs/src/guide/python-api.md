@@ -520,9 +520,7 @@ msgs = tensogram.convert_grib(
     compression="szip",        # "none" | "zstd" | "lz4" | "blosc2" | "szip"
     compression_level=None,    # applies to zstd / blosc2 (None = codec default)
     threads=0,                 # 0 = sequential; honours TENSOGRAM_THREADS env var
-    hash="xxh3",               # "xxh3" | None
-    reject_nan=False,          # pipeline-independent NaN guard (see strict-finite.md)
-    reject_inf=False,          # pipeline-independent Inf guard (see strict-finite.md)
+    hash="xxh3",               # "xxh3" | None,          # pipeline-independent NaN guard (see strict-finite.md),          # pipeline-independent Inf guard (see strict-finite.md)
 )
 with open("forecast.tgm", "wb") as fh:
     for msg in msgs:
@@ -566,8 +564,7 @@ resp = requests.get(
 msgs = tensogram.convert_grib_buffer(
     resp.content,
     encoding="simple_packing", bits=16, compression="szip",
-    # Pipeline-independent strict-finite guards (see strict-finite.md).
-    reject_nan=True, reject_inf=True,
+    # Pipeline-independent strict-finite guards (see strict-finite.md).,
 )
 ```
 
@@ -593,9 +590,7 @@ msgs = tensogram.convert_netcdf(
     compression="zstd",
     compression_level=3,
     threads=0,
-    hash="xxh3",
-    reject_nan=False,          # hard-fail if any float payload has NaN
-    reject_inf=False,          # same, for ±Inf
+    hash="xxh3",          # hard-fail if any float payload has NaN,          # same, for ±Inf
 )
 ```
 

@@ -5,6 +5,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed — BREAKING (default-behaviour flip, 0.17 pre-release)
+
+- **Non-finite float values now error by default at encode.** Pre-0.17
+  the library passed NaN / ±Inf bit patterns through
+  `encoding="none"` pipelines verbatim; opt-in `reject_nan` /
+  `reject_inf` flags upgraded rejection to pipeline-independent.
+  0.17+ inverts that policy: rejection is the default across every
+  encode path (`tensogram::encode`, `file.append`, streaming,
+  converters, CLI), and the former opt-in flags are **removed**.
+  Callers who intentionally shipped NaN-bearing data through
+  `encoding="none"` must now either pre-process the data or wait for
+  the `allow_nan` / `allow_inf` bitmask opt-in (next commit series,
+  see `plans/BITMASK_FRAME.md`).
+- **Removed API surface** (hard break — no deprecation shim):
+  - Rust: `EncodeOptions::reject_nan`, `EncodeOptions::reject_inf`,
+    the `tensogram::strict_finite` module (renamed to
+    `finite_check`, always-on).
+  - Python: `reject_nan` / `reject_inf` kwargs on `tensogram.encode`,
+    `TensogramFile.append`, `StreamingEncoder`, `convert_grib`,
+    `convert_grib_buffer`, `convert_netcdf`.
+  - TypeScript: `EncodeOptions.rejectNan`, `EncodeOptions.rejectInf`,
+    `StreamingEncoderOptions.rejectNan`, `StreamingEncoderOptions.rejectInf`.
+  - C FFI: removed `bool reject_nan, bool reject_inf` parameters from
+    `tgm_encode`, `tgm_file_append`, `tgm_streaming_encoder_create`.
+    Headers regenerated; pre-0.17 C callers get compile errors.
+  - C++: removed `reject_nan` / `reject_inf` fields from
+    `encode_options`.
+  - CLI: removed `--reject-nan` / `--reject-inf` global flags and
+    `TENSOGRAM_REJECT_NAN` / `TENSOGRAM_REJECT_INF` env vars (clap
+    reports "unknown argument" if passed).
+  - Docs: deleted `docs/src/guide/strict-finite.md`; SUMMARY link
+    removed.  Affected pages (`edge-cases.md`, `error-handling.md`,
+    `python-api.md`, `simple-packing.md`) had inline mentions
+    scrubbed; full rewrite pending in a later commit.
+- **`encode_pre_encoded` no longer runs the finite check.** The
+  pre-encoded API was previously a source of conflicting semantics
+  (the flags errored if set on this path); it now unconditionally
+  treats bytes as opaque.
+
 ### Fixed
 
 - **`simple_packing::encode` safety net handles `i32::MIN` correctly.**

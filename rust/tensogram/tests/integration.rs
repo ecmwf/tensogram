@@ -1102,7 +1102,7 @@ fn test_szip_simple_packing_decode_range_last_elements() {
 
 #[test]
 fn test_szip_raw_u8_round_trip() {
-    let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+    let data: Vec<u8> = (0..1024).flat_map(|i| (i as f32).to_ne_bytes()).collect();
     let (global, desc) = make_szip_raw_pair(4096, Dtype::Uint8);
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -1113,7 +1113,7 @@ fn test_szip_raw_u8_round_trip() {
 #[test]
 fn test_szip_shuffle_round_trip() {
     // shuffle + szip: float32 data shuffled to bytes, then szip-compressed
-    let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect(); // 1024 float32s
+    let data: Vec<u8> = (0..1024).flat_map(|i| (i as f32).to_ne_bytes()).collect(); // 1024 finite f32s
     let mut params = BTreeMap::new();
     params.insert(
         "shuffle_element_size".to_string(),
@@ -1156,7 +1156,7 @@ fn test_szip_shuffle_round_trip() {
 #[test]
 fn test_szip_shuffle_decode_range_rejected() {
     // shuffle + szip: decode_range should be rejected
-    let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+    let data: Vec<u8> = (0..1024).flat_map(|i| (i as f32).to_ne_bytes()).collect();
     let mut params = BTreeMap::new();
     params.insert(
         "shuffle_element_size".to_string(),

@@ -105,8 +105,18 @@ fn make_descriptor(shape: Vec<u64>, compression: &Compression) -> DataObjectDesc
 }
 
 fn make_payload(len: usize, seed: u8) -> Vec<u8> {
-    (0..len)
-        .map(|i| ((i as u32).wrapping_mul(2654435761) ^ seed as u32) as u8)
+    // Produce finite f32 bytes so the 0.17 default-reject finite-check
+    // accepts the payload.  `len` is a byte count; `len / 4` f32 values.
+    // Seed influences the sequence but all values stay in a safe finite
+    // range.
+    let n_floats = len / 4;
+    (0..n_floats)
+        .map(|i| {
+            let base = i as f32;
+            let shift = (seed as f32) * 0.001;
+            base + shift
+        })
+        .flat_map(|v| v.to_ne_bytes())
         .collect()
 }
 

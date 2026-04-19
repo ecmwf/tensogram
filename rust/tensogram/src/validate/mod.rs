@@ -248,7 +248,7 @@ pub fn validate_buffer(buf: &[u8], options: &ValidateOptions) -> FileValidationR
 mod tests {
     use super::*;
     use crate::Dtype;
-    use crate::encode::{EncodeOptions, encode};
+    use crate::encode::{EncodeOptions, encode, encode_pre_encoded};
     use crate::types::{DataObjectDescriptor, GlobalMetadata};
     use crate::wire::{FRAME_HEADER_SIZE, POSTAMBLE_SIZE, PREAMBLE_SIZE};
     use std::collections::BTreeMap;
@@ -805,6 +805,10 @@ mod tests {
     }
 
     fn make_float64_message(values: &[f64]) -> Vec<u8> {
+        // Use `encode_pre_encoded` to bypass the 0.17 default-reject
+        // finite-value check — these validate tests deliberately
+        // construct NaN / Inf-bearing messages to verify the
+        // Fidelity-level scanner catches them on decode.
         let meta = GlobalMetadata::default();
         let desc = DataObjectDescriptor {
             obj_type: "ndarray".to_string(),
@@ -820,7 +824,7 @@ mod tests {
             hash: None,
         };
         let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
-        encode(
+        encode_pre_encoded(
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions::default(),
@@ -844,7 +848,7 @@ mod tests {
             hash: None,
         };
         let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        encode(
+        encode_pre_encoded(
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions::default(),
@@ -994,7 +998,7 @@ mod tests {
         let mut data = vec![0u8; 4]; // 2 × f16
         data[0..2].copy_from_slice(&0x0000u16.to_be_bytes()); // valid zero
         data[2..4].copy_from_slice(&0x7C01u16.to_be_bytes()); // NaN
-        let msg = encode(
+        let msg = encode_pre_encoded(
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions::default(),
@@ -1032,7 +1036,7 @@ mod tests {
         };
         // Float16 Inf: exponent=0x1F, mantissa=0 => 0x7C00
         let data = 0x7C00u16.to_be_bytes().to_vec();
-        let msg = encode(
+        let msg = encode_pre_encoded(
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions::default(),
@@ -1067,7 +1071,7 @@ mod tests {
         // BFloat16 NaN: exponent=0xFF, mantissa≠0
         // sign(1) + exp(8) + mantissa(7): 0_11111111_0000001 = 0x7F81
         let data = 0x7F81u16.to_be_bytes().to_vec();
-        let msg = encode(
+        let msg = encode_pre_encoded(
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions::default(),
@@ -1103,7 +1107,7 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(&f32::NAN.to_be_bytes());
         data.extend_from_slice(&0.0f32.to_be_bytes());
-        let msg = encode(
+        let msg = encode_pre_encoded(
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions::default(),
@@ -1139,7 +1143,7 @@ mod tests {
         let mut data = Vec::new();
         data.extend_from_slice(&1.0f64.to_be_bytes());
         data.extend_from_slice(&f64::INFINITY.to_be_bytes());
-        let msg = encode(
+        let msg = encode_pre_encoded(
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions::default(),
@@ -2725,7 +2729,7 @@ mod tests {
             .chain(3.0f64.to_be_bytes().iter())
             .copied()
             .collect();
-        let msg = encode(
+        let msg = encode_pre_encoded(
             &meta,
             &[(&desc, nan_data.as_slice()), (&desc, ok_data.as_slice())],
             &EncodeOptions::default(),
@@ -3313,6 +3317,10 @@ mod tests {
     /// and raw little-endian payload bytes. Used by the fidelity NaN/Inf
     /// coverage tests to stage adversarial inputs.
     fn make_raw_object_message(dtype: Dtype, bytes: Vec<u8>, shape: Vec<u64>) -> Vec<u8> {
+        // These fidelity tests construct NaN / Inf-bearing messages to
+        // verify the Fidelity-level scanner catches them on decode.
+        // Use `encode_pre_encoded` to bypass the 0.17 default-reject
+        // check at encode time.
         let meta = GlobalMetadata::default();
         let byte_width = dtype.byte_width();
         let strides = vec![byte_width as u64];
@@ -3329,7 +3337,7 @@ mod tests {
             params: BTreeMap::new(),
             hash: None,
         };
-        encode(
+        encode_pre_encoded(
             &meta,
             &[(&desc, bytes.as_slice())],
             &EncodeOptions::default(),

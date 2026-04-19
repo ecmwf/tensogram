@@ -54,7 +54,7 @@ decodes to `NaN` everywhere. Both are errors at the codec entry:
 Remove or replace non-finite values before encoding. For
 **domain-strict workflows** that also want the same guarantee over
 the other encodings (`encoding="none"` + any compressor), use the
-pipeline-independent [strict-finite encode flags](../guide/strict-finite.md)
+pipeline-independent strict-finite encoding (see docs)
 (`reject_nan` / `reject_inf`) which run upstream of the codec.
 
 [memo]: https://github.com/ecmwf/tensogram/blob/main/plans/RESEARCH_NAN_HANDLING.md
@@ -83,9 +83,7 @@ This closes the standalone-API footgun where a caller constructs or
 mutates `SimplePackingParams` directly rather than deriving them
 from `compute_params`. Both failures surface as
 `PackingError::InvalidParams { field, reason }` with a clear message
-naming the offending field. See the
-[Strict-Finite Encode Checks guide](../guide/strict-finite.md#simple_packing-params-safety-net-always-on)
-for cross-language examples.
+naming the offending field.
 
 ### Constant Fields
 

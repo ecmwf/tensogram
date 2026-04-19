@@ -55,11 +55,7 @@ export function encode(
   const hash = options?.hash !== false;
   // Strict-finite flags default to false, matching the Rust and Python
   // APIs. See EncodeOptions doc for full semantics.
-  const rejectNan = options?.rejectNan === true;
-  const rejectInf = options?.rejectInf === true;
-  return rethrowTyped(() =>
-    wbg.encode(metadata, objArray, hash, rejectNan, rejectInf),
-  );
+  return rethrowTyped(() => wbg.encode(metadata, objArray, hash));
 }
 
 function assertValidObjects(objects: readonly EncodeInput[]): void {

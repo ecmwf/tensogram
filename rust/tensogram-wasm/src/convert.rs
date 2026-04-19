@@ -29,20 +29,17 @@ pub(crate) fn js_err<E: std::fmt::Display>(e: E) -> JsError {
     JsError::new(&e.to_string())
 }
 
-/// Build an `EncodeOptions` from the JS `hash: boolean` and strict-
-/// finite flags.
+/// Build an `EncodeOptions` from the JS `hash: boolean` option.
 ///
 /// `hash` is `true` (the JS default) when absent; pass `Some(false)`
-/// to disable hashing entirely.  `reject_nan` / `reject_inf` mirror
-/// the TS `EncodeOptions` fields — default `false` (backwards-
-/// compatible).  `emit_preceders` is always `false` from the WASM
-/// side; the JS layer uses `StreamingEncoder` to emit preceders
-/// explicitly.
-pub(crate) fn build_encode_options(
-    hash: Option<bool>,
-    reject_nan: Option<bool>,
-    reject_inf: Option<bool>,
-) -> EncodeOptions {
+/// to disable hashing entirely.  `emit_preceders` is always `false`
+/// from the WASM side; the JS layer uses `StreamingEncoder` to emit
+/// preceders explicitly.
+///
+/// 0.17+: non-finite values are rejected by default at encode time.
+/// The `allow_nan` / `allow_inf` bitmask opt-in lands in a subsequent
+/// commit.
+pub(crate) fn build_encode_options(hash: Option<bool>) -> EncodeOptions {
     EncodeOptions {
         hash_algorithm: if hash.unwrap_or(true) {
             Some(core::hash::HashAlgorithm::Xxh3)
@@ -50,8 +47,6 @@ pub(crate) fn build_encode_options(
             None
         },
         emit_preceders: false,
-        reject_nan: reject_nan.unwrap_or(false),
-        reject_inf: reject_inf.unwrap_or(false),
         ..Default::default()
     }
 }
