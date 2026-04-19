@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **NaN / Inf bitmask companion frame** (wire type 9
+  `NTensorMaskedFrame`) — encoders that pass the new `allow_nan` /
+  `allow_inf` opt-in now substitute non-finite values with `0.0` on
+  the wire and record their positions in up to three compressed
+  bitmasks stored alongside the payload.  Decoders restore canonical
+  NaN / ±Inf at the marked positions.  See
+  `plans/BITMASK_FRAME.md` and
+  `docs/src/guide/nan-inf-handling.md` for the full design and
+  usage.
+- Per-kind mask compression methods:
+  `nan_mask_method` / `pos_inf_mask_method` / `neg_inf_mask_method`,
+  accepting `"none"` | `"rle"` | `"roaring"` (default) | `"blosc2"` |
+  `"zstd"` | `"lz4"`.  Small-mask auto-fallback to `"none"` below
+  `small_mask_threshold_bytes` (default 128).
+- Decode-side `restore_non_finite` flag (default `true`) and the
+  advanced `decode_with_masks` API (Rust + Python) that return raw
+  decompressed bitmasks alongside the substituted payload.
+- `tensogram validate --full` is now mask-aware: NaN / ±Inf at a
+  masked position is expected; at any other position it still
+  fails as `NanDetected` / `InfDetected`.
+- CLI: `--allow-nan` / `--allow-inf` global flags with matching
+  `TENSOGRAM_ALLOW_NAN` / `TENSOGRAM_ALLOW_INF` env vars.
+  Per-kind `--nan-mask-method` / `--pos-inf-mask-method` /
+  `--neg-inf-mask-method` and `--small-mask-threshold` flags with
+  matching `TENSOGRAM_*` env vars.
+
 ### Changed — BREAKING (default-behaviour flip, 0.17 pre-release)
 
 - **Non-finite float values now error by default at encode.** Pre-0.17
@@ -15,9 +43,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   encode path (`tensogram::encode`, `file.append`, streaming,
   converters, CLI), and the former opt-in flags are **removed**.
   Callers who intentionally shipped NaN-bearing data through
-  `encoding="none"` must now either pre-process the data or wait for
-  the `allow_nan` / `allow_inf` bitmask opt-in (next commit series,
-  see `plans/BITMASK_FRAME.md`).
+  `encoding="none"` must now either pre-process the data or opt in
+  to the new `allow_nan` / `allow_inf` bitmask companion.
+- **Frame-type rename**: pre-0.17 `DataObject` = wire type 4
+  becomes `NTensorFrame`.  New encoders emit `NTensorMaskedFrame`
+  (wire type 9) for every data object; decoders accept both.  See
+  `docs/src/format/wire-format.md` for the registry.
+- **`DataObjectDescriptor` gains an optional `masks` field** of
+  type `Option<MasksMetadata>`.  Absent by default, serialises as
+  no CBOR key — byte-compatible with pre-0.17 descriptors when no
+  masks are present.
 - **Removed API surface** (hard break — no deprecation shim):
   - Rust: `EncodeOptions::reject_nan`, `EncodeOptions::reject_inf`,
     the `tensogram::strict_finite` module (renamed to

@@ -51,11 +51,13 @@ decodes to `NaN` everywhere. Both are errors at the codec entry:
 - NaN → `PackingError::NanValue(index)`
 - +Inf / -Inf → `PackingError::InfiniteValue(index)`
 
-Remove or replace non-finite values before encoding. For
-**domain-strict workflows** that also want the same guarantee over
-the other encodings (`encoding="none"` + any compressor), use the
-pipeline-independent strict-finite encoding (see docs)
-(`reject_nan` / `reject_inf`) which run upstream of the codec.
+Remove or replace non-finite values before encoding.  If you want
+to preserve them, switch to `encoding="none"` and opt in to the NaN
+/ Inf bitmask companion via `allow_nan=true` / `allow_inf=true` —
+see [NaN / Inf Handling](../guide/nan-inf-handling.md) for the full
+semantics.  Simple packing cannot represent non-finite values at
+all, so the mask companion is only available on the pass-through
+encoding path.
 
 [memo]: https://github.com/ecmwf/tensogram/blob/main/plans/RESEARCH_NAN_HANDLING.md
 

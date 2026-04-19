@@ -30,6 +30,7 @@
 - [Encoding Data](guide/encoding.md)
 - [Pre-Encoded Data API (Advanced)](guide/encode-pre-encoded.md)
 - [Decoding Data](guide/decoding.md)
+- [NaN / Inf Handling](guide/nan-inf-handling.md)
 - [Working with Files](guide/file-api.md)
 - [Remote Access (S3, GCS, Azure, HTTP)](guide/remote-access.md)
 - [Iterators](guide/iterators.md)

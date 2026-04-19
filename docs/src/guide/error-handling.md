@@ -451,9 +451,11 @@ and a recovery hint, rather than silently downgrading the variable
 to `encoding="none"`. Pre-0.17 soft-downgrade hid data-quality
 problems; the new behaviour surfaces them at conversion time.
 Callers relying on the old fallback should either pick a
-non-simple_packing encoding up front, pre-process NaN / Inf out of
-the data, or use `--split-by variable` and choose per-variable
-encodings.
+non-simple_packing encoding up front, opt into the NaN / Inf
+bitmask companion via `--allow-nan` / `--allow-inf` (see
+[NaN / Inf Handling](nan-inf-handling.md)), pre-process NaN / Inf
+out of the data, or use `--split-by variable` and choose
+per-variable encodings.
 
 ### NetCDF Importer — Unknown Codec Name
 
