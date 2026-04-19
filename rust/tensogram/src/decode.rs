@@ -315,12 +315,14 @@ pub fn decode_range(
         )));
     }
 
-    let (desc, payload_bytes, _mask_region, _) = &msg.objects[object_index];
-    let parts = decode_range_from_payload(desc, payload_bytes, ranges, options)?;
-    // NOTE: range decode NaN/Inf restoration is Commit 7 per
-    // plans/BITMASK_FRAME.md §7.4.  For now if the object carries
-    // masks and the caller asks for ranges, the returned bytes will
-    // have zeros where non-finite values used to be.
+    let (desc, payload_bytes, mask_region, _) = &msg.objects[object_index];
+    let mut parts = decode_range_from_payload(desc, payload_bytes, ranges, options)?;
+    // Apply mask-aware NaN / Inf restoration to each requested
+    // sub-range.  See `plans/BITMASK_FRAME.md` §7.4.
+    if options.restore_non_finite && desc.masks.is_some() {
+        let mask_set = crate::restore::decode_mask_set(desc, mask_region)?;
+        crate::restore::restore_non_finite_into_ranges(&mut parts, desc, ranges, &mask_set)?;
+    }
     Ok((desc.clone(), parts))
 }
 

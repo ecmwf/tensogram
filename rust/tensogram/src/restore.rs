@@ -364,6 +364,62 @@ impl DecodedMaskSet {
     }
 }
 
+/// Apply canonical NaN / Inf restoration to pre-decoded range slices.
+///
+/// Each range is a `(element_offset, element_count)` pair matching the
+/// `ranges` argument passed to [`crate::decode_range`].  The output
+/// `parts[i]` is a `Vec<u8>` of length `count_i * elem_size` — we
+/// write the canonical bit pattern at any element index that falls in
+/// `[offset_i, offset_i + count_i)` AND has a `1` bit in the
+/// corresponding kind's mask.
+///
+/// No-op when `descriptor.masks` is `None` or `mask_set.is_empty()`.
+pub(crate) fn restore_non_finite_into_ranges(
+    parts: &mut [Vec<u8>],
+    descriptor: &DataObjectDescriptor,
+    ranges: &[(u64, u64)],
+    mask_set: &DecodedMaskSet,
+) -> Result<()> {
+    if descriptor.masks.is_none() || mask_set.is_empty() {
+        return Ok(());
+    }
+    if parts.len() != ranges.len() {
+        return Err(TensogramError::Framing(format!(
+            "range count mismatch: parts.len()={} but ranges.len()={}",
+            parts.len(),
+            ranges.len()
+        )));
+    }
+    let native = ByteOrder::native();
+
+    // For every (range, part) pair, slice each mask over the range
+    // and apply canonical restoration per kind.  A single element is
+    // only ever set in at most one mask (complex priority rule on
+    // encode) so the three passes cannot collide.
+    for (part, &(offset, count)) in parts.iter_mut().zip(ranges.iter()) {
+        let start = u64_to_usize(offset, "range.offset")?;
+        let end = start
+            .checked_add(u64_to_usize(count, "range.count")?)
+            .ok_or_else(|| TensogramError::Framing("range offset+count overflow".to_string()))?;
+        for (kind_bits, kind) in [
+            (mask_set.nan.as_ref(), Kind::Nan),
+            (mask_set.pos_inf.as_ref(), Kind::PosInf),
+            (mask_set.neg_inf.as_ref(), Kind::NegInf),
+        ] {
+            let Some(bits) = kind_bits else { continue };
+            if end > bits.len() {
+                return Err(TensogramError::Framing(format!(
+                    "range end {end} exceeds mask length {} for descriptor shape",
+                    bits.len()
+                )));
+            }
+            let sliced = &bits[start..end];
+            write_canonical_non_finite(part, descriptor.dtype, native, sliced, kind);
+        }
+    }
+    Ok(())
+}
+
 /// Decompress the masks referenced by `descriptor.masks` from the
 /// raw `mask_region` slice.  Returns `DecodedMaskSet::default()` when
 /// the descriptor has no masks.
