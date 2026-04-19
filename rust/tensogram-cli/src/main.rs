@@ -38,6 +38,68 @@ struct Cli {
     #[arg(long, global = true, default_value_t = 0, env = "TENSOGRAM_THREADS")]
     threads: u32,
 
+    /// When encoding float / complex tensors, substitute NaN values
+    /// with 0.0 and record their positions in a bitmask companion
+    /// section of the data-object frame.  By default (flag absent)
+    /// the encoder rejects any NaN in the input with an error.
+    ///
+    /// Set `TENSOGRAM_ALLOW_NAN=1` (or `true`, `yes`, `on`) in the
+    /// environment for the same effect.  See
+    /// `plans/BITMASK_FRAME.md` for the wire-format details.
+    #[arg(
+        long,
+        global = true,
+        env = "TENSOGRAM_ALLOW_NAN",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        default_value_t = false,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true,
+        hide_default_value = true,
+    )]
+    allow_nan: bool,
+
+    /// When encoding float / complex tensors, substitute +Inf AND
+    /// -Inf values with 0.0 and record their positions in per-sign
+    /// bitmask companion sections.  By default (flag absent) the
+    /// encoder rejects any ±Inf in the input.
+    ///
+    /// Set `TENSOGRAM_ALLOW_INF=1` in the environment for the same
+    /// effect.
+    #[arg(
+        long,
+        global = true,
+        env = "TENSOGRAM_ALLOW_INF",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        default_value_t = false,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true,
+        hide_default_value = true,
+    )]
+    allow_inf: bool,
+
+    /// Compression method for the NaN mask.  One of
+    /// `"none"` | `"rle"` | `"roaring"` | `"lz4"` | `"zstd"` |
+    /// `"blosc2"`.  Default `"roaring"`.  Only consulted when
+    /// `--allow-nan` is set AND the input contains NaN.
+    #[arg(long, global = true, env = "TENSOGRAM_NAN_MASK_METHOD")]
+    nan_mask_method: Option<String>,
+
+    /// Compression method for the `+Inf` mask.  See `--nan-mask-method`.
+    #[arg(long, global = true, env = "TENSOGRAM_POS_INF_MASK_METHOD")]
+    pos_inf_mask_method: Option<String>,
+
+    /// Compression method for the `-Inf` mask.  See `--nan-mask-method`.
+    #[arg(long, global = true, env = "TENSOGRAM_NEG_INF_MASK_METHOD")]
+    neg_inf_mask_method: Option<String>,
+
+    /// Uncompressed byte-count threshold below which mask blobs are
+    /// written as `"none"` regardless of the requested method.
+    /// Default `128`.  Set to `0` to disable the fallback.
+    #[arg(long, global = true, env = "TENSOGRAM_SMALL_MASK_THRESHOLD")]
+    small_mask_threshold: Option<usize>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -198,6 +260,14 @@ fn main() {
 
     let cli = Cli::parse();
     let threads = cli.threads;
+    let mask_cli = commands::MaskCliOptions {
+        allow_nan: cli.allow_nan,
+        allow_inf: cli.allow_inf,
+        nan_mask_method: cli.nan_mask_method.clone(),
+        pos_inf_mask_method: cli.pos_inf_mask_method.clone(),
+        neg_inf_mask_method: cli.neg_inf_mask_method.clone(),
+        small_mask_threshold_bytes: cli.small_mask_threshold,
+    };
 
     let result = match cli.command {
         Commands::Info { files } => commands::info::run(&files),
@@ -233,9 +303,13 @@ fn main() {
             inputs,
             output,
             strategy,
-        } => commands::merge::run(&inputs, &output, &strategy, threads),
-        Commands::Split { input, output } => commands::split::run(&input, &output, threads),
-        Commands::Reshuffle { input, output } => commands::reshuffle::run(&input, &output, threads),
+        } => commands::merge::run(&inputs, &output, &strategy, threads, &mask_cli),
+        Commands::Split { input, output } => {
+            commands::split::run(&input, &output, threads, &mask_cli)
+        }
+        Commands::Reshuffle { input, output } => {
+            commands::reshuffle::run(&input, &output, threads, &mask_cli)
+        }
         Commands::Validate {
             files,
             quick,
@@ -276,6 +350,7 @@ fn main() {
             all_keys,
             &pipeline,
             threads,
+            &mask_cli,
         ),
         #[cfg(feature = "netcdf")]
         Commands::ConvertNetcdf {
@@ -291,6 +366,7 @@ fn main() {
             cf,
             &pipeline,
             threads,
+            &mask_cli,
         ),
     };
 

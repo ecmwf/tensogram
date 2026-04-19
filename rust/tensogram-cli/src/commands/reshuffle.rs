@@ -16,7 +16,12 @@ use tensogram::{DecodeOptions, EncodeOptions, RESERVED_KEY, TensogramFile, decod
 /// Converts streaming-mode messages (footer-based index/hash) into
 /// random-access-mode messages (header-based index/hash).
 /// This is a decode → re-encode operation.
-pub fn run(input: &Path, output: &Path, threads: u32) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(
+    input: &Path,
+    output: &Path,
+    threads: u32,
+    mask_cli: &super::MaskCliOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
     let file = TensogramFile::open(input)?;
     let count = file.message_count()?;
 
@@ -43,14 +48,12 @@ pub fn run(input: &Path, output: &Path, threads: u32) -> Result<(), Box<dyn std:
         let refs: Vec<_> = objects.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
         // Re-encode produces a header-mode message (non-streaming)
-        let encoded = encode(
-            &meta,
-            &refs,
-            &EncodeOptions {
-                threads,
-                ..Default::default()
-            },
-        )?;
+        let mut encode_opts = EncodeOptions {
+            threads,
+            ..Default::default()
+        };
+        mask_cli.apply(&mut encode_opts)?;
+        let encoded = encode(&meta, &refs, &encode_opts)?;
         out.write_all(&encoded)?;
     }
 
@@ -105,7 +108,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let input = make_test_file(dir.path());
         let output = dir.path().join("reshuffled.tgm");
-        run(&input, &output, 0).unwrap();
+        run(&input, &output, 0, &super::super::MaskCliOptions::default()).unwrap();
 
         // Verify output is valid and has same content
         let f = tensogram::TensogramFile::open(&output).unwrap();

@@ -21,6 +21,7 @@ pub fn run(
     cf: bool,
     pipeline: &PipelineArgs,
     threads: u32,
+    mask_cli: &super::MaskCliOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if inputs.is_empty() {
         return Err("no input files specified".into());
@@ -38,13 +39,16 @@ pub fn run(
         }
     };
 
+    let mut encode_options = tensogram::EncodeOptions {
+        threads,
+        ..Default::default()
+    };
+    mask_cli.apply(&mut encode_options)?;
+
     let options = ConvertOptions {
         split_by,
         cf,
-        encode_options: tensogram::EncodeOptions {
-            threads,
-            ..Default::default()
-        },
+        encode_options,
         pipeline: DataPipeline {
             encoding: pipeline.encoding.clone(),
             bits: pipeline.bits,
@@ -110,6 +114,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -127,6 +132,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -145,6 +151,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -162,6 +169,7 @@ mod tests {
             true,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -185,6 +193,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -197,7 +206,18 @@ mod tests {
     #[test]
     fn convert_no_inputs_errors() {
         let empty: Vec<String> = vec![];
-        assert!(run(&empty, None, "file", false, &default_pipeline(), 0).is_err());
+        assert!(
+            run(
+                &empty,
+                None,
+                "file",
+                false,
+                &default_pipeline(),
+                0,
+                &super::super::MaskCliOptions::default()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -209,6 +229,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         );
         assert!(result.is_err());
     }
@@ -222,6 +243,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         );
         assert!(result.is_err(), "empty file should produce an error");
     }
@@ -235,6 +257,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         );
         assert!(result.is_err());
     }
@@ -248,6 +271,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         );
         assert!(
             result.is_err(),
@@ -266,6 +290,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -286,10 +311,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires --allow-nan CLI flag (BITMASK_FRAME.md Commit 12)"]
     fn convert_multi_dtype_preserves_types() {
+        // multi_dtype.nc contains NaN — opt in via --allow-nan.
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("out.tgm");
+        let mask_cli = super::super::MaskCliOptions {
+            allow_nan: true,
+            ..Default::default()
+        };
         run(
             &[testdata("multi_dtype.nc")],
             Some(out.to_str().unwrap()),
@@ -297,6 +326,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &mask_cli,
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -345,6 +375,7 @@ mod tests {
             false,
             &pipeline_with("simple_packing", Some(24), "none", "none"),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let (encoding, _, _) = first_descriptor_fields(&out);
@@ -362,6 +393,7 @@ mod tests {
             false,
             &pipeline_with("none", None, "none", "zstd"),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let (_, _, compression) = first_descriptor_fields(&out);
@@ -379,6 +411,7 @@ mod tests {
             false,
             &pipeline_with("none", None, "shuffle", "none"),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let (_, filter, _) = first_descriptor_fields(&out);
@@ -394,6 +427,7 @@ mod tests {
             false,
             &pipeline_with("none", None, "none", "bogus"),
             0,
+            &super::super::MaskCliOptions::default(),
         );
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
@@ -416,6 +450,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let (encoding, filter, compression) = first_descriptor_fields(&out);
