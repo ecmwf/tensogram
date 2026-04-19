@@ -373,17 +373,15 @@ class TestWireFormatEdgeCases:
         assert var.shape == (1,)
         np.testing.assert_array_equal(var.values, data)
 
-    @pytest.mark.skip(
-        reason="All-NaN round-trip requires allow_nan kwarg on Python bindings "
-        "(BITMASK_FRAME.md Commit 9). Until then, NaN input is rejected at encode."
-    )
     def test_all_nan_float32_preserved(self, tmp_path: Path):
         """All-NaN float32 array opens correctly with xarray, NaN preserved."""
         path = str(tmp_path / "all_nan.tgm")
         data = np.full((3, 4), np.nan, dtype=np.float32)
         meta = {"version": 2, "base": [{"name": "nan_field"}]}
         with tensogram.TensogramFile.create(path) as f:
-            f.append(meta, [(_desc([3, 4]), data)])
+            # allow_nan=True opts into the NaN companion-mask wire
+            # format (see BITMASK_FRAME.md §2).
+            f.append(meta, [(_desc([3, 4]), data)], allow_nan=True)
 
         ds = xr.open_dataset(path, engine="tensogram", variable_key="name")
         var = ds["nan_field"]

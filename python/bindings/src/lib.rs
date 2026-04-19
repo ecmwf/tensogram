@@ -418,8 +418,20 @@ impl PyTensogramFile {
     ///     hash: ``"xxh3"`` (default) or ``None`` to skip hashing.
     ///     threads: thread budget (0 = sequential / env fallback).
     #[pyo3(
-        signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3"), threads=0)
+        signature = (
+            global_meta_dict,
+            descriptors_and_data,
+            hash=Some("xxh3"),
+            threads=0,
+            allow_nan=false,
+            allow_inf=false,
+            nan_mask_method=None,
+            pos_inf_mask_method=None,
+            neg_inf_mask_method=None,
+            small_mask_threshold_bytes=None,
+        )
     )]
+    #[allow(clippy::too_many_arguments)]
     fn append(
         &mut self,
         py: Python<'_>,
@@ -427,13 +439,28 @@ impl PyTensogramFile {
         descriptors_and_data: &Bound<'_, PyList>,
         hash: Option<&str>,
         threads: u32,
+        allow_nan: bool,
+        allow_inf: bool,
+        nan_mask_method: Option<&str>,
+        pos_inf_mask_method: Option<&str>,
+        neg_inf_mask_method: Option<&str>,
+        small_mask_threshold_bytes: Option<usize>,
     ) -> PyResult<()> {
         let global_meta = dict_to_global_metadata(global_meta_dict)?;
         let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
         let refs: Vec<(&DataObjectDescriptor, &[u8])> =
             pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
-        let options = make_encode_options(hash, threads)?;
+        let options = make_encode_options_full(
+            hash,
+            threads,
+            allow_nan,
+            allow_inf,
+            nan_mask_method,
+            pos_inf_mask_method,
+            neg_inf_mask_method,
+            small_mask_threshold_bytes,
+        )?;
         py.detach(|| self.file.append(&global_meta, &refs, &options))
             .map_err(to_py_err)
     }
@@ -444,7 +471,15 @@ impl PyTensogramFile {
     /// Set *native_byte_order* to ``False`` to get wire-order bytes (default ``True``).
     /// Set *threads* to ``N`` to spend a budget of ``N`` threads on decoding
     /// (0 = sequential / env fallback).
-    #[pyo3(signature = (index, verify_hash=None, native_byte_order=true, threads=0))]
+    #[pyo3(
+        signature = (
+            index,
+            verify_hash=None,
+            native_byte_order=true,
+            threads=0,
+            restore_non_finite=true,
+        )
+    )]
     fn decode_message(
         &self,
         py: Python<'_>,
@@ -452,11 +487,13 @@ impl PyTensogramFile {
         verify_hash: Option<bool>,
         native_byte_order: bool,
         threads: u32,
+        restore_non_finite: bool,
     ) -> PyResult<PyObject> {
         let options = DecodeOptions {
             verify_hash: verify_hash.unwrap_or(false),
             native_byte_order,
             threads,
+            restore_non_finite,
             ..Default::default()
         };
         let (global_meta, data_objects) = py
@@ -738,7 +775,7 @@ impl PyTensogramFile {
                     "message index {index} out of range for file with {count} messages"
                 )));
             }
-            return self.decode_message(py, idx as usize, None, true, 0);
+            return self.decode_message(py, idx as usize, None, true, 0, true);
         }
 
         if let Ok(slice) = key.cast::<pyo3::types::PySlice>() {
@@ -746,7 +783,7 @@ impl PyTensogramFile {
             let mut items: Vec<PyObject> = Vec::with_capacity(indices.slicelength as usize);
             let mut i = indices.start;
             while (indices.step > 0 && i < indices.stop) || (indices.step < 0 && i > indices.stop) {
-                items.push(self.decode_message(py, i as usize, None, true, 0)?);
+                items.push(self.decode_message(py, i as usize, None, true, 0, true)?);
                 i += indices.step;
             }
             return Ok(PyList::new(py, items)?.into_any().unbind());
@@ -844,21 +881,48 @@ impl PyFileIter {
 #[pyfunction]
 #[pyo3(
     name = "encode",
-    signature = (global_meta_dict, descriptors_and_data, hash=Some("xxh3"), threads=0)
+    signature = (
+        global_meta_dict,
+        descriptors_and_data,
+        hash=Some("xxh3"),
+        threads=0,
+        allow_nan=false,
+        allow_inf=false,
+        nan_mask_method=None,
+        pos_inf_mask_method=None,
+        neg_inf_mask_method=None,
+        small_mask_threshold_bytes=None,
+    )
 )]
+#[allow(clippy::too_many_arguments)]
 fn py_encode<'py>(
     py: Python<'py>,
     global_meta_dict: &Bound<'_, PyDict>,
     descriptors_and_data: &Bound<'_, PyList>,
     hash: Option<&str>,
     threads: u32,
+    allow_nan: bool,
+    allow_inf: bool,
+    nan_mask_method: Option<&str>,
+    pos_inf_mask_method: Option<&str>,
+    neg_inf_mask_method: Option<&str>,
+    small_mask_threshold_bytes: Option<usize>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let global_meta = dict_to_global_metadata(global_meta_dict)?;
     let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
     let refs: Vec<(&DataObjectDescriptor, &[u8])> =
         pairs.iter().map(|(d, b)| (d, b.as_slice())).collect();
 
-    let options = make_encode_options(hash, threads)?;
+    let options = make_encode_options_full(
+        hash,
+        threads,
+        allow_nan,
+        allow_inf,
+        nan_mask_method,
+        pos_inf_mask_method,
+        neg_inf_mask_method,
+        small_mask_threshold_bytes,
+    )?;
     let msg = py.detach(|| encode(&global_meta, &refs, &options).map_err(to_py_err))?;
     Ok(PyBytes::new(py, &msg))
 }
@@ -905,18 +969,29 @@ fn py_encode_pre_encoded<'py>(
 ///
 /// Set *verify_hash* to ``True`` to verify payload integrity.
 #[pyfunction]
-#[pyo3(name = "decode", signature = (buf, verify_hash=false, native_byte_order=true, threads=0))]
+#[pyo3(
+    name = "decode",
+    signature = (
+        buf,
+        verify_hash=false,
+        native_byte_order=true,
+        threads=0,
+        restore_non_finite=true,
+    )
+)]
 fn py_decode(
     py: Python<'_>,
     buf: PyBackedBytes,
     verify_hash: bool,
     native_byte_order: bool,
     threads: u32,
+    restore_non_finite: bool,
 ) -> PyResult<PyObject> {
     let options = DecodeOptions {
         verify_hash,
         native_byte_order,
         threads,
+        restore_non_finite,
         ..Default::default()
     };
     let (global_meta, data_objects) = py.detach(|| decode(&buf, &options).map_err(to_py_err))?;
@@ -960,7 +1035,18 @@ fn py_decode_descriptors(py: Python<'_>, buf: &[u8]) -> PyResult<(PyMetadata, Py
 /// Only the header and the requested object's payload are read.
 /// Raises ``ValueError`` if *index* is out of range.
 #[pyfunction]
-#[pyo3(name = "decode_object", signature = (buf, index, verify_hash=false, native_byte_order=true, threads=0))]
+#[pyo3(
+    name = "decode_object",
+    signature = (
+        buf,
+        index,
+        verify_hash=false,
+        native_byte_order=true,
+        threads=0,
+        restore_non_finite=true,
+    )
+)]
+#[allow(clippy::too_many_arguments)]
 fn py_decode_object(
     py: Python<'_>,
     buf: PyBackedBytes,
@@ -968,11 +1054,13 @@ fn py_decode_object(
     verify_hash: bool,
     native_byte_order: bool,
     threads: u32,
+    restore_non_finite: bool,
 ) -> PyResult<(PyMetadata, PyDataObjectDescriptor, PyObject)> {
     let options = DecodeOptions {
         verify_hash,
         native_byte_order,
         threads,
+        restore_non_finite,
         ..Default::default()
     };
     let (global_meta, desc, obj_bytes) =
@@ -1000,7 +1088,19 @@ fn py_decode_object(
 /// Returns:
 ///     ``list[ndarray]`` (default) or ``ndarray`` (when ``join=True``).
 #[pyfunction]
-#[pyo3(name = "decode_range", signature = (buf, object_index, ranges, join=false, verify_hash=false, native_byte_order=true, threads=0))]
+#[pyo3(
+    name = "decode_range",
+    signature = (
+        buf,
+        object_index,
+        ranges,
+        join=false,
+        verify_hash=false,
+        native_byte_order=true,
+        threads=0,
+        restore_non_finite=true,
+    )
+)]
 // The argument list is the public Python ABI — each one is a documented
 // keyword argument that other bindings (Rust core, FFI, WASM) also
 // expose.  Collapsing them into an options struct would break the
@@ -1015,11 +1115,13 @@ fn py_decode_range(
     verify_hash: bool,
     native_byte_order: bool,
     threads: u32,
+    restore_non_finite: bool,
 ) -> PyResult<PyObject> {
     let options = DecodeOptions {
         verify_hash,
         native_byte_order,
         threads,
+        restore_non_finite,
         ..Default::default()
     };
     let (desc, parts) =
@@ -1226,14 +1328,42 @@ impl PyStreamingEncoder {
     ///         does not have cross-object parallelism by design).
     ///         Default ``0`` preserves the sequential path.
     #[new]
-    #[pyo3(signature = (global_meta_dict, hash=Some("xxh3"), threads=0))]
+    #[pyo3(
+        signature = (
+            global_meta_dict,
+            hash=Some("xxh3"),
+            threads=0,
+            allow_nan=false,
+            allow_inf=false,
+            nan_mask_method=None,
+            pos_inf_mask_method=None,
+            neg_inf_mask_method=None,
+            small_mask_threshold_bytes=None,
+        )
+    )]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         global_meta_dict: &Bound<'_, PyDict>,
         hash: Option<&str>,
         threads: u32,
+        allow_nan: bool,
+        allow_inf: bool,
+        nan_mask_method: Option<&str>,
+        pos_inf_mask_method: Option<&str>,
+        neg_inf_mask_method: Option<&str>,
+        small_mask_threshold_bytes: Option<usize>,
     ) -> PyResult<Self> {
         let global_meta = dict_to_global_metadata(global_meta_dict)?;
-        let options = make_encode_options(hash, threads)?;
+        let options = make_encode_options_full(
+            hash,
+            threads,
+            allow_nan,
+            allow_inf,
+            nan_mask_method,
+            pos_inf_mask_method,
+            neg_inf_mask_method,
+            small_mask_threshold_bytes,
+        )?;
         let inner = StreamingEncoder::new(Vec::new(), &global_meta, &options).map_err(to_py_err)?;
         Ok(Self { inner: Some(inner) })
     }
@@ -2545,15 +2675,58 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
 // ---------------------------------------------------------------------------
 
 fn make_encode_options(hash: Option<&str>, threads: u32) -> PyResult<EncodeOptions> {
+    make_encode_options_full(hash, threads, false, false, None, None, None, None)
+}
+
+/// Build an [`EncodeOptions`] from the full kwargs set exposed by the
+/// Python-facing `encode` / `append` / `StreamingEncoder.create`
+/// entry points.  Mask method names follow
+/// [`plans/BITMASK_FRAME.md` §3.3]:
+/// `"none"` | `"rle"` | `"roaring"` | `"lz4"` | `"zstd"` | `"blosc2"`.
+/// Missing sentinels use the library defaults (`Roaring` for methods,
+/// `128` for the small-mask fallback threshold).
+#[allow(clippy::too_many_arguments)]
+fn make_encode_options_full(
+    hash: Option<&str>,
+    threads: u32,
+    allow_nan: bool,
+    allow_inf: bool,
+    nan_mask_method: Option<&str>,
+    pos_inf_mask_method: Option<&str>,
+    neg_inf_mask_method: Option<&str>,
+    small_mask_threshold_bytes: Option<usize>,
+) -> PyResult<EncodeOptions> {
+    use tensogram_lib::encode::MaskMethod;
+
     let hash_algorithm = match hash {
         None => None,
         Some("xxh3") => Some(HashAlgorithm::Xxh3),
         Some(other) => return Err(PyValueError::new_err(format!("unknown hash: {other}"))),
     };
+    let parse_method = |s: Option<&str>, default: MaskMethod| -> PyResult<MaskMethod> {
+        let Some(name) = s else {
+            return Ok(default);
+        };
+        MaskMethod::from_name(name).map_err(|_| {
+            PyValueError::new_err(format!(
+                "unknown mask method {name:?} (expected \
+                 \"none\" | \"rle\" | \"roaring\" | \"lz4\" | \"zstd\" | \"blosc2\")"
+            ))
+        })
+    };
+
+    let defaults = EncodeOptions::default();
     Ok(EncodeOptions {
         hash_algorithm,
         threads,
-        ..Default::default()
+        allow_nan,
+        allow_inf,
+        nan_mask_method: parse_method(nan_mask_method, defaults.nan_mask_method)?,
+        pos_inf_mask_method: parse_method(pos_inf_mask_method, defaults.pos_inf_mask_method)?,
+        neg_inf_mask_method: parse_method(neg_inf_mask_method, defaults.neg_inf_mask_method)?,
+        small_mask_threshold_bytes: small_mask_threshold_bytes
+            .unwrap_or(defaults.small_mask_threshold_bytes),
+        ..defaults
     })
 }
 
