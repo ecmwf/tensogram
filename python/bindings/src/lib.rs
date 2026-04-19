@@ -2342,7 +2342,8 @@ fn py_convert_grib(
 ///
 /// In-memory equivalent of [`convert_grib`].  Accepts any Python
 /// bytes-like object (`bytes`, `bytearray`, memoryview, `numpy.uint8[:]`)
-/// and releases the GIL during the conversion itself.
+/// and releases the GIL during the conversion itself.  Accepts the
+/// same `reject_nan` / `reject_inf` kwargs as [`convert_grib`].
 ///
 /// # Python exceptions raised
 /// - [`ValueError`] — `buffer` is not a bytes-like object; the buffer
@@ -2472,6 +2473,11 @@ fn py_convert_grib_buffer(
 ///   be overridden by `TENSOGRAM_THREADS=N`; use `1` to force
 ///   single-threaded execution.
 /// - `hash`: `"xxh3"` (default) or `None` to skip hashing.
+/// - `reject_nan` / `reject_inf`: pipeline-independent strict-finite
+///   guards; see [`convert_grib`].  Particularly useful with
+///   `encoding="simple_packing"`, where NaN / Inf input is rejected
+///   at the codec level — turning `reject_nan` on surfaces the
+///   failure earlier and with the element index included.
 #[pyfunction]
 #[pyo3(name = "convert_netcdf", signature = (
     path,

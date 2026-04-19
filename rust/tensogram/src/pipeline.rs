@@ -137,18 +137,19 @@ pub fn apply_pipeline(
             }
             Some(values) => {
                 let bits = pipeline.bits.unwrap_or(16);
-                // Hard-fail on NaN/Inf (pre-0.17 behaviour soft-
-                // downgraded silently to `encoding="none"` with only a
-                // stderr warning, which hid data-quality problems from
-                // callers).  If the variable contains non-finite
-                // values the user must either pick a different
-                // encoding or pre-process the data.
+                // Hard-fail on any `compute_params` error — most often
+                // NaN or Inf in the input data.  Pre-0.17 behaviour
+                // soft-downgraded silently to `encoding="none"` with
+                // only a stderr warning, which hid data-quality
+                // problems from callers.  The remedy hint is
+                // appropriate for every failure mode: fix the data
+                // (NaN/Inf) or pick a different encoding (which also
+                // covers `BitsPerValueTooLarge` via `--bits`).
                 let params = simple_packing::compute_params(values, bits, 0).map_err(|e| {
                     format!(
                         "simple_packing failed for {var_label}: {e}. \
-                         The variable contains NaN or Inf which cannot be represented \
-                         by simple_packing. Pre-process the data or choose a \
-                         different encoding (e.g. encoding=\"none\")."
+                         Pre-process the data or choose a different \
+                         encoding (e.g. encoding=\"none\")."
                     )
                 })?;
                 desc.encoding = "simple_packing".to_string();
