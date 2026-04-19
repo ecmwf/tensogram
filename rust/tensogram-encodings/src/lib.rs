@@ -6,6 +6,7 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
+pub mod bitmask;
 pub mod compression;
 #[cfg(feature = "szip")]
 pub mod libaec;
