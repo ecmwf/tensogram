@@ -210,6 +210,11 @@ enum Kind {
 /// both validate this at entry.  A `debug_assert!` catches a caller
 /// bug in tests; release builds skip out-of-bounds positions rather
 /// than panicking.
+///
+/// The per-(dtype, kind, byte_order) element bit pattern is computed
+/// once and cached in [`CanonicalPattern`] before the inner loop —
+/// hot-path iterations are just `copy_from_slice` of a stack-local
+/// byte array.
 fn write_canonical_non_finite(
     buf: &mut [u8],
     dtype: Dtype,
@@ -225,6 +230,12 @@ fn write_canonical_non_finite(
         bits.len(),
         elem_size,
     );
+    let Some(pattern) = CanonicalPattern::new(dtype, kind, byte_order) else {
+        // Non-float dtype — the encoder should never have produced
+        // a mask here, but guard defensively rather than panic.
+        return;
+    };
+    let element_bytes = pattern.as_slice();
     for (i, &is_set) in bits.iter().enumerate() {
         if !is_set {
             continue;
@@ -236,113 +247,129 @@ fn write_canonical_non_finite(
             // process.  All in-tree callers validate lengths upstream.
             break;
         }
-        match dtype {
+        buf[start..start + elem_size].copy_from_slice(element_bytes);
+    }
+}
+
+/// Precomputed canonical-element byte pattern for a given
+/// (`dtype`, `kind`, `byte_order`) triple.
+///
+/// Hoisted out of the hot loop in [`write_canonical_non_finite`] so
+/// the per-element cost collapses to a single `copy_from_slice`.
+/// Holds up to 16 bytes (the `complex128` element size) inline — no
+/// heap allocation.
+struct CanonicalPattern {
+    bytes: [u8; 16],
+    len: usize,
+}
+
+impl CanonicalPattern {
+    /// Build the canonical pattern for a float-family dtype,
+    /// returning `None` for non-float dtypes.
+    fn new(dtype: Dtype, kind: Kind, byte_order: ByteOrder) -> Option<Self> {
+        let mut bytes = [0u8; 16];
+        let len = match dtype {
             Dtype::Float32 => {
-                let bytes = match kind {
-                    Kind::Nan => f32_nan_bytes(byte_order),
-                    Kind::PosInf => f32_bytes(f32::INFINITY, byte_order),
-                    Kind::NegInf => f32_bytes(f32::NEG_INFINITY, byte_order),
-                };
-                buf[start..start + 4].copy_from_slice(&bytes);
+                let scalar = f32_canonical(kind, byte_order);
+                bytes[..4].copy_from_slice(&scalar);
+                4
             }
             Dtype::Float64 => {
-                let bytes = match kind {
-                    Kind::Nan => f64_nan_bytes(byte_order),
-                    Kind::PosInf => f64_bytes(f64::INFINITY, byte_order),
-                    Kind::NegInf => f64_bytes(f64::NEG_INFINITY, byte_order),
-                };
-                buf[start..start + 8].copy_from_slice(&bytes);
+                let scalar = f64_canonical(kind, byte_order);
+                bytes[..8].copy_from_slice(&scalar);
+                8
             }
             Dtype::Float16 => {
-                // IEEE half canonical patterns:
-                //   NaN  = 0x7E00 (quiet, sign=0, exp=0x1F, mant=0x200)
-                //   +Inf = 0x7C00
-                //   -Inf = 0xFC00
-                let bits_u16 = match kind {
-                    Kind::Nan => 0x7E00u16,
-                    Kind::PosInf => 0x7C00,
-                    Kind::NegInf => 0xFC00,
-                };
-                let bytes = match byte_order {
-                    ByteOrder::Big => bits_u16.to_be_bytes(),
-                    ByteOrder::Little => bits_u16.to_le_bytes(),
-                };
-                buf[start..start + 2].copy_from_slice(&bytes);
+                let half = half_canonical(kind, byte_order, Half::F16);
+                bytes[..2].copy_from_slice(&half);
+                2
             }
             Dtype::Bfloat16 => {
-                // bfloat16 canonical patterns:
-                //   NaN  = 0x7FC0 (quiet, sign=0, exp=0xFF, mant=0x40)
-                //   +Inf = 0x7F80
-                //   -Inf = 0xFF80
-                let bits_u16 = match kind {
-                    Kind::Nan => 0x7FC0u16,
-                    Kind::PosInf => 0x7F80,
-                    Kind::NegInf => 0xFF80,
-                };
-                let bytes = match byte_order {
-                    ByteOrder::Big => bits_u16.to_be_bytes(),
-                    ByteOrder::Little => bits_u16.to_le_bytes(),
-                };
-                buf[start..start + 2].copy_from_slice(&bytes);
+                let half = half_canonical(kind, byte_order, Half::BF16);
+                bytes[..2].copy_from_slice(&half);
+                2
             }
             Dtype::Complex64 => {
-                // Both real and imag components get the same
-                // canonical pattern — see §4 / §7.1.
-                let comp = match kind {
-                    Kind::Nan => f32_nan_bytes(byte_order),
-                    Kind::PosInf => f32_bytes(f32::INFINITY, byte_order),
-                    Kind::NegInf => f32_bytes(f32::NEG_INFINITY, byte_order),
-                };
-                buf[start..start + 4].copy_from_slice(&comp);
-                buf[start + 4..start + 8].copy_from_slice(&comp);
+                // Both components share the same pattern (§4 / §7.1).
+                let comp = f32_canonical(kind, byte_order);
+                bytes[..4].copy_from_slice(&comp);
+                bytes[4..8].copy_from_slice(&comp);
+                8
             }
             Dtype::Complex128 => {
-                let comp = match kind {
-                    Kind::Nan => f64_nan_bytes(byte_order),
-                    Kind::PosInf => f64_bytes(f64::INFINITY, byte_order),
-                    Kind::NegInf => f64_bytes(f64::NEG_INFINITY, byte_order),
-                };
-                buf[start..start + 8].copy_from_slice(&comp);
-                buf[start + 8..start + 16].copy_from_slice(&comp);
+                let comp = f64_canonical(kind, byte_order);
+                bytes[..8].copy_from_slice(&comp);
+                bytes[8..16].copy_from_slice(&comp);
+                16
             }
-            // Non-float dtypes: the encoder should have never
-            // produced masks for these, but guard defensively.
-            _ => {}
-        }
+            // Non-float dtypes — caller should never reach here.
+            Dtype::Int8
+            | Dtype::Int16
+            | Dtype::Int32
+            | Dtype::Int64
+            | Dtype::Uint8
+            | Dtype::Uint16
+            | Dtype::Uint32
+            | Dtype::Uint64
+            | Dtype::Bitmask => return None,
+        };
+        Some(Self { bytes, len })
+    }
+
+    /// View of the computed element bytes.
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len]
     }
 }
 
-fn f32_nan_bytes(byte_order: ByteOrder) -> [u8; 4] {
-    // Canonical quiet NaN: 0x7FC00000.  Matches `f32::NAN.to_bits()`
-    // on every host Rust supports today, but we use the explicit
-    // constant rather than `f32::NAN` to remove host variance.
-    let bits = 0x7FC0_0000u32;
+/// IEEE half-precision layout selector for [`half_canonical`].
+#[derive(Clone, Copy)]
+enum Half {
+    F16,
+    BF16,
+}
+
+fn f32_canonical(kind: Kind, byte_order: ByteOrder) -> [u8; 4] {
+    // Canonical quiet-NaN bits 0x7FC00000; +Inf 0x7F800000;
+    // -Inf 0xFF800000.  We use explicit constants to remove any
+    // host-dependent NaN-payload variance.
+    let bits: u32 = match kind {
+        Kind::Nan => 0x7FC0_0000,
+        Kind::PosInf => 0x7F80_0000,
+        Kind::NegInf => 0xFF80_0000,
+    };
     match byte_order {
         ByteOrder::Big => bits.to_be_bytes(),
         ByteOrder::Little => bits.to_le_bytes(),
     }
 }
 
-fn f64_nan_bytes(byte_order: ByteOrder) -> [u8; 8] {
-    // Canonical quiet NaN: 0x7FF8000000000000.
-    let bits = 0x7FF8_0000_0000_0000u64;
+fn f64_canonical(kind: Kind, byte_order: ByteOrder) -> [u8; 8] {
+    let bits: u64 = match kind {
+        Kind::Nan => 0x7FF8_0000_0000_0000,
+        Kind::PosInf => 0x7FF0_0000_0000_0000,
+        Kind::NegInf => 0xFFF0_0000_0000_0000,
+    };
     match byte_order {
         ByteOrder::Big => bits.to_be_bytes(),
         ByteOrder::Little => bits.to_le_bytes(),
     }
 }
 
-fn f32_bytes(v: f32, byte_order: ByteOrder) -> [u8; 4] {
+fn half_canonical(kind: Kind, byte_order: ByteOrder, half: Half) -> [u8; 2] {
+    // IEEE half: quiet NaN = 0x7E00, +Inf = 0x7C00, -Inf = 0xFC00.
+    // bfloat16: quiet NaN = 0x7FC0, +Inf = 0x7F80, -Inf = 0xFF80.
+    let bits: u16 = match (half, kind) {
+        (Half::F16, Kind::Nan) => 0x7E00,
+        (Half::F16, Kind::PosInf) => 0x7C00,
+        (Half::F16, Kind::NegInf) => 0xFC00,
+        (Half::BF16, Kind::Nan) => 0x7FC0,
+        (Half::BF16, Kind::PosInf) => 0x7F80,
+        (Half::BF16, Kind::NegInf) => 0xFF80,
+    };
     match byte_order {
-        ByteOrder::Big => v.to_be_bytes(),
-        ByteOrder::Little => v.to_le_bytes(),
-    }
-}
-
-fn f64_bytes(v: f64, byte_order: ByteOrder) -> [u8; 8] {
-    match byte_order {
-        ByteOrder::Big => v.to_be_bytes(),
-        ByteOrder::Little => v.to_le_bytes(),
+        ByteOrder::Big => bits.to_be_bytes(),
+        ByteOrder::Little => bits.to_le_bytes(),
     }
 }
 
@@ -374,8 +401,17 @@ pub struct DecodedObjectWithMasks {
 /// element-count field — callers get it from the descriptor.
 #[derive(Debug, Clone, Default)]
 pub struct DecodedMaskSet {
+    /// Positions that held NaN at encode time, or `None` when the
+    /// frame carried no NaN mask.  For complex dtypes a single bit
+    /// covers BOTH (real, imag) components — see
+    /// `plans/BITMASK_FRAME.md` §4 for the priority rule.
     pub nan: Option<Vec<bool>>,
+    /// Positions that held `+∞`, or `None`.  Never overlaps with
+    /// `nan` at the same index (encoder's priority rule assigns
+    /// each element to at most one kind).
     pub pos_inf: Option<Vec<bool>>,
+    /// Positions that held `−∞`, or `None`.  Never overlaps with
+    /// `nan` or `pos_inf` at the same index.
     pub neg_inf: Option<Vec<bool>>,
 }
 
@@ -664,6 +700,123 @@ mod tests {
             msg.contains("decoded payload length"),
             "expected length-mismatch error, got: {msg}"
         );
+    }
+
+    #[test]
+    fn decode_one_mask_at_rejects_offset_below_region_base() {
+        // Regression: mask.offset < mask_region_base would underflow
+        // the subtraction without the checked_sub guard.
+        let md = MaskDescriptor {
+            method: "none".to_string(),
+            offset: 4, // below the base
+            length: 1,
+            params: BTreeMap::new(),
+        };
+        let mask_region = vec![0u8; 1];
+        let mask_region_base = 10; // base > offset
+        let err = decode_one_mask_at(&md, &mask_region, mask_region_base, 4).unwrap_err();
+        assert!(
+            err.to_string().contains("mask.offset"),
+            "expected offset-below-base error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn restore_non_finite_into_ranges_rejects_bitmask_dtype() {
+        // Regression for Pass 5: even the range-decode path must
+        // reject bitmask dtype at entry — consistent with the
+        // whole-object restore.
+        let mut desc = make_descriptor(vec![4], Dtype::Bitmask);
+        desc.masks = Some(MasksMetadata {
+            nan: Some(MaskDescriptor {
+                method: "none".to_string(),
+                offset: 0,
+                length: 1,
+                params: BTreeMap::new(),
+            }),
+            ..Default::default()
+        });
+        let mask_set = DecodedMaskSet {
+            nan: Some(vec![true; 4]),
+            pos_inf: None,
+            neg_inf: None,
+        };
+        let mut parts = vec![vec![0u8; 1]];
+        let err = restore_non_finite_into_ranges(
+            &mut parts,
+            &desc,
+            &[(0, 1)],
+            &mask_set,
+            ByteOrder::native(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("bitmask"), "got: {err}");
+    }
+
+    #[test]
+    fn restore_non_finite_into_ranges_rejects_parts_len_mismatch() {
+        // parts.len() != ranges.len() — caller supplied a wrong
+        // number of pre-decoded range slices.
+        let mut desc = make_descriptor(vec![8], Dtype::Float64);
+        desc.masks = Some(MasksMetadata {
+            nan: Some(MaskDescriptor {
+                method: "none".to_string(),
+                offset: 64,
+                length: 1,
+                params: BTreeMap::new(),
+            }),
+            ..Default::default()
+        });
+        let mask_set = DecodedMaskSet {
+            nan: Some(vec![true; 8]),
+            pos_inf: None,
+            neg_inf: None,
+        };
+        let mut parts = vec![vec![0u8; 24]]; // 1 part...
+        let err = restore_non_finite_into_ranges(
+            &mut parts,
+            &desc,
+            &[(0, 3), (5, 3)], // ...but 2 ranges
+            &mask_set,
+            ByteOrder::native(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("range count mismatch"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn restore_non_finite_into_ranges_rejects_range_past_mask_end() {
+        // Range offset + count exceeds the decoded mask's element
+        // count — the range decoder supplies parts longer than the
+        // mask can cover.
+        let mut desc = make_descriptor(vec![8], Dtype::Float64);
+        desc.masks = Some(MasksMetadata {
+            nan: Some(MaskDescriptor {
+                method: "none".to_string(),
+                offset: 64,
+                length: 1,
+                params: BTreeMap::new(),
+            }),
+            ..Default::default()
+        });
+        let mask_set = DecodedMaskSet {
+            nan: Some(vec![true; 4]), // mask only covers 4 elements
+            pos_inf: None,
+            neg_inf: None,
+        };
+        let mut parts = vec![vec![0u8; 48]]; // 6×f64
+        let err = restore_non_finite_into_ranges(
+            &mut parts,
+            &desc,
+            &[(0, 6)], // wants 6 but mask has 4
+            &mask_set,
+            ByteOrder::native(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("range end"), "got: {err}");
     }
 
     #[test]

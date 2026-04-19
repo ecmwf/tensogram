@@ -282,7 +282,7 @@ impl<W: Write> StreamingEncoder<W> {
         // Compose the payload region: [encoded_payload][masks...] — see
         // `plans/BITMASK_FRAME.md` §3.2.  When no masks were produced
         // (the common case) this is a zero-cost passthrough.
-        let (payload_region, masks_metadata) = crate::encode::compose_payload_region_for_streaming(
+        let (payload_region, masks_metadata) = crate::encode::compose_payload_region(
             result.encoded_bytes,
             mask_set,
             &self.nan_mask_method,

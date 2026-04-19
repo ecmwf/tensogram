@@ -313,8 +313,14 @@ fn encode_one_object(
     // and each kind's CBOR descriptor records its byte offset and
     // length relative to the region start.  See
     // `plans/BITMASK_FRAME.md` §3.2.
-    let (payload_region, masks_metadata) =
-        compose_payload_region(encoded_payload, mask_set, options)?;
+    let (payload_region, masks_metadata) = compose_payload_region(
+        encoded_payload,
+        mask_set,
+        &options.nan_mask_method,
+        &options.pos_inf_mask_method,
+        &options.neg_inf_mask_method,
+        options.small_mask_threshold_bytes,
+    )?;
     if let Some(m) = masks_metadata {
         final_desc.masks = Some(m);
     }
@@ -1009,30 +1015,6 @@ pub(crate) fn validate_no_szip_offsets_for_non_szip(desc: &DataObjectDescriptor)
     Ok(())
 }
 
-/// Streaming-encoder shim for [`compose_payload_region`].
-///
-/// `StreamingEncoder` carries a snapshot of the relevant options at
-/// construction time (rather than the full `EncodeOptions`), so this
-/// thin wrapper lets it reuse the same implementation without
-/// borrowing the options struct.
-pub(crate) fn compose_payload_region_for_streaming(
-    encoded_payload: Vec<u8>,
-    masks: MaskSet,
-    nan_method: &MaskMethod,
-    pos_inf_method: &MaskMethod,
-    neg_inf_method: &MaskMethod,
-    small_threshold: usize,
-) -> Result<(Vec<u8>, Option<MasksMetadata>)> {
-    compose_payload_region_inner(
-        encoded_payload,
-        masks,
-        nan_method,
-        pos_inf_method,
-        neg_inf_method,
-        small_threshold,
-    )
-}
-
 /// Compose the payload region for a data-object frame.
 ///
 /// The layout emitted is
@@ -1050,27 +1032,17 @@ pub(crate) fn compose_payload_region_for_streaming(
 /// # Small-mask fallback
 ///
 /// When a mask's uncompressed bit-packed byte count is
-/// `≤ options.small_mask_threshold_bytes` (default 128, configurable
-/// and set to `0` to disable), the method is forced to
-/// [`MaskMethod::None`] regardless of `options.*_mask_method`.  The
-/// resulting [`MaskDescriptor::method`] reflects what was actually
-/// written, not the caller's request.
-fn compose_payload_region(
-    encoded_payload: Vec<u8>,
-    masks: MaskSet,
-    options: &EncodeOptions,
-) -> Result<(Vec<u8>, Option<MasksMetadata>)> {
-    compose_payload_region_inner(
-        encoded_payload,
-        masks,
-        &options.nan_mask_method,
-        &options.pos_inf_mask_method,
-        &options.neg_inf_mask_method,
-        options.small_mask_threshold_bytes,
-    )
-}
-
-fn compose_payload_region_inner(
+/// `≤ small_threshold` (default 128, configurable and set to `0` to
+/// disable), the method is forced to [`MaskMethod::None`] regardless
+/// of the caller's requested method.  The resulting
+/// [`MaskDescriptor::method`] reflects what was actually written,
+/// not the caller's request.
+///
+/// Takes the per-kind methods + threshold directly rather than an
+/// [`EncodeOptions`] reference so `StreamingEncoder` can call it
+/// from its field snapshot without borrowing a synthesised options
+/// struct.
+pub(crate) fn compose_payload_region(
     mut encoded_payload: Vec<u8>,
     masks: MaskSet,
     nan_method: &MaskMethod,

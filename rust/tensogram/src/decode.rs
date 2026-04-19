@@ -223,6 +223,11 @@ pub fn decode_with_masks(
         })
     };
 
+    // Advanced API — axis-A parallelism is not worth the complexity
+    // here since this path is intended for niche workflows (custom
+    // missing-value representations, missing-count stats).  Mainline
+    // consumers use `decode()` with `restore_non_finite=true` which
+    // does have the full axis-A/B dispatch.
     let objects: Vec<DecodedObjectWithMasks> =
         crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, || {
             msg.objects.iter().map(decode_one).collect::<Result<_>>()

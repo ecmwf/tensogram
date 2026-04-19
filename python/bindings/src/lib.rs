@@ -999,6 +999,57 @@ fn py_decode(
     pack_message(py, PyMetadata { inner: global_meta }, result_list)
 }
 
+/// Decode a wire-format message, returning raw NaN / Inf bitmasks
+/// alongside the `0.0`-substituted payload for advanced callers.
+///
+/// Unlike :func:`decode`, this entry point never writes canonical
+/// NaN / ±Inf bits into the payload — callers see the substituted
+/// zeros exactly as on disk, plus the raw mask booleans.  Use it
+/// to aggregate missing-count statistics without materialising
+/// canonical non-finite bytes, or to convert to a domain-specific
+/// missing-value representation.
+///
+/// Returns a ``Message(metadata, objects)`` where each object is a
+/// ``(descriptor, payload_array, masks_dict)`` tuple.  ``masks_dict``
+/// holds any subset of ``"nan"``, ``"inf+"``, ``"inf-"`` keys, each
+/// mapped to a boolean numpy array of length ``n_elements``.  An
+/// empty dict means the frame carried no mask companion.
+///
+/// See :doc:`nan-inf-handling` and ``plans/BITMASK_FRAME.md`` §7.3.
+#[pyfunction]
+#[pyo3(
+    name = "decode_with_masks",
+    signature = (
+        buf,
+        verify_hash=false,
+        native_byte_order=true,
+        threads=0,
+    )
+)]
+fn py_decode_with_masks(
+    py: Python<'_>,
+    buf: PyBackedBytes,
+    verify_hash: bool,
+    native_byte_order: bool,
+    threads: u32,
+) -> PyResult<PyObject> {
+    let options = DecodeOptions {
+        verify_hash,
+        native_byte_order,
+        threads,
+        // Forced false by the underlying `decode_with_masks`
+        // regardless of what we pass; stated explicitly for
+        // symmetry with the Rust API contract.
+        restore_non_finite: false,
+        ..Default::default()
+    };
+    let (global_meta, objects) = py.detach(|| {
+        tensogram_lib::decode_with_masks(&buf, &options).map_err(to_py_err)
+    })?;
+    let result_list = objects_with_masks_to_python(py, &objects)?;
+    pack_message(py, PyMetadata { inner: global_meta }, result_list)
+}
+
 /// Decode only metadata (no payload decompression).
 ///
 /// Faster than ``decode()`` when you only need metadata for filtering.
@@ -2635,6 +2686,7 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_encode, m)?)?;
     m.add_function(wrap_pyfunction!(py_encode_pre_encoded, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode, m)?)?;
+    m.add_function(wrap_pyfunction!(py_decode_with_masks, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode_metadata, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode_descriptors, m)?)?;
     m.add_function(wrap_pyfunction!(py_decode_object, m)?)?;
@@ -2857,6 +2909,48 @@ fn data_objects_to_python(
                 .into_any()
                 .unbind();
             Ok(pair)
+        })
+        .collect();
+    Ok(PyList::new(py, items?)?.into_any().unbind())
+}
+
+/// Build a Python list of `(descriptor, payload_array, masks_dict)`
+/// tuples for [`py_decode_with_masks`].  Each `masks_dict` contains
+/// only the kinds that were actually present in the frame (empty
+/// dict for frames without a mask companion).
+fn objects_with_masks_to_python(
+    py: Python<'_>,
+    objects: &[tensogram_lib::DecodedObjectWithMasks],
+) -> PyResult<PyObject> {
+    use numpy::PyArray1;
+    let items: PyResult<Vec<PyObject>> = objects
+        .iter()
+        .map(|obj| {
+            let arr = bytes_to_numpy(py, &obj.descriptor, &obj.payload)?;
+            let py_desc = PyDataObjectDescriptor {
+                inner: obj.descriptor.clone(),
+            }
+            .into_pyobject(py)?
+            .into_any()
+            .unbind();
+            let masks_dict = PyDict::new(py);
+            let add_kind = |key: &str, bits: &Option<Vec<bool>>| -> PyResult<()> {
+                if let Some(bits) = bits {
+                    let arr = PyArray1::<bool>::from_slice(py, bits.as_slice());
+                    masks_dict.set_item(key, arr)?;
+                }
+                Ok(())
+            };
+            add_kind("nan", &obj.masks.nan)?;
+            add_kind("inf+", &obj.masks.pos_inf)?;
+            add_kind("inf-", &obj.masks.neg_inf)?;
+            let triple = pyo3::types::PyTuple::new(
+                py,
+                [py_desc, arr, masks_dict.into_any().unbind()],
+            )?
+            .into_any()
+            .unbind();
+            Ok(triple)
         })
         .collect();
     Ok(PyList::new(py, items?)?.into_any().unbind())

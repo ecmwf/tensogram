@@ -1092,6 +1092,66 @@ mod tests {
     }
 
     #[test]
+    fn mask_aware_payload_end_rejects_mask_past_region() {
+        // Defense-in-depth: a corrupted / malicious descriptor with
+        // mask.offset + length exceeding the region must produce a
+        // clean Framing error at parse time, BEFORE the mask codec
+        // runs.  Exercises mask_aware_payload_end directly since
+        // round-tripping a tampered frame at the integration layer
+        // is fragile (CBOR byte-shifting).
+        let mut desc = make_descriptor(vec![2]);
+        desc.masks = Some(crate::types::MasksMetadata {
+            nan: Some(crate::types::MaskDescriptor {
+                method: "none".to_string(),
+                offset: 4,
+                length: 100, // way past any reasonable region
+                params: BTreeMap::new(),
+            }),
+            ..Default::default()
+        });
+        // Region covers [payload_start=16 .. cbor_start=24] — only
+        // 8 bytes available, so the claimed mask (offset=4, len=100)
+        // exceeds the region (end=104 > 8).
+        let err = mask_aware_payload_end(16, 24, &desc).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exceeds payload region size"),
+            "expected region-size-exceeded error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn mask_aware_payload_end_rejects_offset_length_overflow() {
+        // u64::MAX + u64::MAX overflows checked_add and should
+        // surface a clear overflow error.
+        let mut desc = make_descriptor(vec![2]);
+        desc.masks = Some(crate::types::MasksMetadata {
+            nan: Some(crate::types::MaskDescriptor {
+                method: "none".to_string(),
+                offset: usize::MAX as u64,
+                length: usize::MAX as u64,
+                params: BTreeMap::new(),
+            }),
+            ..Default::default()
+        });
+        let err = mask_aware_payload_end(16, 24, &desc).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("overflow") || msg.contains("exceeds"),
+            "expected overflow / exceeds error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn mask_aware_payload_end_no_masks_uses_region_end() {
+        // Baseline: when descriptor.masks is None, the payload fills
+        // the entire region (pre-0.17 compat path).
+        let desc = make_descriptor(vec![4]);
+        let end = mask_aware_payload_end(16, 32, &desc).unwrap();
+        assert_eq!(end, 32);
+    }
+
+    #[test]
     fn test_data_object_frame_round_trip_cbor_after() {
         let desc = make_descriptor(vec![4]);
         let payload = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];

@@ -263,3 +263,76 @@ def test_decode_object_restores_nan() -> None:
     assert obj[0] == 1.0
     assert np.isnan(obj[1])
     assert obj[2] == 3.0
+
+
+# ── decode_with_masks advanced API ──────────────────────────────────────────
+
+
+def test_decode_with_masks_returns_substituted_payload_plus_masks() -> None:
+    data = np.array([1.0, np.nan, 2.0, np.inf, 3.0], dtype=np.float64)
+    msg = tensogram.encode(
+        _meta(),
+        [(_desc([5]), data)],
+        allow_nan=True,
+        allow_inf=True,
+        small_mask_threshold_bytes=0,
+    )
+    decoded = tensogram.decode_with_masks(msg)
+    assert len(decoded.objects) == 1
+    desc_out, payload, masks = decoded.objects[0]
+
+    # Payload holds the on-disk substituted zeros — never canonical
+    # NaN / Inf (decode_with_masks forces restore_non_finite=False).
+    np.testing.assert_array_equal(
+        payload,
+        np.array([1.0, 0.0, 2.0, 0.0, 3.0], dtype=np.float64),
+    )
+
+    # Masks are numpy bool arrays of length n_elements.  Only kinds
+    # that were actually present appear in the dict.
+    assert set(masks.keys()) == {"nan", "inf+"}
+    np.testing.assert_array_equal(
+        masks["nan"], np.array([False, True, False, False, False])
+    )
+    np.testing.assert_array_equal(
+        masks["inf+"], np.array([False, False, False, True, False])
+    )
+
+
+def test_decode_with_masks_returns_empty_dict_without_masks() -> None:
+    data = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    msg = tensogram.encode(_meta(), [(_desc([3]), data)])
+    decoded = tensogram.decode_with_masks(msg)
+    _, payload, masks = decoded.objects[0]
+    np.testing.assert_array_equal(payload, np.array([1.0, 2.0, 3.0]))
+    assert masks == {}, f"expected empty masks dict, got {masks!r}"
+
+
+def test_decode_with_masks_all_three_kinds_produce_separate_bool_arrays() -> None:
+    data = np.array(
+        [np.nan, 1.0, np.inf, 2.0, -np.inf, 3.0],
+        dtype=np.float64,
+    )
+    msg = tensogram.encode(
+        _meta(),
+        [(_desc([6]), data)],
+        allow_nan=True,
+        allow_inf=True,
+        small_mask_threshold_bytes=0,
+    )
+    decoded = tensogram.decode_with_masks(msg)
+    _, payload, masks = decoded.objects[0]
+
+    expected_payload = np.array([0.0, 1.0, 0.0, 2.0, 0.0, 3.0], dtype=np.float64)
+    np.testing.assert_array_equal(payload, expected_payload)
+
+    assert set(masks.keys()) == {"nan", "inf+", "inf-"}
+    np.testing.assert_array_equal(
+        masks["nan"], [True, False, False, False, False, False]
+    )
+    np.testing.assert_array_equal(
+        masks["inf+"], [False, False, True, False, False, False]
+    )
+    np.testing.assert_array_equal(
+        masks["inf-"], [False, False, False, False, True, False]
+    )
