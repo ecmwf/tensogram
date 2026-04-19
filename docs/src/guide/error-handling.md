@@ -192,16 +192,22 @@ Soft warnings (stderr, exit 0):
 warning: {file}: sub-groups found; only root-group variables are converted
 warning: skipping variable '{name}': Char variables are not supported
 warning: skipping variable '{name}': complex type Compound(_) is not supported
-warning: skipping simple_packing for variable '{name}' (Float32 is not float64)
-warning: skipping simple_packing for variable '{name}': NaN value encountered at index N
+warning: skipping simple_packing for variable '{name}' (not a float64 payload)
 warning: variable '{name}': failed to read attribute '{attr}': {cause}
 warning: failed to read global attribute '{name}': {cause}
 ```
 
-The last two are rare — they only fire on corrupt attribute values
-or unsupported upstream AttributeValue variants — but they surface
-instead of dropping data silently so operators can trace unexpected
-missing metadata.
+Note: NaN/Inf in a variable that targets `simple_packing` now
+**hard-fails** the conversion (see
+[NetCDF Importer — simple_packing on Mixed-dtype Files](#netcdf-importer--simple_packing-on-mixed-dtype-files)
+below).  The previous "warning: skipping simple_packing ... NaN value
+encountered" line no longer fires; that case is an error rather than
+a warning.
+
+The last two lines above are rare — they only fire on corrupt
+attribute values or unsupported upstream AttributeValue variants —
+but they surface instead of dropping data silently so operators can
+trace unexpected missing metadata.
 
 ```
 tensogram-grib errors (rust/tensogram-grib/src/error.rs)
@@ -403,11 +409,19 @@ Accessing `decode_object(buf, index=N)` where N ≥ number of objects
 produces an **Object error** (Rust/C/C++) or **ValueError** (Python).
 File indexing `file[N]` raises **IndexError** for out-of-range N.
 
-### NaN in Simple Packing
+### NaN / Inf in Simple Packing
 
-`compute_packing_params()` rejects NaN values with a **ValueError** that
-includes the index of the first NaN. Inf values are accepted but produce
-extreme scale factors — filter them before packing.
+`compute_packing_params()` rejects both **NaN** and **±Inf** values
+with a **ValueError** that includes the index of the first offending
+sample. `simple_packing`'s scale-factor derivation has no meaningful
+value for non-finite input — rejecting them up front prevents the
+silent corruption path where an `i32::MAX`-saturated
+`binary_scale_factor` decodes to NaN everywhere.
+
+For the pipeline-independent strict-finite check that applies the same
+contract to `encoding="none"` and to every compressor, see the
+[strict-finite encode flags](strict-finite.md) (`reject_nan=True` /
+`reject_inf=True`).
 
 ### File Not Found / Permission Denied
 
@@ -428,10 +442,18 @@ multi-input batch triggered it.
 typical CF temperature file has `f32` lat/lon coordinates alongside
 `f64` data) are handled gracefully: non-f64 variables emit a stderr
 warning and pass through with `encoding="none"`, and the conversion
-overall succeeds. The same fallback fires when a specific f64
-variable contains NaN values (common with unpacked fill values) —
-`simple_packing::compute_params` rejects NaN, so that variable
-falls back to `encoding="none"` with a warning.
+overall succeeds.
+
+**NaN or Inf in a targeted f64 variable is now a hard error** (0.17+).
+The importer fails with
+`NetcdfError::InvalidData("simple_packing failed for {var}: ...")`
+and a recovery hint, rather than silently downgrading the variable
+to `encoding="none"`. Pre-0.17 soft-downgrade hid data-quality
+problems; the new behaviour surfaces them at conversion time.
+Callers relying on the old fallback should either pick a
+non-simple_packing encoding up front, pre-process NaN / Inf out of
+the data, or use `--split-by variable` and choose per-variable
+encodings.
 
 ### NetCDF Importer — Unknown Codec Name
 

@@ -93,9 +93,26 @@ except ValueError as e:
     # rejected: EncodingError: strict-NaN check: NaN at element 1 of float32 array
 ```
 
-Both `tensogram.encode()`, `TensogramFile.append()`, and
-`StreamingEncoder(...)` accept `reject_nan=False` and
-`reject_inf=False` kwargs.
+The following Python entry points all accept
+`reject_nan=False` and `reject_inf=False` kwargs:
+
+- `tensogram.encode(...)`
+- `tensogram.TensogramFile.append(...)`
+- `tensogram.StreamingEncoder(...)`
+- `tensogram.convert_grib(...)` / `convert_grib_buffer(...)`
+- `tensogram.convert_netcdf(...)`
+
+Turning them on at the converter level gives you the same strict
+contract as the CLI:
+
+```python
+msgs = tensogram.convert_netcdf(
+    "sparse.nc",
+    encoding="simple_packing",
+    reject_nan=True,   # hard-fail on _FillValue → NaN substitution
+    reject_inf=True,   # hard-fail on any Inf in the payload
+)
+```
 
 ### TypeScript
 

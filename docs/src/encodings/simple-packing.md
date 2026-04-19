@@ -39,20 +39,53 @@ flowchart TD
 
 ## Limitations and Edge Cases
 
-### NaN is Rejected
+### NaN and ±Infinity are Rejected
 
-`compute_params()` and `encode()` return an error if the data contains any NaN values. Simple packing has no representation for NaN (unlike IEEE 754 floats). Remove or replace NaN values before encoding.
+`compute_params()` and `encode()` return an error if the data
+contains any NaN or ±Infinity values. Simple packing has no
+representation for non-finite numbers (unlike IEEE 754 floats), and
+feeding `Inf` through the range / scale-factor derivation would
+produce an `i32::MAX`-saturated `binary_scale_factor` that silently
+decodes to `NaN` everywhere. Both are errors at the codec entry:
 
-For **domain-strict workflows** that also need to reject `+Inf` / `-Inf` (which simple_packing accepts but silently corrupts — see [§3.1 of the NaN research memo][memo]), use the pipeline-independent [strict-finite encode flags](../guide/strict-finite.md): `reject_nan` and `reject_inf`. They run upstream of the encoding pipeline and give the same contract regardless of `encoding` / `filter` / `compression`.
+- NaN → `PackingError::NanValue(index)`
+- +Inf / -Inf → `PackingError::InfiniteValue(index)`
+
+Remove or replace non-finite values before encoding. For
+**domain-strict workflows** that also want the same guarantee over
+the other encodings (`encoding="none"` + any compressor), use the
+pipeline-independent [strict-finite encode flags](../guide/strict-finite.md)
+(`reject_nan` / `reject_inf`) which run upstream of the codec.
 
 [memo]: https://github.com/ecmwf/tensogram/blob/main/plans/RESEARCH_NAN_HANDLING.md
 
 ```rust
-// This will fail:
-let values = vec![1.0f64, 2.0, f64::NAN, 4.0];
-let params = compute_params(&values, 16, 0);
-assert!(params.is_err());
+// Both rejected:
+let with_nan = vec![1.0_f64, 2.0, f64::NAN, 4.0];
+let with_inf = vec![1.0_f64, 2.0, f64::INFINITY, 4.0];
+assert!(compute_params(&with_nan, 16, 0).is_err());
+assert!(compute_params(&with_inf, 16, 0).is_err());
 ```
+
+### Params Safety Net
+
+Beyond input-value validation, `encode()` also checks the
+`SimplePackingParams` it receives:
+
+- `reference_value` must be finite (`NaN` / `±Inf` → error).
+- `|binary_scale_factor| ≤ 256`. The threshold catches the
+  `i32::MAX`-saturation fingerprint from feeding `Inf` through
+  `compute_params` indirectly; real-world data (`|bsf| ≤ 60`) fits
+  comfortably. The constant `MAX_REASONABLE_BINARY_SCALE = 256` is
+  exported from `tensogram_encodings::simple_packing`.
+
+This closes the standalone-API footgun where a caller constructs or
+mutates `SimplePackingParams` directly rather than deriving them
+from `compute_params`. Both failures surface as
+`PackingError::InvalidParams { field, reason }` with a clear message
+naming the offending field. See the
+[Strict-Finite Encode Checks guide](../guide/strict-finite.md#simple_packing-params-safety-net-always-on)
+for cross-language examples.
 
 ### Constant Fields
 

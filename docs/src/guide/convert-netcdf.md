@@ -186,9 +186,39 @@ wire format. They use the same names and semantics as `convert-grib`:
 | Compression | `--compression blosc2 --compression-level 9` | Uses `blosc2_codec=lz4` by default. |
 | Compression | `--compression szip` | Sets `szip_rsi=128`, `szip_block_size=16`, `szip_flags=8`. **Requires** preceding `simple_packing` or `shuffle` because libaec szip caps at 32 bits per sample (raw `f64` is 64 bits). |
 
-Variables that contain `NaN` (typically from unpacked fill values) cannot be
-`simple_packed` because the algorithm rejects NaN inputs. Such variables are
-skipped (with a warning) and pass through with `encoding=none`.
+Variables that contain `NaN` or `±Inf` (typically from unpacked
+`_FillValue` / `missing_value` substitution or degenerate arithmetic
+upstream) cannot be represented by `simple_packing` — the algorithm's
+range / scale-factor derivation has no slot for non-finite values.
+
+**The importer hard-fails when `--encoding simple_packing` is
+requested on data containing NaN or Inf.** The error names the
+offending variable and suggests recovery options:
+
+```
+error: simple_packing failed for forecast_temperature: NaN value
+encountered at index 42. The variable contains NaN or Inf which
+cannot be represented by simple_packing. Pre-process the data or
+choose a different encoding (e.g. encoding="none").
+```
+
+Recovery options, in order of effort:
+
+1. **Drop the `--encoding simple_packing` flag.** The default
+   (`encoding="none"`) accepts NaN bits transparently and produces a
+   valid Tensogram file.
+2. **Substitute non-finite values** with an in-band sentinel before
+   conversion if you need simple_packing throughout.
+3. **Split the conversion** with `--split-by variable` and re-run
+   per-variable, using `--encoding simple_packing` only for the
+   variables you know are NaN-free.
+
+> **Prior behaviour (pre-0.17).** The importer used to soft-downgrade
+> NaN-bearing variables to `encoding="none"` with a stderr warning.
+> That silently hid data-quality problems from automated pipelines;
+> the hard-fail surfaces them. The non-f64-payload branch (a
+> structural mismatch rather than a data-quality problem) keeps its
+> stderr-warning + fallback behaviour unchanged.
 
 ```bash
 # Pack temperature to 24-bit + zstd
