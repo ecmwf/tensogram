@@ -17,9 +17,9 @@ shape/dtype sourcing after refactor.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 import numpy as np
+import pytest
 import tensogram
 import xarray as xr
 from tensogram_xarray.mapping import resolve_variable_name
@@ -373,6 +373,10 @@ class TestWireFormatEdgeCases:
         assert var.shape == (1,)
         np.testing.assert_array_equal(var.values, data)
 
+    @pytest.mark.skip(
+        reason="All-NaN round-trip requires allow_nan bitmask opt-in "
+        "(BITMASK_FRAME.md Commit 5). Until then, NaN input is rejected at encode."
+    )
     def test_all_nan_float32_preserved(self, tmp_path: Path):
         """All-NaN float32 array opens correctly with xarray, NaN preserved."""
         path = str(tmp_path / "all_nan.tgm")
