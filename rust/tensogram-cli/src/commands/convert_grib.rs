@@ -108,6 +108,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -125,6 +126,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -142,6 +144,7 @@ mod tests {
             true,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -164,6 +167,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -176,7 +180,18 @@ mod tests {
     #[test]
     fn convert_no_inputs_errors() {
         let empty: Vec<String> = vec![];
-        assert!(run(&empty, None, false, false, &default_pipeline(), 0).is_err());
+        assert!(
+            run(
+                &empty,
+                None,
+                false,
+                false,
+                &default_pipeline(),
+                0,
+                &super::super::MaskCliOptions::default(),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -188,6 +203,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         );
         assert!(result.is_err());
     }
@@ -203,6 +219,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -220,6 +237,7 @@ mod tests {
             true,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -240,6 +258,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();

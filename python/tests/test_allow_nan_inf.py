@@ -71,7 +71,7 @@ def test_allow_nan_round_trip_f64_restores_nan_at_masked_positions() -> None:
     data = np.array([1.0, np.nan, 3.0, np.nan, 5.0], dtype=np.float64)
     msg = tensogram.encode(_meta(), [(_desc([5]), data)], allow_nan=True)
     decoded = tensogram.decode(msg)
-    out = decoded.objects[0].data
+    out = decoded.objects[0][1]
     assert out[0] == 1.0
     assert np.isnan(out[1])
     assert out[2] == 3.0
@@ -83,7 +83,7 @@ def test_restore_non_finite_false_returns_substituted_zero() -> None:
     data = np.array([1.0, np.nan, 3.0], dtype=np.float64)
     msg = tensogram.encode(_meta(), [(_desc([3]), data)], allow_nan=True)
     decoded = tensogram.decode(msg, restore_non_finite=False)
-    out = decoded.objects[0].data
+    out = decoded.objects[0][1]
     # NaN position now holds 0.0 (the substituted bit pattern).
     assert out[0] == 1.0
     assert out[1] == 0.0
@@ -103,7 +103,7 @@ def test_allow_nan_and_inf_f32_all_kinds_round_trip() -> None:
         small_mask_threshold_bytes=0,  # force requested methods
     )
     decoded = tensogram.decode(msg)
-    out = decoded.objects[0].data
+    out = decoded.objects[0][1]
     assert out[0] == 1.0
     assert np.isnan(out[1])
     assert np.isposinf(out[2])
@@ -131,7 +131,7 @@ def test_mask_method_round_trip(method: str) -> None:
         small_mask_threshold_bytes=0,
     )
     decoded = tensogram.decode(msg)
-    out = decoded.objects[0].data
+    out = decoded.objects[0][1]
     nan_positions = np.nonzero(np.isnan(out))[0]
     assert sorted(nan_positions.tolist()) == [10, 50, 100]
 
@@ -162,7 +162,7 @@ def test_small_mask_auto_fallback_still_round_trips() -> None:
         # leave small_mask_threshold_bytes at the default (128)
     )
     decoded = tensogram.decode(msg)
-    out = decoded.objects[0].data
+    out = decoded.objects[0][1]
     assert np.isnan(out[0])
     assert out[1] == 1.0
     assert np.isnan(out[2])
@@ -182,7 +182,7 @@ def test_streaming_encoder_allow_nan_round_trip() -> None:
     enc.write_object(_desc([3]), data)
     msg = bytes(enc.finish())
     decoded = tensogram.decode(msg)
-    out = decoded.objects[0].data
+    out = decoded.objects[0][1]
     assert out[0] == 1.0
     assert np.isnan(out[1])
     assert out[2] == 2.0
@@ -203,7 +203,7 @@ def test_tensogram_file_append_allow_nan(tmp_path) -> None:
         )
     with tensogram.TensogramFile.open(path) as f:
         msg = f.decode_message(0)
-        out = msg.objects[0].data
+        out = msg.objects[0][1]
         assert out[0] == 1.0
         assert np.isnan(out[1])
         assert out[2] == 3.0
