@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- **Strict-finite kwargs on Python converter functions.**
+  `tensogram.convert_grib`, `tensogram.convert_grib_buffer`, and
+  `tensogram.convert_netcdf` now accept `reject_nan: bool = False`
+  and `reject_inf: bool = False` kwargs that forward to the shared
+  `EncodeOptions`.  CLI parity (`tensogram convert-grib --reject-nan`)
+  already existed; this closes the corresponding Python gap.
+
 ## [0.16.1] - 2026-04-19
 
 ### Fixed

@@ -386,6 +386,50 @@ def test_convert_grib_invalid_hash() -> None:
         tensogram.convert_grib(str(_testdata("2t.grib2")), hash="sha256")
 
 
+# ── Strict-finite flag parity with CLI convert-grib ─────────────────────────
+
+
+@requires_grib
+def test_convert_grib_accepts_reject_nan_kwarg() -> None:
+    """The ``reject_nan=True`` kwarg is accepted and plumbed through.
+
+    ECMWF opendata GRIB fixtures are NaN-free, so the flag does not
+    fire — we just verify conversion still completes.  The NetCDF
+    suite (where CF unpacking produces NaN) exercises the rejection
+    path.
+    """
+    messages = tensogram.convert_grib(
+        str(_testdata("2t.grib2")),
+        reject_nan=True,
+    )
+    assert isinstance(messages, list)
+    assert messages
+
+
+@requires_grib
+def test_convert_grib_accepts_reject_inf_kwarg() -> None:
+    """Same, for ``reject_inf=True``."""
+    messages = tensogram.convert_grib(
+        str(_testdata("2t.grib2")),
+        reject_inf=True,
+    )
+    assert isinstance(messages, list)
+    assert messages
+
+
+@requires_grib
+def test_convert_grib_buffer_accepts_strict_kwargs() -> None:
+    """``convert_grib_buffer`` takes the same kwargs as ``convert_grib``."""
+    with open(_testdata("2t.grib2"), "rb") as fh:
+        messages = tensogram.convert_grib_buffer(
+            fh.read(),
+            reject_nan=True,
+            reject_inf=True,
+        )
+    assert isinstance(messages, list)
+    assert messages
+
+
 def test_convert_grib_stub_when_feature_missing() -> None:
     """When the build lacks the 'grib' feature, the stub explains how to fix it."""
     if _has_grib_feature():
