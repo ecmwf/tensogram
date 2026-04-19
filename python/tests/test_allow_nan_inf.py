@@ -147,6 +147,25 @@ def test_unknown_mask_method_errors_cleanly() -> None:
         )
 
 
+def test_unknown_mask_method_error_lists_all_accepted_names() -> None:
+    """Regression: the error message enumerates every accepted mask
+    method name.  Keeps cross-language parity with the Rust / CLI /
+    TS / WASM / FFI frontends (single source of truth in
+    ``MaskError::UnknownMethod``).
+    """
+    data = np.array([np.nan], dtype=np.float64)
+    with pytest.raises(ValueError) as exc_info:
+        tensogram.encode(
+            _meta(),
+            [(_desc([1]), data)],
+            allow_nan=True,
+            nan_mask_method="znorfle",
+        )
+    message = str(exc_info.value)
+    for name in ("none", "rle", "roaring", "lz4", "zstd", "blosc2"):
+        assert f'"{name}"' in message, f"expected quoted {name!r} in error: {message!r}"
+
+
 # ── Small-mask auto-fallback ───────────────────────────────────────────────
 
 

@@ -221,7 +221,7 @@ impl StreamingEncoder {
             pos_inf_mask_method.as_deref(),
             neg_inf_mask_method.as_deref(),
             small_mask_threshold_bytes,
-        );
+        )?;
         let inner = match on_bytes {
             Some(cb) => {
                 let sink = JsCallbackWriter::new(cb);

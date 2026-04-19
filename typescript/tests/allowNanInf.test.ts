@@ -105,6 +105,25 @@ describe('allow_nan / allow_inf bindings', () => {
     }
   });
 
+  it('unknown mask method name raises a JsError (no silent fallback)', async () => {
+    await init();
+    const data = new Float64Array([1, NaN, 3]);
+    expect(() =>
+      encode(
+        defaultMeta(),
+        [{ descriptor: makeDescriptor([3], 'float64'), data }],
+        {
+          allowNan: true,
+          // Cast to bypass the TypeScript type guard — we want to
+          // exercise the WASM-side validation on arbitrary user
+          // input (e.g. runtime strings from CLI flags).
+          nanMaskMethod: 'totally-bogus' as never,
+          smallMaskThresholdBytes: 0,
+        },
+      ),
+    ).toThrow(/unknown mask method/);
+  });
+
   it('zstd mask method raises feature-disabled error on WASM', async () => {
     await init();
     const data = new Float64Array([NaN, 1, 2]);

@@ -103,6 +103,21 @@ TEST(AllowNanInfTest, AllowInfRestoresPosAndNegInf) {
     EXPECT_DOUBLE_EQ(out[3], 2.0);
 }
 
+TEST(AllowNanInfTest, UnknownMaskMethodReturnsInvalidArg) {
+    // Pass 4 regression: the FFI layer used to silently fall back
+    // to "roaring" on unknown method names, which hid user typos
+    // and broke cross-language parity with the Python / TS / CLI
+    // frontends.  tgm_encode_with_options now returns InvalidArg
+    // with a clear error message.
+    std::vector<double> values = {1.0, std::nan(""), 3.0};
+    tensogram::encode_options opts;
+    opts.allow_nan = true;
+    opts.nan_mask_method = "totally-bogus";
+    EXPECT_THROW(
+        tensogram::encode(descriptor_json(3), one_object(values), opts),
+        tensogram::invalid_arg_error);
+}
+
 TEST(AllowNanInfTest, MaskMethodRleRoundTrip) {
     std::vector<double> values(128);
     for (std::size_t i = 0; i < 128; ++i) {

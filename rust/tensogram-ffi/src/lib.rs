@@ -123,9 +123,10 @@ pub struct TgmBytes {
 ///
 /// Each `*_mask_method` string is one of `"none"`, `"rle"`,
 /// `"roaring"`, `"lz4"`, `"zstd"`, or `"blosc2"`; pass `NULL` to use
-/// the library default (`"roaring"`).  Unknown names fall back to
-/// `"roaring"` silently; use the Rust `encode` entry point for
-/// strict validation.
+/// the library default (`"roaring"`).  Unknown names cause the
+/// owning `tgm_*_with_options` call to return
+/// [`TgmError::InvalidArg`] with a clear message via
+/// [`tgm_last_error`].
 ///
 /// `small_mask_threshold_bytes` is the byte-count below which mask
 /// blobs are written as `"none"` regardless of the requested method
@@ -142,48 +143,57 @@ pub struct TgmEncodeMaskOptions {
 }
 
 /// Parse one of the optional C-string mask-method fields into a Rust
-/// [`MaskMethod`], falling back to the argument default on `NULL` or
-/// unknown names.
+/// [`MaskMethod`].  Returns the caller-supplied default on `NULL`,
+/// an `Err` naming the offending value (and accepted alternatives)
+/// for invalid UTF-8 or unknown names.
 ///
 /// # Safety
 ///
 /// `ptr` must either be `NULL` or point to a NUL-terminated UTF-8
 /// string with a valid Rust-bound lifetime.
-unsafe fn parse_mask_method_cstr(ptr: *const c_char, default: MaskMethod) -> MaskMethod {
+unsafe fn parse_mask_method_cstr(
+    ptr: *const c_char,
+    default: MaskMethod,
+) -> Result<MaskMethod, String> {
     if ptr.is_null() {
-        return default;
+        return Ok(default);
     }
-    let s = match unsafe { CStr::from_ptr(ptr) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return default,
-    };
-    MaskMethod::from_name(s).unwrap_or(default)
+    let s = unsafe { CStr::from_ptr(ptr) }
+        .to_str()
+        .map_err(|_| "mask method name is not valid UTF-8".to_string())?;
+    MaskMethod::from_name(s).map_err(|e| e.to_string())
 }
 
 /// Apply the optional [`TgmEncodeMaskOptions`] pointer to an
-/// [`EncodeOptions`].  `NULL` is a no-op.
+/// [`EncodeOptions`].  `NULL` is a no-op.  Returns an error message
+/// (routed to [`set_last_error`] by the caller) when a method name
+/// is invalid UTF-8 or unknown.
 ///
 /// # Safety
 ///
 /// `opts` must either be `NULL` or point to a valid
 /// `TgmEncodeMaskOptions` whose `*_mask_method` fields satisfy
 /// [`parse_mask_method_cstr`]'s safety contract.
-unsafe fn apply_mask_options(encode_opts: &mut EncodeOptions, opts: *const TgmEncodeMaskOptions) {
+unsafe fn apply_mask_options(
+    encode_opts: &mut EncodeOptions,
+    opts: *const TgmEncodeMaskOptions,
+) -> Result<(), String> {
     if opts.is_null() {
-        return;
+        return Ok(());
     }
     let opts = unsafe { &*opts };
     encode_opts.allow_nan = opts.allow_nan;
     encode_opts.allow_inf = opts.allow_inf;
     encode_opts.nan_mask_method =
-        unsafe { parse_mask_method_cstr(opts.nan_mask_method, MaskMethod::default()) };
+        unsafe { parse_mask_method_cstr(opts.nan_mask_method, MaskMethod::default())? };
     encode_opts.pos_inf_mask_method =
-        unsafe { parse_mask_method_cstr(opts.pos_inf_mask_method, MaskMethod::default()) };
+        unsafe { parse_mask_method_cstr(opts.pos_inf_mask_method, MaskMethod::default())? };
     encode_opts.neg_inf_mask_method =
-        unsafe { parse_mask_method_cstr(opts.neg_inf_mask_method, MaskMethod::default()) };
+        unsafe { parse_mask_method_cstr(opts.neg_inf_mask_method, MaskMethod::default())? };
     if opts.small_mask_threshold_bytes >= 0 {
         encode_opts.small_mask_threshold_bytes = opts.small_mask_threshold_bytes as usize;
     }
+    Ok(())
 }
 
 /// Decode-side companion to [`TgmEncodeMaskOptions`].  Pass a pointer
@@ -708,7 +718,10 @@ pub extern "C" fn tgm_encode_with_options(
             return code;
         }
     };
-    unsafe { apply_mask_options(&mut parsed.options, mask_options) };
+    if let Err(msg) = unsafe { apply_mask_options(&mut parsed.options, mask_options) } {
+        set_last_error(&msg);
+        return TgmError::InvalidArg;
+    }
 
     let pairs: Vec<(&DataObjectDescriptor, &[u8])> = parsed
         .descriptors
@@ -876,7 +889,10 @@ pub extern "C" fn tgm_streaming_encoder_create_with_options(
         threads,
         ..Default::default()
     };
-    unsafe { apply_mask_options(&mut options, mask_options) };
+    if let Err(msg) = unsafe { apply_mask_options(&mut options, mask_options) } {
+        set_last_error(&msg);
+        return TgmError::InvalidArg;
+    }
     let writer = std::io::BufWriter::new(file);
     match StreamingEncoder::new(writer, &global_metadata, &options) {
         Ok(enc) => {
@@ -936,7 +952,10 @@ pub extern "C" fn tgm_file_append_with_options(
             return code;
         }
     };
-    unsafe { apply_mask_options(&mut parsed.options, mask_options) };
+    if let Err(msg) = unsafe { apply_mask_options(&mut parsed.options, mask_options) } {
+        set_last_error(&msg);
+        return TgmError::InvalidArg;
+    }
     let pairs: Vec<(&DataObjectDescriptor, &[u8])> = parsed
         .descriptors
         .iter()

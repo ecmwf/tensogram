@@ -143,20 +143,16 @@ pub fn encode(
         .zip(data_vec.iter())
         .map(|(d, v)| (d, v.as_slice()))
         .collect();
-    let encoded = core::encode(
-        &metadata,
-        &pairs,
-        &build_encode_options_full(
-            hash,
-            allow_nan,
-            allow_inf,
-            nan_mask_method.as_deref(),
-            pos_inf_mask_method.as_deref(),
-            neg_inf_mask_method.as_deref(),
-            small_mask_threshold_bytes,
-        ),
-    )
-    .map_err(js_err)?;
+    let options = build_encode_options_full(
+        hash,
+        allow_nan,
+        allow_inf,
+        nan_mask_method.as_deref(),
+        pos_inf_mask_method.as_deref(),
+        neg_inf_mask_method.as_deref(),
+        small_mask_threshold_bytes,
+    )?;
+    let encoded = core::encode(&metadata, &pairs, &options).map_err(js_err)?;
     // Return a JS-owned copy.  We must not use `view_as_u8` here because
     // `encoded` is a local Vec that will be dropped when this function
     // returns — a view into it would be a dangling pointer.

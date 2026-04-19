@@ -2707,12 +2707,10 @@ fn make_encode_options_full(
         let Some(name) = s else {
             return Ok(default);
         };
-        MaskMethod::from_name(name).map_err(|_| {
-            PyValueError::new_err(format!(
-                "unknown mask method {name:?} (expected \
-                 \"none\" | \"rle\" | \"roaring\" | \"lz4\" | \"zstd\" | \"blosc2\")"
-            ))
-        })
+        // Delegate the error message to `MaskError::UnknownMethod`'s
+        // Display so the accepted-names list stays in one place
+        // across every binding.
+        MaskMethod::from_name(name).map_err(|e| PyValueError::new_err(e.to_string()))
     };
 
     let defaults = EncodeOptions::default();

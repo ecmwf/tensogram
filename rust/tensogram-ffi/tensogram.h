@@ -94,9 +94,10 @@ typedef struct {
  *
  * Each `*_mask_method` string is one of `"none"`, `"rle"`,
  * `"roaring"`, `"lz4"`, `"zstd"`, or `"blosc2"`; pass `NULL` to use
- * the library default (`"roaring"`).  Unknown names fall back to
- * `"roaring"` silently; use the Rust `encode` entry point for
- * strict validation.
+ * the library default (`"roaring"`).  Unknown names cause the
+ * owning `tgm_*_with_options` call to return
+ * [`TgmError::InvalidArg`] with a clear message via
+ * [`tgm_last_error`].
  *
  * `small_mask_threshold_bytes` is the byte-count below which mask
  * blobs are written as `"none"` regardless of the requested method

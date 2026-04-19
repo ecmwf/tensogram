@@ -48,17 +48,14 @@ impl MaskCliOptions {
         use tensogram::encode::MaskMethod;
         opts.allow_nan = self.allow_nan;
         opts.allow_inf = self.allow_inf;
+        // Delegate the error message to `MaskError::UnknownMethod`'s
+        // Display so the accepted-names list stays in one place
+        // across every binding.
         let parse = |name: &Option<String>, default: &MaskMethod| -> Result<MaskMethod, String> {
             let Some(name) = name.as_deref() else {
                 return Ok(default.clone());
             };
-            MaskMethod::from_name(name).map_err(|_| {
-                format!(
-                    "unknown mask method {name:?} \
-                     (expected \"none\" | \"rle\" | \"roaring\" | \
-                     \"lz4\" | \"zstd\" | \"blosc2\")"
-                )
-            })
+            MaskMethod::from_name(name).map_err(|e| e.to_string())
         };
         let defaults = tensogram::EncodeOptions::default();
         opts.nan_mask_method = parse(&self.nan_mask_method, &defaults.nan_mask_method)?;
