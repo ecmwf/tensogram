@@ -87,7 +87,10 @@ fn validate_params(params: &SimplePackingParams) -> Result<(), PackingError> {
             reason: format!("must be finite, got {}", params.reference_value),
         });
     }
-    if params.binary_scale_factor.abs() > MAX_REASONABLE_BINARY_SCALE {
+    // `saturating_abs` handles `i32::MIN` without panicking (debug)
+    // or silently returning a negative value (release).  `i32::MIN`
+    // clamps to `i32::MAX`, comfortably above the threshold.
+    if params.binary_scale_factor.saturating_abs() > MAX_REASONABLE_BINARY_SCALE {
         return Err(PackingError::InvalidParams {
             field: "binary_scale_factor",
             reason: format!(
@@ -1411,6 +1414,53 @@ mod tests {
                 field: "binary_scale_factor",
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn test_encode_rejects_i32_min_binary_scale_factor() {
+        // Regression: `i32::MIN.abs()` overflows (panics in debug,
+        // returns `i32::MIN` in release).  `saturating_abs` handles it.
+        // Either way: `i32::MIN` is massively out of the reasonable
+        // range, so rejection is the right answer.
+        let params = SimplePackingParams {
+            reference_value: 1.0,
+            binary_scale_factor: i32::MIN,
+            decimal_scale_factor: 0,
+            bits_per_value: 16,
+        };
+        assert!(matches!(
+            encode(&[1.0], &params),
+            Err(PackingError::InvalidParams {
+                field: "binary_scale_factor",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_safety_net_catches_compute_params_extreme_range() {
+        // End-to-end path: even with all-finite input, a caller who
+        // asks to pack `[f64::MIN, f64::MAX]` at 16 bits gets params
+        // with `binary_scale_factor ≈ i32::MAX` (log2(f64::MAX / 2^16)
+        // saturates the cast to i32).  This is the same signature as
+        // the Inf-corruption §3.1 path, only via a different origin.
+        // The safety net treats both the same: hard error with a
+        // "recompute from finite data" hint.  The remedy here is to
+        // use more bits or split the range; the message is accurate
+        // for both.
+        let values = [f64::MIN, f64::MAX];
+        let params = compute_params(&values, 16, 0).unwrap();
+        // compute_params succeeds but the params are unusable.
+        assert_eq!(params.binary_scale_factor, i32::MAX);
+        // encode catches it.
+        let err = encode(&values, &params).unwrap_err();
+        assert!(matches!(
+            err,
+            PackingError::InvalidParams {
+                field: "binary_scale_factor",
+                ..
+            }
         ));
     }
 

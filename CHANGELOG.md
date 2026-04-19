@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`simple_packing::encode` safety net handles `i32::MIN` correctly.**
+  Before: `params.binary_scale_factor.abs()` panics on debug builds
+  (integer-overflow) and silently returns `i32::MIN` (still negative)
+  on release, so the comparison `> 256` falsely accepts the
+  worst-case value, and the subsequent encode silently corrupts.
+  After: uses `saturating_abs()` which clamps `i32::MIN` to
+  `i32::MAX`, correctly rejecting it via
+  `PackingError::InvalidParams`.  Regression test added.
+
 ### Added
 
 - **Strict-finite kwargs on Python converter functions.**
