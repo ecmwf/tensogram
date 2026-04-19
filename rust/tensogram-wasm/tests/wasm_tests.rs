@@ -69,6 +69,7 @@ fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     }
 }
@@ -1241,6 +1242,7 @@ fn decode_scalar_tensor() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let payload = 42.0f64.to_le_bytes().to_vec();

@@ -746,7 +746,10 @@ fn simple_packing_on_multi_dtype_fails_on_nan_variable() {
         msg.contains("simple_packing") && msg.contains("f64_with_nan"),
         "error must name encoding + offending variable: {msg}"
     );
-    assert!(msg.contains("NaN"), "error must name the trigger kind: {msg}");
+    assert!(
+        msg.contains("NaN"),
+        "error must name the trigger kind: {msg}"
+    );
 }
 
 // Note: the pre-0.17 test `simple_packing_skips_non_f64_variables` was

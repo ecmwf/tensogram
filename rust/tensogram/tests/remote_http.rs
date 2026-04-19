@@ -59,6 +59,7 @@ fn make_descriptor(shape: Vec<u64>) -> DataObjectDescriptor {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     }
 }

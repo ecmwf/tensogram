@@ -56,6 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         filter: "shuffle".to_string(), // ← shuffle is the filter stage
         compression: "none".to_string(),
         params: filter_params,
+        masks: None,
         hash: None,
     };
 

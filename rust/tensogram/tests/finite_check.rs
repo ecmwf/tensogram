@@ -11,13 +11,14 @@
 //!
 //! Unlike the pre-0.17 `EncodeOptions::reject_nan` / `reject_inf`
 //! flags (removed in commit 0 of the bitmask frame work), rejection
-//! is now always on.  The `allow_nan` / `allow_inf` bitmask opt-in
-//! lands in a subsequent commit; tests for that path live in the
-//! bitmask test file.
+//! is now always on by default.  The `allow_nan` / `allow_inf`
+//! bitmask opt-in (Commit 5) flips the policy for callers who want
+//! their non-finite values preserved via a mask companion frame;
+//! tests for that path live in `tests/allow_nan_inf.rs`.
 //!
 //! Cross-references:
 //! - Design: `plans/BITMASK_FRAME.md` §2 (default-behaviour flip).
-//! - Scan internals: `rust/tensogram/src/finite_check.rs`.
+//! - Substitution internals: `rust/tensogram/src/substitute_and_mask.rs`.
 
 use std::collections::BTreeMap;
 use tensogram::*;
@@ -50,6 +51,7 @@ fn make_descriptor(shape: Vec<u64>, dtype: Dtype, byte_order: ByteOrder) -> Data
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     }
 }

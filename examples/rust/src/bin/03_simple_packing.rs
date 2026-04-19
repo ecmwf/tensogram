@@ -89,6 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: packing_params,
+        masks: None,
         hash: None,
     };
 

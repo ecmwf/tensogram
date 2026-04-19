@@ -65,6 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         filter: "none".to_string(),
         compression: "szip".to_string(),
         params,
+        masks: None,
         hash: None,
     };
 

@@ -20,12 +20,12 @@ pub mod metadata;
 // and `DecodeOptions.threads`; the constants
 // `DEFAULT_PARALLEL_THRESHOLD_BYTES` and `ENV_THREADS` are re-exported
 // at the crate root for documentation.
-pub(crate) mod finite_check;
 mod parallel;
 pub mod pipeline;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub mod streaming;
+pub(crate) mod substitute_and_mask;
 pub mod types;
 pub mod validate;
 pub mod wire;

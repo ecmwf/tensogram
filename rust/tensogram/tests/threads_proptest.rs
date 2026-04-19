@@ -100,6 +100,7 @@ fn make_descriptor(shape: Vec<u64>, compression: &Compression) -> DataObjectDesc
         filter: "none".to_string(),
         compression: wire,
         params,
+        masks: None,
         hash: None,
     }
 }

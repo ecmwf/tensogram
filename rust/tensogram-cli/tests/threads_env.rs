@@ -41,6 +41,7 @@ fn make_input_file(dir: &std::path::Path) -> std::path::PathBuf {
         filter: "none".to_string(),
         compression: "blosc2".to_string(),
         params: Default::default(),
+        masks: None,
         hash: None,
     };
     desc.params

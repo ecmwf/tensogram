@@ -2864,6 +2864,7 @@ fn dict_to_data_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<DataObje
         filter,
         compression,
         params,
+        masks: None,
         hash: None,
     })
 }

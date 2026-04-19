@@ -85,6 +85,7 @@ fn bench_encode_paths(c: &mut Criterion) {
         filter: "none".to_string(),
         compression: "szip".to_string(),
         params: params_map,
+        masks: None,
         hash: None,
     };
 

@@ -16,6 +16,63 @@ use crate::wire::{
     MAGIC, MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE, Postamble, Preamble,
 };
 
+/// Compute the byte offset in `buf` where the encoded payload ends
+/// and the (optional) mask region begins, given the payload start,
+/// the region end (the start of CBOR), and the parsed descriptor.
+///
+/// When `descriptor.masks` is `None` — the common case — the payload
+/// fills the entire region, so `payload_end == region_end`.  When
+/// masks are present, the payload ends at the smallest offset among
+/// the present mask descriptors (offsets are relative to the
+/// payload-region start, so the absolute end is
+/// `payload_start + smallest_offset`).
+///
+/// Returns [`TensogramError::Framing`] when a mask descriptor's
+/// offset + length exceeds the region size — a corrupted or
+/// malicious frame.
+fn mask_aware_payload_end(
+    payload_start: usize,
+    region_end: usize,
+    desc: &DataObjectDescriptor,
+) -> Result<usize> {
+    let Some(masks) = desc.masks.as_ref() else {
+        return Ok(region_end);
+    };
+    let region_len = region_end.saturating_sub(payload_start);
+
+    // Validate every present mask fits inside the region.
+    let mut smallest_offset: Option<usize> = None;
+    let mut validate_one =
+        |md: Option<&crate::types::MaskDescriptor>, kind: &'static str| -> Result<()> {
+            let Some(md) = md else { return Ok(()) };
+            let offset = usize::try_from(md.offset).map_err(|_| {
+                TensogramError::Framing(format!("mask_{kind}.offset {} overflows usize", md.offset))
+            })?;
+            let length = usize::try_from(md.length).map_err(|_| {
+                TensogramError::Framing(format!("mask_{kind}.length {} overflows usize", md.length))
+            })?;
+            let end = offset.checked_add(length).ok_or_else(|| {
+                TensogramError::Framing(format!(
+                    "mask_{kind}.offset + length overflow (offset={offset}, length={length})"
+                ))
+            })?;
+            if end > region_len {
+                return Err(TensogramError::Framing(format!(
+                    "mask_{kind}.offset + length ({end}) exceeds payload region size ({region_len})"
+                )));
+            }
+            smallest_offset = Some(smallest_offset.map_or(offset, |s| s.min(offset)));
+            Ok(())
+        };
+    validate_one(masks.nan.as_ref(), "nan")?;
+    validate_one(masks.pos_inf.as_ref(), "inf+")?;
+    validate_one(masks.neg_inf.as_ref(), "inf-")?;
+
+    // Every kind absent (masks == Some(empty)) — treat like no masks.
+    let relative_end = smallest_offset.unwrap_or(region_len);
+    Ok(payload_start + relative_end)
+}
+
 // ── Frame-level primitives ───────────────────────────────────────────────────
 
 /// Write a complete frame: frame_header + payload + ENDF.
@@ -227,15 +284,20 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
     let cbor_after = fh.flags & DataObjectFlags::CBOR_AFTER_PAYLOAD != 0;
 
     let (descriptor, payload_slice) = if cbor_after {
-        // Layout: header(16) | payload | cbor | cbor_offset(8) | ENDF(4)
+        // Layout: header(16) | payload_region | cbor | cbor_offset(8) | ENDF(4)
+        //
+        // `payload_region` = [encoded_payload][mask_nan][mask_inf+][mask_inf-]
+        // when descriptor.masks is Some; just [encoded_payload] otherwise.
+        // See `plans/BITMASK_FRAME.md` §3.2.
         let payload_start = FRAME_HEADER_SIZE;
         let cbor_start = cbor_offset;
         let cbor_end = cbor_offset_pos;
         let cbor_slice = &buf[cbor_start..cbor_end];
         let desc = metadata::cbor_to_object_descriptor(cbor_slice)?;
-        (desc, &buf[payload_start..cbor_start])
+        let payload_end = mask_aware_payload_end(payload_start, cbor_start, &desc)?;
+        (desc, &buf[payload_start..payload_end])
     } else {
-        // Layout: header(16) | cbor | payload | cbor_offset(8) | ENDF(4)
+        // Layout: header(16) | cbor | payload_region | cbor_offset(8) | ENDF(4)
         // Use Cursor to measure exact consumed CBOR bytes on the wire.
         // Re-serialization would produce different lengths for non-canonical CBOR.
         let cbor_start = cbor_offset;
@@ -252,7 +314,8 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
         let desc: DataObjectDescriptor = cbor_value.deserialized().map_err(|e| {
             TensogramError::Metadata(format!("failed to deserialize descriptor: {e}"))
         })?;
-        (desc, &buf[payload_start..cbor_offset_pos])
+        let payload_end = mask_aware_payload_end(payload_start, cbor_offset_pos, &desc)?;
+        (desc, &buf[payload_start..payload_end])
     };
 
     // Bytes consumed, including padding
@@ -1005,6 +1068,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         }
     }

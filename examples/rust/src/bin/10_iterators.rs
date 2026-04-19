@@ -49,6 +49,7 @@ fn make_message(param: &str, fill: u8) -> (GlobalMetadata, DataObjectDescriptor,
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 

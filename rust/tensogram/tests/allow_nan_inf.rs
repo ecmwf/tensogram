@@ -1,0 +1,445 @@
+// (C) Copyright 2026- ECMWF and individual contributors.
+//
+// This software is licensed under the terms of the Apache Licence Version 2.0
+// which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+// In applying this licence, ECMWF does not waive the privileges and immunities
+// granted to it by virtue of its status as an intergovernmental organisation nor
+// does it submit to any jurisdiction.
+
+//! Integration tests for the `allow_nan` / `allow_inf` encode path
+//! introduced by Commit 5 of `plans/BITMASK_FRAME.md`.
+//!
+//! Scope of this commit: encode-side only.  The tests verify that
+//! the type-9 `NTensorMaskedFrame` is emitted with a correctly
+//! populated `masks` sub-map and per-kind mask sections.  NaN / Inf
+//! **reconstruction on decode** is Commit 6; tests here assert the
+//! decoded payload contains the substituted zeros and inspect
+//! `descriptor.masks` metadata directly.
+
+use std::collections::BTreeMap;
+use tensogram::encode::MaskMethod;
+use tensogram::*;
+
+fn make_global_meta() -> GlobalMetadata {
+    GlobalMetadata {
+        version: 2,
+        ..Default::default()
+    }
+}
+
+fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
+    let strides = if shape.is_empty() {
+        vec![]
+    } else {
+        let mut s = vec![1u64; shape.len()];
+        for i in (0..shape.len() - 1).rev() {
+            s[i] = s[i + 1] * shape[i + 1];
+        }
+        s
+    };
+    DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: shape.len() as u64,
+        shape,
+        strides,
+        dtype,
+        byte_order: ByteOrder::native(),
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        masks: None,
+        params: BTreeMap::new(),
+        hash: None,
+    }
+}
+
+fn f32_bytes(values: &[f32]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_ne_bytes()).collect()
+}
+fn f64_bytes(values: &[f64]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_ne_bytes()).collect()
+}
+
+// ── Finite-only input: allow_* is a no-op ───────────────────────────────────
+
+#[test]
+fn allow_nan_on_finite_input_produces_no_masks() {
+    // Even with allow_nan=true, finite data must not cause a mask
+    // section to appear.  Descriptor.masks stays None so the frame is
+    // byte-compatible with the legacy layout.
+    let data = f64_bytes(&[1.0, 2.0, 3.0, 4.0]);
+    let desc = make_descriptor(vec![4], Dtype::Float64);
+    let options = EncodeOptions {
+        allow_nan: true,
+        allow_inf: true,
+        hash_algorithm: None,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+    let (_, descriptors) = decode_descriptors(&msg).unwrap();
+    assert_eq!(descriptors.len(), 1);
+    assert!(
+        descriptors[0].masks.is_none(),
+        "finite input must not produce a masks sub-map"
+    );
+}
+
+// ── NaN input without allow_nan: still rejects ──────────────────────────────
+
+#[test]
+fn default_still_rejects_nan_when_allow_inf_only() {
+    // allow_inf alone does not unlock NaN.
+    let data = f64_bytes(&[1.0, f64::NAN]);
+    let desc = make_descriptor(vec![2], Dtype::Float64);
+    let options = EncodeOptions {
+        allow_nan: false,
+        allow_inf: true,
+        ..Default::default()
+    };
+    let err = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap_err();
+    assert!(err.to_string().contains("NaN"));
+}
+
+#[test]
+fn default_still_rejects_pos_inf_when_allow_nan_only() {
+    let data = f64_bytes(&[1.0, f64::INFINITY]);
+    let desc = make_descriptor(vec![2], Dtype::Float64);
+    let options = EncodeOptions {
+        allow_nan: true,
+        allow_inf: false,
+        ..Default::default()
+    };
+    let err = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap_err();
+    assert!(err.to_string().contains("+Inf"));
+}
+
+// ── End-to-end: NaN encode produces populated mask metadata ─────────────────
+
+#[test]
+fn allow_nan_f64_produces_nan_mask_with_correct_positions() {
+    let data = f64_bytes(&[1.0, f64::NAN, 2.0, f64::NAN, 5.0]);
+    let desc = make_descriptor(vec![5], Dtype::Float64);
+    let options = EncodeOptions {
+        allow_nan: true,
+        hash_algorithm: None,
+        // Force roaring explicitly even for small masks to avoid the
+        // small-mask auto-fallback to "none" kicking in.
+        nan_mask_method: MaskMethod::Roaring,
+        small_mask_threshold_bytes: 0,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+    let (_, descriptors) = decode_descriptors(&msg).unwrap();
+    let masks = descriptors[0]
+        .masks
+        .as_ref()
+        .expect("masks sub-map must be present");
+    let nan_md = masks.nan.as_ref().expect("nan mask must be present");
+    assert_eq!(nan_md.method, "roaring");
+    assert!(masks.pos_inf.is_none(), "no +Inf in input");
+    assert!(masks.neg_inf.is_none(), "no -Inf in input");
+    // offset == encoded_payload length (pre-mask-append).  For
+    // encoding=none, encoded_payload is 5*8 = 40 bytes.
+    assert_eq!(nan_md.offset, 40);
+    assert!(nan_md.length > 0);
+}
+
+#[test]
+fn allow_nan_substitutes_positions_with_canonical_zero() {
+    let data = f64_bytes(&[1.0, f64::NAN, 2.0, f64::NAN, 5.0]);
+    let desc = make_descriptor(vec![5], Dtype::Float64);
+    let options = EncodeOptions {
+        allow_nan: true,
+        hash_algorithm: None,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+
+    // Decoder returns the substituted payload (masks stripped via the
+    // mask-aware payload-slice boundary; reconstruction is Commit 6).
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 1);
+    let decoded = &objects[0].1;
+    let expected = f64_bytes(&[1.0, 0.0, 2.0, 0.0, 5.0]);
+    assert_eq!(
+        decoded, &expected,
+        "NaN positions must be substituted with 0.0"
+    );
+}
+
+#[test]
+fn allow_inf_both_signs_produces_separate_masks() {
+    let data = f64_bytes(&[
+        0.0,
+        f64::INFINITY,
+        1.0,
+        f64::NEG_INFINITY,
+        2.0,
+        f64::INFINITY,
+    ]);
+    let desc = make_descriptor(vec![6], Dtype::Float64);
+    let options = EncodeOptions {
+        allow_inf: true,
+        hash_algorithm: None,
+        small_mask_threshold_bytes: 0,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+    let (_, descriptors) = decode_descriptors(&msg).unwrap();
+    let masks = descriptors[0].masks.as_ref().unwrap();
+    assert!(masks.pos_inf.is_some(), "+Inf mask must be present");
+    assert!(masks.neg_inf.is_some(), "-Inf mask must be present");
+    assert!(masks.nan.is_none(), "no NaN in input");
+
+    // Canonical order: +Inf mask must come before -Inf mask in the
+    // payload region (matches the encoder's documented layout).
+    let pos = masks.pos_inf.as_ref().unwrap();
+    let neg = masks.neg_inf.as_ref().unwrap();
+    assert!(
+        pos.offset < neg.offset,
+        "pos_inf mask ({}) must precede neg_inf mask ({}) in region",
+        pos.offset,
+        neg.offset
+    );
+    // And both must have non-zero length.
+    assert!(pos.length > 0);
+    assert!(neg.length > 0);
+}
+
+#[test]
+fn all_three_kinds_coexist_in_one_frame() {
+    let data = f64_bytes(&[
+        f64::NAN,
+        1.0,
+        f64::INFINITY,
+        2.0,
+        f64::NEG_INFINITY,
+        3.0,
+        f64::NAN,
+    ]);
+    let desc = make_descriptor(vec![7], Dtype::Float64);
+    let options = EncodeOptions {
+        allow_nan: true,
+        allow_inf: true,
+        hash_algorithm: None,
+        small_mask_threshold_bytes: 0,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+    let (_, descriptors) = decode_descriptors(&msg).unwrap();
+    let masks = descriptors[0].masks.as_ref().unwrap();
+    assert!(masks.nan.is_some());
+    assert!(masks.pos_inf.is_some());
+    assert!(masks.neg_inf.is_some());
+
+    // Offsets must be strictly increasing in the canonical order:
+    // nan < +Inf < -Inf.
+    let n = masks.nan.as_ref().unwrap();
+    let p = masks.pos_inf.as_ref().unwrap();
+    let m = masks.neg_inf.as_ref().unwrap();
+    assert!(n.offset < p.offset && p.offset < m.offset);
+}
+
+// ── Mask-method selection honoured in descriptor ───────────────────────────
+
+#[test]
+fn mask_method_rle_reflected_in_descriptor() {
+    let data = f64_bytes(&[1.0, f64::NAN, 2.0, f64::NAN, 3.0, f64::NAN, 4.0, f64::NAN]);
+    let desc = make_descriptor(vec![8], Dtype::Float64);
+    let options = EncodeOptions {
+        allow_nan: true,
+        hash_algorithm: None,
+        nan_mask_method: MaskMethod::Rle,
+        small_mask_threshold_bytes: 0,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+    let (_, descriptors) = decode_descriptors(&msg).unwrap();
+    let nan_md = descriptors[0].masks.as_ref().unwrap().nan.as_ref().unwrap();
+    assert_eq!(nan_md.method, "rle");
+}
+
+#[test]
+fn small_mask_auto_fallback_to_none() {
+    // 2-element NaN mask packs to 1 byte — way under the default
+    // threshold of 128 bytes — so the encoder forces method="none"
+    // regardless of the requested method.
+    let data = f64_bytes(&[f64::NAN, 1.0]);
+    let desc = make_descriptor(vec![2], Dtype::Float64);
+    let options = EncodeOptions {
+        allow_nan: true,
+        hash_algorithm: None,
+        nan_mask_method: MaskMethod::Roaring,
+        small_mask_threshold_bytes: 128, // default
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+    let (_, descriptors) = decode_descriptors(&msg).unwrap();
+    let nan_md = descriptors[0].masks.as_ref().unwrap().nan.as_ref().unwrap();
+    assert_eq!(
+        nan_md.method, "none",
+        "small mask must auto-fallback to 'none' even when Roaring is requested"
+    );
+}
+
+#[test]
+fn small_mask_threshold_zero_disables_auto_fallback() {
+    // With threshold=0, a 2-element mask uses the requested method
+    // (roaring) rather than falling back.
+    let data = f64_bytes(&[f64::NAN, 1.0]);
+    let desc = make_descriptor(vec![2], Dtype::Float64);
+    let options = EncodeOptions {
+        allow_nan: true,
+        hash_algorithm: None,
+        nan_mask_method: MaskMethod::Roaring,
+        small_mask_threshold_bytes: 0,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+    let (_, descriptors) = decode_descriptors(&msg).unwrap();
+    let nan_md = descriptors[0].masks.as_ref().unwrap().nan.as_ref().unwrap();
+    assert_eq!(nan_md.method, "roaring");
+}
+
+// ── Complex dtype priority rule ─────────────────────────────────────────────
+
+#[test]
+fn complex64_nan_in_either_component_masked_as_nan() {
+    // (NaN + 1i), (2 + NaN*i), (3 + 4i), (5 + 6i) →
+    // elements 0 and 1 go to nan mask; 2 and 3 are finite.
+    let data: Vec<u8> = [f32::NAN, 1.0, 2.0, f32::NAN, 3.0, 4.0, 5.0, 6.0]
+        .iter()
+        .flat_map(|v| v.to_ne_bytes())
+        .collect();
+    let desc = make_descriptor(vec![4], Dtype::Complex64);
+    let options = EncodeOptions {
+        allow_nan: true,
+        hash_algorithm: None,
+        small_mask_threshold_bytes: 0,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+    let (_, descriptors) = decode_descriptors(&msg).unwrap();
+    assert!(descriptors[0].masks.as_ref().unwrap().nan.is_some());
+
+    // Decoded payload must have the first two elements (both
+    // components) zeroed, and elements 2-3 untouched.
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+    let expected: Vec<u8> = [0.0_f32, 0.0, 0.0, 0.0, 3.0, 4.0, 5.0, 6.0]
+        .iter()
+        .flat_map(|v| v.to_ne_bytes())
+        .collect();
+    assert_eq!(objects[0].1, expected);
+}
+
+// ── Float32 end-to-end ──────────────────────────────────────────────────────
+
+#[test]
+fn allow_nan_and_allow_inf_f32_end_to_end() {
+    let data = f32_bytes(&[1.0, f32::NAN, f32::INFINITY, 0.0, f32::NEG_INFINITY]);
+    let desc = make_descriptor(vec![5], Dtype::Float32);
+    let options = EncodeOptions {
+        allow_nan: true,
+        allow_inf: true,
+        hash_algorithm: None,
+        small_mask_threshold_bytes: 0,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+    let (_, descriptors) = decode_descriptors(&msg).unwrap();
+    let masks = descriptors[0].masks.as_ref().unwrap();
+    assert!(masks.nan.is_some() && masks.pos_inf.is_some() && masks.neg_inf.is_some());
+
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+    let expected = f32_bytes(&[1.0, 0.0, 0.0, 0.0, 0.0]);
+    assert_eq!(objects[0].1, expected);
+}
+
+// ── StreamingEncoder parity ─────────────────────────────────────────────────
+
+#[test]
+fn streaming_allow_nan_produces_equivalent_frame() {
+    let data = f64_bytes(&[1.0, f64::NAN, 2.0]);
+    let desc = make_descriptor(vec![3], Dtype::Float64);
+    let options = EncodeOptions {
+        allow_nan: true,
+        hash_algorithm: None,
+        small_mask_threshold_bytes: 0,
+        ..Default::default()
+    };
+
+    // Buffered encode.
+    let buffered = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+    let (_, buffered_descs) = decode_descriptors(&buffered).unwrap();
+
+    // Streaming encode.
+    let buf = Vec::new();
+    let mut enc = StreamingEncoder::new(buf, &make_global_meta(), &options).unwrap();
+    enc.write_object(&desc, &data).unwrap();
+    let streamed = enc.finish().unwrap();
+    let (_, streamed_descs) = decode_descriptors(&streamed).unwrap();
+
+    // Both paths must produce identical mask metadata.
+    assert_eq!(buffered_descs[0].masks, streamed_descs[0].masks);
+
+    // Both decoded payloads must contain the substituted zeros.
+    let (_, buffered_objects) = decode(&buffered, &DecodeOptions::default()).unwrap();
+    let (_, streamed_objects) = decode(&streamed, &DecodeOptions::default()).unwrap();
+    assert_eq!(buffered_objects[0].1, streamed_objects[0].1);
+}
+
+// ── Hash verification still works with masks present ───────────────────────
+
+#[test]
+fn hash_verifies_against_substituted_payload() {
+    // The hash covers the substituted encoded payload (pre-mask-append).
+    // Decode with verify_hash=true must pass because the decoder
+    // strips mask bytes from the payload slice before hashing.
+    let data = f64_bytes(&[1.0, f64::NAN, 2.0, f64::INFINITY]);
+    let desc = make_descriptor(vec![4], Dtype::Float64);
+    let options = EncodeOptions {
+        allow_nan: true,
+        allow_inf: true,
+        hash_algorithm: Some(HashAlgorithm::Xxh3),
+        small_mask_threshold_bytes: 0,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
+
+    let decode_opts = DecodeOptions {
+        verify_hash: true,
+        ..Default::default()
+    };
+    let (_, objects) =
+        decode(&msg, &decode_opts).expect("hash must verify against substituted payload");
+    assert_eq!(objects.len(), 1);
+}
+
+// ── Multiple objects per message, mixed finite / non-finite ─────────────────
+
+#[test]
+fn multi_object_message_with_mixed_finite_and_nan_payloads() {
+    // Object 0: finite.  Object 1: has NaN.  Object 2: finite.
+    // Only object 1 should have masks.
+    let desc = make_descriptor(vec![3], Dtype::Float64);
+    let d0 = f64_bytes(&[1.0, 2.0, 3.0]);
+    let d1 = f64_bytes(&[f64::NAN, 4.0, 5.0]);
+    let d2 = f64_bytes(&[6.0, 7.0, 8.0]);
+
+    let options = EncodeOptions {
+        allow_nan: true,
+        hash_algorithm: None,
+        small_mask_threshold_bytes: 0,
+        ..Default::default()
+    };
+    let msg = encode(
+        &make_global_meta(),
+        &[(&desc, &d0), (&desc, &d1), (&desc, &d2)],
+        &options,
+    )
+    .unwrap();
+    let (_, descriptors) = decode_descriptors(&msg).unwrap();
+    assert!(descriptors[0].masks.is_none());
+    assert!(descriptors[1].masks.is_some());
+    assert!(descriptors[2].masks.is_none());
+}

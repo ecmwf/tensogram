@@ -256,6 +256,7 @@ mod tests {
             filter: "none".into(),
             compression: "none".into(),
             params: Default::default(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 16];
@@ -340,6 +341,7 @@ mod tests {
             filter: "none".into(),
             compression: "none".into(),
             params: Default::default(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 16];

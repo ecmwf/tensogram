@@ -267,6 +267,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data: Vec<u8> = vec![0u8; 32];
@@ -291,6 +292,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data: Vec<u8> = vec![0u8; 16];
@@ -607,6 +609,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 32];
@@ -642,6 +645,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 8];
@@ -680,6 +684,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 32];
@@ -753,6 +758,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 16];
@@ -821,6 +827,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
@@ -845,6 +852,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
@@ -950,6 +958,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 16]; // 4 × i32
@@ -991,6 +1000,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         // Float16: exponent=0x1F (all 1s), mantissa=1 => NaN
@@ -1032,6 +1042,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         // Float16 Inf: exponent=0x1F, mantissa=0 => 0x7C00
@@ -1066,6 +1077,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         // BFloat16 NaN: exponent=0xFF, mantissa≠0
@@ -1101,6 +1113,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         // Complex64: [NaN real, 0.0 imag]
@@ -1137,6 +1150,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         // Complex128: [1.0 real, Inf imag]
@@ -1239,6 +1253,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data: Vec<u8> = vec![];
@@ -1273,6 +1288,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 12]; // 3 × f32, valid
@@ -1402,6 +1418,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         }
     }
@@ -2261,6 +2278,7 @@ mod tests {
                 filter: "none".to_string(),
                 compression: "zstd".to_string(),
                 params: BTreeMap::new(),
+                masks: None,
                 hash: None,
             };
             let data = vec![0u8; 32];
@@ -2376,6 +2394,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 2]; // ceil(16/8) = 2 bytes
@@ -2408,6 +2427,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 2]; // ceil(13/8) = 2 bytes
@@ -2715,6 +2735,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let nan_data: Vec<u8> = f64::NAN
@@ -3080,6 +3101,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 32];
@@ -3119,6 +3141,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "lz4".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         // Encode 2 f64 values through the same pipeline so the bytes we hand
@@ -3335,6 +3358,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         encode_pre_encoded(
@@ -3544,6 +3568,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 32];
@@ -3581,6 +3606,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 16];
@@ -3626,6 +3652,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 32];
@@ -3686,6 +3713,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 16];

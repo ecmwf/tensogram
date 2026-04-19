@@ -10,13 +10,15 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 use crate::encode::{
-    EncodeOptions, build_pipeline_config, populate_base_entries, populate_reserved_provenance,
-    validate_no_szip_offsets_for_non_szip, validate_object, validate_szip_block_offsets,
+    EncodeOptions, MaskMethod, build_pipeline_config, populate_base_entries,
+    populate_reserved_provenance, validate_no_szip_offsets_for_non_szip, validate_object,
+    validate_szip_block_offsets,
 };
 use crate::error::{Result, TensogramError};
 use crate::framing::EncodedObject;
 use crate::hash::HashAlgorithm;
 use crate::metadata::{self, RESERVED_KEY};
+use crate::substitute_and_mask;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashDescriptor, HashFrame, IndexFrame};
 use crate::wire::{
     FRAME_END, FRAME_HEADER_SIZE, FrameHeader, FrameType, MessageFlags, PREAMBLE_SIZE, Postamble,
@@ -77,6 +79,17 @@ pub struct StreamingEncoder<W: Write> {
     intra_codec_threads: u32,
     /// Snapshot of the parallel-threshold option for the same reason.
     parallel_threshold_bytes: Option<usize>,
+    /// Snapshot of `EncodeOptions.allow_nan` / `allow_inf` — determines
+    /// whether `write_object` substitutes non-finite values and emits
+    /// a mask companion section (see `plans/BITMASK_FRAME.md`).
+    allow_nan: bool,
+    allow_inf: bool,
+    /// Per-kind mask compression method snapshots.
+    nan_mask_method: MaskMethod,
+    pos_inf_mask_method: MaskMethod,
+    neg_inf_mask_method: MaskMethod,
+    /// Snapshot of the small-mask fallback threshold.
+    small_mask_threshold_bytes: usize,
 }
 
 impl<W: Write> StreamingEncoder<W> {
@@ -138,6 +151,12 @@ impl<W: Write> StreamingEncoder<W> {
             preceder_payloads: Vec::new(),
             intra_codec_threads,
             parallel_threshold_bytes: options.parallel_threshold_bytes,
+            allow_nan: options.allow_nan,
+            allow_inf: options.allow_inf,
+            nan_mask_method: options.nan_mask_method.clone(),
+            pos_inf_mask_method: options.pos_inf_mask_method.clone(),
+            neg_inf_mask_method: options.neg_inf_mask_method.clone(),
+            small_mask_threshold_bytes: options.small_mask_threshold_bytes,
         })
     }
 
@@ -213,12 +232,18 @@ impl<W: Write> StreamingEncoder<W> {
             self.parallel_threshold_bytes,
         );
 
-        // Finite-value check, consistent with buffered `encode()`.
-        // Only `write_object` runs the scan; `write_object_pre_encoded`
-        // treats its input as opaque (matching buffered `encode_pre_encoded`).
-        // Always enabled in 0.17+; `allow_nan` / `allow_inf` bitmask
-        // opt-in comes in a subsequent commit.
-        crate::finite_check::scan(data, desc.dtype, desc.byte_order, parallel)?;
+        // Pre-pipeline substitute-and-mask stage — see
+        // [`crate::encode::encode_one_object`] for semantics.
+        // `write_object_pre_encoded` treats its input as opaque and
+        // bypasses the stage, matching buffered `encode_pre_encoded`.
+        let (pipeline_input, mask_set) = substitute_and_mask::substitute_and_mask(
+            data,
+            desc.dtype,
+            desc.byte_order,
+            self.allow_nan,
+            self.allow_inf,
+            parallel,
+        )?;
         let intra = if parallel {
             self.intra_codec_threads
         } else {
@@ -235,7 +260,7 @@ impl<W: Write> StreamingEncoder<W> {
 
         let result =
             crate::parallel::run_maybe_pooled(self.intra_codec_threads, parallel, intra, || {
-                pipeline::encode_pipeline(data, &config)
+                pipeline::encode_pipeline(pipeline_input.as_ref(), &config)
             })
             .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
@@ -254,7 +279,22 @@ impl<W: Write> StreamingEncoder<W> {
             );
         }
 
-        self.write_object_inner(final_desc, &result.encoded_bytes)
+        // Compose the payload region: [encoded_payload][masks...] — see
+        // `plans/BITMASK_FRAME.md` §3.2.  When no masks were produced
+        // (the common case) this is a zero-cost passthrough.
+        let (payload_region, masks_metadata) = crate::encode::compose_payload_region_for_streaming(
+            result.encoded_bytes,
+            mask_set,
+            &self.nan_mask_method,
+            &self.pos_inf_mask_method,
+            &self.neg_inf_mask_method,
+            self.small_mask_threshold_bytes,
+        )?;
+        if let Some(m) = masks_metadata {
+            final_desc.masks = Some(m);
+        }
+
+        self.write_object_inner(final_desc, &payload_region)
     }
 
     /// Write a pre-encoded data object frame directly.
@@ -746,6 +786,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         }
     }

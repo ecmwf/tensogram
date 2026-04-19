@@ -45,6 +45,7 @@ fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     }
 }
@@ -349,6 +350,7 @@ fn make_simple_packing_desc(reference_value: f64) -> DataObjectDescriptor {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params,
+        masks: None,
         hash: None,
     }
 }
@@ -1020,6 +1022,7 @@ fn metadata_namespaces_roundtrip() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let data = vec![0u8; 1];
@@ -1142,6 +1145,7 @@ fn make_compressed_descriptor(
         filter: "none".to_string(),
         compression: compression.to_string(),
         params,
+        masks: None,
         hash: None,
     }
 }
@@ -1269,6 +1273,7 @@ fn zfp_cross_endian_decode_produces_native_bytes() {
         filter: "none".to_string(),
         compression: "zfp".to_string(),
         params,
+        masks: None,
         hash: None,
     };
 

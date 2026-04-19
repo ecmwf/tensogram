@@ -28,6 +28,7 @@ fn make_float32_descriptor(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescri
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     (global, desc)
@@ -79,6 +80,7 @@ fn make_mars_pair(shape: Vec<u64>, param: &str) -> (GlobalMetadata, DataObjectDe
             );
             p
         },
+        masks: None,
         hash: None,
     };
     (global, desc)
@@ -133,6 +135,7 @@ fn test_multi_object_message() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let desc2 = DataObjectDescriptor {
@@ -146,6 +149,7 @@ fn test_multi_object_message() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 
@@ -196,6 +200,7 @@ fn test_decode_single_object_by_index() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let desc2 = DataObjectDescriptor {
@@ -209,6 +214,7 @@ fn test_decode_single_object_by_index() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 
@@ -328,6 +334,7 @@ fn test_simple_packing_round_trip() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: packing_params,
+        masks: None,
         hash: None,
     };
 
@@ -374,6 +381,7 @@ fn test_shuffle_round_trip() {
         filter: "shuffle".to_string(),
         compression: "none".to_string(),
         params,
+        masks: None,
         hash: None,
     };
 
@@ -465,6 +473,7 @@ fn test_decode_range_shuffle_rejected() {
         filter: "shuffle".to_string(),
         compression: "none".to_string(),
         params,
+        masks: None,
         hash: None,
     };
 
@@ -537,6 +546,7 @@ fn test_validate_object_overflow() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 
@@ -590,6 +600,7 @@ fn test_cross_endian_round_trip() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: packing_params.clone(),
+        masks: None,
         hash: None,
     };
 
@@ -621,6 +632,7 @@ fn test_cross_endian_round_trip() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: packing_params.clone(),
+        masks: None,
         hash: None,
     };
 
@@ -684,6 +696,7 @@ fn test_decode_range_cross_endian_native() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 
@@ -724,6 +737,7 @@ fn test_decode_range_wire_byte_order_opt_out() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 
@@ -783,6 +797,7 @@ fn test_simple_packing_rejects_non_f64() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: packing_params,
+        masks: None,
         hash: None,
     };
 
@@ -817,6 +832,7 @@ fn test_validate_ndim_mismatch() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 
@@ -858,6 +874,7 @@ fn test_param_out_of_bounds() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: packing_params,
+        masks: None,
         hash: None,
     };
 
@@ -921,6 +938,7 @@ fn make_szip_packing_pair(
         filter: "none".to_string(),
         compression: "szip".to_string(),
         params: packing_params,
+        masks: None,
         hash: None,
     };
     (global, desc)
@@ -955,6 +973,7 @@ fn make_szip_raw_pair(num_values: u64, dtype: Dtype) -> (GlobalMetadata, DataObj
         filter: "none".to_string(),
         compression: "szip".to_string(),
         params,
+        masks: None,
         hash: None,
     };
     (global, desc)
@@ -1145,6 +1164,7 @@ fn test_szip_shuffle_round_trip() {
         filter: "shuffle".to_string(),
         compression: "szip".to_string(),
         params,
+        masks: None,
         hash: None,
     };
 
@@ -1188,6 +1208,7 @@ fn test_szip_shuffle_decode_range_rejected() {
         filter: "shuffle".to_string(),
         compression: "szip".to_string(),
         params,
+        masks: None,
         hash: None,
     };
 
@@ -1250,6 +1271,7 @@ fn test_szip_multi_object_mixed_compression() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let packed_desc = DataObjectDescriptor {
@@ -1263,6 +1285,7 @@ fn test_szip_multi_object_mixed_compression() {
         filter: "none".to_string(),
         compression: "szip".to_string(),
         params: packing_params,
+        masks: None,
         hash: None,
     };
 
@@ -1380,6 +1403,7 @@ fn test_validate_empty_obj_type() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 
