@@ -34,6 +34,7 @@
 
 pub mod packing;
 pub mod rle;
+pub mod roaring;
 
 use thiserror::Error;
 
