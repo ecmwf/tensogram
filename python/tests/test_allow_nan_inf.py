@@ -154,7 +154,7 @@ def test_unknown_mask_method_error_lists_all_accepted_names() -> None:
     ``MaskError::UnknownMethod``).
     """
     data = np.array([np.nan], dtype=np.float64)
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="unknown mask method") as exc_info:
         tensogram.encode(
             _meta(),
             [(_desc([1]), data)],
@@ -279,7 +279,7 @@ def test_decode_with_masks_returns_substituted_payload_plus_masks() -> None:
     )
     decoded = tensogram.decode_with_masks(msg)
     assert len(decoded.objects) == 1
-    desc_out, payload, masks = decoded.objects[0]
+    _, payload, masks = decoded.objects[0]
 
     # Payload holds the on-disk substituted zeros — never canonical
     # NaN / Inf (decode_with_masks forces restore_non_finite=False).
