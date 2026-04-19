@@ -172,6 +172,54 @@ fn allow_nan_default_decode_restores_canonical_nan() {
 }
 
 #[test]
+fn restore_honours_non_native_byte_order() {
+    // Regression: pass `native_byte_order=false` on decode.  The
+    // restored NaN bits must be written in the descriptor's declared
+    // byte order, not the host's native order, otherwise downstream
+    // consumers reading wire-order bytes see corrupted values.
+    let desc = DataObjectDescriptor {
+        // Force the non-native order so the bug is observable on both
+        // hosts (x86_64 little-endian and ppc64/sparc big-endian).
+        byte_order: match ByteOrder::native() {
+            ByteOrder::Little => ByteOrder::Big,
+            ByteOrder::Big => ByteOrder::Little,
+        },
+        ..make_descriptor(vec![3], Dtype::Float64)
+    };
+    let wire_data: Vec<u8> = [1.0_f64, f64::NAN, 3.0]
+        .iter()
+        .flat_map(|v| match desc.byte_order {
+            ByteOrder::Big => v.to_be_bytes(),
+            ByteOrder::Little => v.to_le_bytes(),
+        })
+        .collect();
+    let options = EncodeOptions {
+        allow_nan: true,
+        hash_algorithm: None,
+        small_mask_threshold_bytes: 0,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &wire_data)], &options).unwrap();
+
+    // Decode with native_byte_order=false — callers get wire-order bytes.
+    let decode_opts = DecodeOptions {
+        native_byte_order: false,
+        ..Default::default()
+    };
+    let (_, objects) = decode(&msg, &decode_opts).unwrap();
+    // Parse the returned bytes using the descriptor's byte order;
+    // position 1 must round-trip as NaN.
+    let parse = |chunk: &[u8]| match desc.byte_order {
+        ByteOrder::Big => f64::from_be_bytes(chunk.try_into().unwrap()),
+        ByteOrder::Little => f64::from_le_bytes(chunk.try_into().unwrap()),
+    };
+    let bytes = &objects[0].1;
+    assert_eq!(parse(&bytes[0..8]), 1.0);
+    assert!(parse(&bytes[8..16]).is_nan());
+    assert_eq!(parse(&bytes[16..24]), 3.0);
+}
+
+#[test]
 fn allow_nan_restore_disabled_returns_substituted_zero() {
     let data = f64_bytes(&[1.0, f64::NAN, 2.0, f64::NAN, 5.0]);
     let desc = make_descriptor(vec![5], Dtype::Float64);

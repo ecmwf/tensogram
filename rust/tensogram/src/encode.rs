@@ -1085,40 +1085,29 @@ fn compose_payload_region_inner(
     let mut metadata = MasksMetadata::default();
     let mut region_cursor = encoded_payload.len() as u64;
 
-    // Canonical order: nan, inf+, inf- (matches CBOR key sort).
-    if let Some(bits) = &masks.nan {
-        let (blob, used_method) = encode_one_mask(bits, nan_method.clone(), small_threshold)?;
-        metadata.nan = Some(MaskDescriptor {
-            method: used_method.name().to_string(),
-            offset: region_cursor,
-            length: blob.len() as u64,
-            params: mask_params_cbor(&used_method),
-        });
-        region_cursor += blob.len() as u64;
-        encoded_payload.extend_from_slice(&blob);
-    }
-    if let Some(bits) = &masks.pos_inf {
-        let (blob, used_method) = encode_one_mask(bits, pos_inf_method.clone(), small_threshold)?;
-        metadata.pos_inf = Some(MaskDescriptor {
-            method: used_method.name().to_string(),
-            offset: region_cursor,
-            length: blob.len() as u64,
-            params: mask_params_cbor(&used_method),
-        });
-        region_cursor += blob.len() as u64;
-        encoded_payload.extend_from_slice(&blob);
-    }
-    if let Some(bits) = &masks.neg_inf {
-        let (blob, used_method) = encode_one_mask(bits, neg_inf_method.clone(), small_threshold)?;
-        metadata.neg_inf = Some(MaskDescriptor {
-            method: used_method.name().to_string(),
-            offset: region_cursor,
-            length: blob.len() as u64,
-            params: mask_params_cbor(&used_method),
-        });
-        let _ = region_cursor; // last mask — cursor unused beyond this point
-        encoded_payload.extend_from_slice(&blob);
-    }
+    // Append each present mask to the payload region and record its
+    // descriptor.  Canonical order matches the CBOR key sort —
+    // nan < inf+ < inf- — so the mask region stays byte-stable
+    // across identical inputs.
+    let mut append_one =
+        |bits_opt: Option<&Vec<bool>>, method: &MaskMethod| -> Result<Option<MaskDescriptor>> {
+            let Some(bits) = bits_opt else {
+                return Ok(None);
+            };
+            let (blob, used_method) = encode_one_mask(bits, method.clone(), small_threshold)?;
+            let desc = MaskDescriptor {
+                method: used_method.name().to_string(),
+                offset: region_cursor,
+                length: blob.len() as u64,
+                params: mask_params_cbor(&used_method),
+            };
+            region_cursor += blob.len() as u64;
+            encoded_payload.extend_from_slice(&blob);
+            Ok(Some(desc))
+        };
+    metadata.nan = append_one(masks.nan.as_ref(), nan_method)?;
+    metadata.pos_inf = append_one(masks.pos_inf.as_ref(), pos_inf_method)?;
+    metadata.neg_inf = append_one(masks.neg_inf.as_ref(), neg_inf_method)?;
 
     Ok((encoded_payload, Some(metadata)))
 }

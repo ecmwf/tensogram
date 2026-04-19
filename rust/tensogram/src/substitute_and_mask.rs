@@ -44,10 +44,10 @@
 //! 3. Otherwise the element is finite.
 //!
 //! On substitution both components are written as `0.0`.  On decode
-//! (see Commit 6) the canonical bit pattern of the kind is restored
-//! to **both** components — bit-exact NaN payloads and mixed
-//! real/imag kinds are not preserved.  This is a documented lossy
-//! trade-off per §7.1.
+//! (see [`crate::restore`]) the canonical bit pattern of the kind
+//! is restored to **both** components — bit-exact NaN payloads and
+//! mixed real/imag kinds are not preserved.  This is a documented
+//! lossy trade-off per `plans/BITMASK_FRAME.md` §7.1.
 //!
 //! ## Parallelism
 //!
@@ -95,9 +95,22 @@ pub struct MaskSet {
     /// -Inf mask — `true` at positions where the original value was
     /// `−∞` and neither component was NaN or `+∞`.
     pub neg_inf: Option<Vec<bool>>,
-    /// Element count of the scan — used to size the bitmasks
-    /// consistently when one or more kinds was never seen.
+    /// Element count seen by the scan.  Cached here so that
+    /// [`set_bit`](Self::set_bit) can lazily allocate a kind's
+    /// `Vec<bool>` at the correct length on first hit — without it
+    /// we would need to thread the payload's element count through
+    /// every classifier.
     pub n_elements: usize,
+}
+
+/// One of the three mask kinds — `nan`, `pos_inf`, `neg_inf`.  Used
+/// as a key for helpers that iterate over all three without
+/// duplicating the branch logic three times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MaskKind {
+    Nan,
+    PosInf,
+    NegInf,
 }
 
 impl MaskSet {
@@ -117,24 +130,26 @@ impl MaskSet {
         self.nan.is_none() && self.pos_inf.is_none() && self.neg_inf.is_none()
     }
 
-    /// Set bit `index` in the nan mask, lazily allocating the
-    /// `Vec<bool>` on first hit.  `n_elements` must already be
-    /// populated.
-    fn set_nan(&mut self, index: usize) {
-        let m = self.nan.get_or_insert_with(|| vec![false; self.n_elements]);
-        m[index] = true;
+    /// Mutable slot for a given kind.  Single-source dispatch that
+    /// lets [`set_bit`](Self::set_bit) and
+    /// [`merge_chunk`](Self::merge_chunk) avoid repeating the
+    /// per-kind match three times.
+    fn slot_for(&mut self, kind: MaskKind) -> &mut Option<Vec<bool>> {
+        match kind {
+            MaskKind::Nan => &mut self.nan,
+            MaskKind::PosInf => &mut self.pos_inf,
+            MaskKind::NegInf => &mut self.neg_inf,
+        }
     }
-    fn set_pos_inf(&mut self, index: usize) {
-        let m = self
-            .pos_inf
-            .get_or_insert_with(|| vec![false; self.n_elements]);
-        m[index] = true;
-    }
-    fn set_neg_inf(&mut self, index: usize) {
-        let m = self
-            .neg_inf
-            .get_or_insert_with(|| vec![false; self.n_elements]);
-        m[index] = true;
+
+    /// Set the bit at `index` for `kind`, lazily allocating the
+    /// backing `Vec<bool>` on first hit.  `self.n_elements` must
+    /// already be populated.
+    fn set_bit(&mut self, kind: MaskKind, index: usize) {
+        let n = self.n_elements;
+        let slot = self.slot_for(kind);
+        let mask = slot.get_or_insert_with(|| vec![false; n]);
+        mask[index] = true;
     }
 
     /// Merge a chunk-local set into `self` at element offset `base`.
@@ -142,27 +157,31 @@ impl MaskSet {
     /// already cover the chunk.
     #[cfg(feature = "threads")]
     fn merge_chunk(&mut self, other: MaskSet, base: usize) {
-        if let Some(m) = other.nan {
-            for (i, &b) in m.iter().enumerate() {
+        for (kind, bits) in [
+            (MaskKind::Nan, other.nan),
+            (MaskKind::PosInf, other.pos_inf),
+            (MaskKind::NegInf, other.neg_inf),
+        ] {
+            let Some(bits) = bits else { continue };
+            for (i, &b) in bits.iter().enumerate() {
                 if b {
-                    self.set_nan(base + i);
+                    self.set_bit(kind, base + i);
                 }
             }
         }
-        if let Some(m) = other.pos_inf {
-            for (i, &b) in m.iter().enumerate() {
-                if b {
-                    self.set_pos_inf(base + i);
-                }
-            }
-        }
-        if let Some(m) = other.neg_inf {
-            for (i, &b) in m.iter().enumerate() {
-                if b {
-                    self.set_neg_inf(base + i);
-                }
-            }
-        }
+    }
+
+    /// Iterate over present per-kind mask slices in canonical order.
+    /// Used by [`zero_at_mask_positions`] to walk all set bits
+    /// without repeating the three-kind match.
+    fn iter_bits(&self) -> impl Iterator<Item = &[bool]> {
+        [
+            self.nan.as_ref(),
+            self.pos_inf.as_ref(),
+            self.neg_inf.as_ref(),
+        ]
+        .into_iter()
+        .filter_map(|m| m.map(|v| v.as_slice()))
     }
 }
 
@@ -279,7 +298,7 @@ fn run_sequential<'a>(
             &mut masks,
             &mut saw_any,
         )?,
-        Dtype::Float16 => scan_f16(
+        Dtype::Float16 => scan_half(
             data,
             byte_order,
             base_index,
@@ -287,8 +306,9 @@ fn run_sequential<'a>(
             allow_inf,
             &mut masks,
             &mut saw_any,
+            &F16_LAYOUT,
         )?,
-        Dtype::Bfloat16 => scan_bf16(
+        Dtype::Bfloat16 => scan_half(
             data,
             byte_order,
             base_index,
@@ -296,6 +316,7 @@ fn run_sequential<'a>(
             allow_inf,
             &mut masks,
             &mut saw_any,
+            &BF16_LAYOUT,
         )?,
         Dtype::Complex64 => scan_complex64(
             data,
@@ -391,35 +412,15 @@ fn run_parallel<'a>(
 
 /// For every position set in any mask, overwrite `elem_size` bytes
 /// with zero.  The canonical zero bit pattern works for all IEEE 754
-/// float formats and their complex variants: +0.0 real, +0.0 imag.
+/// float formats and their complex variants: `+0.0` real, `+0.0` imag.
 fn zero_at_mask_positions(buf: &mut [u8], elem_size: usize, masks: &MaskSet) {
-    let zero_position = |buf: &mut [u8], pos: usize| {
-        let start = pos * elem_size;
-        // Safe: mask length == n_elements == buf.len() / elem_size,
-        // so start + elem_size <= buf.len().
-        for b in &mut buf[start..start + elem_size] {
-            *b = 0;
-        }
-    };
-
-    if let Some(m) = &masks.nan {
-        for (i, &b) in m.iter().enumerate() {
-            if b {
-                zero_position(buf, i);
-            }
-        }
-    }
-    if let Some(m) = &masks.pos_inf {
-        for (i, &b) in m.iter().enumerate() {
-            if b {
-                zero_position(buf, i);
-            }
-        }
-    }
-    if let Some(m) = &masks.neg_inf {
-        for (i, &b) in m.iter().enumerate() {
-            if b {
-                zero_position(buf, i);
+    for bits in masks.iter_bits() {
+        for (i, &is_set) in bits.iter().enumerate() {
+            if is_set {
+                let start = i * elem_size;
+                // Safe: mask length == n_elements == buf.len() / elem_size,
+                // so start + elem_size <= buf.len().
+                buf[start..start + elem_size].fill(0);
             }
         }
     }
@@ -494,51 +495,54 @@ fn scan_f64(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn scan_f16(
-    chunk: &[u8],
-    byte_order: ByteOrder,
-    base_index: usize,
-    allow_nan: bool,
-    allow_inf: bool,
-    masks: &mut MaskSet,
-    saw_any: &mut bool,
-) -> Result<()> {
-    for (i, c) in chunk.chunks_exact(2).enumerate() {
-        let &[b0, b1] = c else { continue };
-        let bits = match byte_order {
-            ByteOrder::Big => u16::from_be_bytes([b0, b1]),
-            ByteOrder::Little => u16::from_le_bytes([b0, b1]),
-        };
-        let exp = (bits >> 10) & 0x1F;
-        if exp != 0x1F {
-            continue;
-        }
-        let mantissa = bits & 0x03FF;
-        let positive = (bits & 0x8000) == 0;
-        let kind = if mantissa != 0 {
-            Classification::Nan
-        } else if positive {
-            Classification::PosInf
-        } else {
-            Classification::NegInf
-        };
-        kind.dispatch(
-            i,
-            base_index + i,
-            "float16",
-            None,
-            allow_nan,
-            allow_inf,
-            masks,
-            saw_any,
-        )?;
+/// IEEE-half-precision scanner layout: bit positions for exponent
+/// and mantissa.  `f16` uses 5-bit exp + 10-bit mantissa; `bfloat16`
+/// uses 8-bit exp + 7-bit mantissa.
+struct HalfLayout {
+    /// Right-shift to extract the exponent.
+    exp_shift: u16,
+    /// Exponent all-ones marker — non-finite when `exp == exp_all_ones`.
+    exp_all_ones: u16,
+    /// Mantissa mask (the bits below the exponent).
+    mantissa_mask: u16,
+    /// Dtype name for error messages.
+    dtype_name: &'static str,
+}
+
+const F16_LAYOUT: HalfLayout = HalfLayout {
+    exp_shift: 10,
+    exp_all_ones: 0x1F,
+    mantissa_mask: 0x03FF,
+    dtype_name: "float16",
+};
+
+const BF16_LAYOUT: HalfLayout = HalfLayout {
+    exp_shift: 7,
+    exp_all_ones: 0xFF,
+    mantissa_mask: 0x7F,
+    dtype_name: "bfloat16",
+};
+
+/// Classify a `u16` as finite / NaN / ±Inf according to a
+/// half-precision IEEE layout.  The sign bit is always bit 15.
+fn classify_half(bits: u16, layout: &HalfLayout) -> Classification {
+    let exp = (bits >> layout.exp_shift) & layout.exp_all_ones;
+    if exp != layout.exp_all_ones {
+        return Classification::Finite;
     }
-    Ok(())
+    let mantissa = bits & layout.mantissa_mask;
+    let positive = (bits & 0x8000) == 0;
+    if mantissa != 0 {
+        Classification::Nan
+    } else if positive {
+        Classification::PosInf
+    } else {
+        Classification::NegInf
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn scan_bf16(
+fn scan_half(
     chunk: &[u8],
     byte_order: ByteOrder,
     base_index: usize,
@@ -546,6 +550,7 @@ fn scan_bf16(
     allow_inf: bool,
     masks: &mut MaskSet,
     saw_any: &mut bool,
+    layout: &HalfLayout,
 ) -> Result<()> {
     for (i, c) in chunk.chunks_exact(2).enumerate() {
         let &[b0, b1] = c else { continue };
@@ -553,23 +558,10 @@ fn scan_bf16(
             ByteOrder::Big => u16::from_be_bytes([b0, b1]),
             ByteOrder::Little => u16::from_le_bytes([b0, b1]),
         };
-        let exp = (bits >> 7) & 0xFF;
-        if exp != 0xFF {
-            continue;
-        }
-        let mantissa = bits & 0x7F;
-        let positive = (bits & 0x8000) == 0;
-        let kind = if mantissa != 0 {
-            Classification::Nan
-        } else if positive {
-            Classification::PosInf
-        } else {
-            Classification::NegInf
-        };
-        kind.dispatch(
+        classify_half(bits, layout).dispatch(
             i,
             base_index + i,
-            "bfloat16",
+            layout.dtype_name,
             None,
             allow_nan,
             allow_inf,
@@ -664,7 +656,7 @@ fn scan_complex128(
                 f64::from_le_bytes([im0, im1, im2, im3, im4, im5, im6, im7]),
             ),
         };
-        let (kind, component) = classify_complex_f64(real, imag);
+        let (kind, component) = classify_complex(real, imag);
         kind.dispatch(
             i,
             base_index + i,
@@ -690,6 +682,17 @@ enum Classification {
 }
 
 impl Classification {
+    /// Map the non-finite variants to their [`MaskKind`] slot.
+    /// Returns `None` for [`Classification::Finite`].
+    fn mask_kind(self) -> Option<MaskKind> {
+        match self {
+            Classification::Finite => None,
+            Classification::Nan => Some(MaskKind::Nan),
+            Classification::PosInf => Some(MaskKind::PosInf),
+            Classification::NegInf => Some(MaskKind::NegInf),
+        }
+    }
+
     /// Apply the `allow_*` policy to this classification.
     ///
     /// `local_index` is the position within the current `MaskSet`
@@ -710,33 +713,23 @@ impl Classification {
         masks: &mut MaskSet,
         saw_any: &mut bool,
     ) -> Result<()> {
-        match self {
-            Classification::Finite => Ok(()),
-            Classification::Nan => {
-                if !allow_nan {
-                    return Err(nan_err(global_index, dtype_name, component));
-                }
-                masks.set_nan(local_index);
-                *saw_any = true;
-                Ok(())
-            }
-            Classification::PosInf => {
-                if !allow_inf {
-                    return Err(inf_err(global_index, dtype_name, component, true));
-                }
-                masks.set_pos_inf(local_index);
-                *saw_any = true;
-                Ok(())
-            }
-            Classification::NegInf => {
-                if !allow_inf {
-                    return Err(inf_err(global_index, dtype_name, component, false));
-                }
-                masks.set_neg_inf(local_index);
-                *saw_any = true;
-                Ok(())
-            }
+        let Some(kind) = self.mask_kind() else {
+            return Ok(()); // Finite — nothing to do.
+        };
+        let allowed = match kind {
+            MaskKind::Nan => allow_nan,
+            MaskKind::PosInf | MaskKind::NegInf => allow_inf,
+        };
+        if !allowed {
+            return Err(match kind {
+                MaskKind::Nan => nan_err(global_index, dtype_name, component),
+                MaskKind::PosInf => inf_err(global_index, dtype_name, component, true),
+                MaskKind::NegInf => inf_err(global_index, dtype_name, component, false),
+            });
         }
+        masks.set_bit(kind, local_index);
+        *saw_any = true;
+        Ok(())
     }
 }
 
@@ -754,32 +747,49 @@ fn classify_scalar(is_nan: bool, is_infinite: bool, is_sign_positive: bool) -> C
     }
 }
 
-/// Complex priority: NaN > +Inf > -Inf.  Returns the kind to emit AND
-/// the component (`"real"` / `"imaginary"`) that first triggered it
-/// — used in error messages when the kind is disallowed.
-fn classify_complex(real: f32, imag: f32) -> (Classification, Option<&'static str>) {
-    if real.is_nan() {
-        return (Classification::Nan, Some("real"));
-    }
-    if imag.is_nan() {
-        return (Classification::Nan, Some("imaginary"));
-    }
-    if real.is_infinite() && real.is_sign_positive() {
-        return (Classification::PosInf, Some("real"));
-    }
-    if imag.is_infinite() && imag.is_sign_positive() {
-        return (Classification::PosInf, Some("imaginary"));
-    }
-    if real.is_infinite() {
-        return (Classification::NegInf, Some("real"));
-    }
-    if imag.is_infinite() {
-        return (Classification::NegInf, Some("imaginary"));
-    }
-    (Classification::Finite, None)
+/// Trait factoring the `is_nan` / `is_infinite` / `is_sign_positive`
+/// predicates so [`classify_complex`] can stay generic over `f32`
+/// and `f64` without pulling in the `num-traits` crate.  Private —
+/// only `f32` and `f64` impls exist.
+trait ComplexComponent: Copy {
+    fn is_nan(self) -> bool;
+    fn is_infinite(self) -> bool;
+    fn is_sign_positive(self) -> bool;
 }
 
-fn classify_complex_f64(real: f64, imag: f64) -> (Classification, Option<&'static str>) {
+impl ComplexComponent for f32 {
+    fn is_nan(self) -> bool {
+        f32::is_nan(self)
+    }
+    fn is_infinite(self) -> bool {
+        f32::is_infinite(self)
+    }
+    fn is_sign_positive(self) -> bool {
+        f32::is_sign_positive(self)
+    }
+}
+
+impl ComplexComponent for f64 {
+    fn is_nan(self) -> bool {
+        f64::is_nan(self)
+    }
+    fn is_infinite(self) -> bool {
+        f64::is_infinite(self)
+    }
+    fn is_sign_positive(self) -> bool {
+        f64::is_sign_positive(self)
+    }
+}
+
+/// Complex priority: NaN > +Inf > -Inf.  Returns the kind to emit
+/// AND the component (`"real"` / `"imaginary"`) that first triggered
+/// it — used in error messages when the kind is disallowed.  Shared
+/// between `complex64` (f32 components) and `complex128` (f64
+/// components).
+fn classify_complex<F: ComplexComponent>(
+    real: F,
+    imag: F,
+) -> (Classification, Option<&'static str>) {
     if real.is_nan() {
         return (Classification::Nan, Some("real"));
     }

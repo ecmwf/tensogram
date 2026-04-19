@@ -42,72 +42,68 @@ use tensogram_encodings::bitmask;
 /// through the pipeline (decompression, filter reversal, byte-order
 /// swap).  `decoded_payload.len()` must match the element count
 /// declared by the descriptor's shape + dtype.
+///
+/// `output_byte_order` must match the byte order of
+/// `decoded_payload` — typically [`ByteOrder::native()`] when the
+/// caller decoded with `native_byte_order = true`, otherwise the
+/// descriptor's declared `byte_order`.
 pub(crate) fn restore_non_finite_into(
     decoded_payload: &mut [u8],
     descriptor: &DataObjectDescriptor,
     mask_region: &[u8],
+    output_byte_order: ByteOrder,
 ) -> Result<()> {
     let Some(masks) = descriptor.masks.as_ref() else {
         return Ok(());
     };
 
     let n_elements = element_count(descriptor)?;
-    let elem_size = descriptor.dtype.byte_width();
-    if elem_size == 0 {
+    if descriptor.dtype.byte_width() == 0 {
         // Bitmask dtype — masks don't apply; guard against the
         // pathological case.
         return Err(TensogramError::Framing(
             "bitmask-companion masks cannot be restored on bitmask-dtype payloads".to_string(),
         ));
     }
-    // `decoded_payload` is in the caller's declared byte order when
-    // options.native_byte_order is true.  We write canonical bit
-    // patterns in that same order so the caller sees consistent
-    // bytes back.  `options.native_byte_order == false` (rare) keeps
-    // the wire byte order; we respect the descriptor's declared
-    // byte_order in that case — but since the decode output is
-    // whichever order the caller requested, we just always write
-    // native here.  The "always native" choice mirrors how
-    // `decode_pipeline` handles endian on its output.
-    let native = ByteOrder::native();
 
     // Mask-region offsets in the descriptor are relative to the
     // payload-region start.  The `mask_region` slice we receive
-    // starts at the smallest mask offset — which equals the payload
-    // length — so subtract that base to translate into per-slice
-    // positions.  `decode_one_mask_at` handles the translation.
+    // starts at the smallest mask offset (= payload length), so
+    // [`decode_one_mask_at`] subtracts `mask_region_base` to
+    // translate descriptor offsets into per-slice positions.
     let mask_region_base = smallest_mask_offset(masks);
 
-    // Restore in canonical descriptor order: nan, inf+, inf-.  Since
-    // a given element was classified into exactly ONE kind on encode
-    // (complex priority rule), the three mask kinds never overlap;
-    // restoration order is cosmetic.
-    if let Some(md) = masks.nan.as_ref() {
-        let bits = decode_one_mask_at(md, mask_region, mask_region_base, n_elements)?;
-        write_canonical_non_finite(decoded_payload, descriptor.dtype, native, &bits, Kind::Nan);
-    }
-    if let Some(md) = masks.pos_inf.as_ref() {
+    // Restore in canonical descriptor order: nan, inf+, inf-.  A
+    // given element is classified into AT MOST ONE kind on encode
+    // (complex priority rule), so the three mask kinds never
+    // overlap; iteration order is cosmetic.
+    for (md, kind) in each_mask_kind(masks) {
         let bits = decode_one_mask_at(md, mask_region, mask_region_base, n_elements)?;
         write_canonical_non_finite(
             decoded_payload,
             descriptor.dtype,
-            native,
+            output_byte_order,
             &bits,
-            Kind::PosInf,
-        );
-    }
-    if let Some(md) = masks.neg_inf.as_ref() {
-        let bits = decode_one_mask_at(md, mask_region, mask_region_base, n_elements)?;
-        write_canonical_non_finite(
-            decoded_payload,
-            descriptor.dtype,
-            native,
-            &bits,
-            Kind::NegInf,
+            kind,
         );
     }
 
     Ok(())
+}
+
+/// Iterate over the three mask kinds in canonical order, yielding
+/// only those that are present.  Used by both [`restore_non_finite_into`]
+/// and [`decode_mask_set`] to keep the kind-handling DRY.
+fn each_mask_kind(
+    masks: &crate::types::MasksMetadata,
+) -> impl Iterator<Item = (&MaskDescriptor, Kind)> {
+    [
+        (masks.nan.as_ref(), Kind::Nan),
+        (masks.pos_inf.as_ref(), Kind::PosInf),
+        (masks.neg_inf.as_ref(), Kind::NegInf),
+    ]
+    .into_iter()
+    .filter_map(|(md, kind)| md.map(|m| (m, kind)))
 }
 
 fn element_count(desc: &DataObjectDescriptor) -> Result<usize> {
@@ -362,6 +358,16 @@ impl DecodedMaskSet {
     pub fn is_empty(&self) -> bool {
         self.nan.is_none() && self.pos_inf.is_none() && self.neg_inf.is_none()
     }
+
+    /// Mutable slot for one of the three mask kinds, used by
+    /// assembly helpers that iterate over [`Kind`] values.
+    fn slot_for(&mut self, kind: Kind) -> &mut Option<Vec<bool>> {
+        match kind {
+            Kind::Nan => &mut self.nan,
+            Kind::PosInf => &mut self.pos_inf,
+            Kind::NegInf => &mut self.neg_inf,
+        }
+    }
 }
 
 /// Apply canonical NaN / Inf restoration to pre-decoded range slices.
@@ -374,11 +380,14 @@ impl DecodedMaskSet {
 /// corresponding kind's mask.
 ///
 /// No-op when `descriptor.masks` is `None` or `mask_set.is_empty()`.
+/// `output_byte_order` must match the byte order of the bytes
+/// already in `parts`; see [`restore_non_finite_into`].
 pub(crate) fn restore_non_finite_into_ranges(
     parts: &mut [Vec<u8>],
     descriptor: &DataObjectDescriptor,
     ranges: &[(u64, u64)],
     mask_set: &DecodedMaskSet,
+    output_byte_order: ByteOrder,
 ) -> Result<()> {
     if descriptor.masks.is_none() || mask_set.is_empty() {
         return Ok(());
@@ -390,12 +399,11 @@ pub(crate) fn restore_non_finite_into_ranges(
             ranges.len()
         )));
     }
-    let native = ByteOrder::native();
 
     // For every (range, part) pair, slice each mask over the range
-    // and apply canonical restoration per kind.  A single element is
-    // only ever set in at most one mask (complex priority rule on
-    // encode) so the three passes cannot collide.
+    // and apply canonical restoration per kind.  Kinds never overlap
+    // on encode (complex priority rule) so the three passes are
+    // independent.
     for (part, &(offset, count)) in parts.iter_mut().zip(ranges.iter()) {
         let start = u64_to_usize(offset, "range.offset")?;
         let end = start
@@ -414,7 +422,7 @@ pub(crate) fn restore_non_finite_into_ranges(
                 )));
             }
             let sliced = &bits[start..end];
-            write_canonical_non_finite(part, descriptor.dtype, native, sliced, kind);
+            write_canonical_non_finite(part, descriptor.dtype, output_byte_order, sliced, kind);
         }
     }
     Ok(())
@@ -433,29 +441,9 @@ pub(crate) fn decode_mask_set(
     let n_elements = element_count(descriptor)?;
     let mask_region_base = smallest_mask_offset(masks);
     let mut out = DecodedMaskSet::default();
-    if let Some(md) = masks.nan.as_ref() {
-        out.nan = Some(decode_one_mask_at(
-            md,
-            mask_region,
-            mask_region_base,
-            n_elements,
-        )?);
-    }
-    if let Some(md) = masks.pos_inf.as_ref() {
-        out.pos_inf = Some(decode_one_mask_at(
-            md,
-            mask_region,
-            mask_region_base,
-            n_elements,
-        )?);
-    }
-    if let Some(md) = masks.neg_inf.as_ref() {
-        out.neg_inf = Some(decode_one_mask_at(
-            md,
-            mask_region,
-            mask_region_base,
-            n_elements,
-        )?);
+    for (md, kind) in each_mask_kind(masks) {
+        let bits = decode_one_mask_at(md, mask_region, mask_region_base, n_elements)?;
+        *out.slot_for(kind) = Some(bits);
     }
     Ok(out)
 }
@@ -573,7 +561,7 @@ mod tests {
         let desc = make_descriptor(vec![4], Dtype::Float64);
         let mut payload = vec![0u8; 32];
         let original = payload.clone();
-        restore_non_finite_into(&mut payload, &desc, &[]).unwrap();
+        restore_non_finite_into(&mut payload, &desc, &[], ByteOrder::native()).unwrap();
         assert_eq!(payload, original);
     }
 

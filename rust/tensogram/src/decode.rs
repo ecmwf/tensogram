@@ -132,7 +132,12 @@ pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Ve
             intra_codec_threads,
         )?;
         if options.restore_non_finite {
-            crate::restore::restore_non_finite_into(&mut decoded, desc, mask_region)?;
+            crate::restore::restore_non_finite_into(
+                &mut decoded,
+                desc,
+                mask_region,
+                output_byte_order(desc, options),
+            )?;
         }
         Ok((desc.clone(), decoded))
     };
@@ -286,7 +291,12 @@ pub fn decode_object(
         })?;
 
     if options.restore_non_finite {
-        crate::restore::restore_non_finite_into(&mut decoded, desc, mask_region)?;
+        crate::restore::restore_non_finite_into(
+            &mut decoded,
+            desc,
+            mask_region,
+            output_byte_order(desc, options),
+        )?;
     }
 
     Ok((msg.global_metadata, desc.clone(), decoded))
@@ -321,9 +331,30 @@ pub fn decode_range(
     // sub-range.  See `plans/BITMASK_FRAME.md` §7.4.
     if options.restore_non_finite && desc.masks.is_some() {
         let mask_set = crate::restore::decode_mask_set(desc, mask_region)?;
-        crate::restore::restore_non_finite_into_ranges(&mut parts, desc, ranges, &mask_set)?;
+        crate::restore::restore_non_finite_into_ranges(
+            &mut parts,
+            desc,
+            ranges,
+            &mask_set,
+            output_byte_order(desc, options),
+        )?;
     }
     Ok((desc.clone(), parts))
+}
+
+/// Byte order of the bytes coming out of `decode_pipeline` for
+/// `desc`, given the caller's [`DecodeOptions`].  Used to tell
+/// [`crate::restore`] which endianness to write canonical NaN / Inf
+/// bit patterns in.
+fn output_byte_order(
+    desc: &DataObjectDescriptor,
+    options: &DecodeOptions,
+) -> tensogram_encodings::ByteOrder {
+    if options.native_byte_order {
+        tensogram_encodings::ByteOrder::native()
+    } else {
+        desc.byte_order
+    }
 }
 
 pub fn decode_range_from_payload(

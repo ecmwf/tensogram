@@ -180,10 +180,20 @@ impl Iterator for ObjectIter {
             Err(e) => return Some(Err(crate::error::TensogramError::Encoding(e.to_string()))),
         };
 
-        if self.options.restore_non_finite
-            && let Err(e) = crate::restore::restore_non_finite_into(&mut decoded, desc, mask_region)
-        {
-            return Some(Err(e));
+        if self.options.restore_non_finite {
+            let output_byte_order = if self.options.native_byte_order {
+                tensogram_encodings::ByteOrder::native()
+            } else {
+                desc.byte_order
+            };
+            if let Err(e) = crate::restore::restore_non_finite_into(
+                &mut decoded,
+                desc,
+                mask_region,
+                output_byte_order,
+            ) {
+                return Some(Err(e));
+            }
         }
 
         Some(Ok((desc.clone(), decoded)))

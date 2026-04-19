@@ -178,12 +178,12 @@ pub fn encode_data_object_frame(
 
     let mut out = Vec::with_capacity(total_length as usize);
 
-    // Frame header — 0.17+ emits `NTensorMaskedFrame` (type 9) for every
-    // new data-object frame.  Without a `masks` sub-map in the CBOR
-    // descriptor the on-wire layout matches pre-0.17 type 4 byte-for-byte
-    // except for the type number; legacy-read code paths treat the two
-    // variants identically until the bitmask work (Commit 5) adds the
-    // optional mask sections.
+    // Frame header — 0.17+ emits `NTensorMaskedFrame` (type 9) for
+    // every new data-object frame.  When the descriptor carries no
+    // `masks` sub-map the on-wire layout matches pre-0.17 type 4
+    // byte-for-byte except for the type number.  Mask sections
+    // (when present) live between the payload and the CBOR
+    // descriptor, located by offsets in `descriptor.masks`.
     let fh = FrameHeader {
         frame_type: FrameType::NTensorMaskedFrame,
         version: 1,
@@ -226,10 +226,10 @@ pub fn encode_data_object_frame(
 pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u8], &[u8], usize)> {
     let fh = FrameHeader::read_from(buf)?;
     // Accept both legacy `NTensorFrame` (type 4) and the 0.17+
-    // `NTensorMaskedFrame` (type 9).  When the bitmask work lands this
-    // function will fork: type 9 parses optional mask sections; type 4
-    // stays layout-compatible.  For now both layouts are byte-identical
-    // below the preamble.
+    // `NTensorMaskedFrame` (type 9).  Type 4 frames always yield an
+    // empty mask region; type 9 frames may carry mask blobs between
+    // the payload and the CBOR descriptor located via
+    // `descriptor.masks`.
     if !fh.frame_type.is_data_object() {
         return Err(TensogramError::Framing(format!(
             "expected data-object frame (type 4 or 9), got {:?}",
@@ -775,12 +775,10 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
                 pos += consumed;
             }
             FrameType::NTensorFrame | FrameType::NTensorMaskedFrame => {
-                // Both frame types share the same wire layout for the payload + CBOR
-                // sections; mask blobs (only present in type 9) live between
-                // payload and CBOR and are surfaced later via the descriptor's
-                // `masks` sub-map — a no-op here in Commit 1 (decode_data_object_frame
-                // treats both types identically until the bitmask work lands
-                // in Commit 5).
+                // Both frame types share the same payload + CBOR layout;
+                // `decode_data_object_frame` returns the trimmed data
+                // payload and the (possibly empty) mask region slice.
+                // Type 4 frames always have an empty mask region.
                 let (desc, payload, mask_region, consumed) = decode_data_object_frame(&buf[pos..])?;
                 objects.push((desc, payload, mask_region, frame_start));
                 // Consume the pending preceder (if any) for this object
