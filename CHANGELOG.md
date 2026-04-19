@@ -28,6 +28,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   mismatch, not a data-quality problem) keeps its stderr-warning +
   fallback behaviour unchanged.
 
+### Added — simple_packing standalone-API safety net
+
+- **`simple_packing::encode_with_threads` now validates its
+  `SimplePackingParams` input** with an always-on safety net.  Catches
+  hand-crafted or mutated params that would otherwise produce
+  silently-wrong output:
+  - Non-finite `reference_value` (NaN / ±Inf) → new
+    `PackingError::InvalidParams { field: "reference_value", .. }`.
+  - `|binary_scale_factor| > 256` → new
+    `PackingError::InvalidParams { field: "binary_scale_factor", .. }`.
+    The threshold catches the `i32::MAX` fingerprint that results from
+    feeding Inf through `compute_params`.  Real-world weather data
+    (`|bsf| ≤ 60`) comfortably fits.  Exposed as the public constant
+    `MAX_REASONABLE_BINARY_SCALE = 256`.
+  - `bits_per_value = 0` remains valid (legitimate constant-field
+    encoding); `> 64` continues to be caught by the pre-existing
+    `BitsPerValueTooLarge`.
+  The validation fires on every encode path — direct Rust calls via
+  `simple_packing::encode()`, via the high-level `tensogram::encode()`,
+  via PyO3, WASM, C FFI, and C++ wrapper.  Cross-language parity tests
+  pin the behaviour. See `plans/RESEARCH_NAN_HANDLING.md` §4.2.3 for
+  the rationale and the failure-mode catalogue.
+
 ## [0.16.1] - 2026-04-19
 
 ### Fixed

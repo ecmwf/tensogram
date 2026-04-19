@@ -290,8 +290,81 @@ def test_reject_nan_empty_array_passes():
 def test_error_message_mentions_dtype_and_index():
     data = np.array([1.0, 2.0, 3.0, np.nan, 5.0], dtype=np.float64)
     with pytest.raises(ValueError, match=r"NaN.*element 3.*float64") as excinfo:
-        tensogram.encode(_meta(), [(_desc([5], "float64"), data)], reject_nan=True)
+        tensogram.encode(
+            _meta(), [(_desc([5], "float64"), data)], reject_nan=True
+        )
     msg = str(excinfo.value)
     assert "NaN" in msg
     assert "element 3" in msg
     assert "float64" in msg
+
+
+# ── Standalone-API safety net (plans/RESEARCH_NAN_HANDLING.md §4.2.3) ────────
+#
+# simple_packing::encode_with_threads now validates SimplePackingParams
+# against silent-corruption-producing values.  Here we exercise the
+# validation through the high-level `tensogram.encode` path — the
+# caller supplies a descriptor with a degenerate `binary_scale_factor`,
+# and the error must surface as ValueError.
+
+
+def _simple_packing_desc(
+    ref_value: float = 0.0,
+    binary_scale_factor: int = 0,
+    bits_per_value: int = 16,
+):
+    # The PyO3 binding folds every non-reserved descriptor key into
+    # `params`, so simple_packing's reference_value / binary_scale_factor
+    # / etc. go at the top level of the dict, NOT nested under "params".
+    return {
+        "type": "ntensor",
+        "shape": [4],
+        "dtype": "float64",
+        "byte_order": "little",
+        "encoding": "simple_packing",
+        "filter": "none",
+        "compression": "none",
+        "reference_value": ref_value,
+        "binary_scale_factor": binary_scale_factor,
+        "decimal_scale_factor": 0,
+        "bits_per_value": bits_per_value,
+    }
+
+
+def test_standalone_safety_net_rejects_huge_binary_scale_factor():
+    """Caller supplies ``binary_scale_factor=i32::MAX`` — the
+    fingerprint of feeding Inf through compute_params's range
+    arithmetic.  The safety net catches it at the Rust core."""
+    desc = _simple_packing_desc(binary_scale_factor=2**31 - 1)
+    data = np.array([273.15, 283.0, 293.0, 303.0], dtype=np.float64)
+    with pytest.raises(ValueError, match=r"binary_scale_factor"):
+        tensogram.encode(_meta(), [(desc, data)])
+
+
+def test_standalone_safety_net_threshold_is_256():
+    """Pinning the 256-step threshold is inclusive: 256 passes, 257 fails."""
+    data = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64)
+    # At threshold → accepted
+    desc_ok = _simple_packing_desc(binary_scale_factor=256)
+    tensogram.encode(_meta(), [(desc_ok, data)])
+    # Above threshold → rejected
+    desc_fail = _simple_packing_desc(binary_scale_factor=257)
+    with pytest.raises(ValueError, match=r"binary_scale_factor"):
+        tensogram.encode(_meta(), [(desc_fail, data)])
+
+
+def test_standalone_safety_net_accepts_realistic_binary_scale_factors():
+    """Regression guard: real-world weather values (|bsf| ≤ 60) pass."""
+    data = np.array([273.15, 283.0, 293.0, 303.0], dtype=np.float64)
+    for bsf in (-60, -20, 0, 20, 60):
+        desc = _simple_packing_desc(ref_value=273.15, binary_scale_factor=bsf)
+        tensogram.encode(_meta(), [(desc, data)])
+
+
+def test_standalone_safety_net_constant_field_still_works():
+    """``bits_per_value=0`` is a legitimate constant-field encoding;
+    the safety net must not reject it."""
+    desc = _simple_packing_desc(ref_value=42.0, bits_per_value=0)
+    data = np.array([42.0] * 4, dtype=np.float64)
+    # Should succeed and the packed payload is empty (0 bits per value).
+    tensogram.encode(_meta(), [(desc, data)])
