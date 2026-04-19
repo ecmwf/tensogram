@@ -83,6 +83,7 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
                     descriptor_failed: false,
                     cbor_bytes,
                     payload,
+                    mask_region: &[],
                     frame_offset: *frame_offset,
                     decode_state: DecodeState::NotDecoded,
                 })
@@ -3162,6 +3163,7 @@ mod tests {
             descriptor_failed: false,
             cbor_bytes: &[],
             payload: compressed.as_slice(),
+            mask_region: &[],
             decode_state: DecodeState::NotDecoded,
             frame_offset: 100,
         }];

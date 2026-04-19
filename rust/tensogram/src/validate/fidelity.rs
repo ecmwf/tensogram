@@ -6,10 +6,23 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
-//! Level 4: Fidelity validation — full decode, size check, NaN/Inf detection.
+//! Level 4: Fidelity validation — full decode, size check, mask-aware
+//! NaN / Inf detection.
+//!
+//! When a data-object frame carries a `masks` sub-map
+//! (`NTensorMaskedFrame`, see `plans/BITMASK_FRAME.md` §3.2), the
+//! validator decompresses the per-kind bitmasks and cross-checks
+//! the reconstructed decoded output.  At every mask bit set to `1`,
+//! the matching canonical non-finite value is **expected**.  At
+//! every other position, any NaN / ±Inf indicates a corruption —
+//! either in the payload pipeline output or in the mask itself.
+//!
+//! Without masks, the scanner keeps its pre-0.17 behaviour: any
+//! NaN / Inf in the decoded payload is an error.
 
 use crate::dtype::Dtype;
 use crate::encode::build_pipeline_config;
+use crate::restore::DecodedMaskSet;
 use tensogram_encodings::ByteOrder;
 
 use super::types::*;
@@ -161,18 +174,54 @@ pub(crate) fn validate_fidelity(
             continue;
         }
 
-        // NaN/Inf scan for float types
+        // Decompress the mask set (if any) so the scanner knows which
+        // non-finite positions to expect.
+        let mask_set = match crate::restore::decode_mask_set(desc, obj.mask_region) {
+            Ok(ms) => ms,
+            Err(e) => {
+                issues.push(err(
+                    IssueCode::DecodeObjectFailed,
+                    ValidationLevel::Fidelity,
+                    Some(i),
+                    Some(obj.frame_offset),
+                    format!("bitmask decode failed: {e}"),
+                ));
+                continue;
+            }
+        };
+
+        // NaN/Inf scan for float types — each scanner consults the
+        // mask set and only reports NaN/Inf at positions the mask did
+        // not claim.
         let byte_order = desc.byte_order;
         match desc.dtype {
-            Dtype::Float32 => scan_f32(decoded, byte_order, i, obj.frame_offset, issues),
-            Dtype::Float64 => scan_f64(decoded, byte_order, i, obj.frame_offset, issues),
-            Dtype::Float16 => scan_f16(decoded, byte_order, i, obj.frame_offset, issues),
-            Dtype::Bfloat16 => scan_bf16(decoded, byte_order, i, obj.frame_offset, issues),
-            Dtype::Complex64 => scan_complex64(decoded, byte_order, i, obj.frame_offset, issues),
-            Dtype::Complex128 => scan_complex128(decoded, byte_order, i, obj.frame_offset, issues),
+            Dtype::Float32 => scan_f32(decoded, byte_order, i, obj.frame_offset, &mask_set, issues),
+            Dtype::Float64 => scan_f64(decoded, byte_order, i, obj.frame_offset, &mask_set, issues),
+            Dtype::Float16 => scan_f16(decoded, byte_order, i, obj.frame_offset, &mask_set, issues),
+            Dtype::Bfloat16 => {
+                scan_bf16(decoded, byte_order, i, obj.frame_offset, &mask_set, issues)
+            }
+            Dtype::Complex64 => {
+                scan_complex64(decoded, byte_order, i, obj.frame_offset, &mask_set, issues)
+            }
+            Dtype::Complex128 => {
+                scan_complex128(decoded, byte_order, i, obj.frame_offset, &mask_set, issues)
+            }
             _ => {} // Integer/bitmask types: no NaN/Inf possible
         }
     }
+}
+
+// ── Mask-set helpers ────────────────────────────────────────────────────────
+
+/// Return whether `idx` is flagged in any of the three masks — i.e.
+/// the encoder said the element was non-finite.  The scanner uses
+/// this to suppress NaN/Inf reports at expected positions.
+fn index_is_masked(mask_set: &DecodedMaskSet, idx: usize) -> bool {
+    let check = |bits: Option<&Vec<bool>>| bits.is_some_and(|b| b.get(idx).copied() == Some(true));
+    check(mask_set.nan.as_ref())
+        || check(mask_set.pos_inf.as_ref())
+        || check(mask_set.neg_inf.as_ref())
 }
 
 // ── Float scanners ──────────────────────────────────────────────────────────
@@ -182,6 +231,7 @@ fn scan_f32(
     byte_order: ByteOrder,
     obj_idx: usize,
     frame_offset: usize,
+    mask_set: &DecodedMaskSet,
     issues: &mut Vec<ValidationIssue>,
 ) {
     let chunks = data.chunks_exact(4);
@@ -213,22 +263,28 @@ fn scan_f32(
             ByteOrder::Little => f32::from_le_bytes(bytes),
         };
         if val.is_nan() {
+            if index_is_masked(mask_set, idx) {
+                continue;
+            }
             issues.push(err(
                 IssueCode::NanDetected,
                 ValidationLevel::Fidelity,
                 Some(obj_idx),
                 Some(frame_offset),
-                format!("NaN at element {idx}"),
+                format!("unexpected NaN at element {idx} (not recorded in mask)"),
             ));
             return; // Report first occurrence only
         }
         if val.is_infinite() {
+            if index_is_masked(mask_set, idx) {
+                continue;
+            }
             issues.push(err(
                 IssueCode::InfDetected,
                 ValidationLevel::Fidelity,
                 Some(obj_idx),
                 Some(frame_offset),
-                format!("Inf at element {idx}"),
+                format!("unexpected Inf at element {idx} (not recorded in mask)"),
             ));
             return;
         }
@@ -240,6 +296,7 @@ fn scan_f64(
     byte_order: ByteOrder,
     obj_idx: usize,
     frame_offset: usize,
+    mask_set: &DecodedMaskSet,
     issues: &mut Vec<ValidationIssue>,
 ) {
     let chunks = data.chunks_exact(8);
@@ -267,22 +324,28 @@ fn scan_f64(
             ByteOrder::Little => f64::from_le_bytes(bytes),
         };
         if val.is_nan() {
+            if index_is_masked(mask_set, idx) {
+                continue;
+            }
             issues.push(err(
                 IssueCode::NanDetected,
                 ValidationLevel::Fidelity,
                 Some(obj_idx),
                 Some(frame_offset),
-                format!("NaN at element {idx}"),
+                format!("unexpected NaN at element {idx} (not recorded in mask)"),
             ));
             return;
         }
         if val.is_infinite() {
+            if index_is_masked(mask_set, idx) {
+                continue;
+            }
             issues.push(err(
                 IssueCode::InfDetected,
                 ValidationLevel::Fidelity,
                 Some(obj_idx),
                 Some(frame_offset),
-                format!("Inf at element {idx}"),
+                format!("unexpected Inf at element {idx} (not recorded in mask)"),
             ));
             return;
         }
@@ -294,6 +357,7 @@ fn scan_f16(
     byte_order: ByteOrder,
     obj_idx: usize,
     frame_offset: usize,
+    mask_set: &DecodedMaskSet,
     issues: &mut Vec<ValidationIssue>,
 ) {
     let chunks = data.chunks_exact(2);
@@ -324,13 +388,16 @@ fn scan_f16(
         let exp = (bits >> 10) & 0x1F;
         let mantissa = bits & 0x03FF;
         if exp == 0x1F {
+            if index_is_masked(mask_set, idx) {
+                continue;
+            }
             if mantissa != 0 {
                 issues.push(err(
                     IssueCode::NanDetected,
                     ValidationLevel::Fidelity,
                     Some(obj_idx),
                     Some(frame_offset),
-                    format!("NaN at element {idx}"),
+                    format!("unexpected NaN at element {idx} (not recorded in mask)"),
                 ));
                 return;
             } else {
@@ -339,7 +406,7 @@ fn scan_f16(
                     ValidationLevel::Fidelity,
                     Some(obj_idx),
                     Some(frame_offset),
-                    format!("Inf at element {idx}"),
+                    format!("unexpected Inf at element {idx} (not recorded in mask)"),
                 ));
                 return;
             }
@@ -352,6 +419,7 @@ fn scan_bf16(
     byte_order: ByteOrder,
     obj_idx: usize,
     frame_offset: usize,
+    mask_set: &DecodedMaskSet,
     issues: &mut Vec<ValidationIssue>,
 ) {
     let chunks = data.chunks_exact(2);
@@ -382,13 +450,16 @@ fn scan_bf16(
         let exp = (bits >> 7) & 0xFF;
         let mantissa = bits & 0x7F;
         if exp == 0xFF {
+            if index_is_masked(mask_set, idx) {
+                continue;
+            }
             if mantissa != 0 {
                 issues.push(err(
                     IssueCode::NanDetected,
                     ValidationLevel::Fidelity,
                     Some(obj_idx),
                     Some(frame_offset),
-                    format!("NaN at element {idx}"),
+                    format!("unexpected NaN at element {idx} (not recorded in mask)"),
                 ));
                 return;
             } else {
@@ -397,7 +468,7 @@ fn scan_bf16(
                     ValidationLevel::Fidelity,
                     Some(obj_idx),
                     Some(frame_offset),
-                    format!("Inf at element {idx}"),
+                    format!("unexpected Inf at element {idx} (not recorded in mask)"),
                 ));
                 return;
             }
@@ -410,6 +481,7 @@ fn scan_complex64(
     byte_order: ByteOrder,
     obj_idx: usize,
     frame_offset: usize,
+    mask_set: &DecodedMaskSet,
     issues: &mut Vec<ValidationIssue>,
 ) {
     // Complex64 = two f32 (real, imaginary) = 8 bytes per element
@@ -446,22 +518,32 @@ fn scan_complex64(
         };
         for (val, component) in [(real, "real"), (imag, "imaginary")] {
             if val.is_nan() {
+                if index_is_masked(mask_set, idx) {
+                    continue;
+                }
                 issues.push(err(
                     IssueCode::NanDetected,
                     ValidationLevel::Fidelity,
                     Some(obj_idx),
                     Some(frame_offset),
-                    format!("NaN at element {idx} ({component} component)"),
+                    format!(
+                        "unexpected NaN at element {idx} ({component} component, not recorded in mask)"
+                    ),
                 ));
                 return;
             }
             if val.is_infinite() {
+                if index_is_masked(mask_set, idx) {
+                    continue;
+                }
                 issues.push(err(
                     IssueCode::InfDetected,
                     ValidationLevel::Fidelity,
                     Some(obj_idx),
                     Some(frame_offset),
-                    format!("Inf at element {idx} ({component} component)"),
+                    format!(
+                        "unexpected Inf at element {idx} ({component} component, not recorded in mask)"
+                    ),
                 ));
                 return;
             }
@@ -474,6 +556,7 @@ fn scan_complex128(
     byte_order: ByteOrder,
     obj_idx: usize,
     frame_offset: usize,
+    mask_set: &DecodedMaskSet,
     issues: &mut Vec<ValidationIssue>,
 ) {
     // Complex128 = two f64 (real, imaginary) = 16 bytes per element
@@ -528,22 +611,32 @@ fn scan_complex128(
         };
         for (val, component) in [(real, "real"), (imag, "imaginary")] {
             if val.is_nan() {
+                if index_is_masked(mask_set, idx) {
+                    continue;
+                }
                 issues.push(err(
                     IssueCode::NanDetected,
                     ValidationLevel::Fidelity,
                     Some(obj_idx),
                     Some(frame_offset),
-                    format!("NaN at element {idx} ({component} component)"),
+                    format!(
+                        "unexpected NaN at element {idx} ({component} component, not recorded in mask)"
+                    ),
                 ));
                 return;
             }
             if val.is_infinite() {
+                if index_is_masked(mask_set, idx) {
+                    continue;
+                }
                 issues.push(err(
                     IssueCode::InfDetected,
                     ValidationLevel::Fidelity,
                     Some(obj_idx),
                     Some(frame_offset),
-                    format!("Inf at element {idx} ({component} component)"),
+                    format!(
+                        "unexpected Inf at element {idx} ({component} component, not recorded in mask)"
+                    ),
                 ));
                 return;
             }
