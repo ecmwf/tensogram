@@ -121,7 +121,28 @@ Offset  Size    Field
 8       8       Magic: "39277777"
 ```
 
+## Frame type registry
+
+| Type | Name | Phase | Status |
+|-----:|---|---|---|
+| 1 | `HeaderMetadata` | header | — |
+| 2 | `HeaderIndex` | header | — |
+| 3 | `HeaderHash` | header | — |
+| 4 | `NTensorFrame` (was `DataObject`) | body | **legacy**: read-only for ≥0.17 decoders; no new encoder emits |
+| 5 | `FooterHash` | footer | — |
+| 6 | `FooterIndex` | footer | — |
+| 7 | `FooterMetadata` | footer | — |
+| 8 | `PrecederMetadata` | body | — |
+| 9 | `NTensorMaskedFrame` | body | ≥0.17: all new n-tensor encoders emit this |
+
 ## Data Object Frames
+
+Data-object frames (types 4 and 9) carry one N-dimensional tensor each.
+Type 4 (`NTensorFrame`) is the pre-0.17 format; type 9
+(`NTensorMaskedFrame`) supersedes it and can optionally carry up to
+three compressed bitmasks identifying positions of non-finite values
+(NaN, +Inf, -Inf).  See §Data Object Frame (type 4) and §N-Tensor
+Masked Frame (type 9) for the per-type layout.
 
 We assume that a single data object frame can always be encoded in a single buffer, hence it is possible to always encode its CBOR encoding information together with the data payload. 1 flag is dedicated to identify if CBOR object is before (0) or after (1) of the data payload. Default is to encode AFTER since it is a single append to record the CBOR, sometimes only fully known after all the encoding is finished.
 
@@ -138,6 +159,8 @@ Offset  Size    Field
 8       8       Total Length as Offset to end of object (uint64 BE)
 ```
 
+### `NTensorFrame` (type 4) — legacy
+
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  DATA OBJ PREAMBLE  magic, version, flags, length (fixed sz)  │
@@ -152,13 +175,71 @@ Offset  Size    Field
 └──────────────────────────────────────────────────────────────┘
 ```
 
+### `NTensorMaskedFrame` (type 9) — current
+
+Layout extends type 4 with up to three optional compressed bitmasks
+stored between the payload and the CBOR descriptor.  Each mask
+records the positions of a specific non-finite kind (NaN, +Inf, -Inf)
+in the original input.  The payload itself has those positions
+substituted with `0.0`; on decode, the library restores the values
+using the canonical bit patterns (see `plans/BITMASK_FRAME.md` §7.1
+for the documented lossy-reconstruction caveat — specific NaN
+payloads such as signalling NaNs are NOT preserved).
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  DATA OBJ PREAMBLE  magic type=9, version, flags, length      │
+├──────────────────────────────────────────────────────────────┤
+│  DATA BYTESTREAM PAYLOAD  (NaN/Inf substituted with 0.0)      │
+├──────────────────────────────────────────────────────────────┤
+│  MASK BLOB 1   nan mask    (optional, compressed)             │
+├──────────────────────────────────────────────────────────────┤
+│  MASK BLOB 2   inf+ mask   (optional, compressed)             │
+├──────────────────────────────────────────────────────────────┤
+│  MASK BLOB 3   inf- mask   (optional, compressed)             │
+├──────────────────────────────────────────────────────────────┤
+│  DATA OBJ ENCODING  CBOR descriptor (with "masks" sub-map)    │
+├──────────────────────────────────────────────────────────────┤
+│  DATA OBJ FOOTER    CBOR offset (uint64) + end_magic 'ENDF'  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Each mask blob is a self-contained compressed bitmask; compression
+method and byte offset/length are recorded in the CBOR descriptor's
+`masks` sub-map.  No padding between sections; byte offsets are
+relative to the start of the payload region (i.e., first byte after
+the frame preamble).
+
+CBOR `masks` schema (optional; absent = no non-finite values in the
+source):
+
+```cbor
+{
+  "masks": {
+    "nan":  { "method": "roaring", "offset": 800000, "length": 512 },
+    "inf+": { "method": "rle",     "offset": 800512, "length":  64 },
+    "inf-": { "method": "rle",     "offset": 800576, "length":  32 }
+  }
+}
+```
+
+Methods: `"rle"` | `"roaring"` (default) | `"blosc2"` | `"zstd"` |
+`"lz4"` | `"none"`.  Per-method `params` sub-map is optional.  See
+`plans/BITMASK_FRAME.md` §3.3 for the full schema and §5 for method
+details.
+
+**Reading legacy type-4 frames** with a 0.17+ decoder: interpret the
+absence of the `masks` sub-map as "no non-finite values present".
+Layout is otherwise byte-identical.  Encoders ≥0.17 do not emit
+type 4.
+
 ## Preceder Metadata Frame
 
 A Preceder Metadata Frame (type 8) optionally precedes a Data Object Frame, carrying per-object metadata for the immediately following data object. This is primarily useful for streaming producers that may not know ahead of time when to send the footer and want to associate per-object metadata early.
 
 **Ordering rules:**
-- A Preceder Metadata Frame belongs in the data objects phase (same phase as DataObject frames).
-- It MUST be followed by exactly one DataObject frame. Two consecutive Preceder frames without an intervening DataObject are invalid.
+- A Preceder Metadata Frame belongs in the data objects phase (same phase as `NTensorFrame` / `NTensorMaskedFrame` frames).
+- It MUST be followed by exactly one data-object frame (type 4 or type 9). Two consecutive Preceder frames without an intervening data-object frame are invalid.
 - A Preceder frame not followed by a DataObject (e.g., at end of stream or before a footer) is invalid.
 - Preceders are optional per-object: some objects in a message may have a preceder while others do not.
 
