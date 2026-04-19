@@ -32,6 +32,7 @@
 //! 128) lives at the encoder-integration layer rather than here — this
 //! module encodes whichever method the caller picks.
 
+pub mod codecs;
 pub mod packing;
 pub mod rle;
 pub mod roaring;
