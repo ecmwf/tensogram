@@ -59,7 +59,11 @@ export function decode(buf: Uint8Array, opts?: DecodeOptions): DecodedMessage {
   assertUint8Array(buf, 'buf');
   const wbg = getWbg();
   const handle = rethrowTyped(() =>
-    wbg.decode(buf, opts?.verifyHash ?? false) as unknown as WbgDecodedMessage,
+    wbg.decode(
+      buf,
+      opts?.verifyHash ?? false,
+      opts?.restoreNonFinite ?? true,
+    ) as unknown as WbgDecodedMessage,
   );
   return buildDecodedMessage(handle);
 }
@@ -88,7 +92,12 @@ export function decodeObject(
   }
   const wbg = getWbg();
   const handle = rethrowTyped(() =>
-    wbg.decode_object(buf, index, opts?.verifyHash ?? false) as unknown as WbgDecodedMessage,
+    wbg.decode_object(
+      buf,
+      index,
+      opts?.verifyHash ?? false,
+      opts?.restoreNonFinite ?? true,
+    ) as unknown as WbgDecodedMessage,
   );
   return buildDecodedMessage(handle);
 }

@@ -31,15 +31,42 @@ pub(crate) fn js_err<E: std::fmt::Display>(e: E) -> JsError {
 
 /// Build an `EncodeOptions` from the JS `hash: boolean` option.
 ///
-/// `hash` is `true` (the JS default) when absent; pass `Some(false)`
-/// to disable hashing entirely.  `emit_preceders` is always `false`
-/// from the WASM side; the JS layer uses `StreamingEncoder` to emit
-/// preceders explicitly.
-///
-/// 0.17+: non-finite values are rejected by default at encode time.
-/// The `allow_nan` / `allow_inf` bitmask opt-in lands in a subsequent
-/// commit.
+/// Kept for call sites that don't yet pass the full kwargs (convert
+/// shims, tests).  New entry points should call
+/// [`build_encode_options_full`] directly.
 pub(crate) fn build_encode_options(hash: Option<bool>) -> EncodeOptions {
+    build_encode_options_full(hash, None, None, None, None, None, None)
+}
+
+/// Build an [`EncodeOptions`] from the full JS kwargs set for the
+/// NaN / Inf bitmask companion frame.  See
+/// [`plans/BITMASK_FRAME.md`] for the semantics.
+///
+/// - `hash`: `true` (default) or `false` to disable hashing.
+/// - `allow_nan` / `allow_inf`: both default `false` (reject policy).
+/// - `*_mask_method`: optional string name (`"none"` | `"rle"` |
+///   `"roaring"` | `"lz4"` | `"zstd"` | `"blosc2"`).  Unknown names
+///   surface as a `JsError` at the call site.
+/// - `small_mask_threshold_bytes`: default `128`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_encode_options_full(
+    hash: Option<bool>,
+    allow_nan: Option<bool>,
+    allow_inf: Option<bool>,
+    nan_mask_method: Option<&str>,
+    pos_inf_mask_method: Option<&str>,
+    neg_inf_mask_method: Option<&str>,
+    small_mask_threshold_bytes: Option<usize>,
+) -> EncodeOptions {
+    use core::encode::MaskMethod;
+
+    let defaults = EncodeOptions::default();
+    let parse = |s: Option<&str>, d: MaskMethod| -> MaskMethod {
+        match s {
+            Some(name) => MaskMethod::from_name(name).unwrap_or(d),
+            None => d,
+        }
+    };
     EncodeOptions {
         hash_algorithm: if hash.unwrap_or(true) {
             Some(core::hash::HashAlgorithm::Xxh3)
@@ -47,7 +74,14 @@ pub(crate) fn build_encode_options(hash: Option<bool>) -> EncodeOptions {
             None
         },
         emit_preceders: false,
-        ..Default::default()
+        allow_nan: allow_nan.unwrap_or(false),
+        allow_inf: allow_inf.unwrap_or(false),
+        nan_mask_method: parse(nan_mask_method, defaults.nan_mask_method.clone()),
+        pos_inf_mask_method: parse(pos_inf_mask_method, defaults.pos_inf_mask_method.clone()),
+        neg_inf_mask_method: parse(neg_inf_mask_method, defaults.neg_inf_mask_method.clone()),
+        small_mask_threshold_bytes: small_mask_threshold_bytes
+            .unwrap_or(defaults.small_mask_threshold_bytes),
+        ..defaults
     }
 }
 

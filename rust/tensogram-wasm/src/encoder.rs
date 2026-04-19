@@ -199,14 +199,29 @@ impl StreamingEncoder {
     ///   buffers to an internal `Vec<u8>` and `finish()` returns the
     ///   complete message.
     #[wasm_bindgen(constructor)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         metadata_js: JsValue,
         hash: Option<bool>,
         on_bytes: Option<js_sys::Function>,
+        allow_nan: Option<bool>,
+        allow_inf: Option<bool>,
+        nan_mask_method: Option<String>,
+        pos_inf_mask_method: Option<String>,
+        neg_inf_mask_method: Option<String>,
+        small_mask_threshold_bytes: Option<usize>,
     ) -> Result<StreamingEncoder, JsError> {
         let metadata: core::GlobalMetadata =
             serde_wasm_bindgen::from_value(metadata_js).map_err(js_err)?;
-        let options = build_encode_options(hash);
+        let options = build_encode_options_full(
+            hash,
+            allow_nan,
+            allow_inf,
+            nan_mask_method.as_deref(),
+            pos_inf_mask_method.as_deref(),
+            neg_inf_mask_method.as_deref(),
+            small_mask_threshold_bytes,
+        );
         let inner = match on_bytes {
             Some(cb) => {
                 let sink = JsCallbackWriter::new(cb);

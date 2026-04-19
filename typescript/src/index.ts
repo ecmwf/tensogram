@@ -111,6 +111,7 @@ export type {
   HashDescriptor,
   IssueCode,
   IssueSeverity,
+  MaskMethod,
   MessagePosition,
   OpenFileOptions,
   PreEncodedInput,

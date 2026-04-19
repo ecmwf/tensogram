@@ -107,7 +107,17 @@ export class StreamingEncoder {
     this.#streaming = sink !== undefined;
     this.#handle = rethrowTyped(
       () =>
-        new wbg.StreamingEncoder(metadata, hash, sink) as unknown as WbgStreamingEncoder,
+        new wbg.StreamingEncoder(
+          metadata,
+          hash,
+          sink,
+          opts?.allowNan ?? false,
+          opts?.allowInf ?? false,
+          opts?.nanMaskMethod,
+          opts?.posInfMaskMethod,
+          opts?.negInfMaskMethod,
+          opts?.smallMaskThresholdBytes,
+        ) as unknown as WbgStreamingEncoder,
     );
     registry.register(this, this.#handle, this);
   }
