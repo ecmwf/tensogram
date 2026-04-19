@@ -7,7 +7,7 @@
 // does it submit to any jurisdiction.
 
 #[cfg(feature = "blosc2")]
-mod blosc2;
+pub(crate) mod blosc2;
 #[cfg(feature = "lz4")]
 mod lz4;
 #[cfg(feature = "sz3")]

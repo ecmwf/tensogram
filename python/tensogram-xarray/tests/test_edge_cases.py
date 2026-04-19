@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 import tensogram
 import xarray as xr
+
 from tensogram_xarray.mapping import resolve_variable_name
 from tensogram_xarray.merge import open_datasets
 from tensogram_xarray.scanner import scan_file
@@ -379,7 +380,9 @@ class TestWireFormatEdgeCases:
         data = np.full((3, 4), np.nan, dtype=np.float32)
         meta = {"version": 2, "base": [{"name": "nan_field"}]}
         with tensogram.TensogramFile.create(path) as f:
-            f.append(meta, [(_desc([3, 4]), data)])
+            # allow_nan=True opts into the NaN companion-mask wire
+            # format (see BITMASK_FRAME.md §2).
+            f.append(meta, [(_desc([3, 4]), data)], allow_nan=True)
 
         ds = xr.open_dataset(path, engine="tensogram", variable_key="name")
         var = ds["nan_field"]

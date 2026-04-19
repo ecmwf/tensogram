@@ -317,6 +317,45 @@ pub(crate) fn validate_metadata(
             ));
         }
 
+        // Split obj.payload into (data_payload, mask_region) when the
+        // frame carries a `masks` sub-map — see
+        // `plans/BITMASK_FRAME.md` §3.2.  Before this split, `payload`
+        // spans the entire payload region including any trailing mask
+        // bytes; Level 3 / Level 4 expect the narrowed slice so that
+        // `decode_pipeline` sees only the encoded tensor data.
+        if let Some(masks) = desc.masks.as_ref() {
+            let smallest_offset = [
+                masks.nan.as_ref(),
+                masks.pos_inf.as_ref(),
+                masks.neg_inf.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .map(|m| m.offset)
+            .min();
+            if let Some(off) = smallest_offset {
+                match usize::try_from(off) {
+                    Ok(off_usz) if off_usz <= obj.payload.len() => {
+                        let (data, mask) = obj.payload.split_at(off_usz);
+                        obj.payload = data;
+                        obj.mask_region = mask;
+                    }
+                    _ => {
+                        issues.push(err(
+                            IssueCode::DescriptorCborParseFailed,
+                            ValidationLevel::Metadata,
+                            Some(i),
+                            Some(obj.frame_offset),
+                            format!(
+                                "mask offset {off} out of range (payload region is {} bytes)",
+                                obj.payload.len()
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+
         // Cache the parsed descriptor for Level 3/4
         obj.descriptor = Some(desc);
     }

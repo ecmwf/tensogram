@@ -29,7 +29,9 @@ fn frame_phase(ft: FrameType) -> Phase {
         FrameType::HeaderMetadata | FrameType::HeaderIndex | FrameType::HeaderHash => {
             Phase::Headers
         }
-        FrameType::DataObject | FrameType::PrecederMetadata => Phase::DataObjects,
+        FrameType::NTensorFrame | FrameType::NTensorMaskedFrame | FrameType::PrecederMetadata => {
+            Phase::DataObjects
+        }
         FrameType::FooterHash | FrameType::FooterIndex | FrameType::FooterMetadata => {
             Phase::Footers
         }
@@ -326,7 +328,7 @@ pub(crate) fn validate_structure<'a>(
             }
         };
 
-        let min_size = if fh.frame_type == FrameType::DataObject {
+        let min_size = if fh.frame_type.is_data_object() {
             FRAME_HEADER_SIZE + DATA_OBJECT_FOOTER_SIZE
         } else {
             FRAME_HEADER_SIZE + FRAME_END.len()
@@ -405,14 +407,14 @@ pub(crate) fn validate_structure<'a>(
         current_phase = current_phase.max(phase);
 
         // Preceder legality
-        if pending_preceder && fh.frame_type != FrameType::DataObject {
+        if pending_preceder && !fh.frame_type.is_data_object() {
             issues.push(err(
                 IssueCode::PrecederNotFollowedByObject,
                 ValidationLevel::Structure,
                 None,
                 Some(pos),
                 format!(
-                    "PrecederMetadata must be followed by DataObject, got {:?} at offset {pos}",
+                    "PrecederMetadata must be followed by a data-object frame, got {:?} at offset {pos}",
                     fh.frame_type
                 ),
             ));
@@ -431,14 +433,14 @@ pub(crate) fn validate_structure<'a>(
                 pending_preceder = true;
                 observed_flags.set(MessageFlags::PRECEDER_METADATA);
             }
-            FrameType::DataObject => {
+            FrameType::NTensorFrame | FrameType::NTensorMaskedFrame => {
                 pending_preceder = false;
             }
         }
 
         // Extract payloads for Level 2/3 reuse
         match fh.frame_type {
-            FrameType::DataObject => {
+            FrameType::NTensorFrame | FrameType::NTensorMaskedFrame => {
                 let cbor_offset_pos = endf_offset - 8;
                 if cbor_offset_pos < pos + FRAME_HEADER_SIZE {
                     issues.push(err(

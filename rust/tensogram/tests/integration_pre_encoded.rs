@@ -100,6 +100,7 @@ fn make_simple_packing_desc(
         filter: "none".to_string(),
         compression: "none".to_string(),
         params,
+        masks: None,
         hash: None,
     }
 }
@@ -146,6 +147,7 @@ fn make_szip_simple_packing_desc(
         filter: "none".to_string(),
         compression: "szip".to_string(),
         params,
+        masks: None,
         hash: None,
     }
 }
@@ -168,6 +170,7 @@ fn make_raw_desc(
         filter: "none".to_string(),
         compression: compression.to_string(),
         params,
+        masks: None,
         hash: None,
     }
 }
@@ -187,7 +190,7 @@ fn encode_then_extract_payload(
     let (extracted_desc, payload_vec) = {
         let dec = framing::decode_message(&msg).expect("decode message");
         assert_eq!(dec.objects.len(), 1);
-        let (d, payload_slice, _offset) = &dec.objects[0];
+        let (d, payload_slice, _mask_region, _offset) = &dec.objects[0];
         (d.clone(), payload_slice.to_vec())
     };
     (msg, extracted_desc, payload_vec)
@@ -704,6 +707,7 @@ fn test_encode_pre_encoded_zero_element_shape() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let meta = GlobalMetadata::default();
@@ -772,6 +776,7 @@ fn test_encode_pre_encoded_tensor_metadata_populated() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let meta = GlobalMetadata::default();
@@ -874,6 +879,7 @@ fn test_encode_pre_encoded_single_element() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let raw = 42.0f32.to_be_bytes().to_vec();
@@ -901,6 +907,7 @@ fn test_encode_pre_encoded_2d_array() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let values: Vec<f32> = (0..12).map(|i| i as f32 * 1.5).collect();
@@ -935,6 +942,7 @@ fn test_encode_pre_encoded_ndim0_scalar() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     // A scalar has shape product = 1 (empty product), so expected bytes = 1 * 8 = 8.
@@ -962,6 +970,7 @@ fn test_encode_pre_encoded_rejects_empty_obj_type() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let raw = vec![0u8; 16];
@@ -1116,6 +1125,7 @@ fn test_encode_pre_encoded_multiple_objects_different_dtypes() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let raw_f32 = vec![1u8; 16]; // 4 × float32
@@ -1149,6 +1159,7 @@ fn test_encode_pre_encoded_ndim_shape_mismatch_rejected() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let raw = vec![0u8; 16];
@@ -1176,6 +1187,7 @@ fn test_encode_pre_encoded_strides_shape_mismatch_rejected() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let raw = vec![0u8; 16];

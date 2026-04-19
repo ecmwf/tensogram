@@ -34,7 +34,7 @@ fn encoded_payloads(msg: &[u8]) -> Vec<Vec<u8>> {
     decoded
         .objects
         .iter()
-        .map(|(_, payload, _)| payload.to_vec())
+        .map(|(_, payload, _, _)| payload.to_vec())
         .collect()
 }
 
@@ -60,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 

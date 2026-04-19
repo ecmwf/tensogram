@@ -67,6 +67,19 @@ pub struct DecodeOptions {
     /// skipped.  See
     /// [`EncodeOptions.parallel_threshold_bytes`](crate::encode::EncodeOptions::parallel_threshold_bytes).
     pub parallel_threshold_bytes: Option<usize>,
+    /// When `true` (the default) AND the object carries a
+    /// `NTensorMaskedFrame` `masks` sub-map, decompress the masks
+    /// and write the canonical NaN / +Inf / -Inf bit pattern at
+    /// every `1` position in the decoded output.  See
+    /// `plans/BITMASK_FRAME.md` §7.1 for the (lossy) reconstruction
+    /// caveat — only the canonical quiet-NaN / ±∞ bit pattern is
+    /// restored; specific NaN payloads are not preserved.
+    ///
+    /// Set to `false` to skip restoration and receive the
+    /// `0.0`-substituted bytes as they are on disk.  Callers who
+    /// need the raw masks alongside the substituted payload use
+    /// [`decode_with_masks`] instead.
+    pub restore_non_finite: bool,
 }
 
 impl Default for DecodeOptions {
@@ -77,6 +90,7 @@ impl Default for DecodeOptions {
             compression_backend: pipeline::CompressionBackend::default(),
             threads: 0,
             parallel_threshold_bytes: None,
+            restore_non_finite: true,
         }
     }
 }
@@ -94,24 +108,37 @@ pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Ve
     let msg = framing::decode_message(buf)?;
 
     let budget = crate::parallel::resolve_budget(options.threads);
-    let total_bytes: usize = msg.objects.iter().map(|(_, p, _)| p.len()).sum();
+    let total_bytes: usize = msg.objects.iter().map(|(_, p, _, _)| p.len()).sum();
     let parallel =
         crate::parallel::should_parallelise(budget, total_bytes, options.parallel_threshold_bytes);
-    let any_axis_b = msg.objects.iter().any(|(d, _, _)| {
+    let any_axis_b = msg.objects.iter().any(|(d, _, _, _)| {
         crate::parallel::is_axis_b_friendly(&d.encoding, &d.filter, &d.compression)
     });
     let use_axis_a = parallel && crate::parallel::use_axis_a(msg.objects.len(), budget, any_axis_b);
     let intra_codec_threads = if parallel && !use_axis_a { budget } else { 0 };
 
-    let decode_one = |(desc, payload_bytes, _offset): &(DataObjectDescriptor, &[u8], usize)|
-        -> Result<DecodedObject> {
-        let decoded = decode_single_object_with_backend(
+    let decode_one = |(desc, payload_bytes, mask_region, _offset): &(
+        DataObjectDescriptor,
+        &[u8],
+        &[u8],
+        usize,
+    )|
+     -> Result<DecodedObject> {
+        let mut decoded = decode_single_object_with_backend(
             desc,
             payload_bytes,
             options,
             options.compression_backend,
             intra_codec_threads,
         )?;
+        if options.restore_non_finite {
+            crate::restore::restore_non_finite_into(
+                &mut decoded,
+                desc,
+                mask_region,
+                output_byte_order(desc, options),
+            )?;
+        }
         Ok((desc.clone(), decoded))
     };
 
@@ -144,6 +171,73 @@ pub fn decode_metadata(buf: &[u8]) -> Result<GlobalMetadata> {
     framing::decode_metadata_only(buf)
 }
 
+/// Decode all objects from a message buffer AND return the raw
+/// decompressed bitmasks alongside the substituted payloads.
+///
+/// Like [`decode`], but the returned payloads always contain `0.0`
+/// at non-finite positions — restoration is **not** applied.
+/// Callers get the raw [`restore::DecodedMaskSet`] for each object
+/// and can apply the masks manually (e.g. to convert to a
+/// domain-specific missing-value representation, or to aggregate
+/// missing-count statistics without materialising the canonical
+/// NaN / Inf bytes).
+///
+/// See `plans/BITMASK_FRAME.md` §7.3.
+pub fn decode_with_masks(
+    buf: &[u8],
+    options: &DecodeOptions,
+) -> Result<(GlobalMetadata, Vec<DecodedObjectWithMasks>)> {
+    let msg = framing::decode_message(buf)?;
+
+    let budget = crate::parallel::resolve_budget(options.threads);
+    let total_bytes: usize = msg.objects.iter().map(|(_, p, _, _)| p.len()).sum();
+    let parallel =
+        crate::parallel::should_parallelise(budget, total_bytes, options.parallel_threshold_bytes);
+    let intra_codec_threads = if parallel { budget } else { 0 };
+
+    // Local options snapshot with restore_non_finite forced off —
+    // this API returns masks alongside a 0-substituted payload by
+    // design, matching the `plans/BITMASK_FRAME.md` §7.3 contract.
+    let mut decode_opts = options.clone();
+    decode_opts.restore_non_finite = false;
+
+    let decode_one = |(desc, payload_bytes, mask_region, _offset): &(
+        DataObjectDescriptor,
+        &[u8],
+        &[u8],
+        usize,
+    )|
+     -> Result<DecodedObjectWithMasks> {
+        let payload = decode_single_object_with_backend(
+            desc,
+            payload_bytes,
+            &decode_opts,
+            options.compression_backend,
+            intra_codec_threads,
+        )?;
+        let masks = crate::restore::decode_mask_set(desc, mask_region)?;
+        Ok(DecodedObjectWithMasks {
+            descriptor: desc.clone(),
+            payload,
+            masks,
+        })
+    };
+
+    // Advanced API — axis-A parallelism is not worth the complexity
+    // here since this path is intended for niche workflows (custom
+    // missing-value representations, missing-count stats).  Mainline
+    // consumers use `decode()` with `restore_non_finite=true` which
+    // does have the full axis-A/B dispatch.
+    let objects: Vec<DecodedObjectWithMasks> =
+        crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, || {
+            msg.objects.iter().map(decode_one).collect::<Result<_>>()
+        })?;
+
+    Ok((msg.global_metadata, objects))
+}
+
+pub use crate::restore::{DecodedMaskSet, DecodedObjectWithMasks};
+
 /// Decode global metadata **and** per-object descriptors without decoding
 /// any payload data.
 ///
@@ -153,7 +247,11 @@ pub fn decode_metadata(buf: &[u8]) -> Result<GlobalMetadata> {
 /// at open time.
 pub fn decode_descriptors(buf: &[u8]) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>)> {
     let msg = framing::decode_message(buf)?;
-    let descriptors = msg.objects.into_iter().map(|(desc, _, _)| desc).collect();
+    let descriptors = msg
+        .objects
+        .into_iter()
+        .map(|(desc, _, _, _)| desc)
+        .collect();
     Ok((msg.global_metadata, descriptors))
 }
 
@@ -174,7 +272,7 @@ pub fn decode_object(
         )));
     }
 
-    let (desc, payload_bytes, _) = &msg.objects[index];
+    let (desc, payload_bytes, mask_region, _) = &msg.objects[index];
 
     // Single-object decode: axis A is impossible — spend the entire
     // budget (if any) on the codec internally (axis B).
@@ -186,15 +284,25 @@ pub fn decode_object(
     );
     let intra_codec_threads = if parallel { budget } else { 0 };
 
-    let decoded = crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, || {
-        decode_single_object_with_backend(
+    let mut decoded =
+        crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, || {
+            decode_single_object_with_backend(
+                desc,
+                payload_bytes,
+                options,
+                options.compression_backend,
+                intra_codec_threads,
+            )
+        })?;
+
+    if options.restore_non_finite {
+        crate::restore::restore_non_finite_into(
+            &mut decoded,
             desc,
-            payload_bytes,
-            options,
-            options.compression_backend,
-            intra_codec_threads,
-        )
-    })?;
+            mask_region,
+            output_byte_order(desc, options),
+        )?;
+    }
 
     Ok((msg.global_metadata, desc.clone(), decoded))
 }
@@ -222,9 +330,36 @@ pub fn decode_range(
         )));
     }
 
-    let (desc, payload_bytes, _) = &msg.objects[object_index];
-    let parts = decode_range_from_payload(desc, payload_bytes, ranges, options)?;
+    let (desc, payload_bytes, mask_region, _) = &msg.objects[object_index];
+    let mut parts = decode_range_from_payload(desc, payload_bytes, ranges, options)?;
+    // Apply mask-aware NaN / Inf restoration to each requested
+    // sub-range.  See `plans/BITMASK_FRAME.md` §7.4.
+    if options.restore_non_finite && desc.masks.is_some() {
+        let mask_set = crate::restore::decode_mask_set(desc, mask_region)?;
+        crate::restore::restore_non_finite_into_ranges(
+            &mut parts,
+            desc,
+            ranges,
+            &mask_set,
+            output_byte_order(desc, options),
+        )?;
+    }
     Ok((desc.clone(), parts))
+}
+
+/// Byte order of the bytes coming out of `decode_pipeline` for
+/// `desc`, given the caller's [`DecodeOptions`].  Used to tell
+/// [`crate::restore`] which endianness to write canonical NaN / Inf
+/// bit patterns in.
+fn output_byte_order(
+    desc: &DataObjectDescriptor,
+    options: &DecodeOptions,
+) -> tensogram_encodings::ByteOrder {
+    if options.native_byte_order {
+        tensogram_encodings::ByteOrder::native()
+    } else {
+        desc.byte_order
+    }
 }
 
 pub fn decode_range_from_payload(
@@ -418,6 +553,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         }
     }
@@ -629,7 +765,9 @@ mod tests {
             "shuffle_element_size".to_string(),
             ciborium::Value::Integer(4.into()),
         );
-        let data: Vec<u8> = (0..400).map(|i| (i % 256) as u8).collect();
+        // Finite f32 data (avoid tripping the 0.17 default-reject
+        // finite-check with byte-pattern NaN bits).
+        let data: Vec<u8> = (0..100).flat_map(|i| (i as f32).to_ne_bytes()).collect();
 
         let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
@@ -658,6 +796,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0xFF; 2]; // ceil(16/8) = 2 bytes

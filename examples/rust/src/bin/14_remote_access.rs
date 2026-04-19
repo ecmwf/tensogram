@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: std::collections::BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let data = vec![0u8; 72 * 144 * 4];

@@ -28,6 +28,7 @@ fn make_float32_descriptor(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescri
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     (global, desc)
@@ -79,6 +80,7 @@ fn make_mars_pair(shape: Vec<u64>, param: &str) -> (GlobalMetadata, DataObjectDe
             );
             p
         },
+        masks: None,
         hash: None,
     };
     (global, desc)
@@ -133,6 +135,7 @@ fn test_multi_object_message() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let desc2 = DataObjectDescriptor {
@@ -146,6 +149,7 @@ fn test_multi_object_message() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 
@@ -196,6 +200,7 @@ fn test_decode_single_object_by_index() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let desc2 = DataObjectDescriptor {
@@ -209,6 +214,7 @@ fn test_decode_single_object_by_index() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 
@@ -265,9 +271,9 @@ fn test_hash_verification_fails_on_corruption() {
     let mut encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // The v2 message layout: preamble(24) | header frames | data-object frame | footer frames | postamble(16).
-    // The DataObject frame is identified by the "FR" marker followed by frame-type byte 0x00 0x04.
-    // Find the data object frame and corrupt a byte inside its payload region.
-    let data_frame_marker: &[u8] = &[b'F', b'R', 0x00, 0x04];
+    // 0.17+ encoders emit NTensorMaskedFrame (type 9); identify the
+    // frame by its "FR" magic + frame-type bytes 0x00 0x09.
+    let data_frame_marker: &[u8] = &[b'F', b'R', 0x00, 0x09];
     let frame_start = encoded
         .windows(4)
         .position(|w| w == data_frame_marker)
@@ -328,6 +334,7 @@ fn test_simple_packing_round_trip() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: packing_params,
+        masks: None,
         hash: None,
     };
 
@@ -374,6 +381,7 @@ fn test_shuffle_round_trip() {
         filter: "shuffle".to_string(),
         compression: "none".to_string(),
         params,
+        masks: None,
         hash: None,
     };
 
@@ -465,6 +473,7 @@ fn test_decode_range_shuffle_rejected() {
         filter: "shuffle".to_string(),
         compression: "none".to_string(),
         params,
+        masks: None,
         hash: None,
     };
 
@@ -537,6 +546,7 @@ fn test_validate_object_overflow() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 
@@ -590,6 +600,7 @@ fn test_cross_endian_round_trip() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: packing_params.clone(),
+        masks: None,
         hash: None,
     };
 
@@ -621,6 +632,7 @@ fn test_cross_endian_round_trip() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: packing_params.clone(),
+        masks: None,
         hash: None,
     };
 
@@ -684,6 +696,7 @@ fn test_decode_range_cross_endian_native() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 
@@ -724,6 +737,7 @@ fn test_decode_range_wire_byte_order_opt_out() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 
@@ -783,6 +797,7 @@ fn test_simple_packing_rejects_non_f64() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: packing_params,
+        masks: None,
         hash: None,
     };
 
@@ -817,6 +832,7 @@ fn test_validate_ndim_mismatch() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 
@@ -858,6 +874,7 @@ fn test_param_out_of_bounds() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: packing_params,
+        masks: None,
         hash: None,
     };
 
@@ -921,6 +938,7 @@ fn make_szip_packing_pair(
         filter: "none".to_string(),
         compression: "szip".to_string(),
         params: packing_params,
+        masks: None,
         hash: None,
     };
     (global, desc)
@@ -955,6 +973,7 @@ fn make_szip_raw_pair(num_values: u64, dtype: Dtype) -> (GlobalMetadata, DataObj
         filter: "none".to_string(),
         compression: "szip".to_string(),
         params,
+        masks: None,
         hash: None,
     };
     (global, desc)
@@ -1102,7 +1121,7 @@ fn test_szip_simple_packing_decode_range_last_elements() {
 
 #[test]
 fn test_szip_raw_u8_round_trip() {
-    let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+    let data: Vec<u8> = (0..1024).flat_map(|i| (i as f32).to_ne_bytes()).collect();
     let (global, desc) = make_szip_raw_pair(4096, Dtype::Uint8);
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -1113,7 +1132,7 @@ fn test_szip_raw_u8_round_trip() {
 #[test]
 fn test_szip_shuffle_round_trip() {
     // shuffle + szip: float32 data shuffled to bytes, then szip-compressed
-    let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect(); // 1024 float32s
+    let data: Vec<u8> = (0..1024).flat_map(|i| (i as f32).to_ne_bytes()).collect(); // 1024 finite f32s
     let mut params = BTreeMap::new();
     params.insert(
         "shuffle_element_size".to_string(),
@@ -1145,6 +1164,7 @@ fn test_szip_shuffle_round_trip() {
         filter: "shuffle".to_string(),
         compression: "szip".to_string(),
         params,
+        masks: None,
         hash: None,
     };
 
@@ -1156,7 +1176,7 @@ fn test_szip_shuffle_round_trip() {
 #[test]
 fn test_szip_shuffle_decode_range_rejected() {
     // shuffle + szip: decode_range should be rejected
-    let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+    let data: Vec<u8> = (0..1024).flat_map(|i| (i as f32).to_ne_bytes()).collect();
     let mut params = BTreeMap::new();
     params.insert(
         "shuffle_element_size".to_string(),
@@ -1188,6 +1208,7 @@ fn test_szip_shuffle_decode_range_rejected() {
         filter: "shuffle".to_string(),
         compression: "szip".to_string(),
         params,
+        masks: None,
         hash: None,
     };
 
@@ -1250,6 +1271,7 @@ fn test_szip_multi_object_mixed_compression() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
     let packed_desc = DataObjectDescriptor {
@@ -1263,6 +1285,7 @@ fn test_szip_multi_object_mixed_compression() {
         filter: "none".to_string(),
         compression: "szip".to_string(),
         params: packing_params,
+        masks: None,
         hash: None,
     };
 
@@ -1380,6 +1403,7 @@ fn test_validate_empty_obj_type() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     };
 

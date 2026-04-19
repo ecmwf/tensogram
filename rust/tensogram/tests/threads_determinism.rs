@@ -40,7 +40,7 @@ fn encoded_payloads(buf: &[u8]) -> Vec<Vec<u8>> {
     let msg = tensogram::framing::decode_message(buf).expect("decode_message");
     msg.objects
         .iter()
-        .map(|(_, payload, _)| payload.to_vec())
+        .map(|(_, payload, _, _)| payload.to_vec())
         .collect()
 }
 
@@ -60,6 +60,7 @@ fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     }
 }

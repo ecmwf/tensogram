@@ -5,6 +5,84 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **NaN / Inf bitmask companion frame** (wire type 9
+  `NTensorMaskedFrame`) — encoders that pass the new `allow_nan` /
+  `allow_inf` opt-in now substitute non-finite values with `0.0` on
+  the wire and record their positions in up to three compressed
+  bitmasks stored alongside the payload.  Decoders restore canonical
+  NaN / ±Inf at the marked positions.  See
+  `plans/BITMASK_FRAME.md` and
+  `docs/src/guide/nan-inf-handling.md` for the full design and
+  usage.
+- Per-kind mask compression methods:
+  `nan_mask_method` / `pos_inf_mask_method` / `neg_inf_mask_method`,
+  accepting `"none"` | `"rle"` | `"roaring"` (default) | `"blosc2"` |
+  `"zstd"` | `"lz4"`.  Small-mask auto-fallback to `"none"` below
+  `small_mask_threshold_bytes` (default 128).
+- Decode-side `restore_non_finite` flag (default `true`) and the
+  advanced `decode_with_masks` API (Rust + Python) that return raw
+  decompressed bitmasks alongside the substituted payload.
+- `tensogram validate --full` is now mask-aware: NaN / ±Inf at a
+  masked position is expected; at any other position it still
+  fails as `NanDetected` / `InfDetected`.
+- CLI: `--allow-nan` / `--allow-inf` global flags with matching
+  `TENSOGRAM_ALLOW_NAN` / `TENSOGRAM_ALLOW_INF` env vars.
+  Per-kind `--nan-mask-method` / `--pos-inf-mask-method` /
+  `--neg-inf-mask-method` and `--small-mask-threshold` flags with
+  matching `TENSOGRAM_*` env vars.
+
+### Changed — BREAKING (default-behaviour flip, 0.17 pre-release)
+
+- **Non-finite float values now error by default at encode.** Pre-0.17
+  the library passed NaN / ±Inf bit patterns through
+  `encoding="none"` pipelines verbatim; opt-in `reject_nan` /
+  `reject_inf` flags upgraded rejection to pipeline-independent.
+  0.17+ inverts that policy: rejection is the default across every
+  encode path (`tensogram::encode`, `file.append`, streaming,
+  converters, CLI), and the former opt-in flags are **removed**.
+  Callers who intentionally shipped NaN-bearing data through
+  `encoding="none"` must now either pre-process the data or opt in
+  to the new `allow_nan` / `allow_inf` bitmask companion.
+- **Frame-type rename**: pre-0.17 `DataObject` = wire type 4
+  becomes `NTensorFrame`.  New encoders emit `NTensorMaskedFrame`
+  (wire type 9) for every data object; decoders accept both.  See
+  `docs/src/format/wire-format.md` for the registry.
+- **`DataObjectDescriptor` gains an optional `masks` field** of
+  type `Option<MasksMetadata>`.  Absent by default, serialises as
+  no CBOR key — byte-compatible with pre-0.17 descriptors when no
+  masks are present.
+- **Removed API surface** (hard break — no deprecation shim):
+  - Rust: `EncodeOptions::reject_nan`, `EncodeOptions::reject_inf`,
+    and the `tensogram::strict_finite` module; non-finite handling
+    now uses the default-reject policy plus the
+    `tensogram::substitute_and_mask` / `allow_nan` / `allow_inf`
+    opt-in path where callers want mask-based preservation.
+  - Python: `reject_nan` / `reject_inf` kwargs on `tensogram.encode`,
+    `TensogramFile.append`, `StreamingEncoder`, `convert_grib`,
+    `convert_grib_buffer`, `convert_netcdf`.
+  - TypeScript: `EncodeOptions.rejectNan`, `EncodeOptions.rejectInf`,
+    `StreamingEncoderOptions.rejectNan`, `StreamingEncoderOptions.rejectInf`.
+  - C FFI: removed `bool reject_nan, bool reject_inf` parameters from
+    `tgm_encode`, `tgm_file_append`, `tgm_streaming_encoder_create`.
+    Headers regenerated; pre-0.17 C callers get compile errors.
+  - C++: removed `reject_nan` / `reject_inf` fields from
+    `encode_options`.
+  - CLI: removed `--reject-nan` / `--reject-inf` global flags and
+    `TENSOGRAM_REJECT_NAN` / `TENSOGRAM_REJECT_INF` env vars (clap
+    reports "unknown argument" if passed).
+  - Docs: replaced `docs/src/guide/strict-finite.md` with
+    `docs/src/guide/nan-inf-handling.md`, which covers both the
+    default-reject policy and the `allow_nan` / `allow_inf` bitmask
+    opt-in.  Cross-references from `edge-cases.md`, `error-handling.md`,
+    `python-api.md`, `simple-packing.md`, `convert-netcdf.md`
+    updated.
+- **`encode_pre_encoded` no longer runs the finite check.** The
+  pre-encoded API was previously a source of conflicting semantics
+  (the flags errored if set on this path); it now unconditionally
+  treats bytes as opaque.
+
 ### Fixed
 
 - **`simple_packing::encode` safety net handles `i32::MIN` correctly.**

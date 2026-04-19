@@ -83,6 +83,7 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
                     descriptor_failed: false,
                     cbor_bytes,
                     payload,
+                    mask_region: &[],
                     frame_offset: *frame_offset,
                     decode_state: DecodeState::NotDecoded,
                 })
@@ -248,7 +249,7 @@ pub fn validate_buffer(buf: &[u8], options: &ValidateOptions) -> FileValidationR
 mod tests {
     use super::*;
     use crate::Dtype;
-    use crate::encode::{EncodeOptions, encode};
+    use crate::encode::{EncodeOptions, encode, encode_pre_encoded};
     use crate::types::{DataObjectDescriptor, GlobalMetadata};
     use crate::wire::{FRAME_HEADER_SIZE, POSTAMBLE_SIZE, PREAMBLE_SIZE};
     use std::collections::BTreeMap;
@@ -267,6 +268,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data: Vec<u8> = vec![0u8; 32];
@@ -291,6 +293,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data: Vec<u8> = vec![0u8; 16];
@@ -607,6 +610,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 32];
@@ -642,6 +646,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 8];
@@ -680,6 +685,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 32];
@@ -753,6 +759,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 16];
@@ -805,6 +812,10 @@ mod tests {
     }
 
     fn make_float64_message(values: &[f64]) -> Vec<u8> {
+        // Use `encode_pre_encoded` to bypass the 0.17 default-reject
+        // finite-value check — these validate tests deliberately
+        // construct NaN / Inf-bearing messages to verify the
+        // Fidelity-level scanner catches them on decode.
         let meta = GlobalMetadata::default();
         let desc = DataObjectDescriptor {
             obj_type: "ndarray".to_string(),
@@ -817,10 +828,11 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
-        encode(
+        encode_pre_encoded(
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions::default(),
@@ -841,10 +853,11 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        encode(
+        encode_pre_encoded(
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions::default(),
@@ -946,6 +959,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 16]; // 4 × i32
@@ -987,6 +1001,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         // Float16: exponent=0x1F (all 1s), mantissa=1 => NaN
@@ -994,7 +1009,7 @@ mod tests {
         let mut data = vec![0u8; 4]; // 2 × f16
         data[0..2].copy_from_slice(&0x0000u16.to_be_bytes()); // valid zero
         data[2..4].copy_from_slice(&0x7C01u16.to_be_bytes()); // NaN
-        let msg = encode(
+        let msg = encode_pre_encoded(
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions::default(),
@@ -1028,11 +1043,12 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         // Float16 Inf: exponent=0x1F, mantissa=0 => 0x7C00
         let data = 0x7C00u16.to_be_bytes().to_vec();
-        let msg = encode(
+        let msg = encode_pre_encoded(
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions::default(),
@@ -1062,12 +1078,13 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         // BFloat16 NaN: exponent=0xFF, mantissa≠0
         // sign(1) + exp(8) + mantissa(7): 0_11111111_0000001 = 0x7F81
         let data = 0x7F81u16.to_be_bytes().to_vec();
-        let msg = encode(
+        let msg = encode_pre_encoded(
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions::default(),
@@ -1097,13 +1114,14 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         // Complex64: [NaN real, 0.0 imag]
         let mut data = Vec::new();
         data.extend_from_slice(&f32::NAN.to_be_bytes());
         data.extend_from_slice(&0.0f32.to_be_bytes());
-        let msg = encode(
+        let msg = encode_pre_encoded(
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions::default(),
@@ -1133,13 +1151,14 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         // Complex128: [1.0 real, Inf imag]
         let mut data = Vec::new();
         data.extend_from_slice(&1.0f64.to_be_bytes());
         data.extend_from_slice(&f64::INFINITY.to_be_bytes());
-        let msg = encode(
+        let msg = encode_pre_encoded(
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions::default(),
@@ -1235,6 +1254,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data: Vec<u8> = vec![];
@@ -1269,6 +1289,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 12]; // 3 × f32, valid
@@ -1398,6 +1419,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         }
     }
@@ -2257,6 +2279,7 @@ mod tests {
                 filter: "none".to_string(),
                 compression: "zstd".to_string(),
                 params: BTreeMap::new(),
+                masks: None,
                 hash: None,
             };
             let data = vec![0u8; 32];
@@ -2372,6 +2395,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 2]; // ceil(16/8) = 2 bytes
@@ -2404,6 +2428,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 2]; // ceil(13/8) = 2 bytes
@@ -2711,6 +2736,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let nan_data: Vec<u8> = f64::NAN
@@ -2725,7 +2751,7 @@ mod tests {
             .chain(3.0f64.to_be_bytes().iter())
             .copied()
             .collect();
-        let msg = encode(
+        let msg = encode_pre_encoded(
             &meta,
             &[(&desc, nan_data.as_slice()), (&desc, ok_data.as_slice())],
             &EncodeOptions::default(),
@@ -2973,7 +2999,7 @@ mod tests {
             if fh_total < FRAME_HEADER_SIZE {
                 return None;
             }
-            if fh_type_raw == 4 {
+            if fh_type_raw == 4 || fh_type_raw == 9 {
                 return Some((pos, fh_total));
             }
             // Frames are 8-byte aligned on the wire.
@@ -3076,6 +3102,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 32];
@@ -3115,6 +3142,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "lz4".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         // Encode 2 f64 values through the same pipeline so the bytes we hand
@@ -3135,6 +3163,7 @@ mod tests {
             descriptor_failed: false,
             cbor_bytes: &[],
             payload: compressed.as_slice(),
+            mask_region: &[],
             decode_state: DecodeState::NotDecoded,
             frame_offset: 100,
         }];
@@ -3313,6 +3342,10 @@ mod tests {
     /// and raw little-endian payload bytes. Used by the fidelity NaN/Inf
     /// coverage tests to stage adversarial inputs.
     fn make_raw_object_message(dtype: Dtype, bytes: Vec<u8>, shape: Vec<u64>) -> Vec<u8> {
+        // These fidelity tests construct NaN / Inf-bearing messages to
+        // verify the Fidelity-level scanner catches them on decode.
+        // Use `encode_pre_encoded` to bypass the 0.17 default-reject
+        // check at encode time.
         let meta = GlobalMetadata::default();
         let byte_width = dtype.byte_width();
         let strides = vec![byte_width as u64];
@@ -3327,9 +3360,10 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
-        encode(
+        encode_pre_encoded(
             &meta,
             &[(&desc, bytes.as_slice())],
             &EncodeOptions::default(),
@@ -3536,6 +3570,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 32];
@@ -3573,6 +3608,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 16];
@@ -3618,6 +3654,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 32];
@@ -3678,6 +3715,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 16];

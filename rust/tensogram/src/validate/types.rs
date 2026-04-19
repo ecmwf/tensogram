@@ -113,8 +113,13 @@ pub(crate) enum DecodeState {
 
 /// Per-object validation context, populated incrementally across levels.
 ///
-/// Level 1 fills `payload` and `frame_offset`.
-/// Level 2 fills `descriptor`.
+/// Level 1 fills `payload` (full payload region including mask bytes
+/// if the frame carries masks) and `frame_offset`.
+/// Level 2 parses the descriptor and, when `descriptor.masks` is
+/// `Some`, narrows `payload` to just the data-payload portion while
+/// populating `mask_region` with the trailing mask bytes.  After
+/// Level 2, `payload` is safe to feed to `decode_pipeline` on its
+/// own.
 /// Level 3 fills `decode_state` for non-raw objects.
 /// Level 4 reuses decoded bytes or scans `payload` in-place for raw objects.
 pub(crate) struct ObjectContext<'a> {
@@ -124,8 +129,13 @@ pub(crate) struct ObjectContext<'a> {
     pub descriptor_failed: bool,
     /// Raw CBOR bytes for the descriptor.
     pub cbor_bytes: &'a [u8],
-    /// Encoded payload bytes (from Level 1 frame walk).
+    /// Data-payload bytes — the pipeline-encoded portion only.
+    /// Narrowed in Level 2 when `descriptor.masks` is `Some`.
     pub payload: &'a [u8],
+    /// Mask-region bytes trailing the data payload.  Empty when the
+    /// frame has no masks; populated in Level 2 from the descriptor's
+    /// `masks` sub-map.  See `plans/BITMASK_FRAME.md` §3.2.
+    pub mask_region: &'a [u8],
     /// Byte offset of the data object frame within the message.
     pub frame_offset: usize,
     /// Decode pipeline state (filled by Level 3, reused by Level 4).

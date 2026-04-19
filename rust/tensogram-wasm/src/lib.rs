@@ -40,10 +40,19 @@ use wasm_bindgen::prelude::*;
 ///
 /// @param buf - Raw .tgm message bytes
 /// @param verify_hash - Whether to verify payload integrity hashes (default: false)
+/// @param restore_non_finite - When true (default), decode writes canonical
+///                             NaN / +Inf / -Inf at positions recorded in
+///                             the frame's mask companion.  Set to false to
+///                             receive 0.0-substituted bytes as on disk.
 #[wasm_bindgen]
-pub fn decode(buf: &[u8], verify_hash: Option<bool>) -> Result<DecodedMessage, JsError> {
+pub fn decode(
+    buf: &[u8],
+    verify_hash: Option<bool>,
+    restore_non_finite: Option<bool>,
+) -> Result<DecodedMessage, JsError> {
     let options = DecodeOptions {
         verify_hash: verify_hash.unwrap_or(false),
+        restore_non_finite: restore_non_finite.unwrap_or(true),
         ..Default::default()
     };
     let (metadata, objects) = core::decode(buf, &options).map_err(js_err)?;
@@ -65,14 +74,17 @@ pub fn decode_metadata(buf: &[u8]) -> Result<JsValue, JsError> {
 /// @param buf - Raw .tgm message bytes
 /// @param index - Zero-based object index
 /// @param verify_hash - Whether to verify hash
+/// @param restore_non_finite - Restore canonical NaN / Inf from mask companion (default: true)
 #[wasm_bindgen]
 pub fn decode_object(
     buf: &[u8],
     index: usize,
     verify_hash: Option<bool>,
+    restore_non_finite: Option<bool>,
 ) -> Result<DecodedMessage, JsError> {
     let options = DecodeOptions {
         verify_hash: verify_hash.unwrap_or(false),
+        restore_non_finite: restore_non_finite.unwrap_or(true),
         ..Default::default()
     };
     let (metadata, descriptor, data) = core::decode_object(buf, index, &options).map_err(js_err)?;
@@ -101,18 +113,27 @@ pub fn scan(buf: &[u8]) -> Result<JsValue, JsError> {
 /// @param metadata_js - GlobalMetadata as a plain JS object
 /// @param objects_js - Array of {descriptor, data} objects where data is a TypedArray
 /// @param hash - Whether to compute integrity hashes (default: true)
-/// @param reject_nan - If true, reject float payloads containing any NaN
-///   before the pipeline runs. Default: false. See the Rust
-///   `EncodeOptions::reject_nan` docs for full semantics.
-/// @param reject_inf - Same for +Inf / -Inf. Default: false.
+/// @param allow_nan - When true, substitute NaN with 0 and record
+///                    positions in a mask companion frame (default: false)
+/// @param allow_inf - When true, substitute +Inf / -Inf with 0 and
+///                    record positions in per-sign masks (default: false)
+/// @param nan_mask_method - Mask compression method for the NaN mask
+/// @param pos_inf_mask_method - Mask compression method for the +Inf mask
+/// @param neg_inf_mask_method - Mask compression method for the -Inf mask
+/// @param small_mask_threshold_bytes - Mask size below which method="none" is forced (default: 128)
 /// @returns Uint8Array containing the encoded .tgm message
 #[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
 pub fn encode(
     metadata_js: JsValue,
     objects_js: js_sys::Array,
     hash: Option<bool>,
-    reject_nan: Option<bool>,
-    reject_inf: Option<bool>,
+    allow_nan: Option<bool>,
+    allow_inf: Option<bool>,
+    nan_mask_method: Option<String>,
+    pos_inf_mask_method: Option<String>,
+    neg_inf_mask_method: Option<String>,
+    small_mask_threshold_bytes: Option<usize>,
 ) -> Result<js_sys::Uint8Array, JsError> {
     let metadata: core::GlobalMetadata =
         serde_wasm_bindgen::from_value(metadata_js).map_err(js_err)?;
@@ -122,12 +143,16 @@ pub fn encode(
         .zip(data_vec.iter())
         .map(|(d, v)| (d, v.as_slice()))
         .collect();
-    let encoded = core::encode(
-        &metadata,
-        &pairs,
-        &build_encode_options(hash, reject_nan, reject_inf),
-    )
-    .map_err(js_err)?;
+    let options = build_encode_options_full(
+        hash,
+        allow_nan,
+        allow_inf,
+        nan_mask_method.as_deref(),
+        pos_inf_mask_method.as_deref(),
+        neg_inf_mask_method.as_deref(),
+        small_mask_threshold_bytes,
+    )?;
+    let encoded = core::encode(&metadata, &pairs, &options).map_err(js_err)?;
     // Return a JS-owned copy.  We must not use `view_as_u8` here because
     // `encoded` is a local Vec that will be dropped when this function
     // returns — a view into it would be a dangling pointer.

@@ -58,6 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(), // encoding params only — no MARS keys here
+        masks: None,
         hash: None,
     };
 

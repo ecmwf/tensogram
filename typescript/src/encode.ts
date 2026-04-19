@@ -53,12 +53,18 @@ export function encode(
 
   // Default to hashing. Opt out explicitly with `{ hash: false }`.
   const hash = options?.hash !== false;
-  // Strict-finite flags default to false, matching the Rust and Python
-  // APIs. See EncodeOptions doc for full semantics.
-  const rejectNan = options?.rejectNan === true;
-  const rejectInf = options?.rejectInf === true;
   return rethrowTyped(() =>
-    wbg.encode(metadata, objArray, hash, rejectNan, rejectInf),
+    wbg.encode(
+      metadata,
+      objArray,
+      hash,
+      options?.allowNan ?? false,
+      options?.allowInf ?? false,
+      options?.nanMaskMethod,
+      options?.posInfMaskMethod,
+      options?.negInfMaskMethod,
+      options?.smallMaskThresholdBytes,
+    ),
   );
 }
 

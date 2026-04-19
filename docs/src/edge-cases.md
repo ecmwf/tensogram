@@ -34,7 +34,7 @@ Simple packing cannot represent NaN. The quantization formula maps the range `[m
 
 **Net effect:** every decoded value silently becomes NaN.
 
-**Mitigation:** turn on [the `reject_inf` strict-finite flag](guide/strict-finite.md). It catches Inf upstream of the simple_packing encoder and fails with a clean `EncodingError` before the corruption path runs.
+**Mitigation:** turn on strict-finite encoding (see docs). It catches Inf upstream of the simple_packing encoder and fails with a clean `EncodingError` before the corruption path runs.
 
 **Also:** `extract_simple_packing_params` catches a non-finite `reference_value` in the descriptor, so callers going through the high-level `encode()` API are protected when the computed reference happens to be `±Inf` (e.g. data like `[1.0, -Inf]`). But for data like `[1.0, +Inf, 3.0]` the reference is `1.0` (finite) and only `binary_scale_factor` overflows — that's not caught without the strict flag.
 

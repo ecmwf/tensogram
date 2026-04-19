@@ -204,9 +204,10 @@ choose a different encoding (e.g. encoding="none").
 
 Recovery options, in order of effort:
 
-1. **Drop the `--encoding simple_packing` flag.** The default
-   (`encoding="none"`) accepts NaN bits transparently and produces a
-   valid Tensogram file.
+1. **Drop the `--encoding simple_packing` flag AND pass
+   `--allow-nan`.** The default pipeline (`encoding="none"`)
+   combined with the NaN bitmask companion frame round-trips NaN
+   values losslessly.  See [NaN / Inf Handling](nan-inf-handling.md).
 2. **Substitute non-finite values** with an in-band sentinel before
    conversion if you need simple_packing throughout.
 3. **Split the conversion** with `--split-by variable` and re-run
@@ -216,9 +217,11 @@ Recovery options, in order of effort:
 > **Prior behaviour (pre-0.17).** The importer used to soft-downgrade
 > NaN-bearing variables to `encoding="none"` with a stderr warning.
 > That silently hid data-quality problems from automated pipelines;
-> the hard-fail surfaces them. The non-f64-payload branch (a
-> structural mismatch rather than a data-quality problem) keeps its
-> stderr-warning + fallback behaviour unchanged.
+> 0.17 surfaces them as hard errors and pairs the fix with the
+> `--allow-nan` bitmask opt-in (preferred over pre-processing).
+> The non-f64-payload branch (a structural mismatch rather than a
+> data-quality problem) keeps its stderr-warning + fallback
+> behaviour unchanged.
 
 ```bash
 # Pack temperature to 24-bit + zstd

@@ -21,8 +21,7 @@ pub fn run(
     all_keys: bool,
     pipeline: &PipelineArgs,
     threads: u32,
-    reject_nan: bool,
-    reject_inf: bool,
+    mask_cli: &super::MaskCliOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if inputs.is_empty() {
         return Err("no input files specified".into());
@@ -34,6 +33,12 @@ pub fn run(
         Grouping::MergeAll
     };
 
+    let mut encode_options = tensogram::EncodeOptions {
+        threads,
+        ..Default::default()
+    };
+    mask_cli.apply(&mut encode_options)?;
+
     let options = ConvertOptions {
         grouping,
         preserve_all_keys: all_keys,
@@ -44,12 +49,7 @@ pub fn run(
             compression: pipeline.compression.clone(),
             compression_level: pipeline.compression_level,
         },
-        encode_options: tensogram::EncodeOptions {
-            threads,
-            reject_nan,
-            reject_inf,
-            ..Default::default()
-        },
+        encode_options,
     };
 
     let mut all_messages = Vec::new();
@@ -108,8 +108,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
-            false,
-            false,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -127,8 +126,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
-            false,
-            false,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -146,8 +144,7 @@ mod tests {
             true,
             &default_pipeline(),
             0,
-            false,
-            false,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -170,8 +167,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
-            false,
-            false,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -192,8 +188,7 @@ mod tests {
                 false,
                 &default_pipeline(),
                 0,
-                false,
-                false,
+                &super::super::MaskCliOptions::default(),
             )
             .is_err()
         );
@@ -208,8 +203,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
-            false,
-            false,
+            &super::super::MaskCliOptions::default(),
         );
         assert!(result.is_err());
     }
@@ -225,8 +219,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
-            false,
-            false,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -244,8 +237,7 @@ mod tests {
             true,
             &default_pipeline(),
             0,
-            false,
-            false,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();
@@ -266,8 +258,7 @@ mod tests {
             false,
             &default_pipeline(),
             0,
-            false,
-            false,
+            &super::super::MaskCliOptions::default(),
         )
         .unwrap();
         let f = tensogram::TensogramFile::open(&out).unwrap();

@@ -178,6 +178,7 @@ Each data object frame contains its own CBOR descriptor. This descriptor fully d
 | `filter` | text | Yes | `"none"` or `"shuffle"` |
 | `compression` | text | Yes | `"none"`, `"szip"`, `"zstd"`, `"lz4"`, `"blosc2"`, `"zfp"`, or `"sz3"` |
 | `hash` | map | No | Integrity hash of the payload (see below) |
+| `masks` | map | No | NaN / Inf bitmask companion descriptors (see below) |
 | *encoding params* | various | Conditional | Required when `encoding != "none"` |
 | *filter params* | various | Conditional | Required when `filter != "none"` |
 | *compression params* | various | Conditional | Required when `compression != "none"` |
@@ -278,6 +279,47 @@ The optional `hash` field records an integrity digest of the raw payload bytes.
 |-----|------|-------------|
 | `type` | text | `"xxh3"` |
 | `value` | text | Hex-encoded digest |
+
+### NaN / Inf mask companion (`masks`)
+
+When the object was encoded with `allow_nan=true` and/or
+`allow_inf=true` AND the payload actually contained at least one
+matching non-finite value, the descriptor carries a `masks`
+sub-map.  Each kind (`nan`, `inf+`, `inf-`) is independently
+optional — only the kinds that appeared are present.
+
+```cbor
+{
+  ... standard DataObjectDescriptor fields ...,
+  "masks": {
+    "nan": {
+      "method": "roaring",
+      "offset": 40,
+      "length": 12
+    },
+    "inf+": {
+      "method": "rle",
+      "offset": 52,
+      "length": 3
+    }
+  }
+}
+```
+
+Each entry:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `method` | text | `"none"` \| `"rle"` \| `"roaring"` \| `"blosc2"` \| `"zstd"` \| `"lz4"` — compression method actually used (may differ from the requested method due to the small-mask auto-fallback) |
+| `offset` | uint | Byte offset of the mask blob from the **start of the payload region** (= first byte after the 16-byte frame header) |
+| `length` | uint | Byte length of the mask blob on disk |
+| `params` | map | Optional method-specific parameters (e.g. `{"level": 3}` for zstd, `{"codec": "lz4", "level": 5}` for blosc2) |
+
+Canonical key order for `masks` is the byte-lex sort `inf+` < `inf-` < `nan`.
+The encoder writes mask blobs between the payload and the CBOR
+descriptor in the same canonical order.  See
+[NaN / Inf Handling](../guide/nan-inf-handling.md) for the encode
+/ decode semantics.
 
 ## IndexFrame
 

@@ -16,6 +16,63 @@ use crate::wire::{
     MAGIC, MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE, Postamble, Preamble,
 };
 
+/// Compute the byte offset in `buf` where the encoded payload ends
+/// and the (optional) mask region begins, given the payload start,
+/// the region end (the start of CBOR), and the parsed descriptor.
+///
+/// When `descriptor.masks` is `None` — the common case — the payload
+/// fills the entire region, so `payload_end == region_end`.  When
+/// masks are present, the payload ends at the smallest offset among
+/// the present mask descriptors (offsets are relative to the
+/// payload-region start, so the absolute end is
+/// `payload_start + smallest_offset`).
+///
+/// Returns [`TensogramError::Framing`] when a mask descriptor's
+/// offset + length exceeds the region size — a corrupted or
+/// malicious frame.
+fn mask_aware_payload_end(
+    payload_start: usize,
+    region_end: usize,
+    desc: &DataObjectDescriptor,
+) -> Result<usize> {
+    let Some(masks) = desc.masks.as_ref() else {
+        return Ok(region_end);
+    };
+    let region_len = region_end.saturating_sub(payload_start);
+
+    // Validate every present mask fits inside the region.
+    let mut smallest_offset: Option<usize> = None;
+    let mut validate_one =
+        |md: Option<&crate::types::MaskDescriptor>, kind: &'static str| -> Result<()> {
+            let Some(md) = md else { return Ok(()) };
+            let offset = usize::try_from(md.offset).map_err(|_| {
+                TensogramError::Framing(format!("mask_{kind}.offset {} overflows usize", md.offset))
+            })?;
+            let length = usize::try_from(md.length).map_err(|_| {
+                TensogramError::Framing(format!("mask_{kind}.length {} overflows usize", md.length))
+            })?;
+            let end = offset.checked_add(length).ok_or_else(|| {
+                TensogramError::Framing(format!(
+                    "mask_{kind}.offset + length overflow (offset={offset}, length={length})"
+                ))
+            })?;
+            if end > region_len {
+                return Err(TensogramError::Framing(format!(
+                    "mask_{kind}.offset + length ({end}) exceeds payload region size ({region_len})"
+                )));
+            }
+            smallest_offset = Some(smallest_offset.map_or(offset, |s| s.min(offset)));
+            Ok(())
+        };
+    validate_one(masks.nan.as_ref(), "nan")?;
+    validate_one(masks.pos_inf.as_ref(), "inf+")?;
+    validate_one(masks.neg_inf.as_ref(), "inf-")?;
+
+    // Every kind absent (masks == Some(empty)) — treat like no masks.
+    let relative_end = smallest_offset.unwrap_or(region_len);
+    Ok(payload_start + relative_end)
+}
+
 // ── Frame-level primitives ───────────────────────────────────────────────────
 
 /// Write a complete frame: frame_header + payload + ENDF.
@@ -121,9 +178,14 @@ pub fn encode_data_object_frame(
 
     let mut out = Vec::with_capacity(total_length as usize);
 
-    // Frame header
+    // Frame header — 0.17+ emits `NTensorMaskedFrame` (type 9) for
+    // every new data-object frame.  When the descriptor carries no
+    // `masks` sub-map the on-wire layout matches pre-0.17 type 4
+    // byte-for-byte except for the type number.  Mask sections
+    // (when present) live between the payload and the CBOR
+    // descriptor, located by offsets in `descriptor.masks`.
     let fh = FrameHeader {
-        frame_type: FrameType::DataObject,
+        frame_type: FrameType::NTensorMaskedFrame,
         version: 1,
         flags,
         total_length,
@@ -150,14 +212,27 @@ pub fn encode_data_object_frame(
     Ok(out)
 }
 
-/// Decode a data object frame, returning the descriptor and payload slice.
+/// Decode a data object frame, returning the descriptor, the
+/// (trimmed) data-payload slice, the raw mask-region slice, and the
+/// total bytes consumed (including alignment padding).
+///
+/// The mask-region slice contains the bytes between the data payload
+/// and the CBOR descriptor — non-empty only when
+/// `descriptor.masks.is_some()`, per the `NTensorMaskedFrame` layout
+/// in `plans/BITMASK_FRAME.md` §3.2.  Callers that only care about
+/// the data payload can ignore it.
 ///
 /// `buf` must start at the frame header.
-pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u8], usize)> {
+pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u8], &[u8], usize)> {
     let fh = FrameHeader::read_from(buf)?;
-    if fh.frame_type != FrameType::DataObject {
+    // Accept both legacy `NTensorFrame` (type 4) and the 0.17+
+    // `NTensorMaskedFrame` (type 9).  Type 4 frames always yield an
+    // empty mask region; type 9 frames may carry mask blobs between
+    // the payload and the CBOR descriptor located via
+    // `descriptor.masks`.
+    if !fh.frame_type.is_data_object() {
         return Err(TensogramError::Framing(format!(
-            "expected DataObject frame, got {:?}",
+            "expected data-object frame (type 4 or 9), got {:?}",
             fh.frame_type
         )));
     }
@@ -216,16 +291,25 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
 
     let cbor_after = fh.flags & DataObjectFlags::CBOR_AFTER_PAYLOAD != 0;
 
-    let (descriptor, payload_slice) = if cbor_after {
-        // Layout: header(16) | payload | cbor | cbor_offset(8) | ENDF(4)
+    let (descriptor, payload_slice, mask_region) = if cbor_after {
+        // Layout: header(16) | payload_region | cbor | cbor_offset(8) | ENDF(4)
+        //
+        // `payload_region` = [encoded_payload][mask_nan][mask_inf+][mask_inf-]
+        // when descriptor.masks is Some; just [encoded_payload] otherwise.
+        // See `plans/BITMASK_FRAME.md` §3.2.
         let payload_start = FRAME_HEADER_SIZE;
         let cbor_start = cbor_offset;
         let cbor_end = cbor_offset_pos;
         let cbor_slice = &buf[cbor_start..cbor_end];
         let desc = metadata::cbor_to_object_descriptor(cbor_slice)?;
-        (desc, &buf[payload_start..cbor_start])
+        let payload_end = mask_aware_payload_end(payload_start, cbor_start, &desc)?;
+        (
+            desc,
+            &buf[payload_start..payload_end],
+            &buf[payload_end..cbor_start],
+        )
     } else {
-        // Layout: header(16) | cbor | payload | cbor_offset(8) | ENDF(4)
+        // Layout: header(16) | cbor | payload_region | cbor_offset(8) | ENDF(4)
         // Use Cursor to measure exact consumed CBOR bytes on the wire.
         // Re-serialization would produce different lengths for non-canonical CBOR.
         let cbor_start = cbor_offset;
@@ -242,7 +326,12 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
         let desc: DataObjectDescriptor = cbor_value.deserialized().map_err(|e| {
             TensogramError::Metadata(format!("failed to deserialize descriptor: {e}"))
         })?;
-        (desc, &buf[payload_start..cbor_offset_pos])
+        let payload_end = mask_aware_payload_end(payload_start, cbor_offset_pos, &desc)?;
+        (
+            desc,
+            &buf[payload_start..payload_end],
+            &buf[payload_end..cbor_offset_pos],
+        )
     };
 
     // Bytes consumed, including padding
@@ -252,7 +341,7 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
         consumed = aligned;
     }
 
-    Ok((descriptor, payload_slice, consumed))
+    Ok((descriptor, payload_slice, mask_region, consumed))
 }
 
 // ── Message-level encode (buffered mode) ─────────────────────────────────────
@@ -513,8 +602,12 @@ pub struct DecodedMessage<'a> {
     pub global_metadata: GlobalMetadata,
     pub index: Option<IndexFrame>,
     pub hash_frame: Option<HashFrame>,
-    /// (descriptor, payload_slice, frame_offset_in_message)
-    pub objects: Vec<(DataObjectDescriptor, &'a [u8], usize)>,
+    /// (descriptor, data_payload_slice, mask_region_slice, frame_offset_in_message)
+    ///
+    /// `mask_region_slice` is empty when the frame has no masks;
+    /// otherwise it holds the raw compressed mask bytes.  See
+    /// `plans/BITMASK_FRAME.md` §3.2 for the region layout.
+    pub objects: Vec<(DataObjectDescriptor, &'a [u8], &'a [u8], usize)>,
     /// Per-object preceder metadata, parallel to `objects`.
     /// `Some(map)` if a PrecederMetadata frame preceded that object.
     /// After decode, these entries are merged into `global_metadata.base`
@@ -537,9 +630,13 @@ fn frame_phase(ft: FrameType) -> DecodePhase {
         FrameType::HeaderMetadata | FrameType::HeaderIndex | FrameType::HeaderHash => {
             DecodePhase::Headers
         }
-        // PrecederMetadata lives alongside DataObject frames — it must appear
-        // immediately before the DataObject it describes, within the data phase.
-        FrameType::DataObject | FrameType::PrecederMetadata => DecodePhase::DataObjects,
+        // PrecederMetadata lives alongside data-object frames — it must appear
+        // immediately before the data-object frame it describes, within the
+        // data phase.  Both NTensorFrame (legacy) and NTensorMaskedFrame
+        // count as data-object frames.
+        FrameType::NTensorFrame | FrameType::NTensorMaskedFrame | FrameType::PrecederMetadata => {
+            DecodePhase::DataObjects
+        }
         FrameType::FooterHash | FrameType::FooterIndex | FrameType::FooterMetadata => {
             DecodePhase::Footers
         }
@@ -590,7 +687,7 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
     let mut global_metadata: Option<GlobalMetadata> = None;
     let mut index: Option<IndexFrame> = None;
     let mut hash_frame: Option<HashFrame> = None;
-    let mut objects: Vec<(DataObjectDescriptor, &[u8], usize)> = Vec::new();
+    let mut objects: Vec<(DataObjectDescriptor, &[u8], &[u8], usize)> = Vec::new();
     let mut preceder_payloads: Vec<Option<BTreeMap<String, ciborium::Value>>> = Vec::new();
     let mut current_phase = DecodePhase::Headers;
 
@@ -628,9 +725,9 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
 
         // A pending preceder must be followed by a DataObject, not a footer
         // or another preceder.
-        if pending_preceder.is_some() && fh.frame_type != FrameType::DataObject {
+        if pending_preceder.is_some() && !fh.frame_type.is_data_object() {
             return Err(TensogramError::Framing(format!(
-                "PrecederMetadata must be followed by a DataObject frame, got {:?}",
+                "PrecederMetadata must be followed by a data-object frame, got {:?}",
                 fh.frame_type
             )));
         }
@@ -677,9 +774,13 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
                 pending_preceder = Some(entry);
                 pos += consumed;
             }
-            FrameType::DataObject => {
-                let (desc, payload, consumed) = decode_data_object_frame(&buf[pos..])?;
-                objects.push((desc, payload, frame_start));
+            FrameType::NTensorFrame | FrameType::NTensorMaskedFrame => {
+                // Both frame types share the same payload + CBOR layout;
+                // `decode_data_object_frame` returns the trimmed data
+                // payload and the (possibly empty) mask region slice.
+                // Type 4 frames always have an empty mask region.
+                let (desc, payload, mask_region, consumed) = decode_data_object_frame(&buf[pos..])?;
+                objects.push((desc, payload, mask_region, frame_start));
                 // Consume the pending preceder (if any) for this object
                 preceder_payloads.push(pending_preceder.take());
                 pos += consumed;
@@ -687,10 +788,10 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
         }
     }
 
-    // A preceder at the end of the stream with no following DataObject is invalid
+    // A preceder at the end of the stream with no following data-object frame is invalid
     if pending_preceder.is_some() {
         return Err(TensogramError::Framing(
-            "dangling PrecederMetadata: no DataObject frame followed".to_string(),
+            "dangling PrecederMetadata: no data-object frame followed".to_string(),
         ));
     }
 
@@ -985,8 +1086,69 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         }
+    }
+
+    #[test]
+    fn mask_aware_payload_end_rejects_mask_past_region() {
+        // Defense-in-depth: a corrupted / malicious descriptor with
+        // mask.offset + length exceeding the region must produce a
+        // clean Framing error at parse time, BEFORE the mask codec
+        // runs.  Exercises mask_aware_payload_end directly since
+        // round-tripping a tampered frame at the integration layer
+        // is fragile (CBOR byte-shifting).
+        let mut desc = make_descriptor(vec![2]);
+        desc.masks = Some(crate::types::MasksMetadata {
+            nan: Some(crate::types::MaskDescriptor {
+                method: "none".to_string(),
+                offset: 4,
+                length: 100, // way past any reasonable region
+                params: BTreeMap::new(),
+            }),
+            ..Default::default()
+        });
+        // Region covers [payload_start=16 .. cbor_start=24] — only
+        // 8 bytes available, so the claimed mask (offset=4, len=100)
+        // exceeds the region (end=104 > 8).
+        let err = mask_aware_payload_end(16, 24, &desc).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exceeds payload region size"),
+            "expected region-size-exceeded error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn mask_aware_payload_end_rejects_offset_length_overflow() {
+        // u64::MAX + u64::MAX overflows checked_add and should
+        // surface a clear overflow error.
+        let mut desc = make_descriptor(vec![2]);
+        desc.masks = Some(crate::types::MasksMetadata {
+            nan: Some(crate::types::MaskDescriptor {
+                method: "none".to_string(),
+                offset: usize::MAX as u64,
+                length: usize::MAX as u64,
+                params: BTreeMap::new(),
+            }),
+            ..Default::default()
+        });
+        let err = mask_aware_payload_end(16, 24, &desc).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("overflow") || msg.contains("exceeds"),
+            "expected overflow / exceeds error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn mask_aware_payload_end_no_masks_uses_region_end() {
+        // Baseline: when descriptor.masks is None, the payload fills
+        // the entire region (pre-0.17 compat path).
+        let desc = make_descriptor(vec![4]);
+        let end = mask_aware_payload_end(16, 32, &desc).unwrap();
+        assert_eq!(end, 32);
     }
 
     #[test]
@@ -996,7 +1158,8 @@ mod tests {
 
         let frame = encode_data_object_frame(&desc, &payload, false).unwrap();
 
-        let (decoded_desc, decoded_payload, consumed) = decode_data_object_frame(&frame).unwrap();
+        let (decoded_desc, decoded_payload, _mask_region, consumed) =
+            decode_data_object_frame(&frame).unwrap();
         assert_eq!(decoded_desc.shape, vec![4]);
         assert_eq!(decoded_desc.dtype, Dtype::Float32);
         assert_eq!(decoded_payload, &payload[..]);
@@ -1010,7 +1173,8 @@ mod tests {
 
         let frame = encode_data_object_frame(&desc, &payload, true).unwrap();
 
-        let (decoded_desc, decoded_payload, _) = decode_data_object_frame(&frame).unwrap();
+        let (decoded_desc, decoded_payload, _mask_region, _) =
+            decode_data_object_frame(&frame).unwrap();
         assert_eq!(decoded_desc.shape, vec![2, 3]);
         assert_eq!(decoded_payload, &payload[..]);
     }
@@ -1173,7 +1337,7 @@ mod tests {
 
         for (content, frame_type) in frames {
             match frame_type {
-                FrameType::DataObject => {
+                FrameType::NTensorFrame => {
                     let frame = encode_data_object_frame(&desc, &payload, false).unwrap();
                     out.extend_from_slice(&frame);
                     let pad = (8 - (out.len() % 8)) % 8;
@@ -1217,7 +1381,7 @@ mod tests {
     fn test_decode_rejects_header_after_data_object() {
         // DataObject before HeaderMetadata — should fail
         let msg = build_raw_message(&[
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
             (&[], FrameType::HeaderMetadata),
         ]);
         let result = decode_message(&msg);
@@ -1247,7 +1411,7 @@ mod tests {
         let msg = build_raw_message(&[
             (&meta_cbor, FrameType::HeaderMetadata),
             (&hash_cbor, FrameType::FooterHash),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
         ]);
         let result = decode_message(&msg);
         assert!(
@@ -1261,7 +1425,7 @@ mod tests {
         // HeaderMetadata → DataObject — canonical order
         let msg = build_raw_message(&[
             (&[], FrameType::HeaderMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
         ]);
         let result = decode_message(&msg);
         assert!(
@@ -1343,7 +1507,7 @@ mod tests {
 
         let msg = build_raw_message(&[
             (&meta_cbor, FrameType::HeaderMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
             (&meta_cbor, FrameType::FooterMetadata),
         ]);
         let result = decode_message(&msg);
@@ -1381,7 +1545,7 @@ mod tests {
         let msg = build_raw_message(&[
             (&[], FrameType::HeaderMetadata),
             (&preceder_cbor, FrameType::PrecederMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
         ]);
         let decoded = decode_message(&msg).unwrap();
 
@@ -1403,14 +1567,14 @@ mod tests {
             (&[], FrameType::HeaderMetadata),
             (&preceder_cbor, FrameType::PrecederMetadata),
             (&preceder_cbor, FrameType::PrecederMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
         ]);
         let result = decode_message(&msg);
         assert!(result.is_err(), "consecutive preceders should be rejected");
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("PrecederMetadata") && err.contains("DataObject"),
-            "error should explain preceder must precede DataObject: {err}"
+            err.contains("PrecederMetadata") && err.contains("data-object"),
+            "error should explain preceder must precede a data-object frame: {err}"
         );
     }
 
@@ -1422,7 +1586,7 @@ mod tests {
         // Preceder at end of message without a following DataObject
         let msg = build_raw_message(&[
             (&[], FrameType::HeaderMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
             (&preceder_cbor, FrameType::PrecederMetadata),
         ]);
         let result = decode_message(&msg);
@@ -1447,7 +1611,7 @@ mod tests {
         let msg = build_raw_message(&[
             (&[], FrameType::HeaderMetadata),
             (&bad_cbor, FrameType::PrecederMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
         ]);
         let result = decode_message(&msg);
         assert!(
@@ -1474,7 +1638,7 @@ mod tests {
         let msg = build_raw_message(&[
             (&[], FrameType::HeaderMetadata),
             (&bad_cbor, FrameType::PrecederMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
         ]);
         let result = decode_message(&msg);
         assert!(
@@ -1520,8 +1684,8 @@ mod tests {
         let msg = build_raw_message(&[
             (&[], FrameType::HeaderMetadata),
             (&preceder_cbor, FrameType::PrecederMetadata),
-            (&[], FrameType::DataObject),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
+            (&[], FrameType::NTensorFrame),
         ]);
         let decoded = decode_message(&msg).unwrap();
 
@@ -1562,7 +1726,7 @@ mod tests {
         let msg = build_raw_message(&[
             (&[], FrameType::HeaderMetadata),
             (&preceder_cbor, FrameType::PrecederMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
             (&footer_cbor, FrameType::FooterMetadata),
         ]);
         let decoded = decode_message(&msg).unwrap();
@@ -1591,7 +1755,7 @@ mod tests {
 
         let msg = build_raw_message(&[
             (&footer_cbor, FrameType::HeaderMetadata),
-            (&[], FrameType::DataObject),
+            (&[], FrameType::NTensorFrame),
         ]);
         let result = decode_message(&msg);
         assert!(

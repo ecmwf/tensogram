@@ -28,19 +28,24 @@ def encode_valid_message():
 
 
 def encode_nan_message():
-    """Encode a message containing NaN values."""
-    data = np.array([1.0, float("nan"), 3.0], dtype=np.float64)
+    """Encode a message containing NaN values via the pre-encoded
+    path, bypassing the 0.17 default-reject finite-check.  These tests
+    need a NaN-bearing message on disk to exercise the Fidelity-level
+    scanner — `encode_pre_encoded` treats bytes as opaque and lets
+    them through unchanged.
+    """
+    data = np.array([1.0, float("nan"), 3.0], dtype=np.float64).tobytes()
     meta = {"version": 2}
     desc = {"type": "ntensor", "shape": [3], "dtype": "float64"}
-    return tensogram.encode(meta, [(desc, data)])
+    return tensogram.encode_pre_encoded(meta, [(desc, data)])
 
 
 def encode_inf_message():
-    """Encode a message containing Inf values."""
-    data = np.array([1.0, float("inf"), 3.0], dtype=np.float64)
+    """Same as `encode_nan_message` but for ±Inf."""
+    data = np.array([1.0, float("inf"), 3.0], dtype=np.float64).tobytes()
     meta = {"version": 2}
     desc = {"type": "ntensor", "shape": [3], "dtype": "float64"}
-    return tensogram.encode(meta, [(desc, data)])
+    return tensogram.encode_pre_encoded(meta, [(desc, data)])
 
 
 def encode_no_hash_message():
@@ -351,8 +356,10 @@ class TestValidateFile:
 
     def test_file_full_level_nan(self, tmp_path):
         path = str(tmp_path / "nan.tgm")
-        nan_data = np.array([1.0, float("nan"), 3.0], dtype=np.float64)
-        nan_msg = tensogram.encode(
+        # Use encode_pre_encoded to bypass the 0.17 default-reject
+        # check (see encode_nan_message).
+        nan_data = np.array([1.0, float("nan"), 3.0], dtype=np.float64).tobytes()
+        nan_msg = tensogram.encode_pre_encoded(
             {"version": 2},
             [({"type": "ntensor", "shape": [3], "dtype": "float64"}, nan_data)],
         )

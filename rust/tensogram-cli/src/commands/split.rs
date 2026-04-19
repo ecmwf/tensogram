@@ -20,8 +20,7 @@ pub fn run(
     input: &Path,
     output_template: &str,
     threads: u32,
-    reject_nan: bool,
-    reject_inf: bool,
+    mask_cli: &super::MaskCliOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let file = TensogramFile::open(input)?;
     let count = file.message_count()?;
@@ -63,16 +62,12 @@ pub fn run(
             // Clear reserved — the encoder will regenerate it.
             split_meta.reserved.clear();
 
-            let encoded = encode(
-                &split_meta,
-                &[(desc, data.as_slice())],
-                &EncodeOptions {
-                    threads,
-                    reject_nan,
-                    reject_inf,
-                    ..Default::default()
-                },
-            )?;
+            let mut encode_opts = EncodeOptions {
+                threads,
+                ..Default::default()
+            };
+            mask_cli.apply(&mut encode_opts)?;
+            let encoded = encode(&split_meta, &[(desc, data.as_slice())], &encode_opts)?;
 
             let mut out = std::fs::File::create(&out_name)?;
             out.write_all(&encoded)?;
@@ -147,6 +142,7 @@ mod tests {
             filter: "none".into(),
             compression: "none".into(),
             params: Default::default(),
+            masks: None,
             hash: None,
         };
         let desc2 = desc1.clone();
@@ -170,7 +166,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let input = make_multi_object_file(dir.path());
         let template = format!("{}/split_[index].tgm", dir.path().display());
-        run(&input, &template, 0, false, false).unwrap();
+        run(
+            &input,
+            &template,
+            0,
+            &super::super::MaskCliOptions::default(),
+        )
+        .unwrap();
         assert!(dir.path().join("split_0000.tgm").exists());
         assert!(dir.path().join("split_0001.tgm").exists());
         // Verify each split file has 1 object
@@ -185,7 +187,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let input = make_multi_object_file(dir.path());
         let template = format!("{}/out.tgm", dir.path().display());
-        run(&input, &template, 0, false, false).unwrap();
+        run(
+            &input,
+            &template,
+            0,
+            &super::super::MaskCliOptions::default(),
+        )
+        .unwrap();
         assert!(dir.path().join("out_0000.tgm").exists());
         assert!(dir.path().join("out_0001.tgm").exists());
     }
@@ -207,6 +215,7 @@ mod tests {
             filter: "none".into(),
             compression: "none".into(),
             params: Default::default(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 16];
@@ -219,7 +228,13 @@ mod tests {
         drop(f);
 
         let template = format!("{}/split_[index].tgm", dir.path().display());
-        run(&path, &template, 0, false, false).unwrap();
+        run(
+            &path,
+            &template,
+            0,
+            &super::super::MaskCliOptions::default(),
+        )
+        .unwrap();
         assert!(dir.path().join("split_0000.tgm").exists());
         // Should NOT have a second file
         assert!(!dir.path().join("split_0001.tgm").exists());
@@ -248,6 +263,7 @@ mod tests {
             filter: "none".into(),
             compression: "none".into(),
             params: Default::default(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 16];
@@ -269,7 +285,13 @@ mod tests {
         drop(f);
 
         let template = format!("{}/split_meta_[index].tgm", dir.path().display());
-        run(&path, &template, 0, false, false).unwrap();
+        run(
+            &path,
+            &template,
+            0,
+            &super::super::MaskCliOptions::default(),
+        )
+        .unwrap();
 
         // Verify first split has param=2t
         let msg0 = std::fs::read(dir.path().join("split_meta_0000.tgm")).unwrap();

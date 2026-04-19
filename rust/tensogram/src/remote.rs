@@ -617,7 +617,9 @@ impl RemoteBackend {
                     let idx = metadata::cbor_to_index(payload)?;
                     state.layouts[msg_idx].index = Some(idx);
                 }
-                FrameType::DataObject | FrameType::PrecederMetadata => {
+                FrameType::NTensorFrame
+                | FrameType::NTensorMaskedFrame
+                | FrameType::PrecederMetadata => {
                     break;
                 }
                 _ => {}
@@ -810,7 +812,8 @@ impl RemoteBackend {
 
         if frame_length <= DESCRIPTOR_PREFIX_THRESHOLD {
             let frame_bytes = self.get_range(range.clone())?;
-            let (desc, _payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
+            let (desc, _payload, _mask_region, _consumed) =
+                framing::decode_data_object_frame(&frame_bytes)?;
             return Ok(desc);
         }
 
@@ -820,7 +823,7 @@ impl RemoteBackend {
         let header_bytes = self.get_range(frame_start..frame_start + FRAME_HEADER_SIZE as u64)?;
         let fh = FrameHeader::read_from(&header_bytes)?;
 
-        if fh.frame_type != FrameType::DataObject {
+        if !fh.frame_type.is_data_object() {
             return Err(TensogramError::Remote(format!(
                 "expected DataObject frame, got {:?}",
                 fh.frame_type
@@ -918,7 +921,8 @@ impl RemoteBackend {
             )?;
             let frame_bytes = self.get_range(range)?;
 
-            let (desc, payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
+            let (desc, payload, _mask_region, _consumed) =
+                framing::decode_data_object_frame(&frame_bytes)?;
 
             let decoded = crate::decode::decode_single_object(&desc, payload, options)?;
 
@@ -972,7 +976,8 @@ impl RemoteBackend {
 
         let mut results = Vec::with_capacity(msg_indices.len());
         for frame_bytes in &all_bytes {
-            let (desc, payload, _consumed) = framing::decode_data_object_frame(frame_bytes)?;
+            let (desc, payload, _mask_region, _consumed) =
+                framing::decode_data_object_frame(frame_bytes)?;
             let parts = crate::decode::decode_range_from_payload(&desc, payload, ranges, options)?;
             results.push((desc, parts));
         }
@@ -1024,7 +1029,8 @@ impl RemoteBackend {
 
         let mut results = Vec::with_capacity(msg_indices.len());
         for (frame_bytes, meta) in all_bytes.iter().zip(metas) {
-            let (desc, payload, _consumed) = framing::decode_data_object_frame(frame_bytes)?;
+            let (desc, payload, _mask_region, _consumed) =
+                framing::decode_data_object_frame(frame_bytes)?;
             let decoded = crate::decode::decode_single_object(&desc, payload, options)?;
             results.push((meta, desc, decoded));
         }
@@ -1058,7 +1064,8 @@ impl RemoteBackend {
                 index.lengths[obj_idx],
             )?;
             let frame_bytes = self.get_range(range)?;
-            let (desc, payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
+            let (desc, payload, _mask_region, _consumed) =
+                framing::decode_data_object_frame(&frame_bytes)?;
             let parts = crate::decode::decode_range_from_payload(&desc, payload, ranges, options)?;
             Ok((desc, parts))
         } else {
@@ -1719,7 +1726,8 @@ impl RemoteBackend {
 
         if frame_length <= DESCRIPTOR_PREFIX_THRESHOLD {
             let frame_bytes = self.get_range_async(range.clone()).await?;
-            let (desc, _payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
+            let (desc, _payload, _mask_region, _consumed) =
+                framing::decode_data_object_frame(&frame_bytes)?;
             return Ok(desc);
         }
 
@@ -1731,7 +1739,7 @@ impl RemoteBackend {
             .await?;
         let fh = FrameHeader::read_from(&header_bytes)?;
 
-        if fh.frame_type != FrameType::DataObject {
+        if !fh.frame_type.is_data_object() {
             return Err(TensogramError::Remote(format!(
                 "expected DataObject frame, got {:?}",
                 fh.frame_type
@@ -1825,7 +1833,8 @@ impl RemoteBackend {
                 index.lengths[obj_idx],
             )?;
             let frame_bytes = self.get_range_async(range).await?;
-            let (desc, payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
+            let (desc, payload, _mask_region, _consumed) =
+                framing::decode_data_object_frame(&frame_bytes)?;
             let decoded = crate::decode::decode_single_object(&desc, payload, options)?;
             Ok((meta, desc, decoded))
         } else {
@@ -2021,7 +2030,8 @@ impl RemoteBackend {
 
         let mut results = Vec::with_capacity(msg_indices.len());
         for (frame_bytes, meta) in all_bytes.iter().zip(metas) {
-            let (desc, payload, _consumed) = framing::decode_data_object_frame(frame_bytes)?;
+            let (desc, payload, _mask_region, _consumed) =
+                framing::decode_data_object_frame(frame_bytes)?;
             let decoded = crate::decode::decode_single_object(&desc, payload, options)?;
             results.push((meta, desc, decoded));
         }
@@ -2072,7 +2082,8 @@ impl RemoteBackend {
         // 4. Decode each frame locally.
         let mut results = Vec::with_capacity(msg_indices.len());
         for frame_bytes in &all_bytes {
-            let (desc, payload, _consumed) = framing::decode_data_object_frame(frame_bytes)?;
+            let (desc, payload, _mask_region, _consumed) =
+                framing::decode_data_object_frame(frame_bytes)?;
             let parts = crate::decode::decode_range_from_payload(&desc, payload, ranges, options)?;
             results.push((desc, parts));
         }
@@ -2103,7 +2114,8 @@ impl RemoteBackend {
                 index.lengths[obj_idx],
             )?;
             let frame_bytes = self.get_range_async(range).await?;
-            let (desc, payload, _consumed) = framing::decode_data_object_frame(&frame_bytes)?;
+            let (desc, payload, _mask_region, _consumed) =
+                framing::decode_data_object_frame(&frame_bytes)?;
             let parts = crate::decode::decode_range_from_payload(&desc, payload, ranges, options)?;
             Ok((desc, parts))
         } else {

@@ -17,6 +17,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   encode,
+  encodePreEncoded,
+  init,
   InvalidArgumentError,
   IoError,
   validate,
@@ -82,11 +84,15 @@ describe('Scope C.1 — validate', () => {
       expect(report.hash_verified).toBe(false);
     });
 
-    it('routes mode="full" and detects NaN in a float64 payload', () => {
+    it('routes mode="full" and detects NaN in a float64 payload', async () => {
+      await init();
       const data = new Float64Array([1, NaN, 3]);
       const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-      // Use encode_pre_encoded to bypass simple_packing's NaN rejection.
-      const msg = encode(defaultMeta(), [
+      // 0.17 default-reject means `encode()` rejects NaN input.  Use
+      // `encodePreEncoded` to construct a NaN-bearing message on
+      // purpose, so the Fidelity-level scanner has something to
+      // detect.
+      const msg = encodePreEncoded(defaultMeta(), [
         { descriptor: makeDescriptor([3], 'float64'), data: bytes },
       ]);
       const report = validate(msg, { mode: 'full' });

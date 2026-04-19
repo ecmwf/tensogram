@@ -100,11 +100,12 @@ Every frame ends with the ASCII string `ENDF`.
 | 1 | Header Metadata | CBOR global metadata map |
 | 2 | Header Index | CBOR index of data object offsets |
 | 3 | Header Hash | CBOR array of per-object hashes |
-| 4 | Data Object | Descriptor + payload (see below) |
+| 4 | `NTensorFrame` (legacy) | Descriptor + payload (see below) — **read-only**; new encoders do not emit |
 | 5 | Footer Hash | CBOR array of per-object hashes |
 | 6 | Footer Index | CBOR index of data object offsets |
 | 7 | Footer Metadata | CBOR global metadata map |
 | 8 | Preceder Metadata | Per-object CBOR metadata (see below) |
+| 9 | `NTensorMaskedFrame` | Descriptor + payload + optional NaN / Inf bitmask companion sections (see [NaN / Inf Handling](../guide/nan-inf-handling.md)) |
 
 ### Padding between frames
 
@@ -133,6 +134,46 @@ A data object frame wraps one tensor's payload together with its CBOR descriptor
 The `cbor_offset` field (8 bytes, immediately before `ENDF`) tells the reader where the CBOR descriptor starts relative to the beginning of this frame. This lets a reader jump straight to the descriptor regardless of whether it is placed before or after the payload.
 
 The CBOR descriptor fully describes the data object: its type, shape, strides, data type, byte order, encoding pipeline, and optional per-object metadata. See the [CBOR Metadata](cbor-metadata.md) page for the schema.
+
+### `NTensorMaskedFrame` (type 9)
+
+Emitted by every encoder at 0.17+ — layout-compatible with the
+legacy type 4 `NTensorFrame` except for the frame-type number and
+the optional NaN / Inf bitmask companion sections that may appear
+between the payload and the CBOR descriptor:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  FRAME HEADER       "FR" + type(9) + ver + flags + len (16 B)│
+├──────────────────────────────────────────────────────────────┤
+│  DATA PAYLOAD       raw or compressed bytes, NaN/Inf         │
+│                     positions substituted with 0.0           │
+├──────────────────────────────────────────────────────────────┤
+│  mask_nan blob      OPTIONAL — compressed NaN position mask  │
+├──────────────────────────────────────────────────────────────┤
+│  mask_inf+ blob     OPTIONAL — compressed +Inf position mask │
+├──────────────────────────────────────────────────────────────┤
+│  mask_inf- blob     OPTIONAL — compressed -Inf position mask │
+├──────────────────────────────────────────────────────────────┤
+│  CBOR DESCRIPTOR    carries a top-level "masks" sub-map      │
+│                     when any mask is present (see below)     │
+├──────────────────────────────────────────────────────────────┤
+│  cbor_offset (uint64 BE, 8 B)                                │
+├──────────────────────────────────────────────────────────────┤
+│  "ENDF" (4 B)                                                │
+└──────────────────────────────────────────────────────────────┘
+```
+
+When **no** NaN / Inf values were recorded, the `masks` sub-map is
+absent from the CBOR and the frame is byte-identical to a type 4
+`NTensorFrame` payload layout.  Readers that don't know about type 9
+(pre-0.17) can still locate the CBOR via `cbor_offset` but will
+misinterpret any trailing mask bytes — encoders should not emit type
+9 with masks when the target readership may predate 0.17.
+
+See [NaN / Inf Handling](../guide/nan-inf-handling.md) for the
+encode / decode semantics and the documented lossy-reconstruction
+caveat.
 
 ## Preceder Metadata Frame
 

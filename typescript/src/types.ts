@@ -303,6 +303,19 @@ export interface MessagePosition {
   length: number;
 }
 
+/**
+ * Mask compression methods recognised by the NaN / Inf companion
+ * bitmask frame (wire type 9 `NTensorMaskedFrame`, see
+ * `plans/BITMASK_FRAME.md` §3.3).
+ */
+export type MaskMethod =
+  | 'none'
+  | 'rle'
+  | 'roaring'
+  | 'lz4'
+  | 'zstd'
+  | 'blosc2';
+
 /** Options for `encode()`. */
 export interface EncodeOptions {
   /**
@@ -311,35 +324,31 @@ export interface EncodeOptions {
    */
   hash?: 'xxh3' | false;
   /**
-   * Reject NaN values in float payloads before the encoding pipeline
-   * runs. Default `false` (backwards-compatible).
-   *
-   * When `true`, raw input for float dtypes (float16, bfloat16,
-   * float32, float64, complex64, complex128) is scanned element by
-   * element. On the first NaN, `encode()` throws an
-   * {@link EncodingError} with the element index and dtype. Integer
-   * and bitmask dtypes are skipped (zero cost).
-   *
-   * The check runs **before** any pipeline stage, so the contract is
-   * pipeline-independent: callers get the same guarantee whether they
-   * pick `encoding="none"`, `"simple_packing"`, or a compressor.
-   *
-   * Parallel scans (WASM is single-threaded today, but Rust
-   * multi-threaded callers should note) may report a
-   * not-globally-first NaN index. Sequential callers always get the
-   * globally-first index.
+   * When `true`, NaN values in float / complex payloads are
+   * substituted with `0.0` and recorded in a bitmask companion
+   * section of the data-object frame.  When `false` (the default),
+   * any NaN in the input is a hard encode error.  See
+   * `plans/BITMASK_FRAME.md`.
    */
-  rejectNan?: boolean;
+  allowNan?: boolean;
   /**
-   * Reject `+Inf` / `-Inf` values in float payloads before the encoding
-   * pipeline runs. Default `false`.
-   *
-   * Primary motivation: `simple_packing` does not reject Inf in its
-   * input and silently produces numerically-useless parameters that
-   * decode to NaN everywhere. Turning this flag on catches the
-   * problem at encode time with a clean {@link EncodingError}.
+   * When `true`, `+Inf` AND `-Inf` are substituted with `0.0` and
+   * recorded in per-sign bitmasks.  When `false` (the default), any
+   * `±Inf` in the input is a hard encode error.
    */
-  rejectInf?: boolean;
+  allowInf?: boolean;
+  /** Compression method for the NaN mask.  Default `"roaring"`. */
+  nanMaskMethod?: MaskMethod;
+  /** Compression method for the `+Inf` mask.  Default `"roaring"`. */
+  posInfMaskMethod?: MaskMethod;
+  /** Compression method for the `-Inf` mask.  Default `"roaring"`. */
+  negInfMaskMethod?: MaskMethod;
+  /**
+   * Uncompressed byte-count threshold below which mask blobs are
+   * written with method `"none"` regardless of the requested method.
+   * Default `128`.  Set to `0` to disable the auto-fallback.
+   */
+  smallMaskThresholdBytes?: number;
 }
 
 /** Options for `decode()` / `decodeObject()`. */
@@ -349,6 +358,15 @@ export interface DecodeOptions {
    * throws `HashMismatchError` on mismatch. Default `false`.
    */
   verifyHash?: boolean;
+  /**
+   * When `true` (the default), decode writes canonical NaN / ±Inf
+   * bit patterns at positions recorded in the frame's mask companion.
+   * Set to `false` to receive the `0.0`-substituted bytes as they
+   * are on disk.  Only meaningful for frames produced with
+   * `allowNan` / `allowInf` on encode.  See
+   * `plans/BITMASK_FRAME.md` §7.
+   */
+  restoreNonFinite?: boolean;
 }
 
 /** Information supplied to {@link DecodeStreamOptions.onError}. */
@@ -543,28 +561,36 @@ export interface ValidateOptions {
 export interface AppendOptions {
   /** Hash algorithm.  Default `"xxh3"`.  Pass `false` to disable. */
   hash?: 'xxh3' | false;
+  /** See {@link EncodeOptions.allowNan}.  Default `false`. */
+  allowNan?: boolean;
+  /** See {@link EncodeOptions.allowInf}.  Default `false`. */
+  allowInf?: boolean;
+  /** See {@link EncodeOptions.nanMaskMethod}. */
+  nanMaskMethod?: MaskMethod;
+  /** See {@link EncodeOptions.posInfMaskMethod}. */
+  posInfMaskMethod?: MaskMethod;
+  /** See {@link EncodeOptions.negInfMaskMethod}. */
+  negInfMaskMethod?: MaskMethod;
+  /** See {@link EncodeOptions.smallMaskThresholdBytes}.  Default `128`. */
+  smallMaskThresholdBytes?: number;
 }
 
 /** Options for {@link StreamingEncoder}. */
 export interface StreamingEncoderOptions {
   /** Hash algorithm.  Default `"xxh3"`.  Pass `false` to disable. */
   hash?: 'xxh3' | false;
-  /**
-   * Reject NaN values in float payloads before the encoding pipeline
-   * runs.  Default `false` (backwards-compatible).  Captured at
-   * construction; applies to every `writeObject` call on this encoder.
-   * See {@link EncodeOptions.rejectNan} for full semantics.
-   *
-   * Setting this with `writeObjectPreEncoded` throws — pre-encoded
-   * bytes are opaque and the flag cannot be meaningfully enforced.
-   */
-  rejectNan?: boolean;
-  /**
-   * Reject `+Inf` / `-Inf` values in float payloads before the
-   * encoding pipeline runs.  Default `false`.  Same semantics as
-   * {@link StreamingEncoderOptions.rejectNan}.
-   */
-  rejectInf?: boolean;
+  /** See {@link EncodeOptions.allowNan}.  Default `false`. */
+  allowNan?: boolean;
+  /** See {@link EncodeOptions.allowInf}.  Default `false`. */
+  allowInf?: boolean;
+  /** See {@link EncodeOptions.nanMaskMethod}. */
+  nanMaskMethod?: MaskMethod;
+  /** See {@link EncodeOptions.posInfMaskMethod}. */
+  posInfMaskMethod?: MaskMethod;
+  /** See {@link EncodeOptions.negInfMaskMethod}. */
+  negInfMaskMethod?: MaskMethod;
+  /** See {@link EncodeOptions.smallMaskThresholdBytes}.  Default `128`. */
+  smallMaskThresholdBytes?: number;
   /**
    * Synchronous streaming sink.
    *

@@ -88,6 +88,41 @@ typedef struct {
 } tgm_bytes_t;
 
 /**
+ * Mask-companion options for encode entry points (see
+ * `plans/BITMASK_FRAME.md` §6.3).  Pass a pointer to this struct to
+ * opt into NaN / ±Inf substitution with bitmask companion frames.
+ *
+ * Each `*_mask_method` string is one of `"none"`, `"rle"`,
+ * `"roaring"`, `"lz4"`, `"zstd"`, or `"blosc2"`; pass `NULL` to use
+ * the library default (`"roaring"`).  Unknown names cause the
+ * owning `tgm_*_with_options` call to return
+ * [`TgmError::InvalidArg`] with a clear message via
+ * [`tgm_last_error`].
+ *
+ * `small_mask_threshold_bytes` is the byte-count below which mask
+ * blobs are written as `"none"` regardless of the requested method
+ * (auto-fallback).  Pass `0` to disable the fallback.  Negative
+ * values use the library default (128).
+ */
+typedef struct {
+  bool allow_nan;
+  bool allow_inf;
+  const char *nan_mask_method;
+  const char *pos_inf_mask_method;
+  const char *neg_inf_mask_method;
+  ptrdiff_t small_mask_threshold_bytes;
+} TgmEncodeMaskOptions;
+
+/**
+ * Decode-side companion to [`TgmEncodeMaskOptions`].  Pass a pointer
+ * to opt out of canonical NaN / Inf restoration.  Pass `NULL` for
+ * the default `restore_non_finite = true`.
+ */
+typedef struct {
+  bool restore_non_finite;
+} TgmDecodeMaskOptions;
+
+/**
  * Scan result: array of (offset, length) pairs.
  */
 typedef struct {
@@ -118,15 +153,14 @@ void tgm_bytes_free(tgm_bytes_t buf);
  *
  * `hash_algo`: null-terminated string ("xxh3") or NULL for no hash.
  *
- * `reject_nan` / `reject_inf`: when `true`, the encoder scans float
- * payloads before the pipeline runs and returns
- * [`TgmError::Encoding`] on the first NaN / Inf.  Pass `false` to
- * preserve the current behaviour.  See the Rust
- * `EncodeOptions::reject_nan` docs for full semantics.  Integer
- * dtypes are not scanned.
- *
  * On success returns `TgmError::Ok` and fills `out` with the encoded bytes.
  * The caller must free `out` with `tgm_bytes_free`.
+ *
+ * 0.17+: encode rejects non-finite values (NaN / ±Inf) by default.
+ * Use [`tgm_encode_with_options`] with a
+ * [`TgmEncodeMaskOptions`] pointer (`allow_nan` / `allow_inf`) to
+ * opt into NaN / Inf substitution with bitmask companion frames;
+ * this entry point always uses the default reject policy.
  */
 tgm_error tgm_encode(const char *metadata_json,
                      const uint8_t *const *data_ptrs,
@@ -134,9 +168,67 @@ tgm_error tgm_encode(const char *metadata_json,
                      size_t num_objects,
                      const char *hash_algo,
                      uint32_t threads,
-                     bool reject_nan,
-                     bool reject_inf,
                      tgm_bytes_t *out);
+
+/**
+ * Encode with explicit NaN / Inf mask-companion options.
+ *
+ * Like [`tgm_encode`] but takes a [`TgmEncodeMaskOptions`] pointer
+ * (nullable — `NULL` behaves like [`tgm_encode`]'s default reject
+ * policy).  All other arguments are identical.
+ */
+tgm_error tgm_encode_with_options(const char *metadata_json,
+                                  const uint8_t *const *data_ptrs,
+                                  const size_t *data_lens,
+                                  size_t num_objects,
+                                  const char *hash_algo,
+                                  uint32_t threads,
+                                  const TgmEncodeMaskOptions *mask_options,
+                                  tgm_bytes_t *out);
+
+/**
+ * Decode with explicit NaN / Inf restoration options.
+ *
+ * Like [`tgm_decode`] but takes a [`TgmDecodeMaskOptions`] pointer
+ * (nullable — `NULL` behaves like [`tgm_decode`]'s default
+ * `restore_non_finite = true`).
+ */
+tgm_error tgm_decode_with_options(const uint8_t *buf,
+                                  size_t buf_len,
+                                  int32_t verify_hash,
+                                  int32_t native_byte_order,
+                                  uint32_t threads,
+                                  const TgmDecodeMaskOptions *mask_options,
+                                  tgm_message_t **out);
+
+/**
+ * Streaming-encoder constructor with NaN / Inf mask-companion options.
+ *
+ * Like [`tgm_streaming_encoder_create`] but takes a
+ * [`TgmEncodeMaskOptions`] pointer.  `NULL` behaves like the default
+ * reject policy.
+ */
+tgm_error tgm_streaming_encoder_create_with_options(const char *path,
+                                                    const char *metadata_json,
+                                                    const char *hash_algo,
+                                                    uint32_t threads,
+                                                    const TgmEncodeMaskOptions *mask_options,
+                                                    tgm_streaming_encoder_t **out);
+
+/**
+ * Append a message to a file with explicit NaN / Inf mask-companion options.
+ *
+ * Like [`tgm_file_append`] but takes a [`TgmEncodeMaskOptions`]
+ * pointer.  `NULL` behaves like the default reject policy.
+ */
+tgm_error tgm_file_append_with_options(tgm_file_t *file,
+                                       const char *metadata_json,
+                                       const uint8_t *const *data_ptrs,
+                                       const size_t *data_lens,
+                                       size_t num_objects,
+                                       const char *hash_algo,
+                                       uint32_t threads,
+                                       const TgmEncodeMaskOptions *mask_options);
 
 /**
  * Encode a Tensogram message from JSON metadata and pre-encoded payload bytes.
@@ -440,7 +532,8 @@ const char *tgm_file_path(const tgm_file_t *file);
 /**
  * Encode and append a message to the file.
  * Same JSON schema as `tgm_encode` for `metadata_json`.
- * `reject_nan` / `reject_inf` match `tgm_encode`'s semantics.
+ *
+ * Non-finite-value rejection is on by default in 0.17+; see `tgm_encode`.
  */
 tgm_error tgm_file_append(tgm_file_t *file,
                           const char *metadata_json,
@@ -448,9 +541,7 @@ tgm_error tgm_file_append(tgm_file_t *file,
                           const size_t *data_lens,
                           size_t num_objects,
                           const char *hash_algo,
-                          uint32_t threads,
-                          bool reject_nan,
-                          bool reject_inf);
+                          uint32_t threads);
 
 /**
  * Close a file handle and release resources.
@@ -584,8 +675,6 @@ tgm_error tgm_streaming_encoder_create(const char *path,
                                        const char *metadata_json,
                                        const char *hash_algo,
                                        uint32_t threads,
-                                       bool reject_nan,
-                                       bool reject_inf,
                                        tgm_streaming_encoder_t **out);
 
 /**

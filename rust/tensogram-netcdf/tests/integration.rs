@@ -70,8 +70,18 @@ fn simple_2d_data_roundtrip() {
 
 #[test]
 fn multi_dtype_preserves_native_dtypes() {
+    // multi_dtype.nc contains a 'f64_with_nan' variable.  Default
+    // encode rejects NaN, so opt in via allow_nan — matches the
+    // policy documented in plans/BITMASK_FRAME.md §2.
     let path = testdata("multi_dtype.nc");
-    let msgs = convert_netcdf_file(&path, &ConvertOptions::default()).unwrap();
+    let opts = ConvertOptions {
+        encode_options: tensogram::EncodeOptions {
+            allow_nan: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
     let (meta, objects) = decode_first(&msgs);
 
     let mut dtype_map = std::collections::HashMap::new();
@@ -178,7 +188,14 @@ fn cf_temperature_unpacks_to_f64() {
 #[test]
 fn multi_dtype_nan_values_in_f64_with_nan() {
     let path = testdata("multi_dtype.nc");
-    let msgs = convert_netcdf_file(&path, &ConvertOptions::default()).unwrap();
+    let opts = ConvertOptions {
+        encode_options: tensogram::EncodeOptions {
+            allow_nan: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
     let (meta, objects) = decode_first(&msgs);
 
     let nan_idx = meta.base.iter().position(|e| {
@@ -416,7 +433,14 @@ fn multi_var_has_all_numeric_variables() {
 fn scalar_variable_has_empty_shape() {
     // multi_dtype.nc has a scalar 'pi' variable (ndim=0)
     let path = testdata("multi_dtype.nc");
-    let msgs = convert_netcdf_file(&path, &ConvertOptions::default()).unwrap();
+    let opts = ConvertOptions {
+        encode_options: tensogram::EncodeOptions {
+            allow_nan: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
     let (meta, objects) = decode_first(&msgs);
 
     let pi_idx = meta.base.iter().position(|e| {
@@ -743,7 +767,10 @@ fn simple_packing_on_multi_dtype_fails_on_nan_variable() {
         msg.contains("simple_packing") && msg.contains("f64_with_nan"),
         "error must name encoding + offending variable: {msg}"
     );
-    assert!(msg.contains("NaN"), "error must name the trigger kind: {msg}");
+    assert!(
+        msg.contains("NaN"),
+        "error must name the trigger kind: {msg}"
+    );
 }
 
 // Note: the pre-0.17 test `simple_packing_skips_non_f64_variables` was
@@ -884,7 +911,15 @@ fn record_multi_dtype_covers_all_read_native_extents_arms() {
 #[test]
 fn attr_type_variants_all_unpack_to_f64() {
     let path = testdata("attr_type_variants.nc");
-    let msgs = convert_netcdf_file(&path, &ConvertOptions::default()).unwrap();
+    // `with_missing` uses CF missing_value → NaN, so opt in.
+    let opts = ConvertOptions {
+        encode_options: tensogram::EncodeOptions {
+            allow_nan: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
     let (meta, objects) = decode_first(&msgs);
 
     // Every variable in the fixture has scale_factor → all should be
@@ -909,7 +944,16 @@ fn attr_type_variants_string_scale_factor_returns_raw_data() {
     // fires and read_and_unpack still runs (because attribute "exists")
     // but with all Option<f64>s = None, so values pass through unchanged.
     let path = testdata("attr_type_variants.nc");
-    let msgs = convert_netcdf_file(&path, &ConvertOptions::default()).unwrap();
+    // Fixture file also carries `with_missing` with NaN — allow_nan
+    // is required to encode the whole file.
+    let opts = ConvertOptions {
+        encode_options: tensogram::EncodeOptions {
+            allow_nan: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
     let (meta, objects) = decode_first(&msgs);
 
     let idx = meta
@@ -1062,7 +1106,14 @@ fn attr_type_variants_missing_value_replaced_with_nan() {
     // positions. This explicitly exercises the NaN-substitution
     // branch in read_and_unpack.
     let path = testdata("attr_type_variants.nc");
-    let msgs = convert_netcdf_file(&path, &ConvertOptions::default()).unwrap();
+    let opts = ConvertOptions {
+        encode_options: tensogram::EncodeOptions {
+            allow_nan: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let msgs = convert_netcdf_file(&path, &opts).unwrap();
     let (meta, objects) = decode_first(&msgs);
 
     let idx = meta

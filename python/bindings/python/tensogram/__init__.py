@@ -15,12 +15,19 @@ from .tensogram import *  # noqa: F403
 Message = namedtuple("Message", ["metadata", "objects"])
 """Decoded message with named fields.
 
-Returned by ``decode()``, ``decode_message()``, file iteration, and
-``iter_messages()``::
+Returned by ``decode()``, ``decode_with_masks()``, ``decode_message()``,
+file iteration, and ``iter_messages()``::
 
 
     msg = tensogram.decode(buf)
-    msg.metadata          # Metadata object
+    msg.metadata           # Metadata object
     msg.objects            # list[(DataObjectDescriptor, ndarray)]
     meta, objects = msg    # tuple unpacking also works
+
+``decode_with_masks()`` returns one extra trailing field per object —
+a ``dict`` of per-kind bitmasks with any subset of ``"nan"``,
+``"inf+"``, ``"inf-"`` keys, each mapped to a ``bool`` numpy array::
+
+    for desc, payload, masks in tensogram.decode_with_masks(buf).objects:
+        n_missing = masks.get("nan", np.zeros(0, dtype=bool)).sum()
 """

@@ -48,6 +48,7 @@ fn make_desc_float32(n: usize) -> DataObjectDescriptor {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: BTreeMap::new(),
+        masks: None,
         hash: None,
     }
 }
@@ -72,7 +73,7 @@ fn buffered_hash_equals_compute_hash_of_encoded_payload_passthrough() {
 
     let msg = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let decoded = framing::decode_message(&msg).unwrap();
-    let (got_desc, got_payload, _) = &decoded.objects[0];
+    let (got_desc, got_payload, _, _) = &decoded.objects[0];
 
     let h = got_desc
         .hash
@@ -144,6 +145,7 @@ fn buffered_and_streaming_produce_identical_hashes() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: params_map,
+        masks: None,
         hash: None,
     };
 
@@ -271,6 +273,7 @@ fn buffered_hash_byte_identical_across_thread_counts_simple_packing() {
         filter: "none".to_string(),
         compression: "none".to_string(),
         params: params_map,
+        masks: None,
         hash: None,
     };
 

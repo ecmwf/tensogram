@@ -56,10 +56,10 @@ pub fn messages(buf: &[u8]) -> MessageIter<'_> {
 /// the full pipeline (encoding + filter + decompression).
 pub fn objects(buf: &[u8], options: DecodeOptions) -> Result<ObjectIter> {
     let msg = framing::decode_message(buf)?;
-    let object_data: Vec<(DataObjectDescriptor, Vec<u8>)> = msg
+    let object_data: Vec<(DataObjectDescriptor, Vec<u8>, Vec<u8>)> = msg
         .objects
         .into_iter()
-        .map(|(desc, payload, _)| (desc, payload.to_vec()))
+        .map(|(desc, payload, mask_region, _)| (desc, payload.to_vec(), mask_region.to_vec()))
         .collect();
     Ok(ObjectIter {
         objects: object_data,
@@ -75,7 +75,7 @@ pub fn objects_metadata(buf: &[u8]) -> Result<impl Iterator<Item = DataObjectDes
     Ok(msg
         .objects
         .into_iter()
-        .map(|(desc, _, _)| desc)
+        .map(|(desc, _, _, _)| desc)
         .collect::<Vec<_>>()
         .into_iter())
 }
@@ -121,7 +121,7 @@ impl ExactSizeIterator for MessageIter<'_> {}
 /// Yields `Result<(DataObjectDescriptor, Vec<u8>)>`.
 /// Implements [`ExactSizeIterator`].
 pub struct ObjectIter {
-    objects: Vec<(DataObjectDescriptor, Vec<u8>)>,
+    objects: Vec<(DataObjectDescriptor, Vec<u8>, Vec<u8>)>,
     index: usize,
     options: DecodeOptions,
 }
@@ -135,7 +135,7 @@ impl Iterator for ObjectIter {
         }
         let i = self.index;
         self.index += 1;
-        let (ref desc, ref payload_bytes) = self.objects[i];
+        let (ref desc, ref payload_bytes, ref mask_region) = self.objects[i];
 
         // Verify hash if requested
         if self.options.verify_hash
@@ -171,7 +171,7 @@ impl Iterator for ObjectIter {
             Err(e) => return Some(Err(e)),
         };
 
-        let decoded = match tensogram_encodings::pipeline::decode_pipeline(
+        let mut decoded = match tensogram_encodings::pipeline::decode_pipeline(
             payload_bytes,
             &config,
             self.options.native_byte_order,
@@ -179,6 +179,22 @@ impl Iterator for ObjectIter {
             Ok(d) => d,
             Err(e) => return Some(Err(crate::error::TensogramError::Encoding(e.to_string()))),
         };
+
+        if self.options.restore_non_finite {
+            let output_byte_order = if self.options.native_byte_order {
+                tensogram_encodings::ByteOrder::native()
+            } else {
+                desc.byte_order
+            };
+            if let Err(e) = crate::restore::restore_non_finite_into(
+                &mut decoded,
+                desc,
+                mask_region,
+                output_byte_order,
+            ) {
+                return Some(Err(e));
+            }
+        }
 
         Some(Ok((desc.clone(), decoded)))
     }
@@ -284,6 +300,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         }
     }

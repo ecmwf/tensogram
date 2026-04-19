@@ -418,10 +418,12 @@ value for non-finite input — rejecting them up front prevents the
 silent corruption path where an `i32::MAX`-saturated
 `binary_scale_factor` decodes to NaN everywhere.
 
-For the pipeline-independent strict-finite check that applies the same
-contract to `encoding="none"` and to every compressor, see the
-[strict-finite encode flags](strict-finite.md) (`reject_nan=True` /
-`reject_inf=True`).
+0.17+ extends this contract to every pipeline: `encoding="none"`
+(and every compressor) rejects NaN / ±Inf input by default.  The
+[NaN / Inf Handling](nan-inf-handling.md) guide covers the
+`allow_nan` / `allow_inf` opt-in that substitutes non-finite values
+with `0.0` and records their positions in a bitmask companion
+section.
 
 ### File Not Found / Permission Denied
 
@@ -451,9 +453,11 @@ and a recovery hint, rather than silently downgrading the variable
 to `encoding="none"`. Pre-0.17 soft-downgrade hid data-quality
 problems; the new behaviour surfaces them at conversion time.
 Callers relying on the old fallback should either pick a
-non-simple_packing encoding up front, pre-process NaN / Inf out of
-the data, or use `--split-by variable` and choose per-variable
-encodings.
+non-simple_packing encoding up front, opt into the NaN / Inf
+bitmask companion via `--allow-nan` / `--allow-inf` (see
+[NaN / Inf Handling](nan-inf-handling.md)), pre-process NaN / Inf
+out of the data, or use `--split-by variable` and choose
+per-variable encodings.
 
 ### NetCDF Importer — Unknown Codec Name
 

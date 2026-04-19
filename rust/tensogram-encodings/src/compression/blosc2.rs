@@ -31,7 +31,7 @@ fn map_err(e: blosc2::Error) -> CompressionError {
     CompressionError::Blosc2(format!("{e:?}"))
 }
 
-fn codec_to_algo(codec: &Blosc2Codec) -> CompressAlgo {
+pub(crate) fn codec_to_algo(codec: &Blosc2Codec) -> CompressAlgo {
     match codec {
         Blosc2Codec::Blosclz => CompressAlgo::Blosclz,
         Blosc2Codec::Lz4 => CompressAlgo::Lz4,

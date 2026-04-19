@@ -24,15 +24,16 @@ mod parallel;
 pub mod pipeline;
 #[cfg(feature = "remote")]
 pub mod remote;
+pub(crate) mod restore;
 pub mod streaming;
-pub(crate) mod strict_finite;
+pub(crate) mod substitute_and_mask;
 pub mod types;
 pub mod validate;
 pub mod wire;
 
 pub use decode::{
-    DecodeOptions, decode, decode_descriptors, decode_metadata, decode_object, decode_range,
-    decode_range_from_payload,
+    DecodeOptions, DecodedMaskSet, DecodedObjectWithMasks, decode, decode_descriptors,
+    decode_metadata, decode_object, decode_range, decode_range_from_payload, decode_with_masks,
 };
 pub use dtype::Dtype;
 pub use encode::{EncodeOptions, encode, encode_pre_encoded};
@@ -45,10 +46,11 @@ pub use metadata::{RESERVED_KEY, compute_common, verify_canonical_cbor};
 pub use parallel::{DEFAULT_PARALLEL_THRESHOLD_BYTES, ENV_THREADS};
 pub use pipeline::{DataPipeline, apply_pipeline};
 pub use streaming::StreamingEncoder;
+pub use tensogram_encodings::bitmask::MaskMethod;
 pub use tensogram_encodings::pipeline::CompressionBackend;
 pub use types::{
     ByteOrder, DataObjectDescriptor, DecodedObject, GlobalMetadata, HashDescriptor, HashFrame,
-    IndexFrame,
+    IndexFrame, MaskDescriptor, MasksMetadata,
 };
 pub use validate::{
     FileIssue, FileValidationReport, IssueCode, IssueSeverity, ValidateOptions, ValidationIssue,

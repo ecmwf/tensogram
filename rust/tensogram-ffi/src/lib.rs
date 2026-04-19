@@ -40,6 +40,7 @@ use std::path::Path;
 use std::ptr;
 use std::slice;
 
+use tensogram::encode::MaskMethod;
 use tensogram::validate::{
     ValidateOptions, ValidationLevel, validate_file as core_validate_file, validate_message,
 };
@@ -114,6 +115,111 @@ pub extern "C" fn tgm_last_error() -> *const c_char {
 pub struct TgmBytes {
     pub data: *mut u8,
     pub len: usize,
+}
+
+/// Mask-companion options for encode entry points (see
+/// `plans/BITMASK_FRAME.md` §6.3).  Pass a pointer to this struct to
+/// opt into NaN / ±Inf substitution with bitmask companion frames.
+///
+/// Each `*_mask_method` string is one of `"none"`, `"rle"`,
+/// `"roaring"`, `"lz4"`, `"zstd"`, or `"blosc2"`; pass `NULL` to use
+/// the library default (`"roaring"`).  Unknown names cause the
+/// owning `tgm_*_with_options` call to return
+/// [`TgmError::InvalidArg`] with a clear message via
+/// [`tgm_last_error`].
+///
+/// `small_mask_threshold_bytes` is the byte-count below which mask
+/// blobs are written as `"none"` regardless of the requested method
+/// (auto-fallback).  Pass `0` to disable the fallback.  Negative
+/// values use the library default (128).
+#[repr(C)]
+pub struct TgmEncodeMaskOptions {
+    pub allow_nan: bool,
+    pub allow_inf: bool,
+    pub nan_mask_method: *const c_char,
+    pub pos_inf_mask_method: *const c_char,
+    pub neg_inf_mask_method: *const c_char,
+    pub small_mask_threshold_bytes: isize,
+}
+
+/// Parse one of the optional C-string mask-method fields into a Rust
+/// [`MaskMethod`].  Returns the caller-supplied default on `NULL`,
+/// an `Err` naming the offending value (and accepted alternatives)
+/// for invalid UTF-8 or unknown names.
+///
+/// # Safety
+///
+/// `ptr` must either be `NULL` or point to a NUL-terminated UTF-8
+/// string with a valid Rust-bound lifetime.
+unsafe fn parse_mask_method_cstr(
+    ptr: *const c_char,
+    default: MaskMethod,
+) -> Result<MaskMethod, String> {
+    if ptr.is_null() {
+        return Ok(default);
+    }
+    let s = unsafe { CStr::from_ptr(ptr) }
+        .to_str()
+        .map_err(|_| "mask method name is not valid UTF-8".to_string())?;
+    MaskMethod::from_name(s).map_err(|e| e.to_string())
+}
+
+/// Apply the optional [`TgmEncodeMaskOptions`] pointer to an
+/// [`EncodeOptions`].  `NULL` is a no-op.  Returns an error message
+/// (routed to [`set_last_error`] by the caller) when a method name
+/// is invalid UTF-8 or unknown.
+///
+/// # Safety
+///
+/// `opts` must either be `NULL` or point to a valid
+/// `TgmEncodeMaskOptions` whose `*_mask_method` fields satisfy
+/// [`parse_mask_method_cstr`]'s safety contract.
+unsafe fn apply_mask_options(
+    encode_opts: &mut EncodeOptions,
+    opts: *const TgmEncodeMaskOptions,
+) -> Result<(), String> {
+    if opts.is_null() {
+        return Ok(());
+    }
+    let opts = unsafe { &*opts };
+    encode_opts.allow_nan = opts.allow_nan;
+    encode_opts.allow_inf = opts.allow_inf;
+    encode_opts.nan_mask_method =
+        unsafe { parse_mask_method_cstr(opts.nan_mask_method, MaskMethod::default())? };
+    encode_opts.pos_inf_mask_method =
+        unsafe { parse_mask_method_cstr(opts.pos_inf_mask_method, MaskMethod::default())? };
+    encode_opts.neg_inf_mask_method =
+        unsafe { parse_mask_method_cstr(opts.neg_inf_mask_method, MaskMethod::default())? };
+    if opts.small_mask_threshold_bytes >= 0 {
+        encode_opts.small_mask_threshold_bytes = opts.small_mask_threshold_bytes as usize;
+    }
+    Ok(())
+}
+
+/// Decode-side companion to [`TgmEncodeMaskOptions`].  Pass a pointer
+/// to opt out of canonical NaN / Inf restoration.  Pass `NULL` for
+/// the default `restore_non_finite = true`.
+#[repr(C)]
+pub struct TgmDecodeMaskOptions {
+    pub restore_non_finite: bool,
+}
+
+/// Apply the optional [`TgmDecodeMaskOptions`] pointer to a
+/// [`DecodeOptions`].  `NULL` is a no-op.
+///
+/// # Safety
+///
+/// `opts` must either be `NULL` or point to a valid
+/// `TgmDecodeMaskOptions`.
+unsafe fn apply_decode_mask_options(
+    decode_opts: &mut DecodeOptions,
+    opts: *const TgmDecodeMaskOptions,
+) {
+    if opts.is_null() {
+        return;
+    }
+    let opts = unsafe { &*opts };
+    decode_opts.restore_non_finite = opts.restore_non_finite;
 }
 
 /// Free a byte buffer returned by `tgm_encode`.
@@ -437,7 +543,6 @@ unsafe fn collect_data_slices<'a>(
 ///
 /// All pointer arguments must satisfy the same contracts as the public FFI
 /// functions that delegate to this helper.
-#[allow(clippy::too_many_arguments)]
 unsafe fn parse_encode_args<'a>(
     json_str: &str,
     data_ptrs: *const *const u8,
@@ -445,8 +550,6 @@ unsafe fn parse_encode_args<'a>(
     num_objects: usize,
     hash_algo: *const c_char,
     threads: u32,
-    reject_nan: bool,
-    reject_inf: bool,
 ) -> Result<ParsedEncode<'a>, (TgmError, String)> {
     let (global_metadata, descriptors) =
         parse_encode_json(json_str).map_err(|e| (TgmError::Metadata, e))?;
@@ -467,8 +570,6 @@ unsafe fn parse_encode_args<'a>(
     let options = EncodeOptions {
         hash_algorithm,
         threads,
-        reject_nan,
-        reject_inf,
         ..Default::default()
     };
 
@@ -495,17 +596,15 @@ unsafe fn parse_encode_args<'a>(
 ///
 /// `hash_algo`: null-terminated string ("xxh3") or NULL for no hash.
 ///
-/// `reject_nan` / `reject_inf`: when `true`, the encoder scans float
-/// payloads before the pipeline runs and returns
-/// [`TgmError::Encoding`] on the first NaN / Inf.  Pass `false` to
-/// preserve the current behaviour.  See the Rust
-/// `EncodeOptions::reject_nan` docs for full semantics.  Integer
-/// dtypes are not scanned.
-///
 /// On success returns `TgmError::Ok` and fills `out` with the encoded bytes.
 /// The caller must free `out` with `tgm_bytes_free`.
+///
+/// 0.17+: encode rejects non-finite values (NaN / ±Inf) by default.
+/// Use [`tgm_encode_with_options`] with a
+/// [`TgmEncodeMaskOptions`] pointer (`allow_nan` / `allow_inf`) to
+/// opt into NaN / Inf substitution with bitmask companion frames;
+/// this entry point always uses the default reject policy.
 #[unsafe(no_mangle)]
-#[allow(clippy::too_many_arguments)]
 pub extern "C" fn tgm_encode(
     metadata_json: *const c_char,
     data_ptrs: *const *const u8,
@@ -513,8 +612,6 @@ pub extern "C" fn tgm_encode(
     num_objects: usize,
     hash_algo: *const c_char,
     threads: u32,
-    reject_nan: bool,
-    reject_inf: bool,
     out: *mut TgmBytes,
 ) -> TgmError {
     if metadata_json.is_null() || out.is_null() {
@@ -538,8 +635,6 @@ pub extern "C" fn tgm_encode(
             num_objects,
             hash_algo,
             threads,
-            reject_nan,
-            reject_inf,
         )
     } {
         Ok(p) => p,
@@ -571,6 +666,306 @@ pub extern "C" fn tgm_encode(
             }
             TgmError::Ok
         }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
+/// Encode with explicit NaN / Inf mask-companion options.
+///
+/// Like [`tgm_encode`] but takes a [`TgmEncodeMaskOptions`] pointer
+/// (nullable — `NULL` behaves like [`tgm_encode`]'s default reject
+/// policy).  All other arguments are identical.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn tgm_encode_with_options(
+    metadata_json: *const c_char,
+    data_ptrs: *const *const u8,
+    data_lens: *const usize,
+    num_objects: usize,
+    hash_algo: *const c_char,
+    threads: u32,
+    mask_options: *const TgmEncodeMaskOptions,
+    out: *mut TgmBytes,
+) -> TgmError {
+    if metadata_json.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let json_str = match unsafe { CStr::from_ptr(metadata_json) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in metadata_json: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+
+    let mut parsed = match unsafe {
+        parse_encode_args(
+            json_str,
+            data_ptrs,
+            data_lens,
+            num_objects,
+            hash_algo,
+            threads,
+        )
+    } {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            set_last_error(&msg);
+            return code;
+        }
+    };
+    if let Err(msg) = unsafe { apply_mask_options(&mut parsed.options, mask_options) } {
+        set_last_error(&msg);
+        return TgmError::InvalidArg;
+    }
+
+    let pairs: Vec<(&DataObjectDescriptor, &[u8])> = parsed
+        .descriptors
+        .iter()
+        .zip(parsed.data_slices.iter())
+        .map(|(d, s)| (d, *s))
+        .collect();
+
+    match encode(&parsed.global_metadata, &pairs, &parsed.options) {
+        Ok(bytes) => {
+            let mut bytes = bytes.into_boxed_slice().into_vec();
+            let result = TgmBytes {
+                data: bytes.as_mut_ptr(),
+                len: bytes.len(),
+            };
+            std::mem::forget(bytes);
+            unsafe {
+                *out = result;
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
+/// Decode with explicit NaN / Inf restoration options.
+///
+/// Like [`tgm_decode`] but takes a [`TgmDecodeMaskOptions`] pointer
+/// (nullable — `NULL` behaves like [`tgm_decode`]'s default
+/// `restore_non_finite = true`).
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn tgm_decode_with_options(
+    buf: *const u8,
+    buf_len: usize,
+    verify_hash: i32,
+    native_byte_order: i32,
+    threads: u32,
+    mask_options: *const TgmDecodeMaskOptions,
+    out: *mut *mut TgmMessage,
+) -> TgmError {
+    if buf.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+
+    let data = unsafe { slice::from_raw_parts(buf, buf_len) };
+    let mut options = DecodeOptions {
+        verify_hash: verify_hash != 0,
+        native_byte_order: native_byte_order != 0,
+        threads,
+        ..Default::default()
+    };
+    unsafe { apply_decode_mask_options(&mut options, mask_options) };
+
+    match decode(data, &options) {
+        Ok((global_metadata, objects)) => {
+            let caches = build_message_caches(&objects);
+            let msg = Box::new(TgmMessage {
+                global_metadata,
+                objects,
+                dtype_strings: caches.dtype_strings,
+                type_strings: caches.type_strings,
+                byte_order_strings: caches.byte_order_strings,
+                filter_strings: caches.filter_strings,
+                compression_strings: caches.compression_strings,
+                encoding_strings: caches.encoding_strings,
+                hash_type_strings: caches.hash_type_strings,
+                hash_value_strings: caches.hash_value_strings,
+            });
+            unsafe {
+                *out = Box::into_raw(msg);
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
+/// Streaming-encoder constructor with NaN / Inf mask-companion options.
+///
+/// Like [`tgm_streaming_encoder_create`] but takes a
+/// [`TgmEncodeMaskOptions`] pointer.  `NULL` behaves like the default
+/// reject policy.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn tgm_streaming_encoder_create_with_options(
+    path: *const c_char,
+    metadata_json: *const c_char,
+    hash_algo: *const c_char,
+    threads: u32,
+    mask_options: *const TgmEncodeMaskOptions,
+    out: *mut *mut TgmStreamingEncoder,
+) -> TgmError {
+    // Delegate to the existing tgm_streaming_encoder_create for the
+    // validation + file-creation side-effects, then — if that
+    // succeeded AND the caller passed a non-NULL mask_options — no
+    // further adjustment is needed because the encoder has been
+    // constructed with default options.  For an opt-in mask-aware
+    // encoder we take a direct path through StreamingEncoder::new
+    // with the full options set.
+    //
+    // Rationale for the direct path: the library-level EncodeOptions
+    // is snapshotted at construction in StreamingEncoder, so we can't
+    // retrofit mask options after the fact.  We therefore replicate
+    // the existing validation + open logic here, pointer-for-pointer.
+    if path.is_null() || metadata_json.is_null() || out.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in path: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+    let json_str = match unsafe { CStr::from_ptr(metadata_json) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in metadata_json: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+    let global_metadata = match parse_streaming_metadata_json(json_str) {
+        Ok(m) => m,
+        Err(e) => {
+            set_last_error(&e);
+            return TgmError::Metadata;
+        }
+    };
+    let hash_algorithm = if hash_algo.is_null() {
+        None
+    } else {
+        let s = match unsafe { CStr::from_ptr(hash_algo) }.to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                set_last_error("invalid UTF-8 in hash_algo");
+                return TgmError::InvalidArg;
+            }
+        };
+        match HashAlgorithm::parse(s) {
+            Ok(a) => Some(a),
+            Err(e) => {
+                set_last_error(&e.to_string());
+                return TgmError::InvalidArg;
+            }
+        }
+    };
+    let file = match std::fs::File::create(path_str) {
+        Ok(f) => f,
+        Err(e) => {
+            set_last_error(&e.to_string());
+            return TgmError::Io;
+        }
+    };
+    let mut options = EncodeOptions {
+        hash_algorithm,
+        threads,
+        ..Default::default()
+    };
+    if let Err(msg) = unsafe { apply_mask_options(&mut options, mask_options) } {
+        set_last_error(&msg);
+        return TgmError::InvalidArg;
+    }
+    let writer = std::io::BufWriter::new(file);
+    match StreamingEncoder::new(writer, &global_metadata, &options) {
+        Ok(enc) => {
+            let handle = Box::new(TgmStreamingEncoder { inner: Some(enc) });
+            unsafe {
+                *out = Box::into_raw(handle);
+            }
+            TgmError::Ok
+        }
+        Err(e) => {
+            set_last_error(&e.to_string());
+            to_error_code(&e)
+        }
+    }
+}
+
+/// Append a message to a file with explicit NaN / Inf mask-companion options.
+///
+/// Like [`tgm_file_append`] but takes a [`TgmEncodeMaskOptions`]
+/// pointer.  `NULL` behaves like the default reject policy.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn tgm_file_append_with_options(
+    file: *mut TgmFile,
+    metadata_json: *const c_char,
+    data_ptrs: *const *const u8,
+    data_lens: *const usize,
+    num_objects: usize,
+    hash_algo: *const c_char,
+    threads: u32,
+    mask_options: *const TgmEncodeMaskOptions,
+) -> TgmError {
+    if file.is_null() || metadata_json.is_null() {
+        set_last_error("null argument");
+        return TgmError::InvalidArg;
+    }
+    let json_str = match unsafe { CStr::from_ptr(metadata_json) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("invalid UTF-8 in metadata_json: {e}"));
+            return TgmError::InvalidArg;
+        }
+    };
+    let mut parsed = match unsafe {
+        parse_encode_args(
+            json_str,
+            data_ptrs,
+            data_lens,
+            num_objects,
+            hash_algo,
+            threads,
+        )
+    } {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            set_last_error(&msg);
+            return code;
+        }
+    };
+    if let Err(msg) = unsafe { apply_mask_options(&mut parsed.options, mask_options) } {
+        set_last_error(&msg);
+        return TgmError::InvalidArg;
+    }
+    let pairs: Vec<(&DataObjectDescriptor, &[u8])> = parsed
+        .descriptors
+        .iter()
+        .zip(parsed.data_slices.iter())
+        .map(|(d, s)| (d, *s))
+        .collect();
+    let f = unsafe { &mut (*file).file };
+    match f.append(&parsed.global_metadata, &pairs, &parsed.options) {
+        Ok(()) => TgmError::Ok,
         Err(e) => {
             set_last_error(&e.to_string());
             to_error_code(&e)
@@ -630,8 +1025,6 @@ pub extern "C" fn tgm_encode_pre_encoded(
         }
     };
 
-    // `encode_pre_encoded` is opaque — the strict-finite scan does not
-    // apply.  See plans/RESEARCH_NAN_HANDLING.md §3.1 for why.
     let parsed = match unsafe {
         parse_encode_args(
             json_str,
@@ -640,8 +1033,6 @@ pub extern "C" fn tgm_encode_pre_encoded(
             num_objects,
             hash_algo,
             threads,
-            false,
-            false,
         )
     } {
         Ok(p) => p,
@@ -1584,9 +1975,9 @@ pub extern "C" fn tgm_file_path(file: *const TgmFile) -> *const c_char {
 
 /// Encode and append a message to the file.
 /// Same JSON schema as `tgm_encode` for `metadata_json`.
-/// `reject_nan` / `reject_inf` match `tgm_encode`'s semantics.
+///
+/// Non-finite-value rejection is on by default in 0.17+; see `tgm_encode`.
 #[unsafe(no_mangle)]
-#[allow(clippy::too_many_arguments)]
 pub extern "C" fn tgm_file_append(
     file: *mut TgmFile,
     metadata_json: *const c_char,
@@ -1595,8 +1986,6 @@ pub extern "C" fn tgm_file_append(
     num_objects: usize,
     hash_algo: *const c_char,
     threads: u32,
-    reject_nan: bool,
-    reject_inf: bool,
 ) -> TgmError {
     if file.is_null() || metadata_json.is_null() {
         set_last_error("null argument");
@@ -1619,8 +2008,6 @@ pub extern "C" fn tgm_file_append(
             num_objects,
             hash_algo,
             threads,
-            reject_nan,
-            reject_inf,
         )
     } {
         Ok(p) => p,
@@ -2622,6 +3009,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
@@ -2751,9 +3139,7 @@ mod tests {
             &data_len as *const usize,
             1,
             ptr::null(), // no hash
-            0,
-            false,
-            false, // threads
+            0,           // threads
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok), "tgm_encode failed");
@@ -2796,8 +3182,6 @@ mod tests {
             1,
             hash_algo.as_ptr(),
             0,
-            false,
-            false,
             &mut out,
         );
         assert!(
@@ -2989,8 +3373,6 @@ mod tests {
             0,
             ptr::null(),
             0,
-            false,
-            false,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -3006,8 +3388,6 @@ mod tests {
             0,
             ptr::null(),
             0,
-            false,
-            false,
             ptr::null_mut(),
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -3030,9 +3410,7 @@ mod tests {
             &data_len as *const usize,
             1, // mismatch!
             ptr::null(),
-            0,
-            false,
-            false, // threads
+            0, // threads
             &mut out,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -3052,8 +3430,6 @@ mod tests {
             0,
             ptr::null(),
             0,
-            false,
-            false,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Metadata));
@@ -3672,8 +4048,6 @@ mod tests {
             1,
             ptr::null(),
             0,
-            false,
-            false,
         );
         assert!(matches!(err, super::TgmError::Ok));
 
@@ -3779,8 +4153,6 @@ mod tests {
             0,
             ptr::null(),
             0,
-            false,
-            false,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
 
@@ -3837,9 +4209,7 @@ mod tests {
             c_path.as_ptr(),
             meta_json.as_ptr(),
             ptr::null(), // no hash
-            0,
-            false,
-            false, // threads
+            0,           // threads
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -3914,23 +4284,14 @@ mod tests {
             meta.as_ptr(),
             ptr::null(),
             0,
-            false,
-            false,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
 
         // create with null metadata
         let p = CString::new("/tmp/dummy.tgm").unwrap();
-        let err = super::tgm_streaming_encoder_create(
-            p.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-            0,
-            false,
-            false,
-            &mut enc,
-        );
+        let err =
+            super::tgm_streaming_encoder_create(p.as_ptr(), ptr::null(), ptr::null(), 0, &mut enc);
         assert!(matches!(err, super::TgmError::InvalidArg));
 
         // create with null out
@@ -3939,8 +4300,6 @@ mod tests {
             meta.as_ptr(),
             ptr::null(),
             0,
-            false,
-            false,
             ptr::null_mut(),
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -3985,8 +4344,6 @@ mod tests {
             meta_json.as_ptr(),
             ptr::null(),
             0,
-            false,
-            false,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4019,8 +4376,6 @@ mod tests {
             meta_json.as_ptr(),
             ptr::null(),
             0,
-            false,
-            false,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4243,8 +4598,6 @@ mod tests {
             0,
             ptr::null(),
             0,
-            false,
-            false,
             &mut out,
         );
 
@@ -4616,8 +4969,6 @@ mod tests {
             0,
             ptr::null(),
             0,
-            false,
-            false,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4653,8 +5004,6 @@ mod tests {
             meta_json.as_ptr(),
             hash_algo.as_ptr(),
             0,
-            false,
-            false,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4707,8 +5056,6 @@ mod tests {
             meta_json.as_ptr(),
             bad_algo.as_ptr(),
             0,
-            false,
-            false,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -4730,8 +5077,6 @@ mod tests {
             bad_meta.as_ptr(),
             ptr::null(),
             0,
-            false,
-            false,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Metadata));
@@ -4775,8 +5120,6 @@ mod tests {
             2,
             ptr::null(),
             0,
-            false,
-            false,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4846,8 +5189,6 @@ mod tests {
             1,
             ptr::null(),
             0,
-            false,
-            false,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4920,8 +5261,6 @@ mod tests {
             meta_json.as_ptr(),
             ptr::null(),
             0,
-            false,
-            false,
             &mut enc,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -4986,8 +5325,6 @@ mod tests {
             0,
             bad_algo.as_ptr(),
             0,
-            false,
-            false,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
@@ -5050,9 +5387,7 @@ mod tests {
             data_lens.as_ptr(),
             1,
             ptr::null(), // no hash
-            0,
-            false,
-            false, // threads
+            0,           // threads
             &mut out,
         );
         assert!(
@@ -5289,8 +5624,6 @@ mod tests {
             1,
             ptr::null(),
             /* threads */ 0,
-            false,
-            false,
             &mut out,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -5483,14 +5816,11 @@ fn parse_streaming_metadata_json(json_str: &str) -> Result<GlobalMetadata, Strin
 /// Free with `tgm_streaming_encoder_free` or finalize with
 /// `tgm_streaming_encoder_finish`.
 #[unsafe(no_mangle)]
-#[allow(clippy::too_many_arguments)]
 pub extern "C" fn tgm_streaming_encoder_create(
     path: *const c_char,
     metadata_json: *const c_char,
     hash_algo: *const c_char,
     threads: u32,
-    reject_nan: bool,
-    reject_inf: bool,
     out: *mut *mut TgmStreamingEncoder,
 ) -> TgmError {
     if path.is_null() || metadata_json.is_null() || out.is_null() {
@@ -5552,8 +5882,6 @@ pub extern "C" fn tgm_streaming_encoder_create(
     let options = EncodeOptions {
         hash_algorithm,
         threads,
-        reject_nan,
-        reject_inf,
         ..Default::default()
     };
     let writer = std::io::BufWriter::new(file);

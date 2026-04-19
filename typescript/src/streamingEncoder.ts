@@ -104,8 +104,6 @@ export class StreamingEncoder {
     const wbg = getWbg();
     const hash = opts?.hash !== false;
     const sink = opts?.onBytes;
-    const rejectNan = opts?.rejectNan === true;
-    const rejectInf = opts?.rejectInf === true;
     this.#streaming = sink !== undefined;
     this.#handle = rethrowTyped(
       () =>
@@ -113,8 +111,12 @@ export class StreamingEncoder {
           metadata,
           hash,
           sink,
-          rejectNan,
-          rejectInf,
+          opts?.allowNan ?? false,
+          opts?.allowInf ?? false,
+          opts?.nanMaskMethod,
+          opts?.posInfMaskMethod,
+          opts?.negInfMaskMethod,
+          opts?.smallMaskThresholdBytes,
         ) as unknown as WbgStreamingEncoder,
     );
     registry.register(this, this.#handle, this);

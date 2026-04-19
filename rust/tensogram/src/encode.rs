@@ -13,7 +13,11 @@ use crate::error::{Result, TensogramError};
 use crate::framing::{self, EncodedObject};
 use crate::hash::{HashAlgorithm, compute_hash};
 use crate::metadata::RESERVED_KEY;
-use crate::types::{DataObjectDescriptor, GlobalMetadata, HashDescriptor};
+use crate::substitute_and_mask::{self, MaskSet};
+use crate::types::{
+    DataObjectDescriptor, GlobalMetadata, HashDescriptor, MaskDescriptor, MasksMetadata,
+};
+pub use tensogram_encodings::bitmask::MaskMethod;
 #[cfg(feature = "blosc2")]
 use tensogram_encodings::pipeline::Blosc2Codec;
 #[cfg(feature = "sz3")]
@@ -69,50 +73,38 @@ pub struct EncodeOptions {
     /// Set to `Some(0)` to force the parallel path for testing; set to
     /// `Some(usize::MAX)` to force sequential.
     pub parallel_threshold_bytes: Option<usize>,
-    /// Reject NaN values in float payloads before the encoding pipeline
-    /// runs.  Default `false` (backwards-compatible).
-    ///
-    /// When `true`, raw input for float dtypes
-    /// (`float16`/`bfloat16`/`float32`/`float64`/`complex64`/`complex128`)
-    /// is scanned element-by-element.  On first NaN the encode fails
-    /// with [`TensogramError::Encoding`] carrying the element index and
-    /// dtype.  Integer and bitmask dtypes are skipped (zero cost).
-    ///
-    /// Applies **before** any pipeline stage, so the contract is
-    /// pipeline-independent: callers get the same guarantee whether
-    /// they pick `encoding="none"`, `"simple_packing"`, or a lossy
-    /// float compressor.  This is the primary user-visible mitigation
-    /// for the corners documented in `plans/RESEARCH_NAN_HANDLING.md`
-    /// §3.1 (silent Inf corruption in `simple_packing`) and §3.3
-    /// (undefined NaN behaviour in `zfp`/`sz3`).
-    ///
-    /// Setting this flag on [`encode_pre_encoded`] or
-    /// [`StreamingEncoder::write_object_pre_encoded`](crate::streaming::StreamingEncoder::write_object_pre_encoded)
-    /// returns [`TensogramError::Encoding`] — pre-encoded bytes are
-    /// opaque to the library and cannot be meaningfully scanned.
-    /// Callers who want the strict contract must use [`encode`] or
-    /// [`StreamingEncoder::write_object`](crate::streaming::StreamingEncoder::write_object)
-    /// on raw input.
-    ///
-    /// Parallel scans (when `threads > 0` and input exceeds the
-    /// parallel threshold) short-circuit per worker, so the reported
-    /// element index may not be the globally first NaN.  Pass
-    /// `threads = 0` for deterministic first-index reporting.
-    pub reject_nan: bool,
-    /// Reject `+Inf` / `-Inf` values in float payloads before the
-    /// encoding pipeline runs.  Default `false` (backwards-compatible).
-    ///
-    /// Same semantics as [`reject_nan`](Self::reject_nan) but for
-    /// infinities.  The error message includes the sign (`+Inf` or
-    /// `-Inf`) alongside the element index and dtype.
-    ///
-    /// Closes the silent-corruption gotcha documented in
-    /// `plans/RESEARCH_NAN_HANDLING.md` §3.1: `simple_packing::compute_params`
-    /// accepts Inf input and produces numerically-useless parameters
-    /// (`binary_scale_factor = i32::MAX`) that silently decode to NaN
-    /// everywhere.  Turning this flag on catches the problem at encode
-    /// time.
-    pub reject_inf: bool,
+    /// When `true`, NaN values in float / complex payloads are
+    /// substituted with `0.0` and recorded in a bitmask companion
+    /// section of the data-object frame (wire type 9
+    /// `NTensorMaskedFrame`, see `plans/BITMASK_FRAME.md`).  When
+    /// `false` (the default) any NaN in the input is a hard encode
+    /// error.
+    pub allow_nan: bool,
+    /// When `true`, `+Inf` AND `-Inf` values are substituted with
+    /// `0.0` and recorded in per-sign bitmasks (see `allow_nan`).
+    /// The flag is a single switch for both signs on purpose — callers
+    /// who want only one sign must pre-process their data.  When
+    /// `false` (the default), any `±Inf` in the input is a hard encode
+    /// error.
+    pub allow_inf: bool,
+    /// Compression method for the NaN mask (see
+    /// [`tensogram_encodings::bitmask::MaskMethod`]).  Default
+    /// [`MaskMethod::Roaring`].  Only consulted when `allow_nan` is
+    /// `true` AND the input actually contained at least one NaN
+    /// element.
+    pub nan_mask_method: MaskMethod,
+    /// Compression method for the `+Inf` mask.  Default
+    /// [`MaskMethod::Roaring`].
+    pub pos_inf_mask_method: MaskMethod,
+    /// Compression method for the `-Inf` mask.  Default
+    /// [`MaskMethod::Roaring`].
+    pub neg_inf_mask_method: MaskMethod,
+    /// Uncompressed byte-count threshold below which mask blobs are
+    /// written with [`MaskMethod::None`] (raw packed bytes) regardless
+    /// of the requested method.  Default `128`.  Single threshold
+    /// across all three masks.  Set to `0` to disable the auto-fallback
+    /// and always use the requested method.
+    pub small_mask_threshold_bytes: usize,
 }
 
 impl Default for EncodeOptions {
@@ -123,8 +115,12 @@ impl Default for EncodeOptions {
             compression_backend: pipeline::CompressionBackend::default(),
             threads: 0,
             parallel_threshold_bytes: None,
-            reject_nan: false,
-            reject_inf: false,
+            allow_nan: false,
+            allow_inf: false,
+            nan_mask_method: MaskMethod::default(),
+            pos_inf_mask_method: MaskMethod::default(),
+            neg_inf_mask_method: MaskMethod::default(),
+            small_mask_threshold_bytes: 128,
         }
     }
 }
@@ -199,25 +195,34 @@ fn encode_one_object(
 ) -> Result<EncodedObject> {
     validate_object(desc, data.len())?;
 
-    // Strict-finite pre-pipeline scan (Raw mode only — pre-encoded
-    // bytes are opaque and the caller already accepted that contract).
-    // Short-circuits to Ok when both flags are off or the dtype is
-    // integer/bitmask; see `strict_finite` for the full semantics.
-    if matches!(mode, EncodeMode::Raw) && (options.reject_nan || options.reject_inf) {
+    // Pre-pipeline substitute-and-mask stage (Raw mode only).  Two
+    // flavours gated by the same call:
+    //
+    // - `allow_nan == false && allow_inf == false` — behaves like the
+    //   0.17 default finite check: first NaN / Inf errors out.
+    // - Either flag true — substitute non-finite values with the
+    //   dtype-specific zero and collect per-kind bitmasks for the
+    //   frame-writing stage.  See `plans/BITMASK_FRAME.md` §6.1.
+    //
+    // Pre-encoded bytes are opaque: skip the stage.
+    let (pipeline_input, mask_set) = if matches!(mode, EncodeMode::Raw) {
         let parallel = crate::parallel::should_parallelise(
             intra_codec_threads,
             data.len(),
             options.parallel_threshold_bytes,
         );
-        crate::strict_finite::scan(
+        let (cow, masks) = substitute_and_mask::substitute_and_mask(
             data,
             desc.dtype,
             desc.byte_order,
-            options.reject_nan,
-            options.reject_inf,
+            options.allow_nan,
+            options.allow_inf,
             parallel,
         )?;
-    }
+        (cow, masks)
+    } else {
+        (std::borrow::Cow::Borrowed(data), MaskSet::empty(0))
+    };
 
     let shape_product = desc
         .shape
@@ -259,8 +264,11 @@ fn encode_one_object(
 
     let (encoded_payload, inline_hash) = match mode {
         EncodeMode::Raw => {
-            // Run the full encoding pipeline.
-            let result = pipeline::encode_pipeline(data, &config)
+            // Run the full encoding pipeline on the (possibly
+            // substituted) payload.  When substitution occurred the
+            // `pipeline_input` is `Cow::Owned`; otherwise it's the
+            // caller's bytes borrowed zero-cost.
+            let result = pipeline::encode_pipeline(pipeline_input.as_ref(), &config)
                 .map_err(|e| TensogramError::Encoding(e.to_string()))?;
 
             // Store szip block offsets if produced
@@ -290,6 +298,33 @@ fn encode_one_object(
             (data.to_vec(), None)
         }
     };
+
+    // ── Compose the payload region: [encoded_payload][mask_nan][mask_inf+][mask_inf-] ──
+    //
+    // When no masks were collected (the common case), the region is
+    // just `encoded_payload` and the descriptor gets `masks = None`,
+    // making the frame byte-identical to the legacy `NTensorFrame`
+    // payload layout except for the frame-type number.
+    //
+    // When masks ARE present, each kind is compressed via the
+    // user-specified `MaskMethod` (with auto-fallback to `None` for
+    // tiny masks), appended to the payload region in the canonical
+    // order `nan`, `inf+`, `inf-` (matching the CBOR key sort order),
+    // and each kind's CBOR descriptor records its byte offset and
+    // length relative to the region start.  See
+    // `plans/BITMASK_FRAME.md` §3.2.
+    let (payload_region, masks_metadata) = compose_payload_region(
+        encoded_payload,
+        mask_set,
+        &options.nan_mask_method,
+        &options.pos_inf_mask_method,
+        &options.neg_inf_mask_method,
+        options.small_mask_threshold_bytes,
+    )?;
+    if let Some(m) = masks_metadata {
+        final_desc.masks = Some(m);
+    }
+    let encoded_payload = payload_region;
 
     // Attach the integrity hash to the descriptor, overwriting any
     // caller-supplied hash.  `inline_hash` carries the pipeline's inline
@@ -323,22 +358,6 @@ fn encode_inner(
     if options.emit_preceders {
         return Err(TensogramError::Encoding(
             "emit_preceders is not supported in buffered mode; use StreamingEncoder::write_preceder() instead".to_string(),
-        ));
-    }
-
-    // Strict-finite flags are raw-input-only — pre-encoded bytes are
-    // opaque to the library and cannot be meaningfully scanned for
-    // NaN/Inf.  Failing loudly here prevents a silent-ignore footgun
-    // where a caller mistakenly expects pre-encoded payloads to be
-    // checked.  (Python's binding already raises TypeError; this
-    // mirrors that behaviour for Rust, C FFI, and C++.)
-    if matches!(mode, EncodeMode::PreEncoded) && (options.reject_nan || options.reject_inf) {
-        return Err(TensogramError::Encoding(
-            "reject_nan / reject_inf do not apply to encode_pre_encoded: \
-             pre-encoded bytes are opaque to the library. Clear these \
-             flags before calling encode_pre_encoded, or use encode() \
-             on raw data."
-                .to_string(),
         ));
     }
 
@@ -446,9 +465,11 @@ pub fn encode(
 /// Callers must NOT set:
 /// - `emit_preceders = true` — use `StreamingEncoder::write_preceder()` for streaming
 ///   preceder support.
-/// - `reject_nan = true` or `reject_inf = true` — these flags are raw-input-only;
-///   pre-encoded bytes are opaque to the library and cannot be scanned.  Setting
-///   either flag returns [`TensogramError::Encoding`].
+///
+/// Unlike `encode()`, this path does NOT run the finite-value check — the caller's
+/// bytes are assumed to be already well-formed for the declared encoding and are
+/// written as-is.  If the pre-encoded bytes decode to NaN / Inf, that round-trips
+/// through the wire unchanged.
 #[tracing::instrument(name = "encode_pre_encoded", skip_all, fields(num_objects = descriptors.len()))]
 pub fn encode_pre_encoded(
     global_metadata: &GlobalMetadata,
@@ -994,6 +1015,151 @@ pub(crate) fn validate_no_szip_offsets_for_non_szip(desc: &DataObjectDescriptor)
     Ok(())
 }
 
+/// Compose the payload region for a data-object frame.
+///
+/// The layout emitted is
+/// `[encoded_payload][mask_nan][mask_inf+][mask_inf-]`
+/// where each mask section is present iff the corresponding
+/// [`MaskSet`] field is `Some`.  The returned [`MasksMetadata`]
+/// records each section's byte offset (relative to the start of the
+/// region) and length.
+///
+/// When [`MaskSet::is_empty`], the returned region is the caller's
+/// `encoded_payload` unchanged and the metadata is `None` — the
+/// resulting frame is byte-identical to the legacy `NTensorFrame`
+/// payload layout except for the frame-type number.
+///
+/// # Small-mask fallback
+///
+/// When a mask's uncompressed bit-packed byte count is
+/// `≤ small_threshold` (default 128, configurable and set to `0` to
+/// disable), the method is forced to [`MaskMethod::None`] regardless
+/// of the caller's requested method.  The resulting
+/// [`MaskDescriptor::method`] reflects what was actually written,
+/// not the caller's request.
+///
+/// Takes the per-kind methods + threshold directly rather than an
+/// [`EncodeOptions`] reference so `StreamingEncoder` can call it
+/// from its field snapshot without borrowing a synthesised options
+/// struct.
+pub(crate) fn compose_payload_region(
+    mut encoded_payload: Vec<u8>,
+    masks: MaskSet,
+    nan_method: &MaskMethod,
+    pos_inf_method: &MaskMethod,
+    neg_inf_method: &MaskMethod,
+    small_threshold: usize,
+) -> Result<(Vec<u8>, Option<MasksMetadata>)> {
+    if masks.is_empty() {
+        return Ok((encoded_payload, None));
+    }
+
+    let mut metadata = MasksMetadata::default();
+    let mut region_cursor = encoded_payload.len() as u64;
+
+    // Append each present mask to the payload region and record its
+    // descriptor.  Canonical order matches the CBOR key sort —
+    // nan < inf+ < inf- — so the mask region stays byte-stable
+    // across identical inputs.
+    let mut append_one =
+        |bits_opt: Option<&Vec<bool>>, method: &MaskMethod| -> Result<Option<MaskDescriptor>> {
+            let Some(bits) = bits_opt else {
+                return Ok(None);
+            };
+            let (blob, used_method) = encode_one_mask(bits, method.clone(), small_threshold)?;
+            let desc = MaskDescriptor {
+                method: used_method.name().to_string(),
+                offset: region_cursor,
+                length: blob.len() as u64,
+                params: mask_params_cbor(&used_method),
+            };
+            region_cursor += blob.len() as u64;
+            encoded_payload.extend_from_slice(&blob);
+            Ok(Some(desc))
+        };
+    metadata.nan = append_one(masks.nan.as_ref(), nan_method)?;
+    metadata.pos_inf = append_one(masks.pos_inf.as_ref(), pos_inf_method)?;
+    metadata.neg_inf = append_one(masks.neg_inf.as_ref(), neg_inf_method)?;
+
+    Ok((encoded_payload, Some(metadata)))
+}
+
+/// Compress one mask using the caller's chosen method, with auto-
+/// fallback to [`MaskMethod::None`] for small masks.  Returns the
+/// serialised blob AND the method actually used (may differ from the
+/// requested method due to the small-mask fallback — see
+/// [`compose_payload_region`]).
+fn encode_one_mask(
+    bits: &[bool],
+    requested: MaskMethod,
+    small_threshold: usize,
+) -> Result<(Vec<u8>, MaskMethod)> {
+    use tensogram_encodings::bitmask;
+
+    // Small-mask fallback: compare the raw bit-packed byte count
+    // against the threshold.  When `small_threshold == 0` the
+    // fallback is disabled and we always honour the requested method.
+    let uncompressed_bytes = bits.len().div_ceil(8);
+    let method = if small_threshold > 0 && uncompressed_bytes <= small_threshold {
+        MaskMethod::None
+    } else {
+        requested
+    };
+
+    let blob = match &method {
+        MaskMethod::None => bitmask::codecs::encode_none(bits),
+        MaskMethod::Rle => bitmask::rle::encode(bits),
+        MaskMethod::Roaring => bitmask::roaring::encode(bits)
+            .map_err(|e| TensogramError::Encoding(format!("roaring mask encode: {e}")))?,
+        MaskMethod::Lz4 => bitmask::codecs::encode_lz4(bits)
+            .map_err(|e| TensogramError::Encoding(format!("lz4 mask encode: {e}")))?,
+        MaskMethod::Zstd { level } => bitmask::codecs::encode_zstd(bits, *level)
+            .map_err(|e| TensogramError::Encoding(format!("zstd mask encode: {e}")))?,
+        #[cfg(feature = "blosc2")]
+        MaskMethod::Blosc2 { codec, level } => bitmask::codecs::encode_blosc2(bits, *codec, *level)
+            .map_err(|e| TensogramError::Encoding(format!("blosc2 mask encode: {e}")))?,
+    };
+
+    Ok((blob, method))
+}
+
+/// Build the `params` sub-map for a [`MaskDescriptor`] per
+/// `plans/BITMASK_FRAME.md` §3.3.  Empty for the parameter-less
+/// methods; populated for `zstd` / `blosc2`.
+fn mask_params_cbor(method: &MaskMethod) -> BTreeMap<String, ciborium::Value> {
+    let mut params = BTreeMap::new();
+    match method {
+        MaskMethod::None | MaskMethod::Rle | MaskMethod::Roaring | MaskMethod::Lz4 => {}
+        MaskMethod::Zstd { level } => {
+            if let Some(l) = level {
+                params.insert(
+                    "level".to_string(),
+                    ciborium::Value::Integer((*l as i64).into()),
+                );
+            }
+        }
+        #[cfg(feature = "blosc2")]
+        MaskMethod::Blosc2 { codec, level } => {
+            let codec_str = match codec {
+                Blosc2Codec::Blosclz => "blosclz",
+                Blosc2Codec::Lz4 => "lz4",
+                Blosc2Codec::Lz4hc => "lz4hc",
+                Blosc2Codec::Zlib => "zlib",
+                Blosc2Codec::Zstd => "zstd",
+            };
+            params.insert(
+                "codec".to_string(),
+                ciborium::Value::Text(codec_str.to_string()),
+            );
+            params.insert(
+                "level".to_string(),
+                ciborium::Value::Integer((*level as i64).into()),
+            );
+        }
+    }
+    params
+}
+
 // ── Edge case tests ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1022,6 +1188,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         }
     }
@@ -1284,6 +1451,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "none".to_string(),
             params: BTreeMap::new(),
+            masks: None,
             hash: None,
         };
         let data = vec![0u8; 4]; // 1 float32
@@ -1569,6 +1737,7 @@ mod tests {
                 filter: "none".to_string(),
                 compression: "none".to_string(),
                 params: BTreeMap::new(),
+                masks: None,
                 hash: None,
             };
             let data = vec![0u8; data_len];
@@ -1967,6 +2136,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "zstd".to_string(),
             params,
+            masks: None,
             hash: None,
         };
 
@@ -1997,6 +2167,7 @@ mod tests {
             filter: "none".to_string(),
             compression: "szip".to_string(),
             params,
+            masks: None,
             hash: None,
         };
 
