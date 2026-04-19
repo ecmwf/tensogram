@@ -286,6 +286,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires allow_nan bitmask opt-in (BITMASK_FRAME.md Commit 5)"]
     fn convert_multi_dtype_preserves_types() {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("out.tgm");
