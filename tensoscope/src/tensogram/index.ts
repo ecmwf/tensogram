@@ -81,26 +81,6 @@ export async function ensureInit(): Promise<void> {
   initialised = true;
 }
 
-// ── Response cache ──────────────────────────────────────────────────────
-
-const CACHE_NAME = 'tensogram-remote-v1';
-
-async function cachedFetch(url: string, proxyUrl: string): Promise<ArrayBuffer> {
-  const cache = await caches.open(CACHE_NAME);
-  // Key by the original URL so proxy changes don't invalidate entries
-  const cacheKey = new Request(url);
-  const cached = await cache.match(cacheKey);
-  if (cached) return cached.arrayBuffer();
-
-  const resp = await fetch(proxyUrl);
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Failed to fetch ${url}: ${text}`);
-  }
-  // Clone before consuming -- one copy for cache, one for caller
-  await cache.put(cacheKey, resp.clone());
-  return resp.arrayBuffer();
-}
 
 // ── Viewer handle ───────────────────────────────────────────────────────
 
@@ -123,12 +103,18 @@ export class Tensoscope {
     return new Tensoscope(file, fileObj.name);
   }
 
-  /** Open from a URL (http, https), proxied to avoid CORS and cached. */
+  /**
+   * Open from a URL (http, https).
+   *
+   * Routes through the nginx CORS proxy so cross-origin files are reachable.
+   * The proxy forwards Range headers, so TensogramFile.fromUrl will use lazy
+   * per-message Range requests when the upstream server supports them, falling
+   * back to a full eager GET otherwise.
+   */
   static async fromUrl(url: string): Promise<Tensoscope> {
     await ensureInit();
     const proxyUrl = `/api/proxy?url=${encodeURIComponent(url)}`;
-    const buf = await cachedFetch(url, proxyUrl);
-    const file = TensogramFile.fromBytes(new Uint8Array(buf));
+    const file = await TensogramFile.fromUrl(proxyUrl);
     return new Tensoscope(file, url);
   }
 

@@ -12,7 +12,8 @@ server {
         return 301 ${BASE_PATH}/;
     }
 
-    # CORS proxy for remote .tgm files
+    # CORS proxy for remote .tgm files — forwards Range requests so the
+    # TypeScript TensogramFile lazy backend can issue per-message fetches.
     location ~ ^${BASE_PATH}/api/proxy {
         resolver 8.8.8.8 ipv6=off;
 
@@ -23,7 +24,12 @@ server {
         proxy_pass $arg_url;
         proxy_set_header Host $proxy_host;
         proxy_set_header Accept-Encoding '';
+        proxy_set_header Range $http_range;
         proxy_ssl_server_name on;
         proxy_buffering off;
+
+        proxy_pass_header Accept-Ranges;
+        proxy_pass_header Content-Range;
+        proxy_pass_header Content-Length;
     }
 }
