@@ -17,6 +17,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { getPaletteLUT } from './colormaps';
 import type { CustomStop } from './colormaps';
 import RegridWorker from './regrid.worker?worker';
+import { getNumBands } from './contourUtils';
 
 export interface FieldOverlayProps {
   data: Float32Array;
@@ -28,6 +29,7 @@ export interface FieldOverlayProps {
   zoom?: number;
   paletteReversed?: boolean;
   customStops?: CustomStop[];
+  renderMode: 'heatmap' | 'contours';
 }
 
 export interface FieldImage {
@@ -140,11 +142,12 @@ function cacheKey(
   gridH: number,
   paletteReversed: boolean,
   customStops: CustomStop[] | undefined,
+  renderMode: 'heatmap' | 'contours',
 ): string {
   const palKey = palette
     + (paletteReversed ? ':r' : '')
     + (palette === 'custom' && customStops ? ':' + JSON.stringify(customStops) : '');
-  return `${dataFingerprint(data)}:${colorMin}:${colorMax}:${palKey}:${gridW}x${gridH}`;
+  return `${dataFingerprint(data)}:${colorMin}:${colorMax}:${palKey}:${gridW}x${gridH}:${renderMode}`;
 }
 
 function getCached(key: string): string | null {
@@ -191,6 +194,8 @@ function requestRegrid(
   colorMin: number,
   colorMax: number,
   params: GridParams,
+  renderMode: 'heatmap' | 'contours',
+  numBands: number,
 ): Promise<{ rgba: Uint8ClampedArray; width: number; height: number }> {
   return new Promise((resolve) => {
     const id = ++workerSeq;
@@ -209,6 +214,8 @@ function requestRegrid(
         height: params.height,
         binDeg: params.binDeg,
         rowLats: params.rowLats,
+        renderMode,
+        numBands,
       },
       // Transfer arrays to avoid copying (worker gets ownership)
       // We clone them first since the caller may still need them
@@ -240,11 +247,12 @@ export function useFieldImage(props: FieldOverlayProps | null): FieldImage | nul
       setImage(null);
       return;
     }
-    const { data, lat, lon, colorMin, colorMax, palette, zoom, paletteReversed = false, customStops } = props;
+    const { data, lat, lon, colorMin, colorMax, palette, zoom, paletteReversed = false, customStops, renderMode } = props;
+    const numBands = getNumBands(palette, customStops);
 
     const scale = zoomToScale(zoom);
     const params = computeGridParams(data.length, scale);
-    const key = cacheKey(data, colorMin, colorMax, palette, params.width, params.height, paletteReversed, customStops);
+    const key = cacheKey(data, colorMin, colorMax, palette, params.width, params.height, paletteReversed, customStops, renderMode);
 
     // Check cache first
     const cached = getCached(key);
@@ -256,7 +264,7 @@ export function useFieldImage(props: FieldOverlayProps | null): FieldImage | nul
     const reqId = ++requestIdRef.current;
     const lut = getPaletteLUT(palette, { reversed: paletteReversed, customStops });
 
-    const result = await requestRegrid(lat, lon, data, lut, colorMin, colorMax, params);
+    const result = await requestRegrid(lat, lon, data, lut, colorMin, colorMax, params, renderMode, numBands);
 
     // Only apply if this is still the most recent request (prevents stale results)
     if (reqId !== requestIdRef.current) return;
@@ -264,7 +272,7 @@ export function useFieldImage(props: FieldOverlayProps | null): FieldImage | nul
     const dataUrl = rgbaToDataUrl(result.rgba, result.width, result.height);
     putCache(key, dataUrl);
     setImage({ dataUrl, coordinates: COORDINATES });
-  }, [props?.data, props?.lat, props?.lon, props?.colorMin, props?.colorMax, props?.palette, props?.zoom, props?.paletteReversed, props?.customStops]);
+  }, [props?.data, props?.lat, props?.lon, props?.colorMin, props?.colorMax, props?.palette, props?.zoom, props?.paletteReversed, props?.customStops, props?.renderMode]);
 
   useEffect(() => {
     render();

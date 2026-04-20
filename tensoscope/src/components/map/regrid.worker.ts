@@ -20,6 +20,8 @@ interface RegridRequest {
   height: number;
   binDeg: number;
   rowLats: Float64Array;  // pre-computed Mercator-spaced latitudes per row
+  renderMode: 'heatmap' | 'contours';
+  numBands: number;
 }
 
 interface RegridResponse {
@@ -32,7 +34,7 @@ interface RegridResponse {
 // ── Regrid + colormap ────────────────────────────────────────────────────
 
 function regridAndColormap(req: RegridRequest): RegridResponse {
-  const { srcLat, srcLon, srcData, lut, colorMin, colorMax, width, height, binDeg, rowLats } = req;
+  const { srcLat, srcLon, srcData, lut, colorMin, colorMax, width, height, binDeg, rowLats, renderMode, numBands } = req;
   const n = srcData.length;
 
   const binsLon = Math.ceil(360 / binDeg);
@@ -112,7 +114,16 @@ function regridAndColormap(req: RegridRequest): RegridResponse {
       if (bestIdx >= 0) {
         const v = srcData[bestIdx];
         if (v !== v) continue; // NaN -- leave transparent (already 0)
-        const lutIdx = Math.max(0, Math.min(255, ((v - colorMin) * invRange) | 0));
+
+        let lutIdx: number;
+        if (renderMode === 'contours') {
+          const t = range === 0 ? 0 : Math.max(0, Math.min(1, (v - colorMin) / range));
+          const bandIdx = Math.min(numBands - 1, Math.floor(t * numBands));
+          lutIdx = numBands <= 1 ? 0 : Math.round((bandIdx * 255) / (numBands - 1));
+        } else {
+          lutIdx = Math.max(0, Math.min(255, ((v - colorMin) * invRange) | 0));
+        }
+
         const lutBase = lutIdx * 3;
         rgba[base] = lut[lutBase];
         rgba[base + 1] = lut[lutBase + 1];
