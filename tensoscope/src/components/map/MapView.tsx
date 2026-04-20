@@ -1,11 +1,3 @@
-/**
- * MapView -- main map container.
- *
- * Uses react-map-gl/maplibre with a native image source for the field overlay.
- * This renders as part of the map so alignment and projection are handled by
- * MapLibre itself.
- */
-
 import { useState, useCallback, useRef } from 'react';
 import { Map, Source, Layer } from 'react-map-gl/maplibre';
 import type { MapRef } from 'react-map-gl/maplibre';
@@ -13,6 +5,8 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import { useFieldImage } from './FieldOverlay';
 import { ColorBar } from './ColorBar';
 import { ColorScaleControls } from './ColorScaleControls';
+import { CesiumView } from './CesiumView';
+import { RenderModePicker } from './RenderModePicker';
 import type { FieldOverlayProps } from './FieldOverlay';
 import { ProjectionPicker, PROJECTION_PRESETS } from './ProjectionPicker';
 import type { ProjectionPreset } from './ProjectionPicker';
@@ -54,16 +48,25 @@ export function MapView(props: MapViewProps) {
   } = props;
 
   const [activePreset, setActivePreset] = useState<ProjectionPreset>(PROJECTION_PRESETS[0]);
+  const [renderMode, setRenderMode] = useState<'heatmap' | 'contours'>('heatmap');
   const [zoom, setZoom] = useState(1.5);
+  const [cameraCenter, setCameraCenter] = useState({ lat: 20, lon: 0 });
   const mapRef = useRef<MapRef>(null);
   const zoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handlePresetSelect = (preset: ProjectionPreset) => {
+    if (preset.id === activePreset.id) return;
+    if (activePreset.id === 'flat' && mapRef.current) {
+      const centre = mapRef.current.getCenter();
+      setCameraCenter({ lat: centre.lat, lon: centre.lng });
+    }
     setActivePreset(preset);
-    mapRef.current?.flyTo({ center: preset.center, zoom: preset.zoom });
   };
 
-  // Debounce zoom changes to avoid spamming re-renders during smooth zoom
+  const handleCesiumUnmount = (lat: number, lon: number) => {
+    setCameraCenter({ lat, lon });
+  };
+
   const handleZoomEnd = useCallback(() => {
     if (zoomTimerRef.current) clearTimeout(zoomTimerRef.current);
     zoomTimerRef.current = setTimeout(() => {
@@ -74,38 +77,50 @@ export function MapView(props: MapViewProps) {
 
   const overlayProps: FieldOverlayProps | null =
     data && lat && lon
-      ? { data, lat, lon, colorMin, colorMax, palette, zoom, paletteReversed, customStops }
+      ? { data, lat, lon, colorMin, colorMax, palette, zoom, paletteReversed, customStops, renderMode }
       : null;
 
   const fieldImage = useFieldImage(overlayProps);
 
+  const isGlobe = activePreset.id === 'globe';
+
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-      <Map
-        ref={mapRef}
-        initialViewState={{ longitude: 0, latitude: 20, zoom: 1.5 }}
-        mapStyle={BASEMAP_STYLE}
-        projection={activePreset.type as any}
-        style={{ width: '100%', height: '100%' }}
-        onZoomEnd={handleZoomEnd}
-      >
-        {fieldImage && (
-          <Source
-            id="field-overlay"
-            type="image"
-            url={fieldImage.dataUrl}
-            coordinates={fieldImage.coordinates}
-          >
-            <Layer
-              id="field-overlay-layer"
-              type="raster"
-              paint={{ 'raster-opacity': 0.7 }}
-            />
-          </Source>
-        )}
-      </Map>
+      {isGlobe ? (
+        <CesiumView
+          fieldImage={fieldImage}
+          initialCenter={cameraCenter}
+          onUnmount={handleCesiumUnmount}
+        />
+      ) : (
+        <Map
+          ref={mapRef}
+          initialViewState={{ longitude: cameraCenter.lon, latitude: cameraCenter.lat, zoom: 1.5 }}
+          mapStyle={BASEMAP_STYLE}
+          projection={activePreset.type as any}
+          style={{ width: '100%', height: '100%' }}
+          onZoomEnd={handleZoomEnd}
+        >
+          {fieldImage && (
+            <Source
+              id="field-overlay"
+              type="image"
+              url={fieldImage.dataUrl}
+              coordinates={fieldImage.coordinates}
+            >
+              <Layer
+                id="field-overlay-layer"
+                type="raster"
+                paint={{ 'raster-opacity': 0.7 }}
+              />
+            </Source>
+          )}
+        </Map>
+      )}
 
       <ProjectionPicker current={activePreset.id} onSelect={handlePresetSelect} />
+
+      {data && <RenderModePicker mode={renderMode} onChange={setRenderMode} />}
 
       {data && (
         <>
