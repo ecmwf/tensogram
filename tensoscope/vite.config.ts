@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import wasm from 'vite-plugin-wasm'
+import cesium from 'vite-plugin-cesium'
 import path from 'path'
 
 const tensogramPkg = path.resolve(
@@ -67,7 +68,7 @@ function corsProxy(): Plugin {
 // https://vite.dev/config/
 export default defineConfig({
   base: './',
-  plugins: [react(), wasm(), corsProxy()],
+  plugins: [react(), wasm(), cesium(), corsProxy()],
   resolve: {
     alias: {
       '@ecmwf/tensogram': tensogramPkg,
