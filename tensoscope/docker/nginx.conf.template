@@ -15,7 +15,7 @@ server {
     # CORS proxy for remote .tgm files — forwards Range requests so the
     # TypeScript TensogramFile lazy backend can issue per-message fetches.
     location ~ ^${BASE_PATH}/api/proxy {
-        resolver 8.8.8.8 ipv6=off;
+        resolver ${RESOLVER} ipv6=off;
 
         if ($arg_url = '') {
             return 400 'Missing url parameter';
