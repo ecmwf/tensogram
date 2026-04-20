@@ -7,7 +7,9 @@ const tensogramPkg = path.resolve(
   __dirname, 'node_modules/@ecmwf/tensogram/dist/index.js',
 )
 
-/** Vite plugin: proxy /api/proxy?url=... to bypass CORS for remote .tgm files. */
+/** Vite plugin: proxy /api/proxy?url=... to bypass CORS for remote .tgm files.
+ *  Forwards the request method and Range header so TensogramFile.fromUrl can
+ *  use lazy per-message Range requests in dev mode, matching nginx behaviour. */
 function corsProxy(): Plugin {
   return {
     name: 'cors-proxy',
@@ -21,15 +23,23 @@ function corsProxy(): Plugin {
           return;
         }
         try {
-          const upstream = await fetch(target);
-          if (!upstream.ok) {
-            res.statusCode = upstream.status;
-            res.end(`Upstream error: ${upstream.status} ${upstream.statusText}`);
+          const init: RequestInit = { method: req.method };
+          const range = req.headers['range'];
+          if (range) init.headers = { Range: range };
+
+          const upstream = await fetch(target, init);
+          res.statusCode = upstream.status;
+
+          for (const key of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
+            const val = upstream.headers.get(key);
+            if (val) res.setHeader(key, val);
+          }
+
+          if (req.method === 'HEAD') {
+            res.end();
             return;
           }
-          res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'application/octet-stream');
-          const contentLength = upstream.headers.get('content-length');
-          if (contentLength) res.setHeader('Content-Length', contentLength);
+
           const buf = Buffer.from(await upstream.arrayBuffer());
           res.end(buf);
         } catch (err) {
