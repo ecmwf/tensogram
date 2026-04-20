@@ -39,9 +39,9 @@ interface AppState {
 
   openLocalFile: (file: File) => Promise<void>;
   openUrl: (url: string) => Promise<void>;
-  selectField: (msgIdx: number, objIdx: number) => void;
+  selectField: (msgIdx: number, objIdx: number) => Promise<void>;
   setSelectedLevel: (level: number | null) => void;
-  fetchSlice: (dim: number, idx: number) => void;
+  fetchSlice: (dim: number, idx: number) => Promise<void>;
   setColorScale: (config: Partial<ColorScaleConfig>) => void;
 }
 
@@ -115,10 +115,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  selectField: (msgIdx: number, objIdx: number) => {
+  selectField: async (msgIdx: number, objIdx: number) => {
     const { viewer, fileIndex, coordinates, selectedLevel } = get();
     if (!viewer || !fileIndex) return;
     set({ loading: true, error: null, selectedObject: { msgIdx, objIdx } });
+    // Yield so React renders the loading state before the synchronous WASM decode blocks the thread.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     try {
       const varInfo = fileIndex.variables.find(
         (v) => v.msgIndex === msgIdx && v.objIndex === objIdx,
@@ -171,10 +173,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ selectedLevel: level });
   },
 
-  fetchSlice: (dim: number, idx: number) => {
+  fetchSlice: async (dim: number, idx: number) => {
     const { viewer, selectedObject } = get();
     if (!viewer || !selectedObject) return;
     set({ loading: true, error: null });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     try {
       const result = viewer.decodeFieldSlice(
         selectedObject.msgIdx,

@@ -22,6 +22,19 @@ function corsProxy(): Plugin {
           res.end('Missing url parameter');
           return;
         }
+        let targetUrl: URL;
+        try {
+          targetUrl = new URL(target);
+        } catch {
+          res.statusCode = 400;
+          res.end('Invalid url parameter');
+          return;
+        }
+        if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+          res.statusCode = 400;
+          res.end('Only http/https URLs are allowed');
+          return;
+        }
         try {
           const init: RequestInit = { method: req.method };
           const range = req.headers['range'];

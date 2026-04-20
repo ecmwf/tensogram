@@ -17,6 +17,10 @@ server {
             return 400 'Missing url parameter';
         }
 
+        if ($arg_url !~ "^https?://[^/]") {
+            return 400 'Only http/https URLs are allowed';
+        }
+
         proxy_pass $arg_url;
         proxy_set_header Host $proxy_host;
         proxy_set_header Accept-Encoding '';

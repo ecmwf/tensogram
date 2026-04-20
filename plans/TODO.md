@@ -44,47 +44,42 @@ For speculative ideas, see `IDEAS.md`.
     `TensogramFile.open/fromUrl/fromBytes`, 87 tests, 6 examples, CI job,
     mdBook page, Makefile targets.
 
-  - [ ] **typescript-wrapper (Scope C.1) — API-surface parity**
-    Close the gap between the TS wrapper and the Rust / Python / FFI / C++
-    surfaces listed in `plans/TYPESCRIPT_WRAPPER.md` → "Cross-language
-    parity matrix". Landing these as a single work stream keeps the
-    `@internal` conventions, typed-error routing, and doc-comment
-    patterns consistent; they share infrastructure (new WASM exports,
-    TS → WASM boundary typing, test harness, example scripts).
-    - `decodeRange(buf, objIndex, ranges, opts?)` — mirrors Rust
-      `decode_range` / Python `file_decode_range` / `tgm_decode_range`.
-      WASM already exposes the primitive.
-    - `computeHash(bytes, algo?)` — mirrors `tgm_compute_hash`. WASM
-      already exposes the primitive.
-    - `encodePreEncoded(metadata, objects, opts?)` — mirrors Rust
-      `encode_pre_encoded` / `tgm_encode_pre_encoded`.
-    - `simplePackingComputeParams(values, bitsPerValue, decimalScaleFactor)`
-      — mirrors `tgm_simple_packing_compute_params`.
-    - `validate(buf, opts?)` / `validateFile(path, opts?)` — requires
-      first extending `tensogram-wasm` to export `validate_buffer` /
-      `validate_file` before wrapping on the TS side.
-    - `TensogramFile#append(metadata, objects, opts?)` — mirrors Rust
-      `TensogramFile::append`. Requires file-append exposure through
-      `tensogram-wasm`.
-    - `StreamingEncoder` class — wraps Rust `StreamingEncoder`,
-      Python `AsyncStreamingEncoder`, and `tgm_streaming_encoder_*`.
-      Requires WASM-side `StreamingEncoder` parallel to the existing
-      `StreamingDecoder`.
-    - Range-based lazy backend for `TensogramFile.fromUrl` (currently
-      downloads the whole file; add HTTP `Range` + streaming reader).
+  - [x] ~~**typescript-wrapper (Scope C.1) — API-surface parity**~~
+    Closed the gap between the TS wrapper and the other language
+    surfaces.  New WASM exports (`decode_range`, `compute_hash`,
+    `simple_packing_compute_params`, `encode_pre_encoded`,
+    `validate_buffer`, `StreamingEncoder`) in `rust/tensogram-wasm`
+    backed by new TS wrappers (`decodeRange`, `computeHash`,
+    `simplePackingComputeParams`, `encodePreEncoded`, `validate` /
+    `validateBuffer` / `validateFile`, `StreamingEncoder`).
+    `TensogramFile#append(meta, objects, opts?)` gained for files
+    opened via `TensogramFile.open(path)` (Node local paths only —
+    matches the Rust / Python / FFI / C++ contract).
+    `TensogramFile.fromUrl` now auto-detects HTTP Range support via a
+    `HEAD` probe and switches to a lazy backend that fetches messages
+    on demand; falls back transparently to the eager Scope-B download
+    when the server omits `Accept-Ranges` or returns a streaming-mode
+    message.  `TensogramFile#rawMessage` is now async (was sync) to
+    accommodate the lazy backend.  Five new examples
+    (`04_decode_range`, `08_validate`, `11_encode_pre_encoded`,
+    `12_streaming_encoder`, `13_range_access`), per-module test suites,
+    and the TS API guide / parity matrix updated.  See
+    `plans/DONE.md` → *TypeScript Scope C.1* for the full breakdown.
 
-  - [ ] **typescript-wrapper (Scope C.2) — first-class half-precision + complex dtypes**
-    JS has no native `Float16Array` (it's at Stage-3 in TC39 — arriving
-    but not widely supported). Today `float16` / `bfloat16` round-trip
-    as `Uint16Array`, and `complex64` / `complex128` as interleaved
-    `Float32Array` / `Float64Array`. This is functional but forces
-    consumers to know the encoding. Ship first-class support via a
-    small runtime helper: typed array views with `.real(i)` / `.imag(i)`
-    / `.toFloat32(i)` accessors, mirroring numpy.
-    - Probe `typeof Float16Array === 'function'` and prefer the native
-      implementation when present.
-    - Provide a polyfill class for runtimes that lack it.
-    - Round-trip tests across f16/bf16/c64/c128 with fast-check.
+  - [x] ~~**typescript-wrapper (Scope C.2) — first-class half-precision + complex dtypes**~~
+    `typedArrayFor(dtype)` now returns `Float16Array` (native) or
+    `Float16Polyfill` for `float16`, `Bfloat16Array` for `bfloat16`,
+    and `ComplexArray` for `complex64` / `complex128`.  The polyfill
+    matches the TC39 Stage-3 `Float16Array` observable behaviour
+    (round-ties-to-even narrow, NaN / ±Inf / subnormal / ±0
+    preservation).  `ComplexArray` exposes numpy-flavoured accessors
+    (`.real(i)`, `.imag(i)`, `.get(i)`, iteration).  Raw bits / raw
+    interleaved storage are still reachable through `.bits` / `.data`.
+    fast-check round-trip property tests cover every new dtype;
+    `encode → decode` keeps the bytes bit-exact.  Breaking vs Scope B:
+    `obj.data()` for these four dtypes no longer returns a raw
+    `Uint16Array` / interleaved `Float32Array` — consumers wanting the
+    raw shape use `.bits` / `.data` on the returned view.
 
   - [ ] **typescript-wrapper (Scope C.3) — distribution & CI maturity**
     Three intertwined tasks that all touch the build, pack, and publish
