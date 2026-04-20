@@ -1,0 +1,78 @@
+name: Deploy Tensoscope
+
+on:
+  push:
+    tags: ['[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (defaults to VERSION file content)"
+        required: false
+        type: string
+
+concurrency:
+  group: deploy-tensoscope-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: eccr.ecmwf.int/tensoscope/tensoscope
+  NODE_VERSION: "22.22.2"
+
+jobs:
+  build-and-push:
+    name: Build and push Tensoscope image
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="$(cat VERSION | tr -d '[:space:]')"
+          fi
+          echo "value=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Install Node.js
+        run: |
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+            | tar xJ --strip-components=1 -C /usr/local
+
+      - name: Build WASM
+        run: |
+          wasm-pack build rust/tensogram-wasm --release \
+            --target web --out-dir ../../typescript/wasm --out-name tensogram_wasm
+
+      - name: Build TypeScript wrapper
+        working-directory: typescript
+        run: |
+          npm ci || npm install --no-audit --no-fund
+          npx tsc
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to ECCR
+        uses: docker/login-action@v3
+        with:
+          registry: eccr.ecmwf.int
+          username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+          password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: tensoscope/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tag.outputs.value }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,14 +1,16 @@
 # Configurable via env or command line:
 #   make build
 #   BASE_PATH=/subpath make run
-#   REPOSITORY=my-app TAG=1.2.3 make push
-ECCR_REGISTRY ?= eccr.ecmwf.int/tensoscope
-IMAGE_NAME    ?= tensoscope
-TAG           ?= latest
-BASE_PATH     ?= /
+#   TAG=1.2.3 REGISTRY=my.registry/tensoscope make push
+#
+# ECMWF users — push to ECCR:
+#   TAG=1.2.3 REGISTRY=eccr.ecmwf.int/tensoscope make push
+IMAGE_NAME ?= tensoscope
+TAG        ?= latest
+BASE_PATH  ?= /
+REGISTRY   ?=
 
 LOCAL_IMAGE := $(IMAGE_NAME):$(TAG)
-ECCR_IMAGE  := $(ECCR_REGISTRY)/$(IMAGE_NAME):$(TAG)
 
 # Build context is the repo root so both typescript/ and tensoscope/ are accessible
 BUILD_CONTEXT := ..
@@ -23,12 +25,13 @@ build:
           --platform linux/amd64 \
 	  $(BUILD_CONTEXT)
 
-## Tag and push to ECCR (requires prior: make build)
+## Tag and push to REGISTRY (requires prior: make build, and REGISTRY to be set)
 push:
-	podman tag $(LOCAL_IMAGE) $(ECCR_IMAGE)
-	podman push $(ECCR_IMAGE)
+	@test -n "$(REGISTRY)" || (echo "REGISTRY is not set. Example: REGISTRY=eccr.ecmwf.int/tensoscope make push" && exit 1)
+	podman tag $(LOCAL_IMAGE) $(REGISTRY)/$(IMAGE_NAME):$(TAG)
+	podman push $(REGISTRY)/$(IMAGE_NAME):$(TAG)
 
-## Run the container locally (exposes port 8080)
+## Run the container locally (exposes port 8000)
 run:
 	podman run --rm \
 	  -p 8000:8000 \
