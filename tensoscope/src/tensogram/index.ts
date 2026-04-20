@@ -113,7 +113,7 @@ export class Tensoscope {
    */
   static async fromUrl(url: string): Promise<Tensoscope> {
     await ensureInit();
-    const proxyUrl = `/api/proxy?url=${encodeURIComponent(url)}`;
+    const proxyUrl = `${import.meta.env.BASE_URL}api/proxy?url=${encodeURIComponent(url)}`;
     const file = await TensogramFile.fromUrl(proxyUrl);
     return new Tensoscope(file, url);
   }
