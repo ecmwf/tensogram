@@ -823,3 +823,39 @@ h2 {
 .projection-thumb-active .projection-thumb-label {
   color: var(--accent);
 }
+
+/* ── Render Mode Picker ── */
+.render-mode-picker {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 10;
+  display: flex;
+  gap: 4px;
+  background: rgba(20, 20, 30, 0.85);
+  border-radius: 8px;
+  padding: 4px;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+
+.render-mode-btn {
+  padding: 5px 12px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  color: rgba(255,255,255,0.6);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.render-mode-btn:hover {
+  background: rgba(255,255,255,0.1);
+  color: #fff;
+}
+
+.render-mode-btn-active {
+  background: rgba(255,255,255,0.18);
+  color: #fff;
+  font-weight: 600;
+}
