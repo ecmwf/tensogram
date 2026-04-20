@@ -1640,6 +1640,46 @@ fn mmap_decode_matches_regular() {
     assert_eq!(regular_msg, mmap_msg);
 }
 
+// ── 34b. mmap offset correctness ─────────────────────────────────────────────
+//
+// Verifies that the mmap slice boundaries (offset + length) are correct so
+// that the decoded payload matches the one written.  Guards against the
+// `offset + length → offset - length` arithmetic mutation.
+
+#[cfg(feature = "mmap")]
+#[test]
+fn mmap_decoded_data_matches_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mmap_data.tgm");
+
+    let meta = make_global_meta();
+    let n = 100usize;
+    let desc = make_descriptor(vec![n as u64], Dtype::Float32);
+    // Recognisable deterministic payload so a wrong slice is detected.
+    let data: Vec<u8> = (0..n)
+        .map(|i| i as f32)
+        .flat_map(|v| v.to_ne_bytes())
+        .collect();
+
+    let mut file = TensogramFile::create(&path).unwrap();
+    file.append(
+        &meta,
+        &[(&desc, data.as_slice())],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
+
+    let mmap = TensogramFile::open_mmap(&path).unwrap();
+    let (_, objects) = mmap.decode_message(0, &DecodeOptions::default()).unwrap();
+    let decoded_bytes = &objects[0].1;
+
+    assert_eq!(
+        decoded_bytes.as_slice(),
+        data.as_slice(),
+        "mmap-decoded payload must match written data"
+    );
+}
+
 // ── 35. Little-endian byte order ─────────────────────────────────────────────
 
 #[test]
@@ -2871,5 +2911,413 @@ fn unicode_metadata_empty_string_key_roundtrip() {
     assert_eq!(
         decoded_meta.extra.get(""),
         Some(&ciborium::Value::Text("empty_key".to_string()))
+    );
+}
+
+// ── 60. Provenance timestamp accuracy ────────────────────────────────────────
+//
+// Guards the `civil_from_days` date conversion and time arithmetic in
+// `populate_reserved_provenance`.  Existing tests only checked the
+// `reserved.contains_key("time")` — this test parses the value and
+// verifies the encoded UTC timestamp falls within the window measured
+// before and after encoding.
+
+/// Inverse of `civil_from_days`: produce a Unix epoch in seconds from
+/// the Gregorian calendar fields written by `populate_reserved_provenance`.
+/// Uses Howard Hinnant's `days_from_civil` algorithm (the mathematical
+/// inverse of the production `civil_from_days`).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let m_adj = if m <= 2 { m + 9 } else { m - 3 };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = (y - era * 400) as u64;
+    let doy = (153 * m_adj as u64 + 2) / 5 + d as u64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe as i64 - 719468
+}
+
+fn epoch_from_civil(y: i64, month: u32, day: u32, h: u64, min: u64, s: u64) -> u64 {
+    let days = days_from_civil(y, month, day);
+    days as u64 * 86400 + h * 3600 + min * 60 + s
+}
+
+#[test]
+fn provenance_timestamp_is_accurate_utc() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let before = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let data = vec![0u8; 16];
+    let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    let after = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let (decoded_meta, _) = decode(&encoded, &DecodeOptions::default()).unwrap();
+
+    let time_val = decoded_meta
+        .reserved
+        .get("time")
+        .expect("reserved must contain 'time' key");
+    let time_str = match time_val {
+        ciborium::Value::Text(s) => s.clone(),
+        other => panic!("reserved['time'] must be Text, got: {other:?}"),
+    };
+
+    // Format must be exactly "YYYY-MM-DDThh:mm:ssZ" (20 chars)
+    assert_eq!(
+        time_str.len(),
+        20,
+        "timestamp must be 20 chars, got: {time_str}"
+    );
+    assert!(
+        time_str.ends_with('Z'),
+        "timestamp must end with 'Z': {time_str}"
+    );
+
+    let (date_part, rest) = time_str
+        .split_once('T')
+        .expect("timestamp must contain 'T'");
+    let time_part = rest.trim_end_matches('Z');
+
+    let date_components: Vec<i64> = date_part
+        .split('-')
+        .map(|s| s.parse().expect("date component must be integer"))
+        .collect();
+    let time_components: Vec<u64> = time_part
+        .split(':')
+        .map(|s| s.parse().expect("time component must be integer"))
+        .collect();
+
+    assert_eq!(date_components.len(), 3, "date must have 3 components");
+    assert_eq!(time_components.len(), 3, "time must have 3 components");
+
+    let (year, month, day) = (
+        date_components[0],
+        date_components[1] as u32,
+        date_components[2] as u32,
+    );
+    let (hours, minutes, seconds) = (time_components[0], time_components[1], time_components[2]);
+
+    assert!((1..=12).contains(&month), "month {month} out of [1,12]");
+    assert!((1..=31).contains(&day), "day {day} out of [1,31]");
+    assert!(hours <= 23, "hours {hours} out of [0,23]");
+    assert!(minutes <= 59, "minutes {minutes} out of [0,59]");
+    assert!(seconds <= 59, "seconds {seconds} out of [0,59]");
+
+    // Reconstruct the epoch from the parsed components and verify it
+    // falls within the before/after window (with 1-second tolerance for
+    // crossing a second boundary during the encode call itself).
+    let encoded_epoch = epoch_from_civil(year, month, day, hours, minutes, seconds);
+    assert!(
+        encoded_epoch >= before.saturating_sub(1) && encoded_epoch <= after + 1,
+        "timestamp {time_str} → epoch {encoded_epoch} is outside window [{before}, {after}]"
+    );
+}
+
+// ── 61. Mask small-mask threshold behaviour ───────────────────────────────────
+//
+// All existing mask tests use `small_mask_threshold_bytes: 0` which skips the
+// threshold logic entirely.  These tests exercise the `encode_one_mask` branch
+// that downgrades small masks to `None` and leaves large masks unchanged.
+// Guards the `&&→||` mutation on that condition.
+
+#[test]
+fn mask_threshold_small_mask_is_downgraded_to_none() {
+    use tensogram::encode::MaskMethod;
+
+    // 4 f32 elements → packed NaN mask is 1 byte (ceil(4/8)).
+    // Threshold 16 > 1, so the mask should be downgraded to "none".
+    let values: Vec<f32> = vec![1.0, f32::NAN, 3.0, 4.0];
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+    let desc = make_descriptor(vec![4], Dtype::Float32);
+    let opts = EncodeOptions {
+        allow_nan: true,
+        nan_mask_method: MaskMethod::Roaring,
+        small_mask_threshold_bytes: 16,
+        hash_algorithm: None,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &opts).unwrap();
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+
+    let method = &objects[0]
+        .0
+        .masks
+        .as_ref()
+        .expect("masks must be present")
+        .nan
+        .as_ref()
+        .expect("NaN mask must be present")
+        .method;
+    assert_eq!(
+        method, "none",
+        "mask smaller than threshold must be downgraded to 'none'"
+    );
+}
+
+#[test]
+fn mask_threshold_large_mask_keeps_requested_method() {
+    use tensogram::encode::MaskMethod;
+
+    // 500 f32 elements with all-NaN → packed mask = ceil(500/8) = 63 bytes.
+    // Threshold 4 < 63, so the mask should keep the requested method.
+    let n = 500usize;
+    let values: Vec<f32> = (0..n).map(|_| f32::NAN).collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+    let desc = make_descriptor(vec![n as u64], Dtype::Float32);
+    let opts = EncodeOptions {
+        allow_nan: true,
+        nan_mask_method: MaskMethod::Roaring,
+        small_mask_threshold_bytes: 4,
+        hash_algorithm: None,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &opts).unwrap();
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+
+    let method = &objects[0]
+        .0
+        .masks
+        .as_ref()
+        .expect("masks must be present")
+        .nan
+        .as_ref()
+        .expect("NaN mask must be present")
+        .method;
+    assert_eq!(
+        method, "roaring",
+        "mask larger than threshold must keep the requested method"
+    );
+}
+
+// ── 62. Zstd mask compression level stored in descriptor params ───────────────
+//
+// Guards the `mask_params_cbor → BTreeMap::new()` mutation: if params are
+// cleared, the level key is lost and the assertion below fails.
+
+#[cfg(feature = "zstd")]
+#[test]
+fn zstd_mask_level_preserved_in_descriptor_params() {
+    use tensogram::encode::MaskMethod;
+
+    let values: Vec<f64> = (0..128)
+        .map(|i| if i % 10 == 0 { f64::NAN } else { i as f64 })
+        .collect();
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+    let desc = make_descriptor(vec![128], Dtype::Float64);
+    let opts = EncodeOptions {
+        allow_nan: true,
+        nan_mask_method: MaskMethod::Zstd { level: Some(5) },
+        small_mask_threshold_bytes: 0,
+        hash_algorithm: None,
+        ..Default::default()
+    };
+    let msg = encode(&make_global_meta(), &[(&desc, &data)], &opts).unwrap();
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+
+    let params = &objects[0]
+        .0
+        .masks
+        .as_ref()
+        .expect("masks must be present")
+        .nan
+        .as_ref()
+        .expect("NaN mask must be present")
+        .params;
+
+    let level_val = params
+        .get("level")
+        .expect("zstd mask descriptor params must contain 'level' key");
+    assert_eq!(
+        level_val,
+        &ciborium::Value::Integer(5i64.into()),
+        "zstd mask level must be stored as integer 5 in descriptor params"
+    );
+}
+
+// ── 63. Async local file API ──────────────────────────────────────────────────
+//
+// These tests exercise the async variants of the TensogramFile API
+// (`open_async`, `message_count_async`, `read_message_async`,
+// `decode_message_async`, `decode_metadata_async`, `decode_descriptors_async`,
+// `decode_object_async`, `decode_range_async`).
+//
+// All mutations at file.rs:443–622 are whole-function stubs that return
+// `Default::default()` values; a single test that verifies the returned
+// data matches what was written kills all of them.
+
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn async_file_api_round_trips_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("async_test.tgm");
+
+    // Write a recognisable message synchronously.
+    let meta = make_global_meta();
+    let n = 50usize;
+    let desc = make_descriptor(vec![n as u64], Dtype::Float32);
+    let data: Vec<u8> = (0..n)
+        .map(|i| i as f32)
+        .flat_map(|v| v.to_ne_bytes())
+        .collect();
+
+    {
+        let mut file = TensogramFile::create(&path).unwrap();
+        file.append(&meta, &[(&desc, &data)], &EncodeOptions::default())
+            .unwrap();
+    }
+
+    // ── open_async ──────────────────────────────────────────────────────────
+    let file = TensogramFile::open_async(&path).await.unwrap();
+
+    // ── message_count_async ─────────────────────────────────────────────────
+    let count = file.message_count_async().await.unwrap();
+    assert_eq!(count, 1, "message_count_async must return 1");
+
+    // ── read_message_async ──────────────────────────────────────────────────
+    let raw = file.read_message_async(0).await.unwrap();
+    assert!(
+        !raw.is_empty(),
+        "read_message_async must return non-empty bytes"
+    );
+
+    // ── decode_message_async ────────────────────────────────────────────────
+    let (dec_meta, objects) = file
+        .decode_message_async(0, &DecodeOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(dec_meta.version, 2, "decode_message_async: wrong version");
+    assert_eq!(objects.len(), 1, "decode_message_async: wrong object count");
+    assert_eq!(
+        objects[0].1.as_slice(),
+        data.as_slice(),
+        "decode_message_async: decoded bytes must match written data"
+    );
+
+    // ── decode_metadata_async ────────────────────────────────────────────────
+    let dec_meta2 = file.decode_metadata_async(0).await.unwrap();
+    assert_eq!(dec_meta2.version, 2, "decode_metadata_async: wrong version");
+
+    // ── decode_descriptors_async ─────────────────────────────────────────────
+    let (_, descs) = file.decode_descriptors_async(0).await.unwrap();
+    assert_eq!(
+        descs.len(),
+        1,
+        "decode_descriptors_async: wrong descriptor count"
+    );
+    assert_eq!(
+        descs[0].dtype,
+        Dtype::Float32,
+        "decode_descriptors_async: wrong dtype"
+    );
+
+    // ── decode_object_async ──────────────────────────────────────────────────
+    let (_, obj_desc, obj_data) = file
+        .decode_object_async(0, 0, &DecodeOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        obj_desc.dtype,
+        Dtype::Float32,
+        "decode_object_async: wrong dtype"
+    );
+    assert_eq!(
+        obj_data.as_slice(),
+        data.as_slice(),
+        "decode_object_async: decoded bytes must match written data"
+    );
+
+    // ── decode_range_async ───────────────────────────────────────────────────
+    let (range_desc, ranges_out) = file
+        .decode_range_async(0, 0, &[(0, 5)], &DecodeOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        range_desc.dtype,
+        Dtype::Float32,
+        "decode_range_async: wrong dtype"
+    );
+    assert_eq!(
+        ranges_out.len(),
+        1,
+        "decode_range_async: expected one range result"
+    );
+    // First 5 f32 elements = bytes 0..20
+    assert_eq!(
+        ranges_out[0].as_slice(),
+        &data[0..20],
+        "decode_range_async: first 5 elements must match"
+    );
+}
+
+// ── 64. invalidate_offsets clears a populated cache ───────────────────────────
+//
+// The existing streaming+buffered test calls `invalidate_offsets()` when the
+// OnceLock is already empty (because `append()` resets it), so the mutation
+// `invalidate_offsets → ()` survives.  This test explicitly populates the
+// cache (by calling `message_count()`) before appending externally, ensuring
+// the no-op mutation is caught.
+
+#[test]
+fn invalidate_offsets_clears_populated_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("invalidate_test.tgm");
+
+    let meta = make_global_meta();
+    let desc = make_descriptor(vec![4], Dtype::Uint8);
+    let data0 = vec![0u8; 4];
+    let data1 = vec![1u8; 4];
+
+    let mut file = TensogramFile::create(&path).unwrap();
+    file.append(
+        &meta,
+        &[(&desc, data0.as_slice())],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
+
+    // Populate the offset cache (ensure_scanned).
+    assert_eq!(file.message_count().unwrap(), 1, "initial count must be 1");
+
+    // Write a second message externally (bypassing `append` so the cache
+    // is NOT automatically cleared).
+    {
+        let second = encode(
+            &meta,
+            &[(&desc, data1.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        std::io::Write::write_all(&mut f, &second).unwrap();
+    }
+
+    // Without invalidate, the cached count is still 1.
+    // With invalidate (real code), ensure_scanned rescans and finds 2.
+    file.invalidate_offsets();
+    assert_eq!(
+        file.message_count().unwrap(),
+        2,
+        "message_count after invalidate_offsets must reflect newly appended message"
+    );
+
+    // Also verify the second message decodes correctly so this isn't a
+    // vacuous count test.
+    let (_, objects) = file.decode_message(1, &DecodeOptions::default()).unwrap();
+    assert_eq!(
+        objects[0].1.as_slice(),
+        data1.as_slice(),
+        "second message payload must match what was written"
     );
 }

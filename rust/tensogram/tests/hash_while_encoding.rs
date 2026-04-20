@@ -31,7 +31,7 @@ use std::io::Cursor;
 use tensogram::framing;
 use tensogram::hash::{HashAlgorithm, compute_hash};
 use tensogram::streaming::StreamingEncoder;
-use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
+use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata, HashFrame};
 use tensogram::{DecodeOptions, Dtype, EncodeOptions, decode, encode};
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -432,5 +432,56 @@ fn streaming_hash_algorithms_have_fixed_cbor_length() {
                 alg.as_str()
             );
         }
+    }
+}
+
+// ── hash frame present in encoded message ─────────────────────────────────────
+//
+// Guards `build_hash_frame_cbor`: when hashing is enabled (the default),
+// a hash frame must be written to the message, and its entries must
+// match the inline hashes stored in each object descriptor.
+//
+// Mutations replaced `build_hash_frame_cbor` with `Ok(None)` and
+// `Ok(Some(Default::default()))` — both are caught here.
+
+#[test]
+fn hash_frame_present_and_consistent_with_descriptor_hashes() {
+    let meta = GlobalMetadata::default();
+    // Two objects so the hash frame entry count is checked.
+    let desc = make_desc_float32(100);
+    let data = payload_float32(100, 0xDEAD_BEEF);
+
+    let opts = EncodeOptions::default(); // xxh3 hashing enabled
+    let msg = encode(&meta, &[(&desc, &data), (&desc, &data)], &opts).unwrap();
+
+    let decoded = framing::decode_message(&msg).unwrap();
+
+    let hf: &HashFrame = decoded
+        .hash_frame
+        .as_ref()
+        .expect("hash frame must be present when hashing is enabled");
+
+    assert_eq!(hf.hash_type, "xxh3", "hash frame hash_type must be 'xxh3'");
+    assert_eq!(
+        hf.hashes.len(),
+        2,
+        "hash frame must contain one entry per object"
+    );
+    assert_eq!(
+        hf.object_count, 2,
+        "hash frame object_count must equal number of objects"
+    );
+
+    // Every hash frame entry must match the inline hash in the corresponding
+    // object descriptor — the two must always be in sync.
+    for (i, (obj_desc, _payload, _masks, _offset)) in decoded.objects.iter().enumerate() {
+        let inline = obj_desc
+            .hash
+            .as_ref()
+            .expect("descriptor must have an inline hash when hashing is enabled");
+        assert_eq!(
+            hf.hashes[i], inline.value,
+            "hash frame entry {i} must match inline descriptor hash"
+        );
     }
 }
