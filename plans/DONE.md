@@ -683,6 +683,18 @@ comparison against ecCodes.
 - **Animation.** `StepSlider` + play/pause over the step/time dimension;
   `AnimationControls` handles frame timing.
 - **Projections.** Equirectangular (flat) and globe.
+- **Globe renderer.** CesiumJS (open-source, no Ion token, OSM base
+  tiles via `OpenStreetMapImageryProvider`) replaces MapLibre for the
+  globe projection mode. MapLibre remains for the flat/Mercator mode.
+  The projection toggle in the toolbar switches renderers; both share
+  the same decoded field data.
+- **Render mode.** A `RenderModePicker` toggle in the map toolbar
+  switches between heatmap and filled-contours display. In
+  filled-contours mode the regrid worker quantises decoded pixel values
+  into N discrete colour bands (N = colour-scale step count; default 10
+  for continuous palettes, stop count for custom palettes). The same
+  canvas-based pipeline is used for both renderers -- no GeoJSON or
+  marching-squares algorithm is required.
 - **State.** Zustand store (`useAppStore.ts`) owns selected file, field,
   step, and colour scale.
 - **Deployment.** nginx Docker image; `BASE_PATH` env var for subpath
