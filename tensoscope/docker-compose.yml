@@ -1,0 +1,9 @@
+services:
+  viewer:
+    build:
+      context: ..
+      dockerfile: tensoscope/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      BASE_PATH: ${BASE_PATH:-/}

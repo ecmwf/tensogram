@@ -666,6 +666,40 @@ comparison against ecCodes.
   failures, `ValueError` for decode/encode, `IndexError` for out-of-range.
   `close()` is exception-safe.
 
+## Tensoscope (web viewer)
+
+- React SPA (`tensoscope/`) for exploring `.tgm` files in the browser.
+- Depends on `@ecmwf/tensogram` WASM package (`typescript/`) for all
+  decode — no server-side component.
+- **File loading.** Drag-and-drop or URL fetch; WASM scan builds an
+  in-memory index of messages and objects without decoding payloads.
+- **Field browser.** Sidebar lists every decodable field; selecting one
+  triggers WASM decode and map render.
+- **Map rendering.** deck.gl `BitmapLayer` over MapLibre GL JS.
+  Regridding runs in a dedicated web worker (`regrid.worker.ts`) to
+  keep the main thread free.
+- **Colour scale.** Per-field min/max with chromatic colour maps;
+  `ColorBar` overlay for reference.
+- **Animation.** `StepSlider` + play/pause over the step/time dimension;
+  `AnimationControls` handles frame timing.
+- **Projections.** Equirectangular (flat) and globe.
+- **Globe renderer.** CesiumJS (open-source, no Ion token, OSM base
+  tiles via `OpenStreetMapImageryProvider`) replaces MapLibre for the
+  globe projection mode. MapLibre remains for the flat/Mercator mode.
+  The projection toggle in the toolbar switches renderers; both share
+  the same decoded field data.
+- **Render mode.** A `RenderModePicker` toggle in the map toolbar
+  switches between heatmap and filled-contours display. In
+  filled-contours mode the regrid worker quantises decoded pixel values
+  into N discrete colour bands (N = colour-scale step count; default 10
+  for continuous palettes, stop count for custom palettes). The same
+  canvas-based pipeline is used for both renderers -- no GeoJSON or
+  marching-squares algorithm is required.
+- **State.** Zustand store (`useAppStore.ts`) owns selected file, field,
+  step, and colour scale.
+- **Deployment.** nginx Docker image; `BASE_PATH` env var for subpath
+  deployments. Makefile targets: `build`, `push`, `run`, `stop`.
+
 ## Metadata structure
 
 - `GlobalMetadata`: `version`, `base` (per-object metadata array, each

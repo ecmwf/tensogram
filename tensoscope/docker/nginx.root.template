@@ -1,0 +1,35 @@
+server {
+    listen 8000;
+    server_name _;
+
+    location / {
+        root /usr/share/nginx/html;
+        index index.html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # CORS proxy for remote .tgm files — forwards Range requests so the
+    # TypeScript TensogramFile lazy backend can issue per-message fetches.
+    location ~ ^/api/proxy {
+        resolver ${RESOLVER} ipv6=off;
+
+        if ($arg_url = '') {
+            return 400 'Missing url parameter';
+        }
+
+        if ($arg_url !~ "^https?://[^/]") {
+            return 400 'Only http/https URLs are allowed';
+        }
+
+        proxy_pass $arg_url;
+        proxy_set_header Host $proxy_host;
+        proxy_set_header Accept-Encoding '';
+        proxy_set_header Range $http_range;
+        proxy_ssl_server_name on;
+        proxy_buffering off;
+
+        proxy_pass_header Accept-Ranges;
+        proxy_pass_header Content-Range;
+        proxy_pass_header Content-Length;
+    }
+}
