@@ -38,8 +38,9 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount }: CesiumViewP
     if (!containerRef.current) return;
 
     const osm = new UrlTemplateImageryProvider({
-      url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-      credit: new Credit('© OpenStreetMap contributors'),
+      url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+      subdomains: ['a', 'b', 'c', 'd'],
+      credit: new Credit('© OpenStreetMap contributors © CARTO'),
       maximumLevel: 19,
     });
 
