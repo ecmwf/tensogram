@@ -1,0 +1,25 @@
+server {
+    listen 8000;
+    server_name _;
+
+    location / {
+        root /usr/share/nginx/html;
+        index index.html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # CORS proxy for remote .tgm files
+    location ~ ^/api/proxy {
+        resolver 8.8.8.8 ipv6=off;
+
+        if ($arg_url = '') {
+            return 400 'Missing url parameter';
+        }
+
+        proxy_pass $arg_url;
+        proxy_set_header Host $proxy_host;
+        proxy_set_header Accept-Encoding '';
+        proxy_ssl_server_name on;
+        proxy_buffering off;
+    }
+}
