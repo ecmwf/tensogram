@@ -1,73 +1,65 @@
-# React + TypeScript + Vite
+# Tensoscope
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Interactive web viewer for [Tensogram](https://github.com/ecmwf/tensogram) `.tgm` files.
 
-Currently, two official plugins are available:
+Decodes data directly in the browser via the `@ecmwf/tensogram` WebAssembly package and
+renders geospatial fields on an interactive map using deck.gl + MapLibre GL JS.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Features
 
-## React Compiler
+- Drag-and-drop or URL-based `.tgm` file loading
+- Field browser with metadata panel
+- Interactive map with deck.gl bitmap layers
+- Colour scale controls and colour bar
+- Multi-step animation with play/pause
+- Multiple map projections (equirectangular, globe)
+- Regridding worker to avoid blocking the main thread
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Prerequisites
 
-## Expanding the ESLint configuration
+- Node ≥ 20
+- The WASM package built first: `cd typescript && make ts-build`
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Dev server
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+cd tensoscope
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Starts at http://localhost:5173.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Production build
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+cd tensoscope
+npm run build
 ```
+
+Output goes to `tensoscope/dist/`.
+
+## Docker
+
+```bash
+cd tensoscope
+make build   # builds podman/docker image
+make run     # serves at http://localhost:8000
+```
+
+Set `BASE_PATH=/subpath` to deploy under a subpath.
+
+## Architecture
+
+Tensoscope is a thin UI layer. All heavy lifting is done by the
+`@ecmwf/tensogram` WASM package (`typescript/`):
+
+- `src/tensogram/index.ts` — wraps the WASM API into a `TensoscopeViewer` class
+- `src/store/useAppStore.ts` — Zustand state for selected file, field, and step
+- `src/components/map/` — deck.gl + MapLibre rendering, regrid worker, colour maps
+- `src/components/file-browser/` — file open dialog, field selector, metadata panel
+- `src/components/animation/` — step slider and animation controls
+
+## Licence
+
+Apache 2.0 — see [LICENSE](../LICENSE).
