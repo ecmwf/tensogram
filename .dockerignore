@@ -1,0 +1,22 @@
+# Rust build artefacts
+target/
+
+# Python
+.venv/
+**/__pycache__/
+**/*.pyc
+
+# Node modules (rebuilt inside the image)
+tensoscope/node_modules/
+typescript/node_modules/
+examples/typescript/node_modules/
+
+# Git
+.git/
+.gitignore
+
+# Docs build output
+docs/book/
+
+# Misc
+**/.DS_Store
