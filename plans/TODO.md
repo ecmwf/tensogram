@@ -44,42 +44,47 @@ For speculative ideas, see `IDEAS.md`.
     `TensogramFile.open/fromUrl/fromBytes`, 87 tests, 6 examples, CI job,
     mdBook page, Makefile targets.
 
-  - [x] ~~**typescript-wrapper (Scope C.1) — API-surface parity**~~
-    Closed the gap between the TS wrapper and the other language
-    surfaces.  New WASM exports (`decode_range`, `compute_hash`,
-    `simple_packing_compute_params`, `encode_pre_encoded`,
-    `validate_buffer`, `StreamingEncoder`) in `rust/tensogram-wasm`
-    backed by new TS wrappers (`decodeRange`, `computeHash`,
-    `simplePackingComputeParams`, `encodePreEncoded`, `validate` /
-    `validateBuffer` / `validateFile`, `StreamingEncoder`).
-    `TensogramFile#append(meta, objects, opts?)` gained for files
-    opened via `TensogramFile.open(path)` (Node local paths only —
-    matches the Rust / Python / FFI / C++ contract).
-    `TensogramFile.fromUrl` now auto-detects HTTP Range support via a
-    `HEAD` probe and switches to a lazy backend that fetches messages
-    on demand; falls back transparently to the eager Scope-B download
-    when the server omits `Accept-Ranges` or returns a streaming-mode
-    message.  `TensogramFile#rawMessage` is now async (was sync) to
-    accommodate the lazy backend.  Five new examples
-    (`04_decode_range`, `08_validate`, `11_encode_pre_encoded`,
-    `12_streaming_encoder`, `13_range_access`), per-module test suites,
-    and the TS API guide / parity matrix updated.  See
-    `plans/DONE.md` → *TypeScript Scope C.1* for the full breakdown.
+  - [ ] **typescript-wrapper (Scope C.1) — API-surface parity**
+    Close the gap between the TS wrapper and the Rust / Python / FFI / C++
+    surfaces listed in `plans/TYPESCRIPT_WRAPPER.md` → "Cross-language
+    parity matrix". Landing these as a single work stream keeps the
+    `@internal` conventions, typed-error routing, and doc-comment
+    patterns consistent; they share infrastructure (new WASM exports,
+    TS → WASM boundary typing, test harness, example scripts).
+    - `decodeRange(buf, objIndex, ranges, opts?)` — mirrors Rust
+      `decode_range` / Python `file_decode_range` / `tgm_decode_range`.
+      WASM already exposes the primitive.
+    - `computeHash(bytes, algo?)` — mirrors `tgm_compute_hash`. WASM
+      already exposes the primitive.
+    - `encodePreEncoded(metadata, objects, opts?)` — mirrors Rust
+      `encode_pre_encoded` / `tgm_encode_pre_encoded`.
+    - `simplePackingComputeParams(values, bitsPerValue, decimalScaleFactor)`
+      — mirrors `tgm_simple_packing_compute_params`.
+    - `validate(buf, opts?)` / `validateFile(path, opts?)` — requires
+      first extending `tensogram-wasm` to export `validate_buffer` /
+      `validate_file` before wrapping on the TS side.
+    - `TensogramFile#append(metadata, objects, opts?)` — mirrors Rust
+      `TensogramFile::append`. Requires file-append exposure through
+      `tensogram-wasm`.
+    - `StreamingEncoder` class — wraps Rust `StreamingEncoder`,
+      Python `AsyncStreamingEncoder`, and `tgm_streaming_encoder_*`.
+      Requires WASM-side `StreamingEncoder` parallel to the existing
+      `StreamingDecoder`.
+    - Range-based lazy backend for `TensogramFile.fromUrl` (currently
+      downloads the whole file; add HTTP `Range` + streaming reader).
 
-  - [x] ~~**typescript-wrapper (Scope C.2) — first-class half-precision + complex dtypes**~~
-    `typedArrayFor(dtype)` now returns `Float16Array` (native) or
-    `Float16Polyfill` for `float16`, `Bfloat16Array` for `bfloat16`,
-    and `ComplexArray` for `complex64` / `complex128`.  The polyfill
-    matches the TC39 Stage-3 `Float16Array` observable behaviour
-    (round-ties-to-even narrow, NaN / ±Inf / subnormal / ±0
-    preservation).  `ComplexArray` exposes numpy-flavoured accessors
-    (`.real(i)`, `.imag(i)`, `.get(i)`, iteration).  Raw bits / raw
-    interleaved storage are still reachable through `.bits` / `.data`.
-    fast-check round-trip property tests cover every new dtype;
-    `encode → decode` keeps the bytes bit-exact.  Breaking vs Scope B:
-    `obj.data()` for these four dtypes no longer returns a raw
-    `Uint16Array` / interleaved `Float32Array` — consumers wanting the
-    raw shape use `.bits` / `.data` on the returned view.
+  - [ ] **typescript-wrapper (Scope C.2) — first-class half-precision + complex dtypes**
+    JS has no native `Float16Array` (it's at Stage-3 in TC39 — arriving
+    but not widely supported). Today `float16` / `bfloat16` round-trip
+    as `Uint16Array`, and `complex64` / `complex128` as interleaved
+    `Float32Array` / `Float64Array`. This is functional but forces
+    consumers to know the encoding. Ship first-class support via a
+    small runtime helper: typed array views with `.real(i)` / `.imag(i)`
+    / `.toFloat32(i)` accessors, mirroring numpy.
+    - Probe `typeof Float16Array === 'function'` and prefer the native
+      implementation when present.
+    - Provide a polyfill class for runtimes that lack it.
+    - Round-trip tests across f16/bf16/c64/c128 with fast-check.
 
   - [ ] **typescript-wrapper (Scope C.3) — distribution & CI maturity**
     Three intertwined tasks that all touch the build, pack, and publish
@@ -187,17 +192,10 @@ For speculative ideas, see `IDEAS.md`.
   tests.  See `DONE.md` for the full breakdown and
   `docs/src/guide/multi-threaded-pipeline.md` for the API reference.
 
-- [x] ~~**hash-while-encoding**~~ → xxh3-64 hashing folded into the
-  encoding pipeline via opt-in `PipelineConfig.compute_hash` and
-  `PipelineResult.hash`.  `encode_one_object` and `StreamingEncoder`
-  both consume the inline digest.  Streaming path now writes the data
-  object frame directly to the sink while hashing, reducing payload
-  reads from 3 (hash → frame memcpy → stream write) to 1.  Wire format
-  and golden files unchanged.  Bench (`hash_overhead.rs`) on 128 MiB
-  shows ~11% speedup on `none+none` (recovering ~24% of hash overhead)
-  and within-noise on heavy pipelines where encode dominates.  See
-  `plans/DONE.md` for the full breakdown; the design memo
-  `HASH_WHILE_ENCODING.md` at repo root may be removed at release time.
+- [ ] **hash-while-encoding**:
+  - explore a possible optimisation to compute the xxhash while the encoding is happening
+  - this would save a second pass through the buffer
+  - analyse if this makes sense and if it brings a benefit
  
 - [x] ~~minimise-mem-alloc~~ → documented in DESIGN.md "Memory Strategy" section. Pipeline uses `Cow` for zero-copy when no encoding/filter/compression. Metadata-only ops never touch payloads. xarray/zarr use lazy loading.
 
@@ -214,7 +212,7 @@ For speculative ideas, see `IDEAS.md`.
 ## Validation
 
 - [x] **tensogram-validate PR 1** — core library API + CLI (Levels 1-3):
-  - `validate_message(buf, options) -> ValidationReport` and `validate_file(path, options)` in tensogram.
+  - `validate_message(buf, options) -> ValidationReport` and `validate_file(path, options)` in tensogram-core.
   - Level 1 (Structure): raw byte walking — magic, preamble, frame headers/ENDF, total_length, postamble, first_footer_offset, frame ordering, preceder legality, preamble flags vs observed, overflow-safe arithmetic.
   - Level 2 (Metadata): raw CBOR parsing from frame payloads (before decode_message normalization), required keys, dtype/encoding/filter/compression recognized, shape/strides/ndim consistency, index/hash frame consistency.
   - Level 3 (Integrity): xxh3 hash verification (descriptor + hash frame fallback), decode pipeline execution for compressed objects. Unknown hash algorithms produce warnings. `hash_verified` only true when ALL objects verified.
@@ -303,90 +301,15 @@ For speculative ideas, see `IDEAS.md`.
 - [x] ~~code coverage~~ → All CLI subcommands have dedicated tests (ls, dump, get, set, copy, merge, split, reshuffle, validate, convert-grib, convert-netcdf). Encodings: `simple_packing` and `zfp` covered. FFI exercised through the C++ wrapper test suite.
 - [x] ~~add logging trace~~ → `tracing` crate instrumented on encode/decode/scan/file/pipeline. Activate with `TENSOGRAM_LOG=debug`
 
-- [ ] **python-bindings-clippy-warning**:
-  - `python/bindings/src/lib.rs::py_decode_range` triggers
-    `clippy::too_many_arguments` (8 args, limit 7). Pre-existing, not
-    enforced by the current CI matrix (which does not run clippy on the
-    `python/bindings` crate — it is excluded from the workspace).
-  - Either add `#[allow(clippy::too_many_arguments)]` on that
-    `#[pyfunction]` (consistent with other long-signature pyfns in the
-    same file), or refactor the argument list into a `DecodeRangeOptions`
-    struct mirroring `EncodeOptions`/`DecodeOptions` on the core side.
-  - While here, add a standalone CI step `cargo clippy --manifest-path
-    python/bindings/Cargo.toml --features grib,netcdf --all-targets
-    -- -D warnings` so future regressions are caught.
+## Viewer
 
-## Cross-Language Parity
-
-- [x] ~~**converter-python-parity (v0.15)**~~ — `tensogram.convert_grib(path)`,
-  `tensogram.convert_grib_buffer(bytes)`, and `tensogram.convert_netcdf(path)`
-  PyO3 wrappers + opt-in `grib`/`netcdf` Cargo features + runtime probes
-  `tensogram.__has_grib__` / `__has_netcdf__` + feature-disabled
-  `RuntimeError` stubs. Examples `12_convert_netcdf.py` /
-  `17_convert_grib.py` updated to use the native API.
-
-- [ ] **converter-ffi-cpp-parity**:
-  - Mirror the v0.15 Python converter API in the C FFI (`rust/tensogram-ffi`)
-    and the header-only C++ wrapper (`cpp/include/tensogram.hpp`). The
-    Python bindings already exist; the C/C++ surface currently only
-    reaches GRIB/NetCDF via the CLI `tensogram convert-grib` /
-    `convert-netcdf` subcommands, which is awkward for in-process use
-    (requires PATH + subprocess + filesystem staging).
-  - Proposed FFI surface (mirrors PyO3 signatures):
-    ```c
-    tgm_error tgm_convert_grib(
-        const char*               path,
-        const TgmConvertGribOpts* options,   /* nullable → all defaults */
-        TgmBytes*                 out_msgs   /* array of buffers */
-    );
-    tgm_error tgm_convert_grib_buffer(
-        const uint8_t*            data,
-        size_t                    len,
-        const TgmConvertGribOpts* options,
-        TgmBytes*                 out_msgs
-    );
-    tgm_error tgm_convert_netcdf(
-        const char*                 path,
-        const TgmConvertNetcdfOpts* options,
-        TgmBytes*                   out_msgs
-    );
-    ```
-    where `TgmConvertGribOpts` / `TgmConvertNetcdfOpts` are `#[repr(C)]`
-    structs carrying the same keyword arguments as the Python signature
-    (`grouping`, `preserve_all_keys`, `split_by`, `cf`, pipeline fields,
-    `threads`, `hash`), and `TgmBytes*` is an array of the existing
-    `TgmBytes` buffer type returned by `tgm_encode`.
-  - C++ wrapper should expose `tensogram::convert_grib(path, options)`,
-    `tensogram::convert_grib_buffer(std::span<const std::byte>, options)`,
-    `tensogram::convert_netcdf(path, options)` returning
-    `std::vector<std::vector<std::byte>>` and throwing the existing
-    typed exception hierarchy on error.
-  - Feature-gating: same pattern as PyO3 — always compile the functions;
-    return `TGM_ERROR_FEATURE_DISABLED` (new variant) when the wheel
-    was built without `grib` / `netcdf` so C callers get a clean
-    runtime signal rather than a link error.
-  - Examples to add: `examples/cpp/17_convert_grib.cpp`,
-    `examples/rust/src/bin/17_convert_grib.rs` (both feature-gated).
-  - Tests: extend `cpp/tests/test_convert_grib.cpp` and
-    `rust/tensogram-ffi` unit tests with buffer + file parity checks.
-  - Docs: update `docs/src/guide/cpp-api.md` + reference pages.
-
-- [ ] **converter-cli-stdin**:
-  - CLI `tensogram convert-grib` currently only accepts a filesystem
-    path; `convert-grib-buffer` has no CLI analogue. Add `--stdin`
-    (or `-` as a pseudo-path) so a pipe like
-    `curl ... | tensogram convert-grib --stdin --encoding simple_packing
-    --bits 16 --compression szip -o out.tgm` works without staging the
-    GRIB bytes through a temp file. Mirrors the Python
-    `convert_grib_buffer` ergonomics at the shell level.
-
-## Consistency
-
-- [ ] **encode-options-error-wording**:
-  - `python/bindings/src/lib.rs::make_encode_options` emits `"unknown
-    hash: {other}"` when the caller passes an unknown hash name. Other
-    PyO3-level validation errors in the same file follow the richer
-    `"X must be Y or Z, got W"` pattern (see `build_grib_options`,
-    `build_netcdf_options`, `py_validate`). Harmonise the hash error
-    to that pattern (and list the currently-supported algorithms:
-    `"none" | "xxh3"`) so the API surface is uniformly self-documenting.
+- [ ] Loading spinner/skeleton on map while field is being regridded
+- [ ] Wire LevelSelector into the UI for 3D pressure-level fields
+- [ ] Cache rendered frames client-side for instant scrubbing through previously viewed steps
+- [ ] OffscreenCanvas in worker to avoid main-thread canvas.toDataURL
+- [ ] Cache decoded Float32Arrays to skip WASM decode when revisiting fields
+- [ ] Pre-fetch next N frames during animation playback
+- [ ] URL state persistence (selected file, field, colour scale)
+- [ ] Keyboard shortcuts: space play/pause, arrow keys step
+- [ ] Resizable sidebar (drag handle)
+- [ ] Handle polar stereographic projections and single-point fields

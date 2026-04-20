@@ -91,6 +91,31 @@ This project contains Rust, Python, C, C++ and TypeScript code
 - User-facing docs: `docs/src/guide/typescript-api.md`
 - Scope: Phase 0–2 shipped (typed surface, dtype dispatch, metadata helpers); Phase 3 streaming + Phase 4 file API are follow-ups. See `plans/TYPESCRIPT_WRAPPER.md`.
 
+## Tensoscope (React SPA)
+
+The interactive web viewer lives at `tensoscope/`.
+It depends on the `@ecmwf/tensogram` WASM package at `typescript/`.
+
+### Prerequisites
+- Build the WASM package first: `cd typescript && make ts-build`
+
+### Dev server
+```bash
+cd tensoscope && npm install && npm run dev
+```
+Starts at http://localhost:5173.
+
+### Production build
+```bash
+cd tensoscope && npm run build
+```
+
+### Docker
+```bash
+cd tensoscope && make build && make run
+```
+Serves at http://localhost:8080/ (set BASE_PATH env var to deploy under a subpath)
+
 # Version control
 - Git project in github.com/ecmwf/tensogram
 - IMPORTANT: 
