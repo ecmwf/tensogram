@@ -40,6 +40,9 @@
   - ALWAYS document those features in docs/
   - Remember to add examples (see below)
 
+- IMPORTANT:
+  - when you commit your work, make sure it passess all checks, tests and lints -- by running `make all`
+
 # Design & Purpose
 
 - README.md -- entry level generic information
