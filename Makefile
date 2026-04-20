@@ -42,14 +42,17 @@ rust-lint: rust-clippy rust-fmt ## Run all Rust lints (clippy + fmt)
 
 # ── Python ────────────────────────────────────────────────────────────────
 
-PYTHON ?= python3
-VENV ?= .venv
+PYTHON ?= uv run python
 RUFF_CFG ?= python/bindings/pyproject.toml
 
 python-build: ## Build Python bindings via maturin
+	if [ ! -d .venv ] ; then uv venv ; fi
 	cd python/bindings && maturin develop --release
+	uv pip install ./python/tensogram-xarray
+	uv pip install ./python/tensogram-zarr
 
 python-test: ## Run all Python tests
+	uv pip install pytest pytest-asyncio # TODO should come from workspace-level pyproject
 	$(PYTHON) -m pytest python/tests/ -v
 	$(PYTHON) -m pytest python/tensogram-xarray/tests/ -v
 	$(PYTHON) -m pytest python/tensogram-zarr/tests/ -v
@@ -96,7 +99,7 @@ docs-build: ## Build mdbook documentation
 # ── Aggregates ────────────────────────────────────────────────────────────
 
 check: rust-check ## Check all builds
-test: rust-test python-test ts-test ## Run all tests
+test: rust-test python-build python-test ts-test ## Run all tests
 lint: rust-lint python-lint python-fmt ts-typecheck ## Run all lints
 fmt: rust-fmt python-fmt ## Check all formatting
 
