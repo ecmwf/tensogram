@@ -113,7 +113,12 @@ export class Tensoscope {
    */
   static async fromUrl(url: string): Promise<Tensoscope> {
     await ensureInit();
-    const proxyUrl = `${import.meta.env.BASE_URL}api/proxy?url=${encodeURIComponent(url)}`;
+    // Do NOT use encodeURIComponent here: nginx's $arg_url returns the raw
+    // (non-decoded) query-string value, so encoding "://" as "%3A%2F%2F"
+    // breaks both the regex safety-check and the proxy_pass in production.
+    // We only encode "&" and "#" which would otherwise truncate the parameter.
+    const safeUrl = url.replace(/[&#]/g, encodeURIComponent);
+    const proxyUrl = `${import.meta.env.BASE_URL}api/proxy?url=${safeUrl}`;
     const file = await TensogramFile.fromUrl(proxyUrl);
     return new Tensoscope(file, url);
   }
@@ -176,8 +181,8 @@ export class Tensoscope {
   // ── Field decode ──────────────────────────────────────────────────────
 
   /** Decode a single object and return as Float32Array with stats. */
-  decodeField(msgIdx: number, objIdx: number): DecodedField {
-    const raw = this.file.rawMessage(msgIdx);
+  async decodeField(msgIdx: number, objIdx: number): Promise<DecodedField> {
+    const raw = await this.file.rawMessage(msgIdx);
     const msg = decodeObject(raw, objIdx);
     try {
       const obj = msg.objects[0];
@@ -194,8 +199,8 @@ export class Tensoscope {
   }
 
   /** Decode a field and slice along a dimension. */
-  decodeFieldSlice(msgIdx: number, objIdx: number, dim: number, idx: number): DecodedField {
-    const full = this.decodeField(msgIdx, objIdx);
+  async decodeFieldSlice(msgIdx: number, objIdx: number, dim: number, idx: number): Promise<DecodedField> {
+    const full = await this.decodeField(msgIdx, objIdx);
     const sliced = sliceArray(full.data, full.shape, dim, idx);
     const stats = computeStats(sliced);
     const newShape = [...full.shape];
@@ -218,8 +223,8 @@ export class Tensoscope {
     );
     if (!latInfo || !lonInfo) return null;
 
-    const lat = this.decodeField(latInfo.msgIndex, latInfo.objIndex).data;
-    const lon = this.decodeField(lonInfo.msgIndex, lonInfo.objIndex).data;
+    const lat = (await this.decodeField(latInfo.msgIndex, latInfo.objIndex)).data;
+    const lon = (await this.decodeField(lonInfo.msgIndex, lonInfo.objIndex)).data;
     this._coords = { lat, lon };
     return this._coords;
   }

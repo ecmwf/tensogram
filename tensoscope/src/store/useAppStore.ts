@@ -142,12 +142,12 @@ export const useAppStore = create<AppState>((set, get) => ({
               if (idx >= 0) sliceIdx = idx;
             }
           }
-          result = viewer.decodeFieldSlice(msgIdx, objIdx, sliceDim, sliceIdx);
+          result = await viewer.decodeFieldSlice(msgIdx, objIdx, sliceDim, sliceIdx);
         } else {
-          result = viewer.decodeField(msgIdx, objIdx);
+          result = await viewer.decodeField(msgIdx, objIdx);
         }
       } else {
-        result = viewer.decodeField(msgIdx, objIdx);
+        result = await viewer.decodeField(msgIdx, objIdx);
       }
 
       // Apply per-variable auto-style if available, otherwise use data range
@@ -179,7 +179,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ loading: true, error: null });
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     try {
-      const result = viewer.decodeFieldSlice(
+      const result = await viewer.decodeFieldSlice(
         selectedObject.msgIdx,
         selectedObject.objIdx,
         dim,
