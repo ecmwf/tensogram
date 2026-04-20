@@ -92,7 +92,7 @@ export function MapView(props: MapViewProps) {
 
   const overlayProps: FieldOverlayProps | null =
     data && lat && lon
-      ? { data, lat, lon, colorMin, colorMax, palette, zoom, paletteReversed, customStops, renderMode }
+      ? { data, lat, lon, colorMin, colorMax, palette, zoom, paletteReversed, customStops, renderMode, mapProjection: isGlobe ? 'geographic' : 'mercator' }
       : null;
 
   const fieldImage = useFieldImage(overlayProps);

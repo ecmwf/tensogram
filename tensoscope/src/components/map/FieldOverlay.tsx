@@ -30,6 +30,7 @@ export interface FieldOverlayProps {
   paletteReversed?: boolean;
   customStops?: CustomStop[];
   renderMode: 'heatmap' | 'contours';
+  mapProjection?: 'mercator' | 'geographic';
 }
 
 export interface FieldImage {
@@ -79,19 +80,32 @@ interface GridParams {
  * to see full native resolution). It multiplies the native-resolution
  * grid size so that zoomed-out views render smaller, faster images.
  */
-function computeGridParams(nPoints: number, scaleFactor: number): GridParams {
+function computeGridParams(
+  nPoints: number,
+  scaleFactor: number,
+  mapProjection: 'mercator' | 'geographic',
+): GridParams {
   const avgSpacing = Math.sqrt(360 * 170 / Math.max(1, nPoints));
   const cellDeg = Math.max(0.1, Math.min(2, avgSpacing * 0.7));
   const nativeWidth = Math.ceil(360 / cellDeg);
 
   const width = Math.min(1440, Math.max(180, Math.round(nativeWidth * scaleFactor)));
-  const height = Math.min(1440, Math.max(180, Math.round(width * Y_RANGE / (2 * Math.PI))));
+  const heightRaw = mapProjection === 'geographic'
+    ? width * (LAT_MAX - LAT_MIN) / 360
+    : width * Y_RANGE / (2 * Math.PI);
+  const height = Math.min(1440, Math.max(180, Math.round(heightRaw)));
   const binDeg = Math.max(1, Math.ceil(avgSpacing * 1.5));
 
   const rowLats = new Float64Array(height);
-  for (let row = 0; row < height; row++) {
-    const mercY = Y_TOP - (row + 0.5) / height * Y_RANGE;
-    rowLats[row] = mercYToLat(mercY);
+  if (mapProjection === 'geographic') {
+    for (let row = 0; row < height; row++) {
+      rowLats[row] = LAT_MAX - (row + 0.5) / height * (LAT_MAX - LAT_MIN);
+    }
+  } else {
+    for (let row = 0; row < height; row++) {
+      const mercY = Y_TOP - (row + 0.5) / height * Y_RANGE;
+      rowLats[row] = mercYToLat(mercY);
+    }
   }
 
   return { width, height, binDeg, rowLats };
@@ -143,11 +157,12 @@ function cacheKey(
   paletteReversed: boolean,
   customStops: CustomStop[] | undefined,
   renderMode: 'heatmap' | 'contours',
+  mapProjection: 'mercator' | 'geographic',
 ): string {
   const palKey = palette
     + (paletteReversed ? ':r' : '')
     + (palette === 'custom' && customStops ? ':' + JSON.stringify(customStops) : '');
-  return `${dataFingerprint(data)}:${colorMin}:${colorMax}:${palKey}:${gridW}x${gridH}:${renderMode}`;
+  return `${dataFingerprint(data)}:${colorMin}:${colorMax}:${palKey}:${gridW}x${gridH}:${renderMode}:${mapProjection}`;
 }
 
 function getCached(key: string): string | null {
@@ -247,12 +262,12 @@ export function useFieldImage(props: FieldOverlayProps | null): FieldImage | nul
       setImage(null);
       return;
     }
-    const { data, lat, lon, colorMin, colorMax, palette, zoom, paletteReversed = false, customStops, renderMode } = props;
+    const { data, lat, lon, colorMin, colorMax, palette, zoom, paletteReversed = false, customStops, renderMode, mapProjection = 'mercator' } = props;
     const numBands = getNumBands(palette, customStops);
 
     const scale = zoomToScale(zoom);
-    const params = computeGridParams(data.length, scale);
-    const key = cacheKey(data, colorMin, colorMax, palette, params.width, params.height, paletteReversed, customStops, renderMode);
+    const params = computeGridParams(data.length, scale, mapProjection);
+    const key = cacheKey(data, colorMin, colorMax, palette, params.width, params.height, paletteReversed, customStops, renderMode, mapProjection);
 
     // Check cache first
     const cached = getCached(key);
@@ -272,7 +287,7 @@ export function useFieldImage(props: FieldOverlayProps | null): FieldImage | nul
     const dataUrl = rgbaToDataUrl(result.rgba, result.width, result.height);
     putCache(key, dataUrl);
     setImage({ dataUrl, coordinates: COORDINATES });
-  }, [props?.data, props?.lat, props?.lon, props?.colorMin, props?.colorMax, props?.palette, props?.zoom, props?.paletteReversed, props?.customStops, props?.renderMode]);
+  }, [props?.data, props?.lat, props?.lon, props?.colorMin, props?.colorMax, props?.palette, props?.zoom, props?.paletteReversed, props?.customStops, props?.renderMode, props?.mapProjection]);
 
   useEffect(() => {
     render();

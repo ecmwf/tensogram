@@ -827,18 +827,67 @@ h2 {
 /* ── Render Mode Picker ── */
 .render-mode-picker {
   position: absolute;
-  top: 16px;
+  top: 60px;   /* sits below the projection-picker toggle button */
   left: 16px;
   z-index: 10;
-  display: flex;
-  gap: 4px;
-  background: rgba(20, 20, 30, 0.85);
-  border-radius: 8px;
-  padding: 4px;
-  border: 1px solid rgba(255,255,255,0.1);
 }
 
-.render-mode-btn {
+.render-mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(20, 20, 30, 0.85);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px;
+  padding: 5px 10px;
+  color: rgba(255,255,255,0.85);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.render-mode-toggle:hover {
+  background: rgba(30, 30, 50, 0.95);
+}
+
+.render-mode-toggle-label {
+  flex: 1;
+}
+
+.render-mode-arrow {
+  display: inline-block;
+  font-size: 11px;
+  opacity: 0.7;
+  transition: transform 0.15s;
+}
+
+.render-mode-arrow-open {
+  transform: rotate(180deg);
+}
+
+.render-mode-panel {
+  margin-top: 4px;
+  background: rgba(20, 20, 30, 0.95);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 0.15s, transform 0.15s;
+}
+
+.render-mode-panel-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.render-mode-option {
   padding: 5px 12px;
   border-radius: 5px;
   border: none;
@@ -846,16 +895,17 @@ h2 {
   color: rgba(255,255,255,0.6);
   font-size: 12px;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  text-align: left;
+  transition: background 0.1s, color 0.1s;
 }
 
-.render-mode-btn:hover {
-  background: rgba(255,255,255,0.1);
+.render-mode-option:hover {
+  background: rgba(255,255,255,0.08);
   color: #fff;
 }
 
-.render-mode-btn-active {
-  background: rgba(255,255,255,0.18);
+.render-mode-option-active {
+  background: rgba(255,255,255,0.15);
   color: #fff;
   font-weight: 600;
 }

@@ -1,6 +1,6 @@
 // tensoscope/src/components/map/contourUtils.ts
 
-export const DEFAULT_NUM_BANDS = 10;
+export const DEFAULT_NUM_BANDS = 20;
 
 /**
  * Number of contour bands for the given palette.
