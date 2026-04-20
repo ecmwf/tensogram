@@ -39,15 +39,28 @@ Click a field to decode it and render it on the map.
 ## Map view
 
 Fields with two spatial dimensions (latitude × longitude) are rendered as a
-`BitmapLayer` over a MapLibre GL JS base map.
-
-Regridding onto the map pixel grid runs in a web worker so the UI stays responsive
+coloured overlay on an interactive map. Regridding from the unstructured source
+grid onto the display pixel grid runs in a web worker so the UI stays responsive
 while large arrays are processed.
 
 ### Projections
 
-Switch between equirectangular (flat) and globe projections using the projection
-picker in the toolbar.
+Switch between **flat** (Mercator, powered by MapLibre GL JS) and **globe**
+(3D sphere, powered by CesiumJS with OpenStreetMap base tiles) using the
+projection picker in the bottom-left of the map. Camera position is preserved
+when switching between the two renderers.
+
+### Render modes
+
+A **Heatmap / Contours** toggle in the top-left of the map switches between two
+rendering styles:
+
+- **Heatmap** — smooth continuous gradient from the active colour scale. Pixel
+  colours are interpolated linearly across the data range.
+- **Contours** — filled colour bands (like `matplotlib.contourf`). The data
+  range is divided into N discrete bands where N is the number of colour steps
+  in the active palette (default 10 for continuous palettes; stop count for
+  custom palettes). Each band is rendered with a single solid colour.
 
 ## Colour scale
 

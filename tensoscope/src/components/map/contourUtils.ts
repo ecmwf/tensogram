@@ -26,6 +26,7 @@ export function getNumBands(
  */
 export function contourLutIndex(t: number, numBands: number): number {
   if (numBands <= 1) return 0;
-  const bandIdx = Math.min(numBands - 1, Math.floor(t * numBands));
+  const tc = Math.max(0, Math.min(1, t));
+  const bandIdx = Math.min(numBands - 1, Math.floor(tc * numBands));
   return Math.round((bandIdx * 255) / (numBands - 1));
 }

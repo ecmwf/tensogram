@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { Map, Source, Layer } from 'react-map-gl/maplibre';
 import type { MapRef } from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -53,12 +53,16 @@ export function MapView(props: MapViewProps) {
   const [cameraCenter, setCameraCenter] = useState({ lat: 20, lon: 0 });
   const mapRef = useRef<MapRef>(null);
   const zoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const justSwitchedToFlatRef = useRef(false);
 
   const handlePresetSelect = (preset: ProjectionPreset) => {
     if (preset.id === activePreset.id) return;
     if (activePreset.id === 'flat' && mapRef.current) {
       const centre = mapRef.current.getCenter();
       setCameraCenter({ lat: centre.lat, lon: centre.lng });
+    }
+    if (preset.id === 'flat') {
+      justSwitchedToFlatRef.current = true;
     }
     setActivePreset(preset);
   };
@@ -75,14 +79,23 @@ export function MapView(props: MapViewProps) {
     }, 200);
   }, []);
 
+  const isGlobe = activePreset.id === 'globe';
+
+  // After Cesium unmounts and saves its camera position, fly MapLibre to that position.
+  // initialViewState on <Map> is mount-only, so we must use flyTo after the switch.
+  useEffect(() => {
+    if (!isGlobe && justSwitchedToFlatRef.current && mapRef.current) {
+      justSwitchedToFlatRef.current = false;
+      mapRef.current.flyTo({ center: [cameraCenter.lon, cameraCenter.lat], zoom, duration: 0 });
+    }
+  }, [cameraCenter, isGlobe, zoom]);
+
   const overlayProps: FieldOverlayProps | null =
     data && lat && lon
       ? { data, lat, lon, colorMin, colorMax, palette, zoom, paletteReversed, customStops, renderMode }
       : null;
 
   const fieldImage = useFieldImage(overlayProps);
-
-  const isGlobe = activePreset.id === 'globe';
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
