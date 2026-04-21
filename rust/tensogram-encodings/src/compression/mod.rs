@@ -35,7 +35,7 @@ mod zstd_pure;
 // `PipelineConfig`.  See `pipeline::build_compressor()`.
 
 #[cfg(feature = "blosc2")]
-pub use self::blosc2::Blosc2Compressor;
+pub use self::blosc2::{Blosc2Compressor, DEFAULT_BLOSC2_CHUNK_BYTES};
 #[cfg(feature = "lz4")]
 pub use self::lz4::Lz4Compressor;
 pub use self::rle::RleCompressor;
