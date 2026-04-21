@@ -47,7 +47,7 @@ RUFF_CFG ?= python/bindings/pyproject.toml
 
 python-build: ## Build Python bindings via maturin
 	if [ ! -d .venv ] ; then uv venv ; fi
-	cd python/bindings && maturin develop --release
+	cd python/bindings && maturin develop --release --uv
 	uv pip install ./python/tensogram-xarray
 	uv pip install ./python/tensogram-zarr
 
