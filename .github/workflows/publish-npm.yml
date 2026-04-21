@@ -1,0 +1,68 @@
+name: Publish TypeScript package to npm
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  TMPDIR: ${{ github.workspace }}/.tmp
+  NODE_VERSION: "22.22.2"
+
+jobs:
+  publish:
+    name: Publish @ecmwf.int/tensogram
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    environment: npm
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.2.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - run: mkdir -p "$TMPDIR"
+
+      - name: Install Node.js
+        run: |
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+            | tar xJ --strip-components=1 -C /usr/local
+
+      - name: Build WASM
+        run: |
+          wasm-pack build rust/tensogram-wasm --release \
+            --target web --out-dir ../../typescript/wasm --out-name tensogram_wasm
+
+      - name: Install TypeScript deps
+        working-directory: typescript
+        run: npm ci || npm install --no-audit --no-fund
+
+      - name: Build distributable
+        working-directory: typescript
+        run: npx tsc
+
+      - name: Check if version already published
+        id: version-check
+        run: |
+          VERSION=$(node -e "process.stdout.write(require('./typescript/package.json').version)")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://registry.npmjs.org/%40ecmwf.int%2Ftensogram/$VERSION")
+          if [ "$HTTP_STATUS" = "200" ]; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "@ecmwf.int/tensogram@$VERSION is already on npmjs.com — skipping"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+            echo "@ecmwf.int/tensogram@$VERSION not found on npmjs.com — will publish"
+          fi
+
+      - name: Publish to npm
+        if: steps.version-check.outputs.already_published == 'false'
+        working-directory: typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPMJS_API_TOKEN }}
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > .npmrc
+          npm publish --access public
