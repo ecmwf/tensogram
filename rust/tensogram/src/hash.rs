@@ -114,11 +114,20 @@ pub fn hash_frame_body(frame_bytes: &[u8], frame_type: FrameType) -> Result<u64>
 /// [`hash_frame_body`], and errors with [`TensogramError::
 /// HashMismatch`] on disagreement.
 ///
-/// Pass-through: a stored hash of `0x0000000000000000` is a
-/// signal that the frame was written without hashing (message
-/// flag `HASHES_PRESENT = 0`), and this function treats that case
-/// as "no hash to verify" and returns `Ok(())`.  Callers that want
-/// to *require* hashing should check the preamble flag themselves.
+/// **Strict-compare contract.** This function unconditionally
+/// compares the stored slot against the recomputed digest.  A
+/// stored value of `0x0000000000000000` on a frame whose body
+/// hashes to something non-zero is a mismatch — it does **not**
+/// mean "no hash to verify".  Callers that need to handle the
+/// message-wide `HASHES_PRESENT = 0` case (every slot is zero by
+/// design) must check the preamble flag themselves and skip
+/// calling this function; the validator does this in
+/// `validate_integrity`.
+///
+/// Rationale: treating zero as a pass-through would be an
+/// integrity bypass — an attacker zeroing a single frame's slot
+/// (while leaving `HASHES_PRESENT = 1`) would otherwise silently
+/// pass verification.
 pub fn verify_frame_hash(frame_bytes: &[u8], frame_type: FrameType) -> Result<()> {
     use crate::wire::{FRAME_COMMON_FOOTER_SIZE, FRAME_END, read_u64_be};
     let frame_len = frame_bytes.len();
@@ -144,10 +153,6 @@ pub fn verify_frame_hash(frame_bytes: &[u8], frame_type: FrameType) -> Result<()
     }
     let slot_start = frame_len - FRAME_COMMON_FOOTER_SIZE;
     let stored = read_u64_be(frame_bytes, slot_start);
-    if stored == 0 {
-        // HASHES_PRESENT = 0 for this message.  No hash to verify.
-        return Ok(());
-    }
     let computed = hash_frame_body(frame_bytes, frame_type)?;
     if computed != stored {
         return Err(TensogramError::HashMismatch {
@@ -276,18 +281,54 @@ mod tests {
     }
 
     #[test]
-    fn verify_frame_hash_accepts_zero_slot_as_no_hash_to_verify() {
-        // Minimal frame: 16 B header + empty body + 0-hash slot + ENDF.
+    fn verify_frame_hash_rejects_zero_slot_when_body_is_nonempty() {
+        // Post-Copilot-review: `verify_frame_hash` now strict-compares
+        // the slot against the recomputed digest.  A zero slot on a
+        // frame with a non-zero body hash is a mismatch — NOT a
+        // pass-through.  Callers that know HASHES_PRESENT = 0 at the
+        // message level must check that flag themselves and skip
+        // calling this helper; the validator does this via
+        // `validate_integrity`.
         use crate::wire::{FRAME_END, FRAME_MAGIC};
+        let body = b"hello";
         let mut buf = Vec::new();
         buf.extend_from_slice(FRAME_MAGIC);
         buf.extend_from_slice(&1u16.to_be_bytes()); // HeaderMetadata
         buf.extend_from_slice(&1u16.to_be_bytes()); // version
         buf.extend_from_slice(&0u16.to_be_bytes()); // flags
-        buf.extend_from_slice(&28u64.to_be_bytes()); // total_length
-        buf.extend_from_slice(&0u64.to_be_bytes()); // hash slot = 0
+        let total_length = 16 + body.len() + 12;
+        buf.extend_from_slice(&(total_length as u64).to_be_bytes());
+        buf.extend_from_slice(body);
+        buf.extend_from_slice(&0u64.to_be_bytes()); // hash slot = 0 (attacker-zeroed)
         buf.extend_from_slice(FRAME_END);
-        assert!(verify_frame_hash(&buf, FrameType::HeaderMetadata).is_ok());
+        let err = verify_frame_hash(&buf, FrameType::HeaderMetadata).unwrap_err();
+        assert!(matches!(err, TensogramError::HashMismatch { .. }));
+    }
+
+    #[test]
+    fn verify_frame_hash_accepts_zero_slot_only_when_body_hashes_to_zero() {
+        // A frame whose body happens to hash to zero (not xxh3 in
+        // practice but a boundary case for the strict-compare
+        // contract): stored slot = 0 matches computed = 0 → Ok.
+        // xxh3 of an empty body is non-zero in reality, so we
+        // can't actually trigger the all-zero case with real bytes
+        // — this test documents the contract via negation.
+        use crate::wire::{FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
+        let body: &[u8] = b"";
+        let mut buf = Vec::new();
+        buf.extend_from_slice(FRAME_MAGIC);
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes());
+        let total_length = FRAME_HEADER_SIZE + body.len() + 12;
+        buf.extend_from_slice(&(total_length as u64).to_be_bytes());
+        buf.extend_from_slice(body);
+        buf.extend_from_slice(&0u64.to_be_bytes()); // stored = 0
+        buf.extend_from_slice(FRAME_END);
+        // Empty body xxh3 is 0x2d06800538d394c2 (non-zero), so
+        // stored=0 != computed → must mismatch.
+        let result = verify_frame_hash(&buf, FrameType::HeaderMetadata);
+        assert!(matches!(result, Err(TensogramError::HashMismatch { .. })));
     }
 
     #[test]

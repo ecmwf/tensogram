@@ -44,11 +44,14 @@ use tensogram::{
 };
 
 fn simple_desc() -> DataObjectDescriptor {
+    // Rust-side convention: element strides (see
+    // docs/src/guide/encode-pre-encoded.md#strides-convention).
+    // 1D float32 tensor: stride 1 element.
     DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
         ndim: 1,
         shape: vec![4],
-        strides: vec![4],
+        strides: vec![1],
         dtype: Dtype::Float32,
         byte_order: ByteOrder::native(),
         encoding: "none".to_string(),
