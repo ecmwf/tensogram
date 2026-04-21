@@ -509,19 +509,15 @@ fn test_encode_pre_encoded_decode_range_fails_without_offsets() {
     );
 }
 
-// ── Hash overwrite ───────────────────────────────────────────────────────────
+// ── Hash inline-slot population via encode_pre_encoded ──────────────────────
 //
-// v3 deprecation: the per-object hash no longer lives in the CBOR
-// descriptor.  The scenario this test targeted (caller supplies a
-// garbage hash, library overwrites it) is structurally impossible
-// because the field is gone.  Phase 6 rewrites the integrity check
-// against the inline slot instead.
-
-#[test]
-#[ignore = "v3: hash moved to frame footer — re-enable in phase 6"]
-fn test_encode_pre_encoded_overwrites_caller_hash() {
-    // Intentionally empty — see the module-level note above.
-}
+// The pre-v3 "caller-supplies-garbage-hash-on-descriptor,
+// library-overwrites" scenario is structurally impossible in v3
+// (DataObjectDescriptor.hash is gone).  The v3 equivalent of that
+// test is covered in unit tests in rust/tensogram/src/encode.rs
+// (`test_encode_pre_encoded_populates_inline_hash_slot`) where we
+// confirm the inline slot is populated via
+// `crate::hash::verify_frame_hash` over the frame body.
 
 // ── Rejection branches ───────────────────────────────────────────────────────
 
@@ -1066,7 +1062,10 @@ fn test_encode_pre_encoded_extra_params_survive() {
 
 #[test]
 fn test_encode_pre_encoded_no_hash() {
-    // hash_algorithm=None: no hash in output.
+    // hash_algorithm = None: HASHES_PRESENT clear, every frame
+    // inline slot at zero.
+    use tensogram::wire::{MessageFlags, Preamble};
+
     let raw = vec![0u8; 16];
     let desc = make_raw_desc(4, Dtype::Float32, "none", BTreeMap::new());
     let meta = GlobalMetadata::default();
@@ -1077,8 +1076,10 @@ fn test_encode_pre_encoded_no_hash() {
     };
     let msg = encode_pre_encoded(&meta, &[(&desc, &raw)], &opts)
         .expect("encode_pre_encoded with no hash");
-    let (_, _objects) = decode(&msg, &DecodeOptions::default()).expect("decode");
-    // v3: hash moved to frame footer — re-enable in phase 6
+    let preamble = Preamble::read_from(&msg).unwrap();
+    assert!(!preamble.flags.has(MessageFlags::HASHES_PRESENT));
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).expect("decode");
+    assert_eq!(objects.len(), 1);
 }
 
 #[test]

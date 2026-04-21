@@ -255,17 +255,38 @@ fn test_hash_verification_passes() {
     assert_eq!(objects[0].1, data);
 }
 
-/// v3: `DecodeOptions.verify_hash` is a no-op at the decode layer;
-/// per-frame integrity moved to the inline hash slot, verified by
-/// `tensogram validate --checksum` or
-/// `tensogram::hash::verify_frame_hash` on raw frame bytes.  This
-/// test's scenario (hash verification at decode time) is
-/// structurally replaced by the validate path in phase 6; ignored
-/// here until that lands.
+/// Flipping a byte inside the payload region of a hashed message
+/// must surface as a `HashMismatch` validation issue.  v3 moved
+/// frame-level integrity from the decoder to the validator
+/// (see `plans/WIRE_FORMAT.md` §11.1): `DecodeOptions.verify_hash`
+/// is a no-op at the decode layer; frame-body hashes are
+/// recomputed by `validate::validate_message` at Integrity level.
 #[test]
-#[ignore = "v3: hash verification moved to validate --checksum — re-enable in phase 6"]
 fn test_hash_verification_fails_on_corruption() {
-    // Intentionally empty.
+    use tensogram::validate::{IssueCode, ValidateOptions, validate_message};
+
+    let (global, desc) = make_float32_descriptor(vec![100]);
+    let data = vec![42u8; 100 * 4];
+    let mut encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    // Identify the NTensorFrame by its "FR" magic + type=9 bytes.
+    let data_frame_marker: &[u8] = &[b'F', b'R', 0x00, 0x09];
+    let frame_start = encoded
+        .windows(4)
+        .position(|w| w == data_frame_marker)
+        .expect("NTensorFrame not found in encoded message");
+    // Flip a byte 16 B past the frame header — inside the payload.
+    encoded[frame_start + 16] ^= 0xFF;
+
+    let report = validate_message(&encoded, &ValidateOptions::default());
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::HashMismatch),
+        "expected HashMismatch after payload tamper, got: {:?}",
+        report.issues
+    );
 }
 
 #[test]

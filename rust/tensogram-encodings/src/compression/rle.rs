@@ -40,23 +40,15 @@ use crate::bitmask::{packing, rle};
 /// RLE compressor over bitmask-packed bytes.
 pub struct RleCompressor;
 
-fn n_elements_from_packed_bytes(bytes: &[u8]) -> usize {
-    // Compressors only see the *packed* byte count — the exact
-    // element count is injected as a prefix by `compress`, so
-    // `decompress` doesn't need this helper.  Retained here as
-    // the canonical way to recover an upper-bound element count
-    // if the prefix is ever missing in debug builds.
-    bytes.len() * 8
-}
-
 impl Compressor for RleCompressor {
     fn compress(&self, data: &[u8]) -> Result<CompressResult, CompressionError> {
-        // The pipeline passes the packed bitmask bytes; upper-bound
-        // the element count so `unpack` reads the full input.  The
-        // pipeline is responsible for trimming trailing bits when
-        // the caller hands in a packed payload whose element count
-        // isn't a multiple of 8 — we preserve what we're given.
-        let n_elements = n_elements_from_packed_bytes(data);
+        // The pipeline passes the packed bitmask bytes.  We treat
+        // `n_elements = data.len() * 8` as the canonical upper
+        // bound so `unpack` reads the full input; the pipeline is
+        // responsible for trimming trailing bits when the caller
+        // hands in a packed payload whose element count isn't a
+        // multiple of 8.
+        let n_elements = data.len() * 8;
         let bits = packing::unpack(data, n_elements)
             .map_err(|e| CompressionError::Unknown(format!("RLE compress unpack: {e}")))?;
         let rle_bytes = rle::encode(&bits);

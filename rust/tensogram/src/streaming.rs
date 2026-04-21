@@ -399,11 +399,12 @@ impl<W: Write> StreamingEncoder<W> {
         )?;
         self.bytes_written += frame_len;
 
-        // v3: the per-object hash now lives in the inline hash slot
-        // of the frame footer, not on the descriptor.  Phase 6 will
-        // repopulate `hash_entries` from the inline slots for the
-        // aggregate HashFrame; for phase 5 the helper returns the
-        // raw hash digest alongside the frame length.
+        // v3: the per-object hash lives in the inline slot of the
+        // frame footer (see `plans/WIRE_FORMAT.md` §2.4).  The
+        // streaming encoder captures each object's digest in
+        // `hash_entries` as it's written so the aggregate
+        // `FooterHash` frame can be emitted at `finish()` without
+        // a second pass over the payload.
         let hash_entry = inline_digest.map(|d| {
             (
                 HashAlgorithm::Xxh3.as_str().to_string(),
@@ -922,11 +923,50 @@ mod tests {
         // cross-check between the two encoders here.
     }
 
+    /// After a streaming encode with hashing enabled, every frame
+    /// in the message must carry a non-zero inline hash slot that
+    /// matches `xxh3-64` of the frame body.  Pinned via
+    /// [`crate::hash::verify_frame_hash`] which is also the
+    /// validator's fast-path check.
     #[test]
-    #[ignore = "v3: hash verification moved to frame footer — re-enable in phase 6"]
     fn streaming_hash_verification() {
-        // Intentionally empty.  The equivalent test will read the
-        // inline hash slot of the emitted frame once phase 6 lands.
+        use crate::framing::{decode_message, scan};
+        use crate::hash::verify_frame_hash;
+        use crate::wire::{FrameHeader, MessageFlags, Preamble};
+
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![42u8; 4 * 4];
+        let options = EncodeOptions {
+            hash_algorithm: Some(HashAlgorithm::Xxh3),
+            ..Default::default()
+        };
+
+        let mut enc = StreamingEncoder::new(Vec::new(), &meta, &options).unwrap();
+        enc.write_object(&desc, &data).unwrap();
+        let wire = enc.finish().unwrap();
+
+        // HASHES_PRESENT must be set in the preamble.
+        let preamble = Preamble::read_from(&wire).unwrap();
+        assert!(
+            preamble.flags.has(MessageFlags::HASHES_PRESENT),
+            "streaming encode with hash_algorithm=Some must set HASHES_PRESENT"
+        );
+
+        // Verify every frame's inline hash slot against the body.
+        let messages = scan(&wire);
+        assert_eq!(messages.len(), 1);
+        let (offset, len) = messages[0];
+        let msg = &wire[offset..offset + len];
+        let decoded = decode_message(msg).unwrap();
+
+        for (_, _, _, frame_offset) in &decoded.objects {
+            let frame = &msg[*frame_offset..];
+            let fh = FrameHeader::read_from(frame).unwrap();
+            let frame_bytes = &frame[..fh.total_length as usize];
+            verify_frame_hash(frame_bytes, fh.frame_type)
+                .expect("streaming data-object inline hash must verify");
+        }
     }
 
     #[test]

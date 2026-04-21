@@ -348,14 +348,20 @@ fn encode_one_object(
     }
     let encoded_payload = payload_region;
 
-    // Attach the integrity hash to the descriptor, overwriting any
-    // v3 note: the per-object hash is no longer written into the CBOR
-    // descriptor; it lives in the inline hash slot of the frame's
-    // footer (see `plans/WIRE_FORMAT.md` §2.4).  The pipeline's
-    // `inline_hash` is kept on the encoder path for the
-    // message-level `HashFrame` aggregation (phase 6), but the
-    // descriptor itself carries no hash field in v3.
-    let _ = (inline_hash, options); // placeholder: will feed HashFrame in phase 6
+    // v3: the per-object hash is no longer written into the CBOR
+    // descriptor.  It lives in the inline hash slot of the frame's
+    // footer (see `plans/WIRE_FORMAT.md` §2.4), populated by
+    // `encode_data_object_frame` at frame-build time.  The
+    // aggregate HashFrame reads those slots back in
+    // `framing::build_hash_frame_cbor` — no second pass here.
+    //
+    // `inline_hash` from the pipeline is redundant with the
+    // inline slot (same digest, different storage) and is
+    // intentionally unused on this path; keeping it in the return
+    // tuple preserves the pipeline's hash-while-encoding
+    // invariant for callers that want a digest without going
+    // through the frame layer.
+    let _ = (inline_hash, options);
 
     Ok(EncodedObject {
         descriptor: final_desc,
@@ -2014,13 +2020,43 @@ mod tests {
         );
     }
 
-    /// v3: caller-supplied hash on the descriptor is structurally
-    /// impossible (the field is gone).  Phase 6 rewrites the
-    /// equivalent check against the frame footer's inline slot.
+    /// `encode_pre_encoded` populates each data-object frame's
+    /// inline hash slot with the xxh3-64 of the frame body when
+    /// `EncodeOptions.hash_algorithm` is `Some(Xxh3)` — same
+    /// contract as `encode`.  v3 equivalent of the pre-v3
+    /// "library overwrites caller-supplied descriptor hash" test
+    /// (caller-supplied hashes are structurally impossible in v3
+    /// because `DataObjectDescriptor.hash` is gone).
     #[test]
-    #[ignore = "v3: hash moved to frame footer — re-enable in phase 6"]
-    fn test_encode_pre_encoded_overwrites_caller_hash() {
-        // Intentionally empty.
+    fn test_encode_pre_encoded_populates_inline_hash_slot() {
+        use crate::framing::{decode_message, scan};
+        use crate::hash::verify_frame_hash;
+        use crate::wire::{FrameHeader, MessageFlags, Preamble};
+
+        let desc = make_descriptor(vec![2]);
+        let data = vec![0xABu8; 8];
+        let meta = GlobalMetadata::default();
+        let options = EncodeOptions::default();
+
+        let msg = encode_pre_encoded(&meta, &[(&desc, data.as_slice())], &options).unwrap();
+
+        // Preamble HASHES_PRESENT must be set.
+        let preamble = Preamble::read_from(&msg).unwrap();
+        assert!(preamble.flags.has(MessageFlags::HASHES_PRESENT));
+
+        // Every data-object frame's inline slot verifies.
+        let messages = scan(&msg);
+        assert_eq!(messages.len(), 1);
+        let (offset, len) = messages[0];
+        let only_msg = &msg[offset..offset + len];
+        let decoded = decode_message(only_msg).unwrap();
+        for (_, _, _, frame_offset) in &decoded.objects {
+            let frame = &only_msg[*frame_offset..];
+            let fh = FrameHeader::read_from(frame).unwrap();
+            let frame_bytes = &frame[..fh.total_length as usize];
+            verify_frame_hash(frame_bytes, fh.frame_type)
+                .expect("inline hash slot must verify against body");
+        }
     }
 
     #[test]

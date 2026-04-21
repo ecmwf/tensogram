@@ -100,21 +100,43 @@ pub(crate) fn validate_integrity(
     let mut all_verified = true;
     let mut any_checked = false;
 
-    // Phase 6 will aggregate per-object hashes into a HashFrame and
-    // re-enable this read-side verification; phase 5 emits no
-    // HashFrame so we drop any parse error here at warning level.
+    // Parse aggregate HashFrame(s) (HeaderHash / FooterHash) and
+    // surface any structural or schema-level issues.  v3 only
+    // recognises `algorithm = "xxh3"`; other values trigger an
+    // `UnknownHashAlgorithm` warning — the frame-body hashes are
+    // still verified against the inline slots below (which are
+    // authoritative), but an unknown algorithm name means the
+    // aggregate HashFrame entries can't be interpreted.
     for (ft, payload) in &walk.meta_frames {
-        if matches!(ft, FrameType::HeaderHash | FrameType::FooterHash)
-            && let Err(e) = metadata::cbor_to_hash_frame(payload)
-        {
-            all_verified = false;
-            issues.push(err(
-                IssueCode::HashFrameCborParseFailed,
-                ValidationLevel::Integrity,
-                None,
-                None,
-                format!("failed to parse hash frame CBOR: {e}"),
-            ));
+        if !matches!(ft, FrameType::HeaderHash | FrameType::FooterHash) {
+            continue;
+        }
+        match metadata::cbor_to_hash_frame(payload) {
+            Ok(hf) => {
+                if hash::HashAlgorithm::parse(&hf.algorithm).is_err() {
+                    issues.push(warn(
+                        IssueCode::UnknownHashAlgorithm,
+                        ValidationLevel::Integrity,
+                        None,
+                        None,
+                        format!(
+                            "unknown hash algorithm '{}' in HashFrame, aggregate \
+                             entries cannot be verified (inline slots still checked)",
+                            hf.algorithm
+                        ),
+                    ));
+                }
+            }
+            Err(e) => {
+                all_verified = false;
+                issues.push(err(
+                    IssueCode::HashFrameCborParseFailed,
+                    ValidationLevel::Integrity,
+                    None,
+                    None,
+                    format!("failed to parse hash frame CBOR: {e}"),
+                ));
+            }
         }
     }
 

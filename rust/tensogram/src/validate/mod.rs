@@ -2231,16 +2231,50 @@ mod tests {
         assert!(report.hash_verified, "issues: {:?}", report.issues);
     }
 
-    // ── Integrity: UnknownHashAlgorithm ─────────────────────────────────
+    // ── Integrity: UnknownHashAlgorithm via HashFrame ───────────────────
 
-    /// v3: per-object hash is the inline slot (always xxh3) — an
-    /// unknown per-descriptor hash algorithm is structurally
-    /// impossible.  Phase 6 reinstates this check against the
-    /// HashFrame's `"algorithm"` field.
+    /// v3: per-object hash is the inline xxh3-64 slot.  The
+    /// aggregate HashFrame's `algorithm` field names the digest
+    /// convention; any value other than `"xxh3"` triggers the
+    /// `UnknownHashAlgorithm` warning.
     #[test]
-    #[ignore = "v3: per-descriptor hash removed — re-enable in phase 6 via HashFrame"]
     fn integrity_unknown_hash_algorithm() {
-        // Intentionally empty.
+        use crate::wire::{FRAME_COMMON_FOOTER_SIZE, FRAME_HEADER_SIZE, FRAME_MAGIC};
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
+
+        // Hand-built HashFrame CBOR with algorithm = "blake99".
+        // v3 readers silently accept unknown keys but flag the
+        // unknown algorithm at Integrity level.
+        let hf = crate::types::HashFrame {
+            algorithm: "blake99".to_string(),
+            hashes: vec!["deadbeefdeadbeef".to_string()],
+        };
+        let hcbor = crate::metadata::hash_frame_to_cbor(&hf).unwrap();
+        // Wrap in a v3 HeaderHash frame (footer = 12 B hash slot + ENDF).
+        let htl = (FRAME_HEADER_SIZE + hcbor.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
+        let mut hash_frame = Vec::new();
+        hash_frame.extend_from_slice(FRAME_MAGIC);
+        hash_frame.extend_from_slice(&3u16.to_be_bytes()); // HeaderHash
+        hash_frame.extend_from_slice(&1u16.to_be_bytes());
+        hash_frame.extend_from_slice(&0u16.to_be_bytes());
+        hash_frame.extend_from_slice(&htl.to_be_bytes());
+        hash_frame.extend_from_slice(&hcbor);
+        hash_frame.extend_from_slice(&0u64.to_be_bytes()); // hash slot (message HASHES_PRESENT=0)
+        hash_frame.extend_from_slice(b"ENDF");
+
+        let flags = 1u16 | (1u16 << 4); // HEADER_METADATA | HEADER_HASHES
+        let msg = build_raw_message(flags, &[meta_frame, hash_frame, data_frame], None, false);
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::UnknownHashAlgorithm),
+            "expected UnknownHashAlgorithm, got: {:?}",
+            report.issues
+        );
     }
 
     // ── Integrity: DecodePipelineFailed (corrupt compressed payload) ────
@@ -2756,14 +2790,22 @@ mod tests {
     // Additional coverage — Integrity (Level 3)
     // ═══════════════════════════════════════════════════════════════════════
 
-    /// v3: HashFrame-level unknown-algorithm detection is deferred
-    /// to phase 6, when the aggregate HashFrame is re-populated
-    /// from inline slots.  Phase 5 short-circuits emission of the
-    /// HashFrame entirely.
+    /// v3 encoder always emits `algorithm = "xxh3"` in the
+    /// aggregate HashFrame; validate recognises it.  Pins that
+    /// default-options roundtrip is silent about algorithm
+    /// identification (no false-positive UnknownHashAlgorithm).
     #[test]
-    #[ignore = "v3: HashFrame emission deferred to phase 6"]
-    fn integrity_unknown_hash_in_frame() {
-        // Intentionally empty.
+    fn integrity_default_xxh3_hash_frame_is_known() {
+        let msg = make_test_message();
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::UnknownHashAlgorithm),
+            "xxh3 (default) must never be flagged as UnknownHashAlgorithm, got: {:?}",
+            report.issues
+        );
     }
 
     #[test]

@@ -398,8 +398,57 @@ struct MessageCaches {
     hash_value_strings: Vec<Option<CString>>,
 }
 
-/// Build all CString caches from the object descriptors.
-fn build_message_caches(objects: &[(DataObjectDescriptor, Vec<u8>)]) -> MessageCaches {
+/// Extract each data-object frame's inline hash slot from a
+/// single-message wire buffer.
+///
+/// Returns one entry per NTensorFrame in emission order; `None`
+/// means the slot was zero (HASHES_PRESENT=0 on the message, or
+/// the frame-level hash wasn't computed).  Returns an empty Vec
+/// if the buffer doesn't contain a parseable message, so callers
+/// can proceed without needing to handle the error separately
+/// (the preceding `decode()` call will have already surfaced any
+/// structural issue).
+fn extract_inline_hashes(buf: &[u8]) -> Vec<Option<u64>> {
+    use tensogram::framing::{decode_message, scan};
+    use tensogram::wire::{FRAME_COMMON_FOOTER_SIZE, FrameHeader};
+
+    let messages = scan(buf);
+    let Some(&(msg_off, msg_len)) = messages.first() else {
+        return Vec::new();
+    };
+    let msg = &buf[msg_off..msg_off + msg_len];
+    let decoded = match decode_message(msg) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    decoded
+        .objects
+        .iter()
+        .map(|(_, _, _, frame_offset)| {
+            let frame = msg.get(*frame_offset..)?;
+            let fh = FrameHeader::read_from(frame).ok()?;
+            let total = usize::try_from(fh.total_length).ok()?;
+            if total < FRAME_COMMON_FOOTER_SIZE || *frame_offset + total > msg.len() {
+                return None;
+            }
+            let slot_start = *frame_offset + total - FRAME_COMMON_FOOTER_SIZE;
+            let slot = u64::from_be_bytes(msg[slot_start..slot_start + 8].try_into().ok()?);
+            if slot == 0 { None } else { Some(slot) }
+        })
+        .collect()
+}
+
+/// Build all CString caches from the object descriptors and
+/// inline hash slots.
+///
+/// `inline_hashes` is expected to be either empty (no hash data
+/// available — every per-object entry becomes `None`) or the
+/// same length as `objects`.  A longer or shorter slice is
+/// silently truncated / padded with `None` to match `objects`.
+fn build_message_caches(
+    objects: &[(DataObjectDescriptor, Vec<u8>)],
+    inline_hashes: &[Option<u64>],
+) -> MessageCaches {
     let dtype_strings = objects
         .iter()
         .map(|(desc, _)| CString::new(desc.dtype.to_string()).unwrap_or_default())
@@ -430,13 +479,27 @@ fn build_message_caches(objects: &[(DataObjectDescriptor, Vec<u8>)]) -> MessageC
         .iter()
         .map(|(desc, _)| CString::new(desc.encoding.as_str()).unwrap_or_default())
         .collect();
-    // v3: the per-object hash no longer lives in the CBOR
-    // descriptor.  The inline slot in the frame footer is the
-    // source of truth.  Until the FFI surfaces the inline slot
-    // (phase 8), we return `None` for every descriptor so the
-    // C API stops reporting stale values.
-    let hash_type_strings: Vec<Option<CString>> = objects.iter().map(|_| None).collect();
-    let hash_value_strings: Vec<Option<CString>> = objects.iter().map(|_| None).collect();
+
+    // v3: per-object hash lives in the frame footer's inline slot
+    // (see `plans/WIRE_FORMAT.md` §2.4).  When the caller has
+    // computed the inline slots, surface them through the two
+    // existing accessors; otherwise keep the entries `None`.
+    let hash_type_strings: Vec<Option<CString>> = (0..objects.len())
+        .map(|i| {
+            inline_hashes
+                .get(i)
+                .and_then(|h| h.as_ref())
+                .map(|_| CString::new("xxh3").unwrap_or_default())
+        })
+        .collect();
+    let hash_value_strings: Vec<Option<CString>> = (0..objects.len())
+        .map(|i| {
+            inline_hashes
+                .get(i)
+                .and_then(|h| h.as_ref())
+                .map(|digest| CString::new(format!("{digest:016x}")).unwrap_or_default())
+        })
+        .collect();
 
     MessageCaches {
         dtype_strings,
@@ -774,7 +837,8 @@ pub extern "C" fn tgm_decode_with_options(
 
     match decode(data, &options) {
         Ok((global_metadata, objects)) => {
-            let caches = build_message_caches(&objects);
+            let inline_hashes = extract_inline_hashes(data);
+            let caches = build_message_caches(&objects, &inline_hashes);
             let msg = Box::new(TgmMessage {
                 global_metadata,
                 objects,
@@ -1097,7 +1161,8 @@ pub extern "C" fn tgm_decode(
 
     match decode(data, &options) {
         Ok((global_metadata, objects)) => {
-            let caches = build_message_caches(&objects);
+            let inline_hashes = extract_inline_hashes(data);
+            let caches = build_message_caches(&objects, &inline_hashes);
             let msg = Box::new(TgmMessage {
                 global_metadata,
                 objects,
@@ -1184,7 +1249,8 @@ pub extern "C" fn tgm_decode_object(
     match decode_object(data, index, &options) {
         Ok((global_metadata, descriptor, obj_bytes)) => {
             let objects = vec![(descriptor, obj_bytes)];
-            let caches = build_message_caches(&objects);
+            let inline_hashes = extract_inline_hashes(data);
+            let caches = build_message_caches(&objects, &inline_hashes);
             let msg = Box::new(TgmMessage {
                 global_metadata,
                 objects,
@@ -1516,20 +1582,28 @@ pub extern "C" fn tgm_payload_encoding(msg: *const TgmMessage, index: usize) -> 
     }
 }
 
-/// Returns 1 if the object descriptor has a hash, 0 otherwise.
+/// Returns 1 if the i-th data object has a populated inline hash
+/// slot, 0 otherwise.
 ///
-/// **v3 deprecation.** The per-object hash has moved from the CBOR
-/// descriptor to the frame footer's inline slot (see
-/// `plans/WIRE_FORMAT.md` §2.4).  This FFI entry point always
-/// returns `0` in v3 pending the phase-8 binding update that will
-/// surface the inline slot (and the message-level
-/// `HASHES_PRESENT` flag) through a new API.
+/// In v3 the per-object hash lives in the frame footer's inline
+/// slot (see `plans/WIRE_FORMAT.md` §2.4) rather than the CBOR
+/// descriptor.  This accessor now reflects the inline-slot
+/// presence: returns 1 when the slot holds a non-zero xxh3-64
+/// digest, 0 when the slot is zero (message-wide
+/// `HASHES_PRESENT = 0` or this specific object wasn't hashed)
+/// or when the index is out of range.
+///
+/// The matching hex digest is available via
+/// [`tgm_object_hash_value`]; the algorithm tag (always
+/// `"xxh3"` in v3) via [`tgm_object_hash_type`].
 #[unsafe(no_mangle)]
-pub extern "C" fn tgm_payload_has_hash(msg: *const TgmMessage, _index: usize) -> i32 {
-    // Intentionally ignores `msg` / `_index`: the stale-surface
-    // contract is "v3 descriptors never carry a hash".
-    let _ = msg;
-    0
+pub extern "C" fn tgm_payload_has_hash(msg: *const TgmMessage, index: usize) -> i32 {
+    unsafe {
+        as_msg(msg)
+            .and_then(|m| m.hash_value_strings.get(index))
+            .map(|opt| opt.is_some() as i32)
+            .unwrap_or(0)
+    }
 }
 
 /// Extract a metadata handle from a decoded message.
@@ -1856,7 +1930,12 @@ pub extern "C" fn tgm_file_decode_message(
 
     match f.decode_message(index, &options) {
         Ok((global_metadata, objects)) => {
-            let caches = build_message_caches(&objects);
+            // File-based decode path: we don't have the raw message
+            // buffer here, so inline hashes aren't reachable
+            // without re-reading from disk.  Leave them empty —
+            // callers that need the inline hash should use the
+            // buffer-based `tgm_decode` entry point.
+            let caches = build_message_caches(&objects, &[]);
             let msg = Box::new(TgmMessage {
                 global_metadata,
                 objects,
@@ -2458,7 +2537,11 @@ pub extern "C" fn tgm_object_iter_next(
         Some(Ok((descriptor, data))) => {
             let global_metadata = it.global_metadata.clone();
             let objects = vec![(descriptor, data)];
-            let caches = build_message_caches(&objects);
+            // Iterator path: `data` is the decoded payload, not the
+            // raw message buffer.  Inline hashes aren't reachable
+            // from here; callers needing them should use the
+            // buffer-based `tgm_decode` entry point.
+            let caches = build_message_caches(&objects, &[]);
             let msg = Box::new(TgmMessage {
                 global_metadata,
                 objects,
@@ -3277,7 +3360,6 @@ mod tests {
         super::tgm_message_free(msg);
     }
 
-    #[ignore = "v3: hash moved to frame footer — re-enable in phase 6"]
     #[test]
     fn ffi_encode_decode_with_hash() {
         let values = [10.0f32, 20.0, 30.0];
@@ -4984,8 +5066,16 @@ mod tests {
 
     // ── tgm_streaming_encoder with hash ──
 
+    /// End-to-end: streaming-encode a hashed message, read the file
+    /// back as bytes, decode via the buffer-based `tgm_decode`, and
+    /// confirm the inline-hash slot is surfaced through the
+    /// `tgm_payload_has_hash` / `tgm_object_hash_*` accessors.
+    ///
+    /// Note: the file-based decode path (`tgm_file_decode_message`)
+    /// doesn't carry the raw buffer and so cannot surface inline
+    /// hashes — callers that need the hash should go through
+    /// `tgm_decode` after reading the file into memory.
     #[test]
-    #[ignore = "v3: hash moved to frame footer — re-enable in phase 6"]
     fn ffi_streaming_encoder_with_hash() {
         let dir = std::env::temp_dir();
         let path = dir.join("ffi_streaming_hash.tgm");
@@ -5021,19 +5111,24 @@ mod tests {
         assert!(matches!(err, super::TgmError::Ok));
         super::tgm_streaming_encoder_free(enc);
 
-        // Read back and verify hash
-        let mut file: *mut super::TgmFile = ptr::null_mut();
-        let err = super::tgm_file_open(c_path.as_ptr(), &mut file);
-        assert!(matches!(err, super::TgmError::Ok));
-
+        // Read back via the buffer-based decode path so inline
+        // hashes are extracted.
+        let bytes = std::fs::read(&path).expect("read file");
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_file_decode_message(file, 0, 1, 0, 0, &mut msg);
+        let err = super::tgm_decode(bytes.as_ptr(), bytes.len(), 1, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         assert_eq!(super::tgm_payload_has_hash(msg, 0), 1);
+        let ht = unsafe { CStr::from_ptr(super::tgm_object_hash_type(msg, 0)) }
+            .to_str()
+            .unwrap();
+        assert_eq!(ht, "xxh3");
+        let hv = unsafe { CStr::from_ptr(super::tgm_object_hash_value(msg, 0)) }
+            .to_str()
+            .unwrap();
+        assert_eq!(hv.len(), 16, "xxh3 digest is 16 hex chars");
 
         super::tgm_message_free(msg);
-        super::tgm_file_close(file);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -5552,29 +5647,52 @@ mod tests {
         assert!(matches!(err, super::TgmError::InvalidArg));
     }
 
-    // ── tgm_decode with verify_hash on tampered payload ───────────────
+    // ── Inline-hash integrity via tgm_validate on tampered payload ──
 
+    /// Flipping a byte inside the payload region of a hashed
+    /// message must surface a hash mismatch through
+    /// `tgm_validate` at the `integrity` / `checksum` level (the
+    /// v3 integrity channel — see `plans/WIRE_FORMAT.md` §11).
+    ///
+    /// `tgm_decode` in v3 does **not** verify frame-level hashes
+    /// (decode is a pure deserialisation path); the `verify_hash`
+    /// flag on decode is retained for source compatibility but is
+    /// a no-op.  Hash integrity is always a validate-level check.
     #[test]
-    #[ignore = "v3: hash moved to frame footer — re-enable in phase 6"]
-    fn ffi_decode_verify_hash_on_tampered_payload() {
+    fn ffi_validate_detects_tampered_payload() {
         let values = vec![1.0f32; 256];
         let encoded = ffi_encode_with_hash(&values);
         let mut tampered = encoded.clone();
-        // Tamper around 75% into the message so we hit the payload region,
-        // not frame headers / CBOR descriptors.
+        // Tamper ~75% into the message so we're in the payload
+        // region, not the frame header / CBOR descriptor.
         let pos = (tampered.len() * 75) / 100;
         tampered[pos] ^= 0xFF;
         tampered[pos + 1] ^= 0xFF;
-        let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(
+
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let level = CString::new("checksum").unwrap();
+        let err = super::tgm_validate(
             tampered.as_ptr(),
             tampered.len(),
-            /* verify_hash */ 1,
-            /* native_byte_order */ 0,
-            /* threads */ 0,
-            &mut msg,
+            level.as_ptr(),
+            /* pretty */ 0,
+            &mut out,
         );
-        assert!(matches!(err, super::TgmError::HashMismatch));
+        // Validation itself runs fine; the report JSON flags the
+        // mismatch.  `tgm_validate` returns Ok on any parseable
+        // message and communicates findings via the JSON report.
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!out.data.is_null());
+        let json_bytes = unsafe { slice::from_raw_parts(out.data, out.len) };
+        let json = std::str::from_utf8(json_bytes).unwrap();
+        assert!(
+            json.contains("HashMismatch") || json.contains("hash mismatch"),
+            "expected HashMismatch in validate report, got: {json}"
+        );
+        super::tgm_bytes_free(out);
     }
 
     // ── tgm_object_data with null out_len pointer ─────────────────────

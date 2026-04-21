@@ -366,16 +366,33 @@ fn test_golden_multi_message() {
 
 #[test]
 fn test_golden_hash_xxh3() {
+    use tensogram::framing::{decode_message, scan};
+    use tensogram::hash::verify_frame_hash;
+    use tensogram::wire::{FrameHeader, MessageFlags, Preamble};
+
     let data = std::fs::read(golden_dir().join("hash_xxh3.tgm")).unwrap();
 
-    // Decode with hash verification
-    let opts = DecodeOptions {
-        verify_hash: true,
-        ..Default::default()
-    };
-    let (meta, objects) = decode::decode(&data, &opts).unwrap();
+    // Decode high-level content.
+    let (meta, objects) = decode::decode(&data, &DecodeOptions::default()).unwrap();
     assert_eq!(meta.version, 3);
     assert_eq!(objects.len(), 1);
-    // v3: hash moved to frame footer — re-enable in phase 6
-    // v3: hash moved to frame footer — re-enable in phase 6
+
+    // v3: the hash lives in the frame footer's inline slot.  Pin
+    // the committed golden's HASHES_PRESENT flag and the
+    // frame-level hash verification pathway.
+    let preamble = Preamble::read_from(&data).unwrap();
+    assert!(
+        preamble.flags.has(MessageFlags::HASHES_PRESENT),
+        "hash_xxh3.tgm must have HASHES_PRESENT set"
+    );
+    let messages = scan(&data);
+    let (offset, len) = messages[0];
+    let msg = &data[offset..offset + len];
+    let decoded = decode_message(msg).unwrap();
+    for (_, _, _, frame_offset) in &decoded.objects {
+        let frame = &msg[*frame_offset..];
+        let fh = FrameHeader::read_from(frame).unwrap();
+        let frame_bytes = &frame[..fh.total_length as usize];
+        verify_frame_hash(frame_bytes, fh.frame_type).expect("golden hash_xxh3 frame must verify");
+    }
 }

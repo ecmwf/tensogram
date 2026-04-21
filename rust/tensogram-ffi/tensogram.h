@@ -406,16 +406,22 @@ const uint8_t *tgm_object_data(const tgm_message_t *msg, size_t decoded_index, s
 const char *tgm_payload_encoding(const tgm_message_t *msg, size_t index);
 
 /**
- * Returns 1 if the object descriptor has a hash, 0 otherwise.
+ * Returns 1 if the i-th data object has a populated inline hash
+ * slot, 0 otherwise.
  *
- * **v3 deprecation.** The per-object hash has moved from the CBOR
- * descriptor to the frame footer's inline slot (see
- * `plans/WIRE_FORMAT.md` §2.4).  This FFI entry point always
- * returns `0` in v3 pending the phase-8 binding update that will
- * surface the inline slot (and the message-level
- * `HASHES_PRESENT` flag) through a new API.
+ * In v3 the per-object hash lives in the frame footer's inline
+ * slot (see `plans/WIRE_FORMAT.md` §2.4) rather than the CBOR
+ * descriptor.  This accessor now reflects the inline-slot
+ * presence: returns 1 when the slot holds a non-zero xxh3-64
+ * digest, 0 when the slot is zero (message-wide
+ * `HASHES_PRESENT = 0` or this specific object wasn't hashed)
+ * or when the index is out of range.
+ *
+ * The matching hex digest is available via
+ * [`tgm_object_hash_value`]; the algorithm tag (always
+ * `"xxh3"` in v3) via [`tgm_object_hash_type`].
  */
-int32_t tgm_payload_has_hash(const tgm_message_t *msg, size_t _index);
+int32_t tgm_payload_has_hash(const tgm_message_t *msg, size_t index);
 
 /**
  * Extract a metadata handle from a decoded message.

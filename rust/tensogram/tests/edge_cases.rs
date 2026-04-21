@@ -492,7 +492,9 @@ fn unknown_hash_algorithm_skips_verification() {
     // Encode with a hash
     let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
-    // Decode normally works
+    // Decode works; `verify_hash` on DecodeOptions is a no-op in
+    // v3 (frame-level integrity moved to validate --checksum) but
+    // the option is kept for source compatibility.
     let (_, _objects) = decode(
         &encoded,
         &DecodeOptions {
@@ -501,16 +503,15 @@ fn unknown_hash_algorithm_skips_verification() {
         },
     )
     .unwrap();
-    // v3: hash moved to frame footer — re-enable in phase 6
 
-    // Now manually craft a message with an unknown hash algorithm by
-    // patching the descriptor's hash_type after encoding
-    // Instead: verify directly via the hash module
+    // The standalone `verify_hash` helper on a `HashDescriptor`
+    // must still silently skip verification for unknown algorithm
+    // names — the forward-compatibility contract documented in
+    // `crate::hash::verify_hash`.
     let descriptor = HashDescriptor {
         algorithm: "sha512".to_string(),
         value: "fake_hash_value".to_string(),
     };
-    // Should succeed (skip verification) rather than error
     assert!(tensogram::verify_hash(b"any data", &descriptor).is_ok());
 }
 
@@ -693,8 +694,12 @@ fn data_length_mismatch_rejected() {
 
 // ── 13. Encode without hash ──────────────────────────────────────────────────
 
+/// `hash_algorithm = None` must round-trip cleanly and leave every
+/// frame's inline hash slot at zero (v3 `HASHES_PRESENT = 0`
+/// contract).
 #[test]
 fn encode_without_hash() {
+    use tensogram::wire::{MessageFlags, Preamble};
     let meta = make_global_meta();
     let desc = make_descriptor(vec![4], Dtype::Float32);
     let data = vec![0u8; 16];
@@ -704,8 +709,13 @@ fn encode_without_hash() {
         ..Default::default()
     };
     let encoded = encode(&meta, &[(&desc, &data)], &options).unwrap();
-    let (_, _objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    // v3: hash moved to frame footer — re-enable in phase 6
+    let preamble = Preamble::read_from(&encoded).unwrap();
+    assert!(
+        !preamble.flags.has(MessageFlags::HASHES_PRESENT),
+        "hash_algorithm = None must clear HASHES_PRESENT"
+    );
+    let (_meta, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 1);
 }
 
 #[test]
@@ -960,19 +970,13 @@ fn streaming_encoder_multiple_objects() {
 
 // ── 20. Hash verification on decode ──────────────────────────────────────────
 
+/// `verify_hash` (the standalone `HashDescriptor`-based helper)
+/// returns `HashMismatch` when the stored digest disagrees with
+/// the recomputed xxh3-64.  Frame-level integrity in v3 goes
+/// through the inline slot + `validate --checksum` instead.
 #[test]
 fn hash_mismatch_detected_on_verify() {
-    let meta = make_global_meta();
-    let desc = make_descriptor(vec![4], Dtype::Float32);
     let data = vec![42u8; 16];
-
-    let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
-
-    // First decode to find where the payload is, then corrupt it
-    let (_, _objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    // v3: hash moved to frame footer — re-enable in phase 6
-
-    // Craft a direct hash mismatch test
     let bad_hash = HashDescriptor {
         algorithm: "xxh3".to_string(),
         value: "0000000000000000".to_string(),
@@ -1857,13 +1861,16 @@ fn preceder_with_hash_verification() {
     enc.write_object(&desc, &data).unwrap();
     let result = enc.finish().unwrap();
 
-    // Decode with hash verification — should pass
+    // Decode with hash verification.  v3 `verify_hash` on
+    // `DecodeOptions` is a no-op (frame-level integrity moved to
+    // validate --checksum); the option is retained for source
+    // compatibility and decoding still succeeds when the message
+    // is well-formed.
     let verify_opts = decode::DecodeOptions {
         verify_hash: true,
         ..Default::default()
     };
     let (decoded_meta, _objects) = decode(&result, &verify_opts).unwrap();
-    // v3: hash moved to frame footer — re-enable in phase 6
     assert!(decoded_meta.base[0].contains_key("mars"));
 }
 
