@@ -919,56 +919,239 @@ pub fn decode_metadata_only(buf: &[u8]) -> Result<GlobalMetadata> {
 
 // ── Scan ─────────────────────────────────────────────────────────────────────
 
+/// Options controlling the in-memory `scan` and file-level
+/// `scan_file` algorithms.
+///
+/// `bidirectional = true` (default) enables a meet-in-the-middle
+/// walker pair — one forward from offset 0, one backward from EOF —
+/// that can halve the hop count on large multi-message files.  The
+/// backward walker uses the postamble's `total_length` field added
+/// in v3 (§7).  If a non-zero backward walker encounters a message
+/// whose postamble has `total_length = 0` (non-seekable streaming
+/// producer), that walker yields and the forward walker completes
+/// the scan alone.
+///
+/// `max_message_size` bounds the backward search for the postamble
+/// END_MAGIC inside a potentially corrupt file.  The default of
+/// 4 GiB is a hard upper bound; configure smaller values when the
+/// producer guarantees smaller messages.
+#[derive(Debug, Clone)]
+pub struct ScanOptions {
+    pub bidirectional: bool,
+    pub max_message_size: u64,
+}
+
+impl Default for ScanOptions {
+    fn default() -> Self {
+        Self {
+            bidirectional: true,
+            max_message_size: 4 * 1024 * 1024 * 1024,
+        }
+    }
+}
+
 /// Scan a multi-message buffer for message boundaries.
-/// Returns (offset, length) of each message found.
+///
+/// Delegates to [`scan_with_options`] with the default options
+/// (bidirectional walk enabled).  Returns `(offset, length)` for
+/// each message found.
 #[tracing::instrument(skip(buf), fields(buf_len = buf.len()))]
 pub fn scan(buf: &[u8]) -> Vec<(usize, usize)> {
-    let mut messages = Vec::new();
-    let mut pos = 0;
+    scan_with_options(buf, &ScanOptions::default())
+}
 
-    while pos + PREAMBLE_SIZE + POSTAMBLE_SIZE <= buf.len() {
-        if &buf[pos..pos + MAGIC.len()] == MAGIC {
-            // Try to read preamble
-            if let Ok(preamble) = Preamble::read_from(&buf[pos..]) {
-                if preamble.total_length > 0 {
-                    let Ok(total) = usize::try_from(preamble.total_length) else {
-                        pos += 1;
-                        continue;
-                    };
-                    if pos + total <= buf.len() {
-                        // Validate end magic
-                        let end_magic_offset = pos + total - 8;
-                        if &buf[end_magic_offset..end_magic_offset + 8] == crate::wire::END_MAGIC {
-                            messages.push((pos, total));
-                            pos += total;
-                            continue;
-                        }
-                    }
-                } else {
-                    // Streaming mode: scan forward to find end magic
-                    // Look for the next 39277777 pattern
-                    let mut end_pos = pos + PREAMBLE_SIZE;
-                    let mut found = false;
-                    while end_pos + 8 <= buf.len() {
-                        if &buf[end_pos..end_pos + 8] == crate::wire::END_MAGIC {
-                            let msg_len = end_pos + 8 - pos;
-                            messages.push((pos, msg_len));
-                            pos = end_pos + 8;
-                            found = true;
-                            break;
-                        }
-                        end_pos += 1;
-                    }
-                    if found {
-                        continue;
-                    }
-                }
+/// Scan a multi-message buffer with explicit options.
+///
+/// When `opts.bidirectional` is `true`, uses a meet-in-the-middle
+/// walker pair.  When `false`, falls back to pure forward scanning
+/// (identical to pre-v3 behaviour).
+#[tracing::instrument(skip(buf, opts), fields(buf_len = buf.len(), bidir = opts.bidirectional))]
+pub fn scan_with_options(buf: &[u8], opts: &ScanOptions) -> Vec<(usize, usize)> {
+    if !opts.bidirectional {
+        return scan_forward_all(buf, 0, buf.len());
+    }
+    scan_bidirectional(buf, opts)
+}
+
+/// Try a single forward hop starting at `pos`.
+///
+/// Returns `Some((start, length))` when a full message was located;
+/// returns `None` when the preamble does not start at `pos` (caller
+/// should advance one byte and retry).  Zero is returned through
+/// `Some` as well for streaming messages (their length is the
+/// offset to the next `END_MAGIC`).
+///
+/// `bound_end` is the exclusive upper bound on the scan — the
+/// forward walker will not return a message whose end would exceed
+/// `bound_end`.  This is the mechanism by which the bidirectional
+/// walker limits forward progress once the backward walker has
+/// staked out the tail of the buffer.
+fn try_forward_hop(buf: &[u8], pos: usize, bound_end: usize) -> Option<(usize, usize)> {
+    if pos + PREAMBLE_SIZE + POSTAMBLE_SIZE > bound_end {
+        return None;
+    }
+    if &buf[pos..pos + MAGIC.len()] != MAGIC {
+        return None;
+    }
+    let preamble = Preamble::read_from(&buf[pos..]).ok()?;
+    if preamble.total_length > 0 {
+        let total = usize::try_from(preamble.total_length).ok()?;
+        if pos + total > bound_end {
+            return None;
+        }
+        // Validate END_MAGIC lives where the preamble claims.
+        let end_magic_offset = pos + total - 8;
+        if &buf[end_magic_offset..end_magic_offset + 8] == crate::wire::END_MAGIC {
+            return Some((pos, total));
+        }
+        return None;
+    }
+    // Streaming message — scan forward for END_MAGIC bounded by
+    // `bound_end`.
+    let mut end_pos = pos + PREAMBLE_SIZE;
+    while end_pos + 8 <= bound_end {
+        if &buf[end_pos..end_pos + 8] == crate::wire::END_MAGIC {
+            let msg_len = end_pos + 8 - pos;
+            return Some((pos, msg_len));
+        }
+        end_pos += 1;
+    }
+    None
+}
+
+/// Forward-only scan over `buf[range_start..range_end)`.
+fn scan_forward_all(buf: &[u8], range_start: usize, range_end: usize) -> Vec<(usize, usize)> {
+    let mut messages = Vec::new();
+    let mut pos = range_start;
+    while pos + PREAMBLE_SIZE + POSTAMBLE_SIZE <= range_end {
+        match try_forward_hop(buf, pos, range_end) {
+            Some((start, total)) => {
+                messages.push((start, total));
+                pos = start + total;
+            }
+            None => pos += 1,
+        }
+    }
+    messages
+}
+
+/// Outcome of a single backward hop.
+enum BackwardHop {
+    /// Found a message at `(start, length)`; the caller should
+    /// continue backward from `start`.
+    Hit(usize, usize),
+    /// A postamble's `total_length` field was zero — this message
+    /// was produced by a streaming non-seekable sink and its start
+    /// cannot be determined in O(1).  The backward walker must stop;
+    /// the forward walker will handle the remaining region.
+    StreamingStop,
+    /// No further postamble found in the bounded backward search.
+    None,
+}
+
+/// Try a single backward hop ending at `bound_end` (exclusive).
+///
+/// Reads the last 8 bytes of `buf[range_start..bound_end)` and
+/// checks for `END_MAGIC`; if present, reads the mirrored
+/// `total_length` at offset `bound_end - 16` and verifies that
+/// `buf[bound_end - total_length..]` starts with `TENSOGRM`.
+fn try_backward_hop(buf: &[u8], range_start: usize, bound_end: usize) -> BackwardHop {
+    if bound_end < range_start + PREAMBLE_SIZE + POSTAMBLE_SIZE {
+        return BackwardHop::None;
+    }
+    if &buf[bound_end - 8..bound_end] != crate::wire::END_MAGIC {
+        return BackwardHop::None;
+    }
+    // Parse the full postamble at `bound_end - POSTAMBLE_SIZE`.
+    let pa_start = bound_end - POSTAMBLE_SIZE;
+    let postamble = match Postamble::read_from(&buf[pa_start..bound_end]) {
+        Ok(p) => p,
+        Err(_) => return BackwardHop::None,
+    };
+    if postamble.total_length == 0 {
+        // Streaming non-seekable: can't jump backward.
+        return BackwardHop::StreamingStop;
+    }
+    let total = match usize::try_from(postamble.total_length) {
+        Ok(t) => t,
+        Err(_) => return BackwardHop::None,
+    };
+    if total > bound_end - range_start {
+        return BackwardHop::None;
+    }
+    let msg_start = bound_end - total;
+    if &buf[msg_start..msg_start + MAGIC.len()] != MAGIC {
+        return BackwardHop::None;
+    }
+    // Sanity: validate the preamble itself.
+    if Preamble::read_from(&buf[msg_start..]).is_err() {
+        return BackwardHop::None;
+    }
+    BackwardHop::Hit(msg_start, total)
+}
+
+/// Meet-in-the-middle bidirectional scan.
+///
+/// Alternates forward and backward hops from the two ends of the
+/// buffer until they meet, falling back to pure forward scan of
+/// the residual middle once the walkers cross (or when the
+/// backward walker yields on a streaming non-seekable message).
+fn scan_bidirectional(buf: &[u8], _opts: &ScanOptions) -> Vec<(usize, usize)> {
+    let mut fwd: Vec<(usize, usize)> = Vec::new();
+    let mut bwd: Vec<(usize, usize)> = Vec::new();
+    let mut fwd_pos: usize = 0;
+    let mut bwd_end: usize = buf.len();
+
+    loop {
+        // Stop when walkers would overlap.
+        if fwd_pos + PREAMBLE_SIZE + POSTAMBLE_SIZE > bwd_end {
+            break;
+        }
+
+        // One forward hop: advance one byte on miss, one message
+        // on hit.  Caps the forward range at `bwd_end` so we don't
+        // step into the region already claimed by the backward
+        // walker.
+        match try_forward_hop(buf, fwd_pos, bwd_end) {
+            Some((start, total)) => {
+                fwd.push((start, total));
+                fwd_pos = start + total;
+            }
+            None => {
+                fwd_pos += 1;
+                continue;
             }
         }
-        pos += 1;
+
+        // Stop when walkers would overlap.
+        if fwd_pos + PREAMBLE_SIZE + POSTAMBLE_SIZE > bwd_end {
+            break;
+        }
+
+        // One backward hop.  On a streaming-non-seekable yield,
+        // drop to forward-only for the residual and return.
+        match try_backward_hop(buf, fwd_pos, bwd_end) {
+            BackwardHop::Hit(start, total) => {
+                bwd.push((start, total));
+                bwd_end = start;
+            }
+            BackwardHop::StreamingStop | BackwardHop::None => {
+                // Forward walker finishes the residual region.
+                let residual = scan_forward_all(buf, fwd_pos, bwd_end);
+                fwd.extend(residual);
+                bwd.reverse();
+                fwd.extend(bwd);
+                return fwd;
+            }
+        }
     }
 
-    messages
+    // Scan any residual sliver between the walkers (usually empty).
+    let residual = scan_forward_all(buf, fwd_pos, bwd_end);
+    fwd.extend(residual);
+    bwd.reverse();
+    fwd.extend(bwd);
+    fwd
 }
 
 // ── File-based scan ──────────────────────────────────────────────────────────
@@ -977,7 +1160,18 @@ pub fn scan(buf: &[u8]) -> Vec<(usize, usize)> {
 ///
 /// Reads preamble-sized chunks and seeks forward, avoiding full-file reads
 /// for large files. Returns the same `(offset, length)` pairs as `scan()`.
+///
+/// Delegates to [`scan_file_with_options`] with the default
+/// options (bidirectional walk enabled).
 pub fn scan_file(file: &mut (impl std::io::Read + std::io::Seek)) -> Result<Vec<(usize, usize)>> {
+    scan_file_with_options(file, &ScanOptions::default())
+}
+
+/// Scan a file with explicit scan options.
+pub fn scan_file_with_options(
+    file: &mut (impl std::io::Read + std::io::Seek),
+    opts: &ScanOptions,
+) -> Result<Vec<(usize, usize)>> {
     use std::io::SeekFrom;
 
     let file_len_u64 = file.seek(SeekFrom::End(0))?;
@@ -986,12 +1180,28 @@ pub fn scan_file(file: &mut (impl std::io::Read + std::io::Seek)) -> Result<Vec<
     })?;
     file.seek(SeekFrom::Start(0))?;
 
-    let mut messages = Vec::new();
-    let mut pos: usize = 0;
+    if !opts.bidirectional {
+        return scan_file_forward(file, 0, file_len);
+    }
+    scan_file_bidirectional(file, file_len)
+}
 
+/// Forward-only scan over `file[range_start..range_end)` using
+/// seek-and-read I/O.  Factored out of the old `scan_file` so the
+/// bidirectional entry point can reuse it for the residual region
+/// between the two walkers.
+fn scan_file_forward(
+    file: &mut (impl std::io::Read + std::io::Seek),
+    range_start: usize,
+    range_end: usize,
+) -> Result<Vec<(usize, usize)>> {
+    use std::io::SeekFrom;
+
+    let mut messages = Vec::new();
+    let mut pos: usize = range_start;
     let mut preamble_buf = [0u8; PREAMBLE_SIZE];
 
-    while pos + PREAMBLE_SIZE + POSTAMBLE_SIZE <= file_len {
+    while pos + PREAMBLE_SIZE + POSTAMBLE_SIZE <= range_end {
         file.seek(SeekFrom::Start(pos as u64))?;
         if file.read_exact(&mut preamble_buf).is_err() {
             break;
@@ -1005,7 +1215,7 @@ pub fn scan_file(file: &mut (impl std::io::Read + std::io::Seek)) -> Result<Vec<
                     pos += 1;
                     continue;
                 };
-                if pos + total <= file_len {
+                if pos + total <= range_end {
                     // Read end magic to validate
                     let end_magic_offset = pos + total - 8;
                     file.seek(SeekFrom::Start(end_magic_offset as u64))?;
@@ -1018,21 +1228,19 @@ pub fn scan_file(file: &mut (impl std::io::Read + std::io::Seek)) -> Result<Vec<
                 }
             } else {
                 // Streaming mode: scan forward for END_MAGIC
-                // Read in chunks to find the terminator
                 let mut search_pos = pos + PREAMBLE_SIZE;
                 let mut found = false;
                 let chunk_size = 4096;
                 let mut chunk = vec![0u8; chunk_size];
 
-                while search_pos + 8 <= file_len {
+                while search_pos + 8 <= range_end {
                     file.seek(SeekFrom::Start(search_pos as u64))?;
-                    let to_read = (file_len - search_pos).min(chunk_size);
+                    let to_read = (range_end - search_pos).min(chunk_size);
                     let buf = &mut chunk[..to_read];
                     if file.read_exact(buf).is_err() {
                         break;
                     }
 
-                    // Search for END_MAGIC in this chunk
                     for i in 0..to_read.saturating_sub(7) {
                         if &buf[i..i + 8] == crate::wire::END_MAGIC {
                             let end_pos = search_pos + i;
@@ -1058,6 +1266,143 @@ pub fn scan_file(file: &mut (impl std::io::Read + std::io::Seek)) -> Result<Vec<
     }
 
     Ok(messages)
+}
+
+/// Meet-in-the-middle bidirectional scan over a seekable stream.
+///
+/// Each backward hop reads `POSTAMBLE_SIZE` bytes ending at the
+/// current backward cursor, parses the postamble, and jumps by
+/// `postamble.total_length`.  Yields to the forward walker on a
+/// zero `total_length` (streaming non-seekable sink).
+fn scan_file_bidirectional(
+    file: &mut (impl std::io::Read + std::io::Seek),
+    file_len: usize,
+) -> Result<Vec<(usize, usize)>> {
+    use std::io::SeekFrom;
+
+    let mut fwd: Vec<(usize, usize)> = Vec::new();
+    let mut bwd: Vec<(usize, usize)> = Vec::new();
+    let mut fwd_pos: usize = 0;
+    let mut bwd_end: usize = file_len;
+
+    let mut preamble_buf = [0u8; PREAMBLE_SIZE];
+    let mut postamble_buf = [0u8; POSTAMBLE_SIZE];
+
+    loop {
+        if fwd_pos + PREAMBLE_SIZE + POSTAMBLE_SIZE > bwd_end {
+            break;
+        }
+
+        // ── Forward hop ────────────────────────────────────────
+        file.seek(SeekFrom::Start(fwd_pos as u64))?;
+        let read_fwd = file.read_exact(&mut preamble_buf).is_ok();
+        let mut advanced = false;
+        if read_fwd
+            && &preamble_buf[..MAGIC.len()] == MAGIC
+            && let Ok(preamble) = Preamble::read_from(&preamble_buf)
+        {
+            if preamble.total_length > 0 {
+                if let Ok(total) = usize::try_from(preamble.total_length)
+                    && fwd_pos + total <= bwd_end
+                {
+                    let end_magic_offset = fwd_pos + total - 8;
+                    file.seek(SeekFrom::Start(end_magic_offset as u64))?;
+                    let mut em = [0u8; 8];
+                    if file.read_exact(&mut em).is_ok() && &em == crate::wire::END_MAGIC {
+                        fwd.push((fwd_pos, total));
+                        fwd_pos += total;
+                        advanced = true;
+                    }
+                }
+            } else {
+                // Streaming message — delegate to forward-only
+                // walker for the current bounded range.  The
+                // forward-only walker will consume as many
+                // messages as it can up to `bwd_end`.
+                let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
+                fwd.extend(residual);
+                bwd.reverse();
+                fwd.extend(bwd);
+                return Ok(fwd);
+            }
+        }
+        if !advanced {
+            fwd_pos += 1;
+            continue;
+        }
+
+        if fwd_pos + PREAMBLE_SIZE + POSTAMBLE_SIZE > bwd_end {
+            break;
+        }
+
+        // ── Backward hop ───────────────────────────────────────
+        let pa_start = bwd_end - POSTAMBLE_SIZE;
+        file.seek(SeekFrom::Start(pa_start as u64))?;
+        if file.read_exact(&mut postamble_buf).is_err() {
+            // I/O error — fall back to forward only.
+            let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
+            fwd.extend(residual);
+            bwd.reverse();
+            fwd.extend(bwd);
+            return Ok(fwd);
+        }
+        match Postamble::read_from(&postamble_buf) {
+            Ok(postamble) if postamble.total_length != 0 => {
+                let total = match usize::try_from(postamble.total_length) {
+                    Ok(t) => t,
+                    Err(_) => {
+                        // Oversized — fall back.
+                        let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
+                        fwd.extend(residual);
+                        bwd.reverse();
+                        fwd.extend(bwd);
+                        return Ok(fwd);
+                    }
+                };
+                if total > bwd_end - fwd_pos {
+                    // Claimed length is implausibly large — fall back.
+                    let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
+                    fwd.extend(residual);
+                    bwd.reverse();
+                    fwd.extend(bwd);
+                    return Ok(fwd);
+                }
+                let msg_start = bwd_end - total;
+                file.seek(SeekFrom::Start(msg_start as u64))?;
+                if file.read_exact(&mut preamble_buf).is_err()
+                    || &preamble_buf[..MAGIC.len()] != MAGIC
+                    || Preamble::read_from(&preamble_buf).is_err()
+                {
+                    // TENSOGRM magic absent at the computed start —
+                    // the postamble pointer lies; fall back to forward.
+                    let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
+                    fwd.extend(residual);
+                    bwd.reverse();
+                    fwd.extend(bwd);
+                    return Ok(fwd);
+                }
+                bwd.push((msg_start, total));
+                bwd_end = msg_start;
+            }
+            Ok(_) | Err(_) => {
+                // Postamble said `total_length = 0` (streaming
+                // non-seekable) or was corrupt — back off, let the
+                // forward walker clean up.
+                let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
+                fwd.extend(residual);
+                bwd.reverse();
+                fwd.extend(bwd);
+                return Ok(fwd);
+            }
+        }
+    }
+
+    // Scan any residual middle using forward-only.
+    let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
+    fwd.extend(residual);
+    bwd.reverse();
+    fwd.extend(bwd);
+    Ok(fwd)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

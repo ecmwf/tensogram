@@ -1784,3 +1784,156 @@ fn postamble_end_magic_always_at_last_8_bytes() {
     let backfilled = enc.finish_with_backfill().unwrap().into_inner();
     assert_eq!(&backfilled[backfilled.len() - 8..], b"39277777");
 }
+
+// ── Phase 3: bidirectional scan ─────────────────────────────────────────────
+
+fn encode_sample(version_tag: u32) -> Vec<u8> {
+    // Produce a small, well-formed message with a per-message tag so
+    // callers can tell messages apart by payload.
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![4],
+        dtype: Dtype::Uint32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+        hash: None,
+    };
+    let data: Vec<u8> = (0..4)
+        .flat_map(|i| (version_tag + i).to_le_bytes())
+        .collect();
+    encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap()
+}
+
+/// Concatenate 10 well-formed messages and scan them.  Bidirectional
+/// scan must return the same boundaries as forward-only scan.
+#[test]
+fn scan_bidirectional_matches_forward_on_10_messages() {
+    let mut buf = Vec::new();
+    for i in 0..10 {
+        buf.extend_from_slice(&encode_sample(i as u32 * 100));
+    }
+
+    let fwd_only_opts = ScanOptions {
+        bidirectional: false,
+        ..ScanOptions::default()
+    };
+    let bidir_opts = ScanOptions::default();
+
+    let fwd_only = scan_with_options(&buf, &fwd_only_opts);
+    let bidir = scan_with_options(&buf, &bidir_opts);
+
+    assert_eq!(fwd_only.len(), 10);
+    assert_eq!(bidir.len(), 10);
+    assert_eq!(bidir, fwd_only, "bidir scan must preserve order");
+}
+
+/// Scan via `scan()` (default options) agrees with explicit
+/// forward-only walk.
+#[test]
+fn scan_default_is_bidirectional_and_equivalent_to_forward() {
+    let mut buf = Vec::new();
+    for i in 0..5 {
+        buf.extend_from_slice(&encode_sample(i));
+    }
+    let default = scan(&buf);
+    let fwd = scan_with_options(
+        &buf,
+        &ScanOptions {
+            bidirectional: false,
+            ..ScanOptions::default()
+        },
+    );
+    assert_eq!(default, fwd);
+}
+
+/// When a mid-file message has `postamble.total_length = 0`
+/// (streaming non-seekable sink), the backward walker yields and
+/// the forward walker completes the scan.  Output must still match
+/// forward-only.
+#[test]
+fn scan_bidirectional_falls_back_on_mid_file_streaming_marker() {
+    use tensogram::wire::POSTAMBLE_SIZE;
+
+    // Build 5 well-formed messages.
+    let mut msgs: Vec<Vec<u8>> = (0..5).map(encode_sample).collect();
+
+    // Zero the postamble `total_length` of message index 2 — this
+    // simulates a streaming non-seekable producer's output sitting
+    // in the middle of the file.
+    let mid = &mut msgs[2];
+    let slot = mid.len() - 16;
+    mid[slot..slot + 8].copy_from_slice(&0u64.to_be_bytes());
+
+    let mut buf = Vec::new();
+    for m in &msgs {
+        buf.extend_from_slice(m);
+    }
+
+    // Bidirectional: must still return all 5 boundaries.  The
+    // fact that message 2's postamble says "unknown length" doesn't
+    // prevent the forward walker from completing — it uses the
+    // preamble's `total_length`, which the encoder did populate
+    // for the buffered-then-tampered fixture.
+    let bidir = scan_with_options(&buf, &ScanOptions::default());
+    let fwd = scan_with_options(
+        &buf,
+        &ScanOptions {
+            bidirectional: false,
+            ..ScanOptions::default()
+        },
+    );
+    assert_eq!(bidir.len(), 5, "all 5 messages must be found");
+    assert_eq!(bidir, fwd);
+
+    // Sanity: the `POSTAMBLE_SIZE` constant is 24 in v3 — the
+    // tamper above wrote 8 zeros at `len - 16` (the total_length
+    // slot between first_footer_offset and END_MAGIC).  This is
+    // just a self-check so this test breaks loudly if POSTAMBLE_SIZE
+    // ever changes.
+    assert_eq!(POSTAMBLE_SIZE, 24);
+}
+
+/// Scan matches under both scan directions for a 1-message buffer.
+#[test]
+fn scan_single_message_works_in_both_modes() {
+    let buf = encode_sample(42);
+    let fwd = scan_with_options(
+        &buf,
+        &ScanOptions {
+            bidirectional: false,
+            ..ScanOptions::default()
+        },
+    );
+    let bidir = scan_with_options(&buf, &ScanOptions::default());
+    assert_eq!(fwd.len(), 1);
+    assert_eq!(bidir, fwd);
+}
+
+/// File-level bidirectional scan through an in-memory Cursor must
+/// agree with the in-memory scan.
+#[test]
+fn scan_file_bidirectional_matches_in_memory() {
+    use std::io::Cursor;
+    use tensogram::framing;
+
+    let mut buf = Vec::new();
+    for i in 0..8 {
+        buf.extend_from_slice(&encode_sample(i * 17));
+    }
+
+    let mut cursor = Cursor::new(buf.clone());
+    let file_result = framing::scan_file(&mut cursor).unwrap();
+    let mem_result = scan(&buf);
+    assert_eq!(file_result, mem_result);
+    assert_eq!(file_result.len(), 8);
+}
