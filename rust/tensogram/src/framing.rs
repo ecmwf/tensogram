@@ -1127,6 +1127,94 @@ pub fn decode_metadata_only(buf: &[u8]) -> Result<GlobalMetadata> {
     ))
 }
 
+/// Walk the frame chain of a single message and collect the
+/// inline hash slot of every data-object frame, in emission order.
+///
+/// Returns `Ok(Vec<Option<u64>>)` with one entry per
+/// `NTensorFrame`:
+///
+/// - `Some(digest)` when the frame's hash slot holds a non-zero
+///   xxh3-64 digest (the common case when `HASHES_PRESENT = 1`).
+/// - `None` when the slot is `0x0000000000000000` — either
+///   because the message's preamble flag clears
+///   `HASHES_PRESENT` or because a future selective-hashing
+///   policy opted-out this specific frame.
+///
+/// This is the cheap specialization of [`decode_message`] for
+/// callers that only want the per-object hashes and don't care
+/// about CBOR descriptors or payload bytes — the walker visits
+/// only the 16-byte frame headers plus 8 bytes per hash slot,
+/// skipping CBOR parsing entirely.  Useful for FFI inline-hash
+/// surfaces and fast integrity scans.
+///
+/// # Errors
+///
+/// Returns `TensogramError::Framing` on any structural problem
+/// (buffer too short, bad frame header, total_length overflow,
+/// unknown frame type).  Callers that can tolerate a partial
+/// result should fall back to `decode_message` and recover from
+/// that function's fields instead.
+pub fn data_object_inline_hashes(buf: &[u8]) -> Result<Vec<Option<u64>>> {
+    let preamble = Preamble::read_from(buf)?;
+
+    let msg_end = if preamble.total_length > 0 {
+        let total_len = usize::try_from(preamble.total_length).map_err(|_| {
+            TensogramError::Framing(format!(
+                "total_length {} overflows usize",
+                preamble.total_length
+            ))
+        })?;
+        total_len.checked_sub(POSTAMBLE_SIZE).ok_or_else(|| {
+            TensogramError::Framing(format!(
+                "total_length {} too small for postamble ({POSTAMBLE_SIZE} bytes)",
+                preamble.total_length
+            ))
+        })?
+    } else {
+        buf.len().checked_sub(POSTAMBLE_SIZE).ok_or_else(|| {
+            TensogramError::Framing(format!(
+                "buffer too short for postamble: {} < {POSTAMBLE_SIZE}",
+                buf.len()
+            ))
+        })?
+    };
+
+    let mut hashes = Vec::new();
+    let mut pos = PREAMBLE_SIZE;
+    while pos < msg_end {
+        if pos + FRAME_HEADER_SIZE > buf.len() || &buf[pos..pos + 2] != b"FR" {
+            // Ragged tail; forward scanner would byte-walk here —
+            // for an inline-hash collector we stop cleanly at the
+            // first mis-alignment.
+            break;
+        }
+        let fh = FrameHeader::read_from(&buf[pos..])?;
+        let frame_total = usize::try_from(fh.total_length).map_err(|_| {
+            TensogramError::Framing(format!(
+                "frame total_length {} overflows usize",
+                fh.total_length
+            ))
+        })?;
+        if pos + frame_total > buf.len() {
+            return Err(TensogramError::Framing(format!(
+                "frame at offset {pos} extends past buffer end ({} > {})",
+                pos + frame_total,
+                buf.len()
+            )));
+        }
+        if fh.frame_type.is_data_object() {
+            // Hash slot sits at `frame_end - 12` regardless of
+            // frame type (v3 §2.2 common tail).
+            let slot_start = pos + frame_total - crate::wire::FRAME_COMMON_FOOTER_SIZE;
+            let slot = crate::wire::read_u64_be(buf, slot_start);
+            hashes.push(if slot == 0 { None } else { Some(slot) });
+        }
+        pos += frame_total;
+        pos = (pos + 7) & !7; // 8-byte alignment padding
+    }
+    Ok(hashes)
+}
+
 // ── Scan ─────────────────────────────────────────────────────────────────────
 
 /// Options controlling the in-memory `scan` and file-level
@@ -1150,7 +1238,14 @@ pub fn decode_metadata_only(buf: &[u8]) -> Result<GlobalMetadata> {
 /// detection tighter.
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
+    /// Enable meet-in-the-middle walking.  When `false`, the
+    /// scanner walks forward from offset 0 only (pre-v3 behaviour
+    /// — still correct, just without the hop-count halving).
     pub bidirectional: bool,
+    /// Upper bound on the `total_length` value advertised by a
+    /// postamble.  Anything larger is treated as corruption and
+    /// the backward walker yields to the forward walker.
+    /// Default 4 GiB.
     pub max_message_size: u64,
 }
 

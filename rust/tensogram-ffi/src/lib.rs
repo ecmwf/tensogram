@@ -399,43 +399,30 @@ struct MessageCaches {
 }
 
 /// Extract each data-object frame's inline hash slot from a
-/// single-message wire buffer.
+/// single-message wire buffer, via the cheap
+/// [`tensogram::framing::data_object_inline_hashes`] walker.
 ///
-/// Returns one entry per NTensorFrame in emission order; `None`
-/// means the slot was zero (HASHES_PRESENT=0 on the message, or
-/// the frame-level hash wasn't computed).  Returns an empty Vec
-/// if the buffer doesn't contain a parseable message, so callers
-/// can proceed without needing to handle the error separately
-/// (the preceding `decode()` call will have already surfaced any
-/// structural issue).
+/// Returns one entry per `NTensorFrame` in emission order:
+/// `Some(digest)` when the slot is populated, `None` when it
+/// is zero (message-level `HASHES_PRESENT = 0`, or the frame
+/// wasn't hashed).  Returns an empty `Vec` if the buffer
+/// doesn't contain a parseable message — the preceding
+/// `decode()` in every FFI caller will already have surfaced
+/// any structural error.
+///
+/// Cheaper than going through `decode_message` because it
+/// parses only frame headers, not CBOR descriptors.  Matters
+/// for messages with thousands of objects where we'd otherwise
+/// pay a CBOR-parse hit just to locate each inline slot.
 fn extract_inline_hashes(buf: &[u8]) -> Vec<Option<u64>> {
-    use tensogram::framing::{decode_message, scan};
-    use tensogram::wire::{FRAME_COMMON_FOOTER_SIZE, FrameHeader};
+    use tensogram::framing::{data_object_inline_hashes, scan};
 
     let messages = scan(buf);
     let Some(&(msg_off, msg_len)) = messages.first() else {
         return Vec::new();
     };
     let msg = &buf[msg_off..msg_off + msg_len];
-    let decoded = match decode_message(msg) {
-        Ok(d) => d,
-        Err(_) => return Vec::new(),
-    };
-    decoded
-        .objects
-        .iter()
-        .map(|(_, _, _, frame_offset)| {
-            let frame = msg.get(*frame_offset..)?;
-            let fh = FrameHeader::read_from(frame).ok()?;
-            let total = usize::try_from(fh.total_length).ok()?;
-            if total < FRAME_COMMON_FOOTER_SIZE || *frame_offset + total > msg.len() {
-                return None;
-            }
-            let slot_start = *frame_offset + total - FRAME_COMMON_FOOTER_SIZE;
-            let slot = u64::from_be_bytes(msg[slot_start..slot_start + 8].try_into().ok()?);
-            if slot == 0 { None } else { Some(slot) }
-        })
-        .collect()
+    data_object_inline_hashes(msg).unwrap_or_default()
 }
 
 /// Build all CString caches from the object descriptors and
@@ -1930,12 +1917,19 @@ pub extern "C" fn tgm_file_decode_message(
 
     match f.decode_message(index, &options) {
         Ok((global_metadata, objects)) => {
-            // File-based decode path: we don't have the raw message
-            // buffer here, so inline hashes aren't reachable
-            // without re-reading from disk.  Leave them empty —
-            // callers that need the inline hash should use the
-            // buffer-based `tgm_decode` entry point.
-            let caches = build_message_caches(&objects, &[]);
+            // Inline hashes: re-read the raw message bytes and run
+            // them through the cheap frame-header walker.  This
+            // costs one extra message read (typically memory-
+            // mapped) but gives FFI file-path callers parity with
+            // the buffer path's hash accessors.  Silent fallback
+            // to empty on read error — `decode_message` above
+            // already succeeded so this branch is defensive.
+            let inline_hashes = f
+                .read_message(index)
+                .ok()
+                .and_then(|bytes| tensogram::framing::data_object_inline_hashes(&bytes).ok())
+                .unwrap_or_default();
+            let caches = build_message_caches(&objects, &inline_hashes);
             let msg = Box::new(TgmMessage {
                 global_metadata,
                 objects,
@@ -2537,10 +2531,14 @@ pub extern "C" fn tgm_object_iter_next(
         Some(Ok((descriptor, data))) => {
             let global_metadata = it.global_metadata.clone();
             let objects = vec![(descriptor, data)];
-            // Iterator path: `data` is the decoded payload, not the
-            // raw message buffer.  Inline hashes aren't reachable
-            // from here; callers needing them should use the
-            // buffer-based `tgm_decode` entry point.
+            // Iterator path: the object iterator's `data` is the
+            // already-decoded payload; the original frame's inline
+            // hash slot isn't accessible from this layer without
+            // re-reading from the source and re-scanning.  Callers
+            // that need per-object hashes should either use
+            // `tgm_file_decode_message` (which surfaces the hash
+            // via the file-re-read path), or the buffer-based
+            // `tgm_decode` if the raw bytes are already in memory.
             let caches = build_message_caches(&objects, &[]);
             let msg = Box::new(TgmMessage {
                 global_metadata,
@@ -5071,10 +5069,10 @@ mod tests {
     /// confirm the inline-hash slot is surfaced through the
     /// `tgm_payload_has_hash` / `tgm_object_hash_*` accessors.
     ///
-    /// Note: the file-based decode path (`tgm_file_decode_message`)
-    /// doesn't carry the raw buffer and so cannot surface inline
-    /// hashes — callers that need the hash should go through
-    /// `tgm_decode` after reading the file into memory.
+    /// As of pass 5 the file-based decode path
+    /// (`tgm_file_decode_message`) also surfaces inline hashes
+    /// via a re-read of the raw message bytes — see
+    /// `ffi_file_decode_surfaces_inline_hash`.
     #[test]
     fn ffi_streaming_encoder_with_hash() {
         let dir = std::env::temp_dir();
@@ -5129,6 +5127,98 @@ mod tests {
         assert_eq!(hv.len(), 16, "xxh3 digest is 16 hex chars");
 
         super::tgm_message_free(msg);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Pass-5 cross-language parity: the file-based decode path
+    /// (`tgm_file_decode_message`) surfaces the same inline hash
+    /// as the buffer-based path (`tgm_decode`) for the same
+    /// underlying bytes.  Pins the symmetry added by the
+    /// `read_message` + `data_object_inline_hashes` two-step
+    /// inside the FFI file decoder.
+    #[test]
+    fn ffi_file_decode_surfaces_inline_hash() {
+        // Encode a hashed message into a temp file via the streaming
+        // encoder, then open it with tgm_file_open + decode via
+        // tgm_file_decode_message and confirm the hash accessors
+        // report the same digest that tgm_decode surfaces.
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_file_hash.tgm");
+        let _ = std::fs::remove_file(&path);
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let meta_json = CString::new(r#"{"version":3}"#).unwrap();
+        let hash_algo = CString::new("xxh3").unwrap();
+        let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_streaming_encoder_create(
+                c_path.as_ptr(),
+                meta_json.as_ptr(),
+                hash_algo.as_ptr(),
+                0,
+                &mut enc,
+            ),
+            super::TgmError::Ok
+        ));
+        let values = [1.0f32, 2.0, 3.0];
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let desc_json = CString::new(format!(
+            r#"{{"type":"ntensor","ndim":1,"shape":[{}],"strides":[1],"dtype":"float32","byte_order":"{}","encoding":"none","filter":"none","compression":"none"}}"#,
+            values.len(),
+            if cfg!(target_endian = "little") { "little" } else { "big" },
+        )).unwrap();
+        assert!(matches!(
+            super::tgm_streaming_encoder_write(enc, desc_json.as_ptr(), data.as_ptr(), data.len(),),
+            super::TgmError::Ok
+        ));
+        assert!(matches!(
+            super::tgm_streaming_encoder_finish(enc),
+            super::TgmError::Ok
+        ));
+        super::tgm_streaming_encoder_free(enc);
+
+        // File path: tgm_file_open + tgm_file_decode_message.
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_file_open(c_path.as_ptr(), &mut file),
+            super::TgmError::Ok
+        ));
+        let mut file_msg: *mut super::TgmMessage = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_file_decode_message(file, 0, 0, 0, 0, &mut file_msg),
+            super::TgmError::Ok
+        ));
+        let file_has = super::tgm_payload_has_hash(file_msg, 0);
+        let file_hv_ptr = super::tgm_object_hash_value(file_msg, 0);
+        assert_eq!(file_has, 1);
+        assert!(!file_hv_ptr.is_null());
+        let file_hv = unsafe { CStr::from_ptr(file_hv_ptr) }
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // Buffer path: same file, read into memory, tgm_decode.
+        let bytes = std::fs::read(&path).unwrap();
+        let mut buf_msg: *mut super::TgmMessage = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_decode(bytes.as_ptr(), bytes.len(), 0, 0, 0, &mut buf_msg),
+            super::TgmError::Ok
+        ));
+        let buf_hv_ptr = super::tgm_object_hash_value(buf_msg, 0);
+        let buf_hv = unsafe { CStr::from_ptr(buf_hv_ptr) }
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        assert_eq!(
+            file_hv, buf_hv,
+            "file-path and buffer-path hash values must agree"
+        );
+        assert_eq!(file_hv.len(), 16, "xxh3 digest is 16 hex chars");
+
+        super::tgm_message_free(file_msg);
+        super::tgm_message_free(buf_msg);
+        super::tgm_file_close(file);
         let _ = std::fs::remove_file(&path);
     }
 

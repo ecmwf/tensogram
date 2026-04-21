@@ -2380,3 +2380,162 @@ fn validate_detects_hash_frame_aggregate_tamper() {
         report.issues
     );
 }
+
+// ── Aggregate HashFrame cross-check coverage (Pass 5) ───────────────────────
+
+/// When both `HeaderHash` and `FooterHash` aggregate frames are
+/// present and carry identical hashes, validation is silent about
+/// the aggregates (no spurious `HashMismatch` from the two copies
+/// comparing to each other).
+#[test]
+fn validate_accepts_both_hash_aggregates_when_identical() {
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![2],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 8];
+    let opts = EncodeOptions {
+        create_header_hashes: true,
+        create_footer_hashes: true,
+        ..EncodeOptions::default()
+    };
+    let msg = encode(&global, &[(&desc, &data)], &opts).unwrap();
+
+    use tensogram::validate::{IssueCode, ValidateOptions, validate_message};
+    let report = validate_message(&msg, &ValidateOptions::default());
+    // No HashMismatch, no UnknownHashAlgorithm.
+    let bad = report.issues.iter().any(|i| {
+        matches!(
+            i.code,
+            IssueCode::HashMismatch | IssueCode::UnknownHashAlgorithm
+        )
+    });
+    assert!(
+        !bad,
+        "dual aggregate HashFrames with identical hashes must not flag anything, got: {:?}",
+        report.issues
+    );
+}
+
+/// Buffer `data_object_inline_hashes` returns one `Some` entry per
+/// data-object frame when hashing is enabled.
+#[test]
+fn data_object_inline_hashes_happy_path() {
+    use tensogram::framing::data_object_inline_hashes;
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![1],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![42u8; 4];
+    let msg = encode(
+        &global,
+        &[(&desc, data.as_slice()), (&desc, data.as_slice())],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
+
+    let hashes = data_object_inline_hashes(&msg).unwrap();
+    assert_eq!(hashes.len(), 2);
+    assert!(hashes.iter().all(|h| h.is_some()));
+    // Same input → same hash.  Two identical objects produce two
+    // identical inline slots.
+    assert_eq!(hashes[0], hashes[1]);
+}
+
+/// With `hash_algorithm = None` every entry is `None` — pinning
+/// the v3 contract that `HASHES_PRESENT = 0` zeros every slot.
+#[test]
+fn data_object_inline_hashes_none_when_hashing_disabled() {
+    use tensogram::framing::data_object_inline_hashes;
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![1],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 4];
+    let opts = EncodeOptions {
+        hash_algorithm: None,
+        ..Default::default()
+    };
+    let msg = encode(&global, &[(&desc, &data)], &opts).unwrap();
+
+    let hashes = data_object_inline_hashes(&msg).unwrap();
+    assert_eq!(hashes.len(), 1);
+    assert!(hashes[0].is_none());
+}
+
+/// `data_object_inline_hashes` errors on a buffer truncated
+/// *inside* a data-object frame.  Pins the "propagate structural
+/// problems" contract so callers distinguish "message with zero-
+/// hash slots" from "malformed input".
+#[test]
+fn data_object_inline_hashes_rejects_truncated_buffer() {
+    use tensogram::framing::data_object_inline_hashes;
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![100], // large payload so truncation hits the frame
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 400];
+    let mut msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    // Chop off half the message — truncates inside the data-object
+    // frame body, before the footer.  The walker sees a frame
+    // header whose declared `total_length` extends past the end.
+    msg.truncate(msg.len() / 2);
+    let result = data_object_inline_hashes(&msg);
+    assert!(
+        result.is_err(),
+        "mid-frame truncation must return Err, got: {:?}",
+        result
+    );
+}

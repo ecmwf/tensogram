@@ -39,7 +39,10 @@ pub use dtype::Dtype;
 pub use encode::{EncodeOptions, encode, encode_pre_encoded};
 pub use error::{Result, TensogramError};
 pub use file::TensogramFile;
-pub use framing::{ScanOptions, scan, scan_file, scan_file_with_options, scan_with_options};
+pub use framing::{
+    ScanOptions, data_object_inline_hashes, scan, scan_file, scan_file_with_options,
+    scan_with_options,
+};
 pub use hash::{HashAlgorithm, compute_hash, verify_hash};
 pub use iter::{FileMessageIter, MessageIter, ObjectIter, messages, objects, objects_metadata};
 pub use metadata::{RESERVED_KEY, compute_common, verify_canonical_cbor};

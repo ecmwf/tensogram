@@ -10,18 +10,48 @@ use crate::error::{Result, TensogramError};
 use crate::types::HashDescriptor;
 use crate::wire::{FRAME_HEADER_SIZE, FrameType, footer_size_for};
 
+/// Cryptographic / checksum algorithm identifiers understood by
+/// this crate's hashing surface.
+///
+/// v3 recognises a single algorithm — xxh3-64 — named `"xxh3"`
+/// on the wire (see the `algorithm` field of the
+/// [`crate::types::HashFrame`] CBOR schema).  Any other algorithm
+/// name parsed from a wire message surfaces as an
+/// `UnknownHashAlgorithm` validation warning; the inline per-frame
+/// hash slot still serves as the authoritative integrity source.
+///
+/// Adding a new variant here is deliberate: the `as_str` /
+/// `parse` match arms are exhaustive at compile time, so every
+/// call site that names an algorithm forces an explicit answer
+/// for the new variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashAlgorithm {
+    /// xxh3-64 — the canonical v3 algorithm.  64-bit digest,
+    /// rendered on the wire as a lowercase 16-character hex
+    /// string (see [`format_xxh3_digest`]).
     Xxh3,
 }
 
 impl HashAlgorithm {
+    /// Returns the wire-format string identifier for this
+    /// algorithm (e.g. `"xxh3"`).  Used by the HashFrame CBOR
+    /// encoder and the FFI `tgm_object_hash_type` accessor.
     pub fn as_str(&self) -> &'static str {
         match self {
             HashAlgorithm::Xxh3 => "xxh3",
         }
     }
 
+    /// Parse a wire-format algorithm string into a
+    /// [`HashAlgorithm`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `TensogramError::Metadata` when `s` is not a
+    /// recognised algorithm name.  v3 readers treat the error
+    /// loosely at the HashFrame layer (the inline slot remains
+    /// authoritative and an unknown algorithm becomes a warning
+    /// rather than a hard failure).
     pub fn parse(s: &str) -> Result<Self> {
         match s {
             "xxh3" => Ok(HashAlgorithm::Xxh3),
