@@ -44,7 +44,13 @@ fn extract_block_offsets(
 /// Options for decoding.
 #[derive(Debug, Clone)]
 pub struct DecodeOptions {
-    /// Whether to verify payload hashes during decode.
+    /// **No-op in v3.**  Frame-level integrity verification now
+    /// goes through `tensogram validate --checksum` or
+    /// [`crate::hash::verify_frame_hash`] on raw frame bytes; the
+    /// decode path is a pure deserialisation with no hash
+    /// checking.  Retained on the public API for source
+    /// compatibility with pre-v3 code; will be removed in a
+    /// future breaking release.
     pub verify_hash: bool,
     /// When true (the default), decoded payloads are converted to the
     /// caller's native byte order regardless of the wire byte order declared

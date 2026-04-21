@@ -1097,17 +1097,20 @@ pub fn decode_metadata_only(buf: &[u8]) -> Result<GlobalMetadata> {
 ///
 /// `bidirectional = true` (default) enables a meet-in-the-middle
 /// walker pair — one forward from offset 0, one backward from EOF —
-/// that can halve the hop count on large multi-message files.  The
-/// backward walker uses the postamble's `total_length` field added
-/// in v3 (§7).  If a non-zero backward walker encounters a message
-/// whose postamble has `total_length = 0` (non-seekable streaming
-/// producer), that walker yields and the forward walker completes
-/// the scan alone.
+/// that can halve the hop count on multi-message files.  The
+/// backward walker uses the postamble's mirrored `total_length`
+/// field (v3 §7) to jump directly to the preceding message's
+/// start without a byte-by-byte search.  If the backward walker
+/// hits a message whose postamble has `total_length = 0`
+/// (non-seekable streaming producer) or any structural anomaly,
+/// it yields and the forward walker completes the scan alone.
 ///
-/// `max_message_size` bounds the backward search for the postamble
-/// END_MAGIC inside a potentially corrupt file.  The default of
-/// 4 GiB is a hard upper bound; configure smaller values when the
-/// producer guarantees smaller messages.
+/// `max_message_size` caps the apparent message length advertised
+/// by a postamble's `total_length` field.  Any value larger than
+/// this cap is treated as corruption and the backward walker
+/// yields to the forward walker.  Default 4 GiB.  Lower this for
+/// producers that guarantee smaller messages to make corruption
+/// detection tighter.
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
     pub bidirectional: bool,
@@ -1224,11 +1227,22 @@ enum BackwardHop {
 
 /// Try a single backward hop ending at `bound_end` (exclusive).
 ///
-/// Reads the last 8 bytes of `buf[range_start..bound_end)` and
-/// checks for `END_MAGIC`; if present, reads the mirrored
-/// `total_length` at offset `bound_end - 16` and verifies that
-/// `buf[bound_end - total_length..]` starts with `TENSOGRM`.
-fn try_backward_hop(buf: &[u8], range_start: usize, bound_end: usize) -> BackwardHop {
+/// Reads the fixed-size postamble at `[bound_end - POSTAMBLE_SIZE,
+/// bound_end)` and uses its mirrored `total_length` field to
+/// compute the message start.  Returns `None` on any structural
+/// mismatch (missing END_MAGIC, bad preamble at the computed
+/// start, total_length > `max_message_size`) so the caller falls
+/// back to forward scanning.
+///
+/// `max_message_size` caps the apparent message length to guard
+/// against corruption that could otherwise cause the backward
+/// walker to jump to a nonsense offset.
+fn try_backward_hop(
+    buf: &[u8],
+    range_start: usize,
+    bound_end: usize,
+    max_message_size: u64,
+) -> BackwardHop {
     if bound_end < range_start + PREAMBLE_SIZE + POSTAMBLE_SIZE {
         return BackwardHop::None;
     }
@@ -1244,6 +1258,11 @@ fn try_backward_hop(buf: &[u8], range_start: usize, bound_end: usize) -> Backwar
     if postamble.total_length == 0 {
         // Streaming non-seekable: can't jump backward.
         return BackwardHop::StreamingStop;
+    }
+    if postamble.total_length > max_message_size {
+        // Implausibly large — likely corruption.  Bail back to the
+        // forward walker which does its own per-step validation.
+        return BackwardHop::None;
     }
     let total = match usize::try_from(postamble.total_length) {
         Ok(t) => t,
@@ -1269,7 +1288,7 @@ fn try_backward_hop(buf: &[u8], range_start: usize, bound_end: usize) -> Backwar
 /// buffer until they meet, falling back to pure forward scan of
 /// the residual middle once the walkers cross (or when the
 /// backward walker yields on a streaming non-seekable message).
-fn scan_bidirectional(buf: &[u8], _opts: &ScanOptions) -> Vec<(usize, usize)> {
+fn scan_bidirectional(buf: &[u8], opts: &ScanOptions) -> Vec<(usize, usize)> {
     let mut fwd: Vec<(usize, usize)> = Vec::new();
     let mut bwd: Vec<(usize, usize)> = Vec::new();
     let mut fwd_pos: usize = 0;
@@ -1301,15 +1320,15 @@ fn scan_bidirectional(buf: &[u8], _opts: &ScanOptions) -> Vec<(usize, usize)> {
             break;
         }
 
-        // One backward hop.  On a streaming-non-seekable yield,
-        // drop to forward-only for the residual and return.
-        match try_backward_hop(buf, fwd_pos, bwd_end) {
+        // One backward hop.  On a streaming-non-seekable yield or
+        // any structural anomaly, drop to forward-only for the
+        // residual region and return.
+        match try_backward_hop(buf, fwd_pos, bwd_end, opts.max_message_size) {
             BackwardHop::Hit(start, total) => {
                 bwd.push((start, total));
                 bwd_end = start;
             }
             BackwardHop::StreamingStop | BackwardHop::None => {
-                // Forward walker finishes the residual region.
                 let residual = scan_forward_all(buf, fwd_pos, bwd_end);
                 fwd.extend(residual);
                 bwd.reverse();
@@ -1356,7 +1375,7 @@ pub fn scan_file_with_options(
     if !opts.bidirectional {
         return scan_file_forward(file, 0, file_len);
     }
-    scan_file_bidirectional(file, file_len)
+    scan_file_bidirectional(file, file_len, opts.max_message_size)
 }
 
 /// Forward-only scan over `file[range_start..range_end)` using
@@ -1450,6 +1469,7 @@ fn scan_file_forward(
 fn scan_file_bidirectional(
     file: &mut (impl std::io::Read + std::io::Seek),
     file_len: usize,
+    max_message_size: u64,
 ) -> Result<Vec<(usize, usize)>> {
     use std::io::SeekFrom;
 
@@ -1521,10 +1541,19 @@ fn scan_file_bidirectional(
         }
         match Postamble::read_from(&postamble_buf) {
             Ok(postamble) if postamble.total_length != 0 => {
+                if postamble.total_length > max_message_size {
+                    // Postamble claims a message larger than the
+                    // per-reader cap — treat as corruption.
+                    let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
+                    fwd.extend(residual);
+                    bwd.reverse();
+                    fwd.extend(bwd);
+                    return Ok(fwd);
+                }
                 let total = match usize::try_from(postamble.total_length) {
                     Ok(t) => t,
                     Err(_) => {
-                        // Oversized — fall back.
+                        // Oversized (exceeds usize) — fall back.
                         let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
                         fwd.extend(residual);
                         bwd.reverse();
@@ -1533,7 +1562,8 @@ fn scan_file_bidirectional(
                     }
                 };
                 if total > bwd_end - fwd_pos {
-                    // Claimed length is implausibly large — fall back.
+                    // Claimed length exceeds the un-scanned region —
+                    // overlap with forward walker's claims; fall back.
                     let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
                     fwd.extend(residual);
                     bwd.reverse();

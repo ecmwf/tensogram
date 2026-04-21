@@ -28,21 +28,6 @@ impl HashAlgorithm {
             _ => Err(TensogramError::Metadata(format!("unknown hash type: {s}"))),
         }
     }
-
-    /// Length in characters of the hex-encoded digest string produced by
-    /// [`compute_hash`] for this algorithm.
-    ///
-    /// Used by the streaming encoder to size the CBOR descriptor before
-    /// the payload has been hashed — the digest must always serialise to
-    /// the same number of bytes regardless of value, otherwise the frame
-    /// header's `total_length` would be wrong.  Adding a new variant
-    /// forces an explicit answer here: the match is exhaustive at
-    /// compile time.
-    pub fn hex_digest_len(&self) -> usize {
-        match self {
-            HashAlgorithm::Xxh3 => 16, // 64 bits → 16 hex chars
-        }
-    }
 }
 
 /// Compute a hash of the given data, returning the hex-encoded digest.
@@ -78,9 +63,13 @@ pub fn hash_frame_body(frame_bytes: &[u8], frame_type: FrameType) -> Result<u64>
     let min_size = FRAME_HEADER_SIZE + footer;
     if frame_bytes.len() < min_size {
         return Err(TensogramError::Framing(format!(
-            "frame too small to hash: {} < header+footer ({})",
+            "frame too small to hash: frame_bytes.len() = {} < header({}) + footer({}) = {}; \
+             for frame_type = {:?}.  Likely truncated; re-read from source.",
             frame_bytes.len(),
-            min_size
+            FRAME_HEADER_SIZE,
+            footer,
+            min_size,
+            frame_type,
         )));
     }
     let body = &frame_bytes[FRAME_HEADER_SIZE..frame_bytes.len() - footer];
@@ -102,23 +91,28 @@ pub fn hash_frame_body(frame_bytes: &[u8], frame_type: FrameType) -> Result<u64>
 /// to *require* hashing should check the preamble flag themselves.
 pub fn verify_frame_hash(frame_bytes: &[u8], frame_type: FrameType) -> Result<()> {
     use crate::wire::{FRAME_COMMON_FOOTER_SIZE, FRAME_END, read_u64_be};
-    let total = frame_bytes.len();
-    // Buffer must be large enough to contain the common 12-byte
-    // tail.  The body hasher does its own min-size check too.
-    if total < FRAME_COMMON_FOOTER_SIZE {
+    let frame_len = frame_bytes.len();
+    // Buffer must be large enough to contain the 12-byte common tail
+    // (hash + ENDF).  The body hasher below does its own header+footer
+    // size check against `frame_type`.
+    if frame_len < FRAME_COMMON_FOOTER_SIZE {
         return Err(TensogramError::Framing(format!(
-            "frame too small to read hash slot: {total} < {FRAME_COMMON_FOOTER_SIZE}"
+            "frame too small to read hash slot: frame_bytes.len() = {frame_len} \
+             < FRAME_COMMON_FOOTER_SIZE ({FRAME_COMMON_FOOTER_SIZE}); \
+             truncated or not a v3 frame"
         )));
     }
     // ENDF at the very end — sanity check so we never hash a
     // misaligned frame.
-    let endf_start = total - FRAME_END.len();
-    if &frame_bytes[endf_start..total] != FRAME_END {
+    let endf_start = frame_len - FRAME_END.len();
+    if &frame_bytes[endf_start..frame_len] != FRAME_END {
         return Err(TensogramError::Framing(
-            "frame missing ENDF marker while verifying inline hash".to_string(),
+            "frame missing ENDF marker while verifying inline hash — \
+             likely truncated or not a v3 frame; re-read from source"
+                .to_string(),
         ));
     }
-    let slot_start = total - FRAME_COMMON_FOOTER_SIZE;
+    let slot_start = frame_len - FRAME_COMMON_FOOTER_SIZE;
     let stored = read_u64_be(frame_bytes, slot_start);
     if stored == 0 {
         // HASHES_PRESENT = 0 for this message.  No hash to verify.

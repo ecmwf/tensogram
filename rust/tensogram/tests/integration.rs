@@ -2153,3 +2153,45 @@ fn compression_roaring_rejects_non_bitmask_dtype() {
         "expected roaring-dtype error, got: {msg}"
     );
 }
+
+/// `ScanOptions.max_message_size` caps the apparent message length
+/// advertised by a postamble; values beyond the cap cause the
+/// backward walker to yield back to the forward walker rather
+/// than jumping to a bogus offset.
+#[test]
+fn scan_max_message_size_caps_backward_walker() {
+    // Build two small messages.  With the default cap (4 GiB) both
+    // are reachable via the backward walker.  With a cap of 1 byte
+    // the backward walker cannot trust any postamble's total_length
+    // and must fall back to forward-only scanning.
+    let mut buf = Vec::new();
+    for i in 0..3 {
+        buf.extend_from_slice(&encode_sample(i * 7));
+    }
+
+    let big_cap = ScanOptions {
+        bidirectional: true,
+        max_message_size: 4 * 1024 * 1024 * 1024,
+    };
+    let tiny_cap = ScanOptions {
+        bidirectional: true,
+        max_message_size: 1, // every message exceeds this → backward yields
+    };
+
+    let via_big = scan_with_options(&buf, &big_cap);
+    let via_tiny = scan_with_options(&buf, &tiny_cap);
+    let via_fwd = scan_with_options(
+        &buf,
+        &ScanOptions {
+            bidirectional: false,
+            ..ScanOptions::default()
+        },
+    );
+
+    // Both bidir modes and the pure forward scanner agree on the
+    // boundary list — regardless of `max_message_size`, no message
+    // goes missing.
+    assert_eq!(via_big.len(), 3);
+    assert_eq!(via_tiny, via_fwd);
+    assert_eq!(via_big, via_fwd);
+}

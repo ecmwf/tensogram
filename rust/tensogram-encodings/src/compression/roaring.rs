@@ -48,13 +48,16 @@ impl Compressor for RoaringCompressor {
     }
 
     fn decompress(&self, data: &[u8], expected_size: usize) -> Result<Vec<u8>, CompressionError> {
-        if data.len() < 4 {
+        // Split off the 4-byte n_elements prefix without
+        // `try_into().unwrap()` so the function is panic-free by
+        // construction on any input, even when a future caller
+        // bypasses the length check.
+        let Some((prefix, blob)) = data.split_first_chunk::<4>() else {
             return Err(CompressionError::Unknown(
-                "Roaring blob too short: missing n_elements prefix".to_string(),
+                "Roaring blob too short: missing 4-byte n_elements prefix".to_string(),
             ));
-        }
-        let n_elements = u32::from_be_bytes(data[0..4].try_into().unwrap()) as usize;
-        let blob = &data[4..];
+        };
+        let n_elements = u32::from_be_bytes(*prefix) as usize;
         let bits = roaring::decode(blob, n_elements)
             .map_err(|e| CompressionError::Unknown(format!("Roaring decode: {e}")))?;
         let packed = packing::pack(&bits);

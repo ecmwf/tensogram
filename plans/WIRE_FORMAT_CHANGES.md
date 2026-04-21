@@ -787,3 +787,36 @@ phases can reduce wall time if multiple agents collaborate.
 - Hash algorithm registry (`"xxh3-128"`, `"blake3"`): reserve
   space in the inline slot for variable-length digests via a new
   frame-header flag; deferred until a concrete need arises.
+- Python / TypeScript / C++ wrapper test-suite runs.  The Rust
+  surface they wrap is v3-complete (phases 5–7 cascaded through
+  the bindings at the source level); the bindings' own test
+  suites require local `pytest` / `npm` / `cmake` environments
+  that were not available in the implementation session.  CI
+  picks these up automatically on the next run.
+
+---
+
+## Implementation status (2026-04-20)
+
+| Phase | Status | Notes |
+|------:|:------:|-------|
+| 0 — spec sign-off              | ✅ | Plans committed; maintainer sign-off recorded in the "Design decisions" block above. |
+| 1 — version bump               | ✅ | `WIRE_VERSION = 3`; v1/v2 preambles hard-fail. |
+| 2 — postamble 24 B             | ✅ | Mirrored `total_length`; `finish_with_backfill()` on seekable `StreamingEncoder`. |
+| 3 — bidirectional scan         | ✅ | `ScanOptions { bidirectional, max_message_size }`; default on.  Pass 3 wired `max_message_size` into both in-memory and file-based walkers. |
+| 4 — type 4 removal             | ✅ | Obsolete `NTensorFrame` (type 4) reserved; `NTensorMaskedFrame` (type 9) renamed to `NTensorFrame`. |
+| 5 — inline hash slot           | ✅ | `[hash u64][ENDF]` common tail on every frame; hash scope = body only; `DataObjectDescriptor.hash` removed. |
+| 6 — HashFrame auto-populate    | ✅ | `HashFrame { algorithm, hashes }` (renamed from `hash_type`); `IndexFrame { offsets, lengths }` (no `object_count`); `create_header_hashes` / `create_footer_hashes` on `EncodeOptions`. |
+| 7 — rle / roaring codecs       | ✅ | First-class compression codecs; bitmask-dtype guard at pipeline-build time; pure-Rust (no feature gate). |
+| 8 — cross-language parity      | ⚠️ partial | Rust workspace (lib + cli + ffi + wasm) v3-complete and all tests pass.  Python / TypeScript / C++ wrapper suites pick up changes via source inheritance; dev-env test runs deferred to CI.  FFI tests re-enabled in pass 2 after adding `extract_inline_hashes` to surface the inline slot through `tgm_payload_has_hash` / `tgm_object_hash_*`. |
+| 9 — documentation              | ✅ | `CHANGELOG.md` `[Unreleased]` section covers every wire change; `plans/WIRE_FORMAT.md` is the v3 canonical spec. |
+| 10 — golden fixtures + release | ✅ | Five `.tgm` fixtures regenerated; `test_golden_*` re-enabled and passing. |
+
+**Pass 2 / Pass 3 addenda.** A follow-up review pass reconciled
+all ten v3-related `#[ignore]` tests (rewriting 7 against the v3
+design and collapsing 3 that had become structurally impossible),
+added the missing `max_message_size` plumbing in both scan
+walkers, replaced `try_into().unwrap()` patterns in the bitmask
+compressors with panic-free `split_first_chunk`, and tightened
+error messages in `hash_frame_body` / `verify_frame_hash` with
+size values and remediation hints.
