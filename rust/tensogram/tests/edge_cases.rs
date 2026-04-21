@@ -1905,9 +1905,11 @@ fn preceder_with_extra_keys_tolerated() {
     out.extend_from_slice(&obj_frame);
     let pad = (8 - (out.len() % 8)) % 8;
     out.extend(std::iter::repeat_n(0u8, pad));
-    // Postamble
-    let footer_off = out.len() as u64;
+    // Postamble (v3, 24 B): first_footer_offset + total_length + magic.
+    let postamble_offset = out.len();
+    let footer_off = postamble_offset as u64;
     out.extend_from_slice(&footer_off.to_be_bytes());
+    out.extend_from_slice(&0u64.to_be_bytes()); // total_length placeholder (patched below)
     out.extend_from_slice(b"39277777");
     // Patch preamble
     let total = out.len() as u64;
@@ -1918,6 +1920,8 @@ fn preceder_with_extra_keys_tolerated() {
     pre.extend_from_slice(&0u32.to_be_bytes());
     pre.extend_from_slice(&total.to_be_bytes());
     out[..24].copy_from_slice(&pre);
+    // Patch postamble total_length
+    out[postamble_offset + 8..postamble_offset + 16].copy_from_slice(&total.to_be_bytes());
 
     let decoded = framing::decode_message(&out).unwrap();
     assert_eq!(decoded.objects.len(), 1);

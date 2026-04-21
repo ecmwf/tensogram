@@ -1593,3 +1593,194 @@ fn test_deep_nested_metadata_round_trip() {
         "nested leaf must survive round-trip at depth {max_depth}"
     );
 }
+
+// ── Phase 2: postamble 24-byte layout, seekable back-fill ───────────────────
+
+/// Buffered encode always writes the real `total_length` into the
+/// postamble's mirrored slot — confirms `assemble_message` patches
+/// both slots on every message.
+#[test]
+fn buffered_postamble_total_length_equals_message_length() {
+    use tensogram::wire::POSTAMBLE_SIZE;
+
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+        hash: None,
+    };
+    let data = vec![0u8; 16];
+    let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    // Postamble layout: [ffo u64][total_length u64][END_MAGIC 8]
+    let pa_start = msg.len() - POSTAMBLE_SIZE;
+    let pa_total = u64::from_be_bytes(msg[pa_start + 8..pa_start + 16].try_into().unwrap());
+    assert_eq!(pa_total, msg.len() as u64, "postamble must mirror length");
+
+    // Preamble total_length must also equal the full length.
+    let pre_total = u64::from_be_bytes(msg[16..24].try_into().unwrap());
+    assert_eq!(pre_total, msg.len() as u64);
+    assert_eq!(pre_total, pa_total);
+}
+
+/// Streaming encoder on a non-seekable sink writes `total_length = 0`
+/// in both preamble and postamble — the fallback-to-forward-scan
+/// contract.  `Vec<u8>` is Write-only (not Seek), so `finish()` is
+/// the only path available.
+#[test]
+fn streaming_non_seekable_zero_total_length_preamble_and_postamble() {
+    use tensogram::streaming::StreamingEncoder;
+    use tensogram::wire::POSTAMBLE_SIZE;
+
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![2],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+        hash: None,
+    };
+    let data = vec![0u8; 8];
+
+    let buf: Vec<u8> = Vec::new();
+    let mut enc = StreamingEncoder::new(buf, &global, &EncodeOptions::default()).unwrap();
+    enc.write_object(&desc, &data).unwrap();
+    let finished = enc.finish().unwrap();
+
+    // Preamble total_length at offset 16..24 — must be 0 (streaming).
+    let pre_total = u64::from_be_bytes(finished[16..24].try_into().unwrap());
+    assert_eq!(pre_total, 0, "streaming preamble total_length must be 0");
+
+    // Postamble total_length at offset len-16..len-8 — also 0 for
+    // non-seekable sinks.
+    let pa_start = finished.len() - POSTAMBLE_SIZE;
+    let pa_total = u64::from_be_bytes(finished[pa_start + 8..pa_start + 16].try_into().unwrap());
+    assert_eq!(
+        pa_total, 0,
+        "streaming postamble total_length must be 0 on non-seekable sinks"
+    );
+
+    // Decode must still work (forward scan fallback).
+    let (_meta, objects) = decode(&finished, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 1);
+}
+
+/// Streaming encoder onto a seekable sink can back-fill both
+/// total_length slots via `finish_with_backfill`.  Confirms the
+/// Write+Seek specialisation and the post-condition that both slots
+/// equal the real message length.
+#[test]
+fn streaming_seekable_backfill_patches_both_total_length_slots() {
+    use std::io::Cursor;
+    use tensogram::streaming::StreamingEncoder;
+    use tensogram::wire::POSTAMBLE_SIZE;
+
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![3],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+        hash: None,
+    };
+    let data = vec![0u8; 12];
+
+    // Cursor<Vec<u8>> is Write + Seek.
+    let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+    let mut enc = StreamingEncoder::new(cursor, &global, &EncodeOptions::default()).unwrap();
+    enc.write_object(&desc, &data).unwrap();
+    let cursor = enc.finish_with_backfill().unwrap();
+    let buf = cursor.into_inner();
+
+    // Preamble total_length back-filled.
+    let pre_total = u64::from_be_bytes(buf[16..24].try_into().unwrap());
+    assert_eq!(pre_total, buf.len() as u64);
+
+    // Postamble total_length back-filled.
+    let pa_start = buf.len() - POSTAMBLE_SIZE;
+    let pa_total = u64::from_be_bytes(buf[pa_start + 8..pa_start + 16].try_into().unwrap());
+    assert_eq!(pa_total, buf.len() as u64);
+    assert_eq!(pre_total, pa_total);
+
+    // Round-trip still works after the back-fill.
+    let (_meta, objects) = decode(&buf, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 1);
+}
+
+/// The postamble end magic is always at the last 8 bytes of the
+/// message — pinning the wire contract that backward scanners rely
+/// on to locate the end of a preceding message.
+#[test]
+fn postamble_end_magic_always_at_last_8_bytes() {
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![1],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+        hash: None,
+    };
+    let data = vec![0u8; 4];
+
+    // Buffered:
+    let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    assert_eq!(&msg[msg.len() - 8..], b"39277777");
+
+    // Streaming non-seekable:
+    use tensogram::streaming::StreamingEncoder;
+    let mut enc =
+        StreamingEncoder::new(Vec::<u8>::new(), &global, &EncodeOptions::default()).unwrap();
+    enc.write_object(&desc, &data).unwrap();
+    let streamed = enc.finish().unwrap();
+    assert_eq!(&streamed[streamed.len() - 8..], b"39277777");
+
+    // Streaming seekable + back-fill:
+    use std::io::Cursor;
+    let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+    let mut enc = StreamingEncoder::new(cursor, &global, &EncodeOptions::default()).unwrap();
+    enc.write_object(&desc, &data).unwrap();
+    let backfilled = enc.finish_with_backfill().unwrap().into_inner();
+    assert_eq!(&backfilled[backfilled.len() - 8..], b"39277777");
+}

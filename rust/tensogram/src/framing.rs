@@ -511,16 +511,20 @@ fn assemble_message(
         }
     }
 
-    // Postamble (no footer frames in buffered mode)
+    // Postamble (no footer frames in buffered mode).  `total_length`
+    // is populated *after* postamble bytes are emitted (we don't know
+    // the final message size until then) by patching the field in
+    // place.  The `first_footer_offset` is known up front.
     let postamble_offset = out.len();
-    let postamble = Postamble {
+    let postamble_placeholder = Postamble {
         first_footer_offset: postamble_offset as u64,
+        total_length: 0,
     };
-    postamble.write_to(&mut out);
+    postamble_placeholder.write_to(&mut out);
 
     let total_length = out.len() as u64;
 
-    // Patch the preamble with the real values
+    // Patch the preamble with the real values.
     let preamble = Preamble {
         version: WIRE_VERSION,
         flags,
@@ -530,6 +534,12 @@ fn assemble_message(
     let mut preamble_bytes = Vec::new();
     preamble.write_to(&mut preamble_bytes);
     out[preamble_pos..preamble_pos + PREAMBLE_SIZE].copy_from_slice(&preamble_bytes);
+
+    // Patch the postamble's `total_length` — buffered mode always
+    // knows the final size, so this field is always non-zero here.
+    // The mirrored value enables O(1) backward scan (v3, §9.2).
+    let total_length_bytes = total_length.to_be_bytes();
+    out[postamble_offset + 8..postamble_offset + 16].copy_from_slice(&total_length_bytes);
 
     out
 }
@@ -666,9 +676,19 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
             )));
         }
 
-        // Validate postamble
+        // Validate postamble.  In v3 the postamble carries a mirrored
+        // `total_length` that — when non-zero — must match the
+        // preamble's value.  Zero in the postamble means a
+        // non-seekable streaming producer couldn't back-fill it;
+        // that's always valid, just loses the backward-scan property.
         let pa_offset = total_len - POSTAMBLE_SIZE;
-        let _postamble = Postamble::read_from(&buf[pa_offset..])?;
+        let postamble = Postamble::read_from(&buf[pa_offset..])?;
+        if postamble.total_length != 0 && postamble.total_length != preamble.total_length {
+            return Err(TensogramError::Framing(format!(
+                "postamble total_length ({}) does not match preamble total_length ({})",
+                postamble.total_length, preamble.total_length
+            )));
+        }
     }
 
     let mut pos = PREAMBLE_SIZE;
@@ -1354,10 +1374,12 @@ mod tests {
             }
         }
 
-        // Postamble
+        // Postamble — first_footer_offset is known; total_length is
+        // patched after the final length is known.
         let postamble_offset = out.len();
         let postamble = Postamble {
             first_footer_offset: postamble_offset as u64,
+            total_length: 0,
         };
         postamble.write_to(&mut out);
 
@@ -1373,6 +1395,9 @@ mod tests {
         let mut preamble_bytes = Vec::new();
         preamble.write_to(&mut preamble_bytes);
         out[0..PREAMBLE_SIZE].copy_from_slice(&preamble_bytes);
+        // Patch the postamble's total_length now that it is known.
+        let total_length_bytes = total_length.to_be_bytes();
+        out[postamble_offset + 8..postamble_offset + 16].copy_from_slice(&total_length_bytes);
 
         out
     }

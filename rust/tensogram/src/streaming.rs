@@ -21,8 +21,8 @@ use crate::metadata::{self, RESERVED_KEY};
 use crate::substitute_and_mask;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashDescriptor, HashFrame, IndexFrame};
 use crate::wire::{
-    FRAME_END, FRAME_HEADER_SIZE, FrameHeader, FrameType, MessageFlags, PREAMBLE_SIZE, Postamble,
-    Preamble,
+    FRAME_END, FRAME_HEADER_SIZE, FrameHeader, FrameType, MessageFlags, POSTAMBLE_SIZE,
+    PREAMBLE_SIZE, Postamble, Preamble,
 };
 use tensogram_encodings::pipeline;
 
@@ -487,13 +487,22 @@ impl<W: Write> StreamingEncoder<W> {
 
         write_padding(&mut self.writer, &mut self.bytes_written)?;
 
-        // Postamble
+        // Postamble.
+        //
+        // Streaming mode writes `total_length = 0` by default — the
+        // writer is typed `W: Write` and we cannot seek back to
+        // rewrite the preamble.  Callers with a seekable sink can
+        // opt into back-filling via `finish_with_backfill` (below),
+        // which populates both the preamble's and postamble's
+        // `total_length` fields.
         let postamble = Postamble {
             first_footer_offset: footer_start,
+            total_length: 0,
         };
-        let mut postamble_bytes = Vec::with_capacity(16);
+        let mut postamble_bytes = Vec::with_capacity(POSTAMBLE_SIZE);
         postamble.write_to(&mut postamble_bytes);
         self.writer.write_all(&postamble_bytes)?;
+        self.bytes_written += postamble_bytes.len() as u64;
 
         self.writer.flush()?;
 
@@ -508,6 +517,59 @@ impl<W: Write> StreamingEncoder<W> {
     /// Returns the total bytes written so far.
     pub fn bytes_written(&self) -> u64 {
         self.bytes_written
+    }
+}
+
+// ── Seekable-sink specialisation ─────────────────────────────────────────────
+
+impl<W: Write + std::io::Seek> StreamingEncoder<W> {
+    /// Finalize the streaming message and back-fill the `total_length`
+    /// field in both the preamble and postamble (v3 §7 and §9.4).
+    ///
+    /// Equivalent to [`finish`] but at the end seeks back to the
+    /// preamble offset (0) and the postamble's `total_length` slot
+    /// (`end_pos - 16`), writing the real message length to both.
+    /// Readers can then backward-scan from EOF using the mirrored
+    /// length without fallback to forward scanning.
+    ///
+    /// Use this when the writer backs a seekable sink (file, cursor
+    /// over a buffer) — it's a no-op semantic change over
+    /// `finish()` but enables O(1) backward scan on the produced
+    /// file.
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O error from the underlying writer's `seek`,
+    /// `write_all`, or `flush`.
+    ///
+    /// [`finish`]: StreamingEncoder::finish
+    pub fn finish_with_backfill(self) -> Result<W> {
+        use std::io::SeekFrom;
+        // `finish()` consumes self and returns the inner writer;
+        // we then seek back to patch both length slots.
+        let mut writer = self.finish()?;
+
+        // Determine the current file position, which equals the full
+        // message length after finish() (finish() consumed self, so
+        // we re-derive via `stream_position`).
+        let end_pos = writer.stream_position()?;
+        let total_length = end_pos;
+
+        // Back-fill the preamble's total_length (bytes 16..24).
+        writer.seek(SeekFrom::Start(16))?;
+        writer.write_all(&total_length.to_be_bytes())?;
+
+        // Back-fill the postamble's total_length (second u64 field,
+        // located at `end - 16 .. end - 8`; the trailing 8 bytes are
+        // the END_MAGIC).
+        writer.seek(SeekFrom::Start(end_pos - 16))?;
+        writer.write_all(&total_length.to_be_bytes())?;
+
+        // Seek back to EOF so the returned writer matches
+        // `finish()`'s post-condition (cursor at the very end).
+        writer.seek(SeekFrom::Start(end_pos))?;
+        writer.flush()?;
+        Ok(writer)
     }
 }
 
@@ -1319,10 +1381,12 @@ mod tests {
         let pad = (8 - (out.len() % 8)) % 8;
         out.extend(std::iter::repeat_n(0u8, pad));
 
-        // Postamble
+        // Postamble (patched with total_length after preamble is
+        // finalised).
         let postamble_offset = out.len();
         let postamble = Postamble {
             first_footer_offset: postamble_offset as u64,
+            total_length: 0,
         };
         postamble.write_to(&mut out);
 
@@ -1341,6 +1405,9 @@ mod tests {
         let mut preamble_bytes = Vec::new();
         preamble.write_to(&mut preamble_bytes);
         out[0..PREAMBLE_SIZE].copy_from_slice(&preamble_bytes);
+        // Patch postamble total_length
+        out[postamble_offset + 8..postamble_offset + 16]
+            .copy_from_slice(&total_length.to_be_bytes());
 
         // Decode
         let decoded = crate::framing::decode_message(&out).unwrap();

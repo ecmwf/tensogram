@@ -378,3 +378,68 @@ fn test_adversarial_ndim_mismatch() {
         result
     );
 }
+
+// ── Phase 2: postamble integrity (v3) ───────────────────────────────────────
+
+/// A message whose preamble says one total_length but whose postamble
+/// mirrors a different value must be rejected.  Pins the v3 §7 contract
+/// that the two `total_length` slots agree whenever both are non-zero.
+#[test]
+fn postamble_total_length_mismatch_fails() {
+    let (global, desc) = make_simple_float32_pair(vec![2, 3]);
+    let payload = vec![0u8; 4 * 2 * 3];
+    let mut msg = encode(&global, &[(&desc, &payload)], &EncodeOptions::default()).unwrap();
+
+    // The postamble's total_length lives at bytes [len-16, len-8).
+    // Tamper with it to be one byte shorter than the real length.
+    let msg_len = msg.len() as u64;
+    let fake = msg_len - 1;
+    let slot_start = msg.len() - 16;
+    msg[slot_start..slot_start + 8].copy_from_slice(&fake.to_be_bytes());
+
+    let result = framing::decode_message(&msg);
+    assert!(
+        result.is_err(),
+        "expected postamble/preamble total_length mismatch to fail decode"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("postamble total_length") && err.contains("preamble total_length"),
+        "expected mismatch error, got: {err}"
+    );
+}
+
+/// Postamble `total_length = 0` must remain valid — the streaming
+/// non-seekable-sink case produces this and readers fall back to
+/// forward scan (see v3 §9.2).
+#[test]
+fn postamble_zero_total_length_accepted() {
+    let (global, desc) = make_simple_float32_pair(vec![2]);
+    let payload = vec![0u8; 4 * 2];
+    let mut msg = encode(&global, &[(&desc, &payload)], &EncodeOptions::default()).unwrap();
+
+    // Zero the postamble total_length slot — as a non-seekable
+    // streaming producer would have written it.
+    let slot_start = msg.len() - 16;
+    msg[slot_start..slot_start + 8].copy_from_slice(&0u64.to_be_bytes());
+
+    // Decode must succeed — zero is the documented "unknown" signal.
+    let decoded = framing::decode_message(&msg).unwrap();
+    assert_eq!(decoded.objects.len(), 1);
+}
+
+/// Postamble is 24 B in v3.  Pins the wire-size invariant.
+#[test]
+fn postamble_is_24_bytes() {
+    let (global, desc) = make_simple_float32_pair(vec![1]);
+    let payload = vec![0u8; 4];
+    let msg = encode(&global, &[(&desc, &payload)], &EncodeOptions::default()).unwrap();
+
+    // Last 8 bytes are the END_MAGIC; bytes [-24 .. -16) and
+    // [-16 .. -8) are the two u64 fields.  Confirm magic placement.
+    assert_eq!(&msg[msg.len() - 8..], b"39277777");
+    // The postamble's total_length (bytes [-16..-8)) equals the full
+    // message length — buffered mode always back-fills.
+    let pa_total = u64::from_be_bytes(msg[msg.len() - 16..msg.len() - 8].try_into().unwrap());
+    assert_eq!(pa_total, msg.len() as u64);
+}

@@ -769,8 +769,9 @@ mod tests {
         enc.write_object(&desc, &data).unwrap();
         enc.finish().unwrap();
 
-        // Corrupt the first_footer_offset (8 bytes before end magic)
-        let pa_start = buf.len() - 16;
+        // Corrupt the first_footer_offset.  Postamble (v3, 24 B):
+        //   [first_footer_offset u64][total_length u64][END_MAGIC].
+        let pa_start = buf.len() - POSTAMBLE_SIZE;
         let bad_ffo: u64 = 0; // 0 < PREAMBLE_SIZE, so out of range
         buf[pa_start..pa_start + 8].copy_from_slice(&bad_ffo.to_be_bytes());
 
@@ -1346,6 +1347,9 @@ mod tests {
 
     /// Helper: build a minimal valid message from raw parts.
     /// Constructs: preamble + metadata_frame + data_object_frame + postamble.
+    ///
+    /// Postamble layout (v3, 24 bytes):
+    ///   [first_footer_offset u64][total_length u64][END_MAGIC]
     fn build_raw_message(
         flags: u16,
         frames: &[Vec<u8>], // pre-built frame bytes (including headers + ENDF)
@@ -1371,15 +1375,23 @@ mod tests {
             out.extend(std::iter::repeat_n(0u8, pad));
         }
 
-        // Postamble: first_footer_offset = current position (no footer frames)
-        let ffo = out.len() as u64;
+        // Postamble (v3, 24 bytes): first_footer_offset at the
+        // postamble offset (no footer frames) + mirrored
+        // total_length placeholder + end magic.
+        let postamble_offset = out.len();
+        let ffo = postamble_offset as u64;
         out.extend_from_slice(&ffo.to_be_bytes());
+        out.extend_from_slice(&0u64.to_be_bytes()); // total_length placeholder (patched below)
         out.extend_from_slice(END_MAGIC);
 
         // Patch total_length in preamble
         let total = if streaming { 0u64 } else { out.len() as u64 };
         let tl = total_length_override.unwrap_or(total);
         out[16..24].copy_from_slice(&tl.to_be_bytes());
+        // Patch the postamble's mirrored total_length (second field).
+        // Use the same `tl` value so overrides propagate.
+        let pa_tl = if streaming { 0u64 } else { tl };
+        out[postamble_offset + 8..postamble_offset + 16].copy_from_slice(&pa_tl.to_be_bytes());
 
         out
     }
@@ -2599,7 +2611,9 @@ mod tests {
         let data_frame = build_data_object_frame(&desc, &payload);
         let flags = 1u16;
         let mut msg = build_raw_message(flags, &[meta_frame, data_frame], None, true);
-        let pa_start = msg.len() - 16;
+        // Postamble is 24 B in v3; first_footer_offset is the first
+        // u64 of the postamble, at offset `msg.len() - POSTAMBLE_SIZE`.
+        let pa_start = msg.len() - POSTAMBLE_SIZE;
         let bad_ffo: u64 = (msg.len() + 100) as u64;
         msg[pa_start..pa_start + 8].copy_from_slice(&bad_ffo.to_be_bytes());
         let report = validate_message(&msg, &ValidateOptions::default());
@@ -2922,9 +2936,9 @@ mod tests {
     #[test]
     fn structure_footer_offset_below_preamble() {
         let mut msg = make_test_message();
-        // first_footer_offset lives at byte offset msg.len() - 16 (start of
-        // postamble), 8 bytes big-endian.
-        let ffo_pos = msg.len() - 16;
+        // first_footer_offset lives at the start of the postamble
+        // (msg.len() - POSTAMBLE_SIZE), 8 bytes big-endian.
+        let ffo_pos = msg.len() - POSTAMBLE_SIZE;
         msg[ffo_pos..ffo_pos + 8].copy_from_slice(&0u64.to_be_bytes());
         let report = validate_message(&msg, &ValidateOptions::default());
         assert!(
@@ -2943,8 +2957,9 @@ mod tests {
     fn structure_footer_offset_beyond_postamble() {
         let mut msg = make_test_message();
         let msg_len = msg.len();
-        let ffo_pos = msg_len - 16;
-        // Point FFO well past the postamble position (msg_len - 16).
+        // Postamble is 24 B in v3; FFO is its first u64.
+        let ffo_pos = msg_len - POSTAMBLE_SIZE;
+        // Point FFO well past the postamble position.
         msg[ffo_pos..ffo_pos + 8].copy_from_slice(&(msg_len as u64 + 1000).to_be_bytes());
         let report = validate_message(&msg, &ValidateOptions::default());
         assert!(
@@ -2964,7 +2979,7 @@ mod tests {
     fn structure_footer_offset_overflows_usize() {
         let mut msg = make_test_message();
         let msg_len = msg.len();
-        let ffo_pos = msg_len - 16;
+        let ffo_pos = msg_len - POSTAMBLE_SIZE;
         msg[ffo_pos..ffo_pos + 8].copy_from_slice(&u64::MAX.to_be_bytes());
         let report = validate_message(&msg, &ValidateOptions::default());
         assert!(
@@ -3810,8 +3825,9 @@ mod tests {
         msg.extend_from_slice(&0u16.to_be_bytes()); // flags
         msg.extend_from_slice(&0u32.to_be_bytes()); // reserved
         msg.extend_from_slice(&(total_len as u64).to_be_bytes());
-        // Postamble: first_footer_offset + magic
+        // Postamble (v3, 24 B): first_footer_offset + total_length + magic
         msg.extend_from_slice(&(PREAMBLE_SIZE as u64).to_be_bytes());
+        msg.extend_from_slice(&(total_len as u64).to_be_bytes());
         msg.extend_from_slice(b"39277777");
         let report = validate_message(&msg, &ValidateOptions::default());
         assert!(

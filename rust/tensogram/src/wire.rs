@@ -31,8 +31,12 @@ pub const WIRE_VERSION: u16 = 3;
 pub const PREAMBLE_SIZE: usize = 24;
 /// Frame header size: FR(2) + type(2) + version(2) + flags(2) + total_length(8) = 16
 pub const FRAME_HEADER_SIZE: usize = 16;
-/// Postamble size: first_footer_offset(8) + end_magic(8) = 16
-pub const POSTAMBLE_SIZE: usize = 16;
+/// Postamble size in v3: first_footer_offset(8) + total_length(8) + end_magic(8) = 24.
+///
+/// The `total_length` field was added in v3 to make the postamble
+/// self-locating from any byte position inside a message — see
+/// `plans/WIRE_FORMAT.md` §7 and §9.2.
+pub const POSTAMBLE_SIZE: usize = 24;
 /// Data object footer size: cbor_offset(8) + ENDF(4) = 12
 pub const DATA_OBJECT_FOOTER_SIZE: usize = 12;
 
@@ -247,12 +251,29 @@ impl FrameHeader {
 
 // ── Postamble ────────────────────────────────────────────────────────────────
 
-/// The fixed 16-byte message postamble (footer terminator).
+/// The fixed 24-byte message postamble (footer terminator).
+///
+/// Layout (v3):
+/// ```text
+///   0 ..  8   first_footer_offset  (uint64 BE)
+///   8 .. 16   total_length         (uint64 BE)  ← new in v3
+///  16 .. 24   end magic "39277777" (8 bytes)
+/// ```
+///
+/// The mirrored `total_length` lets a reader backward-scan for
+/// `END_MAGIC` and then subtract `total_length` to locate the
+/// message's `TENSOGRM` byte directly.  Zero indicates streaming
+/// mode where the sink was not seekable at `finish()` time;
+/// readers fall back to forward scan in that case.
 #[derive(Debug, Clone)]
 pub struct Postamble {
     /// Byte offset from message start to the first footer frame,
     /// or to the postamble itself if no footer frames exist.
     pub first_footer_offset: u64,
+    /// Total byte length of the message, mirroring the preamble's
+    /// `total_length` (new in v3).  `0` means "length unknown at
+    /// finish-time" (non-seekable streaming sink).
+    pub total_length: u64,
 }
 
 impl Postamble {
@@ -264,18 +285,21 @@ impl Postamble {
             )));
         }
         let first_footer_offset = read_u64_be(buf, 0);
-        if &buf[8..16] != END_MAGIC {
+        let total_length = read_u64_be(buf, 8);
+        if &buf[16..24] != END_MAGIC {
             return Err(TensogramError::Framing(
                 "invalid end magic in postamble".to_string(),
             ));
         }
         Ok(Postamble {
             first_footer_offset,
+            total_length,
         })
     }
 
     pub fn write_to(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.first_footer_offset.to_be_bytes());
+        out.extend_from_slice(&self.total_length.to_be_bytes());
         out.extend_from_slice(END_MAGIC);
     }
 }
@@ -356,6 +380,7 @@ mod tests {
     fn test_postamble_round_trip() {
         let pa = Postamble {
             first_footer_offset: 8192,
+            total_length: 16384,
         };
         let mut buf = Vec::new();
         pa.write_to(&mut buf);
@@ -363,6 +388,35 @@ mod tests {
 
         let parsed = Postamble::read_from(&buf).unwrap();
         assert_eq!(parsed.first_footer_offset, 8192);
+        assert_eq!(parsed.total_length, 16384);
+    }
+
+    #[test]
+    fn test_postamble_zero_total_length_streaming() {
+        // Streaming-mode non-seekable sink: total_length left at 0 at finish().
+        let pa = Postamble {
+            first_footer_offset: 500,
+            total_length: 0,
+        };
+        let mut buf = Vec::new();
+        pa.write_to(&mut buf);
+        assert_eq!(buf.len(), POSTAMBLE_SIZE);
+        let parsed = Postamble::read_from(&buf).unwrap();
+        assert_eq!(parsed.total_length, 0);
+    }
+
+    #[test]
+    fn test_postamble_end_magic_at_fixed_offset() {
+        // Pins the wire contract: the last 8 bytes of any postamble
+        // are always the END_MAGIC, regardless of the preceding
+        // fields.  Backward scanners rely on this.
+        let pa = Postamble {
+            first_footer_offset: 1,
+            total_length: 2,
+        };
+        let mut buf = Vec::new();
+        pa.write_to(&mut buf);
+        assert_eq!(&buf[16..24], END_MAGIC);
     }
 
     #[test]
@@ -427,8 +481,9 @@ mod tests {
     #[test]
     fn test_invalid_end_magic() {
         let mut buf = vec![0u8; POSTAMBLE_SIZE];
-        // Valid offset but bad magic
+        // Valid offsets but bad magic at [16..24]
         buf[0..8].copy_from_slice(&100u64.to_be_bytes());
+        buf[8..16].copy_from_slice(&200u64.to_be_bytes());
         assert!(Postamble::read_from(&buf).is_err());
     }
 
