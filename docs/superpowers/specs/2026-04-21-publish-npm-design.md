@@ -19,7 +19,7 @@ Self-hosted Linux runner with the ECMWF CI Docker image (`eccr.ecmwf.int/tensogr
 
 Named environment: `npm`. Mirrors the `crates-io` and `pypi` environments. Allows gating the `NPM_TOKEN` secret and optionally adding required reviewers.
 
-**Required secret:** `NPM_TOKEN` — a publish-scoped npm access token for the `@ecmwf` scope, stored in the `npm` environment.
+**Required secret:** `NPMJS_API_TOKEN` — a publish-scoped npm access token for the `@ecmwf` scope, stored in the `npm` environment.
 
 ## Steps
 
@@ -31,7 +31,7 @@ Named environment: `npm`. Mirrors the `crates-io` and `pypi` environments. Allow
 6. Build distributable: `npx tsc` in `typescript/`
 7. **Idempotency check:** Query `https://registry.npmjs.org/@ecmwf/tensogram/<version>`. HTTP 200 → already published, skip (exit 0). HTTP 404 → proceed.
 8. Write `.npmrc`: `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` (inline, since Node is installed manually rather than via `actions/setup-node`)
-9. `npm publish --access public` in `typescript/` with `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}`
+9. `npm publish --access public` in `typescript/` with `NODE_AUTH_TOKEN: ${{ secrets.NPMJS_API_TOKEN }}`
 
 ## What is not included
 
@@ -42,4 +42,4 @@ Named environment: `npm`. Mirrors the `crates-io` and `pypi` environments. Allow
 ## Prerequisites for first use
 
 1. Create a `npm` environment in the GitHub repo settings.
-2. Add `NPM_TOKEN` (publish-scoped npm token for `@ecmwf`) to that environment's secrets.
+2. Add `NPMJS_API_TOKEN` (publish-scoped npm token for `@ecmwf`) to that environment's secrets.
