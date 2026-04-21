@@ -72,27 +72,6 @@ implement until promoted to `TODO.md`.
   path too.  Gains are modest (decompress is memory-bound) but it
   would close the symmetry gap.
 
-- [ ] Cross-codec `expected_size`-preallocation DoS hardening: the
-  `Compressor::decompress` trait hands each codec an `expected_size`
-  that flows from `estimate_decompressed_size(config)` in the
-  pipeline, which multiplies `config.num_values * dtype_byte_width`
-  with no upper-bound validation.  A malformed `.tgm` claiming
-  a pathological `num_values` therefore drives an infallible
-  allocation that can abort the process.  Blosc2 was fixed in #69
-  by not preallocating from `expected_size` at all; the remaining
-  affected codecs are:
-  - `rust/tensogram-encodings/src/libaec.rs:150` —
-    `vec![0u8; expected_size]` inside szip's `aec_decompress`
-    (worse than `with_capacity` because it also zero-initialises).
-  - `rust/tensogram-szip/src/decoder.rs:88` — `Vec::with_capacity`
-    on `total_samples` in the pure-Rust szip backend.
-  The right fix is probably two-layer: add an upper-bound validation
-  in `estimate_decompressed_size` (or a new `validate` step on the
-  descriptor) AND switch the remaining callers to `try_reserve`
-  plus amortised growth so allocation failure surfaces as
-  `CompressionError` rather than a process abort.  Tracked out of
-  the Copilot review on #69.
-
 - [ ] blosc2 per-chunk `block_offsets`: populate
   `CompressResult.block_offsets` from blosc2's frame offsets
   (`blosc2_frame_get_offsets` in `c-blosc2/include/blosc2.h`,

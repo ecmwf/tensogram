@@ -296,6 +296,34 @@ For speculative ideas, see `IDEAS.md`.
 - [x] ~~code coverage~~ → All CLI subcommands have dedicated tests (ls, dump, get, set, copy, merge, split, reshuffle, validate, convert-grib, convert-netcdf). Encodings: `simple_packing` and `zfp` covered. FFI exercised through the C++ wrapper test suite.
 - [x] ~~add logging trace~~ → `tracing` crate instrumented on encode/decode/scan/file/pipeline. Activate with `TENSOGRAM_LOG=debug`
 
+- [ ] **cross-codec `expected_size` preallocation hardening**:
+    - `Compressor::decompress` receives `expected_size` from
+      `estimate_decompressed_size(config)`
+      (`rust/tensogram-encodings/src/pipeline.rs:787`), which multiplies
+      `config.num_values * dtype_byte_width` with no upper-bound check.
+      `config.num_values` is attacker-controllable via the tensor-shape
+      CBOR of a malformed `.tgm` file, so a pathological value drives
+      an infallible allocation that can abort the process (DoS).
+    - blosc2 was fixed in-PR for #69 by dropping `expected_size` trust
+      entirely and using `Vec::new()` + per-chunk `try_reserve` (size
+      comes from the codec's own frame trailer, not the descriptor).
+    - Remaining affected codecs:
+        - `rust/tensogram-encodings/src/libaec.rs:150` —
+          `vec![0u8; expected_size]` inside szip's `aec_decompress`
+          (additionally zero-initialises the buffer, so it's worse
+          than `with_capacity`).
+        - `rust/tensogram-szip/src/decoder.rs:88` —
+          `Vec::with_capacity` on `total_samples` in the pure-Rust
+          szip backend.
+    - Recommended two-layer fix:
+        - Add an upper-bound check in `estimate_decompressed_size`
+          (or in a new descriptor-validation step on decode) so the
+          pipeline-derived sizes can't exceed a documented cap.
+        - Switch the remaining codecs to `try_reserve` + growable
+          allocation so allocation failures surface as
+          `CompressionError` instead of aborting the process.
+    - Spun out of the Copilot review on #69.
+
 ## Viewer
 
 - [ ] Loading spinner/skeleton on map while field is being regridded
