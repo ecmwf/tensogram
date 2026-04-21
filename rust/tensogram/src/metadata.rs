@@ -50,14 +50,16 @@ pub fn cbor_to_object_descriptor(cbor_bytes: &[u8]) -> Result<DataObjectDescript
 
 /// Serialize an index frame to deterministic CBOR bytes.
 ///
-/// CBOR structure: { "object_count": uint, "offsets": [uint, ...], "lengths": [uint, ...] }
+/// v3 CBOR structure (see `plans/WIRE_FORMAT.md` §6.2):
+/// ```cbor
+/// { "offsets": [uint, ...], "lengths": [uint, ...] }
+/// ```
+///
+/// Object count is derived from `offsets.len()` — no separate
+/// `object_count` key.
 pub fn index_to_cbor(index: &IndexFrame) -> Result<Vec<u8>> {
     use ciborium::Value;
     let map = Value::Map(vec![
-        (
-            Value::Text("object_count".to_string()),
-            Value::Integer(index.object_count.into()),
-        ),
         (
             Value::Text("offsets".to_string()),
             Value::Array(
@@ -106,24 +108,23 @@ pub fn cbor_to_index(cbor_bytes: &[u8]) -> Result<IndexFrame> {
             _ => continue,
         };
         match key {
-            "object_count" => {
-                index.object_count = cbor_to_u64(v, "object_count")?;
-            }
             "offsets" => {
                 index.offsets = cbor_to_u64_array(v, "offsets")?;
             }
             "lengths" => {
                 index.lengths = cbor_to_u64_array(v, "lengths")?;
             }
-            _ => {} // ignore unknown keys
+            _ => {} // ignore unknown keys (forward compat)
         }
     }
 
-    if index.object_count != index.offsets.len() as u64 {
+    // v3: object count is derived from offsets.len(); cross-check
+    // lengths has the same cardinality.
+    if index.offsets.len() != index.lengths.len() {
         return Err(TensogramError::Metadata(format!(
-            "index object_count ({}) != offsets.len() ({})",
-            index.object_count,
-            index.offsets.len()
+            "index offsets.len() ({}) != lengths.len() ({})",
+            index.offsets.len(),
+            index.lengths.len()
         )));
     }
 
@@ -132,21 +133,23 @@ pub fn cbor_to_index(cbor_bytes: &[u8]) -> Result<IndexFrame> {
 
 /// Serialize a hash frame to deterministic CBOR bytes.
 ///
-/// CBOR structure: { "object_count": uint, "hash_type": text, "hashes": [text, ...] }
+/// v3 CBOR structure (see `plans/WIRE_FORMAT.md` §6.3):
+/// ```cbor
+/// { "algorithm": "xxh3", "hashes": ["hex", ...] }
+/// ```
+///
+/// Object count is derived from `hashes.len()` — no separate
+/// `object_count` key.
 pub fn hash_frame_to_cbor(hf: &HashFrame) -> Result<Vec<u8>> {
     use ciborium::Value;
     let map = Value::Map(vec![
         (
-            Value::Text("hash_type".to_string()),
-            Value::Text(hf.hash_type.clone()),
+            Value::Text("algorithm".to_string()),
+            Value::Text(hf.algorithm.clone()),
         ),
         (
             Value::Text("hashes".to_string()),
             Value::Array(hf.hashes.iter().map(|h| Value::Text(h.clone())).collect()),
-        ),
-        (
-            Value::Text("object_count".to_string()),
-            Value::Integer(hf.object_count.into()),
         ),
     ]);
     let mut sorted = map;
@@ -155,6 +158,11 @@ pub fn hash_frame_to_cbor(hf: &HashFrame) -> Result<Vec<u8>> {
 }
 
 /// Deserialize a hash frame from CBOR bytes.
+///
+/// v3 only accepts the new schema (`algorithm`, `hashes`).  The old
+/// v2 keys (`hash_type`, `object_count`) are silently ignored as
+/// unknown — callers that need to detect the legacy form should
+/// check for their presence explicitly.
 pub fn cbor_to_hash_frame(cbor_bytes: &[u8]) -> Result<HashFrame> {
     let value: ciborium::Value = ciborium::from_reader(cbor_bytes)
         .map_err(|e| TensogramError::Metadata(format!("failed to parse hash CBOR: {e}")))?;
@@ -168,8 +176,7 @@ pub fn cbor_to_hash_frame(cbor_bytes: &[u8]) -> Result<HashFrame> {
         }
     };
 
-    let mut object_count = 0u64;
-    let mut hash_type = String::new();
+    let mut algorithm = String::new();
     let mut hashes = Vec::new();
 
     for (k, v) in map {
@@ -178,15 +185,12 @@ pub fn cbor_to_hash_frame(cbor_bytes: &[u8]) -> Result<HashFrame> {
             _ => continue,
         };
         match key {
-            "object_count" => {
-                object_count = cbor_to_u64(v, "object_count")?;
-            }
-            "hash_type" => {
-                hash_type = match v {
+            "algorithm" => {
+                algorithm = match v {
                     ciborium::Value::Text(s) => s.clone(),
                     _ => {
                         return Err(TensogramError::Metadata(
-                            "hash_type must be text".to_string(),
+                            "algorithm must be text".to_string(),
                         ));
                     }
                 };
@@ -209,22 +213,11 @@ pub fn cbor_to_hash_frame(cbor_bytes: &[u8]) -> Result<HashFrame> {
                     }
                 };
             }
-            _ => {}
+            _ => {} // ignore unknown keys (forward compat)
         }
     }
 
-    if object_count != hashes.len() as u64 {
-        return Err(TensogramError::Metadata(format!(
-            "hash frame object_count ({object_count}) != hashes.len() ({})",
-            hashes.len()
-        )));
-    }
-
-    Ok(HashFrame {
-        object_count,
-        hash_type,
-        hashes,
-    })
+    Ok(HashFrame { algorithm, hashes })
 }
 
 // ── Common-key extraction ────────────────────────────────────────────────────
@@ -456,7 +449,7 @@ mod tests {
         base_entry.insert("mars".to_string(), mars_value);
 
         GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![base_entry],
             ..Default::default()
         }
@@ -475,7 +468,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         }
     }
 
@@ -484,7 +476,7 @@ mod tests {
         let meta = make_test_global_metadata();
         let bytes = global_metadata_to_cbor(&meta).unwrap();
         let decoded = cbor_to_global_metadata(&bytes).unwrap();
-        assert_eq!(decoded.version, 2);
+        assert_eq!(decoded.version, 3);
         assert_eq!(decoded.base.len(), 1);
         assert!(decoded.base[0].contains_key("mars"));
     }
@@ -511,13 +503,12 @@ mod tests {
     #[test]
     fn test_index_round_trip() {
         let index = IndexFrame {
-            object_count: 3,
             offsets: vec![100, 500, 1200],
             lengths: vec![400, 700, 300],
         };
         let bytes = index_to_cbor(&index).unwrap();
         let decoded = cbor_to_index(&bytes).unwrap();
-        assert_eq!(decoded.object_count, 3);
+        assert_eq!(decoded.offsets.len(), 3);
         assert_eq!(decoded.offsets, vec![100, 500, 1200]);
         assert_eq!(decoded.lengths, vec![400, 700, 300]);
     }
@@ -525,8 +516,7 @@ mod tests {
     #[test]
     fn test_hash_frame_round_trip() {
         let hf = HashFrame {
-            object_count: 2,
-            hash_type: "xxh3".to_string(),
+            algorithm: "xxh3".to_string(),
             hashes: vec![
                 "abcdef0123456789".to_string(),
                 "1234567890abcdef".to_string(),
@@ -534,8 +524,8 @@ mod tests {
         };
         let bytes = hash_frame_to_cbor(&hf).unwrap();
         let decoded = cbor_to_hash_frame(&bytes).unwrap();
-        assert_eq!(decoded.object_count, 2);
-        assert_eq!(decoded.hash_type, "xxh3");
+        assert_eq!(decoded.hashes.len(), 2);
+        assert_eq!(decoded.algorithm, "xxh3");
         assert_eq!(decoded.hashes, hf.hashes);
     }
 
@@ -544,7 +534,7 @@ mod tests {
         let meta = GlobalMetadata::default();
         let bytes = global_metadata_to_cbor(&meta).unwrap();
         let decoded = cbor_to_global_metadata(&bytes).unwrap();
-        assert_eq!(decoded.version, 2);
+        assert_eq!(decoded.version, 3);
         assert!(decoded.base.is_empty());
         assert!(decoded.extra.is_empty());
     }
@@ -568,7 +558,6 @@ mod tests {
     #[test]
     fn test_index_cbor_is_canonical() {
         let index = IndexFrame {
-            object_count: 3,
             offsets: vec![100, 500, 1200],
             lengths: vec![400, 700, 300],
         };
@@ -579,8 +568,7 @@ mod tests {
     #[test]
     fn test_hash_frame_cbor_is_canonical() {
         let hf = HashFrame {
-            object_count: 2,
-            hash_type: "xxh3".to_string(),
+            algorithm: "xxh3".to_string(),
             hashes: vec!["abc".to_string(), "def".to_string()],
         };
         let bytes = hash_frame_to_cbor(&hf).unwrap();
@@ -635,7 +623,7 @@ mod tests {
         base1.insert("zebra".to_string(), ciborium::Value::Integer(1.into()));
         base1.insert("apple".to_string(), ciborium::Value::Integer(2.into()));
         let meta1 = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![base1],
             ..Default::default()
         };
@@ -644,7 +632,7 @@ mod tests {
         base2.insert("apple".to_string(), ciborium::Value::Integer(2.into()));
         base2.insert("zebra".to_string(), ciborium::Value::Integer(1.into()));
         let meta2 = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![base2],
             ..Default::default()
         };

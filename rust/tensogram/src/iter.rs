@@ -137,13 +137,12 @@ impl Iterator for ObjectIter {
         self.index += 1;
         let (ref desc, ref payload_bytes, ref mask_region) = self.objects[i];
 
-        // Verify hash if requested
-        if self.options.verify_hash
-            && let Some(ref hash_desc) = desc.hash
-            && let Err(e) = crate::hash::verify_hash(payload_bytes, hash_desc)
-        {
-            return Some(Err(e));
-        }
+        // v3: hash verification moved to frame-level (see the inline
+        // slot in `plans/WIRE_FORMAT.md` §2.4).  `options.verify_hash`
+        // is retained on the public API for source compatibility
+        // but a full-iter caller that wants integrity checks should
+        // go through `validate --checksum`.
+        let _ = (self.options.verify_hash, desc, payload_bytes);
 
         let shape_product = match desc
             .shape
@@ -275,7 +274,7 @@ mod tests {
 
     fn make_global_meta() -> GlobalMetadata {
         GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         }
@@ -301,7 +300,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         }
     }
 
@@ -373,7 +371,7 @@ mod tests {
 
         for (i, slice) in messages(&buf).enumerate() {
             let (meta, objs) = crate::decode::decode(slice, &DecodeOptions::default()).unwrap();
-            assert_eq!(meta.version, 2);
+            assert_eq!(meta.version, 3);
             let expected_shape = if i == 0 { vec![3u64] } else { vec![5u64] };
             assert_eq!(objs[0].0.shape, expected_shape);
         }
@@ -495,7 +493,7 @@ mod tests {
         for raw in FileMessageIter::new(path, offsets).unwrap() {
             let raw = raw.unwrap();
             let (meta, _) = crate::decode::decode(&raw, &DecodeOptions::default()).unwrap();
-            assert_eq!(meta.version, 2);
+            assert_eq!(meta.version, 3);
         }
     }
 }

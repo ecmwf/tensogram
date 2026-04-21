@@ -51,11 +51,10 @@ mod tests {
             compression: "none".into(),
             params: Default::default(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 16]; // 4 × f32
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             ..Default::default()
         };
         for _ in 0..n_messages {

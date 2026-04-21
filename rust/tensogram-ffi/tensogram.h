@@ -406,7 +406,26 @@ const uint8_t *tgm_object_data(const tgm_message_t *msg, size_t decoded_index, s
 const char *tgm_payload_encoding(const tgm_message_t *msg, size_t index);
 
 /**
- * Returns 1 if the object descriptor has a hash, 0 otherwise.
+ * Returns 1 if the i-th data object has a populated inline hash
+ * slot, 0 otherwise.
+ *
+ * In v3 the per-object hash lives in the frame footer's inline
+ * slot (see `plans/WIRE_FORMAT.md` §2.4) rather than the CBOR
+ * descriptor.  v3 hashing is a message-wide toggle: either every
+ * frame's slot is populated (preamble flag `HASHES_PRESENT = 1`)
+ * or every slot is zero (`HASHES_PRESENT = 0`).  This accessor
+ * returns 1 when the i-th slot holds a non-zero xxh3-64 digest,
+ * and 0 when the slot is zero (most commonly the whole-message
+ * `HASHES_PRESENT = 0` case) or when the index is out of range.
+ *
+ * A zero slot on a message that advertises `HASHES_PRESENT = 1`
+ * is a structural anomaly (tamper or writer bug) — surface via
+ * `tgm_validate` at the `checksum` / `integrity` level, which
+ * will report a HashMismatch against the body's recomputed digest.
+ *
+ * The matching hex digest is available via
+ * [`tgm_object_hash_value`]; the algorithm tag (always
+ * `"xxh3"` in v3) via [`tgm_object_hash_type`].
  */
 int32_t tgm_payload_has_hash(const tgm_message_t *msg, size_t index);
 

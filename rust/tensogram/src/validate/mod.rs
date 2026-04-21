@@ -100,6 +100,7 @@ pub fn validate_message(buf: &[u8], options: &ValidateOptions) -> ValidationRepo
         // Level 3: Integrity — hash verification + decode pipeline (caches decoded bytes)
         if run_integrity {
             hash_verified = validate_integrity(
+                buf,
                 walk,
                 &mut objects,
                 &mut issues,
@@ -269,7 +270,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data: Vec<u8> = vec![0u8; 32];
         encode(
@@ -294,7 +294,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data: Vec<u8> = vec![0u8; 16];
         encode(
@@ -371,7 +370,7 @@ mod tests {
     fn tiny_total_length_does_not_panic() {
         let mut buf = vec![0u8; 40];
         buf[0..8].copy_from_slice(b"TENSOGRM");
-        buf[8..10].copy_from_slice(&2u16.to_be_bytes());
+        buf[8..10].copy_from_slice(&crate::wire::WIRE_VERSION.to_be_bytes());
         buf[16..24].copy_from_slice(&10u64.to_be_bytes());
         let report = validate_message(&buf, &ValidateOptions::default());
         assert!(!report.is_ok());
@@ -611,7 +610,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 32];
 
@@ -647,7 +645,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 8];
 
@@ -686,7 +683,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 32];
         let opts = EncodeOptions {
@@ -760,7 +756,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 16];
 
@@ -769,8 +764,9 @@ mod tests {
         enc.write_object(&desc, &data).unwrap();
         enc.finish().unwrap();
 
-        // Corrupt the first_footer_offset (8 bytes before end magic)
-        let pa_start = buf.len() - 16;
+        // Corrupt the first_footer_offset.  Postamble (v3, 24 B):
+        //   [first_footer_offset u64][total_length u64][END_MAGIC].
+        let pa_start = buf.len() - POSTAMBLE_SIZE;
         let bad_ffo: u64 = 0; // 0 < PREAMBLE_SIZE, so out of range
         buf[pa_start..pa_start + 8].copy_from_slice(&bad_ffo.to_be_bytes());
 
@@ -829,7 +825,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
         encode_pre_encoded(
@@ -854,7 +849,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
         encode_pre_encoded(
@@ -960,7 +954,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 16]; // 4 × i32
         let msg = encode(
@@ -1002,7 +995,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         // Float16: exponent=0x1F (all 1s), mantissa=1 => NaN
         // Bit pattern: 0_11111_0000000001 = 0x7C01
@@ -1044,7 +1036,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         // Float16 Inf: exponent=0x1F, mantissa=0 => 0x7C00
         let data = 0x7C00u16.to_be_bytes().to_vec();
@@ -1079,7 +1070,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         // BFloat16 NaN: exponent=0xFF, mantissa≠0
         // sign(1) + exp(8) + mantissa(7): 0_11111111_0000001 = 0x7F81
@@ -1115,7 +1105,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         // Complex64: [NaN real, 0.0 imag]
         let mut data = Vec::new();
@@ -1152,7 +1141,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         // Complex128: [1.0 real, Inf imag]
         let mut data = Vec::new();
@@ -1255,7 +1243,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data: Vec<u8> = vec![];
         let msg = encode(
@@ -1290,7 +1277,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 12]; // 3 × f32, valid
         let opts = EncodeOptions {
@@ -1346,19 +1332,22 @@ mod tests {
 
     /// Helper: build a minimal valid message from raw parts.
     /// Constructs: preamble + metadata_frame + data_object_frame + postamble.
+    ///
+    /// Postamble layout (v3, 24 bytes):
+    ///   [first_footer_offset u64][total_length u64][END_MAGIC]
     fn build_raw_message(
         flags: u16,
         frames: &[Vec<u8>], // pre-built frame bytes (including headers + ENDF)
         total_length_override: Option<u64>,
         streaming: bool,
     ) -> Vec<u8> {
-        use crate::wire::{END_MAGIC, MAGIC};
+        use crate::wire::{END_MAGIC, MAGIC, WIRE_VERSION};
 
         let mut out = Vec::new();
 
         // Preamble placeholder
         out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&2u16.to_be_bytes()); // version
+        out.extend_from_slice(&WIRE_VERSION.to_be_bytes()); // version
         out.extend_from_slice(&flags.to_be_bytes());
         out.extend_from_slice(&0u32.to_be_bytes()); // reserved
         out.extend_from_slice(&0u64.to_be_bytes()); // total_length placeholder
@@ -1371,25 +1360,36 @@ mod tests {
             out.extend(std::iter::repeat_n(0u8, pad));
         }
 
-        // Postamble: first_footer_offset = current position (no footer frames)
-        let ffo = out.len() as u64;
+        // Postamble (v3, 24 bytes): first_footer_offset at the
+        // postamble offset (no footer frames) + mirrored
+        // total_length placeholder + end magic.
+        let postamble_offset = out.len();
+        let ffo = postamble_offset as u64;
         out.extend_from_slice(&ffo.to_be_bytes());
+        out.extend_from_slice(&0u64.to_be_bytes()); // total_length placeholder (patched below)
         out.extend_from_slice(END_MAGIC);
 
         // Patch total_length in preamble
         let total = if streaming { 0u64 } else { out.len() as u64 };
         let tl = total_length_override.unwrap_or(total);
         out[16..24].copy_from_slice(&tl.to_be_bytes());
+        // Patch the postamble's mirrored total_length (second field).
+        // Use the same `tl` value so overrides propagate.
+        let pa_tl = if streaming { 0u64 } else { tl };
+        out[postamble_offset + 8..postamble_offset + 16].copy_from_slice(&pa_tl.to_be_bytes());
 
         out
     }
 
     /// Helper: build a simple metadata frame (type=HeaderMetadata) from scratch.
+    ///
+    /// v3 footer: `[hash u64][ENDF 4]` = 12 bytes.  `hash_slot` is
+    /// left as zero here (HASHES_PRESENT=0 at the message level).
     fn build_metadata_frame() -> Vec<u8> {
-        use crate::wire::{FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
+        use crate::wire::{FRAME_COMMON_FOOTER_SIZE, FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
         let meta = GlobalMetadata::default();
         let cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
-        let total_length = (FRAME_HEADER_SIZE + cbor.len() + FRAME_END.len()) as u64;
+        let total_length = (FRAME_HEADER_SIZE + cbor.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
         let mut frame = Vec::new();
         frame.extend_from_slice(FRAME_MAGIC);
         frame.extend_from_slice(&1u16.to_be_bytes()); // type = HeaderMetadata
@@ -1397,13 +1397,14 @@ mod tests {
         frame.extend_from_slice(&0u16.to_be_bytes()); // flags
         frame.extend_from_slice(&total_length.to_be_bytes());
         frame.extend_from_slice(&cbor);
+        frame.extend_from_slice(&0u64.to_be_bytes()); // hash slot
         frame.extend_from_slice(FRAME_END);
         frame
     }
 
     /// Helper: build a data object frame from a descriptor and payload.
     fn build_data_object_frame(desc: &DataObjectDescriptor, payload: &[u8]) -> Vec<u8> {
-        crate::framing::encode_data_object_frame(desc, payload, false).unwrap()
+        crate::framing::encode_data_object_frame(desc, payload, false, None).unwrap()
     }
 
     /// Helper: the default ndarray descriptor used in many tests.
@@ -1420,7 +1421,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         }
     }
 
@@ -1633,20 +1633,22 @@ mod tests {
         // Garbage CBOR
         let bad_cbor = vec![0xFF, 0xFF, 0xFF, 0xFF];
 
-        // cbor_before layout: header | cbor | payload | cbor_offset(8) | ENDF(4)
+        // v3 cbor_before layout:
+        //   header | cbor | payload | cbor_offset(8) | hash(8) | ENDF(4)
         let cbor_offset = FRAME_HEADER_SIZE as u64; // CBOR starts right after header
         let body_len = bad_cbor.len() + payload.len() + DATA_OBJECT_FOOTER_SIZE;
         let total_length = (FRAME_HEADER_SIZE + body_len) as u64;
 
         let mut frame = Vec::new();
         frame.extend_from_slice(FRAME_MAGIC);
-        frame.extend_from_slice(&4u16.to_be_bytes()); // DataObject
+        frame.extend_from_slice(&9u16.to_be_bytes()); // NTensorFrame (type 9 in v3)
         frame.extend_from_slice(&1u16.to_be_bytes()); // version
         frame.extend_from_slice(&0u16.to_be_bytes()); // flags=0 → CBOR before payload
         frame.extend_from_slice(&total_length.to_be_bytes());
         frame.extend_from_slice(&bad_cbor);
         frame.extend_from_slice(&payload);
         frame.extend_from_slice(&cbor_offset.to_be_bytes());
+        frame.extend_from_slice(&0u64.to_be_bytes()); // hash slot
         frame.extend_from_slice(FRAME_END);
 
         let meta_frame = build_metadata_frame();
@@ -1802,13 +1804,15 @@ mod tests {
 
         let mut frame = Vec::new();
         frame.extend_from_slice(FRAME_MAGIC);
-        frame.extend_from_slice(&4u16.to_be_bytes()); // DataObject
+        frame.extend_from_slice(&9u16.to_be_bytes()); // NTensorFrame (type 9 in v3)
         frame.extend_from_slice(&1u16.to_be_bytes()); // version
         frame.extend_from_slice(&DataObjectFlags::CBOR_AFTER_PAYLOAD.to_be_bytes()); // flags
         frame.extend_from_slice(&total_length.to_be_bytes());
         frame.extend_from_slice(&payload);
         frame.extend_from_slice(&patched_cbor);
+        // v3 footer: [cbor_offset u64][hash u64][ENDF 4]
         frame.extend_from_slice(&cbor_offset.to_be_bytes());
+        frame.extend_from_slice(&0u64.to_be_bytes()); // hash slot (HASHES_PRESENT=0)
         frame.extend_from_slice(FRAME_END);
 
         let meta_frame = build_metadata_frame();
@@ -1847,7 +1851,6 @@ mod tests {
 
         // Build a fake index frame claiming 5 objects with wrong offsets
         let idx = crate::types::IndexFrame {
-            object_count: 5,
             offsets: vec![0, 100, 200, 300, 400],
             lengths: vec![50, 50, 50, 50, 50],
         };
@@ -1889,7 +1892,6 @@ mod tests {
         let meta_frame = build_metadata_frame();
 
         let idx = crate::types::IndexFrame {
-            object_count: 1,
             offsets: vec![9999], // wrong offset
             lengths: vec![50],
         };
@@ -2229,31 +2231,47 @@ mod tests {
         assert!(report.hash_verified, "issues: {:?}", report.issues);
     }
 
-    // ── Integrity: UnknownHashAlgorithm ─────────────────────────────────
+    // ── Integrity: UnknownHashAlgorithm via HashFrame ───────────────────
 
+    /// v3: per-object hash is the inline xxh3-64 slot.  The
+    /// aggregate HashFrame's `algorithm` field names the digest
+    /// convention; any value other than `"xxh3"` triggers the
+    /// `UnknownHashAlgorithm` warning.
     #[test]
     fn integrity_unknown_hash_algorithm() {
-        // Build a message with a per-object hash using a fake algorithm name.
-        let msg = make_message_with_patched_descriptor(|v| {
-            let hash_map = ciborium::Value::Map(vec![
-                (
-                    ciborium::Value::Text("type".to_string()),
-                    ciborium::Value::Text("sha9001".to_string()),
-                ),
-                (
-                    ciborium::Value::Text("value".to_string()),
-                    ciborium::Value::Text("deadbeef".to_string()),
-                ),
-            ]);
-            cbor_map_set(v, "hash", hash_map);
-        });
+        use crate::wire::{FRAME_COMMON_FOOTER_SIZE, FRAME_HEADER_SIZE, FRAME_MAGIC};
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
+
+        // Hand-built HashFrame CBOR with algorithm = "blake99".
+        // v3 readers silently accept unknown keys but flag the
+        // unknown algorithm at Integrity level.
+        let hf = crate::types::HashFrame {
+            algorithm: "blake99".to_string(),
+            hashes: vec!["deadbeefdeadbeef".to_string()],
+        };
+        let hcbor = crate::metadata::hash_frame_to_cbor(&hf).unwrap();
+        // Wrap in a v3 HeaderHash frame (footer = 12 B hash slot + ENDF).
+        let htl = (FRAME_HEADER_SIZE + hcbor.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
+        let mut hash_frame = Vec::new();
+        hash_frame.extend_from_slice(FRAME_MAGIC);
+        hash_frame.extend_from_slice(&3u16.to_be_bytes()); // HeaderHash
+        hash_frame.extend_from_slice(&1u16.to_be_bytes());
+        hash_frame.extend_from_slice(&0u16.to_be_bytes());
+        hash_frame.extend_from_slice(&htl.to_be_bytes());
+        hash_frame.extend_from_slice(&hcbor);
+        hash_frame.extend_from_slice(&0u64.to_be_bytes()); // hash slot (message HASHES_PRESENT=0)
+        hash_frame.extend_from_slice(b"ENDF");
+
+        let flags = 1u16 | (1u16 << 4); // HEADER_METADATA | HEADER_HASHES
+        let msg = build_raw_message(flags, &[meta_frame, hash_frame, data_frame], None, false);
         let report = validate_message(&msg, &ValidateOptions::default());
-        let has_unk_hash = report
-            .issues
-            .iter()
-            .any(|i| i.code == IssueCode::UnknownHashAlgorithm);
         assert!(
-            has_unk_hash,
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::UnknownHashAlgorithm),
             "expected UnknownHashAlgorithm, got: {:?}",
             report.issues
         );
@@ -2280,7 +2298,6 @@ mod tests {
                 compression: "zstd".to_string(),
                 params: BTreeMap::new(),
                 masks: None,
-                hash: None,
             };
             let data = vec![0u8; 32];
             let opts = EncodeOptions {
@@ -2396,7 +2413,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 2]; // ceil(16/8) = 2 bytes
         let msg = encode(
@@ -2429,7 +2445,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 2]; // ceil(13/8) = 2 bytes
         let msg = encode(
@@ -2546,8 +2561,7 @@ mod tests {
         let data_frame = build_data_object_frame(&desc, &payload);
 
         let hash_frame_data = crate::types::HashFrame {
-            object_count: 3,
-            hash_type: "xxh3".to_string(),
+            algorithm: "xxh3".to_string(),
             hashes: vec!["aaa".to_string(), "bbb".to_string(), "ccc".to_string()],
         };
         let hash_cbor = crate::metadata::hash_frame_to_cbor(&hash_frame_data).unwrap();
@@ -2599,7 +2613,9 @@ mod tests {
         let data_frame = build_data_object_frame(&desc, &payload);
         let flags = 1u16;
         let mut msg = build_raw_message(flags, &[meta_frame, data_frame], None, true);
-        let pa_start = msg.len() - 16;
+        // Postamble is 24 B in v3; first_footer_offset is the first
+        // u64 of the postamble, at offset `msg.len() - POSTAMBLE_SIZE`.
+        let pa_start = msg.len() - POSTAMBLE_SIZE;
         let bad_ffo: u64 = (msg.len() + 100) as u64;
         msg[pa_start..pa_start + 8].copy_from_slice(&bad_ffo.to_be_bytes());
         let report = validate_message(&msg, &ValidateOptions::default());
@@ -2737,7 +2753,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let nan_data: Vec<u8> = f64::NAN
             .to_be_bytes()
@@ -2775,27 +2790,102 @@ mod tests {
     // Additional coverage — Integrity (Level 3)
     // ═══════════════════════════════════════════════════════════════════════
 
+    /// v3 encoder always emits `algorithm = "xxh3"` in the
+    /// aggregate HashFrame; validate recognises it.  Pins that
+    /// default-options roundtrip is silent about algorithm
+    /// identification (no false-positive UnknownHashAlgorithm).
     #[test]
-    fn integrity_unknown_hash_in_frame() {
-        use crate::wire::{FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
+    fn integrity_default_xxh3_hash_frame_is_known() {
+        let msg = make_test_message();
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            !report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::UnknownHashAlgorithm),
+            "xxh3 (default) must never be flagged as UnknownHashAlgorithm, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// Two aggregate HashFrames (header + footer) carrying
+    /// different hash lists must be flagged as `HashMismatch`.
+    /// Pins the v3 §6.3 contract that when both are present they
+    /// must agree.
+    #[test]
+    fn integrity_disagreeing_header_and_footer_hash_frames() {
+        use crate::wire::{FRAME_COMMON_FOOTER_SIZE, FRAME_HEADER_SIZE, FRAME_MAGIC};
+
         let meta_frame = build_metadata_frame();
         let desc = default_desc();
         let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
-        let hf = crate::types::HashFrame {
-            object_count: 1,
-            hash_type: "blake99".to_string(),
-            hashes: vec!["deadbeef".to_string()],
+
+        // Build two distinct HashFrame aggregates claiming
+        // different per-object hashes.
+        let build_hash_frame = |ft_byte: u16, hex: &str| -> Vec<u8> {
+            let hf = crate::types::HashFrame {
+                algorithm: "xxh3".to_string(),
+                hashes: vec![hex.to_string()],
+            };
+            let hcbor = crate::metadata::hash_frame_to_cbor(&hf).unwrap();
+            let htl = (FRAME_HEADER_SIZE + hcbor.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
+            let mut out = Vec::new();
+            out.extend_from_slice(FRAME_MAGIC);
+            out.extend_from_slice(&ft_byte.to_be_bytes());
+            out.extend_from_slice(&1u16.to_be_bytes());
+            out.extend_from_slice(&0u16.to_be_bytes());
+            out.extend_from_slice(&htl.to_be_bytes());
+            out.extend_from_slice(&hcbor);
+            out.extend_from_slice(&0u64.to_be_bytes()); // hash slot
+            out.extend_from_slice(b"ENDF");
+            out
         };
-        let hcbor = crate::metadata::hash_frame_to_cbor(&hf).unwrap();
-        let htl = (FRAME_HEADER_SIZE + hcbor.len() + FRAME_END.len()) as u64;
+        let header_hash = build_hash_frame(3, "aaaaaaaaaaaaaaaa");
+        let footer_hash = build_hash_frame(5, "bbbbbbbbbbbbbbbb");
+
+        // Need FOOTER_HASHES flag bit 5 AND HEADER_HASHES bit 4.
+        let flags = 1u16 | (1u16 << 4) | (1u16 << 5);
+        let msg = build_raw_message(
+            flags,
+            &[meta_frame, header_hash, data_frame, footer_hash],
+            None,
+            false,
+        );
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::HashMismatch && i.description.contains("disagree")),
+            "expected HashMismatch with 'disagree' in description, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// A structurally-invalid HashFrame (non-CBOR bytes in the
+    /// payload region) triggers `HashFrameCborParseFailed` at
+    /// Integrity level.
+    #[test]
+    fn integrity_hash_frame_cbor_parse_failure() {
+        use crate::wire::{FRAME_COMMON_FOOTER_SIZE, FRAME_HEADER_SIZE, FRAME_MAGIC};
+
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
+
+        // HashFrame payload is 0xFFFFFFFF — invalid CBOR.
+        let bad_payload = vec![0xFFu8; 4];
+        let htl = (FRAME_HEADER_SIZE + bad_payload.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
         let mut hash_frame = Vec::new();
         hash_frame.extend_from_slice(FRAME_MAGIC);
-        hash_frame.extend_from_slice(&3u16.to_be_bytes());
+        hash_frame.extend_from_slice(&3u16.to_be_bytes()); // HeaderHash
         hash_frame.extend_from_slice(&1u16.to_be_bytes());
         hash_frame.extend_from_slice(&0u16.to_be_bytes());
         hash_frame.extend_from_slice(&htl.to_be_bytes());
-        hash_frame.extend_from_slice(&hcbor);
-        hash_frame.extend_from_slice(FRAME_END);
+        hash_frame.extend_from_slice(&bad_payload);
+        hash_frame.extend_from_slice(&0u64.to_be_bytes());
+        hash_frame.extend_from_slice(b"ENDF");
+
         let flags = 1u16 | (1u16 << 4);
         let msg = build_raw_message(flags, &[meta_frame, hash_frame, data_frame], None, false);
         let report = validate_message(&msg, &ValidateOptions::default());
@@ -2803,8 +2893,8 @@ mod tests {
             report
                 .issues
                 .iter()
-                .any(|i| i.code == IssueCode::UnknownHashAlgorithm),
-            "expected UnknownHashAlgorithm, got: {:?}",
+                .any(|i| i.code == IssueCode::HashFrameCborParseFailed),
+            "expected HashFrameCborParseFailed, got: {:?}",
             report.issues
         );
     }
@@ -2922,9 +3012,9 @@ mod tests {
     #[test]
     fn structure_footer_offset_below_preamble() {
         let mut msg = make_test_message();
-        // first_footer_offset lives at byte offset msg.len() - 16 (start of
-        // postamble), 8 bytes big-endian.
-        let ffo_pos = msg.len() - 16;
+        // first_footer_offset lives at the start of the postamble
+        // (msg.len() - POSTAMBLE_SIZE), 8 bytes big-endian.
+        let ffo_pos = msg.len() - POSTAMBLE_SIZE;
         msg[ffo_pos..ffo_pos + 8].copy_from_slice(&0u64.to_be_bytes());
         let report = validate_message(&msg, &ValidateOptions::default());
         assert!(
@@ -2943,8 +3033,9 @@ mod tests {
     fn structure_footer_offset_beyond_postamble() {
         let mut msg = make_test_message();
         let msg_len = msg.len();
-        let ffo_pos = msg_len - 16;
-        // Point FFO well past the postamble position (msg_len - 16).
+        // Postamble is 24 B in v3; FFO is its first u64.
+        let ffo_pos = msg_len - POSTAMBLE_SIZE;
+        // Point FFO well past the postamble position.
         msg[ffo_pos..ffo_pos + 8].copy_from_slice(&(msg_len as u64 + 1000).to_be_bytes());
         let report = validate_message(&msg, &ValidateOptions::default());
         assert!(
@@ -2964,7 +3055,7 @@ mod tests {
     fn structure_footer_offset_overflows_usize() {
         let mut msg = make_test_message();
         let msg_len = msg.len();
-        let ffo_pos = msg_len - 16;
+        let ffo_pos = msg_len - POSTAMBLE_SIZE;
         msg[ffo_pos..ffo_pos + 8].copy_from_slice(&u64::MAX.to_be_bytes());
         let report = validate_message(&msg, &ValidateOptions::default());
         assert!(
@@ -3103,7 +3194,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 32];
         // encode() itself rejects base.len() > descriptors.len(), so we have to
@@ -3143,7 +3233,6 @@ mod tests {
             compression: "lz4".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         // Encode 2 f64 values through the same pipeline so the bytes we hand
         // to the fidelity scanner are genuinely compressed.
@@ -3361,7 +3450,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         encode_pre_encoded(
             &meta,
@@ -3571,7 +3659,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 32];
         let msg = encode(
@@ -3609,7 +3696,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 16];
         let msg = encode(
@@ -3655,7 +3741,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 32];
         let msg = encode(
@@ -3716,7 +3801,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 16];
         let msg = encode(
@@ -3755,11 +3839,12 @@ mod tests {
     /// triggers the streaming-mode BufferTooShort branch (L186-194 of structure.rs).
     #[test]
     fn structure_streaming_mode_buffer_too_short_for_postamble() {
+        use crate::wire::WIRE_VERSION;
         // Build a preamble with total_length=0 (streaming), buffer size is
         // only 24 bytes (exactly PREAMBLE_SIZE, no postamble).
         let mut msg = Vec::with_capacity(PREAMBLE_SIZE);
         msg.extend_from_slice(b"TENSOGRM");
-        msg.extend_from_slice(&2u16.to_be_bytes()); // version
+        msg.extend_from_slice(&WIRE_VERSION.to_be_bytes()); // version
         msg.extend_from_slice(&0u16.to_be_bytes()); // flags
         msg.extend_from_slice(&0u32.to_be_bytes()); // reserved
         msg.extend_from_slice(&0u64.to_be_bytes()); // total_length=0 (streaming)
@@ -3770,11 +3855,12 @@ mod tests {
     /// Streaming mode with a corrupt postamble (bad end magic).
     #[test]
     fn structure_streaming_mode_invalid_postamble() {
+        use crate::wire::WIRE_VERSION;
         let total_len = PREAMBLE_SIZE + POSTAMBLE_SIZE;
         let mut msg = Vec::with_capacity(total_len);
         // Preamble with streaming flag (total_length=0)
         msg.extend_from_slice(b"TENSOGRM");
-        msg.extend_from_slice(&2u16.to_be_bytes());
+        msg.extend_from_slice(&WIRE_VERSION.to_be_bytes());
         msg.extend_from_slice(&0u16.to_be_bytes());
         msg.extend_from_slice(&0u32.to_be_bytes());
         msg.extend_from_slice(&0u64.to_be_bytes()); // streaming
@@ -3797,18 +3883,20 @@ mod tests {
     /// postamble, and nothing else.
     #[test]
     fn structure_no_metadata_frame_empty_body() {
+        use crate::wire::WIRE_VERSION;
         // Minimal valid preamble + postamble, no frames at all.
         // Assemble manually.
         let total_len = PREAMBLE_SIZE + POSTAMBLE_SIZE;
         let mut msg = Vec::with_capacity(total_len);
-        // Preamble: TENSOGRM + version=2 + flags=0 + reserved=0 + total_length
+        // Preamble: TENSOGRM + version + flags=0 + reserved=0 + total_length
         msg.extend_from_slice(b"TENSOGRM");
-        msg.extend_from_slice(&2u16.to_be_bytes()); // version
+        msg.extend_from_slice(&WIRE_VERSION.to_be_bytes()); // version
         msg.extend_from_slice(&0u16.to_be_bytes()); // flags
         msg.extend_from_slice(&0u32.to_be_bytes()); // reserved
         msg.extend_from_slice(&(total_len as u64).to_be_bytes());
-        // Postamble: first_footer_offset + magic
+        // Postamble (v3, 24 B): first_footer_offset + total_length + magic
         msg.extend_from_slice(&(PREAMBLE_SIZE as u64).to_be_bytes());
+        msg.extend_from_slice(&(total_len as u64).to_be_bytes());
         msg.extend_from_slice(b"39277777");
         let report = validate_message(&msg, &ValidateOptions::default());
         assert!(

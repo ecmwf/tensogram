@@ -5,6 +5,78 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Wire format v3 — BREAKING
+
+This release is a clean break from v2.  There is no backward
+compatibility; v2 messages are rejected at preamble read with a
+clear error pointing at re-encoding.  The v3 spec lives at
+[`plans/WIRE_FORMAT.md`](plans/WIRE_FORMAT.md); the implementation
+plan that produced it is
+[`plans/WIRE_FORMAT_CHANGES.md`](plans/WIRE_FORMAT_CHANGES.md).
+
+#### Preamble / postamble
+
+- Preamble `version` bumped `2 → 3`.  `Preamble::read_from`
+  requires `version == 3` exactly.  `pub const WIRE_VERSION = 3`
+  in `rust/tensogram/src/wire.rs` is the single source of truth.
+- Postamble grew `16 → 24 B`.  New layout
+  `[first_footer_offset u64][total_length u64][END_MAGIC 8]`.
+  The mirrored `total_length` makes the postamble self-locating
+  from any byte position inside a message, enabling backward and
+  bidirectional scan.
+- New preamble flag `HASHES_PRESENT` (bit 7) signals whether the
+  inline per-frame hash slots are populated.
+
+#### Frame registry
+
+- Type 4 (obsolete v2 `NTensorFrame`) — removed from the enum.
+  Any decoder that reads a type-4 frame hard-fails with a
+  reserved-type error.
+- Type 9 renamed from `NTensorMaskedFrame` → `NTensorFrame` and
+  is the only concrete data-object type in v3.  The body phase is
+  explicitly designed to accommodate future non-tensor
+  data-object types at fresh unused type numbers without a
+  wire-format version bump.
+
+#### Hashing
+
+- Every frame now ends with a common 12-byte tail
+  `[hash u64][ENDF 4]`.  Data-object frames have a 20 B footer
+  `[cbor_offset u64][hash u64][ENDF 4]`.
+- Hash scope is the frame *body* only — `bytes[16 ..
+  frame_end − footer_size(type))`.  Neither the header nor any
+  byte of the footer (including `cbor_offset`) is covered.
+- Hashing is message-wide: `HASHES_PRESENT = 1` populates every
+  frame's slot, `= 0` leaves them zero.  No per-frame flag.
+- `DataObjectDescriptor.hash: Option<HashDescriptor>` — REMOVED.
+  The inline slot is the single integrity source.
+- `HashFrame` CBOR schema: `hash_type → algorithm`, `object_count`
+  removed (derived from `hashes.len()`).
+- `IndexFrame` CBOR schema: `object_count` removed (derived from
+  `offsets.len()`).
+- New `EncodeOptions.create_header_hashes: bool` (default `true`
+  buffered) and `.create_footer_hashes: bool` (default `false`
+  buffered; streaming folds both into the footer).
+- `validate --checksum` rewired to recompute per-frame body
+  hashes and compare to the inline slot — no CBOR parse on the
+  fast path.
+
+#### Compression codecs
+
+- `rle` and `roaring` promoted from mask-companion-only to
+  first-class `DataObjectDescriptor.compression` values.
+  Bitmask-only: attempting either codec on a non-`Bitmask` dtype
+  is an encode-time `EncodingError`.  `decompress_range` returns
+  `CompressionError::RangeNotSupported`.
+
+#### Scan
+
+- `scan` / `scan_file` default to bidirectional (meet-in-the-middle)
+  walking.  New `ScanOptions { bidirectional, max_message_size }`
+  lets callers opt out.  Falls back to pure forward scan when the
+  backward walker hits a `total_length = 0` (streaming from a
+  non-seekable sink) or any I/O / postamble anomaly.
+
 ### Added
 
 - **NaN / Inf bitmask companion frame** (wire type 9

@@ -181,12 +181,17 @@ TEST(ErrorTest, InvalidFilePathThrowsIoError) {
 }
 
 // ---------------------------------------------------------------------------
-// Hash mismatch throws hash_mismatch_error (specific type, not just error)
+// v3: hash-mismatch detection moved from decode to validate.  The
+// decode path no longer verifies hashes (`verify_hash = true` is a
+// no-op kept for source compatibility).  Corruption is reported by
+// `tensogram::validate_bytes` at `checksum` level as a JSON issue
+// with code `HashMismatch` (or `DecodePipelineFailed` /
+// `CborOffsetInvalid` when the tamper also breaks frame structure).
 // ---------------------------------------------------------------------------
 
-TEST(ErrorTest, HashMismatchThrowsHashMismatchError) {
-    // Use a large payload so corruption reliably hits payload data, not frame
-    // structure (ENDF markers, CBOR descriptors).
+TEST(ErrorTest, ValidateDetectsHashMismatchOnTamperedPayload) {
+    // Large payload so corruption reliably hits payload data, not
+    // frame structure.
     std::vector<float> values(256, 42.0f);
     std::string json = test_helpers::simple_f32_json(values.size());
     std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
@@ -197,16 +202,21 @@ TEST(ErrorTest, HashMismatchThrowsHashMismatchError) {
     enc_opts.hash_algo = "xxh3";
     auto encoded = tensogram::encode(json, objects, enc_opts);
 
-    // Corrupt bytes deep in the payload area (75% into message, safely past
-    // all header/index/hash frames and inside the 1024-byte payload).
+    // Corrupt bytes deep in the payload area.
     const std::size_t payload_offset = (encoded.size() * 75) / 100;
     ASSERT_GT(encoded.size(), payload_offset + 2);
     encoded[payload_offset]     ^= 0xFF;
     encoded[payload_offset + 1] ^= 0xFF;
 
-    tensogram::decode_options dec_opts;
-    dec_opts.verify_hash = true;
-    EXPECT_THROW(
-        (void)tensogram::decode(encoded.data(), encoded.size(), dec_opts),
-        tensogram::hash_mismatch_error);
+    // Validate at checksum level — must surface a hash_mismatch (or
+    // structural issue) in the report JSON.  Note: validate emits
+    // issue codes in snake_case, not the Rust enum's CamelCase.
+    const std::string report_json =
+        tensogram::validate(encoded.data(), encoded.size(), "checksum");
+    EXPECT_TRUE(
+        report_json.find("hash_mismatch") != std::string::npos ||
+        report_json.find("decode_pipeline_failed") != std::string::npos ||
+        report_json.find("cbor_offset_invalid") != std::string::npos)
+        << "expected integrity or structural issue in validate report, got: "
+        << report_json;
 }

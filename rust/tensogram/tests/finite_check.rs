@@ -25,7 +25,7 @@ use tensogram::*;
 
 fn make_global_meta() -> GlobalMetadata {
     GlobalMetadata {
-        version: 2,
+        version: 3,
         ..Default::default()
     }
 }
@@ -52,7 +52,6 @@ fn make_descriptor(shape: Vec<u64>, dtype: Dtype, byte_order: ByteOrder) -> Data
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     }
 }
 

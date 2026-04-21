@@ -57,7 +57,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         compression: "none".to_string(),
         params: filter_params,
         masks: None,
-        hash: None,
     };
 
     let global_meta = GlobalMetadata {

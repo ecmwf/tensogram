@@ -35,7 +35,6 @@
 //!     compression: "none".to_string(),
 //!     masks: None,
 //!     params: BTreeMap::new(),
-//!     hash: None,
 //! };
 //!
 //! let pipeline = DataPipeline {
@@ -277,7 +276,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         }
     }
 

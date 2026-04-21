@@ -60,7 +60,6 @@ fn make_forecast_message(
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     // Payload: zeros stand in for real forecast data

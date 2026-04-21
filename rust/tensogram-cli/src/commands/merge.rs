@@ -256,7 +256,6 @@ mod tests {
             compression: "none".into(),
             params: Default::default(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 16];
         let mut extra = BTreeMap::new();
@@ -265,7 +264,7 @@ mod tests {
             ciborium::Value::Text(param.to_string()),
         );
         let meta = tensogram::GlobalMetadata {
-            version: 2,
+            version: 3,
             extra,
             ..Default::default()
         };
@@ -371,7 +370,6 @@ mod tests {
             compression: "none".into(),
             params: Default::default(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 16];
         let mut base = BTreeMap::new();
@@ -380,7 +378,7 @@ mod tests {
             ciborium::Value::Text(param.to_string()),
         );
         let meta = tensogram::GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![base],
             ..Default::default()
         };

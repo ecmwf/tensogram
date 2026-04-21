@@ -173,6 +173,13 @@ pub enum CompressionType {
     Sz3 {
         error_bound: Sz3ErrorBound,
     },
+    /// Bit-level run-length encoding.  Bitmask-only — the pipeline
+    /// build-layer rejects this codec on any other dtype.
+    /// See [`crate::compression::RleCompressor`].
+    Rle,
+    /// Roaring bitmap.  Bitmask-only.
+    /// See [`crate::compression::RoaringCompressor`].
+    Roaring,
 }
 
 /// Selects which backend to use when both FFI and pure-Rust implementations
@@ -433,6 +440,8 @@ fn build_compressor(
             num_values: config.num_values,
             byte_order: config.byte_order,
         }))),
+        CompressionType::Rle => Ok(Some(Box::new(crate::compression::RleCompressor))),
+        CompressionType::Roaring => Ok(Some(Box::new(crate::compression::RoaringCompressor))),
     }
 }
 
@@ -776,7 +785,16 @@ pub fn decode_range_pipeline(
 
 fn estimate_decompressed_size(config: &PipelineConfig) -> usize {
     match &config.encoding {
-        EncodingType::None => config.num_values.saturating_mul(config.dtype_byte_width),
+        EncodingType::None => {
+            // `Dtype::Bitmask` reports `byte_width = 0` because its
+            // elements are 1 bit each.  The decompressed byte count
+            // for a bitmask payload is `ceil(num_values / 8)`.
+            if config.dtype_byte_width == 0 {
+                config.num_values.div_ceil(8)
+            } else {
+                config.num_values.saturating_mul(config.dtype_byte_width)
+            }
+        }
         EncodingType::SimplePacking(params) => {
             let total_bits =
                 (config.num_values as u128).saturating_mul(params.bits_per_value as u128);

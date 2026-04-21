@@ -103,13 +103,12 @@ mod tests {
             compression: "none".into(),
             params: Default::default(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 16];
         let mut extra = BTreeMap::new();
         extra.insert("param".to_string(), ciborium::Value::Text("2t".to_string()));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra,
             ..Default::default()
         };

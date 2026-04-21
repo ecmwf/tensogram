@@ -44,7 +44,6 @@ fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     }
 }
 
@@ -98,12 +97,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 obj_data[0]
             );
         }
-        // Verify hash descriptor was stored by encoder
-        let hash = &objects[0].0.hash;
-        println!(
-            "  objects[0].hash: {:?}",
-            hash.as_ref().map(|h| &h.hash_type)
-        );
+        // v3: hash lives in the frame footer's inline slot (see
+        // `plans/WIRE_FORMAT.md` §2.4), not on the descriptor.
+        // Phase 6 adds an API to surface it via `objects[i]`.
+        println!("  objects[0].hash: (inline slot — phase 6 API)");
         assert_eq!(objects[0].1, data0);
         assert_eq!(objects[1].1, data1);
         assert_eq!(objects[2].1, data2);

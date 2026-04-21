@@ -50,7 +50,6 @@ fn make_message(param: &str, fill: u8) -> (GlobalMetadata, DataObjectDescriptor,
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let data = vec![fill; 4 * 4 * 4]; // 4×4 float32

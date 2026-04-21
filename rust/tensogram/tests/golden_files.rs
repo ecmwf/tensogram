@@ -50,7 +50,6 @@ fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     }
 }
 
@@ -62,7 +61,7 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
     // 1. Simple message: single float32 tensor [4], no compression
     {
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         };
@@ -78,7 +77,7 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
     // 2. Multi-object: 3 tensors with different dtypes
     {
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         };
@@ -125,7 +124,7 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
             ),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![base_entry],
             ..Default::default()
         };
@@ -141,7 +140,7 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
     // 4. Multi-message file
     {
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         };
@@ -164,7 +163,7 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
     // 5. Hash verification message (xxh3)
     {
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         };
@@ -255,7 +254,7 @@ fn test_golden_simple_f32() {
     let data = std::fs::read(golden_dir().join("simple_f32.tgm")).unwrap();
     let (meta, objects) = decode::decode(&data, &DecodeOptions::default()).unwrap();
 
-    assert_eq!(meta.version, 2);
+    assert_eq!(meta.version, 3);
     assert_eq!(objects.len(), 1);
     assert_eq!(objects[0].0.shape, vec![4]);
     assert_eq!(objects[0].0.dtype, Dtype::Float32);
@@ -276,7 +275,7 @@ fn test_golden_multi_object() {
     let data = std::fs::read(golden_dir().join("multi_object.tgm")).unwrap();
     let (meta, objects) = decode::decode(&data, &DecodeOptions::default()).unwrap();
 
-    assert_eq!(meta.version, 2);
+    assert_eq!(meta.version, 3);
     assert_eq!(objects.len(), 3);
 
     // Float32 [2]
@@ -305,7 +304,7 @@ fn test_golden_mars_metadata() {
     let data = std::fs::read(golden_dir().join("mars_metadata.tgm")).unwrap();
     let (meta, objects) = decode::decode(&data, &DecodeOptions::default()).unwrap();
 
-    assert_eq!(meta.version, 2);
+    assert_eq!(meta.version, 3);
     assert!(meta.base[0].contains_key("mars"));
 
     // Verify MARS keys are under base[0]["mars"]
@@ -367,16 +366,33 @@ fn test_golden_multi_message() {
 
 #[test]
 fn test_golden_hash_xxh3() {
+    use tensogram::framing::{decode_message, scan};
+    use tensogram::hash::verify_frame_hash;
+    use tensogram::wire::{FrameHeader, MessageFlags, Preamble};
+
     let data = std::fs::read(golden_dir().join("hash_xxh3.tgm")).unwrap();
 
-    // Decode with hash verification
-    let opts = DecodeOptions {
-        verify_hash: true,
-        ..Default::default()
-    };
-    let (meta, objects) = decode::decode(&data, &opts).unwrap();
-    assert_eq!(meta.version, 2);
+    // Decode high-level content.
+    let (meta, objects) = decode::decode(&data, &DecodeOptions::default()).unwrap();
+    assert_eq!(meta.version, 3);
     assert_eq!(objects.len(), 1);
-    assert!(objects[0].0.hash.is_some());
-    assert_eq!(objects[0].0.hash.as_ref().unwrap().hash_type, "xxh3");
+
+    // v3: the hash lives in the frame footer's inline slot.  Pin
+    // the committed golden's HASHES_PRESENT flag and the
+    // frame-level hash verification pathway.
+    let preamble = Preamble::read_from(&data).unwrap();
+    assert!(
+        preamble.flags.has(MessageFlags::HASHES_PRESENT),
+        "hash_xxh3.tgm must have HASHES_PRESENT set"
+    );
+    let messages = scan(&data);
+    let (offset, len) = messages[0];
+    let msg = &data[offset..offset + len];
+    let decoded = decode_message(msg).unwrap();
+    for (_, _, _, frame_offset) in &decoded.objects {
+        let frame = &msg[*frame_offset..];
+        let fh = FrameHeader::read_from(frame).unwrap();
+        let frame_bytes = &frame[..fh.total_length as usize];
+        verify_frame_hash(frame_bytes, fh.frame_type).expect("golden hash_xxh3 frame must verify");
+    }
 }

@@ -72,7 +72,6 @@ fn rust_encode_decode_sha256() -> String {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let meta = GlobalMetadata::default();

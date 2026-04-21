@@ -42,7 +42,6 @@ fn make_input_file(dir: &std::path::Path) -> std::path::PathBuf {
         compression: "blosc2".to_string(),
         params: Default::default(),
         masks: None,
-        hash: None,
     };
     desc.params
         .insert("blosc2_clevel".to_string(), Value::Integer(5.into()));

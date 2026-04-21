@@ -362,7 +362,6 @@ fn build_descriptor(
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     // Simple_packing is f64-only. Extract typed values from the raw
@@ -405,7 +404,7 @@ fn encode_as_one_message(
         extracted.iter().map(|ev| ev.base_entry.clone()).collect();
 
     let global_meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base,
         ..Default::default()
     };
@@ -433,7 +432,7 @@ fn encode_one_per_variable(
 
     for ev in extracted {
         let global_meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![ev.base_entry.clone()],
             ..Default::default()
         };

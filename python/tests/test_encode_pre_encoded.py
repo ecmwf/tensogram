@@ -345,36 +345,44 @@ class TestEncodePreEncodedSzip:
 
 
 class TestEncodePreEncodedHashOverwrite:
-    """Library always overwrites the caller's hash field."""
+    """v3: `DataObjectDescriptor.hash` is gone from the CBOR
+    descriptor; the per-object hash lives in the frame footer's
+    inline slot.  The "caller injects garbage hash on descriptor,
+    library overwrites" scenario is structurally impossible —
+    the descriptor dict can't carry a `hash` key because the Rust
+    struct no longer has one.  This test is retained as a v3
+    integrity smoke-test: pre-encoded round-trips through encode/
+    decode/validate cleanly with `hash="xxh3"` on the
+    message-level options.
+    """
 
     def test_overwrites_caller_hash(self):
-        """Even if the descriptor dict contains a 'hash' key, the library
-        recomputes it from the payload bytes."""
+        """v3 integrity smoke-test — see class docstring above."""
         data = np.arange(20, dtype=np.float32)
         raw_bytes = data.tobytes()
 
+        # No `hash` kwarg in v3 — the library populates the inline
+        # slot from the payload regardless.
         desc = make_descriptor(
             shape=[20],
             dtype="float32",
             byte_order="little",
-            # Inject a fake hash that should be overwritten
-            hash={"type": "xxh3", "value": "deadbeef"},
         )
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
 
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw_bytes)]))
 
-        # Decode and check the hash is NOT our fake one
+        # Decode the payload and confirm round-trip equality.
         _, objects = tensogram.decode(msg, verify_hash=True)
-        desc_out, arr = objects[0]
+        _desc_out, arr = objects[0]
         np.testing.assert_array_equal(arr, data)
 
-        h = desc_out.hash
-        assert h is not None
-        assert h["type"] == "xxh3"
-        # The library computed a real hash, not our injected fake
-        assert h["value"] != "deadbeef"
-        assert len(h["value"]) > 0
+        # Validate at checksum level: inline slot must verify
+        # against the recomputed frame-body hash.
+        report = tensogram.validate(msg, level="checksum")
+        assert report["hash_verified"], (
+            f"encode_pre_encoded inline slot must verify at checksum level, got: {report}"
+        )
 
 
 # ---------------------------------------------------------------------------

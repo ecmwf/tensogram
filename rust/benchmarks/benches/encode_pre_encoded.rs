@@ -86,7 +86,6 @@ fn bench_encode_paths(c: &mut Criterion) {
         compression: "szip".to_string(),
         params: params_map,
         masks: None,
-        hash: None,
     };
 
     let meta = GlobalMetadata::default();

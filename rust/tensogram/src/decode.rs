@@ -9,7 +9,7 @@
 use crate::encode::build_pipeline_config_with_backend;
 use crate::error::{Result, TensogramError};
 use crate::framing;
-use crate::hash;
+
 use crate::types::{DataObjectDescriptor, DecodedObject, GlobalMetadata};
 use tensogram_encodings::pipeline;
 
@@ -44,7 +44,13 @@ fn extract_block_offsets(
 /// Options for decoding.
 #[derive(Debug, Clone)]
 pub struct DecodeOptions {
-    /// Whether to verify payload hashes during decode.
+    /// **No-op in v3.**  Frame-level integrity verification now
+    /// goes through `tensogram validate --checksum` or
+    /// [`crate::hash::verify_frame_hash`] on raw frame bytes; the
+    /// decode path is a pure deserialisation with no hash
+    /// checking.  Retained on the public API for source
+    /// compatibility with pre-v3 code; will be removed in a
+    /// future breaking release.
     pub verify_hash: bool,
     /// When true (the default), decoded payloads are converted to the
     /// caller's native byte order regardless of the wire byte order declared
@@ -68,7 +74,7 @@ pub struct DecodeOptions {
     /// [`EncodeOptions.parallel_threshold_bytes`](crate::encode::EncodeOptions::parallel_threshold_bytes).
     pub parallel_threshold_bytes: Option<usize>,
     /// When `true` (the default) AND the object carries a
-    /// `NTensorMaskedFrame` `masks` sub-map, decompress the masks
+    /// `NTensorFrame` `masks` sub-map, decompress the masks
     /// and write the canonical NaN / +Inf / -Inf bit pattern at
     /// every `1` position in the decoded output.  See
     /// `plans/BITMASK_FRAME.md` §7.1 for the (lossy) reconstruction
@@ -380,11 +386,13 @@ pub fn decode_range_from_payload(
         ));
     }
 
-    if options.verify_hash
-        && let Some(ref hash_desc) = desc.hash
-    {
-        hash::verify_hash(payload_bytes, hash_desc)?;
-    }
+    // v3: per-object hash lives in the frame footer's inline slot
+    // (see `plans/WIRE_FORMAT.md` §2.4).  Partial-range decode runs
+    // at the sub-object level and has no access to the containing
+    // frame bytes, so hash verification at this layer is a no-op —
+    // callers wanting frame-level integrity should use
+    // `tensogram validate --checksum` or call
+    // `hash::verify_frame_hash` on the full frame directly.
 
     let shape_product = desc
         .shape
@@ -490,11 +498,13 @@ fn decode_single_object_with_backend(
     backend: pipeline::CompressionBackend,
     intra_codec_threads: u32,
 ) -> Result<Vec<u8>> {
-    if options.verify_hash
-        && let Some(ref hash_desc) = desc.hash
-    {
-        hash::verify_hash(payload_bytes, hash_desc)?;
-    }
+    // v3: hash verification moved to frame-level (see the inline
+    // slot in `plans/WIRE_FORMAT.md` §2.4).  `options.verify_hash`
+    // is retained on the public API for source compatibility but is
+    // a no-op at this layer; use `validate --checksum` for a full
+    // integrity sweep or `hash::verify_frame_hash(frame_bytes, ft)`
+    // for programmatic per-frame verification.
+    let _ = options.verify_hash;
 
     let shape_product = desc
         .shape
@@ -526,7 +536,7 @@ mod tests {
 
     fn make_global_meta() -> GlobalMetadata {
         GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         }
@@ -554,7 +564,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         }
     }
 
@@ -721,7 +730,7 @@ mod tests {
         let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
         let decoded_meta = decode_metadata(&encoded).unwrap();
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
     }
 
     #[test]
@@ -748,7 +757,7 @@ mod tests {
         .unwrap();
 
         let (decoded_meta, descs) = decode_descriptors(&encoded).unwrap();
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         assert_eq!(descs.len(), 2);
         assert_eq!(descs[0].shape, vec![4]);
         assert_eq!(descs[1].shape, vec![2, 3]);
@@ -797,7 +806,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0xFF; 2]; // ceil(16/8) = 2 bytes
 

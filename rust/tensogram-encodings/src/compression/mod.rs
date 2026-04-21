@@ -10,6 +10,13 @@
 pub(crate) mod blosc2;
 #[cfg(feature = "lz4")]
 mod lz4;
+/// RLE compressor (bitmask-only — see `plans/WIRE_FORMAT.md` §8).
+///
+/// Pure-Rust, always compiled in (the RLE codec has no feature
+/// gate because `crate::bitmask::rle` is always available).
+pub mod rle;
+/// Roaring-bitmap compressor (bitmask-only).  Always compiled in.
+pub mod roaring;
 #[cfg(feature = "sz3")]
 mod sz3;
 #[cfg(feature = "szip")]
@@ -31,6 +38,8 @@ mod zstd_pure;
 pub use self::blosc2::Blosc2Compressor;
 #[cfg(feature = "lz4")]
 pub use self::lz4::Lz4Compressor;
+pub use self::rle::RleCompressor;
+pub use self::roaring::RoaringCompressor;
 #[cfg(feature = "sz3")]
 pub use self::sz3::Sz3Compressor;
 #[cfg(feature = "szip")]

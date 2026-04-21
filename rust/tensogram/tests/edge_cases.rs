@@ -19,7 +19,7 @@ use tensogram::*;
 
 fn make_global_meta() -> GlobalMetadata {
     GlobalMetadata {
-        version: 2,
+        version: 3,
         ..Default::default()
     }
 }
@@ -46,7 +46,6 @@ fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     }
 }
 
@@ -166,7 +165,7 @@ fn empty_message_no_data_objects() {
     let meta = make_global_meta();
     let encoded = encode(&meta, &[], &EncodeOptions::default()).unwrap();
     let (decoded_meta, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     assert!(objects.is_empty());
 }
 
@@ -178,7 +177,7 @@ fn empty_message_with_custom_metadata() {
         ciborium::Value::Text("test".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -351,7 +350,6 @@ fn make_simple_packing_desc(reference_value: f64) -> DataObjectDescriptor {
         compression: "none".to_string(),
         params,
         masks: None,
-        hash: None,
     }
 }
 
@@ -494,8 +492,10 @@ fn unknown_hash_algorithm_skips_verification() {
     // Encode with a hash
     let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
-    // Decode normally works
-    let (_, objects) = decode(
+    // Decode works; `verify_hash` on DecodeOptions is a no-op in
+    // v3 (frame-level integrity moved to validate --checksum) but
+    // the option is kept for source compatibility.
+    let (_, _objects) = decode(
         &encoded,
         &DecodeOptions {
             verify_hash: true,
@@ -503,16 +503,15 @@ fn unknown_hash_algorithm_skips_verification() {
         },
     )
     .unwrap();
-    assert!(objects[0].0.hash.is_some());
 
-    // Now manually craft a message with an unknown hash algorithm by
-    // patching the descriptor's hash_type after encoding
-    // Instead: verify directly via the hash module
+    // The standalone `verify_hash` helper on a `HashDescriptor`
+    // must still silently skip verification for unknown algorithm
+    // names — the forward-compatibility contract documented in
+    // `crate::hash::verify_hash`.
     let descriptor = HashDescriptor {
-        hash_type: "sha512".to_string(),
+        algorithm: "sha512".to_string(),
         value: "fake_hash_value".to_string(),
     };
-    // Should succeed (skip verification) rather than error
     assert!(tensogram::verify_hash(b"any data", &descriptor).is_ok());
 }
 
@@ -695,8 +694,12 @@ fn data_length_mismatch_rejected() {
 
 // ── 13. Encode without hash ──────────────────────────────────────────────────
 
+/// `hash_algorithm = None` must round-trip cleanly and leave every
+/// frame's inline hash slot at zero (v3 `HASHES_PRESENT = 0`
+/// contract).
 #[test]
 fn encode_without_hash() {
+    use tensogram::wire::{MessageFlags, Preamble};
     let meta = make_global_meta();
     let desc = make_descriptor(vec![4], Dtype::Float32);
     let data = vec![0u8; 16];
@@ -706,8 +709,13 @@ fn encode_without_hash() {
         ..Default::default()
     };
     let encoded = encode(&meta, &[(&desc, &data)], &options).unwrap();
-    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert!(objects[0].0.hash.is_none());
+    let preamble = Preamble::read_from(&encoded).unwrap();
+    assert!(
+        !preamble.flags.has(MessageFlags::HASHES_PRESENT),
+        "hash_algorithm = None must clear HASHES_PRESENT"
+    );
+    let (_meta, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 1);
 }
 
 #[test]
@@ -742,7 +750,7 @@ fn decode_metadata_only() {
         ciborium::Value::Text("ecmwf".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };
@@ -962,21 +970,15 @@ fn streaming_encoder_multiple_objects() {
 
 // ── 20. Hash verification on decode ──────────────────────────────────────────
 
+/// `verify_hash` (the standalone `HashDescriptor`-based helper)
+/// returns `HashMismatch` when the stored digest disagrees with
+/// the recomputed xxh3-64.  Frame-level integrity in v3 goes
+/// through the inline slot + `validate --checksum` instead.
 #[test]
 fn hash_mismatch_detected_on_verify() {
-    let meta = make_global_meta();
-    let desc = make_descriptor(vec![4], Dtype::Float32);
     let data = vec![42u8; 16];
-
-    let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
-
-    // First decode to find where the payload is, then corrupt it
-    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert!(objects[0].0.hash.is_some());
-
-    // Craft a direct hash mismatch test
     let bad_hash = HashDescriptor {
-        hash_type: "xxh3".to_string(),
+        algorithm: "xxh3".to_string(),
         value: "0000000000000000".to_string(),
     };
     let result = tensogram::verify_hash(&data, &bad_hash);
@@ -1005,7 +1007,7 @@ fn metadata_namespaces_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![base_entry],
         extra,
         ..Default::default()
@@ -1023,7 +1025,6 @@ fn metadata_namespaces_roundtrip() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let data = vec![0u8; 1];
 
@@ -1146,7 +1147,6 @@ fn make_compressed_descriptor(
         compression: compression.to_string(),
         params,
         masks: None,
-        hash: None,
     }
 }
 
@@ -1274,7 +1274,6 @@ fn zfp_cross_endian_decode_produces_native_bytes() {
         compression: "zfp".to_string(),
         params,
         masks: None,
-        hash: None,
     };
 
     let meta = make_global_meta();
@@ -1862,13 +1861,16 @@ fn preceder_with_hash_verification() {
     enc.write_object(&desc, &data).unwrap();
     let result = enc.finish().unwrap();
 
-    // Decode with hash verification — should pass
+    // Decode with hash verification.  v3 `verify_hash` on
+    // `DecodeOptions` is a no-op (frame-level integrity moved to
+    // validate --checksum); the option is retained for source
+    // compatibility and decoding still succeeds when the message
+    // is well-formed.
     let verify_opts = decode::DecodeOptions {
         verify_hash: true,
         ..Default::default()
     };
-    let (decoded_meta, objects) = decode(&result, &verify_opts).unwrap();
-    assert!(objects[0].0.hash.is_some());
+    let (decoded_meta, _objects) = decode(&result, &verify_opts).unwrap();
     assert!(decoded_meta.base[0].contains_key("mars"));
 }
 
@@ -1892,7 +1894,7 @@ fn preceder_with_extra_keys_tolerated() {
 
     let desc = make_descriptor(vec![4], Dtype::Float32);
     let payload = vec![0u8; 16];
-    let obj_frame = framing::encode_data_object_frame(&desc, &payload, false).unwrap();
+    let obj_frame = framing::encode_data_object_frame(&desc, &payload, false, None).unwrap();
 
     let mut out = Vec::new();
     // Preamble placeholder
@@ -1905,19 +1907,23 @@ fn preceder_with_extra_keys_tolerated() {
     out.extend_from_slice(&obj_frame);
     let pad = (8 - (out.len() % 8)) % 8;
     out.extend(std::iter::repeat_n(0u8, pad));
-    // Postamble
-    let footer_off = out.len() as u64;
+    // Postamble (v3, 24 B): first_footer_offset + total_length + magic.
+    let postamble_offset = out.len();
+    let footer_off = postamble_offset as u64;
     out.extend_from_slice(&footer_off.to_be_bytes());
+    out.extend_from_slice(&0u64.to_be_bytes()); // total_length placeholder (patched below)
     out.extend_from_slice(b"39277777");
     // Patch preamble
     let total = out.len() as u64;
     let mut pre = Vec::new();
     pre.extend_from_slice(b"TENSOGRM");
-    pre.extend_from_slice(&2u16.to_be_bytes());
+    pre.extend_from_slice(&tensogram::wire::WIRE_VERSION.to_be_bytes());
     pre.extend_from_slice(&1u16.to_be_bytes()); // HEADER_METADATA flag
     pre.extend_from_slice(&0u32.to_be_bytes());
     pre.extend_from_slice(&total.to_be_bytes());
     out[..24].copy_from_slice(&pre);
+    // Patch postamble total_length
+    out[postamble_offset + 8..postamble_offset + 16].copy_from_slice(&total.to_be_bytes());
 
     let decoded = framing::decode_message(&out).unwrap();
     assert_eq!(decoded.objects.len(), 1);
@@ -2001,7 +2007,7 @@ fn decode_descriptors_returns_descriptors_without_data() {
     .unwrap();
 
     let (decoded_meta, descriptors) = decode_descriptors(&encoded).unwrap();
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     assert_eq!(descriptors.len(), 2);
     assert_eq!(descriptors[0].shape, vec![4]);
     assert_eq!(descriptors[0].dtype, Dtype::Float32);
@@ -2015,7 +2021,7 @@ fn decode_descriptors_empty_message() {
     let encoded = encode(&meta, &[], &EncodeOptions::default()).unwrap();
 
     let (decoded_meta, descriptors) = decode_descriptors(&encoded).unwrap();
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     assert!(descriptors.is_empty());
 }
 
@@ -2079,7 +2085,7 @@ fn u64_param_missing_rejected() {
 #[test]
 fn global_metadata_default_version_is_2() {
     let meta = GlobalMetadata::default();
-    assert_eq!(meta.version, 2);
+    assert_eq!(meta.version, 3);
     assert!(meta.base.is_empty());
     assert!(meta.reserved.is_empty());
     assert!(meta.extra.is_empty());
@@ -2105,7 +2111,7 @@ fn global_metadata_serde_reserved_rename() {
         ciborium::Value::Text("test".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         reserved,
         ..Default::default()
     };
@@ -2120,7 +2126,7 @@ fn global_metadata_serde_extra_rename() {
     let mut extra = BTreeMap::new();
     extra.insert("custom".to_string(), ciborium::Value::Integer(42.into()));
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -2150,7 +2156,7 @@ fn compute_common_all_empty_entries() {
 fn framing_base_auto_extends_when_fewer_than_objects() {
     // Encode with 0 base entries but 3 objects → decoder should auto-extend base
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![], // Fewer than objects
         ..Default::default()
     };
@@ -2222,7 +2228,7 @@ fn encode_base_exactly_matches_descriptors() {
         ciborium::Value::Text("msl".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![entry0, entry1],
         ..Default::default()
     };
@@ -2279,7 +2285,7 @@ fn stress_100_data_objects_roundtrip() {
 
     // Decode all objects
     let (decoded_meta, decoded_objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     assert_eq!(decoded_objects.len(), num_objects);
 
     // Verify each object's data round-trips correctly
@@ -2432,7 +2438,7 @@ fn streaming_encoder_finish_immediately_produces_valid_message() {
 
     // Decode should succeed with 0 objects
     let (decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     assert!(
         objects.is_empty(),
         "streaming zero-object message should decode to 0 objects"
@@ -2466,7 +2472,7 @@ fn unicode_metadata_emoji_and_cjk_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -2501,16 +2507,19 @@ fn unicode_metadata_emoji_and_cjk_roundtrip() {
     );
 }
 
-/// Helper: write a frame (FR + type + version=1 + flags=0 + len + payload + ENDF)
-/// with 8-byte alignment padding.
+/// Helper: write a non-data-object frame with v3 layout
+/// `FR + type + version=1 + flags=0 + total_length + payload + hash(8) + ENDF`
+/// plus 8-byte alignment padding.  Hash slot is zero-filled
+/// (HASHES_PRESENT=0 at the message level).
 fn write_test_frame(out: &mut Vec<u8>, frame_type: u16, payload: &[u8]) {
-    let total_len = (16 + payload.len() + 4) as u64;
+    let total_len = (16 + payload.len() + 12) as u64; // header + payload + hash(8) + ENDF(4)
     out.extend_from_slice(b"FR");
     out.extend_from_slice(&frame_type.to_be_bytes());
     out.extend_from_slice(&1u16.to_be_bytes()); // version
     out.extend_from_slice(&0u16.to_be_bytes()); // flags
     out.extend_from_slice(&total_len.to_be_bytes());
     out.extend_from_slice(payload);
+    out.extend_from_slice(&0u64.to_be_bytes()); // hash slot
     out.extend_from_slice(b"ENDF");
     let pad = (8 - (out.len() % 8)) % 8;
     out.extend(std::iter::repeat_n(0u8, pad));
@@ -2684,7 +2693,7 @@ fn corrupt_data_object_frame_trailer_rejected() {
     let mut encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Find the data-object frame: "FR" followed by frame type 0x0009
-    // (NTensorMaskedFrame is what 0.17+ encoders emit).
+    // (NTensorFrame is what 0.17+ encoders emit).
     let data_object_marker: &[u8] = &[b'F', b'R', 0x00, 0x09];
     if let Some(frame_start) = encoded.windows(4).position(|w| w == data_object_marker) {
         // Read the total_length from the frame header (bytes 8-15)
@@ -2845,7 +2854,7 @@ fn unicode_metadata_emoji_keys_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -2871,7 +2880,7 @@ fn unicode_metadata_cjk_values_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -2897,7 +2906,7 @@ fn unicode_metadata_empty_string_key_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -3194,7 +3203,7 @@ async fn async_file_api_round_trips_data() {
         .decode_message_async(0, &DecodeOptions::default())
         .await
         .unwrap();
-    assert_eq!(dec_meta.version, 2, "decode_message_async: wrong version");
+    assert_eq!(dec_meta.version, 3, "decode_message_async: wrong version");
     assert_eq!(objects.len(), 1, "decode_message_async: wrong object count");
     assert_eq!(
         objects[0].1.as_slice(),
@@ -3204,7 +3213,7 @@ async fn async_file_api_round_trips_data() {
 
     // ── decode_metadata_async ────────────────────────────────────────────────
     let dec_meta2 = file.decode_metadata_async(0).await.unwrap();
-    assert_eq!(dec_meta2.version, 2, "decode_metadata_async: wrong version");
+    assert_eq!(dec_meta2.version, 3, "decode_metadata_async: wrong version");
 
     // ── decode_descriptors_async ─────────────────────────────────────────────
     let (_, descs) = file.decode_descriptors_async(0).await.unwrap();

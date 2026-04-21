@@ -38,7 +38,13 @@ describe('Scope C.1 — encodePreEncoded', () => {
     }
   });
 
-  it('stamps a freshly computed xxh3 hash matching computeHash', () => {
+  it('encodePreEncoded round-trips cleanly (v3: descriptor.hash is undefined)', () => {
+    // v3: the per-object hash lives in the frame footer's inline
+    // slot, not on the CBOR descriptor (plans/WIRE_FORMAT.md §2.4).
+    // `descriptor.hash` on the decoded output is always undefined.
+    // `computeHash` still returns a stable 16-char hex digest that
+    // can be compared to the inline slot via a future Message-level
+    // accessor (tracked in plans/WIRE_FORMAT_CHANGES.md follow-ups).
     const values = new Float64Array([1.25, 2.5, 3.75, 4.0]);
     const bytes = new Uint8Array(values.buffer, values.byteOffset, values.byteLength);
     const msg = encodePreEncoded(defaultMeta(), [
@@ -46,9 +52,9 @@ describe('Scope C.1 — encodePreEncoded', () => {
     ]);
     const decoded = decode(msg);
     try {
-      const desc = decoded.objects[0].descriptor;
-      expect(desc.hash?.type).toBe('xxh3');
-      expect(desc.hash?.value).toBe(computeHash(bytes));
+      expect(decoded.objects[0].descriptor.hash).toBeUndefined();
+      // computeHash remains a stable independent helper:
+      expect(computeHash(bytes)).toHaveLength(16);
     } finally {
       decoded.close();
     }

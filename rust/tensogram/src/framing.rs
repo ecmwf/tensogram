@@ -12,8 +12,9 @@ use crate::error::{Result, TensogramError};
 use crate::metadata::{self, RESERVED_KEY};
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashFrame, IndexFrame};
 use crate::wire::{
-    DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END, FRAME_HEADER_SIZE, FrameHeader, FrameType,
-    MAGIC, MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE, Postamble, Preamble,
+    DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_COMMON_FOOTER_SIZE, FRAME_END,
+    FRAME_HEADER_SIZE, FrameHeader, FrameType, MAGIC, MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE,
+    Postamble, Preamble, WIRE_VERSION,
 };
 
 /// Compute the byte offset in `buf` where the encoded payload ends
@@ -75,7 +76,14 @@ fn mask_aware_payload_end(
 
 // ── Frame-level primitives ───────────────────────────────────────────────────
 
-/// Write a complete frame: frame_header + payload + ENDF.
+/// Write a non-data-object frame: frame_header + payload + hash_slot + ENDF.
+///
+/// The 8-byte hash slot is always written (new in v3, see
+/// `plans/WIRE_FORMAT.md` §2.2).  When `hash_algorithm` is
+/// `Some(_)` the slot is populated with the xxh3-64 digest of the
+/// payload; when `None` it is written as zeros.  The preamble-level
+/// `HASHES_PRESENT` flag tells readers which mode was used.
+///
 /// Optionally pads to 8-byte alignment after ENDF.
 fn write_frame(
     out: &mut Vec<u8>,
@@ -83,9 +91,27 @@ fn write_frame(
     version: u16,
     flags: u16,
     payload: &[u8],
+    hash_algorithm: Option<crate::hash::HashAlgorithm>,
     align: bool,
 ) {
-    let total_length = (FRAME_HEADER_SIZE + payload.len() + FRAME_END.len()) as u64;
+    // Data-object frames have their own encoder; this helper only
+    // handles frames with the common 12-byte footer.
+    debug_assert!(
+        !frame_type.is_data_object(),
+        "write_frame is for non-data-object frames only"
+    );
+    // Non-data-object frame payloads are bounded CBOR (metadata,
+    // index, hash) at most a few KiB; `u64` overflow here is
+    // genuinely unreachable.  The debug_assert catches accidental
+    // misuse on tiny-pointer-size targets (e.g. 16-bit test
+    // platforms that this crate doesn't support but clippy still
+    // checks against).
+    debug_assert!(
+        payload.len() <= u64::MAX as usize - FRAME_HEADER_SIZE - FRAME_COMMON_FOOTER_SIZE,
+        "non-data-object frame payload too large: {}",
+        payload.len()
+    );
+    let total_length = (FRAME_HEADER_SIZE + payload.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
 
     let fh = FrameHeader {
         frame_type,
@@ -95,6 +121,16 @@ fn write_frame(
     };
     fh.write_to(out);
     out.extend_from_slice(payload);
+
+    // Inline hash slot (8 bytes) — hashes the body (just `payload`
+    // for non-data-object frames).
+    let hash_value: u64 = match hash_algorithm {
+        Some(crate::hash::HashAlgorithm::Xxh3) => xxhash_rust::xxh3::xxh3_64(payload),
+        None => 0,
+    };
+    out.extend_from_slice(&hash_value.to_be_bytes());
+
+    // End marker.
     out.extend_from_slice(FRAME_END);
 
     if align {
@@ -103,8 +139,15 @@ fn write_frame(
     }
 }
 
-/// Read one frame from a buffer. Returns (FrameHeader, payload_slice, total_bytes_consumed).
-/// `total_bytes_consumed` includes any padding to the next 8-byte boundary.
+/// Read one non-data-object frame from a buffer.
+///
+/// Returns `(FrameHeader, payload_slice, total_bytes_consumed)`
+/// where `payload_slice` is the CBOR body *without* the inline
+/// hash slot or ENDF marker.  `total_bytes_consumed` includes any
+/// padding to the next 8-byte boundary.
+///
+/// Data-object frames go through [`decode_data_object_frame`]
+/// instead — their footer has an additional `cbor_offset` field.
 fn read_frame(buf: &[u8]) -> Result<(FrameHeader, &[u8], usize)> {
     let fh = FrameHeader::read_from(buf)?;
     let frame_total = usize::try_from(fh.total_length).map_err(|_| {
@@ -114,8 +157,8 @@ fn read_frame(buf: &[u8]) -> Result<(FrameHeader, &[u8], usize)> {
         ))
     })?;
 
-    // Minimum frame: header(16) + ENDF(4) = 20 bytes
-    let min_frame_size = FRAME_HEADER_SIZE + FRAME_END.len();
+    // Minimum frame: header(16) + hash(8) + ENDF(4) = 28 bytes
+    let min_frame_size = FRAME_HEADER_SIZE + FRAME_COMMON_FOOTER_SIZE;
     if frame_total < min_frame_size {
         return Err(TensogramError::Framing(format!(
             "frame total_length {} is smaller than minimum {min_frame_size}",
@@ -131,7 +174,7 @@ fn read_frame(buf: &[u8]) -> Result<(FrameHeader, &[u8], usize)> {
         )));
     }
 
-    // Validate ENDF marker
+    // Validate ENDF marker at the very end.
     let endf_start = frame_total - FRAME_END.len();
     if &buf[endf_start..frame_total] != FRAME_END {
         return Err(TensogramError::Framing(format!(
@@ -139,7 +182,9 @@ fn read_frame(buf: &[u8]) -> Result<(FrameHeader, &[u8], usize)> {
         )));
     }
 
-    let payload = &buf[FRAME_HEADER_SIZE..endf_start];
+    // Payload excludes the 12-byte common footer (hash slot + ENDF).
+    let payload_end = frame_total - FRAME_COMMON_FOOTER_SIZE;
+    let payload = &buf[FRAME_HEADER_SIZE..payload_end];
 
     // Skip padding after ENDF to next 8-byte boundary
     let mut consumed = frame_total;
@@ -155,14 +200,20 @@ fn read_frame(buf: &[u8]) -> Result<(FrameHeader, &[u8], usize)> {
 
 /// Encode a data object frame with CBOR descriptor after payload (default).
 ///
-/// Layout: FrameHeader(16) | payload_bytes | cbor_bytes | cbor_offset(8) + ENDF(4)
+/// v3 layout (see `plans/WIRE_FORMAT.md` §6.5):
+///   `FrameHeader(16) | payload | cbor | cbor_offset(8) | hash(8) | ENDF(4)`
 ///
-/// The cbor_offset in the footer is the byte offset from frame start to the
-/// start of the CBOR descriptor.
+/// The `cbor_offset` in the footer is the byte offset from frame
+/// start to the start of the CBOR descriptor.  The `hash` slot is
+/// populated with xxh3-64 of the body when `hash_algorithm` is
+/// `Some(_)`, or `0x0000000000000000` when `None` (see hash-scope
+/// rule in `plans/WIRE_FORMAT.md` §2.4 — scope excludes the header,
+/// `cbor_offset`, hash slot, and ENDF).
 pub fn encode_data_object_frame(
     descriptor: &DataObjectDescriptor,
     payload: &[u8],
     cbor_before: bool,
+    hash_algorithm: Option<crate::hash::HashAlgorithm>,
 ) -> Result<Vec<u8>> {
     let cbor_bytes = metadata::object_descriptor_to_cbor(descriptor)?;
     let flags = if cbor_before {
@@ -171,21 +222,44 @@ pub fn encode_data_object_frame(
         DataObjectFlags::CBOR_AFTER_PAYLOAD
     };
 
-    // Calculate the total frame length:
-    // frame_header(16) + cbor_bytes + payload + cbor_offset(8) + ENDF(4)
-    let frame_body_len = cbor_bytes.len() + payload.len() + DATA_OBJECT_FOOTER_SIZE;
-    let total_length = (FRAME_HEADER_SIZE + frame_body_len) as u64;
+    // Calculate the total frame length (v3 data-object footer = 20 B):
+    //   header(16) + body + footer(20)
+    // where body = payload + cbor_bytes and footer =
+    // cbor_offset(8) + hash(8) + ENDF(4).
+    //
+    // Checked arithmetic here guards against pathological payloads
+    // (huge CBOR + tensor bytes) from silently wrapping the
+    // `total_length` field or panicking the process.  The
+    // resulting error is mapped to `TensogramError::Framing` so the
+    // caller sees a clean message rather than a debug-build panic.
+    let total_length: u64 = [
+        FRAME_HEADER_SIZE,
+        payload.len(),
+        cbor_bytes.len(),
+        DATA_OBJECT_FOOTER_SIZE,
+    ]
+    .into_iter()
+    .try_fold(0u64, |acc, part| acc.checked_add(part as u64))
+    .ok_or_else(|| {
+        TensogramError::Framing(format!(
+            "data-object frame total_length overflows u64 \
+             (payload {} bytes, CBOR {} bytes, framing {} bytes)",
+            payload.len(),
+            cbor_bytes.len(),
+            FRAME_HEADER_SIZE + DATA_OBJECT_FOOTER_SIZE
+        ))
+    })?;
 
     let mut out = Vec::with_capacity(total_length as usize);
 
-    // Frame header — 0.17+ emits `NTensorMaskedFrame` (type 9) for
-    // every new data-object frame.  When the descriptor carries no
-    // `masks` sub-map the on-wire layout matches pre-0.17 type 4
-    // byte-for-byte except for the type number.  Mask sections
-    // (when present) live between the payload and the CBOR
-    // descriptor, located by offsets in `descriptor.masks`.
+    // Frame header — v3 emits `NTensorFrame` (type 9) for every new
+    // data-object frame.  When the descriptor carries no `masks`
+    // sub-map the payload region holds only the encoded tensor
+    // bytes.  When masks are present they live between the payload
+    // and the CBOR descriptor, located by offsets in
+    // `descriptor.masks`.
     let fh = FrameHeader {
-        frame_type: FrameType::NTensorMaskedFrame,
+        frame_type: FrameType::NTensorFrame,
         version: 1,
         flags,
         total_length,
@@ -194,18 +268,34 @@ pub fn encode_data_object_frame(
 
     if cbor_before {
         // CBOR descriptor first, then payload
-        let cbor_offset = FRAME_HEADER_SIZE as u64;
         out.extend_from_slice(&cbor_bytes);
         out.extend_from_slice(payload);
-        out.extend_from_slice(&cbor_offset.to_be_bytes());
     } else {
         // Payload first, then CBOR descriptor (default)
-        let cbor_offset = (FRAME_HEADER_SIZE + payload.len()) as u64;
         out.extend_from_slice(payload);
         out.extend_from_slice(&cbor_bytes);
-        out.extend_from_slice(&cbor_offset.to_be_bytes());
     }
 
+    // Compute the inline hash now, *before* writing the footer
+    // fields.  The hash scope is exactly the body bytes we've
+    // appended since the header end; cbor_offset and the hash slot
+    // itself live in the footer and are not in scope
+    // (`plans/WIRE_FORMAT.md` §2.4).
+    let hash_value: u64 = match hash_algorithm {
+        Some(crate::hash::HashAlgorithm::Xxh3) => {
+            xxhash_rust::xxh3::xxh3_64(&out[FRAME_HEADER_SIZE..])
+        }
+        None => 0,
+    };
+
+    // Footer: [cbor_offset u64][hash u64][ENDF 4].
+    let cbor_offset = if cbor_before {
+        FRAME_HEADER_SIZE as u64
+    } else {
+        (FRAME_HEADER_SIZE + payload.len()) as u64
+    };
+    out.extend_from_slice(&cbor_offset.to_be_bytes());
+    out.extend_from_slice(&hash_value.to_be_bytes());
     out.extend_from_slice(FRAME_END);
 
     debug_assert_eq!(out.len(), total_length as usize);
@@ -218,21 +308,21 @@ pub fn encode_data_object_frame(
 ///
 /// The mask-region slice contains the bytes between the data payload
 /// and the CBOR descriptor — non-empty only when
-/// `descriptor.masks.is_some()`, per the `NTensorMaskedFrame` layout
-/// in `plans/BITMASK_FRAME.md` §3.2.  Callers that only care about
-/// the data payload can ignore it.
+/// `descriptor.masks.is_some()`, per the `NTensorFrame` layout in
+/// `plans/WIRE_FORMAT.md` §6.5.  Callers that only care about the
+/// data payload can ignore it.
 ///
 /// `buf` must start at the frame header.
 pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u8], &[u8], usize)> {
     let fh = FrameHeader::read_from(buf)?;
-    // Accept both legacy `NTensorFrame` (type 4) and the 0.17+
-    // `NTensorMaskedFrame` (type 9).  Type 4 frames always yield an
-    // empty mask region; type 9 frames may carry mask blobs between
-    // the payload and the CBOR descriptor located via
-    // `descriptor.masks`.
+    // Only `NTensorFrame` (type 9) is a valid data-object frame in
+    // v3; other types hit the `is_data_object() == false` branch
+    // below.  Type 4 (obsolete v2 NTensorFrame) never reaches here
+    // because `FrameHeader::read_from` rejects it at the registry
+    // lookup.
     if !fh.frame_type.is_data_object() {
         return Err(TensogramError::Framing(format!(
-            "expected data-object frame (type 4 or 9), got {:?}",
+            "expected data-object frame (type 9 NTensorFrame in v3), got {:?}",
             fh.frame_type
         )));
     }
@@ -243,7 +333,7 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
             fh.total_length
         ))
     })?;
-    // Minimum: frame_header(16) + cbor_offset(8) + ENDF(4) = 28
+    // v3 minimum: header(16) + cbor_offset(8) + hash(8) + ENDF(4) = 36
     let min_frame_size = FRAME_HEADER_SIZE + DATA_OBJECT_FOOTER_SIZE;
     if frame_total < min_frame_size {
         return Err(TensogramError::Framing(format!(
@@ -259,7 +349,7 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
         )));
     }
 
-    // Validate ENDF marker
+    // Validate ENDF marker at the very end.
     let endf_start = frame_total - FRAME_END.len();
     if &buf[endf_start..frame_total] != FRAME_END {
         return Err(TensogramError::Framing(
@@ -267,22 +357,31 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
         ));
     }
 
-    // Read cbor_offset from the data object footer (8 bytes before ENDF)
-    if endf_start < 8 {
+    // v3 footer layout (data-object): `[cbor_offset u64][hash u64][ENDF 4]`.
+    //
+    // The two u64 slots precede the 4-byte ENDF.  Using a named
+    // constant here keeps the offset math linked to the single
+    // source of truth in `wire::DATA_OBJECT_FOOTER_SIZE`: a future
+    // footer-layout change triggers compile errors at every read
+    // site rather than letting them silently drift.
+    const DATA_OBJECT_FOOTER_PRE_ENDF: usize = DATA_OBJECT_FOOTER_SIZE - FRAME_END.len();
+    if endf_start < DATA_OBJECT_FOOTER_PRE_ENDF {
         return Err(TensogramError::Framing(format!(
-            "data object frame too small for cbor_offset: endf_start={endf_start} < 8"
+            "data object frame too small for v3 footer: \
+             endf_start ({endf_start}) < footer-fields-size ({DATA_OBJECT_FOOTER_PRE_ENDF})"
         )));
     }
-    let cbor_offset_pos = endf_start - 8;
-    // cbor_offset_pos is guaranteed >= 0 (checked endf_start >= 8 above),
-    // and cbor_offset_pos + 8 <= endf_start <= frame_total <= buf.len(),
-    // so read_u64_be is safe.
+    // `cbor_offset` sits at the very start of the type-specific
+    // footer; `hash` is 8 bytes later.  Derived layout, not magic
+    // numbers.
+    let cbor_offset_pos = endf_start - DATA_OBJECT_FOOTER_PRE_ENDF;
     let cbor_offset_raw = crate::wire::read_u64_be(buf, cbor_offset_pos);
     let cbor_offset = usize::try_from(cbor_offset_raw).map_err(|_| {
         TensogramError::Framing(format!("cbor_offset {cbor_offset_raw} overflows usize"))
     })?;
 
-    // Validate cbor_offset points within the frame body
+    // Validate cbor_offset points within the frame body (before
+    // the 16-byte type-specific footer portion).
     if cbor_offset < FRAME_HEADER_SIZE || cbor_offset > cbor_offset_pos {
         return Err(TensogramError::Framing(format!(
             "cbor_offset {cbor_offset} out of valid range [{FRAME_HEADER_SIZE}, {cbor_offset_pos}]"
@@ -292,14 +391,15 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
     let cbor_after = fh.flags & DataObjectFlags::CBOR_AFTER_PAYLOAD != 0;
 
     let (descriptor, payload_slice, mask_region) = if cbor_after {
-        // Layout: header(16) | payload_region | cbor | cbor_offset(8) | ENDF(4)
+        // v3 layout:
+        //   header(16) | payload_region | cbor | cbor_offset(8) | hash(8) | ENDF(4)
         //
         // `payload_region` = [encoded_payload][mask_nan][mask_inf+][mask_inf-]
         // when descriptor.masks is Some; just [encoded_payload] otherwise.
         // See `plans/BITMASK_FRAME.md` §3.2.
         let payload_start = FRAME_HEADER_SIZE;
         let cbor_start = cbor_offset;
-        let cbor_end = cbor_offset_pos;
+        let cbor_end = cbor_offset_pos; // v3: end-of-CBOR = start-of-footer (end-16)
         let cbor_slice = &buf[cbor_start..cbor_end];
         let desc = metadata::cbor_to_object_descriptor(cbor_slice)?;
         let payload_end = mask_aware_payload_end(payload_start, cbor_start, &desc)?;
@@ -309,7 +409,8 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
             &buf[payload_end..cbor_start],
         )
     } else {
-        // Layout: header(16) | cbor | payload_region | cbor_offset(8) | ENDF(4)
+        // v3 layout:
+        //   header(16) | cbor | payload_region | cbor_offset(8) | hash(8) | ENDF(4)
         // Use Cursor to measure exact consumed CBOR bytes on the wire.
         // Re-serialization would produce different lengths for non-canonical CBOR.
         let cbor_start = cbor_offset;
@@ -352,31 +453,45 @@ pub struct EncodedObject {
     pub encoded_payload: Vec<u8>,
 }
 
-/// Build hash frame CBOR if any objects carry hashes.
-fn build_hash_frame_cbor(objects: &[EncodedObject]) -> Result<Option<Vec<u8>>> {
-    let has_hashes = objects.iter().any(|o| o.descriptor.hash.is_some());
-    if !has_hashes {
+/// Build the aggregate `HeaderHash` / `FooterHash` CBOR from a
+/// list of pre-computed data-object frames.
+///
+/// Walks each frame, reads its inline hash slot at
+/// `frame_end − 12`, and renders the 8-byte digest as a lowercase
+/// 16-character hex string.  When `hash_algorithm` is `None` or
+/// no frames have populated hash slots, returns `Ok(None)`.
+///
+/// The helper is cheap (no hashing) because the inline slot was
+/// already computed at frame-encode time.
+fn build_hash_frame_cbor(
+    object_frames: &[Vec<u8>],
+    hash_algorithm: Option<crate::hash::HashAlgorithm>,
+) -> Result<Option<Vec<u8>>> {
+    use crate::wire::{FRAME_COMMON_FOOTER_SIZE, read_u64_be};
+
+    let Some(algorithm) = hash_algorithm else {
+        return Ok(None);
+    };
+    if object_frames.is_empty() {
         return Ok(None);
     }
 
-    let hash_type = objects
-        .iter()
-        .find_map(|o| o.descriptor.hash.as_ref())
-        .map(|h| h.hash_type.clone())
-        .unwrap_or_default();
-    let hashes: Vec<String> = objects
-        .iter()
-        .map(|o| {
-            o.descriptor
-                .hash
-                .as_ref()
-                .map(|h| h.value.clone())
-                .unwrap_or_default()
-        })
-        .collect();
+    let mut hashes = Vec::with_capacity(object_frames.len());
+    for frame in object_frames {
+        if frame.len() < FRAME_COMMON_FOOTER_SIZE {
+            return Err(TensogramError::Framing(format!(
+                "data object frame too small to read inline hash slot: {} < {}",
+                frame.len(),
+                FRAME_COMMON_FOOTER_SIZE
+            )));
+        }
+        let slot = frame.len() - FRAME_COMMON_FOOTER_SIZE;
+        let digest = read_u64_be(frame, slot);
+        hashes.push(crate::hash::format_xxh3_digest(digest));
+    }
+
     let hf = HashFrame {
-        object_count: objects.len() as u64,
-        hash_type,
+        algorithm: algorithm.as_str().to_string(),
         hashes,
     };
     Ok(Some(metadata::hash_frame_to_cbor(&hf)?))
@@ -387,6 +502,7 @@ fn build_hash_frame_cbor(objects: &[EncodedObject]) -> Result<Option<Vec<u8>>> {
 fn build_index_frame(
     header_size_no_index: usize,
     object_frames: &[Vec<u8>],
+    hash_algorithm: Option<crate::hash::HashAlgorithm>,
 ) -> Result<Option<Vec<u8>>> {
     if object_frames.is_empty() {
         return Ok(None);
@@ -396,7 +512,6 @@ fn build_index_frame(
 
     // First estimate: use dummy offsets of 0 to estimate CBOR size
     let dummy_idx = IndexFrame {
-        object_count: object_frames.len() as u64,
         offsets: vec![0u64; object_frames.len()],
         lengths: frame_lengths.clone(),
     };
@@ -409,7 +524,6 @@ fn build_index_frame(
 
     // Build real index with actual offsets
     let real_idx = IndexFrame {
-        object_count: object_frames.len() as u64,
         offsets,
         lengths: frame_lengths.clone(),
     };
@@ -421,7 +535,6 @@ fn build_index_frame(
         let new_data_cursor = header_size_no_index + real_frame_size;
         let new_offsets = compute_object_offsets(new_data_cursor, object_frames);
         let final_idx = IndexFrame {
-            object_count: object_frames.len() as u64,
             offsets: new_offsets,
             lengths: frame_lengths,
         };
@@ -445,6 +558,7 @@ fn build_index_frame(
         1,
         0,
         &final_cbor,
+        hash_algorithm,
         true,
     );
     Ok(Some(idx_frame))
@@ -476,12 +590,15 @@ fn compute_message_flags(has_index: bool, has_hashes: bool) -> MessageFlags {
 }
 
 /// Assemble the final message buffer from pre-computed components.
+#[allow(clippy::too_many_arguments)]
 fn assemble_message(
     flags: MessageFlags,
     meta_cbor: &[u8],
     index_frame_bytes: Option<&[u8]>,
-    hash_cbor: Option<&[u8]>,
+    header_hash_cbor: Option<&[u8]>,
+    footer_hash_cbor: Option<&[u8]>,
     object_frames: &[Vec<u8>],
+    hash_algorithm: Option<crate::hash::HashAlgorithm>,
 ) -> Vec<u8> {
     let mut out = Vec::new();
 
@@ -490,7 +607,15 @@ fn assemble_message(
     out.extend_from_slice(&[0u8; PREAMBLE_SIZE]);
 
     // Header metadata frame
-    write_frame(&mut out, FrameType::HeaderMetadata, 1, 0, meta_cbor, true);
+    write_frame(
+        &mut out,
+        FrameType::HeaderMetadata,
+        1,
+        0,
+        meta_cbor,
+        hash_algorithm,
+        true,
+    );
 
     // Header index frame (between metadata and hash, per spec ordering)
     if let Some(idx_bytes) = index_frame_bytes {
@@ -498,8 +623,16 @@ fn assemble_message(
     }
 
     // Header hash frame
-    if let Some(h_cbor) = hash_cbor {
-        write_frame(&mut out, FrameType::HeaderHash, 1, 0, h_cbor, true);
+    if let Some(h_cbor) = header_hash_cbor {
+        write_frame(
+            &mut out,
+            FrameType::HeaderHash,
+            1,
+            0,
+            h_cbor,
+            hash_algorithm,
+            true,
+        );
     }
 
     // Data object frames with inter-frame alignment
@@ -510,19 +643,47 @@ fn assemble_message(
             out.extend(std::iter::repeat_n(0u8, pad));
         }
     }
+    // Align to 8 bytes after the last data object, before any footer
+    // frames / postamble.
+    let pad = (8 - (out.len() % 8)) % 8;
+    out.extend(std::iter::repeat_n(0u8, pad));
 
-    // Postamble (no footer frames in buffered mode)
+    // Footer frames region (v3 supports buffered-mode FooterHash
+    // for callers who opt in).  `first_footer_offset` points at
+    // the first footer frame, or at the postamble itself when no
+    // footer frames exist.
+    let footer_start_offset = out.len();
+    if let Some(h_cbor) = footer_hash_cbor {
+        write_frame(
+            &mut out,
+            FrameType::FooterHash,
+            1,
+            0,
+            h_cbor,
+            hash_algorithm,
+            true,
+        );
+    }
+
+    // Postamble.  `first_footer_offset` = the footer-frames region
+    // start (or the postamble offset if there were no footer frames).
     let postamble_offset = out.len();
-    let postamble = Postamble {
-        first_footer_offset: postamble_offset as u64,
+    let first_footer_offset = if footer_hash_cbor.is_some() {
+        footer_start_offset as u64
+    } else {
+        postamble_offset as u64
     };
-    postamble.write_to(&mut out);
+    let postamble_placeholder = Postamble {
+        first_footer_offset,
+        total_length: 0,
+    };
+    postamble_placeholder.write_to(&mut out);
 
     let total_length = out.len() as u64;
 
-    // Patch the preamble with the real values
+    // Patch the preamble with the real values.
     let preamble = Preamble {
-        version: 2,
+        version: WIRE_VERSION,
         flags,
         reserved: 0,
         total_length,
@@ -531,30 +692,78 @@ fn assemble_message(
     preamble.write_to(&mut preamble_bytes);
     out[preamble_pos..preamble_pos + PREAMBLE_SIZE].copy_from_slice(&preamble_bytes);
 
+    // Patch the postamble's `total_length` — buffered mode always
+    // knows the final size, so this field is always non-zero here.
+    // The mirrored value enables O(1) backward scan (v3, §9.2).
+    let total_length_bytes = total_length.to_be_bytes();
+    out[postamble_offset + 8..postamble_offset + 16].copy_from_slice(&total_length_bytes);
+
     out
+}
+
+/// Hash-frame-emission policy passed through `encode_message`.
+///
+/// Buffered mode supports both header and footer hash frames; the
+/// streaming encoder (which has no access to future bytes when it
+/// writes the header) only emits the footer frame.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HashFramePolicy {
+    /// Emit a `HeaderHash` aggregate frame (buffered mode only).
+    pub header: bool,
+    /// Emit a `FooterHash` aggregate frame.
+    pub footer: bool,
 }
 
 /// Encode a complete message in buffered mode.
 ///
-/// All objects are known upfront. Header contains metadata + index + hashes.
-/// Footer has only the postamble (no footer frames).
+/// All objects are known upfront. Header contains metadata + index + optional
+/// aggregate HashHeader.  Footer may carry an aggregate HashFooter.
+///
+/// When `hash_algorithm` is `Some(_)` every frame in the message
+/// gets its inline hash slot populated and the preamble's
+/// `HASHES_PRESENT` flag is set.  When `None`, the slot is written
+/// as zeros and the flag is clear (see v3 §2.4).  The hash-frame
+/// `policy` controls whether aggregate Header/Footer HashFrames are
+/// emitted; it's ignored when `hash_algorithm.is_none()`.
 ///
 /// Strategy: build the message in two passes.
 /// Pass 1: serialize all pieces, compute sizes/offsets.
 /// Pass 2: assemble into final buffer.
-pub fn encode_message(global_meta: &GlobalMetadata, objects: &[EncodedObject]) -> Result<Vec<u8>> {
+pub fn encode_message(
+    global_meta: &GlobalMetadata,
+    objects: &[EncodedObject],
+    hash_algorithm: Option<crate::hash::HashAlgorithm>,
+    hash_policy: HashFramePolicy,
+) -> Result<Vec<u8>> {
     // Serialize metadata CBOR
     let meta_cbor = metadata::global_metadata_to_cbor(global_meta)?;
 
     // Pre-encode all data object frames
     let mut object_frames: Vec<Vec<u8>> = Vec::with_capacity(objects.len());
     for obj in objects {
-        let frame = encode_data_object_frame(&obj.descriptor, &obj.encoded_payload, false)?;
+        let frame =
+            encode_data_object_frame(&obj.descriptor, &obj.encoded_payload, false, hash_algorithm)?;
         object_frames.push(frame);
     }
 
-    // Build hash frame CBOR (if any objects have hashes)
-    let hash_cbor = build_hash_frame_cbor(objects)?;
+    // Build aggregate HashFrame CBOR from the inline slots.  The
+    // same bytes are used for both header and footer aggregates.
+    let aggregate_hash_cbor =
+        if hash_algorithm.is_some() && (hash_policy.header || hash_policy.footer) {
+            build_hash_frame_cbor(&object_frames, hash_algorithm)?
+        } else {
+            None
+        };
+    let header_hash_cbor: Option<&[u8]> = if hash_policy.header {
+        aggregate_hash_cbor.as_deref()
+    } else {
+        None
+    };
+    let footer_hash_cbor: Option<&[u8]> = if hash_policy.footer {
+        aggregate_hash_cbor.as_deref()
+    } else {
+        None
+    };
 
     // Measure header size without index to feed the two-pass index builder
     let mut header_no_index = Vec::new();
@@ -565,31 +774,44 @@ pub fn encode_message(global_meta: &GlobalMetadata, objects: &[EncodedObject]) -
         1,
         0,
         &meta_cbor,
+        hash_algorithm,
         true,
     );
-    if let Some(ref h_cbor) = hash_cbor {
+    if let Some(h_cbor) = header_hash_cbor {
         write_frame(
             &mut header_no_index,
             FrameType::HeaderHash,
             1,
             0,
             h_cbor,
+            hash_algorithm,
             true,
         );
     }
 
     // Two-pass index construction
-    let index_frame_bytes = build_index_frame(header_no_index.len(), &object_frames)?;
+    let index_frame_bytes =
+        build_index_frame(header_no_index.len(), &object_frames, hash_algorithm)?;
 
-    // Compute flags and assemble
-    let flags = compute_message_flags(index_frame_bytes.is_some(), hash_cbor.is_some());
+    // Compute flags and assemble.  `HASHES_PRESENT` is set whenever
+    // `hash_algorithm.is_some()` — the per-frame hash slots are
+    // populated uniformly for every frame in the message.
+    let mut flags = compute_message_flags(index_frame_bytes.is_some(), header_hash_cbor.is_some());
+    if footer_hash_cbor.is_some() {
+        flags.set(MessageFlags::FOOTER_HASHES);
+    }
+    if hash_algorithm.is_some() {
+        flags.set(MessageFlags::HASHES_PRESENT);
+    }
 
     Ok(assemble_message(
         flags,
         &meta_cbor,
         index_frame_bytes.as_deref(),
-        hash_cbor.as_deref(),
+        header_hash_cbor,
+        footer_hash_cbor,
         &object_frames,
+        hash_algorithm,
     ))
 }
 
@@ -630,13 +852,12 @@ fn frame_phase(ft: FrameType) -> DecodePhase {
         FrameType::HeaderMetadata | FrameType::HeaderIndex | FrameType::HeaderHash => {
             DecodePhase::Headers
         }
-        // PrecederMetadata lives alongside data-object frames — it must appear
-        // immediately before the data-object frame it describes, within the
-        // data phase.  Both NTensorFrame (legacy) and NTensorMaskedFrame
-        // count as data-object frames.
-        FrameType::NTensorFrame | FrameType::NTensorMaskedFrame | FrameType::PrecederMetadata => {
-            DecodePhase::DataObjects
-        }
+        // PrecederMetadata lives alongside data-object frames — it
+        // must appear immediately before the data-object frame it
+        // describes, within the data phase.  In v3 the only concrete
+        // data-object type is NTensorFrame (type 9); new types will
+        // join this match arm without a wire-format version bump.
+        FrameType::NTensorFrame | FrameType::PrecederMetadata => DecodePhase::DataObjects,
         FrameType::FooterHash | FrameType::FooterIndex | FrameType::FooterMetadata => {
             DecodePhase::Footers
         }
@@ -666,9 +887,19 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
             )));
         }
 
-        // Validate postamble
+        // Validate postamble.  In v3 the postamble carries a mirrored
+        // `total_length` that — when non-zero — must match the
+        // preamble's value.  Zero in the postamble means a
+        // non-seekable streaming producer couldn't back-fill it;
+        // that's always valid, just loses the backward-scan property.
         let pa_offset = total_len - POSTAMBLE_SIZE;
-        let _postamble = Postamble::read_from(&buf[pa_offset..])?;
+        let postamble = Postamble::read_from(&buf[pa_offset..])?;
+        if postamble.total_length != 0 && postamble.total_length != preamble.total_length {
+            return Err(TensogramError::Framing(format!(
+                "postamble total_length ({}) does not match preamble total_length ({})",
+                postamble.total_length, preamble.total_length
+            )));
+        }
     }
 
     let mut pos = PREAMBLE_SIZE;
@@ -774,11 +1005,10 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
                 pending_preceder = Some(entry);
                 pos += consumed;
             }
-            FrameType::NTensorFrame | FrameType::NTensorMaskedFrame => {
-                // Both frame types share the same payload + CBOR layout;
+            FrameType::NTensorFrame => {
                 // `decode_data_object_frame` returns the trimmed data
                 // payload and the (possibly empty) mask region slice.
-                // Type 4 frames always have an empty mask region.
+                // Frames without masks have an empty mask region.
                 let (desc, payload, mask_region, consumed) = decode_data_object_frame(&buf[pos..])?;
                 objects.push((desc, payload, mask_region, frame_start));
                 // Consume the pending preceder (if any) for this object
@@ -897,58 +1127,350 @@ pub fn decode_metadata_only(buf: &[u8]) -> Result<GlobalMetadata> {
     ))
 }
 
+/// Walk the frame chain of a single message and collect the
+/// inline hash slot of every data-object frame, in emission order.
+///
+/// Returns `Ok(Vec<Option<u64>>)` with one entry per
+/// `NTensorFrame`:
+///
+/// - `Some(digest)` when the frame's hash slot holds a non-zero
+///   xxh3-64 digest (the common case when `HASHES_PRESENT = 1`).
+/// - `None` when the slot is `0x0000000000000000` — either
+///   because the message's preamble flag clears
+///   `HASHES_PRESENT` or because a future selective-hashing
+///   policy opted-out this specific frame.
+///
+/// This is the cheap specialization of [`decode_message`] for
+/// callers that only want the per-object hashes and don't care
+/// about CBOR descriptors or payload bytes — the walker visits
+/// only the 16-byte frame headers plus 8 bytes per hash slot,
+/// skipping CBOR parsing entirely.  Useful for FFI inline-hash
+/// surfaces and fast integrity scans.
+///
+/// # Errors
+///
+/// Returns `TensogramError::Framing` on any structural problem
+/// (buffer too short, bad frame header, total_length overflow,
+/// unknown frame type).  Callers that can tolerate a partial
+/// result should fall back to `decode_message` and recover from
+/// that function's fields instead.
+pub fn data_object_inline_hashes(buf: &[u8]) -> Result<Vec<Option<u64>>> {
+    let preamble = Preamble::read_from(buf)?;
+
+    let msg_end = if preamble.total_length > 0 {
+        let total_len = usize::try_from(preamble.total_length).map_err(|_| {
+            TensogramError::Framing(format!(
+                "total_length {} overflows usize",
+                preamble.total_length
+            ))
+        })?;
+        total_len.checked_sub(POSTAMBLE_SIZE).ok_or_else(|| {
+            TensogramError::Framing(format!(
+                "total_length {} too small for postamble ({POSTAMBLE_SIZE} bytes)",
+                preamble.total_length
+            ))
+        })?
+    } else {
+        buf.len().checked_sub(POSTAMBLE_SIZE).ok_or_else(|| {
+            TensogramError::Framing(format!(
+                "buffer too short for postamble: {} < {POSTAMBLE_SIZE}",
+                buf.len()
+            ))
+        })?
+    };
+
+    let mut hashes = Vec::new();
+    let mut pos = PREAMBLE_SIZE;
+    while pos < msg_end {
+        if pos + FRAME_HEADER_SIZE > buf.len() || &buf[pos..pos + 2] != b"FR" {
+            // Ragged tail; forward scanner would byte-walk here —
+            // for an inline-hash collector we stop cleanly at the
+            // first mis-alignment.
+            break;
+        }
+        let fh = FrameHeader::read_from(&buf[pos..])?;
+        let frame_total = usize::try_from(fh.total_length).map_err(|_| {
+            TensogramError::Framing(format!(
+                "frame total_length {} overflows usize",
+                fh.total_length
+            ))
+        })?;
+        if pos + frame_total > buf.len() {
+            return Err(TensogramError::Framing(format!(
+                "frame at offset {pos} extends past buffer end ({} > {})",
+                pos + frame_total,
+                buf.len()
+            )));
+        }
+        if fh.frame_type.is_data_object() {
+            // Hash slot sits at `frame_end - 12` regardless of
+            // frame type (v3 §2.2 common tail).
+            let slot_start = pos + frame_total - crate::wire::FRAME_COMMON_FOOTER_SIZE;
+            let slot = crate::wire::read_u64_be(buf, slot_start);
+            hashes.push(if slot == 0 { None } else { Some(slot) });
+        }
+        pos += frame_total;
+        pos = (pos + 7) & !7; // 8-byte alignment padding
+    }
+    Ok(hashes)
+}
+
 // ── Scan ─────────────────────────────────────────────────────────────────────
 
+/// Options controlling the in-memory `scan` and file-level
+/// `scan_file` algorithms.
+///
+/// `bidirectional = true` (default) enables a meet-in-the-middle
+/// walker pair — one forward from offset 0, one backward from EOF —
+/// that can halve the hop count on multi-message files.  The
+/// backward walker uses the postamble's mirrored `total_length`
+/// field (v3 §7) to jump directly to the preceding message's
+/// start without a byte-by-byte search.  If the backward walker
+/// hits a message whose postamble has `total_length = 0`
+/// (non-seekable streaming producer) or any structural anomaly,
+/// it yields and the forward walker completes the scan alone.
+///
+/// `max_message_size` caps the apparent message length advertised
+/// by a postamble's `total_length` field.  Any value larger than
+/// this cap is treated as corruption and the backward walker
+/// yields to the forward walker.  Default 4 GiB.  Lower this for
+/// producers that guarantee smaller messages to make corruption
+/// detection tighter.
+#[derive(Debug, Clone)]
+pub struct ScanOptions {
+    /// Enable meet-in-the-middle walking.  When `false`, the
+    /// scanner walks forward from offset 0 only (pre-v3 behaviour
+    /// — still correct, just without the hop-count halving).
+    pub bidirectional: bool,
+    /// Upper bound on the `total_length` value advertised by a
+    /// postamble.  Anything larger is treated as corruption and
+    /// the backward walker yields to the forward walker.
+    /// Default 4 GiB.
+    pub max_message_size: u64,
+}
+
+impl Default for ScanOptions {
+    fn default() -> Self {
+        Self {
+            bidirectional: true,
+            max_message_size: 4 * 1024 * 1024 * 1024,
+        }
+    }
+}
+
 /// Scan a multi-message buffer for message boundaries.
-/// Returns (offset, length) of each message found.
+///
+/// Delegates to [`scan_with_options`] with the default options
+/// (bidirectional walk enabled).  Returns `(offset, length)` for
+/// each message found.
 #[tracing::instrument(skip(buf), fields(buf_len = buf.len()))]
 pub fn scan(buf: &[u8]) -> Vec<(usize, usize)> {
-    let mut messages = Vec::new();
-    let mut pos = 0;
+    scan_with_options(buf, &ScanOptions::default())
+}
 
-    while pos + PREAMBLE_SIZE + POSTAMBLE_SIZE <= buf.len() {
-        if &buf[pos..pos + MAGIC.len()] == MAGIC {
-            // Try to read preamble
-            if let Ok(preamble) = Preamble::read_from(&buf[pos..]) {
-                if preamble.total_length > 0 {
-                    let Ok(total) = usize::try_from(preamble.total_length) else {
-                        pos += 1;
-                        continue;
-                    };
-                    if pos + total <= buf.len() {
-                        // Validate end magic
-                        let end_magic_offset = pos + total - 8;
-                        if &buf[end_magic_offset..end_magic_offset + 8] == crate::wire::END_MAGIC {
-                            messages.push((pos, total));
-                            pos += total;
-                            continue;
-                        }
-                    }
-                } else {
-                    // Streaming mode: scan forward to find end magic
-                    // Look for the next 39277777 pattern
-                    let mut end_pos = pos + PREAMBLE_SIZE;
-                    let mut found = false;
-                    while end_pos + 8 <= buf.len() {
-                        if &buf[end_pos..end_pos + 8] == crate::wire::END_MAGIC {
-                            let msg_len = end_pos + 8 - pos;
-                            messages.push((pos, msg_len));
-                            pos = end_pos + 8;
-                            found = true;
-                            break;
-                        }
-                        end_pos += 1;
-                    }
-                    if found {
-                        continue;
-                    }
-                }
+/// Scan a multi-message buffer with explicit options.
+///
+/// When `opts.bidirectional` is `true`, uses a meet-in-the-middle
+/// walker pair.  When `false`, falls back to pure forward scanning
+/// (identical to pre-v3 behaviour).
+#[tracing::instrument(skip(buf, opts), fields(buf_len = buf.len(), bidir = opts.bidirectional))]
+pub fn scan_with_options(buf: &[u8], opts: &ScanOptions) -> Vec<(usize, usize)> {
+    if !opts.bidirectional {
+        return scan_forward_all(buf, 0, buf.len());
+    }
+    scan_bidirectional(buf, opts)
+}
+
+/// Try a single forward hop starting at `pos`.
+///
+/// Returns `Some((start, length))` when a full message was located;
+/// returns `None` when the preamble does not start at `pos` (caller
+/// should advance one byte and retry).  Zero is returned through
+/// `Some` as well for streaming messages (their length is the
+/// offset to the next `END_MAGIC`).
+///
+/// `bound_end` is the exclusive upper bound on the scan — the
+/// forward walker will not return a message whose end would exceed
+/// `bound_end`.  This is the mechanism by which the bidirectional
+/// walker limits forward progress once the backward walker has
+/// staked out the tail of the buffer.
+fn try_forward_hop(buf: &[u8], pos: usize, bound_end: usize) -> Option<(usize, usize)> {
+    if pos + PREAMBLE_SIZE + POSTAMBLE_SIZE > bound_end {
+        return None;
+    }
+    if &buf[pos..pos + MAGIC.len()] != MAGIC {
+        return None;
+    }
+    let preamble = Preamble::read_from(&buf[pos..]).ok()?;
+    if preamble.total_length > 0 {
+        let total = usize::try_from(preamble.total_length).ok()?;
+        if pos + total > bound_end {
+            return None;
+        }
+        // Validate END_MAGIC lives where the preamble claims.
+        let end_magic_offset = pos + total - 8;
+        if &buf[end_magic_offset..end_magic_offset + 8] == crate::wire::END_MAGIC {
+            return Some((pos, total));
+        }
+        return None;
+    }
+    // Streaming message — scan forward for END_MAGIC bounded by
+    // `bound_end`.
+    let mut end_pos = pos + PREAMBLE_SIZE;
+    while end_pos + 8 <= bound_end {
+        if &buf[end_pos..end_pos + 8] == crate::wire::END_MAGIC {
+            let msg_len = end_pos + 8 - pos;
+            return Some((pos, msg_len));
+        }
+        end_pos += 1;
+    }
+    None
+}
+
+/// Forward-only scan over `buf[range_start..range_end)`.
+fn scan_forward_all(buf: &[u8], range_start: usize, range_end: usize) -> Vec<(usize, usize)> {
+    let mut messages = Vec::new();
+    let mut pos = range_start;
+    while pos + PREAMBLE_SIZE + POSTAMBLE_SIZE <= range_end {
+        match try_forward_hop(buf, pos, range_end) {
+            Some((start, total)) => {
+                messages.push((start, total));
+                pos = start + total;
+            }
+            None => pos += 1,
+        }
+    }
+    messages
+}
+
+/// Outcome of a single backward hop.
+enum BackwardHop {
+    /// Found a message at `(start, length)`; the caller should
+    /// continue backward from `start`.
+    Hit(usize, usize),
+    /// A postamble's `total_length` field was zero — this message
+    /// was produced by a streaming non-seekable sink and its start
+    /// cannot be determined in O(1).  The backward walker must stop;
+    /// the forward walker will handle the remaining region.
+    StreamingStop,
+    /// No further postamble found in the bounded backward search.
+    None,
+}
+
+/// Try a single backward hop ending at `bound_end` (exclusive).
+///
+/// Reads the fixed-size postamble at `[bound_end - POSTAMBLE_SIZE,
+/// bound_end)` and uses its mirrored `total_length` field to
+/// compute the message start.  Returns `None` on any structural
+/// mismatch (missing END_MAGIC, bad preamble at the computed
+/// start, total_length > `max_message_size`) so the caller falls
+/// back to forward scanning.
+///
+/// `max_message_size` caps the apparent message length to guard
+/// against corruption that could otherwise cause the backward
+/// walker to jump to a nonsense offset.
+fn try_backward_hop(
+    buf: &[u8],
+    range_start: usize,
+    bound_end: usize,
+    max_message_size: u64,
+) -> BackwardHop {
+    if bound_end < range_start + PREAMBLE_SIZE + POSTAMBLE_SIZE {
+        return BackwardHop::None;
+    }
+    if &buf[bound_end - 8..bound_end] != crate::wire::END_MAGIC {
+        return BackwardHop::None;
+    }
+    // Parse the full postamble at `bound_end - POSTAMBLE_SIZE`.
+    let pa_start = bound_end - POSTAMBLE_SIZE;
+    let postamble = match Postamble::read_from(&buf[pa_start..bound_end]) {
+        Ok(p) => p,
+        Err(_) => return BackwardHop::None,
+    };
+    if postamble.total_length == 0 {
+        // Streaming non-seekable: can't jump backward.
+        return BackwardHop::StreamingStop;
+    }
+    if postamble.total_length > max_message_size {
+        // Implausibly large — likely corruption.  Bail back to the
+        // forward walker which does its own per-step validation.
+        return BackwardHop::None;
+    }
+    let total = match usize::try_from(postamble.total_length) {
+        Ok(t) => t,
+        Err(_) => return BackwardHop::None,
+    };
+    if total > bound_end - range_start {
+        return BackwardHop::None;
+    }
+    let msg_start = bound_end - total;
+    if &buf[msg_start..msg_start + MAGIC.len()] != MAGIC {
+        return BackwardHop::None;
+    }
+    // Sanity: validate the preamble itself.
+    if Preamble::read_from(&buf[msg_start..]).is_err() {
+        return BackwardHop::None;
+    }
+    BackwardHop::Hit(msg_start, total)
+}
+
+/// Meet-in-the-middle bidirectional scan.
+///
+/// Alternates forward and backward hops from the two ends of the
+/// buffer until they meet, falling back to pure forward scan of
+/// the residual middle once the walkers cross (or when the
+/// backward walker yields on a streaming non-seekable message).
+fn scan_bidirectional(buf: &[u8], opts: &ScanOptions) -> Vec<(usize, usize)> {
+    let mut fwd: Vec<(usize, usize)> = Vec::new();
+    let mut bwd: Vec<(usize, usize)> = Vec::new();
+    let mut fwd_pos: usize = 0;
+    let mut bwd_end: usize = buf.len();
+
+    loop {
+        // Stop when walkers would overlap.
+        if fwd_pos + PREAMBLE_SIZE + POSTAMBLE_SIZE > bwd_end {
+            break;
+        }
+
+        // One forward hop: advance one byte on miss, one message
+        // on hit.  Caps the forward range at `bwd_end` so we don't
+        // step into the region already claimed by the backward
+        // walker.
+        match try_forward_hop(buf, fwd_pos, bwd_end) {
+            Some((start, total)) => {
+                fwd.push((start, total));
+                fwd_pos = start + total;
+            }
+            None => {
+                fwd_pos += 1;
+                continue;
             }
         }
-        pos += 1;
+
+        // Stop when walkers would overlap.
+        if fwd_pos + PREAMBLE_SIZE + POSTAMBLE_SIZE > bwd_end {
+            break;
+        }
+
+        // One backward hop.  On a streaming-non-seekable yield or
+        // any structural anomaly, drop to forward-only for the
+        // residual region and return the merged result.
+        match try_backward_hop(buf, fwd_pos, bwd_end, opts.max_message_size) {
+            BackwardHop::Hit(start, total) => {
+                bwd.push((start, total));
+                bwd_end = start;
+            }
+            BackwardHop::StreamingStop | BackwardHop::None => {
+                let residual = scan_forward_all(buf, fwd_pos, bwd_end);
+                return merge_bidirectional_results(fwd, bwd, residual);
+            }
+        }
     }
 
-    messages
+    // Walkers crossed cleanly: scan the (usually empty) residual
+    // and merge.
+    let residual = scan_forward_all(buf, fwd_pos, bwd_end);
+    merge_bidirectional_results(fwd, bwd, residual)
 }
 
 // ── File-based scan ──────────────────────────────────────────────────────────
@@ -957,7 +1479,18 @@ pub fn scan(buf: &[u8]) -> Vec<(usize, usize)> {
 ///
 /// Reads preamble-sized chunks and seeks forward, avoiding full-file reads
 /// for large files. Returns the same `(offset, length)` pairs as `scan()`.
+///
+/// Delegates to [`scan_file_with_options`] with the default
+/// options (bidirectional walk enabled).
 pub fn scan_file(file: &mut (impl std::io::Read + std::io::Seek)) -> Result<Vec<(usize, usize)>> {
+    scan_file_with_options(file, &ScanOptions::default())
+}
+
+/// Scan a file with explicit scan options.
+pub fn scan_file_with_options(
+    file: &mut (impl std::io::Read + std::io::Seek),
+    opts: &ScanOptions,
+) -> Result<Vec<(usize, usize)>> {
     use std::io::SeekFrom;
 
     let file_len_u64 = file.seek(SeekFrom::End(0))?;
@@ -966,12 +1499,28 @@ pub fn scan_file(file: &mut (impl std::io::Read + std::io::Seek)) -> Result<Vec<
     })?;
     file.seek(SeekFrom::Start(0))?;
 
-    let mut messages = Vec::new();
-    let mut pos: usize = 0;
+    if !opts.bidirectional {
+        return scan_file_forward(file, 0, file_len);
+    }
+    scan_file_bidirectional(file, file_len, opts.max_message_size)
+}
 
+/// Forward-only scan over `file[range_start..range_end)` using
+/// seek-and-read I/O.  Factored out of the old `scan_file` so the
+/// bidirectional entry point can reuse it for the residual region
+/// between the two walkers.
+fn scan_file_forward(
+    file: &mut (impl std::io::Read + std::io::Seek),
+    range_start: usize,
+    range_end: usize,
+) -> Result<Vec<(usize, usize)>> {
+    use std::io::SeekFrom;
+
+    let mut messages = Vec::new();
+    let mut pos: usize = range_start;
     let mut preamble_buf = [0u8; PREAMBLE_SIZE];
 
-    while pos + PREAMBLE_SIZE + POSTAMBLE_SIZE <= file_len {
+    while pos + PREAMBLE_SIZE + POSTAMBLE_SIZE <= range_end {
         file.seek(SeekFrom::Start(pos as u64))?;
         if file.read_exact(&mut preamble_buf).is_err() {
             break;
@@ -985,7 +1534,7 @@ pub fn scan_file(file: &mut (impl std::io::Read + std::io::Seek)) -> Result<Vec<
                     pos += 1;
                     continue;
                 };
-                if pos + total <= file_len {
+                if pos + total <= range_end {
                     // Read end magic to validate
                     let end_magic_offset = pos + total - 8;
                     file.seek(SeekFrom::Start(end_magic_offset as u64))?;
@@ -998,21 +1547,19 @@ pub fn scan_file(file: &mut (impl std::io::Read + std::io::Seek)) -> Result<Vec<
                 }
             } else {
                 // Streaming mode: scan forward for END_MAGIC
-                // Read in chunks to find the terminator
                 let mut search_pos = pos + PREAMBLE_SIZE;
                 let mut found = false;
                 let chunk_size = 4096;
                 let mut chunk = vec![0u8; chunk_size];
 
-                while search_pos + 8 <= file_len {
+                while search_pos + 8 <= range_end {
                     file.seek(SeekFrom::Start(search_pos as u64))?;
-                    let to_read = (file_len - search_pos).min(chunk_size);
+                    let to_read = (range_end - search_pos).min(chunk_size);
                     let buf = &mut chunk[..to_read];
                     if file.read_exact(buf).is_err() {
                         break;
                     }
 
-                    // Search for END_MAGIC in this chunk
                     for i in 0..to_read.saturating_sub(7) {
                         if &buf[i..i + 8] == crate::wire::END_MAGIC {
                             let end_pos = search_pos + i;
@@ -1040,11 +1587,151 @@ pub fn scan_file(file: &mut (impl std::io::Read + std::io::Seek)) -> Result<Vec<
     Ok(messages)
 }
 
+/// Merge a forward-walker prefix and a backward-walker suffix
+/// into the final boundary list — the backward results are
+/// reversed (since they were collected EOF-first) and appended.
+fn merge_bidirectional_results(
+    mut fwd: Vec<(usize, usize)>,
+    bwd: Vec<(usize, usize)>,
+    residual: Vec<(usize, usize)>,
+) -> Vec<(usize, usize)> {
+    fwd.extend(residual);
+    let mut bwd_reversed = bwd;
+    bwd_reversed.reverse();
+    fwd.extend(bwd_reversed);
+    fwd
+}
+
+/// Meet-in-the-middle bidirectional scan over a seekable stream.
+///
+/// Each backward hop reads `POSTAMBLE_SIZE` bytes ending at the
+/// current backward cursor, parses the postamble, and jumps by
+/// `postamble.total_length`.  Yields to the forward walker on a
+/// zero `total_length` (streaming non-seekable sink), on any
+/// structural mismatch (missing TENSOGRM at the computed start),
+/// or when the claimed length exceeds `max_message_size`.
+fn scan_file_bidirectional(
+    file: &mut (impl std::io::Read + std::io::Seek),
+    file_len: usize,
+    max_message_size: u64,
+) -> Result<Vec<(usize, usize)>> {
+    use std::io::SeekFrom;
+
+    let mut fwd: Vec<(usize, usize)> = Vec::new();
+    let mut bwd: Vec<(usize, usize)> = Vec::new();
+    let mut fwd_pos: usize = 0;
+    let mut bwd_end: usize = file_len;
+
+    let mut preamble_buf = [0u8; PREAMBLE_SIZE];
+    let mut postamble_buf = [0u8; POSTAMBLE_SIZE];
+
+    // Helper: hand off to the forward-only walker for the
+    // remaining region between `fwd_pos` and `bwd_end` and return
+    // the merged boundary list.  Used at every fall-back point in
+    // the walker below to avoid copy-paste drift.
+    macro_rules! fall_back_to_forward {
+        () => {{
+            let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
+            return Ok(merge_bidirectional_results(fwd, bwd, residual));
+        }};
+    }
+
+    loop {
+        if fwd_pos + PREAMBLE_SIZE + POSTAMBLE_SIZE > bwd_end {
+            break;
+        }
+
+        // ── Forward hop ────────────────────────────────────────
+        file.seek(SeekFrom::Start(fwd_pos as u64))?;
+        let read_fwd = file.read_exact(&mut preamble_buf).is_ok();
+        let mut advanced = false;
+        if read_fwd
+            && &preamble_buf[..MAGIC.len()] == MAGIC
+            && let Ok(preamble) = Preamble::read_from(&preamble_buf)
+        {
+            if preamble.total_length > 0 {
+                if let Ok(total) = usize::try_from(preamble.total_length)
+                    && fwd_pos + total <= bwd_end
+                {
+                    let end_magic_offset = fwd_pos + total - 8;
+                    file.seek(SeekFrom::Start(end_magic_offset as u64))?;
+                    let mut em = [0u8; 8];
+                    if file.read_exact(&mut em).is_ok() && &em == crate::wire::END_MAGIC {
+                        fwd.push((fwd_pos, total));
+                        fwd_pos += total;
+                        advanced = true;
+                    }
+                }
+            } else {
+                // Streaming message — forward-only walker handles
+                // the remaining region.
+                fall_back_to_forward!();
+            }
+        }
+        if !advanced {
+            fwd_pos += 1;
+            continue;
+        }
+
+        if fwd_pos + PREAMBLE_SIZE + POSTAMBLE_SIZE > bwd_end {
+            break;
+        }
+
+        // ── Backward hop ───────────────────────────────────────
+        let pa_start = bwd_end - POSTAMBLE_SIZE;
+        file.seek(SeekFrom::Start(pa_start as u64))?;
+        if file.read_exact(&mut postamble_buf).is_err() {
+            fall_back_to_forward!();
+        }
+        match Postamble::read_from(&postamble_buf) {
+            Ok(postamble) if postamble.total_length != 0 => {
+                if postamble.total_length > max_message_size {
+                    // Postamble claims a message larger than the
+                    // per-reader cap — treat as corruption.
+                    fall_back_to_forward!();
+                }
+                let Ok(total) = usize::try_from(postamble.total_length) else {
+                    // Exceeds usize — fall back.
+                    fall_back_to_forward!();
+                };
+                if total > bwd_end - fwd_pos {
+                    // Claimed length exceeds the un-scanned region —
+                    // overlaps the forward walker's claims.
+                    fall_back_to_forward!();
+                }
+                let msg_start = bwd_end - total;
+                file.seek(SeekFrom::Start(msg_start as u64))?;
+                if file.read_exact(&mut preamble_buf).is_err()
+                    || &preamble_buf[..MAGIC.len()] != MAGIC
+                    || Preamble::read_from(&preamble_buf).is_err()
+                {
+                    // TENSOGRM magic absent at the computed start —
+                    // the postamble's `total_length` lies.
+                    fall_back_to_forward!();
+                }
+                bwd.push((msg_start, total));
+                bwd_end = msg_start;
+            }
+            Ok(_) | Err(_) => {
+                // Postamble said `total_length = 0` (streaming
+                // non-seekable) or was corrupt — back off.
+                fall_back_to_forward!();
+            }
+        }
+    }
+
+    // Walkers crossed without a fallback trigger: scan the residual
+    // middle (usually empty) and merge the two results.
+    let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
+    Ok(merge_bidirectional_results(fwd, bwd, residual))
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Total frame size: header + payload + ENDF
+/// Total frame size for a non-data-object frame in v3:
+/// `header(16) + payload + hash(8) + ENDF(4)`.
 fn frame_total_size(payload_len: usize) -> usize {
-    FRAME_HEADER_SIZE + payload_len + FRAME_END.len()
+    FRAME_HEADER_SIZE + payload_len + FRAME_COMMON_FOOTER_SIZE
 }
 
 /// Frame total size aligned to 8 bytes
@@ -1062,7 +1749,7 @@ mod tests {
 
     fn make_global_meta() -> GlobalMetadata {
         GlobalMetadata {
-            version: 2,
+            version: 3,
             ..Default::default()
         }
     }
@@ -1087,7 +1774,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         }
     }
 
@@ -1156,7 +1842,7 @@ mod tests {
         let desc = make_descriptor(vec![4]);
         let payload = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 
-        let frame = encode_data_object_frame(&desc, &payload, false).unwrap();
+        let frame = encode_data_object_frame(&desc, &payload, false, None).unwrap();
 
         let (decoded_desc, decoded_payload, _mask_region, consumed) =
             decode_data_object_frame(&frame).unwrap();
@@ -1171,7 +1857,7 @@ mod tests {
         let desc = make_descriptor(vec![2, 3]);
         let payload = vec![0xABu8; 24]; // 2*3*4 = 24 bytes for float32
 
-        let frame = encode_data_object_frame(&desc, &payload, true).unwrap();
+        let frame = encode_data_object_frame(&desc, &payload, true, None).unwrap();
 
         let (decoded_desc, decoded_payload, _mask_region, _) =
             decode_data_object_frame(&frame).unwrap();
@@ -1182,14 +1868,14 @@ mod tests {
     #[test]
     fn test_empty_message_round_trip() {
         let meta = make_global_meta();
-        let msg = encode_message(&meta, &[]).unwrap();
+        let msg = encode_message(&meta, &[], None, Default::default()).unwrap();
 
         // Check magic and end magic
         assert_eq!(&msg[0..8], MAGIC);
         assert_eq!(&msg[msg.len() - 8..], crate::wire::END_MAGIC);
 
         let decoded = decode_message(&msg).unwrap();
-        assert_eq!(decoded.global_metadata.version, 2);
+        assert_eq!(decoded.global_metadata.version, 3);
         assert_eq!(decoded.objects.len(), 0);
         assert!(decoded.index.is_none()); // no objects = no index
     }
@@ -1205,15 +1891,15 @@ mod tests {
             encoded_payload: payload.clone(),
         }];
 
-        let msg = encode_message(&meta, &objects).unwrap();
+        let msg = encode_message(&meta, &objects, None, Default::default()).unwrap();
         let decoded = decode_message(&msg).unwrap();
 
-        assert_eq!(decoded.global_metadata.version, 2);
+        assert_eq!(decoded.global_metadata.version, 3);
         assert_eq!(decoded.objects.len(), 1);
         assert_eq!(decoded.objects[0].0.shape, vec![4]);
         assert_eq!(decoded.objects[0].1, &payload[..]);
         assert!(decoded.index.is_some());
-        assert_eq!(decoded.index.as_ref().unwrap().object_count, 1);
+        assert_eq!(decoded.index.as_ref().unwrap().offsets.len(), 1);
     }
 
     #[test]
@@ -1235,7 +1921,7 @@ mod tests {
             },
         ];
 
-        let msg = encode_message(&meta, &objects).unwrap();
+        let msg = encode_message(&meta, &objects, None, Default::default()).unwrap();
         let decoded = decode_message(&msg).unwrap();
 
         assert_eq!(decoded.objects.len(), 2);
@@ -1245,8 +1931,8 @@ mod tests {
         assert_eq!(decoded.objects[1].1, &payload1[..]);
 
         let idx = decoded.index.as_ref().unwrap();
-        assert_eq!(idx.object_count, 2);
         assert_eq!(idx.offsets.len(), 2);
+        assert_eq!(idx.lengths.len(), 2);
     }
 
     #[test]
@@ -1258,14 +1944,18 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
+            None,
+            Default::default(),
         )
         .unwrap();
         let msg2 = encode_message(
             &meta,
             &[EncodedObject {
-                descriptor: make_descriptor(vec![2]),
-                encoded_payload: vec![2u8; 8],
+                descriptor: make_descriptor(vec![4]),
+                encoded_payload: vec![1u8; 16],
             }],
+            None,
+            Default::default(),
         )
         .unwrap();
 
@@ -1287,6 +1977,8 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
+            None,
+            Default::default(),
         )
         .unwrap();
 
@@ -1311,13 +2003,15 @@ mod tests {
             &meta,
             &[EncodedObject {
                 descriptor: make_descriptor(vec![4]),
-                encoded_payload: vec![0u8; 16],
+                encoded_payload: vec![1u8; 16],
             }],
+            None,
+            Default::default(),
         )
         .unwrap();
 
         let decoded_meta = decode_metadata_only(&msg).unwrap();
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         // _extra_ is the CBOR key name (via serde rename)
         assert!(decoded_meta.extra.contains_key("test_key"));
     }
@@ -1338,7 +2032,7 @@ mod tests {
         for (content, frame_type) in frames {
             match frame_type {
                 FrameType::NTensorFrame => {
-                    let frame = encode_data_object_frame(&desc, &payload, false).unwrap();
+                    let frame = encode_data_object_frame(&desc, &payload, false, None).unwrap();
                     out.extend_from_slice(&frame);
                     let pad = (8 - (out.len() % 8)) % 8;
                     out.extend(std::iter::repeat_n(0u8, pad));
@@ -1349,15 +2043,17 @@ mod tests {
                     } else {
                         *content
                     };
-                    write_frame(&mut out, *frame_type, 1, 0, data, true);
+                    write_frame(&mut out, *frame_type, 1, 0, data, None, true);
                 }
             }
         }
 
-        // Postamble
+        // Postamble — first_footer_offset is known; total_length is
+        // patched after the final length is known.
         let postamble_offset = out.len();
         let postamble = Postamble {
             first_footer_offset: postamble_offset as u64,
+            total_length: 0,
         };
         postamble.write_to(&mut out);
 
@@ -1365,7 +2061,7 @@ mod tests {
         let mut flags = MessageFlags::default();
         flags.set(MessageFlags::HEADER_METADATA);
         let preamble = Preamble {
-            version: 2,
+            version: WIRE_VERSION,
             flags,
             reserved: 0,
             total_length,
@@ -1373,6 +2069,9 @@ mod tests {
         let mut preamble_bytes = Vec::new();
         preamble.write_to(&mut preamble_bytes);
         out[0..PREAMBLE_SIZE].copy_from_slice(&preamble_bytes);
+        // Patch the postamble's total_length now that it is known.
+        let total_length_bytes = total_length.to_be_bytes();
+        out[postamble_offset + 8..postamble_offset + 16].copy_from_slice(&total_length_bytes);
 
         out
     }
@@ -1402,8 +2101,7 @@ mod tests {
         let meta = make_global_meta();
         let meta_cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
         let hf = HashFrame {
-            object_count: 0,
-            hash_type: "xxh3".to_string(),
+            algorithm: "xxh3".to_string(),
             hashes: vec![],
         };
         let hash_cbor = crate::metadata::hash_frame_to_cbor(&hf).unwrap();
@@ -1446,14 +2144,18 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
+            None,
+            Default::default(),
         )
         .unwrap();
         let msg2 = encode_message(
             &meta,
             &[EncodedObject {
-                descriptor: make_descriptor(vec![2]),
-                encoded_payload: vec![2u8; 8],
+                descriptor: make_descriptor(vec![4]),
+                encoded_payload: vec![1u8; 16],
             }],
+            None,
+            Default::default(),
         )
         .unwrap();
 
@@ -1478,6 +2180,8 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
+            None,
+            Default::default(),
         )
         .unwrap();
 
@@ -1523,7 +2227,7 @@ mod tests {
     /// Helper: build a preceder metadata CBOR blob with a single base entry.
     fn make_preceder_cbor(entries: std::collections::BTreeMap<String, ciborium::Value>) -> Vec<u8> {
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entries],
             ..Default::default()
         };
@@ -1602,7 +2306,7 @@ mod tests {
     fn test_decode_preceder_with_multiple_base_entries_rejected() {
         // Preceder with 2 base entries — should be rejected (must have exactly 1)
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![BTreeMap::new(), BTreeMap::new()],
             ..Default::default()
         };
@@ -1629,7 +2333,7 @@ mod tests {
     fn test_decode_preceder_with_zero_base_entries_rejected() {
         // Preceder with 0 base entries — should be rejected
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![],
             ..Default::default()
         };
@@ -1717,7 +2421,7 @@ mod tests {
             ciborium::Value::Text("footer".to_string()),
         );
         let footer_meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![footer_base],
             ..Default::default()
         };
@@ -1747,7 +2451,7 @@ mod tests {
         // Footer metadata with 3 base entries but only 1 data object
         // should be rejected (base.len > obj_count).
         let footer_meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![BTreeMap::new(), BTreeMap::new(), BTreeMap::new()],
             ..Default::default()
         };

@@ -13,7 +13,7 @@ use tensogram_encodings::simple_packing;
 fn make_float32_descriptor(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescriptor) {
     let strides = compute_strides(&shape);
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -29,7 +29,6 @@ fn make_float32_descriptor(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescri
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     (global, desc)
 }
@@ -57,7 +56,7 @@ fn make_mars_pair(shape: Vec<u64>, param: &str) -> (GlobalMetadata, DataObjectDe
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };
@@ -81,7 +80,6 @@ fn make_mars_pair(shape: Vec<u64>, param: &str) -> (GlobalMetadata, DataObjectDe
             p
         },
         masks: None,
-        hash: None,
     };
     (global, desc)
 }
@@ -109,7 +107,7 @@ fn test_full_round_trip_single_object() {
     assert_eq!(&encoded[encoded.len() - 8..], b"39277777");
 
     let (decoded_meta, decoded_objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     assert_eq!(decoded_objects.len(), 1);
     assert_eq!(decoded_objects[0].1, data);
 }
@@ -119,7 +117,7 @@ fn test_multi_object_message() {
     let strides1 = compute_strides(&[4, 5]);
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -136,7 +134,6 @@ fn test_multi_object_message() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let desc2 = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -150,7 +147,6 @@ fn test_multi_object_message() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let data1 = vec![1u8; 4 * 5 * 4]; // 20 float32
@@ -178,13 +174,13 @@ fn test_decode_metadata_only() {
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let meta = decode_metadata(&encoded).unwrap();
 
-    assert_eq!(meta.version, 2);
+    assert_eq!(meta.version, 3);
 }
 
 #[test]
 fn test_decode_single_object_by_index() {
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -201,7 +197,6 @@ fn test_decode_single_object_by_index() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let desc2 = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -215,7 +210,6 @@ fn test_decode_single_object_by_index() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let data1 = vec![0xAA; 2 * 4];
@@ -235,7 +229,7 @@ fn test_decode_single_object_by_index() {
 #[test]
 fn test_zero_object_message() {
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -261,35 +255,37 @@ fn test_hash_verification_passes() {
     assert_eq!(objects[0].1, data);
 }
 
+/// Flipping a byte inside the payload region of a hashed message
+/// must surface as a `HashMismatch` validation issue.  v3 moved
+/// frame-level integrity from the decoder to the validator
+/// (see `plans/WIRE_FORMAT.md` §11.1): `DecodeOptions.verify_hash`
+/// is a no-op at the decode layer; frame-body hashes are
+/// recomputed by `validate::validate_message` at Integrity level.
 #[test]
 fn test_hash_verification_fails_on_corruption() {
-    // Use a larger payload so the data object frame is well-separated from
-    // the metadata frames and easy to corrupt.
+    use tensogram::validate::{IssueCode, ValidateOptions, validate_message};
+
     let (global, desc) = make_float32_descriptor(vec![100]);
     let data = vec![42u8; 100 * 4];
-
     let mut encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
-    // The v2 message layout: preamble(24) | header frames | data-object frame | footer frames | postamble(16).
-    // 0.17+ encoders emit NTensorMaskedFrame (type 9); identify the
-    // frame by its "FR" magic + frame-type bytes 0x00 0x09.
+    // Identify the NTensorFrame by its "FR" magic + type=9 bytes.
     let data_frame_marker: &[u8] = &[b'F', b'R', 0x00, 0x09];
     let frame_start = encoded
         .windows(4)
         .position(|w| w == data_frame_marker)
-        .expect("DataObject frame not found in encoded message");
-    // Skip the 16-byte frame header to reach the payload; flip the first payload byte.
-    let payload_byte = frame_start + 16;
-    encoded[payload_byte] ^= 0xFF;
+        .expect("NTensorFrame not found in encoded message");
+    // Flip a byte 16 B past the frame header — inside the payload.
+    encoded[frame_start + 16] ^= 0xFF;
 
-    let options = DecodeOptions {
-        verify_hash: true,
-        ..Default::default()
-    };
-    let result = decode(&encoded, &options);
+    let report = validate_message(&encoded, &ValidateOptions::default());
     assert!(
-        result.is_err(),
-        "expected hash verification failure after corruption"
+        report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::HashMismatch),
+        "expected HashMismatch after payload tamper, got: {:?}",
+        report.issues
     );
 }
 
@@ -319,7 +315,7 @@ fn test_simple_packing_round_trip() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -335,7 +331,6 @@ fn test_simple_packing_round_trip() {
         compression: "none".to_string(),
         params: packing_params,
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -366,7 +361,7 @@ fn test_shuffle_round_trip() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -382,7 +377,6 @@ fn test_shuffle_round_trip() {
         compression: "none".to_string(),
         params,
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -458,7 +452,7 @@ fn test_decode_range_shuffle_rejected() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -474,7 +468,6 @@ fn test_decode_range_shuffle_rejected() {
         compression: "none".to_string(),
         params,
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -531,7 +524,7 @@ fn test_namespaced_metadata_round_trip() {
 #[test]
 fn test_validate_object_overflow() {
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -547,7 +540,6 @@ fn test_validate_object_overflow() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 64];
@@ -585,7 +577,7 @@ fn test_cross_endian_round_trip() {
     let be_data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -601,7 +593,6 @@ fn test_cross_endian_round_trip() {
         compression: "none".to_string(),
         params: packing_params.clone(),
         masks: None,
-        hash: None,
     };
 
     let encoded_be = encode(&global, &[(&be_desc, &be_data)], &EncodeOptions::default()).unwrap();
@@ -633,7 +624,6 @@ fn test_cross_endian_round_trip() {
         compression: "none".to_string(),
         params: packing_params.clone(),
         masks: None,
-        hash: None,
     };
 
     let encoded_le = encode(&global, &[(&le_desc, &le_data)], &EncodeOptions::default()).unwrap();
@@ -681,7 +671,7 @@ fn test_decode_range_cross_endian_native() {
     let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -697,7 +687,6 @@ fn test_decode_range_cross_endian_native() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -722,7 +711,7 @@ fn test_decode_range_wire_byte_order_opt_out() {
     let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -738,7 +727,6 @@ fn test_decode_range_wire_byte_order_opt_out() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -782,7 +770,7 @@ fn test_simple_packing_rejects_non_f64() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -798,7 +786,6 @@ fn test_simple_packing_rejects_non_f64() {
         compression: "none".to_string(),
         params: packing_params,
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 10 * 4];
@@ -817,7 +804,7 @@ fn test_simple_packing_rejects_non_f64() {
 #[test]
 fn test_validate_ndim_mismatch() {
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -833,7 +820,6 @@ fn test_validate_ndim_mismatch() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 4 * 5 * 4];
@@ -859,7 +845,7 @@ fn test_param_out_of_bounds() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -875,7 +861,6 @@ fn test_param_out_of_bounds() {
         compression: "none".to_string(),
         params: packing_params,
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 4 * 8];
@@ -923,7 +908,7 @@ fn make_szip_packing_pair(
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -939,7 +924,6 @@ fn make_szip_packing_pair(
         compression: "szip".to_string(),
         params: packing_params,
         masks: None,
-        hash: None,
     };
     (global, desc)
 }
@@ -958,7 +942,7 @@ fn make_szip_raw_pair(num_values: u64, dtype: Dtype) -> (GlobalMetadata, DataObj
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -974,7 +958,6 @@ fn make_szip_raw_pair(num_values: u64, dtype: Dtype) -> (GlobalMetadata, DataObj
         compression: "szip".to_string(),
         params,
         masks: None,
-        hash: None,
     };
     (global, desc)
 }
@@ -1149,7 +1132,7 @@ fn test_szip_shuffle_round_trip() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -1165,7 +1148,6 @@ fn test_szip_shuffle_round_trip() {
         compression: "szip".to_string(),
         params,
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -1193,7 +1175,7 @@ fn test_szip_shuffle_decode_range_rejected() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -1209,7 +1191,6 @@ fn test_szip_shuffle_decode_range_rejected() {
         compression: "szip".to_string(),
         params,
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -1256,7 +1237,7 @@ fn test_szip_multi_object_mixed_compression() {
     let packed_data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -1272,7 +1253,6 @@ fn test_szip_multi_object_mixed_compression() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let packed_desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -1286,7 +1266,6 @@ fn test_szip_multi_object_mixed_compression() {
         compression: "szip".to_string(),
         params: packing_params,
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(
@@ -1388,7 +1367,7 @@ fn test_szip_decode_range_multiple_ranges() {
 #[test]
 fn test_validate_empty_obj_type() {
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -1404,7 +1383,6 @@ fn test_validate_empty_obj_type() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 4 * 4];
@@ -1435,7 +1413,7 @@ fn test_metadata_base_reserved_round_trip() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };
@@ -1443,7 +1421,7 @@ fn test_metadata_base_reserved_round_trip() {
     let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap();
 
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     // base must have one entry with user-supplied + auto-populated keys.
     assert_eq!(decoded_meta.base.len(), 1);
     assert_eq!(
@@ -1491,7 +1469,7 @@ fn test_metadata_empty_sections_not_serialized() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -1499,7 +1477,7 @@ fn test_metadata_empty_sections_not_serialized() {
     let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap();
 
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     // Encoder auto-populates base with one entry per object.
     assert_eq!(
         decoded_meta.base.len(),
@@ -1555,7 +1533,7 @@ fn test_deep_nested_metadata_round_trip() {
     base_entry.insert("nested".to_string(), value);
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };
@@ -1592,4 +1570,1129 @@ fn test_deep_nested_metadata_round_trip() {
         &ciborium::Value::Text(format!("leaf_at_{max_depth}")),
         "nested leaf must survive round-trip at depth {max_depth}"
     );
+}
+
+// ── Phase 2: postamble 24-byte layout, seekable back-fill ───────────────────
+
+/// Buffered encode always writes the real `total_length` into the
+/// postamble's mirrored slot — confirms `assemble_message` patches
+/// both slots on every message.
+#[test]
+fn buffered_postamble_total_length_equals_message_length() {
+    use tensogram::wire::POSTAMBLE_SIZE;
+
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 16];
+    let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    // Postamble layout: [ffo u64][total_length u64][END_MAGIC 8]
+    let pa_start = msg.len() - POSTAMBLE_SIZE;
+    let pa_total = u64::from_be_bytes(msg[pa_start + 8..pa_start + 16].try_into().unwrap());
+    assert_eq!(pa_total, msg.len() as u64, "postamble must mirror length");
+
+    // Preamble total_length must also equal the full length.
+    let pre_total = u64::from_be_bytes(msg[16..24].try_into().unwrap());
+    assert_eq!(pre_total, msg.len() as u64);
+    assert_eq!(pre_total, pa_total);
+}
+
+/// Streaming encoder on a non-seekable sink writes `total_length = 0`
+/// in both preamble and postamble — the fallback-to-forward-scan
+/// contract.  `Vec<u8>` is Write-only (not Seek), so `finish()` is
+/// the only path available.
+#[test]
+fn streaming_non_seekable_zero_total_length_preamble_and_postamble() {
+    use tensogram::streaming::StreamingEncoder;
+    use tensogram::wire::POSTAMBLE_SIZE;
+
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![2],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 8];
+
+    let buf: Vec<u8> = Vec::new();
+    let mut enc = StreamingEncoder::new(buf, &global, &EncodeOptions::default()).unwrap();
+    enc.write_object(&desc, &data).unwrap();
+    let finished = enc.finish().unwrap();
+
+    // Preamble total_length at offset 16..24 — must be 0 (streaming).
+    let pre_total = u64::from_be_bytes(finished[16..24].try_into().unwrap());
+    assert_eq!(pre_total, 0, "streaming preamble total_length must be 0");
+
+    // Postamble total_length at offset len-16..len-8 — also 0 for
+    // non-seekable sinks.
+    let pa_start = finished.len() - POSTAMBLE_SIZE;
+    let pa_total = u64::from_be_bytes(finished[pa_start + 8..pa_start + 16].try_into().unwrap());
+    assert_eq!(
+        pa_total, 0,
+        "streaming postamble total_length must be 0 on non-seekable sinks"
+    );
+
+    // Decode must still work (forward scan fallback).
+    let (_meta, objects) = decode(&finished, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 1);
+}
+
+/// Streaming encoder onto a seekable sink can back-fill both
+/// total_length slots via `finish_with_backfill`.  Confirms the
+/// Write+Seek specialisation and the post-condition that both slots
+/// equal the real message length.
+#[test]
+fn streaming_seekable_backfill_patches_both_total_length_slots() {
+    use std::io::Cursor;
+    use tensogram::streaming::StreamingEncoder;
+    use tensogram::wire::POSTAMBLE_SIZE;
+
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![3],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 12];
+
+    // Cursor<Vec<u8>> is Write + Seek.
+    let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+    let mut enc = StreamingEncoder::new(cursor, &global, &EncodeOptions::default()).unwrap();
+    enc.write_object(&desc, &data).unwrap();
+    let cursor = enc.finish_with_backfill().unwrap();
+    let buf = cursor.into_inner();
+
+    // Preamble total_length back-filled.
+    let pre_total = u64::from_be_bytes(buf[16..24].try_into().unwrap());
+    assert_eq!(pre_total, buf.len() as u64);
+
+    // Postamble total_length back-filled.
+    let pa_start = buf.len() - POSTAMBLE_SIZE;
+    let pa_total = u64::from_be_bytes(buf[pa_start + 8..pa_start + 16].try_into().unwrap());
+    assert_eq!(pa_total, buf.len() as u64);
+    assert_eq!(pre_total, pa_total);
+
+    // Round-trip still works after the back-fill.
+    let (_meta, objects) = decode(&buf, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 1);
+}
+
+/// The postamble end magic is always at the last 8 bytes of the
+/// message — pinning the wire contract that backward scanners rely
+/// on to locate the end of a preceding message.
+#[test]
+fn postamble_end_magic_always_at_last_8_bytes() {
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![1],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 4];
+
+    // Buffered:
+    let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    assert_eq!(&msg[msg.len() - 8..], b"39277777");
+
+    // Streaming non-seekable:
+    use tensogram::streaming::StreamingEncoder;
+    let mut enc =
+        StreamingEncoder::new(Vec::<u8>::new(), &global, &EncodeOptions::default()).unwrap();
+    enc.write_object(&desc, &data).unwrap();
+    let streamed = enc.finish().unwrap();
+    assert_eq!(&streamed[streamed.len() - 8..], b"39277777");
+
+    // Streaming seekable + back-fill:
+    use std::io::Cursor;
+    let cursor: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+    let mut enc = StreamingEncoder::new(cursor, &global, &EncodeOptions::default()).unwrap();
+    enc.write_object(&desc, &data).unwrap();
+    let backfilled = enc.finish_with_backfill().unwrap().into_inner();
+    assert_eq!(&backfilled[backfilled.len() - 8..], b"39277777");
+}
+
+// ── Phase 3: bidirectional scan ─────────────────────────────────────────────
+
+fn encode_sample(version_tag: u32) -> Vec<u8> {
+    // Produce a small, well-formed message with a per-message tag so
+    // callers can tell messages apart by payload.
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![4],
+        dtype: Dtype::Uint32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data: Vec<u8> = (0..4)
+        .flat_map(|i| (version_tag + i).to_le_bytes())
+        .collect();
+    encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap()
+}
+
+/// Concatenate 10 well-formed messages and scan them.  Bidirectional
+/// scan must return the same boundaries as forward-only scan.
+#[test]
+fn scan_bidirectional_matches_forward_on_10_messages() {
+    let mut buf = Vec::new();
+    for i in 0..10 {
+        buf.extend_from_slice(&encode_sample(i as u32 * 100));
+    }
+
+    let fwd_only_opts = ScanOptions {
+        bidirectional: false,
+        ..ScanOptions::default()
+    };
+    let bidir_opts = ScanOptions::default();
+
+    let fwd_only = scan_with_options(&buf, &fwd_only_opts);
+    let bidir = scan_with_options(&buf, &bidir_opts);
+
+    assert_eq!(fwd_only.len(), 10);
+    assert_eq!(bidir.len(), 10);
+    assert_eq!(bidir, fwd_only, "bidir scan must preserve order");
+}
+
+/// Scan via `scan()` (default options) agrees with explicit
+/// forward-only walk.
+#[test]
+fn scan_default_is_bidirectional_and_equivalent_to_forward() {
+    let mut buf = Vec::new();
+    for i in 0..5 {
+        buf.extend_from_slice(&encode_sample(i));
+    }
+    let default = scan(&buf);
+    let fwd = scan_with_options(
+        &buf,
+        &ScanOptions {
+            bidirectional: false,
+            ..ScanOptions::default()
+        },
+    );
+    assert_eq!(default, fwd);
+}
+
+/// When a mid-file message has `postamble.total_length = 0`
+/// (streaming non-seekable sink), the backward walker yields and
+/// the forward walker completes the scan.  Output must still match
+/// forward-only.
+#[test]
+fn scan_bidirectional_falls_back_on_mid_file_streaming_marker() {
+    use tensogram::wire::POSTAMBLE_SIZE;
+
+    // Build 5 well-formed messages.
+    let mut msgs: Vec<Vec<u8>> = (0..5).map(encode_sample).collect();
+
+    // Zero the postamble `total_length` of message index 2 — this
+    // simulates a streaming non-seekable producer's output sitting
+    // in the middle of the file.
+    let mid = &mut msgs[2];
+    let slot = mid.len() - 16;
+    mid[slot..slot + 8].copy_from_slice(&0u64.to_be_bytes());
+
+    let mut buf = Vec::new();
+    for m in &msgs {
+        buf.extend_from_slice(m);
+    }
+
+    // Bidirectional: must still return all 5 boundaries.  The
+    // fact that message 2's postamble says "unknown length" doesn't
+    // prevent the forward walker from completing — it uses the
+    // preamble's `total_length`, which the encoder did populate
+    // for the buffered-then-tampered fixture.
+    let bidir = scan_with_options(&buf, &ScanOptions::default());
+    let fwd = scan_with_options(
+        &buf,
+        &ScanOptions {
+            bidirectional: false,
+            ..ScanOptions::default()
+        },
+    );
+    assert_eq!(bidir.len(), 5, "all 5 messages must be found");
+    assert_eq!(bidir, fwd);
+
+    // Sanity: the `POSTAMBLE_SIZE` constant is 24 in v3 — the
+    // tamper above wrote 8 zeros at `len - 16` (the total_length
+    // slot between first_footer_offset and END_MAGIC).  This is
+    // just a self-check so this test breaks loudly if POSTAMBLE_SIZE
+    // ever changes.
+    assert_eq!(POSTAMBLE_SIZE, 24);
+}
+
+/// Scan matches under both scan directions for a 1-message buffer.
+#[test]
+fn scan_single_message_works_in_both_modes() {
+    let buf = encode_sample(42);
+    let fwd = scan_with_options(
+        &buf,
+        &ScanOptions {
+            bidirectional: false,
+            ..ScanOptions::default()
+        },
+    );
+    let bidir = scan_with_options(&buf, &ScanOptions::default());
+    assert_eq!(fwd.len(), 1);
+    assert_eq!(bidir, fwd);
+}
+
+/// File-level bidirectional scan through an in-memory Cursor must
+/// agree with the in-memory scan.
+#[test]
+fn scan_file_bidirectional_matches_in_memory() {
+    use std::io::Cursor;
+    use tensogram::framing;
+
+    let mut buf = Vec::new();
+    for i in 0..8 {
+        buf.extend_from_slice(&encode_sample(i * 17));
+    }
+
+    let mut cursor = Cursor::new(buf.clone());
+    let file_result = framing::scan_file(&mut cursor).unwrap();
+    let mem_result = scan(&buf);
+    assert_eq!(file_result, mem_result);
+    assert_eq!(file_result.len(), 8);
+}
+
+// ── Phase 6: aggregate HashFrame policy ─────────────────────────────────────
+
+fn encode_sample_hashed(create_header: bool, create_footer: bool) -> Vec<u8> {
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![3],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 12];
+    let opts = EncodeOptions {
+        create_header_hashes: create_header,
+        create_footer_hashes: create_footer,
+        ..EncodeOptions::default()
+    };
+    encode(&global, &[(&desc, &data)], &opts).unwrap()
+}
+
+/// Buffered encode with default options emits a `HeaderHash` frame
+/// (no `FooterHash`) and the CBOR schema uses the v3 `algorithm` key.
+#[test]
+fn buffered_encode_default_emits_header_hash_only() {
+    let msg = encode_sample_hashed(true, false);
+    let decoded = tensogram::framing::decode_message(&msg).unwrap();
+
+    // HeaderHash present, FooterHash absent via the aggregate field.
+    let hf = decoded
+        .hash_frame
+        .as_ref()
+        .expect("HeaderHash must be emitted by default");
+    assert_eq!(hf.algorithm, "xxh3");
+    assert_eq!(hf.hashes.len(), 1);
+
+    // Inline slot must match the aggregate value for object 0.
+    use tensogram::wire::FRAME_COMMON_FOOTER_SIZE;
+    let (_desc, _payload, _masks, frame_offset) = &decoded.objects[0];
+    let fh = tensogram::wire::FrameHeader::read_from(&msg[*frame_offset..]).unwrap();
+    let frame_end = *frame_offset + fh.total_length as usize;
+    let slot_start = frame_end - FRAME_COMMON_FOOTER_SIZE;
+    let inline = u64::from_be_bytes(msg[slot_start..slot_start + 8].try_into().unwrap());
+    assert_eq!(
+        format!("{inline:016x}"),
+        hf.hashes[0],
+        "aggregate hex must equal the inline slot"
+    );
+}
+
+/// `create_footer_hashes = true` places the aggregate in the
+/// footer region instead.
+#[test]
+fn buffered_encode_footer_hashes_goes_to_footer() {
+    let msg = encode_sample_hashed(false, true);
+    let preamble = tensogram::wire::Preamble::read_from(&msg).unwrap();
+    use tensogram::wire::MessageFlags;
+    assert!(
+        preamble.flags.has(MessageFlags::FOOTER_HASHES),
+        "FOOTER_HASHES flag must be set"
+    );
+    assert!(
+        !preamble.flags.has(MessageFlags::HEADER_HASHES),
+        "HEADER_HASHES flag must be clear"
+    );
+    // The decoder surfaces the same aggregate regardless of location.
+    let decoded = tensogram::framing::decode_message(&msg).unwrap();
+    assert!(decoded.hash_frame.is_some());
+}
+
+/// Both flags on produce both frames; readers see the same aggregate.
+#[test]
+fn buffered_encode_both_flags_emits_both_aggregates() {
+    let msg = encode_sample_hashed(true, true);
+    let preamble = tensogram::wire::Preamble::read_from(&msg).unwrap();
+    use tensogram::wire::MessageFlags;
+    assert!(preamble.flags.has(MessageFlags::HEADER_HASHES));
+    assert!(preamble.flags.has(MessageFlags::FOOTER_HASHES));
+}
+
+/// `hash_algorithm = None` clears HASHES_PRESENT and emits no
+/// aggregate regardless of the create_* flags.
+#[test]
+fn buffered_encode_without_hashing_clears_aggregate() {
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![1],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 4];
+    let opts = EncodeOptions {
+        hash_algorithm: None,
+        create_header_hashes: true,
+        create_footer_hashes: true,
+        ..EncodeOptions::default()
+    };
+    let msg = encode(&global, &[(&desc, &data)], &opts).unwrap();
+
+    let preamble = tensogram::wire::Preamble::read_from(&msg).unwrap();
+    use tensogram::wire::MessageFlags;
+    assert!(!preamble.flags.has(MessageFlags::HASHES_PRESENT));
+    assert!(!preamble.flags.has(MessageFlags::HEADER_HASHES));
+    assert!(!preamble.flags.has(MessageFlags::FOOTER_HASHES));
+}
+
+// ── Phase 7: rle / roaring compression codecs on bitmask dtype ──────────────
+
+fn bitmask_payload_128_bits() -> Vec<u8> {
+    // 128 bits = 16 bytes, alternating 0xAA pattern (10101010) — gives the
+    // RLE codec real runs to collapse and the roaring codec distinct
+    // container candidates to choose.
+    vec![0xAAu8; 16]
+}
+
+#[test]
+fn compression_rle_round_trips_bitmask() {
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![128],
+        strides: vec![1],
+        dtype: Dtype::Bitmask,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "rle".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = bitmask_payload_128_bits();
+    let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let (_meta, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects[0].1, data);
+    assert_eq!(objects[0].0.compression, "rle");
+}
+
+#[test]
+fn compression_roaring_round_trips_bitmask() {
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![128],
+        strides: vec![1],
+        dtype: Dtype::Bitmask,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "roaring".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = bitmask_payload_128_bits();
+    let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let (_meta, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects[0].1, data);
+    assert_eq!(objects[0].0.compression, "roaring");
+}
+
+#[test]
+fn compression_rle_rejects_non_bitmask_dtype() {
+    // Pin the dtype guard: rle on float32 is an encode-time error.
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "rle".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 16];
+    let err = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("\"rle\"") && msg.contains("dtype=bitmask"),
+        "expected rle-dtype error, got: {msg}"
+    );
+}
+
+#[test]
+fn compression_roaring_rejects_non_bitmask_dtype() {
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![2],
+        strides: vec![4],
+        dtype: Dtype::Uint32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "roaring".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 8];
+    let err = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("\"roaring\"") && msg.contains("dtype=bitmask"),
+        "expected roaring-dtype error, got: {msg}"
+    );
+}
+
+/// `ScanOptions.max_message_size` caps the apparent message length
+/// advertised by a postamble; values beyond the cap cause the
+/// backward walker to yield back to the forward walker rather
+/// than jumping to a bogus offset.
+#[test]
+fn scan_max_message_size_caps_backward_walker() {
+    // Build two small messages.  With the default cap (4 GiB) both
+    // are reachable via the backward walker.  With a cap of 1 byte
+    // the backward walker cannot trust any postamble's total_length
+    // and must fall back to forward-only scanning.
+    let mut buf = Vec::new();
+    for i in 0..3 {
+        buf.extend_from_slice(&encode_sample(i * 7));
+    }
+
+    let big_cap = ScanOptions {
+        bidirectional: true,
+        max_message_size: 4 * 1024 * 1024 * 1024,
+    };
+    let tiny_cap = ScanOptions {
+        bidirectional: true,
+        max_message_size: 1, // every message exceeds this → backward yields
+    };
+
+    let via_big = scan_with_options(&buf, &big_cap);
+    let via_tiny = scan_with_options(&buf, &tiny_cap);
+    let via_fwd = scan_with_options(
+        &buf,
+        &ScanOptions {
+            bidirectional: false,
+            ..ScanOptions::default()
+        },
+    );
+
+    // Both bidir modes and the pure forward scanner agree on the
+    // boundary list — regardless of `max_message_size`, no message
+    // goes missing.
+    assert_eq!(via_big.len(), 3);
+    assert_eq!(via_tiny, via_fwd);
+    assert_eq!(via_big, via_fwd);
+}
+
+/// Adversarial: a buffer whose last 8 bytes happen to match the
+/// postamble END_MAGIC but whose preceding 16 bytes don't point
+/// at a real message.  The backward walker must notice the
+/// preamble-check mismatch and yield to the forward walker —
+/// returning the same boundary list as pure forward scan.
+#[test]
+fn scan_bidirectional_shrugs_off_spurious_end_magic() {
+    // Start with three well-formed messages, then append a block
+    // of bytes whose tail is END_MAGIC preceded by a "postamble-
+    // shaped" payload that points at a random offset inside the
+    // legitimate region.
+    let mut buf = Vec::new();
+    for i in 0..3 {
+        buf.extend_from_slice(&encode_sample(i * 11));
+    }
+    let good_end = buf.len();
+
+    // Bogus trailing block: 8 B of random, then a u64 offset that
+    // points into the middle of the good region (not at TENSOGRM),
+    // then a u64 "total_length" that's nonsense, then END_MAGIC.
+    buf.extend_from_slice(&[0xAB; 8]);
+    buf.extend_from_slice(&(good_end as u64 / 3).to_be_bytes()); // bogus ffo
+    buf.extend_from_slice(&(good_end as u64).to_be_bytes()); // nonsense total_length
+    buf.extend_from_slice(b"39277777");
+
+    // Bidirectional scan must still return the original three
+    // messages — the backward walker detects the preamble-check
+    // mismatch and falls back to forward-only.
+    let bidir = scan(&buf);
+    let fwd = scan_with_options(
+        &buf,
+        &ScanOptions {
+            bidirectional: false,
+            ..ScanOptions::default()
+        },
+    );
+    assert_eq!(bidir, fwd, "bidirectional must match forward on bogus tail");
+    assert_eq!(bidir.len(), 3);
+}
+
+/// A buffer smaller than `PREAMBLE_SIZE + POSTAMBLE_SIZE` (48 B)
+/// cannot contain any valid message; both scan modes return empty.
+#[test]
+fn scan_tiny_buffer_returns_empty() {
+    let tiny = vec![0u8; 47];
+    assert!(scan(&tiny).is_empty());
+    assert!(
+        scan_with_options(
+            &tiny,
+            &ScanOptions {
+                bidirectional: false,
+                ..ScanOptions::default()
+            }
+        )
+        .is_empty()
+    );
+}
+
+/// Zero-length buffer is a trivial empty scan; must not panic on
+/// the backward walker's `buf.len() - 8` slice.
+#[test]
+fn scan_empty_buffer_returns_empty() {
+    let empty: Vec<u8> = Vec::new();
+    assert!(scan(&empty).is_empty());
+    assert!(
+        scan_with_options(
+            &empty,
+            &ScanOptions {
+                bidirectional: false,
+                ..ScanOptions::default()
+            }
+        )
+        .is_empty()
+    );
+}
+
+/// Off-by-one on `max_message_size`: a message exactly that size
+/// must be accepted; one byte over must trigger fallback.
+#[test]
+fn scan_max_message_size_off_by_one() {
+    let msg = encode_sample(1);
+    let exact_cap = ScanOptions {
+        bidirectional: true,
+        max_message_size: msg.len() as u64,
+    };
+    let one_short = ScanOptions {
+        bidirectional: true,
+        max_message_size: (msg.len() as u64) - 1,
+    };
+
+    let via_exact = scan_with_options(&msg, &exact_cap);
+    let via_short = scan_with_options(&msg, &one_short);
+
+    // Exact-cap: backward walker accepts and bidir returns 1 msg.
+    assert_eq!(via_exact.len(), 1);
+    // Short-by-one: backward walker rejects → forward-only fallback
+    // still finds the message.
+    assert_eq!(via_short.len(), 1);
+    assert_eq!(via_exact, via_short);
+}
+
+/// Tamper only the HashFrame aggregate (not the inline slot).
+/// Inline-slot verification still passes (the body is untouched),
+/// but the aggregate cross-check must surface a `HashMismatch`
+/// identifying the specific object whose aggregate entry lies.
+#[test]
+fn validate_detects_hash_frame_aggregate_tamper() {
+    use tensogram::framing::{decode_message, scan};
+    use tensogram::validate::{IssueCode, ValidateOptions, validate_message};
+    use tensogram::wire::{FRAME_COMMON_FOOTER_SIZE, FrameHeader};
+
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0x11u8; 16];
+    let mut msg = encode(
+        &global,
+        &[(&desc, data.as_slice())],
+        &EncodeOptions {
+            create_header_hashes: true,
+            ..EncodeOptions::default()
+        },
+    )
+    .unwrap();
+
+    // Find the data-object frame's inline slot hex; then find an
+    // occurrence of that exact 16-char ASCII sequence elsewhere in
+    // the buffer (the HashFrame CBOR body) and flip a single hex
+    // char there.  This tampers the aggregate without corrupting
+    // the CBOR structure around it.
+    let messages = scan(&msg);
+    let (msg_off, msg_len) = messages[0];
+    let msg_slice = &msg[msg_off..msg_off + msg_len];
+    let decoded = decode_message(msg_slice).unwrap();
+    let (_, _, _, frame_offset) = decoded.objects[0];
+    let fh = FrameHeader::read_from(&msg_slice[frame_offset..]).unwrap();
+    let total = fh.total_length as usize;
+    let slot_start = frame_offset + total - FRAME_COMMON_FOOTER_SIZE;
+    let inline = u64::from_be_bytes(msg_slice[slot_start..slot_start + 8].try_into().unwrap());
+    let inline_hex = format!("{inline:016x}");
+
+    // Locate the aggregate copy inside the HashFrame and flip
+    // one character deterministically.  The search finds *all*
+    // occurrences; we pick the first one that isn't the inline
+    // slot (which is bytes, not ASCII — so a hex-string match in
+    // the byte stream can only be the CBOR aggregate).
+    let aggregate_pos = msg
+        .windows(inline_hex.len())
+        .position(|w| w == inline_hex.as_bytes())
+        .expect("aggregate hex must appear in HashFrame CBOR");
+    // Flip the first char: '0'..'e' → next digit; 'f' → '0'.
+    let orig = msg[aggregate_pos];
+    msg[aggregate_pos] = if orig == b'f' { b'0' } else { orig + 1 };
+
+    // Message must still decode (inline slots untouched).
+    let (_meta, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 1);
+
+    // But the aggregate cross-check must fire.
+    let report = validate_message(&msg, &ValidateOptions::default());
+    let any_hash_mismatch = report
+        .issues
+        .iter()
+        .any(|i| i.code == IssueCode::HashMismatch);
+    assert!(
+        any_hash_mismatch,
+        "aggregate HashFrame tamper must trigger HashMismatch, got: {:?}",
+        report.issues
+    );
+}
+
+// ── Aggregate HashFrame cross-check coverage (Pass 5) ───────────────────────
+
+/// When both `HeaderHash` and `FooterHash` aggregate frames are
+/// present and carry identical hashes, validation is silent about
+/// the aggregates (no spurious `HashMismatch` from the two copies
+/// comparing to each other).
+#[test]
+fn validate_accepts_both_hash_aggregates_when_identical() {
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![2],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 8];
+    let opts = EncodeOptions {
+        create_header_hashes: true,
+        create_footer_hashes: true,
+        ..EncodeOptions::default()
+    };
+    let msg = encode(&global, &[(&desc, &data)], &opts).unwrap();
+
+    use tensogram::validate::{IssueCode, ValidateOptions, validate_message};
+    let report = validate_message(&msg, &ValidateOptions::default());
+    // No HashMismatch, no UnknownHashAlgorithm.
+    let bad = report.issues.iter().any(|i| {
+        matches!(
+            i.code,
+            IssueCode::HashMismatch | IssueCode::UnknownHashAlgorithm
+        )
+    });
+    assert!(
+        !bad,
+        "dual aggregate HashFrames with identical hashes must not flag anything, got: {:?}",
+        report.issues
+    );
+}
+
+/// Buffer `data_object_inline_hashes` returns one `Some` entry per
+/// data-object frame when hashing is enabled.
+#[test]
+fn data_object_inline_hashes_happy_path() {
+    use tensogram::framing::data_object_inline_hashes;
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![1],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![42u8; 4];
+    let msg = encode(
+        &global,
+        &[(&desc, data.as_slice()), (&desc, data.as_slice())],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
+
+    let hashes = data_object_inline_hashes(&msg).unwrap();
+    assert_eq!(hashes.len(), 2);
+    assert!(hashes.iter().all(|h| h.is_some()));
+    // Same input → same hash.  Two identical objects produce two
+    // identical inline slots.
+    assert_eq!(hashes[0], hashes[1]);
+}
+
+/// With `hash_algorithm = None` every entry is `None` — pinning
+/// the v3 contract that `HASHES_PRESENT = 0` zeros every slot.
+#[test]
+fn data_object_inline_hashes_none_when_hashing_disabled() {
+    use tensogram::framing::data_object_inline_hashes;
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![1],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 4];
+    let opts = EncodeOptions {
+        hash_algorithm: None,
+        ..Default::default()
+    };
+    let msg = encode(&global, &[(&desc, &data)], &opts).unwrap();
+
+    let hashes = data_object_inline_hashes(&msg).unwrap();
+    assert_eq!(hashes.len(), 1);
+    assert!(hashes[0].is_none());
+}
+
+/// `data_object_inline_hashes` errors on a buffer truncated
+/// *inside* a data-object frame.  Pins the "propagate structural
+/// problems" contract so callers distinguish "message with zero-
+/// hash slots" from "malformed input".
+#[test]
+fn data_object_inline_hashes_rejects_truncated_buffer() {
+    use tensogram::framing::data_object_inline_hashes;
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![100], // large payload so truncation hits the frame
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 400];
+    let mut msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    // Chop off half the message — truncates inside the data-object
+    // frame body, before the footer.  The walker sees a frame
+    // header whose declared `total_length` extends past the end.
+    msg.truncate(msg.len() / 2);
+    let result = data_object_inline_hashes(&msg);
+    assert!(
+        result.is_err(),
+        "mid-frame truncation must return Err, got: {:?}",
+        result
+    );
+}
+
+// ── Coverage: adversarial validate paths ─────────────────────────────────────
+
+/// A data-object frame with `cbor_offset` pointing outside the valid
+/// range surfaces `CborOffsetInvalid` at validate's Structure level.
+#[test]
+fn validate_cbor_offset_out_of_range_detected() {
+    use tensogram::validate::{IssueCode, ValidateOptions, validate_message};
+    use tensogram::wire::{
+        DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC,
+    };
+
+    let (global, desc) = make_float32_descriptor(vec![2]);
+    let data = vec![0u8; 8];
+    let mut msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    // Locate the NTensorFrame by its "FR" + type=9 marker and
+    // tamper the cbor_offset (lives at endf_offset - 16).
+    let marker: &[u8] = &[b'F', b'R', 0x00, 0x09];
+    let frame_start = msg.windows(4).position(|w| w == marker).unwrap();
+    // Read frame total_length (8 bytes at offset+8)
+    let total_length =
+        u64::from_be_bytes(msg[frame_start + 8..frame_start + 16].try_into().unwrap()) as usize;
+    let endf_offset = frame_start + total_length - FRAME_END.len();
+    let cbor_offset_pos = endf_offset - 16;
+    // Overwrite cbor_offset with a wildly out-of-range value.
+    msg[cbor_offset_pos..cbor_offset_pos + 8].copy_from_slice(&(u64::MAX / 2).to_be_bytes());
+
+    let report = validate_message(&msg, &ValidateOptions::default());
+    assert!(
+        report.issues.iter().any(|i| matches!(
+            i.code,
+            IssueCode::CborOffsetInvalid | IssueCode::DataObjectTooSmall
+        )),
+        "expected CborOffsetInvalid or DataObjectTooSmall, got: {:?}",
+        report.issues
+    );
+
+    // Suppress unused-import warning — the bytes written above
+    // match v3's 20-byte data-object footer layout
+    // [cbor_offset(8)][hash(8)][ENDF(4)] = DATA_OBJECT_FOOTER_SIZE.
+    let _ = (
+        DATA_OBJECT_FOOTER_SIZE,
+        DataObjectFlags::CBOR_AFTER_PAYLOAD,
+        FRAME_HEADER_SIZE,
+        FRAME_MAGIC,
+    );
+}
+
+/// Non-zero bytes in the alignment-padding region between frames
+/// trigger a `NonZeroPadding` warning at Structure level.
+#[test]
+fn validate_non_zero_alignment_padding_detected() {
+    use tensogram::validate::{IssueCode, ValidateOptions, validate_message};
+
+    // Use two objects so there's a padding region between frames.
+    let (global, desc) = make_float32_descriptor(vec![3]);
+    let data = vec![0u8; 12];
+    let mut msg = encode(
+        &global,
+        &[(&desc, &data), (&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
+
+    // Walk all "FR" markers to find an alignment-padding byte.
+    // After the first data-object frame's ENDF there are 0-7
+    // zero bytes before the next FR.  Find the first zero byte
+    // that sits between two FR markers and flip it.
+    let fr_positions: Vec<usize> = msg
+        .windows(2)
+        .enumerate()
+        .filter(|(_, w)| *w == b"FR")
+        .map(|(i, _)| i)
+        .collect();
+    // Pick the transition between the two data-object frames:
+    // scan for two consecutive "FR" + type=9 markers.
+    let marker: &[u8] = &[b'F', b'R', 0x00, 0x09];
+    let nth: Vec<usize> = msg
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w)| *w == marker)
+        .map(|(i, _)| i)
+        .collect();
+    assert!(nth.len() >= 2, "expected 2 NTensorFrames");
+    let first_end =
+        nth[0] + u64::from_be_bytes(msg[nth[0] + 8..nth[0] + 16].try_into().unwrap()) as usize;
+    let pad_start = first_end;
+    let pad_end = nth[1];
+    if pad_end > pad_start {
+        // Flip a padding byte to 0xFF
+        msg[pad_start] = 0xFF;
+    }
+
+    let report = validate_message(&msg, &ValidateOptions::default());
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::NonZeroPadding),
+        "expected NonZeroPadding warning, got: {:?}",
+        report.issues
+    );
+    let _ = fr_positions;
+}
+
+/// File-based scan handles streaming-mode messages (preamble
+/// `total_length = 0`) by scanning forward for END_MAGIC.  Covers
+/// the file-backed forward walker's streaming branch.
+#[test]
+fn scan_file_handles_streaming_message() {
+    use std::io::Write;
+    use tensogram::framing::scan_file;
+    use tensogram::streaming::StreamingEncoder;
+
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![2],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 8];
+
+    // Stream to a Vec<u8> (non-seekable).
+    let mut enc =
+        StreamingEncoder::new(Vec::<u8>::new(), &global, &EncodeOptions::default()).unwrap();
+    enc.write_object(&desc, &data).unwrap();
+    let streamed_bytes = enc.finish().unwrap();
+
+    // Write to a temp file.
+    let path = std::env::temp_dir().join("tensogram_coverage_streaming.tgm");
+    let _ = std::fs::remove_file(&path);
+    {
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(&streamed_bytes).unwrap();
+    }
+
+    // scan_file must find exactly one message.
+    let mut f = std::fs::File::open(&path).unwrap();
+    let results = scan_file(&mut f).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, 0);
+    assert_eq!(results[0].1, streamed_bytes.len());
+
+    let _ = std::fs::remove_file(&path);
 }

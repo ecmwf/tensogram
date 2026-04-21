@@ -211,17 +211,14 @@ impl PyDataObjectDescriptor {
         extra_to_py(py, &self.inner.params)
     }
 
+    /// **Deprecated in v3.**  The per-object hash moved from the
+    /// CBOR descriptor to the frame footer's inline slot (see
+    /// `plans/WIRE_FORMAT.md` §2.4).  This getter returns `None`
+    /// unconditionally; use `Message.object_inline_hashes()` or
+    /// `Message.object_hash(i)` to read the inline slot.
     #[getter]
     fn hash(&self, py: Python<'_>) -> PyResult<PyObject> {
-        match &self.inner.hash {
-            Some(h) => {
-                let d = PyDict::new(py);
-                d.set_item("type", &h.hash_type)?;
-                d.set_item("value", &h.value)?;
-                Ok(d.into_any().unbind())
-            }
-            None => Ok(py.None()),
-        }
+        Ok(py.None())
     }
 
     fn __repr__(&self) -> String {
@@ -429,6 +426,8 @@ impl PyTensogramFile {
             pos_inf_mask_method=None,
             neg_inf_mask_method=None,
             small_mask_threshold_bytes=None,
+            create_header_hashes=None,
+            create_footer_hashes=None,
         )
     )]
     #[allow(clippy::too_many_arguments)]
@@ -445,6 +444,8 @@ impl PyTensogramFile {
         pos_inf_mask_method: Option<&str>,
         neg_inf_mask_method: Option<&str>,
         small_mask_threshold_bytes: Option<usize>,
+        create_header_hashes: Option<bool>,
+        create_footer_hashes: Option<bool>,
     ) -> PyResult<()> {
         let global_meta = dict_to_global_metadata(global_meta_dict)?;
         let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
@@ -460,6 +461,8 @@ impl PyTensogramFile {
             pos_inf_mask_method,
             neg_inf_mask_method,
             small_mask_threshold_bytes,
+            create_header_hashes,
+            create_footer_hashes,
         )?;
         py.detach(|| self.file.append(&global_meta, &refs, &options))
             .map_err(to_py_err)
@@ -892,6 +895,8 @@ impl PyFileIter {
         pos_inf_mask_method=None,
         neg_inf_mask_method=None,
         small_mask_threshold_bytes=None,
+        create_header_hashes=None,
+        create_footer_hashes=None,
     )
 )]
 #[allow(clippy::too_many_arguments)]
@@ -907,6 +912,8 @@ fn py_encode<'py>(
     pos_inf_mask_method: Option<&str>,
     neg_inf_mask_method: Option<&str>,
     small_mask_threshold_bytes: Option<usize>,
+    create_header_hashes: Option<bool>,
+    create_footer_hashes: Option<bool>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let global_meta = dict_to_global_metadata(global_meta_dict)?;
     let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
@@ -922,6 +929,8 @@ fn py_encode<'py>(
         pos_inf_mask_method,
         neg_inf_mask_method,
         small_mask_threshold_bytes,
+        create_header_hashes,
+        create_footer_hashes,
     )?;
     let msg = py.detach(|| encode(&global_meta, &refs, &options).map_err(to_py_err))?;
     Ok(PyBytes::new(py, &msg))
@@ -1390,6 +1399,8 @@ impl PyStreamingEncoder {
             pos_inf_mask_method=None,
             neg_inf_mask_method=None,
             small_mask_threshold_bytes=None,
+            create_header_hashes=None,
+            create_footer_hashes=None,
         )
     )]
     #[allow(clippy::too_many_arguments)]
@@ -1403,6 +1414,8 @@ impl PyStreamingEncoder {
         pos_inf_mask_method: Option<&str>,
         neg_inf_mask_method: Option<&str>,
         small_mask_threshold_bytes: Option<usize>,
+        create_header_hashes: Option<bool>,
+        create_footer_hashes: Option<bool>,
     ) -> PyResult<Self> {
         let global_meta = dict_to_global_metadata(global_meta_dict)?;
         let options = make_encode_options_full(
@@ -1414,6 +1427,8 @@ impl PyStreamingEncoder {
             pos_inf_mask_method,
             neg_inf_mask_method,
             small_mask_threshold_bytes,
+            create_header_hashes,
+            create_footer_hashes,
         )?;
         let inner = StreamingEncoder::new(Vec::new(), &global_meta, &options).map_err(to_py_err)?;
         Ok(Self { inner: Some(inner) })
@@ -2727,16 +2742,28 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
 // ---------------------------------------------------------------------------
 
 fn make_encode_options(hash: Option<&str>, threads: u32) -> PyResult<EncodeOptions> {
-    make_encode_options_full(hash, threads, false, false, None, None, None, None)
+    make_encode_options_full(
+        hash, threads, false, false, None, None, None, None, None, None,
+    )
 }
 
 /// Build an [`EncodeOptions`] from the full kwargs set exposed by the
 /// Python-facing `encode` / `append` / `StreamingEncoder.create`
-/// entry points.  Mask method names follow
-/// [`plans/BITMASK_FRAME.md` §3.3]:
-/// `"none"` | `"rle"` | `"roaring"` | `"lz4"` | `"zstd"` | `"blosc2"`.
-/// Missing sentinels use the library defaults (`Roaring` for methods,
-/// `128` for the small-mask fallback threshold).
+/// entry points.
+///
+/// Mask method names follow [`plans/BITMASK_FRAME.md` §3.3]:
+/// `"none"` | `"rle"` | `"roaring"` | `"lz4"` | `"zstd"` |
+/// `"blosc2"`.  Missing sentinels use the library defaults
+/// (`Roaring` for methods, `128` for the small-mask fallback
+/// threshold).
+///
+/// `create_header_hashes` / `create_footer_hashes` are v3 opt-in
+/// flags controlling the aggregate HashFrame emission.  When
+/// `None`, the library default applies (buffered mode: header-
+/// only; streaming mode: footer-only).  Either or both may be
+/// set explicitly — streaming mode silently folds
+/// `create_header_hashes = true` into `create_footer_hashes`
+/// because a streaming header is emitted before any data object.
 #[allow(clippy::too_many_arguments)]
 fn make_encode_options_full(
     hash: Option<&str>,
@@ -2747,6 +2774,8 @@ fn make_encode_options_full(
     pos_inf_mask_method: Option<&str>,
     neg_inf_mask_method: Option<&str>,
     small_mask_threshold_bytes: Option<usize>,
+    create_header_hashes: Option<bool>,
+    create_footer_hashes: Option<bool>,
 ) -> PyResult<EncodeOptions> {
     use tensogram_lib::encode::MaskMethod;
 
@@ -2776,6 +2805,8 @@ fn make_encode_options_full(
         neg_inf_mask_method: parse_method(neg_inf_mask_method, defaults.neg_inf_mask_method)?,
         small_mask_threshold_bytes: small_mask_threshold_bytes
             .unwrap_or(defaults.small_mask_threshold_bytes),
+        create_header_hashes: create_header_hashes.unwrap_or(defaults.create_header_hashes),
+        create_footer_hashes: create_footer_hashes.unwrap_or(defaults.create_footer_hashes),
         ..defaults
     })
 }
@@ -3130,7 +3161,6 @@ fn dict_to_data_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<DataObje
         compression,
         params,
         masks: None,
-        hash: None,
     })
 }
 

@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 use tensogram::framing;
 use tensogram::{
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
-    HashDescriptor, StreamingEncoder, decode, decode_range, encode, encode_pre_encoded,
+    StreamingEncoder, decode, decode_range, encode, encode_pre_encoded,
 };
 use tensogram_encodings::simple_packing;
 
@@ -101,7 +101,6 @@ fn make_simple_packing_desc(
         compression: "none".to_string(),
         params,
         masks: None,
-        hash: None,
     }
 }
 
@@ -148,7 +147,6 @@ fn make_szip_simple_packing_desc(
         compression: "szip".to_string(),
         params,
         masks: None,
-        hash: None,
     }
 }
 
@@ -171,7 +169,6 @@ fn make_raw_desc(
         compression: compression.to_string(),
         params,
         masks: None,
-        hash: None,
     }
 }
 
@@ -512,39 +509,15 @@ fn test_encode_pre_encoded_decode_range_fails_without_offsets() {
     );
 }
 
-// ── Hash overwrite ───────────────────────────────────────────────────────────
-
-#[test]
-fn test_encode_pre_encoded_overwrites_caller_hash() {
-    let values: Vec<f32> = (0..256).map(|i| i as f32).collect();
-    let raw = f32_to_be_bytes(&values);
-    let garbage_hash = HashDescriptor {
-        hash_type: "xxh3".to_string(),
-        value: "deadbeefcafebabe".to_string(),
-    };
-    let mut desc = make_raw_desc(256, Dtype::Float32, "none", BTreeMap::new());
-    desc.hash = Some(garbage_hash);
-
-    let meta = GlobalMetadata::default();
-    let opts = EncodeOptions::default();
-    let msg = encode_pre_encoded(&meta, &[(&desc, &raw)], &opts).expect("encode_pre_encoded");
-
-    let (_, objects) = decode(&msg, &DecodeOptions::default()).expect("decode");
-    let embedded = objects[0].0.hash.as_ref().expect("hash present");
-    assert_eq!(embedded.hash_type, "xxh3", "hash type should be xxh3");
-    assert_ne!(
-        embedded.value, "deadbeefcafebabe",
-        "garbage hash must be overwritten by library"
-    );
-
-    // The library hashes the encoded payload bytes, which for encoding=none
-    // are exactly the bytes the caller passed in.
-    let expected = tensogram::compute_hash(&raw, tensogram::HashAlgorithm::Xxh3);
-    assert_eq!(
-        embedded.value, expected,
-        "embedded hash must equal xxh3 of payload bytes"
-    );
-}
+// ── Hash inline-slot population via encode_pre_encoded ──────────────────────
+//
+// The pre-v3 "caller-supplies-garbage-hash-on-descriptor,
+// library-overwrites" scenario is structurally impossible in v3
+// (DataObjectDescriptor.hash is gone).  The v3 equivalent of that
+// test is covered in unit tests in rust/tensogram/src/encode.rs
+// (`test_encode_pre_encoded_populates_inline_hash_slot`) where we
+// confirm the inline slot is populated via
+// `crate::hash::verify_frame_hash` over the frame body.
 
 // ── Rejection branches ───────────────────────────────────────────────────────
 
@@ -577,7 +550,7 @@ fn test_encode_pre_encoded_rejects_caller_reserved() {
         ciborium::Value::Text("client-set".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         reserved,
         ..Default::default()
     };
@@ -690,7 +663,7 @@ fn test_encode_pre_encoded_zero_objects() {
     let (decoded_meta, objects) =
         decode(&msg, &DecodeOptions::default()).expect("decode empty message");
     assert_eq!(objects.len(), 0, "should decode to zero objects");
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
 }
 
 #[test]
@@ -708,7 +681,6 @@ fn test_encode_pre_encoded_zero_element_shape() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let meta = GlobalMetadata::default();
     let msg = encode_pre_encoded(&meta, &[(&desc, &[])], &EncodeOptions::default())
@@ -777,7 +749,6 @@ fn test_encode_pre_encoded_tensor_metadata_populated() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let meta = GlobalMetadata::default();
     let msg = encode_pre_encoded(&meta, &[(&desc, &raw)], &EncodeOptions::default())
@@ -880,7 +851,6 @@ fn test_encode_pre_encoded_single_element() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let raw = 42.0f32.to_be_bytes().to_vec();
     let meta = GlobalMetadata::default();
@@ -908,7 +878,6 @@ fn test_encode_pre_encoded_2d_array() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let values: Vec<f32> = (0..12).map(|i| i as f32 * 1.5).collect();
     let raw = f32_to_be_bytes(&values);
@@ -943,7 +912,6 @@ fn test_encode_pre_encoded_ndim0_scalar() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     // A scalar has shape product = 1 (empty product), so expected bytes = 1 * 8 = 8.
     let raw = std::f64::consts::PI.to_be_bytes().to_vec();
@@ -971,7 +939,6 @@ fn test_encode_pre_encoded_rejects_empty_obj_type() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let raw = vec![0u8; 16];
     let meta = GlobalMetadata::default();
@@ -1095,7 +1062,10 @@ fn test_encode_pre_encoded_extra_params_survive() {
 
 #[test]
 fn test_encode_pre_encoded_no_hash() {
-    // hash_algorithm=None: no hash in output.
+    // hash_algorithm = None: HASHES_PRESENT clear, every frame
+    // inline slot at zero.
+    use tensogram::wire::{MessageFlags, Preamble};
+
     let raw = vec![0u8; 16];
     let desc = make_raw_desc(4, Dtype::Float32, "none", BTreeMap::new());
     let meta = GlobalMetadata::default();
@@ -1106,8 +1076,10 @@ fn test_encode_pre_encoded_no_hash() {
     };
     let msg = encode_pre_encoded(&meta, &[(&desc, &raw)], &opts)
         .expect("encode_pre_encoded with no hash");
+    let preamble = Preamble::read_from(&msg).unwrap();
+    assert!(!preamble.flags.has(MessageFlags::HASHES_PRESENT));
     let (_, objects) = decode(&msg, &DecodeOptions::default()).expect("decode");
-    assert!(objects[0].0.hash.is_none(), "hash must be None");
+    assert_eq!(objects.len(), 1);
 }
 
 #[test]
@@ -1126,7 +1098,6 @@ fn test_encode_pre_encoded_multiple_objects_different_dtypes() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let raw_f32 = vec![1u8; 16]; // 4 × float32
     let raw_f64 = vec![2u8; 24]; // 3 × float64
@@ -1160,7 +1131,6 @@ fn test_encode_pre_encoded_ndim_shape_mismatch_rejected() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let raw = vec![0u8; 16];
     let meta = GlobalMetadata::default();
@@ -1188,7 +1158,6 @@ fn test_encode_pre_encoded_strides_shape_mismatch_rejected() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let raw = vec![0u8; 16];
     let meta = GlobalMetadata::default();

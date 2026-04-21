@@ -45,7 +45,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         compression: "none".to_string(), // no compression
         params: BTreeMap::new(),
         masks: None,
-        hash: None, // hash is filled in by encode() when EncodeOptions::default()
     };
 
     let global_meta = GlobalMetadata {

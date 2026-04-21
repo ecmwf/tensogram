@@ -26,7 +26,7 @@
 //! ## JSON schema for `tgm_encode`
 //!
 //! The `metadata_json` argument to `tgm_encode` must be a JSON object with:
-//! - `"version"` (integer, required): wire format version (2).
+//! - `"version"` (integer, required): wire format version (3).
 //! - `"descriptors"` (array, required): one entry per data object. Each entry
 //!   merges tensor info and encoding pipeline info into a single object:
 //!   `type`, `ndim`, `shape`, `strides`, `dtype`, `byte_order`, `encoding`,
@@ -398,8 +398,44 @@ struct MessageCaches {
     hash_value_strings: Vec<Option<CString>>,
 }
 
-/// Build all CString caches from the object descriptors.
-fn build_message_caches(objects: &[(DataObjectDescriptor, Vec<u8>)]) -> MessageCaches {
+/// Extract each data-object frame's inline hash slot from a
+/// single-message wire buffer, via the cheap
+/// [`tensogram::framing::data_object_inline_hashes`] walker.
+///
+/// Returns one entry per `NTensorFrame` in emission order:
+/// `Some(digest)` when the slot is populated, `None` when it
+/// is zero (message-level `HASHES_PRESENT = 0`, or the frame
+/// wasn't hashed).  Returns an empty `Vec` if the buffer
+/// doesn't contain a parseable message — the preceding
+/// `decode()` in every FFI caller will already have surfaced
+/// any structural error.
+///
+/// Cheaper than going through `decode_message` because it
+/// parses only frame headers, not CBOR descriptors.  Matters
+/// for messages with thousands of objects where we'd otherwise
+/// pay a CBOR-parse hit just to locate each inline slot.
+fn extract_inline_hashes(buf: &[u8]) -> Vec<Option<u64>> {
+    use tensogram::framing::{data_object_inline_hashes, scan};
+
+    let messages = scan(buf);
+    let Some(&(msg_off, msg_len)) = messages.first() else {
+        return Vec::new();
+    };
+    let msg = &buf[msg_off..msg_off + msg_len];
+    data_object_inline_hashes(msg).unwrap_or_default()
+}
+
+/// Build all CString caches from the object descriptors and
+/// inline hash slots.
+///
+/// `inline_hashes` is expected to be either empty (no hash data
+/// available — every per-object entry becomes `None`) or the
+/// same length as `objects`.  A longer or shorter slice is
+/// silently truncated / padded with `None` to match `objects`.
+fn build_message_caches(
+    objects: &[(DataObjectDescriptor, Vec<u8>)],
+    inline_hashes: &[Option<u64>],
+) -> MessageCaches {
     let dtype_strings = objects
         .iter()
         .map(|(desc, _)| CString::new(desc.dtype.to_string()).unwrap_or_default())
@@ -430,20 +466,25 @@ fn build_message_caches(objects: &[(DataObjectDescriptor, Vec<u8>)]) -> MessageC
         .iter()
         .map(|(desc, _)| CString::new(desc.encoding.as_str()).unwrap_or_default())
         .collect();
-    let hash_type_strings = objects
-        .iter()
-        .map(|(desc, _)| {
-            desc.hash
-                .as_ref()
-                .map(|h| CString::new(h.hash_type.as_str()).unwrap_or_default())
+
+    // v3: per-object hash lives in the frame footer's inline slot
+    // (see `plans/WIRE_FORMAT.md` §2.4).  When the caller has
+    // computed the inline slots, surface them through the two
+    // existing accessors; otherwise keep the entries `None`.
+    let hash_type_strings: Vec<Option<CString>> = (0..objects.len())
+        .map(|i| {
+            inline_hashes
+                .get(i)
+                .and_then(|h| h.as_ref())
+                .map(|_| CString::new("xxh3").unwrap_or_default())
         })
         .collect();
-    let hash_value_strings = objects
-        .iter()
-        .map(|(desc, _)| {
-            desc.hash
-                .as_ref()
-                .map(|h| CString::new(h.value.as_str()).unwrap_or_default())
+    let hash_value_strings: Vec<Option<CString>> = (0..objects.len())
+        .map(|i| {
+            inline_hashes
+                .get(i)
+                .and_then(|h| h.as_ref())
+                .map(|digest| CString::new(format!("{digest:016x}")).unwrap_or_default())
         })
         .collect();
 
@@ -783,7 +824,8 @@ pub extern "C" fn tgm_decode_with_options(
 
     match decode(data, &options) {
         Ok((global_metadata, objects)) => {
-            let caches = build_message_caches(&objects);
+            let inline_hashes = extract_inline_hashes(data);
+            let caches = build_message_caches(&objects, &inline_hashes);
             let msg = Box::new(TgmMessage {
                 global_metadata,
                 objects,
@@ -1106,7 +1148,8 @@ pub extern "C" fn tgm_decode(
 
     match decode(data, &options) {
         Ok((global_metadata, objects)) => {
-            let caches = build_message_caches(&objects);
+            let inline_hashes = extract_inline_hashes(data);
+            let caches = build_message_caches(&objects, &inline_hashes);
             let msg = Box::new(TgmMessage {
                 global_metadata,
                 objects,
@@ -1193,7 +1236,8 @@ pub extern "C" fn tgm_decode_object(
     match decode_object(data, index, &options) {
         Ok((global_metadata, descriptor, obj_bytes)) => {
             let objects = vec![(descriptor, obj_bytes)];
-            let caches = build_message_caches(&objects);
+            let inline_hashes = extract_inline_hashes(data);
+            let caches = build_message_caches(&objects, &inline_hashes);
             let msg = Box::new(TgmMessage {
                 global_metadata,
                 objects,
@@ -1525,14 +1569,33 @@ pub extern "C" fn tgm_payload_encoding(msg: *const TgmMessage, index: usize) -> 
     }
 }
 
-/// Returns 1 if the object descriptor has a hash, 0 otherwise.
+/// Returns 1 if the i-th data object has a populated inline hash
+/// slot, 0 otherwise.
+///
+/// In v3 the per-object hash lives in the frame footer's inline
+/// slot (see `plans/WIRE_FORMAT.md` §2.4) rather than the CBOR
+/// descriptor.  v3 hashing is a message-wide toggle: either every
+/// frame's slot is populated (preamble flag `HASHES_PRESENT = 1`)
+/// or every slot is zero (`HASHES_PRESENT = 0`).  This accessor
+/// returns 1 when the i-th slot holds a non-zero xxh3-64 digest,
+/// and 0 when the slot is zero (most commonly the whole-message
+/// `HASHES_PRESENT = 0` case) or when the index is out of range.
+///
+/// A zero slot on a message that advertises `HASHES_PRESENT = 1`
+/// is a structural anomaly (tamper or writer bug) — surface via
+/// `tgm_validate` at the `checksum` / `integrity` level, which
+/// will report a HashMismatch against the body's recomputed digest.
+///
+/// The matching hex digest is available via
+/// [`tgm_object_hash_value`]; the algorithm tag (always
+/// `"xxh3"` in v3) via [`tgm_object_hash_type`].
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_payload_has_hash(msg: *const TgmMessage, index: usize) -> i32 {
     unsafe {
         as_msg(msg)
-            .and_then(|m| m.objects.get(index))
-            .and_then(|(desc, _)| desc.hash.as_ref())
-            .is_some() as i32
+            .and_then(|m| m.hash_value_strings.get(index))
+            .map(|opt| opt.is_some() as i32)
+            .unwrap_or(0)
     }
 }
 
@@ -1860,7 +1923,19 @@ pub extern "C" fn tgm_file_decode_message(
 
     match f.decode_message(index, &options) {
         Ok((global_metadata, objects)) => {
-            let caches = build_message_caches(&objects);
+            // Inline hashes: re-read the raw message bytes and run
+            // them through the cheap frame-header walker.  This
+            // costs one extra message read (typically memory-
+            // mapped) but gives FFI file-path callers parity with
+            // the buffer path's hash accessors.  Silent fallback
+            // to empty on read error — `decode_message` above
+            // already succeeded so this branch is defensive.
+            let inline_hashes = f
+                .read_message(index)
+                .ok()
+                .and_then(|bytes| tensogram::framing::data_object_inline_hashes(&bytes).ok())
+                .unwrap_or_default();
+            let caches = build_message_caches(&objects, &inline_hashes);
             let msg = Box::new(TgmMessage {
                 global_metadata,
                 objects,
@@ -2462,7 +2537,15 @@ pub extern "C" fn tgm_object_iter_next(
         Some(Ok((descriptor, data))) => {
             let global_metadata = it.global_metadata.clone();
             let objects = vec![(descriptor, data)];
-            let caches = build_message_caches(&objects);
+            // Iterator path: the object iterator's `data` is the
+            // already-decoded payload; the original frame's inline
+            // hash slot isn't accessible from this layer without
+            // re-reading from the source and re-scanning.  Callers
+            // that need per-object hashes should either use
+            // `tgm_file_decode_message` (which surfaces the hash
+            // via the file-re-read path), or the buffer-based
+            // `tgm_decode` if the raw bytes are already in memory.
+            let caches = build_message_caches(&objects, &[]);
             let msg = Box::new(TgmMessage {
                 global_metadata,
                 objects,
@@ -2541,7 +2624,7 @@ mod tests {
         extra: BTreeMap<String, ciborium::Value>,
     ) -> GlobalMetadata {
         GlobalMetadata {
-            version: 2,
+            version: 3,
             base,
             extra,
             ..Default::default()
@@ -2706,7 +2789,7 @@ mod tests {
     #[test]
     fn lookup_string_key_version() {
         let meta = make_meta(vec![], BTreeMap::new());
-        assert_eq!(lookup_string_key(&meta, "version"), Some("2".into()));
+        assert_eq!(lookup_string_key(&meta, "version"), Some("3".into()));
     }
 
     #[test]
@@ -2753,7 +2836,7 @@ mod tests {
     #[test]
     fn lookup_int_key_version() {
         let meta = make_meta(vec![], BTreeMap::new());
-        assert_eq!(lookup_int_key(&meta, "version"), Some(2));
+        assert_eq!(lookup_int_key(&meta, "version"), Some(3));
     }
 
     #[test]
@@ -2794,9 +2877,9 @@ mod tests {
 
     #[test]
     fn parse_encode_json_with_base() {
-        let json = r#"{"version":2,"base":[{"mars":{"param":"2t"}}],"descriptors":[]}"#;
+        let json = r#"{"version":3,"base":[{"mars":{"param":"2t"}}],"descriptors":[]}"#;
         let (gm, descs) = parse_encode_json(json).unwrap();
-        assert_eq!(gm.version, 2);
+        assert_eq!(gm.version, 3);
         assert_eq!(gm.base.len(), 1);
         assert!(gm.base[0].contains_key("mars"));
         assert!(descs.is_empty());
@@ -2804,14 +2887,14 @@ mod tests {
 
     #[test]
     fn parse_encode_json_without_base() {
-        let json = r#"{"version":2,"descriptors":[]}"#;
+        let json = r#"{"version":3,"descriptors":[]}"#;
         let (gm, _) = parse_encode_json(json).unwrap();
         assert!(gm.base.is_empty());
     }
 
     #[test]
     fn parse_encode_json_reserved_in_base_rejected() {
-        let json = r#"{"version":2,"base":[{"_reserved_":{"tensor":{}}}],"descriptors":[]}"#;
+        let json = r#"{"version":3,"base":[{"_reserved_":{"tensor":{}}}],"descriptors":[]}"#;
         let result = parse_encode_json(json);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("_reserved_"));
@@ -2819,7 +2902,7 @@ mod tests {
 
     #[test]
     fn parse_encode_json_extra_keys() {
-        let json = r#"{"version":2,"descriptors":[],"source":"test","count":42}"#;
+        let json = r#"{"version":3,"descriptors":[],"source":"test","count":42}"#;
         let (gm, _) = parse_encode_json(json).unwrap();
         assert!(gm.extra.contains_key("source"));
         assert!(gm.extra.contains_key("count"));
@@ -2829,15 +2912,15 @@ mod tests {
 
     #[test]
     fn parse_streaming_json_with_base() {
-        let json = r#"{"version":2,"base":[{"mars":{"param":"2t"}}]}"#;
+        let json = r#"{"version":3,"base":[{"mars":{"param":"2t"}}]}"#;
         let gm = parse_streaming_metadata_json(json).unwrap();
-        assert_eq!(gm.version, 2);
+        assert_eq!(gm.version, 3);
         assert_eq!(gm.base.len(), 1);
     }
 
     #[test]
     fn parse_streaming_json_reserved_rejected() {
-        let json = r#"{"version":2,"base":[{"_reserved_":{"tensor":{}}}]}"#;
+        let json = r#"{"version":3,"base":[{"_reserved_":{"tensor":{}}}]}"#;
         let result = parse_streaming_metadata_json(json);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("_reserved_"));
@@ -2845,7 +2928,7 @@ mod tests {
 
     #[test]
     fn parse_streaming_json_no_base() {
-        let json = r#"{"version":2,"source":"stream"}"#;
+        let json = r#"{"version":3,"source":"stream"}"#;
         let gm = parse_streaming_metadata_json(json).unwrap();
         assert!(gm.base.is_empty());
         assert!(gm.extra.contains_key("source"));
@@ -3010,7 +3093,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
             .iter()
@@ -3109,7 +3191,7 @@ mod tests {
     fn ffi_encode_single_f32_tensor(values: &[f32], extra_json: &str) -> Vec<u8> {
         let shape_str = format!("[{}]", values.len());
         let json = format!(
-            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]{extra}}}"#,
+            r#"{{"version":3,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]{extra}}}"#,
             shape = shape_str,
             bo = if cfg!(target_endian = "little") {
                 "little"
@@ -3155,7 +3237,7 @@ mod tests {
     fn ffi_encode_with_hash(values: &[f32]) -> Vec<u8> {
         let shape_str = format!("[{}]", values.len());
         let json = format!(
-            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            r#"{{"version":3,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
             shape = shape_str,
             bo = if cfg!(target_endian = "little") {
                 "little"
@@ -3215,7 +3297,7 @@ mod tests {
         assert!(!msg.is_null());
 
         // Message-level accessors
-        assert_eq!(super::tgm_message_version(msg), 2);
+        assert_eq!(super::tgm_message_version(msg), 3);
         assert_eq!(super::tgm_message_num_objects(msg), 1);
         assert_eq!(super::tgm_message_num_decoded(msg), 1);
 
@@ -3380,7 +3462,7 @@ mod tests {
 
     #[test]
     fn ffi_encode_null_out() {
-        let json = CString::new(r#"{"version":2,"descriptors":[]}"#).unwrap();
+        let json = CString::new(r#"{"version":3,"descriptors":[]}"#).unwrap();
         let err = super::tgm_encode(
             json.as_ptr(),
             ptr::null(),
@@ -3396,7 +3478,7 @@ mod tests {
     #[test]
     fn ffi_encode_descriptor_count_mismatch() {
         // JSON says 0 descriptors, but num_objects = 1
-        let json = CString::new(r#"{"version":2,"descriptors":[]}"#).unwrap();
+        let json = CString::new(r#"{"version":3,"descriptors":[]}"#).unwrap();
         let data: [u8; 4] = [0; 4];
         let data_ptr: *const u8 = data.as_ptr();
         let data_len: usize = 4;
@@ -3473,7 +3555,7 @@ mod tests {
         assert!(!meta.is_null());
 
         // Version
-        assert_eq!(super::tgm_metadata_version(meta), 2);
+        assert_eq!(super::tgm_metadata_version(meta), 3);
 
         // num_objects
         assert_eq!(super::tgm_metadata_num_objects(meta), 1);
@@ -3557,10 +3639,10 @@ mod tests {
         let val_ptr = super::tgm_metadata_get_string(meta, key.as_ptr());
         assert!(!val_ptr.is_null());
         let val_str = unsafe { CStr::from_ptr(val_ptr) }.to_str().unwrap();
-        assert_eq!(val_str, "2");
+        assert_eq!(val_str, "3");
 
         let ival = super::tgm_metadata_get_int(meta, key.as_ptr(), -1);
-        assert_eq!(ival, 2);
+        assert_eq!(ival, 3);
 
         super::tgm_metadata_free(meta);
     }
@@ -4027,7 +4109,7 @@ mod tests {
         let values = [10.0f32, 20.0, 30.0];
         let shape_str = format!("[{}]", values.len());
         let json = format!(
-            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            r#"{{"version":3,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
             shape = shape_str,
             bo = if cfg!(target_endian = "little") {
                 "little"
@@ -4201,7 +4283,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let c_path = CString::new(path.to_str().unwrap()).unwrap();
-        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+        let meta_json = CString::new(r#"{"version":3}"#).unwrap();
 
         // Create
         let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
@@ -4278,7 +4360,7 @@ mod tests {
         let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
 
         // create with null path
-        let meta = CString::new(r#"{"version":2}"#).unwrap();
+        let meta = CString::new(r#"{"version":3}"#).unwrap();
         let err = super::tgm_streaming_encoder_create(
             ptr::null(),
             meta.as_ptr(),
@@ -4336,7 +4418,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let c_path = CString::new(path.to_str().unwrap()).unwrap();
-        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+        let meta_json = CString::new(r#"{"version":3}"#).unwrap();
 
         let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
         let err = super::tgm_streaming_encoder_create(
@@ -4368,7 +4450,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let c_path = CString::new(path.to_str().unwrap()).unwrap();
-        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+        let meta_json = CString::new(r#"{"version":3}"#).unwrap();
 
         let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
         let err = super::tgm_streaming_encoder_create(
@@ -4673,7 +4755,7 @@ mod tests {
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
 
-        let json = CString::new(r#"{"version":2,"descriptors":[]}"#).unwrap();
+        let json = CString::new(r#"{"version":3,"descriptors":[]}"#).unwrap();
         let err = super::tgm_encode_pre_encoded(
             json.as_ptr(),
             ptr::null(),
@@ -4693,7 +4775,7 @@ mod tests {
         let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
         let json = format!(
-            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":[{len}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            r#"{{"version":3,"descriptors":[{{"type":"ntensor","ndim":1,"shape":[{len}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
             len = values.len(),
             bo = if cfg!(target_endian = "little") {
                 "little"
@@ -4828,7 +4910,7 @@ mod tests {
         assert!(!msg.is_null());
 
         assert_eq!(super::tgm_message_num_objects(msg), 1);
-        assert_eq!(super::tgm_message_version(msg), 2);
+        assert_eq!(super::tgm_message_version(msg), 3);
 
         let mut data_len: usize = 0;
         let dp = super::tgm_object_data(msg, 0, &mut data_len);
@@ -4957,7 +5039,7 @@ mod tests {
 
     #[test]
     fn ffi_encode_decode_zero_objects() {
-        let json = CString::new(r#"{"version":2,"descriptors":[],"source":"empty"}"#).unwrap();
+        let json = CString::new(r#"{"version":3,"descriptors":[],"source":"empty"}"#).unwrap();
         let mut out = super::TgmBytes {
             data: ptr::null_mut(),
             len: 0,
@@ -4980,7 +5062,7 @@ mod tests {
         let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
-        assert_eq!(super::tgm_message_version(msg), 2);
+        assert_eq!(super::tgm_message_version(msg), 3);
         assert_eq!(super::tgm_message_num_objects(msg), 0);
 
         super::tgm_message_free(msg);
@@ -4988,6 +5070,15 @@ mod tests {
 
     // ── tgm_streaming_encoder with hash ──
 
+    /// End-to-end: streaming-encode a hashed message, read the file
+    /// back as bytes, decode via the buffer-based `tgm_decode`, and
+    /// confirm the inline-hash slot is surfaced through the
+    /// `tgm_payload_has_hash` / `tgm_object_hash_*` accessors.
+    ///
+    /// As of pass 5 the file-based decode path
+    /// (`tgm_file_decode_message`) also surfaces inline hashes
+    /// via a re-read of the raw message bytes — see
+    /// `ffi_file_decode_surfaces_inline_hash`.
     #[test]
     fn ffi_streaming_encoder_with_hash() {
         let dir = std::env::temp_dir();
@@ -4995,7 +5086,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let c_path = CString::new(path.to_str().unwrap()).unwrap();
-        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+        let meta_json = CString::new(r#"{"version":3}"#).unwrap();
         let hash_algo = CString::new("xxh3").unwrap();
 
         let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
@@ -5024,18 +5115,115 @@ mod tests {
         assert!(matches!(err, super::TgmError::Ok));
         super::tgm_streaming_encoder_free(enc);
 
-        // Read back and verify hash
-        let mut file: *mut super::TgmFile = ptr::null_mut();
-        let err = super::tgm_file_open(c_path.as_ptr(), &mut file);
-        assert!(matches!(err, super::TgmError::Ok));
-
+        // Read back via the buffer-based decode path so inline
+        // hashes are extracted.
+        let bytes = std::fs::read(&path).expect("read file");
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_file_decode_message(file, 0, 1, 0, 0, &mut msg);
+        let err = super::tgm_decode(bytes.as_ptr(), bytes.len(), 1, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         assert_eq!(super::tgm_payload_has_hash(msg, 0), 1);
+        let ht = unsafe { CStr::from_ptr(super::tgm_object_hash_type(msg, 0)) }
+            .to_str()
+            .unwrap();
+        assert_eq!(ht, "xxh3");
+        let hv = unsafe { CStr::from_ptr(super::tgm_object_hash_value(msg, 0)) }
+            .to_str()
+            .unwrap();
+        assert_eq!(hv.len(), 16, "xxh3 digest is 16 hex chars");
 
         super::tgm_message_free(msg);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Pass-5 cross-language parity: the file-based decode path
+    /// (`tgm_file_decode_message`) surfaces the same inline hash
+    /// as the buffer-based path (`tgm_decode`) for the same
+    /// underlying bytes.  Pins the symmetry added by the
+    /// `read_message` + `data_object_inline_hashes` two-step
+    /// inside the FFI file decoder.
+    #[test]
+    fn ffi_file_decode_surfaces_inline_hash() {
+        // Encode a hashed message into a temp file via the streaming
+        // encoder, then open it with tgm_file_open + decode via
+        // tgm_file_decode_message and confirm the hash accessors
+        // report the same digest that tgm_decode surfaces.
+        let dir = std::env::temp_dir();
+        let path = dir.join("ffi_file_hash.tgm");
+        let _ = std::fs::remove_file(&path);
+
+        let c_path = CString::new(path.to_str().unwrap()).unwrap();
+        let meta_json = CString::new(r#"{"version":3}"#).unwrap();
+        let hash_algo = CString::new("xxh3").unwrap();
+        let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_streaming_encoder_create(
+                c_path.as_ptr(),
+                meta_json.as_ptr(),
+                hash_algo.as_ptr(),
+                0,
+                &mut enc,
+            ),
+            super::TgmError::Ok
+        ));
+        let values = [1.0f32, 2.0, 3.0];
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let desc_json = CString::new(format!(
+            r#"{{"type":"ntensor","ndim":1,"shape":[{}],"strides":[1],"dtype":"float32","byte_order":"{}","encoding":"none","filter":"none","compression":"none"}}"#,
+            values.len(),
+            if cfg!(target_endian = "little") { "little" } else { "big" },
+        )).unwrap();
+        assert!(matches!(
+            super::tgm_streaming_encoder_write(enc, desc_json.as_ptr(), data.as_ptr(), data.len(),),
+            super::TgmError::Ok
+        ));
+        assert!(matches!(
+            super::tgm_streaming_encoder_finish(enc),
+            super::TgmError::Ok
+        ));
+        super::tgm_streaming_encoder_free(enc);
+
+        // File path: tgm_file_open + tgm_file_decode_message.
+        let mut file: *mut super::TgmFile = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_file_open(c_path.as_ptr(), &mut file),
+            super::TgmError::Ok
+        ));
+        let mut file_msg: *mut super::TgmMessage = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_file_decode_message(file, 0, 0, 0, 0, &mut file_msg),
+            super::TgmError::Ok
+        ));
+        let file_has = super::tgm_payload_has_hash(file_msg, 0);
+        let file_hv_ptr = super::tgm_object_hash_value(file_msg, 0);
+        assert_eq!(file_has, 1);
+        assert!(!file_hv_ptr.is_null());
+        let file_hv = unsafe { CStr::from_ptr(file_hv_ptr) }
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // Buffer path: same file, read into memory, tgm_decode.
+        let bytes = std::fs::read(&path).unwrap();
+        let mut buf_msg: *mut super::TgmMessage = ptr::null_mut();
+        assert!(matches!(
+            super::tgm_decode(bytes.as_ptr(), bytes.len(), 0, 0, 0, &mut buf_msg),
+            super::TgmError::Ok
+        ));
+        let buf_hv_ptr = super::tgm_object_hash_value(buf_msg, 0);
+        let buf_hv = unsafe { CStr::from_ptr(buf_hv_ptr) }
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        assert_eq!(
+            file_hv, buf_hv,
+            "file-path and buffer-path hash values must agree"
+        );
+        assert_eq!(file_hv.len(), 16, "xxh3 digest is 16 hex chars");
+
+        super::tgm_message_free(file_msg);
+        super::tgm_message_free(buf_msg);
         super::tgm_file_close(file);
         let _ = std::fs::remove_file(&path);
     }
@@ -5047,7 +5235,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("ffi_streaming_bad_hash.tgm");
         let c_path = CString::new(path.to_str().unwrap()).unwrap();
-        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+        let meta_json = CString::new(r#"{"version":3}"#).unwrap();
         let bad_algo = CString::new("bogus_hash").unwrap();
 
         let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
@@ -5096,7 +5284,7 @@ mod tests {
         };
 
         let json = format!(
-            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":[{len1}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}},{{"type":"ntensor","ndim":1,"shape":[{len2}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            r#"{{"version":3,"descriptors":[{{"type":"ntensor","ndim":1,"shape":[{len1}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}},{{"type":"ntensor","ndim":1,"shape":[{len2}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
             len1 = vals1.len(),
             len2 = vals2.len(),
             bo = bo,
@@ -5169,7 +5357,7 @@ mod tests {
             "big"
         };
         let json = format!(
-            r#"{{"version":2,"base":[{{"param":"2t","level":"surface"}}],"descriptors":[{{"type":"ntensor","ndim":1,"shape":[2],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            r#"{{"version":3,"base":[{{"param":"2t","level":"surface"}}],"descriptors":[{{"type":"ntensor","ndim":1,"shape":[2],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
             bo = bo,
         );
 
@@ -5253,7 +5441,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let c_path = CString::new(path.to_str().unwrap()).unwrap();
-        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+        let meta_json = CString::new(r#"{"version":3}"#).unwrap();
 
         let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
         let err = super::tgm_streaming_encoder_create(
@@ -5311,7 +5499,7 @@ mod tests {
 
     #[test]
     fn ffi_encode_invalid_hash_algo() {
-        let json = CString::new(r#"{"version":2,"descriptors":[]}"#).unwrap();
+        let json = CString::new(r#"{"version":3,"descriptors":[]}"#).unwrap();
         let bad_algo = CString::new("bogus").unwrap();
         let mut out = super::TgmBytes {
             data: ptr::null_mut(),
@@ -5371,7 +5559,7 @@ mod tests {
         // Encode with a zero-element tensor where the data pointer could be null
         // but length is 0 — should succeed without UB.
         let json = CString::new(
-            r#"{"version":2,"descriptors":[{"type":"ntensor","ndim":1,"shape":[0],"strides":[1],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]}"#,
+            r#"{"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[0],"strides":[1],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]}"#,
         )
         .unwrap();
         let data_ptrs: [*const u8; 1] = [ptr::null()];
@@ -5555,28 +5743,52 @@ mod tests {
         assert!(matches!(err, super::TgmError::InvalidArg));
     }
 
-    // ── tgm_decode with verify_hash on tampered payload ───────────────
+    // ── Inline-hash integrity via tgm_validate on tampered payload ──
 
+    /// Flipping a byte inside the payload region of a hashed
+    /// message must surface a hash mismatch through
+    /// `tgm_validate` at the `integrity` / `checksum` level (the
+    /// v3 integrity channel — see `plans/WIRE_FORMAT.md` §11).
+    ///
+    /// `tgm_decode` in v3 does **not** verify frame-level hashes
+    /// (decode is a pure deserialisation path); the `verify_hash`
+    /// flag on decode is retained for source compatibility but is
+    /// a no-op.  Hash integrity is always a validate-level check.
     #[test]
-    fn ffi_decode_verify_hash_on_tampered_payload() {
+    fn ffi_validate_detects_tampered_payload() {
         let values = vec![1.0f32; 256];
         let encoded = ffi_encode_with_hash(&values);
         let mut tampered = encoded.clone();
-        // Tamper around 75% into the message so we hit the payload region,
-        // not frame headers / CBOR descriptors.
+        // Tamper ~75% into the message so we're in the payload
+        // region, not the frame header / CBOR descriptor.
         let pos = (tampered.len() * 75) / 100;
         tampered[pos] ^= 0xFF;
         tampered[pos + 1] ^= 0xFF;
-        let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(
+
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let level = CString::new("checksum").unwrap();
+        let err = super::tgm_validate(
             tampered.as_ptr(),
             tampered.len(),
-            /* verify_hash */ 1,
-            /* native_byte_order */ 0,
-            /* threads */ 0,
-            &mut msg,
+            level.as_ptr(),
+            /* pretty */ 0,
+            &mut out,
         );
-        assert!(matches!(err, super::TgmError::HashMismatch));
+        // Validation itself runs fine; the report JSON flags the
+        // mismatch.  `tgm_validate` returns Ok on any parseable
+        // message and communicates findings via the JSON report.
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!out.data.is_null());
+        let json_bytes = unsafe { slice::from_raw_parts(out.data, out.len) };
+        let json = std::str::from_utf8(json_bytes).unwrap();
+        assert!(
+            json.contains("HashMismatch") || json.contains("hash mismatch"),
+            "expected HashMismatch in validate report, got: {json}"
+        );
+        super::tgm_bytes_free(out);
     }
 
     // ── tgm_object_data with null out_len pointer ─────────────────────
@@ -5607,7 +5819,7 @@ mod tests {
         // Encode with zstd compression which doesn't support range decode
         // without block offsets.
         let json = CString::new(
-            r#"{"version":2,"descriptors":[{"type":"ntensor","ndim":1,"shape":[100],"strides":[1],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"zstd"}]}"#,
+            r#"{"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[100],"strides":[1],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"zstd"}]}"#,
         )
         .unwrap();
         let data: Vec<u8> = vec![0u8; 400];
@@ -5694,6 +5906,108 @@ mod tests {
             ptr::null_mut(),
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
+    }
+
+    // ── _with_options FFI coverage ─────────────────────────────────────
+
+    /// `tgm_encode_with_options(NULL mask_options)` behaves identically
+    /// to `tgm_encode` — exercises the mask-options NULL-pointer path.
+    #[test]
+    fn ffi_encode_with_options_null_mask_ptr() {
+        let values = [1.0f32, 2.0, 3.0, 4.0];
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let json = format!(
+            r#"{{"version":3,"descriptors":[{{"type":"ntensor","ndim":1,"shape":[{}],"strides":[1],"dtype":"float32","byte_order":"{}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            values.len(),
+            if cfg!(target_endian = "little") {
+                "little"
+            } else {
+                "big"
+            },
+        );
+        let c_json = CString::new(json).unwrap();
+        let hash_algo = CString::new("xxh3").unwrap();
+        let data_ptr: *const u8 = data.as_ptr();
+        let data_len: usize = data.len();
+
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_encode_with_options(
+            c_json.as_ptr(),
+            &data_ptr as *const *const u8,
+            &data_len as *const usize,
+            1,
+            hash_algo.as_ptr(),
+            0,           // threads
+            ptr::null(), // mask_options = NULL → defaults
+            &mut out,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!out.data.is_null() && out.len > 0);
+        super::tgm_bytes_free(out);
+    }
+
+    /// `tgm_decode_with_options(NULL mask_options)` behaves identically
+    /// to `tgm_decode` — exercises the NULL-pointer branch of
+    /// `apply_decode_mask_options`.
+    #[test]
+    fn ffi_decode_with_options_null_mask_ptr() {
+        let values = [1.0f32, 2.0];
+        let encoded = ffi_encode_single_f32_tensor(&values, "");
+
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode_with_options(
+            encoded.as_ptr(),
+            encoded.len(),
+            0,
+            0,
+            0,
+            ptr::null(), // mask_options = NULL → default restore_non_finite=true
+            &mut msg,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!msg.is_null());
+        super::tgm_message_free(msg);
+    }
+
+    /// Non-NULL `TgmDecodeMaskOptions` with `restore_non_finite = false`
+    /// threads through to `DecodeOptions` — pins the
+    /// `apply_decode_mask_options` mutation path.
+    #[test]
+    fn ffi_decode_with_options_explicit_restore_false() {
+        let values = [1.0f32, 2.0];
+        let encoded = ffi_encode_single_f32_tensor(&values, "");
+
+        let mask_opts = super::TgmDecodeMaskOptions {
+            restore_non_finite: false,
+        };
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode_with_options(
+            encoded.as_ptr(),
+            encoded.len(),
+            0,
+            0,
+            0,
+            &mask_opts,
+            &mut msg,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        super::tgm_message_free(msg);
+    }
+
+    /// `tgm_decode_with_options` with NULL output pointer must
+    /// return InvalidArg and set `tgm_last_error`.
+    #[test]
+    fn ffi_decode_with_options_null_out() {
+        let err =
+            super::tgm_decode_with_options(b"x".as_ptr(), 1, 0, 0, 0, ptr::null(), ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+        let msg = unsafe { CStr::from_ptr(super::tgm_last_error()) }
+            .to_str()
+            .unwrap();
+        assert!(msg.contains("null"), "expected null-arg msg, got: {msg}");
     }
 }
 

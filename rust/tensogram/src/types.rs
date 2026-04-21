@@ -14,10 +14,20 @@ use crate::dtype::Dtype;
 pub use tensogram_encodings::ByteOrder;
 
 /// Hash descriptor for payload integrity verification.
+///
+/// **Deprecated in v3.**  In v3 the per-object hash lives in the
+/// inline hash slot of the data-object frame footer (see
+/// `plans/WIRE_FORMAT.md` §2.2 and §2.4), not in the CBOR
+/// descriptor.  This struct is retained only for the message-level
+/// [`HashFrame`] CBOR schema (which stores an array of hex-encoded
+/// digest values, to allow future longer digests).  Callers doing
+/// frame-level integrity verification should go through
+/// [`crate::hash::hash_frame_body`] /
+/// [`crate::hash::verify_frame_hash`] instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HashDescriptor {
     #[serde(rename = "type")]
-    pub hash_type: String,
+    pub algorithm: String,
     pub value: String,
 }
 
@@ -46,7 +56,7 @@ pub struct MaskDescriptor {
     pub params: BTreeMap<String, ciborium::Value>,
 }
 
-/// Top-level `masks` sub-map for the `NTensorMaskedFrame` (wire type 9,
+/// Top-level `masks` sub-map for the `NTensorFrame` (wire type 9,
 /// see `plans/BITMASK_FRAME.md` §3.3).
 ///
 /// All three fields are optional — a frame can carry any subset (or
@@ -96,7 +106,7 @@ pub struct DataObjectDescriptor {
     pub filter: String,
     pub compression: String,
 
-    /// Optional NaN / Inf companion-mask metadata (`NTensorMaskedFrame`,
+    /// Optional NaN / Inf companion-mask metadata (`NTensorFrame`,
     /// wire type 9 — see `plans/BITMASK_FRAME.md`).  `None` means no
     /// mask sections are present, and the frame is byte-compatible with
     /// the legacy `NTensorFrame` layout.
@@ -110,10 +120,6 @@ pub struct DataObjectDescriptor {
     /// szip_block_offsets, etc.). Stored as ciborium::Value for flexibility.
     #[serde(flatten)]
     pub params: BTreeMap<String, ciborium::Value>,
-
-    /// Per-object integrity hash (set during encoding).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hash: Option<HashDescriptor>,
 }
 
 /// Global message metadata (carried in header/footer metadata frames).
@@ -162,9 +168,17 @@ pub struct GlobalMetadata {
 }
 
 /// Index frame payload — maps object ordinals to byte offsets.
+///
+/// v3 CBOR schema (see `plans/WIRE_FORMAT.md` §6.2):
+///
+/// ```cbor
+/// { "offsets": [u64, ...], "lengths": [u64, ...] }
+/// ```
+///
+/// Object count is derived from `offsets.len()`.  The previously
+/// serialised `object_count` key is dropped.
 #[derive(Debug, Clone, Default)]
 pub struct IndexFrame {
-    pub object_count: u64,
     /// Byte offset of each data object frame from message start.
     pub offsets: Vec<u64>,
     /// Total byte length of each data object frame, excluding alignment padding.
@@ -172,17 +186,26 @@ pub struct IndexFrame {
 }
 
 /// Hash frame payload — per-object integrity hashes.
+///
+/// v3 CBOR schema (see `plans/WIRE_FORMAT.md` §6.3):
+///
+/// ```cbor
+/// { "algorithm": "xxh3", "hashes": ["hex", "hex", ...] }
+/// ```
+///
+/// The `hash_type` key was renamed to `algorithm` to signal that the
+/// value names the algorithm rather than a type identifier.  Object
+/// count is derived from `hashes.len()`.
 #[derive(Debug, Clone)]
 pub struct HashFrame {
-    pub object_count: u64,
-    pub hash_type: String,
+    pub algorithm: String,
     pub hashes: Vec<String>,
 }
 
 impl Default for GlobalMetadata {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: crate::wire::WIRE_VERSION,
             base: Vec::new(),
             reserved: BTreeMap::new(),
             extra: BTreeMap::new(),
@@ -192,3 +215,39 @@ impl Default for GlobalMetadata {
 
 /// A decoded object: its descriptor paired with its raw decoded payload bytes.
 pub type DecodedObject = (DataObjectDescriptor, Vec<u8>);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn masks_metadata_is_empty_detects_every_kind_absent() {
+        let empty = MasksMetadata::default();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn masks_metadata_is_empty_false_when_any_kind_present() {
+        let any_mask = MaskDescriptor {
+            method: "roaring".to_string(),
+            offset: 0,
+            length: 1,
+            params: BTreeMap::new(),
+        };
+        let nan_only = MasksMetadata {
+            nan: Some(any_mask.clone()),
+            ..MasksMetadata::default()
+        };
+        let pos_only = MasksMetadata {
+            pos_inf: Some(any_mask.clone()),
+            ..MasksMetadata::default()
+        };
+        let neg_only = MasksMetadata {
+            neg_inf: Some(any_mask),
+            ..MasksMetadata::default()
+        };
+        assert!(!nan_only.is_empty());
+        assert!(!pos_only.is_empty());
+        assert!(!neg_only.is_empty());
+    }
+}

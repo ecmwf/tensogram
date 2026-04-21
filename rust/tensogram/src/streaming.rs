@@ -19,10 +19,10 @@ use crate::framing::EncodedObject;
 use crate::hash::HashAlgorithm;
 use crate::metadata::{self, RESERVED_KEY};
 use crate::substitute_and_mask;
-use crate::types::{DataObjectDescriptor, GlobalMetadata, HashDescriptor, HashFrame, IndexFrame};
+use crate::types::{DataObjectDescriptor, GlobalMetadata, HashFrame, IndexFrame};
 use crate::wire::{
-    FRAME_END, FRAME_HEADER_SIZE, FrameHeader, FrameType, MessageFlags, PREAMBLE_SIZE, Postamble,
-    Preamble,
+    FRAME_COMMON_FOOTER_SIZE, FRAME_END, FRAME_HEADER_SIZE, FrameHeader, FrameType, MessageFlags,
+    POSTAMBLE_SIZE, PREAMBLE_SIZE, Postamble, Preamble,
 };
 use tensogram_encodings::pipeline;
 
@@ -64,6 +64,11 @@ pub struct StreamingEncoder<W: Write> {
     bytes_written: u64,
     /// Hash algorithm to use for payload integrity.
     hash_algorithm: Option<HashAlgorithm>,
+    /// Whether to emit an aggregate `FooterHash` frame at finish-time
+    /// (v3).  The header-hash aggregate is unavailable in streaming
+    /// mode — if the caller sets `create_header_hashes`, construction
+    /// errors at `StreamingEncoder::new`.
+    emit_footer_hash_frame: bool,
     /// Original global metadata — re-used to build the footer metadata frame.
     global_meta: GlobalMetadata,
     /// True when a PrecederMetadata frame has been written but the
@@ -102,6 +107,16 @@ impl<W: Write> StreamingEncoder<W> {
         global_meta: &GlobalMetadata,
         options: &EncodeOptions,
     ) -> Result<Self> {
+        // v3: `create_header_hashes` in streaming mode silently
+        // redirects to `create_footer_hashes` — the header frames
+        // are emitted before any data object, so there are no
+        // hashes to aggregate there yet.  Rather than erroring on
+        // the buffered-friendly default, we honour the caller's
+        // "I want the aggregate" intent in the only place where
+        // streaming can put it.
+        let emit_footer_hash = options.hash_algorithm.is_some()
+            && (options.create_footer_hashes || options.create_header_hashes);
+
         let meta_cbor = metadata::global_metadata_to_cbor(global_meta)?;
 
         // Streaming preamble: total_length=0 signals unknown length at write time.
@@ -113,11 +128,16 @@ impl<W: Write> StreamingEncoder<W> {
         flags.set(MessageFlags::FOOTER_INDEX);
         flags.set(MessageFlags::PRECEDER_METADATA);
         if options.hash_algorithm.is_some() {
-            flags.set(MessageFlags::FOOTER_HASHES);
+            // v3: HASHES_PRESENT signals per-frame inline hash slots
+            // are populated; set whenever hashing is enabled.
+            flags.set(MessageFlags::HASHES_PRESENT);
+            if emit_footer_hash {
+                flags.set(MessageFlags::FOOTER_HASHES);
+            }
         }
 
         let preamble = Preamble {
-            version: 2,
+            version: 3,
             flags,
             reserved: 0,
             total_length: 0,
@@ -127,7 +147,13 @@ impl<W: Write> StreamingEncoder<W> {
         let mut bytes_written = PREAMBLE_SIZE as u64;
 
         // Write header metadata frame
-        let frame_bytes = build_frame(FrameType::HeaderMetadata, 1, 0, &meta_cbor);
+        let frame_bytes = build_frame(
+            FrameType::HeaderMetadata,
+            1,
+            0,
+            &meta_cbor,
+            options.hash_algorithm,
+        );
         writer.write_all(&frame_bytes)?;
         bytes_written += frame_bytes.len() as u64;
 
@@ -146,6 +172,7 @@ impl<W: Write> StreamingEncoder<W> {
             completed_objects: Vec::new(),
             bytes_written,
             hash_algorithm: options.hash_algorithm,
+            emit_footer_hash_frame: emit_footer_hash,
             global_meta: global_meta.clone(),
             pending_preceder: false,
             preceder_payloads: Vec::new(),
@@ -189,7 +216,13 @@ impl<W: Write> StreamingEncoder<W> {
             ..Default::default()
         };
         let cbor = crate::metadata::global_metadata_to_cbor(&preceder_meta)?;
-        let frame_bytes = build_frame(FrameType::PrecederMetadata, 1, 0, &cbor);
+        let frame_bytes = build_frame(
+            FrameType::PrecederMetadata,
+            1,
+            0,
+            &cbor,
+            self.hash_algorithm,
+        );
         self.writer.write_all(&frame_bytes)?;
         self.bytes_written += frame_bytes.len() as u64;
 
@@ -358,7 +391,7 @@ impl<W: Write> StreamingEncoder<W> {
     ) -> Result<()> {
         let start_offset = self.bytes_written;
 
-        let frame_len = write_data_object_frame_hashed(
+        let (frame_len, inline_digest) = write_data_object_frame_hashed(
             &mut self.writer,
             &mut final_desc,
             encoded_bytes,
@@ -366,12 +399,18 @@ impl<W: Write> StreamingEncoder<W> {
         )?;
         self.bytes_written += frame_len;
 
-        // The helper writes the real hash back into `final_desc.hash`;
-        // mirror it into `hash_entries` for footer-frame bookkeeping.
-        let hash_entry = final_desc
-            .hash
-            .as_ref()
-            .map(|h| (h.hash_type.clone(), h.value.clone()));
+        // v3: the per-object hash lives in the inline slot of the
+        // frame footer (see `plans/WIRE_FORMAT.md` §2.4).  The
+        // streaming encoder captures each object's digest in
+        // `hash_entries` as it's written so the aggregate
+        // `FooterHash` frame can be emitted at `finish()` without
+        // a second pass over the payload.
+        let hash_entry = inline_digest.map(|d| {
+            (
+                HashAlgorithm::Xxh3.as_str().to_string(),
+                crate::hash::format_xxh3_digest(d),
+            )
+        });
 
         self.object_offsets.push(start_offset);
         self.object_lengths.push(frame_len);
@@ -443,16 +482,22 @@ impl<W: Write> StreamingEncoder<W> {
                 }
             }
             let meta_cbor = metadata::global_metadata_to_cbor(&enriched_meta)?;
-            let frame_bytes = build_frame(FrameType::FooterMetadata, 1, 0, &meta_cbor);
+            let frame_bytes = build_frame(
+                FrameType::FooterMetadata,
+                1,
+                0,
+                &meta_cbor,
+                self.hash_algorithm,
+            );
             self.writer.write_all(&frame_bytes)?;
             self.bytes_written += frame_bytes.len() as u64;
             write_padding(&mut self.writer, &mut self.bytes_written)?;
         }
 
-        // Footer hash frame (if any objects had hashes)
-        let has_hashes = self.hash_entries.iter().any(|e| e.is_some());
-        if has_hashes {
-            let hash_type = self
+        // Footer hash frame — only when the caller opted in via
+        // `EncodeOptions.create_footer_hashes`.
+        if self.emit_footer_hash_frame && self.hash_entries.iter().any(|e| e.is_some()) {
+            let algorithm = self
                 .hash_algorithm
                 .map(|a| a.as_str().to_string())
                 .unwrap_or_default();
@@ -461,13 +506,10 @@ impl<W: Write> StreamingEncoder<W> {
                 .iter()
                 .map(|e| e.as_ref().map(|(_, v)| v.clone()).unwrap_or_default())
                 .collect();
-            let hash_frame = HashFrame {
-                object_count: self.object_offsets.len() as u64,
-                hash_type,
-                hashes,
-            };
+            let hash_frame = HashFrame { algorithm, hashes };
             let hash_cbor = metadata::hash_frame_to_cbor(&hash_frame)?;
-            let frame_bytes = build_frame(FrameType::FooterHash, 1, 0, &hash_cbor);
+            let frame_bytes =
+                build_frame(FrameType::FooterHash, 1, 0, &hash_cbor, self.hash_algorithm);
             self.writer.write_all(&frame_bytes)?;
             self.bytes_written += frame_bytes.len() as u64;
 
@@ -476,24 +518,38 @@ impl<W: Write> StreamingEncoder<W> {
 
         // Footer index frame
         let index = IndexFrame {
-            object_count: self.object_offsets.len() as u64,
             offsets: self.object_offsets,
             lengths: self.object_lengths,
         };
         let index_cbor = metadata::index_to_cbor(&index)?;
-        let frame_bytes = build_frame(FrameType::FooterIndex, 1, 0, &index_cbor);
+        let frame_bytes = build_frame(
+            FrameType::FooterIndex,
+            1,
+            0,
+            &index_cbor,
+            self.hash_algorithm,
+        );
         self.writer.write_all(&frame_bytes)?;
         self.bytes_written += frame_bytes.len() as u64;
 
         write_padding(&mut self.writer, &mut self.bytes_written)?;
 
-        // Postamble
+        // Postamble.
+        //
+        // Streaming mode writes `total_length = 0` by default — the
+        // writer is typed `W: Write` and we cannot seek back to
+        // rewrite the preamble.  Callers with a seekable sink can
+        // opt into back-filling via `finish_with_backfill` (below),
+        // which populates both the preamble's and postamble's
+        // `total_length` fields.
         let postamble = Postamble {
             first_footer_offset: footer_start,
+            total_length: 0,
         };
-        let mut postamble_bytes = Vec::with_capacity(16);
+        let mut postamble_bytes = Vec::with_capacity(POSTAMBLE_SIZE);
         postamble.write_to(&mut postamble_bytes);
         self.writer.write_all(&postamble_bytes)?;
+        self.bytes_written += postamble_bytes.len() as u64;
 
         self.writer.flush()?;
 
@@ -511,6 +567,59 @@ impl<W: Write> StreamingEncoder<W> {
     }
 }
 
+// ── Seekable-sink specialisation ─────────────────────────────────────────────
+
+impl<W: Write + std::io::Seek> StreamingEncoder<W> {
+    /// Finalize the streaming message and back-fill the `total_length`
+    /// field in both the preamble and postamble (v3 §7 and §9.4).
+    ///
+    /// Equivalent to [`finish`] but at the end seeks back to the
+    /// preamble offset (0) and the postamble's `total_length` slot
+    /// (`end_pos - 16`), writing the real message length to both.
+    /// Readers can then backward-scan from EOF using the mirrored
+    /// length without fallback to forward scanning.
+    ///
+    /// Use this when the writer backs a seekable sink (file, cursor
+    /// over a buffer) — it's a no-op semantic change over
+    /// `finish()` but enables O(1) backward scan on the produced
+    /// file.
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O error from the underlying writer's `seek`,
+    /// `write_all`, or `flush`.
+    ///
+    /// [`finish`]: StreamingEncoder::finish
+    pub fn finish_with_backfill(self) -> Result<W> {
+        use std::io::SeekFrom;
+        // `finish()` consumes self and returns the inner writer;
+        // we then seek back to patch both length slots.
+        let mut writer = self.finish()?;
+
+        // Determine the current file position, which equals the full
+        // message length after finish() (finish() consumed self, so
+        // we re-derive via `stream_position`).
+        let end_pos = writer.stream_position()?;
+        let total_length = end_pos;
+
+        // Back-fill the preamble's total_length (bytes 16..24).
+        writer.seek(SeekFrom::Start(16))?;
+        writer.write_all(&total_length.to_be_bytes())?;
+
+        // Back-fill the postamble's total_length (second u64 field,
+        // located at `end - 16 .. end - 8`; the trailing 8 bytes are
+        // the END_MAGIC).
+        writer.seek(SeekFrom::Start(end_pos - 16))?;
+        writer.write_all(&total_length.to_be_bytes())?;
+
+        // Seek back to EOF so the returned writer matches
+        // `finish()`'s post-condition (cursor at the very end).
+        writer.seek(SeekFrom::Start(end_pos))?;
+        writer.flush()?;
+        Ok(writer)
+    }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn preamble_to_bytes(preamble: &Preamble) -> Vec<u8> {
@@ -519,8 +628,24 @@ fn preamble_to_bytes(preamble: &Preamble) -> Vec<u8> {
     out
 }
 
-fn build_frame(frame_type: FrameType, version: u16, flags: u16, payload: &[u8]) -> Vec<u8> {
-    let total_length = (FRAME_HEADER_SIZE + payload.len() + FRAME_END.len()) as u64;
+/// Build a non-data-object frame on the wire (v3).
+///
+/// Layout: `[frame header 16][payload][hash u64][ENDF]` — the
+/// 12-byte common tail `[hash][ENDF]` is appended automatically.
+/// The inline hash slot is populated from xxh3-64 of `payload` when
+/// `hash_algorithm` is `Some(_)`, or zeros when `None`.
+fn build_frame(
+    frame_type: FrameType,
+    version: u16,
+    flags: u16,
+    payload: &[u8],
+    hash_algorithm: Option<HashAlgorithm>,
+) -> Vec<u8> {
+    debug_assert!(
+        !frame_type.is_data_object(),
+        "streaming::build_frame is for non-data-object frames only"
+    );
+    let total_length = (FRAME_HEADER_SIZE + payload.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
     let fh = FrameHeader {
         frame_type,
         version,
@@ -530,6 +655,13 @@ fn build_frame(frame_type: FrameType, version: u16, flags: u16, payload: &[u8]) 
     let mut out = Vec::with_capacity(total_length as usize);
     fh.write_to(&mut out);
     out.extend_from_slice(payload);
+
+    // Inline hash slot (8 bytes).
+    let hash_value: u64 = match hash_algorithm {
+        Some(HashAlgorithm::Xxh3) => xxhash_rust::xxh3::xxh3_64(payload),
+        None => 0,
+    };
+    out.extend_from_slice(&hash_value.to_be_bytes());
     out.extend_from_slice(FRAME_END);
     out
 }
@@ -555,115 +687,59 @@ fn write_padding(writer: &mut impl Write, bytes_written: &mut u64) -> std::io::R
 /// `Xxh3Default` hasher in 64 KiB chunks as it is written, so the payload
 /// is walked exactly once end-to-end.
 ///
-/// Frame layout (always `CBOR_AFTER_PAYLOAD`):
+/// v3 frame layout (always `CBOR_AFTER_PAYLOAD`):
 ///
 /// ```text
-/// [FrameHeader 16B][Payload][CBOR descriptor][cbor_offset 8B][ENDF 4B]
+/// [FrameHeader 16B][Payload][CBOR][cbor_offset 8B][hash 8B][ENDF 4B]
 /// ```
 ///
-/// # CBOR length invariant
-///
-/// The CBOR descriptor embeds the hash value, but the frame header's
-/// `total_length` field must be written *before* the hash is known.  We
-/// rely on each [`HashAlgorithm`] variant producing a hex string of a
-/// fixed advertised length (see [`HashAlgorithm::hex_digest_len`]) so
-/// that the CBOR byte count is the same whether we serialise a
-/// placeholder or the real digest.  The length is verified twice:
-///
-/// 1. Once **before writing any bytes**, by serialising with two
-///    distinct placeholder digests and confirming they produce the same
-///    CBOR length.  If this fails we return a
-///    [`TensogramError::Framing`] without touching the sink, so the
-///    caller's stream is untouched.
-/// 2. Once **after** the real CBOR is built, as a debug-only sanity
-///    check (the first check makes this redundant, but it catches
-///    divergences in `object_descriptor_to_cbor` itself).
-///
-/// The descriptor's `hash` field is cleared on entry so any
-/// caller-supplied hash does not leak into the size estimate, and on exit
-/// carries the real `HashDescriptor` produced by the inline hash (or
-/// `None` when `hash_algorithm == None`).
+/// The inline hash slot is populated with the xxh3-64 digest of the
+/// frame *body* (`payload + CBOR` in this layout — the hash scope
+/// excludes the 16-byte header and the 20-byte type-specific
+/// footer; see `plans/WIRE_FORMAT.md` §2.4).  In v3 the descriptor
+/// no longer carries a `hash` field, so there is no CBOR-length
+/// placeholder dance — the CBOR length is known exactly up front.
 ///
 /// # Returns
 ///
-/// Number of bytes written to `writer`, not including any trailing 8-byte
-/// alignment padding (the caller's responsibility).
+/// `(total_length, inline_digest)` — the number of bytes written to
+/// `writer` (excluding any trailing 8-byte alignment padding,
+/// which is the caller's responsibility) and the raw xxh3-64
+/// digest installed in the inline slot (or `None` when
+/// `hash_algorithm` is `None`).
 ///
 /// # Errors
 ///
-/// * [`TensogramError::Framing`] if the configured [`HashAlgorithm`]
-///   produces a CBOR representation whose length depends on the digest
-///   value, or if the frame's `total_length` would overflow `u64`.  In
-///   both cases no bytes are written to `writer`.
+/// * [`TensogramError::Framing`] if the frame's `total_length`
+///   would overflow `u64`.  No bytes are written in that case.
 /// * [`TensogramError::Metadata`] if CBOR serialisation fails.
-/// * [`TensogramError::Io`] on any `writer` failure — partial writes may
-///   already be on the sink.
+/// * [`TensogramError::Io`] on any `writer` failure — partial
+///   writes may already be on the sink.
 fn write_data_object_frame_hashed<W: Write>(
     writer: &mut W,
     descriptor: &mut DataObjectDescriptor,
     payload: &[u8],
     hash_algorithm: Option<HashAlgorithm>,
-) -> Result<u64> {
+) -> Result<(u64, Option<u64>)> {
     use crate::wire::{DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END};
 
-    // ── CBOR size estimate ────────────────────────────────────────────
-    //
-    // Build a placeholder descriptor that carries the exact same
-    // `hash_type` label the final descriptor will carry, plus a hex
-    // value of `alg.hex_digest_len()` zeros.
-    let cbor_len_estimate = match hash_algorithm {
-        None => {
-            descriptor.hash = None;
-            metadata::object_descriptor_to_cbor(descriptor)?.len()
-        }
-        Some(alg) => {
-            let placeholder_len = alg.hex_digest_len();
-            descriptor.hash = Some(HashDescriptor {
-                hash_type: alg.as_str().to_string(),
-                value: "0".repeat(placeholder_len),
-            });
-            let len_zeros = metadata::object_descriptor_to_cbor(descriptor)?.len();
-
-            // Verify the invariant BEFORE writing any bytes: a second
-            // placeholder with different digit values must serialise to
-            // the same length, otherwise the CBOR length depends on the
-            // hash value and we would corrupt `total_length`.
-            descriptor.hash = Some(HashDescriptor {
-                hash_type: alg.as_str().to_string(),
-                value: "f".repeat(placeholder_len),
-            });
-            let len_ones = metadata::object_descriptor_to_cbor(descriptor)?.len();
-            if len_zeros != len_ones {
-                return Err(TensogramError::Framing(format!(
-                    "streaming encoder requires a hash algorithm with a \
-                     value-independent CBOR encoding length; {} produced \
-                     {len_zeros} bytes for an all-zero digest and \
-                     {len_ones} bytes for an all-'f' digest of the same \
-                     length ({placeholder_len} chars).  No frame bytes \
-                     have been written.  Use the buffered encode() API \
-                     for this hash algorithm, or extend \
-                     write_data_object_frame_hashed to handle variable-\
-                     length digests.",
-                    alg.as_str()
-                )));
-            }
-            len_zeros
-        }
-    };
-
+    // Serialise the CBOR descriptor up front — in v3 its length is
+    // deterministic (no hash placeholder needed).
+    let cbor_bytes = metadata::object_descriptor_to_cbor(descriptor)?;
+    let cbor_len = cbor_bytes.len();
     let payload_len = payload.len();
 
-    // Compute `total_length` in u64 with checked arithmetic so an
-    // overflow (only reachable on pathological 32-bit inputs) becomes
-    // a clean `TensogramError::Framing` before any bytes are written.
+    // Compute `total_length` with checked arithmetic.  An overflow
+    // (only reachable on pathological 32-bit inputs) becomes a
+    // clean `TensogramError::Framing` before any bytes are written.
     let total_length = (FRAME_HEADER_SIZE as u64)
-        .checked_add(cbor_len_estimate as u64)
+        .checked_add(cbor_len as u64)
         .and_then(|n| n.checked_add(payload_len as u64))
         .and_then(|n| n.checked_add(DATA_OBJECT_FOOTER_SIZE as u64))
         .ok_or_else(|| {
             TensogramError::Framing(format!(
                 "data object frame total_length overflows u64 \
-                 (payload {payload_len} bytes, CBOR {cbor_len_estimate} bytes, \
+                 (payload {payload_len} bytes, CBOR {cbor_len} bytes, \
                  framing {} bytes)",
                 FRAME_HEADER_SIZE + DATA_OBJECT_FOOTER_SIZE
             ))
@@ -671,13 +747,10 @@ fn write_data_object_frame_hashed<W: Write>(
 
     // ── 1) Frame header ──────────────────────────────────────────────
     //
-    // 0.17+ emits `NTensorMaskedFrame` (type 9) for every new data-object
-    // frame.  Without a `masks` sub-map in the CBOR descriptor the on-wire
-    // layout matches pre-0.17 type 4 byte-for-byte except for the type
-    // number.
+    // v3 emits `NTensorFrame` (type 9).
     let mut header_bytes = Vec::with_capacity(FRAME_HEADER_SIZE);
     FrameHeader {
-        frame_type: FrameType::NTensorMaskedFrame,
+        frame_type: FrameType::NTensorFrame,
         version: 1,
         flags: DataObjectFlags::CBOR_AFTER_PAYLOAD,
         total_length,
@@ -687,74 +760,48 @@ fn write_data_object_frame_hashed<W: Write>(
 
     // ── 2) Payload — single walk, hashing inline in 64 KiB chunks ────
     //
-    // Inline streaming hashing is xxh3-specific today: the digest
-    // format (`format_xxh3_digest`) and hasher type (`Xxh3Default`)
-    // are both Xxh3-bound.  The inner match on `HashAlgorithm` is
-    // exhaustive, so adding a new variant becomes a compile error
-    // here — forcing the maintainer to either wire up a new hasher
-    // and digest formatter, or to reject the new algorithm with a
-    // clean `TensogramError::Framing` (and route it through the
-    // buffered `encode()` path instead).
-    //
-    // We couple the hasher with its algorithm tag in a single
-    // `Option<(hasher, alg)>` so the digest-install match in step 3
-    // cannot get out of sync with the construction.
+    // The inline hash covers the frame *body* = payload + CBOR
+    // (v3 §2.4).  We hash the payload chunks as we write them and
+    // then fold the CBOR bytes into the same hasher in step 3.
     const CHUNK: usize = 64 * 1024;
-    let mut inline_hasher: Option<(xxhash_rust::xxh3::Xxh3Default, HashAlgorithm)> = hash_algorithm
-        .map(|alg| match alg {
-            HashAlgorithm::Xxh3 => (xxhash_rust::xxh3::Xxh3Default::new(), alg),
+    let mut inline_hasher: Option<xxhash_rust::xxh3::Xxh3Default> =
+        hash_algorithm.map(|alg| match alg {
+            HashAlgorithm::Xxh3 => xxhash_rust::xxh3::Xxh3Default::new(),
         });
     let mut offset = 0;
     while offset < payload_len {
         let end = (offset + CHUNK).min(payload_len);
         let chunk = &payload[offset..end];
-        if let Some((h, _)) = &mut inline_hasher {
+        if let Some(h) = &mut inline_hasher {
             h.update(chunk);
         }
         writer.write_all(chunk)?;
         offset = end;
     }
 
-    // ── 3) Install the real hash digest on the descriptor ────────────
-    //
-    // The match on `alg` is exhaustive over `HashAlgorithm`; a new
-    // variant forces a compile error until its hex-digest formatter
-    // is wired in (or the construction in step 2 is extended to
-    // reject it).
-    descriptor.hash = inline_hasher.map(|(h, alg)| match alg {
-        HashAlgorithm::Xxh3 => HashDescriptor {
-            hash_type: alg.as_str().to_string(),
-            value: crate::hash::format_xxh3_digest(h.digest()),
-        },
-    });
-
-    // ── 4) CBOR descriptor — re-serialised with the real hash value ──
-    //
-    // Length must match the placeholder estimate byte-for-byte, which
-    // the pre-write check above has already guaranteed for this
-    // algorithm.  The `debug_assert_eq!` is a dev-time tripwire for
-    // bugs inside `object_descriptor_to_cbor` itself (non-canonical
-    // serialisation etc.), not for the hash-length invariant.
-    let cbor_bytes = metadata::object_descriptor_to_cbor(descriptor)?;
-    debug_assert_eq!(
-        cbor_bytes.len(),
-        cbor_len_estimate,
-        "write_data_object_frame_hashed: final CBOR length \
-         ({}) differs from pre-write estimate ({cbor_len_estimate}) — \
-         this indicates a non-deterministic CBOR serialiser, not a \
-         hash-length problem (that would have been caught earlier)",
-        cbor_bytes.len(),
-    );
+    // ── 3) CBOR descriptor — written, then folded into the hash ─────
     writer.write_all(&cbor_bytes)?;
+    if let Some(h) = &mut inline_hasher {
+        h.update(&cbor_bytes);
+    }
 
-    // ── 5) cbor_offset — frame-relative byte offset of CBOR start ────
+    // ── 4) cbor_offset — NOT part of the hash scope ─────────────────
     let cbor_offset = (FRAME_HEADER_SIZE + payload_len) as u64;
     writer.write_all(&cbor_offset.to_be_bytes())?;
 
-    // ── 6) ENDF terminator ───────────────────────────────────────────
+    // ── 5) hash slot (8 bytes) ──────────────────────────────────────
+    //
+    // Finalised digest of the body (payload + CBOR).  When hashing
+    // is disabled the slot is zero-filled; readers distinguish
+    // via the preamble-level HASHES_PRESENT flag.
+    let digest = inline_hasher.as_mut().map(|h| h.digest());
+    let hash_slot = digest.unwrap_or(0);
+    writer.write_all(&hash_slot.to_be_bytes())?;
+
+    // ── 6) ENDF terminator ──────────────────────────────────────────
     writer.write_all(FRAME_END)?;
 
-    Ok(total_length)
+    Ok((total_length, digest))
 }
 
 #[cfg(test)]
@@ -787,7 +834,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         }
     }
 
@@ -805,7 +851,7 @@ mod tests {
 
         // Decode should succeed
         let (decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         assert_eq!(objects.len(), 1);
         assert_eq!(objects[0].1, data);
     }
@@ -872,15 +918,22 @@ mod tests {
         assert_eq!(buf_objects[0].0.shape, str_objects[0].0.shape);
         assert_eq!(buf_objects[0].0.dtype, str_objects[0].0.dtype);
         assert_eq!(buf_objects[0].1, str_objects[0].1);
-        // Hash values must match
-        assert_eq!(
-            buf_objects[0].0.hash.as_ref().unwrap().value,
-            str_objects[0].0.hash.as_ref().unwrap().value
-        );
+        // v3: per-object hash lives in the frame footer's inline
+        // slot, not the CBOR descriptor.  Phase 6 adds a slot-level
+        // cross-check between the two encoders here.
     }
 
+    /// After a streaming encode with hashing enabled, every frame
+    /// in the message must carry a non-zero inline hash slot that
+    /// matches `xxh3-64` of the frame body.  Pinned via
+    /// [`crate::hash::verify_frame_hash`] which is also the
+    /// validator's fast-path check.
     #[test]
     fn streaming_hash_verification() {
+        use crate::framing::{decode_message, scan};
+        use crate::hash::verify_frame_hash;
+        use crate::wire::{FrameHeader, MessageFlags, Preamble};
+
         let meta = GlobalMetadata::default();
         let desc = make_descriptor(vec![4]);
         let data = vec![42u8; 4 * 4];
@@ -889,18 +942,31 @@ mod tests {
             ..Default::default()
         };
 
-        let buf = Vec::new();
-        let mut enc = StreamingEncoder::new(buf, &meta, &options).unwrap();
+        let mut enc = StreamingEncoder::new(Vec::new(), &meta, &options).unwrap();
         enc.write_object(&desc, &data).unwrap();
-        let result = enc.finish().unwrap();
+        let wire = enc.finish().unwrap();
 
-        // Verify hash passes
-        let verify_opts = DecodeOptions {
-            verify_hash: true,
-            ..Default::default()
-        };
-        let (_, objects) = decode(&result, &verify_opts).unwrap();
-        assert!(objects[0].0.hash.is_some());
+        // HASHES_PRESENT must be set in the preamble.
+        let preamble = Preamble::read_from(&wire).unwrap();
+        assert!(
+            preamble.flags.has(MessageFlags::HASHES_PRESENT),
+            "streaming encode with hash_algorithm=Some must set HASHES_PRESENT"
+        );
+
+        // Verify every frame's inline hash slot against the body.
+        let messages = scan(&wire);
+        assert_eq!(messages.len(), 1);
+        let (offset, len) = messages[0];
+        let msg = &wire[offset..offset + len];
+        let decoded = decode_message(msg).unwrap();
+
+        for (_, _, _, frame_offset) in &decoded.objects {
+            let frame = &msg[*frame_offset..];
+            let fh = FrameHeader::read_from(frame).unwrap();
+            let frame_bytes = &frame[..fh.total_length as usize];
+            verify_frame_hash(frame_bytes, fh.frame_type)
+                .expect("streaming data-object inline hash must verify");
+        }
     }
 
     #[test]
@@ -917,7 +983,7 @@ mod tests {
         let result = enc.finish().unwrap();
 
         let (decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         assert_eq!(objects.len(), 0);
     }
 
@@ -977,7 +1043,7 @@ mod tests {
             ciborium::Value::Text("ecmwf".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra,
             ..Default::default()
         };
@@ -1039,7 +1105,7 @@ mod tests {
             ciborium::Value::Text("footer".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![footer_base],
             ..Default::default()
         };
@@ -1218,7 +1284,7 @@ mod tests {
         // and verify _reserved_ from preceder doesn't clobber.
         // We test via the framing level directly.
         let preceder_meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![prec_entry],
             ..Default::default()
         };
@@ -1228,7 +1294,8 @@ mod tests {
         let desc_for_frame = make_descriptor(vec![4]);
         let payload = vec![0u8; 4 * 4];
         let frame =
-            crate::framing::encode_data_object_frame(&desc_for_frame, &payload, false).unwrap();
+            crate::framing::encode_data_object_frame(&desc_for_frame, &payload, false, None)
+                .unwrap();
 
         // Footer metadata with _reserved_.tensor
         let mut footer_base = BTreeMap::new();
@@ -1258,13 +1325,13 @@ mod tests {
             )]),
         );
         let footer_meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![footer_base],
             ..Default::default()
         };
         let footer_cbor = crate::metadata::global_metadata_to_cbor(&footer_meta).unwrap();
 
-        // Assemble raw message
+        // Assemble raw message (v3 frame footers = `[hash u64][ENDF]`).
         use crate::wire::*;
         let header_meta_cbor =
             crate::metadata::global_metadata_to_cbor(&GlobalMetadata::default()).unwrap();
@@ -1273,7 +1340,8 @@ mod tests {
         out.extend_from_slice(&[0u8; PREAMBLE_SIZE]);
 
         // Header metadata
-        let total_length = (FRAME_HEADER_SIZE + header_meta_cbor.len() + FRAME_END.len()) as u64;
+        let total_length =
+            (FRAME_HEADER_SIZE + header_meta_cbor.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
         let fh = FrameHeader {
             frame_type: FrameType::HeaderMetadata,
             version: 1,
@@ -1282,12 +1350,14 @@ mod tests {
         };
         fh.write_to(&mut out);
         out.extend_from_slice(&header_meta_cbor);
+        out.extend_from_slice(&0u64.to_be_bytes()); // hash slot
         out.extend_from_slice(FRAME_END);
         let pad = (8 - (out.len() % 8)) % 8;
         out.extend(std::iter::repeat_n(0u8, pad));
 
         // Preceder metadata
-        let total_length = (FRAME_HEADER_SIZE + preceder_cbor.len() + FRAME_END.len()) as u64;
+        let total_length =
+            (FRAME_HEADER_SIZE + preceder_cbor.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
         let fh = FrameHeader {
             frame_type: FrameType::PrecederMetadata,
             version: 1,
@@ -1296,6 +1366,7 @@ mod tests {
         };
         fh.write_to(&mut out);
         out.extend_from_slice(&preceder_cbor);
+        out.extend_from_slice(&0u64.to_be_bytes()); // hash slot
         out.extend_from_slice(FRAME_END);
         let pad = (8 - (out.len() % 8)) % 8;
         out.extend(std::iter::repeat_n(0u8, pad));
@@ -1306,7 +1377,8 @@ mod tests {
         out.extend(std::iter::repeat_n(0u8, pad));
 
         // Footer metadata
-        let total_length = (FRAME_HEADER_SIZE + footer_cbor.len() + FRAME_END.len()) as u64;
+        let total_length =
+            (FRAME_HEADER_SIZE + footer_cbor.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
         let fh = FrameHeader {
             frame_type: FrameType::FooterMetadata,
             version: 1,
@@ -1315,14 +1387,17 @@ mod tests {
         };
         fh.write_to(&mut out);
         out.extend_from_slice(&footer_cbor);
+        out.extend_from_slice(&0u64.to_be_bytes()); // hash slot
         out.extend_from_slice(FRAME_END);
         let pad = (8 - (out.len() % 8)) % 8;
         out.extend(std::iter::repeat_n(0u8, pad));
 
-        // Postamble
+        // Postamble (patched with total_length after preamble is
+        // finalised).
         let postamble_offset = out.len();
         let postamble = Postamble {
             first_footer_offset: postamble_offset as u64,
+            total_length: 0,
         };
         postamble.write_to(&mut out);
 
@@ -1333,7 +1408,7 @@ mod tests {
         flags.set(MessageFlags::FOOTER_METADATA);
         flags.set(MessageFlags::PRECEDER_METADATA);
         let preamble = Preamble {
-            version: 2,
+            version: 3,
             flags,
             reserved: 0,
             total_length,
@@ -1341,6 +1416,9 @@ mod tests {
         let mut preamble_bytes = Vec::new();
         preamble.write_to(&mut preamble_bytes);
         out[0..PREAMBLE_SIZE].copy_from_slice(&preamble_bytes);
+        // Patch postamble total_length
+        out[postamble_offset + 8..postamble_offset + 16]
+            .copy_from_slice(&total_length.to_be_bytes());
 
         // Decode
         let decoded = crate::framing::decode_message(&out).unwrap();

@@ -184,7 +184,7 @@ impl TensogramFile {
         let offsets = self
             .message_offsets
             .get()
-            .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?;
+            .ok_or_else(|| TensogramError::Framing("internal invariant violated: message_offsets was not populated by ensure_scanned() before use (this is a library bug — please report)".to_string()))?;
         if index >= offsets.len() {
             return Err(TensogramError::Framing(format!(
                 "message index {} out of range (count={})",
@@ -206,7 +206,7 @@ impl TensogramFile {
         Ok(self
             .message_offsets
             .get()
-            .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?
+            .ok_or_else(|| TensogramError::Framing("internal invariant violated: message_offsets was not populated by ensure_scanned() before use (this is a library bug — please report)".to_string()))?
             .len())
     }
 
@@ -284,7 +284,7 @@ impl TensogramFile {
         let count = self
             .message_offsets
             .get()
-            .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?
+            .ok_or_else(|| TensogramError::Framing("internal invariant violated: message_offsets was not populated by ensure_scanned() before use (this is a library bug — please report)".to_string()))?
             .len();
         let mut msgs = Vec::with_capacity(count);
         for i in 0..count {
@@ -308,7 +308,7 @@ impl TensogramFile {
         let offsets = self
             .message_offsets
             .get()
-            .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?
+            .ok_or_else(|| TensogramError::Framing("internal invariant violated: message_offsets was not populated by ensure_scanned() before use (this is a library bug — please report)".to_string()))?
             .clone();
         crate::iter::FileMessageIter::new(path, offsets)
     }
@@ -491,7 +491,7 @@ impl TensogramFile {
         Ok(self
             .message_offsets
             .get()
-            .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?
+            .ok_or_else(|| TensogramError::Framing("internal invariant violated: message_offsets was not populated by ensure_scanned() before use (this is a library bug — please report)".to_string()))?
             .len())
     }
 
@@ -687,7 +687,7 @@ mod tests {
 
     fn make_global_meta() -> GlobalMetadata {
         GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         }
@@ -716,7 +716,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         }
     }
 
@@ -747,7 +746,7 @@ mod tests {
         assert_eq!(msgs.len(), 2);
 
         let (decoded_meta, objects) = file.decode_message(0, &DecodeOptions::default())?;
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         assert_eq!(objects.len(), 1);
         assert_eq!(objects[0].1, data);
         Ok(())
@@ -811,7 +810,7 @@ mod tests {
         )?;
 
         let decoded_meta = file.decode_metadata(0)?;
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         Ok(())
     }
 
@@ -831,7 +830,7 @@ mod tests {
         )?;
 
         let (decoded_meta, descriptors) = file.decode_descriptors(0)?;
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         assert_eq!(descriptors.len(), 1);
         assert_eq!(descriptors[0].shape, vec![4]);
         Ok(())
@@ -854,7 +853,7 @@ mod tests {
 
         let (decoded_meta, decoded_desc, decoded_data) =
             file.decode_object(0, 0, &DecodeOptions::default())?;
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         assert_eq!(decoded_desc.shape, vec![4]);
         assert_eq!(decoded_data, data);
         Ok(())
@@ -888,7 +887,7 @@ mod tests {
         assert_eq!(mmap_file.message_count()?, 2);
 
         let (decoded_meta, objects) = mmap_file.decode_message(0, &DecodeOptions::default())?;
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         assert_eq!(objects[0].1, data0);
 
         let (_, objects1) = mmap_file.decode_message(1, &DecodeOptions::default())?;
@@ -991,7 +990,7 @@ mod tests {
 
         let msg0 = async_file.read_message_async(0).await?;
         let (meta0, objects0) = crate::decode::decode(&msg0, &DecodeOptions::default())?;
-        assert_eq!(meta0.version, 2);
+        assert_eq!(meta0.version, 3);
         assert_eq!(objects0[0].1, data0);
 
         let (_, objects1) = async_file
@@ -1258,7 +1257,7 @@ mod tests {
 
         let async_file = TensogramFile::open_async(&path).await?;
         let (decoded_meta, descriptors) = async_file.decode_descriptors_async(0).await?;
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         assert_eq!(descriptors.len(), 1);
         assert_eq!(descriptors[0].shape, vec![4]);
         Ok(())
@@ -1284,7 +1283,7 @@ mod tests {
         let (decoded_meta, decoded_desc, decoded_data) = async_file
             .decode_object_async(0, 0, &DecodeOptions::default())
             .await?;
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         assert_eq!(decoded_desc.shape, vec![4]);
         assert_eq!(decoded_data, data);
         Ok(())
@@ -1522,7 +1521,7 @@ mod tests {
         assert_eq!(file.message_count()?, 1);
         // The one message has zero objects.
         let (decoded_meta, objects) = file.decode_message(0, &DecodeOptions::default())?;
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         assert_eq!(objects.len(), 0);
         Ok(())
     }
@@ -1739,7 +1738,7 @@ mod tests {
 
         let (decoded_meta, decoded_desc, decoded_data) =
             file.decode_object(0, 0, &DecodeOptions::default())?;
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         assert_eq!(decoded_desc.shape, vec![4]);
         assert_eq!(decoded_data, data);
         Ok(())
@@ -1894,7 +1893,7 @@ mod tests {
         let file = TensogramFile::open(&path)?;
         assert_eq!(file.message_count()?, 1);
         let (meta, objs) = file.decode_message(0, &DecodeOptions::default())?;
-        assert_eq!(meta.version, 2);
+        assert_eq!(meta.version, 3);
         assert_eq!(objs[0].1, vec![55u8; 16]);
         Ok(())
     }

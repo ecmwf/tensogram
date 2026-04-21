@@ -395,13 +395,38 @@ The decoder looks for the 8-byte magic `TENSOGRM` and a matching terminator.
 
 ### Hash Mismatch After Corruption
 
-When `verify_hash=True` (Python) or `TGM_DECODE_VERIFY_HASH` (C), the
-decoder recomputes the xxh3-64 hash of each payload and compares it to the
-stored hash. A mismatch produces a **HashMismatch error** with both the
-expected and actual hash values.
+**v3 note.** Frame-level integrity moved from the decoder to the
+validator.  `verify_hash=True` (Python `DecodeOptions`) or
+`TGM_DECODE_VERIFY_HASH` (C) is retained for source compatibility
+but is a **no-op on the decode path** in v3.
 
-Messages encoded without a hash (`hash=None`) silently pass verification —
-there is nothing to check.
+To detect corruption in a v3 message, run the message through
+`tensogram validate --checksum` (CLI), `validate_message` (Rust),
+`tgm_validate` (C), or the equivalent Python / TypeScript helpers.
+The validator:
+
+1. Walks every frame and recomputes the xxh3-64 of its body
+   (payload + masks + CBOR; `cbor_offset`, the hash slot, and
+   ENDF are excluded — see `plans/WIRE_FORMAT.md` §2.4).
+2. Compares the recomputed digest to the inline hash slot at
+   `frame_end − 12`.  A mismatch emits a **HashMismatch**
+   validation issue carrying the `expected` and `actual` hex
+   values plus the frame offset.
+3. When both a `HeaderHash` and a `FooterHash` aggregate frame
+   are present, cross-checks them against each other and against
+   the inline slots.  Disagreement also surfaces as a
+   **HashMismatch**.
+4. An `UnknownHashAlgorithm` warning fires when the aggregate
+   `HashFrame.algorithm` is not `"xxh3"` — the inline slots are
+   still verified (they're authoritative); only the aggregate's
+   algorithm identifier is advisory.
+
+Messages encoded with `hash_algorithm=None` clear the
+`HASHES_PRESENT` preamble flag and leave every inline slot at
+`0x00…00`.  On such messages, `validate --checksum` emits
+`NoHashAvailable` at warning level and cannot detect corruption
+beyond structural errors — re-encode with `hash_algorithm =
+Some(Xxh3)` to enable integrity checking.
 
 ### Object Index Out of Range
 

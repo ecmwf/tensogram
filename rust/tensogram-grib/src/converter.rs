@@ -214,7 +214,7 @@ fn convert_one_to_one(
         }
 
         let global_meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -256,7 +256,7 @@ fn convert_merge_all(
         .collect();
 
     let global_meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base,
         ..Default::default()
     };
@@ -332,7 +332,6 @@ fn build_data_object(
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     // GRIB data is always float64, so pass `Some(values)` — simple_packing

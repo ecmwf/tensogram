@@ -11,12 +11,10 @@ use std::collections::BTreeMap;
 use crate::dtype::Dtype;
 use crate::error::{Result, TensogramError};
 use crate::framing::{self, EncodedObject};
-use crate::hash::{HashAlgorithm, compute_hash};
+use crate::hash::HashAlgorithm;
 use crate::metadata::RESERVED_KEY;
 use crate::substitute_and_mask::{self, MaskSet};
-use crate::types::{
-    DataObjectDescriptor, GlobalMetadata, HashDescriptor, MaskDescriptor, MasksMetadata,
-};
+use crate::types::{DataObjectDescriptor, GlobalMetadata, MaskDescriptor, MasksMetadata};
 pub use tensogram_encodings::bitmask::MaskMethod;
 #[cfg(feature = "blosc2")]
 use tensogram_encodings::pipeline::Blosc2Codec;
@@ -76,7 +74,7 @@ pub struct EncodeOptions {
     /// When `true`, NaN values in float / complex payloads are
     /// substituted with `0.0` and recorded in a bitmask companion
     /// section of the data-object frame (wire type 9
-    /// `NTensorMaskedFrame`, see `plans/BITMASK_FRAME.md`).  When
+    /// `NTensorFrame`, see `plans/BITMASK_FRAME.md`).  When
     /// `false` (the default) any NaN in the input is a hard encode
     /// error.
     pub allow_nan: bool,
@@ -105,6 +103,27 @@ pub struct EncodeOptions {
     /// across all three masks.  Set to `0` to disable the auto-fallback
     /// and always use the requested method.
     pub small_mask_threshold_bytes: usize,
+    /// Emit a `HeaderHash` frame aggregating per-object hashes.
+    ///
+    /// Buffered mode default: `true`.  Streaming mode: forced to
+    /// `false` — header frames are written before any data object,
+    /// so the hashes aren't known yet.  Setting this to `true` while
+    /// building a `StreamingEncoder` is a construction-time
+    /// `EncodingError`.
+    ///
+    /// Ignored when `hash_algorithm` is `None`: if hashing is
+    /// disabled there is nothing to aggregate.
+    pub create_header_hashes: bool,
+    /// Emit a `FooterHash` frame aggregating per-object hashes.
+    ///
+    /// Buffered mode default: `false` (the `HeaderHash` frame is
+    /// the canonical place for the aggregate in buffered mode).
+    /// Streaming mode default: `true` (the only place where the
+    /// aggregate can live, since streamed data objects precede the
+    /// footer).
+    ///
+    /// Ignored when `hash_algorithm` is `None`.
+    pub create_footer_hashes: bool,
 }
 
 impl Default for EncodeOptions {
@@ -121,6 +140,9 @@ impl Default for EncodeOptions {
             pos_inf_mask_method: MaskMethod::default(),
             neg_inf_mask_method: MaskMethod::default(),
             small_mask_threshold_bytes: 128,
+            // Buffered defaults: header-only aggregate.
+            create_header_hashes: true,
+            create_footer_hashes: false,
         }
     }
 }
@@ -326,20 +348,20 @@ fn encode_one_object(
     }
     let encoded_payload = payload_region;
 
-    // Attach the integrity hash to the descriptor, overwriting any
-    // caller-supplied hash.  `inline_hash` carries the pipeline's inline
-    // digest when `compute_hash` was set; otherwise (PreEncoded mode) we
-    // fall back to a single-pass `compute_hash` over the payload.
-    if let Some(algorithm) = options.hash_algorithm {
-        let hash_value = match inline_hash {
-            Some(digest) => crate::hash::format_xxh3_digest(digest),
-            None => compute_hash(&encoded_payload, algorithm),
-        };
-        final_desc.hash = Some(HashDescriptor {
-            hash_type: algorithm.as_str().to_string(),
-            value: hash_value,
-        });
-    }
+    // v3: the per-object hash is no longer written into the CBOR
+    // descriptor.  It lives in the inline hash slot of the frame's
+    // footer (see `plans/WIRE_FORMAT.md` §2.4), populated by
+    // `encode_data_object_frame` at frame-build time.  The
+    // aggregate HashFrame reads those slots back in
+    // `framing::build_hash_frame_cbor` — no second pass here.
+    //
+    // `inline_hash` from the pipeline is redundant with the
+    // inline slot (same digest, different storage) and is
+    // intentionally unused on this path; keeping it in the return
+    // tuple preserves the pipeline's hash-while-encoding
+    // invariant for callers that want a digest without going
+    // through the frame layer.
+    let _ = (inline_hash, options);
 
     Ok(EncodedObject {
         descriptor: final_desc,
@@ -435,7 +457,20 @@ fn encode_inner(
     populate_base_entries(&mut enriched_meta.base, &encoded_objects);
     populate_reserved_provenance(&mut enriched_meta.reserved);
 
-    framing::encode_message(&enriched_meta, &encoded_objects)
+    // Derive the aggregate HashFrame policy from the buffered-mode
+    // options.  Streaming uses a different path (force-false
+    // `create_header_hashes`); here in `encode()` we honor the
+    // caller's choice as-is.
+    let hash_policy = framing::HashFramePolicy {
+        header: options.create_header_hashes,
+        footer: options.create_footer_hashes,
+    };
+    framing::encode_message(
+        &enriched_meta,
+        &encoded_objects,
+        options.hash_algorithm,
+        hash_policy,
+    )
 }
 
 /// Encode a complete Tensogram message.
@@ -822,6 +857,26 @@ pub(crate) fn build_pipeline_config_with_backend(
             };
             CompressionType::Sz3 { error_bound }
         }
+        "rle" => {
+            // Bitmask-only codec — see `plans/WIRE_FORMAT.md` §8.
+            if dtype != Dtype::Bitmask {
+                return Err(TensogramError::Encoding(format!(
+                    "compression \"rle\" only supports dtype=bitmask, got dtype={:?}",
+                    dtype
+                )));
+            }
+            CompressionType::Rle
+        }
+        "roaring" => {
+            // Bitmask-only codec — see `plans/WIRE_FORMAT.md` §8.
+            if dtype != Dtype::Bitmask {
+                return Err(TensogramError::Encoding(format!(
+                    "compression \"roaring\" only supports dtype=bitmask, got dtype={:?}",
+                    dtype
+                )));
+            }
+            CompressionType::Roaring
+        }
         other => {
             return Err(TensogramError::Encoding(format!(
                 "unknown compression: {other}"
@@ -1189,7 +1244,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         }
     }
 
@@ -1199,7 +1253,7 @@ mod tests {
     fn test_base_more_entries_than_descriptors_rejected() {
         // base has 5 entries but only 2 descriptors — should error.
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![
                 BTreeMap::new(),
                 BTreeMap::new(),
@@ -1235,7 +1289,7 @@ mod tests {
     fn test_base_fewer_entries_than_descriptors_auto_extended() {
         // base has 0 entries but 3 descriptors — auto-extends, _reserved_ inserted.
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![],
             ..Default::default()
         };
@@ -1280,7 +1334,7 @@ mod tests {
             ciborium::Value::Text("not-the-real-base".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -1294,7 +1348,7 @@ mod tests {
         let (decoded, _) = decode(&msg, &DecodeOptions::default()).unwrap();
 
         // Top-level version is still 2
-        assert_eq!(decoded.version, 2);
+        assert_eq!(decoded.version, 3);
         // base[0] should have both custom keys preserved
         assert_eq!(
             decoded.base[0].get("version"),
@@ -1317,7 +1371,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("foo".to_string(), nested);
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -1349,7 +1403,7 @@ mod tests {
             ciborium::Value::Text("bad".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             reserved,
             ..Default::default()
         };
@@ -1373,7 +1427,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("_reserved_".to_string(), ciborium::Value::Map(vec![]));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -1452,7 +1506,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 4]; // 1 float32
         let meta = GlobalMetadata::default();
@@ -1511,7 +1564,7 @@ mod tests {
             ciborium::Value::Text("extra-mars".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             extra,
             ..Default::default()
@@ -1538,7 +1591,7 @@ mod tests {
     #[test]
     fn test_empty_extra_omitted_from_cbor() {
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         };
@@ -1571,7 +1624,7 @@ mod tests {
         let mut extra = BTreeMap::new();
         extra.insert("nested".to_string(), nested.clone());
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra,
             ..Default::default()
         };
@@ -1591,12 +1644,12 @@ mod tests {
 
     #[test]
     fn test_old_common_payload_keys_silently_ignored() {
-        // Simulate an old v2 message with "common" and "payload" keys at top level.
-        // GlobalMetadata uses `deny_unknown_fields` is NOT set (serde default),
-        // so unknown keys should be silently ignored.
+        // Simulate a message with legacy "common" / "payload" keys at top
+        // level.  GlobalMetadata does NOT set `deny_unknown_fields`, so
+        // unknown keys should be silently ignored.
         use ciborium::Value;
         let cbor = Value::Map(vec![
-            (Value::Text("version".to_string()), Value::Integer(2.into())),
+            (Value::Text("version".to_string()), Value::Integer(3.into())),
             (Value::Text("common".to_string()), Value::Map(vec![])),
             (Value::Text("payload".to_string()), Value::Array(vec![])),
         ]);
@@ -1604,7 +1657,7 @@ mod tests {
         ciborium::into_writer(&cbor, &mut bytes).unwrap();
 
         let decoded: GlobalMetadata = crate::metadata::cbor_to_global_metadata(&bytes).unwrap();
-        assert_eq!(decoded.version, 2);
+        assert_eq!(decoded.version, 3);
         assert!(decoded.base.is_empty());
         assert!(decoded.extra.is_empty());
         assert!(decoded.reserved.is_empty());
@@ -1615,7 +1668,7 @@ mod tests {
         // "reserved" (old name) should be ignored, only "_reserved_" is captured.
         use ciborium::Value;
         let cbor = Value::Map(vec![
-            (Value::Text("version".to_string()), Value::Integer(2.into())),
+            (Value::Text("version".to_string()), Value::Integer(3.into())),
             (
                 Value::Text("reserved".to_string()),
                 Value::Map(vec![(
@@ -1644,7 +1697,7 @@ mod tests {
         let mut entry1 = BTreeMap::new();
         entry1.insert("_reserved_".to_string(), ciborium::Value::Map(vec![]));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry0, entry1],
             ..Default::default()
         };
@@ -1677,7 +1730,7 @@ mod tests {
             ciborium::Value::Text("val1".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![e0, e1],
             ..Default::default()
         };
@@ -1738,7 +1791,6 @@ mod tests {
                 compression: "none".to_string(),
                 params: BTreeMap::new(),
                 masks: None,
-                hash: None,
             };
             let data = vec![0u8; data_len];
             let meta = GlobalMetadata::default();
@@ -1791,7 +1843,7 @@ mod tests {
         extra.insert("custom".to_string(), Value::Integer(42.into()));
 
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![base_entry],
             reserved,
             extra,
@@ -1802,7 +1854,7 @@ mod tests {
         let decoded: GlobalMetadata =
             crate::metadata::cbor_to_global_metadata(&cbor_bytes).unwrap();
 
-        assert_eq!(decoded.version, 2);
+        assert_eq!(decoded.version, 3);
         assert_eq!(decoded.base.len(), 1);
         assert_eq!(
             decoded.base[0].get("key"),
@@ -1894,7 +1946,7 @@ mod tests {
                     Value::Text("ignored".to_string()),
                 )]),
             ),
-            (Value::Text("version".to_string()), Value::Integer(2.into())),
+            (Value::Text("version".to_string()), Value::Integer(3.into())),
         ]);
         let mut bytes = Vec::new();
         ciborium::into_writer(&cbor, &mut bytes).unwrap();
@@ -1968,45 +2020,43 @@ mod tests {
         );
     }
 
-    /// Caller-supplied hash in descriptor must be overwritten by the library-computed hash.
+    /// `encode_pre_encoded` populates each data-object frame's
+    /// inline hash slot with the xxh3-64 of the frame body when
+    /// `EncodeOptions.hash_algorithm` is `Some(Xxh3)` — same
+    /// contract as `encode`.  v3 equivalent of the pre-v3
+    /// "library overwrites caller-supplied descriptor hash" test
+    /// (caller-supplied hashes are structurally impossible in v3
+    /// because `DataObjectDescriptor.hash` is gone).
     #[test]
-    fn test_encode_pre_encoded_overwrites_caller_hash() {
-        let mut desc = make_descriptor(vec![2]);
-        // Plant garbage hash in descriptor
-        desc.hash = Some(HashDescriptor {
-            hash_type: "xxh3".to_string(),
-            value: "deadbeefdeadbeef".to_string(),
-        });
+    fn test_encode_pre_encoded_populates_inline_hash_slot() {
+        use crate::framing::{decode_message, scan};
+        use crate::hash::verify_frame_hash;
+        use crate::wire::{FrameHeader, MessageFlags, Preamble};
 
-        let data = vec![0xAB_u8; 8]; // non-trivial payload bytes
+        let desc = make_descriptor(vec![2]);
+        let data = vec![0xABu8; 8];
         let meta = GlobalMetadata::default();
-        let options = EncodeOptions::default(); // includes xxh3 hashing
+        let options = EncodeOptions::default();
 
         let msg = encode_pre_encoded(&meta, &[(&desc, data.as_slice())], &options).unwrap();
-        let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
-        let (decoded_desc, decoded_payload) = &objects[0];
 
-        // Library should have computed a fresh hash
-        let computed_hash = match options.hash_algorithm {
-            Some(algorithm) => compute_hash(decoded_payload, algorithm),
-            None => panic!("expected hash algorithm"),
-        };
+        // Preamble HASHES_PRESENT must be set.
+        let preamble = Preamble::read_from(&msg).unwrap();
+        assert!(preamble.flags.has(MessageFlags::HASHES_PRESENT));
 
-        let stored_hash = decoded_desc
-            .hash
-            .as_ref()
-            .expect("hash should be present in decoded descriptor")
-            .value
-            .clone();
-
-        assert_ne!(
-            stored_hash, "deadbeefdeadbeef",
-            "caller's garbage hash must be overwritten"
-        );
-        assert_eq!(
-            stored_hash, computed_hash,
-            "library-computed hash must match hash over decoded payload"
-        );
+        // Every data-object frame's inline slot verifies.
+        let messages = scan(&msg);
+        assert_eq!(messages.len(), 1);
+        let (offset, len) = messages[0];
+        let only_msg = &msg[offset..offset + len];
+        let decoded = decode_message(only_msg).unwrap();
+        for (_, _, _, frame_offset) in &decoded.objects {
+            let frame = &only_msg[*frame_offset..];
+            let fh = FrameHeader::read_from(frame).unwrap();
+            let frame_bytes = &frame[..fh.total_length as usize];
+            verify_frame_hash(frame_bytes, fh.frame_type)
+                .expect("inline hash slot must verify against body");
+        }
     }
 
     #[test]
@@ -2137,7 +2187,6 @@ mod tests {
             compression: "zstd".to_string(),
             params,
             masks: None,
-            hash: None,
         };
 
         let err = validate_no_szip_offsets_for_non_szip(&desc)
@@ -2168,7 +2217,6 @@ mod tests {
             compression: "szip".to_string(),
             params,
             masks: None,
-            hash: None,
         };
 
         assert!(validate_no_szip_offsets_for_non_szip(&desc).is_ok());

@@ -29,9 +29,7 @@ fn frame_phase(ft: FrameType) -> Phase {
         FrameType::HeaderMetadata | FrameType::HeaderIndex | FrameType::HeaderHash => {
             Phase::Headers
         }
-        FrameType::NTensorFrame | FrameType::NTensorMaskedFrame | FrameType::PrecederMetadata => {
-            Phase::DataObjects
-        }
+        FrameType::NTensorFrame | FrameType::PrecederMetadata => Phase::DataObjects,
         FrameType::FooterHash | FrameType::FooterIndex | FrameType::FooterMetadata => {
             Phase::Footers
         }
@@ -433,15 +431,17 @@ pub(crate) fn validate_structure<'a>(
                 pending_preceder = true;
                 observed_flags.set(MessageFlags::PRECEDER_METADATA);
             }
-            FrameType::NTensorFrame | FrameType::NTensorMaskedFrame => {
+            FrameType::NTensorFrame => {
                 pending_preceder = false;
             }
         }
 
         // Extract payloads for Level 2/3 reuse
         match fh.frame_type {
-            FrameType::NTensorFrame | FrameType::NTensorMaskedFrame => {
-                let cbor_offset_pos = endf_offset - 8;
+            FrameType::NTensorFrame => {
+                // v3 data-object footer: [cbor_offset u64][hash u64][ENDF 4]
+                // cbor_offset lives at endf_offset - 16 (not -8 as in v2).
+                let cbor_offset_pos = endf_offset - 16;
                 if cbor_offset_pos < pos + FRAME_HEADER_SIZE {
                     issues.push(err(
                         IssueCode::DataObjectTooSmall,
