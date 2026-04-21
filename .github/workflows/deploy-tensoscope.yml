@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE: eccr.ecmwf.int/tensoscope/tensoscope
+  IMAGE: eccr.ecmwf.int/tensogram/tensoscope
   NODE_VERSION: "22.22.2"
 
 jobs:
