@@ -184,7 +184,7 @@ impl TensogramFile {
         let offsets = self
             .message_offsets
             .get()
-            .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?;
+            .ok_or_else(|| TensogramError::Framing("internal invariant violated: message_offsets was not populated by ensure_scanned() before use (this is a library bug — please report)".to_string()))?;
         if index >= offsets.len() {
             return Err(TensogramError::Framing(format!(
                 "message index {} out of range (count={})",
@@ -206,7 +206,7 @@ impl TensogramFile {
         Ok(self
             .message_offsets
             .get()
-            .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?
+            .ok_or_else(|| TensogramError::Framing("internal invariant violated: message_offsets was not populated by ensure_scanned() before use (this is a library bug — please report)".to_string()))?
             .len())
     }
 
@@ -284,7 +284,7 @@ impl TensogramFile {
         let count = self
             .message_offsets
             .get()
-            .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?
+            .ok_or_else(|| TensogramError::Framing("internal invariant violated: message_offsets was not populated by ensure_scanned() before use (this is a library bug — please report)".to_string()))?
             .len();
         let mut msgs = Vec::with_capacity(count);
         for i in 0..count {
@@ -308,7 +308,7 @@ impl TensogramFile {
         let offsets = self
             .message_offsets
             .get()
-            .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?
+            .ok_or_else(|| TensogramError::Framing("internal invariant violated: message_offsets was not populated by ensure_scanned() before use (this is a library bug — please report)".to_string()))?
             .clone();
         crate::iter::FileMessageIter::new(path, offsets)
     }
@@ -491,7 +491,7 @@ impl TensogramFile {
         Ok(self
             .message_offsets
             .get()
-            .ok_or_else(|| TensogramError::Framing("scan result missing".to_string()))?
+            .ok_or_else(|| TensogramError::Framing("internal invariant violated: message_offsets was not populated by ensure_scanned() before use (this is a library bug — please report)".to_string()))?
             .len())
     }
 

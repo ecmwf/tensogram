@@ -217,7 +217,20 @@ impl Preamble {
             )));
         }
         if &buf[0..8] != MAGIC {
-            return Err(TensogramError::Framing("invalid magic bytes".to_string()));
+            // Show both the expected magic and the first 8 bytes of
+            // the actual buffer (as hex + printable ASCII if any) so
+            // the user can quickly tell whether they're pointed at
+            // the wrong file vs a partially-written one.
+            let actual = &buf[0..8];
+            let as_ascii: String = actual
+                .iter()
+                .map(|&b| if b.is_ascii_graphic() { b as char } else { '.' })
+                .collect();
+            let as_hex: String = actual.iter().map(|b| format!("{b:02x}")).collect();
+            return Err(TensogramError::Framing(format!(
+                "invalid magic bytes: expected \"TENSOGRM\", got \"{as_ascii}\" \
+                 (hex {as_hex}) — buffer does not start with a Tensogram preamble"
+            )));
         }
         let version = read_u16_be(buf, 8);
         if version != WIRE_VERSION {
@@ -463,6 +476,21 @@ mod tests {
     fn test_invalid_magic() {
         let buf = vec![0u8; PREAMBLE_SIZE];
         assert!(Preamble::read_from(&buf).is_err());
+    }
+
+    #[test]
+    fn test_invalid_magic_error_message_shows_actual_bytes() {
+        // A buffer starting with ASCII-printable non-magic bytes
+        // must report both the expected magic and the actual
+        // bytes (as printable ASCII and hex) so the user can
+        // distinguish "wrong file type" from "truncated file".
+        let mut buf = vec![0u8; PREAMBLE_SIZE];
+        buf[0..8].copy_from_slice(b"GARBAGE!");
+        let err = Preamble::read_from(&buf).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("TENSOGRM"), "expected magic mentioned: {msg}");
+        assert!(msg.contains("GARBAGE!"), "actual ASCII rendered: {msg}");
+        assert!(msg.contains("hex"), "hex representation shown: {msg}");
     }
 
     #[test]
