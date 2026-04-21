@@ -446,10 +446,10 @@ def test_stack_levels_metadata(tmp_path):
         entry = meta.base[obj_idx]
         anemoi = entry["anemoi"]
         mars = entry["mars"]
-        assert "levelist" in anemoi
+        assert "levelist" not in anemoi
         assert "level" not in anemoi
         assert "level" not in mars
-        assert anemoi["levelist"] == sorted(PL_LEVELS)
+        assert mars["levelist"] == sorted(PL_LEVELS)
         assert mars["levtype"] == "pl"
         assert "name" in entry
         assert entry["name"] == mars["param"]
@@ -478,8 +478,8 @@ def test_stack_values_round_trip(tmp_path):
     tgm_file = tensogram.TensogramFile.open(str(path))
     meta, objects = tgm_file[0]
 
-    anemoi = meta.base[2]["anemoi"]
-    assert anemoi["levelist"] == [500, 850, 1000]
+    mars = meta.base[2]["mars"]
+    assert mars["levelist"] == [500, 850, 1000]
 
     _, arr = objects[2]
     np.testing.assert_allclose(arr[:, 0], fields["t500"], rtol=1e-6)

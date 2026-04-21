@@ -50,8 +50,8 @@ class TensogramOutput(Output):
     When ``stack_pressure_levels=True``, all fields sharing the same ``param``
     are stacked into a single 2-D object of shape ``(n_grid, n_levels)``,
     sorted by level in ascending order.  The per-object metadata stores
-    ``"levelist": [500, 850, ...]`` instead of the scalar ``"level"``
-    key used for unstacked fields.
+    ``"levelist": [500, 850, ...]`` in the ``"mars"`` namespace instead of
+    the scalar ``"level"`` key used for unstacked fields.
 
     Without stacking (default), every field is a separate 1-D object and the
     scalar ``"level"`` key is always stored when it is present in the
@@ -304,9 +304,9 @@ class TensogramOutput(Output):
         arrays = [self._prepare_array(item[3]) for item in group]
         stacked = np.column_stack(arrays)
 
-        mars = {**mars_extra, **{k: v for k, v in first_grib.items() if k != "level"}}
+        mars = {**mars_extra, **{k: v for k, v in first_grib.items() if k != "level"}, "levelist": levels}
 
-        base_entry: dict = {"name": param, "anemoi": {"variable": param, "levelist": levels}}
+        base_entry: dict = {"name": param, "anemoi": {"variable": param}}
         if mars:
             base_entry["mars"] = mars
         return base_entry, self._build_descriptor(stacked), stacked

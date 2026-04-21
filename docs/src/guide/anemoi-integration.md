@@ -84,8 +84,8 @@ ds = xr.open_dataset("forecast.tgm", engine="tensogram")
 
 When `stack_pressure_levels=True`, all fields sharing the same GRIB `param`
 are merged into a single 2-D object of shape `(n_grid, n_levels)`, sorted by
-level ascending.  The `"anemoi"` namespace carries `"levelist": [500, 850, ...]`
-instead of a scalar `"level"`.  Non-pressure-level fields are always written
+level ascending.  The `"mars"` namespace carries `"levelist": [500, 850, ...]`
+instead of a scalar `"level"` (following standard MARS convention).  Non-pressure-level fields are always written
 as individual 1-D objects.
 
 ```yaml
