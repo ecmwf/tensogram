@@ -14,6 +14,23 @@ use blosc2::{CParams, CompressAlgo, DParams};
 use super::{CompressResult, CompressionError, Compressor};
 use crate::pipeline::Blosc2Codec;
 
+/// Default maximum size of a single SChunk chunk, in bytes (256 MiB).
+///
+/// Blosc2 enforces a hard per-call limit of
+/// `BLOSC2_MAX_BUFFERSIZE = INT_MAX - 32 ≈ 2 GiB` on every compression call
+/// (see `c-blosc2/include/blosc2.h`, `BLOSC2_MAX_BUFFERSIZE`), so any buffer
+/// larger than this limit passed in a single `SChunk::append()` fails with
+/// `MaxBufsizeExceeded`. To support arrays bigger than that, the compressor
+/// splits its input across multiple SChunk chunks of up to
+/// `DEFAULT_BLOSC2_CHUNK_BYTES` bytes each.
+///
+/// 256 MiB matches the upper cap used by python-blosc2's `SChunk.__init__`
+/// (see `python-blosc2/src/blosc2/schunk.py`). It keeps the number of
+/// chunks small on multi-GiB payloads while staying comfortably below the
+/// 2 GiB per-call limit and the per-append working-set pressure that a
+/// larger chunk would impose.
+pub const DEFAULT_BLOSC2_CHUNK_BYTES: usize = 256 * 1024 * 1024;
+
 /// Ensure the blosc2 C library is initialized.
 ///
 /// Workaround: the `blosc2` crate (v0.2.2) calls `blosc2_init()` inside
@@ -51,6 +68,19 @@ pub struct Blosc2Compressor {
     /// byte-identical output to previous releases.  Values `>= 1` are
     /// passed through verbatim.
     pub nthreads: u32,
+    /// Maximum size of a single SChunk chunk in bytes. Inputs larger than
+    /// this are split across multiple SChunk chunks during [`compress`] to
+    /// stay below blosc2's hard per-call limit of
+    /// `BLOSC2_MAX_BUFFERSIZE = INT_MAX - 32 ≈ 2 GiB`.
+    ///
+    /// Production callers set this to [`DEFAULT_BLOSC2_CHUNK_BYTES`]
+    /// (256 MiB) via the pipeline constructor; tests may set it smaller
+    /// to exercise the multi-chunk path without large allocations. Values
+    /// smaller than `typesize` (including `0`) are rounded up to exactly
+    /// one `typesize` element per chunk.
+    ///
+    /// [`compress`]: Compressor::compress
+    pub chunk_bytes: usize,
 }
 
 /// Normalise the tensogram `nthreads` semantics (0 == sequential) to
@@ -88,7 +118,26 @@ impl Compressor for Blosc2Compressor {
         let dparams = self.build_dparams();
 
         let mut schunk = SChunk::new(cparams, dparams).map_err(map_err)?;
-        schunk.append(data).map_err(map_err)?;
+
+        // Floor `chunk_bytes` to a multiple of `typesize` so non-tail
+        // appends stay aligned for blosc2's shuffle filter, and clamp to
+        // at least one `typesize` to guarantee forward progress.
+        let ts = self.typesize.max(1);
+        let chunk_bytes = (self.chunk_bytes / ts).max(1) * ts;
+
+        if data.len() <= chunk_bytes {
+            // Fast path: inputs that fit in one chunk produce byte-identical
+            // output to the pre-fix single-append codepath.
+            schunk.append(data).map_err(map_err)?;
+        } else {
+            // Large input: split to stay below blosc2's per-call
+            // `BLOSC2_MAX_BUFFERSIZE = INT_MAX - 32` limit.  The SChunk
+            // format tolerates a single short trailing chunk (see
+            // `blosc2_schunk_fill_special` in c-blosc2/blosc/schunk.c).
+            for slice in data.chunks(chunk_bytes) {
+                schunk.append(slice).map_err(map_err)?;
+            }
+        }
 
         let buf = schunk.to_buffer().map_err(map_err)?;
         Ok(CompressResult {
@@ -97,21 +146,42 @@ impl Compressor for Blosc2Compressor {
         })
     }
 
-    fn decompress(&self, data: &[u8], _expected_size: usize) -> Result<Vec<u8>, CompressionError> {
+    fn decompress(&self, data: &[u8], expected_size: usize) -> Result<Vec<u8>, CompressionError> {
         ensure_blosc2_init();
-        // NOTE: blosc2's safe `SChunk::from_buffer` reads dparams from
-        // the buffer itself; there is no cheap runtime override through
-        // the high-level API (compare against `Chunk::set_dparams`, which
-        // works at the single-chunk level).  We therefore run decompress
+        // We iterate chunks explicitly instead of going through
+        // `schunk.items(0..schunk.items_num())` because `items_num()` in
+        // blosc2-rs 0.2.x is computed as
+        // `num_chunks * chunksize / typesize`
+        // (blosc2-0.2.2/src/chunk/schunk.rs:466-468), which OVER-REPORTS
+        // whenever the final chunk is shorter than `chunksize` — the
+        // common case once `compress()` splits a large input across
+        // multiple chunks.  Asking `items(0..overcount)` would request
+        // phantom items past the real end and fail in the C layer.
+        //
+        // Each `Chunk::decompress()` call uses the chunk's own recorded
+        // `nbytes` (Chunk::nbytes in blosc2-0.2.2/src/chunk/chunk.rs:141),
+        // so the short-tail case decodes correctly.
+        //
+        // Blosc2's safe `SChunk::from_buffer` reads dparams from the
+        // buffer itself; there is no cheap runtime override through the
+        // high-level API (compare `Chunk::set_dparams`, which works at
+        // the single-chunk level).  We therefore run decompress
         // sequentially and rely on the compress path for axis-B wins.
         // Compress is the expensive direction; blosc2 decompress is
         // largely memory-bound anyway.
-        let schunk = SChunk::from_buffer(data.into()).map_err(map_err)?;
-        let num_items = schunk.items_num();
-        if num_items == 0 {
+        let mut schunk = SChunk::from_buffer(data.into()).map_err(map_err)?;
+        let num_chunks = schunk.num_chunks();
+        if num_chunks == 0 {
             return Ok(Vec::new());
         }
-        schunk.items(0..num_items).map_err(map_err)
+
+        let mut out = Vec::with_capacity(expected_size);
+        for idx in 0..num_chunks {
+            let chunk = schunk.get_chunk(idx).map_err(map_err)?;
+            let bytes = chunk.decompress().map_err(map_err)?;
+            out.extend_from_slice(&bytes);
+        }
+        Ok(out)
     }
 
     fn decompress_range(
@@ -154,6 +224,16 @@ impl Compressor for Blosc2Compressor {
 mod tests {
     use super::*;
 
+    fn small_chunk_compressor(chunk_bytes: usize) -> Blosc2Compressor {
+        Blosc2Compressor {
+            codec: Blosc2Codec::Lz4,
+            clevel: 5,
+            typesize: 1,
+            nthreads: 0,
+            chunk_bytes,
+        }
+    }
+
     #[test]
     fn blosc2_round_trip() {
         let data: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
@@ -162,6 +242,7 @@ mod tests {
             clevel: 5,
             typesize: 1,
             nthreads: 0,
+            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
 
         let result = compressor.compress(&data).unwrap();
@@ -177,6 +258,7 @@ mod tests {
             clevel: 5,
             typesize: 4,
             nthreads: 0,
+            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
 
         let result = compressor.compress(&data).unwrap();
@@ -192,6 +274,7 @@ mod tests {
             clevel: 5,
             typesize: 1,
             nthreads: 0,
+            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
 
         let result = compressor.compress(&data).unwrap();
@@ -210,6 +293,7 @@ mod tests {
             clevel: 3,
             typesize: 1,
             nthreads: 0,
+            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
         let result = compressor.compress(&data).unwrap();
         let decompressed = compressor.decompress(&result.data, data.len()).unwrap();
@@ -224,6 +308,7 @@ mod tests {
             clevel: 5,
             typesize: 1,
             nthreads: 0,
+            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
         let result = compressor.compress(&data).unwrap();
         let decompressed = compressor.decompress(&result.data, data.len()).unwrap();
@@ -253,6 +338,7 @@ mod tests {
             clevel: 3,
             typesize: 4,
             nthreads: 0,
+            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
         let seq_bytes = seq_compressor.compress(&data).unwrap().data;
         let seq_rt = seq_compressor.decompress(&seq_bytes, data.len()).unwrap();
@@ -264,6 +350,7 @@ mod tests {
                 clevel: 3,
                 typesize: 4,
                 nthreads: n,
+                chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
             };
             let par_bytes = par_compressor.compress(&data).unwrap().data;
             // Decoded values must always round-trip exactly.
@@ -291,6 +378,7 @@ mod tests {
             clevel: 3,
             typesize: 4,
             nthreads: 0,
+            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
         let a = compressor.compress(&data).unwrap().data;
         let b = compressor.compress(&data).unwrap().data;
@@ -311,6 +399,7 @@ mod tests {
             clevel: 5,
             typesize: 1,
             nthreads: 0,
+            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
         let compressed = compressor.compress(&data).unwrap().data;
 
@@ -319,8 +408,150 @@ mod tests {
             clevel: 0,
             typesize: 1,
             nthreads: 0,
+            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
         let decompressed = decoder.decompress(&compressed, data.len()).unwrap();
         assert_eq!(decompressed, data);
     }
+
+    /// Regression test for issue #68: a buffer larger than `chunk_bytes`
+    /// with a non-multiple size splits into N full chunks plus one short
+    /// trailing chunk. Both encode and decode must handle the short tail.
+    ///
+    /// This would fail with the pre-fix `decompress()` that used
+    /// `schunk.items(0..schunk.items_num())`, because `items_num()` in
+    /// blosc2-0.2.2 over-reports when the final chunk is short — see
+    /// the note in `Blosc2Compressor::decompress`.
+    #[test]
+    fn blosc2_multi_chunk_round_trip_short_tail() {
+        let chunk_bytes = 4096;
+        let len = 3 * chunk_bytes + 777;
+        let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+
+        let compressor = small_chunk_compressor(chunk_bytes);
+        let compressed = compressor.compress(&data).unwrap().data;
+
+        let decompressed = compressor.decompress(&compressed, data.len()).unwrap();
+        assert_eq!(decompressed.len(), data.len());
+        assert_eq!(decompressed, data);
+
+        let schunk = blosc2::chunk::SChunk::from_buffer(compressed.as_slice().into()).unwrap();
+        assert!(
+            schunk.num_chunks() >= 2,
+            "multi-chunk path not exercised: num_chunks = {}",
+            schunk.num_chunks()
+        );
+    }
+
+    /// Multi-chunk path with input length that is an exact multiple of
+    /// `chunk_bytes` (no short trailing chunk).  Guards that the equal-
+    /// size case stays correct alongside the short-tail case.
+    #[test]
+    fn blosc2_multi_chunk_round_trip_exact_multiple() {
+        let chunk_bytes = 4096;
+        let len = 4 * chunk_bytes;
+        let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+
+        let compressor = small_chunk_compressor(chunk_bytes);
+        let compressed = compressor.compress(&data).unwrap().data;
+        let decompressed = compressor.decompress(&compressed, data.len()).unwrap();
+
+        assert_eq!(decompressed, data);
+    }
+
+    /// Partial-decode across a chunk boundary.  The range starts in one
+    /// SChunk chunk and ends in the next; the C `get_slice_buffer` path
+    /// used by `decompress_range()` must stitch the two halves together.
+    #[test]
+    fn blosc2_range_decode_spans_chunk_boundary() {
+        let chunk_bytes = 4096;
+        let len = 3 * chunk_bytes + 500;
+        let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+
+        let compressor = small_chunk_compressor(chunk_bytes);
+        let compressed = compressor.compress(&data).unwrap().data;
+
+        let range_start = chunk_bytes - 200;
+        let range_len = 500;
+        let partial = compressor
+            .decompress_range(&compressed, &[], range_start, range_len)
+            .unwrap();
+
+        assert_eq!(partial.len(), range_len);
+        assert_eq!(&partial[..], &data[range_start..range_start + range_len]);
+    }
+
+    /// A small input with the production default `chunk_bytes` must stay
+    /// in the single-append fast path and produce a single SChunk chunk.
+    /// This preserves byte-level compatibility with the pre-fix output
+    /// for anything that previously worked.
+    #[test]
+    fn blosc2_small_input_is_single_chunk() {
+        let data: Vec<u8> = (0..8192).map(|i| (i % 251) as u8).collect();
+        let compressor = Blosc2Compressor {
+            codec: Blosc2Codec::Lz4,
+            clevel: 5,
+            typesize: 1,
+            nthreads: 0,
+            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
+        };
+        let compressed = compressor.compress(&data).unwrap().data;
+
+        let schunk = blosc2::chunk::SChunk::from_buffer(compressed.as_slice().into()).unwrap();
+        assert_eq!(
+            schunk.num_chunks(),
+            1,
+            "small input should stay on single-append fast path"
+        );
+
+        let decompressed = compressor.decompress(&compressed, data.len()).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    /// Input that exactly equals `chunk_bytes` must still take the
+    /// single-append path — the fast-path predicate is `<=`, not `<`.
+    /// Guards against a common off-by-one that would force a trivial
+    /// multi-chunk encode for any N-aligned buffer.
+    #[test]
+    fn blosc2_input_equal_to_chunk_bytes_stays_single_chunk() {
+        let chunk_bytes = 4096;
+        let data: Vec<u8> = (0..chunk_bytes).map(|i| (i % 251) as u8).collect();
+
+        let compressor = small_chunk_compressor(chunk_bytes);
+        let compressed = compressor.compress(&data).unwrap().data;
+
+        let schunk = blosc2::chunk::SChunk::from_buffer(compressed.as_slice().into()).unwrap();
+        assert_eq!(schunk.num_chunks(), 1);
+
+        let decompressed = compressor.decompress(&compressed, data.len()).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    /// Typesize-aligned chunking: with typesize = 4 and chunk_bytes
+    /// explicitly set smaller than the input, every internal append
+    /// except the possible trailing chunk must receive a buffer whose
+    /// length is a multiple of typesize.  This is asserted indirectly:
+    /// blosc2's shuffle filter corrupts data if typesize alignment is
+    /// wrong on non-tail chunks, so round-trip success is the guard.
+    #[test]
+    fn blosc2_multi_chunk_typesize_alignment() {
+        let chunk_bytes = 4096;
+        let num_values: usize = 2 * chunk_bytes + 37;
+        let data: Vec<u8> = (0..num_values)
+            .flat_map(|i: usize| (i as u32).to_ne_bytes())
+            .collect();
+        assert_eq!(data.len() % 4, 0);
+
+        let compressor = Blosc2Compressor {
+            codec: Blosc2Codec::Blosclz,
+            clevel: 5,
+            typesize: 4,
+            nthreads: 0,
+            chunk_bytes,
+        };
+        let compressed = compressor.compress(&data).unwrap().data;
+        let decompressed = compressor.decompress(&compressed, data.len()).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
 }

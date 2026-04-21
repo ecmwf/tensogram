@@ -8,8 +8,6 @@
 
 use std::borrow::Cow;
 
-#[cfg(feature = "blosc2")]
-use crate::compression::Blosc2Compressor;
 #[cfg(feature = "lz4")]
 use crate::compression::Lz4Compressor;
 #[cfg(feature = "sz3")]
@@ -24,6 +22,8 @@ use crate::compression::ZfpCompressor;
 use crate::compression::ZstdCompressor;
 #[cfg(feature = "zstd-pure")]
 use crate::compression::ZstdPureCompressor;
+#[cfg(feature = "blosc2")]
+use crate::compression::{Blosc2Compressor, DEFAULT_BLOSC2_CHUNK_BYTES};
 use crate::compression::{CompressResult, CompressionError, Compressor};
 use crate::shuffle;
 use crate::simple_packing::{self, PackingError, SimplePackingParams};
@@ -427,6 +427,7 @@ fn build_compressor(
             clevel: *clevel,
             typesize: *typesize,
             nthreads: config.intra_codec_threads,
+            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         }))),
         #[cfg(feature = "zfp")]
         CompressionType::Zfp { mode } => Ok(Some(Box::new(ZfpCompressor {
