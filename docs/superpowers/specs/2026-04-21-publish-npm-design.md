@@ -19,7 +19,7 @@ Self-hosted Linux runner with the ECMWF CI Docker image (`eccr.ecmwf.int/tensogr
 
 Named environment: `npm`. Mirrors the `crates-io` and `pypi` environments. Allows gating the `NPM_TOKEN` secret and optionally adding required reviewers.
 
-**Required secret:** `NPMJS_API_TOKEN` — a publish-scoped npm access token for the `@ecmwf` scope, stored in the `npm` environment.
+**Required secret:** `NPMJS_API_TOKEN` — a publish-scoped npm access token for the `@ecmwf.int` scope, stored in the `npm` environment.
 
 ## Steps
 
@@ -29,9 +29,15 @@ Named environment: `npm`. Mirrors the `crates-io` and `pypi` environments. Allow
 4. Build WASM: `wasm-pack build rust/tensogram-wasm --release --target web --out-dir ../../typescript/wasm --out-name tensogram_wasm`
 5. Install TypeScript deps: `npm ci` in `typescript/`
 6. Build distributable: `npx tsc` in `typescript/`
-7. **Idempotency check:** Query `https://registry.npmjs.org/@ecmwf/tensogram/<version>`. HTTP 200 → already published, skip (exit 0). HTTP 404 → proceed.
+7. **Package rename:** `typescript/package.json` `name` field changes from `@ecmwf/tensogram` to `@ecmwf.int/tensogram`. All import statements and `package.json` dependency references across the repo are updated to match (40 files).
+
+**Idempotency check:** Query `https://registry.npmjs.org/%40ecmwf.int%2Ftensogram/<version>`. HTTP 200 → already published, skip (exit 0). HTTP 404 → proceed.
 8. Write `.npmrc`: `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` (inline, since Node is installed manually rather than via `actions/setup-node`)
 9. `npm publish --access public` in `typescript/` with `NODE_AUTH_TOKEN: ${{ secrets.NPMJS_API_TOKEN }}`
+
+## Package rename
+
+The package name changes from `@ecmwf/tensogram` → `@ecmwf.int/tensogram`. This affects 40 files (source imports, `package.json` dependency entries, lock files, and documentation). Lock files are regenerated rather than hand-edited.
 
 ## What is not included
 
@@ -42,4 +48,5 @@ Named environment: `npm`. Mirrors the `crates-io` and `pypi` environments. Allow
 ## Prerequisites for first use
 
 1. Create a `npm` environment in the GitHub repo settings.
-2. Add `NPMJS_API_TOKEN` (publish-scoped npm token for `@ecmwf`) to that environment's secrets.
+2. Add `NPMJS_API_TOKEN` (publish-scoped npm token for `@ecmwf.int`) to that environment's secrets.
+3. Verify the `@ecmwf.int` scope is registered on npmjs.com (org names with dots are non-standard — confirm availability before the first publish).
