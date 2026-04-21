@@ -152,7 +152,7 @@ class TestCrossCheckWithEncode:
         digest = tensogram.compute_hash(raw)
         assert isinstance(digest, str) and len(digest) == 16
         # Validator confirms frame-level integrity at checksum level.
-        report = tensogram.validate_message(msg, level="checksum")
+        report = tensogram.validate(msg, level="checksum")
         assert report["hash_verified"], f"checksum validation failed: {report}"
 
     def test_matches_stamped_hash_int64(self):
@@ -161,7 +161,7 @@ class TestCrossCheckWithEncode:
         msg = tensogram.encode({"version": 3}, [(_descriptor_for([5], "int64"), values)])
         digest = tensogram.compute_hash(raw)
         assert len(digest) == 16
-        report = tensogram.validate_message(msg, level="checksum")
+        report = tensogram.validate(msg, level="checksum")
         assert report["hash_verified"]
 
     def test_matches_stamped_hash_large_payload(self):
@@ -173,7 +173,7 @@ class TestCrossCheckWithEncode:
             {"version": 3}, [(_descriptor_for([10_000], "float64"), values)]
         )
         assert len(tensogram.compute_hash(raw)) == 16
-        report = tensogram.validate_message(msg, level="checksum")
+        report = tensogram.validate(msg, level="checksum")
         assert report["hash_verified"]
 
 
@@ -191,5 +191,5 @@ class TestEncodePreEncodedIntegration:
         msg = tensogram.encode_pre_encoded(
             {"version": 3}, [(_descriptor_for([3], "float32"), raw)]
         )
-        report = tensogram.validate_message(msg, level="checksum")
+        report = tensogram.validate(msg, level="checksum")
         assert report["hash_verified"], f"checksum validation failed: {report}"

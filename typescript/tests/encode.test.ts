@@ -84,17 +84,21 @@ describe('Phase 1 — encode wrapper', () => {
   });
 
   it('defaults to xxh3 hashing', async () => {
+    // v3: the per-object hash moved from the CBOR descriptor to
+    // the frame footer's inline slot (plans/WIRE_FORMAT.md §2.4).
+    // `descriptor.hash` is always undefined on the decoded
+    // output.  The default `hash: "xxh3"` option still populates
+    // the inline slot (verifiable via `tensogram validate
+    // --checksum`; a Message-level `inlineHashes()` accessor is
+    // tracked as a pass-5 follow-up).  This test now just pins
+    // that encode+decode round-trips cleanly with default hashing.
     await init();
     const data = new Float32Array([1, 2, 3]);
     const msg = encode(defaultMeta(), [
       { descriptor: makeDescriptor([3], 'float32'), data },
     ]);
     const decoded = decode(msg);
-    const h = decoded.objects[0].descriptor.hash;
-    expect(h).toBeDefined();
-    expect(h?.type).toBe('xxh3');
-    expect(typeof h?.value).toBe('string');
-    expect(h?.value.length).toBeGreaterThan(0);
+    expect(decoded.objects[0].descriptor.hash).toBeUndefined();
     decoded.close();
   });
 

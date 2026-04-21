@@ -379,7 +379,7 @@ class TestEncodePreEncodedHashOverwrite:
 
         # Validate at checksum level: inline slot must verify
         # against the recomputed frame-body hash.
-        report = tensogram.validate_message(msg, level="checksum")
+        report = tensogram.validate(msg, level="checksum")
         assert report["hash_verified"], (
             f"encode_pre_encoded inline slot must verify at checksum level, got: {report}"
         )

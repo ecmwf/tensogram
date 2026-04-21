@@ -71,20 +71,32 @@ describe('Phase 1 — decode wrapper', () => {
     expect(() => decode(garbage)).toThrow(FramingError);
   });
 
-  it('throws HashMismatchError with verifyHash: true on tamper', async () => {
+  it('verifyHash: true is a no-op in v3 (integrity moved to validate)', async () => {
+    // v3: `verifyHash: true` on decode is retained for source
+    // compatibility but is a no-op.  Frame-level integrity
+    // verification moved to the validate API
+    // (plans/WIRE_FORMAT.md §11).  Corruption detection lives in
+    // `validate --checksum`; decode is a pure deserialisation.
     await init();
-    // Large payload so we can flip a byte that's clearly inside the
-    // data region, not the descriptor CBOR. 1000 f32s = 4000 B.
     const data = new Float32Array(1000);
     for (let i = 0; i < data.length; i++) data[i] = i;
     const msg = encode(defaultMeta(), [
       { descriptor: makeDescriptor([1000], 'float32'), data },
     ]);
     const tampered = new Uint8Array(msg);
-    // The preamble is 24 bytes, header frames a few hundred; byte offset
-    // 500 is deep inside the payload for a 4000-byte f32 array.
     tampered[500] ^= 0xff;
-    expect(() => decode(tampered, { verifyHash: true })).toThrow(HashMismatchError);
+    // decode must NOT throw HashMismatchError — that surface moved
+    // to validate.  It may still throw FramingError if the tamper
+    // lands on a structural byte; otherwise it succeeds silently.
+    try {
+      const decoded = decode(tampered, { verifyHash: true });
+      decoded.close();
+    } catch (e) {
+      // Structural tamper → FramingError is acceptable; hash-only
+      // tamper → decode succeeds.  Either way, HashMismatchError
+      // must not escape the decode path.
+      expect(e).not.toBeInstanceOf(HashMismatchError);
+    }
   });
 
   it('verifyHash: true on untampered data succeeds', async () => {

@@ -28,8 +28,9 @@ use crate::framing;
 use crate::metadata;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, IndexFrame};
 use crate::wire::{
-    DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END, FRAME_HEADER_SIZE, FrameHeader, FrameType,
-    MAGIC, MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE, Postamble, Preamble,
+    DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_COMMON_FOOTER_SIZE, FRAME_END,
+    FRAME_HEADER_SIZE, FrameHeader, FrameType, MAGIC, MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE,
+    Postamble, Preamble,
 };
 
 // ── URL scheme detection ─────────────────────────────────────────────────────
@@ -606,7 +607,7 @@ impl RemoteBackend {
                 ));
             }
 
-            let payload = &buf[pos + FRAME_HEADER_SIZE..frame_end - FRAME_END.len()];
+            let payload = &buf[pos + FRAME_HEADER_SIZE..frame_end - FRAME_COMMON_FOOTER_SIZE];
 
             match fh.frame_type {
                 FrameType::HeaderMetadata => {
@@ -674,7 +675,7 @@ impl RemoteBackend {
                 ));
             }
 
-            let payload = &buf[pos + FRAME_HEADER_SIZE..frame_end - FRAME_END.len()];
+            let payload = &buf[pos + FRAME_HEADER_SIZE..frame_end - FRAME_COMMON_FOOTER_SIZE];
 
             match fh.frame_type {
                 FrameType::FooterMetadata => {
@@ -834,7 +835,10 @@ impl RemoteBackend {
         if footer_bytes.len() < DATA_OBJECT_FOOTER_SIZE {
             return Err(TensogramError::Remote("frame footer too short".to_string()));
         }
-        if &footer_bytes[8..] != FRAME_END {
+        // v3 data-object footer: [cbor_offset u64][hash u64][ENDF 4]
+        // ENDF sits in the last 4 bytes.
+        let endf_pos = footer_bytes.len() - FRAME_END.len();
+        if &footer_bytes[endf_pos..] != FRAME_END {
             return Err(TensogramError::Remote(
                 "frame missing ENDF trailer".to_string(),
             ));
@@ -1750,7 +1754,9 @@ impl RemoteBackend {
         if footer_bytes.len() < DATA_OBJECT_FOOTER_SIZE {
             return Err(TensogramError::Remote("frame footer too short".to_string()));
         }
-        if &footer_bytes[8..] != FRAME_END {
+        // v3 data-object footer: [cbor_offset u64][hash u64][ENDF 4]
+        let endf_pos = footer_bytes.len() - FRAME_END.len();
+        if &footer_bytes[endf_pos..] != FRAME_END {
             return Err(TensogramError::Remote(
                 "frame missing ENDF trailer".to_string(),
             ));

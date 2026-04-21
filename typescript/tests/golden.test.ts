@@ -40,7 +40,7 @@ describe('Cross-language golden-file parity', () => {
     const bytes = loadGolden('simple_f32.tgm');
     const decoded = decode(bytes);
     try {
-      expect(decoded.metadata.version).toBe(2);
+      expect(decoded.metadata.version).toBe(3);
       expect(decoded.objects).toHaveLength(1);
 
       const obj = decoded.objects[0];
@@ -61,7 +61,7 @@ describe('Cross-language golden-file parity', () => {
     const bytes = loadGolden('multi_object.tgm');
     const decoded = decode(bytes);
     try {
-      expect(decoded.metadata.version).toBe(2);
+      expect(decoded.metadata.version).toBe(3);
       expect(decoded.objects).toHaveLength(3);
 
       // object[0] — float32 [2]
@@ -89,7 +89,7 @@ describe('Cross-language golden-file parity', () => {
     const bytes = loadGolden('mars_metadata.tgm');
     const decoded = decode(bytes);
     try {
-      expect(decoded.metadata.version).toBe(2);
+      expect(decoded.metadata.version).toBe(3);
       expect(decoded.metadata.base).toBeDefined();
       expect(decoded.metadata.base!.length).toBeGreaterThan(0);
 
@@ -131,38 +131,45 @@ describe('Cross-language golden-file parity', () => {
     }
   });
 
-  it('hash_xxh3.tgm decodes with verifyHash=true and carries a hash descriptor', async () => {
+  it('hash_xxh3.tgm decodes cleanly (v3: descriptor.hash is undefined)', async () => {
+    // v3: per-object hash lives in the frame footer inline slot;
+    // `descriptor.hash` on the decoded output is always undefined.
+    // Integrity verification is a validate-level concern in v3
+    // (plans/WIRE_FORMAT.md §11).
     await init();
     const bytes = loadGolden('hash_xxh3.tgm');
     const decoded = decode(bytes, { verifyHash: true });
     try {
-      expect(decoded.metadata.version).toBe(2);
+      expect(decoded.metadata.version).toBe(3);
       expect(decoded.objects).toHaveLength(1);
-      const hash = decoded.objects[0].descriptor.hash;
-      expect(hash).toBeDefined();
-      expect(hash?.type).toBe('xxh3');
-      expect(typeof hash?.value).toBe('string');
-      expect(hash!.value.length).toBeGreaterThan(0);
+      expect(decoded.objects[0].descriptor.hash).toBeUndefined();
     } finally {
       decoded.close();
     }
   });
 
-  it('hash_xxh3.tgm flags corruption under verifyHash', async () => {
+  it('hash_xxh3.tgm tamper may or may not throw on decode in v3', async () => {
+    // v3: `verifyHash: true` on decode is a no-op (integrity
+    // verification moved to validate).  A byte flip in the tail
+    // region may still throw FramingError (structural corruption)
+    // but is not guaranteed to — hash-only tamper slips through
+    // decode silently.  The replacement TS-side integrity test
+    // lives in the validate suite (once the TS `validate`
+    // wrapper lands).
     await init();
     const bytes = loadGolden('hash_xxh3.tgm');
-    // Corrupt a byte in the last 32 bytes of the file. For this small
-    // golden file the payload sits near the end, so a late-byte flip
-    // is guaranteed to land in either the payload itself (triggers
-    // HashMismatchError) or the hash/postamble bookkeeping (triggers
-    // a FramingError). Both are valid "tamper detected" outcomes.
     const tampered = new Uint8Array(bytes);
     const target = tampered.length - 24;
     tampered[target] ^= 0xff;
-    expect(() => decode(tampered, { verifyHash: true })).toThrow();
+    try {
+      const d = decode(tampered, { verifyHash: true });
+      d.close();
+    } catch {
+      // FramingError on structural tamper is acceptable.
+    }
   });
 
-  it('decodeMetadata on every golden file yields version 2', async () => {
+  it('decodeMetadata on every golden file yields version 3', async () => {
     await init();
     for (const name of [
       'simple_f32.tgm',
@@ -172,7 +179,7 @@ describe('Cross-language golden-file parity', () => {
     ]) {
       const bytes = loadGolden(name);
       const meta = decodeMetadata(bytes);
-      expect(meta.version, `version in ${name}`).toBe(2);
+      expect(meta.version, `version in ${name}`).toBe(3);
     }
   });
 });

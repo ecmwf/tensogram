@@ -759,7 +759,7 @@ fn decode_metadata_only() {
     );
 
     let version = js_sys::Reflect::get(&meta_js, &"version".into()).unwrap();
-    assert_eq!(version.as_f64().unwrap(), 2.0, "version should be 2");
+    assert_eq!(version.as_f64().unwrap(), 3.0, "v3 wire format");
 }
 
 #[wasm_bindgen_test]
@@ -1275,7 +1275,7 @@ fn decode_preserves_metadata_version() {
 
     let meta_js = tensogram_wasm::decode_metadata(&msg).unwrap();
     let version = js_sys::Reflect::get(&meta_js, &"version".into()).unwrap();
-    assert_eq!(version.as_f64().unwrap(), 2.0, "version should be 2");
+    assert_eq!(version.as_f64().unwrap(), 3.0, "v3 wire format");
 }
 
 #[wasm_bindgen_test]
@@ -1486,7 +1486,7 @@ fn api_metadata_version_field_accessible() {
     // Version should be accessible as a number
     let version = js_sys::Reflect::get(&meta, &"version".into()).unwrap();
     assert!(version.is_truthy());
-    assert_eq!(version.as_f64().unwrap(), 2.0);
+    assert_eq!(version.as_f64().unwrap(), 3.0);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2555,21 +2555,20 @@ fn compute_hash_unknown_algo_errors() {
 }
 
 #[wasm_bindgen_test]
-fn compute_hash_matches_descriptor_hash() {
-    // The hash in the descriptor is computed over the encoded payload.
-    // For encoding=none,filter=none,compression=none the encoded payload
-    // is the raw native bytes, so the hashes must match.
-    let desc = make_descriptor(vec![4], Dtype::Float32);
+fn compute_hash_is_stable_for_raw_bytes() {
+    // v3: the per-object hash is no longer stamped on the CBOR
+    // descriptor — it lives in the frame footer's inline slot
+    // (plans/WIRE_FORMAT.md §2.4).  Testing cross-equality with
+    // the inline slot from the WASM side requires a public
+    // slot-accessor API that isn't yet surfaced (tracked in
+    // plans/WIRE_FORMAT_CHANGES.md open follow-ups).  Until
+    // then, we pin `compute_hash` stability: the same raw bytes
+    // always produce the same 16-character hex digest.
     let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
-    let msg = encode_native(&default_metadata(), &[(&desc, &payload)]); // with hash
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
-    let desc_js = decoded.object_descriptor(0).unwrap();
-    let hash_val = js_sys::Reflect::get(&desc_js, &"hash".into()).unwrap();
-    let value_val = js_sys::Reflect::get(&hash_val, &"value".into()).unwrap();
-    let expected = value_val.as_string().unwrap();
-
-    let computed = tensogram_wasm::compute_hash(&payload, None).unwrap();
-    assert_eq!(computed, expected);
+    let a = tensogram_wasm::compute_hash(&payload, None).unwrap();
+    let b = tensogram_wasm::compute_hash(&payload, None).unwrap();
+    assert_eq!(a, b);
+    assert_eq!(a.len(), 16);
 }
 
 // -- simple_packing_compute_params -----------------------------------------

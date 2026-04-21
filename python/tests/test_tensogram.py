@@ -883,7 +883,7 @@ class TestErrors:
 
         `decode(verify_hash=True)` is a no-op in v3 (the option is
         kept for source compatibility).  Frame-level integrity now
-        goes through `tensogram.validate_message(msg, level="checksum")`,
+        goes through `tensogram.validate(msg, level="checksum")`,
         which recomputes each frame's body hash and compares it to
         the inline slot.  Corruption in the payload or header region
         surfaces as a validation issue, not a decode error.
@@ -909,7 +909,7 @@ class TestErrors:
 
         # If decode succeeded, validate --checksum must surface the
         # corruption as a HashMismatch issue.
-        report = tensogram.validate_message(bytes(corrupted), level="checksum")
+        report = tensogram.validate(bytes(corrupted), level="checksum")
         codes = [issue["code"] for issue in report["issues"]]
         assert any(
             c in ("HashMismatch", "DecodePipelineFailed", "CborOffsetInvalid")
@@ -1658,7 +1658,7 @@ class TestDescriptorCoverage:
         desc, _ = objects[0]
         assert desc.hash is None
         # Integrity verification lives at the validate layer now.
-        report = tensogram.validate_message(msg, level="checksum")
+        report = tensogram.validate(msg, level="checksum")
         assert report["hash_verified"], (
             f"checksum validation should pass on fresh encode, got: {report}"
         )
@@ -1743,7 +1743,7 @@ class TestErrorCoverage:
         """
         msg = bytearray(encode_simple(np.ones(100, dtype=np.float32), hash_algo="xxh3"))
         msg[len(msg) // 2] ^= 0xFF
-        report = tensogram.validate_message(bytes(msg), level="checksum")
+        report = tensogram.validate(bytes(msg), level="checksum")
         codes = [issue["code"] for issue in report["issues"]]
         assert any(
             c in ("HashMismatch", "DecodePipelineFailed", "CborOffsetInvalid")

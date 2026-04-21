@@ -64,23 +64,19 @@ describe('Scope C.1 — computeHash', () => {
     ).toThrow(MetadataError);
   });
 
-  it('matches the hash stamped on an encoded payload (no pipeline)', async () => {
-    // For encoding=filter=compression=none, the encoded payload is the
-    // raw native-endian bytes.  TS-side hash of those bytes must equal
-    // the descriptor's recorded hash.
+  it('computeHash produces a stable 16-char xxh3 hex digest', () => {
+    // v3: the per-object hash moved from the CBOR descriptor to the
+    // frame footer's inline slot (plans/WIRE_FORMAT.md §2.4), so
+    // `descriptor.hash` is always undefined on the TS-side decoded
+    // output.  The standalone `computeHash` helper remains a
+    // cross-language-stable digest function; a Message-level
+    // inline-hash accessor is tracked as a pass-5 follow-up in
+    // plans/WIRE_FORMAT_CHANGES.md.
     const values = new Float32Array([1.25, 2.5, 3.75, 4.0]);
     const raw = new Uint8Array(values.buffer, values.byteOffset, values.byteLength);
-    const msg = encode(defaultMeta(), [
-      { descriptor: makeDescriptor([4], 'float32'), data: values },
-    ]);
-    const decoded = decode(msg);
-    try {
-      const descHash = decoded.objects[0].descriptor.hash;
-      expect(descHash?.type).toBe('xxh3');
-      const standalone = computeHash(raw);
-      expect(standalone).toBe(descHash?.value);
-    } finally {
-      decoded.close();
-    }
+    const a = computeHash(raw);
+    const b = computeHash(raw);
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{16}$/);
   });
 });

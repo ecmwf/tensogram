@@ -126,11 +126,14 @@ describe('Scope C.1 — StreamingEncoder', () => {
       expect(Array.from(decStr.objects[0].data() as Float32Array)).toEqual(
         Array.from(decBuf.objects[0].data() as Float32Array),
       );
-      // Wire bytes intentionally differ (header-index vs footer-index).
-      // Hash value must match — it's the xxh3 of the same encoded payload.
-      expect(decStr.objects[0].descriptor.hash?.value).toBe(
-        decBuf.objects[0].descriptor.hash?.value,
-      );
+      // v3: descriptor.hash is always undefined on the decoded
+      // output (the hash moved to the frame footer's inline slot,
+      // plans/WIRE_FORMAT.md §2.4).  Buffered and streaming
+      // encoders produce the same inline slot for the same input
+      // — pinned at the Rust level in hash_while_encoding.rs; the
+      // TS-side slot-level cross-check is a pass-5 follow-up.
+      expect(decStr.objects[0].descriptor.hash).toBeUndefined();
+      expect(decBuf.objects[0].descriptor.hash).toBeUndefined();
     } finally {
       decBuf.close();
       decStr.close();
