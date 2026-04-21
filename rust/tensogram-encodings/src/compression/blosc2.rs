@@ -31,6 +31,16 @@ use crate::pipeline::Blosc2Codec;
 /// larger chunk would impose.
 pub const DEFAULT_BLOSC2_CHUNK_BYTES: usize = 256 * 1024 * 1024;
 
+/// C-Blosc2's hard per-call compression buffer limit, in bytes.
+///
+/// Any single `SChunk::append()` whose input exceeds this returns
+/// `MaxBufsizeExceeded`.  Defined as `INT_MAX - BLOSC2_MAX_OVERHEAD`
+/// in `c-blosc2/include/blosc2.h` (overhead = extended header = 32 B).
+/// Exposed at crate-private visibility only — the chunking logic in
+/// [`Blosc2Compressor::compress`] uses it to clamp an over-large
+/// `chunk_bytes` and keep the multi-append path always legal.
+const BLOSC2_MAX_BUFFERSIZE: usize = (i32::MAX as usize) - 32;
+
 /// Ensure the blosc2 C library is initialized.
 ///
 /// Workaround: the `blosc2` crate (v0.2.2) calls `blosc2_init()` inside
@@ -120,10 +130,13 @@ impl Compressor for Blosc2Compressor {
         let mut schunk = SChunk::new(cparams, dparams).map_err(map_err)?;
 
         // Floor `chunk_bytes` to a multiple of `typesize` so non-tail
-        // appends stay aligned for blosc2's shuffle filter, and clamp to
-        // at least one `typesize` to guarantee forward progress.
+        // appends stay aligned for blosc2's shuffle filter, clamp upward
+        // to at least one `typesize` to guarantee forward progress, and
+        // clamp downward to `BLOSC2_MAX_BUFFERSIZE` so the multi-append
+        // path stays legal even if a caller misconfigures `chunk_bytes`.
         let ts = self.typesize.max(1);
-        let chunk_bytes = (self.chunk_bytes / ts).max(1) * ts;
+        let capped = self.chunk_bytes.min(BLOSC2_MAX_BUFFERSIZE);
+        let chunk_bytes = (capped / ts).max(1) * ts;
 
         if data.len() <= chunk_bytes {
             // Fast path: inputs that fit in one chunk produce byte-identical
@@ -554,4 +567,23 @@ mod tests {
         assert_eq!(decompressed, data);
     }
 
+    /// A caller who constructs `Blosc2Compressor` directly with a
+    /// `chunk_bytes` larger than `BLOSC2_MAX_BUFFERSIZE` (2 GiB) must
+    /// still round-trip: the clamp in `compress()` keeps every
+    /// `schunk.append()` below the C limit.  This guards against the
+    /// original issue #68 re-emerging through a misconfigured field.
+    #[test]
+    fn blosc2_chunk_bytes_above_max_buffersize_is_clamped() {
+        let data: Vec<u8> = (0..8192).map(|i| (i % 251) as u8).collect();
+        let compressor = Blosc2Compressor {
+            codec: Blosc2Codec::Lz4,
+            clevel: 5,
+            typesize: 1,
+            nthreads: 0,
+            chunk_bytes: BLOSC2_MAX_BUFFERSIZE + (1 << 30),
+        };
+        let compressed = compressor.compress(&data).unwrap().data;
+        let decompressed = compressor.decompress(&compressed, data.len()).unwrap();
+        assert_eq!(decompressed, data);
+    }
 }
