@@ -19,7 +19,7 @@ classifiers = [
 ]
 dependencies = [
     "tensogram>=0.16.1,<0.17",
-    "anemoi-inference",
+    "anemoi-inference>=0.4,<0.11",
     "fsspec",
     "numpy",
 ]
