@@ -121,7 +121,7 @@ pub(crate) fn extract_descriptor_data_pairs(
 ///
 /// Rust `BTreeMap` / `HashMap` values serialise as plain JS objects
 /// (not ES `Map`), which is the natural shape TypeScript consumers
-/// expect and what the high-level `@ecmwf/tensogram` wrapper relies
+/// expect and what the high-level `@ecmwf.int/tensogram` wrapper relies
 /// on. Safe-range `u64` values come across as `number`; values that
 /// exceed `Number.MAX_SAFE_INTEGER` come across as `BigInt`.
 ///

@@ -311,7 +311,7 @@ if (!msg) {
 
 ### TypeScript
 
-Every error thrown by `@ecmwf/tensogram` is an instance of the abstract
+Every error thrown by `@ecmwf.int/tensogram` is an instance of the abstract
 `TensogramError` base class. The concrete subclasses match the Rust
 variants one-to-one, plus a TS-specific `InvalidArgumentError` and
 `StreamingLimitError`.
@@ -324,7 +324,7 @@ import {
   HashMismatchError,
   ObjectError,
   StreamingLimitError,
-} from '@ecmwf/tensogram';
+} from '@ecmwf.int/tensogram';
 
 try {
   const { metadata, objects } = decode(buf, { verifyHash: true });
@@ -361,7 +361,7 @@ iterator skips and continues. Register an `onError` callback to observe
 the skips:
 
 ```ts
-import { decodeStream, StreamingLimitError } from '@ecmwf/tensogram';
+import { decodeStream, StreamingLimitError } from '@ecmwf.int/tensogram';
 
 try {
   for await (const frame of decodeStream(res.body!, {

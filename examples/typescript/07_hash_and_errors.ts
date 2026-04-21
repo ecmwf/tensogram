@@ -32,7 +32,7 @@ import {
   TensogramError,
   decodeObject,
   type DataObjectDescriptor,
-} from '@ecmwf/tensogram';
+} from '@ecmwf.int/tensogram';
 
 function descFor(shape: number[]): DataObjectDescriptor {
   const strides = new Array<number>(shape.length).fill(1);

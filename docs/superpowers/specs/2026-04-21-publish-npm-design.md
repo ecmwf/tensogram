@@ -5,7 +5,7 @@
 
 ## Summary
 
-A GitHub Actions workflow (`publish-npm.yml`) that publishes `@ecmwf/tensogram` to the public npm registry on manual dispatch. Consistent in style and structure with the existing `publish-crates.yml` and `publish-pypi-tensogram.yml` workflows.
+A GitHub Actions workflow (`publish-npm.yml`) that publishes `@ecmwf.int/tensogram` to the public npm registry on manual dispatch. Consistent in style and structure with the existing `publish-crates.yml` and `publish-pypi-tensogram.yml` workflows.
 
 ## Trigger
 
@@ -29,7 +29,7 @@ Named environment: `npm`. Mirrors the `crates-io` and `pypi` environments. Allow
 4. Build WASM: `wasm-pack build rust/tensogram-wasm --release --target web --out-dir ../../typescript/wasm --out-name tensogram_wasm`
 5. Install TypeScript deps: `npm ci` in `typescript/`
 6. Build distributable: `npx tsc` in `typescript/`
-7. **Package rename:** `typescript/package.json` `name` field changes from `@ecmwf/tensogram` to `@ecmwf.int/tensogram`. All import statements and `package.json` dependency references across the repo are updated to match (40 files).
+7. **Package rename:** `typescript/package.json` `name` field changes from `@ecmwf.int/tensogram` to `@ecmwf.int/tensogram`. All import statements and `package.json` dependency references across the repo are updated to match (40 files).
 
 **Idempotency check:** Query `https://registry.npmjs.org/%40ecmwf.int%2Ftensogram/<version>`. HTTP 200 → already published, skip (exit 0). HTTP 404 → proceed.
 8. Write `.npmrc`: `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` (inline, since Node is installed manually rather than via `actions/setup-node`)
@@ -37,7 +37,7 @@ Named environment: `npm`. Mirrors the `crates-io` and `pypi` environments. Allow
 
 ## Package rename
 
-The package name changes from `@ecmwf/tensogram` → `@ecmwf.int/tensogram`. This affects 40 files (source imports, `package.json` dependency entries, lock files, and documentation). Lock files are regenerated rather than hand-edited.
+The package name changes from `@ecmwf.int/tensogram` → `@ecmwf.int/tensogram`. This affects 40 files (source imports, `package.json` dependency entries, lock files, and documentation). Lock files are regenerated rather than hand-edited.
 
 ## What is not included
 

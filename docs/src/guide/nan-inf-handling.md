@@ -75,7 +75,7 @@ decoded = tensogram.decode(msg)
 ### TypeScript
 
 ```ts
-import { encode, decode } from '@ecmwf/tensogram';
+import { encode, decode } from '@ecmwf.int/tensogram';
 
 const msg = encode(
     { version: 2 },

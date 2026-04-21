@@ -572,7 +572,7 @@ and [PyPI](https://pypi.org/project/tensogram/).
 - FFI signatures gain a `threads` parameter — this is an ABI
   break from 0.12.0, but downstream code that used option-struct
   defaults will pick it up naturally.
-- **TypeScript wrapper** (`@ecmwf/tensogram` under `typescript/`)
+- **TypeScript wrapper** (`@ecmwf.int/tensogram` under `typescript/`)
   — ergonomic TypeScript bindings over the existing WebAssembly
   crate, shipped as a separate npm package. Includes a full Vitest
   suite (smoke, init, encode, decode, metadata, streaming, errors,

@@ -1,6 +1,6 @@
 # TypeScript Wrapper
 
-> Design and implementation plan for `@ecmwf/tensogram` — a TypeScript
+> Design and implementation plan for `@ecmwf.int/tensogram` — a TypeScript
 > package that provides an ergonomic, typed API on top of the existing
 > `tensogram-wasm` bindings.
 >
@@ -62,7 +62,7 @@ Not included (explicitly):
                   └────────────────┬─────────────────┘
                                    │
                   ┌────────────────▼─────────────────┐
-                  │   @ecmwf/tensogram (this pkg)    │
+                  │   @ecmwf.int/tensogram (this pkg)    │
                   │                                  │
                   │  typed API · dtype dispatch      │
                   │  file helpers · stream helpers   │
@@ -104,7 +104,7 @@ import { init, encode, decode, scan,
          decodeStream,
          TensogramFile,
          getMetaKey, computeCommon,
-         FramingError, HashMismatchError, /* ... */ } from '@ecmwf/tensogram';
+         FramingError, HashMismatchError, /* ... */ } from '@ecmwf.int/tensogram';
 
 await init();  // idempotent, loads + instantiates the WASM blob
 
@@ -137,7 +137,7 @@ const { metadata, objects } = await file.message(0);  // Range request
 
 ```
 typescript/                             ← new top-level dir
-├── package.json                        ← "@ecmwf/tensogram", ESM-only
+├── package.json                        ← "@ecmwf.int/tensogram", ESM-only
 ├── tsconfig.json                       ← strict, ES2022, node+dom libs
 ├── vitest.config.ts
 ├── .gitignore                          ← dist/, wasm/, node_modules/
@@ -447,7 +447,7 @@ issue the `Range` GET on first access; existing callers add `await`.
 - **Scope C.3** — npm publish pipeline, browser CI via
   Vitest-browser + Playwright, `size-limit` bundle budget, vitest
   bench on hot paths.  See `plans/TODO.md`.
-- **Scope C.4** — `@ecmwf/tensogram-zarr` mirror of the Python
+- **Scope C.4** — `@ecmwf.int/tensogram-zarr` mirror of the Python
   `tensogram-zarr` package.
 - Dual `--target web` + `--target nodejs` wasm-pack build for tighter
   Node compatibility (currently Node ≥ 20 required).

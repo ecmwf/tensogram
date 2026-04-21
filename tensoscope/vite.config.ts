@@ -5,7 +5,7 @@ import cesium from 'vite-plugin-cesium'
 import path from 'path'
 
 const tensogramPkg = path.resolve(
-  __dirname, 'node_modules/@ecmwf/tensogram/dist/index.js',
+  __dirname, 'node_modules/@ecmwf.int/tensogram/dist/index.js',
 )
 
 /** Vite plugin: proxy /api/proxy?url=... to bypass CORS for remote .tgm files.
@@ -71,12 +71,12 @@ export default defineConfig({
   plugins: [react(), wasm(), cesium(), corsProxy()],
   resolve: {
     alias: {
-      '@ecmwf/tensogram': tensogramPkg,
+      '@ecmwf.int/tensogram': tensogramPkg,
     },
     preserveSymlinks: true,
   },
   optimizeDeps: {
-    exclude: ['@ecmwf/tensogram'],
+    exclude: ['@ecmwf.int/tensogram'],
   },
   server: {
     fs: {

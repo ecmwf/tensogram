@@ -2,7 +2,7 @@
 
 Interactive web viewer for [Tensogram](https://github.com/ecmwf/tensogram) `.tgm` files.
 
-Decodes data directly in the browser via the `@ecmwf/tensogram` WebAssembly package and
+Decodes data directly in the browser via the `@ecmwf.int/tensogram` WebAssembly package and
 renders geospatial fields on an interactive map using deck.gl + MapLibre GL JS.
 
 ## Features
@@ -52,7 +52,7 @@ Set `BASE_PATH=/subpath` to deploy under a subpath.
 ## Architecture
 
 Tensoscope is a thin UI layer. All heavy lifting is done by the
-`@ecmwf/tensogram` WASM package (`typescript/`):
+`@ecmwf.int/tensogram` WASM package (`typescript/`):
 
 - `src/tensogram/index.ts` — wraps the WASM API into a `TensoscopeViewer` class
 - `src/store/useAppStore.ts` — Zustand state for selected file, field, and step

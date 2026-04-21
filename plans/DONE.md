@@ -230,7 +230,7 @@ streaming. Compiles to `wasm32-unknown-unknown` via `wasm-pack`.
 - **Build / test.** `wasm-pack build rust/tensogram-wasm --target web`,
   `wasm-pack test --node rust/tensogram-wasm`.
 
-## TypeScript wrapper (`@ecmwf/tensogram`)
+## TypeScript wrapper (`@ecmwf.int/tensogram`)
 
 Ergonomic typed layer over `tensogram-wasm` for browser + Node consumers.
 Design doc: `plans/TYPESCRIPT_WRAPPER.md`. User guide:
@@ -238,7 +238,7 @@ Design doc: `plans/TYPESCRIPT_WRAPPER.md`. User guide:
 
 - **Package.** `typescript/` — ESM-only, strict TS, Node ≥ 20, built
   via `wasm-pack build --target web` + `tsc`. Package name
-  `@ecmwf/tensogram`.
+  `@ecmwf.int/tensogram`.
 - **WASM side-change.** `rust/tensogram-wasm/src/convert.rs::to_js`
   uses `Serializer::json_compatible()` so CBOR metadata surfaces as
   plain JS objects rather than ES `Map`. Backwards-compatible at the
@@ -669,7 +669,7 @@ comparison against ecCodes.
 ## Tensoscope (web viewer)
 
 - React SPA (`tensoscope/`) for exploring `.tgm` files in the browser.
-- Depends on `@ecmwf/tensogram` WASM package (`typescript/`) for all
+- Depends on `@ecmwf.int/tensogram` WASM package (`typescript/`) for all
   decode — no server-side component.
 - **File loading.** Drag-and-drop or URL fetch; WASM scan builds an
   in-memory index of messages and objects without decoding payloads.

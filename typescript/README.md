@@ -1,4 +1,4 @@
-# @ecmwf/tensogram
+# @ecmwf.int/tensogram
 
 TypeScript bindings for [Tensogram](https://github.com/ecmwf/tensogram),
 a binary message format for N-dimensional scientific tensors. Tensogram is
@@ -29,7 +29,7 @@ Requirements:
 ## Quick start
 
 ```ts
-import { init, encode, decode } from '@ecmwf/tensogram';
+import { init, encode, decode } from '@ecmwf.int/tensogram';
 
 await init();
 

@@ -1,6 +1,6 @@
 # TypeScript API
 
-Tensogram ships `@ecmwf/tensogram`, a TypeScript package that wraps the
+Tensogram ships `@ecmwf.int/tensogram`, a TypeScript package that wraps the
 WebAssembly build with typed, idiomatic helpers. Use it in any modern
 browser or Node ≥ 20.
 
@@ -38,7 +38,7 @@ import {
   init, encode, decode,
   type DataObjectDescriptor,
   type GlobalMetadata,
-} from '@ecmwf/tensogram';
+} from '@ecmwf.int/tensogram';
 
 // One-time WASM initialisation (idempotent)
 await init();
@@ -192,7 +192,7 @@ import {
   HashMismatchError,
   InvalidArgumentError,
   StreamingLimitError,
-} from '@ecmwf/tensogram';
+} from '@ecmwf.int/tensogram';
 
 try {
   decode(corruptBuffer);
@@ -232,7 +232,7 @@ Use `decodeStream(readable, opts?)` to progressively decode a
 hand-rolled `ReadableStream`.
 
 ```ts
-import { decodeStream } from '@ecmwf/tensogram';
+import { decodeStream } from '@ecmwf.int/tensogram';
 
 const res = await fetch('/data.tgm');
 for await (const frame of decodeStream(res.body!)) {
@@ -271,7 +271,7 @@ whether it lives on the local file system, behind an HTTPS URL, or
 already in memory.
 
 ```ts
-import { TensogramFile } from '@ecmwf/tensogram';
+import { TensogramFile } from '@ecmwf.int/tensogram';
 
 // Node: from the local file system
 const file = await TensogramFile.open('/data/input.tgm');
@@ -493,10 +493,10 @@ that want direct control.
 The low-level bit-conversion helpers (`halfBitsToFloat`,
 `floatToHalfBits`, `bfloat16BitsToFloat`, `floatToBfloat16Bits`) and
 the `isComplexDtype` type-guard are **internal** and are not re-exported
-from `@ecmwf/tensogram`.  Callers that need bit-level manipulation
+from `@ecmwf.int/tensogram`.  Callers that need bit-level manipulation
 should grab the raw storage from a view's `.bits` / `.data` accessor
 and do the conversion themselves, or import directly from
-`@ecmwf/tensogram/float16`, `…/bfloat16`, `…/complex` with the
+`@ecmwf.int/tensogram/float16`, `…/bfloat16`, `…/complex` with the
 understanding that these module paths are not part of the stable API.
 
 ## Examples

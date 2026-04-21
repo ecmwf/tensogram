@@ -94,7 +94,7 @@ This project contains Rust, Python, C, C++ and TypeScript code
 ## Tensoscope (React SPA)
 
 The interactive web viewer lives at `tensoscope/`.
-It depends on the `@ecmwf/tensogram` WASM package at `typescript/`.
+It depends on the `@ecmwf.int/tensogram` WASM package at `typescript/`.
 
 ### Prerequisites
 - Build the WASM package first: `cd typescript && make ts-build`

@@ -1,7 +1,7 @@
 # Tensoscope
 
 Tensoscope is an interactive web viewer for `.tgm` files. It runs entirely in the
-browser — no server-side component — by decoding data via the `@ecmwf/tensogram`
+browser — no server-side component — by decoding data via the `@ecmwf.int/tensogram`
 WebAssembly package.
 
 ## Quick start
