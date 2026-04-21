@@ -1,10 +1,10 @@
 [build-system]
-build-backend = "setuptools.build_meta"
-requires = [ "setuptools>=60", "setuptools-scm>=8" ]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "tensogram-anemoi"
-dynamic = [ "version" ]
+version = "0.16.1"
 description = "anemoi-inference output plugin for tensogram .tgm files"
 readme = {text = "anemoi-inference output plugin for tensogram .tgm files", content-type = "text/plain"}
 requires-python = ">=3.11"
@@ -34,13 +34,8 @@ dev = ["pytest>=7.0", "ruff>=0.4"]
 [project.entry-points."anemoi.inference.outputs"]
 tensogram = "tensogram_anemoi.output:TensogramOutput"
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools_scm]
-version_file = "src/tensogram_anemoi/_version.py"
-root = "../.."
-fallback_version = "0.0.0.dev0"
+[tool.hatch.build.targets.wheel]
+packages = ["src/tensogram_anemoi"]
 
 [tool.ruff]
 line-length = 99
