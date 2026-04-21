@@ -47,10 +47,7 @@ jobs:
       - run: mkdir -p "$TMPDIR"
 
       - name: Format + Clippy
-        run: |
-          cargo fmt --check
-          cargo clippy --workspace --all-targets -- -D warnings
-          cargo clippy -p tensogram --all-targets --features "remote,async" -- -D warnings
+        run: make rust-lint
 
       - name: sccache stats
         if: always()
@@ -409,7 +406,7 @@ jobs:
             | tar xz --strip-components=1 -C /usr/local "node-v${NODE_VERSION}-linux-x64/bin/node"
 
       - name: Build and test
-        run: wasm-pack test --node rust/tensogram-wasm
+        run: make wasm-test
 
       - name: sccache stats
         if: always()
@@ -437,26 +434,17 @@ jobs:
           curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
             | tar xJ --strip-components=1 -C /usr/local
 
-      - name: Build WASM (wasm-pack → typescript/wasm)
-        run: |
-          wasm-pack build rust/tensogram-wasm --release \
-            --target web --out-dir ../../typescript/wasm --out-name tensogram_wasm
-
       - name: Install typescript deps
-        working-directory: typescript
-        run: npm ci || npm install --no-audit --no-fund
+        run: make ts-install
+
+      - name: Build WASM + TypeScript (wasm-pack → typescript/wasm, tsc → dist)
+        run: make ts-build
 
       - name: Typecheck (strict, src + tests)
-        working-directory: typescript
-        run: npx tsc --noEmit -p tsconfig.test.json
+        run: make ts-typecheck
 
       - name: Run tests (vitest)
-        working-directory: typescript
-        run: npx vitest run
-
-      - name: Build distributable
-        working-directory: typescript
-        run: npx tsc
+        run: make ts-test
 
       - name: Smoke-test examples
         run: |
