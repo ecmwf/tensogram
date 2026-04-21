@@ -1,220 +1,540 @@
-# Wire Format
+# Wire Format (v3)
 
-A tensor message is composed by HEADER (Preamble + Frames), DATA OBJECT FRAMES and FOOTER (Frames + Postamble).
+> **Status.** This document describes wire format **version 3**, shipped
+> under the `[Unreleased] → 0.17.0` section of `CHANGELOG.md`.  Versions
+> 1 and 2 are no longer supported — decoders hard-fail when they read
+> a preamble with `version < 3`.  The change is a clean break; no
+> backward-compatibility shim is provided because the project is still
+> local and has no external data.
+>
+> For **why** these changes landed, see
+> [`plans/WIRE_FORMAT_CHANGES.md`](WIRE_FORMAT_CHANGES.md) (the phased
+> implementation plan that produced v3).  For the companion-mask
+> design that ships alongside, see
+> [`plans/BITMASK_FRAME.md`](BITMASK_FRAME.md).
 
-The HEADER and FOOTER each have a fixed part (Preamble and Postamble) contain optional FRAMES.
+---
 
-Whenever Reserved flags are unused, they shall be set to to zero.
+## 1. Overview
 
-# Frames
+A Tensogram message is a self-contained binary blob composed of a
+**HEADER** (fixed preamble + optional frames), a **BODY** (one or
+more data-object frames, each optionally preceded by a per-object
+preceder metadata frame), and a **FOOTER** (optional frames + fixed
+postamble).  Multiple messages may be appended to a file.
 
-Each frame is always identified by a start marker ASCII 'FR' and a uint16 that defines the type. It finishes with an end marker ASCII ENDF. uint16 types assigned are:
-1 - HEADER METADATA FRAME
-2 - HEADER INDEX FRAME
-3 - HEADER HASH FRAME
-4 - DATA OBJECT FRAME
-5 - FOOTER HASH FRAME
-6 - FOOTER INDEX FRAME
-7 - FOOTER METADATA FRAME
-8 - PRECEDER METADATA FRAME
+Every integer field is **big-endian** unless stated otherwise.  All
+frame payloads except the data payload of data-object frames are
+serialised as **canonical CBOR** (RFC 8949 §4.2).  Unknown CBOR keys
+at any level are silently ignored on decode (forward-compatibility
+rule).
 
-```
-FRAME (16 bytes)
-Offset  Size    Field
-──────  ──────  ─────────────────────────────────
-0       4       Magic: "FR" + uint16 (Frame type)
-4       2       Version (uint16 BE)
-6       2       Reserved Flags (uint16 BE)
-8       8       Total Length as Offset to end of object (uint64 BE)
-```
-Frame versions are independent from version of message and other frame types.
-HEADER PREAMBLE and FOOTER POSTAMBLE are not considered Frames.
+**Generic data objects.** The body phase carries one or more
+*data-object frames*.  The wire format is designed to accommodate
+multiple kinds of data object in the future (e.g. observation
+tables, non-tensor products).  In v3 the registry defines exactly
+one concrete data-object type — [`NTensorFrame`](#65-ntensorframe-type-9),
+the N-dimensional tensor frame (type 9).  New data-object types,
+when added, slot in alongside `NTensorFrame` at fresh frame-type
+numbers without a wire-format version bump, as long as they
+follow the common frame structure defined in §2.
 
-It is always possible to have padding between Frames, from the ENDF to next FR+int. This exists to allow for memory bounds alignment to 64bits, which is a option of the encoder.
-
-Some Frame types will contain structures encoded in CBOR.
-
-### CBOR
-
-Note that natively, a standard CBOR byte stream does not use universal "start" and "end" markers** in the way that JSON uses `{` and `}` or XML uses tags.
-Instead, CBOR is fundamentally a **length-prefixed** format (or "self-describing").
-Here is exactly how CBOR handles boundaries at the byte level: when a CBOR encoder writes an object (like a Map/dictionary, an Array, or a String), the very first byte acts as a "header" that declares the data type and how many items (or bytes) follow. Because the decoder knows exactly how many bytes or items to expect right from the start, **there is no end marker.** The decoder simply counts the bytes or items as it reads them and stops when it reaches the declared length.
-
-## Message
-
-Here is the overall message format:
+Top-level layout:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  HEADER PREAMBLE    magic, version, flags, length (fixed sz) │
+│  HEADER PREAMBLE            24 B  magic, version, flags, tl  │
 ├──────────────────────────────────────────────────────────────┤
-│  HEADER METADATA FRAME  CBOR metadata (optional)             │
+│  Header frames (optional, in this order)                     │
+│    HEADER METADATA FRAME      type 1                         │
+│    HEADER INDEX FRAME         type 2                         │
+│    HEADER HASH FRAME          type 3                         │
 ├──────────────────────────────────────────────────────────────┤
-│  HEADER INDEX FRAME CBOR [count, object offsets] (optional)  │
+│  Body — repeated per data object:                            │
+│    PRECEDER METADATA FRAME    type 8   (optional, pre-object)│
+│    NTENSORFRAME               type 9   (currently the only   │
+│    …                                    data-object type)    │
 ├──────────────────────────────────────────────────────────────┤
-│  HEADER HASH FRAME CBOR [count, hash_type, hashes] (optional)│
+│  Footer frames (optional, in this order)                     │
+│    FOOTER HASH FRAME          type 5                         │
+│    FOOTER INDEX FRAME         type 6                         │
+│    FOOTER METADATA FRAME      type 7                         │
 ├──────────────────────────────────────────────────────────────┤
-│  PRECEDER METADATA FRAME (for object 0, optional)            │
-│  DATA OBJECT FRAME  header + payload + footer  (object 0)    │
-│  PRECEDER METADATA FRAME (for object 1, optional)            │
-│  DATA OBJECT FRAME  header + payload + footer  (object 1)    │
-│  DATA OBJECT FRAME  header + payload + footer  (object 2)    │
-│  ...                (any number of objects)                  │
-├──────────────────────────────────────────────────────────────┤
-│  FOOTER HASH FRAME CBOR [count, hash_type, hashes] (optional)│
-├──────────────────────────────────────────────────────────────┤
-│  FOOTER INDEX FRAME CBOR [count, object offsets] (optional)  │
-├──────────────────────────────────────────────────────────────┤
-│  FOOTER METADATA FRAME  CBOR metadata (optional)             │
-├──────────────────────────────────────────────────────────────┤
-│  FOOTER POSTAMBLE first_footer_offset | end_magic (fixed sz) │
+│  FOOTER POSTAMBLE           24 B  first_footer_offset,       │
+│                                   total_length, end_magic    │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## Header
+**Invariant.** Either a header metadata frame or a footer metadata
+frame must be present.  Messages cannot be emitted without metadata.
+Index and hash frames are optional individually, but the encoder
+strongly encourages at least one of each per message and controls
+them through `EncodeOptions.create_header_hashes` /
+`create_footer_hashes` and the corresponding index flags.
 
-The HEADER starts with magic, version and reserved flags.
+---
 
-```
-Tensogram message HEADER PREAMBLE (24 bytes)
-Offset  Size    Field
-──────  ──────  ─────────────────────────────────
-0       8       Magic: "TENSOGRM"
-8       2       Version (uint16 BE)
-10      2       Flags (uint16 BE)
-12      4       Reserved Flags (uint32 BE)
-16      8       Total Length to end of message (may be zero if stream)
-```
+## 2. Common frame structure
 
-The flags in the message header preamble will indicate if the optional frames exist:
-- Bit 0: Header Metadata Frame
-- Bit 1: Footer Metadata Frame
-- Bit 2: Header Index Frame
-- Bit 3: Footer Index Frame
-- Bit 4: Header Hashes Frame
-- Bit 5: Footer Hashes Frame
-- Bit 6: Preceder Metadata Frames present
+Every frame has the same 16-byte **frame header** and a
+**frame-type-specific footer** whose size is fixed per type.
+The footer always ends with the two-field tail `[hash u64][ENDF]`
+(12 bytes), but may contain additional fixed-size fields *before*
+that tail.  Between header and footer, the per-frame payload is
+either CBOR-encoded (most frame types) or a custom layout
+(data-object frames).  Eight-byte alignment padding may follow a
+frame's `ENDF` — see §2.3.
 
-Either a header or a footer metadata frame must always be present, ie Messages cannot be without metadata. Indexes and hashes, in header and footer are optional, but highly encouraged to always have 1 of them. Default is to add them, in the header encoding in a single buffer or default in the footer if encoding while streaming.
-
-## Metadata Frame
-
-Whether in the Header or Footer, the metadata frame uniquely identifies the message.
-Each metadata CBOR block contains the following sub-objects:
- - 'version' (required) wire format version, currently 2.
- - 'base' holds an array of metadata maps, one per data object. Each entry holds ALL structured metadata for that object independently — no tracking of commonalities. The encoder auto-populates `_reserved_.tensor` (ndim, shape, strides, dtype) in each entry.
- - '_reserved_' is set aside for internals of the library. Client code can read but MUST NOT write — the encoder validates this. Inside it contains:
-    - 'encoder' describes the library that encoded the message. contains:
-        - 'name', 'tensogram' for this one
-        - 'version', software version
-    - 'time' date-time in UTC zulu of time of encoding
-    - 'uuid' UUID RFC 4122 generated at time of encoding, useful for provenance and tracking.
- - '_extra_' client-writable catch-all for ad-hoc message-level annotations. Any key not recognised by the library is preserved here on round-trip.
-
-## Footer
+### 2.1 Frame header (16 bytes)
 
 ```
-Footer Postamble (16 bytes)
-Offset  Size    Field
-──────  ──────  ─────────────────────────────────
-0       8       Offset to start of first footer Frame object (uint64 BE)
-8       8       Magic: "39277777"
+Offset  Size  Field
+──────  ────  ───────────────────────────────────────
+0       2     Magic: ASCII "FR"
+2       2     Frame type   (uint16 BE)  — see §4
+4       2     Version      (uint16 BE)  — frame-type-specific
+6       2     Frame flags  (uint16 BE)  — frame-type-specific
+8       8     total_length (uint64 BE)  — incl. header, payload,
+                                           footer, excl. padding
 ```
 
-## Frame type registry
+The `total_length` is the number of bytes from the first byte of the
+frame header through the last byte of `ENDF`, not counting any
+alignment padding that follows.
 
-| Type | Name | Phase | Status |
+### 2.2 Frame footer (type-specific, always ends with `[hash][ENDF]`)
+
+**New in v3.** Every frame ends with a fixed-size footer whose
+exact size depends on the frame type, but whose **last 12 bytes
+are always `[hash u64][ENDF 4]`**.  Any additional footer fields
+specific to a frame type (e.g. the `cbor_offset` field of
+data-object frames) appear *immediately before* the common tail.
+
+```
+Offset (from frame_end)  Size  Field
+───────────────────────  ────  ───────────────────────────────────
+ ⋮                        ⋮    type-specific footer fields
+-12                      8     hash (uint64 BE) — xxh3-64 digest,
+                                or 0x0000000000000000 when the
+                                preamble HASHES_PRESENT flag is 0
+-4                       4     End marker: ASCII "ENDF"
+```
+
+The hash slot lives at exactly `frame_end − 12` for every frame
+type, so a validator can locate it without knowing anything about
+the frame's payload structure.  The total footer size varies by
+type — see §2.4 and the per-frame sections (§6).
+
+Footer sizes in v3:
+
+| Frame type(s)                     | Footer size | Layout                      |
+|-----------------------------------|:----------:|------------------------------|
+| `HeaderMetadata` / `FooterMetadata` (1, 7) | 12 B | `[hash][ENDF]` |
+| `HeaderIndex` / `FooterIndex`     (2, 6)   | 12 B | `[hash][ENDF]` |
+| `HeaderHash` / `FooterHash`       (3, 5)   | 12 B | `[hash][ENDF]` |
+| `PrecederMetadata`                (8)      | 12 B | `[hash][ENDF]` |
+| `NTensorFrame`                    (9)      | 20 B | `[cbor_offset][hash][ENDF]` |
+
+### 2.3 Alignment padding
+
+`0–7` zero bytes may follow a frame's `ENDF` to align the next frame
+header to an 8-byte boundary.  This padding is *not* part of the
+frame — it is not covered by the hash, not included in
+`total_length`, and is simply skipped by the frame scanner.
+
+### 2.4 Frame hash scope
+
+**Rule.** The hash covers the **frame body** — i.e. the bytes
+between the frame header and the frame's type-specific footer.
+Neither the header nor any byte of the footer is ever covered by
+the hash.
+
+Formally, given a frame with `frame_start = s` and
+`frame_end = s + total_length`:
+
+```
+hash_scope = frame_bytes[s + 16 .. frame_end - footer_size(type))
+```
+
+where `footer_size(type)` is the per-type size from the table in
+§2.2.
+
+Examples:
+
+- **Metadata / Index / Hash / Preceder frames** (footer = 12 B) —
+  hash covers `bytes[16 .. total_length - 12)`, i.e. the CBOR
+  payload in full.
+- **`NTensorFrame`** (footer = 20 B) — hash covers
+  `bytes[16 .. total_length - 20)`, i.e. the encoded tensor
+  payload + any mask blobs + the CBOR descriptor.  The
+  `cbor_offset` field is part of the footer and is **not** hashed.
+
+Excluded from the hash in every case: the 16-byte frame header, the
+4-byte `ENDF` marker, the 8-byte hash slot itself, every other
+fixed-size footer field (e.g. `cbor_offset`), and any alignment
+padding after `ENDF`.
+
+The hash slot is **8 bytes of raw xxh3-64 digest in big-endian
+order** — no algorithm identifier byte, no length prefix.  The
+algorithm name (always `"xxh3"` in v3) lives in the message-level
+hash frames (§6.3) and is therefore extensible.
+
+When `HASHES_PRESENT = 0`, every frame's hash slot is written as
+`0x0000000000000000` and validators skip hash verification.
+
+---
+
+## 3. Preamble (24 bytes)
+
+```
+Offset  Size  Field
+──────  ────  ─────────────────────────────────────────────
+0       8     Magic: ASCII "TENSOGRM"
+8       2     Version (uint16 BE)            — must be 3 in v3
+10      2     Flags   (uint16 BE)            — see §3.1
+12      4     Reserved flags (uint32 BE)     — set to 0
+16      8     total_length (uint64 BE)       — see §3.2
+```
+
+A v3 decoder **rejects** any preamble where `version != 3` with a
+`FramingError`.  The version field is the sole source of truth for
+wire compatibility; changes that require new parsing logic always
+bump it.
+
+### 3.1 Preamble flags (bit positions)
+
+```
+Bit  Flag                    Meaning
+───  ──────────────────────  ─────────────────────────────────
+0    HEADER_METADATA         A HeaderMetadata frame is present.
+1    FOOTER_METADATA         A FooterMetadata frame is present.
+2    HEADER_INDEX            A HeaderIndex frame is present.
+3    FOOTER_INDEX            A FooterIndex frame is present.
+4    HEADER_HASHES           A HeaderHash frame is present.
+5    FOOTER_HASHES           A FooterHash frame is present.
+6    PRECEDER_METADATA       At least one PrecederMetadata frame
+                             appears in the body.
+7    HASHES_PRESENT          Per-frame hash slots are populated
+                             (non-zero).  When 0, every frame's
+                             hash slot is 0x00…00 and readers
+                             skip hash verification.
+8–15                         Reserved; set to 0.
+```
+
+### 3.2 `total_length`
+
+Total byte length of this message from the `TENSOGRM` magic (byte 0
+of the preamble) through the `39277777` magic (last 8 bytes of the
+postamble), inclusive.  Alignment padding between frames is counted;
+padding after the postamble is not (the postamble's last byte is
+the last byte of the message).
+
+In **streaming encode mode**, when the encoder does not know the
+total message size at the time it emits the preamble, this field is
+written as `0`.  If the output sink is seekable, the encoder
+back-fills the real value at `finish()` time (see §9.2).  A zero
+here tells readers to fall back to forward scanning.
+
+---
+
+## 4. Frame type registry
+
+| Type | Name | Phase | Status in v3 |
 |-----:|---|---|---|
-| 1 | `HeaderMetadata` | header | — |
-| 2 | `HeaderIndex` | header | — |
-| 3 | `HeaderHash` | header | — |
-| 4 | `NTensorFrame` (was `DataObject`) | body | **legacy**: read-only for ≥0.17 decoders; no new encoder emits |
-| 5 | `FooterHash` | footer | — |
-| 6 | `FooterIndex` | footer | — |
-| 7 | `FooterMetadata` | footer | — |
-| 8 | `PrecederMetadata` | body | — |
-| 9 | `NTensorMaskedFrame` | body | ≥0.17: all new n-tensor encoders emit this |
+| 1    | `HeaderMetadata`     | header | active |
+| 2    | `HeaderIndex`        | header | active |
+| 3    | `HeaderHash`         | header | active |
+| 4    | *(reserved, removed)*| body   | **error** — occupied by the obsolete v2 `NTensorFrame`; any v3 decoder that reads it emits `FramingError` |
+| 5    | `FooterHash`         | footer | active |
+| 6    | `FooterIndex`        | footer | active |
+| 7    | `FooterMetadata`     | footer | active |
+| 8    | `PrecederMetadata`   | body   | active |
+| 9    | `NTensorFrame`       | body   | active — currently the only concrete data-object type |
 
-## Data Object Frames
+Types ≥ 10 and types `0`, `4` are invalid.  Decoders reject them
+with a `FramingError("unknown frame type {n}")` or
+`FramingError("reserved frame type 4 (obsolete v2 NTensorFrame) not supported in v3")`
+respectively.
 
-Data-object frames (types 4 and 9) carry one N-dimensional tensor each.
-Type 4 (`NTensorFrame`) is the pre-0.17 format; type 9
-(`NTensorMaskedFrame`) supersedes it and can optionally carry up to
-three compressed bitmasks identifying positions of non-finite values
-(NaN, +Inf, -Inf).  See §Data Object Frame (type 4) and §N-Tensor
-Masked Frame (type 9) for the per-type layout.
+The body phase is designed to hold multiple kinds of data object;
+new data-object types slot in at fresh unused frame-type numbers
+(alongside `NTensorFrame` at type 9) without a version bump, as
+long as they follow the common frame structure of §2.
 
-We assume that a single data object frame can always be encoded in a single buffer, hence it is possible to always encode its CBOR encoding information together with the data payload. 1 flag is dedicated to identify if CBOR object is before (0) or after (1) of the data payload. Default is to encode AFTER since it is a single append to record the CBOR, sometimes only fully known after all the encoding is finished.
+---
 
-The CBOR information completely describes the data object encoding. For an N-Tensor, it also describes the shape of the layout once decoded: ndim, shape, strides, dtype.
- This header has a preamble followed by a CBOR block. Preamble is 16 bytes (see below). Then a CBOR structure describing the full encoding information, including the offset to the start of data because it is possible to have padding between the end of CBOR and the start of the data (for memory alignment).
+## 5. Phase ordering
 
-```
-Data Object Preamble (16 bytes)
-Offset  Size    Field
-──────  ──────  ─────────────────────────────────
-0       4       Magic: "FR" + uint16 (Frame type)
-4       2       Version (uint16 BE)
-6       2       Reserved Flags (uint16 BE)
-8       8       Total Length as Offset to end of object (uint64 BE)
-```
+Frames must appear in phase order: **header → body → footer**.
+Within a phase, the order above in §1 and §4 is enforced.  Two
+consecutive `PrecederMetadata` frames without an intervening
+data-object frame are invalid.  A `PrecederMetadata` frame not
+followed by a data-object frame (including at end-of-body) is
+invalid.  In v3, "data-object frame" means exclusively
+`NTensorFrame` (type 9); future data-object types will join that
+set without otherwise changing the ordering rules.
 
-### `NTensorFrame` (type 4) — legacy
+---
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  DATA OBJ PREAMBLE  magic, version, flags, length (fixed sz)  │
-├──────────────────────────────────────────────────────────────┤
-│  DATA OBJ ENCODING    CBOR description (before)               │
-├──────────────────────────────────────────────────────────────┤
-│  DATA BYTESTREAM PAYLOAD                                      │
-├──────────────────────────────────────────────────────────────┤
-│  DATA OBJ ENCODING CBOR description (after - default)         │
-├──────────────────────────────────────────────────────────────┤
-│  DATA OBJ FOOTER CBOR offset (uint64) + end_magic 'ENDF'     │
-└──────────────────────────────────────────────────────────────┘
-```
+## 6. Frame types
 
-### `NTensorMaskedFrame` (type 9) — current
+### 6.1 `HeaderMetadata` / `FooterMetadata` (types 1, 7)
 
-Layout extends type 4 with up to three optional compressed bitmasks
-stored between the payload and the CBOR descriptor.  Each mask
-records the positions of a specific non-finite kind (NaN, +Inf, -Inf)
-in the original input.  The payload itself has those positions
-substituted with `0.0`; on decode, the library restores the values
-using the canonical bit patterns (see `plans/BITMASK_FRAME.md` §7.1
-for the documented lossy-reconstruction caveat — specific NaN
-payloads such as signalling NaNs are NOT preserved).
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  DATA OBJ PREAMBLE  magic type=9, version, flags, length      │
-├──────────────────────────────────────────────────────────────┤
-│  DATA BYTESTREAM PAYLOAD  (NaN/Inf substituted with 0.0)      │
-├──────────────────────────────────────────────────────────────┤
-│  MASK BLOB 1   nan mask    (optional, compressed)             │
-├──────────────────────────────────────────────────────────────┤
-│  MASK BLOB 2   inf+ mask   (optional, compressed)             │
-├──────────────────────────────────────────────────────────────┤
-│  MASK BLOB 3   inf- mask   (optional, compressed)             │
-├──────────────────────────────────────────────────────────────┤
-│  DATA OBJ ENCODING  CBOR descriptor (with "masks" sub-map)    │
-├──────────────────────────────────────────────────────────────┤
-│  DATA OBJ FOOTER    CBOR offset (uint64) + end_magic 'ENDF'  │
-└──────────────────────────────────────────────────────────────┘
-```
-
-Each mask blob is a self-contained compressed bitmask; compression
-method and byte offset/length are recorded in the CBOR descriptor's
-`masks` sub-map.  No padding between sections; byte offsets are
-relative to the start of the payload region (i.e., first byte after
-the frame preamble).
-
-CBOR `masks` schema (optional; absent = no non-finite values in the
-source):
+CBOR payload: the `GlobalMetadata` structure.
 
 ```cbor
 {
+  "version": 3,                          ; required — wire format version
+  "base": [                              ; per-object metadata, one map per object
+    { "mars": { ... }, ... },
+    { "mars": { ... }, ... }
+  ],
+  "_reserved_": {                        ; library-managed, see below
+    "encoder": { "name": "tensogram", "version": "0.17.0" },
+    "time":    "2026-04-20T10:00:00Z",
+    "uuid":    "550e8400-e29b-41d4-a716-446655440000"
+  },
+  "_extra_": {                           ; client-writable catch-all
+    ...
+  }
+}
+```
+
+- `version` **must** equal the preamble version (3 in v3).  A
+  mismatch is a `MetadataError`.
+- `base[i]` holds ALL structured metadata for object `i`
+  independently.  The encoder auto-populates `_reserved_.tensor`
+  (with `ndim`, `shape`, `strides`, `dtype`) in each entry.
+- `_reserved_` is library-managed — client code may read but MUST
+  NOT write; the encoder validates this and rejects messages where
+  client code has set keys inside `_reserved_`.
+- `_extra_` is a client-writable catch-all for ad-hoc message-level
+  annotations.  Unknown top-level CBOR keys are preserved here on
+  round-trip.
+
+Exactly one of `HeaderMetadata` / `FooterMetadata` **must** be
+present.  If both are present, the decoder prefers the header frame
+(the most common case); any divergence between the two is a
+`MetadataError`.
+
+### 6.2 `HeaderIndex` / `FooterIndex` (types 2, 6)
+
+CBOR payload: a map listing the byte offset and byte length of each
+data-object frame, in emission order.
+
+```cbor
+{
+  "offsets": [u64, u64, ...],            ; offset from message start
+                                         ; (= from the TENSOGRM magic byte)
+  "lengths": [u64, u64, ...]             ; frame total_length, excl. padding
+}
+```
+
+- `offsets.len() == lengths.len()` — else `MetadataError`.
+- `offsets[i]` is the byte offset of the i-th data-object frame from
+  the start of the message (i.e. from `TENSOGRM` magic at byte 0),
+  **not** an absolute file offset.
+- `lengths[i]` mirrors the frame header's `total_length` for object
+  `i`, so readers can know the exact size of each frame without
+  reading its header first.
+- `PrecederMetadata` frames and alignment padding are NOT included
+  in the index; only data-object frames are indexed.  In v3 that
+  means only `NTensorFrame` frames; future data-object types will
+  also be indexed.
+- Object count is derived from `offsets.len()` — no separate
+  `object_count` key.
+
+Either a `HeaderIndex` or a `FooterIndex` (or both) is encouraged
+but not required.  If both are present, the decoder prefers the
+header frame.
+
+**Placement.** In buffered encoding the encoder typically emits a
+`HeaderIndex` (default).  In streaming encoding, where frame
+offsets are not known in advance, the encoder emits a `FooterIndex`
+instead (default), and sets the postamble `first_footer_offset`
+field to the byte offset of the footer frame.
+
+Unknown CBOR keys are ignored, so future additions (e.g. a
+`frame_types` array, or per-object flags) can be carried
+forward-compatibly without a version bump.
+
+### 6.3 `HeaderHash` / `FooterHash` (types 3, 5)
+
+CBOR payload: a map listing the per-object payload hashes.
+
+```cbor
+{
+  "algorithm": "xxh3",                   ; hash algorithm name
+  "hashes":    ["abcdef0123456789",      ; hex string per object,
+                "1122334455667788",      ; in emission order
+                ...]
+}
+```
+
+- `hashes[i]` is a lowercase hex string equal to the xxh3-64 digest
+  stored in the inline hash slot of the i-th data-object frame —
+  the same 8-byte value, just rendered as 16 hex characters for
+  CBOR-level readability.
+- Object count is derived from `hashes.len()` — no separate
+  `object_count` key.
+- `algorithm` is free-form CBOR text.  In v3 the only value used by
+  the encoder is `"xxh3"`.  Unknown values cause hash verification
+  to be skipped with a warning; they are never a hard error.
+- Hex strings (rather than `bytes`) are retained to leave room for
+  future longer digests (e.g. xxh3-128, BLAKE3-256) without a
+  schema change.  Use `Vec<u8>` of fixed width 8 on the Rust side;
+  convert to hex on serialise.
+
+**Placement.** By default:
+
+- **Buffered encoding** emits a `HeaderHash` frame (all hashes
+  known up-front).
+- **Streaming encoding** emits a `FooterHash` frame (hashes only
+  known after every object is written).
+
+The user controls this via `EncodeOptions.create_header_hashes`
+and `create_footer_hashes`.  In streaming mode,
+`create_header_hashes = true` is an `EncodingError` at encoder
+construction time.  Both flags may be set simultaneously in
+buffered mode; the same hash list is written to both frames.
+
+**Forward-compatibility.** The map is intentionally minimal so
+future fields (per-hash flags, per-hash algorithm overrides,
+signatures) can be added as new keys without breaking readers.
+
+### 6.4 `PrecederMetadata` (type 8)
+
+A `PrecederMetadata` frame optionally precedes a single
+data-object frame, carrying per-object metadata for the
+immediately following data object.  Primary use: streaming
+producers that want to associate per-object metadata early.
+
+CBOR payload: the same `GlobalMetadata` structure as §6.1, with:
+
+- `base` = a single-entry array containing one metadata map for
+  the next data object.
+- `_reserved_` must be empty; the encoder strips any `_reserved_`
+  key from preceder frames to avoid colliding with the encoder's
+  auto-populated `_reserved_.tensor`.
+- `_extra_` must be empty.
+
+**Ordering rules.**
+
+- A `PrecederMetadata` frame lives in the body phase.
+- It must be followed by exactly one data-object frame.  In v3
+  that means an `NTensorFrame`.  Two consecutive preceders
+  without an intervening data-object frame are invalid.
+- A preceder at end-of-body (with no following data-object frame)
+  is invalid.
+- Preceders are optional per object.  Some objects may have a
+  preceder; others may not.
+
+**Merge semantics on decode.**  When both a preceder and a
+header/footer metadata frame carry `base[i]` entries for the same
+object index:
+
+- Keys from the preceder override keys from the
+  header/footer on conflict (preceder wins).
+- Keys present only in the header/footer (e.g. auto-populated
+  `_reserved_.tensor`) are preserved.
+- The decoder presents a unified `GlobalMetadata.base[i]` to the
+  consumer; the preceder / footer distinction is transparent.
+
+**Flag.** Preamble bit 6 (`PRECEDER_METADATA`) is set iff at least
+one preceder frame is present.  In streaming mode the flag is
+always set because the encoder emits preceders per-object by
+default.
+
+### 6.5 `NTensorFrame` (type 9)
+
+The N-dimensional tensor data-object frame — one tensor per frame,
+optionally with compressed bitmask companions identifying positions
+of non-finite values (NaN / +Inf / −Inf).  See
+[`plans/BITMASK_FRAME.md`](BITMASK_FRAME.md) for the full mask
+design.  In v3 this is the only concrete data-object type defined;
+future versions may introduce other data-object frame types at
+fresh type numbers.
+
+**Layout.** Two variants, selected by the `CBOR_AFTER_PAYLOAD`
+frame-flag bit (bit 0 of the frame header's `flags` field).
+Default is CBOR after payload.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Frame header                                          16 B  │
+│  magic "FR" | type=9 | version=1 | flags | total_length     │
+├─────────────────────────────────────────────────────────────┤
+│ Payload region:                                             │
+│  ┌ encoded tensor payload                  (variable) ────┐ │
+│  ├ mask blob: nan                         (optional) ─────┤ │
+│  ├ mask blob: inf+                        (optional) ─────┤ │
+│  ├ mask blob: inf-                        (optional) ─────┤ │
+│  └─────────────────────────────────────────────────────────┘│
+│ CBOR descriptor                              (variable)     │
+├─────────────────────────────────────────────────────────────┤
+│ Frame footer (type-specific, 20 B)                          │
+│  cbor_offset (uint64 BE)                               8 B  │
+│  hash        (uint64 BE)                               8 B  │
+│  "ENDF"                                                4 B  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+When `CBOR_AFTER_PAYLOAD = 0` (CBOR-before-payload), the CBOR
+descriptor precedes the payload region; the two sections are
+swapped but every other offset is unchanged.
+
+**Fixed offsets** (relative to `frame_end`, the byte after `ENDF`):
+
+- `-4  ..  0`  `"ENDF"` marker
+- `-12 ..  -4`  hash (uint64 BE; see §2.2)
+- `-20 ..  -12` `cbor_offset` (uint64 BE) — byte offset within
+  the frame from the first byte of the frame header to the first
+  byte of the CBOR descriptor
+
+A reader that has `total_length` from the frame header can compute
+both slots directly from `frame_start + total_length − 12` (hash)
+and `frame_start + total_length − 20` (`cbor_offset`) without
+parsing any CBOR.
+
+**`cbor_offset`** must fall within `[16, total_length − 20]`.  Out
+of range → `FramingError`.
+
+**Hash scope.** Per §2.4, the hash covers
+`frame_bytes[16 .. frame_end − 20)` — i.e. the payload region
+(including any mask blobs) + the CBOR descriptor only.  The
+`cbor_offset` field is part of the footer and is **not** covered
+by the hash, nor are the hash slot itself, the `ENDF` marker, or
+the frame header.  Writing the hash is therefore strictly after
+the rest of the frame body is known.
+
+**CBOR descriptor** — the `DataObjectDescriptor`:
+
+```cbor
+{
+  ; Tensor metadata
+  "type":       "ntensor",               ; object type tag
+  "ndim":       u64,
+  "shape":      [u64, ...],
+  "strides":    [u64, ...],
+  "dtype":      "float64" | "float32" | … | "bitmask",
+
+  ; Encoding pipeline
+  "byte_order": "big" | "little",
+  "encoding":   "none" | "simple_packing",
+  "filter":     "none" | "shuffle",
+  "compression":"none" | "szip" | "zstd" | "lz4" | "blosc2"
+             |  "zfp"  | "sz3"
+             |  "rle"  | "roaring",       ; rle/roaring: bitmask dtype only
+
+  ; Encoding-specific parameters (flattened into the map)
+  "reference_value":       ...,
+  "binary_scale_factor":   ...,
+  "decimal_scale_factor":  ...,
+  "bits_per_value":        ...,
+  "szip_block_offsets":    [...],
+  ...
+
+  ; Mask metadata (optional — absent when no non-finite masks)
   "masks": {
     "nan":  { "method": "roaring", "offset": 800000, "length": 512 },
     "inf+": { "method": "rle",     "offset": 800512, "length":  64 },
@@ -223,76 +543,282 @@ source):
 }
 ```
 
-Methods: `"rle"` | `"roaring"` (default) | `"blosc2"` | `"zstd"` |
-`"lz4"` | `"none"`.  Per-method `params` sub-map is optional.  See
-`plans/BITMASK_FRAME.md` §3.3 for the full schema and §5 for method
-details.
+The `hash` field on the descriptor (present pre-v3) is **removed**.
+The inline hash slot in the frame's common footer is the sole
+source of truth for per-object integrity.
 
-**Reading legacy type-4 frames** with a 0.17+ decoder: interpret the
-absence of the `masks` sub-map as "no non-finite values present".
-Layout is otherwise byte-identical.  Encoders ≥0.17 do not emit
-type 4.
+**Dtype-restricted codecs.** In v3, `compression = "rle"` and
+`compression = "roaring"` require `dtype = "bitmask"`.  The
+encoder rejects any other combination at pipeline-build time with
+an `EncodingError`.  See §8.
 
-## Preceder Metadata Frame
+---
 
-A Preceder Metadata Frame (type 8) optionally precedes a Data Object Frame, carrying per-object metadata for the immediately following data object. This is primarily useful for streaming producers that may not know ahead of time when to send the footer and want to associate per-object metadata early.
-
-**Ordering rules:**
-- A Preceder Metadata Frame belongs in the data objects phase (same phase as `NTensorFrame` / `NTensorMaskedFrame` frames).
-- It MUST be followed by exactly one data-object frame (type 4 or type 9). Two consecutive Preceder frames without an intervening data-object frame are invalid.
-- A Preceder frame not followed by a DataObject (e.g., at end of stream or before a footer) is invalid.
-- Preceders are optional per-object: some objects in a message may have a preceder while others do not.
-
-**CBOR structure:** Uses the same GlobalMetadata CBOR format as header/footer metadata frames, with:
-- `base`: a single-entry array containing one metadata map for the next data object
-- `_reserved_`: empty
-- `_extra_`: empty
-
-Example CBOR:
-```
-{
-  "version": 2,
-  "base": [
-    {
-      "mars": {"param": "2t", "levtype": "sfc"},
-      "units": "K"
-    }
-  ]
-}
-```
-
-**Merge semantics on decode:** When a decoder encounters both a Preceder and a footer metadata frame with `base[i]` for the same object index:
-- Keys from the Preceder override keys from the footer on conflict (preceder wins).
-- Keys present only in the footer (e.g., auto-populated `_reserved_.tensor` with ndim, shape, strides, dtype) are preserved.
-- The decoder presents a unified `GlobalMetadata.base` to the consumer; the preceder/footer distinction is transparent.
-
-**Preamble flag:** Bit 6 (`PRECEDER_METADATA`) in the preamble flags indicates that at least one Preceder Metadata Frame is present. In streaming mode, this flag is always set. In buffered mode, it is set only when preceders are explicitly emitted.
-
-## Operations
-### Stored-file reader (seekable, random access)
-
-**With header index:**
-This is expected to be the most common case, when a message was encoded not in streaming mode.
+## 7. Postamble (24 bytes, NEW in v3)
 
 ```
-1. Read header preamble → flags
-2. Read metadata frame → global context
-3. Read header index frame → offsets[], object_count
-4. Seek to offsets[N], read object frame → decode
+Offset  Size  Field
+──────  ────  ──────────────────────────────────────────────
+0       8     first_footer_offset (uint64 BE)
+8       8     total_length       (uint64 BE)  — NEW in v3
+16      8     Magic: ASCII "39277777"
 ```
 
-**Without header index, ie footer index only:**
-This happens when a message was encoded in streaming mode, ie it was not possible to know ahead of time how many data objects were being sent, and the index is placed at the end.
+The postamble grew from 16 bytes (v2) to 24 bytes (v3) with the
+addition of the mirrored `total_length` field.
+
+- **`first_footer_offset`** — byte offset from the message start
+  (the `TENSOGRM` byte) to the first byte of the first footer
+  frame, or to the postamble itself if no footer frames exist.
+  Same semantics as v2.
+- **`total_length`** — same value as the preamble's `total_length`,
+  mirrored here so backward-scanning readers can locate the
+  message start without consulting the preamble first.  Zero in
+  the streaming-non-seekable-sink case (see §9.2), in which case
+  readers fall back to forward scanning.
+- **End magic** — ASCII `"39277777"` at the last 8 bytes of the
+  message.  Its position is invariant: the last 8 bytes of any
+  message are always the end magic.
+
+**Backward locatability.**  A reader that has *any* byte position
+inside a message can locate that message's start as follows:
+
+1. Search backward byte-by-byte for the 8-byte pattern
+   `"39277777"`, bounded by the reader's configured max-message-size
+   (default 4 GiB — configurable via `ReaderOptions`).
+2. The byte immediately after the found magic is the start of the
+   next message (or EOF).
+3. Read the 8 bytes at `end_magic_pos − 8`: that's
+   `total_length`.  If non-zero, subtract it from
+   `end_magic_pos + 8` to get the start of the current message
+   (the `TENSOGRM` byte).
+4. Validate by reading `TENSOGRM` at that offset.  If absent,
+   fall back to forward scanning from file start.
+
+This enables bidirectional `scan_file()` (§9.1).
+
+---
+
+## 8. Bitmask dtype and compression codecs
+
+`Dtype::Bitmask` represents packed 1-bit values, MSB-first, with
+the byte count = `ceil(shape_product / 8)`.  Trailing bits in the
+last byte are zero-filled for hash determinism.
+
+Compression codecs split into two tiers:
+
+- **Dtype-agnostic codecs** — work on any dtype including
+  `bitmask`:
+  `none`, `szip`, `zstd`, `lz4`, `blosc2`, `zfp`, `sz3`.
+- **Bitmask-only codecs** — error at encode time if used with any
+  other dtype:
+  `rle`, `roaring`.
+
+The guard lives at pipeline-build time.  Attempting
+`compression = "rle"` or `"roaring"` on a non-bitmask dtype returns
+an `EncodingError("codec {codec} only supports dtype=bitmask, got
+dtype={dtype}")`.
+
+On-wire byte layout for `rle` and `roaring` matches the mask blob
+format documented in `plans/BITMASK_FRAME.md` §5 (they are the same
+codec implementations, reused).  `decompress_range` is not
+supported — both codecs return `CompressionError::RangeNotSupported`
+to match `zstd` / `lz4`.
+
+---
+
+## 9. Scanning procedures
+
+### 9.1 Forward scan (primary path)
 
 ```
-1. Seek to end - 16, read footer → first_footer_offset
-2. Seek to first_footer, read footer index → offsets[], object_count
-3. Seek to offsets[N], read object frame → decode
+pos = 0
+while pos + PREAMBLE_SIZE + POSTAMBLE_SIZE ≤ buf.len():
+  if buf[pos..pos+8] != "TENSOGRM":
+    pos += 1; continue
+  preamble = read_preamble(buf[pos..])
+  if preamble.version != 3: fail
+  if preamble.total_length > 0:
+    # Happy path — deterministic jump.
+    end_magic_pos = pos + preamble.total_length - 8
+    if buf[end_magic_pos..end_magic_pos+8] == "39277777":
+      emit (pos, preamble.total_length)
+      pos += preamble.total_length
+      continue
+  else:
+    # Streaming message — scan forward for end magic.
+    end = find_next_end_magic(buf, pos + 24)
+    emit (pos, end + 8 - pos)
+    pos = end + 8
 ```
 
-Both paths give O(1) access to any object.
+### 9.2 Backward scan (new in v3)
 
-Multiple messages can be concatenated in a `.tgm` file. To find message boundaries:
-1. Scan for `TENSOGRM` magic (8 bytes)
-2. If `total_length` not zero, use to advance to the next message otherwise use header index if present.
-3. If no header index is present: scan forward frame-by-frame (each frame is has header with length) until the next magic or EOF
+Given an `end_pos` (end-of-file for a file, end-of-buffer for an
+in-memory scan), walk backward:
+
+```
+pos = end_pos
+while pos >= PREAMBLE_SIZE + POSTAMBLE_SIZE:
+  magic_pos = pos - 8
+  if buf[magic_pos..pos] != "39277777":
+    pos -= 1; continue
+  # We are at a postamble end magic.
+  total_length = read_u64_be(buf, magic_pos - 8)
+  if total_length == 0:
+    # Streaming message with non-seekable producer — bail back
+    # to forward scan from the current position.
+    switch to forward scan
+    break
+  msg_start = magic_pos + 8 - total_length
+  if buf[msg_start..msg_start+8] != "TENSOGRM":
+    # Stray postamble-looking bytes inside payload.  Keep walking.
+    pos -= 1; continue
+  emit (msg_start, total_length)
+  pos = msg_start
+```
+
+### 9.3 Bidirectional scan
+
+For large files with both ends addressable, `scan_file()` spawns
+two walkers (forward from offset 0, backward from EOF) and meets
+in the middle.  Expected ~2× reduction in hop count.  Falls back
+to pure forward scanning if any backward hop hits a zero
+`total_length` (streaming non-seekable message).
+
+### 9.4 Streaming producers and seekable sinks
+
+A streaming encoder writes `total_length = 0` in the preamble
+when it starts, because the total length is not yet known.  At
+`finish()`:
+
+- If the sink is **seekable** (file, seekable byte-stream): the
+  encoder seeks back and back-fills both the preamble's
+  `total_length` and the postamble's `total_length`.
+- If the sink is **not seekable** (pipe, socket): both values
+  remain `0`.  Readers fall back to forward scan (§9.1).
+
+---
+
+## 10. Random-access reading
+
+### 10.1 With header or footer index frame (fast path)
+
+```
+1. Read preamble; check version == 3.
+2. Read HeaderMetadata → global metadata.
+3. If HEADER_INDEX flag is set:
+     Read HeaderIndex → offsets[], lengths[]
+   else if FOOTER_INDEX flag is set:
+     Seek to postamble; read first_footer_offset.
+     Seek to first_footer_offset; read footer frames until
+       FooterIndex → offsets[], lengths[]
+4. For any object i, seek to offsets[i] and read one frame of
+   size lengths[i].
+```
+
+Both paths give `O(1)` access to any object.
+
+### 10.2 Without index (slow path)
+
+When neither a header nor a footer index is present, random
+access requires a full forward scan of the body.  Reader
+implementations may choose to materialise an index lazily on first
+random-access call.
+
+### 10.3 Partial range decode
+
+See `docs/src/guide/decoding.md` for the `decode_range` API.  The
+partial-decode wire contract is unchanged from v2; frame-body
+hashing (see §2.4) lives strictly at the frame boundary and does
+not interact with partial-range slicing inside a single data
+object.
+
+---
+
+## 11. Integrity verification
+
+### 11.1 Fast integrity scan (`tensogram validate --checksum`)
+
+When `HASHES_PRESENT = 1`, every frame's inline hash slot can be
+verified without parsing CBOR.  `--checksum` recomputes each
+frame's xxh3-64 over the hash scope defined in §2.4 and compares
+it bit-for-bit to the stored slot value; any mismatch is a fatal
+validation error.
+
+```
+for each frame F in the message:
+  footer_size = footer_size_for(F.frame_type)   # 12 B or 20 B
+  scope_end   = F.total_length - footer_size
+  computed    = xxh3(F.bytes[16 .. scope_end])
+  stored      = read_u64_be(F.bytes, F.total_length - 12)
+  if computed != stored:
+    fail F with HashMismatch { computed, stored }
+```
+
+This is the intended path for `tensogram validate --checksum`.
+It needs no codec and no CBOR parser, and hashes exactly the
+frame-body bytes on disk — the fastest possible integrity path.
+
+When `HASHES_PRESENT = 0`, `validate --checksum` fails with
+`ValidationError("message has no inline hashes — cannot run
+checksum validation; re-encode with hash_algorithm = Some(Xxh3)")`.
+
+### 11.2 Full validation (`tensogram validate --full`)
+
+Includes the above plus:
+- CBOR canonical ordering check
+- Decode-pipeline round-trip
+- NaN / Inf scan (mask-aware per `plans/BITMASK_FRAME.md` §8)
+
+### 11.3 Hash frame consistency
+
+If either a `HeaderHash` or `FooterHash` frame is present, the
+validator cross-checks each `hashes[i]` entry against the hex
+rendering of the inline hash slot of the i-th data-object frame.
+A mismatch is a fatal `ValidationError::HashFrameMismatch`.
+
+---
+
+## 12. Deterministic encoding
+
+All CBOR output is **canonical** per RFC 8949 §4.2:
+
+- Map keys sorted by encoded byte representation (lex, length-first).
+- Integers encoded in the shortest form.
+- No indefinite-length items.
+
+Any encoder that produces canonical CBOR from the same logical
+message will produce byte-identical output regardless of key
+insertion order.  Non-canonical CBOR in an incoming message is
+accepted on decode but produces a `ValidationCode::NonCanonicalCbor`
+warning from `--canonical` mode.
+
+---
+
+## 13. Change log vs. v2
+
+| Aspect | v2 | v3 |
+|---|---|---|
+| Preamble size | 24 B | 24 B (same) |
+| Preamble `version` | 2 | 3 |
+| Preamble flags | bits 0–6 | bits 0–7 (`HASHES_PRESENT` added) |
+| Postamble size | 16 B | 24 B |
+| Postamble fields | `first_footer_offset`, end magic | + `total_length` |
+| Frame common tail | `ENDF` only (4 B) | `[hash u64][ENDF]` (12 B), prepended by any type-specific footer fields |
+| Frame footer size (most types) | 4 B (`ENDF` only) | 12 B (`[hash][ENDF]`) |
+| Data-object frame | types 4 (`NTensorFrame`) and 9 (`NTensorMaskedFrame`) both emitted; type 4 legacy-read on decode | type 4 reserved (obsolete, `FramingError` on read); type 9 renamed `NTensorFrame` and is the only concrete data-object type |
+| Data-object footer size | 12 B (`[cbor_offset][ENDF]`) | 20 B (`[cbor_offset][hash][ENDF]`) |
+| Per-object hash | `hash` field in CBOR descriptor (optional) | Inline slot in frame footer (populated iff `HASHES_PRESENT=1`); CBOR `hash` field removed |
+| Hash scope | just the encoded payload bytes | frame body only: `bytes[16 .. end − footer_size)`; header and footer (including `cbor_offset`) are never covered |
+| Hash flagging | per-descriptor, optional | message-wide via preamble bit 7 `HASHES_PRESENT`; no per-frame flag |
+| Hash frame CBOR key | `hash_type` | `algorithm` |
+| Hash frame CBOR key | `object_count` (separate) | removed (derived from `hashes.len()`) |
+| Index frame CBOR key | `object_count` (separate) | removed (derived from `offsets.len()`) |
+| Compression codecs | `none`, `szip`, `zstd`, `lz4`, `blosc2`, `zfp`, `sz3` | + `rle`, `roaring` (bitmask-dtype-only) |
+| Scan direction | forward only | forward / backward / bidirectional |
+| Streaming total_length in postamble | (field did not exist) | mirrored when sink is seekable; 0 otherwise |
+| Generic data-object concept | implicit (only NTensorFrame existed) | documented — body phase holds data-object frames; new types slot in at fresh type numbers without a version bump |
+
+v2 messages are rejected at preamble read.  No migration path is
+provided.
