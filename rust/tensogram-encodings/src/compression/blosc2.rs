@@ -567,6 +567,32 @@ mod tests {
         assert_eq!(decompressed, data);
     }
 
+    /// Input whose total length is NOT a multiple of `typesize`.  This
+    /// is reachable in production from `simple_packing` with a
+    /// non-byte-aligned `bits_per_value` (packed length =
+    /// `ceil(num_values * bpv / 8)`), and is explicitly tolerated by
+    /// c-blosc2's shuffle/bitshuffle filters, which pass leftover
+    /// trailing bytes through unchanged.  Round-trip must still be
+    /// lossless.
+    #[test]
+    fn blosc2_multi_chunk_non_typesize_aligned_tail() {
+        let chunk_bytes = 4096;
+        let len = 2 * chunk_bytes + 13;
+        assert_ne!(len % 4, 0, "test setup: length must not be 4-aligned");
+        let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+
+        let compressor = Blosc2Compressor {
+            codec: Blosc2Codec::Blosclz,
+            clevel: 5,
+            typesize: 4,
+            nthreads: 0,
+            chunk_bytes,
+        };
+        let compressed = compressor.compress(&data).unwrap().data;
+        let decompressed = compressor.decompress(&compressed, data.len()).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
     /// A caller who constructs `Blosc2Compressor` directly with a
     /// `chunk_bytes` larger than `BLOSC2_MAX_BUFFERSIZE` (2 GiB) must
     /// still round-trip: the clamp in `compress()` keeps every
