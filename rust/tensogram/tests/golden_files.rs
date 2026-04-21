@@ -184,7 +184,6 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
 }
 
 #[test]
-#[ignore = "v3 wire format — goldens regenerated in Phase 10"]
 fn test_golden_files_are_deterministic() {
     // Structural comparison: decode both committed and freshly-generated
     // messages and compare metadata + payload data. Byte-exact comparison
@@ -251,7 +250,6 @@ fn regenerate_golden_files() {
 // ── Read-only tests — decode committed golden files ─────────────────────
 
 #[test]
-#[ignore = "v3 wire format — goldens regenerated in Phase 10"]
 fn test_golden_simple_f32() {
     let data = std::fs::read(golden_dir().join("simple_f32.tgm")).unwrap();
     let (meta, objects) = decode::decode(&data, &DecodeOptions::default()).unwrap();
@@ -273,7 +271,6 @@ fn test_golden_simple_f32() {
 }
 
 #[test]
-#[ignore = "v3 wire format — goldens regenerated in Phase 10"]
 fn test_golden_multi_object() {
     let data = std::fs::read(golden_dir().join("multi_object.tgm")).unwrap();
     let (meta, objects) = decode::decode(&data, &DecodeOptions::default()).unwrap();
@@ -303,7 +300,6 @@ fn test_golden_multi_object() {
 }
 
 #[test]
-#[ignore = "v3 wire format — goldens regenerated in Phase 10"]
 fn test_golden_mars_metadata() {
     let data = std::fs::read(golden_dir().join("mars_metadata.tgm")).unwrap();
     let (meta, objects) = decode::decode(&data, &DecodeOptions::default()).unwrap();
@@ -336,7 +332,6 @@ fn test_golden_mars_metadata() {
 }
 
 #[test]
-#[ignore = "v3 wire format — goldens regenerated in Phase 10"]
 fn test_golden_multi_message() {
     let data = std::fs::read(golden_dir().join("multi_message.tgm")).unwrap();
     let offsets = framing::scan(&data);
@@ -370,7 +365,6 @@ fn test_golden_multi_message() {
 }
 
 #[test]
-#[ignore = "v3 wire format — goldens regenerated in Phase 10"]
 fn test_golden_hash_xxh3() {
     let data = std::fs::read(golden_dir().join("hash_xxh3.tgm")).unwrap();
 
