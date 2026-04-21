@@ -542,19 +542,26 @@ class TestDataObjectDescriptor:
         assert desc.strides == [12, 4, 1]
 
     def test_hash_present(self):
-        """When hash is used, descriptor should expose it."""
+        """v3: `descriptor.hash` is always None (deprecated surface).
+
+        The per-object hash moved from the CBOR descriptor to the frame
+        footer's inline slot in v3 (see plans/WIRE_FORMAT.md §2.4).
+        `descriptor.hash` is retained on the Python class for source
+        compatibility but returns None regardless of whether the
+        encoder wrote a hash slot.  Use `tensogram validate --checksum`
+        or the upcoming `Message.inline_hashes()` accessor (tracked in
+        plans/WIRE_FORMAT_CHANGES.md open follow-ups) for frame-level
+        integrity.
+        """
         data = np.ones(10, dtype=np.float32)
         msg = encode_simple(data, hash_algo="xxh3")
         _, objects = tensogram.decode(msg)
         desc, _ = objects[0]
-        h = desc.hash
-        assert h is not None
-        assert h["type"] == "xxh3"
-        assert isinstance(h["value"], str)
-        assert len(h["value"]) > 0
+        # v3 contract: descriptor.hash is always None.
+        assert desc.hash is None
 
     def test_hash_absent(self):
-        """Without hash, descriptor.hash should be None."""
+        """Without hash, descriptor.hash is None (same as with-hash in v3)."""
         data = np.ones(10, dtype=np.float32)
         msg = encode_simple(data, hash_algo=None)
         _, objects = tensogram.decode(msg)
@@ -872,11 +879,18 @@ class TestErrors:
             tensogram.encode(meta, [(desc, data)])
 
     def test_hash_mismatch_detected(self):
-        """Corrupted payload should fail verify_hash=True.
+        """v3: corruption detection moved to `validate`, not `decode`.
 
-        Corruption may manifest as FramingError (ValueError) if the
-        corruption breaks the frame structure, or RuntimeError if only
-        the hash mismatches. Both are acceptable detection.
+        `decode(verify_hash=True)` is a no-op in v3 (the option is
+        kept for source compatibility).  Frame-level integrity now
+        goes through `tensogram.validate_message(msg, level="checksum")`,
+        which recomputes each frame's body hash and compares it to
+        the inline slot.  Corruption in the payload or header region
+        surfaces as a validation issue, not a decode error.
+
+        Decode may still raise `ValueError` (FramingError) if the
+        corruption breaks frame boundaries; otherwise decode succeeds
+        and the validation report flags the mismatch.
         """
         data = np.arange(100, dtype=np.float32)
         msg = encode_simple(data, hash_algo="xxh3")
@@ -884,8 +898,23 @@ class TestErrors:
         # Corrupt a byte in the payload area (past header, before terminator)
         mid = len(corrupted) // 2
         corrupted[mid] ^= 0xFF
-        with pytest.raises((ValueError, RuntimeError)):
+
+        # Decode no longer checks the hash — may succeed or raise
+        # FramingError depending on where the tamper lands.  Ignore
+        # that return value; the real check is in validate.
+        try:
             tensogram.decode(bytes(corrupted), verify_hash=True)
+        except ValueError:
+            return  # FramingError is an acceptable v3 detection path
+
+        # If decode succeeded, validate --checksum must surface the
+        # corruption as a HashMismatch issue.
+        report = tensogram.validate_message(bytes(corrupted), level="checksum")
+        codes = [issue["code"] for issue in report["issues"]]
+        assert any(
+            c in ("HashMismatch", "DecodePipelineFailed", "CborOffsetInvalid")
+            for c in codes
+        ), f"expected integrity or structural error in validate report, got: {report}"
 
     def test_file_open_nonexistent(self, tmp_path):
         nonexistent_path = tmp_path / "nonexistent_file_12345.tgm"
@@ -1616,15 +1645,23 @@ class TestDescriptorCoverage:
         assert isinstance(desc.params, dict)
 
     def test_hash_with_xxh3(self):
-        """Descriptor reports hash when xxh3 is used."""
+        """v3: `descriptor.hash` is deprecated — always None.
+
+        The per-object hash lives in the frame footer's inline slot
+        (plans/WIRE_FORMAT.md §2.4).  Python's `descriptor.hash`
+        stays on the class for source compatibility and returns
+        None regardless of the encoder's `hash` option.  Use the
+        validate API to confirm integrity.
+        """
         msg = encode_simple(np.ones(10, dtype=np.float32), hash_algo="xxh3")
         _, objects = tensogram.decode(msg)
         desc, _ = objects[0]
-        h = desc.hash
-        assert h is not None
-        assert h["type"] == "xxh3"
-        assert isinstance(h["value"], str)
-        assert len(h["value"]) == 16  # 64-bit hex
+        assert desc.hash is None
+        # Integrity verification lives at the validate layer now.
+        report = tensogram.validate_message(msg, level="checksum")
+        assert report["hash_verified"], (
+            f"checksum validation should pass on fresh encode, got: {report}"
+        )
 
     def test_hash_without(self):
         """Descriptor reports None when no hash is used."""
@@ -1697,12 +1734,21 @@ class TestErrorCoverage:
             tensogram.decode_object(msg, index=-1)
 
     def test_hash_mismatch(self):
-        """Corrupted payload raises RuntimeError on verify_hash."""
+        """v3: HashMismatch is surfaced via `validate_message`, not decode.
+
+        `decode(verify_hash=True)` is a v3 no-op; integrity is a
+        validate-level check.  A middle-of-payload tamper triggers
+        a `HashMismatch` or `DecodePipelineFailed` issue in the
+        validation report.
+        """
         msg = bytearray(encode_simple(np.ones(100, dtype=np.float32), hash_algo="xxh3"))
-        # Corrupt payload area
         msg[len(msg) // 2] ^= 0xFF
-        with pytest.raises(RuntimeError, match="HashMismatch"):
-            tensogram.decode(bytes(msg), verify_hash=True)
+        report = tensogram.validate_message(bytes(msg), level="checksum")
+        codes = [issue["code"] for issue in report["issues"]]
+        assert any(
+            c in ("HashMismatch", "DecodePipelineFailed", "CborOffsetInvalid")
+            for c in codes
+        ), f"expected integrity error, got: {report}"
 
     def test_encode_shape_mismatch(self):
         """Shape mismatch between descriptor and data raises ValueError."""

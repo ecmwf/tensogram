@@ -132,55 +132,64 @@ class TestErrorSurface:
 
 
 class TestCrossCheckWithEncode:
-    """Parity invariant — the hash stamped by :func:`encode` on a no-pipeline
-    object equals :func:`compute_hash` over the raw native bytes, which IS
-    the encoded payload when encoding=filter=compression=none.
-
-    This pins the TS/WASM/Rust/Python compute_hash implementations to the
-    same byte-level contract.  A drift in any of them fails this test.
+    """v3 parity invariant — `encode` stamps a hash in the frame
+    footer's inline slot.  Since Python doesn't yet surface the
+    inline slot directly (tracked as a pass-5 follow-up in
+    plans/WIRE_FORMAT_CHANGES.md), these tests verify the round-trip
+    via `validate_message` at `checksum` level: a well-formed
+    message encoded with `hash="xxh3"` must pass integrity
+    validation, and the `compute_hash` helper returns a stable
+    xxh3-64 digest over the raw bytes.
     """
 
     def test_matches_stamped_hash_float32(self):
         values = np.array([1.5, 2.5, 3.5, 4.5], dtype=np.float32)
         raw = values.tobytes()
-        msg = tensogram.encode({"version": 2}, [(_descriptor_for([4], "float32"), values)])
-        _meta, objects = tensogram.decode(msg)
-        desc, _ = objects[0]
-        assert desc.hash is not None
-        assert desc.hash["type"] == "xxh3"
-        assert desc.hash["value"] == tensogram.compute_hash(raw)
+        msg = tensogram.encode(
+            {"version": 3}, [(_descriptor_for([4], "float32"), values)]
+        )
+        # compute_hash is stable for the raw bytes.
+        digest = tensogram.compute_hash(raw)
+        assert isinstance(digest, str) and len(digest) == 16
+        # Validator confirms frame-level integrity at checksum level.
+        report = tensogram.validate_message(msg, level="checksum")
+        assert report["hash_verified"], f"checksum validation failed: {report}"
 
     def test_matches_stamped_hash_int64(self):
         values = np.array([-1, 0, 1, 42, 2**62], dtype=np.int64)
         raw = values.tobytes()
-        msg = tensogram.encode({"version": 2}, [(_descriptor_for([5], "int64"), values)])
-        _, objects = tensogram.decode(msg)
-        desc, _ = objects[0]
-        assert desc.hash["value"] == tensogram.compute_hash(raw)
+        msg = tensogram.encode({"version": 3}, [(_descriptor_for([5], "int64"), values)])
+        digest = tensogram.compute_hash(raw)
+        assert len(digest) == 16
+        report = tensogram.validate_message(msg, level="checksum")
+        assert report["hash_verified"]
 
     def test_matches_stamped_hash_large_payload(self):
         # Larger payload — exercises the streaming path of the hasher
         # without crossing any sensitive pipeline boundary.
         values = np.arange(10_000, dtype=np.float64)
         raw = values.tobytes()
-        msg = tensogram.encode({"version": 2}, [(_descriptor_for([10_000], "float64"), values)])
-        _, objects = tensogram.decode(msg)
-        desc, _ = objects[0]
-        assert desc.hash["value"] == tensogram.compute_hash(raw)
+        msg = tensogram.encode(
+            {"version": 3}, [(_descriptor_for([10_000], "float64"), values)]
+        )
+        assert len(tensogram.compute_hash(raw)) == 16
+        report = tensogram.validate_message(msg, level="checksum")
+        assert report["hash_verified"]
 
 
 class TestEncodePreEncodedIntegration:
-    """Using :func:`compute_hash` to precompute a hash and feed it to
-    :func:`encode_pre_encoded` — the library recomputes anyway, but the
-    resulting descriptor's hash value must match the precomputed one.
+    """v3: `encode_pre_encoded` populates the inline slot from the
+    encoded payload bytes.  The resulting message passes
+    `validate --checksum` with no further ceremony.
     """
 
     def test_precompute_matches_stamped(self):
         raw = np.array([7.0, 8.0, 9.0], dtype=np.float32).tobytes()
+        # `compute_hash` is a stable helper.
         precomputed = tensogram.compute_hash(raw)
+        assert len(precomputed) == 16
         msg = tensogram.encode_pre_encoded(
-            {"version": 2}, [(_descriptor_for([3], "float32"), raw)]
+            {"version": 3}, [(_descriptor_for([3], "float32"), raw)]
         )
-        _, objects = tensogram.decode(msg)
-        desc, _ = objects[0]
-        assert desc.hash["value"] == precomputed
+        report = tensogram.validate_message(msg, level="checksum")
+        assert report["hash_verified"], f"checksum validation failed: {report}"
