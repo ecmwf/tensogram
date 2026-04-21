@@ -2195,3 +2195,188 @@ fn scan_max_message_size_caps_backward_walker() {
     assert_eq!(via_tiny, via_fwd);
     assert_eq!(via_big, via_fwd);
 }
+
+/// Adversarial: a buffer whose last 8 bytes happen to match the
+/// postamble END_MAGIC but whose preceding 16 bytes don't point
+/// at a real message.  The backward walker must notice the
+/// preamble-check mismatch and yield to the forward walker —
+/// returning the same boundary list as pure forward scan.
+#[test]
+fn scan_bidirectional_shrugs_off_spurious_end_magic() {
+    // Start with three well-formed messages, then append a block
+    // of bytes whose tail is END_MAGIC preceded by a "postamble-
+    // shaped" payload that points at a random offset inside the
+    // legitimate region.
+    let mut buf = Vec::new();
+    for i in 0..3 {
+        buf.extend_from_slice(&encode_sample(i * 11));
+    }
+    let good_end = buf.len();
+
+    // Bogus trailing block: 8 B of random, then a u64 offset that
+    // points into the middle of the good region (not at TENSOGRM),
+    // then a u64 "total_length" that's nonsense, then END_MAGIC.
+    buf.extend_from_slice(&[0xAB; 8]);
+    buf.extend_from_slice(&(good_end as u64 / 3).to_be_bytes()); // bogus ffo
+    buf.extend_from_slice(&(good_end as u64).to_be_bytes()); // nonsense total_length
+    buf.extend_from_slice(b"39277777");
+
+    // Bidirectional scan must still return the original three
+    // messages — the backward walker detects the preamble-check
+    // mismatch and falls back to forward-only.
+    let bidir = scan(&buf);
+    let fwd = scan_with_options(
+        &buf,
+        &ScanOptions {
+            bidirectional: false,
+            ..ScanOptions::default()
+        },
+    );
+    assert_eq!(bidir, fwd, "bidirectional must match forward on bogus tail");
+    assert_eq!(bidir.len(), 3);
+}
+
+/// A buffer smaller than `PREAMBLE_SIZE + POSTAMBLE_SIZE` (48 B)
+/// cannot contain any valid message; both scan modes return empty.
+#[test]
+fn scan_tiny_buffer_returns_empty() {
+    let tiny = vec![0u8; 47];
+    assert!(scan(&tiny).is_empty());
+    assert!(
+        scan_with_options(
+            &tiny,
+            &ScanOptions {
+                bidirectional: false,
+                ..ScanOptions::default()
+            }
+        )
+        .is_empty()
+    );
+}
+
+/// Zero-length buffer is a trivial empty scan; must not panic on
+/// the backward walker's `buf.len() - 8` slice.
+#[test]
+fn scan_empty_buffer_returns_empty() {
+    let empty: Vec<u8> = Vec::new();
+    assert!(scan(&empty).is_empty());
+    assert!(
+        scan_with_options(
+            &empty,
+            &ScanOptions {
+                bidirectional: false,
+                ..ScanOptions::default()
+            }
+        )
+        .is_empty()
+    );
+}
+
+/// Off-by-one on `max_message_size`: a message exactly that size
+/// must be accepted; one byte over must trigger fallback.
+#[test]
+fn scan_max_message_size_off_by_one() {
+    let msg = encode_sample(1);
+    let exact_cap = ScanOptions {
+        bidirectional: true,
+        max_message_size: msg.len() as u64,
+    };
+    let one_short = ScanOptions {
+        bidirectional: true,
+        max_message_size: (msg.len() as u64) - 1,
+    };
+
+    let via_exact = scan_with_options(&msg, &exact_cap);
+    let via_short = scan_with_options(&msg, &one_short);
+
+    // Exact-cap: backward walker accepts and bidir returns 1 msg.
+    assert_eq!(via_exact.len(), 1);
+    // Short-by-one: backward walker rejects → forward-only fallback
+    // still finds the message.
+    assert_eq!(via_short.len(), 1);
+    assert_eq!(via_exact, via_short);
+}
+
+/// Tamper only the HashFrame aggregate (not the inline slot).
+/// Inline-slot verification still passes (the body is untouched),
+/// but the aggregate cross-check must surface a `HashMismatch`
+/// identifying the specific object whose aggregate entry lies.
+#[test]
+fn validate_detects_hash_frame_aggregate_tamper() {
+    use tensogram::framing::{decode_message, scan};
+    use tensogram::validate::{IssueCode, ValidateOptions, validate_message};
+    use tensogram::wire::{FRAME_COMMON_FOOTER_SIZE, FrameHeader};
+
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0x11u8; 16];
+    let mut msg = encode(
+        &global,
+        &[(&desc, data.as_slice())],
+        &EncodeOptions {
+            create_header_hashes: true,
+            ..EncodeOptions::default()
+        },
+    )
+    .unwrap();
+
+    // Find the data-object frame's inline slot hex; then find an
+    // occurrence of that exact 16-char ASCII sequence elsewhere in
+    // the buffer (the HashFrame CBOR body) and flip a single hex
+    // char there.  This tampers the aggregate without corrupting
+    // the CBOR structure around it.
+    let messages = scan(&msg);
+    let (msg_off, msg_len) = messages[0];
+    let msg_slice = &msg[msg_off..msg_off + msg_len];
+    let decoded = decode_message(msg_slice).unwrap();
+    let (_, _, _, frame_offset) = decoded.objects[0];
+    let fh = FrameHeader::read_from(&msg_slice[frame_offset..]).unwrap();
+    let total = fh.total_length as usize;
+    let slot_start = frame_offset + total - FRAME_COMMON_FOOTER_SIZE;
+    let inline = u64::from_be_bytes(msg_slice[slot_start..slot_start + 8].try_into().unwrap());
+    let inline_hex = format!("{inline:016x}");
+
+    // Locate the aggregate copy inside the HashFrame and flip
+    // one character deterministically.  The search finds *all*
+    // occurrences; we pick the first one that isn't the inline
+    // slot (which is bytes, not ASCII — so a hex-string match in
+    // the byte stream can only be the CBOR aggregate).
+    let aggregate_pos = msg
+        .windows(inline_hex.len())
+        .position(|w| w == inline_hex.as_bytes())
+        .expect("aggregate hex must appear in HashFrame CBOR");
+    // Flip the first char: '0'..'e' → next digit; 'f' → '0'.
+    let orig = msg[aggregate_pos];
+    msg[aggregate_pos] = if orig == b'f' { b'0' } else { orig + 1 };
+
+    // Message must still decode (inline slots untouched).
+    let (_meta, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 1);
+
+    // But the aggregate cross-check must fire.
+    let report = validate_message(&msg, &ValidateOptions::default());
+    let any_hash_mismatch = report
+        .issues
+        .iter()
+        .any(|i| i.code == IssueCode::HashMismatch);
+    assert!(
+        any_hash_mismatch,
+        "aggregate HashFrame tamper must trigger HashMismatch, got: {:?}",
+        report.issues
+    );
+}

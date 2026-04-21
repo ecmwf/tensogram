@@ -323,42 +323,50 @@ descriptor in the same canonical order.  See
 
 ## IndexFrame
 
-Index frames (header or footer) contain a CBOR map that lets readers jump directly to any data object without scanning.
+Index frames (header or footer) contain a CBOR map that lets readers
+jump directly to any data object without scanning.
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `object_count` | uint | Number of data objects in the message |
-| `offsets` | array of uint | Byte offset of each data object frame from message start |
-| `lengths` | array of uint | Byte length of each data object frame |
+| Key       | Type           | Description                                            |
+|-----------|----------------|--------------------------------------------------------|
+| `offsets` | array of uint  | Byte offset of each data object frame from message start |
+| `lengths` | array of uint  | Byte length of each data object frame                  |
+
+Object count is derived from `offsets.len()`; `lengths.len()` must
+equal `offsets.len()` or the decoder emits a `MetadataError`.
 
 ### Example IndexFrame
 
 ```json
 {
-  "object_count": 3,
   "offsets": [256, 1048832, 2097408],
   "lengths": [1048576, 1048576, 524288]
 }
 ```
 
-The `offsets` array gives O(1) random access to any object — seek to `offsets[i]` and read `lengths[i]` bytes.
+The `offsets` array gives O(1) random access to any object — seek
+to `offsets[i]` and read `lengths[i]` bytes.
 
 ## HashFrame
 
-Hash frames (header or footer) store per-object integrity hashes, allowing verification without reading the individual descriptors.
+Hash frames (header or footer) mirror the per-object inline hash
+slots of each data-object frame's footer (see
+[wire-format.md §2.4](./wire-format.md#24-frame-hash-scope)), so
+readers can inspect the aggregate without walking every frame.
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `object_count` | uint | Number of data objects |
-| `hash_type` | text | Hash algorithm: `"xxh3"` |
-| `hashes` | array of text | Hex-encoded digest for each object, in order |
+| Key         | Type           | Description                                        |
+|-------------|----------------|----------------------------------------------------|
+| `algorithm` | text           | Hash algorithm name.  `"xxh3"` is the only value a v3 encoder emits. |
+| `hashes`    | array of text  | Hex-encoded digest for each object, in emission order. |
+
+Object count is derived from `hashes.len()`.  An unknown
+`algorithm` value triggers an `UnknownHashAlgorithm` warning at
+validate time; the inline slots remain the authoritative check.
 
 ### Example HashFrame
 
 ```json
 {
-  "object_count": 3,
-  "hash_type": "xxh3",
+  "algorithm": "xxh3",
   "hashes": [
     "a1b2c3d4e5f60718",
     "b2c3d4e5f6071829",

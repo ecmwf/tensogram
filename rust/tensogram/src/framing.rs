@@ -100,6 +100,17 @@ fn write_frame(
         !frame_type.is_data_object(),
         "write_frame is for non-data-object frames only"
     );
+    // Non-data-object frame payloads are bounded CBOR (metadata,
+    // index, hash) at most a few KiB; `u64` overflow here is
+    // genuinely unreachable.  The debug_assert catches accidental
+    // misuse on tiny-pointer-size targets (e.g. 16-bit test
+    // platforms that this crate doesn't support but clippy still
+    // checks against).
+    debug_assert!(
+        payload.len() <= u64::MAX as usize - FRAME_HEADER_SIZE - FRAME_COMMON_FOOTER_SIZE,
+        "non-data-object frame payload too large: {}",
+        payload.len()
+    );
     let total_length = (FRAME_HEADER_SIZE + payload.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
 
     let fh = FrameHeader {
@@ -215,8 +226,29 @@ pub fn encode_data_object_frame(
     //   header(16) + body + footer(20)
     // where body = payload + cbor_bytes and footer =
     // cbor_offset(8) + hash(8) + ENDF(4).
-    let frame_body_len = cbor_bytes.len() + payload.len() + DATA_OBJECT_FOOTER_SIZE;
-    let total_length = (FRAME_HEADER_SIZE + frame_body_len) as u64;
+    //
+    // Checked arithmetic here guards against pathological payloads
+    // (huge CBOR + tensor bytes) from silently wrapping the
+    // `total_length` field or panicking the process.  The
+    // resulting error is mapped to `TensogramError::Framing` so the
+    // caller sees a clean message rather than a debug-build panic.
+    let total_length: u64 = [
+        FRAME_HEADER_SIZE,
+        payload.len(),
+        cbor_bytes.len(),
+        DATA_OBJECT_FOOTER_SIZE,
+    ]
+    .into_iter()
+    .try_fold(0u64, |acc, part| acc.checked_add(part as u64))
+    .ok_or_else(|| {
+        TensogramError::Framing(format!(
+            "data-object frame total_length overflows u64 \
+             (payload {} bytes, CBOR {} bytes, framing {} bytes)",
+            payload.len(),
+            cbor_bytes.len(),
+            FRAME_HEADER_SIZE + DATA_OBJECT_FOOTER_SIZE
+        ))
+    })?;
 
     let mut out = Vec::with_capacity(total_length as usize);
 
@@ -325,23 +357,28 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
         ));
     }
 
-    // v3 footer layout: `[cbor_offset u64][hash u64][ENDF]`.
-    //   hash_slot    at endf_start - 8
-    //   cbor_offset  at endf_start - 16
-    if endf_start < 16 {
+    // v3 footer layout (data-object): `[cbor_offset u64][hash u64][ENDF 4]`.
+    //
+    // The two u64 slots precede the 4-byte ENDF.  Using a named
+    // constant here keeps the offset math linked to the single
+    // source of truth in `wire::DATA_OBJECT_FOOTER_SIZE`: a future
+    // footer-layout change triggers compile errors at every read
+    // site rather than letting them silently drift.
+    const DATA_OBJECT_FOOTER_PRE_ENDF: usize = DATA_OBJECT_FOOTER_SIZE - FRAME_END.len();
+    if endf_start < DATA_OBJECT_FOOTER_PRE_ENDF {
         return Err(TensogramError::Framing(format!(
-            "data object frame too small for v3 footer: endf_start={endf_start} < 16"
+            "data object frame too small for v3 footer: \
+             endf_start ({endf_start}) < footer-fields-size ({DATA_OBJECT_FOOTER_PRE_ENDF})"
         )));
     }
-    let hash_slot_pos = endf_start - 8;
-    let cbor_offset_pos = endf_start - 16;
-    // Both positions are valid u64 slots because endf_start >= 16.
+    // `cbor_offset` sits at the very start of the type-specific
+    // footer; `hash` is 8 bytes later.  Derived layout, not magic
+    // numbers.
+    let cbor_offset_pos = endf_start - DATA_OBJECT_FOOTER_PRE_ENDF;
     let cbor_offset_raw = crate::wire::read_u64_be(buf, cbor_offset_pos);
     let cbor_offset = usize::try_from(cbor_offset_raw).map_err(|_| {
         TensogramError::Framing(format!("cbor_offset {cbor_offset_raw} overflows usize"))
     })?;
-    // Avoid `unused` warning when not built with debug_assertions.
-    let _ = hash_slot_pos;
 
     // Validate cbor_offset points within the frame body (before
     // the 16-byte type-specific footer portion).
@@ -1322,7 +1359,7 @@ fn scan_bidirectional(buf: &[u8], opts: &ScanOptions) -> Vec<(usize, usize)> {
 
         // One backward hop.  On a streaming-non-seekable yield or
         // any structural anomaly, drop to forward-only for the
-        // residual region and return.
+        // residual region and return the merged result.
         match try_backward_hop(buf, fwd_pos, bwd_end, opts.max_message_size) {
             BackwardHop::Hit(start, total) => {
                 bwd.push((start, total));
@@ -1330,20 +1367,15 @@ fn scan_bidirectional(buf: &[u8], opts: &ScanOptions) -> Vec<(usize, usize)> {
             }
             BackwardHop::StreamingStop | BackwardHop::None => {
                 let residual = scan_forward_all(buf, fwd_pos, bwd_end);
-                fwd.extend(residual);
-                bwd.reverse();
-                fwd.extend(bwd);
-                return fwd;
+                return merge_bidirectional_results(fwd, bwd, residual);
             }
         }
     }
 
-    // Scan any residual sliver between the walkers (usually empty).
+    // Walkers crossed cleanly: scan the (usually empty) residual
+    // and merge.
     let residual = scan_forward_all(buf, fwd_pos, bwd_end);
-    fwd.extend(residual);
-    bwd.reverse();
-    fwd.extend(bwd);
-    fwd
+    merge_bidirectional_results(fwd, bwd, residual)
 }
 
 // ── File-based scan ──────────────────────────────────────────────────────────
@@ -1460,12 +1492,29 @@ fn scan_file_forward(
     Ok(messages)
 }
 
+/// Merge a forward-walker prefix and a backward-walker suffix
+/// into the final boundary list — the backward results are
+/// reversed (since they were collected EOF-first) and appended.
+fn merge_bidirectional_results(
+    mut fwd: Vec<(usize, usize)>,
+    bwd: Vec<(usize, usize)>,
+    residual: Vec<(usize, usize)>,
+) -> Vec<(usize, usize)> {
+    fwd.extend(residual);
+    let mut bwd_reversed = bwd;
+    bwd_reversed.reverse();
+    fwd.extend(bwd_reversed);
+    fwd
+}
+
 /// Meet-in-the-middle bidirectional scan over a seekable stream.
 ///
 /// Each backward hop reads `POSTAMBLE_SIZE` bytes ending at the
 /// current backward cursor, parses the postamble, and jumps by
 /// `postamble.total_length`.  Yields to the forward walker on a
-/// zero `total_length` (streaming non-seekable sink).
+/// zero `total_length` (streaming non-seekable sink), on any
+/// structural mismatch (missing TENSOGRM at the computed start),
+/// or when the claimed length exceeds `max_message_size`.
 fn scan_file_bidirectional(
     file: &mut (impl std::io::Read + std::io::Seek),
     file_len: usize,
@@ -1480,6 +1529,17 @@ fn scan_file_bidirectional(
 
     let mut preamble_buf = [0u8; PREAMBLE_SIZE];
     let mut postamble_buf = [0u8; POSTAMBLE_SIZE];
+
+    // Helper: hand off to the forward-only walker for the
+    // remaining region between `fwd_pos` and `bwd_end` and return
+    // the merged boundary list.  Used at every fall-back point in
+    // the walker below to avoid copy-paste drift.
+    macro_rules! fall_back_to_forward {
+        () => {{
+            let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
+            return Ok(merge_bidirectional_results(fwd, bwd, residual));
+        }};
+    }
 
     loop {
         if fwd_pos + PREAMBLE_SIZE + POSTAMBLE_SIZE > bwd_end {
@@ -1508,15 +1568,9 @@ fn scan_file_bidirectional(
                     }
                 }
             } else {
-                // Streaming message — delegate to forward-only
-                // walker for the current bounded range.  The
-                // forward-only walker will consume as many
-                // messages as it can up to `bwd_end`.
-                let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
-                fwd.extend(residual);
-                bwd.reverse();
-                fwd.extend(bwd);
-                return Ok(fwd);
+                // Streaming message — forward-only walker handles
+                // the remaining region.
+                fall_back_to_forward!();
             }
         }
         if !advanced {
@@ -1532,43 +1586,23 @@ fn scan_file_bidirectional(
         let pa_start = bwd_end - POSTAMBLE_SIZE;
         file.seek(SeekFrom::Start(pa_start as u64))?;
         if file.read_exact(&mut postamble_buf).is_err() {
-            // I/O error — fall back to forward only.
-            let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
-            fwd.extend(residual);
-            bwd.reverse();
-            fwd.extend(bwd);
-            return Ok(fwd);
+            fall_back_to_forward!();
         }
         match Postamble::read_from(&postamble_buf) {
             Ok(postamble) if postamble.total_length != 0 => {
                 if postamble.total_length > max_message_size {
                     // Postamble claims a message larger than the
                     // per-reader cap — treat as corruption.
-                    let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
-                    fwd.extend(residual);
-                    bwd.reverse();
-                    fwd.extend(bwd);
-                    return Ok(fwd);
+                    fall_back_to_forward!();
                 }
-                let total = match usize::try_from(postamble.total_length) {
-                    Ok(t) => t,
-                    Err(_) => {
-                        // Oversized (exceeds usize) — fall back.
-                        let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
-                        fwd.extend(residual);
-                        bwd.reverse();
-                        fwd.extend(bwd);
-                        return Ok(fwd);
-                    }
+                let Ok(total) = usize::try_from(postamble.total_length) else {
+                    // Exceeds usize — fall back.
+                    fall_back_to_forward!();
                 };
                 if total > bwd_end - fwd_pos {
                     // Claimed length exceeds the un-scanned region —
-                    // overlap with forward walker's claims; fall back.
-                    let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
-                    fwd.extend(residual);
-                    bwd.reverse();
-                    fwd.extend(bwd);
-                    return Ok(fwd);
+                    // overlaps the forward walker's claims.
+                    fall_back_to_forward!();
                 }
                 let msg_start = bwd_end - total;
                 file.seek(SeekFrom::Start(msg_start as u64))?;
@@ -1577,35 +1611,24 @@ fn scan_file_bidirectional(
                     || Preamble::read_from(&preamble_buf).is_err()
                 {
                     // TENSOGRM magic absent at the computed start —
-                    // the postamble pointer lies; fall back to forward.
-                    let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
-                    fwd.extend(residual);
-                    bwd.reverse();
-                    fwd.extend(bwd);
-                    return Ok(fwd);
+                    // the postamble's `total_length` lies.
+                    fall_back_to_forward!();
                 }
                 bwd.push((msg_start, total));
                 bwd_end = msg_start;
             }
             Ok(_) | Err(_) => {
                 // Postamble said `total_length = 0` (streaming
-                // non-seekable) or was corrupt — back off, let the
-                // forward walker clean up.
-                let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
-                fwd.extend(residual);
-                bwd.reverse();
-                fwd.extend(bwd);
-                return Ok(fwd);
+                // non-seekable) or was corrupt — back off.
+                fall_back_to_forward!();
             }
         }
     }
 
-    // Scan any residual middle using forward-only.
+    // Walkers crossed without a fallback trigger: scan the residual
+    // middle (usually empty) and merge the two results.
     let residual = scan_file_forward(file, fwd_pos, bwd_end)?;
-    fwd.extend(residual);
-    bwd.reverse();
-    fwd.extend(bwd);
-    Ok(fwd)
+    Ok(merge_bidirectional_results(fwd, bwd, residual))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

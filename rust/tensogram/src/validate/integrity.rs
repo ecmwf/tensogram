@@ -24,6 +24,27 @@ enum HashCheckResult {
     Failed,
 }
 
+/// Read the inline hash slot of the object frame at `frame_offset`
+/// and render it as a lowercase 16-char hex string.  Returns `None`
+/// when the frame cannot be sliced (out of bounds, unparseable
+/// header, etc.); the aggregate cross-check in
+/// [`validate_integrity`] skips those cases silently because the
+/// inline-slot verification path reports the structural problem.
+fn inline_slot_hex(buf: &[u8], frame_offset: usize) -> Option<String> {
+    use crate::wire::{FRAME_COMMON_FOOTER_SIZE, FRAME_HEADER_SIZE};
+    if frame_offset + FRAME_HEADER_SIZE > buf.len() {
+        return None;
+    }
+    let fh = crate::wire::FrameHeader::read_from(&buf[frame_offset..]).ok()?;
+    let total = usize::try_from(fh.total_length).ok()?;
+    if total < FRAME_COMMON_FOOTER_SIZE || frame_offset + total > buf.len() {
+        return None;
+    }
+    let slot_start = frame_offset + total - FRAME_COMMON_FOOTER_SIZE;
+    let slot = u64::from_be_bytes(buf[slot_start..slot_start + 8].try_into().ok()?);
+    Some(format!("{slot:016x}"))
+}
+
 /// Verify the inline hash slot of the object frame at `frame_offset`.
 ///
 /// Slices the full frame out of `buf` using the frame header's
@@ -101,12 +122,14 @@ pub(crate) fn validate_integrity(
     let mut any_checked = false;
 
     // Parse aggregate HashFrame(s) (HeaderHash / FooterHash) and
-    // surface any structural or schema-level issues.  v3 only
+    // surface structural, schema, and consistency issues.  v3 only
     // recognises `algorithm = "xxh3"`; other values trigger an
-    // `UnknownHashAlgorithm` warning — the frame-body hashes are
-    // still verified against the inline slots below (which are
-    // authoritative), but an unknown algorithm name means the
-    // aggregate HashFrame entries can't be interpreted.
+    // `UnknownHashAlgorithm` warning.  The frame-body hashes are
+    // verified against the inline slots below (which are
+    // authoritative); the aggregate's entries are additionally
+    // cross-checked against those slots later in this function
+    // via `aggregate_hashes`.
+    let mut aggregate_hashes: Option<Vec<String>> = None;
     for (ft, payload) in &walk.meta_frames {
         if !matches!(ft, FrameType::HeaderHash | FrameType::FooterHash) {
             continue;
@@ -125,6 +148,28 @@ pub(crate) fn validate_integrity(
                             hf.algorithm
                         ),
                     ));
+                } else {
+                    // Record the aggregate for cross-check below.
+                    // Multiple HashFrames (header + footer) must
+                    // agree; the first wins and later frames are
+                    // compared against it.
+                    match &aggregate_hashes {
+                        None => aggregate_hashes = Some(hf.hashes.clone()),
+                        Some(first) if first != &hf.hashes => {
+                            all_verified = false;
+                            issues.push(err(
+                                IssueCode::HashMismatch,
+                                ValidationLevel::Integrity,
+                                None,
+                                None,
+                                "HeaderHash and FooterHash aggregate frames \
+                                 disagree — wire-format contract requires \
+                                 they carry identical hash lists"
+                                    .to_string(),
+                            ));
+                        }
+                        Some(_) => {} // identical — fine
+                    }
                 }
             }
             Err(e) => {
@@ -196,6 +241,30 @@ pub(crate) fn validate_integrity(
 
         if !matches!(result, HashCheckResult::Verified) {
             all_verified = false;
+        }
+
+        // Aggregate HashFrame cross-check (new in v3).  When the
+        // message carries a HashFrame whose algorithm is known, the
+        // i-th aggregate entry must match the hex rendering of the
+        // i-th inline slot.  Disagreement indicates the aggregate
+        // was tampered with independently of the frame body.
+        if matches!(result, HashCheckResult::Verified)
+            && let Some(ref hashes) = aggregate_hashes
+            && let Some(expected_hex) = hashes.get(i)
+            && let Some(inline_hex) = inline_slot_hex(buf, obj.frame_offset)
+            && expected_hex != &inline_hex
+        {
+            all_verified = false;
+            issues.push(err(
+                IssueCode::HashMismatch,
+                ValidationLevel::Integrity,
+                Some(i),
+                Some(obj.frame_offset),
+                format!(
+                    "HashFrame aggregate[{i}] = {expected_hex} disagrees with \
+                     frame {i} inline slot = {inline_hex}"
+                ),
+            ));
         }
 
         // Decompression check (requires parsed descriptor, skipped in checksum-only mode)
