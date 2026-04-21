@@ -93,7 +93,7 @@ git commit -m "feat: rename npm package to @ecmwf.int/tensogram"
 **Files:**
 - Create: `.github/workflows/publish-npm.yml`
 
-- [ ] **Step 1: Create the workflow file**
+- [x] **Step 1: Create the workflow file**
 
 Create `.github/workflows/publish-npm.yml` with this content:
 
@@ -168,14 +168,14 @@ jobs:
           npm publish --access public
 ```
 
-- [ ] **Step 2: Verify YAML is valid**
+- [x] **Step 2: Verify YAML is valid**
 
 ```bash
 python3 -c "import yaml; yaml.safe_load(open('.github/workflows/publish-npm.yml'))" && echo "YAML OK"
 ```
 Expected: `YAML OK`
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add .github/workflows/publish-npm.yml

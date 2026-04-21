@@ -37,7 +37,7 @@ jobs:
 
       - name: Install TypeScript deps
         working-directory: typescript
-        run: npm ci || npm install --no-audit --no-fund
+        run: npm ci
 
       - name: Build distributable
         working-directory: typescript
@@ -65,4 +65,8 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPMJS_API_TOKEN }}
         run: |
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > .npmrc
-          npm publish --access public
+          npm publish
+
+      - name: Cleanup
+        if: always()
+        run: rm -f typescript/.npmrc && rm -rf "$TMPDIR" typescript/node_modules typescript/dist typescript/wasm
