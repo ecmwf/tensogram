@@ -39,6 +39,7 @@ where = ["src"]
 
 [tool.setuptools_scm]
 version_file = "src/tensogram_anemoi/_version.py"
+root = "../.."
 fallback_version = "0.0.0.dev0"
 
 [tool.ruff]
