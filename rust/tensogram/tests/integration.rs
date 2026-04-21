@@ -2539,3 +2539,160 @@ fn data_object_inline_hashes_rejects_truncated_buffer() {
         result
     );
 }
+
+// ── Coverage: adversarial validate paths ─────────────────────────────────────
+
+/// A data-object frame with `cbor_offset` pointing outside the valid
+/// range surfaces `CborOffsetInvalid` at validate's Structure level.
+#[test]
+fn validate_cbor_offset_out_of_range_detected() {
+    use tensogram::validate::{IssueCode, ValidateOptions, validate_message};
+    use tensogram::wire::{
+        DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC,
+    };
+
+    let (global, desc) = make_float32_descriptor(vec![2]);
+    let data = vec![0u8; 8];
+    let mut msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+
+    // Locate the NTensorFrame by its "FR" + type=9 marker and
+    // tamper the cbor_offset (lives at endf_offset - 16).
+    let marker: &[u8] = &[b'F', b'R', 0x00, 0x09];
+    let frame_start = msg.windows(4).position(|w| w == marker).unwrap();
+    // Read frame total_length (8 bytes at offset+8)
+    let total_length =
+        u64::from_be_bytes(msg[frame_start + 8..frame_start + 16].try_into().unwrap()) as usize;
+    let endf_offset = frame_start + total_length - FRAME_END.len();
+    let cbor_offset_pos = endf_offset - 16;
+    // Overwrite cbor_offset with a wildly out-of-range value.
+    msg[cbor_offset_pos..cbor_offset_pos + 8].copy_from_slice(&(u64::MAX / 2).to_be_bytes());
+
+    let report = validate_message(&msg, &ValidateOptions::default());
+    assert!(
+        report.issues.iter().any(|i| matches!(
+            i.code,
+            IssueCode::CborOffsetInvalid | IssueCode::DataObjectTooSmall
+        )),
+        "expected CborOffsetInvalid or DataObjectTooSmall, got: {:?}",
+        report.issues
+    );
+
+    // Suppress unused-import warning — the bytes written above
+    // match v3's 20-byte data-object footer layout
+    // [cbor_offset(8)][hash(8)][ENDF(4)] = DATA_OBJECT_FOOTER_SIZE.
+    let _ = (
+        DATA_OBJECT_FOOTER_SIZE,
+        DataObjectFlags::CBOR_AFTER_PAYLOAD,
+        FRAME_HEADER_SIZE,
+        FRAME_MAGIC,
+    );
+}
+
+/// Non-zero bytes in the alignment-padding region between frames
+/// trigger a `NonZeroPadding` warning at Structure level.
+#[test]
+fn validate_non_zero_alignment_padding_detected() {
+    use tensogram::validate::{IssueCode, ValidateOptions, validate_message};
+
+    // Use two objects so there's a padding region between frames.
+    let (global, desc) = make_float32_descriptor(vec![3]);
+    let data = vec![0u8; 12];
+    let mut msg = encode(
+        &global,
+        &[(&desc, &data), (&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
+
+    // Walk all "FR" markers to find an alignment-padding byte.
+    // After the first data-object frame's ENDF there are 0-7
+    // zero bytes before the next FR.  Find the first zero byte
+    // that sits between two FR markers and flip it.
+    let fr_positions: Vec<usize> = msg
+        .windows(2)
+        .enumerate()
+        .filter(|(_, w)| *w == b"FR")
+        .map(|(i, _)| i)
+        .collect();
+    // Pick the transition between the two data-object frames:
+    // scan for two consecutive "FR" + type=9 markers.
+    let marker: &[u8] = &[b'F', b'R', 0x00, 0x09];
+    let nth: Vec<usize> = msg
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w)| *w == marker)
+        .map(|(i, _)| i)
+        .collect();
+    assert!(nth.len() >= 2, "expected 2 NTensorFrames");
+    let first_end =
+        nth[0] + u64::from_be_bytes(msg[nth[0] + 8..nth[0] + 16].try_into().unwrap()) as usize;
+    let pad_start = first_end;
+    let pad_end = nth[1];
+    if pad_end > pad_start {
+        // Flip a padding byte to 0xFF
+        msg[pad_start] = 0xFF;
+    }
+
+    let report = validate_message(&msg, &ValidateOptions::default());
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|i| i.code == IssueCode::NonZeroPadding),
+        "expected NonZeroPadding warning, got: {:?}",
+        report.issues
+    );
+    let _ = fr_positions;
+}
+
+/// File-based scan handles streaming-mode messages (preamble
+/// `total_length = 0`) by scanning forward for END_MAGIC.  Covers
+/// the file-backed forward walker's streaming branch.
+#[test]
+fn scan_file_handles_streaming_message() {
+    use std::io::Write;
+    use tensogram::framing::scan_file;
+    use tensogram::streaming::StreamingEncoder;
+
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![2],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 8];
+
+    // Stream to a Vec<u8> (non-seekable).
+    let mut enc =
+        StreamingEncoder::new(Vec::<u8>::new(), &global, &EncodeOptions::default()).unwrap();
+    enc.write_object(&desc, &data).unwrap();
+    let streamed_bytes = enc.finish().unwrap();
+
+    // Write to a temp file.
+    let path = std::env::temp_dir().join("tensogram_coverage_streaming.tgm");
+    let _ = std::fs::remove_file(&path);
+    {
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(&streamed_bytes).unwrap();
+    }
+
+    // scan_file must find exactly one message.
+    let mut f = std::fs::File::open(&path).unwrap();
+    let results = scan_file(&mut f).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, 0);
+    assert_eq!(results[0].1, streamed_bytes.len());
+
+    let _ = std::fs::remove_file(&path);
+}
