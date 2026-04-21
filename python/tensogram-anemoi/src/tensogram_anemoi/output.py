@@ -38,7 +38,6 @@ class TensogramOutput(Output):
     pressure-level parameter when ``stack_pressure_levels=True``).
 
     Per-object metadata is stored under the ``"anemoi"`` namespace in CBOR.
-    Message-level metadata (date, step) is stored in ``_extra_["anemoi"]``.
     Dimension-name hints are stored in ``_extra_["dim_names"]`` so the
     tensogram-xarray backend can resolve meaningful names without the reader
     having to pass ``dim_names`` explicitly.
@@ -51,7 +50,7 @@ class TensogramOutput(Output):
     When ``stack_pressure_levels=True``, all fields sharing the same ``param``
     are stacked into a single 2-D object of shape ``(n_grid, n_levels)``,
     sorted by level in ascending order.  The per-object metadata stores
-    ``"levels": [500, 850, ...]`` (plural) instead of the scalar ``"level"``
+    ``"levelist": [500, 850, ...]`` instead of the scalar ``"level"``
     key used for unstacked fields.
 
     Without stacking (default), every field is a separate 1-D object and the
@@ -63,6 +62,7 @@ class TensogramOutput(Output):
         self,
         context: Context,
         path: str,
+        *,
         encoding: str = "none",
         bits: int | None = None,
         compression: str = "zstd",
@@ -128,12 +128,7 @@ class TensogramOutput(Output):
         global_meta = {
             "version": 2,
             "base": [],
-            "_extra_": {
-                "anemoi": {
-                    "date": state["date"].isoformat(),
-                    "step": state["step"].total_seconds(),
-                }
-            },
+            "_extra_": {},
         }
         descriptors_and_data = []
 
@@ -311,7 +306,7 @@ class TensogramOutput(Output):
 
         mars = {**mars_extra, **{k: v for k, v in first_grib.items() if k != "level"}}
 
-        base_entry: dict = {"name": param, "anemoi": {"variable": param, "levels": levels}}
+        base_entry: dict = {"name": param, "anemoi": {"variable": param, "levelist": levels}}
         if mars:
             base_entry["mars"] = mars
         return base_entry, self._build_descriptor(stacked), stacked

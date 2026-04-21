@@ -162,9 +162,6 @@ def test_write_and_read_local(tmp_path):
             _, field_arr = objects[obj_idx]
             np.testing.assert_allclose(field_arr, states[i]["fields"][name], rtol=1e-6)
 
-        extra = meta.extra["anemoi"]
-        assert extra["step"] == states[i]["step"].total_seconds()
-        assert extra["date"] == states[i]["date"].isoformat()
 
 
 def test_variable_filter(tmp_path):
@@ -283,7 +280,6 @@ def test_remote_write_via_memory_fs():
         msg_bytes = raw[offset : offset + length]
         meta, objects = tensogram.decode(msg_bytes)
         assert len(objects) == 5
-        assert meta.extra["anemoi"]["step"] == states[i]["step"].total_seconds()
 
 
 def test_dtype_float64(tmp_path):
@@ -433,7 +429,7 @@ def test_stack_shape(tmp_path):
 
 
 def test_stack_levels_metadata(tmp_path):
-    """Stacked objects store 'levels' (plural) sorted ascending; no scalar 'level'."""
+    """Stacked objects store 'levelist' sorted ascending; no scalar 'level'."""
     path = tmp_path / "stacked.tgm"
     context = _make_pl_context()
     output = TensogramOutput(context, str(path), stack_pressure_levels=True)
@@ -450,10 +446,10 @@ def test_stack_levels_metadata(tmp_path):
         entry = meta.base[obj_idx]
         anemoi = entry["anemoi"]
         mars = entry["mars"]
-        assert "levels" in anemoi
+        assert "levelist" in anemoi
         assert "level" not in anemoi
         assert "level" not in mars
-        assert anemoi["levels"] == sorted(PL_LEVELS)
+        assert anemoi["levelist"] == sorted(PL_LEVELS)
         assert mars["levtype"] == "pl"
         assert "name" in entry
         assert entry["name"] == mars["param"]
@@ -483,7 +479,7 @@ def test_stack_values_round_trip(tmp_path):
     meta, objects = tgm_file[0]
 
     anemoi = meta.base[2]["anemoi"]
-    assert anemoi["levels"] == [500, 850, 1000]
+    assert anemoi["levelist"] == [500, 850, 1000]
 
     _, arr = objects[2]
     np.testing.assert_allclose(arr[:, 0], fields["t500"], rtol=1e-6)
