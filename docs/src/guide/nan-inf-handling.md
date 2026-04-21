@@ -21,7 +21,7 @@ encode:
    together (the flag covers both signs; two per-sign bitmasks are
    written when both kinds appear in the payload).
 
-The mask companion is formally called the *`NTensorMaskedFrame`* —
+The mask companion is formally called the *`NTensorFrame`* —
 wire-format type 9, defined in
 [plans/BITMASK_FRAME.md](https://github.com/ecmwf/tensogram/blob/main/plans/BITMASK_FRAME.md)
 and [the wire-format reference](../format/wire-format.md#ntensormaskedframe-type-9).

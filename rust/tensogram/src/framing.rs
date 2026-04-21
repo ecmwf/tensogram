@@ -178,14 +178,14 @@ pub fn encode_data_object_frame(
 
     let mut out = Vec::with_capacity(total_length as usize);
 
-    // Frame header — 0.17+ emits `NTensorMaskedFrame` (type 9) for
-    // every new data-object frame.  When the descriptor carries no
-    // `masks` sub-map the on-wire layout matches pre-0.17 type 4
-    // byte-for-byte except for the type number.  Mask sections
-    // (when present) live between the payload and the CBOR
-    // descriptor, located by offsets in `descriptor.masks`.
+    // Frame header — v3 emits `NTensorFrame` (type 9) for every new
+    // data-object frame.  When the descriptor carries no `masks`
+    // sub-map the payload region holds only the encoded tensor
+    // bytes.  When masks are present they live between the payload
+    // and the CBOR descriptor, located by offsets in
+    // `descriptor.masks`.
     let fh = FrameHeader {
-        frame_type: FrameType::NTensorMaskedFrame,
+        frame_type: FrameType::NTensorFrame,
         version: 1,
         flags,
         total_length,
@@ -218,21 +218,21 @@ pub fn encode_data_object_frame(
 ///
 /// The mask-region slice contains the bytes between the data payload
 /// and the CBOR descriptor — non-empty only when
-/// `descriptor.masks.is_some()`, per the `NTensorMaskedFrame` layout
-/// in `plans/BITMASK_FRAME.md` §3.2.  Callers that only care about
-/// the data payload can ignore it.
+/// `descriptor.masks.is_some()`, per the `NTensorFrame` layout in
+/// `plans/WIRE_FORMAT.md` §6.5.  Callers that only care about the
+/// data payload can ignore it.
 ///
 /// `buf` must start at the frame header.
 pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u8], &[u8], usize)> {
     let fh = FrameHeader::read_from(buf)?;
-    // Accept both legacy `NTensorFrame` (type 4) and the 0.17+
-    // `NTensorMaskedFrame` (type 9).  Type 4 frames always yield an
-    // empty mask region; type 9 frames may carry mask blobs between
-    // the payload and the CBOR descriptor located via
-    // `descriptor.masks`.
+    // Only `NTensorFrame` (type 9) is a valid data-object frame in
+    // v3; other types hit the `is_data_object() == false` branch
+    // below.  Type 4 (obsolete v2 NTensorFrame) never reaches here
+    // because `FrameHeader::read_from` rejects it at the registry
+    // lookup.
     if !fh.frame_type.is_data_object() {
         return Err(TensogramError::Framing(format!(
-            "expected data-object frame (type 4 or 9), got {:?}",
+            "expected data-object frame (type 9 NTensorFrame in v3), got {:?}",
             fh.frame_type
         )));
     }
@@ -640,13 +640,12 @@ fn frame_phase(ft: FrameType) -> DecodePhase {
         FrameType::HeaderMetadata | FrameType::HeaderIndex | FrameType::HeaderHash => {
             DecodePhase::Headers
         }
-        // PrecederMetadata lives alongside data-object frames — it must appear
-        // immediately before the data-object frame it describes, within the
-        // data phase.  Both NTensorFrame (legacy) and NTensorMaskedFrame
-        // count as data-object frames.
-        FrameType::NTensorFrame | FrameType::NTensorMaskedFrame | FrameType::PrecederMetadata => {
-            DecodePhase::DataObjects
-        }
+        // PrecederMetadata lives alongside data-object frames — it
+        // must appear immediately before the data-object frame it
+        // describes, within the data phase.  In v3 the only concrete
+        // data-object type is NTensorFrame (type 9); new types will
+        // join this match arm without a wire-format version bump.
+        FrameType::NTensorFrame | FrameType::PrecederMetadata => DecodePhase::DataObjects,
         FrameType::FooterHash | FrameType::FooterIndex | FrameType::FooterMetadata => {
             DecodePhase::Footers
         }
@@ -794,11 +793,10 @@ pub fn decode_message(buf: &[u8]) -> Result<DecodedMessage<'_>> {
                 pending_preceder = Some(entry);
                 pos += consumed;
             }
-            FrameType::NTensorFrame | FrameType::NTensorMaskedFrame => {
-                // Both frame types share the same payload + CBOR layout;
+            FrameType::NTensorFrame => {
                 // `decode_data_object_frame` returns the trimmed data
                 // payload and the (possibly empty) mask region slice.
-                // Type 4 frames always have an empty mask region.
+                // Frames without masks have an empty mask region.
                 let (desc, payload, mask_region, consumed) = decode_data_object_frame(&buf[pos..])?;
                 objects.push((desc, payload, mask_region, frame_start));
                 // Consume the pending preceder (if any) for this object

@@ -443,3 +443,41 @@ fn postamble_is_24_bytes() {
     let pa_total = u64::from_be_bytes(msg[msg.len() - 16..msg.len() - 8].try_into().unwrap());
     assert_eq!(pa_total, msg.len() as u64);
 }
+
+// ── Phase 4: type 4 (obsolete v2 NTensorFrame) is reserved ─────────────────
+
+/// Hand-constructed type-4 frame embedded in an otherwise valid
+/// message must fail decode with a reserved-type error.  Pins the
+/// v3 contract that type 4 is rejected at the registry lookup.
+#[test]
+fn frame_type_4_is_rejected() {
+    // Build a syntactically-valid frame but with type=4 in the
+    // header.  The frame body doesn't matter — registry rejection
+    // fires at the FrameType::from_u16 stage inside
+    // FrameHeader::read_from.
+    use tensogram::wire::{FRAME_END, FRAME_HEADER_SIZE, FRAME_MAGIC};
+
+    let body = vec![0u8; 32];
+    let total_length = (FRAME_HEADER_SIZE + body.len() + FRAME_END.len()) as u64;
+    let mut frame = Vec::new();
+    frame.extend_from_slice(FRAME_MAGIC);
+    frame.extend_from_slice(&4u16.to_be_bytes()); // type = 4 (reserved)
+    frame.extend_from_slice(&1u16.to_be_bytes()); // version
+    frame.extend_from_slice(&0u16.to_be_bytes()); // flags
+    frame.extend_from_slice(&total_length.to_be_bytes());
+    frame.extend_from_slice(&body);
+    frame.extend_from_slice(FRAME_END);
+
+    // Try to parse the frame header — must fail with reserved-type
+    // message.
+    let err = tensogram::wire::FrameHeader::read_from(&frame).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("reserved frame type 4"),
+        "expected reserved-type-4 error, got: {msg}"
+    );
+    assert!(
+        msg.contains("obsolete v2"),
+        "expected 'obsolete v2' in the error, got: {msg}"
+    );
+}

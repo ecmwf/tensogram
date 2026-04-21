@@ -37,7 +37,7 @@ thiserror.workspace = true
 serde.workspace = true
 tracing.workspace = true
 xxhash-rust.workspace = true
-# Roaring is used by the bitmask companion frame (NTensorMaskedFrame).
+# Roaring is used by the bitmask companion frame (NTensorFrame).
 # Pure-Rust, verified to build on wasm32-unknown-unknown — mandatory
 # everywhere, not feature-gated (per plans/BITMASK_FRAME.md).
 roaring = "0.11"

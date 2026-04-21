@@ -733,13 +733,13 @@ fn write_data_object_frame_hashed<W: Write>(
 
     // ── 1) Frame header ──────────────────────────────────────────────
     //
-    // 0.17+ emits `NTensorMaskedFrame` (type 9) for every new data-object
+    // v3 emits `NTensorFrame` (type 9) for every new data-object
     // frame.  Without a `masks` sub-map in the CBOR descriptor the on-wire
     // layout matches pre-0.17 type 4 byte-for-byte except for the type
     // number.
     let mut header_bytes = Vec::with_capacity(FRAME_HEADER_SIZE);
     FrameHeader {
-        frame_type: FrameType::NTensorMaskedFrame,
+        frame_type: FrameType::NTensorFrame,
         version: 1,
         flags: DataObjectFlags::CBOR_AFTER_PAYLOAD,
         total_length,

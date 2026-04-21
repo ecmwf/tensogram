@@ -8,7 +8,7 @@
 
 //! Compressed bitmasks for the NaN / Inf bitmask companion frame.
 //!
-//! Used by `NTensorMaskedFrame` (wire type 9, see
+//! Used by `NTensorFrame` (wire type 9, see
 //! `plans/BITMASK_FRAME.md` §3) to record the positions of NaN / +Inf /
 //! -Inf values in a float payload.  The payload itself has those
 //! positions substituted with `0.0`; the bitmask tells the decoder

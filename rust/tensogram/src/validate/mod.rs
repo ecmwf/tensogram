@@ -1652,7 +1652,7 @@ mod tests {
 
         let mut frame = Vec::new();
         frame.extend_from_slice(FRAME_MAGIC);
-        frame.extend_from_slice(&4u16.to_be_bytes()); // DataObject
+        frame.extend_from_slice(&9u16.to_be_bytes()); // NTensorFrame (type 9 in v3)
         frame.extend_from_slice(&1u16.to_be_bytes()); // version
         frame.extend_from_slice(&0u16.to_be_bytes()); // flags=0 → CBOR before payload
         frame.extend_from_slice(&total_length.to_be_bytes());
@@ -1814,7 +1814,7 @@ mod tests {
 
         let mut frame = Vec::new();
         frame.extend_from_slice(FRAME_MAGIC);
-        frame.extend_from_slice(&4u16.to_be_bytes()); // DataObject
+        frame.extend_from_slice(&9u16.to_be_bytes()); // NTensorFrame (type 9 in v3)
         frame.extend_from_slice(&1u16.to_be_bytes()); // version
         frame.extend_from_slice(&DataObjectFlags::CBOR_AFTER_PAYLOAD.to_be_bytes()); // flags
         frame.extend_from_slice(&total_length.to_be_bytes());

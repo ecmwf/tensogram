@@ -105,7 +105,7 @@ Every frame ends with the ASCII string `ENDF`.
 | 6 | Footer Index | CBOR index of data object offsets |
 | 7 | Footer Metadata | CBOR global metadata map |
 | 8 | Preceder Metadata | Per-object CBOR metadata (see below) |
-| 9 | `NTensorMaskedFrame` | Descriptor + payload + optional NaN / Inf bitmask companion sections (see [NaN / Inf Handling](../guide/nan-inf-handling.md)) |
+| 9 | `NTensorFrame` | Descriptor + payload + optional NaN / Inf bitmask companion sections (see [NaN / Inf Handling](../guide/nan-inf-handling.md)) |
 
 ### Padding between frames
 
@@ -135,7 +135,7 @@ The `cbor_offset` field (8 bytes, immediately before `ENDF`) tells the reader wh
 
 The CBOR descriptor fully describes the data object: its type, shape, strides, data type, byte order, encoding pipeline, and optional per-object metadata. See the [CBOR Metadata](cbor-metadata.md) page for the schema.
 
-### `NTensorMaskedFrame` (type 9)
+### `NTensorFrame` (type 9)
 
 Emitted by every encoder at 0.17+ — layout-compatible with the
 legacy type 4 `NTensorFrame` except for the frame-type number and

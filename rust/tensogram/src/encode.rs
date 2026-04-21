@@ -76,7 +76,7 @@ pub struct EncodeOptions {
     /// When `true`, NaN values in float / complex payloads are
     /// substituted with `0.0` and recorded in a bitmask companion
     /// section of the data-object frame (wire type 9
-    /// `NTensorMaskedFrame`, see `plans/BITMASK_FRAME.md`).  When
+    /// `NTensorFrame`, see `plans/BITMASK_FRAME.md`).  When
     /// `false` (the default) any NaN in the input is a hard encode
     /// error.
     pub allow_nan: bool,

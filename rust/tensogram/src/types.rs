@@ -46,7 +46,7 @@ pub struct MaskDescriptor {
     pub params: BTreeMap<String, ciborium::Value>,
 }
 
-/// Top-level `masks` sub-map for the `NTensorMaskedFrame` (wire type 9,
+/// Top-level `masks` sub-map for the `NTensorFrame` (wire type 9,
 /// see `plans/BITMASK_FRAME.md` §3.3).
 ///
 /// All three fields are optional — a frame can carry any subset (or
@@ -96,7 +96,7 @@ pub struct DataObjectDescriptor {
     pub filter: String,
     pub compression: String,
 
-    /// Optional NaN / Inf companion-mask metadata (`NTensorMaskedFrame`,
+    /// Optional NaN / Inf companion-mask metadata (`NTensorFrame`,
     /// wire type 9 — see `plans/BITMASK_FRAME.md`).  `None` means no
     /// mask sections are present, and the frame is byte-compatible with
     /// the legacy `NTensorFrame` layout.

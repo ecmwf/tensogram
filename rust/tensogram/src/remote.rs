@@ -617,9 +617,7 @@ impl RemoteBackend {
                     let idx = metadata::cbor_to_index(payload)?;
                     state.layouts[msg_idx].index = Some(idx);
                 }
-                FrameType::NTensorFrame
-                | FrameType::NTensorMaskedFrame
-                | FrameType::PrecederMetadata => {
+                FrameType::NTensorFrame | FrameType::PrecederMetadata => {
                     break;
                 }
                 _ => {}

@@ -9,7 +9,7 @@
 """Tests for the ``allow_nan`` / ``allow_inf`` Python bindings.
 
 Covers the NaN / Inf bitmask companion frame (type 9,
-``NTensorMaskedFrame``) introduced in 0.17 (see
+``NTensorFrame``) introduced in 0.17 (see
 ``plans/BITMASK_FRAME.md``).  These tests exercise:
 
 - default-reject policy (``allow_nan`` / ``allow_inf`` both False)

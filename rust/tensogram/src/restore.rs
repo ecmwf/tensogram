@@ -9,7 +9,7 @@
 //! Decode-side companion to [`crate::substitute_and_mask`].
 //!
 //! When a data-object frame carries a `masks` sub-map
-//! (`NTensorMaskedFrame`, wire type 9 — see `plans/BITMASK_FRAME.md`
+//! (`NTensorFrame`, wire type 9 — see `plans/BITMASK_FRAME.md`
 //! §7), this module:
 //!
 //! 1. Parses each present mask's [`crate::types::MaskDescriptor`]

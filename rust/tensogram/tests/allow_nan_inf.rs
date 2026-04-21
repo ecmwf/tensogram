@@ -10,7 +10,7 @@
 //! introduced by Commit 5 of `plans/BITMASK_FRAME.md`.
 //!
 //! Scope of this commit: encode-side only.  The tests verify that
-//! the type-9 `NTensorMaskedFrame` is emitted with a correctly
+//! the type-9 `NTensorFrame` is emitted with a correctly
 //! populated `masks` sub-map and per-kind mask sections.  NaN / Inf
 //! **reconstruction on decode** is Commit 6; tests here assert the
 //! decoded payload contains the substituted zeros and inspect

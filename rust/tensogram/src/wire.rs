@@ -43,40 +43,44 @@ pub const DATA_OBJECT_FOOTER_SIZE: usize = 12;
 // ── Frame Types ──────────────────────────────────────────────────────────────
 
 /// Frame type identifiers (uint16).
+///
+/// The body phase may hold any number of *data-object* frames.  In
+/// v3 the registry defines exactly one concrete data-object type,
+/// [`FrameType::NTensorFrame`] (type 9).  Future data-object types
+/// slot in at fresh unused numbers without a wire-format version
+/// bump.  Type 4 is **reserved** and cannot be emitted nor read —
+/// it was occupied by the obsolete v2 `NTensorFrame` layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum FrameType {
     HeaderMetadata = 1,
     HeaderIndex = 2,
     HeaderHash = 3,
-    /// Legacy n-tensor data-object frame (pre-0.17).  Read-only for
-    /// ≥0.17 decoders; new encoders emit [`FrameType::NTensorMaskedFrame`].
-    ///
-    /// The on-wire layout and CBOR schema are unchanged from pre-0.17.
-    /// When a type-9 decoder reads a type-4 frame, the descriptor is
-    /// interpreted as having no `masks` sub-map (equivalent to "all
-    /// values are finite" under the new default-reject semantics).
-    NTensorFrame = 4,
+    // Type 4 reserved — occupied by the obsolete v2 NTensorFrame.
+    // Any decoder that reads a type-4 frame emits a FramingError.
     FooterHash = 5,
     FooterIndex = 6,
     FooterMetadata = 7,
     /// Per-object metadata frame that immediately precedes a data-object
-    /// frame (type 4 or 9).  Carries a GlobalMetadata CBOR with a
-    /// single-entry `base` array containing metadata for the next data
-    /// object. `_reserved_` and `_extra_` are empty in the preceder.
+    /// frame.  Carries a GlobalMetadata CBOR with a single-entry
+    /// `base` array containing metadata for the next data object.
+    /// `_reserved_` and `_extra_` are empty in the preceder.
     PrecederMetadata = 8,
-    /// N-tensor data-object frame with optional companion bitmasks
-    /// identifying positions of NaN / +Inf / -Inf values in the
-    /// original input.
+    /// N-dimensional tensor data-object frame — the canonical
+    /// data-object type in v3.  Optionally carries compressed
+    /// bitmask companions identifying positions of NaN / +Inf / −Inf
+    /// values in the original input.
     ///
-    /// Layout: same preamble as type 4, then the encoded payload (with
-    /// non-finite values substituted with `0.0`), then up to three
-    /// compressed bitmask blobs, then the CBOR descriptor (with an
-    /// optional `"masks"` sub-map carrying per-kind method / offset /
-    /// length), then the `u64 cbor_offset` + `ENDF` end-magic.
+    /// Layout: frame header, then the encoded payload (with
+    /// non-finite values substituted with `0.0` when masks are
+    /// present), then up to three compressed bitmask blobs, then the
+    /// CBOR descriptor (with an optional `"masks"` sub-map carrying
+    /// per-kind method / offset / length), then the 20-byte type-
+    /// specific footer `[cbor_offset u64][hash u64][ENDF]`.
     ///
-    /// See `plans/BITMASK_FRAME.md` for the full design.
-    NTensorMaskedFrame = 9,
+    /// See `plans/BITMASK_FRAME.md` for the mask design and
+    /// `plans/WIRE_FORMAT.md` §6.5 for the full frame layout.
+    NTensorFrame = 9,
 }
 
 impl FrameType {
@@ -85,25 +89,25 @@ impl FrameType {
             1 => Ok(FrameType::HeaderMetadata),
             2 => Ok(FrameType::HeaderIndex),
             3 => Ok(FrameType::HeaderHash),
-            4 => Ok(FrameType::NTensorFrame),
+            4 => Err(TensogramError::Framing(
+                "reserved frame type 4 (obsolete v2 NTensorFrame) not supported in v3".to_string(),
+            )),
             5 => Ok(FrameType::FooterHash),
             6 => Ok(FrameType::FooterIndex),
             7 => Ok(FrameType::FooterMetadata),
             8 => Ok(FrameType::PrecederMetadata),
-            9 => Ok(FrameType::NTensorMaskedFrame),
+            9 => Ok(FrameType::NTensorFrame),
             _ => Err(TensogramError::Framing(format!("unknown frame type: {v}"))),
         }
     }
 
-    /// True for frames that carry an n-tensor data payload (types 4 and 9).
-    /// Callers that want to treat both variants uniformly (e.g. the
-    /// framing scanner) should use this instead of matching a single
-    /// variant.
+    /// True for frames that carry a data-object payload.
+    ///
+    /// Structured as a match to leave room for future non-tensor
+    /// data-object variants (see the frame-type registry comment).
+    /// In v3 this matches only [`FrameType::NTensorFrame`] (type 9).
     pub fn is_data_object(self) -> bool {
-        matches!(
-            self,
-            FrameType::NTensorFrame | FrameType::NTensorMaskedFrame
-        )
+        matches!(self, FrameType::NTensorFrame)
     }
 }
 
@@ -490,24 +494,44 @@ mod tests {
     #[test]
     fn test_frame_type_parse() {
         assert_eq!(FrameType::from_u16(1).unwrap(), FrameType::HeaderMetadata);
-        assert_eq!(FrameType::from_u16(4).unwrap(), FrameType::NTensorFrame);
+        assert_eq!(FrameType::from_u16(2).unwrap(), FrameType::HeaderIndex);
+        assert_eq!(FrameType::from_u16(3).unwrap(), FrameType::HeaderHash);
+        assert_eq!(FrameType::from_u16(5).unwrap(), FrameType::FooterHash);
+        assert_eq!(FrameType::from_u16(6).unwrap(), FrameType::FooterIndex);
         assert_eq!(FrameType::from_u16(7).unwrap(), FrameType::FooterMetadata);
         assert_eq!(FrameType::from_u16(8).unwrap(), FrameType::PrecederMetadata);
-        assert_eq!(
-            FrameType::from_u16(9).unwrap(),
-            FrameType::NTensorMaskedFrame
-        );
+        // Type 9 is the canonical NTensorFrame in v3 (formerly
+        // NTensorMaskedFrame under the transitional name).
+        assert_eq!(FrameType::from_u16(9).unwrap(), FrameType::NTensorFrame);
+        // Type 0 / 10+ are unknown.
         assert!(FrameType::from_u16(0).is_err());
         assert!(FrameType::from_u16(10).is_err());
     }
 
     #[test]
+    fn test_type_4_reserved_is_rejected() {
+        // Pins the v3 contract that type 4 (obsolete v2 NTensorFrame)
+        // is not parseable.
+        let err = FrameType::from_u16(4).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("reserved frame type 4"),
+            "expected reserved-type-4 message, got: {msg}"
+        );
+        assert!(
+            msg.contains("obsolete v2"),
+            "expected 'obsolete v2' in the error, got: {msg}"
+        );
+    }
+
+    #[test]
     fn test_is_data_object() {
         assert!(FrameType::NTensorFrame.is_data_object());
-        assert!(FrameType::NTensorMaskedFrame.is_data_object());
         assert!(!FrameType::HeaderMetadata.is_data_object());
         assert!(!FrameType::PrecederMetadata.is_data_object());
         assert!(!FrameType::FooterHash.is_data_object());
+        assert!(!FrameType::FooterIndex.is_data_object());
+        assert!(!FrameType::FooterMetadata.is_data_object());
     }
 
     #[test]

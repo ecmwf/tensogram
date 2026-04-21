@@ -10,7 +10,7 @@
 //! NaN / Inf detection.
 //!
 //! When a data-object frame carries a `masks` sub-map
-//! (`NTensorMaskedFrame`, see `plans/BITMASK_FRAME.md` §3.2), the
+//! (`NTensorFrame`, see `plans/BITMASK_FRAME.md` §3.2), the
 //! validator decompresses the per-kind bitmasks and cross-checks
 //! the reconstructed decoded output.  At every mask bit set to `1`,
 //! the matching canonical non-finite value is **expected**.  At

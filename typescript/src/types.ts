@@ -305,7 +305,7 @@ export interface MessagePosition {
 
 /**
  * Mask compression methods recognised by the NaN / Inf companion
- * bitmask frame (wire type 9 `NTensorMaskedFrame`, see
+ * bitmask frame (wire type 9 `NTensorFrame`, see
  * `plans/BITMASK_FRAME.md` §3.3).
  */
 export type MaskMethod =

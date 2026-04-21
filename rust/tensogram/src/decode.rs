@@ -68,7 +68,7 @@ pub struct DecodeOptions {
     /// [`EncodeOptions.parallel_threshold_bytes`](crate::encode::EncodeOptions::parallel_threshold_bytes).
     pub parallel_threshold_bytes: Option<usize>,
     /// When `true` (the default) AND the object carries a
-    /// `NTensorMaskedFrame` `masks` sub-map, decompress the masks
+    /// `NTensorFrame` `masks` sub-map, decompress the masks
     /// and write the canonical NaN / +Inf / -Inf bit pattern at
     /// every `1` position in the decoded output.  See
     /// `plans/BITMASK_FRAME.md` §7.1 for the (lossy) reconstruction
