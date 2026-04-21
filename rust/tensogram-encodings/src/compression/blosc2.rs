@@ -159,7 +159,11 @@ impl Compressor for Blosc2Compressor {
         })
     }
 
-    fn decompress(&self, data: &[u8], expected_size: usize) -> Result<Vec<u8>, CompressionError> {
+    fn decompress(
+        &self,
+        data: &[u8],
+        _expected_size: usize,
+    ) -> Result<Vec<u8>, CompressionError> {
         ensure_blosc2_init();
         // We iterate chunks explicitly instead of going through
         // `schunk.items(0..schunk.items_num())` because `items_num()` in
@@ -182,16 +186,32 @@ impl Compressor for Blosc2Compressor {
         // sequentially and rely on the compress path for axis-B wins.
         // Compress is the expensive direction; blosc2 decompress is
         // largely memory-bound anyway.
+        //
+        // The `_expected_size` parameter is deliberately ignored: it is
+        // derived from caller-supplied tensor metadata (via the pipeline's
+        // `estimate_decompressed_size`), so trusting it for an infallible
+        // pre-allocation would turn a malformed `num_values` field into a
+        // process abort.  Instead we grow `out` from empty and fall back
+        // to `try_reserve` per chunk, where the size comes from the
+        // already-validated blosc2 frame trailer; an unreasonably large
+        // per-chunk value surfaces cleanly as a `CompressionError`
+        // instead of aborting the process.
         let mut schunk = SChunk::from_buffer(data.into()).map_err(map_err)?;
         let num_chunks = schunk.num_chunks();
         if num_chunks == 0 {
             return Ok(Vec::new());
         }
 
-        let mut out = Vec::with_capacity(expected_size);
+        let mut out: Vec<u8> = Vec::new();
         for idx in 0..num_chunks {
             let chunk = schunk.get_chunk(idx).map_err(map_err)?;
             let bytes = chunk.decompress().map_err(map_err)?;
+            out.try_reserve(bytes.len()).map_err(|e| {
+                CompressionError::Blosc2(format!(
+                    "failed to reserve {} bytes for decompressed chunk {idx}: {e}",
+                    bytes.len(),
+                ))
+            })?;
             out.extend_from_slice(&bytes);
         }
         Ok(out)
