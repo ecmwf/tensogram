@@ -297,7 +297,12 @@ pub(crate) fn validate_metadata(
         // All codecs defined in the wire format, regardless of build features.
         // Level 2 checks format validity; Level 3 catches unsupported codecs
         // at decode time via PipelineConfigFailed.
-        let known_compressions = ["none", "szip", "zstd", "lz4", "blosc2", "zfp", "sz3"];
+        let known_compressions = [
+            "none", "szip", "zstd", "lz4", "blosc2", "zfp", "sz3",
+            // Bitmask-only codecs (v3 §8).  Validation doesn't check
+            // the dtype guard here; that's enforced by encode.rs.
+            "rle", "roaring",
+        ];
         if !known_compressions.contains(&desc.compression.as_str()) {
             issues.push(err(
                 IssueCode::UnknownCompression,

@@ -851,6 +851,26 @@ pub(crate) fn build_pipeline_config_with_backend(
             };
             CompressionType::Sz3 { error_bound }
         }
+        "rle" => {
+            // Bitmask-only codec — see `plans/WIRE_FORMAT.md` §8.
+            if dtype != Dtype::Bitmask {
+                return Err(TensogramError::Encoding(format!(
+                    "compression \"rle\" only supports dtype=bitmask, got dtype={:?}",
+                    dtype
+                )));
+            }
+            CompressionType::Rle
+        }
+        "roaring" => {
+            // Bitmask-only codec — see `plans/WIRE_FORMAT.md` §8.
+            if dtype != Dtype::Bitmask {
+                return Err(TensogramError::Encoding(format!(
+                    "compression \"roaring\" only supports dtype=bitmask, got dtype={:?}",
+                    dtype
+                )));
+            }
+            CompressionType::Roaring
+        }
         other => {
             return Err(TensogramError::Encoding(format!(
                 "unknown compression: {other}"

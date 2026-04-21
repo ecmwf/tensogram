@@ -2014,3 +2014,121 @@ fn buffered_encode_without_hashing_clears_aggregate() {
     assert!(!preamble.flags.has(MessageFlags::HEADER_HASHES));
     assert!(!preamble.flags.has(MessageFlags::FOOTER_HASHES));
 }
+
+// ── Phase 7: rle / roaring compression codecs on bitmask dtype ──────────────
+
+fn bitmask_payload_128_bits() -> Vec<u8> {
+    // 128 bits = 16 bytes, alternating 0xAA pattern (10101010) — gives the
+    // RLE codec real runs to collapse and the roaring codec distinct
+    // container candidates to choose.
+    vec![0xAAu8; 16]
+}
+
+#[test]
+fn compression_rle_round_trips_bitmask() {
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![128],
+        strides: vec![1],
+        dtype: Dtype::Bitmask,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "rle".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = bitmask_payload_128_bits();
+    let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let (_meta, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects[0].1, data);
+    assert_eq!(objects[0].0.compression, "rle");
+}
+
+#[test]
+fn compression_roaring_round_trips_bitmask() {
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![128],
+        strides: vec![1],
+        dtype: Dtype::Bitmask,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "roaring".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = bitmask_payload_128_bits();
+    let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let (_meta, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects[0].1, data);
+    assert_eq!(objects[0].0.compression, "roaring");
+}
+
+#[test]
+fn compression_rle_rejects_non_bitmask_dtype() {
+    // Pin the dtype guard: rle on float32 is an encode-time error.
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "rle".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 16];
+    let err = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("\"rle\"") && msg.contains("dtype=bitmask"),
+        "expected rle-dtype error, got: {msg}"
+    );
+}
+
+#[test]
+fn compression_roaring_rejects_non_bitmask_dtype() {
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![2],
+        strides: vec![4],
+        dtype: Dtype::Uint32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "roaring".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 8];
+    let err = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("\"roaring\"") && msg.contains("dtype=bitmask"),
+        "expected roaring-dtype error, got: {msg}"
+    );
+}
