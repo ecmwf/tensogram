@@ -7,11 +7,19 @@
 // does it submit to any jurisdiction.
 
 /**
- * Example 07 — Hash verification and typed errors (TypeScript)
+ * Example 07 — Typed error hierarchy (TypeScript)
  *
- * Demonstrates the typed error hierarchy. `decode(buf, { verifyHash: true })`
- * throws `HashMismatchError` when the payload has been tampered with.
- * `decode` on a garbage buffer throws `FramingError`, and so on.
+ * Demonstrates the typed error hierarchy.  `decode` on a garbage
+ * buffer throws `FramingError`; out-of-range object indices throw
+ * `ObjectError`.  All concrete errors extend `TensogramError` so a
+ * single `catch (e) { if (e instanceof TensogramError) ... }`
+ * handles every library-raised error.
+ *
+ * **v3 note.** Frame-level integrity verification moved from the
+ * decoder to the validate API (plans/WIRE_FORMAT.md §11).
+ * `decode(buf, { verifyHash: true })` is a no-op; corruption
+ * surfaces through `tensogram validate --checksum` (or the TS
+ * `validate` wrapper when the slot-level accessor lands).
  */
 
 import {
@@ -49,23 +57,33 @@ async function main(): Promise<void> {
   for (let i = 0; i < data.length; i++) data[i] = i;
 
   // Encode with the default xxh3 hash.
-  const msg = encode({ version: 2 }, [{ descriptor: descFor([1000]), data }]);
+  const msg = encode({ version: 3 }, [{ descriptor: descFor([1000]), data }]);
 
-  // 1. Clean decode with hash verification — succeeds.
+  // 1. Clean decode with verifyHash: true — succeeds.
   const clean = decode(msg, { verifyHash: true });
-  console.log(`clean verify: OK (${clean.objects.length} object)`);
+  console.log(`clean decode: OK (${clean.objects.length} object)`);
   clean.close();
 
-  // 2. Tamper with a byte in the payload and verify again.
+  // 2. v3: decode is no longer the integrity-verification surface.
+  //     A byte flip in the payload may decode silently (the inline
+  //     hash slot mismatch is not checked at decode time).  Use the
+  //     validate API to detect the mismatch.  Structural tamper
+  //     still surfaces as FramingError.
   const tampered = new Uint8Array(msg);
   tampered[500] ^= 0xff;
   try {
-    decode(tampered, { verifyHash: true });
-    console.error('expected a HashMismatchError');
-    process.exit(1);
+    const d = decode(tampered, { verifyHash: true });
+    console.log('tamper not detected at decode (expected in v3 — use validate for integrity)');
+    d.close();
   } catch (err) {
-    if (!(err instanceof HashMismatchError)) throw err;
-    console.log(`tamper detected:  expected=${err.expected}  actual=${err.actual}`);
+    if (err instanceof FramingError) {
+      console.log(`tamper landed on structural byte: ${err.message}`);
+    } else if (err instanceof HashMismatchError) {
+      // Won't hit in v3, but catch defensively.
+      console.log(`HashMismatchError: expected=${err.expected} actual=${err.actual}`);
+    } else {
+      throw err;
+    }
   }
 
   // 3. Garbage input → FramingError.

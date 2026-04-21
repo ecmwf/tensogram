@@ -208,14 +208,15 @@ TEST(ErrorTest, ValidateDetectsHashMismatchOnTamperedPayload) {
     encoded[payload_offset]     ^= 0xFF;
     encoded[payload_offset + 1] ^= 0xFF;
 
-    // Validate at checksum level — must surface a HashMismatch (or
-    // structural issue) issue in the report JSON.
+    // Validate at checksum level — must surface a hash_mismatch (or
+    // structural issue) in the report JSON.  Note: validate emits
+    // issue codes in snake_case, not the Rust enum's CamelCase.
     const std::string report_json =
         tensogram::validate(encoded.data(), encoded.size(), "checksum");
     EXPECT_TRUE(
-        report_json.find("HashMismatch") != std::string::npos ||
-        report_json.find("DecodePipelineFailed") != std::string::npos ||
-        report_json.find("CborOffsetInvalid") != std::string::npos)
+        report_json.find("hash_mismatch") != std::string::npos ||
+        report_json.find("decode_pipeline_failed") != std::string::npos ||
+        report_json.find("cbor_offset_invalid") != std::string::npos)
         << "expected integrity or structural issue in validate report, got: "
         << report_json;
 }
