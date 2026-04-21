@@ -1851,7 +1851,6 @@ mod tests {
 
         // Build a fake index frame claiming 5 objects with wrong offsets
         let idx = crate::types::IndexFrame {
-            object_count: 5,
             offsets: vec![0, 100, 200, 300, 400],
             lengths: vec![50, 50, 50, 50, 50],
         };
@@ -1893,7 +1892,6 @@ mod tests {
         let meta_frame = build_metadata_frame();
 
         let idx = crate::types::IndexFrame {
-            object_count: 1,
             offsets: vec![9999], // wrong offset
             lengths: vec![50],
         };
@@ -2529,8 +2527,7 @@ mod tests {
         let data_frame = build_data_object_frame(&desc, &payload);
 
         let hash_frame_data = crate::types::HashFrame {
-            object_count: 3,
-            hash_type: "xxh3".to_string(),
+            algorithm: "xxh3".to_string(),
             hashes: vec!["aaa".to_string(), "bbb".to_string(), "ccc".to_string()],
         };
         let hash_cbor = crate::metadata::hash_frame_to_cbor(&hash_frame_data).unwrap();

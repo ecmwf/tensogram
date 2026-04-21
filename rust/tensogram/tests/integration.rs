@@ -1889,3 +1889,128 @@ fn scan_file_bidirectional_matches_in_memory() {
     assert_eq!(file_result, mem_result);
     assert_eq!(file_result.len(), 8);
 }
+
+// ── Phase 6: aggregate HashFrame policy ─────────────────────────────────────
+
+fn encode_sample_hashed(create_header: bool, create_footer: bool) -> Vec<u8> {
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![3],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 12];
+    let opts = EncodeOptions {
+        create_header_hashes: create_header,
+        create_footer_hashes: create_footer,
+        ..EncodeOptions::default()
+    };
+    encode(&global, &[(&desc, &data)], &opts).unwrap()
+}
+
+/// Buffered encode with default options emits a `HeaderHash` frame
+/// (no `FooterHash`) and the CBOR schema uses the v3 `algorithm` key.
+#[test]
+fn buffered_encode_default_emits_header_hash_only() {
+    let msg = encode_sample_hashed(true, false);
+    let decoded = tensogram::framing::decode_message(&msg).unwrap();
+
+    // HeaderHash present, FooterHash absent via the aggregate field.
+    let hf = decoded
+        .hash_frame
+        .as_ref()
+        .expect("HeaderHash must be emitted by default");
+    assert_eq!(hf.algorithm, "xxh3");
+    assert_eq!(hf.hashes.len(), 1);
+
+    // Inline slot must match the aggregate value for object 0.
+    use tensogram::wire::FRAME_COMMON_FOOTER_SIZE;
+    let (_desc, _payload, _masks, frame_offset) = &decoded.objects[0];
+    let fh = tensogram::wire::FrameHeader::read_from(&msg[*frame_offset..]).unwrap();
+    let frame_end = *frame_offset + fh.total_length as usize;
+    let slot_start = frame_end - FRAME_COMMON_FOOTER_SIZE;
+    let inline = u64::from_be_bytes(msg[slot_start..slot_start + 8].try_into().unwrap());
+    assert_eq!(
+        format!("{inline:016x}"),
+        hf.hashes[0],
+        "aggregate hex must equal the inline slot"
+    );
+}
+
+/// `create_footer_hashes = true` places the aggregate in the
+/// footer region instead.
+#[test]
+fn buffered_encode_footer_hashes_goes_to_footer() {
+    let msg = encode_sample_hashed(false, true);
+    let preamble = tensogram::wire::Preamble::read_from(&msg).unwrap();
+    use tensogram::wire::MessageFlags;
+    assert!(
+        preamble.flags.has(MessageFlags::FOOTER_HASHES),
+        "FOOTER_HASHES flag must be set"
+    );
+    assert!(
+        !preamble.flags.has(MessageFlags::HEADER_HASHES),
+        "HEADER_HASHES flag must be clear"
+    );
+    // The decoder surfaces the same aggregate regardless of location.
+    let decoded = tensogram::framing::decode_message(&msg).unwrap();
+    assert!(decoded.hash_frame.is_some());
+}
+
+/// Both flags on produce both frames; readers see the same aggregate.
+#[test]
+fn buffered_encode_both_flags_emits_both_aggregates() {
+    let msg = encode_sample_hashed(true, true);
+    let preamble = tensogram::wire::Preamble::read_from(&msg).unwrap();
+    use tensogram::wire::MessageFlags;
+    assert!(preamble.flags.has(MessageFlags::HEADER_HASHES));
+    assert!(preamble.flags.has(MessageFlags::FOOTER_HASHES));
+}
+
+/// `hash_algorithm = None` clears HASHES_PRESENT and emits no
+/// aggregate regardless of the create_* flags.
+#[test]
+fn buffered_encode_without_hashing_clears_aggregate() {
+    let global = GlobalMetadata {
+        version: 3,
+        ..Default::default()
+    };
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![1],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::Little,
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: BTreeMap::new(),
+        masks: None,
+    };
+    let data = vec![0u8; 4];
+    let opts = EncodeOptions {
+        hash_algorithm: None,
+        create_header_hashes: true,
+        create_footer_hashes: true,
+        ..EncodeOptions::default()
+    };
+    let msg = encode(&global, &[(&desc, &data)], &opts).unwrap();
+
+    let preamble = tensogram::wire::Preamble::read_from(&msg).unwrap();
+    use tensogram::wire::MessageFlags;
+    assert!(!preamble.flags.has(MessageFlags::HASHES_PRESENT));
+    assert!(!preamble.flags.has(MessageFlags::HEADER_HASHES));
+    assert!(!preamble.flags.has(MessageFlags::FOOTER_HASHES));
+}

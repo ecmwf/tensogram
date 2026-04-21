@@ -64,6 +64,11 @@ pub struct StreamingEncoder<W: Write> {
     bytes_written: u64,
     /// Hash algorithm to use for payload integrity.
     hash_algorithm: Option<HashAlgorithm>,
+    /// Whether to emit an aggregate `FooterHash` frame at finish-time
+    /// (v3).  The header-hash aggregate is unavailable in streaming
+    /// mode — if the caller sets `create_header_hashes`, construction
+    /// errors at `StreamingEncoder::new`.
+    emit_footer_hash_frame: bool,
     /// Original global metadata — re-used to build the footer metadata frame.
     global_meta: GlobalMetadata,
     /// True when a PrecederMetadata frame has been written but the
@@ -102,6 +107,16 @@ impl<W: Write> StreamingEncoder<W> {
         global_meta: &GlobalMetadata,
         options: &EncodeOptions,
     ) -> Result<Self> {
+        // v3: `create_header_hashes` in streaming mode silently
+        // redirects to `create_footer_hashes` — the header frames
+        // are emitted before any data object, so there are no
+        // hashes to aggregate there yet.  Rather than erroring on
+        // the buffered-friendly default, we honour the caller's
+        // "I want the aggregate" intent in the only place where
+        // streaming can put it.
+        let emit_footer_hash = options.hash_algorithm.is_some()
+            && (options.create_footer_hashes || options.create_header_hashes);
+
         let meta_cbor = metadata::global_metadata_to_cbor(global_meta)?;
 
         // Streaming preamble: total_length=0 signals unknown length at write time.
@@ -113,10 +128,12 @@ impl<W: Write> StreamingEncoder<W> {
         flags.set(MessageFlags::FOOTER_INDEX);
         flags.set(MessageFlags::PRECEDER_METADATA);
         if options.hash_algorithm.is_some() {
-            flags.set(MessageFlags::FOOTER_HASHES);
             // v3: HASHES_PRESENT signals per-frame inline hash slots
             // are populated; set whenever hashing is enabled.
             flags.set(MessageFlags::HASHES_PRESENT);
+            if emit_footer_hash {
+                flags.set(MessageFlags::FOOTER_HASHES);
+            }
         }
 
         let preamble = Preamble {
@@ -155,6 +172,7 @@ impl<W: Write> StreamingEncoder<W> {
             completed_objects: Vec::new(),
             bytes_written,
             hash_algorithm: options.hash_algorithm,
+            emit_footer_hash_frame: emit_footer_hash,
             global_meta: global_meta.clone(),
             pending_preceder: false,
             preceder_payloads: Vec::new(),
@@ -475,10 +493,10 @@ impl<W: Write> StreamingEncoder<W> {
             write_padding(&mut self.writer, &mut self.bytes_written)?;
         }
 
-        // Footer hash frame (if any objects had hashes)
-        let has_hashes = self.hash_entries.iter().any(|e| e.is_some());
-        if has_hashes {
-            let hash_type = self
+        // Footer hash frame — only when the caller opted in via
+        // `EncodeOptions.create_footer_hashes`.
+        if self.emit_footer_hash_frame && self.hash_entries.iter().any(|e| e.is_some()) {
+            let algorithm = self
                 .hash_algorithm
                 .map(|a| a.as_str().to_string())
                 .unwrap_or_default();
@@ -487,11 +505,7 @@ impl<W: Write> StreamingEncoder<W> {
                 .iter()
                 .map(|e| e.as_ref().map(|(_, v)| v.clone()).unwrap_or_default())
                 .collect();
-            let hash_frame = HashFrame {
-                object_count: self.object_offsets.len() as u64,
-                hash_type,
-                hashes,
-            };
+            let hash_frame = HashFrame { algorithm, hashes };
             let hash_cbor = metadata::hash_frame_to_cbor(&hash_frame)?;
             let frame_bytes =
                 build_frame(FrameType::FooterHash, 1, 0, &hash_cbor, self.hash_algorithm);
@@ -503,7 +517,6 @@ impl<W: Write> StreamingEncoder<W> {
 
         // Footer index frame
         let index = IndexFrame {
-            object_count: self.object_offsets.len() as u64,
             offsets: self.object_offsets,
             lengths: self.object_lengths,
         };

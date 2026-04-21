@@ -57,7 +57,8 @@ pub(crate) fn validate_metadata(
                 match metadata::cbor_to_index(payload) {
                     Ok(idx) => {
                         let obj_count = objects.len();
-                        let indexed_count = usize::try_from(idx.object_count).unwrap_or(usize::MAX);
+                        // v3: object count is derived from offsets.len().
+                        let indexed_count = idx.offsets.len();
                         if indexed_count != obj_count {
                             issues.push(err(
                                 IssueCode::IndexCountMismatch,
@@ -65,8 +66,8 @@ pub(crate) fn validate_metadata(
                                 None,
                                 None,
                                 format!(
-                                    "index object_count {} != actual data object count {}",
-                                    idx.object_count, obj_count
+                                    "index offsets.len() {} != actual data object count {}",
+                                    indexed_count, obj_count
                                 ),
                             ));
                         }

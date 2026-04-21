@@ -152,11 +152,11 @@ pub(crate) fn format_xxh3_digest(digest: u64) -> String {
 /// verification is skipped (returns Ok). This ensures forward compatibility
 /// when new hash algorithms are added.
 pub fn verify_hash(data: &[u8], descriptor: &HashDescriptor) -> Result<()> {
-    let algorithm = match HashAlgorithm::parse(&descriptor.hash_type) {
+    let algorithm = match HashAlgorithm::parse(&descriptor.algorithm) {
         Ok(algo) => algo,
         Err(_) => {
             tracing::warn!(
-                hash_type = %descriptor.hash_type,
+                algorithm = %descriptor.algorithm,
                 "unknown hash algorithm, skipping verification"
             );
             return Ok(());
@@ -190,7 +190,7 @@ mod tests {
         let data = b"test data";
         let hash = compute_hash(data, HashAlgorithm::Xxh3);
         let descriptor = HashDescriptor {
-            hash_type: "xxh3".to_string(),
+            algorithm: "xxh3".to_string(),
             value: hash,
         };
         assert!(verify_hash(data, &descriptor).is_ok());
@@ -200,7 +200,7 @@ mod tests {
     fn test_verify_hash_mismatch() {
         let data = b"test data";
         let descriptor = HashDescriptor {
-            hash_type: "xxh3".to_string(),
+            algorithm: "xxh3".to_string(),
             value: "0000000000000000".to_string(),
         };
         assert!(verify_hash(data, &descriptor).is_err());
@@ -210,7 +210,7 @@ mod tests {
     fn test_unknown_hash_type_skips_verification() {
         let data = b"test data";
         let descriptor = HashDescriptor {
-            hash_type: "sha256".to_string(),
+            algorithm: "sha256".to_string(),
             value: "abc123".to_string(),
         };
         // Unknown hash algorithms skip verification with a warning (forward compatibility)

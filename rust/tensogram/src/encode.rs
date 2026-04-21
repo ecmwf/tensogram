@@ -103,6 +103,27 @@ pub struct EncodeOptions {
     /// across all three masks.  Set to `0` to disable the auto-fallback
     /// and always use the requested method.
     pub small_mask_threshold_bytes: usize,
+    /// Emit a `HeaderHash` frame aggregating per-object hashes.
+    ///
+    /// Buffered mode default: `true`.  Streaming mode: forced to
+    /// `false` — header frames are written before any data object,
+    /// so the hashes aren't known yet.  Setting this to `true` while
+    /// building a `StreamingEncoder` is a construction-time
+    /// `EncodingError`.
+    ///
+    /// Ignored when `hash_algorithm` is `None`: if hashing is
+    /// disabled there is nothing to aggregate.
+    pub create_header_hashes: bool,
+    /// Emit a `FooterHash` frame aggregating per-object hashes.
+    ///
+    /// Buffered mode default: `false` (the `HeaderHash` frame is
+    /// the canonical place for the aggregate in buffered mode).
+    /// Streaming mode default: `true` (the only place where the
+    /// aggregate can live, since streamed data objects precede the
+    /// footer).
+    ///
+    /// Ignored when `hash_algorithm` is `None`.
+    pub create_footer_hashes: bool,
 }
 
 impl Default for EncodeOptions {
@@ -119,6 +140,9 @@ impl Default for EncodeOptions {
             pos_inf_mask_method: MaskMethod::default(),
             neg_inf_mask_method: MaskMethod::default(),
             small_mask_threshold_bytes: 128,
+            // Buffered defaults: header-only aggregate.
+            create_header_hashes: true,
+            create_footer_hashes: false,
         }
     }
 }
@@ -427,7 +451,20 @@ fn encode_inner(
     populate_base_entries(&mut enriched_meta.base, &encoded_objects);
     populate_reserved_provenance(&mut enriched_meta.reserved);
 
-    framing::encode_message(&enriched_meta, &encoded_objects, options.hash_algorithm)
+    // Derive the aggregate HashFrame policy from the buffered-mode
+    // options.  Streaming uses a different path (force-false
+    // `create_header_hashes`); here in `encode()` we honor the
+    // caller's choice as-is.
+    let hash_policy = framing::HashFramePolicy {
+        header: options.create_header_hashes,
+        footer: options.create_footer_hashes,
+    };
+    framing::encode_message(
+        &enriched_meta,
+        &encoded_objects,
+        options.hash_algorithm,
+        hash_policy,
+    )
 }
 
 /// Encode a complete Tensogram message.

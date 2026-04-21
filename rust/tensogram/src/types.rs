@@ -27,7 +27,7 @@ pub use tensogram_encodings::ByteOrder;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HashDescriptor {
     #[serde(rename = "type")]
-    pub hash_type: String,
+    pub algorithm: String,
     pub value: String,
 }
 
@@ -168,9 +168,17 @@ pub struct GlobalMetadata {
 }
 
 /// Index frame payload — maps object ordinals to byte offsets.
+///
+/// v3 CBOR schema (see `plans/WIRE_FORMAT.md` §6.2):
+///
+/// ```cbor
+/// { "offsets": [u64, ...], "lengths": [u64, ...] }
+/// ```
+///
+/// Object count is derived from `offsets.len()`.  The previously
+/// serialised `object_count` key is dropped.
 #[derive(Debug, Clone, Default)]
 pub struct IndexFrame {
-    pub object_count: u64,
     /// Byte offset of each data object frame from message start.
     pub offsets: Vec<u64>,
     /// Total byte length of each data object frame, excluding alignment padding.
@@ -178,10 +186,19 @@ pub struct IndexFrame {
 }
 
 /// Hash frame payload — per-object integrity hashes.
+///
+/// v3 CBOR schema (see `plans/WIRE_FORMAT.md` §6.3):
+///
+/// ```cbor
+/// { "algorithm": "xxh3", "hashes": ["hex", "hex", ...] }
+/// ```
+///
+/// The `hash_type` key was renamed to `algorithm` to signal that the
+/// value names the algorithm rather than a type identifier.  Object
+/// count is derived from `hashes.len()`.
 #[derive(Debug, Clone)]
 pub struct HashFrame {
-    pub object_count: u64,
-    pub hash_type: String,
+    pub algorithm: String,
     pub hashes: Vec<String>,
 }
 

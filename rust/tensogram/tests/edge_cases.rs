@@ -507,7 +507,7 @@ fn unknown_hash_algorithm_skips_verification() {
     // patching the descriptor's hash_type after encoding
     // Instead: verify directly via the hash module
     let descriptor = HashDescriptor {
-        hash_type: "sha512".to_string(),
+        algorithm: "sha512".to_string(),
         value: "fake_hash_value".to_string(),
     };
     // Should succeed (skip verification) rather than error
@@ -974,7 +974,7 @@ fn hash_mismatch_detected_on_verify() {
 
     // Craft a direct hash mismatch test
     let bad_hash = HashDescriptor {
-        hash_type: "xxh3".to_string(),
+        algorithm: "xxh3".to_string(),
         value: "0000000000000000".to_string(),
     };
     let result = tensogram::verify_hash(&data, &bad_hash);

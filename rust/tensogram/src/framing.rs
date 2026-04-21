@@ -416,23 +416,48 @@ pub struct EncodedObject {
     pub encoded_payload: Vec<u8>,
 }
 
-/// Placeholder for the `HeaderHash` / `FooterHash` frame builder.
+/// Build the aggregate `HeaderHash` / `FooterHash` CBOR from a
+/// list of pre-computed data-object frames.
 ///
-/// In v3 the per-object hash lives in the inline hash slot of the
-/// data-object frame's footer; the aggregate `HashFrame` is a
-/// CBOR-encoded summary that mirrors the inline values in hex
-/// form.  Phase 6 hooks this builder up to read each object's
-/// inline slot from the assembled frame bytes so there is no
-/// double-hashing.  Until then this function returns `None`
-/// unconditionally — the hash slots on every data-object frame
-/// are the sole integrity source, which is enough for
-/// `validate --checksum` to do its job.
+/// Walks each frame, reads its inline hash slot at
+/// `frame_end − 12`, and renders the 8-byte digest as a lowercase
+/// 16-character hex string.  When `hash_algorithm` is `None` or
+/// no frames have populated hash slots, returns `Ok(None)`.
+///
+/// The helper is cheap (no hashing) because the inline slot was
+/// already computed at frame-encode time.
 fn build_hash_frame_cbor(
-    _objects: &[EncodedObject],
-    _hash_algorithm: Option<crate::hash::HashAlgorithm>,
+    object_frames: &[Vec<u8>],
+    hash_algorithm: Option<crate::hash::HashAlgorithm>,
 ) -> Result<Option<Vec<u8>>> {
-    // Phase 5: aggregate hash frame deferred to phase 6.
-    Ok(None)
+    use crate::wire::{FRAME_COMMON_FOOTER_SIZE, read_u64_be};
+
+    let Some(algorithm) = hash_algorithm else {
+        return Ok(None);
+    };
+    if object_frames.is_empty() {
+        return Ok(None);
+    }
+
+    let mut hashes = Vec::with_capacity(object_frames.len());
+    for frame in object_frames {
+        if frame.len() < FRAME_COMMON_FOOTER_SIZE {
+            return Err(TensogramError::Framing(format!(
+                "data object frame too small to read inline hash slot: {} < {}",
+                frame.len(),
+                FRAME_COMMON_FOOTER_SIZE
+            )));
+        }
+        let slot = frame.len() - FRAME_COMMON_FOOTER_SIZE;
+        let digest = read_u64_be(frame, slot);
+        hashes.push(crate::hash::format_xxh3_digest(digest));
+    }
+
+    let hf = HashFrame {
+        algorithm: algorithm.as_str().to_string(),
+        hashes,
+    };
+    Ok(Some(metadata::hash_frame_to_cbor(&hf)?))
 }
 
 /// Two-pass index construction: compute data object offsets accounting for
@@ -450,7 +475,6 @@ fn build_index_frame(
 
     // First estimate: use dummy offsets of 0 to estimate CBOR size
     let dummy_idx = IndexFrame {
-        object_count: object_frames.len() as u64,
         offsets: vec![0u64; object_frames.len()],
         lengths: frame_lengths.clone(),
     };
@@ -463,7 +487,6 @@ fn build_index_frame(
 
     // Build real index with actual offsets
     let real_idx = IndexFrame {
-        object_count: object_frames.len() as u64,
         offsets,
         lengths: frame_lengths.clone(),
     };
@@ -475,7 +498,6 @@ fn build_index_frame(
         let new_data_cursor = header_size_no_index + real_frame_size;
         let new_offsets = compute_object_offsets(new_data_cursor, object_frames);
         let final_idx = IndexFrame {
-            object_count: object_frames.len() as u64,
             offsets: new_offsets,
             lengths: frame_lengths,
         };
@@ -531,11 +553,13 @@ fn compute_message_flags(has_index: bool, has_hashes: bool) -> MessageFlags {
 }
 
 /// Assemble the final message buffer from pre-computed components.
+#[allow(clippy::too_many_arguments)]
 fn assemble_message(
     flags: MessageFlags,
     meta_cbor: &[u8],
     index_frame_bytes: Option<&[u8]>,
-    hash_cbor: Option<&[u8]>,
+    header_hash_cbor: Option<&[u8]>,
+    footer_hash_cbor: Option<&[u8]>,
     object_frames: &[Vec<u8>],
     hash_algorithm: Option<crate::hash::HashAlgorithm>,
 ) -> Vec<u8> {
@@ -562,7 +586,7 @@ fn assemble_message(
     }
 
     // Header hash frame
-    if let Some(h_cbor) = hash_cbor {
+    if let Some(h_cbor) = header_hash_cbor {
         write_frame(
             &mut out,
             FrameType::HeaderHash,
@@ -582,14 +606,38 @@ fn assemble_message(
             out.extend(std::iter::repeat_n(0u8, pad));
         }
     }
+    // Align to 8 bytes after the last data object, before any footer
+    // frames / postamble.
+    let pad = (8 - (out.len() % 8)) % 8;
+    out.extend(std::iter::repeat_n(0u8, pad));
 
-    // Postamble (no footer frames in buffered mode).  `total_length`
-    // is populated *after* postamble bytes are emitted (we don't know
-    // the final message size until then) by patching the field in
-    // place.  The `first_footer_offset` is known up front.
+    // Footer frames region (v3 supports buffered-mode FooterHash
+    // for callers who opt in).  `first_footer_offset` points at
+    // the first footer frame, or at the postamble itself when no
+    // footer frames exist.
+    let footer_start_offset = out.len();
+    if let Some(h_cbor) = footer_hash_cbor {
+        write_frame(
+            &mut out,
+            FrameType::FooterHash,
+            1,
+            0,
+            h_cbor,
+            hash_algorithm,
+            true,
+        );
+    }
+
+    // Postamble.  `first_footer_offset` = the footer-frames region
+    // start (or the postamble offset if there were no footer frames).
     let postamble_offset = out.len();
+    let first_footer_offset = if footer_hash_cbor.is_some() {
+        footer_start_offset as u64
+    } else {
+        postamble_offset as u64
+    };
     let postamble_placeholder = Postamble {
-        first_footer_offset: postamble_offset as u64,
+        first_footer_offset,
         total_length: 0,
     };
     postamble_placeholder.write_to(&mut out);
@@ -616,15 +664,30 @@ fn assemble_message(
     out
 }
 
+/// Hash-frame-emission policy passed through `encode_message`.
+///
+/// Buffered mode supports both header and footer hash frames; the
+/// streaming encoder (which has no access to future bytes when it
+/// writes the header) only emits the footer frame.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HashFramePolicy {
+    /// Emit a `HeaderHash` aggregate frame (buffered mode only).
+    pub header: bool,
+    /// Emit a `FooterHash` aggregate frame.
+    pub footer: bool,
+}
+
 /// Encode a complete message in buffered mode.
 ///
-/// All objects are known upfront. Header contains metadata + index + hashes.
-/// Footer has only the postamble (no footer frames).
+/// All objects are known upfront. Header contains metadata + index + optional
+/// aggregate HashHeader.  Footer may carry an aggregate HashFooter.
 ///
 /// When `hash_algorithm` is `Some(_)` every frame in the message
 /// gets its inline hash slot populated and the preamble's
 /// `HASHES_PRESENT` flag is set.  When `None`, the slot is written
-/// as zeros and the flag is clear (see v3 §2.4).
+/// as zeros and the flag is clear (see v3 §2.4).  The hash-frame
+/// `policy` controls whether aggregate Header/Footer HashFrames are
+/// emitted; it's ignored when `hash_algorithm.is_none()`.
 ///
 /// Strategy: build the message in two passes.
 /// Pass 1: serialize all pieces, compute sizes/offsets.
@@ -633,6 +696,7 @@ pub fn encode_message(
     global_meta: &GlobalMetadata,
     objects: &[EncodedObject],
     hash_algorithm: Option<crate::hash::HashAlgorithm>,
+    hash_policy: HashFramePolicy,
 ) -> Result<Vec<u8>> {
     // Serialize metadata CBOR
     let meta_cbor = metadata::global_metadata_to_cbor(global_meta)?;
@@ -645,8 +709,24 @@ pub fn encode_message(
         object_frames.push(frame);
     }
 
-    // Build hash frame CBOR (phase 6 populates this; phase 5 returns None).
-    let hash_cbor = build_hash_frame_cbor(objects, hash_algorithm)?;
+    // Build aggregate HashFrame CBOR from the inline slots.  The
+    // same bytes are used for both header and footer aggregates.
+    let aggregate_hash_cbor =
+        if hash_algorithm.is_some() && (hash_policy.header || hash_policy.footer) {
+            build_hash_frame_cbor(&object_frames, hash_algorithm)?
+        } else {
+            None
+        };
+    let header_hash_cbor: Option<&[u8]> = if hash_policy.header {
+        aggregate_hash_cbor.as_deref()
+    } else {
+        None
+    };
+    let footer_hash_cbor: Option<&[u8]> = if hash_policy.footer {
+        aggregate_hash_cbor.as_deref()
+    } else {
+        None
+    };
 
     // Measure header size without index to feed the two-pass index builder
     let mut header_no_index = Vec::new();
@@ -660,7 +740,7 @@ pub fn encode_message(
         hash_algorithm,
         true,
     );
-    if let Some(ref h_cbor) = hash_cbor {
+    if let Some(h_cbor) = header_hash_cbor {
         write_frame(
             &mut header_no_index,
             FrameType::HeaderHash,
@@ -679,7 +759,10 @@ pub fn encode_message(
     // Compute flags and assemble.  `HASHES_PRESENT` is set whenever
     // `hash_algorithm.is_some()` — the per-frame hash slots are
     // populated uniformly for every frame in the message.
-    let mut flags = compute_message_flags(index_frame_bytes.is_some(), hash_cbor.is_some());
+    let mut flags = compute_message_flags(index_frame_bytes.is_some(), header_hash_cbor.is_some());
+    if footer_hash_cbor.is_some() {
+        flags.set(MessageFlags::FOOTER_HASHES);
+    }
     if hash_algorithm.is_some() {
         flags.set(MessageFlags::HASHES_PRESENT);
     }
@@ -688,7 +771,8 @@ pub fn encode_message(
         flags,
         &meta_cbor,
         index_frame_bytes.as_deref(),
-        hash_cbor.as_deref(),
+        header_hash_cbor,
+        footer_hash_cbor,
         &object_frames,
         hash_algorithm,
     ))
@@ -1636,7 +1720,7 @@ mod tests {
     #[test]
     fn test_empty_message_round_trip() {
         let meta = make_global_meta();
-        let msg = encode_message(&meta, &[], None).unwrap();
+        let msg = encode_message(&meta, &[], None, Default::default()).unwrap();
 
         // Check magic and end magic
         assert_eq!(&msg[0..8], MAGIC);
@@ -1659,7 +1743,7 @@ mod tests {
             encoded_payload: payload.clone(),
         }];
 
-        let msg = encode_message(&meta, &objects, None).unwrap();
+        let msg = encode_message(&meta, &objects, None, Default::default()).unwrap();
         let decoded = decode_message(&msg).unwrap();
 
         assert_eq!(decoded.global_metadata.version, 3);
@@ -1667,7 +1751,7 @@ mod tests {
         assert_eq!(decoded.objects[0].0.shape, vec![4]);
         assert_eq!(decoded.objects[0].1, &payload[..]);
         assert!(decoded.index.is_some());
-        assert_eq!(decoded.index.as_ref().unwrap().object_count, 1);
+        assert_eq!(decoded.index.as_ref().unwrap().offsets.len(), 1);
     }
 
     #[test]
@@ -1689,7 +1773,7 @@ mod tests {
             },
         ];
 
-        let msg = encode_message(&meta, &objects, None).unwrap();
+        let msg = encode_message(&meta, &objects, None, Default::default()).unwrap();
         let decoded = decode_message(&msg).unwrap();
 
         assert_eq!(decoded.objects.len(), 2);
@@ -1699,8 +1783,8 @@ mod tests {
         assert_eq!(decoded.objects[1].1, &payload1[..]);
 
         let idx = decoded.index.as_ref().unwrap();
-        assert_eq!(idx.object_count, 2);
         assert_eq!(idx.offsets.len(), 2);
+        assert_eq!(idx.lengths.len(), 2);
     }
 
     #[test]
@@ -1713,15 +1797,17 @@ mod tests {
                 encoded_payload: vec![1u8; 16],
             }],
             None,
+            Default::default(),
         )
         .unwrap();
         let msg2 = encode_message(
             &meta,
             &[EncodedObject {
-                descriptor: make_descriptor(vec![2]),
-                encoded_payload: vec![2u8; 8],
+                descriptor: make_descriptor(vec![4]),
+                encoded_payload: vec![1u8; 16],
             }],
             None,
+            Default::default(),
         )
         .unwrap();
 
@@ -1744,6 +1830,7 @@ mod tests {
                 encoded_payload: vec![1u8; 16],
             }],
             None,
+            Default::default(),
         )
         .unwrap();
 
@@ -1768,9 +1855,10 @@ mod tests {
             &meta,
             &[EncodedObject {
                 descriptor: make_descriptor(vec![4]),
-                encoded_payload: vec![0u8; 16],
+                encoded_payload: vec![1u8; 16],
             }],
             None,
+            Default::default(),
         )
         .unwrap();
 
@@ -1865,8 +1953,7 @@ mod tests {
         let meta = make_global_meta();
         let meta_cbor = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
         let hf = HashFrame {
-            object_count: 0,
-            hash_type: "xxh3".to_string(),
+            algorithm: "xxh3".to_string(),
             hashes: vec![],
         };
         let hash_cbor = crate::metadata::hash_frame_to_cbor(&hf).unwrap();
@@ -1910,15 +1997,17 @@ mod tests {
                 encoded_payload: vec![1u8; 16],
             }],
             None,
+            Default::default(),
         )
         .unwrap();
         let msg2 = encode_message(
             &meta,
             &[EncodedObject {
-                descriptor: make_descriptor(vec![2]),
-                encoded_payload: vec![2u8; 8],
+                descriptor: make_descriptor(vec![4]),
+                encoded_payload: vec![1u8; 16],
             }],
             None,
+            Default::default(),
         )
         .unwrap();
 
@@ -1944,6 +2033,7 @@ mod tests {
                 encoded_payload: vec![1u8; 16],
             }],
             None,
+            Default::default(),
         )
         .unwrap();
 
