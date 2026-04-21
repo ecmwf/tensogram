@@ -7,7 +7,7 @@
 // does it submit to any jurisdiction.
 
 /**
- * Public type definitions for `@ecmwf/tensogram`.
+ * Public type definitions for `@ecmwf.int/tensogram`.
  *
  * These mirror the Rust types in `tensogram::types` and the wire
  * format defined in `plans/WIRE_FORMAT.md`. They are hand-written rather

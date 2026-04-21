@@ -164,7 +164,7 @@ direct nested access instead.
 ### TypeScript — dotted path
 
 ```ts
-import { getMetaKey } from '@ecmwf/tensogram';
+import { getMetaKey } from '@ecmwf.int/tensogram';
 
 const param   = getMetaKey(meta, 'mars.param');
 const subject = getMetaKey(meta, 'bids.subject');

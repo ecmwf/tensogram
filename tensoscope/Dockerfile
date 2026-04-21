@@ -9,8 +9,8 @@ FROM node:22-alpine AS builder
 
 WORKDIR /workspace
 
-# Copy only the pre-built @ecmwf/tensogram artifacts (not the whole tree —
-# tensoscope/node_modules/@ecmwf/tensogram is a symlink back to typescript/ which
+# Copy only the pre-built @ecmwf.int/tensogram artifacts (not the whole tree —
+# tensoscope/node_modules/@ecmwf.int/tensogram is a symlink back to typescript/ which
 # causes a cycle if we copy the directory recursively).
 COPY typescript/package.json typescript/package.json
 COPY typescript/dist/ typescript/dist/
@@ -26,11 +26,11 @@ RUN npm ci
 COPY tensoscope/ .
 
 # Replace the host symlink with the real pre-built package
-RUN rm -rf node_modules/@ecmwf/tensogram && \
-    mkdir -p node_modules/@ecmwf/tensogram && \
-    cp /workspace/typescript/package.json node_modules/@ecmwf/tensogram/ && \
-    cp -r /workspace/typescript/dist node_modules/@ecmwf/tensogram/ && \
-    cp -r /workspace/typescript/wasm node_modules/@ecmwf/tensogram/
+RUN rm -rf node_modules/@ecmwf.int/tensogram && \
+    mkdir -p node_modules/@ecmwf.int/tensogram && \
+    cp /workspace/typescript/package.json node_modules/@ecmwf.int/tensogram/ && \
+    cp -r /workspace/typescript/dist node_modules/@ecmwf.int/tensogram/ && \
+    cp -r /workspace/typescript/wasm node_modules/@ecmwf.int/tensogram/
 
 RUN npm run build
 

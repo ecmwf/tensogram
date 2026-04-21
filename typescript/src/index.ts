@@ -7,7 +7,7 @@
 // does it submit to any jurisdiction.
 
 /**
- * `@ecmwf/tensogram` — TypeScript bindings for Tensogram, ECMWF's binary
+ * `@ecmwf.int/tensogram` — TypeScript bindings for Tensogram, ECMWF's binary
  * message format for N-dimensional scientific tensors.
  *
  * Wraps `rust/tensogram-wasm` (built via `wasm-pack`) with a typed API:

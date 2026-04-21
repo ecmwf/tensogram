@@ -25,7 +25,7 @@ import {
   init,
   type DataObjectDescriptor,
   type GlobalMetadata,
-} from '@ecmwf/tensogram';
+} from '@ecmwf.int/tensogram';
 
 async function main(): Promise<void> {
   // ── 1. Initialise WASM (one-time, idempotent) ──────────────────────────

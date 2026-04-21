@@ -20,7 +20,7 @@ import {
   encode,
   init,
   type DataObjectDescriptor,
-} from '@ecmwf/tensogram';
+} from '@ecmwf.int/tensogram';
 
 function desc(shape: number[], dtype: DataObjectDescriptor['dtype']): DataObjectDescriptor {
   const strides = new Array<number>(shape.length).fill(1);

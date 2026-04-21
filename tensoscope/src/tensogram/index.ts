@@ -1,7 +1,7 @@
 /**
  * Tensogram wrapper for the viewer.
  *
- * Uses @ecmwf/tensogram (WASM) directly in the browser -- no backend needed.
+ * Uses @ecmwf.int/tensogram (WASM) directly in the browser -- no backend needed.
  * Provides file opening, metadata indexing, field decoding, and coordinate
  * extraction.
  */
@@ -10,11 +10,11 @@ import {
   init as tgInit,
   TensogramFile,
   decodeObject,
-} from '@ecmwf/tensogram';
+} from '@ecmwf.int/tensogram';
 import type {
   BaseEntry,
   CborValue,
-} from '@ecmwf/tensogram';
+} from '@ecmwf.int/tensogram';
 
 // ── Public types ────────────────────────────────────────────────────────
 

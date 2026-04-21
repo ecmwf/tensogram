@@ -14,7 +14,7 @@
     "@deck.gl/geo-layers": "^9.3.0",
     "@deck.gl/layers": "^9.3.0",
     "@deck.gl/react": "^9.3.0",
-    "@ecmwf/tensogram": "file:../typescript",
+    "@ecmwf.int/tensogram": "file:../typescript",
     "@types/d3-scale-chromatic": "^3.1.0",
     "@types/maplibre-gl": "^1.13.2",
     "cesium": "^1.140.0",

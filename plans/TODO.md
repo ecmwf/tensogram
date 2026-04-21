@@ -85,7 +85,7 @@ For speculative ideas, see `IDEAS.md`.
     Three intertwined tasks that all touch the build, pack, and publish
     pipeline. Best done together so we don't re-open CI config three
     times.
-    - **npm publish pipeline.** Choose an npm org (`@ecmwf/tensogram`
+    - **npm publish pipeline.** Choose an npm org (`@ecmwf.int/tensogram`
       already exists in `package.json`), wire a GitHub Actions job that
       publishes on tagged releases and enforces semver lock-step with
       the root `VERSION` file (add `typescript/package.json` to the
@@ -107,15 +107,15 @@ For speculative ideas, see `IDEAS.md`.
     JavaScript mirror of the `tensogram-zarr` package. Lets downstream
     JS tooling (browser-based data explorers, notebook viewers)
     consume Tensogram-backed Zarr stores without re-implementing the
-    chunk-store contract. Ships as a separate `@ecmwf/tensogram-zarr`
-    npm package that depends on `@ecmwf/tensogram`.
+    chunk-store contract. Ships as a separate `@ecmwf.int/tensogram-zarr`
+    npm package that depends on `@ecmwf.int/tensogram`.
     - Implement the Zarr v3 chunk-store trait against a `TensogramFile`
       backend.
     - 14 bidirectional dtype mappings to match the Python
       `tensogram-zarr` test matrix.
     - Smoke-test from a notebook-style fetch scenario
       (`zarr-js` reading a `.tgm`-backed store over HTTPS).
-    - Standalone CI job; does not block the main `@ecmwf/tensogram`
+    - Standalone CI job; does not block the main `@ecmwf.int/tensogram`
       pipeline.
 
 ## Metadata
