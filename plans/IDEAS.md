@@ -72,6 +72,26 @@ implement until promoted to `TODO.md`.
   path too.  Gains are modest (decompress is memory-bound) but it
   would close the symmetry gap.
 
+- [ ] blosc2 per-chunk `block_offsets`: populate
+  `CompressResult.block_offsets` from blosc2's frame offsets
+  (`blosc2_frame_get_offsets` in `c-blosc2/include/blosc2.h`,
+  exposed via the `blosc2_rs_sys` FFI crate) and serialise them in
+  the object descriptor as `"blosc2_chunk_offsets"`, parallel to
+  szip's existing `"szip_block_offsets"` key.  Unlocks two wins:
+  amortises the `SChunk::from_buffer` header-parse cost on hot
+  `decompress_range` loops (xarray/dask workloads), and enables
+  byte-ranged remote reads — fetch the small offsets metadata from
+  S3/GCS first, then issue targeted `Range:` GETs for only the
+  chunks that cover the requested slice instead of downloading the
+  whole multi-GiB compressed blob.  The SChunk frame already stores
+  these offsets in its trailer, so this is about hoisting them up
+  to tensogram's metadata layer for free random access without
+  re-parsing the frame on every call.  Defer until a concrete use
+  case or microbenchmark motivates the wire-format addition;
+  `blosc2_frame_get_offsets` has been a public `BLOSC_EXPORT` since
+  at least v2.7.1, so the upstream surface is stable.  Spun out of
+  the #68 multi-chunk fix review.
+
 ## CI
 
 - [ ] Integrate CI with ECMWF workers
