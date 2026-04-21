@@ -55,6 +55,7 @@ python-build: ## Build Python bindings via maturin
 	uv pip install ./python/tensogram-zarr
 
 python-test: python-build ## Run all Python tests
+	# TODO pip installs should come from workspace-level pyproject
 	uv pip install pytest pytest-asyncio numpy
 	$(PYTHON) -m pytest python/tests/ -v
 	$(PYTHON) -m pytest python/tensogram-xarray/tests/ -v
@@ -113,6 +114,8 @@ clean: ## Remove build artifacts
 	rm -rf build/
 	rm -rf .venv/
 	rm -rf docs/book/
+	rm -rf python/bindings/target/
+	find python/bindings/python -name '*.so' -o -name '*.pyd' | xargs rm -f 2>/dev/null || true
 	rm -rf typescript/dist/ typescript/wasm/ typescript/node_modules/
 	rm -rf examples/typescript/node_modules/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
