@@ -14,12 +14,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeHash,
-  decode,
-  encode,
   InvalidArgumentError,
   MetadataError,
 } from '../src/index.js';
-import { defaultMeta, initOnce, makeDescriptor } from './helpers.js';
+import { initOnce } from './helpers.js';
 
 describe('Scope C.1 — computeHash', () => {
   initOnce();

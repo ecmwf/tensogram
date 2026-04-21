@@ -211,7 +211,7 @@ TEST(ErrorTest, ValidateDetectsHashMismatchOnTamperedPayload) {
     // Validate at checksum level — must surface a HashMismatch (or
     // structural issue) issue in the report JSON.
     const std::string report_json =
-        tensogram::validate_bytes(encoded.data(), encoded.size(), "checksum");
+        tensogram::validate(encoded.data(), encoded.size(), "checksum");
     EXPECT_TRUE(
         report_json.find("HashMismatch") != std::string::npos ||
         report_json.find("DecodePipelineFailed") != std::string::npos ||

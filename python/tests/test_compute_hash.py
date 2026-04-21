@@ -150,7 +150,8 @@ class TestCrossCheckWithEncode:
         )
         # compute_hash is stable for the raw bytes.
         digest = tensogram.compute_hash(raw)
-        assert isinstance(digest, str) and len(digest) == 16
+        assert isinstance(digest, str)
+        assert len(digest) == 16
         # Validator confirms frame-level integrity at checksum level.
         report = tensogram.validate(msg, level="checksum")
         assert report["hash_verified"], f"checksum validation failed: {report}"

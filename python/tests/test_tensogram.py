@@ -912,7 +912,7 @@ class TestErrors:
         report = tensogram.validate(bytes(corrupted), level="checksum")
         codes = [issue["code"] for issue in report["issues"]]
         assert any(
-            c in ("HashMismatch", "DecodePipelineFailed", "CborOffsetInvalid")
+            c in ("hash_mismatch", "decode_pipeline_failed", "cbor_offset_invalid")
             for c in codes
         ), f"expected integrity or structural error in validate report, got: {report}"
 
@@ -1746,7 +1746,7 @@ class TestErrorCoverage:
         report = tensogram.validate(bytes(msg), level="checksum")
         codes = [issue["code"] for issue in report["issues"]]
         assert any(
-            c in ("HashMismatch", "DecodePipelineFailed", "CborOffsetInvalid")
+            c in ("hash_mismatch", "decode_pipeline_failed", "cbor_offset_invalid")
             for c in codes
         ), f"expected integrity error, got: {report}"
 
