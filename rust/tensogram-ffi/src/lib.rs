@@ -5901,6 +5901,108 @@ mod tests {
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
     }
+
+    // ── _with_options FFI coverage ─────────────────────────────────────
+
+    /// `tgm_encode_with_options(NULL mask_options)` behaves identically
+    /// to `tgm_encode` — exercises the mask-options NULL-pointer path.
+    #[test]
+    fn ffi_encode_with_options_null_mask_ptr() {
+        let values = [1.0f32, 2.0, 3.0, 4.0];
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        let json = format!(
+            r#"{{"version":3,"descriptors":[{{"type":"ntensor","ndim":1,"shape":[{}],"strides":[1],"dtype":"float32","byte_order":"{}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            values.len(),
+            if cfg!(target_endian = "little") {
+                "little"
+            } else {
+                "big"
+            },
+        );
+        let c_json = CString::new(json).unwrap();
+        let hash_algo = CString::new("xxh3").unwrap();
+        let data_ptr: *const u8 = data.as_ptr();
+        let data_len: usize = data.len();
+
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_encode_with_options(
+            c_json.as_ptr(),
+            &data_ptr as *const *const u8,
+            &data_len as *const usize,
+            1,
+            hash_algo.as_ptr(),
+            0,           // threads
+            ptr::null(), // mask_options = NULL → defaults
+            &mut out,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!out.data.is_null() && out.len > 0);
+        super::tgm_bytes_free(out);
+    }
+
+    /// `tgm_decode_with_options(NULL mask_options)` behaves identically
+    /// to `tgm_decode` — exercises the NULL-pointer branch of
+    /// `apply_decode_mask_options`.
+    #[test]
+    fn ffi_decode_with_options_null_mask_ptr() {
+        let values = [1.0f32, 2.0];
+        let encoded = ffi_encode_single_f32_tensor(&values, "");
+
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode_with_options(
+            encoded.as_ptr(),
+            encoded.len(),
+            0,
+            0,
+            0,
+            ptr::null(), // mask_options = NULL → default restore_non_finite=true
+            &mut msg,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!msg.is_null());
+        super::tgm_message_free(msg);
+    }
+
+    /// Non-NULL `TgmDecodeMaskOptions` with `restore_non_finite = false`
+    /// threads through to `DecodeOptions` — pins the
+    /// `apply_decode_mask_options` mutation path.
+    #[test]
+    fn ffi_decode_with_options_explicit_restore_false() {
+        let values = [1.0f32, 2.0];
+        let encoded = ffi_encode_single_f32_tensor(&values, "");
+
+        let mask_opts = super::TgmDecodeMaskOptions {
+            restore_non_finite: false,
+        };
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode_with_options(
+            encoded.as_ptr(),
+            encoded.len(),
+            0,
+            0,
+            0,
+            &mask_opts,
+            &mut msg,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        super::tgm_message_free(msg);
+    }
+
+    /// `tgm_decode_with_options` with NULL output pointer must
+    /// return InvalidArg and set `tgm_last_error`.
+    #[test]
+    fn ffi_decode_with_options_null_out() {
+        let err =
+            super::tgm_decode_with_options(b"x".as_ptr(), 1, 0, 0, 0, ptr::null(), ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+        let msg = unsafe { CStr::from_ptr(super::tgm_last_error()) }
+            .to_str()
+            .unwrap();
+        assert!(msg.contains("null"), "expected null-arg msg, got: {msg}");
+    }
 }
 
 /// Compute a hash of the given data.

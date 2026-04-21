@@ -215,3 +215,39 @@ impl Default for GlobalMetadata {
 
 /// A decoded object: its descriptor paired with its raw decoded payload bytes.
 pub type DecodedObject = (DataObjectDescriptor, Vec<u8>);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn masks_metadata_is_empty_detects_every_kind_absent() {
+        let empty = MasksMetadata::default();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn masks_metadata_is_empty_false_when_any_kind_present() {
+        let any_mask = MaskDescriptor {
+            method: "roaring".to_string(),
+            offset: 0,
+            length: 1,
+            params: BTreeMap::new(),
+        };
+        let nan_only = MasksMetadata {
+            nan: Some(any_mask.clone()),
+            ..MasksMetadata::default()
+        };
+        let pos_only = MasksMetadata {
+            pos_inf: Some(any_mask.clone()),
+            ..MasksMetadata::default()
+        };
+        let neg_only = MasksMetadata {
+            neg_inf: Some(any_mask),
+            ..MasksMetadata::default()
+        };
+        assert!(!nan_only.is_empty());
+        assert!(!pos_only.is_empty());
+        assert!(!neg_only.is_empty());
+    }
+}

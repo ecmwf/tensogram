@@ -2808,6 +2808,97 @@ mod tests {
         );
     }
 
+    /// Two aggregate HashFrames (header + footer) carrying
+    /// different hash lists must be flagged as `HashMismatch`.
+    /// Pins the v3 §6.3 contract that when both are present they
+    /// must agree.
+    #[test]
+    fn integrity_disagreeing_header_and_footer_hash_frames() {
+        use crate::wire::{FRAME_COMMON_FOOTER_SIZE, FRAME_HEADER_SIZE, FRAME_MAGIC};
+
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
+
+        // Build two distinct HashFrame aggregates claiming
+        // different per-object hashes.
+        let build_hash_frame = |ft_byte: u16, hex: &str| -> Vec<u8> {
+            let hf = crate::types::HashFrame {
+                algorithm: "xxh3".to_string(),
+                hashes: vec![hex.to_string()],
+            };
+            let hcbor = crate::metadata::hash_frame_to_cbor(&hf).unwrap();
+            let htl = (FRAME_HEADER_SIZE + hcbor.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
+            let mut out = Vec::new();
+            out.extend_from_slice(FRAME_MAGIC);
+            out.extend_from_slice(&ft_byte.to_be_bytes());
+            out.extend_from_slice(&1u16.to_be_bytes());
+            out.extend_from_slice(&0u16.to_be_bytes());
+            out.extend_from_slice(&htl.to_be_bytes());
+            out.extend_from_slice(&hcbor);
+            out.extend_from_slice(&0u64.to_be_bytes()); // hash slot
+            out.extend_from_slice(b"ENDF");
+            out
+        };
+        let header_hash = build_hash_frame(3, "aaaaaaaaaaaaaaaa");
+        let footer_hash = build_hash_frame(5, "bbbbbbbbbbbbbbbb");
+
+        // Need FOOTER_HASHES flag bit 5 AND HEADER_HASHES bit 4.
+        let flags = 1u16 | (1u16 << 4) | (1u16 << 5);
+        let msg = build_raw_message(
+            flags,
+            &[meta_frame, header_hash, data_frame, footer_hash],
+            None,
+            false,
+        );
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::HashMismatch && i.description.contains("disagree")),
+            "expected HashMismatch with 'disagree' in description, got: {:?}",
+            report.issues
+        );
+    }
+
+    /// A structurally-invalid HashFrame (non-CBOR bytes in the
+    /// payload region) triggers `HashFrameCborParseFailed` at
+    /// Integrity level.
+    #[test]
+    fn integrity_hash_frame_cbor_parse_failure() {
+        use crate::wire::{FRAME_COMMON_FOOTER_SIZE, FRAME_HEADER_SIZE, FRAME_MAGIC};
+
+        let meta_frame = build_metadata_frame();
+        let desc = default_desc();
+        let data_frame = build_data_object_frame(&desc, &[0u8; 32]);
+
+        // HashFrame payload is 0xFFFFFFFF — invalid CBOR.
+        let bad_payload = vec![0xFFu8; 4];
+        let htl = (FRAME_HEADER_SIZE + bad_payload.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
+        let mut hash_frame = Vec::new();
+        hash_frame.extend_from_slice(FRAME_MAGIC);
+        hash_frame.extend_from_slice(&3u16.to_be_bytes()); // HeaderHash
+        hash_frame.extend_from_slice(&1u16.to_be_bytes());
+        hash_frame.extend_from_slice(&0u16.to_be_bytes());
+        hash_frame.extend_from_slice(&htl.to_be_bytes());
+        hash_frame.extend_from_slice(&bad_payload);
+        hash_frame.extend_from_slice(&0u64.to_be_bytes());
+        hash_frame.extend_from_slice(b"ENDF");
+
+        let flags = 1u16 | (1u16 << 4);
+        let msg = build_raw_message(flags, &[meta_frame, hash_frame, data_frame], None, false);
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.code == IssueCode::HashFrameCborParseFailed),
+            "expected HashFrameCborParseFailed, got: {:?}",
+            report.issues
+        );
+    }
+
     #[test]
     fn integrity_corrupt_compressed_zstd() {
         let msg = make_message_with_patched_descriptor(|v| {

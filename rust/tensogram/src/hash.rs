@@ -240,4 +240,75 @@ mod tests {
         // Unknown hash algorithms skip verification with a warning (forward compatibility)
         assert!(verify_hash(data, &descriptor).is_ok());
     }
+
+    // ── Inline-slot error paths ─────────────────────────────────────
+
+    #[test]
+    fn hash_frame_body_rejects_below_minimum_size() {
+        // Minimum size for an NTensorFrame is header(16)+footer(20)=36.
+        let buf = vec![0u8; 30];
+        let err = hash_frame_body(&buf, FrameType::NTensorFrame).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("frame too small to hash"));
+        assert!(msg.contains("frame_bytes.len() = 30"));
+        assert!(msg.contains("NTensorFrame"));
+    }
+
+    #[test]
+    fn verify_frame_hash_rejects_below_common_footer_size() {
+        // Below 12 B we can't even read the hash slot.
+        let buf = vec![0u8; 10];
+        let err = verify_frame_hash(&buf, FrameType::HeaderMetadata).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("frame too small to read hash slot")
+        );
+    }
+
+    #[test]
+    fn verify_frame_hash_rejects_missing_endf() {
+        // 12-byte buffer: 8 B of zeros (hash slot = 0) + 4 B non-ENDF.
+        // Must fail at the ENDF check before the stored==0 fast path.
+        let mut buf = vec![0u8; 12];
+        buf[8..12].copy_from_slice(b"XXXX");
+        let err = verify_frame_hash(&buf, FrameType::HeaderMetadata).unwrap_err();
+        assert!(err.to_string().contains("ENDF"));
+    }
+
+    #[test]
+    fn verify_frame_hash_accepts_zero_slot_as_no_hash_to_verify() {
+        // Minimal frame: 16 B header + empty body + 0-hash slot + ENDF.
+        use crate::wire::{FRAME_END, FRAME_MAGIC};
+        let mut buf = Vec::new();
+        buf.extend_from_slice(FRAME_MAGIC);
+        buf.extend_from_slice(&1u16.to_be_bytes()); // HeaderMetadata
+        buf.extend_from_slice(&1u16.to_be_bytes()); // version
+        buf.extend_from_slice(&0u16.to_be_bytes()); // flags
+        buf.extend_from_slice(&28u64.to_be_bytes()); // total_length
+        buf.extend_from_slice(&0u64.to_be_bytes()); // hash slot = 0
+        buf.extend_from_slice(FRAME_END);
+        assert!(verify_frame_hash(&buf, FrameType::HeaderMetadata).is_ok());
+    }
+
+    #[test]
+    fn verify_frame_hash_reports_mismatch_on_tampered_slot() {
+        // Build a frame with a valid body but a wrong hash slot.
+        use crate::wire::{FRAME_END, FRAME_MAGIC};
+        let body = b"hello";
+        let mut buf = Vec::new();
+        buf.extend_from_slice(FRAME_MAGIC);
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes());
+        let total_length = 16 + body.len() + 12;
+        buf.extend_from_slice(&(total_length as u64).to_be_bytes());
+        buf.extend_from_slice(body);
+        buf.extend_from_slice(&0xDEADBEEFCAFEBABEu64.to_be_bytes()); // wrong
+        buf.extend_from_slice(FRAME_END);
+
+        let err = verify_frame_hash(&buf, FrameType::HeaderMetadata).unwrap_err();
+        assert!(matches!(err, TensogramError::HashMismatch { .. }));
+        let msg = err.to_string();
+        assert!(msg.contains("deadbeefcafebabe"));
+    }
 }
