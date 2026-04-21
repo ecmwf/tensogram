@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rename the TypeScript package from `@ecmwf.int/tensogram` to `@ecmwf.int/tensogram` and add a `publish-npm.yml` GitHub Actions workflow that publishes it to npmjs.com on manual dispatch, skipping idempotently if the version is already published.
+**Goal:** Rename the TypeScript package from `@ecmwf/tensogram` to `@ecmwf.int/tensogram` and add a `publish-npm.yml` GitHub Actions workflow that publishes it to npmjs.com on manual dispatch, skipping idempotently if the version is already published.
 
 **Architecture:** Two tasks: (1) rename the package across the repo, regenerating lock files; (2) create the workflow file. The workflow runs on the ECMWF self-hosted Linux runner using the existing CI Docker image (Rust + wasm-pack already installed), builds WASM then TypeScript, checks npmjs.com for the current version, and publishes only if absent. Auth via `NPMJS_API_TOKEN` secret in the `npm` GitHub environment.
 
@@ -10,20 +10,20 @@
 
 ---
 
-### Task 1: Rename package from `@ecmwf.int/tensogram` to `@ecmwf.int/tensogram`
+### Task 1: Rename package from `@ecmwf/tensogram` to `@ecmwf.int/tensogram`
 
 **Files:**
 - Modify: `typescript/package.json`
 - Modify: `tensoscope/package.json`
 - Modify: `examples/typescript/package.json`
 - Regenerate: `typescript/package-lock.json`, `tensoscope/package-lock.json`, `examples/typescript/package-lock.json`
-- Bulk find-replace: all 40 files containing `@ecmwf.int/tensogram`
+- Bulk find-replace: all 40 files containing `@ecmwf/tensogram`
 
-- [ ] **Step 1: Rename via sed across the repo**
+- [x] **Step 1: Rename via sed across the repo**
 
 Run from the repo root (dry-run first to review):
 ```bash
-grep -rl '@ecmwf.int/tensogram' . \
+grep -rl '@ecmwf/tensogram' . \
   --exclude-dir='.git' \
   --exclude-dir='target' \
   --exclude-dir='node_modules' \
@@ -31,14 +31,14 @@ grep -rl '@ecmwf.int/tensogram' . \
 ```
 Then apply:
 ```bash
-grep -rl '@ecmwf.int/tensogram' . \
+grep -rl '@ecmwf/tensogram' . \
   --exclude-dir='.git' \
   --exclude-dir='target' \
   --exclude-dir='node_modules' \
-  | xargs sed -i 's|@ecmwf.int/tensogram|@ecmwf.int/tensogram|g'
+  | xargs sed -i 's|@ecmwf/tensogram|@ecmwf.int/tensogram|g'
 ```
 
-- [ ] **Step 2: Verify the rename in the three package.json files**
+- [x] **Step 2: Verify the rename in the three package.json files**
 
 ```bash
 grep '"name"' typescript/package.json tensoscope/package.json examples/typescript/package.json
@@ -57,7 +57,7 @@ grep 'ecmwf' tensoscope/package.json examples/typescript/package.json
 ```
 Both should now show `@ecmwf.int/tensogram`.
 
-- [ ] **Step 3: Regenerate lock files**
+- [x] **Step 3: Regenerate lock files**
 
 ```bash
 cd typescript && npm install --package-lock-only && cd ..
@@ -65,7 +65,7 @@ cd tensoscope && npm install --package-lock-only && cd ..
 cd examples/typescript && npm install --package-lock-only && cd ..
 ```
 
-- [ ] **Step 4: Verify no stale references remain**
+- [x] **Step 4: Verify no stale references remain**
 
 ```bash
 grep -r '@ecmwf.int/tensogram' . \
@@ -75,7 +75,7 @@ grep -r '@ecmwf.int/tensogram' . \
 ```
 Expected: no output.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add \
