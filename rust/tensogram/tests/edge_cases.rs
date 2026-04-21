@@ -3203,7 +3203,7 @@ async fn async_file_api_round_trips_data() {
         .decode_message_async(0, &DecodeOptions::default())
         .await
         .unwrap();
-    assert_eq!(dec_meta.version, 2, "decode_message_async: wrong version");
+    assert_eq!(dec_meta.version, 3, "decode_message_async: wrong version");
     assert_eq!(objects.len(), 1, "decode_message_async: wrong object count");
     assert_eq!(
         objects[0].1.as_slice(),
@@ -3213,7 +3213,7 @@ async fn async_file_api_round_trips_data() {
 
     // ── decode_metadata_async ────────────────────────────────────────────────
     let dec_meta2 = file.decode_metadata_async(0).await.unwrap();
-    assert_eq!(dec_meta2.version, 2, "decode_metadata_async: wrong version");
+    assert_eq!(dec_meta2.version, 3, "decode_metadata_async: wrong version");
 
     // ── decode_descriptors_async ─────────────────────────────────────────────
     let (_, descs) = file.decode_descriptors_async(0).await.unwrap();
