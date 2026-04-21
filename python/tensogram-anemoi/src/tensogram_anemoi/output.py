@@ -32,8 +32,8 @@ _COORD_NAME_MAP = {
 class TensogramOutput(Output):
     """Tensogram output plugin for anemoi-inference.
 
-    Writes each forecast step as one tensogram message appended to a .tgm file
-    or streamed over a TCP socket.  Each message contains lat/lon coordinate
+    Writes each forecast step as one tensogram message to a .tgm file.
+    Each message contains lat/lon coordinate
     objects followed by one object per field (or one stacked object per
     pressure-level parameter when ``stack_pressure_levels=True``).
 
@@ -185,7 +185,7 @@ class TensogramOutput(Output):
             try:
                 self._handle.flush()
             except Exception:
-                pass
+                LOG.warning("TensogramOutput: failed to flush output stream before close", exc_info=True)
             self._handle.close()
             self._handle = None
 

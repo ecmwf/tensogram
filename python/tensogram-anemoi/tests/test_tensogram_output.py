@@ -73,10 +73,10 @@ def _make_state(step_hours=1, field_names=FIELD_NAMES, n_grid=N_GRID, seed=0):
 # ---------------------------------------------------------------------------
 
 
-def test_write_step_before_open_raises():
+def test_write_step_before_open_raises(tmp_path):
     """write_step raises RuntimeError when called before open()."""
     context = _make_context()
-    output = TensogramOutput(context, "/tmp/never.tgm")
+    output = TensogramOutput(context, str(tmp_path / "never.tgm"))
     with pytest.raises(RuntimeError, match="open"):
         output.write_step(_make_state())
 

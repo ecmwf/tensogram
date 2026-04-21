@@ -6,7 +6,7 @@ requires = [ "setuptools>=60", "setuptools-scm>=8" ]
 name = "tensogram-anemoi"
 dynamic = [ "version" ]
 description = "anemoi-inference output plugin for tensogram .tgm files"
-readme = "README.md"
+readme = {text = "anemoi-inference output plugin for tensogram .tgm files", content-type = "text/plain"}
 requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [{name = "ECMWF", email = "software@ecmwf.int"}]
