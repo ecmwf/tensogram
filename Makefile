@@ -34,6 +34,7 @@ rust-test: ## Run all Rust tests
 
 rust-clippy: ## Run clippy on Rust workspace
 	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy -p tensogram --all-targets --features "remote,async" -- -D warnings
 
 rust-fmt: ## Check Rust formatting
 	cargo fmt --check
@@ -42,26 +43,28 @@ rust-lint: rust-clippy rust-fmt ## Run all Rust lints (clippy + fmt)
 
 # ── Python ────────────────────────────────────────────────────────────────
 
-PYTHON ?= uv run python
+PYTHON  ?= uv run python
+MATURIN ?= uv run --with maturin maturin
+RUFF    ?= uv run --with ruff ruff
 RUFF_CFG ?= python/bindings/pyproject.toml
 
 python-build: ## Build Python bindings via maturin
 	if [ ! -d .venv ] ; then uv venv ; fi
-	cd python/bindings && maturin develop --release --uv
+	cd python/bindings && $(MATURIN) develop --release --uv
 	uv pip install ./python/tensogram-xarray
 	uv pip install ./python/tensogram-zarr
 
-python-test: ## Run all Python tests
-	uv pip install pytest pytest-asyncio # TODO should come from workspace-level pyproject
+python-test: python-build ## Run all Python tests
+	uv pip install pytest pytest-asyncio numpy
 	$(PYTHON) -m pytest python/tests/ -v
 	$(PYTHON) -m pytest python/tensogram-xarray/tests/ -v
 	$(PYTHON) -m pytest python/tensogram-zarr/tests/ -v
 
 python-lint: ## Run ruff check on Python code
-	ruff check --config $(RUFF_CFG) python/tests/ python/tensogram-xarray/ python/tensogram-zarr/
+	$(RUFF) check --config $(RUFF_CFG) python/tests/ python/tensogram-xarray/ python/tensogram-zarr/
 
 python-fmt: ## Check Python formatting
-	ruff format --check --config $(RUFF_CFG) python/tests/ python/tensogram-xarray/ python/tensogram-zarr/
+	$(RUFF) format --check --config $(RUFF_CFG) python/tests/ python/tensogram-xarray/ python/tensogram-zarr/
 
 # ── C++ ───────────────────────────────────────────────────────────────────
 
@@ -80,15 +83,15 @@ wasm-test: ## Run WASM tests
 # ── TypeScript ────────────────────────────────────────────────────────────
 
 ts-install: ## Install TypeScript wrapper dependencies
-	cd typescript && npm install
+	cd typescript && npm ci || npm install --no-audit --no-fund
 
-ts-build: ## Build the TypeScript wrapper (wasm-pack + tsc)
+ts-build: ts-install ## Build the TypeScript wrapper (wasm-pack + tsc)
 	cd typescript && npm run build
 
-ts-test: ## Run TypeScript wrapper tests (vitest)
+ts-test: ts-build ## Run TypeScript wrapper tests (vitest)
 	cd typescript && npm test
 
-ts-typecheck: ## Strict typecheck source + tests
+ts-typecheck: ts-build ## Strict typecheck source + tests
 	cd typescript && npx tsc --noEmit -p tsconfig.test.json
 
 # ── Docs ──────────────────────────────────────────────────────────────────
@@ -99,7 +102,7 @@ docs-build: ## Build mdbook documentation
 # ── Aggregates ────────────────────────────────────────────────────────────
 
 check: rust-check ## Check all builds
-test: rust-test python-build python-test ts-test ## Run all tests
+test: rust-test python-test ts-test ## Run all tests
 lint: rust-lint python-lint python-fmt ts-typecheck ## Run all lints
 fmt: rust-fmt python-fmt ## Check all formatting
 
@@ -108,6 +111,8 @@ fmt: rust-fmt python-fmt ## Check all formatting
 clean: ## Remove build artifacts
 	cargo clean
 	rm -rf build/
+	rm -rf .venv/
+	rm -rf docs/book/
 	rm -rf typescript/dist/ typescript/wasm/ typescript/node_modules/
 	rm -rf examples/typescript/node_modules/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
