@@ -407,8 +407,15 @@ const char *tgm_payload_encoding(const tgm_message_t *msg, size_t index);
 
 /**
  * Returns 1 if the object descriptor has a hash, 0 otherwise.
+ *
+ * **v3 deprecation.** The per-object hash has moved from the CBOR
+ * descriptor to the frame footer's inline slot (see
+ * `plans/WIRE_FORMAT.md` §2.4).  This FFI entry point always
+ * returns `0` in v3 pending the phase-8 binding update that will
+ * surface the inline slot (and the message-level
+ * `HASHES_PRESENT` flag) through a new API.
  */
-int32_t tgm_payload_has_hash(const tgm_message_t *msg, size_t index);
+int32_t tgm_payload_has_hash(const tgm_message_t *msg, size_t _index);
 
 /**
  * Extract a metadata handle from a decoded message.

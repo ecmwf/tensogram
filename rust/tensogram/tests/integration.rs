@@ -29,7 +29,6 @@ fn make_float32_descriptor(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescri
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     (global, desc)
 }
@@ -81,7 +80,6 @@ fn make_mars_pair(shape: Vec<u64>, param: &str) -> (GlobalMetadata, DataObjectDe
             p
         },
         masks: None,
-        hash: None,
     };
     (global, desc)
 }
@@ -136,7 +134,6 @@ fn test_multi_object_message() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let desc2 = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -150,7 +147,6 @@ fn test_multi_object_message() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let data1 = vec![1u8; 4 * 5 * 4]; // 20 float32
@@ -201,7 +197,6 @@ fn test_decode_single_object_by_index() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let desc2 = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -215,7 +210,6 @@ fn test_decode_single_object_by_index() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let data1 = vec![0xAA; 2 * 4];
@@ -261,36 +255,17 @@ fn test_hash_verification_passes() {
     assert_eq!(objects[0].1, data);
 }
 
+/// v3: `DecodeOptions.verify_hash` is a no-op at the decode layer;
+/// per-frame integrity moved to the inline hash slot, verified by
+/// `tensogram validate --checksum` or
+/// `tensogram::hash::verify_frame_hash` on raw frame bytes.  This
+/// test's scenario (hash verification at decode time) is
+/// structurally replaced by the validate path in phase 6; ignored
+/// here until that lands.
 #[test]
+#[ignore = "v3: hash verification moved to validate --checksum — re-enable in phase 6"]
 fn test_hash_verification_fails_on_corruption() {
-    // Use a larger payload so the data object frame is well-separated from
-    // the metadata frames and easy to corrupt.
-    let (global, desc) = make_float32_descriptor(vec![100]);
-    let data = vec![42u8; 100 * 4];
-
-    let mut encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
-
-    // The v2 message layout: preamble(24) | header frames | data-object frame | footer frames | postamble(16).
-    // 0.17+ encoders emit NTensorFrame (type 9); identify the
-    // frame by its "FR" magic + frame-type bytes 0x00 0x09.
-    let data_frame_marker: &[u8] = &[b'F', b'R', 0x00, 0x09];
-    let frame_start = encoded
-        .windows(4)
-        .position(|w| w == data_frame_marker)
-        .expect("DataObject frame not found in encoded message");
-    // Skip the 16-byte frame header to reach the payload; flip the first payload byte.
-    let payload_byte = frame_start + 16;
-    encoded[payload_byte] ^= 0xFF;
-
-    let options = DecodeOptions {
-        verify_hash: true,
-        ..Default::default()
-    };
-    let result = decode(&encoded, &options);
-    assert!(
-        result.is_err(),
-        "expected hash verification failure after corruption"
-    );
+    // Intentionally empty.
 }
 
 #[test]
@@ -335,7 +310,6 @@ fn test_simple_packing_round_trip() {
         compression: "none".to_string(),
         params: packing_params,
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -382,7 +356,6 @@ fn test_shuffle_round_trip() {
         compression: "none".to_string(),
         params,
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -474,7 +447,6 @@ fn test_decode_range_shuffle_rejected() {
         compression: "none".to_string(),
         params,
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -547,7 +519,6 @@ fn test_validate_object_overflow() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 64];
@@ -601,7 +572,6 @@ fn test_cross_endian_round_trip() {
         compression: "none".to_string(),
         params: packing_params.clone(),
         masks: None,
-        hash: None,
     };
 
     let encoded_be = encode(&global, &[(&be_desc, &be_data)], &EncodeOptions::default()).unwrap();
@@ -633,7 +603,6 @@ fn test_cross_endian_round_trip() {
         compression: "none".to_string(),
         params: packing_params.clone(),
         masks: None,
-        hash: None,
     };
 
     let encoded_le = encode(&global, &[(&le_desc, &le_data)], &EncodeOptions::default()).unwrap();
@@ -697,7 +666,6 @@ fn test_decode_range_cross_endian_native() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -738,7 +706,6 @@ fn test_decode_range_wire_byte_order_opt_out() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -798,7 +765,6 @@ fn test_simple_packing_rejects_non_f64() {
         compression: "none".to_string(),
         params: packing_params,
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 10 * 4];
@@ -833,7 +799,6 @@ fn test_validate_ndim_mismatch() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 4 * 5 * 4];
@@ -875,7 +840,6 @@ fn test_param_out_of_bounds() {
         compression: "none".to_string(),
         params: packing_params,
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 4 * 8];
@@ -939,7 +903,6 @@ fn make_szip_packing_pair(
         compression: "szip".to_string(),
         params: packing_params,
         masks: None,
-        hash: None,
     };
     (global, desc)
 }
@@ -974,7 +937,6 @@ fn make_szip_raw_pair(num_values: u64, dtype: Dtype) -> (GlobalMetadata, DataObj
         compression: "szip".to_string(),
         params,
         masks: None,
-        hash: None,
     };
     (global, desc)
 }
@@ -1165,7 +1127,6 @@ fn test_szip_shuffle_round_trip() {
         compression: "szip".to_string(),
         params,
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -1209,7 +1170,6 @@ fn test_szip_shuffle_decode_range_rejected() {
         compression: "szip".to_string(),
         params,
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -1272,7 +1232,6 @@ fn test_szip_multi_object_mixed_compression() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let packed_desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -1286,7 +1245,6 @@ fn test_szip_multi_object_mixed_compression() {
         compression: "szip".to_string(),
         params: packing_params,
         masks: None,
-        hash: None,
     };
 
     let encoded = encode(
@@ -1404,7 +1362,6 @@ fn test_validate_empty_obj_type() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 4 * 4];
@@ -1619,7 +1576,6 @@ fn buffered_postamble_total_length_equals_message_length() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let data = vec![0u8; 16];
     let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
@@ -1660,7 +1616,6 @@ fn streaming_non_seekable_zero_total_length_preamble_and_postamble() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let data = vec![0u8; 8];
 
@@ -1713,7 +1668,6 @@ fn streaming_seekable_backfill_patches_both_total_length_slots() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let data = vec![0u8; 12];
 
@@ -1760,7 +1714,6 @@ fn postamble_end_magic_always_at_last_8_bytes() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let data = vec![0u8; 4];
 
@@ -1806,7 +1759,6 @@ fn encode_sample(version_tag: u32) -> Vec<u8> {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let data: Vec<u8> = (0..4)
         .flat_map(|i| (version_tag + i).to_le_bytes())

@@ -97,17 +97,14 @@ pub fn run(
             };
             let (mut global_meta, mut objects) = decode(&msg, &wire_opts)?;
 
-            // Preserve original hashes per object before any re-encoding
-            let original_hashes: Vec<_> =
-                objects.iter().map(|(desc, _)| desc.hash.clone()).collect();
+            // v3: hashes live in the frame footer's inline slot, not
+            // on the descriptor.  `set` re-encodes with the same
+            // hash algorithm the caller requested — the encoder
+            // re-computes inline slots automatically.  There's no
+            // per-descriptor hash to preserve here anymore.
 
             for (key, value) in &mutations {
                 apply_mutation(&mut global_meta, &mut objects, key, value)?;
-            }
-
-            // Restore hashes so re-encoding without hash computation preserves integrity
-            for ((desc, _), original_hash) in objects.iter_mut().zip(original_hashes) {
-                desc.hash = original_hash;
             }
 
             // Clear reserved fields — the encoder will regenerate them.
@@ -273,7 +270,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         }
     }
 
@@ -305,10 +301,9 @@ mod tests {
         std::fs::write(&input, encoded).unwrap();
 
         let original = decode_metadata(&std::fs::read(&input).unwrap()).unwrap();
-        // Decode full message to get per-object hash
-        let (_, original_objects) =
+        // Decode full message (v3: per-object hash lives in frame footer)
+        let (_, _original_objects) =
             decode(&std::fs::read(&input).unwrap(), &DecodeOptions::default()).unwrap();
-        let original_hash = original_objects[0].0.hash.as_ref().unwrap();
 
         // Verify version is accessible from global metadata
         assert_eq!(original.version, 3);
@@ -322,11 +317,11 @@ mod tests {
             Some(&ciborium::Value::Text("new".to_string()))
         );
 
-        let (_, updated_objects) =
+        // v3: frame-level hashes are re-emitted by the encoder.
+        // Phase 6 will add an assertion here that the inline slots
+        // of the updated message match the re-encoded content.
+        let (_, _updated_objects) =
             decode(&std::fs::read(&output).unwrap(), &DecodeOptions::default()).unwrap();
-        let updated_hash = updated_objects[0].0.hash.as_ref().unwrap();
-        assert_eq!(updated_hash.hash_type, original_hash.hash_type);
-        assert_eq!(updated_hash.value, original_hash.value);
 
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&output);

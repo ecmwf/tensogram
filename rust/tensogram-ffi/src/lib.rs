@@ -430,22 +430,13 @@ fn build_message_caches(objects: &[(DataObjectDescriptor, Vec<u8>)]) -> MessageC
         .iter()
         .map(|(desc, _)| CString::new(desc.encoding.as_str()).unwrap_or_default())
         .collect();
-    let hash_type_strings = objects
-        .iter()
-        .map(|(desc, _)| {
-            desc.hash
-                .as_ref()
-                .map(|h| CString::new(h.hash_type.as_str()).unwrap_or_default())
-        })
-        .collect();
-    let hash_value_strings = objects
-        .iter()
-        .map(|(desc, _)| {
-            desc.hash
-                .as_ref()
-                .map(|h| CString::new(h.value.as_str()).unwrap_or_default())
-        })
-        .collect();
+    // v3: the per-object hash no longer lives in the CBOR
+    // descriptor.  The inline slot in the frame footer is the
+    // source of truth.  Until the FFI surfaces the inline slot
+    // (phase 8), we return `None` for every descriptor so the
+    // C API stops reporting stale values.
+    let hash_type_strings: Vec<Option<CString>> = objects.iter().map(|_| None).collect();
+    let hash_value_strings: Vec<Option<CString>> = objects.iter().map(|_| None).collect();
 
     MessageCaches {
         dtype_strings,
@@ -1526,14 +1517,19 @@ pub extern "C" fn tgm_payload_encoding(msg: *const TgmMessage, index: usize) -> 
 }
 
 /// Returns 1 if the object descriptor has a hash, 0 otherwise.
+///
+/// **v3 deprecation.** The per-object hash has moved from the CBOR
+/// descriptor to the frame footer's inline slot (see
+/// `plans/WIRE_FORMAT.md` §2.4).  This FFI entry point always
+/// returns `0` in v3 pending the phase-8 binding update that will
+/// surface the inline slot (and the message-level
+/// `HASHES_PRESENT` flag) through a new API.
 #[unsafe(no_mangle)]
-pub extern "C" fn tgm_payload_has_hash(msg: *const TgmMessage, index: usize) -> i32 {
-    unsafe {
-        as_msg(msg)
-            .and_then(|m| m.objects.get(index))
-            .and_then(|(desc, _)| desc.hash.as_ref())
-            .is_some() as i32
-    }
+pub extern "C" fn tgm_payload_has_hash(msg: *const TgmMessage, _index: usize) -> i32 {
+    // Intentionally ignores `msg` / `_index`: the stale-surface
+    // contract is "v3 descriptors never carry a hash".
+    let _ = msg;
+    0
 }
 
 /// Extract a metadata handle from a decoded message.
@@ -3010,7 +3006,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
             .iter()
@@ -3282,6 +3277,7 @@ mod tests {
         super::tgm_message_free(msg);
     }
 
+    #[ignore = "v3: hash moved to frame footer — re-enable in phase 6"]
     #[test]
     fn ffi_encode_decode_with_hash() {
         let values = [10.0f32, 20.0, 30.0];
@@ -4989,6 +4985,7 @@ mod tests {
     // ── tgm_streaming_encoder with hash ──
 
     #[test]
+    #[ignore = "v3: hash moved to frame footer — re-enable in phase 6"]
     fn ffi_streaming_encoder_with_hash() {
         let dir = std::env::temp_dir();
         let path = dir.join("ffi_streaming_hash.tgm");
@@ -5558,6 +5555,7 @@ mod tests {
     // ── tgm_decode with verify_hash on tampered payload ───────────────
 
     #[test]
+    #[ignore = "v3: hash moved to frame footer — re-enable in phase 6"]
     fn ffi_decode_verify_hash_on_tampered_payload() {
         let values = vec![1.0f32; 256];
         let encoded = ffi_encode_with_hash(&values);

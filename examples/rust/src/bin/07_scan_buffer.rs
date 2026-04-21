@@ -52,7 +52,6 @@ fn make_message(param: &str, step: i64) -> Vec<u8> {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 10 * 4];

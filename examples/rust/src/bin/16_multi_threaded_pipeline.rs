@@ -61,7 +61,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     // ── 2. Sequential (threads=0) vs parallel (threads=8) ───────────────────

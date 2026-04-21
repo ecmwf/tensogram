@@ -41,7 +41,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         compression: "none".to_string(),
         params: std::collections::BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let data = vec![0u8; 72 * 144 * 4];
     let tgm_bytes = tensogram::encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;

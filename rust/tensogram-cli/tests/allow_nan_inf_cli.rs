@@ -37,7 +37,6 @@ fn make_nan_file(path: &std::path::Path) {
         compression: "none".to_string(),
         masks: None,
         params: BTreeMap::new(),
-        hash: None,
     };
     let data: Vec<u8> = [1.0_f64, f64::NAN, 3.0]
         .iter()
@@ -62,7 +61,6 @@ fn make_finite_file(path: &std::path::Path) {
         compression: "none".to_string(),
         masks: None,
         params: BTreeMap::new(),
-        hash: None,
     };
     let data: Vec<u8> = [1.0_f64, 2.0, 3.0, 4.0]
         .iter()

@@ -332,7 +332,6 @@ fn build_data_object(
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     // GRIB data is always float64, so pass `Some(values)` — simple_packing

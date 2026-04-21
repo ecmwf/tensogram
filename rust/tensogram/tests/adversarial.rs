@@ -36,7 +36,6 @@ fn make_simple_float32_pair(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescr
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     (global, desc)
 }
@@ -73,7 +72,6 @@ fn make_shuffle_pair(shape: Vec<u64>, element_size: u64) -> (GlobalMetadata, Dat
         compression: "none".to_string(),
         params,
         masks: None,
-        hash: None,
     };
     (global, desc)
 }
@@ -177,7 +175,6 @@ fn test_adversarial_negative_cbor_int_wraps() {
         compression: "none".to_string(),
         params,
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 4 * 8];
@@ -228,7 +225,6 @@ fn test_adversarial_non_f64_simple_packing() {
         compression: "none".to_string(),
         params,
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 10 * 4];
@@ -317,7 +313,6 @@ fn test_adversarial_shape_product_overflow() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 64];
@@ -367,7 +362,6 @@ fn test_adversarial_ndim_mismatch() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     let data = vec![0u8; 4 * 5 * 4];

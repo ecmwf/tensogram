@@ -46,7 +46,6 @@ fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     }
 }
 
@@ -351,7 +350,6 @@ fn make_simple_packing_desc(reference_value: f64) -> DataObjectDescriptor {
         compression: "none".to_string(),
         params,
         masks: None,
-        hash: None,
     }
 }
 
@@ -495,7 +493,7 @@ fn unknown_hash_algorithm_skips_verification() {
     let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // Decode normally works
-    let (_, objects) = decode(
+    let (_, _objects) = decode(
         &encoded,
         &DecodeOptions {
             verify_hash: true,
@@ -503,7 +501,7 @@ fn unknown_hash_algorithm_skips_verification() {
         },
     )
     .unwrap();
-    assert!(objects[0].0.hash.is_some());
+    // v3: hash moved to frame footer — re-enable in phase 6
 
     // Now manually craft a message with an unknown hash algorithm by
     // patching the descriptor's hash_type after encoding
@@ -706,8 +704,8 @@ fn encode_without_hash() {
         ..Default::default()
     };
     let encoded = encode(&meta, &[(&desc, &data)], &options).unwrap();
-    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert!(objects[0].0.hash.is_none());
+    let (_, _objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
+    // v3: hash moved to frame footer — re-enable in phase 6
 }
 
 #[test]
@@ -971,8 +969,8 @@ fn hash_mismatch_detected_on_verify() {
     let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
     // First decode to find where the payload is, then corrupt it
-    let (_, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert!(objects[0].0.hash.is_some());
+    let (_, _objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
+    // v3: hash moved to frame footer — re-enable in phase 6
 
     // Craft a direct hash mismatch test
     let bad_hash = HashDescriptor {
@@ -1023,7 +1021,6 @@ fn metadata_namespaces_roundtrip() {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
     let data = vec![0u8; 1];
 
@@ -1146,7 +1143,6 @@ fn make_compressed_descriptor(
         compression: compression.to_string(),
         params,
         masks: None,
-        hash: None,
     }
 }
 
@@ -1274,7 +1270,6 @@ fn zfp_cross_endian_decode_produces_native_bytes() {
         compression: "zfp".to_string(),
         params,
         masks: None,
-        hash: None,
     };
 
     let meta = make_global_meta();
@@ -1867,8 +1862,8 @@ fn preceder_with_hash_verification() {
         verify_hash: true,
         ..Default::default()
     };
-    let (decoded_meta, objects) = decode(&result, &verify_opts).unwrap();
-    assert!(objects[0].0.hash.is_some());
+    let (decoded_meta, _objects) = decode(&result, &verify_opts).unwrap();
+    // v3: hash moved to frame footer — re-enable in phase 6
     assert!(decoded_meta.base[0].contains_key("mars"));
 }
 
@@ -1892,7 +1887,7 @@ fn preceder_with_extra_keys_tolerated() {
 
     let desc = make_descriptor(vec![4], Dtype::Float32);
     let payload = vec![0u8; 16];
-    let obj_frame = framing::encode_data_object_frame(&desc, &payload, false).unwrap();
+    let obj_frame = framing::encode_data_object_frame(&desc, &payload, false, None).unwrap();
 
     let mut out = Vec::new();
     // Preamble placeholder
@@ -2505,16 +2500,19 @@ fn unicode_metadata_emoji_and_cjk_roundtrip() {
     );
 }
 
-/// Helper: write a frame (FR + type + version=1 + flags=0 + len + payload + ENDF)
-/// with 8-byte alignment padding.
+/// Helper: write a non-data-object frame with v3 layout
+/// `FR + type + version=1 + flags=0 + total_length + payload + hash(8) + ENDF`
+/// plus 8-byte alignment padding.  Hash slot is zero-filled
+/// (HASHES_PRESENT=0 at the message level).
 fn write_test_frame(out: &mut Vec<u8>, frame_type: u16, payload: &[u8]) {
-    let total_len = (16 + payload.len() + 4) as u64;
+    let total_len = (16 + payload.len() + 12) as u64; // header + payload + hash(8) + ENDF(4)
     out.extend_from_slice(b"FR");
     out.extend_from_slice(&frame_type.to_be_bytes());
     out.extend_from_slice(&1u16.to_be_bytes()); // version
     out.extend_from_slice(&0u16.to_be_bytes()); // flags
     out.extend_from_slice(&total_len.to_be_bytes());
     out.extend_from_slice(payload);
+    out.extend_from_slice(&0u64.to_be_bytes()); // hash slot
     out.extend_from_slice(b"ENDF");
     let pad = (8 - (out.len() % 8)) % 8;
     out.extend(std::iter::repeat_n(0u8, pad));

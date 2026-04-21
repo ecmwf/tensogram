@@ -439,7 +439,9 @@ pub(crate) fn validate_structure<'a>(
         // Extract payloads for Level 2/3 reuse
         match fh.frame_type {
             FrameType::NTensorFrame => {
-                let cbor_offset_pos = endf_offset - 8;
+                // v3 data-object footer: [cbor_offset u64][hash u64][ENDF 4]
+                // cbor_offset lives at endf_offset - 16 (not -8 as in v2).
+                let cbor_offset_pos = endf_offset - 16;
                 if cbor_offset_pos < pos + FRAME_HEADER_SIZE {
                     issues.push(err(
                         IssueCode::DataObjectTooSmall,

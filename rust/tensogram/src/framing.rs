@@ -12,8 +12,9 @@ use crate::error::{Result, TensogramError};
 use crate::metadata::{self, RESERVED_KEY};
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashFrame, IndexFrame};
 use crate::wire::{
-    DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END, FRAME_HEADER_SIZE, FrameHeader, FrameType,
-    MAGIC, MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE, Postamble, Preamble, WIRE_VERSION,
+    DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_COMMON_FOOTER_SIZE, FRAME_END,
+    FRAME_HEADER_SIZE, FrameHeader, FrameType, MAGIC, MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE,
+    Postamble, Preamble, WIRE_VERSION,
 };
 
 /// Compute the byte offset in `buf` where the encoded payload ends
@@ -75,7 +76,14 @@ fn mask_aware_payload_end(
 
 // ── Frame-level primitives ───────────────────────────────────────────────────
 
-/// Write a complete frame: frame_header + payload + ENDF.
+/// Write a non-data-object frame: frame_header + payload + hash_slot + ENDF.
+///
+/// The 8-byte hash slot is always written (new in v3, see
+/// `plans/WIRE_FORMAT.md` §2.2).  When `hash_algorithm` is
+/// `Some(_)` the slot is populated with the xxh3-64 digest of the
+/// payload; when `None` it is written as zeros.  The preamble-level
+/// `HASHES_PRESENT` flag tells readers which mode was used.
+///
 /// Optionally pads to 8-byte alignment after ENDF.
 fn write_frame(
     out: &mut Vec<u8>,
@@ -83,9 +91,16 @@ fn write_frame(
     version: u16,
     flags: u16,
     payload: &[u8],
+    hash_algorithm: Option<crate::hash::HashAlgorithm>,
     align: bool,
 ) {
-    let total_length = (FRAME_HEADER_SIZE + payload.len() + FRAME_END.len()) as u64;
+    // Data-object frames have their own encoder; this helper only
+    // handles frames with the common 12-byte footer.
+    debug_assert!(
+        !frame_type.is_data_object(),
+        "write_frame is for non-data-object frames only"
+    );
+    let total_length = (FRAME_HEADER_SIZE + payload.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
 
     let fh = FrameHeader {
         frame_type,
@@ -95,6 +110,16 @@ fn write_frame(
     };
     fh.write_to(out);
     out.extend_from_slice(payload);
+
+    // Inline hash slot (8 bytes) — hashes the body (just `payload`
+    // for non-data-object frames).
+    let hash_value: u64 = match hash_algorithm {
+        Some(crate::hash::HashAlgorithm::Xxh3) => xxhash_rust::xxh3::xxh3_64(payload),
+        None => 0,
+    };
+    out.extend_from_slice(&hash_value.to_be_bytes());
+
+    // End marker.
     out.extend_from_slice(FRAME_END);
 
     if align {
@@ -103,8 +128,15 @@ fn write_frame(
     }
 }
 
-/// Read one frame from a buffer. Returns (FrameHeader, payload_slice, total_bytes_consumed).
-/// `total_bytes_consumed` includes any padding to the next 8-byte boundary.
+/// Read one non-data-object frame from a buffer.
+///
+/// Returns `(FrameHeader, payload_slice, total_bytes_consumed)`
+/// where `payload_slice` is the CBOR body *without* the inline
+/// hash slot or ENDF marker.  `total_bytes_consumed` includes any
+/// padding to the next 8-byte boundary.
+///
+/// Data-object frames go through [`decode_data_object_frame`]
+/// instead — their footer has an additional `cbor_offset` field.
 fn read_frame(buf: &[u8]) -> Result<(FrameHeader, &[u8], usize)> {
     let fh = FrameHeader::read_from(buf)?;
     let frame_total = usize::try_from(fh.total_length).map_err(|_| {
@@ -114,8 +146,8 @@ fn read_frame(buf: &[u8]) -> Result<(FrameHeader, &[u8], usize)> {
         ))
     })?;
 
-    // Minimum frame: header(16) + ENDF(4) = 20 bytes
-    let min_frame_size = FRAME_HEADER_SIZE + FRAME_END.len();
+    // Minimum frame: header(16) + hash(8) + ENDF(4) = 28 bytes
+    let min_frame_size = FRAME_HEADER_SIZE + FRAME_COMMON_FOOTER_SIZE;
     if frame_total < min_frame_size {
         return Err(TensogramError::Framing(format!(
             "frame total_length {} is smaller than minimum {min_frame_size}",
@@ -131,7 +163,7 @@ fn read_frame(buf: &[u8]) -> Result<(FrameHeader, &[u8], usize)> {
         )));
     }
 
-    // Validate ENDF marker
+    // Validate ENDF marker at the very end.
     let endf_start = frame_total - FRAME_END.len();
     if &buf[endf_start..frame_total] != FRAME_END {
         return Err(TensogramError::Framing(format!(
@@ -139,7 +171,9 @@ fn read_frame(buf: &[u8]) -> Result<(FrameHeader, &[u8], usize)> {
         )));
     }
 
-    let payload = &buf[FRAME_HEADER_SIZE..endf_start];
+    // Payload excludes the 12-byte common footer (hash slot + ENDF).
+    let payload_end = frame_total - FRAME_COMMON_FOOTER_SIZE;
+    let payload = &buf[FRAME_HEADER_SIZE..payload_end];
 
     // Skip padding after ENDF to next 8-byte boundary
     let mut consumed = frame_total;
@@ -155,14 +189,20 @@ fn read_frame(buf: &[u8]) -> Result<(FrameHeader, &[u8], usize)> {
 
 /// Encode a data object frame with CBOR descriptor after payload (default).
 ///
-/// Layout: FrameHeader(16) | payload_bytes | cbor_bytes | cbor_offset(8) + ENDF(4)
+/// v3 layout (see `plans/WIRE_FORMAT.md` §6.5):
+///   `FrameHeader(16) | payload | cbor | cbor_offset(8) | hash(8) | ENDF(4)`
 ///
-/// The cbor_offset in the footer is the byte offset from frame start to the
-/// start of the CBOR descriptor.
+/// The `cbor_offset` in the footer is the byte offset from frame
+/// start to the start of the CBOR descriptor.  The `hash` slot is
+/// populated with xxh3-64 of the body when `hash_algorithm` is
+/// `Some(_)`, or `0x0000000000000000` when `None` (see hash-scope
+/// rule in `plans/WIRE_FORMAT.md` §2.4 — scope excludes the header,
+/// `cbor_offset`, hash slot, and ENDF).
 pub fn encode_data_object_frame(
     descriptor: &DataObjectDescriptor,
     payload: &[u8],
     cbor_before: bool,
+    hash_algorithm: Option<crate::hash::HashAlgorithm>,
 ) -> Result<Vec<u8>> {
     let cbor_bytes = metadata::object_descriptor_to_cbor(descriptor)?;
     let flags = if cbor_before {
@@ -171,8 +211,10 @@ pub fn encode_data_object_frame(
         DataObjectFlags::CBOR_AFTER_PAYLOAD
     };
 
-    // Calculate the total frame length:
-    // frame_header(16) + cbor_bytes + payload + cbor_offset(8) + ENDF(4)
+    // Calculate the total frame length (v3 data-object footer = 20 B):
+    //   header(16) + body + footer(20)
+    // where body = payload + cbor_bytes and footer =
+    // cbor_offset(8) + hash(8) + ENDF(4).
     let frame_body_len = cbor_bytes.len() + payload.len() + DATA_OBJECT_FOOTER_SIZE;
     let total_length = (FRAME_HEADER_SIZE + frame_body_len) as u64;
 
@@ -194,18 +236,34 @@ pub fn encode_data_object_frame(
 
     if cbor_before {
         // CBOR descriptor first, then payload
-        let cbor_offset = FRAME_HEADER_SIZE as u64;
         out.extend_from_slice(&cbor_bytes);
         out.extend_from_slice(payload);
-        out.extend_from_slice(&cbor_offset.to_be_bytes());
     } else {
         // Payload first, then CBOR descriptor (default)
-        let cbor_offset = (FRAME_HEADER_SIZE + payload.len()) as u64;
         out.extend_from_slice(payload);
         out.extend_from_slice(&cbor_bytes);
-        out.extend_from_slice(&cbor_offset.to_be_bytes());
     }
 
+    // Compute the inline hash now, *before* writing the footer
+    // fields.  The hash scope is exactly the body bytes we've
+    // appended since the header end; cbor_offset and the hash slot
+    // itself live in the footer and are not in scope
+    // (`plans/WIRE_FORMAT.md` §2.4).
+    let hash_value: u64 = match hash_algorithm {
+        Some(crate::hash::HashAlgorithm::Xxh3) => {
+            xxhash_rust::xxh3::xxh3_64(&out[FRAME_HEADER_SIZE..])
+        }
+        None => 0,
+    };
+
+    // Footer: [cbor_offset u64][hash u64][ENDF 4].
+    let cbor_offset = if cbor_before {
+        FRAME_HEADER_SIZE as u64
+    } else {
+        (FRAME_HEADER_SIZE + payload.len()) as u64
+    };
+    out.extend_from_slice(&cbor_offset.to_be_bytes());
+    out.extend_from_slice(&hash_value.to_be_bytes());
     out.extend_from_slice(FRAME_END);
 
     debug_assert_eq!(out.len(), total_length as usize);
@@ -243,7 +301,7 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
             fh.total_length
         ))
     })?;
-    // Minimum: frame_header(16) + cbor_offset(8) + ENDF(4) = 28
+    // v3 minimum: header(16) + cbor_offset(8) + hash(8) + ENDF(4) = 36
     let min_frame_size = FRAME_HEADER_SIZE + DATA_OBJECT_FOOTER_SIZE;
     if frame_total < min_frame_size {
         return Err(TensogramError::Framing(format!(
@@ -259,7 +317,7 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
         )));
     }
 
-    // Validate ENDF marker
+    // Validate ENDF marker at the very end.
     let endf_start = frame_total - FRAME_END.len();
     if &buf[endf_start..frame_total] != FRAME_END {
         return Err(TensogramError::Framing(
@@ -267,22 +325,26 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
         ));
     }
 
-    // Read cbor_offset from the data object footer (8 bytes before ENDF)
-    if endf_start < 8 {
+    // v3 footer layout: `[cbor_offset u64][hash u64][ENDF]`.
+    //   hash_slot    at endf_start - 8
+    //   cbor_offset  at endf_start - 16
+    if endf_start < 16 {
         return Err(TensogramError::Framing(format!(
-            "data object frame too small for cbor_offset: endf_start={endf_start} < 8"
+            "data object frame too small for v3 footer: endf_start={endf_start} < 16"
         )));
     }
-    let cbor_offset_pos = endf_start - 8;
-    // cbor_offset_pos is guaranteed >= 0 (checked endf_start >= 8 above),
-    // and cbor_offset_pos + 8 <= endf_start <= frame_total <= buf.len(),
-    // so read_u64_be is safe.
+    let hash_slot_pos = endf_start - 8;
+    let cbor_offset_pos = endf_start - 16;
+    // Both positions are valid u64 slots because endf_start >= 16.
     let cbor_offset_raw = crate::wire::read_u64_be(buf, cbor_offset_pos);
     let cbor_offset = usize::try_from(cbor_offset_raw).map_err(|_| {
         TensogramError::Framing(format!("cbor_offset {cbor_offset_raw} overflows usize"))
     })?;
+    // Avoid `unused` warning when not built with debug_assertions.
+    let _ = hash_slot_pos;
 
-    // Validate cbor_offset points within the frame body
+    // Validate cbor_offset points within the frame body (before
+    // the 16-byte type-specific footer portion).
     if cbor_offset < FRAME_HEADER_SIZE || cbor_offset > cbor_offset_pos {
         return Err(TensogramError::Framing(format!(
             "cbor_offset {cbor_offset} out of valid range [{FRAME_HEADER_SIZE}, {cbor_offset_pos}]"
@@ -292,14 +354,15 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
     let cbor_after = fh.flags & DataObjectFlags::CBOR_AFTER_PAYLOAD != 0;
 
     let (descriptor, payload_slice, mask_region) = if cbor_after {
-        // Layout: header(16) | payload_region | cbor | cbor_offset(8) | ENDF(4)
+        // v3 layout:
+        //   header(16) | payload_region | cbor | cbor_offset(8) | hash(8) | ENDF(4)
         //
         // `payload_region` = [encoded_payload][mask_nan][mask_inf+][mask_inf-]
         // when descriptor.masks is Some; just [encoded_payload] otherwise.
         // See `plans/BITMASK_FRAME.md` §3.2.
         let payload_start = FRAME_HEADER_SIZE;
         let cbor_start = cbor_offset;
-        let cbor_end = cbor_offset_pos;
+        let cbor_end = cbor_offset_pos; // v3: end-of-CBOR = start-of-footer (end-16)
         let cbor_slice = &buf[cbor_start..cbor_end];
         let desc = metadata::cbor_to_object_descriptor(cbor_slice)?;
         let payload_end = mask_aware_payload_end(payload_start, cbor_start, &desc)?;
@@ -309,7 +372,8 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
             &buf[payload_end..cbor_start],
         )
     } else {
-        // Layout: header(16) | cbor | payload_region | cbor_offset(8) | ENDF(4)
+        // v3 layout:
+        //   header(16) | cbor | payload_region | cbor_offset(8) | hash(8) | ENDF(4)
         // Use Cursor to measure exact consumed CBOR bytes on the wire.
         // Re-serialization would produce different lengths for non-canonical CBOR.
         let cbor_start = cbor_offset;
@@ -352,34 +416,23 @@ pub struct EncodedObject {
     pub encoded_payload: Vec<u8>,
 }
 
-/// Build hash frame CBOR if any objects carry hashes.
-fn build_hash_frame_cbor(objects: &[EncodedObject]) -> Result<Option<Vec<u8>>> {
-    let has_hashes = objects.iter().any(|o| o.descriptor.hash.is_some());
-    if !has_hashes {
-        return Ok(None);
-    }
-
-    let hash_type = objects
-        .iter()
-        .find_map(|o| o.descriptor.hash.as_ref())
-        .map(|h| h.hash_type.clone())
-        .unwrap_or_default();
-    let hashes: Vec<String> = objects
-        .iter()
-        .map(|o| {
-            o.descriptor
-                .hash
-                .as_ref()
-                .map(|h| h.value.clone())
-                .unwrap_or_default()
-        })
-        .collect();
-    let hf = HashFrame {
-        object_count: objects.len() as u64,
-        hash_type,
-        hashes,
-    };
-    Ok(Some(metadata::hash_frame_to_cbor(&hf)?))
+/// Placeholder for the `HeaderHash` / `FooterHash` frame builder.
+///
+/// In v3 the per-object hash lives in the inline hash slot of the
+/// data-object frame's footer; the aggregate `HashFrame` is a
+/// CBOR-encoded summary that mirrors the inline values in hex
+/// form.  Phase 6 hooks this builder up to read each object's
+/// inline slot from the assembled frame bytes so there is no
+/// double-hashing.  Until then this function returns `None`
+/// unconditionally — the hash slots on every data-object frame
+/// are the sole integrity source, which is enough for
+/// `validate --checksum` to do its job.
+fn build_hash_frame_cbor(
+    _objects: &[EncodedObject],
+    _hash_algorithm: Option<crate::hash::HashAlgorithm>,
+) -> Result<Option<Vec<u8>>> {
+    // Phase 5: aggregate hash frame deferred to phase 6.
+    Ok(None)
 }
 
 /// Two-pass index construction: compute data object offsets accounting for
@@ -387,6 +440,7 @@ fn build_hash_frame_cbor(objects: &[EncodedObject]) -> Result<Option<Vec<u8>>> {
 fn build_index_frame(
     header_size_no_index: usize,
     object_frames: &[Vec<u8>],
+    hash_algorithm: Option<crate::hash::HashAlgorithm>,
 ) -> Result<Option<Vec<u8>>> {
     if object_frames.is_empty() {
         return Ok(None);
@@ -445,6 +499,7 @@ fn build_index_frame(
         1,
         0,
         &final_cbor,
+        hash_algorithm,
         true,
     );
     Ok(Some(idx_frame))
@@ -482,6 +537,7 @@ fn assemble_message(
     index_frame_bytes: Option<&[u8]>,
     hash_cbor: Option<&[u8]>,
     object_frames: &[Vec<u8>],
+    hash_algorithm: Option<crate::hash::HashAlgorithm>,
 ) -> Vec<u8> {
     let mut out = Vec::new();
 
@@ -490,7 +546,15 @@ fn assemble_message(
     out.extend_from_slice(&[0u8; PREAMBLE_SIZE]);
 
     // Header metadata frame
-    write_frame(&mut out, FrameType::HeaderMetadata, 1, 0, meta_cbor, true);
+    write_frame(
+        &mut out,
+        FrameType::HeaderMetadata,
+        1,
+        0,
+        meta_cbor,
+        hash_algorithm,
+        true,
+    );
 
     // Header index frame (between metadata and hash, per spec ordering)
     if let Some(idx_bytes) = index_frame_bytes {
@@ -499,7 +563,15 @@ fn assemble_message(
 
     // Header hash frame
     if let Some(h_cbor) = hash_cbor {
-        write_frame(&mut out, FrameType::HeaderHash, 1, 0, h_cbor, true);
+        write_frame(
+            &mut out,
+            FrameType::HeaderHash,
+            1,
+            0,
+            h_cbor,
+            hash_algorithm,
+            true,
+        );
     }
 
     // Data object frames with inter-frame alignment
@@ -549,22 +621,32 @@ fn assemble_message(
 /// All objects are known upfront. Header contains metadata + index + hashes.
 /// Footer has only the postamble (no footer frames).
 ///
+/// When `hash_algorithm` is `Some(_)` every frame in the message
+/// gets its inline hash slot populated and the preamble's
+/// `HASHES_PRESENT` flag is set.  When `None`, the slot is written
+/// as zeros and the flag is clear (see v3 §2.4).
+///
 /// Strategy: build the message in two passes.
 /// Pass 1: serialize all pieces, compute sizes/offsets.
 /// Pass 2: assemble into final buffer.
-pub fn encode_message(global_meta: &GlobalMetadata, objects: &[EncodedObject]) -> Result<Vec<u8>> {
+pub fn encode_message(
+    global_meta: &GlobalMetadata,
+    objects: &[EncodedObject],
+    hash_algorithm: Option<crate::hash::HashAlgorithm>,
+) -> Result<Vec<u8>> {
     // Serialize metadata CBOR
     let meta_cbor = metadata::global_metadata_to_cbor(global_meta)?;
 
     // Pre-encode all data object frames
     let mut object_frames: Vec<Vec<u8>> = Vec::with_capacity(objects.len());
     for obj in objects {
-        let frame = encode_data_object_frame(&obj.descriptor, &obj.encoded_payload, false)?;
+        let frame =
+            encode_data_object_frame(&obj.descriptor, &obj.encoded_payload, false, hash_algorithm)?;
         object_frames.push(frame);
     }
 
-    // Build hash frame CBOR (if any objects have hashes)
-    let hash_cbor = build_hash_frame_cbor(objects)?;
+    // Build hash frame CBOR (phase 6 populates this; phase 5 returns None).
+    let hash_cbor = build_hash_frame_cbor(objects, hash_algorithm)?;
 
     // Measure header size without index to feed the two-pass index builder
     let mut header_no_index = Vec::new();
@@ -575,6 +657,7 @@ pub fn encode_message(global_meta: &GlobalMetadata, objects: &[EncodedObject]) -
         1,
         0,
         &meta_cbor,
+        hash_algorithm,
         true,
     );
     if let Some(ref h_cbor) = hash_cbor {
@@ -584,15 +667,22 @@ pub fn encode_message(global_meta: &GlobalMetadata, objects: &[EncodedObject]) -
             1,
             0,
             h_cbor,
+            hash_algorithm,
             true,
         );
     }
 
     // Two-pass index construction
-    let index_frame_bytes = build_index_frame(header_no_index.len(), &object_frames)?;
+    let index_frame_bytes =
+        build_index_frame(header_no_index.len(), &object_frames, hash_algorithm)?;
 
-    // Compute flags and assemble
-    let flags = compute_message_flags(index_frame_bytes.is_some(), hash_cbor.is_some());
+    // Compute flags and assemble.  `HASHES_PRESENT` is set whenever
+    // `hash_algorithm.is_some()` — the per-frame hash slots are
+    // populated uniformly for every frame in the message.
+    let mut flags = compute_message_flags(index_frame_bytes.is_some(), hash_cbor.is_some());
+    if hash_algorithm.is_some() {
+        flags.set(MessageFlags::HASHES_PRESENT);
+    }
 
     Ok(assemble_message(
         flags,
@@ -600,6 +690,7 @@ pub fn encode_message(global_meta: &GlobalMetadata, objects: &[EncodedObject]) -
         index_frame_bytes.as_deref(),
         hash_cbor.as_deref(),
         &object_frames,
+        hash_algorithm,
     ))
 }
 
@@ -1405,9 +1496,10 @@ fn scan_file_bidirectional(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Total frame size: header + payload + ENDF
+/// Total frame size for a non-data-object frame in v3:
+/// `header(16) + payload + hash(8) + ENDF(4)`.
 fn frame_total_size(payload_len: usize) -> usize {
-    FRAME_HEADER_SIZE + payload_len + FRAME_END.len()
+    FRAME_HEADER_SIZE + payload_len + FRAME_COMMON_FOOTER_SIZE
 }
 
 /// Frame total size aligned to 8 bytes
@@ -1450,7 +1542,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         }
     }
 
@@ -1519,7 +1610,7 @@ mod tests {
         let desc = make_descriptor(vec![4]);
         let payload = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 
-        let frame = encode_data_object_frame(&desc, &payload, false).unwrap();
+        let frame = encode_data_object_frame(&desc, &payload, false, None).unwrap();
 
         let (decoded_desc, decoded_payload, _mask_region, consumed) =
             decode_data_object_frame(&frame).unwrap();
@@ -1534,7 +1625,7 @@ mod tests {
         let desc = make_descriptor(vec![2, 3]);
         let payload = vec![0xABu8; 24]; // 2*3*4 = 24 bytes for float32
 
-        let frame = encode_data_object_frame(&desc, &payload, true).unwrap();
+        let frame = encode_data_object_frame(&desc, &payload, true, None).unwrap();
 
         let (decoded_desc, decoded_payload, _mask_region, _) =
             decode_data_object_frame(&frame).unwrap();
@@ -1545,7 +1636,7 @@ mod tests {
     #[test]
     fn test_empty_message_round_trip() {
         let meta = make_global_meta();
-        let msg = encode_message(&meta, &[]).unwrap();
+        let msg = encode_message(&meta, &[], None).unwrap();
 
         // Check magic and end magic
         assert_eq!(&msg[0..8], MAGIC);
@@ -1568,7 +1659,7 @@ mod tests {
             encoded_payload: payload.clone(),
         }];
 
-        let msg = encode_message(&meta, &objects).unwrap();
+        let msg = encode_message(&meta, &objects, None).unwrap();
         let decoded = decode_message(&msg).unwrap();
 
         assert_eq!(decoded.global_metadata.version, 3);
@@ -1598,7 +1689,7 @@ mod tests {
             },
         ];
 
-        let msg = encode_message(&meta, &objects).unwrap();
+        let msg = encode_message(&meta, &objects, None).unwrap();
         let decoded = decode_message(&msg).unwrap();
 
         assert_eq!(decoded.objects.len(), 2);
@@ -1621,6 +1712,7 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
+            None,
         )
         .unwrap();
         let msg2 = encode_message(
@@ -1629,6 +1721,7 @@ mod tests {
                 descriptor: make_descriptor(vec![2]),
                 encoded_payload: vec![2u8; 8],
             }],
+            None,
         )
         .unwrap();
 
@@ -1650,6 +1743,7 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
+            None,
         )
         .unwrap();
 
@@ -1676,6 +1770,7 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![0u8; 16],
             }],
+            None,
         )
         .unwrap();
 
@@ -1701,7 +1796,7 @@ mod tests {
         for (content, frame_type) in frames {
             match frame_type {
                 FrameType::NTensorFrame => {
-                    let frame = encode_data_object_frame(&desc, &payload, false).unwrap();
+                    let frame = encode_data_object_frame(&desc, &payload, false, None).unwrap();
                     out.extend_from_slice(&frame);
                     let pad = (8 - (out.len() % 8)) % 8;
                     out.extend(std::iter::repeat_n(0u8, pad));
@@ -1712,7 +1807,7 @@ mod tests {
                     } else {
                         *content
                     };
-                    write_frame(&mut out, *frame_type, 1, 0, data, true);
+                    write_frame(&mut out, *frame_type, 1, 0, data, None, true);
                 }
             }
         }
@@ -1814,6 +1909,7 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
+            None,
         )
         .unwrap();
         let msg2 = encode_message(
@@ -1822,6 +1918,7 @@ mod tests {
                 descriptor: make_descriptor(vec![2]),
                 encoded_payload: vec![2u8; 8],
             }],
+            None,
         )
         .unwrap();
 
@@ -1846,6 +1943,7 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
+            None,
         )
         .unwrap();
 

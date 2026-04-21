@@ -66,7 +66,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         compression: "szip".to_string(),
         params,
         masks: None,
-        hash: None,
     };
 
     // 3. Fake the GPU pipeline by running the internal forward pipeline once.

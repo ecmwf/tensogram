@@ -143,7 +143,6 @@ mod tests {
             compression: "none".into(),
             params: Default::default(),
             masks: None,
-            hash: None,
         };
         let desc2 = desc1.clone();
         let data = vec![0u8; 16];
@@ -216,7 +215,6 @@ mod tests {
             compression: "none".into(),
             params: Default::default(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 16];
         let meta = GlobalMetadata {
@@ -264,7 +262,6 @@ mod tests {
             compression: "none".into(),
             params: Default::default(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 16];
         let mut base0 = std::collections::BTreeMap::new();

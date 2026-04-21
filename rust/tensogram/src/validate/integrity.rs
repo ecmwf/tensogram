@@ -24,32 +24,47 @@ enum HashCheckResult {
     Failed,
 }
 
-/// Check a single hash descriptor against payload, pushing issues on failure.
-fn check_hash(
-    payload: &[u8],
-    h: &crate::types::HashDescriptor,
+/// Verify the inline hash slot of the object frame at `frame_offset`.
+///
+/// Slices the full frame out of `buf` using the frame header's
+/// `total_length`, then calls [`crate::hash::verify_frame_hash`]
+/// which computes the xxh3-64 over the v3 hash scope
+/// `bytes[16 .. total_length - footer_size(ft))` and compares it
+/// against the u64 stored at `total_length - 12`.
+fn verify_object_frame_hash(
+    buf: &[u8],
+    frame_offset: usize,
     obj_idx: usize,
     issues: &mut Vec<ValidationIssue>,
 ) -> HashCheckResult {
-    if hash::HashAlgorithm::parse(&h.hash_type).is_err() {
-        issues.push(warn(
-            IssueCode::UnknownHashAlgorithm,
-            ValidationLevel::Integrity,
-            Some(obj_idx),
-            None,
-            format!("unknown hash algorithm '{}', cannot verify", h.hash_type),
-        ));
+    // Read the frame header to learn the total length; if the
+    // header doesn't parse, structure validation will have already
+    // reported the issue — skip quietly here.
+    if frame_offset + crate::wire::FRAME_HEADER_SIZE > buf.len() {
         return HashCheckResult::Skipped;
     }
-    match hash::verify_hash(payload, h) {
+    let fh = match crate::wire::FrameHeader::read_from(&buf[frame_offset..]) {
+        Ok(fh) => fh,
+        Err(_) => return HashCheckResult::Skipped,
+    };
+    let total = match usize::try_from(fh.total_length) {
+        Ok(t) => t,
+        Err(_) => return HashCheckResult::Skipped,
+    };
+    if frame_offset + total > buf.len() {
+        return HashCheckResult::Skipped;
+    }
+    let frame_bytes = &buf[frame_offset..frame_offset + total];
+
+    match hash::verify_frame_hash(frame_bytes, fh.frame_type) {
         Ok(()) => HashCheckResult::Verified,
         Err(TensogramError::HashMismatch { expected, actual }) => {
             issues.push(err(
                 IssueCode::HashMismatch,
                 ValidationLevel::Integrity,
                 Some(obj_idx),
-                None,
-                format!("hash mismatch (expected {expected}, got {actual})"),
+                Some(frame_offset),
+                format!("frame hash mismatch (expected {expected}, got {actual})"),
             ));
             HashCheckResult::Failed
         }
@@ -58,8 +73,8 @@ fn check_hash(
                 IssueCode::HashVerificationError,
                 ValidationLevel::Integrity,
                 Some(obj_idx),
-                None,
-                format!("hash verification error: {e}"),
+                Some(frame_offset),
+                format!("frame hash verification error: {e}"),
             ));
             HashCheckResult::Failed
         }
@@ -75,6 +90,7 @@ fn check_hash(
 /// the message size. For very large tensors, consider validating objects
 /// individually or using `--checksum` for quick integrity checks.
 pub(crate) fn validate_integrity(
+    buf: &[u8],
     walk: &FrameWalkResult<'_>,
     objects: &mut [ObjectContext<'_>],
     issues: &mut Vec<ValidationIssue>,
@@ -84,27 +100,30 @@ pub(crate) fn validate_integrity(
     let mut all_verified = true;
     let mut any_checked = false;
 
-    // Collect hash frame if present
-    let mut hash_frame: Option<crate::types::HashFrame> = None;
+    // Phase 6 will aggregate per-object hashes into a HashFrame and
+    // re-enable this read-side verification; phase 5 emits no
+    // HashFrame so we drop any parse error here at warning level.
     for (ft, payload) in &walk.meta_frames {
-        if matches!(ft, FrameType::HeaderHash | FrameType::FooterHash) {
-            match metadata::cbor_to_hash_frame(payload) {
-                Ok(hf) => {
-                    hash_frame = Some(hf);
-                }
-                Err(e) => {
-                    all_verified = false;
-                    issues.push(err(
-                        IssueCode::HashFrameCborParseFailed,
-                        ValidationLevel::Integrity,
-                        None,
-                        None,
-                        format!("failed to parse hash frame CBOR: {e}"),
-                    ));
-                }
-            }
+        if matches!(ft, FrameType::HeaderHash | FrameType::FooterHash)
+            && let Err(e) = metadata::cbor_to_hash_frame(payload)
+        {
+            all_verified = false;
+            issues.push(err(
+                IssueCode::HashFrameCborParseFailed,
+                ValidationLevel::Integrity,
+                None,
+                None,
+                format!("failed to parse hash frame CBOR: {e}"),
+            ));
         }
     }
+
+    // Check whether the preamble declares any hashes at all.  If
+    // `HASHES_PRESENT` is 0, every frame's inline slot is zero and
+    // we skip verification with a clear message.
+    let has_hashes = crate::wire::Preamble::read_from(buf)
+        .map(|p| p.flags.has(crate::wire::MessageFlags::HASHES_PRESENT))
+        .unwrap_or(false);
 
     for (i, obj) in objects.iter_mut().enumerate() {
         // If Level 2 didn't run, try parsing the descriptor now.
@@ -121,45 +140,36 @@ pub(crate) fn validate_integrity(
                         ValidationLevel::Integrity,
                         Some(i),
                         None,
-                        format!("failed to parse descriptor, falling back to hash frame: {e}"),
+                        format!("failed to parse descriptor: {e}"),
                     ));
                 }
             }
         }
 
-        // Hash verification: prefer per-object descriptor hash, fall back to hash frame
-        let result = if let Some(h) = obj.descriptor.as_ref().and_then(|d| d.hash.as_ref()) {
-            any_checked = true;
-            check_hash(obj.payload, h, i, issues)
-        } else if let Some(ref hf) = hash_frame {
-            if i < hf.hashes.len() {
-                any_checked = true;
-                let h = crate::types::HashDescriptor {
-                    hash_type: hf.hash_type.clone(),
-                    value: hf.hashes[i].clone(),
-                };
-                check_hash(obj.payload, &h, i, issues)
-            } else {
-                issues.push(warn(
-                    IssueCode::NoHashAvailable,
-                    ValidationLevel::Integrity,
-                    Some(i),
-                    None,
-                    "no hash available, cannot verify integrity".to_string(),
-                ));
-                all_verified = false;
-                HashCheckResult::Skipped
-            }
-        } else {
+        // v3 integrity: verify the inline hash slot at
+        // `frame_start + total_length - 12`.  Slice out the full
+        // frame from `buf` using the frame offset and header.
+        let result = if !has_hashes {
+            // Message-level HASHES_PRESENT = 0 — no hash to verify.
             issues.push(warn(
                 IssueCode::NoHashAvailable,
                 ValidationLevel::Integrity,
                 Some(i),
                 None,
-                "no hash available, cannot verify integrity".to_string(),
+                "HASHES_PRESENT flag is clear — message was encoded \
+                 without hashes; cannot verify integrity"
+                    .to_string(),
             ));
             all_verified = false;
             HashCheckResult::Skipped
+        } else {
+            match verify_object_frame_hash(buf, obj.frame_offset, i, issues) {
+                HashCheckResult::Verified => {
+                    any_checked = true;
+                    HashCheckResult::Verified
+                }
+                other => other,
+            }
         };
 
         if !matches!(result, HashCheckResult::Verified) {

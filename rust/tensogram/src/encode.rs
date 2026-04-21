@@ -11,12 +11,10 @@ use std::collections::BTreeMap;
 use crate::dtype::Dtype;
 use crate::error::{Result, TensogramError};
 use crate::framing::{self, EncodedObject};
-use crate::hash::{HashAlgorithm, compute_hash};
+use crate::hash::HashAlgorithm;
 use crate::metadata::RESERVED_KEY;
 use crate::substitute_and_mask::{self, MaskSet};
-use crate::types::{
-    DataObjectDescriptor, GlobalMetadata, HashDescriptor, MaskDescriptor, MasksMetadata,
-};
+use crate::types::{DataObjectDescriptor, GlobalMetadata, MaskDescriptor, MasksMetadata};
 pub use tensogram_encodings::bitmask::MaskMethod;
 #[cfg(feature = "blosc2")]
 use tensogram_encodings::pipeline::Blosc2Codec;
@@ -327,19 +325,13 @@ fn encode_one_object(
     let encoded_payload = payload_region;
 
     // Attach the integrity hash to the descriptor, overwriting any
-    // caller-supplied hash.  `inline_hash` carries the pipeline's inline
-    // digest when `compute_hash` was set; otherwise (PreEncoded mode) we
-    // fall back to a single-pass `compute_hash` over the payload.
-    if let Some(algorithm) = options.hash_algorithm {
-        let hash_value = match inline_hash {
-            Some(digest) => crate::hash::format_xxh3_digest(digest),
-            None => compute_hash(&encoded_payload, algorithm),
-        };
-        final_desc.hash = Some(HashDescriptor {
-            hash_type: algorithm.as_str().to_string(),
-            value: hash_value,
-        });
-    }
+    // v3 note: the per-object hash is no longer written into the CBOR
+    // descriptor; it lives in the inline hash slot of the frame's
+    // footer (see `plans/WIRE_FORMAT.md` §2.4).  The pipeline's
+    // `inline_hash` is kept on the encoder path for the
+    // message-level `HashFrame` aggregation (phase 6), but the
+    // descriptor itself carries no hash field in v3.
+    let _ = (inline_hash, options); // placeholder: will feed HashFrame in phase 6
 
     Ok(EncodedObject {
         descriptor: final_desc,
@@ -435,7 +427,7 @@ fn encode_inner(
     populate_base_entries(&mut enriched_meta.base, &encoded_objects);
     populate_reserved_provenance(&mut enriched_meta.reserved);
 
-    framing::encode_message(&enriched_meta, &encoded_objects)
+    framing::encode_message(&enriched_meta, &encoded_objects, options.hash_algorithm)
 }
 
 /// Encode a complete Tensogram message.
@@ -1189,7 +1181,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         }
     }
 
@@ -1452,7 +1443,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0u8; 4]; // 1 float32
         let meta = GlobalMetadata::default();
@@ -1738,7 +1728,6 @@ mod tests {
                 compression: "none".to_string(),
                 params: BTreeMap::new(),
                 masks: None,
-                hash: None,
             };
             let data = vec![0u8; data_len];
             let meta = GlobalMetadata::default();
@@ -1968,45 +1957,13 @@ mod tests {
         );
     }
 
-    /// Caller-supplied hash in descriptor must be overwritten by the library-computed hash.
+    /// v3: caller-supplied hash on the descriptor is structurally
+    /// impossible (the field is gone).  Phase 6 rewrites the
+    /// equivalent check against the frame footer's inline slot.
     #[test]
+    #[ignore = "v3: hash moved to frame footer — re-enable in phase 6"]
     fn test_encode_pre_encoded_overwrites_caller_hash() {
-        let mut desc = make_descriptor(vec![2]);
-        // Plant garbage hash in descriptor
-        desc.hash = Some(HashDescriptor {
-            hash_type: "xxh3".to_string(),
-            value: "deadbeefdeadbeef".to_string(),
-        });
-
-        let data = vec![0xAB_u8; 8]; // non-trivial payload bytes
-        let meta = GlobalMetadata::default();
-        let options = EncodeOptions::default(); // includes xxh3 hashing
-
-        let msg = encode_pre_encoded(&meta, &[(&desc, data.as_slice())], &options).unwrap();
-        let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
-        let (decoded_desc, decoded_payload) = &objects[0];
-
-        // Library should have computed a fresh hash
-        let computed_hash = match options.hash_algorithm {
-            Some(algorithm) => compute_hash(decoded_payload, algorithm),
-            None => panic!("expected hash algorithm"),
-        };
-
-        let stored_hash = decoded_desc
-            .hash
-            .as_ref()
-            .expect("hash should be present in decoded descriptor")
-            .value
-            .clone();
-
-        assert_ne!(
-            stored_hash, "deadbeefdeadbeef",
-            "caller's garbage hash must be overwritten"
-        );
-        assert_eq!(
-            stored_hash, computed_hash,
-            "library-computed hash must match hash over decoded payload"
-        );
+        // Intentionally empty.
     }
 
     #[test]
@@ -2137,7 +2094,6 @@ mod tests {
             compression: "zstd".to_string(),
             params,
             masks: None,
-            hash: None,
         };
 
         let err = validate_no_szip_offsets_for_non_szip(&desc)
@@ -2168,7 +2124,6 @@ mod tests {
             compression: "szip".to_string(),
             params,
             masks: None,
-            hash: None,
         };
 
         assert!(validate_no_szip_offsets_for_non_szip(&desc).is_ok());

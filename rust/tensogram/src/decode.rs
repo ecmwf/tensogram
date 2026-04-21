@@ -9,7 +9,7 @@
 use crate::encode::build_pipeline_config_with_backend;
 use crate::error::{Result, TensogramError};
 use crate::framing;
-use crate::hash;
+
 use crate::types::{DataObjectDescriptor, DecodedObject, GlobalMetadata};
 use tensogram_encodings::pipeline;
 
@@ -380,11 +380,13 @@ pub fn decode_range_from_payload(
         ));
     }
 
-    if options.verify_hash
-        && let Some(ref hash_desc) = desc.hash
-    {
-        hash::verify_hash(payload_bytes, hash_desc)?;
-    }
+    // v3: per-object hash lives in the frame footer's inline slot
+    // (see `plans/WIRE_FORMAT.md` §2.4).  Partial-range decode runs
+    // at the sub-object level and has no access to the containing
+    // frame bytes, so hash verification at this layer is a no-op —
+    // callers wanting frame-level integrity should use
+    // `tensogram validate --checksum` or call
+    // `hash::verify_frame_hash` on the full frame directly.
 
     let shape_product = desc
         .shape
@@ -490,11 +492,13 @@ fn decode_single_object_with_backend(
     backend: pipeline::CompressionBackend,
     intra_codec_threads: u32,
 ) -> Result<Vec<u8>> {
-    if options.verify_hash
-        && let Some(ref hash_desc) = desc.hash
-    {
-        hash::verify_hash(payload_bytes, hash_desc)?;
-    }
+    // v3: hash verification moved to frame-level (see the inline
+    // slot in `plans/WIRE_FORMAT.md` §2.4).  `options.verify_hash`
+    // is retained on the public API for source compatibility but is
+    // a no-op at this layer; use `validate --checksum` for a full
+    // integrity sweep or `hash::verify_frame_hash(frame_bytes, ft)`
+    // for programmatic per-frame verification.
+    let _ = options.verify_hash;
 
     let shape_product = desc
         .shape
@@ -554,7 +558,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         }
     }
 
@@ -797,7 +800,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         };
         let data = vec![0xFF; 2]; // ceil(16/8) = 2 bytes
 

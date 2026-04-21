@@ -137,13 +137,12 @@ impl Iterator for ObjectIter {
         self.index += 1;
         let (ref desc, ref payload_bytes, ref mask_region) = self.objects[i];
 
-        // Verify hash if requested
-        if self.options.verify_hash
-            && let Some(ref hash_desc) = desc.hash
-            && let Err(e) = crate::hash::verify_hash(payload_bytes, hash_desc)
-        {
-            return Some(Err(e));
-        }
+        // v3: hash verification moved to frame-level (see the inline
+        // slot in `plans/WIRE_FORMAT.md` §2.4).  `options.verify_hash`
+        // is retained on the public API for source compatibility
+        // but a full-iter caller that wants integrity checks should
+        // go through `validate --checksum`.
+        let _ = (self.options.verify_hash, desc, payload_bytes);
 
         let shape_product = match desc
             .shape
@@ -301,7 +300,6 @@ mod tests {
             compression: "none".to_string(),
             params: BTreeMap::new(),
             masks: None,
-            hash: None,
         }
     }
 

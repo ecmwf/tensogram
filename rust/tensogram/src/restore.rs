@@ -572,7 +572,6 @@ mod tests {
             compression: "none".to_string(),
             masks: None,
             params: BTreeMap::new(),
-            hash: None,
         }
     }
 

@@ -14,6 +14,16 @@ use crate::dtype::Dtype;
 pub use tensogram_encodings::ByteOrder;
 
 /// Hash descriptor for payload integrity verification.
+///
+/// **Deprecated in v3.**  In v3 the per-object hash lives in the
+/// inline hash slot of the data-object frame footer (see
+/// `plans/WIRE_FORMAT.md` §2.2 and §2.4), not in the CBOR
+/// descriptor.  This struct is retained only for the message-level
+/// [`HashFrame`] CBOR schema (which stores an array of hex-encoded
+/// digest values, to allow future longer digests).  Callers doing
+/// frame-level integrity verification should go through
+/// [`crate::hash::hash_frame_body`] /
+/// [`crate::hash::verify_frame_hash`] instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HashDescriptor {
     #[serde(rename = "type")]
@@ -110,10 +120,6 @@ pub struct DataObjectDescriptor {
     /// szip_block_offsets, etc.). Stored as ciborium::Value for flexibility.
     #[serde(flatten)]
     pub params: BTreeMap<String, ciborium::Value>,
-
-    /// Per-object integrity hash (set during encoding).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hash: Option<HashDescriptor>,
 }
 
 /// Global message metadata (carried in header/footer metadata frames).

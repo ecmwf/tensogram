@@ -59,7 +59,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         compression: "none".to_string(),
         params: BTreeMap::new(), // encoding params only — no MARS keys here
         masks: None,
-        hash: None,
     };
 
     let global_meta = GlobalMetadata {

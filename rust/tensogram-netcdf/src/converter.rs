@@ -362,7 +362,6 @@ fn build_descriptor(
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     };
 
     // Simple_packing is f64-only. Extract typed values from the raw

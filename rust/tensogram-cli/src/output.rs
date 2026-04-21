@@ -228,7 +228,6 @@ mod tests {
             compression: "none".into(),
             params: Default::default(),
             masks: None,
-            hash: None,
         };
         let objects = vec![(desc, vec![0u8; 16])];
         let json = format_json::<String>(&meta, None, Some(&objects));

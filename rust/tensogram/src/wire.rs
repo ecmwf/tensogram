@@ -37,8 +37,38 @@ pub const FRAME_HEADER_SIZE: usize = 16;
 /// self-locating from any byte position inside a message — see
 /// `plans/WIRE_FORMAT.md` §7 and §9.2.
 pub const POSTAMBLE_SIZE: usize = 24;
-/// Data object footer size: cbor_offset(8) + ENDF(4) = 12
-pub const DATA_OBJECT_FOOTER_SIZE: usize = 12;
+
+/// Size of the common tail every v3 frame ends with:
+/// `[hash u64][ENDF 4]` = 12 bytes.
+///
+/// See `plans/WIRE_FORMAT.md` §2.2.  Frame-type-specific footer
+/// fields (e.g. `cbor_offset` on [`FrameType::NTensorFrame`]) sit
+/// *before* this common tail.
+pub const FRAME_COMMON_FOOTER_SIZE: usize = 12;
+
+/// Footer size of an `NTensorFrame` (v3 type 9):
+/// `[cbor_offset u64][hash u64][ENDF 4]` = 20 bytes.
+pub const DATA_OBJECT_FOOTER_SIZE: usize = 20;
+
+/// Returns the size of the fixed footer for a given frame type.
+///
+/// All v3 frames end with the 12-byte common tail
+/// `[hash u64][ENDF]`; some types prepend additional fixed-size
+/// fields to form a larger footer.  This helper is the single
+/// source of truth for the per-type footer size and is used by
+/// both the hash scope calculation (see
+/// [`crate::hash::hash_frame_body`]) and all frame encoders /
+/// decoders.
+///
+/// See `plans/WIRE_FORMAT.md` §2.2 for the full table and §2.4 for
+/// the hash-scope rule `bytes[16 .. end - footer_size_for(ft))`.
+#[inline]
+pub fn footer_size_for(frame_type: FrameType) -> usize {
+    match frame_type {
+        FrameType::NTensorFrame => DATA_OBJECT_FOOTER_SIZE,
+        _ => FRAME_COMMON_FOOTER_SIZE,
+    }
+}
 
 // ── Frame Types ──────────────────────────────────────────────────────────────
 
@@ -126,6 +156,12 @@ impl MessageFlags {
     pub const FOOTER_HASHES: u16 = 1 << 5;
     /// At least one PrecederMetadata frame is present in the data objects section.
     pub const PRECEDER_METADATA: u16 = 1 << 6;
+    /// New in v3.  When set, every frame in the message has its
+    /// inline `hash` slot populated with the xxh3-64 digest of the
+    /// frame body (see `plans/WIRE_FORMAT.md` §2.4).  When clear,
+    /// every slot is `0x0000000000000000` and readers skip hash
+    /// verification.  Message-wide flag — no per-frame override.
+    pub const HASHES_PRESENT: u16 = 1 << 7;
 
     pub fn new(bits: u16) -> Self {
         Self(bits)

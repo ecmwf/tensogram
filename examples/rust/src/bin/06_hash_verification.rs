@@ -36,7 +36,6 @@ fn make_descriptor() -> DataObjectDescriptor {
         compression: "none".to_string(),
         params: BTreeMap::new(),
         masks: None,
-        hash: None,
     }
 }
 
@@ -61,9 +60,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let message = encode(&global_meta, &[(&desc, &data)], &options)?;
 
-        let (_, objects) = decode(&message, &DecodeOptions::default())?;
-        let hash = objects[0].0.hash.as_ref().unwrap();
-        println!("xxh3 hash: {}:{}", hash.hash_type, hash.value);
+        let (_, _objects) = decode(&message, &DecodeOptions::default())?;
+        // v3: the xxh3 hash now lives in the frame footer's inline
+        // slot (see `plans/WIRE_FORMAT.md` §2.4).  Phase 6 adds a
+        // public accessor; until then, retrieve it via
+        // `tensogram::hash::hash_frame_body` on the raw message
+        // bytes.
+        println!("xxh3 hash: (inline slot — see phase 6)");
 
         // Verify on decode — this is where the hash is checked
         let verify_opts = DecodeOptions {
@@ -82,8 +85,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let message = encode(&global_meta, &[(&desc, &data)], &options)?;
 
-        let (_, objects) = decode(&message, &DecodeOptions::default())?;
-        assert!(objects[0].0.hash.is_none());
+        let (_, _objects) = decode(&message, &DecodeOptions::default())?;
+        // v3: hash presence is now a message-level flag
+        // (HASHES_PRESENT in the preamble) rather than a
+        // per-descriptor field.  Phase 6 surfaces this on the
+        // public API.
 
         // verify_hash: true on a message without a hash is silently skipped
         let verify_opts = DecodeOptions {
