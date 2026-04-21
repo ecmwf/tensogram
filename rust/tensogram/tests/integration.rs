@@ -13,7 +13,7 @@ use tensogram_encodings::simple_packing;
 fn make_float32_descriptor(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescriptor) {
     let strides = compute_strides(&shape);
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -57,7 +57,7 @@ fn make_mars_pair(shape: Vec<u64>, param: &str) -> (GlobalMetadata, DataObjectDe
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };
@@ -109,7 +109,7 @@ fn test_full_round_trip_single_object() {
     assert_eq!(&encoded[encoded.len() - 8..], b"39277777");
 
     let (decoded_meta, decoded_objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     assert_eq!(decoded_objects.len(), 1);
     assert_eq!(decoded_objects[0].1, data);
 }
@@ -119,7 +119,7 @@ fn test_multi_object_message() {
     let strides1 = compute_strides(&[4, 5]);
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -178,13 +178,13 @@ fn test_decode_metadata_only() {
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let meta = decode_metadata(&encoded).unwrap();
 
-    assert_eq!(meta.version, 2);
+    assert_eq!(meta.version, 3);
 }
 
 #[test]
 fn test_decode_single_object_by_index() {
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -235,7 +235,7 @@ fn test_decode_single_object_by_index() {
 #[test]
 fn test_zero_object_message() {
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -319,7 +319,7 @@ fn test_simple_packing_round_trip() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -366,7 +366,7 @@ fn test_shuffle_round_trip() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -458,7 +458,7 @@ fn test_decode_range_shuffle_rejected() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -531,7 +531,7 @@ fn test_namespaced_metadata_round_trip() {
 #[test]
 fn test_validate_object_overflow() {
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -585,7 +585,7 @@ fn test_cross_endian_round_trip() {
     let be_data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -681,7 +681,7 @@ fn test_decode_range_cross_endian_native() {
     let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -722,7 +722,7 @@ fn test_decode_range_wire_byte_order_opt_out() {
     let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -782,7 +782,7 @@ fn test_simple_packing_rejects_non_f64() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -817,7 +817,7 @@ fn test_simple_packing_rejects_non_f64() {
 #[test]
 fn test_validate_ndim_mismatch() {
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -859,7 +859,7 @@ fn test_param_out_of_bounds() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -923,7 +923,7 @@ fn make_szip_packing_pair(
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -958,7 +958,7 @@ fn make_szip_raw_pair(num_values: u64, dtype: Dtype) -> (GlobalMetadata, DataObj
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -1149,7 +1149,7 @@ fn test_szip_shuffle_round_trip() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -1193,7 +1193,7 @@ fn test_szip_shuffle_decode_range_rejected() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -1256,7 +1256,7 @@ fn test_szip_multi_object_mixed_compression() {
     let packed_data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -1388,7 +1388,7 @@ fn test_szip_decode_range_multiple_ranges() {
 #[test]
 fn test_validate_empty_obj_type() {
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -1435,7 +1435,7 @@ fn test_metadata_base_reserved_round_trip() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };
@@ -1443,7 +1443,7 @@ fn test_metadata_base_reserved_round_trip() {
     let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap();
 
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     // base must have one entry with user-supplied + auto-populated keys.
     assert_eq!(decoded_meta.base.len(), 1);
     assert_eq!(
@@ -1491,7 +1491,7 @@ fn test_metadata_empty_sections_not_serialized() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -1499,7 +1499,7 @@ fn test_metadata_empty_sections_not_serialized() {
     let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
     let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap();
 
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     // Encoder auto-populates base with one entry per object.
     assert_eq!(
         decoded_meta.base.len(),
@@ -1555,7 +1555,7 @@ fn test_deep_nested_metadata_round_trip() {
     base_entry.insert("nested".to_string(), value);
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };

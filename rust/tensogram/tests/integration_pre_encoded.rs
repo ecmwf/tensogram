@@ -577,7 +577,7 @@ fn test_encode_pre_encoded_rejects_caller_reserved() {
         ciborium::Value::Text("client-set".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         reserved,
         ..Default::default()
     };
@@ -690,7 +690,7 @@ fn test_encode_pre_encoded_zero_objects() {
     let (decoded_meta, objects) =
         decode(&msg, &DecodeOptions::default()).expect("decode empty message");
     assert_eq!(objects.len(), 0, "should decode to zero objects");
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
 }
 
 #[test]

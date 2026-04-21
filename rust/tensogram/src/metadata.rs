@@ -456,7 +456,7 @@ mod tests {
         base_entry.insert("mars".to_string(), mars_value);
 
         GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![base_entry],
             ..Default::default()
         }
@@ -484,7 +484,7 @@ mod tests {
         let meta = make_test_global_metadata();
         let bytes = global_metadata_to_cbor(&meta).unwrap();
         let decoded = cbor_to_global_metadata(&bytes).unwrap();
-        assert_eq!(decoded.version, 2);
+        assert_eq!(decoded.version, 3);
         assert_eq!(decoded.base.len(), 1);
         assert!(decoded.base[0].contains_key("mars"));
     }
@@ -544,7 +544,7 @@ mod tests {
         let meta = GlobalMetadata::default();
         let bytes = global_metadata_to_cbor(&meta).unwrap();
         let decoded = cbor_to_global_metadata(&bytes).unwrap();
-        assert_eq!(decoded.version, 2);
+        assert_eq!(decoded.version, 3);
         assert!(decoded.base.is_empty());
         assert!(decoded.extra.is_empty());
     }
@@ -635,7 +635,7 @@ mod tests {
         base1.insert("zebra".to_string(), ciborium::Value::Integer(1.into()));
         base1.insert("apple".to_string(), ciborium::Value::Integer(2.into()));
         let meta1 = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![base1],
             ..Default::default()
         };
@@ -644,7 +644,7 @@ mod tests {
         base2.insert("apple".to_string(), ciborium::Value::Integer(2.into()));
         base2.insert("zebra".to_string(), ciborium::Value::Integer(1.into()));
         let meta2 = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![base2],
             ..Default::default()
         };

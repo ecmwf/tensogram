@@ -148,7 +148,7 @@ mod tests {
         let desc2 = desc1.clone();
         let data = vec![0u8; 16];
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             ..Default::default()
         };
         // One message with 2 objects
@@ -220,7 +220,7 @@ mod tests {
         };
         let data = vec![0u8; 16];
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             ..Default::default()
         };
         f.append(&meta, &[(&desc, &data)], &EncodeOptions::default())
@@ -272,7 +272,7 @@ mod tests {
         let mut base1 = std::collections::BTreeMap::new();
         base1.insert("param".into(), ciborium::Value::Text("msl".into()));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![base0, base1],
             ..Default::default()
         };

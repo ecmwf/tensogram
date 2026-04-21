@@ -102,7 +102,7 @@ mod tests {
 
     fn metadata_without_param() -> GlobalMetadata {
         GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         }
@@ -140,7 +140,7 @@ mod tests {
         let mut extra1 = BTreeMap::new();
         extra1.insert("param".to_string(), ciborium::Value::Text("2t".to_string()));
         let meta1 = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: extra1,
             ..Default::default()
         };
@@ -152,7 +152,7 @@ mod tests {
             ciborium::Value::Text("msl".to_string()),
         );
         let meta2 = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: extra2,
             ..Default::default()
         };

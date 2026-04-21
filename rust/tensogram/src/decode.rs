@@ -526,7 +526,7 @@ mod tests {
 
     fn make_global_meta() -> GlobalMetadata {
         GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         }
@@ -721,7 +721,7 @@ mod tests {
         let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
 
         let decoded_meta = decode_metadata(&encoded).unwrap();
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
     }
 
     #[test]
@@ -748,7 +748,7 @@ mod tests {
         .unwrap();
 
         let (decoded_meta, descs) = decode_descriptors(&encoded).unwrap();
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         assert_eq!(descs.len(), 2);
         assert_eq!(descs[0].shape, vec![4]);
         assert_eq!(descs[1].shape, vec![2, 3]);

@@ -147,7 +147,7 @@ pub fn simple_packing_compute_params(
 /// any `szip_block_offsets` it finds but never runs the encoding
 /// pipeline.  The hash is always recomputed from the caller's bytes.
 ///
-/// @param metadata_js - GlobalMetadata (JS object, `version: 2` required).
+/// @param metadata_js - GlobalMetadata (JS object, `version: 3` required).
 /// @param objects_js - Array of `{descriptor, data}`; each `data` must
 ///   be a `Uint8Array` (opaque pre-encoded bytes).
 /// @param hash - Whether to stamp an xxh3 hash.  Default `true`.

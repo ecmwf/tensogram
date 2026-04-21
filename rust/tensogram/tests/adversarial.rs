@@ -20,7 +20,7 @@ fn make_simple_float32_pair(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescr
         s
     };
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -57,7 +57,7 @@ fn make_shuffle_pair(shape: Vec<u64>, element_size: u64) -> (GlobalMetadata, Dat
         ciborium::Value::Integer(element_size.into()),
     );
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -161,7 +161,7 @@ fn test_adversarial_negative_cbor_int_wraps() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -212,7 +212,7 @@ fn test_adversarial_non_f64_simple_packing() {
     );
 
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -301,7 +301,7 @@ fn test_adversarial_decode_range_with_shuffle() {
 #[test]
 fn test_adversarial_shape_product_overflow() {
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -351,7 +351,7 @@ fn test_adversarial_empty_obj_type() {
 #[test]
 fn test_adversarial_ndim_mismatch() {
     let global = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };

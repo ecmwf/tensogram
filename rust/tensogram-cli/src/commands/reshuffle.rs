@@ -93,7 +93,7 @@ mod tests {
         };
         let data = vec![0u8; 16];
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             ..Default::default()
         };
         f.append(&meta, &[(&desc, &data)], &EncodeOptions::default())
@@ -115,7 +115,7 @@ mod tests {
         assert_eq!(f.message_count().unwrap(), 2);
         let msg = f.read_message(0).unwrap();
         let (meta, objs) = decode(&msg, &DecodeOptions::default()).unwrap();
-        assert_eq!(meta.version, 2);
+        assert_eq!(meta.version, 3);
         assert_eq!(objs.len(), 1);
     }
 }

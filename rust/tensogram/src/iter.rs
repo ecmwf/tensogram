@@ -275,7 +275,7 @@ mod tests {
 
     fn make_global_meta() -> GlobalMetadata {
         GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         }
@@ -373,7 +373,7 @@ mod tests {
 
         for (i, slice) in messages(&buf).enumerate() {
             let (meta, objs) = crate::decode::decode(slice, &DecodeOptions::default()).unwrap();
-            assert_eq!(meta.version, 2);
+            assert_eq!(meta.version, 3);
             let expected_shape = if i == 0 { vec![3u64] } else { vec![5u64] };
             assert_eq!(objs[0].0.shape, expected_shape);
         }
@@ -495,7 +495,7 @@ mod tests {
         for raw in FileMessageIter::new(path, offsets).unwrap() {
             let raw = raw.unwrap();
             let (meta, _) = crate::decode::decode(&raw, &DecodeOptions::default()).unwrap();
-            assert_eq!(meta.version, 2);
+            assert_eq!(meta.version, 3);
         }
     }
 }

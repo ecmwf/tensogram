@@ -31,13 +31,13 @@
 //!
 //! ```js
 //! // Buffered (default):
-//! const enc = new StreamingEncoder({ version: 2 });
+//! const enc = new StreamingEncoder({ version: 3 });
 //! enc.writeObject(descriptor, new Float32Array([1, 2, 3]));
 //! const bytes = enc.finish();          // full wire-format message
 //!
 //! // Streaming:
 //! const chunks = [];
-//! const enc = new StreamingEncoder({ version: 2 }, {
+//! const enc = new StreamingEncoder({ version: 3 }, {
 //!   onBytes: (chunk) => chunks.push(new Uint8Array(chunk)),
 //! });
 //! enc.writeObject(descriptor, new Float32Array([1, 2, 3]));

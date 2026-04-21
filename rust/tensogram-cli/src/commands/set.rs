@@ -254,7 +254,7 @@ mod tests {
 
     fn make_global_meta() -> GlobalMetadata {
         GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         }
@@ -311,7 +311,7 @@ mod tests {
         let original_hash = original_objects[0].0.hash.as_ref().unwrap();
 
         // Verify version is accessible from global metadata
-        assert_eq!(original.version, 2);
+        assert_eq!(original.version, 3);
 
         // Use "extra.source=new" to target the extra map where source lives
         run(&input, &output, "extra.source=new", None).unwrap();

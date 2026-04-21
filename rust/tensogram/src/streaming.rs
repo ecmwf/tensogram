@@ -117,7 +117,7 @@ impl<W: Write> StreamingEncoder<W> {
         }
 
         let preamble = Preamble {
-            version: 2,
+            version: 3,
             flags,
             reserved: 0,
             total_length: 0,
@@ -805,7 +805,7 @@ mod tests {
 
         // Decode should succeed
         let (decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         assert_eq!(objects.len(), 1);
         assert_eq!(objects[0].1, data);
     }
@@ -917,7 +917,7 @@ mod tests {
         let result = enc.finish().unwrap();
 
         let (decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
-        assert_eq!(decoded_meta.version, 2);
+        assert_eq!(decoded_meta.version, 3);
         assert_eq!(objects.len(), 0);
     }
 
@@ -977,7 +977,7 @@ mod tests {
             ciborium::Value::Text("ecmwf".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra,
             ..Default::default()
         };
@@ -1039,7 +1039,7 @@ mod tests {
             ciborium::Value::Text("footer".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![footer_base],
             ..Default::default()
         };
@@ -1218,7 +1218,7 @@ mod tests {
         // and verify _reserved_ from preceder doesn't clobber.
         // We test via the framing level directly.
         let preceder_meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![prec_entry],
             ..Default::default()
         };
@@ -1258,7 +1258,7 @@ mod tests {
             )]),
         );
         let footer_meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![footer_base],
             ..Default::default()
         };
@@ -1333,7 +1333,7 @@ mod tests {
         flags.set(MessageFlags::FOOTER_METADATA);
         flags.set(MessageFlags::PRECEDER_METADATA);
         let preamble = Preamble {
-            version: 2,
+            version: 3,
             flags,
             reserved: 0,
             total_length,

@@ -19,7 +19,7 @@ use tensogram::*;
 
 fn make_global_meta() -> GlobalMetadata {
     GlobalMetadata {
-        version: 2,
+        version: 3,
         ..Default::default()
     }
 }
@@ -166,7 +166,7 @@ fn empty_message_no_data_objects() {
     let meta = make_global_meta();
     let encoded = encode(&meta, &[], &EncodeOptions::default()).unwrap();
     let (decoded_meta, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     assert!(objects.is_empty());
 }
 
@@ -178,7 +178,7 @@ fn empty_message_with_custom_metadata() {
         ciborium::Value::Text("test".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -742,7 +742,7 @@ fn decode_metadata_only() {
         ciborium::Value::Text("ecmwf".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };
@@ -1005,7 +1005,7 @@ fn metadata_namespaces_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![base_entry],
         extra,
         ..Default::default()
@@ -1913,7 +1913,7 @@ fn preceder_with_extra_keys_tolerated() {
     let total = out.len() as u64;
     let mut pre = Vec::new();
     pre.extend_from_slice(b"TENSOGRM");
-    pre.extend_from_slice(&2u16.to_be_bytes());
+    pre.extend_from_slice(&tensogram::wire::WIRE_VERSION.to_be_bytes());
     pre.extend_from_slice(&1u16.to_be_bytes()); // HEADER_METADATA flag
     pre.extend_from_slice(&0u32.to_be_bytes());
     pre.extend_from_slice(&total.to_be_bytes());
@@ -2001,7 +2001,7 @@ fn decode_descriptors_returns_descriptors_without_data() {
     .unwrap();
 
     let (decoded_meta, descriptors) = decode_descriptors(&encoded).unwrap();
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     assert_eq!(descriptors.len(), 2);
     assert_eq!(descriptors[0].shape, vec![4]);
     assert_eq!(descriptors[0].dtype, Dtype::Float32);
@@ -2015,7 +2015,7 @@ fn decode_descriptors_empty_message() {
     let encoded = encode(&meta, &[], &EncodeOptions::default()).unwrap();
 
     let (decoded_meta, descriptors) = decode_descriptors(&encoded).unwrap();
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     assert!(descriptors.is_empty());
 }
 
@@ -2079,7 +2079,7 @@ fn u64_param_missing_rejected() {
 #[test]
 fn global_metadata_default_version_is_2() {
     let meta = GlobalMetadata::default();
-    assert_eq!(meta.version, 2);
+    assert_eq!(meta.version, 3);
     assert!(meta.base.is_empty());
     assert!(meta.reserved.is_empty());
     assert!(meta.extra.is_empty());
@@ -2105,7 +2105,7 @@ fn global_metadata_serde_reserved_rename() {
         ciborium::Value::Text("test".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         reserved,
         ..Default::default()
     };
@@ -2120,7 +2120,7 @@ fn global_metadata_serde_extra_rename() {
     let mut extra = BTreeMap::new();
     extra.insert("custom".to_string(), ciborium::Value::Integer(42.into()));
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -2150,7 +2150,7 @@ fn compute_common_all_empty_entries() {
 fn framing_base_auto_extends_when_fewer_than_objects() {
     // Encode with 0 base entries but 3 objects → decoder should auto-extend base
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![], // Fewer than objects
         ..Default::default()
     };
@@ -2222,7 +2222,7 @@ fn encode_base_exactly_matches_descriptors() {
         ciborium::Value::Text("msl".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![entry0, entry1],
         ..Default::default()
     };
@@ -2279,7 +2279,7 @@ fn stress_100_data_objects_roundtrip() {
 
     // Decode all objects
     let (decoded_meta, decoded_objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     assert_eq!(decoded_objects.len(), num_objects);
 
     // Verify each object's data round-trips correctly
@@ -2432,7 +2432,7 @@ fn streaming_encoder_finish_immediately_produces_valid_message() {
 
     // Decode should succeed with 0 objects
     let (decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     assert!(
         objects.is_empty(),
         "streaming zero-object message should decode to 0 objects"
@@ -2466,7 +2466,7 @@ fn unicode_metadata_emoji_and_cjk_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -2845,7 +2845,7 @@ fn unicode_metadata_emoji_keys_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -2871,7 +2871,7 @@ fn unicode_metadata_cjk_values_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -2897,7 +2897,7 @@ fn unicode_metadata_empty_string_key_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };

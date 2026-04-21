@@ -182,7 +182,7 @@ pub struct HashFrame {
 impl Default for GlobalMetadata {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: crate::wire::WIRE_VERSION,
             base: Vec::new(),
             reserved: BTreeMap::new(),
             extra: BTreeMap::new(),

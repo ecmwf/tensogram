@@ -26,7 +26,7 @@
 //! ## JSON schema for `tgm_encode`
 //!
 //! The `metadata_json` argument to `tgm_encode` must be a JSON object with:
-//! - `"version"` (integer, required): wire format version (2).
+//! - `"version"` (integer, required): wire format version (3).
 //! - `"descriptors"` (array, required): one entry per data object. Each entry
 //!   merges tensor info and encoding pipeline info into a single object:
 //!   `type`, `ndim`, `shape`, `strides`, `dtype`, `byte_order`, `encoding`,
@@ -2541,7 +2541,7 @@ mod tests {
         extra: BTreeMap<String, ciborium::Value>,
     ) -> GlobalMetadata {
         GlobalMetadata {
-            version: 2,
+            version: 3,
             base,
             extra,
             ..Default::default()
@@ -2706,7 +2706,7 @@ mod tests {
     #[test]
     fn lookup_string_key_version() {
         let meta = make_meta(vec![], BTreeMap::new());
-        assert_eq!(lookup_string_key(&meta, "version"), Some("2".into()));
+        assert_eq!(lookup_string_key(&meta, "version"), Some("3".into()));
     }
 
     #[test]
@@ -2753,7 +2753,7 @@ mod tests {
     #[test]
     fn lookup_int_key_version() {
         let meta = make_meta(vec![], BTreeMap::new());
-        assert_eq!(lookup_int_key(&meta, "version"), Some(2));
+        assert_eq!(lookup_int_key(&meta, "version"), Some(3));
     }
 
     #[test]
@@ -2794,9 +2794,9 @@ mod tests {
 
     #[test]
     fn parse_encode_json_with_base() {
-        let json = r#"{"version":2,"base":[{"mars":{"param":"2t"}}],"descriptors":[]}"#;
+        let json = r#"{"version":3,"base":[{"mars":{"param":"2t"}}],"descriptors":[]}"#;
         let (gm, descs) = parse_encode_json(json).unwrap();
-        assert_eq!(gm.version, 2);
+        assert_eq!(gm.version, 3);
         assert_eq!(gm.base.len(), 1);
         assert!(gm.base[0].contains_key("mars"));
         assert!(descs.is_empty());
@@ -2804,14 +2804,14 @@ mod tests {
 
     #[test]
     fn parse_encode_json_without_base() {
-        let json = r#"{"version":2,"descriptors":[]}"#;
+        let json = r#"{"version":3,"descriptors":[]}"#;
         let (gm, _) = parse_encode_json(json).unwrap();
         assert!(gm.base.is_empty());
     }
 
     #[test]
     fn parse_encode_json_reserved_in_base_rejected() {
-        let json = r#"{"version":2,"base":[{"_reserved_":{"tensor":{}}}],"descriptors":[]}"#;
+        let json = r#"{"version":3,"base":[{"_reserved_":{"tensor":{}}}],"descriptors":[]}"#;
         let result = parse_encode_json(json);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("_reserved_"));
@@ -2819,7 +2819,7 @@ mod tests {
 
     #[test]
     fn parse_encode_json_extra_keys() {
-        let json = r#"{"version":2,"descriptors":[],"source":"test","count":42}"#;
+        let json = r#"{"version":3,"descriptors":[],"source":"test","count":42}"#;
         let (gm, _) = parse_encode_json(json).unwrap();
         assert!(gm.extra.contains_key("source"));
         assert!(gm.extra.contains_key("count"));
@@ -2829,15 +2829,15 @@ mod tests {
 
     #[test]
     fn parse_streaming_json_with_base() {
-        let json = r#"{"version":2,"base":[{"mars":{"param":"2t"}}]}"#;
+        let json = r#"{"version":3,"base":[{"mars":{"param":"2t"}}]}"#;
         let gm = parse_streaming_metadata_json(json).unwrap();
-        assert_eq!(gm.version, 2);
+        assert_eq!(gm.version, 3);
         assert_eq!(gm.base.len(), 1);
     }
 
     #[test]
     fn parse_streaming_json_reserved_rejected() {
-        let json = r#"{"version":2,"base":[{"_reserved_":{"tensor":{}}}]}"#;
+        let json = r#"{"version":3,"base":[{"_reserved_":{"tensor":{}}}]}"#;
         let result = parse_streaming_metadata_json(json);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("_reserved_"));
@@ -2845,7 +2845,7 @@ mod tests {
 
     #[test]
     fn parse_streaming_json_no_base() {
-        let json = r#"{"version":2,"source":"stream"}"#;
+        let json = r#"{"version":3,"source":"stream"}"#;
         let gm = parse_streaming_metadata_json(json).unwrap();
         assert!(gm.base.is_empty());
         assert!(gm.extra.contains_key("source"));
@@ -3109,7 +3109,7 @@ mod tests {
     fn ffi_encode_single_f32_tensor(values: &[f32], extra_json: &str) -> Vec<u8> {
         let shape_str = format!("[{}]", values.len());
         let json = format!(
-            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]{extra}}}"#,
+            r#"{{"version":3,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]{extra}}}"#,
             shape = shape_str,
             bo = if cfg!(target_endian = "little") {
                 "little"
@@ -3155,7 +3155,7 @@ mod tests {
     fn ffi_encode_with_hash(values: &[f32]) -> Vec<u8> {
         let shape_str = format!("[{}]", values.len());
         let json = format!(
-            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            r#"{{"version":3,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
             shape = shape_str,
             bo = if cfg!(target_endian = "little") {
                 "little"
@@ -3215,7 +3215,7 @@ mod tests {
         assert!(!msg.is_null());
 
         // Message-level accessors
-        assert_eq!(super::tgm_message_version(msg), 2);
+        assert_eq!(super::tgm_message_version(msg), 3);
         assert_eq!(super::tgm_message_num_objects(msg), 1);
         assert_eq!(super::tgm_message_num_decoded(msg), 1);
 
@@ -3380,7 +3380,7 @@ mod tests {
 
     #[test]
     fn ffi_encode_null_out() {
-        let json = CString::new(r#"{"version":2,"descriptors":[]}"#).unwrap();
+        let json = CString::new(r#"{"version":3,"descriptors":[]}"#).unwrap();
         let err = super::tgm_encode(
             json.as_ptr(),
             ptr::null(),
@@ -3396,7 +3396,7 @@ mod tests {
     #[test]
     fn ffi_encode_descriptor_count_mismatch() {
         // JSON says 0 descriptors, but num_objects = 1
-        let json = CString::new(r#"{"version":2,"descriptors":[]}"#).unwrap();
+        let json = CString::new(r#"{"version":3,"descriptors":[]}"#).unwrap();
         let data: [u8; 4] = [0; 4];
         let data_ptr: *const u8 = data.as_ptr();
         let data_len: usize = 4;
@@ -3473,7 +3473,7 @@ mod tests {
         assert!(!meta.is_null());
 
         // Version
-        assert_eq!(super::tgm_metadata_version(meta), 2);
+        assert_eq!(super::tgm_metadata_version(meta), 3);
 
         // num_objects
         assert_eq!(super::tgm_metadata_num_objects(meta), 1);
@@ -3557,10 +3557,10 @@ mod tests {
         let val_ptr = super::tgm_metadata_get_string(meta, key.as_ptr());
         assert!(!val_ptr.is_null());
         let val_str = unsafe { CStr::from_ptr(val_ptr) }.to_str().unwrap();
-        assert_eq!(val_str, "2");
+        assert_eq!(val_str, "3");
 
         let ival = super::tgm_metadata_get_int(meta, key.as_ptr(), -1);
-        assert_eq!(ival, 2);
+        assert_eq!(ival, 3);
 
         super::tgm_metadata_free(meta);
     }
@@ -4027,7 +4027,7 @@ mod tests {
         let values = [10.0f32, 20.0, 30.0];
         let shape_str = format!("[{}]", values.len());
         let json = format!(
-            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            r#"{{"version":3,"descriptors":[{{"type":"ntensor","ndim":1,"shape":{shape},"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
             shape = shape_str,
             bo = if cfg!(target_endian = "little") {
                 "little"
@@ -4201,7 +4201,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let c_path = CString::new(path.to_str().unwrap()).unwrap();
-        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+        let meta_json = CString::new(r#"{"version":3}"#).unwrap();
 
         // Create
         let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
@@ -4278,7 +4278,7 @@ mod tests {
         let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
 
         // create with null path
-        let meta = CString::new(r#"{"version":2}"#).unwrap();
+        let meta = CString::new(r#"{"version":3}"#).unwrap();
         let err = super::tgm_streaming_encoder_create(
             ptr::null(),
             meta.as_ptr(),
@@ -4336,7 +4336,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let c_path = CString::new(path.to_str().unwrap()).unwrap();
-        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+        let meta_json = CString::new(r#"{"version":3}"#).unwrap();
 
         let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
         let err = super::tgm_streaming_encoder_create(
@@ -4368,7 +4368,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let c_path = CString::new(path.to_str().unwrap()).unwrap();
-        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+        let meta_json = CString::new(r#"{"version":3}"#).unwrap();
 
         let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
         let err = super::tgm_streaming_encoder_create(
@@ -4673,7 +4673,7 @@ mod tests {
         );
         assert!(matches!(err, super::TgmError::InvalidArg));
 
-        let json = CString::new(r#"{"version":2,"descriptors":[]}"#).unwrap();
+        let json = CString::new(r#"{"version":3,"descriptors":[]}"#).unwrap();
         let err = super::tgm_encode_pre_encoded(
             json.as_ptr(),
             ptr::null(),
@@ -4693,7 +4693,7 @@ mod tests {
         let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
         let json = format!(
-            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":[{len}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            r#"{{"version":3,"descriptors":[{{"type":"ntensor","ndim":1,"shape":[{len}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
             len = values.len(),
             bo = if cfg!(target_endian = "little") {
                 "little"
@@ -4828,7 +4828,7 @@ mod tests {
         assert!(!msg.is_null());
 
         assert_eq!(super::tgm_message_num_objects(msg), 1);
-        assert_eq!(super::tgm_message_version(msg), 2);
+        assert_eq!(super::tgm_message_version(msg), 3);
 
         let mut data_len: usize = 0;
         let dp = super::tgm_object_data(msg, 0, &mut data_len);
@@ -4957,7 +4957,7 @@ mod tests {
 
     #[test]
     fn ffi_encode_decode_zero_objects() {
-        let json = CString::new(r#"{"version":2,"descriptors":[],"source":"empty"}"#).unwrap();
+        let json = CString::new(r#"{"version":3,"descriptors":[],"source":"empty"}"#).unwrap();
         let mut out = super::TgmBytes {
             data: ptr::null_mut(),
             len: 0,
@@ -4980,7 +4980,7 @@ mod tests {
         let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
-        assert_eq!(super::tgm_message_version(msg), 2);
+        assert_eq!(super::tgm_message_version(msg), 3);
         assert_eq!(super::tgm_message_num_objects(msg), 0);
 
         super::tgm_message_free(msg);
@@ -4995,7 +4995,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let c_path = CString::new(path.to_str().unwrap()).unwrap();
-        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+        let meta_json = CString::new(r#"{"version":3}"#).unwrap();
         let hash_algo = CString::new("xxh3").unwrap();
 
         let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
@@ -5047,7 +5047,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("ffi_streaming_bad_hash.tgm");
         let c_path = CString::new(path.to_str().unwrap()).unwrap();
-        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+        let meta_json = CString::new(r#"{"version":3}"#).unwrap();
         let bad_algo = CString::new("bogus_hash").unwrap();
 
         let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
@@ -5096,7 +5096,7 @@ mod tests {
         };
 
         let json = format!(
-            r#"{{"version":2,"descriptors":[{{"type":"ntensor","ndim":1,"shape":[{len1}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}},{{"type":"ntensor","ndim":1,"shape":[{len2}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            r#"{{"version":3,"descriptors":[{{"type":"ntensor","ndim":1,"shape":[{len1}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}},{{"type":"ntensor","ndim":1,"shape":[{len2}],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
             len1 = vals1.len(),
             len2 = vals2.len(),
             bo = bo,
@@ -5169,7 +5169,7 @@ mod tests {
             "big"
         };
         let json = format!(
-            r#"{{"version":2,"base":[{{"param":"2t","level":"surface"}}],"descriptors":[{{"type":"ntensor","ndim":1,"shape":[2],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
+            r#"{{"version":3,"base":[{{"param":"2t","level":"surface"}}],"descriptors":[{{"type":"ntensor","ndim":1,"shape":[2],"strides":[1],"dtype":"float32","byte_order":"{bo}","encoding":"none","filter":"none","compression":"none"}}]}}"#,
             bo = bo,
         );
 
@@ -5253,7 +5253,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let c_path = CString::new(path.to_str().unwrap()).unwrap();
-        let meta_json = CString::new(r#"{"version":2}"#).unwrap();
+        let meta_json = CString::new(r#"{"version":3}"#).unwrap();
 
         let mut enc: *mut super::TgmStreamingEncoder = ptr::null_mut();
         let err = super::tgm_streaming_encoder_create(
@@ -5311,7 +5311,7 @@ mod tests {
 
     #[test]
     fn ffi_encode_invalid_hash_algo() {
-        let json = CString::new(r#"{"version":2,"descriptors":[]}"#).unwrap();
+        let json = CString::new(r#"{"version":3,"descriptors":[]}"#).unwrap();
         let bad_algo = CString::new("bogus").unwrap();
         let mut out = super::TgmBytes {
             data: ptr::null_mut(),
@@ -5371,7 +5371,7 @@ mod tests {
         // Encode with a zero-element tensor where the data pointer could be null
         // but length is 0 — should succeed without UB.
         let json = CString::new(
-            r#"{"version":2,"descriptors":[{"type":"ntensor","ndim":1,"shape":[0],"strides":[1],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]}"#,
+            r#"{"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[0],"strides":[1],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]}"#,
         )
         .unwrap();
         let data_ptrs: [*const u8; 1] = [ptr::null()];
@@ -5607,7 +5607,7 @@ mod tests {
         // Encode with zstd compression which doesn't support range decode
         // without block offsets.
         let json = CString::new(
-            r#"{"version":2,"descriptors":[{"type":"ntensor","ndim":1,"shape":[100],"strides":[1],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"zstd"}]}"#,
+            r#"{"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[100],"strides":[1],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"zstd"}]}"#,
         )
         .unwrap();
         let data: Vec<u8> = vec![0u8; 400];

@@ -169,7 +169,7 @@ mod tests {
 
     fn make_meta(extra: BTreeMap<String, ciborium::Value>) -> GlobalMetadata {
         GlobalMetadata {
-            version: 2,
+            version: 3,
             extra,
             ..Default::default()
         }
@@ -198,7 +198,7 @@ mod tests {
         extra.insert("key".to_string(), ciborium::Value::Text("val".to_string()));
         let meta = make_meta(extra);
         let json = format_json::<String>(&meta, None, None);
-        assert!(json.contains("\"version\": 2"));
+        assert!(json.contains("\"version\": 3"));
         assert!(json.contains("\"key\": \"val\""));
     }
 
@@ -334,7 +334,7 @@ mod tests {
             )]),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -358,7 +358,7 @@ mod tests {
             ciborium::Value::Text("exp01".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             extra,
             ..Default::default()
@@ -373,14 +373,14 @@ mod tests {
     #[test]
     fn json_empty_base_and_extra() {
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             ..Default::default()
         };
         let json = format_json::<String>(&meta, None, None);
         // Should not contain base or extra sections when empty
         assert!(!json.contains("\"base\""));
         assert!(!json.contains("\"extra\""));
-        assert!(json.contains("\"version\": 2"));
+        assert!(json.contains("\"version\": 3"));
     }
 
     #[test]
@@ -388,7 +388,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("param".to_string(), ciborium::Value::Text("2t".to_string()));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };

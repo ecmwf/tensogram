@@ -19,6 +19,14 @@ pub const FRAME_MAGIC: &[u8; 2] = b"FR";
 /// Frame end marker: ASCII "ENDF"
 pub const FRAME_END: &[u8; 4] = b"ENDF";
 
+/// Current wire-format version.  See `plans/WIRE_FORMAT.md`.
+///
+/// A v3 decoder rejects any preamble whose `version` field does not
+/// match this constant.  Bumping the wire version is the single
+/// source of truth for backwards incompatibility — every structural
+/// format change must bump this.
+pub const WIRE_VERSION: u16 = 3;
+
 /// Preamble size: magic(8) + version(2) + flags(2) + reserved(4) + total_length(8) = 24
 pub const PREAMBLE_SIZE: usize = 24;
 /// Frame header size: FR(2) + type(2) + version(2) + flags(2) + total_length(8) = 16
@@ -168,9 +176,11 @@ impl Preamble {
             return Err(TensogramError::Framing("invalid magic bytes".to_string()));
         }
         let version = read_u16_be(buf, 8);
-        if version < 2 {
+        if version != WIRE_VERSION {
             return Err(TensogramError::Framing(format!(
-                "unsupported message version {version} (versions 0 and 1 are deprecated, minimum is 2)"
+                "unsupported message version {version} (required = {WIRE_VERSION}); \
+                 v3 is a clean break from v2 with no backward compatibility — \
+                 re-encode with tensogram ≥ 0.17.0"
             )));
         }
         Ok(Preamble {
@@ -306,7 +316,7 @@ mod tests {
     #[test]
     fn test_preamble_round_trip() {
         let preamble = Preamble {
-            version: 2,
+            version: WIRE_VERSION,
             flags: MessageFlags::new(MessageFlags::HEADER_METADATA | MessageFlags::HEADER_INDEX),
             reserved: 0,
             total_length: 4096,
@@ -316,7 +326,7 @@ mod tests {
         assert_eq!(buf.len(), PREAMBLE_SIZE);
 
         let parsed = Preamble::read_from(&buf).unwrap();
-        assert_eq!(parsed.version, 2);
+        assert_eq!(parsed.version, WIRE_VERSION);
         assert!(parsed.flags.has(MessageFlags::HEADER_METADATA));
         assert!(parsed.flags.has(MessageFlags::HEADER_INDEX));
         assert!(!parsed.flags.has(MessageFlags::FOOTER_INDEX));
@@ -358,6 +368,53 @@ mod tests {
     #[test]
     fn test_invalid_magic() {
         let buf = vec![0u8; PREAMBLE_SIZE];
+        assert!(Preamble::read_from(&buf).is_err());
+    }
+
+    #[test]
+    fn test_v2_preamble_is_rejected() {
+        // A hand-built preamble with version=2 must hard-fail v3 decoders.
+        // Covers the clean-break contract: no backward compatibility with v2.
+        let mut buf = Vec::with_capacity(PREAMBLE_SIZE);
+        buf.extend_from_slice(MAGIC);
+        buf.extend_from_slice(&2u16.to_be_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes()); // flags
+        buf.extend_from_slice(&0u32.to_be_bytes()); // reserved
+        buf.extend_from_slice(&64u64.to_be_bytes()); // total_length
+        let err = Preamble::read_from(&buf).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsupported message version 2"),
+            "expected v2-rejection message, got: {msg}"
+        );
+        assert!(
+            msg.contains("required = 3"),
+            "expected required-version banner, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_v1_preamble_is_rejected() {
+        // Ditto for v1.
+        let mut buf = Vec::with_capacity(PREAMBLE_SIZE);
+        buf.extend_from_slice(MAGIC);
+        buf.extend_from_slice(&1u16.to_be_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes());
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        buf.extend_from_slice(&64u64.to_be_bytes());
+        let err = Preamble::read_from(&buf).unwrap_err();
+        assert!(err.to_string().contains("unsupported message version 1"));
+    }
+
+    #[test]
+    fn test_future_version_is_rejected() {
+        // A future version bump must also be rejected by this decoder.
+        let mut buf = Vec::with_capacity(PREAMBLE_SIZE);
+        buf.extend_from_slice(MAGIC);
+        buf.extend_from_slice(&99u16.to_be_bytes());
+        buf.extend_from_slice(&0u16.to_be_bytes());
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        buf.extend_from_slice(&64u64.to_be_bytes());
         assert!(Preamble::read_from(&buf).is_err());
     }
 

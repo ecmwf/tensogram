@@ -265,7 +265,7 @@ mod tests {
             ciborium::Value::Text(param.to_string()),
         );
         let meta = tensogram::GlobalMetadata {
-            version: 2,
+            version: 3,
             extra,
             ..Default::default()
         };
@@ -380,7 +380,7 @@ mod tests {
             ciborium::Value::Text(param.to_string()),
         );
         let meta = tensogram::GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![base],
             ..Default::default()
         };

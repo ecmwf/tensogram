@@ -1199,7 +1199,7 @@ mod tests {
     fn test_base_more_entries_than_descriptors_rejected() {
         // base has 5 entries but only 2 descriptors — should error.
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![
                 BTreeMap::new(),
                 BTreeMap::new(),
@@ -1235,7 +1235,7 @@ mod tests {
     fn test_base_fewer_entries_than_descriptors_auto_extended() {
         // base has 0 entries but 3 descriptors — auto-extends, _reserved_ inserted.
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![],
             ..Default::default()
         };
@@ -1280,7 +1280,7 @@ mod tests {
             ciborium::Value::Text("not-the-real-base".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -1294,7 +1294,7 @@ mod tests {
         let (decoded, _) = decode(&msg, &DecodeOptions::default()).unwrap();
 
         // Top-level version is still 2
-        assert_eq!(decoded.version, 2);
+        assert_eq!(decoded.version, 3);
         // base[0] should have both custom keys preserved
         assert_eq!(
             decoded.base[0].get("version"),
@@ -1317,7 +1317,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("foo".to_string(), nested);
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -1349,7 +1349,7 @@ mod tests {
             ciborium::Value::Text("bad".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             reserved,
             ..Default::default()
         };
@@ -1373,7 +1373,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("_reserved_".to_string(), ciborium::Value::Map(vec![]));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -1511,7 +1511,7 @@ mod tests {
             ciborium::Value::Text("extra-mars".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             extra,
             ..Default::default()
@@ -1538,7 +1538,7 @@ mod tests {
     #[test]
     fn test_empty_extra_omitted_from_cbor() {
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         };
@@ -1571,7 +1571,7 @@ mod tests {
         let mut extra = BTreeMap::new();
         extra.insert("nested".to_string(), nested.clone());
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra,
             ..Default::default()
         };
@@ -1591,12 +1591,12 @@ mod tests {
 
     #[test]
     fn test_old_common_payload_keys_silently_ignored() {
-        // Simulate an old v2 message with "common" and "payload" keys at top level.
-        // GlobalMetadata uses `deny_unknown_fields` is NOT set (serde default),
-        // so unknown keys should be silently ignored.
+        // Simulate a message with legacy "common" / "payload" keys at top
+        // level.  GlobalMetadata does NOT set `deny_unknown_fields`, so
+        // unknown keys should be silently ignored.
         use ciborium::Value;
         let cbor = Value::Map(vec![
-            (Value::Text("version".to_string()), Value::Integer(2.into())),
+            (Value::Text("version".to_string()), Value::Integer(3.into())),
             (Value::Text("common".to_string()), Value::Map(vec![])),
             (Value::Text("payload".to_string()), Value::Array(vec![])),
         ]);
@@ -1604,7 +1604,7 @@ mod tests {
         ciborium::into_writer(&cbor, &mut bytes).unwrap();
 
         let decoded: GlobalMetadata = crate::metadata::cbor_to_global_metadata(&bytes).unwrap();
-        assert_eq!(decoded.version, 2);
+        assert_eq!(decoded.version, 3);
         assert!(decoded.base.is_empty());
         assert!(decoded.extra.is_empty());
         assert!(decoded.reserved.is_empty());
@@ -1615,7 +1615,7 @@ mod tests {
         // "reserved" (old name) should be ignored, only "_reserved_" is captured.
         use ciborium::Value;
         let cbor = Value::Map(vec![
-            (Value::Text("version".to_string()), Value::Integer(2.into())),
+            (Value::Text("version".to_string()), Value::Integer(3.into())),
             (
                 Value::Text("reserved".to_string()),
                 Value::Map(vec![(
@@ -1644,7 +1644,7 @@ mod tests {
         let mut entry1 = BTreeMap::new();
         entry1.insert("_reserved_".to_string(), ciborium::Value::Map(vec![]));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry0, entry1],
             ..Default::default()
         };
@@ -1677,7 +1677,7 @@ mod tests {
             ciborium::Value::Text("val1".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![e0, e1],
             ..Default::default()
         };
@@ -1791,7 +1791,7 @@ mod tests {
         extra.insert("custom".to_string(), Value::Integer(42.into()));
 
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![base_entry],
             reserved,
             extra,
@@ -1802,7 +1802,7 @@ mod tests {
         let decoded: GlobalMetadata =
             crate::metadata::cbor_to_global_metadata(&cbor_bytes).unwrap();
 
-        assert_eq!(decoded.version, 2);
+        assert_eq!(decoded.version, 3);
         assert_eq!(decoded.base.len(), 1);
         assert_eq!(
             decoded.base[0].get("key"),
@@ -1894,7 +1894,7 @@ mod tests {
                     Value::Text("ignored".to_string()),
                 )]),
             ),
-            (Value::Text("version".to_string()), Value::Integer(2.into())),
+            (Value::Text("version".to_string()), Value::Integer(3.into())),
         ]);
         let mut bytes = Vec::new();
         ciborium::into_writer(&cbor, &mut bytes).unwrap();

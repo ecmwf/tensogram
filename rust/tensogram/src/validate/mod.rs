@@ -371,7 +371,7 @@ mod tests {
     fn tiny_total_length_does_not_panic() {
         let mut buf = vec![0u8; 40];
         buf[0..8].copy_from_slice(b"TENSOGRM");
-        buf[8..10].copy_from_slice(&2u16.to_be_bytes());
+        buf[8..10].copy_from_slice(&crate::wire::WIRE_VERSION.to_be_bytes());
         buf[16..24].copy_from_slice(&10u64.to_be_bytes());
         let report = validate_message(&buf, &ValidateOptions::default());
         assert!(!report.is_ok());
@@ -1352,13 +1352,13 @@ mod tests {
         total_length_override: Option<u64>,
         streaming: bool,
     ) -> Vec<u8> {
-        use crate::wire::{END_MAGIC, MAGIC};
+        use crate::wire::{END_MAGIC, MAGIC, WIRE_VERSION};
 
         let mut out = Vec::new();
 
         // Preamble placeholder
         out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&2u16.to_be_bytes()); // version
+        out.extend_from_slice(&WIRE_VERSION.to_be_bytes()); // version
         out.extend_from_slice(&flags.to_be_bytes());
         out.extend_from_slice(&0u32.to_be_bytes()); // reserved
         out.extend_from_slice(&0u64.to_be_bytes()); // total_length placeholder
@@ -3755,11 +3755,12 @@ mod tests {
     /// triggers the streaming-mode BufferTooShort branch (L186-194 of structure.rs).
     #[test]
     fn structure_streaming_mode_buffer_too_short_for_postamble() {
+        use crate::wire::WIRE_VERSION;
         // Build a preamble with total_length=0 (streaming), buffer size is
         // only 24 bytes (exactly PREAMBLE_SIZE, no postamble).
         let mut msg = Vec::with_capacity(PREAMBLE_SIZE);
         msg.extend_from_slice(b"TENSOGRM");
-        msg.extend_from_slice(&2u16.to_be_bytes()); // version
+        msg.extend_from_slice(&WIRE_VERSION.to_be_bytes()); // version
         msg.extend_from_slice(&0u16.to_be_bytes()); // flags
         msg.extend_from_slice(&0u32.to_be_bytes()); // reserved
         msg.extend_from_slice(&0u64.to_be_bytes()); // total_length=0 (streaming)
@@ -3770,11 +3771,12 @@ mod tests {
     /// Streaming mode with a corrupt postamble (bad end magic).
     #[test]
     fn structure_streaming_mode_invalid_postamble() {
+        use crate::wire::WIRE_VERSION;
         let total_len = PREAMBLE_SIZE + POSTAMBLE_SIZE;
         let mut msg = Vec::with_capacity(total_len);
         // Preamble with streaming flag (total_length=0)
         msg.extend_from_slice(b"TENSOGRM");
-        msg.extend_from_slice(&2u16.to_be_bytes());
+        msg.extend_from_slice(&WIRE_VERSION.to_be_bytes());
         msg.extend_from_slice(&0u16.to_be_bytes());
         msg.extend_from_slice(&0u32.to_be_bytes());
         msg.extend_from_slice(&0u64.to_be_bytes()); // streaming
@@ -3797,13 +3799,14 @@ mod tests {
     /// postamble, and nothing else.
     #[test]
     fn structure_no_metadata_frame_empty_body() {
+        use crate::wire::WIRE_VERSION;
         // Minimal valid preamble + postamble, no frames at all.
         // Assemble manually.
         let total_len = PREAMBLE_SIZE + POSTAMBLE_SIZE;
         let mut msg = Vec::with_capacity(total_len);
-        // Preamble: TENSOGRM + version=2 + flags=0 + reserved=0 + total_length
+        // Preamble: TENSOGRM + version + flags=0 + reserved=0 + total_length
         msg.extend_from_slice(b"TENSOGRM");
-        msg.extend_from_slice(&2u16.to_be_bytes()); // version
+        msg.extend_from_slice(&WIRE_VERSION.to_be_bytes()); // version
         msg.extend_from_slice(&0u16.to_be_bytes()); // flags
         msg.extend_from_slice(&0u32.to_be_bytes()); // reserved
         msg.extend_from_slice(&(total_len as u64).to_be_bytes());

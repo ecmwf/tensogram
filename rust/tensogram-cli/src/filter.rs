@@ -191,7 +191,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("centre".into(), Value::Text("ecmwf".into()));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -207,7 +207,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("mars".into(), mars);
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -224,7 +224,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("grib".into(), grib);
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -247,7 +247,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("mars".into(), mars);
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -267,7 +267,7 @@ mod tests {
         );
         entry.insert("param".into(), Value::Text("2t".into()));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -307,7 +307,7 @@ mod tests {
         let mut entry1 = BTreeMap::new();
         entry1.insert("mars".into(), mars1);
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry0, entry1],
             ..Default::default()
         };
@@ -321,7 +321,7 @@ mod tests {
         let mut extra = BTreeMap::new();
         extra.insert("shared".into(), Value::Text("from_extra".into()));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             extra,
             ..Default::default()
@@ -335,7 +335,7 @@ mod tests {
         let mut extra = BTreeMap::new();
         extra.insert("custom".into(), Value::Text("val".into()));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra,
             ..Default::default()
         };
@@ -355,7 +355,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("a".into(), b_val);
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -376,7 +376,7 @@ mod tests {
         let mut entry1 = BTreeMap::new();
         entry1.insert("other".into(), Value::Text("val".into()));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry0, entry1],
             ..Default::default()
         };
@@ -406,7 +406,7 @@ mod tests {
         let mut entry1 = BTreeMap::new();
         entry1.insert("param".into(), Value::Text("msl".into()));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry0, entry1],
             ..Default::default()
         };
@@ -439,7 +439,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("param".into(), Value::Text("msl".into()));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -453,7 +453,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("param".into(), Value::Text("sp".into()));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -467,7 +467,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("class".into(), Value::Text("ea".into()));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -481,7 +481,7 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("class".into(), Value::Text("od".into()));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -493,33 +493,33 @@ mod tests {
     #[test]
     fn test_lookup_version() {
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             ..Default::default()
         };
-        assert_eq!(lookup_key(&meta, "version"), Some("2".into()));
+        assert_eq!(lookup_key(&meta, "version"), Some("3".into()));
     }
 
     #[test]
     fn test_matches_version_eq() {
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             ..Default::default()
         };
-        let clause = parse_where("version=2").unwrap();
+        let clause = parse_where("version=3").unwrap();
         assert!(matches(&meta, &clause));
-        let clause_wrong = parse_where("version=1").unwrap();
+        let clause_wrong = parse_where("version=2").unwrap();
         assert!(!matches(&meta, &clause_wrong));
     }
 
     #[test]
     fn test_matches_version_neq() {
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             ..Default::default()
         };
-        let clause = parse_where("version!=1").unwrap();
+        let clause = parse_where("version!=2").unwrap();
         assert!(matches(&meta, &clause));
-        let clause_same = parse_where("version!=2").unwrap();
+        let clause_same = parse_where("version!=3").unwrap();
         assert!(!matches(&meta, &clause_same));
     }
 
@@ -529,7 +529,7 @@ mod tests {
         let mut extra = BTreeMap::new();
         extra.insert("source".into(), Value::Text("test".into()));
         let meta = GlobalMetadata {
-            version: 2,
+            version: 3,
             extra,
             ..Default::default()
         };

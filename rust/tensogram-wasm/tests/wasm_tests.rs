@@ -83,7 +83,7 @@ fn make_descriptor_be(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
 
 fn default_metadata() -> GlobalMetadata {
     GlobalMetadata {
-        version: 2,
+        version: 3,
         ..Default::default()
     }
 }
@@ -195,7 +195,7 @@ fn golden_mars_metadata_decode() {
         ),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };
@@ -745,7 +745,7 @@ fn decode_metadata_only() {
         ciborium::Value::Text("test".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -1196,7 +1196,7 @@ fn streaming_metadata_accessor() {
         ciborium::Value::Text("stream-test".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -1269,7 +1269,7 @@ fn decode_single_element_tensor() {
 #[wasm_bindgen_test]
 fn decode_preserves_metadata_version() {
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         ..Default::default()
     };
     let desc = make_descriptor(vec![1], Dtype::Uint8);
@@ -1290,7 +1290,7 @@ fn decode_large_metadata_survives() {
         );
     }
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -1317,7 +1317,7 @@ fn decode_unicode_metadata_keys() {
         ciborium::Value::Text("earth".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -1575,7 +1575,7 @@ fn streaming_frame_base_entry_available() {
         ),
     );
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };
@@ -1606,7 +1606,7 @@ fn streaming_multi_object_base_entries() {
     );
 
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![base0, base1],
         ..Default::default()
     };
@@ -1671,7 +1671,7 @@ fn metadata_extra_survives_round_trip() {
     );
     extra.insert("priority".to_string(), ciborium::Value::Integer(1.into()));
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra,
         ..Default::default()
     };
@@ -1727,7 +1727,7 @@ fn metadata_deep_nested_mars_keys() {
     );
 
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };
@@ -1746,7 +1746,7 @@ fn metadata_deep_nested_mars_keys() {
 fn metadata_empty_base_array() {
     // Message with zero base entries but one object
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![],
         ..Default::default()
     };
