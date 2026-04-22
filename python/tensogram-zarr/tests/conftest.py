@@ -28,7 +28,7 @@ def simple_tgm(tmp_dir: Path) -> str:
     """Create a single-message .tgm file with one float32 array (6x10)."""
     path = str(tmp_dir / "simple.tgm")
     data = np.arange(60, dtype=np.float32).reshape(6, 10)
-    meta = {"version": 2}
+    meta = {"version": 3}
     desc = {"type": "ntensor", "shape": [6, 10], "dtype": "float32"}
     with tensogram.TensogramFile.create(path) as f:
         f.append(meta, [(desc, data)])
@@ -44,7 +44,7 @@ def multi_object_tgm(tmp_dir: Path) -> str:
     humidity = np.random.rand(4, 8).astype(np.float32)
 
     meta = {
-        "version": 2,
+        "version": 3,
         "base": [
             {"mars": {"param": "2t"}},
             {"mars": {"param": "sp"}},
@@ -67,7 +67,7 @@ def mars_metadata_tgm(tmp_dir: Path) -> str:
     path = str(tmp_dir / "mars.tgm")
     data = np.ones((3, 5), dtype=np.float32) * 273.15
     meta = {
-        "version": 2,
+        "version": 3,
         # Message-level metadata goes into extra (unknown top-level keys)
         "mars": {
             "class": "od",
@@ -94,7 +94,7 @@ def int_types_tgm(tmp_dir: Path) -> str:
     i32 = np.array([1, 2, 3, 4], dtype=np.int32)
     u16 = np.array([10, 20, 30], dtype=np.uint16)
     meta = {
-        "version": 2,
+        "version": 3,
         "base": [
             {"name": "counts"},
             {"name": "flags"},

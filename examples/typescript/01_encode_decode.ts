@@ -41,7 +41,7 @@ async function main(): Promise<void> {
   );
 
   // ── 3. Describe the message ────────────────────────────────────────────
-  const metadata: GlobalMetadata = { version: 2 };
+  const metadata: GlobalMetadata = { version: 3 };
   const descriptor: DataObjectDescriptor = {
     type: 'ntensor',
     ndim: 2,

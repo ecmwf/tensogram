@@ -49,7 +49,7 @@ async function main(): Promise<void> {
 
   const counts = new Int32Array([10, 20, 30, 40, 50]);
 
-  const msg = encode({ version: 2 }, [
+  const msg = encode({ version: 3 }, [
     { descriptor: desc([256], 'float64'), data: spectrum },
     { descriptor: desc([4, 4], 'uint8'), data: landmask },
     { descriptor: desc([5], 'int32'), data: counts },

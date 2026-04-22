@@ -22,7 +22,7 @@ import tensogram
 def encode_valid_message():
     """Encode a simple valid message for testing."""
     data = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
-    meta = {"version": 2}
+    meta = {"version": 3}
     desc = {"type": "ntensor", "shape": [4], "dtype": "float32"}
     return tensogram.encode(meta, [(desc, data)])
 
@@ -35,7 +35,7 @@ def encode_nan_message():
     them through unchanged.
     """
     data = np.array([1.0, float("nan"), 3.0], dtype=np.float64).tobytes()
-    meta = {"version": 2}
+    meta = {"version": 3}
     desc = {"type": "ntensor", "shape": [3], "dtype": "float64"}
     return tensogram.encode_pre_encoded(meta, [(desc, data)])
 
@@ -43,7 +43,7 @@ def encode_nan_message():
 def encode_inf_message():
     """Same as `encode_nan_message` but for ±Inf."""
     data = np.array([1.0, float("inf"), 3.0], dtype=np.float64).tobytes()
-    meta = {"version": 2}
+    meta = {"version": 3}
     desc = {"type": "ntensor", "shape": [3], "dtype": "float64"}
     return tensogram.encode_pre_encoded(meta, [(desc, data)])
 
@@ -51,7 +51,7 @@ def encode_inf_message():
 def encode_no_hash_message():
     """Encode a message without hash."""
     data = np.array([1.0, 2.0], dtype=np.float32)
-    meta = {"version": 2}
+    meta = {"version": 3}
     desc = {"type": "ntensor", "shape": [2], "dtype": "float32"}
     return tensogram.encode(meta, [(desc, data)], hash=None)
 
@@ -92,7 +92,7 @@ class TestValidateBasic:
 
     def test_multi_object(self):
         data = np.array([1.0, 2.0], dtype=np.float32)
-        meta = {"version": 2}
+        meta = {"version": 3}
         desc = {"type": "ntensor", "shape": [2], "dtype": "float32"}
         msg = tensogram.encode(meta, [(desc, data), (desc, data)])
         report = tensogram.validate(msg)
@@ -236,7 +236,7 @@ class TestValidateFile:
         with tensogram.TensogramFile.create(path) as f:
             data = np.array([1.0, 2.0, 3.0], dtype=np.float32)
             desc = {"type": "ntensor", "shape": [3], "dtype": "float32"}
-            f.append({"version": 2}, [(desc, data)])
+            f.append({"version": 3}, [(desc, data)])
         report = tensogram.validate_file(path)
         assert isinstance(report, dict)
         assert "file_issues" in report
@@ -250,8 +250,8 @@ class TestValidateFile:
         with tensogram.TensogramFile.create(path) as f:
             data = np.array([1.0, 2.0], dtype=np.float32)
             desc = {"type": "ntensor", "shape": [2], "dtype": "float32"}
-            f.append({"version": 2}, [(desc, data)])
-            f.append({"version": 2}, [(desc, data)])
+            f.append({"version": 3}, [(desc, data)])
+            f.append({"version": 3}, [(desc, data)])
         report = tensogram.validate_file(path)
         assert len(report["messages"]) == 2
         assert all(m["issues"] == [] for m in report["messages"])
@@ -283,7 +283,7 @@ class TestValidateFile:
         with tensogram.TensogramFile.create(path) as f:
             data = np.array([1.0, 2.0], dtype=np.float32)
             desc = {"type": "ntensor", "shape": [2], "dtype": "float32"}
-            f.append({"version": 2}, [(desc, data)])
+            f.append({"version": 3}, [(desc, data)])
         report = tensogram.validate_file(path, level="full")
         assert len(report["messages"]) == 1
         assert report["messages"][0]["issues"] == []
@@ -328,7 +328,7 @@ class TestValidateFile:
         with tensogram.TensogramFile.create(path) as f:
             data = np.array([1.0], dtype=np.float32)
             f.append(
-                {"version": 2},
+                {"version": 3},
                 [({"type": "ntensor", "shape": [1], "dtype": "float32"}, data)],
             )
         with pytest.raises(ValueError, match="unknown validation level"):
@@ -339,7 +339,7 @@ class TestValidateFile:
         with tensogram.TensogramFile.create(path) as f:
             data = np.array([1.0, 2.0], dtype=np.float32)
             desc = {"type": "ntensor", "shape": [2], "dtype": "float32"}
-            f.append({"version": 2}, [(desc, data)])
+            f.append({"version": 3}, [(desc, data)])
         report = tensogram.validate_file(path, level="checksum")
         assert len(report["messages"]) == 1
         assert report["messages"][0]["hash_verified"] is True
@@ -349,7 +349,7 @@ class TestValidateFile:
         with tensogram.TensogramFile.create(path) as f:
             data = np.array([1.0, 2.0], dtype=np.float32)
             desc = {"type": "ntensor", "shape": [2], "dtype": "float32"}
-            f.append({"version": 2}, [(desc, data)])
+            f.append({"version": 3}, [(desc, data)])
         report = tensogram.validate_file(path, check_canonical=True)
         assert report["file_issues"] == []
         assert report["messages"][0]["issues"] == []
@@ -360,7 +360,7 @@ class TestValidateFile:
         # check (see encode_nan_message).
         nan_data = np.array([1.0, float("nan"), 3.0], dtype=np.float64).tobytes()
         nan_msg = tensogram.encode_pre_encoded(
-            {"version": 2},
+            {"version": 3},
             [({"type": "ntensor", "shape": [3], "dtype": "float64"}, nan_data)],
         )
         with open(path, "wb") as f:

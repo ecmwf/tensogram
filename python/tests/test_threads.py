@@ -53,7 +53,7 @@ def _make_transparent_msg(threads: int, n: int = 200_000) -> bytes:
     """Encode a pipeline with no codec — pure passthrough."""
     rng = np.random.default_rng(42)
     data = rng.standard_normal(n).astype(np.float64)
-    meta = {"version": 2, "base": [{}]}
+    meta = {"version": 3, "base": [{}]}
     desc = {"type": "ntensor", "shape": [n], "dtype": "float64"}
     return tensogram.encode(meta, [(desc, data)], threads=threads)
 
@@ -62,7 +62,7 @@ def _make_sp_msg(threads: int, bits: int, n: int = 200_000) -> bytes:
     rng = np.random.default_rng(42)
     values = 250.0 + rng.standard_normal(n) * 30.0
     params = tensogram.compute_packing_params(values.astype(np.float64).ravel(), bits, 0)
-    meta = {"version": 2, "base": [{}]}
+    meta = {"version": 3, "base": [{}]}
     desc = {
         "type": "ntensor",
         "shape": [n],
@@ -80,7 +80,7 @@ def _make_sp_msg(threads: int, bits: int, n: int = 200_000) -> bytes:
 def _make_blosc2_msg(threads: int, n: int = 100_000) -> bytes:
     rng = np.random.default_rng(42)
     data = rng.standard_normal(n).astype(np.float64)
-    meta = {"version": 2, "base": [{}]}
+    meta = {"version": 3, "base": [{}]}
     desc = {
         "type": "ntensor",
         "shape": [n],
@@ -99,7 +99,7 @@ class TestDefaultBehaviour:
     def test_encode_threads_kwarg_accepted(self):
         """The kwarg exists on encode/decode and accepts 0/1/N."""
         data = np.arange(100, dtype=np.float32)
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {"type": "ntensor", "shape": [100], "dtype": "float32"}
         for t in THREAD_COUNTS:
             msg = tensogram.encode(meta, [(desc, data)], threads=t)
@@ -110,7 +110,7 @@ class TestDefaultBehaviour:
     def test_threads_zero_is_default(self):
         """threads=0 is the default and matches an explicit 0."""
         data = np.arange(100, dtype=np.float32)
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {"type": "ntensor", "shape": [100], "dtype": "float32"}
         m1 = tensogram.encode(meta, [(desc, data)])
         m2 = tensogram.encode(meta, [(desc, data)], threads=0)
@@ -157,7 +157,7 @@ class TestOpaqueRoundTrip:
 class TestAxisAOrderPreservation:
     def test_multi_object_order_preserved(self):
         """16 objects, no codec → axis A.  Output order matches input."""
-        meta = {"version": 2, "base": [{}] * 16}
+        meta = {"version": 3, "base": [{}] * 16}
         descs_and_data = []
         for i in range(16):
             arr = np.arange(50_000, dtype=np.uint32) + i * 1_000_000
@@ -182,7 +182,7 @@ class TestSmallMessageThreshold:
     def test_threads_ignored_below_threshold(self):
         """Tiny payloads never take the parallel path."""
         data = np.arange(64, dtype=np.float64)
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {"type": "ntensor", "shape": [64], "dtype": "float64"}
         baseline = _encoded_payloads(tensogram.encode(meta, [(desc, data)], threads=0))
         for t in (1, 2, 4, 8):

@@ -50,7 +50,7 @@ fn make_descriptor(shape: Vec<u64>) -> DataObjectDescriptor {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── 1. Stream to an in-memory buffer ────────────────────────────────────
     let meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: {
             let mut m = BTreeMap::new();
             m.insert(

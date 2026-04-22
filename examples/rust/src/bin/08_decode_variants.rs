@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let desc2 = make_descriptor(vec![8, 8], Dtype::Uint8); // obj 2: 8×8 u8
 
     let global_meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };

@@ -50,7 +50,7 @@ async function main(): Promise<void> {
 
   // Two parallel namespaces coexist freely in the same base[i] entry.
   const metadata: GlobalMetadata = {
-    version: 2,
+    version: 3,
     base: [
       {
         product: {

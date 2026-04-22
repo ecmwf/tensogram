@@ -138,7 +138,7 @@ class TestNdPartialReadIntegration:
     def tgm_2d(self, tmp_path: Path) -> tuple[Path, np.ndarray]:
         """Create a 2D float32 .tgm file with known data."""
         data = np.arange(60, dtype=np.float32).reshape(6, 10)
-        meta = {"version": 2}
+        meta = {"version": 3}
         desc = _make_desc([6, 10])
         path = tmp_path / "2d.tgm"
         with tensogram.TensogramFile.create(str(path)) as f:
@@ -178,7 +178,7 @@ class TestRangeThreshold:
     def tgm_small(self, tmp_path: Path) -> tuple[Path, np.ndarray]:
         """10-element 1D float32 array."""
         data = np.arange(10, dtype=np.float32)
-        meta = {"version": 2}
+        meta = {"version": 3}
         desc = _make_desc([10])
         path = tmp_path / "small.tgm"
         with tensogram.TensogramFile.create(str(path)) as f:

@@ -68,7 +68,7 @@ def serve_tgm(tmp_path):
     entries: list[tuple] = []
 
     def _serve(data: np.ndarray, shape: list[int], dtype: str = "float32") -> tuple[str, str]:
-        meta = {"version": 2}
+        meta = {"version": 3}
         desc = {
             "type": "ntensor",
             "shape": shape,

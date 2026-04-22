@@ -408,7 +408,7 @@ impl PyTensogramFile {
     /// Append one message.
     ///
     /// Args:
-    ///     global_meta_dict: ``{"version": 2, ...}`` with any extra keys.
+    ///     global_meta_dict: ``{"version": 3, ...}`` with any extra keys.
     ///     descriptors_and_data: list of ``(descriptor_dict, data)`` pairs.
     ///         Each descriptor_dict requires ``type``, ``shape``, ``dtype`` and
     ///         optionally ``byte_order``, ``encoding``, ``filter``, ``compression``.
@@ -875,7 +875,7 @@ impl PyFileIter {
 /// Encode arrays into a Tensogram wire-format message.
 ///
 /// Args:
-///     global_meta_dict: ``{"version": 2, ...}`` with any extra keys.
+///     global_meta_dict: ``{"version": 3, ...}`` with any extra keys.
 ///     descriptors_and_data: list of ``(descriptor_dict, numpy_array)`` pairs.
 ///     hash: ``"xxh3"`` (default) or ``None`` to skip integrity hashing.
 ///
@@ -946,7 +946,7 @@ fn py_encode<'py>(
 /// computes and stamps the payload hash.
 ///
 /// Args:
-///     global_meta_dict: ``{"version": 2, ...}`` with any extra keys.
+///     global_meta_dict: ``{"version": 3, ...}`` with any extra keys.
 ///     descriptors_and_data: list of ``(descriptor_dict, bytes)`` pairs.  The
 ///         second element of each pair **must** be a ``bytes``-like object —
 ///         numpy arrays are rejected because pre-encoded payloads are
@@ -1367,7 +1367,7 @@ fn compute_packing_params(
 ///
 /// Example::
 ///
-///     enc = tensogram.StreamingEncoder({"version": 2})
+///     enc = tensogram.StreamingEncoder({"version": 3})
 ///     enc.write_object({"type": "ntensor", "shape": [4], "dtype": "float32"},
 ///                      np.ones(4, dtype=np.float32))
 ///     msg = enc.finish()
@@ -1381,7 +1381,7 @@ impl PyStreamingEncoder {
     /// Begin a new streaming message.
     ///
     /// Args:
-    ///     global_meta_dict: ``{"version": 2, ...}`` with any extra keys.
+    ///     global_meta_dict: ``{"version": 3, ...}`` with any extra keys.
     ///     hash: ``"xxh3"`` (default) or ``None`` to skip integrity hashing.
     ///     threads: thread budget for intra-codec parallelism inside
     ///         :meth:`write_object` (axis B only — streaming encoding

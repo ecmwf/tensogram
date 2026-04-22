@@ -53,7 +53,7 @@ def example_basic(tmp: Path):
     path = str(tmp / "basic.tgm")
 
     with tensogram.TensogramFile.create(path) as f:
-        f.append({"version": 2}, [(_desc([6, 10]), data)])
+        f.append({"version": 3}, [(_desc([6, 10]), data)])
 
     ds = xr.open_dataset(path, engine="tensogram")
     print("1. Basic open")
@@ -73,7 +73,7 @@ def example_coords(tmp: Path):
     path = str(tmp / "coords.tgm")
     with tensogram.TensogramFile.create(path) as f:
         f.append(
-            {"version": 2},
+            {"version": 3},
             [
                 (_desc([5], dtype="float64", name="latitude"), lat),
                 (_desc([8], dtype="float64", name="longitude"), lon),
@@ -99,7 +99,7 @@ def example_variable_key(tmp: Path):
     path = str(tmp / "mars.tgm")
     with tensogram.TensogramFile.create(path) as f:
         f.append(
-            {"version": 2},
+            {"version": 3},
             [
                 (_desc([3, 4], mars={"param": "2t"}), t2m),
                 (_desc([3, 4], mars={"param": "10u"}), u10),
@@ -125,7 +125,7 @@ def example_dim_names(tmp: Path):
     path = str(tmp / "dims.tgm")
 
     with tensogram.TensogramFile.create(path) as f:
-        f.append({"version": 2}, [(_desc([4, 5]), data)])
+        f.append({"version": 3}, [(_desc([4, 5]), data)])
 
     ds = xr.open_dataset(path, engine="tensogram", dim_names=["latitude", "longitude"])
     print("4. User-specified dim_names")
@@ -144,7 +144,7 @@ def example_multi_message(tmp: Path):
             for date in ["20260401", "20260402"]:
                 data = rng.random((3, 4), dtype=np.float32).astype(np.float32)
                 desc = _desc([3, 4], mars={"param": param, "date": date})
-                f.append({"version": 2}, [(desc, data)])
+                f.append({"version": 3}, [(desc, data)])
 
     datasets = tensogram_xarray.open_datasets(path, variable_key="mars.param")
     print("5. Multi-message open_datasets()")
@@ -160,7 +160,7 @@ def example_lazy_and_threshold(tmp: Path):
     path = str(tmp / "lazy.tgm")
 
     with tensogram.TensogramFile.create(path) as f:
-        f.append({"version": 2}, [(_desc([10, 100]), data)])
+        f.append({"version": 3}, [(_desc([10, 100]), data)])
 
     # Default threshold (0.5): small slices use partial decode_range
     ds = xr.open_dataset(path, engine="tensogram")

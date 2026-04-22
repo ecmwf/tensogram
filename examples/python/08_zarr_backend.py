@@ -32,7 +32,7 @@ def create_sample_tgm(path: str) -> None:
     humidity = np.random.rand(10, 20).astype(np.float32)
 
     meta = {
-        "version": 2,
+        "version": 3,
         "source": "ifs-cycle49r1",
         "base": [
             {

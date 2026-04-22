@@ -333,7 +333,7 @@ class TestAppendMode:
         data = np.ones(4, dtype=np.float32)
         with tensogram.TensogramFile.create(path) as f:
             f.append(
-                {"version": 2, "base": [{"name": "first"}]},
+                {"version": 3, "base": [{"name": "first"}]},
                 [({"type": "ntensor", "shape": [4], "dtype": "float32"}, data)],
             )
 
@@ -687,7 +687,7 @@ class TestScanWithShortBase:
         data2 = np.ones(4, dtype=np.int32)
         # Only 1 base entry for 2 objects — encoder will auto-pad,
         # but we test the naming logic still works
-        meta = {"version": 2, "base": [{"name": "first"}]}
+        meta = {"version": 3, "base": [{"name": "first"}]}
         with tensogram.TensogramFile.create(path) as f:
             f.append(
                 meta,
@@ -781,8 +781,8 @@ class TestWriteReservedTopLevelKeys:
 
         with tensogram.TensogramFile.open(output_path) as f:
             meta, _objects = f.decode_message(0)
-            # version should be 2 (from encoder), not 999
-            assert meta.version == 2
+            # version should be 3 (from encoder), not 999
+            assert meta.version == 3
             # experiment should be in extra
             assert meta.extra.get("experiment") == "real_attr"
 

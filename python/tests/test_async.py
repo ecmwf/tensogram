@@ -19,7 +19,7 @@ import tensogram
 
 
 def _encode_test_message(shape: list[int], fill: float = 42.0) -> bytes:
-    meta = {"version": 2, "base": [{}]}
+    meta = {"version": 3, "base": [{}]}
     desc = {
         "type": "ntensor",
         "shape": shape,
@@ -96,7 +96,7 @@ class TestAsyncDecode:
     async def test_decode_message(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
         meta, objects = await f.decode_message(0)
-        assert meta.version == 2
+        assert meta.version == 3
         assert len(objects) == 1
         _desc, arr = objects[0]
         assert arr.shape == (10,)
@@ -106,14 +106,14 @@ class TestAsyncDecode:
     async def test_decode_message_with_verify_hash(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
         meta, objects = await f.decode_message(0, verify_hash=True)
-        assert meta.version == 2
+        assert meta.version == 3
         assert len(objects) == 1
 
     @pytest.mark.asyncio
     async def test_file_decode_metadata(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
         meta = await f.file_decode_metadata(0)
-        assert meta.version == 2
+        assert meta.version == 3
 
     @pytest.mark.asyncio
     async def test_file_decode_descriptors(self, tgm_path):
@@ -154,7 +154,7 @@ class TestAsyncDecode:
         assert isinstance(raw, bytes)
         assert len(raw) > 0
         meta, _ = tensogram.decode(raw)
-        assert meta.version == 2
+        assert meta.version == 3
 
 
 class TestAsyncGather:
@@ -176,7 +176,7 @@ class TestAsyncGather:
             f.file_decode_metadata(0),
             f.file_decode_object(1, 0),
         )
-        assert meta.version == 2
+        assert meta.version == 3
         assert obj["data"].shape == (10,)
 
     @pytest.mark.asyncio
@@ -188,7 +188,7 @@ class TestAsyncGather:
             f.decode_message(2),
         )
         for i, (meta, objects) in enumerate(messages):
-            assert meta.version == 2
+            assert meta.version == 3
             np.testing.assert_allclose(objects[0][1], np.full(10, float(i), dtype=np.float32))
 
 
@@ -311,7 +311,7 @@ class TestAsyncRemote:
         url = serve_tgm_bytes(msg)
         f = await tensogram.AsyncTensogramFile.open(url)
         meta, objects = await f.decode_message(0)
-        assert meta.version == 2
+        assert meta.version == 3
         np.testing.assert_allclose(objects[0][1], np.full(6, 7.0, dtype=np.float32))
 
     @pytest.mark.asyncio
@@ -376,7 +376,7 @@ class TestAsyncContextManager:
     async def test_async_with(self, tgm_path):
         async with await tensogram.AsyncTensogramFile.open(tgm_path) as f:
             meta, _objects = await f.decode_message(0)
-            assert meta.version == 2
+            assert meta.version == 3
 
     @pytest.mark.asyncio
     async def test_async_with_exception_propagates(self, tgm_path):
@@ -418,7 +418,7 @@ class TestAsyncIteration:
             messages.append(msg)
         assert len(messages) == 3
         for i, (meta, objects) in enumerate(messages):
-            assert meta.version == 2
+            assert meta.version == 3
             np.testing.assert_allclose(objects[0][1], np.full(10, float(i), dtype=np.float32))
 
     @pytest.mark.asyncio
@@ -579,7 +579,7 @@ class TestAsyncMessages:
 class TestAsyncBatchRange:
     @pytest.mark.asyncio
     async def test_batch_basic(self, serve_tgm_bytes):
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {
             "type": "ntensor",
             "shape": [10],
@@ -603,7 +603,7 @@ class TestAsyncBatchRange:
 
     @pytest.mark.asyncio
     async def test_batch_matches_individual(self, serve_tgm_bytes):
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {
             "type": "ntensor",
             "shape": [10],
@@ -649,7 +649,7 @@ class TestAsyncBatchRange:
 class TestAsyncBatchObject:
     @pytest.mark.asyncio
     async def test_batch_basic(self, serve_tgm_bytes):
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {
             "type": "ntensor",
             "shape": [10],
@@ -676,7 +676,7 @@ class TestAsyncBatchObject:
 
     @pytest.mark.asyncio
     async def test_batch_matches_individual(self, serve_tgm_bytes):
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {
             "type": "ntensor",
             "shape": [10],
@@ -716,7 +716,7 @@ class TestAsyncBatchObject:
 
 class TestSyncBatchObject:
     def test_batch_basic(self, serve_tgm_bytes):
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {
             "type": "ntensor",
             "shape": [10],
@@ -738,7 +738,7 @@ class TestSyncBatchObject:
             np.testing.assert_allclose(r["data"], np.full(10, float(i), dtype=np.float32))
 
     def test_batch_matches_individual(self, serve_tgm_bytes):
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {
             "type": "ntensor",
             "shape": [10],
@@ -762,7 +762,7 @@ class TestSyncBatchObject:
 
 class TestSyncBatchRange:
     def test_batch_basic(self, serve_tgm_bytes):
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {
             "type": "ntensor",
             "shape": [10],
@@ -785,7 +785,7 @@ class TestSyncBatchRange:
             np.testing.assert_allclose(arr[:5], np.full(5, float(i), dtype=np.float32))
 
     def test_batch_matches_individual(self, serve_tgm_bytes):
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {
             "type": "ntensor",
             "shape": [10],

@@ -33,7 +33,7 @@ int main() {
     // for provenance notes that apply to the whole message, not to an
     // individual object.
     const std::string metadata_json = R"({
-        "version": 2,
+        "version": 3,
         "descriptors": [{
             "type": "ndarray",
             "ndim": 2,

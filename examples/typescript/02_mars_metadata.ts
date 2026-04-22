@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   const wind = new Float32Array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
 
   const metadata: GlobalMetadata = {
-    version: 2,
+    version: 3,
     base: [
       {
         mars: {
@@ -99,7 +99,7 @@ async function main(): Promise<void> {
     // To see computeCommon() actually return a shared key, flatten the MARS
     // sub-object into top-level keys at the base level.
     const flatMeta = {
-      version: 2,
+      version: 3,
       base: [
         { class: 'od', type: 'fc', param: '2t' },
         { class: 'od', type: 'fc', param: '10u' },

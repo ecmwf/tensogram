@@ -79,7 +79,7 @@ class TestVariableNameSanitization:
         path = str(tmp_path / "slash.tgm")
         data = np.ones(3, dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "temp/sfc"}],
         }
         with tensogram.TensogramFile.create(path) as f:
@@ -103,7 +103,7 @@ class TestTripleDuplicateNames:
         path = str(tmp_path / "triple.tgm")
         data = np.ones(2, dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "x"}, {"name": "x"}, {"name": "x"}],
         }
         with tensogram.TensogramFile.create(path) as f:
@@ -135,7 +135,7 @@ class TestZeroObjectMessage:
         path = str(tmp_path / "zero_obj.tgm")
         # Write a zero-object message via the append API with an empty list
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2, "signal": "start"}, [])
+            f.append({"version": 3, "signal": "start"}, [])
 
         with TensogramStore(path, mode="r") as store:
             root_meta = json.loads(store._keys["zarr.json"])
@@ -431,7 +431,7 @@ class TestZarrKeyCollision:
         path = str(tmp_path / "collision.tgm")
         data = np.ones(3, dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"zarr": "not_a_real_zarr_key", "chunks": 99}],
         }
         with tensogram.TensogramFile.create(path) as f:
@@ -463,7 +463,7 @@ class TestVariableNameResolutionOrder:
         data = np.ones(3, dtype=np.float32)
         # Extra has a name, but base[0] does not
         meta = {
-            "version": 2,
+            "version": 3,
             "name": "from_extra",
             "base": [{}],
         }

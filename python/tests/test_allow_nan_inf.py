@@ -28,7 +28,7 @@ import pytest
 import tensogram
 
 
-def _meta(version: int = 2) -> dict:
+def _meta(version: int = 3) -> dict:
     return {"version": version}
 
 

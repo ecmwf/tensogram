@@ -45,7 +45,7 @@ function describe(shape: number[], dtype: DataObjectDescriptor['dtype']): DataOb
 async function main(): Promise<void> {
   await init();
 
-  const enc = new StreamingEncoder({ version: 2 });
+  const enc = new StreamingEncoder({ version: 3 });
   try {
     // Attach per-object MARS metadata via write_preceder ahead of each
     // data object — handy when application metadata is only known at

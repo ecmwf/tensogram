@@ -30,7 +30,7 @@ def _make_message(size=1000, encoding="none", compression="none", dtype="float32
     """Create a test message with the given parameters."""
     rng = np.random.default_rng(seed)
     data = rng.standard_normal(size).astype(getattr(np, dtype))
-    meta = {"version": 2, "base": [{}]}
+    meta = {"version": 3, "base": [{}]}
     desc = {
         "type": "ntensor",
         "shape": [size],
@@ -78,7 +78,7 @@ class TestConcurrentEncodeDecode:
 
         def work(tid):
             data = np.arange(500, dtype=np.float32) + tid
-            meta = {"version": 2, "base": [{}]}
+            meta = {"version": 3, "base": [{}]}
             desc = {"type": "ntensor", "shape": [500], "dtype": "float32"}
             for _ in range(ITERATIONS):
                 msg = tensogram.encode(meta, [(desc, data)])
@@ -95,7 +95,7 @@ class TestConcurrentEncodeDecode:
 class TestConcurrentDetachedPaths:
     def test_encode_pre_encoded_concurrent(self):
         data = np.arange(100, dtype=np.float32)
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {"type": "ntensor", "shape": [100], "dtype": "float32"}
         raw_bytes = data.tobytes()
 
@@ -108,7 +108,7 @@ class TestConcurrentDetachedPaths:
 
     def test_decode_range_concurrent(self):
         data = np.arange(1000, dtype=np.float32)
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {"type": "ntensor", "shape": [1000], "dtype": "float32"}
         msg = tensogram.encode(meta, [(desc, data)])
 
@@ -126,7 +126,7 @@ class TestConcurrentDetachedPaths:
             path = tmp.name
         try:
             data = np.arange(100, dtype=np.float32)
-            meta = {"version": 2, "base": [{}]}
+            meta = {"version": 3, "base": [{}]}
             desc = {"type": "ntensor", "shape": [100], "dtype": "float32"}
             with tensogram.TensogramFile.create(path) as f:
                 f.append(meta, [(desc, data)])
@@ -143,7 +143,7 @@ class TestConcurrentDetachedPaths:
 
     def test_iter_messages_concurrent(self):
         data = np.arange(50, dtype=np.float32)
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {"type": "ntensor", "shape": [50], "dtype": "float32"}
         msg1 = tensogram.encode(meta, [(desc, data)])
         msg2 = tensogram.encode(meta, [(desc, data + 1)])
@@ -160,7 +160,7 @@ class TestConcurrentDetachedPaths:
     def test_bytes_input_decode(self):
         """Verify decode works with plain bytes (zero-copy via PyBackedBytes)."""
         data = np.arange(100, dtype=np.float32)
-        meta = {"version": 2, "base": [{}]}
+        meta = {"version": 3, "base": [{}]}
         desc = {"type": "ntensor", "shape": [100], "dtype": "float32"}
         msg = bytes(tensogram.encode(meta, [(desc, data)]))
 
@@ -179,7 +179,7 @@ class TestSharedFileHandle:
             path = tmp.name
         try:
             data = np.arange(100, dtype=np.float32)
-            meta = {"version": 2, "base": [{}]}
+            meta = {"version": 3, "base": [{}]}
             desc = {"type": "ntensor", "shape": [100], "dtype": "float32"}
             with tensogram.TensogramFile.create(path) as f:
                 for _ in range(10):
@@ -202,7 +202,7 @@ class TestSharedFileHandle:
             path = tmp.name
         try:
             data = np.arange(200, dtype=np.float32)
-            meta = {"version": 2, "base": [{}]}
+            meta = {"version": 3, "base": [{}]}
             desc = {"type": "ntensor", "shape": [200], "dtype": "float32"}
             with tensogram.TensogramFile.create(path) as f:
                 for _ in range(5):
@@ -231,7 +231,7 @@ class TestSharedFileHandle:
             path = tmp.name
         try:
             data = np.arange(100, dtype=np.float32)
-            meta = {"version": 2, "base": [{}]}
+            meta = {"version": 3, "base": [{}]}
             desc = {"type": "ntensor", "shape": [100], "dtype": "float32"}
             with tensogram.TensogramFile.create(path) as f:
                 f.append(meta, [(desc, data)])
@@ -370,7 +370,7 @@ class TestConcurrentFile:
 
         try:
             data = np.arange(100, dtype=np.float32)
-            meta = {"version": 2, "base": [{}]}
+            meta = {"version": 3, "base": [{}]}
             desc = {"type": "ntensor", "shape": [100], "dtype": "float32"}
             with tensogram.TensogramFile.create(path) as f:
                 for _ in range(5):
@@ -397,7 +397,7 @@ class TestConcurrentStreamingEncoder:
 
         def work(tid):
             for _ in range(ITERATIONS):
-                enc = tensogram.StreamingEncoder({"version": 2})
+                enc = tensogram.StreamingEncoder({"version": 3})
                 data = np.arange(100, dtype=np.float32) + tid
                 enc.write_object({"type": "ntensor", "shape": [100], "dtype": "float32"}, data)
                 msg = enc.finish()
@@ -420,7 +420,7 @@ class TestConcurrentMetadata:
 
         def work(tid):
             for _ in range(ITERATIONS):
-                assert meta.version == 2
+                assert meta.version == 3
                 _ = meta.base
                 _ = meta.reserved
                 _ = meta.extra
@@ -434,7 +434,7 @@ class TestConcurrentMetadata:
         def work(tid):
             for _ in range(ITERATIONS):
                 meta = tensogram.decode_metadata(msg)
-                assert meta.version == 2
+                assert meta.version == 3
 
         _run_threaded(work)
 
@@ -463,7 +463,7 @@ class TestConcurrentCodecBackends:
         def work(tid):
             rng = np.random.default_rng(tid)
             data = rng.standard_normal(500).astype(np.float64) + tid
-            meta = {"version": 2, "base": [{}]}
+            meta = {"version": 3, "base": [{}]}
             desc = {
                 "type": "ntensor",
                 "shape": [500],

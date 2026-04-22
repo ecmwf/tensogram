@@ -65,7 +65,7 @@ class TestBaseIndexOutOfRange:
         data2 = np.ones((3, 4), dtype=np.float32) * 2.0
 
         # Only 1 user base entry for 2 objects
-        meta = {"version": 2, "base": [{"tag": "first"}]}
+        meta = {"version": 3, "base": [{"tag": "first"}]}
         with tensogram.TensogramFile.create(path) as f:
             f.append(
                 meta,
@@ -89,7 +89,7 @@ class TestBaseIndexOutOfRange:
 
         path = str(tmp_path / "mock_base.tgm")
         data = np.ones((3, 4), dtype=np.float32)
-        meta = {"version": 2}
+        meta = {"version": 3}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([3, 4]), data)])
 
@@ -112,7 +112,7 @@ class TestBaseIndexOutOfRange:
         """meta.base = [] should not crash."""
         path = str(tmp_path / "empty_base.tgm")
         data = np.ones((3,), dtype=np.float32)
-        meta = {"version": 2, "base": []}
+        meta = {"version": 3, "base": []}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([3]), data)])
 
@@ -125,7 +125,7 @@ class TestBaseIndexOutOfRange:
         path = str(tmp_path / "no_base.tgm")
         data = np.ones((3,), dtype=np.float32)
         # version only, no base
-        meta = {"version": 2}
+        meta = {"version": 3}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([3]), data)])
 
@@ -146,7 +146,7 @@ class TestReservedFiltering:
         """_reserved_ auto-populated by encoder must not leak to user attrs."""
         path = str(tmp_path / "reserved.tgm")
         data = np.ones((3,), dtype=np.float32)
-        meta = {"version": 2, "base": [{"mars": {"param": "2t"}}]}
+        meta = {"version": 3, "base": [{"mars": {"param": "2t"}}]}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([3]), data)])
 
@@ -157,7 +157,7 @@ class TestReservedFiltering:
         """scanner.py must filter _reserved_ from per-object metadata."""
         path = str(tmp_path / "scan_reserved.tgm")
         data = np.ones((3,), dtype=np.float32)
-        meta = {"version": 2, "base": [{"name": "wind"}]}
+        meta = {"version": 3, "base": [{"name": "wind"}]}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([3]), data)])
 
@@ -168,7 +168,7 @@ class TestReservedFiltering:
         """open_datasets must also filter _reserved_ from variable attrs."""
         path = str(tmp_path / "merge_reserved.tgm")
         data = np.ones((3,), dtype=np.float32)
-        meta = {"version": 2, "base": [{"name": "temp"}]}
+        meta = {"version": 3, "base": [{"name": "temp"}]}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([3]), data)])
 
@@ -232,12 +232,12 @@ class TestMultiMessageMerge:
         with tensogram.TensogramFile.create(path) as f:
             # Message 0: has 'source' key
             f.append(
-                {"version": 2, "base": [{"name": "temp", "source": "model"}]},
+                {"version": 3, "base": [{"name": "temp", "source": "model"}]},
                 [(_desc([3, 4]), np.ones((3, 4), dtype=np.float32))],
             )
             # Message 1: has 'source' key with different value
             f.append(
-                {"version": 2, "base": [{"name": "temp", "source": "obs"}]},
+                {"version": 3, "base": [{"name": "temp", "source": "obs"}]},
                 [(_desc([3, 4]), np.ones((3, 4), dtype=np.float32) * 2)],
             )
 
@@ -249,7 +249,7 @@ class TestMultiMessageMerge:
         path = str(tmp_path / "extra_keys.tgm")
         with tensogram.TensogramFile.create(path) as f:
             f.append(
-                {"version": 2, "experiment": "test42"},
+                {"version": 3, "experiment": "test42"},
                 [(_desc([3, 4]), np.ones((3, 4), dtype=np.float32))],
             )
 
@@ -260,7 +260,7 @@ class TestMultiMessageMerge:
         """Message with zero data objects returns an empty list of datasets."""
         path = str(tmp_path / "zero_obj.tgm")
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2, "signal": "start"}, [])
+            f.append({"version": 3, "signal": "start"}, [])
 
         datasets = open_datasets(path)
         # Zero data objects → empty list (no datasets to construct)
@@ -280,7 +280,7 @@ class TestLazyLoadingSources:
         """Shape comes from the descriptor, not from base metadata."""
         path = str(tmp_path / "shape_source.tgm")
         data = np.arange(20, dtype=np.float64).reshape(4, 5)
-        meta = {"version": 2, "base": [{"tag": "field"}]}
+        meta = {"version": 3, "base": [{"tag": "field"}]}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([4, 5], dtype="float64"), data)])
 
@@ -295,7 +295,7 @@ class TestLazyLoadingSources:
         path = str(tmp_path / "partial.tgm")
         data = np.arange(60, dtype=np.float32).reshape(6, 10)
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2}, [(_desc([6, 10]), data)])
+            f.append({"version": 3}, [(_desc([6, 10]), data)])
 
         ds = xr.open_dataset(path, engine="tensogram", range_threshold=1.0)
         # Slice a subset
@@ -318,7 +318,7 @@ class TestCoordDetectionEdges:
         data = np.ones((3, 4), dtype=np.float32)
 
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "LATITUDE"},  # uppercase
                 {"name": "field"},
@@ -343,7 +343,7 @@ class TestCoordDetectionEdges:
         """
         path = str(tmp_path / "non_coord.tgm")
         data = np.ones((3,), dtype=np.float32)
-        meta = {"version": 2, "base": [{"name": "custom_field"}]}
+        meta = {"version": 3, "base": [{"name": "custom_field"}]}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([3]), data)])
 
@@ -364,7 +364,7 @@ class TestWireFormatEdgeCases:
         """Shape [1] variable opens correctly with xarray."""
         path = str(tmp_path / "single_elem.tgm")
         data = np.array([42.0], dtype=np.float32)
-        meta = {"version": 2, "base": [{"name": "scalar_like"}]}
+        meta = {"version": 3, "base": [{"name": "scalar_like"}]}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([1]), data)])
 
@@ -377,7 +377,7 @@ class TestWireFormatEdgeCases:
         """All-NaN float32 array opens correctly with xarray, NaN preserved."""
         path = str(tmp_path / "all_nan.tgm")
         data = np.full((3, 4), np.nan, dtype=np.float32)
-        meta = {"version": 2, "base": [{"name": "nan_field"}]}
+        meta = {"version": 3, "base": [{"name": "nan_field"}]}
         with tensogram.TensogramFile.create(path) as f:
             # allow_nan=True opts into the NaN companion-mask wire
             # format (see docs/src/guide/nan-inf-handling.md).
@@ -402,7 +402,7 @@ class TestWireFormatEdgeCases:
             for i in range(n_messages):
                 data = np.full((3, 4), float(i), dtype=np.float32)
                 meta = {
-                    "version": 2,
+                    "version": 3,
                     "base": [{"name": "temp", "step": i}],
                 }
                 f.append(meta, [(_desc([3, 4]), data)])
@@ -437,7 +437,7 @@ class TestDimResolutionEdges:
 
         # Coord detection uses "name" key in per-object metadata
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "latitude"},
                 {"name": "depth"},
@@ -468,7 +468,7 @@ class TestDimResolutionEdges:
         data = np.ones((7, 9), dtype=np.float32)
 
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "latitude"},
                 {"tag": "data_field"},
@@ -521,7 +521,7 @@ class TestMixedRankDimCollision:
         coord_x = np.arange(x_size, dtype=np.float32)
 
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "reflectance"},
                 {"name": "count_flash_all"},
@@ -551,7 +551,7 @@ class TestMixedRankDimCollision:
         """Non-conflicting generic axes must keep their ``dim_N`` names."""
         path = str(tmp_path / "partial.tgm")
 
-        meta = {"version": 2, "base": [{"name": "a"}, {"name": "b"}]}
+        meta = {"version": 3, "base": [{"name": "a"}, {"name": "b"}]}
         with tensogram.TensogramFile.create(path) as f:
             f.append(
                 meta,
@@ -569,7 +569,7 @@ class TestMixedRankDimCollision:
         """Regression guard: same-shape vars share ``dim_N`` compatibly."""
         path = str(tmp_path / "no_collision.tgm")
 
-        meta = {"version": 2, "base": [{"name": "a"}, {"name": "b"}]}
+        meta = {"version": 3, "base": [{"name": "a"}, {"name": "b"}]}
         with tensogram.TensogramFile.create(path) as f:
             f.append(
                 meta,
@@ -592,7 +592,7 @@ class TestMixedRankDimCollision:
         data_b = np.ones((3,), dtype=np.float32)
 
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "latitude"},
                 {"name": "field_a"},
@@ -755,7 +755,7 @@ class TestMixedRankDimCollision:
         legit = np.arange(35, dtype=np.float32).reshape(5, 7)
         wrong = np.ones((7,), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "latitude"},
                 {"name": "legit"},
@@ -801,7 +801,7 @@ class TestPerObjectDimNames:
         path = str(tmp_path / "po_simple.tgm")
         data = np.ones((4, 5), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field", "dim_names": ["time", "level"]}],
         }
         with tensogram.TensogramFile.create(path) as f:
@@ -815,7 +815,7 @@ class TestPerObjectDimNames:
         path = str(tmp_path / "po_mixed.tgm")
         t_size, y_size, x_size = 4, 5, 6
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "reflectance", "dim_names": ["time", "y", "x"]},
                 {"name": "count", "dim_names": ["time"]},
@@ -845,7 +845,7 @@ class TestPerObjectDimNames:
         """Two objects pinning matching-size axes to the same name share the dim."""
         path = str(tmp_path / "po_shared.tgm")
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "temp", "dim_names": ["time", "level"]},
                 {"name": "humid", "dim_names": ["time", "level"]},
@@ -869,7 +869,7 @@ class TestPerObjectDimNames:
         """User-supplied ``dim_names=`` outranks the per-object hint."""
         path = str(tmp_path / "po_vs_user.tgm")
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field", "dim_names": ["producer_x", "producer_y"]}],
         }
         with tensogram.TensogramFile.create(path) as f:
@@ -884,7 +884,7 @@ class TestPerObjectDimNames:
         lat = np.linspace(-90, 90, 5, dtype=np.float64)
         data = np.ones((5, 7), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "latitude"},
                 {"name": "field", "dim_names": ["row", "col"]},
@@ -907,7 +907,7 @@ class TestPerObjectDimNames:
         path = str(tmp_path / "po_vs_extra.tgm")
         data = np.ones((4, 5), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field", "dim_names": ["per_obj_x", "per_obj_y"]}],
             "_extra_": {"dim_names": ["extra_x", "extra_y"]},
         }
@@ -921,7 +921,7 @@ class TestPerObjectDimNames:
         """Hint with wrong number of names silently falls through."""
         path = str(tmp_path / "mal_len.tgm")
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field", "dim_names": ["only_one"]}],
         }
         with tensogram.TensogramFile.create(path) as f:
@@ -934,7 +934,7 @@ class TestPerObjectDimNames:
         """Scalar/dict hints (wrong type) silently fall through."""
         path = str(tmp_path / "mal_type.tgm")
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field", "dim_names": "not_a_list"}],
         }
         with tensogram.TensogramFile.create(path) as f:
@@ -947,7 +947,7 @@ class TestPerObjectDimNames:
         """Duplicate entries in the hint silently fall through."""
         path = str(tmp_path / "mal_dup.tgm")
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field", "dim_names": ["x", "x"]}],
         }
         with tensogram.TensogramFile.create(path) as f:
@@ -960,7 +960,7 @@ class TestPerObjectDimNames:
         """Empty-string entries in the hint silently fall through."""
         path = str(tmp_path / "mal_empty.tgm")
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field", "dim_names": ["", "y"]}],
         }
         with tensogram.TensogramFile.create(path) as f:
@@ -1006,7 +1006,7 @@ class TestPerObjectDimNames:
         """``dim_names`` is structural metadata; it must not leak into attrs."""
         path = str(tmp_path / "no_leak.tgm")
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field", "dim_names": ["x", "y"], "units": "K"}],
         }
         with tensogram.TensogramFile.create(path) as f:
@@ -1021,7 +1021,7 @@ class TestPerObjectDimNames:
         """Message-level ``_extra_["dim_names"]`` must not leak into ``ds.attrs``."""
         path = str(tmp_path / "no_leak_extra.tgm")
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field"}],
             "_extra_": {"dim_names": ["x", "y"], "experiment": "e42"},
         }
@@ -1050,7 +1050,7 @@ class TestHintedNameConflict:
         """Different per-object hints on different-size axes do not conflict."""
         path = str(tmp_path / "hint_distinct.tgm")
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "a", "dim_names": ["alpha"]},
                 {"name": "b", "dim_names": ["beta"]},
@@ -1075,7 +1075,7 @@ class TestHintedNameConflict:
 
         path = str(tmp_path / "hint_conflict.tgm")
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "a", "dim_names": ["time"]},
                 {"name": "b", "dim_names": ["time"]},
@@ -1107,7 +1107,7 @@ class TestHintedNameConflict:
         lat = np.linspace(-90, 90, 5, dtype=np.float64)
         data = np.ones((7,), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "latitude"},
                 {"name": "field", "dim_names": ["latitude"]},

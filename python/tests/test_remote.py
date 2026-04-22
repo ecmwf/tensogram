@@ -19,7 +19,7 @@ import tensogram
 # serve_tgm_bytes fixture is auto-discovered from conftest.py
 
 
-def make_global_meta(version: int = 2, **extra: Any) -> dict[str, Any]:
+def make_global_meta(version: int = 3, **extra: Any) -> dict[str, Any]:
     return {"version": version, **extra}
 
 
@@ -92,7 +92,7 @@ class TestPythonRemoteDecode:
 
         with tensogram.TensogramFile.open(url) as f:
             meta = f.file_decode_metadata(0)
-            assert meta.version == 2
+            assert meta.version == 3
 
     def test_file_decode_descriptors(self, serve_tgm_bytes):
         msg = encode_test_message([4])
@@ -125,7 +125,7 @@ class TestPythonRemoteDecode:
 
         with tensogram.TensogramFile.open(url) as f:
             meta, objects = f.decode_message(0)
-            assert meta.version == 2
+            assert meta.version == 3
             assert len(objects) == 1
             np.testing.assert_allclose(objects[0][1], np.full(4, 7.0, dtype=np.float32))
 

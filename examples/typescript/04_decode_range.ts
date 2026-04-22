@@ -50,7 +50,7 @@ async function main(): Promise<void> {
   const values = new Float32Array(N);
   for (let i = 0; i < N; i++) values[i] = i * 0.5;
 
-  const msg = encode({ version: 2 }, [{ descriptor: describe([N], 'float32'), data: values }]);
+  const msg = encode({ version: 3 }, [{ descriptor: describe([N], 'float32'), data: values }]);
   console.log(`message size: ${msg.byteLength.toLocaleString()} bytes`);
 
   // 2. Split mode: one TypedArray per requested range.

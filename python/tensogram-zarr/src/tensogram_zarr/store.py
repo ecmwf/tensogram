@@ -520,7 +520,7 @@ class TensogramStore(ZarrStore):
         # In the new metadata model, message-level annotations go into
         # ``extra`` (any unknown top-level keys), and per-object metadata
         # goes into ``base`` (list of dicts, one per object).
-        global_meta: dict[str, Any] = {"version": 2}
+        global_meta: dict[str, Any] = {"version": 3}
         # Reserved top-level keys that must not be overwritten by group attrs.
         _reserved_top = {"version", "base", "_extra_", "extra", "_reserved_"}
         clean_attrs = {

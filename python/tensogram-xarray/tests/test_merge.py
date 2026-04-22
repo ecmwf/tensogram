@@ -69,7 +69,7 @@ class TestEmptyFile:
         path = tmp_path / "empty.tgm"
         with tensogram.TensogramFile.create(str(path)) as f:
             # Append a zero-object message.
-            meta = {"version": 2}
+            meta = {"version": 3}
             f.append(meta, [])
         datasets = open_datasets(str(path))
         assert isinstance(datasets, list)

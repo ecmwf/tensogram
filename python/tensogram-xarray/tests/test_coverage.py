@@ -82,7 +82,7 @@ class TestStoreCoverage:
         data = np.ones((2, 3), dtype=np.float32)
         path = str(tmp_path / "extra_only.tgm")
         # Use a top-level extra key (not common, not payload)
-        meta = {"version": 2, "experiment": "test42"}
+        meta = {"version": 3, "experiment": "test42"}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([2, 3]), data)])
 
@@ -97,7 +97,7 @@ class TestStoreCoverage:
         data = np.ones((2,), dtype=np.float32)
         path = str(tmp_path / "close.tgm")
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2}, [(_desc([2]), data)])
+            f.append({"version": 3}, [(_desc([2]), data)])
         store = TensogramDataStore(path)
         store.close()  # should not raise
 
@@ -105,7 +105,7 @@ class TestStoreCoverage:
         """_reserved_ key from base entries doesn't appear in var attrs."""
         data = np.ones((3,), dtype=np.float32)
         path = str(tmp_path / "base_filter.tgm")
-        meta = {"version": 2, "base": [{"mars": {"param": "2t"}}]}
+        meta = {"version": 3, "base": [{"mars": {"param": "2t"}}]}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([3]), data)])
 
@@ -159,7 +159,7 @@ class TestArrayCoverage:
         data = np.arange(12, dtype=np.float32).reshape(3, 4)
         path = str(tmp_path / "fallback.tgm")
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2}, [(_desc([3, 4]), data)])
+            f.append({"version": 3}, [(_desc([3, 4]), data)])
 
         # Open with a very low threshold so full array load
         # goes through decode_object path (ratio > threshold).
@@ -181,7 +181,7 @@ class TestBackendCoverage:
         # line 97: empty dataset from merge_objects
         path = str(tmp_path / "empty.tgm")
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2}, [])
+            f.append({"version": 3}, [])
 
         ds = xr.open_dataset(str(path), engine="tensogram", merge_objects=True)
         assert isinstance(ds, xr.Dataset)
@@ -206,9 +206,9 @@ class TestScannerCoverage:
         path = str(tmp_path / "multi.tgm")
         data = np.ones((2,), dtype=np.float32)
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2}, [(_desc([2]), data)])
-            f.append({"version": 2}, [(_desc([2]), data)])
-            f.append({"version": 2}, [(_desc([2]), data)])
+            f.append({"version": 3}, [(_desc([2]), data)])
+            f.append({"version": 3}, [(_desc([2]), data)])
+            f.append({"version": 3}, [(_desc([2]), data)])
 
         idx = scan_file(path)
         assert idx.message_count == 3
@@ -217,7 +217,7 @@ class TestScannerCoverage:
         """scan_message works on a raw in-memory message."""
         # lines 137-163
         data = np.arange(6, dtype=np.float32)
-        meta = {"version": 2}
+        meta = {"version": 3}
         desc = _desc([6], name="wind")
         msg = bytes(tensogram.encode(meta, [(desc, data)]))
 
@@ -233,7 +233,7 @@ class TestScannerCoverage:
         """scan_message with multiple objects in one message."""
         a = np.ones((3,), dtype=np.float32)
         b = np.zeros((5,), dtype=np.float64)
-        meta = {"version": 2}
+        meta = {"version": 3}
         msg = bytes(tensogram.encode(meta, [(_desc([3]), a), (_desc([5], dtype="float64"), b)]))
 
         objects = scan_message(msg)
@@ -245,7 +245,7 @@ class TestScannerCoverage:
         """scan_file reads extra metadata into ObjectInfo.common_meta."""
         path = str(tmp_path / "extra.tgm")
         data = np.ones((2,), dtype=np.float32)
-        meta = {"version": 2, "source": "ecmwf"}
+        meta = {"version": 3, "source": "ecmwf"}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([2]), data)])
 
@@ -393,7 +393,7 @@ class TestMergeIntegrationCoverage:
 
         with tensogram.TensogramFile.create(path) as f:
             f.append(
-                {"version": 2},
+                {"version": 3},
                 [
                     (_desc([3], dtype="float64", name="latitude"), lat),
                     (_desc([4], dtype="float64", name="longitude"), lon),
@@ -420,7 +420,7 @@ class TestMergeIntegrationCoverage:
                 for date in ["20260401", "20260402"]:
                     data = rng.random((3, 4), dtype=np.float32).astype(np.float32)
                     desc = _desc([3, 4], mars={"param": param, "date": date})
-                    f.append({"version": 2}, [(desc, data)])
+                    f.append({"version": 3}, [(desc, data)])
 
         datasets = open_datasets(path, variable_key="mars.param")
         assert len(datasets) >= 1
@@ -438,8 +438,8 @@ class TestMergeIntegrationCoverage:
 
         with tensogram.TensogramFile.create(path) as f:
             # Two messages with identical metadata and shape
-            f.append({"version": 2}, [(_desc([2, 3], name="field"), data)])
-            f.append({"version": 2}, [(_desc([2, 3], name="field"), data * 2)])
+            f.append({"version": 3}, [(_desc([2, 3], name="field"), data)])
+            f.append({"version": 3}, [(_desc([2, 3], name="field"), data * 2)])
 
         datasets = open_datasets(path)
         assert len(datasets) >= 1
@@ -459,7 +459,7 @@ class TestMergeIntegrationCoverage:
             for step in ["0", "6", "12"]:
                 data = rng.random((2, 3), dtype=np.float32).astype(np.float32)
                 desc = _desc([2, 3], step=step)
-                f.append({"version": 2}, [(desc, data)])
+                f.append({"version": 3}, [(desc, data)])
 
         datasets = open_datasets(path)
         assert len(datasets) >= 1
@@ -480,8 +480,8 @@ class TestMergeIntegrationCoverage:
         u10 = np.ones((2, 3), dtype=np.float32) * 5
 
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2}, [(_desc([2, 3], param="2t"), t2m)])
-            f.append({"version": 2}, [(_desc([2, 3], param="10u"), u10)])
+            f.append({"version": 3}, [(_desc([2, 3], param="2t"), t2m)])
+            f.append({"version": 3}, [(_desc([2, 3], param="10u"), u10)])
 
         datasets = open_datasets(path, variable_key="param")
         assert len(datasets) >= 1
@@ -502,8 +502,8 @@ class TestMergeIntegrationCoverage:
 
         with tensogram.TensogramFile.create(path) as f:
             # Two messages where the ONLY varying key is the variable_key itself
-            f.append({"version": 2}, [(_desc([2], param="alpha"), a)])
-            f.append({"version": 2}, [(_desc([2], param="beta"), b)])
+            f.append({"version": 3}, [(_desc([2], param="alpha"), a)])
+            f.append({"version": 3}, [(_desc([2], param="beta"), b)])
 
         datasets = open_datasets(path, variable_key="param")
         assert len(datasets) >= 1
@@ -525,7 +525,7 @@ class TestMergeIntegrationCoverage:
                 for date in ["d1", "d2"]:
                     data = rng.random((2, 3), dtype=np.float32).astype(np.float32)
                     desc = _desc([2, 3], param=param, date=date)
-                    f.append({"version": 2}, [(desc, data)])
+                    f.append({"version": 3}, [(desc, data)])
 
         datasets = open_datasets(path, variable_key="param")
         assert len(datasets) >= 1
@@ -546,7 +546,7 @@ class TestMergeIntegrationCoverage:
             for param, date in [("2t", "d1"), ("10u", "d1"), ("2t", "d2")]:
                 data = rng.random((2, 3), dtype=np.float32).astype(np.float32)
                 desc = _desc([2, 3], param=param, date=date)
-                f.append({"version": 2}, [(desc, data)])
+                f.append({"version": 3}, [(desc, data)])
 
         datasets = open_datasets(path)
         assert len(datasets) >= 1
@@ -564,7 +564,7 @@ class TestMergeIntegrationCoverage:
         path = str(tmp_path / "dimnames.tgm")
         data = np.ones((3, 4), dtype=np.float32)
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2}, [(_desc([3, 4]), data)])
+            f.append({"version": 3}, [(_desc([3, 4]), data)])
 
         datasets = open_datasets(path, dim_names=["row", "col"])
         assert len(datasets) >= 1
@@ -630,7 +630,7 @@ class TestErrorPaths:
         data = np.ones((3, 4), dtype=np.float32)
         path = str(tmp_path / "bad_dims.tgm")
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2}, [(_desc([3, 4]), data)])
+            f.append({"version": 3}, [(_desc([3, 4]), data)])
         with pytest.raises(ValueError, match="dim_names has 1 entries"):
             xr.open_dataset(str(path), engine="tensogram", dim_names=["x"])
 
@@ -686,7 +686,7 @@ class TestDecodeRangeFallback:
         data = np.arange(12, dtype=np.float32).reshape(3, 4)
         path = str(tmp_path / "fallback_exc.tgm")
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2}, [(_desc([3, 4]), data)])
+            f.append({"version": 3}, [(_desc([3, 4]), data)])
 
         ds = xr.open_dataset(path, engine="tensogram", range_threshold=1.0)
 
@@ -710,7 +710,7 @@ class TestMergeConflictingCoords:
         with tensogram.TensogramFile.create(path) as f:
             # Message 0: lat has 3 elements
             f.append(
-                {"version": 2},
+                {"version": 3},
                 [
                     (_desc([3], dtype="float64", name="latitude"), lat3),
                     (_desc([3, 4]), data3),
@@ -718,7 +718,7 @@ class TestMergeConflictingCoords:
             )
             # Message 1: lat has 5 elements — conflicting
             f.append(
-                {"version": 2},
+                {"version": 3},
                 [
                     (_desc([5], dtype="float64", name="latitude"), lat5),
                     (_desc([5, 4]), data5),
@@ -753,10 +753,10 @@ class TestMergeNonHypercubeFallback:
             for date, level in [("d1", "L1"), ("d1", "L2"), ("d2", "L1")]:
                 data = rng.random((2, 3), dtype=np.float32).astype(np.float32)
                 desc = _desc([2, 3], param="2t", date=date, level=level)
-                f.append({"version": 2}, [(desc, data)])
+                f.append({"version": 3}, [(desc, data)])
             data = rng.random((2, 3), dtype=np.float32).astype(np.float32)
             desc = _desc([2, 3], param="10u", date="d1", level="L1")
-            f.append({"version": 2}, [(desc, data)])
+            f.append({"version": 3}, [(desc, data)])
 
         with caplog.at_level(logging.WARNING, logger="tensogram_xarray"):
             datasets = open_datasets(path, variable_key="param")
@@ -776,10 +776,10 @@ class TestMergeNonHypercubeFallback:
         data = np.ones((2, 3), dtype=np.float32)
 
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2}, [(_desc([2, 3], param="2t"), data)])
-            f.append({"version": 2}, [(_desc([2, 3], param="2t"), data)])
-            f.append({"version": 2}, [(_desc([2, 3], param="10u"), data * 2)])
-            f.append({"version": 2}, [(_desc([2, 3], param="10u"), data * 2)])
+            f.append({"version": 3}, [(_desc([2, 3], param="2t"), data)])
+            f.append({"version": 3}, [(_desc([2, 3], param="2t"), data)])
+            f.append({"version": 3}, [(_desc([2, 3], param="10u"), data * 2)])
+            f.append({"version": 3}, [(_desc([2, 3], param="10u"), data * 2)])
 
         with caplog.at_level(logging.WARNING, logger="tensogram_xarray"):
             datasets = open_datasets(path, variable_key="param")
@@ -797,7 +797,7 @@ class TestScannerDescParamsFallback:
         path = str(tmp_path / "params.tgm")
         # No payload in metadata — desc.params is the only source
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2}, [(_desc([3], custom_key="hello"), data)])
+            f.append({"version": 3}, [(_desc([3], custom_key="hello"), data)])
 
         idx = scan_file(path)
         assert len(idx.objects) == 1
@@ -808,7 +808,7 @@ class TestScannerDescParamsFallback:
         """meta.extra keys appear in common_meta."""
         data = np.ones((2,), dtype=np.float32)
         path = str(tmp_path / "extra.tgm")
-        meta = {"version": 2, "experiment": "test99"}
+        meta = {"version": 3, "experiment": "test99"}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([2]), data)])
 
@@ -823,7 +823,7 @@ class TestStoreMetaExtra:
         """meta.extra keys appear in dataset attributes (line 126)."""
         data = np.ones((2, 3), dtype=np.float32)
         path = str(tmp_path / "store_extra.tgm")
-        meta = {"version": 2, "custom_attr": "present"}
+        meta = {"version": 3, "custom_attr": "present"}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([2, 3]), data)])
 
@@ -988,7 +988,7 @@ class TestStorePerObjectMetaEdges:
         data = np.ones((3,), dtype=np.float32)
         path = str(tmp_path / "base_none.tgm")
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2}, [(_desc([3]), data)])
+            f.append({"version": 3}, [(_desc([3]), data)])
 
         store = TensogramDataStore(path)
         # Replace _meta with a mock where base is None
@@ -1006,7 +1006,7 @@ class TestStorePerObjectMetaEdges:
         data = np.ones((3,), dtype=np.float32)
         path = str(tmp_path / "desc_sup.tgm")
         # base has mars but desc has custom_key
-        meta = {"version": 2, "base": [{"mars": {"param": "2t"}}]}
+        meta = {"version": 3, "base": [{"mars": {"param": "2t"}}]}
         with tensogram.TensogramFile.create(path) as f:
             f.append(meta, [(_desc([3], extra_key="from_desc"), data)])
 
@@ -1071,7 +1071,7 @@ class TestBackendMergeObjectsEmpty:
 
         path = str(tmp_path / "meta_only.tgm")
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2, "signal": "start"}, [])
+            f.append({"version": 3, "signal": "start"}, [])
 
         ds = xr.open_dataset(path, engine="tensogram", merge_objects=True)
         assert isinstance(ds, xr.Dataset)
@@ -1201,7 +1201,7 @@ class TestScanMessageWithExtra:
     def test_scan_message_extra_in_common_meta(self):
         """scan_message reads extra metadata into ObjectInfo.common_meta."""
         data = np.ones((3,), dtype=np.float32)
-        meta = {"version": 2, "experiment": "test99"}
+        meta = {"version": 3, "experiment": "test99"}
         msg = bytes(tensogram.encode(meta, [(_desc([3]), data)]))
 
         objects = scan_message(msg)
@@ -1211,7 +1211,7 @@ class TestScanMessageWithExtra:
     def test_scan_message_no_extra(self):
         """scan_message with no extra returns empty common_meta."""
         data = np.ones((3,), dtype=np.float32)
-        msg = bytes(tensogram.encode({"version": 2}, [(_desc([3]), data)]))
+        msg = bytes(tensogram.encode({"version": 3}, [(_desc([3]), data)]))
 
         objects = scan_message(msg)
         assert len(objects) == 1
@@ -1231,7 +1231,7 @@ class TestResolveDimsForVar:
         data = np.ones((3, 4), dtype=np.float32)
         path = str(tmp_path / "dims.tgm")
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2}, [(_desc([3, 4]), data)])
+            f.append({"version": 3}, [(_desc([3, 4]), data)])
 
         store = TensogramDataStore(path, dim_names=["row", "col"])
         ds = store.build_dataset()
@@ -1245,7 +1245,7 @@ class TestResolveDimsForVar:
         data = np.ones((3, 4), dtype=np.float32)
 
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "latitude"},
                 {"name": "longitude"},
@@ -1284,7 +1284,7 @@ class TestMetaDimNames:
         """List-format dim_names are assigned by axis position."""
         data = np.ones((1000, 50), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field"}],
             "_extra_": {"dim_names": ["values", "level"]},
         }
@@ -1299,7 +1299,7 @@ class TestMetaDimNames:
         """List format handles same-size axes correctly (by position)."""
         data = np.ones((10, 10), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field"}],
             "_extra_": {"dim_names": ["grid_x", "grid_y"]},
         }
@@ -1314,7 +1314,7 @@ class TestMetaDimNames:
         """List with wrong number of names is silently ignored."""
         data = np.ones((3, 4), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field"}],
             "_extra_": {"dim_names": ["only_one"]},
         }
@@ -1331,7 +1331,7 @@ class TestMetaDimNames:
         """Dict-format dim_names resolve by size matching."""
         data = np.ones((1000, 50), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field"}],
             "_extra_": {"dim_names": {"1000": "values", "50": "level"}},
         }
@@ -1346,7 +1346,7 @@ class TestMetaDimNames:
         """Dict format: same-size axes — hint used once, second falls back."""
         data = np.ones((10, 10), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field"}],
             "_extra_": {"dim_names": {"10": "grid"}},
         }
@@ -1366,7 +1366,7 @@ class TestMetaDimNames:
         data = np.ones((3, 4), dtype=np.float32)
         path = str(tmp_path / "no_meta.tgm")
         with tensogram.TensogramFile.create(path) as f:
-            f.append({"version": 2}, [(_desc([3, 4]), data)])
+            f.append({"version": 3}, [(_desc([3, 4]), data)])
 
         ds = xr.open_dataset(path, engine="tensogram")
         assert ds["object_0"].dims == ("dim_0", "dim_1")
@@ -1375,7 +1375,7 @@ class TestMetaDimNames:
         """Malformed dim_names (string) silently falls back to dim_N."""
         data = np.ones((3, 4), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field"}],
             "_extra_": {"dim_names": "not_a_dict_or_list"},
         }
@@ -1391,7 +1391,7 @@ class TestMetaDimNames:
         lat = np.linspace(-90, 90, 5, dtype=np.float64)
         data = np.ones((5, 8), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "latitude"},
                 {"name": "field"},
@@ -1419,7 +1419,7 @@ class TestMetaDimNames:
         """User-supplied dim_names (step 1) override everything."""
         data = np.ones((5, 8), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field"}],
             "_extra_": {"dim_names": ["rows", "cols"]},
         }
@@ -1471,7 +1471,7 @@ class TestDuplicateCoordDedup:
             # Both messages include 'latitude' as a coord object
             f.append(
                 {
-                    "version": 2,
+                    "version": 3,
                     "base": [
                         {"name": "latitude"},
                         {"name": "temp"},
@@ -1484,7 +1484,7 @@ class TestDuplicateCoordDedup:
             )
             f.append(
                 {
-                    "version": 2,
+                    "version": 3,
                     "base": [
                         {"name": "latitude"},
                         {"name": "wind"},
@@ -1516,7 +1516,7 @@ class TestCoordOnlyFile:
         with tensogram.TensogramFile.create(path) as f:
             f.append(
                 {
-                    "version": 2,
+                    "version": 3,
                     "base": [
                         {"name": "latitude"},
                         {"name": "longitude"},
@@ -1547,7 +1547,7 @@ class TestUnhashableMetadataConstant:
                 data = np.ones((3, 4), dtype=np.float32) * i
                 f.append(
                     {
-                        "version": 2,
+                        "version": 3,
                         "base": [
                             {"config": {"nested": [1, 2, 3]}, "name": "temp"},
                         ],
@@ -1579,7 +1579,7 @@ class TestMergePathDimResolution:
         """Single-message file with ``_extra_`` list hint applies through merge path."""
         path = str(tmp_path / "merge_extra_list.tgm")
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field"}],
             "_extra_": {"dim_names": ["values", "level"]},
         }
@@ -1594,7 +1594,7 @@ class TestMergePathDimResolution:
         """Single-message file with ``_extra_`` dict hint applies through merge path."""
         path = str(tmp_path / "merge_extra_dict.tgm")
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field"}],
             "_extra_": {"dim_names": {"1000": "values", "50": "level"}},
         }
@@ -1609,7 +1609,7 @@ class TestMergePathDimResolution:
         """Per-object ``base[i]["dim_names"]`` drives dims through merge path."""
         path = str(tmp_path / "merge_per_obj.tgm")
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "field", "dim_names": ["row", "col"]}],
         }
         with tensogram.TensogramFile.create(path) as f:
@@ -1624,7 +1624,7 @@ class TestMergePathDimResolution:
         lat = np.linspace(-90, 90, 5, dtype=np.float64)
         data = np.ones((5, 8), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "latitude"}, {"name": "field"}],
             "_extra_": {"dim_names": ["rows", "cols"]},
         }
@@ -1653,14 +1653,14 @@ class TestMergePathDimResolution:
         with tensogram.TensogramFile.create(path) as f:
             f.append(
                 {
-                    "version": 2,
+                    "version": 3,
                     "base": [{"name": "temp", "dim_names": ["a", "b"]}],
                 },
                 [(_desc([3, 4]), np.ones((3, 4), dtype=np.float32))],
             )
             f.append(
                 {
-                    "version": 2,
+                    "version": 3,
                     "base": [{"name": "temp", "dim_names": ["c", "d"]}],
                 },
                 [(_desc([3, 4]), np.ones((3, 4), dtype=np.float32) * 2)],
@@ -1679,14 +1679,14 @@ class TestMergePathDimResolution:
         with tensogram.TensogramFile.create(path) as f:
             f.append(
                 {
-                    "version": 2,
+                    "version": 3,
                     "base": [{"name": "temp", "dim_names": ["x", "y"]}],
                 },
                 [(_desc([3, 4]), np.ones((3, 4), dtype=np.float32))],
             )
             f.append(
                 {
-                    "version": 2,
+                    "version": 3,
                     "base": [{"name": "temp", "dim_names": ["p", "q"]}],
                 },
                 [(_desc([3, 4]), np.ones((3, 4), dtype=np.float32) * 2)],
@@ -1713,7 +1713,7 @@ class TestMergePathDimResolution:
         lat = np.linspace(-90, 90, 5, dtype=np.float64)
         wrong = np.ones((7,), dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "latitude"},
                 {"name": "field", "dim_names": ["latitude"]},
@@ -1756,7 +1756,7 @@ class TestMergePathDimResolution:
         with tensogram.TensogramFile.create(path) as f:
             f.append(
                 {
-                    "version": 2,
+                    "version": 3,
                     "base": [{"name": "temp"}],
                     "_extra_": {"dim_names": ["x", "y"]},
                 },
@@ -1764,7 +1764,7 @@ class TestMergePathDimResolution:
             )
             f.append(
                 {
-                    "version": 2,
+                    "version": 3,
                     "base": [{"name": "temp"}],
                     "_extra_": {"dim_names": ["p", "q"]},
                 },

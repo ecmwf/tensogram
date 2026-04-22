@@ -127,7 +127,7 @@ class TensogramOutput(Output):
             raise RuntimeError(f"{self!r}: write_step called before open() or after close()")
 
         global_meta = {
-            "version": 2,
+            "version": 3,
             "base": [],
             "_extra_": {},
         }
