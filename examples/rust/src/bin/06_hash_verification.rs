@@ -59,10 +59,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 1. Default encode populates the inline hash slots ─────────────────────
     //
-    // EncodeOptions::default() sets create_header_hashes = true (every
-    // frame header / body gets its slot filled with xxh3-64 of its
-    // body).  create_footer_hashes is false for buffered encode — the
-    // streaming path folds both into the trailing footer instead.
+    // EncodeOptions::default() sets hash_algorithm = Some(Xxh3).  When
+    // hash_algorithm is Some(_) the preamble's HASHES_PRESENT flag is
+    // set and every frame's inline body-hash slot is populated with
+    // xxh3-64 of its body — that's the surface validate_message reads
+    // at level Integrity.  The separate `create_header_hashes` /
+    // `create_footer_hashes` options control an optional aggregate
+    // HashFrame that lists per-object hashes in a single CBOR frame
+    // (a listing convenience, not the integrity surface).
 
     let hashed = encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
     println!("Hashed message:   {} bytes", hashed.len());
