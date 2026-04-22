@@ -28,7 +28,12 @@ from xarray.core import indexing
 
 from tensogram_xarray.array import TensogramBackendArray, _supports_range_decode
 from tensogram_xarray.coords import detect_coords
-from tensogram_xarray.mapping import resolve_dim_names, resolve_variable_name
+from tensogram_xarray.mapping import (
+    EXTRA_DIM_NAMES_KEY,
+    resolve_dims_for_axes,
+    resolve_variable_name,
+    strip_structural_keys,
+)
 from tensogram_xarray.scanner import RESERVED_KEY
 
 logger = logging.getLogger(__name__)
@@ -102,16 +107,23 @@ def _disambiguate_fallback_dims(
     plans: list[_DataVarPlan],
     coord_dim_sizes: dict[str, int],
 ) -> list[tuple[str, ...]]:
-    """Return final dimension names per *plan*, renaming only generic fallback
-    dims that would cause an :class:`xr.Dataset` size conflict.
+    """Return final dimension names per *plan*, resolving every size conflict.
 
     A conflict exists when the same dim name is claimed at two or more
     distinct sizes — either across data variables or against an existing
-    coordinate dim.  Generic fallback dims involved in a conflict are
-    renamed to ``f"obj_{obj_index}_dim_{axis}"``; non-generic names
-    (coord matches, ``_extra_`` hints, user kwargs) are left unchanged.
-    Non-generic conflicts surface at :class:`xr.Dataset` assembly as a
-    clear error naming the conflicting user-visible dim.
+    coordinate dim.
+
+    * **Generic fallback** conflicts (``dim_{axis}`` names with
+      ``is_generic_fallback=True``) are silently renamed to
+      ``f"obj_{obj_index}_dim_{axis}"``.
+    * **Hinted** conflicts (names from coord matches, per-object
+      ``base[i]["dim_names"]``, or ``_extra_["dim_names"]``) are renamed to
+      the same ``obj_{i}_dim_{axis}`` form *with a warning* so producers
+      can diagnose inconsistent hints; this keeps the Dataset openable
+      rather than crashing at :class:`xr.Dataset` assembly.
+
+    Coordinate dim names are never renamed (they claim a single size and
+    so never conflict with themselves); they only participate in detection.
 
     Parameters
     ----------
@@ -119,8 +131,7 @@ def _disambiguate_fallback_dims(
         One :class:`_DataVarPlan` per data variable, in the order they
         will appear in the resulting Dataset.
     coord_dim_sizes
-        Map from existing coordinate dim name to its size.  Coord dims
-        participate in conflict detection but are never renamed.
+        Map from existing coordinate dim name to its size.
 
     Returns
     -------
@@ -135,12 +146,22 @@ def _disambiguate_fallback_dims(
             name_to_sizes.setdefault(dim_name, set()).add(plan.shape[axis])
 
     conflicting = {name for name, sizes in name_to_sizes.items() if len(sizes) > 1}
+    warned: set[str] = set()
 
     resolved: list[tuple[str, ...]] = []
     for plan in plans:
         new_dims: list[str] = []
         for axis, (dim_name, is_generic) in enumerate(plan.dims_with_provenance):
-            if is_generic and dim_name in conflicting:
+            if dim_name in conflicting:
+                if not is_generic and dim_name not in warned:
+                    logger.warning(
+                        "dimension name %r claimed at conflicting sizes %s across "
+                        "objects; falling back to object-local names (producer "
+                        "supplied inconsistent dim_names hints)",
+                        dim_name,
+                        sorted(name_to_sizes[dim_name]),
+                    )
+                    warned.add(dim_name)
                 new_dims.append(f"obj_{plan.obj_index}_dim_{axis}")
             else:
                 new_dims.append(dim_name)
@@ -277,13 +298,11 @@ class TensogramDataStore:
         """
         dataset_attrs = self._get_common_meta()
 
-        # Gather per-object metadata from payload + descriptor params.
         obj_metas = [self._get_per_object_meta(i, d) for i, d in enumerate(self._descriptors)]
+        extra_dim_names_hint = self._extra_dim_names_hint()
 
-        # Detect coordinates vs data variables.
         coord_indices, var_indices, coord_dim_names = detect_coords(obj_metas)
 
-        # Build coordinate variables from detected coord objects.
         coord_vars: dict[str, xr.Variable] = {}
         for ci in coord_indices:
             desc = self._descriptors[ci]
@@ -307,9 +326,11 @@ class TensogramDataStore:
             self._backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
 
-            coord_dims = (dim_name,)
-            coord_attrs = dict(obj_metas[ci])
-            coord_vars[dim_name] = xr.Variable(coord_dims, lazy_data, coord_attrs)
+            coord_vars[dim_name] = xr.Variable(
+                (dim_name,), lazy_data, strip_structural_keys(obj_metas[ci])
+            )
+
+        coord_dim_sizes = {name: var.shape[0] for name, var in coord_vars.items()}
 
         plans: list[_DataVarPlan] = []
         for vi in var_indices:
@@ -321,7 +342,13 @@ class TensogramDataStore:
             np_dtype = _to_numpy_dtype(desc.dtype)
             shape = tuple(desc.shape)
 
-            dims_with_provenance = self._resolve_dims_for_var(shape, coord_vars)
+            dims_with_provenance = resolve_dims_for_axes(
+                shape,
+                user_dim_names=self.dim_names,
+                coord_dim_sizes=coord_dim_sizes,
+                per_object_meta=obj_metas[vi],
+                extra_dim_names_hint=extra_dim_names_hint,
+            )
 
             backend_array = TensogramBackendArray(
                 file_path=self.file_path,
@@ -345,11 +372,10 @@ class TensogramDataStore:
                     shape=shape,
                     dims_with_provenance=dims_with_provenance,
                     backend_array=backend_array,
-                    var_attrs=dict(obj_metas[vi]),
+                    var_attrs=strip_structural_keys(obj_metas[vi]),
                 )
             )
 
-        coord_dim_sizes = {name: var.shape[0] for name, var in coord_vars.items()}
         resolved_dims = _disambiguate_fallback_dims(plans, coord_dim_sizes)
 
         data_vars: dict[str, xr.Variable] = {}
@@ -359,111 +385,12 @@ class TensogramDataStore:
 
         return xr.Dataset(data_vars, coords=coord_vars, attrs=dataset_attrs)
 
-    def _get_meta_dim_names(self, ndim: int) -> list[str] | dict[int, str]:
-        """Return dimension name hints from ``_extra_["dim_names"]``.
-
-        Any writer can embed hints at ``_extra_["dim_names"]`` to provide
-        meaningful dimension names without the reader passing ``dim_names``
-        explicitly. Two formats are accepted:
-
-        **List (preferred)** — axis-ordered names, one per dimension::
-
-            "_extra_": {"dim_names": ["values", "level"]}
-
-        This handles axes with identical sizes correctly because names
-        are assigned by position.
-
-        **Dict (legacy)** — size-to-name mapping::
-
-            "_extra_": {"dim_names": {"1000": "values", "50": "level"}}
-
-        A dict cannot disambiguate axes with the same size; only the
-        first matching axis receives the hint.
-
-        Returns an empty list/dict when the key is absent or malformed.
-        """
+    def _extra_dim_names_hint(self) -> Any:
+        """Return the raw ``_extra_["dim_names"]`` payload, or ``None``."""
         try:
-            raw = self._meta.extra["dim_names"]
+            return self._meta.extra[EXTRA_DIM_NAMES_KEY]
         except (AttributeError, KeyError, TypeError):
-            return {}
-
-        # List format: axis-ordered names.
-        if isinstance(raw, list):
-            try:
-                names = [str(n) for n in raw]
-                if len(names) == ndim:
-                    return names
-                # Length mismatch — ignore the hint rather than crash.
-                return {}
-            except (TypeError, ValueError):
-                return {}
-
-        # Dict format: size -> name (legacy).
-        if isinstance(raw, dict):
-            try:
-                return {int(k): str(v) for k, v in raw.items()}
-            except (TypeError, ValueError):
-                return {}
-
-        return {}
-
-    def _resolve_dims_for_var(
-        self,
-        shape: tuple[int, ...],
-        coord_vars: dict[str, xr.Variable],
-    ) -> list[tuple[str, bool]]:
-        """Assign dimension names for a data variable.
-
-        Returns one ``(name, is_generic_fallback)`` entry per axis.  The
-        boolean flags whether the name came from the ``dim_{axis}``
-        fallback branch — those axes are eligible for post-pass
-        disambiguation when they collide across variables of different
-        shapes.  Names produced by user kwarg, coord size-match, or
-        ``_extra_["dim_names"]`` hint are flagged non-generic and are
-        never auto-renamed.
-
-        Strategy:
-        1. If user provided ``dim_names``, use them directly.
-        2. Try to match each axis size against a known coordinate variable.
-        3. Use producer hints from ``_extra_["dim_names"]`` (list or dict).
-        4. Fall back to ``dim_0``, ``dim_1``, ...
-        """
-        ndim = len(shape)
-
-        if self.dim_names is not None:
-            return [(name, False) for name in resolve_dim_names(ndim, self.dim_names)]
-
-        size_to_coord: dict[int, list[str]] = {}
-        for cname, cvar in coord_vars.items():
-            csize = cvar.shape[0]
-            size_to_coord.setdefault(csize, []).append(cname)
-
-        meta_hints = self._get_meta_dim_names(ndim)
-
-        if isinstance(meta_hints, list):
-            return [(name, False) for name in meta_hints]
-
-        dims: list[tuple[str, bool]] = []
-        used: set[str] = set()
-        for axis, axis_size in enumerate(shape):
-            matched = False
-            if axis_size in size_to_coord:
-                for cname in size_to_coord[axis_size]:
-                    if cname not in used:
-                        dims.append((cname, False))
-                        used.add(cname)
-                        matched = True
-                        break
-            if not matched and axis_size in meta_hints:
-                hint = meta_hints[axis_size]
-                if hint not in used:
-                    dims.append((hint, False))
-                    used.add(hint)
-                    matched = True
-            if not matched:
-                dims.append((f"dim_{axis}", True))
-
-        return dims
+            return None
 
     def close(self) -> None:
         for arr in self._backend_arrays:

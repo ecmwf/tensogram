@@ -27,6 +27,7 @@ import numpy as np
 import pytest
 import tensogram
 import xarray as xr
+
 from tensogram_xarray.array import (
     _is_contiguous_slice,
     _nd_slice_to_flat_ranges,
@@ -1079,29 +1080,40 @@ class TestBackendMergeObjectsEmpty:
 
 
 # ---------------------------------------------------------------------------
-# Coverage pass 2: merge.py _resolve_dims generic fallback naming
+# Coverage pass 2: shared dim resolver generic fallback naming
 # ---------------------------------------------------------------------------
 
 
-class TestMergeResolveDimsGeneric:
-    """Cover merge.py _resolve_dims fallback to dim_N naming."""
+class TestSharedResolveDimsGeneric:
+    """Cover :func:`tensogram_xarray.mapping.resolve_dims_for_axes` fallback."""
 
-    def test_generic_dims_use_len_dims(self, tmp_path):
-        """Generic dim names use dim_{len(dims)} which is the accumulated count."""
-        from tensogram_xarray.merge import _resolve_dims
+    def test_generic_dims_across_axes(self):
+        """With no hints, every axis falls back to a per-axis ``dim_N`` name."""
+        from tensogram_xarray.mapping import resolve_dims_for_axes
 
-        # No coord vars -> all dims are generic
-        dims = _resolve_dims((3, 4, 5), None, {})
-        assert dims == ("dim_0", "dim_1", "dim_2")
+        dims = resolve_dims_for_axes(
+            (3, 4, 5),
+            user_dim_names=None,
+            coord_dim_sizes={},
+            per_object_meta=None,
+            extra_dim_names_hint=None,
+        )
+        assert [name for name, _ in dims] == ["dim_0", "dim_1", "dim_2"]
+        assert all(is_generic for _, is_generic in dims)
 
     def test_mixed_coord_and_generic(self):
-        """When only some axes match coords, others get generic names."""
-        from tensogram_xarray.merge import _resolve_dims
+        """Coord-matched axes are non-generic; unmatched axes fall back."""
+        from tensogram_xarray.mapping import resolve_dims_for_axes
 
-        coord_vars = {"latitude": xr.Variable(("latitude",), np.zeros(3))}
-        dims = _resolve_dims((3, 7), None, coord_vars)
-        assert dims[0] == "latitude"
-        assert dims[1] == "dim_1"
+        dims = resolve_dims_for_axes(
+            (3, 7),
+            user_dim_names=None,
+            coord_dim_sizes={"latitude": 3},
+            per_object_meta=None,
+            extra_dim_names_hint=None,
+        )
+        assert dims[0] == ("latitude", False)
+        assert dims[1] == ("dim_1", True)
 
 
 # ---------------------------------------------------------------------------
@@ -1548,3 +1560,144 @@ class TestUnhashableMetadataConstant:
         assert len(datasets) >= 1
         # The unhashable 'config' key should become a dataset attribute,
         # not a dimension — open_datasets should not crash
+
+
+# ---------------------------------------------------------------------------
+# Merge path dim resolution parity with store path
+# ---------------------------------------------------------------------------
+
+
+class TestMergePathDimResolution:
+    """``open_datasets()`` / ``merge_objects=True`` honours the same priority
+    chain as ``open_dataset()``:  user kwarg > coord match > per-object
+    ``base[i]["dim_names"]`` > ``_extra_["dim_names"]`` > generic fallback.
+
+    Closes a pre-existing divergence where ``merge.py`` silently ignored
+    ``_extra_["dim_names"]`` list and dict hints.
+    """
+
+    def test_extra_list_hint_honoured(self, tmp_path):
+        """Single-message file with ``_extra_`` list hint applies through merge path."""
+        path = str(tmp_path / "merge_extra_list.tgm")
+        meta = {
+            "version": 2,
+            "base": [{"name": "field"}],
+            "_extra_": {"dim_names": ["values", "level"]},
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([1000, 50]), np.ones((1000, 50), dtype=np.float32))])
+
+        datasets = open_datasets(path)
+        assert len(datasets) == 1
+        assert datasets[0]["field"].dims == ("values", "level")
+
+    def test_extra_dict_hint_honoured(self, tmp_path):
+        """Single-message file with ``_extra_`` dict hint applies through merge path."""
+        path = str(tmp_path / "merge_extra_dict.tgm")
+        meta = {
+            "version": 2,
+            "base": [{"name": "field"}],
+            "_extra_": {"dim_names": {"1000": "values", "50": "level"}},
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([1000, 50]), np.ones((1000, 50), dtype=np.float32))])
+
+        datasets = open_datasets(path)
+        assert len(datasets) == 1
+        assert datasets[0]["field"].dims == ("values", "level")
+
+    def test_per_object_hint_honoured(self, tmp_path):
+        """Per-object ``base[i]["dim_names"]`` drives dims through merge path."""
+        path = str(tmp_path / "merge_per_obj.tgm")
+        meta = {
+            "version": 2,
+            "base": [{"name": "field", "dim_names": ["row", "col"]}],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([4, 5]), np.ones((4, 5), dtype=np.float32))])
+
+        datasets = open_datasets(path)
+        assert datasets[0]["field"].dims == ("row", "col")
+
+    def test_coord_match_outranks_extra_list(self, tmp_path):
+        """Coord size-match beats ``_extra_`` list format on matching axes."""
+        path = str(tmp_path / "coord_vs_extra_list.tgm")
+        lat = np.linspace(-90, 90, 5, dtype=np.float64)
+        data = np.ones((5, 8), dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [{"name": "latitude"}, {"name": "field"}],
+            "_extra_": {"dim_names": ["rows", "cols"]},
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([5], dtype="float64"), lat),
+                    (_desc([5, 8]), data),
+                ],
+            )
+
+        datasets = open_datasets(path)
+        ds = datasets[0]
+        assert ds["field"].dims[0] == "latitude"
+        assert ds["field"].dims[1] == "cols"
+
+    def test_dim_names_not_a_hypercube_outer_dim(self, tmp_path):
+        """Varying ``dim_names`` across messages must not become an outer dim.
+
+        Without the structural-key filter, differing ``dim_names`` hints
+        across messages would be treated as a varying metadata key and
+        promoted to a hypercube outer dimension.
+        """
+        path = str(tmp_path / "varying_dim_names.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                {
+                    "version": 2,
+                    "base": [{"name": "temp", "dim_names": ["a", "b"]}],
+                },
+                [(_desc([3, 4]), np.ones((3, 4), dtype=np.float32))],
+            )
+            f.append(
+                {
+                    "version": 2,
+                    "base": [{"name": "temp", "dim_names": ["c", "d"]}],
+                },
+                [(_desc([3, 4]), np.ones((3, 4), dtype=np.float32) * 2)],
+            )
+
+        datasets = open_datasets(path)
+        for ds in datasets:
+            assert "dim_names" not in ds.sizes
+            assert "dim_names" not in ds.coords
+
+    def test_inconsistent_per_object_hint_warns_and_falls_back(self, tmp_path, caplog):
+        """Multi-message group with conflicting per-object hints warns + falls back."""
+        import logging
+
+        path = str(tmp_path / "inconsistent.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                {
+                    "version": 2,
+                    "base": [{"name": "temp", "dim_names": ["x", "y"]}],
+                },
+                [(_desc([3, 4]), np.ones((3, 4), dtype=np.float32))],
+            )
+            f.append(
+                {
+                    "version": 2,
+                    "base": [{"name": "temp", "dim_names": ["p", "q"]}],
+                },
+                [(_desc([3, 4]), np.ones((3, 4), dtype=np.float32) * 2)],
+            )
+
+        with caplog.at_level(logging.WARNING, logger="tensogram_xarray.merge"):
+            datasets = open_datasets(path)
+
+        assert any("inconsistent per-object dim_names" in r.message for r in caplog.records)
+        for ds in datasets:
+            dims = ds["temp"].dims
+            assert dims != ("x", "y")
+            assert dims != ("p", "q")
