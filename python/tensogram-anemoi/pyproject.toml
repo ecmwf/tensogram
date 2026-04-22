@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tensogram-anemoi"
-version = "0.16.1"
+dynamic = ["version"]
 description = "anemoi-inference output plugin for tensogram .tgm files"
 readme = {text = "anemoi-inference output plugin for tensogram .tgm files", content-type = "text/plain"}
 requires-python = ">=3.11"
@@ -33,6 +33,10 @@ dev = ["pytest>=7.0", "ruff>=0.4"]
 
 [project.entry-points."anemoi.inference.outputs"]
 tensogram = "tensogram_anemoi.output:TensogramOutput"
+
+[tool.hatch.version]
+source = "env"
+variable = "VERSION"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tensogram_anemoi"]

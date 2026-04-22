@@ -137,8 +137,6 @@ Serves at http://localhost:8080/ (set BASE_PATH env var to deploy under a subpat
       examples). Do not hardcode a crate list here — discover them with
       `find . -name Cargo.toml -not -path './target/*' -not -path './.venv/*'`
       and update every one to match `VERSION`.
-    - `pyproject.toml` in EVERY Python package under `python/`, AND
-      `examples/jupyter/pyproject.toml` (the Jupyter notebook deps manifest).
     - `package.json` in EVERY JS package — discover them with
       `find . -name package.json -not -path './**/node_modules/*' -not -path './target/*'`
       (currently `typescript/` and `examples/typescript/`; the list grows if

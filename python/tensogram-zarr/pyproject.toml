@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tensogram-zarr"
-version = "0.16.1"
+dynamic = ["version"]
 description = "Zarr v3 store backend for tensogram .tgm files"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,6 +30,10 @@ Documentation = "https://sites.ecmwf.int/docs/tensogram/main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-asyncio>=0.23", "ruff>=0.4"]
+
+[tool.hatch.version]
+source = "env"
+variable = "VERSION"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tensogram_zarr"]
