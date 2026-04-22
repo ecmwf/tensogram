@@ -280,6 +280,17 @@ with tensogram.TensogramFile.create("mars.tgm") as f:
 The `variable_key` supports dotted paths: `"mars.param"` navigates into
 the nested `mars` dict within each object's metadata.
 
+### Where to put `name` / `param` / `units`
+
+Application metadata belongs in `meta["base"][i]`, not in the descriptor
+dict.  The descriptor is only for tensor shape/dtype and encoding
+parameters (`reference_value`, `bits_per_value`, ...).  Unknown keys in
+a descriptor dict are still preserved for wire compatibility (they land
+in `DataObjectDescriptor.params`), and xarray / zarr fall back to them
+for variable naming, but `tensogram.encode()` and
+`TensogramFile.append()` emit a `UserWarning` pointing at the canonical
+location.  See [issue #67](https://github.com/ecmwf/tensogram/issues/67).
+
 ---
 
 ## Example 4: Multi-Message File with Auto-Merge

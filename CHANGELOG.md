@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- `tensogram-zarr`: `TensogramStore` now falls back to descriptor-level
+  keys (`name`, `param`, `shortName`, ...) for variable naming when
+  `meta.base[i]` does not supply one, matching the long-standing xarray
+  backend behaviour.  This rescues files where application metadata
+  was accidentally placed in the descriptor dict (a common Python-API
+  mistake, since unknown keys are silently routed to
+  `DataObjectDescriptor.params`).  Per-key precedence across sources
+  follows the existing name chain; `meta.base[i]` still wins for the
+  same key.  ([#67](https://github.com/ecmwf/tensogram/issues/67))
+
 - `tensogram-xarray`: `xr.open_dataset(engine="tensogram")` no longer
   raises `ValueError: conflicting sizes for dimension 'dim_0'` on
   messages that mix objects of different ranks without CF-recognised
@@ -22,6 +32,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   honour `_extra_["dim_names"]` (list and size-to-name dict) with the
   same priority chain as single-message `open_dataset`.  Previously
   only the single-message path read the hint.
+
+### Changed
+
+- `tensogram` (Python): `encode()` and `TensogramFile.append()` now
+  emit a `UserWarning` when a descriptor dict contains keys that look
+  like application metadata (`name`, `param`, `shortName`, `long_name`,
+  `description`, `units`, `dim_names`, `mars`, `cf`, `product`,
+  `instrument`), pointing callers at `meta["base"][i]` as the
+  canonical location.  The keys are still captured into
+  `DataObjectDescriptor.params` for wire compatibility, so existing
+  files keep round-tripping; the warning is suppressible via standard
+  `warnings.filterwarnings`.  One aggregated warning per descriptor
+  rather than one per key.
+  ([#67](https://github.com/ecmwf/tensogram/issues/67))
 
 ### Added
 

@@ -132,9 +132,12 @@ See `examples/rust/` for metadata, streaming, compression, the file API, and mor
 
 ```python
 data = np.random.randn(100, 200).astype(np.float32)
-# The "product" key below is just an example namespace — the library is
+# Application metadata (names, units, vocabularies) lives in meta["base"][i].
+# The "product" key below is an example namespace — the library is
 # vocabulary-agnostic, so any application-defined keys work the same way
-# (MARS, CF, BIDS, DICOM, or your own).
+# (MARS, CF, BIDS, DICOM, or your own).  The descriptor dict is strictly
+# for tensor shape/dtype and encoding parameters; put "name"/"units"/etc.
+# there and xarray/zarr fall back but emit a UserWarning.
 msg = tensogram.encode(
     {"version": 2, "base": [{"product": {"name": "temperature", "units": "K"}}]},
     [({"type": "ntensor", "shape": [100, 200], "dtype": "float32",
@@ -143,6 +146,10 @@ msg = tensogram.encode(
 result = tensogram.decode(msg)
 arr = result.objects[0][1]  # numpy array
 ```
+
+For default zarr/xarray variable discovery, `meta["base"][i]["name"]` is
+the simplest form; use `variable_key="product.name"` (or any dotted path)
+to pick a name out of a namespaced vocabulary.
 
 ### xarray
 
