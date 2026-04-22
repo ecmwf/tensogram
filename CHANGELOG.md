@@ -5,6 +5,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `tensogram-xarray`: `xr.open_dataset(engine="tensogram")` no longer
+  raises `ValueError: conflicting sizes for dimension 'dim_0'` on
+  messages that mix objects of different ranks without CF-recognised
+  coordinate names.  Generic `dim_N` fallback names that would collide
+  across variables of different shapes are renamed to
+  `obj_{i}_dim_{axis}` so the Dataset opens cleanly.  Coord-matched
+  and hint-supplied names are never auto-renamed.
+  ([#66](https://github.com/ecmwf/tensogram/issues/66))
+
+- `tensogram-xarray`: `open_datasets()` and `merge_objects=True` now
+  honour `_extra_["dim_names"]` (list and size-to-name dict) with the
+  same priority chain as single-message `open_dataset`.  Previously
+  only the single-message path read the hint.
+
+### Added
+
+- `tensogram-xarray`: new opt-in reader convention — producers may
+  embed `base[i]["dim_names"]` (axis-ordered list) per object.  The
+  backend validates the hint (length equal to ndim, all non-empty
+  distinct strings) and uses it in the dim resolution chain:
+  user kwarg > coord match > per-object hint > `_extra_` hint >
+  generic fallback.  Malformed hints are logged at DEBUG and ignored
+  so files remain openable.  Inconsistent hints across a
+  merge/hypercube group trigger a warning and fall back to lower
+  priority sources.  ([#66](https://github.com/ecmwf/tensogram/issues/66))
+
+- `tensogram-anemoi`: the output plugin now writes the per-object
+  `dim_names` list on each data field entry (`["values"]` for flat
+  fields, `["values", "level"]` for stacked pressure-level fields)
+  alongside the existing message-level `_extra_["dim_names"]` hint,
+  opting into the new reader convention while staying
+  backward-compatible with older readers.
+
 ### Wire format v3 — BREAKING
 
 This release is a clean break from v2.  There is no backward
