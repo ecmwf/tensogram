@@ -10,13 +10,13 @@
 /// @brief Example 02b — Per-object metadata with a generic application
 ///        namespace (C++ wrapper).
 ///
-/// Shows that the metadata mechanism in example 02 is not specific to the
-/// MARS vocabulary. Any application namespace works the same way. Here we
-/// use a made-up "product" namespace plus an "instrument" namespace to tag
-/// a 2-D field with semantic context.
+/// Tensogram is vocabulary-agnostic: the library never interprets metadata
+/// keys.  This example attaches two parallel per-object namespaces — a
+/// made-up "product" namespace plus an "instrument" namespace — to a 2-D
+/// field, to show how any domain can model its semantics inside base[i].
 ///
-/// The library never interprets any of these — it simply stores and returns
-/// the keys you supply. Meaning is assigned by the application layer.
+/// The library simply stores and returns the keys you supply; meaning is
+/// assigned by the application layer.
 
 #include <tensogram.hpp>
 

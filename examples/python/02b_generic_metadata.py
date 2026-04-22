@@ -8,19 +8,20 @@
 
 """Example 02b — Per-object metadata with a generic application namespace (Python)
 
-Shows that the metadata mechanism in example 02 is not specific to the MARS
-vocabulary — any application namespace works the same way. Here we use a
-made-up ``"product"`` namespace plus an ``"instrument"`` namespace to tag a
-2-D field with semantic context.
+Tensogram is vocabulary-agnostic: the library never interprets metadata
+keys.  This example attaches two parallel per-object namespaces — a
+made-up ``"product"`` namespace plus an ``"instrument"`` namespace — to a
+2-D field, to show how any domain can model its semantics inside
+``metadata["base"][i]``.
 
-The same pattern applies to any domain vocabulary:
+The same pattern fits any domain:
     - CF conventions (``"cf"``) for climate / atmospheric data
     - BIDS (``"bids"``) for neuroimaging datasets
     - DICOM (``"dicom"``) for medical imaging
     - Custom (``"experiment"``, ``"run"``, ``"device"``, ...)
 
-The library never interprets any of these — it simply stores and returns the
-keys you supply.  Meaning is assigned by the application layer.
+The library simply stores and returns the keys you supply; meaning is
+assigned by the application layer.
 """
 
 import numpy as np
