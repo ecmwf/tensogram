@@ -1,4 +1,4 @@
-name: Deploy Tensoscope
+name: Build Tensoscope
 
 on:
   push:
