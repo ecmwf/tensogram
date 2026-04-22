@@ -58,10 +58,14 @@ Read the current version from `VERSION` file. Bump to the target version.
 
 Update ALL of these locations (they MUST all match):
 - `VERSION` (the source of truth)
-- `Cargo.toml` in EVERY crate: tensogram, tensogram-encodings, tensogram-sz3,
-  tensogram-sz3-sys, tensogram-szip, tensogram-cli, tensogram-ffi, tensogram-python
-  (at `python/bindings/Cargo.toml`), tensogram-grib, tensogram-netcdf, tensogram-wasm,
-  tensogram-core (at `rust/tensogram-core-redirect/Cargo.toml`), benchmarks, examples/rust
+- Root `Cargo.toml` `[workspace.package] version` — since #74 the 9
+  in-workspace member crates (tensogram, tensogram-encodings, tensogram-szip,
+  tensogram-sz3, tensogram-sz3-sys, tensogram-cli, tensogram-ffi, benchmarks,
+  examples/rust) inherit via `version.workspace = true`, so this single edit
+  covers all of them.
+- `Cargo.toml` of each EXCLUDED crate (not workspace members — must be bumped
+  individually): tensogram-python (at `python/bindings/Cargo.toml`),
+  tensogram-grib, tensogram-netcdf, tensogram-wasm.
 - `pyproject.toml` in EVERY Python package: python/bindings, python/tensogram-xarray,
   python/tensogram-zarr, python/tensogram-anemoi, examples/jupyter
 - `typescript/package.json` AND `examples/typescript/package.json`
@@ -77,8 +81,6 @@ dependencies). These locations contain exact version pins that must match:
 - `rust/tensogram-cli/Cargo.toml` deps on tensogram + tensogram-grib + tensogram-netcdf
 - `rust/tensogram-ffi/Cargo.toml` deps on tensogram + tensogram-encodings
 - `rust/tensogram-wasm/Cargo.toml` dep on tensogram
-- `rust/tensogram-core-redirect/Cargo.toml` dep on tensogram (exact pin
-  `tensogram = { version = "=X.Y.Z" }`)
 - `python/tensogram-anemoi/pyproject.toml` dependency pin on `tensogram`
   (uses `>=X.Y.Z,<X.(Y+1)` — bump both bounds, mirrors the jupyter example)
 - `examples/jupyter/pyproject.toml` dependency pins on `tensogram` and
@@ -86,7 +88,7 @@ dependencies). These locations contain exact version pins that must match:
 
 Verify no stale version strings remain in first-party files only:
 ```bash
-# Rust (the rust/tensogram-*/ glob already includes tensogram-core-redirect)
+# Rust
 grep -r 'version = "OLD_VERSION"' --include='Cargo.toml' \
   VERSION Cargo.toml rust/tensogram-*/Cargo.toml python/bindings/Cargo.toml \
   rust/benchmarks/Cargo.toml examples/rust/Cargo.toml
@@ -136,12 +138,12 @@ Trigger each workflow manually and wait for completion between steps.
 All three registry workflows are `workflow_dispatch` only — none triggers
 the next automatically.
 
-1. Run `publish-crates.yml` (workflow_dispatch) — publishes 11 Rust crates
+1. Run `publish-crates.yml` (workflow_dispatch) — publishes 10 Rust crates
    in strict dependency order: tensogram-szip → tensogram-sz3-sys →
    tensogram-sz3 → tensogram-encodings → tensogram → tensogram-grib →
-   tensogram-netcdf → tensogram-ffi → tensogram-cli → tensogram-wasm →
-   tensogram-core (redirect). The workflow skips any crate whose version
-   is already on crates.io, so it is safe to re-run.
+   tensogram-netcdf → tensogram-ffi → tensogram-cli → tensogram-wasm.
+   The workflow skips any crate whose version is already on crates.io,
+   so it is safe to re-run.
 2. Smoke test: `cargo add tensogram@X.Y.Z` in a fresh project, `cargo build`
 3. Run `publish-pypi.yml` (workflow_dispatch, input `use_test_pypi=false`
    for production, `true` for Test PyPI). This single workflow builds
