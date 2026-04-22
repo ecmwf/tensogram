@@ -47,7 +47,7 @@ async function main(): Promise<void> {
 
   const enc = new StreamingEncoder({ version: 3 });
   try {
-    // Attach per-object metadata via write_preceder ahead of each data
+    // Attach per-object metadata via writePreceder ahead of each data
     // object — handy when application metadata is only known at
     // emission time.
     enc.writePreceder({ mars: { param: '2t', step: 0 }, units: 'K' });
