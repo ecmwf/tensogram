@@ -21,6 +21,15 @@ exclude = [
     "rust/tensogram-wasm",
 ]
 
+[workspace.package]
+version = "0.16.1"
+edition = "2024"
+rust-version = "1.87"
+authors = ["ECMWF <software@ecmwf.int>"]
+license = "Apache-2.0"
+repository = "https://github.com/ecmwf/tensogram"
+homepage = "https://sites.ecmwf.int/docs/tensogram/main"
+
 [workspace.dependencies]
 thiserror = "2"
 ciborium = "0.2"

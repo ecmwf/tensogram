@@ -1,17 +1,17 @@
 [package]
 name = "tensogram"
-version = "0.16.1"
-edition = "2024"
-rust-version = "1.87"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Fast binary N-tensor message format for scientific data — encode, decode, file I/O, streaming"
-repository = "https://github.com/ecmwf/tensogram"
-homepage = "https://sites.ecmwf.int/docs/tensogram/main"
 documentation = "https://docs.rs/tensogram"
 readme = "README.md"
 keywords = ["tensogram", "tensor", "scientific-data", "encoding", "serialization"]
 categories = ["science", "encoding"]
-authors = ["ECMWF <software@ecmwf.int>"]
 
 [package.metadata.docs.rs]
 all-features = true
