@@ -285,8 +285,8 @@ mod tests {
                     "encoding": "none", "filter": "none", "compression": "none"
                 }}"#
             );
-            let desc: DataObjectDescriptor = serde_json::from_str(&json)
-                .expect("deserialize should accept explicit byte_order");
+            let desc: DataObjectDescriptor =
+                serde_json::from_str(&json).expect("deserialize should accept explicit byte_order");
             assert_eq!(desc.byte_order, expected);
         }
     }
