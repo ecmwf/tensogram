@@ -110,7 +110,7 @@ int main() {
     std::string json =
         R"({"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[)" +
         std::to_string(N) +
-        R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
+        R"(],"strides":[8],"dtype":"float64",)"
         R"("encoding":"simple_packing","filter":"none","compression":"none",)"
         R"("bits_per_value":)" + std::to_string(bits_per_value) +
         R"(,"reference_value":)" + std::string(ref_buf) +
@@ -152,7 +152,7 @@ int main() {
 
     std::string raw_json =
         R"({"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[50],)"
-        R"("strides":[4],"dtype":"float32","byte_order":"little",)"
+        R"("strides":[4],"dtype":"float32",)"
         R"("encoding":"none","filter":"none","compression":"none"}]})";
 
     std::vector<std::pair<const std::uint8_t*, std::size_t>> raw_objects = {
@@ -179,7 +179,7 @@ int main() {
         // Pre-encoded simple_packing object
         std::string desc_sp =
             R"({"type":"ntensor","ndim":1,"shape":[)" + std::to_string(N) +
-R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
+R"(],"strides":[8],"dtype":"float64",)"
             R"("encoding":"simple_packing","filter":"none","compression":"none",)"
             R"("bits_per_value":)" + std::to_string(bits_per_value) +
             R"(,"reference_value":)" + std::string(ref_buf) +
@@ -192,7 +192,7 @@ R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
         // Pre-encoded encoding=none object
         std::string desc_raw =
             R"({"type":"ntensor","ndim":1,"shape":[50],"strides":[4],)"
-            R"("dtype":"float32","byte_order":"little",)"
+            R"("dtype":"float32",)"
             R"("encoding":"none","filter":"none","compression":"none"})";
         enc.write_object_pre_encoded(desc_raw,
                                      reinterpret_cast<const std::uint8_t*>(raw_data.data()),
