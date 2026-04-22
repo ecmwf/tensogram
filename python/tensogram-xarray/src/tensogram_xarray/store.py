@@ -97,7 +97,8 @@ class _DataVarPlan:
     shape: tuple[int, ...]
     # One entry per axis: (dim_name, came_from_generic_fallback).  A generic
     # fallback is the `dim_{axis}` name produced when no user kwarg, coord
-    # size-match, or ``_extra_["dim_names"]`` hint covers the axis.
+    # size-match, per-object ``base[i]["dim_names"]``, or
+    # ``_extra_["dim_names"]`` hint provides a name for that axis.
     dims_with_provenance: list[tuple[str, bool]]
     backend_array: TensogramBackendArray
     var_attrs: dict[str, Any]
