@@ -12,8 +12,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   messages that mix objects of different ranks without CF-recognised
   coordinate names.  Generic `dim_N` fallback names that would collide
   across variables of different shapes are renamed to
-  `obj_{i}_dim_{axis}` so the Dataset opens cleanly.  Coord-matched
-  and hint-supplied names are never auto-renamed.
+  `obj_{i}_dim_{axis}` so the Dataset opens cleanly.  Coordinate dim
+  names are never auto-renamed; hinted names that claim conflicting
+  sizes across objects emit a warning and are renamed to the same
+  per-object form as generic fallbacks so the Dataset still opens.
   ([#66](https://github.com/ecmwf/tensogram/issues/66))
 
 - `tensogram-xarray`: `open_datasets()` and `merge_objects=True` now

@@ -844,9 +844,14 @@ def _consistent_hint_meta(
 ) -> Mapping[str, Any] | None:
     """Return a representative per-object meta if all hints agree, else ``None``.
 
+    Inspects ``obj.per_object_meta`` (from ``meta.base[i]``) exclusively —
+    not ``merged_meta``, which also folds in ``common_meta`` and would
+    mis-classify a message-level ``_extra_["dim_names"]`` list as a
+    per-object hint.
+
     Objects without a valid per-object ``dim_names`` hint are skipped.
-    If every object with a hint supplies the *same* list, the first such
-    object's meta is returned (its ``dim_names`` drives the resolver).
+    If every object with a hint supplies the *same* list, that object's
+    ``per_object_meta`` is returned (its ``dim_names`` drives the resolver).
     If two objects supply *different* valid hints, a warning is logged
     and ``None`` is returned so the resolver falls through to
     ``_extra_["dim_names"]`` and the generic fallback.
@@ -854,13 +859,13 @@ def _consistent_hint_meta(
     seen: list[tuple[str, ...]] = []
     representative: Mapping[str, Any] | None = None
     for obj in objects:
-        parsed = parse_per_object_dim_names(ndim, obj.merged_meta)
+        parsed = parse_per_object_dim_names(ndim, obj.per_object_meta)
         if parsed is None:
             continue
         parsed_tuple = tuple(parsed)
         if not seen:
             seen.append(parsed_tuple)
-            representative = obj.merged_meta
+            representative = obj.per_object_meta
         elif parsed_tuple not in seen:
             seen.append(parsed_tuple)
     if len(seen) > 1:

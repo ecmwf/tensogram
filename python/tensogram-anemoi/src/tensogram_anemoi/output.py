@@ -151,6 +151,7 @@ class TensogramOutput(Output):
                 {
                     "name": _COORD_NAME_MAP[coord_name],
                     "anemoi": {"variable": coord_name},
+                    "dim_names": [_COORD_NAME_MAP[coord_name]],
                 }
             )
             descriptors_and_data.append(
