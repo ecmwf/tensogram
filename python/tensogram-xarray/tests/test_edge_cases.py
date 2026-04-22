@@ -749,10 +749,11 @@ class TestMixedRankDimCollision:
 
     def test_build_dataset_shares_coord_when_other_hint_is_wrong(self, tmp_path: Path):
         """End-to-end: a data var legitimately using coord 'latitude' keeps
-        that dim when another var's bad hint triggers disambiguation."""
+        that dim when another var's bad hint triggers disambiguation — and
+        xarray actually treats the shared dim as aligned for indexing."""
         path = str(tmp_path / "coord_shared.tgm")
         lat = np.linspace(-90, 90, 5, dtype=np.float64)
-        legit = np.ones((5, 7), dtype=np.float32)
+        legit = np.arange(35, dtype=np.float32).reshape(5, 7)
         wrong = np.ones((7,), dtype=np.float32)
         meta = {
             "version": 2,
@@ -776,6 +777,10 @@ class TestMixedRankDimCollision:
         assert ds["legit"].dims[0] == "latitude"
         assert ds["wrong"].dims == ("obj_2_dim_0",)
         assert ds.coords["latitude"].shape == (5,)
+        # Runtime alignment: indexing via the shared coord must work.
+        slice_at_lat0 = ds["legit"].isel(latitude=0).values
+        np.testing.assert_array_equal(slice_at_lat0, legit[0])
+        assert ds["legit"].sel(latitude=lat[2]).values.tolist() == legit[2].tolist()
 
 
 # ---------------------------------------------------------------------------
