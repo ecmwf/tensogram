@@ -24,35 +24,42 @@
 > [!IMPORTANT]
 > This software is **Emerging** and subject to ECMWF's guidelines on [Software Maturity](https://github.com/ecmwf/codex/raw/refs/heads/main/Project%20Maturity).
 
-A library to encode and decode binary N-tensor scientific data with semantic metadata close to the data, in a serialisable format that can be sent over the network, encoded into in-memory buffers, and decoded with zero-copy.
+A library to encode and decode binary N-tensor scientific data with semantic metadata attached to the data.
 
-Tensogram is designed for scientific computing at scale — weather and climate, Earth observation, medical and microscopy imaging, genomics, particle physics, materials simulation, and machine learning. It is vocabulary-agnostic: the library never interprets metadata keys, so application layers (MARS, CF conventions, BIDS, DICOM, in-house namespaces) own meaning.
+Tensogram is designed for scientific computing at scale — Machine Learning, Weather and Climate, Earth observation, Fluid mechanics, Medical and Microscopy imaging, Materials simulation, etc. It is vocabulary-agnostic: the library never interprets metadata keys, so application layers (conventions, in-house namespaces, etc) own meaning.
 
-Tensogram defines a network-transmissible binary message format, not a file format. Multiple messages can be appended to a file, each carrying its own begin/terminator codes.
+Tensogram defines a binary message format, not strictly a file format. Multiple messages can be appended to a file, each carrying its own begin/terminator codes. This means it is a serialisable format that can be sent over the network, encoded into in-memory buffers, saved to file-systems, stored in archival systems and decoded with zero-copy.
 
 ## Features
 
 - **Self-describing messages** — CBOR-encoded metadata vocabulary agnostic
 - **N-Tensor support** — multiple tensors of different dtypes per message (float16 through float64, int8 through int64, complex, bfloat16)
-- **No panics** — robust library where all fallible operations return `Result<T, TensogramError>`
+- **Robustness** — robust Rust library with 'no panic' policy where all fallible operations return `Result<T, TensogramError>`
 - **File API** — `TensogramFile` for multi-message `.tgm` files: append, random-access read, iterate, and decode individual messages or objects
-- **Partial decode** — `decode_range` extracts sub-tensor slices without decoding the full object, with random-access support for szip, blosc2, and zfp
+- **Partial decode** — `decode_range` minimises IO by extracting sub-tensor slices without decoding the full data objects, with random-access support for szip, blosc2, and zfp.
 - **Remote access** — read `.tgm` files directly from S3, GCS, Azure Blob, or HTTP via `object_store` integration (`open_remote`, `open_source`)
 - **Async API** — full async counterparts for file open, message read, decode, and iteration via tokio (`open_async`, `decode_message_async`, etc.)
 - **Streaming encoder** — progressive encode/transmit without buffering the full message; preceder metadata frames enable consumer-side streaming decode
 - **Compression** — szip, zstd, lz4, blosc2, zfp, sz3 per data object; pure-Rust backends available (`szip-pure`, `zstd-pure`) for environments without C libraries
-- **Hash verification** — xxHash xxh3-64 integrity check per object
+- **Hash verification** — xxHash xxh3-64 integrity check per frame
 - **Validation** — 4-level structural and data integrity validation with optional JSON output (`tensogram validate --quick|--checksum|--full`)
+- **CLI** — `tensogram info/ls/dump/get/set/copy/merge/split/reshuffle/convert-grib/convert-netcdf` with `--strategy first|last|error` merge conflict resolution
+- **Optional features** — `mmap` (zero-copy file reads), `async` (tokio I/O), `remote` (S3/GCS/Azure/HTTP)
+
+## Language Support
+
 - **Multiple languages** — Rust, Python (NumPy), C/C++, WebAssembly
 - **Free-threaded Python** — GIL-free operation on Python 3.13t with full parallel encode/decode
+
+## Extensions
+
 - **xarray backend** — `xr.open_dataset("file.tgm", engine="tensogram")` with lazy loading, coordinate auto-detection, and hypercube stacking via `open_datasets()`
 - **Dask integration** — parallel chunked computation via `xr.open_dataset(..., chunks={})` with per-chunk `decode_range` for efficient out-of-core processing
 - **Zarr v3 store** — `zarr.open_group(store=TensogramStore.open_tgm("file.tgm"), mode="r")` for standard Zarr API access with 14 bidirectionally-mapped dtypes
-- **anemoi-inference output** — store AI weather forecast steps directly to `.tgm` via an auto-discovered plugin; each step is encoded and appended immediately, with optional pressure-level stacking, lossy simple packing, variable filtering, and remote (S3/GCS/Azure) output
+- **Anemoi-inference output** — store AI weather forecast steps directly to `.tgm` via an auto-discovered plugin; each step is encoded and appended immediately, with optional pressure-level stacking, lossy simple packing, variable filtering, and remote (S3/GCS/Azure) output
 - **GRIB import** — bring GRIB data into Tensogram with ecCodes-driven metadata lifting and configurable namespace extraction
 - **NetCDF import** — bring NetCDF-3 and NetCDF-4 files in with CF metadata lifting (`--cf`), packed-data unpacking, and a configurable encoding/compression pipeline shared with `convert-grib`
-- **CLI** — `tensogram info/ls/dump/get/set/copy/merge/split/reshuffle/convert-grib/convert-netcdf` with `--strategy first|last|error` merge conflict resolution
-- **Optional features** — `mmap` (zero-copy file reads), `async` (tokio I/O), `remote` (S3/GCS/Azure/HTTP)
+
 
 ## Installation
 
@@ -134,10 +141,8 @@ See `examples/rust/` for metadata, streaming, compression, the file API, and mor
 data = np.random.randn(100, 200).astype(np.float32)
 # Application metadata (names, units, vocabularies) lives in meta["base"][i].
 # The "product" key below is an example namespace — the library is
-# vocabulary-agnostic, so any application-defined keys work the same way
-# (MARS, CF, BIDS, DICOM, or your own).  The descriptor dict is strictly
-# for tensor shape/dtype and encoding parameters; put "name"/"units"/etc.
-# there and xarray/zarr fall back but emit a UserWarning.
+# vocabulary-agnostic, so any application-defined keys work the same way.
+# The descriptor dict is strictly for tensor shape/dtype and encoding parameters.
 msg = tensogram.encode(
     {"version": 3, "base": [{"product": {"name": "temperature", "units": "K"}}]},
     [({"type": "ntensor", "shape": [100, 200], "dtype": "float32",
@@ -223,9 +228,6 @@ support is provided. For questions, bug reports, or feature requests please
 [open a GitHub issue](https://github.com/ecmwf/tensogram/issues) or a pull
 request. Contributions — bug fixes, documentation, new language bindings,
 integrations with domain tooling — are welcome.
-
-For general enquiries about ECMWF software, visit the
-[ECMWF Support Portal](https://support.ecmwf.int).
 
 ## Documentation
 
