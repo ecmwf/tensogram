@@ -11,7 +11,7 @@
 
 .PHONY: help all check test lint fmt docs clean \
         rust-check rust-test rust-lint rust-fmt rust-clippy \
-        python-build python-test python-lint python-fmt \
+        python-build python-dist python-dist-extras python-test python-lint python-fmt \
         cpp-build cpp-test \
         wasm-test docs-build \
         ts-install ts-build ts-test ts-typecheck
@@ -48,11 +48,20 @@ MATURIN ?= uv run --with maturin maturin
 RUFF    ?= uv run --with ruff ruff
 RUFF_CFG ?= python/bindings/pyproject.toml
 
-python-build: ## Build Python bindings via maturin
+python-build: ## Build Python bindings via maturin (dev install into .venv)
 	if [ ! -d .venv ] ; then uv venv ; fi
 	cd python/bindings && $(MATURIN) develop --release --uv
 	uv pip install ./python/tensogram-xarray
 	uv pip install ./python/tensogram-zarr
+
+python-dist: ## Build tensogram distributable wheels for the current platform
+	if [ ! -d .venv ] ; then uv venv ; fi
+	cd python/bindings && $(MATURIN) build --release --out dist --find-interpreter
+
+python-dist-extras: ## Build distributable wheels for pure-Python extra packages
+	uv build python/tensogram-xarray --out-dir dist/extras
+	uv build python/tensogram-zarr --out-dir dist/extras
+	uv build python/tensogram-anemoi --out-dir dist/extras
 
 python-test: python-build ## Run all Python tests
 	# TODO pip installs should come from workspace-level pyproject
