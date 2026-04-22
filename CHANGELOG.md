@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-04-22
+
 ### Fixed
 
 - `tensogram-zarr`: `TensogramStore` now falls back to descriptor-level
