@@ -89,6 +89,30 @@ fn blosc2_nthreads(n: u32) -> usize {
     if n == 0 { 1 } else { n as usize }
 }
 
+/// Derive the effective per-chunk byte size from a caller's request.
+///
+/// - Floored to a multiple of `typesize` so non-tail SChunk appends
+///   are aligned for blosc2's shuffle / bitshuffle filters.
+/// - Clamped downward to [`BLOSC2_MAX_BUFFERSIZE`] so every
+///   `SChunk::append()` call stays legal regardless of how the caller
+///   (or a mis-validated `typesize`) arrived here.
+/// - Clamped upward to at least one `typesize` so chunks always hold
+///   at least one element; in the `requested < typesize` edge case
+///   the effective size therefore exceeds the request.
+/// - `typesize == 0` is treated as 1 for arithmetic well-definedness
+///   (blosc2 itself rejects 0 in `CParams::typesize()` earlier, this
+///   is defence in depth).
+///
+/// Extracted from `Blosc2Compressor::compress_with_chunk_bytes` so the
+/// clamp properties can be unit-tested without allocating multi-GiB
+/// buffers.
+#[inline]
+fn effective_chunk_bytes(requested: usize, typesize: usize) -> usize {
+    let ts = typesize.max(1);
+    let capped = requested.min(BLOSC2_MAX_BUFFERSIZE);
+    ((capped / ts).max(1) * ts).min(BLOSC2_MAX_BUFFERSIZE)
+}
+
 impl Blosc2Compressor {
     fn build_cparams(&self) -> Result<CParams, CompressionError> {
         let algo = codec_to_algo(&self.codec);
@@ -134,15 +158,7 @@ impl Blosc2Compressor {
 
         let mut schunk = SChunk::new(cparams, dparams).map_err(map_err)?;
 
-        // Floor to a multiple of `typesize` so non-tail appends stay
-        // aligned for blosc2's shuffle filter, clamp upward to at least
-        // one `typesize` to guarantee forward progress, and clamp
-        // downward to `BLOSC2_MAX_BUFFERSIZE` so every append stays below
-        // blosc2's per-call limit regardless of how the caller (or a
-        // mis-validated `typesize`) arrived here.
-        let ts = self.typesize.max(1);
-        let capped = requested_chunk_bytes.min(BLOSC2_MAX_BUFFERSIZE);
-        let chunk_bytes = ((capped / ts).max(1) * ts).min(BLOSC2_MAX_BUFFERSIZE);
+        let chunk_bytes = effective_chunk_bytes(requested_chunk_bytes, self.typesize);
 
         if data.len() <= chunk_bytes {
             // Fast path: inputs that fit in one chunk produce byte-identical
@@ -625,13 +641,15 @@ mod tests {
         assert_eq!(decompressed, data);
     }
 
-    /// A caller who constructs `Blosc2Compressor` directly with a
-    /// `chunk_bytes` larger than `BLOSC2_MAX_BUFFERSIZE` (2 GiB) must
-    /// still round-trip: the clamp in `compress()` keeps every
-    /// `schunk.append()` below the C limit.  This guards against the
-    /// original issue #68 re-emerging through a misconfigured field.
+    /// Accepting an oversized chunk-size request without error.  This
+    /// is a shallow integration test — the small input takes the
+    /// single-append fast path, so it only proves `compress()` does
+    /// not crash or error when the caller asks for more than 2 GiB.
+    /// The actual clamp-value property is verified directly by the
+    /// unit tests on `effective_chunk_bytes` below, without requiring
+    /// a > 2 GiB allocation at test time.
     #[test]
-    fn blosc2_chunk_bytes_above_max_buffersize_is_clamped() {
+    fn blosc2_oversized_chunk_bytes_request_round_trips() {
         let data: Vec<u8> = (0..8192).map(|i| (i % 251) as u8).collect();
         let compressor = small_chunk_compressor();
         let compressed = compressor
@@ -640,5 +658,78 @@ mod tests {
             .data;
         let decompressed = compressor.decompress(&compressed, data.len()).unwrap();
         assert_eq!(decompressed, data);
+    }
+
+    /// Direct unit test for the clamp: any request above
+    /// `BLOSC2_MAX_BUFFERSIZE` must be capped below it so every
+    /// `SChunk::append()` call stays legal.  Regression guard against
+    /// issue #68 re-emerging via a mis-configured request.
+    #[test]
+    fn effective_chunk_bytes_never_exceeds_blosc2_max() {
+        for ts in [1usize, 2, 4, 8, 16, 32, 64, 128, 255] {
+            for &req in &[
+                0usize,
+                1,
+                BLOSC2_MAX_BUFFERSIZE / 2,
+                BLOSC2_MAX_BUFFERSIZE - 1,
+                BLOSC2_MAX_BUFFERSIZE,
+                BLOSC2_MAX_BUFFERSIZE + 1,
+                BLOSC2_MAX_BUFFERSIZE + (1 << 30),
+                usize::MAX,
+            ] {
+                let got = effective_chunk_bytes(req, ts);
+                assert!(
+                    got <= BLOSC2_MAX_BUFFERSIZE,
+                    "effective_chunk_bytes({req}, {ts}) = {got} exceeds BLOSC2_MAX_BUFFERSIZE = {BLOSC2_MAX_BUFFERSIZE}",
+                );
+            }
+        }
+    }
+
+    /// Every result is a multiple of `typesize` (or `1` if `typesize`
+    /// is `0`), guaranteeing non-tail SChunk appends are aligned for
+    /// blosc2's shuffle / bitshuffle filters.
+    #[test]
+    fn effective_chunk_bytes_is_typesize_aligned() {
+        for ts in [1usize, 2, 3, 4, 7, 8, 16, 32, 64, 128, 255] {
+            for &req in &[0usize, 1, 7, 8, 9, 4095, 4096, 4097, 1 << 20, 1 << 30] {
+                let got = effective_chunk_bytes(req, ts);
+                assert_eq!(
+                    got % ts,
+                    0,
+                    "effective_chunk_bytes({req}, {ts}) = {got} not a multiple of {ts}",
+                );
+                assert!(
+                    got >= ts,
+                    "effective_chunk_bytes({req}, {ts}) = {got} below typesize",
+                );
+            }
+        }
+    }
+
+    /// When `requested < typesize` the helper rounds UP to exactly one
+    /// `typesize` so chunks always hold at least one whole element.
+    /// This is the edge case called out in
+    /// `compress_with_chunk_bytes`'s docstring.
+    #[test]
+    fn effective_chunk_bytes_rounds_up_below_typesize() {
+        assert_eq!(effective_chunk_bytes(0, 8), 8);
+        assert_eq!(effective_chunk_bytes(1, 8), 8);
+        assert_eq!(effective_chunk_bytes(7, 8), 8);
+        assert_eq!(effective_chunk_bytes(8, 8), 8);
+    }
+
+    /// `typesize == 0` is rejected earlier by `CParams::typesize()`
+    /// in blosc2, but the helper defensively treats it as `1` so the
+    /// arithmetic is well-defined even if that validation is bypassed
+    /// in some future code path.
+    #[test]
+    fn effective_chunk_bytes_zero_typesize_is_defensive() {
+        assert_eq!(effective_chunk_bytes(0, 0), 1);
+        assert_eq!(effective_chunk_bytes(4096, 0), 4096);
+        assert_eq!(
+            effective_chunk_bytes(BLOSC2_MAX_BUFFERSIZE + 1, 0),
+            BLOSC2_MAX_BUFFERSIZE
+        );
     }
 }
