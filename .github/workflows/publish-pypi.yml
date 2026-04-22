@@ -13,26 +13,33 @@ jobs:
 
   build-tensogram-linux:
     name: Build tensogram wheels (Linux x86_64)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
+      - uses: dtolnay/rust-toolchain@stable
 
-      # Uses the same maturin build args as `make python-dist`, wrapped in the
-      # manylinux_2_28 container that is required for Linux-compatible wheels.
-      - uses: PyO3/maturin-action@v1
-        with:
-          working-directory: python/bindings
-          target: x86_64
-          manylinux: manylinux_2_28
-          args: --release --out dist --find-interpreter
-          before-script-linux: yum install -y clang-devel
-          sccache: true
+      - uses: astral-sh/setup-uv@v3
+
+      # Install all supported CPython versions (including free-threaded) so
+      # they are available to maturin via explicit --interpreter flags.
+      # Maturin produces manylinux-tagged wheels automatically on Linux.
+      - name: Install supported CPython versions
+        run: |
+          uv python install \
+            3.11 3.12 3.13 3.14 \
+            cpython-3.13+freethreaded cpython-3.14+freethreaded
+
+      - name: Build wheels
+        run: |
+          ARGS=""
+          for v in 3.11 3.12 3.13 3.14 \
+                   cpython-3.13+freethreaded cpython-3.14+freethreaded; do
+            ARGS="$ARGS --interpreter $(uv python find $v)"
+          done
+          make python-dist MATURIN_INTERP_ARGS="$ARGS"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -56,13 +63,13 @@ jobs:
       - name: Install supported CPython versions
         run: |
           uv python install \
-            3.9 3.10 3.11 3.12 3.13 3.14 \
+            3.11 3.12 3.13 3.14 \
             cpython-3.13+freethreaded cpython-3.14+freethreaded
 
       - name: Build wheels
         run: |
           ARGS=""
-          for v in 3.9 3.10 3.11 3.12 3.13 3.14 \
+          for v in 3.11 3.12 3.13 3.14 \
                    cpython-3.13+freethreaded cpython-3.14+freethreaded; do
             ARGS="$ARGS --interpreter $(uv python find $v)"
           done
@@ -71,35 +78,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-tensogram-macos-arm64
-          path: python/bindings/dist/
-
-  build-tensogram-freethreaded:
-    name: Build tensogram free-threaded wheels (Linux)
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: astral-sh/setup-uv@v3
-
-      - name: Install free-threaded Python versions
-        run: |
-          uv python install cpython-3.13+freethreaded cpython-3.14+freethreaded
-
-      - name: Build free-threaded wheels
-        run: |
-          ARGS=""
-          for v in cpython-3.13+freethreaded cpython-3.14+freethreaded; do
-            ARGS="$ARGS --interpreter $(uv python find $v)"
-          done
-          make python-dist MATURIN_INTERP_ARGS="$ARGS"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheels-tensogram-freethreaded
           path: python/bindings/dist/
 
   # ── Pure-Python extras (hatchling) ────────────────────────────────────────
@@ -131,7 +109,6 @@ jobs:
     needs:
       - build-tensogram-linux
       - build-tensogram-macos
-      - build-tensogram-freethreaded
       - build-extras
     runs-on: ubuntu-latest
     environment: ${{ inputs.use_test_pypi && 'test-pypi' || 'pypi' }}
