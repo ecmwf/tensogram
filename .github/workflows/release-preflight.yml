@@ -83,7 +83,8 @@ jobs:
           for pytoml in \
             python/bindings/pyproject.toml \
             python/tensogram-xarray/pyproject.toml \
-            python/tensogram-zarr/pyproject.toml; do
+            python/tensogram-zarr/pyproject.toml \
+            python/tensogram-anemoi/pyproject.toml; do
             VER=$(grep '^version' "$pytoml" | head -1 | sed 's/.*"\(.*\)"/\1/')
             check_version "$pytoml" "$VER"
           done

@@ -18,9 +18,9 @@
 
 - **Workspace.** Default Rust workspace + optional Rust crates
   (`tensogram-grib`, `tensogram-netcdf`, `tensogram-wasm`) + the PyO3
-  `python/bindings` crate + two separate Python packages
-  (`tensogram-xarray`, `tensogram-zarr`). See `ARCHITECTURE.md` for the
-  full crate list and what each one does.
+  `python/bindings` crate + three separate Python packages
+  (`tensogram-xarray`, `tensogram-zarr`, `tensogram-anemoi`). See
+  `ARCHITECTURE.md` for the full crate list and what each one does.
 - **Quality bar.** Zero clippy warnings, zero ruff issues,
   `panic = "abort"` on both release and dev profiles. Library code
   avoids `unwrap`/`expect`/`panic!` on any fallible input path;
@@ -823,3 +823,22 @@ byte-for-byte cross-language verification:
 - **Bindings.** `PyO3`, `pyo3-async-runtimes`, `cbindgen`,
   `wasm-bindgen`, `wasm-pack`.
 - **Dev.** `tempfile`, `proptest`, GoogleTest (FetchContent).
+
+## anemoi-inference output plugin (`tensogram-anemoi`)
+
+Standalone pip package at `python/tensogram-anemoi/` that registers
+`TensogramOutput` as an anemoi-inference output plugin.
+
+| Component | What was built |
+|-----------|---------------|
+| `src/tensogram_anemoi/output.py` | `TensogramOutput(Output)` — writes each forecast step as one tensogram message |
+| `pyproject.toml` | `setuptools-scm` build, entry point `anemoi.inference.outputs = tensogram` |
+| `tests/test_tensogram_output.py` | Round-trip, encoding, stacking, remote fsspec, metadata |
+
+**Design decisions:**
+- Registered via `[project.entry-points."anemoi.inference.outputs"]` so anemoi-inference discovers it on install — no fork required.
+- All parameters after `path` are keyword-only (enforced with `*`).
+- Per-object MARS keys (`date`, `time`, `step`) live in `base[i]["mars"]`; no redundant copy in `_extra_`.
+- Pressure-level stacking produces 2-D `(n_grid, n_levels)` objects with `"levelist": [...]` in the `"anemoi"` namespace (MARS convention).
+- `_extra_["dim_names"]` carries axis-size→name hints for the tensogram-xarray backend.
+- Coordinate arrays (lat/lon) use `"grid_latitude"` / `"grid_longitude"` names, outside `KNOWN_COORD_NAMES`, so all objects share one flat dimension in xarray.

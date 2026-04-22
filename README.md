@@ -48,6 +48,7 @@ Tensogram defines a network-transmissible binary message format, not a file form
 - **xarray backend** — `xr.open_dataset("file.tgm", engine="tensogram")` with lazy loading, coordinate auto-detection, and hypercube stacking via `open_datasets()`
 - **Dask integration** — parallel chunked computation via `xr.open_dataset(..., chunks={})` with per-chunk `decode_range` for efficient out-of-core processing
 - **Zarr v3 store** — `zarr.open_group(store=TensogramStore.open_tgm("file.tgm"), mode="r")` for standard Zarr API access with 14 bidirectionally-mapped dtypes
+- **anemoi-inference output** — store AI weather forecast steps directly to `.tgm` via an auto-discovered plugin; each step is encoded and appended immediately, with optional pressure-level stacking, lossy simple packing, variable filtering, and remote (S3/GCS/Azure) output
 - **GRIB import** — bring GRIB data into Tensogram with ecCodes-driven metadata lifting and configurable namespace extraction
 - **NetCDF import** — bring NetCDF-3 and NetCDF-4 files in with CF metadata lifting (`--cf`), packed-data unpacking, and a configurable encoding/compression pipeline shared with `convert-grib`
 - **CLI** — `tensogram info/ls/dump/get/set/copy/merge/split/reshuffle/convert-grib/convert-netcdf` with `--strategy first|last|error` merge conflict resolution
@@ -76,6 +77,25 @@ With xarray and Zarr backends:
 ```bash
 pip install tensogram[all]
 ```
+
+### anemoi-inference plugin
+
+```bash
+pip install tensogram-anemoi
+```
+
+Once installed, anemoi-inference auto-discovers the output plugin. Configure it in your run YAML:
+
+```yaml
+output:
+  tensogram:
+    path: forecast.tgm       # local path or s3://, gs://, az://, ...
+    compression: zstd        # none | zstd | lz4 | szip | blosc2
+    dtype: float32
+    stack_pressure_levels: true
+```
+
+Each forecast step is encoded and appended to the `.tgm` file as it is produced. See `examples/python/` and the [plugin docs](docs/src/guide/anemoi-plugin.md) for the full option reference and reading the output back.
 
 ### CLI
 
@@ -240,6 +260,7 @@ python/
 ├── bindings/             Python bindings (PyO3, excluded from default build)
 ├── tensogram-xarray/     xarray backend engine (Python package)
 ├── tensogram-zarr/       Zarr v3 store backend (Python package)
+├── tensogram-anemoi/     anemoi-inference output plugin (Python package)
 └── tests/                Python test suite
 cpp/
 ├── include/              C++ wrapper header + C header
