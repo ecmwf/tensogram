@@ -286,10 +286,16 @@ Application metadata belongs in `meta["base"][i]`, not in the descriptor
 dict.  The descriptor is only for tensor shape/dtype and encoding
 parameters (`reference_value`, `bits_per_value`, ...).  Unknown keys in
 a descriptor dict are still preserved for wire compatibility (they land
-in `DataObjectDescriptor.params`), and xarray / zarr fall back to them
-for variable naming, but `tensogram.encode()` and
-`TensogramFile.append()` emit a `UserWarning` pointing at the canonical
-location.  See [issue #67](https://github.com/ecmwf/tensogram/issues/67).
+in `DataObjectDescriptor.params`), and the xarray backend's per-object
+merge picks them up as a last-resort fallback — so naming-chain keys
+(`name`, `mars.param`, `param`, `mars.shortName`, `shortName`) and the
+`dim_names` hint still reach the consumer from either source.  Other
+keys (`units`, `long_name`, `description`, ...) survive on the
+descriptor but only reach xarray-visible attributes through the same
+fallback, which is why `tensogram.encode()`, `encode_pre_encoded()`,
+`TensogramFile.append()`, and `StreamingEncoder.write_object*()` emit a
+`UserWarning` pointing at the canonical location.  See
+[issue #67](https://github.com/ecmwf/tensogram/issues/67).
 
 ---
 
