@@ -18,7 +18,7 @@
 #include <cstdlib>
 #include <vector>
 
-/// Build JSON for a simple 10x20 float32 message with MARS metadata.
+/// Build JSON for a simple 10x20 float32 message with per-object metadata.
 static std::string make_json(const char* param, int step) {
     char buf[512];
     std::snprintf(buf, sizeof(buf),

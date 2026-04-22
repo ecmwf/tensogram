@@ -54,8 +54,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         extra: {
             let mut m = BTreeMap::new();
             m.insert(
-                "centre".to_string(),
-                ciborium::Value::Text("ecmwf".to_string()),
+                "source".to_string(),
+                ciborium::Value::Text("streaming-example".to_string()),
             );
             m
         },
