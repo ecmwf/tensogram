@@ -8,7 +8,6 @@
 **/pkg
 **/build/
 python/**/dist/
-python/bindings/Cargo.lock
 
 /docs/book
 **/.venv
@@ -24,6 +23,7 @@ python/bindings/Cargo.lock
 *~
 .DS_Store
 .idea/
-rust/tensogram-grib/Cargo.lock
-rust/tensogram-netcdf/Cargo.lock
-rust/tensogram-wasm/Cargo.lock
+
+# TODO we may want to actually commit those, but ignoring for now
+**/Cargo.lock
+**/uv.lock
