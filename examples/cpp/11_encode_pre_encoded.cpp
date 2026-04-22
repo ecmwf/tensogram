@@ -18,14 +18,9 @@
 /// themselves and Tensogram wraps it into the wire format.
 ///
 /// Build:
-///   cmake -B build && cmake --build build
-///   Then compile manually (or add to your CMakeLists.txt):
-///   g++ -std=c++17 -I include -I crates/tensogram-ffi \
-///       examples/cpp/11_encode_pre_encoded.cpp \
-///       -L target/release -ltensogram_ffi \
-///       -framework CoreFoundation -framework Security \
-///       -framework SystemConfiguration -lc++ -lm \
-///       -o build/example_11
+///   cmake -S cpp -B build -DCMAKE_BUILD_TYPE=Release
+///   cmake --build build -j
+///   ./build/bin/11_encode_pre_encoded
 
 #include <tensogram.hpp>
 
@@ -84,7 +79,7 @@ int main() {
     constexpr std::uint32_t bits_per_value = 16;
     constexpr std::int32_t decimal_scale_factor = 0;
 
-    tgm_error err = tgm_simple_packing_compute_params(
+    [[maybe_unused]] tgm_error err = tgm_simple_packing_compute_params(
         temps.data(), temps.size(),
         bits_per_value, decimal_scale_factor,
         &reference_value, &binary_scale_factor);
@@ -139,7 +134,7 @@ int main() {
     assert(obj.dtype_string() == "float64");
 
     const double* decoded = obj.data_as<double>();
-    const std::size_t count = obj.element_count<double>();
+    [[maybe_unused]] const std::size_t count = obj.element_count<double>();
     assert(count == static_cast<std::size_t>(N));
 
     double max_err = 0.0;
@@ -168,7 +163,7 @@ int main() {
     auto raw_msg = tensogram::encode_pre_encoded(raw_json, raw_objects);
     auto raw_decoded = tensogram::decode(raw_msg.data(), raw_msg.size());
     auto raw_obj = raw_decoded.object(0);
-    const float* rp = raw_obj.data_as<float>();
+    [[maybe_unused]] const float* rp = raw_obj.data_as<float>();
     for (int i = 0; i < 50; ++i) {
         assert(rp[i] == static_cast<float>(i));
     }
@@ -223,7 +218,7 @@ R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
 
     // Verify encoding=none object
     auto s1 = stream_msg.object(1);
-    const float* sp1 = s1.data_as<float>();
+    [[maybe_unused]] const float* sp1 = s1.data_as<float>();
     for (int i = 0; i < 50; ++i) {
         assert(sp1[i] == static_cast<float>(i));
     }
