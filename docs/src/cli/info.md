@@ -20,7 +20,7 @@ tensogram info [FILES]...
 $ tensogram info forecast.tgm
 Messages : 48
 File size: 1.2 GB
-Version  : 1
+Version  : 3
 ```
 
 ## What it Shows

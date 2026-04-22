@@ -4,7 +4,7 @@ Metadata in Tensogram is stored as **CBOR** -- Concise Binary Object Representat
 
 ## Metadata Locations
 
-In v2, metadata lives in two distinct places:
+In v3, metadata lives in two distinct places:
 
 | Level | Where it lives | What it contains |
 |---|---|---|
@@ -19,7 +19,7 @@ The global metadata frame contains a `GlobalMetadata` struct with three named se
 
 ```rust
 GlobalMetadata {
-    version: 2,
+    version: 3,
     base: Vec::new(),              // one BTreeMap per data object (independent entries)
     reserved: BTreeMap::new(),     // library internals (_reserved_ in CBOR)
     extra: BTreeMap::new(),        // client-writable catch-all (_extra_ in CBOR)
@@ -31,7 +31,7 @@ vocabulary):
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "base": [
     {
       "mars": {
@@ -51,7 +51,7 @@ pipeline might use a BIDS namespace:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "base": [{
     "bids": { "subject": "sub-01", "session": "ses-01",
               "task": "rest", "run": 1 }
@@ -63,7 +63,7 @@ A materials-simulation pipeline might use a custom namespace:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "base": [{
     "material": { "composition": "Fe3O4", "lattice": "cubic", "T_K": 300.0 }
   }]
@@ -137,7 +137,7 @@ MARS vocabulary lives under `"mars"`:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "base": [
     {
       "mars": {
@@ -179,7 +179,7 @@ A preceder carries a `GlobalMetadata` CBOR with a single-entry `base` array for 
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "base": [{"product": {"name": "temperature"}, "units": "K"}]
 }
 ```

@@ -37,7 +37,7 @@ pub fn encode_pre_encoded(
 import tensogram
 
 msg: bytes = tensogram.encode_pre_encoded(
-    global_meta_dict={"version": 2},
+    global_meta_dict={"version": 3},
     descriptors_and_data=[(descriptor_dict, raw_bytes)],
     hash="xxh3",
 )
@@ -139,8 +139,8 @@ let desc = DataObjectDescriptor {
     encoding: "simple_packing".into(),
     filter: "none".into(),
     compression: "szip".into(),
+    masks: None,
     params,
-    hash: None,
 };
 
 let msg = encode_pre_encoded(
@@ -202,7 +202,7 @@ enc.finish()?;
 
 ### Python
 ```python
-enc = tensogram.StreamingEncoder({"version": 2})
+enc = tensogram.StreamingEncoder({"version": 3})
 enc.write_object_pre_encoded(descriptor_dict, raw_bytes)
 msg = enc.finish()
 ```

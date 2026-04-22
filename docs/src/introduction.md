@@ -108,14 +108,12 @@ let desc = DataObjectDescriptor {
     encoding: "none".to_string(),
     filter: "none".to_string(),
     compression: "none".to_string(),
+    masks: None,
     params: BTreeMap::new(),
-    hash: None,
 };
 
-let global_meta = GlobalMetadata {
-    version: 2,
-    ..Default::default()
-};
+// `GlobalMetadata::default()` stamps the current wire version (3).
+let global_meta = GlobalMetadata::default();
 
 // Your raw bytes (100 × 200 × 4 bytes = 80,000 bytes)
 let data = vec![0u8; 100 * 200 * 4];

@@ -20,7 +20,7 @@ use tensogram::{
     GlobalMetadata, DataObjectDescriptor, ByteOrder, Dtype, EncodeOptions,
 };
 
-let global = GlobalMetadata { version: 2, ..Default::default() };
+let global = GlobalMetadata::default();
 
 let desc = DataObjectDescriptor {
     obj_type: "ntensor".to_string(),
@@ -32,8 +32,8 @@ let desc = DataObjectDescriptor {
     encoding: "none".to_string(),
     filter: "none".to_string(),
     compression: "none".to_string(),
+    masks: None,
     params: BTreeMap::new(),
-    hash: None,
 };
 
     file.append(&global, &[(&desc, &data)], &EncodeOptions::default())?;
@@ -209,7 +209,7 @@ All CPU-intensive work (scanning, decoding, FFI calls to compression libraries) 
 use std::io::Write;
 let mut f = std::fs::OpenOptions::new().append(true).open("forecast.tgm")?;
 
-let global = GlobalMetadata { version: 2, ..Default::default() };
+let global = GlobalMetadata::default();
 let message = encode(&global, &[(&desc, &data)], &EncodeOptions::default())?;
 f.write_all(&message)?;
 ```

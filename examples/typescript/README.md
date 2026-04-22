@@ -56,6 +56,4 @@ npx tsx 01_encode_decode.ts
 | [`14_streaming_callback.ts`](14_streaming_callback.ts) | `StreamingEncoder` with `onBytes` callback — no full-message buffering |
 
 Numbers 09 / 10 / 15+ are reserved to stay in step with the
-`examples/python/` numbering.  See `plans/TYPESCRIPT_WRAPPER.md` for
-follow-up examples (xarray/Zarr cross-runtime demos, first-class
-half-precision, etc.).
+`examples/python/` numbering.

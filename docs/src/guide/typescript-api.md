@@ -4,12 +4,11 @@ Tensogram ships `@ecmwf.int/tensogram`, a TypeScript package that wraps the
 WebAssembly build with typed, idiomatic helpers. Use it in any modern
 browser or Node ≥ 20.
 
-> **Status:** Scope B is complete. Typed encode / decode / scan, dtype
-> dispatch, metadata helpers, **progressive streaming decode**, and the
-> **`TensogramFile` file / URL helper** are all available. Scope C
-> follow-ups (`validate` wrapper, `encodePreEncoded`, first-class
-> `float16` / `bfloat16` / `complex*` types, npm publish pipeline) are
-> tracked in `plans/TYPESCRIPT_WRAPPER.md`.
+The package exposes typed encode / decode / scan, dtype-aware payload
+views, metadata helpers, progressive streaming decode, the
+`TensogramFile` file / URL helper, the `validate` wrapper,
+`encodePreEncoded`, and first-class `float16` / `bfloat16` /
+`complex*` view classes.
 
 ## Installation
 
@@ -47,7 +46,7 @@ await init();
 const temps = new Float32Array(100 * 200);
 for (let i = 0; i < temps.length; i++) temps[i] = 273.15 + i / 100;
 
-const meta: GlobalMetadata = { version: 2 };
+const meta: GlobalMetadata = { version: 3 };
 const descriptor: DataObjectDescriptor = {
   type: 'ntensor',
   ndim: 2,
@@ -85,7 +84,7 @@ await init({ wasmInput: new URL('...', import.meta.url) });  // custom location
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `metadata` | `GlobalMetadata` | Wire-format metadata; `version: 2` is required |
+| `metadata` | `GlobalMetadata` | Wire-format metadata; `version: 3` is required |
 | `objects` | `Array<{ descriptor, data }>` | Each `data` is a `TypedArray` or `Uint8Array` |
 | `opts.hash` | `'xxh3' \| false` | Hash algorithm. Default `'xxh3'`. Pass `false` to disable. |
 
@@ -384,7 +383,7 @@ language bindings.
 ```ts
 const file = await TensogramFile.open('/data/forecast.tgm');
 try {
-  await file.append({ version: 2 }, [{ descriptor, data }]);
+  await file.append({ version: 3 }, [{ descriptor, data }]);
   console.log(`now has ${file.messageCount} messages`);
 } finally {
   file.close();
@@ -415,7 +414,7 @@ soon as they are produced, pass an `onBytes` callback to the
 `StreamingEncoder` constructor:
 
 ```ts
-const enc = new StreamingEncoder({ version: 2 }, {
+const enc = new StreamingEncoder({ version: 3 }, {
   onBytes: (chunk) => uploadSocket.send(chunk),   // e.g. WebSocket.send
 });
 enc.writeObject(descriptor, new Float32Array([1, 2, 3]));
@@ -449,8 +448,7 @@ Parity note: the Rust core `StreamingEncoder<W: Write>` has always
 supported arbitrary sinks; the WASM/TS surface now exposes this
 capability to JS code.  Python / FFI / C++ bindings remain
 buffered-only; extending them would follow the same `JsCallbackWriter`
-pattern with a language-specific sink abstraction and is tracked in
-`plans/TYPESCRIPT_WRAPPER.md`.
+pattern with a language-specific sink abstraction.
 
 ## First-class half-precision and complex dtypes
 
@@ -524,11 +522,6 @@ cd examples/typescript
 npm install
 npx tsx 01_encode_decode.ts     # or any other file
 ```
-
-## Design notes
-
-See `plans/TYPESCRIPT_WRAPPER.md` for the full design document covering
-architecture, phases, test strategy, memory model, and open follow-ups.
 
 ## Cross-language parity
 

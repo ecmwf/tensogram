@@ -1,31 +1,37 @@
 # tensogram-sz3-sys
 
-Clean-room FFI bindings for the SZ3 lossy compression library.
+Clean-room FFI bindings to the [SZ3](https://github.com/szcompressor/SZ3)
+lossy-compression C++ library, via a thin C shim
+(`cpp/sz3_ffi.cpp`).
 
-This crate provides low-level unsafe Rust bindings to the SZ3 C++ library. It vendors the SZ3 source code and builds it automatically. This is a sys-level crate intended for use by the higher-level `tensogram-sz3` crate.
-
-## Usage
-
-```rust
-use tensogram_sz3_sys::SZ3_Init;
-
-let compressor = unsafe { SZ3_Init(config_ptr) };
-```
+This is a `-sys` crate — it exposes raw `extern "C"` bindings and
+vendors the SZ3 header-only source. Downstream code should normally
+depend on the safe higher-level
+[`tensogram-sz3`](https://crates.io/crates/tensogram-sz3) crate
+instead.
 
 ## Installation
 
-```toml
-[dependencies]
-tensogram-sz3-sys = "0.14"
+```bash
+cargo add tensogram-sz3-sys
 ```
+
+A C++ compiler that supports C++17 is required at build time. The
+crate's `build.rs` compiles the vendored SZ3 source alongside the
+shim.
 
 ## Documentation
 
-- Full documentation: https://sites.ecmwf.int/docs/tensogram/main/
-- Repository: https://github.com/ecmwf/tensogram
+- Full documentation: <https://sites.ecmwf.int/docs/tensogram/main/>
+- Repository: <https://github.com/ecmwf/tensogram>
 
 ## License
 
-Copyright 2026- European Centre for Medium-Range Weather Forecasts (ECMWF).
+This crate contains code under multiple licences:
 
-Licensed under the Apache License, Version 2.0 for the wrapper code. The vendored SZ3 source is licensed under Argonne BSD and Boost Software License 1.0. See LICENSES.md for details.
+- Our wrapper code (Rust + `cpp/sz3_ffi.cpp`) — Apache-2.0.
+- Vendored SZ3 C++ library — UChicago Argonne BSD-style licence.
+- Vendored ska flat hash map (inside the SZ3 tree) — Boost
+  Software License 1.0.
+
+See [LICENSES.md](LICENSES.md) for the full text of each licence.

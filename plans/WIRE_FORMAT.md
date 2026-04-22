@@ -1,17 +1,10 @@
 # Wire Format (v3)
 
-> **Status.** This document describes wire format **version 3**, shipped
-> under the `[Unreleased] → 0.17.0` section of `CHANGELOG.md`.  Versions
-> 1 and 2 are no longer supported — decoders hard-fail when they read
-> a preamble with `version < 3`.  The change is a clean break; no
-> backward-compatibility shim is provided because the project is still
-> local and has no external data.
->
-> For **why** these changes landed, see
-> [`plans/WIRE_FORMAT_CHANGES.md`](WIRE_FORMAT_CHANGES.md) (the phased
-> implementation plan that produced v3).  For the companion-mask
-> design that ships alongside, see
-> [`plans/BITMASK_FRAME.md`](BITMASK_FRAME.md).
+> **Status.** This document is the canonical specification of the
+> Tensogram wire format.  It describes version **3**, the only version
+> currently supported.  Decoders hard-fail when they read a preamble
+> with `version != 3`.  For the user-facing companion-mask usage
+> guide, see [`docs/src/guide/nan-inf-handling.md`](../docs/src/guide/nan-inf-handling.md).
 
 ---
 
@@ -449,11 +442,11 @@ default.
 
 The N-dimensional tensor data-object frame — one tensor per frame,
 optionally with compressed bitmask companions identifying positions
-of non-finite values (NaN / +Inf / −Inf).  See
-[`plans/BITMASK_FRAME.md`](BITMASK_FRAME.md) for the full mask
-design.  In v3 this is the only concrete data-object type defined;
-future versions may introduce other data-object frame types at
-fresh type numbers.
+of non-finite values (NaN / +Inf / −Inf).  The mask design is
+specified inline below (see §6.5 *Masks sub-map* and §8 *Bitmask
+dtype and compression codecs*).  In v3 this is the only concrete
+data-object type defined; future versions may introduce other
+data-object frame types at fresh type numbers.
 
 **Layout.** Two variants, selected by the `CBOR_AFTER_PAYLOAD`
 frame-flag bit (bit 0 of the frame header's `flags` field).
@@ -552,6 +545,94 @@ source of truth for per-object integrity.
 encoder rejects any other combination at pipeline-build time with
 an `EncodingError`.  See §8.
 
+#### 6.5.1 `masks` sub-map — per-mask entry schema
+
+Each of the three optional keys (`nan`, `inf+`, `inf-`) inside the
+`masks` sub-map describes one compressed bitmask blob:
+
+```cbor
+{
+  "method": "roaring",            ; one of "rle" | "roaring" |
+                                  ; "blosc2" | "zstd" | "lz4" | "none"
+  "offset": 800000,               ; byte offset of the mask blob,
+                                  ; measured from the start of the
+                                  ; payload region (= first byte
+                                  ; after the 16-byte frame header)
+  "length": 512,                  ; byte length of the (compressed)
+                                  ; mask blob on disk
+  "params": { ... }               ; optional method-specific params
+}
+```
+
+`params` by method:
+
+- `rle` — no params.
+- `roaring` — no params (format embeds its own metadata).
+- `blosc2` — `{ "codec": "lz4" | "zstd", "level": int }`.  Defaults
+  `codec="lz4"`, `level=5`.
+- `zstd` — `{ "level": int }` (optional, default 3).
+- `lz4` — no params.
+- `none` — no params (raw packed bytes).
+
+Canonical CBOR sort order for `masks` keys: `inf+` < `inf-` <
+`nan` (byte-lex).
+
+#### 6.5.2 Bit packing layout for masks
+
+Raw bit layout (before compression):
+
+- MSB-first, matching the existing `Dtype::Bitmask` convention.
+- `ceil(N / 8)` bytes for `N` elements.
+- Trailing bits in the last byte are **zero-filled** for
+  determinism (required for stable hashing).
+- Bit `i` (element index, 0-based) lives at byte `i / 8`, bit
+  position `7 - (i % 8)`.
+- `1` = the element at that index was the specific non-finite kind
+  being masked.  `0` = the element is finite (or a different
+  non-finite kind).
+
+**Priority for simultaneous classifications.**  A single element
+cannot simultaneously be "NaN" and "Inf".  For complex dtypes
+(`complex64` / `complex128`), where real and imag are independent:
+
+1. **NaN** wins over any Inf (either component being NaN → nan mask).
+2. **+Inf** wins over −Inf (either component being +Inf while
+   neither is NaN → inf+ mask).
+3. **−Inf** otherwise (only non-finiteness is −Inf).
+
+After substitution (both components set to `0.0 + 0.0i`), decode
+restores with the canonical bit pattern of the mask's kind
+(`f64::NAN` / `f64::INFINITY` / `f64::NEG_INFINITY`) in **both**
+real and imag components.
+
+#### 6.5.3 Small-mask fallback
+
+When the uncompressed mask byte-count is
+`≤ small_mask_threshold_bytes` (default 128, configurable via
+`EncodeOptions.small_mask_threshold_bytes` — single threshold
+across all three masks), the encoder writes the mask as `"none"`
+regardless of the user-requested method.  The descriptor's
+`method` field reflects what was actually written.
+
+#### 6.5.4 Lossy NaN-payload reconstruction
+
+The encoder replaces the original float bits (any NaN / Inf value)
+with `0.0` and records only the position.  The decoder restores
+using the **canonical** bit pattern of the kind:
+
+- NaN → `f64::NAN` bits (`0x7FF8000000000000`; quiet NaN).
+- +Inf → `f64::INFINITY` bits (`0x7FF0000000000000`).
+- −Inf → `f64::NEG_INFINITY` bits (`0xFFF0000000000000`).
+
+For `f16` / `bf16` / `f32` / `complex64` / `complex128`, the
+dtype-specific canonical patterns are used.
+
+**Implication**: specific NaN payloads (signalling NaN, custom
+payload bits) are **not preserved** through an `allow_nan=true`
+encode.  Callers needing bit-exact NaN preservation must
+pre-process the payload and encode with `allow_nan=false`, then
+ship the semantics in their own data layer.
+
 ---
 
 ## 7. Postamble (24 bytes, NEW in v3)
@@ -619,11 +700,27 @@ The guard lives at pipeline-build time.  Attempting
 an `EncodingError("codec {codec} only supports dtype=bitmask, got
 dtype={dtype}")`.
 
-On-wire byte layout for `rle` and `roaring` matches the mask blob
-format documented in `plans/BITMASK_FRAME.md` §5 (they are the same
-codec implementations, reused).  `decompress_range` is not
-supported — both codecs return `CompressionError::RangeNotSupported`
-to match `zstd` / `lz4`.
+**RLE on-wire format.**
+
+```
+[u8 start_bit] [varint run_1] [varint run_2] ... [varint run_k]
+```
+
+- `start_bit`: `0x00` or `0x01` — the value of the first run.
+- Each `run_i`: unsigned LEB128 (ULEB128) — count of consecutive bits
+  of the alternating value.  Minimum run length 1.  Sum of runs must
+  equal exactly `N` (descriptor's total element count); decoder
+  errors otherwise.
+- Total length of the serialised form is naturally self-delimiting
+  via the `length` field in the CBOR descriptor.
+
+**Roaring on-wire format.**  Uses the standard
+[Roaring Portable Serialization Format](https://github.com/RoaringBitmap/RoaringFormatSpec).
+The `roaring` Rust crate's `serialize_into` produces this format by
+default.  Bytes are stored as-is — no Tensogram-specific framing.
+
+`decompress_range` is not supported — both codecs return
+`CompressionError::RangeNotSupported` to match `zstd` / `lz4`.
 
 ---
 
@@ -769,7 +866,10 @@ checksum validation; re-encode with hash_algorithm = Some(Xxh3)")`.
 Includes the above plus:
 - CBOR canonical ordering check
 - Decode-pipeline round-trip
-- NaN / Inf scan (mask-aware per `plans/BITMASK_FRAME.md` §8)
+- NaN / Inf scan that is **mask-aware**: at each bit set in the NaN /
+  Inf± masks, NaN / ±Inf is expected and does not fail validation.
+  At any other position, NaN / Inf still fails as `NanDetected` /
+  `InfDetected`.
 
 ### 11.3 Hash frame consistency
 

@@ -103,11 +103,11 @@ DataObjectDescriptor {
     encoding: "simple_packing".into(),
     filter: "none".into(),
     compression: "szip".into(),
+    masks: None,
     params: BTreeMap::from([
         ("reference_value".into(), Value::Float(230.5)),
         ("bits_per_value".into(), Value::Integer(16.into())),
     ]),
-    hash: None, // set automatically during encoding
 }
 ```
 
@@ -115,10 +115,12 @@ All encoding parameters (reference_value, bits_per_value, szip_block_offsets, et
 
 ## Integrity Hashing
 
-After all three stages, the stored bytes can be hashed. The hash is stored in the `DataObjectDescriptor`'s `hash` field alongside the encoded bytes. On decode, if `verify_hash: true` is set, the hash is recomputed and compared.
+Every frame ends with an **inline 8-byte hash slot** followed by the `ENDF` marker. For data object frames, the slot lives at `frame_end − 12`, and the hash covers the frame body (payload + any mask blobs + CBOR descriptor). Populating the slot is controlled message-wide via the `HASHES_PRESENT` preamble flag, set by `EncodeOptions.hash_algorithm = Some(HashAlgorithm::Xxh3)` (the default).
+
+To verify integrity after decoding, run `tensogram validate --checksum`. The validator walks every frame and recomputes the xxh3-64 digest against the stored slot without parsing CBOR on the fast path.
 
 | Algorithm | Hash length | Notes |
 |---|---|---|
-| `xxh3` | 16 hex chars (64-bit) | Default. Fast, non-cryptographic |
+| `xxh3` | 8-byte raw / 16 hex chars (64-bit) | Default. Fast, non-cryptographic |
 
-> **Edge case:** The hash covers the **stored bytes** (after encoding + filter + compression), not the original raw bytes. This means a hash mismatch always indicates storage or transmission corruption, not a quantization difference from lossy encoding.
+> **Edge case:** The hash covers the **frame body only** — header, `cbor_offset`, the hash slot itself, and the `ENDF` marker are not part of the hashed region.
