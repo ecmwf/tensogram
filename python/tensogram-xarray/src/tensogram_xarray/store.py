@@ -113,17 +113,25 @@ def _disambiguate_fallback_dims(
     distinct sizes — either across data variables or against an existing
     coordinate dim.
 
-    * **Generic fallback** conflicts (``dim_{axis}`` names with
+    Resolution per axis:
+
+    * **Legitimate coord match** — an axis whose name matches an existing
+      coord dim AND whose size equals the coord's size is preserved, even
+      if some *other* plan wrongly claims the same name at a different
+      size.  The coord-sharing binding is the correct semantics here; only
+      the offending plan's axis is renamed.
+    * **Generic fallback** conflicts (``dim_{axis}`` with
       ``is_generic_fallback=True``) are silently renamed to
       ``f"obj_{obj_index}_dim_{axis}"``.
-    * **Hinted** conflicts (names from coord matches, per-object
-      ``base[i]["dim_names"]``, or ``_extra_["dim_names"]``) are renamed to
-      the same ``obj_{i}_dim_{axis}`` form *with a warning* so producers
-      can diagnose inconsistent hints; this keeps the Dataset openable
-      rather than crashing at :class:`xr.Dataset` assembly.
+    * **Hinted** conflicts (names from user kwargs, coord-match on a
+      non-matching size, per-object ``base[i]["dim_names"]``, or
+      ``_extra_["dim_names"]``) are renamed to the same
+      ``obj_{i}_dim_{axis}`` form *with a warning* so the Dataset stays
+      openable rather than crashing at :class:`xr.Dataset` assembly.
 
-    Coordinate dim names are never renamed (they claim a single size and
-    so never conflict with themselves); they only participate in detection.
+    Coordinate dim names themselves are never renamed (coords claim a
+    single size in ``coord_dim_sizes`` and so never conflict with
+    themselves); they only participate in detection.
 
     Parameters
     ----------
@@ -153,11 +161,15 @@ def _disambiguate_fallback_dims(
         new_dims: list[str] = []
         for axis, (dim_name, is_generic) in enumerate(plan.dims_with_provenance):
             if dim_name in conflicting:
+                if dim_name in coord_dim_sizes and plan.shape[axis] == coord_dim_sizes[dim_name]:
+                    new_dims.append(dim_name)
+                    continue
                 if not is_generic and dim_name not in warned:
                     logger.warning(
                         "dimension name %r claimed at conflicting sizes %s across "
-                        "objects; falling back to object-local names (producer "
-                        "supplied inconsistent dim_names hints)",
+                        "objects; falling back to object-local names for the "
+                        "conflicting axes (check user dim_names kwarg, _extra_, "
+                        "or per-object hints for an inconsistent producer)",
                         dim_name,
                         sorted(name_to_sizes[dim_name]),
                     )

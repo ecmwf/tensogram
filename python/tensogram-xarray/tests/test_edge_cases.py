@@ -718,6 +718,65 @@ class TestMixedRankDimCollision:
         resolved = _disambiguate_fallback_dims(plans, {"latitude": 5})
         assert resolved == [("obj_0_dim_0",)]
 
+    def test_disambiguate_preserves_legit_coord_match_under_conflict(self):
+        """An axis that legitimately matches a coord (same name AND same size)
+        must survive disambiguation even when another plan wrongly claims the
+        same coord name at a different size — the coord-sharing binding is
+        the correct semantics and only the offender should be renamed."""
+        from tensogram_xarray.store import _DataVarPlan, _disambiguate_fallback_dims
+
+        plans = [
+            _DataVarPlan(
+                obj_index=0,
+                var_name="legit",
+                shape=(5, 7),
+                dims_with_provenance=[("latitude", False), ("dim_1", True)],
+                backend_array=None,  # type: ignore[arg-type]
+                var_attrs={},
+            ),
+            _DataVarPlan(
+                obj_index=1,
+                var_name="wrong",
+                shape=(7,),
+                dims_with_provenance=[("latitude", False)],
+                backend_array=None,  # type: ignore[arg-type]
+                var_attrs={},
+            ),
+        ]
+        resolved = _disambiguate_fallback_dims(plans, {"latitude": 5})
+        assert resolved[0] == ("latitude", "dim_1")
+        assert resolved[1] == ("obj_1_dim_0",)
+
+    def test_build_dataset_shares_coord_when_other_hint_is_wrong(self, tmp_path: Path):
+        """End-to-end: a data var legitimately using coord 'latitude' keeps
+        that dim when another var's bad hint triggers disambiguation."""
+        path = str(tmp_path / "coord_shared.tgm")
+        lat = np.linspace(-90, 90, 5, dtype=np.float64)
+        legit = np.ones((5, 7), dtype=np.float32)
+        wrong = np.ones((7,), dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [
+                {"name": "latitude"},
+                {"name": "legit"},
+                {"name": "wrong", "dim_names": ["latitude"]},
+            ],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([5], dtype="float64"), lat),
+                    (_desc([5, 7]), legit),
+                    (_desc([7]), wrong),
+                ],
+            )
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["legit"].dims[0] == "latitude"
+        assert ds["wrong"].dims == ("obj_2_dim_0",)
+        assert ds.coords["latitude"].shape == (5,)
+
 
 # ---------------------------------------------------------------------------
 # Per-object dim_names hint (base[i]["dim_names"])
