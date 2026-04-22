@@ -55,7 +55,6 @@ descriptor = {
     "type": "ntensor",
     "shape": [512, 512],
     "dtype": "float32",
-    "byte_order": "little",
     "encoding": "none",
     "filter": "none",
     "compression": "none",

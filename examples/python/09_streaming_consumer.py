@@ -83,7 +83,6 @@ def create_streaming_tgm(path: str) -> int:
                 "type": "ntensor",
                 "shape": list(shape),
                 "dtype": "float32",
-                "byte_order": "little",
                 "encoding": "none",
                 "filter": "none",
                 "compression": "none",
