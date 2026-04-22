@@ -641,9 +641,12 @@ class TestMixedRankDimCollision:
             ("obj_1_dim_0",),
         ]
 
-    def test_disambiguate_respects_non_generic(self):
-        """Non-generic names (coord matches, hints) are not auto-renamed
-        even when they collide."""
+    def test_disambiguate_hinted_conflict_warns_and_falls_back(self, caplog):
+        """Non-generic name claimed at different sizes across objects warns
+        and falls back to per-object names rather than crashing at Dataset
+        assembly (producer-error safety net)."""
+        import logging
+
         from tensogram_xarray.store import _DataVarPlan, _disambiguate_fallback_dims
 
         plans = [
@@ -664,8 +667,38 @@ class TestMixedRankDimCollision:
                 var_attrs={},
             ),
         ]
-        resolved = _disambiguate_fallback_dims(plans, {})
-        assert resolved == [("time",), ("time",)]
+        with caplog.at_level(logging.WARNING, logger="tensogram_xarray.store"):
+            resolved = _disambiguate_fallback_dims(plans, {})
+        assert resolved == [("obj_0_dim_0",), ("obj_1_dim_0",)]
+        assert any("'time'" in r.message for r in caplog.records)
+        assert sum("'time'" in r.message for r in caplog.records) == 1, (
+            "warning must be emitted once per conflicting hint, not per offending axis"
+        )
+
+    def test_disambiguate_hinted_same_size_preserved(self):
+        """Non-generic names that agree on size are never renamed — hint
+        sharing across objects is the whole point of per-object dim_names."""
+        from tensogram_xarray.store import _DataVarPlan, _disambiguate_fallback_dims
+
+        plans = [
+            _DataVarPlan(
+                obj_index=0,
+                var_name="a",
+                shape=(5,),
+                dims_with_provenance=[("time", False)],
+                backend_array=None,  # type: ignore[arg-type]
+                var_attrs={},
+            ),
+            _DataVarPlan(
+                obj_index=1,
+                var_name="b",
+                shape=(5,),
+                dims_with_provenance=[("time", False)],
+                backend_array=None,  # type: ignore[arg-type]
+                var_attrs={},
+            ),
+        ]
+        assert _disambiguate_fallback_dims(plans, {}) == [("time",), ("time",)]
 
     def test_disambiguate_considers_coord_sizes(self):
         """Coord dim sizes participate in conflict detection but coord names
@@ -684,3 +717,270 @@ class TestMixedRankDimCollision:
         ]
         resolved = _disambiguate_fallback_dims(plans, {"latitude": 5})
         assert resolved == [("obj_0_dim_0",)]
+
+
+# ---------------------------------------------------------------------------
+# Per-object dim_names hint (base[i]["dim_names"])
+# ---------------------------------------------------------------------------
+
+
+class TestPerObjectDimNames:
+    """The per-object ``base[i]["dim_names"]`` opt-in reader convention.
+
+    Producers may embed an axis-ordered list of dim names in each base
+    entry so mixed-rank messages open with semantically meaningful dims
+    without requiring callers to pass ``dim_names=`` or the message-level
+    ``_extra_["dim_names"]`` fallback.
+    """
+
+    def test_hint_applied_simple(self, tmp_path: Path):
+        """Per-object hint drives dim names for a single variable."""
+        path = str(tmp_path / "po_simple.tgm")
+        data = np.ones((4, 5), dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [{"name": "field", "dim_names": ["time", "level"]}],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([4, 5]), data)])
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["field"].dims == ("time", "level")
+
+    def test_hint_applied_mixed_ranks(self, tmp_path: Path):
+        """Mixed-rank message with per-object hints opens with semantic dims."""
+        path = str(tmp_path / "po_mixed.tgm")
+        t_size, y_size, x_size = 4, 5, 6
+        meta = {
+            "version": 2,
+            "base": [
+                {"name": "reflectance", "dim_names": ["time", "y", "x"]},
+                {"name": "count", "dim_names": ["time"]},
+                {"name": "ny", "dim_names": ["y"]},
+                {"name": "nx", "dim_names": ["x"]},
+            ],
+        }
+        data_3d = np.ones((t_size, y_size, x_size), dtype=np.float32)
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([t_size, y_size, x_size]), data_3d),
+                    (_desc([t_size]), np.arange(t_size, dtype=np.float32)),
+                    (_desc([y_size]), np.arange(y_size, dtype=np.float32)),
+                    (_desc([x_size]), np.arange(x_size, dtype=np.float32)),
+                ],
+            )
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["reflectance"].dims == ("time", "y", "x")
+        assert ds["count"].dims == ("time",)
+        assert ds["ny"].dims == ("y",)
+        assert ds["nx"].dims == ("x",)
+
+    def test_shared_dim_across_objects(self, tmp_path: Path):
+        """Two objects pinning matching-size axes to the same name share the dim."""
+        path = str(tmp_path / "po_shared.tgm")
+        meta = {
+            "version": 2,
+            "base": [
+                {"name": "temp", "dim_names": ["time", "level"]},
+                {"name": "humid", "dim_names": ["time", "level"]},
+            ],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([4, 3]), np.ones((4, 3), dtype=np.float32)),
+                    (_desc([4, 3]), np.ones((4, 3), dtype=np.float32)),
+                ],
+            )
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["temp"].dims == ("time", "level")
+        assert ds["humid"].dims == ("time", "level")
+        assert ds.sizes == {"time": 4, "level": 3}
+
+    def test_user_kwarg_overrides_per_object_hint(self, tmp_path: Path):
+        """User-supplied ``dim_names=`` outranks the per-object hint."""
+        path = str(tmp_path / "po_vs_user.tgm")
+        meta = {
+            "version": 2,
+            "base": [{"name": "field", "dim_names": ["producer_x", "producer_y"]}],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([4, 5]), np.ones((4, 5), dtype=np.float32))])
+
+        ds = xr.open_dataset(path, engine="tensogram", dim_names=["user_x", "user_y"])
+        assert ds["field"].dims == ("user_x", "user_y")
+
+    def test_coord_match_overrides_per_object_hint(self, tmp_path: Path):
+        """Detected coord wins over per-object hint on the matching axis."""
+        path = str(tmp_path / "po_vs_coord.tgm")
+        lat = np.linspace(-90, 90, 5, dtype=np.float64)
+        data = np.ones((5, 7), dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [
+                {"name": "latitude"},
+                {"name": "field", "dim_names": ["row", "col"]},
+            ],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([5], dtype="float64"), lat),
+                    (_desc([5, 7]), data),
+                ],
+            )
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["field"].dims == ("latitude", "col")
+
+    def test_per_object_overrides_extra_hint(self, tmp_path: Path):
+        """Per-object hint outranks the message-level ``_extra_`` hint."""
+        path = str(tmp_path / "po_vs_extra.tgm")
+        data = np.ones((4, 5), dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [{"name": "field", "dim_names": ["per_obj_x", "per_obj_y"]}],
+            "_extra_": {"dim_names": ["extra_x", "extra_y"]},
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([4, 5]), data)])
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["field"].dims == ("per_obj_x", "per_obj_y")
+
+    def test_malformed_wrong_length_ignored(self, tmp_path: Path):
+        """Hint with wrong number of names silently falls through."""
+        path = str(tmp_path / "mal_len.tgm")
+        meta = {
+            "version": 2,
+            "base": [{"name": "field", "dim_names": ["only_one"]}],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([4, 5]), np.ones((4, 5), dtype=np.float32))])
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["field"].dims == ("dim_0", "dim_1")
+
+    def test_malformed_non_list_ignored(self, tmp_path: Path):
+        """Scalar/dict hints (wrong type) silently fall through."""
+        path = str(tmp_path / "mal_type.tgm")
+        meta = {
+            "version": 2,
+            "base": [{"name": "field", "dim_names": "not_a_list"}],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([4, 5]), np.ones((4, 5), dtype=np.float32))])
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["field"].dims == ("dim_0", "dim_1")
+
+    def test_malformed_duplicates_ignored(self, tmp_path: Path):
+        """Duplicate entries in the hint silently fall through."""
+        path = str(tmp_path / "mal_dup.tgm")
+        meta = {
+            "version": 2,
+            "base": [{"name": "field", "dim_names": ["x", "x"]}],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([4, 5]), np.ones((4, 5), dtype=np.float32))])
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["field"].dims == ("dim_0", "dim_1")
+
+    def test_malformed_empty_string_ignored(self, tmp_path: Path):
+        """Empty-string entries in the hint silently fall through."""
+        path = str(tmp_path / "mal_empty.tgm")
+        meta = {
+            "version": 2,
+            "base": [{"name": "field", "dim_names": ["", "y"]}],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([4, 5]), np.ones((4, 5), dtype=np.float32))])
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["field"].dims == ("dim_0", "dim_1")
+
+    def test_dim_names_not_in_var_attrs(self, tmp_path: Path):
+        """``dim_names`` is structural metadata; it must not leak into attrs."""
+        path = str(tmp_path / "no_leak.tgm")
+        meta = {
+            "version": 2,
+            "base": [{"name": "field", "dim_names": ["x", "y"], "units": "K"}],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([4, 5]), np.ones((4, 5), dtype=np.float32))])
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert "dim_names" not in ds["field"].attrs
+        assert ds["field"].attrs.get("units") == "K"
+        assert ds["field"].dims == ("x", "y")
+
+
+# ---------------------------------------------------------------------------
+# Hinted-name conflict (producer error safety net)
+# ---------------------------------------------------------------------------
+
+
+class TestHintedNameConflict:
+    """Two objects claiming the same dim name at different sizes must not crash.
+
+    Hinted-name conflicts indicate a producer error.  The backend warns
+    and falls back to per-object dim names so the Dataset still opens.
+    """
+
+    def test_inconsistent_per_object_hint_same_size_ok(self, tmp_path: Path):
+        """Different per-object hints on different-size axes do not conflict."""
+        path = str(tmp_path / "hint_distinct.tgm")
+        meta = {
+            "version": 2,
+            "base": [
+                {"name": "a", "dim_names": ["alpha"]},
+                {"name": "b", "dim_names": ["beta"]},
+            ],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([4]), np.zeros(4, dtype=np.float32)),
+                    (_desc([7]), np.zeros(7, dtype=np.float32)),
+                ],
+            )
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["a"].dims == ("alpha",)
+        assert ds["b"].dims == ("beta",)
+
+    def test_hinted_conflict_warns_and_falls_back(self, tmp_path: Path, caplog):
+        """Same hinted name at different sizes across objects → warn + fallback."""
+        import logging
+
+        path = str(tmp_path / "hint_conflict.tgm")
+        meta = {
+            "version": 2,
+            "base": [
+                {"name": "a", "dim_names": ["time"]},
+                {"name": "b", "dim_names": ["time"]},
+            ],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([4]), np.zeros(4, dtype=np.float32)),
+                    (_desc([7]), np.zeros(7, dtype=np.float32)),
+                ],
+            )
+
+        with caplog.at_level(logging.WARNING, logger="tensogram_xarray.store"):
+            ds = xr.open_dataset(path, engine="tensogram")
+
+        assert ds["a"].dims == ("obj_0_dim_0",)
+        assert ds["b"].dims == ("obj_1_dim_0",)
+        assert any("'time'" in r.message for r in caplog.records)

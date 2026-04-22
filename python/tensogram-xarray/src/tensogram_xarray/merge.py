@@ -20,7 +20,7 @@ import itertools
 import logging
 import threading
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import xarray as xr
@@ -32,7 +32,14 @@ from tensogram_xarray.array import (
     _supports_range_decode,
 )
 from tensogram_xarray.coords import detect_coords
-from tensogram_xarray.mapping import resolve_dim_names, resolve_variable_name
+from tensogram_xarray.mapping import (
+    EXTRA_DIM_NAMES_KEY,
+    STRUCTURAL_META_KEYS,
+    parse_per_object_dim_names,
+    resolve_dims_for_axes,
+    resolve_variable_name,
+    strip_structural_keys,
+)
 from tensogram_xarray.scanner import ObjectInfo, scan_file
 from tensogram_xarray.store import _to_numpy_dtype
 
@@ -128,7 +135,9 @@ def open_datasets(
             # Duplicate with matching shape -- skip (keep the first).
             continue
 
-        coord_vars[dim_name] = xr.Variable((dim_name,), lazy_data, dict(obj.per_object_meta))
+        coord_vars[dim_name] = xr.Variable(
+            (dim_name,), lazy_data, strip_structural_keys(obj.per_object_meta)
+        )
 
     # Group data objects by structural compatibility.
     data_objects = [file_index.objects[i] for i in var_indices]
@@ -194,10 +203,15 @@ def _group_by_structure(
 
 
 def _extract_meta_keys(objects: list[ObjectInfo]) -> dict[str, list[Any]]:
-    """For each metadata key, collect values across all objects."""
+    """For each (non-structural) metadata key, collect values across all objects.
+
+    :data:`STRUCTURAL_META_KEYS` are skipped so xarray-structural hints
+    (currently ``dim_names``) never become a hypercube outer dimension
+    or a partition key in the grouping pipeline.
+    """
     all_keys: set[str] = set()
     for obj in objects:
-        all_keys.update(obj.merged_meta.keys())
+        all_keys.update(k for k in obj.merged_meta if k not in STRUCTURAL_META_KEYS)
 
     key_values: dict[str, list[Any]] = {}
     for k in sorted(all_keys):
@@ -451,7 +465,12 @@ def _single_object_dataset(
     shape = obj.shape
 
     var_name = resolve_variable_name(obj.obj_index, obj.merged_meta, variable_key)
-    dims = _resolve_dims(shape, dim_names, coord_vars)
+    dims = _resolve_inner_dims(
+        [obj],
+        shape,
+        user_dim_names=dim_names,
+        coord_vars=coord_vars,
+    )
 
     backend_array = TensogramBackendArray(
         file_path=file_path,
@@ -469,9 +488,9 @@ def _single_object_dataset(
     if backend_arrays is not None:
         backend_arrays.append(backend_array)
     lazy_data = indexing.LazilyIndexedArray(backend_array)
-    var = xr.Variable(dims, lazy_data, dict(obj.merged_meta))
+    var = xr.Variable(dims, lazy_data, strip_structural_keys(obj.merged_meta))
 
-    ds_attrs = dict(obj.common_meta)
+    ds_attrs = strip_structural_keys(obj.common_meta)
     ds = xr.Dataset({var_name: var}, coords=coord_vars, attrs=ds_attrs)
     return ds
 
@@ -494,17 +513,23 @@ def _flat_group_dataset(
     """Build a Dataset with one variable per object (no stacking)."""
     data_vars: dict[str, xr.Variable] = {}
 
+    inner_shape = group[0].shape
+    dims = _resolve_inner_dims(
+        group,
+        inner_shape,
+        user_dim_names=dim_names,
+        coord_vars=coord_vars,
+    )
+
     for obj in group:
         np_dtype = _to_numpy_dtype(obj.dtype)
-        shape = obj.shape
         var_name = resolve_variable_name(obj.obj_index, obj.per_object_meta, variable_key)
-        dims = _resolve_dims(shape, dim_names, coord_vars)
 
         backend_array = TensogramBackendArray(
             file_path=file_path,
             msg_index=obj.msg_index,
             obj_index=obj.obj_index,
-            shape=shape,
+            shape=obj.shape,
             dtype=np_dtype,
             supports_range=_supports_range_decode(obj.descriptor),
             verify_hash=verify_hash,
@@ -516,9 +541,9 @@ def _flat_group_dataset(
         if backend_arrays is not None:
             backend_arrays.append(backend_array)
         lazy_data = indexing.LazilyIndexedArray(backend_array)
-        data_vars[var_name] = xr.Variable(dims, lazy_data, dict(obj.merged_meta))
+        data_vars[var_name] = xr.Variable(dims, lazy_data, strip_structural_keys(obj.merged_meta))
 
-    ds_attrs = dict(constant)
+    ds_attrs = strip_structural_keys(constant)
     ds = xr.Dataset(data_vars, coords=coord_vars, attrs=ds_attrs)
     return ds
 
@@ -547,7 +572,12 @@ def _hypercube_dataset(
     """
     inner_shape = group[0].shape
     np_dtype = _to_numpy_dtype(group[0].dtype)
-    inner_dims = _resolve_dims(inner_shape, dim_names, coord_vars)
+    inner_dims = _resolve_inner_dims(
+        group,
+        inner_shape,
+        user_dim_names=dim_names,
+        coord_vars=coord_vars,
+    )
 
     # Determine outer dimension names and coordinate values.
     outer_keys = sorted(varying.keys())
@@ -609,8 +639,8 @@ def _hypercube_dataset(
     for k in outer_keys:
         merged_coords[k] = xr.Variable((k,), outer_coords[k])
 
-    var = xr.Variable(full_dims, lazy_data, dict(constant))
-    ds = xr.Dataset({var_name: var}, coords=merged_coords, attrs=dict(constant))
+    var = xr.Variable(full_dims, lazy_data, strip_structural_keys(constant))
+    ds = xr.Dataset({var_name: var}, coords=merged_coords, attrs=strip_structural_keys(constant))
     return ds
 
 
@@ -648,9 +678,14 @@ def _build_multi_variable_dataset(
     merged_coords = dict(coord_vars)
     inner_shape = group[0].shape
     np_dtype = _to_numpy_dtype(group[0].dtype)
-    inner_dims = _resolve_dims(inner_shape, dim_names, coord_vars)
 
     for var_name, sub_group in sub_groups.items():
+        inner_dims = _resolve_inner_dims(
+            sub_group,
+            inner_shape,
+            user_dim_names=dim_names,
+            coord_vars=coord_vars,
+        )
         if len(sub_group) == 1:
             # Single object for this variable -> no outer dims.
             obj = sub_group[0]
@@ -670,7 +705,9 @@ def _build_multi_variable_dataset(
             if backend_arrays is not None:
                 backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
-            data_vars[var_name] = xr.Variable(inner_dims, lazy_data, dict(obj.merged_meta))
+            data_vars[var_name] = xr.Variable(
+                inner_dims, lazy_data, strip_structural_keys(obj.merged_meta)
+            )
         elif remaining_varying:
             # Re-extract varying keys for this sub-group.
             sub_kv = _extract_meta_keys(sub_group)
@@ -729,7 +766,9 @@ def _build_multi_variable_dataset(
 
                 for k in outer_keys:
                     merged_coords[k] = xr.Variable((k,), outer_coords_local[k])
-                data_vars[var_name] = xr.Variable(full_dims, lazy_data, dict(sub_const))
+                data_vars[var_name] = xr.Variable(
+                    full_dims, lazy_data, strip_structural_keys(sub_const)
+                )
             else:
                 # Can't form hypercube -> use first object only.
                 logger.warning(
@@ -756,7 +795,9 @@ def _build_multi_variable_dataset(
                 if backend_arrays is not None:
                     backend_arrays.append(backend_array)
                 lazy_data = indexing.LazilyIndexedArray(backend_array)
-                data_vars[var_name] = xr.Variable(inner_dims, lazy_data, dict(obj.merged_meta))
+                data_vars[var_name] = xr.Variable(
+                    inner_dims, lazy_data, strip_structural_keys(obj.merged_meta)
+                )
         else:
             # No remaining varying keys -> use first object.
             if len(sub_group) > 1:
@@ -784,9 +825,11 @@ def _build_multi_variable_dataset(
             if backend_arrays is not None:
                 backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
-            data_vars[var_name] = xr.Variable(inner_dims, lazy_data, dict(obj.merged_meta))
+            data_vars[var_name] = xr.Variable(
+                inner_dims, lazy_data, strip_structural_keys(obj.merged_meta)
+            )
 
-    ds = xr.Dataset(data_vars, coords=merged_coords, attrs=dict(constant))
+    ds = xr.Dataset(data_vars, coords=merged_coords, attrs=strip_structural_keys(constant))
     return ds
 
 
@@ -795,38 +838,98 @@ def _build_multi_variable_dataset(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_dims(
-    shape: tuple[int, ...],
-    dim_names: Sequence[str] | None,
-    coord_vars: dict[str, xr.Variable],
-) -> tuple[str, ...]:
-    """Resolve dimension names for a tensor shape.
+def _consistent_hint_meta(
+    objects: Sequence[ObjectInfo],
+    ndim: int,
+) -> Mapping[str, Any] | None:
+    """Return a representative per-object meta if all hints agree, else ``None``.
 
-    Same strategy as ``TensogramDataStore._resolve_dims_for_var``.
+    Objects without a valid per-object ``dim_names`` hint are skipped.
+    If every object with a hint supplies the *same* list, the first such
+    object's meta is returned (its ``dim_names`` drives the resolver).
+    If two objects supply *different* valid hints, a warning is logged
+    and ``None`` is returned so the resolver falls through to
+    ``_extra_["dim_names"]`` and the generic fallback.
     """
-    ndim = len(shape)
+    seen: list[tuple[str, ...]] = []
+    representative: Mapping[str, Any] | None = None
+    for obj in objects:
+        parsed = parse_per_object_dim_names(ndim, obj.merged_meta)
+        if parsed is None:
+            continue
+        parsed_tuple = tuple(parsed)
+        if not seen:
+            seen.append(parsed_tuple)
+            representative = obj.merged_meta
+        elif parsed_tuple not in seen:
+            seen.append(parsed_tuple)
+    if len(seen) > 1:
+        logger.warning(
+            "group has inconsistent per-object dim_names hints %s; "
+            "falling back to coord/_extra_/generic resolution",
+            [list(t) for t in seen],
+        )
+        return None
+    return representative
 
-    if dim_names is not None:
-        return tuple(resolve_dim_names(ndim, dim_names))
 
-    # Match by size against known coordinates.
-    size_to_coord: dict[int, list[str]] = {}
-    for cname, cvar in coord_vars.items():
-        csize = cvar.shape[0]
-        size_to_coord.setdefault(csize, []).append(cname)
+def _consistent_extra_hint(objects: Sequence[ObjectInfo]) -> Any:
+    """Return a representative ``_extra_["dim_names"]`` if all agree, else ``None``.
 
-    dims: list[str] = []
-    used: set[str] = set()
-    for axis_size in shape:
-        matched = False
-        if axis_size in size_to_coord:
-            for cname in size_to_coord[axis_size]:
-                if cname not in used:
-                    dims.append(cname)
-                    used.add(cname)
-                    matched = True
-                    break
-        if not matched:
-            dims.append(f"dim_{len(dims)}")
+    Each :class:`ObjectInfo.common_meta` carries the per-message
+    ``_extra_`` dict.  When messages disagree on the hint, the resolver
+    cannot safely apply any single value across the group, so the hint
+    is discarded with a warning.
+    """
+    seen: list[Any] = []
+    seen_hashable: set[Any] = set()
+    for obj in objects:
+        raw = obj.common_meta.get(EXTRA_DIM_NAMES_KEY)
+        if raw is None:
+            continue
+        frozen = _make_hashable(raw)
+        if frozen not in seen_hashable:
+            seen_hashable.add(frozen)
+            seen.append(raw)
+    if len(seen) > 1:
+        logger.warning(
+            "group has inconsistent _extra_ %s hints across messages "
+            "(%d distinct); falling back to generic dim names",
+            EXTRA_DIM_NAMES_KEY,
+            len(seen),
+        )
+        return None
+    return seen[0] if seen else None
 
-    return tuple(dims)
+
+def _resolve_inner_dims(
+    objects: Sequence[ObjectInfo],
+    inner_shape: tuple[int, ...],
+    *,
+    user_dim_names: Sequence[str] | None,
+    coord_vars: Mapping[str, xr.Variable],
+) -> tuple[str, ...]:
+    """Resolve dimension names for a group of structurally compatible objects.
+
+    Uses the same priority chain as :func:`TensogramDataStore.build_dataset`
+    (via :func:`resolve_dims_for_axes`).  Per-object and message-level
+    ``dim_names`` hints must agree across the group; disagreement triggers
+    a warning and falls back to lower-priority sources.
+
+    The resulting names are collapsed to plain strings — generic
+    ``dim_{axis}`` fallbacks are returned as-is.  Since structurally
+    compatible objects share their inner shape, fallback names cannot
+    collide inside a single resolved group.
+    """
+    ndim = len(inner_shape)
+    coord_dim_sizes = {name: var.shape[0] for name, var in coord_vars.items()}
+    per_object_meta = _consistent_hint_meta(objects, ndim)
+    extra_hint = _consistent_extra_hint(objects)
+    dims_with_provenance = resolve_dims_for_axes(
+        inner_shape,
+        user_dim_names=user_dim_names,
+        coord_dim_sizes=coord_dim_sizes,
+        per_object_meta=per_object_meta,
+        extra_dim_names_hint=extra_hint,
+    )
+    return tuple(name for name, _is_generic in dims_with_provenance)

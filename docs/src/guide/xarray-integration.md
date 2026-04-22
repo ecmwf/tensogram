@@ -179,7 +179,57 @@ The following names are recognized (case-insensitive):
 | `step` | `step` |
 
 If no matching coordinate objects are found and no `dim_names` are provided,
-dimensions remain generic (`dim_0`, `dim_1`, ...).
+dimensions fall back to `dim_0`, `dim_1`, ... per variable.  When two
+variables of different shapes would claim the same generic name, the
+colliding axes are renamed to `obj_{i}_dim_{axis}` so the Dataset opens
+cleanly even for mixed-rank messages without coord hints.
+
+---
+
+### Per-object `dim_names` hint
+
+Producers that know their axes' semantic meaning can embed an
+axis-ordered list into each `base[i]` entry under the `dim_names` key:
+
+```python
+meta = {
+    "version": 2,
+    "base": [
+        {"name": "reflectance",       "dim_names": ["time", "y", "x"]},
+        {"name": "count_flash_all",   "dim_names": ["time"]},
+        {"name": "ny",                "dim_names": ["y"]},
+        {"name": "nx",                "dim_names": ["x"]},
+    ],
+}
+```
+
+The reader validates each list strictly — exactly as many non-empty,
+distinct strings as the object has axes.  Malformed hints are silently
+ignored so files remain openable; the validator emits a DEBUG log line
+explaining why the hint was rejected.
+
+When two objects assign the same name to equally sized axes, those axes
+share the resulting xarray dimension.  When the same name is used at
+different sizes across objects, a warning is logged and the conflicting
+axes fall back to `obj_{i}_dim_{axis}`.
+
+### Resolution priority
+
+Dimension names are resolved per data variable using this chain
+(highest priority first):
+
+1. `dim_names=[...]` kwarg passed to `xr.open_dataset`.
+2. Coord size-match — an existing coordinate variable whose size
+   equals the axis size.
+3. Per-object `base[i]["dim_names"]` — validated axis-ordered list.
+4. Message-level `_extra_["dim_names"]` — list (axis-ordered) or
+   `{size: name}` dict.
+5. Generic `dim_{axis}` fallback — eligible for per-object
+   disambiguation on collision.
+
+The same chain applies in the merge path (`open_datasets` and
+`xr.open_dataset(..., merge_objects=True)`) to keep behaviour
+consistent regardless of entry point.
 
 ---
 
