@@ -59,11 +59,12 @@ Read the current version from `VERSION` file. Bump to the target version.
 Update ALL of these locations (they MUST all match):
 - `VERSION` (the source of truth)
 - `Cargo.toml` in EVERY crate: tensogram, tensogram-encodings, tensogram-sz3,
-  tensogram-sz3-sys, tensogram-szip, tensogram-cli, tensogram-ffi, tensogram-python,
-  tensogram-grib, tensogram-netcdf, tensogram-wasm, benchmarks, examples/rust
+  tensogram-sz3-sys, tensogram-szip, tensogram-cli, tensogram-ffi, tensogram-python
+  (at `python/bindings/Cargo.toml`), tensogram-grib, tensogram-netcdf, tensogram-wasm,
+  tensogram-core (at `rust/tensogram-core-redirect/Cargo.toml`), benchmarks, examples/rust
 - `pyproject.toml` in EVERY Python package: python/bindings, python/tensogram-xarray,
-  python/tensogram-zarr, examples/jupyter
-- `typescript/package.json`
+  python/tensogram-zarr, python/tensogram-anemoi, examples/jupyter
+- `typescript/package.json` AND `examples/typescript/package.json`
 - `CHANGELOG.md` — add new release entry header with today's date
 
 Also bump inter-crate dependency version pins (`version = "=X.Y.Z"` in path
@@ -76,19 +77,30 @@ dependencies). These locations contain exact version pins that must match:
 - `rust/tensogram-cli/Cargo.toml` deps on tensogram + tensogram-grib + tensogram-netcdf
 - `rust/tensogram-ffi/Cargo.toml` deps on tensogram + tensogram-encodings
 - `rust/tensogram-wasm/Cargo.toml` dep on tensogram
+- `rust/tensogram-core-redirect/Cargo.toml` dep on tensogram (exact pin
+  `tensogram = { version = "=X.Y.Z" }`)
+- `python/tensogram-anemoi/pyproject.toml` dependency pin on `tensogram`
+  (uses `>=X.Y.Z,<X.(Y+1)` — bump both bounds, mirrors the jupyter example)
 - `examples/jupyter/pyproject.toml` dependency pins on `tensogram` and
   `tensogram[xarray]` (uses `>=X.Y.Z,<X.(Y+1).0` — bump both bounds)
 
 Verify no stale version strings remain in first-party files only:
 ```bash
+# Rust (the rust/tensogram-*/ glob already includes tensogram-core-redirect)
 grep -r 'version = "OLD_VERSION"' --include='Cargo.toml' \
   VERSION Cargo.toml rust/tensogram-*/Cargo.toml python/bindings/Cargo.toml \
   rust/benchmarks/Cargo.toml examples/rust/Cargo.toml
+# Python
 grep 'version = "OLD_VERSION"' \
   python/bindings/pyproject.toml \
   python/tensogram-xarray/pyproject.toml \
   python/tensogram-zarr/pyproject.toml \
+  python/tensogram-anemoi/pyproject.toml \
   examples/jupyter/pyproject.toml
+# TypeScript
+grep '"version": "OLD_VERSION"' \
+  typescript/package.json \
+  examples/typescript/package.json
 ```
 
 **WARNING**: Do NOT grep all `pyproject.toml` files recursively — the vendored
@@ -120,14 +132,50 @@ git push --tags
 
 ### 5. Publish to Registries
 
-Trigger each workflow manually and wait for completion between steps:
+Trigger each workflow manually and wait for completion between steps.
+All three registry workflows are `workflow_dispatch` only — none triggers
+the next automatically.
 
-1. Run `publish-crates.yml` (workflow_dispatch) — publishes 10 Rust crates
+1. Run `publish-crates.yml` (workflow_dispatch) — publishes 11 Rust crates
+   in strict dependency order: tensogram-szip → tensogram-sz3-sys →
+   tensogram-sz3 → tensogram-encodings → tensogram → tensogram-grib →
+   tensogram-netcdf → tensogram-ffi → tensogram-cli → tensogram-wasm →
+   tensogram-core (redirect). The workflow skips any crate whose version
+   is already on crates.io, so it is safe to re-run.
 2. Smoke test: `cargo add tensogram@X.Y.Z` in a fresh project, `cargo build`
-3. Run `publish-pypi-tensogram.yml` (workflow_dispatch) — native Python wheels
-4. Wait for PyPI propagation, then smoke test: `pip install tensogram==X.Y.Z`
-5. Run `publish-pypi-extras.yml` (dispatch from the release tag) — xarray + zarr
-6. Wait for PyPI propagation, then smoke test: `pip install tensogram-xarray==X.Y.Z`
+3. Run `publish-pypi.yml` (workflow_dispatch, input `use_test_pypi=false`
+   for production, `true` for Test PyPI). This single workflow builds
+   and publishes ALL Python packages in one run:
+   - native `tensogram` wheels (Linux x86_64 + macOS arm64, CPython
+     3.11 / 3.12 / 3.13 / 3.14 + free-threaded 3.13t / 3.14t)
+   - pure-Python extras: `tensogram-xarray`, `tensogram-zarr`,
+     `tensogram-anemoi` (built via `make python-dist-extras`)
+   Uses `PYPI_API_TOKEN` (production) or `PYPI_TEST_API_TOKEN` (test).
+4. Wait for PyPI propagation (~1–2 min), then smoke test each package:
+   ```bash
+   pip install tensogram==X.Y.Z
+   pip install tensogram-xarray==X.Y.Z
+   pip install tensogram-zarr==X.Y.Z
+   pip install tensogram-anemoi==X.Y.Z
+   ```
+5. Run `publish-npm.yml` (workflow_dispatch) — publishes
+   `@ecmwf.int/tensogram` to npmjs.com. Runs on the self-hosted
+   `platform-builder-docker-xl` runner inside the
+   `eccr.ecmwf.int/tensogram/ci:1.3.0` image (Node 22.22.2 pre-baked),
+   builds WASM + TypeScript via `make ts-install` and `make ts-build`,
+   checks `https://registry.npmjs.org/@ecmwf.int/tensogram/X.Y.Z`, and
+   only publishes if the version is missing (safe to re-run).
+   **About the token name**: the workflow reads `TEMPORARY_NPMJS_APIKEY`
+   (see `publish-npm.yml`). "Temporary" refers to the planned migration
+   to npm trusted publishing (OIDC) once it is available for the
+   `@ecmwf.int` scope — the secret itself IS the production credential
+   and is the one to use for real releases.
+6. Wait for npm propagation (~1 min), then smoke test:
+   ```bash
+   npm view @ecmwf.int/tensogram@X.Y.Z version
+   # optionally in a throwaway project:
+   npm install @ecmwf.int/tensogram@X.Y.Z
+   ```
 
 ### 6. Create GitHub Release
 ```bash
