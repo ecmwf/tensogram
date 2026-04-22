@@ -62,7 +62,7 @@ Not included (explicitly):
                   └────────────────┬─────────────────┘
                                    │
                   ┌────────────────▼─────────────────┐
-                  │   @ecmwf.int/tensogram (this pkg)    │
+                  │ @ecmwf.int/tensogram (this pkg)  │
                   │                                  │
                   │  typed API · dtype dispatch      │
                   │  file helpers · stream helpers   │
