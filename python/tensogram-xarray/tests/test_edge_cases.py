@@ -954,6 +954,22 @@ class TestPerObjectDimNames:
         assert ds["field"].attrs.get("units") == "K"
         assert ds["field"].dims == ("x", "y")
 
+    def test_extra_dim_names_not_in_dataset_attrs(self, tmp_path: Path):
+        """Message-level ``_extra_["dim_names"]`` must not leak into ``ds.attrs``."""
+        path = str(tmp_path / "no_leak_extra.tgm")
+        meta = {
+            "version": 2,
+            "base": [{"name": "field"}],
+            "_extra_": {"dim_names": ["x", "y"], "experiment": "e42"},
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(meta, [(_desc([4, 5]), np.ones((4, 5), dtype=np.float32))])
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert "dim_names" not in ds.attrs
+        assert ds.attrs.get("experiment") == "e42"
+        assert ds["field"].dims == ("x", "y")
+
 
 # ---------------------------------------------------------------------------
 # Hinted-name conflict (producer error safety net)

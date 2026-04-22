@@ -329,12 +329,20 @@ def test_dim_names_in_metadata(tmp_path):
     assert str(N_GRID) in dim_names
     assert dim_names[str(N_GRID)] == "values"
 
-    # Per-object hint mirrors the _extra_ convention for 1-D flat fields.
-    coord_names = {"latitude", "longitude"}
+    # Coord entries pin their axis to the canonical coord name.
+    coord_entries = {
+        entry.get("anemoi", {}).get("variable"): entry
+        for entry in meta.base
+        if entry.get("anemoi", {}).get("variable") in {"latitude", "longitude"}
+    }
+    assert coord_entries.get("latitude", {}).get("dim_names") == ["latitude"]
+    assert coord_entries.get("longitude", {}).get("dim_names") == ["longitude"]
+
+    # Flat field entries use the 'values' dim.
     field_entries = [
         entry
         for entry in meta.base
-        if entry.get("anemoi", {}).get("variable") not in coord_names
+        if entry.get("anemoi", {}).get("variable") not in {"latitude", "longitude"}
     ]
     assert field_entries, "expected at least one field entry"
     for entry in field_entries:

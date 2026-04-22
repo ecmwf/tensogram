@@ -243,12 +243,14 @@ class TensogramDataStore:
     def _get_common_meta(self) -> dict[str, Any]:
         """Extract message-level metadata for Dataset attributes.
 
-        Reads from ``meta.extra`` (message-level annotations).
+        Reads from ``meta.extra`` (message-level annotations) and filters
+        out structural keys such as ``dim_names`` so they do not leak from
+        the wire format into user-visible :attr:`xr.Dataset.attrs`.
         """
         attrs: dict[str, Any] = {}
         extra = getattr(self._meta, "extra", None)
         if extra and isinstance(extra, dict):
-            attrs.update(extra)
+            attrs.update(strip_structural_keys(extra))
         attrs["tensogram_version"] = getattr(self._meta, "version", 2)
         return attrs
 

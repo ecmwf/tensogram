@@ -1701,3 +1701,42 @@ class TestMergePathDimResolution:
             dims = ds["temp"].dims
             assert dims != ("x", "y")
             assert dims != ("p", "q")
+
+    def test_inconsistent_extra_hint_does_not_trigger_per_object_warning(self, tmp_path, caplog):
+        """Disagreeing ``_extra_["dim_names"]`` across messages must emit the
+        ``_extra_`` warning only — *not* a spurious per-object warning.
+
+        Regression test for a bug where ``_consistent_hint_meta`` read
+        ``obj.merged_meta`` (which folded in ``common_meta`` carrying
+        ``_extra_["dim_names"]``) and mis-classified the list as a
+        per-object hint."""
+        import logging
+
+        path = str(tmp_path / "extra_conflict.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                {
+                    "version": 2,
+                    "base": [{"name": "temp"}],
+                    "_extra_": {"dim_names": ["x", "y"]},
+                },
+                [(_desc([3, 4]), np.ones((3, 4), dtype=np.float32))],
+            )
+            f.append(
+                {
+                    "version": 2,
+                    "base": [{"name": "temp"}],
+                    "_extra_": {"dim_names": ["p", "q"]},
+                },
+                [(_desc([3, 4]), np.ones((3, 4), dtype=np.float32) * 2)],
+            )
+
+        with caplog.at_level(logging.WARNING, logger="tensogram_xarray.merge"):
+            datasets = open_datasets(path)
+
+        messages = [r.message for r in caplog.records]
+        assert any("inconsistent _extra_" in m for m in messages)
+        assert not any("inconsistent per-object dim_names" in m for m in messages), (
+            "merge path must not misread message-level _extra_['dim_names'] as a per-object hint"
+        )
+        assert datasets, "expected at least one Dataset despite inconsistent hints"
