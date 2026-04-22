@@ -36,9 +36,10 @@ pub const DEFAULT_BLOSC2_CHUNK_BYTES: usize = 256 * 1024 * 1024;
 /// Any single `SChunk::append()` whose input exceeds this returns
 /// `MaxBufsizeExceeded`.  Defined as `INT_MAX - BLOSC2_MAX_OVERHEAD`
 /// in `c-blosc2/include/blosc2.h` (overhead = extended header = 32 B).
-/// Exposed at crate-private visibility only — the chunking logic in
-/// [`Blosc2Compressor::compress`] uses it to clamp an over-large
-/// `chunk_bytes` and keep the multi-append path always legal.
+/// Crate-private — the chunking logic in `compress_with_chunk_bytes`
+/// clamps the requested chunk size to this value so the multi-append
+/// path is always legal even if a caller (or a future regression)
+/// requests something larger.
 const BLOSC2_MAX_BUFFERSIZE: usize = (i32::MAX as usize) - 32;
 
 /// Ensure the blosc2 C library is initialized.
@@ -78,19 +79,6 @@ pub struct Blosc2Compressor {
     /// byte-identical output to previous releases.  Values `>= 1` are
     /// passed through verbatim.
     pub nthreads: u32,
-    /// Maximum size of a single SChunk chunk in bytes. Inputs larger than
-    /// this are split across multiple SChunk chunks during [`compress`] to
-    /// stay below blosc2's hard per-call limit of
-    /// `BLOSC2_MAX_BUFFERSIZE = INT_MAX - 32 ≈ 2 GiB`.
-    ///
-    /// Production callers set this to [`DEFAULT_BLOSC2_CHUNK_BYTES`]
-    /// (256 MiB) via the pipeline constructor; tests may set it smaller
-    /// to exercise the multi-chunk path without large allocations. Values
-    /// smaller than `typesize` (including `0`) are rounded up to exactly
-    /// one `typesize` element per chunk.
-    ///
-    /// [`compress`]: Compressor::compress
-    pub chunk_bytes: usize,
 }
 
 /// Normalise the tensogram `nthreads` semantics (0 == sequential) to
@@ -119,24 +107,33 @@ impl Blosc2Compressor {
         dparams.nthreads(blosc2_nthreads(self.nthreads));
         dparams
     }
-}
 
-impl Compressor for Blosc2Compressor {
-    fn compress(&self, data: &[u8]) -> Result<CompressResult, CompressionError> {
+    /// Compress `data` into an SChunk whose per-chunk byte size is at most
+    /// `requested_chunk_bytes`.  Private test seam so that unit tests can
+    /// exercise the multi-chunk path with small buffers without having to
+    /// allocate [`DEFAULT_BLOSC2_CHUNK_BYTES`] worth of scratch memory.
+    /// Production callers reach this via [`Compressor::compress`], which
+    /// passes `DEFAULT_BLOSC2_CHUNK_BYTES`.
+    fn compress_with_chunk_bytes(
+        &self,
+        data: &[u8],
+        requested_chunk_bytes: usize,
+    ) -> Result<CompressResult, CompressionError> {
         ensure_blosc2_init();
         let cparams = self.build_cparams()?;
         let dparams = self.build_dparams();
 
         let mut schunk = SChunk::new(cparams, dparams).map_err(map_err)?;
 
-        // Floor `chunk_bytes` to a multiple of `typesize` so non-tail
-        // appends stay aligned for blosc2's shuffle filter, clamp upward
-        // to at least one `typesize` to guarantee forward progress, and
-        // clamp downward to `BLOSC2_MAX_BUFFERSIZE` so the multi-append
-        // path stays legal even if a caller misconfigures `chunk_bytes`.
+        // Floor to a multiple of `typesize` so non-tail appends stay
+        // aligned for blosc2's shuffle filter, clamp upward to at least
+        // one `typesize` to guarantee forward progress, and clamp
+        // downward to `BLOSC2_MAX_BUFFERSIZE` so every append stays below
+        // blosc2's per-call limit regardless of how the caller (or a
+        // mis-validated `typesize`) arrived here.
         let ts = self.typesize.max(1);
-        let capped = self.chunk_bytes.min(BLOSC2_MAX_BUFFERSIZE);
-        let chunk_bytes = (capped / ts).max(1) * ts;
+        let capped = requested_chunk_bytes.min(BLOSC2_MAX_BUFFERSIZE);
+        let chunk_bytes = ((capped / ts).max(1) * ts).min(BLOSC2_MAX_BUFFERSIZE);
 
         if data.len() <= chunk_bytes {
             // Fast path: inputs that fit in one chunk produce byte-identical
@@ -158,12 +155,14 @@ impl Compressor for Blosc2Compressor {
             block_offsets: None,
         })
     }
+}
 
-    fn decompress(
-        &self,
-        data: &[u8],
-        _expected_size: usize,
-    ) -> Result<Vec<u8>, CompressionError> {
+impl Compressor for Blosc2Compressor {
+    fn compress(&self, data: &[u8]) -> Result<CompressResult, CompressionError> {
+        self.compress_with_chunk_bytes(data, DEFAULT_BLOSC2_CHUNK_BYTES)
+    }
+
+    fn decompress(&self, data: &[u8], _expected_size: usize) -> Result<Vec<u8>, CompressionError> {
         ensure_blosc2_init();
         // We iterate chunks explicitly instead of going through
         // `schunk.items(0..schunk.items_num())` because `items_num()` in
@@ -257,13 +256,12 @@ impl Compressor for Blosc2Compressor {
 mod tests {
     use super::*;
 
-    fn small_chunk_compressor(chunk_bytes: usize) -> Blosc2Compressor {
+    fn small_chunk_compressor() -> Blosc2Compressor {
         Blosc2Compressor {
             codec: Blosc2Codec::Lz4,
             clevel: 5,
             typesize: 1,
             nthreads: 0,
-            chunk_bytes,
         }
     }
 
@@ -275,7 +273,6 @@ mod tests {
             clevel: 5,
             typesize: 1,
             nthreads: 0,
-            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
 
         let result = compressor.compress(&data).unwrap();
@@ -291,7 +288,6 @@ mod tests {
             clevel: 5,
             typesize: 4,
             nthreads: 0,
-            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
 
         let result = compressor.compress(&data).unwrap();
@@ -307,7 +303,6 @@ mod tests {
             clevel: 5,
             typesize: 1,
             nthreads: 0,
-            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
 
         let result = compressor.compress(&data).unwrap();
@@ -326,7 +321,6 @@ mod tests {
             clevel: 3,
             typesize: 1,
             nthreads: 0,
-            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
         let result = compressor.compress(&data).unwrap();
         let decompressed = compressor.decompress(&result.data, data.len()).unwrap();
@@ -341,7 +335,6 @@ mod tests {
             clevel: 5,
             typesize: 1,
             nthreads: 0,
-            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
         let result = compressor.compress(&data).unwrap();
         let decompressed = compressor.decompress(&result.data, data.len()).unwrap();
@@ -371,7 +364,6 @@ mod tests {
             clevel: 3,
             typesize: 4,
             nthreads: 0,
-            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
         let seq_bytes = seq_compressor.compress(&data).unwrap().data;
         let seq_rt = seq_compressor.decompress(&seq_bytes, data.len()).unwrap();
@@ -383,7 +375,6 @@ mod tests {
                 clevel: 3,
                 typesize: 4,
                 nthreads: n,
-                chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
             };
             let par_bytes = par_compressor.compress(&data).unwrap().data;
             // Decoded values must always round-trip exactly.
@@ -411,7 +402,6 @@ mod tests {
             clevel: 3,
             typesize: 4,
             nthreads: 0,
-            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
         let a = compressor.compress(&data).unwrap().data;
         let b = compressor.compress(&data).unwrap().data;
@@ -432,7 +422,6 @@ mod tests {
             clevel: 5,
             typesize: 1,
             nthreads: 0,
-            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
         let compressed = compressor.compress(&data).unwrap().data;
 
@@ -441,7 +430,6 @@ mod tests {
             clevel: 0,
             typesize: 1,
             nthreads: 0,
-            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
         let decompressed = decoder.decompress(&compressed, data.len()).unwrap();
         assert_eq!(decompressed, data);
@@ -461,8 +449,11 @@ mod tests {
         let len = 3 * chunk_bytes + 777;
         let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
 
-        let compressor = small_chunk_compressor(chunk_bytes);
-        let compressed = compressor.compress(&data).unwrap().data;
+        let compressor = small_chunk_compressor();
+        let compressed = compressor
+            .compress_with_chunk_bytes(&data, chunk_bytes)
+            .unwrap()
+            .data;
 
         let decompressed = compressor.decompress(&compressed, data.len()).unwrap();
         assert_eq!(decompressed.len(), data.len());
@@ -485,8 +476,11 @@ mod tests {
         let len = 4 * chunk_bytes;
         let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
 
-        let compressor = small_chunk_compressor(chunk_bytes);
-        let compressed = compressor.compress(&data).unwrap().data;
+        let compressor = small_chunk_compressor();
+        let compressed = compressor
+            .compress_with_chunk_bytes(&data, chunk_bytes)
+            .unwrap()
+            .data;
         let decompressed = compressor.decompress(&compressed, data.len()).unwrap();
 
         assert_eq!(decompressed, data);
@@ -501,8 +495,11 @@ mod tests {
         let len = 3 * chunk_bytes + 500;
         let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
 
-        let compressor = small_chunk_compressor(chunk_bytes);
-        let compressed = compressor.compress(&data).unwrap().data;
+        let compressor = small_chunk_compressor();
+        let compressed = compressor
+            .compress_with_chunk_bytes(&data, chunk_bytes)
+            .unwrap()
+            .data;
 
         let range_start = chunk_bytes - 200;
         let range_len = 500;
@@ -526,7 +523,6 @@ mod tests {
             clevel: 5,
             typesize: 1,
             nthreads: 0,
-            chunk_bytes: DEFAULT_BLOSC2_CHUNK_BYTES,
         };
         let compressed = compressor.compress(&data).unwrap().data;
 
@@ -550,8 +546,11 @@ mod tests {
         let chunk_bytes = 4096;
         let data: Vec<u8> = (0..chunk_bytes).map(|i| (i % 251) as u8).collect();
 
-        let compressor = small_chunk_compressor(chunk_bytes);
-        let compressed = compressor.compress(&data).unwrap().data;
+        let compressor = small_chunk_compressor();
+        let compressed = compressor
+            .compress_with_chunk_bytes(&data, chunk_bytes)
+            .unwrap()
+            .data;
 
         let schunk = blosc2::chunk::SChunk::from_buffer(compressed.as_slice().into()).unwrap();
         assert_eq!(schunk.num_chunks(), 1);
@@ -580,9 +579,11 @@ mod tests {
             clevel: 5,
             typesize: 4,
             nthreads: 0,
-            chunk_bytes,
         };
-        let compressed = compressor.compress(&data).unwrap().data;
+        let compressed = compressor
+            .compress_with_chunk_bytes(&data, chunk_bytes)
+            .unwrap()
+            .data;
         let decompressed = compressor.decompress(&compressed, data.len()).unwrap();
         assert_eq!(decompressed, data);
     }
@@ -606,9 +607,11 @@ mod tests {
             clevel: 5,
             typesize: 4,
             nthreads: 0,
-            chunk_bytes,
         };
-        let compressed = compressor.compress(&data).unwrap().data;
+        let compressed = compressor
+            .compress_with_chunk_bytes(&data, chunk_bytes)
+            .unwrap()
+            .data;
         let decompressed = compressor.decompress(&compressed, data.len()).unwrap();
         assert_eq!(decompressed, data);
     }
@@ -621,14 +624,11 @@ mod tests {
     #[test]
     fn blosc2_chunk_bytes_above_max_buffersize_is_clamped() {
         let data: Vec<u8> = (0..8192).map(|i| (i % 251) as u8).collect();
-        let compressor = Blosc2Compressor {
-            codec: Blosc2Codec::Lz4,
-            clevel: 5,
-            typesize: 1,
-            nthreads: 0,
-            chunk_bytes: BLOSC2_MAX_BUFFERSIZE + (1 << 30),
-        };
-        let compressed = compressor.compress(&data).unwrap().data;
+        let compressor = small_chunk_compressor();
+        let compressed = compressor
+            .compress_with_chunk_bytes(&data, BLOSC2_MAX_BUFFERSIZE + (1 << 30))
+            .unwrap()
+            .data;
         let decompressed = compressor.decompress(&compressed, data.len()).unwrap();
         assert_eq!(decompressed, data);
     }
