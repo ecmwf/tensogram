@@ -24,13 +24,11 @@ jobs:
 
       - run: mkdir -p "$TMPDIR"
 
-      - name: Install TypeScript deps
-        working-directory: typescript
-        run: npm ci
+      - name: Install typescript deps
+        run: make ts-install
 
-      - name: Build (WASM + TS)
-        working-directory: typescript
-        run: npm run build
+      - name: Build WASM + TypeScript (wasm-pack → typescript/wasm, tsc → dist)
+        run: make ts-build
 
       - name: Check if version already published
         id: version-check
