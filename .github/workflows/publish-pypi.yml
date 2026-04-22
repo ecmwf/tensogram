@@ -143,15 +143,20 @@ jobs:
           path: dist/
           merge-multiple: true
 
-      - name: List artifacts
-        run: ls -la dist/
+      - name: List and check artifacts
+        run: |
+          ls -la dist/
+          pip install twine
+          twine check dist/*
 
       - name: Publish to Test PyPI
         if: inputs.use_test_pypi
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
-          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
+          password: ${{ secrets.PYPI_TEST_API_TOKEN }}
+          skip-existing: true
+          verbose: true
 
       - name: Publish to PyPI
         if: ${{ !inputs.use_test_pypi }}
