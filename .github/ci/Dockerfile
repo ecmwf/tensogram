@@ -1,9 +1,8 @@
 # ────────────────────────────────────────────────────────────────
 # tensogram CI image
 #
-# Pre-bakes Rust toolchain + system libs. Python and Node.js are
-# installed at CI runtime by uv / curl (adds ~10 s per job that
-# needs them, but shrinks the image by ~430 MB).
+# Pre-bakes Rust toolchain, wasm-pack, Node.js, and system libs.
+# Python is installed at CI runtime by uv.
 #
 #   docker build -t tensogram-ci:test .github/ci/
 # ────────────────────────────────────────────────────────────────
@@ -72,7 +71,7 @@ RUN set -eux \
 COPY --from=builder /usr/local/rustup /usr/local/rustup
 COPY --from=builder /usr/local/cargo  /usr/local/cargo
 
-# ── uv (Python + Node installed at CI runtime) ─────────────────
+# ── uv (Python installed at CI runtime) ────────────────────────
 COPY --from=uv /uv /uvx /usr/local/bin/
 
 # ── sccache (S3-backed compilation cache) ──────────────────────
@@ -82,12 +81,20 @@ RUN set -eux \
     | tar xz --strip-components=1 -C /usr/local/bin \
         "sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache"
 
+# ── Node.js (full distribution — node, npm, npx) ───────────────
+ARG NODE_VERSION=22.22.2
+RUN set -eux \
+ && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+    | tar xJ --strip-components=1 -C /usr/local \
+ && rm -rf /usr/local/share/doc /usr/local/share/man /usr/local/share/systemtap
+
 # ── Smoke test ──────────────────────────────────────────────────
 RUN set -eux \
  && rustc --version && cargo --version \
  && cmake --version \
  && wasm-pack --version \
  && uv --version \
- && sccache --version
+ && sccache --version \
+ && node --version && npm --version
 
 WORKDIR /workspace
