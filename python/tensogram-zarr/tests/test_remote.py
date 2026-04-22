@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import http.server
 import threading
+import warnings
 
 import numpy as np
 import pytest
 import tensogram
+import zarr
 from tensogram_zarr.store import TensogramStore
 
 
@@ -223,6 +225,29 @@ class TestZarrRemoteLazyReads:
         assert len(chunk_keys_in_keys) == 1, "local files should decode chunks eagerly"
         assert len(store._chunk_index) == 0, "no lazy index for local files"
         assert store._file is None, "no persistent handle for local files"
+
+
+class TestRemoteIssue67DescriptorNameFallback:
+    def test_remote_scan_surfaces_descriptor_level_name(self, serve_tgm_bytes):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            meta = {"version": 2}
+            desc = {
+                "type": "ntensor",
+                "shape": [4],
+                "dtype": "float32",
+                "byte_order": "little",
+                "encoding": "none",
+                "filter": "none",
+                "compression": "none",
+                "name": "temperature",
+            }
+            msg = tensogram.encode(meta, [(desc, np.arange(4, dtype=np.float32))])
+
+        url = serve_tgm_bytes(msg)
+        with TensogramStore.open_tgm(url) as store:
+            root = zarr.open_group(store=store, mode="r")
+            assert list(root.keys()) == ["temperature"]
 
 
 class TestZarrRemoteWriteRejection:
