@@ -1702,6 +1702,47 @@ class TestMergePathDimResolution:
             assert dims != ("x", "y")
             assert dims != ("p", "q")
 
+    def test_merge_hint_vs_coord_conflict_does_not_crash(self, tmp_path, caplog):
+        """Merge path: a hint that claims an existing coord name at a different
+        size used to crash Dataset assembly with ``conflicting sizes for
+        dimension`` because only ``store.py`` disambiguated such clashes.
+        Now the merge path renames the offending axis and keeps the coord
+        intact."""
+        import logging
+
+        path = str(tmp_path / "merge_hint_vs_coord.tgm")
+        lat = np.linspace(-90, 90, 5, dtype=np.float64)
+        wrong = np.ones((7,), dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [
+                {"name": "latitude"},
+                {"name": "field", "dim_names": ["latitude"]},
+            ],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([5], dtype="float64"), lat),
+                    (_desc([7]), wrong),
+                ],
+            )
+
+        with caplog.at_level(logging.WARNING, logger="tensogram_xarray.merge"):
+            datasets = open_datasets(path)
+
+        assert datasets, "open_datasets must succeed on hint-vs-coord conflict"
+        found_field = False
+        for ds in datasets:
+            if "field" in ds.data_vars:
+                found_field = True
+                assert ds["field"].dims == ("obj_1_dim_0",)
+                assert "latitude" in ds.coords
+                assert ds.coords["latitude"].shape == (5,)
+        assert found_field, "expected a dataset containing the 'field' variable"
+        assert any("conflicts with coord 'latitude'" in r.message for r in caplog.records)
+
     def test_inconsistent_extra_hint_does_not_trigger_per_object_warning(self, tmp_path, caplog):
         """Disagreeing ``_extra_["dim_names"]`` across messages must emit the
         ``_extra_`` warning only — *not* a spurious per-object warning.

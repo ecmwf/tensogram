@@ -899,7 +899,8 @@ def _consistent_extra_hint(objects: Sequence[ObjectInfo]) -> Any:
     if len(seen) > 1:
         logger.warning(
             "group has inconsistent _extra_ %s hints across messages "
-            "(%d distinct); falling back to generic dim names",
+            "(%d distinct); ignoring this hint and falling back to coord "
+            "matches, consistent per-object hints, or generic dim names",
             EXTRA_DIM_NAMES_KEY,
             len(seen),
         )
@@ -921,10 +922,12 @@ def _resolve_inner_dims(
     ``dim_names`` hints must agree across the group; disagreement triggers
     a warning and falls back to lower-priority sources.
 
-    The resulting names are collapsed to plain strings — generic
-    ``dim_{axis}`` fallbacks are returned as-is.  Since structurally
-    compatible objects share their inner shape, fallback names cannot
-    collide inside a single resolved group.
+    A final pass drops any hint name that would collide with an existing
+    coord dim at a different size — those axes are renamed to
+    ``obj_{i}_dim_{axis}`` to prevent ``xr.Dataset`` assembly from raising
+    ``conflicting sizes for dimension ...``.  Within-group fallback
+    collisions cannot occur because structurally compatible objects share
+    their inner shape.
     """
     ndim = len(inner_shape)
     coord_dim_sizes = {name: var.shape[0] for name, var in coord_vars.items()}
@@ -937,4 +940,29 @@ def _resolve_inner_dims(
         per_object_meta=per_object_meta,
         extra_dim_names_hint=extra_hint,
     )
-    return tuple(name for name, _is_generic in dims_with_provenance)
+
+    representative_obj_index = objects[0].obj_index if objects else 0
+    warned: set[str] = set()
+    result: list[str] = []
+    for axis, (dim_name, is_generic) in enumerate(dims_with_provenance):
+        coord_size = coord_dim_sizes.get(dim_name)
+        if coord_size is not None and coord_size != inner_shape[axis]:
+            if not is_generic and dim_name not in warned:
+                logger.warning(
+                    "dim name %r at axis %d size %d conflicts with coord %r "
+                    "size %d; renaming to obj_%d_dim_%d to keep the Dataset "
+                    "openable (check user dim_names kwarg, _extra_, or "
+                    "per-object hints)",
+                    dim_name,
+                    axis,
+                    inner_shape[axis],
+                    dim_name,
+                    coord_size,
+                    representative_obj_index,
+                    axis,
+                )
+                warned.add(dim_name)
+            result.append(f"obj_{representative_obj_index}_dim_{axis}")
+        else:
+            result.append(dim_name)
+    return tuple(result)
