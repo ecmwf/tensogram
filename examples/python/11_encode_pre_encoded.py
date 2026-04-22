@@ -35,9 +35,7 @@ temps = np.linspace(249.15, 349.05, n, dtype=np.float64)
 print(f"Source: {n} float64 values  raw={temps.nbytes} bytes")
 
 # Compute packing parameters via the library helper
-params = tensogram.compute_packing_params(
-    temps, bits_per_value=16, decimal_scale_factor=0
-)
+params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
 ref_val = params["reference_value"]
 bsf = params["binary_scale_factor"]
 dsf = params["decimal_scale_factor"]
@@ -86,7 +84,6 @@ descriptor = {
     "type": "ntensor",
     "shape": [n],
     "dtype": "float64",
-    "byte_order": "little",
     "encoding": "simple_packing",
     "filter": "none",
     "compression": "none",
@@ -119,7 +116,6 @@ raw_desc = {
     "type": "ntensor",
     "shape": [50],
     "dtype": "float32",
-    "byte_order": "little",
     "encoding": "none",
     "filter": "none",
     "compression": "none",

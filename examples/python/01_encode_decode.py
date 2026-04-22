@@ -32,7 +32,6 @@ descriptor = {
     "type": "ntensor",
     "shape": list(temps.shape),
     "dtype": "float32",
-    "byte_order": "little",
     "encoding": "none",
     "filter": "none",
     "compression": "none",
