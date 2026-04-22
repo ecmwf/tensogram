@@ -253,8 +253,7 @@ Then open `http://localhost:3000`.
 
 ## Repository Layout
 
-High-level shape of the repository — for the full crate/package breakdown
-see [`plans/ARCHITECTURE.md`](plans/ARCHITECTURE.md).
+High-level shape of the repository.
 
 - **`rust/`** — Core Rust workspace: encode/decode library, encoding pipeline,
   compression codec crates, CLI binary, C FFI layer, WASM bindings, GRIB and
