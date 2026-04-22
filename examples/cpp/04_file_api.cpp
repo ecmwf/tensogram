@@ -19,10 +19,14 @@
 #include <vector>
 
 /// Build JSON for a simple 10x20 float32 message with per-object metadata.
+///
+/// Per-object application metadata lives under `base[0]` (v3 shape);
+/// the library never interprets the keys, so any application
+/// vocabulary works.  MARS keys are used here as concrete sample data.
 static std::string make_json(const char* param, int step) {
     char buf[512];
     std::snprintf(buf, sizeof(buf),
-        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":2,"shape":[10,20],"strides":[80,4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}],"mars":{"date":"20260401","step":"%d","type":"fc","param":"%s"}})",
+        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":2,"shape":[10,20],"strides":[80,4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}],"base":[{"mars":{"date":"20260401","step":"%d","type":"fc","param":"%s"}}]})",
         step, param);
     return buf;
 }

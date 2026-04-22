@@ -108,7 +108,7 @@ int main() {
     std::snprintf(ref_buf, sizeof(ref_buf), "%.17g", reference_value);
 
     std::string json =
-        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[)" +
+        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[)" +
         std::to_string(N) +
         R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
         R"("encoding":"simple_packing","filter":"none","compression":"none",)"
@@ -151,7 +151,7 @@ int main() {
     for (int i = 0; i < 50; ++i) raw_data[i] = static_cast<float>(i);
 
     std::string raw_json =
-        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[50],)"
+        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[50],)"
         R"("strides":[4],"dtype":"float32","byte_order":"little",)"
         R"("encoding":"none","filter":"none","compression":"none"}]})";
 
@@ -174,11 +174,11 @@ int main() {
     // Write to a temp file, then decode
     const char* tmp_path = "/tmp/tensogram_example_11.tgm";
     {
-        tensogram::streaming_encoder enc(tmp_path, R"({"version":2})");
+        tensogram::streaming_encoder enc(tmp_path, R"({"version":3})");
 
         // Pre-encoded simple_packing object
         std::string desc_sp =
-            R"({"type":"ndarray","ndim":1,"shape":[)" + std::to_string(N) +
+            R"({"type":"ntensor","ndim":1,"shape":[)" + std::to_string(N) +
 R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
             R"("encoding":"simple_packing","filter":"none","compression":"none",)"
             R"("bits_per_value":)" + std::to_string(bits_per_value) +
@@ -191,7 +191,7 @@ R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
 
         // Pre-encoded encoding=none object
         std::string desc_raw =
-            R"({"type":"ndarray","ndim":1,"shape":[50],"strides":[4],)"
+            R"({"type":"ntensor","ndim":1,"shape":[50],"strides":[4],)"
             R"("dtype":"float32","byte_order":"little",)"
             R"("encoding":"none","filter":"none","compression":"none"})";
         enc.write_object_pre_encoded(desc_raw,
