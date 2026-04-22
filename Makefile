@@ -44,7 +44,7 @@ rust-lint: rust-clippy rust-fmt ## Run all Rust lints (clippy + fmt)
 # ── Python ────────────────────────────────────────────────────────────────
 
 PYTHON  ?= uv run python
-MATURIN ?= uv run --with maturin maturin
+MATURIN ?= uvx maturin
 RUFF    ?= uv run --with ruff ruff
 RUFF_CFG ?= python/bindings/pyproject.toml
 # Space-separated --interpreter flags passed to maturin build; defaults to
@@ -53,9 +53,11 @@ MATURIN_INTERP_ARGS ?= --find-interpreter
 
 python-build: ## Build Python bindings via maturin (dev install into .venv)
 	if [ ! -d .venv ] ; then uv venv ; fi
-	cd python/bindings && $(MATURIN) develop --release --uv
-	uv pip install ./python/tensogram-xarray
-	uv pip install ./python/tensogram-zarr
+	cd python/bindings && $(MATURIN) develop --release
+	VERSION=$$(cat VERSION) uv pip install ./python/tensogram-xarray
+	VERSION=$$(cat VERSION) uv pip install ./python/tensogram-zarr
+	VERSION=$$(cat VERSION) uv pip install ./python/tensogram-anemoi
+	VERSION=$$(cat VERSION) uv pip install ./examples/jupyter
 
 python-dist: ## Build tensogram distributable wheels for the current platform
 	if [ ! -d .venv ] ; then uv venv ; fi

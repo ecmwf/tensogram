@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "tensogram"
-version = "0.16.1"
+dynamic = ["version"]
 description = "Fast binary N-tensor message format for scientific data"
 license = "Apache-2.0"
 requires-python = ">=3.11"
