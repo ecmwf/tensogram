@@ -49,7 +49,7 @@ jobs:
         if: steps.version-check.outputs.already_published == 'false'
         working-directory: typescript
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPMJS_API_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.TEMPORARY_NPMJS_APIKEY }}
         run: |
           cp ../LICENSE ./LICENSE
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > .npmrc
