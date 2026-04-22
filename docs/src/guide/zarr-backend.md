@@ -78,11 +78,15 @@ By default, the store tries these metadata paths to name arrays:
 5. `shortName`
 6. Falls back to `object_<index>`
 
-Each path is resolved against the object's `meta.base[i]` dict first and
-then against the descriptor's `params` dict (matching the xarray
-backend's long-standing behaviour).  The per-key precedence still
-applies: a higher-priority key in either source wins; base wins only
-for the same key.
+The lookup runs against a **shallow root-key merge** of `meta.base[i]`
+and `desc.params` (matching the xarray backend's long-standing
+behaviour): for each top-level key, `meta.base[i]` wins if present,
+otherwise `desc.params` fills in.  Nested dicts are *not* deep-merged,
+so a `base[i]` entry with `{"mars": {"levtype": "sfc"}}` entirely
+shadows a `desc.params["mars"]` with `{"param": "2t"}`; no `mars.param`
+from the descriptor survives that case.  After merging, the priority
+chain above is applied to the combined dict, so a higher-priority key
+from either source beats a lower-priority one.
 
 You can override with any dot-path, including non-MARS vocabularies:
 

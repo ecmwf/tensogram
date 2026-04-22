@@ -35,9 +35,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
-- `tensogram` (Python): `encode()` and `TensogramFile.append()` now
-  emit a `UserWarning` when a descriptor dict contains keys that look
-  like application metadata (`name`, `param`, `shortName`, `long_name`,
+- `tensogram` (Python): `encode()`, `encode_pre_encoded()`,
+  `TensogramFile.append()`, `StreamingEncoder.write_object()`, and
+  `StreamingEncoder.write_object_pre_encoded()` now emit a
+  `UserWarning` when a descriptor dict contains keys that look like
+  application metadata (`name`, `param`, `shortName`, `long_name`,
   `description`, `units`, `dim_names`, `mars`, `cf`, `product`,
   `instrument`), pointing callers at `meta["base"][i]` as the
   canonical location.  The keys are still captured into
