@@ -1,17 +1,17 @@
 [package]
 name = "tensogram-sz3-sys"
-version = "0.16.1"
-edition = "2024"
-rust-version = "1.87"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 license-file = "LICENSES.md"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Clean-room FFI bindings for the SZ3 lossy compression library"
-repository = "https://github.com/ecmwf/tensogram"
-homepage = "https://sites.ecmwf.int/docs/tensogram/main"
 documentation = "https://docs.rs/tensogram-sz3-sys"
 readme = "README.md"
 keywords = ["sz3", "compression", "lossy", "ffi", "scientific-data"]
 categories = ["science", "compression", "external-ffi-bindings"]
-authors = ["ECMWF <software@ecmwf.int>"]
 links = "sz3"
 include = [
     "src/**",

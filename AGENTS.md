@@ -133,10 +133,19 @@ Serves at http://localhost:8080/ (set BASE_PATH env var to deploy under a subpat
   canonical version for the ENTIRE project. ALL version strings everywhere MUST match it.
   When bumping the version (e.g. during a release), you MUST update:
     - `VERSION` (the source of truth)
-    - `Cargo.toml` in EVERY crate in the repository (workspace + opt-in crates +
-      examples). Do not hardcode a crate list here — discover them with
-      `find . -name Cargo.toml -not -path './target/*' -not -path './.venv/*'`
-      and update every one to match `VERSION`.
+    - The root `Cargo.toml` `[workspace.package]` `version` field — all workspace member
+      crates inherit from it via `version.workspace = true`, so a single edit covers:
+        `rust/tensogram`, `rust/tensogram-encodings`, `rust/tensogram-sz3`,
+        `rust/tensogram-sz3-sys`, `rust/tensogram-szip`, `rust/tensogram-cli`,
+        `rust/tensogram-ffi`, `rust/benchmarks`, `examples/rust`.
+    - The excluded Cargo.toml files (not workspace members, updated individually):
+        `python/bindings/Cargo.toml`
+        `rust/tensogram-core-redirect/Cargo.toml`
+        `rust/tensogram-grib/Cargo.toml`
+        `rust/tensogram-netcdf/Cargo.toml`
+        `rust/tensogram-wasm/Cargo.toml`
+      Also update any pinned workspace dependency version strings in the root `Cargo.toml`
+      (e.g. `tensogram-szip = { …, version = "=0.16.1" }`, `tensogram-sz3`, etc.).
     - `pyproject.toml` in EVERY Python package under `python/`, AND
       `examples/jupyter/pyproject.toml` (the Jupyter notebook deps manifest).
     - `package.json` in EVERY JS package — discover them with

@@ -1,17 +1,17 @@
 [package]
 name = "tensogram-szip"
-version = "0.16.1"
-edition = "2024"
-rust-version = "1.87"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Pure-Rust CCSDS 121.0-B-3 Adaptive Entropy Coding (AEC/SZIP) — encode, decode, and range decode"
-repository = "https://github.com/ecmwf/tensogram"
-homepage = "https://sites.ecmwf.int/docs/tensogram/main"
 documentation = "https://docs.rs/tensogram-szip"
 readme = "README.md"
 keywords = ["szip", "aec", "compression", "entropy-coding", "scientific-data"]
 categories = ["science", "compression"]
-authors = ["ECMWF <software@ecmwf.int>"]
 
 [dependencies]
 thiserror = { workspace = true }
