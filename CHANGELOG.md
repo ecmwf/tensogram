@@ -287,6 +287,19 @@ clear error pointing at re-encoding.  The v3 spec lives at
   `tensogram-core@0.14.0` through `tensogram-core@0.16.1` remain
   available on crates.io as (now-frozen) re-exports.
 
+### Stats
+
+- Rust workspace: 1487 tests passing (1593 with `remote` + `async`
+  feature coverage).  Excluded-crate suites run separately: 387 tests
+  across `tensogram-grib`, `tensogram-netcdf`, and `tensogram-cli` built
+  with `grib` + `netcdf`.
+- Python: 526 + 242 + 235 tests across `python/tests/`,
+  `python/tensogram-xarray/tests/`, and `python/tensogram-zarr/tests/`
+  (29 skipped on CPython 3.13 and 3.13t free-threaded).  Jupyter
+  notebooks: 32 structural-guard + 46 nbval-lax tests.
+- C++: 143 tests (Linux + macOS).  WASM: 161 tests.
+  TypeScript (vitest): 319 tests.
+
 ## [0.16.1] - 2026-04-19
 
 ### Fixed
