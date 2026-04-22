@@ -906,6 +906,39 @@ class TestPerObjectDimNames:
         ds = xr.open_dataset(path, engine="tensogram")
         assert ds["field"].dims == ("dim_0", "dim_1")
 
+    def test_malformed_non_string_entry_ignored(self, tmp_path: Path):
+        """Non-string entries (ints, None, etc.) in the hint silently fall through."""
+        from tensogram_xarray.mapping import parse_per_object_dim_names
+
+        assert parse_per_object_dim_names(2, {"dim_names": ["x", 42]}) is None
+        assert parse_per_object_dim_names(2, {"dim_names": ["x", None]}) is None
+        assert parse_per_object_dim_names(1, {"dim_names": [42]}) is None
+
+    def test_validator_accepts_zero_dim_empty_list(self):
+        """A zero-dim tensor (ndim=0) accepts an empty ``dim_names`` list."""
+        from tensogram_xarray.mapping import parse_per_object_dim_names
+
+        assert parse_per_object_dim_names(0, {"dim_names": []}) == []
+        assert parse_per_object_dim_names(0, {"dim_names": ["extra"]}) is None
+
+    def test_validator_accepts_tuple(self):
+        """Tuple hints (any non-str/bytes Sequence) are accepted."""
+        from tensogram_xarray.mapping import parse_per_object_dim_names
+
+        assert parse_per_object_dim_names(2, {"dim_names": ("x", "y")}) == ["x", "y"]
+
+    def test_validator_rejects_string(self):
+        """A plain ``str`` is not a valid dim-names sequence."""
+        from tensogram_xarray.mapping import parse_per_object_dim_names
+
+        assert parse_per_object_dim_names(2, {"dim_names": "xy"}) is None
+
+    def test_validator_rejects_bytes(self):
+        """A ``bytes`` / ``bytearray`` is not a valid dim-names sequence."""
+        from tensogram_xarray.mapping import parse_per_object_dim_names
+
+        assert parse_per_object_dim_names(2, {"dim_names": b"xy"}) is None
+
     def test_dim_names_not_in_var_attrs(self, tmp_path: Path):
         """``dim_names`` is structural metadata; it must not leak into attrs."""
         path = str(tmp_path / "no_leak.tgm")
@@ -984,3 +1017,35 @@ class TestHintedNameConflict:
         assert ds["a"].dims == ("obj_0_dim_0",)
         assert ds["b"].dims == ("obj_1_dim_0",)
         assert any("'time'" in r.message for r in caplog.records)
+
+    def test_hint_colliding_with_coord_size_renames_hinted_axis(self, tmp_path: Path, caplog):
+        """A per-object hint that claims an existing coord name at a different
+        size triggers warn + fallback for that axis; the coord itself is left
+        intact because coord dim names are never auto-renamed."""
+        import logging
+
+        path = str(tmp_path / "hint_vs_coord.tgm")
+        lat = np.linspace(-90, 90, 5, dtype=np.float64)
+        data = np.ones((7,), dtype=np.float32)
+        meta = {
+            "version": 2,
+            "base": [
+                {"name": "latitude"},
+                {"name": "field", "dim_names": ["latitude"]},
+            ],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([5], dtype="float64"), lat),
+                    (_desc([7]), data),
+                ],
+            )
+
+        with caplog.at_level(logging.WARNING, logger="tensogram_xarray.store"):
+            ds = xr.open_dataset(path, engine="tensogram")
+
+        assert ds.coords["latitude"].shape == (5,)
+        assert ds["field"].dims == ("obj_1_dim_0",)
+        assert any("'latitude'" in r.message for r in caplog.records)
