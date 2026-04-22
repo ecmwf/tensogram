@@ -482,8 +482,9 @@ class TensogramStore(ZarrStore):
     def _resolve_names(self, descriptors: list, base: list) -> list[str]:
         names: list[str] = []
         name_counts: dict[str, int] = {}
-        for i, _desc in enumerate(descriptors):
-            per_obj = _filter_reserved(base[i]) if i < len(base) else {}
+        for i, desc in enumerate(descriptors):
+            base_entry = base[i] if i < len(base) else {}
+            per_obj = _merge_base_with_desc_params(base_entry, desc)
             raw_name = resolve_variable_name(i, per_obj, None, self._variable_key)
             name = _sanitize_key_segment(raw_name)
             if name in name_counts:
@@ -621,6 +622,24 @@ def _filter_reserved(entry: dict) -> dict:
     if not isinstance(entry, dict):
         return {}
     return {k: v for k, v in entry.items() if k != "_reserved_"}
+
+
+def _merge_base_with_desc_params(base_entry: Any, desc: Any) -> dict:
+    """Combine ``base[i]`` (filtered) with ``desc.params``; base wins same-key.
+
+    Mirrors ``tensogram_xarray.scanner._merge_per_object_meta``.  Used only
+    for variable-name resolution so that naming-chain keys accidentally
+    placed in the descriptor dict (see issue #67) are still surfaced.
+    Array attributes continue to use ``base[i]`` alone — descriptor params
+    remain available under the ``_tensogram_params`` prefix.
+    """
+    result = _filter_reserved(base_entry)
+    params = getattr(desc, "params", None)
+    if params and isinstance(params, dict):
+        for k, v in params.items():
+            if k not in result:
+                result[k] = v
+    return result
 
 
 def _apply_byte_range(data: bytes, byte_range: ByteRequest) -> bytes:
