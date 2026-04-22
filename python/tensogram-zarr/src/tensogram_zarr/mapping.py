@@ -337,9 +337,14 @@ def resolve_variable_name(
     Tries ``variable_key`` first if given, then ``_VARIABLE_NAME_KEYS``,
     then falls back to ``object_<index>``.
 
-    Only ``per_object_meta`` (from ``meta.base[i]``) is consulted for
-    naming.  ``common_meta`` (from ``meta.extra``) is accepted for API
-    compatibility but is **not** searched — variable names should come
+    The lookup runs against whatever per-object dict the caller supplies.
+    ``TensogramStore._resolve_names`` passes a shallow root-key merge of
+    ``meta.base[i]`` and ``desc.params`` (base wins same-key), matching
+    the xarray backend's ``scanner._merge_per_object_meta``.  Callers
+    that want pure ``meta.base[i]`` semantics can simply pass that.
+
+    ``common_meta`` (historically from ``meta.extra``) is accepted for
+    API compatibility but is **not** searched — variable names must come
     from per-object metadata to avoid all objects in a message sharing
     the same name.
     """
