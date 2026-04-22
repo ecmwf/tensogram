@@ -488,3 +488,199 @@ class TestDimResolutionEdges:
         # Data var is "object_1" (no variable_key)
         dims = ds["object_1"].dims
         assert dims == ("dim_0", "dim_1")
+
+
+# ---------------------------------------------------------------------------
+# Mixed-rank dim collision (issue #66)
+# ---------------------------------------------------------------------------
+
+
+class TestMixedRankDimCollision:
+    """Issue #66: xr.open_dataset must not crash on mixed-dimensionality
+    messages when non-coordinate objects of different shapes would otherwise
+    fall back to the same generic ``dim_N`` name.
+    """
+
+    def test_issue_66_repro(self, tmp_path: Path):
+        """Exact shape profile from the bug report opens without ValueError.
+
+        A 3-D variable alongside three 1-D arrays whose names fall outside
+        the CF coord allowlist used to raise::
+
+            ValueError: conflicting sizes for dimension 'dim_0':
+              length X on 'nx' and length Y on {'dim_0': 'count_flash_all', ...}
+
+        With collision-aware fallback disambiguation, the Dataset opens and
+        each clashing ``dim_0`` axis is renamed to ``obj_{i}_dim_0``.
+        """
+        path = str(tmp_path / "issue_66.tgm")
+
+        t_size, y_size, x_size = 4, 5, 6
+        data_3d = np.ones((t_size, y_size, x_size), dtype=np.float32)
+        coord_t = np.arange(t_size, dtype=np.float32)
+        coord_y = np.arange(y_size, dtype=np.float32)
+        coord_x = np.arange(x_size, dtype=np.float32)
+
+        meta = {
+            "version": 2,
+            "base": [
+                {"name": "reflectance"},
+                {"name": "count_flash_all"},
+                {"name": "ny"},
+                {"name": "nx"},
+            ],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([t_size, y_size, x_size]), data_3d),
+                    (_desc([t_size]), coord_t),
+                    (_desc([y_size]), coord_y),
+                    (_desc([x_size]), coord_x),
+                ],
+            )
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert set(ds.data_vars) == {"reflectance", "count_flash_all", "ny", "nx"}
+        assert ds["reflectance"].dims == ("obj_0_dim_0", "dim_1", "dim_2")
+        assert ds["count_flash_all"].dims == ("obj_1_dim_0",)
+        assert ds["ny"].dims == ("obj_2_dim_0",)
+        assert ds["nx"].dims == ("obj_3_dim_0",)
+
+    def test_only_conflicting_axes_renamed(self, tmp_path: Path):
+        """Non-conflicting generic axes must keep their ``dim_N`` names."""
+        path = str(tmp_path / "partial.tgm")
+
+        meta = {"version": 2, "base": [{"name": "a"}, {"name": "b"}]}
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([4, 9]), np.zeros((4, 9), dtype=np.float32)),
+                    (_desc([7, 9]), np.zeros((7, 9), dtype=np.float32)),
+                ],
+            )
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["a"].dims == ("obj_0_dim_0", "dim_1")
+        assert ds["b"].dims == ("obj_1_dim_0", "dim_1")
+
+    def test_no_collision_keeps_generic_names(self, tmp_path: Path):
+        """Regression guard: same-shape vars share ``dim_N`` compatibly."""
+        path = str(tmp_path / "no_collision.tgm")
+
+        meta = {"version": 2, "base": [{"name": "a"}, {"name": "b"}]}
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([4, 5]), np.zeros((4, 5), dtype=np.float32)),
+                    (_desc([4, 5]), np.zeros((4, 5), dtype=np.float32)),
+                ],
+            )
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["a"].dims == ("dim_0", "dim_1")
+        assert ds["b"].dims == ("dim_0", "dim_1")
+
+    def test_coord_untouched_by_disambiguation(self, tmp_path: Path):
+        """Detected coord dims never get renamed by the disambiguation pass."""
+        path = str(tmp_path / "coord_preserved.tgm")
+
+        lat = np.linspace(-90, 90, 5, dtype=np.float64)
+        data_a = np.ones((5, 7), dtype=np.float32)
+        data_b = np.ones((3,), dtype=np.float32)
+
+        meta = {
+            "version": 2,
+            "base": [
+                {"name": "latitude"},
+                {"name": "field_a"},
+                {"name": "field_b"},
+            ],
+        }
+        with tensogram.TensogramFile.create(path) as f:
+            f.append(
+                meta,
+                [
+                    (_desc([5], dtype="float64"), lat),
+                    (_desc([5, 7]), data_a),
+                    (_desc([3]), data_b),
+                ],
+            )
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert ds["field_a"].dims == ("latitude", "dim_1")
+        assert ds["field_b"].dims == ("dim_0",)
+
+    def test_disambiguate_helper_pure(self):
+        """Unit-level check of :func:`_disambiguate_fallback_dims`."""
+        from tensogram_xarray.store import _DataVarPlan, _disambiguate_fallback_dims
+
+        plans = [
+            _DataVarPlan(
+                obj_index=0,
+                var_name="a",
+                shape=(3,),
+                dims_with_provenance=[("dim_0", True)],
+                backend_array=None,  # type: ignore[arg-type]
+                var_attrs={},
+            ),
+            _DataVarPlan(
+                obj_index=1,
+                var_name="b",
+                shape=(5,),
+                dims_with_provenance=[("dim_0", True)],
+                backend_array=None,  # type: ignore[arg-type]
+                var_attrs={},
+            ),
+        ]
+        assert _disambiguate_fallback_dims(plans, {}) == [
+            ("obj_0_dim_0",),
+            ("obj_1_dim_0",),
+        ]
+
+    def test_disambiguate_respects_non_generic(self):
+        """Non-generic names (coord matches, hints) are not auto-renamed
+        even when they collide."""
+        from tensogram_xarray.store import _DataVarPlan, _disambiguate_fallback_dims
+
+        plans = [
+            _DataVarPlan(
+                obj_index=0,
+                var_name="a",
+                shape=(3,),
+                dims_with_provenance=[("time", False)],
+                backend_array=None,  # type: ignore[arg-type]
+                var_attrs={},
+            ),
+            _DataVarPlan(
+                obj_index=1,
+                var_name="b",
+                shape=(5,),
+                dims_with_provenance=[("time", False)],
+                backend_array=None,  # type: ignore[arg-type]
+                var_attrs={},
+            ),
+        ]
+        resolved = _disambiguate_fallback_dims(plans, {})
+        assert resolved == [("time",), ("time",)]
+
+    def test_disambiguate_considers_coord_sizes(self):
+        """Coord dim sizes participate in conflict detection but coord names
+        themselves are never renamed."""
+        from tensogram_xarray.store import _DataVarPlan, _disambiguate_fallback_dims
+
+        plans = [
+            _DataVarPlan(
+                obj_index=0,
+                var_name="a",
+                shape=(7,),
+                dims_with_provenance=[("latitude", True)],
+                backend_array=None,  # type: ignore[arg-type]
+                var_attrs={},
+            ),
+        ]
+        resolved = _disambiguate_fallback_dims(plans, {"latitude": 5})
+        assert resolved == [("obj_0_dim_0",)]
