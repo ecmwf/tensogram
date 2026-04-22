@@ -29,13 +29,13 @@ jobs:
       - name: Install supported CPython versions
         run: |
           uv python install \
-            3.9 3.10 3.11 3.12 3.13 3.14 \
+            3.11 3.12 3.13 3.14 \
             cpython-3.13+freethreaded cpython-3.14+freethreaded
 
       - name: Build wheels
         run: |
           ARGS=""
-          for v in 3.9 3.10 3.11 3.12 3.13 3.14 \
+          for v in 3.11 3.12 3.13 3.14 \
                    cpython-3.13+freethreaded cpython-3.14+freethreaded; do
             ARGS="$ARGS --interpreter $(uv python find $v)"
           done
@@ -63,13 +63,13 @@ jobs:
       - name: Install supported CPython versions
         run: |
           uv python install \
-            3.9 3.10 3.11 3.12 3.13 3.14 \
+            3.11 3.12 3.13 3.14 \
             cpython-3.13+freethreaded cpython-3.14+freethreaded
 
       - name: Build wheels
         run: |
           ARGS=""
-          for v in 3.9 3.10 3.11 3.12 3.13 3.14 \
+          for v in 3.11 3.12 3.13 3.14 \
                    cpython-3.13+freethreaded cpython-3.14+freethreaded; do
             ARGS="$ARGS --interpreter $(uv python find $v)"
           done
