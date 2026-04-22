@@ -312,7 +312,9 @@ def test_close_is_idempotent(tmp_path):
 
 
 def test_dim_names_in_metadata(tmp_path):
-    """dim_names hint is written into _extra_['dim_names'] for the xarray backend."""
+    """Dim-name hints are written into both _extra_ (message-level) and
+    per-object base[i]['dim_names'] so xarray readers on either convention
+    resolve meaningful dim names without explicit kwargs."""
     path = tmp_path / "dimnames.tgm"
     context = _make_context()
     output = TensogramOutput(context, str(path))
@@ -327,9 +329,21 @@ def test_dim_names_in_metadata(tmp_path):
     assert str(N_GRID) in dim_names
     assert dim_names[str(N_GRID)] == "values"
 
+    # Per-object hint mirrors the _extra_ convention for 1-D flat fields.
+    coord_names = {"latitude", "longitude"}
+    field_entries = [
+        entry
+        for entry in meta.base
+        if entry.get("anemoi", {}).get("variable") not in coord_names
+    ]
+    assert field_entries, "expected at least one field entry"
+    for entry in field_entries:
+        assert entry.get("dim_names") == ["values"], entry
+
 
 def test_stacked_dim_names_in_metadata(tmp_path):
-    """Stacked fields write both 'values' and 'level' hints into _extra_['dim_names']."""
+    """Stacked fields write size-based 'values'/'level' hints into _extra_
+    AND a ['values', 'level'] per-object list on each stacked base entry."""
     path = tmp_path / "stacked_dims.tgm"
     context = _make_pl_context(params=["t"], levels=[500, 850, 1000])
     output = TensogramOutput(context, str(path), stack_pressure_levels=True)
@@ -345,6 +359,13 @@ def test_stacked_dim_names_in_metadata(tmp_path):
     assert dim_names[str(N_GRID)] == "values"
     assert str(3) in dim_names
     assert dim_names[str(3)] == "level"
+
+    stacked_entries = [
+        entry for entry in meta.base if entry.get("anemoi", {}).get("variable") == "t"
+    ]
+    assert stacked_entries, "expected stacked pressure-level entry"
+    for entry in stacked_entries:
+        assert entry.get("dim_names") == ["values", "level"], entry
 
 
 # ---------------------------------------------------------------------------
