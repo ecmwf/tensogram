@@ -47,12 +47,16 @@ def _desc(shape, dtype="float32"):
 
     Application metadata (``name``, ``mars``, ...) is deliberately NOT
     accepted here — put those in ``metadata["base"][i]`` instead.
+
+    ``byte_order`` is deliberately omitted: the Python encoder writes
+    numpy data in native byte order, and the descriptor parser defaults
+    the missing key to native so the descriptor always matches the
+    payload on any host.
     """
     return {
         "type": "ntensor",
         "shape": list(shape),
         "dtype": dtype,
-        "byte_order": "little",
         "encoding": "none",
         "filter": "none",
         "compression": "none",
