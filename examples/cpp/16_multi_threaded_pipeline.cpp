@@ -53,7 +53,7 @@ int main() {
         "version": 3,
         "descriptors": [{
             "type": "ntensor", "ndim": 1, "shape": [2000000], "strides": [1],
-            "dtype": "float64", "byte_order": "little",
+            "dtype": "float64",
             "encoding": "none", "filter": "none", "compression": "none"
         }]
     })";

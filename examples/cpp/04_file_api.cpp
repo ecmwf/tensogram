@@ -26,7 +26,7 @@
 static std::string make_json(const char* param, int step) {
     char buf[512];
     std::snprintf(buf, sizeof(buf),
-        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":2,"shape":[10,20],"strides":[80,4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}],"base":[{"mars":{"date":"20260401","step":"%d","type":"fc","param":"%s"}}]})",
+        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":2,"shape":[10,20],"strides":[80,4],"dtype":"float32","encoding":"none","filter":"none","compression":"none"}],"base":[{"mars":{"date":"20260401","step":"%d","type":"fc","param":"%s"}}]})",
         step, param);
     return buf;
 }

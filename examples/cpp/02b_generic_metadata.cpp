@@ -42,7 +42,6 @@ int main() {
             "shape": [512, 512],
             "strides": [2048, 4],
             "dtype": "float32",
-            "byte_order": "little",
             "encoding": "none",
             "filter": "none",
             "compression": "none"
