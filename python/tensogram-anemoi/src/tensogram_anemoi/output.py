@@ -38,9 +38,10 @@ class TensogramOutput(Output):
     pressure-level parameter when ``stack_pressure_levels=True``).
 
     Per-object metadata is stored under the ``"anemoi"`` namespace in CBOR.
-    Dimension-name hints are stored in ``_extra_["dim_names"]`` so the
-    tensogram-xarray backend can resolve meaningful names without the reader
-    having to pass ``dim_names`` explicitly.
+    Dimension-name hints are written into each base entry's ``dim_names``
+    key (per-object, axis-ordered) *and* into ``_extra_["dim_names"]``
+    (message-level size-to-name dict) so readers on either convention can
+    resolve meaningful names without callers passing ``dim_names`` explicitly.
 
     Supports local paths and remote URLs (s3://, gs://, az://, ...) via fsspec.
     Each step is encoded and written immediately -- no full-forecast buffering.
@@ -285,7 +286,11 @@ class TensogramOutput(Output):
     ) -> tuple[dict, dict, np.ndarray]:
         """Build (base_entry, descriptor, array) for a single flat field object."""
         mars = {**mars_extra, **grib}
-        base_entry: dict = {"name": name, "anemoi": {"variable": name}}
+        base_entry: dict = {
+            "name": name,
+            "anemoi": {"variable": name},
+            "dim_names": ["values"],
+        }
         if mars:
             base_entry["mars"] = mars
         arr = self._prepare_array(values)
@@ -306,7 +311,11 @@ class TensogramOutput(Output):
 
         mars = {**mars_extra, **{k: v for k, v in first_grib.items() if k != "level"}, "levelist": levels}
 
-        base_entry: dict = {"name": param, "anemoi": {"variable": param}}
+        base_entry: dict = {
+            "name": param,
+            "anemoi": {"variable": param},
+            "dim_names": ["values", "level"],
+        }
         if mars:
             base_entry["mars"] = mars
         return base_entry, self._build_descriptor(stacked), stacked
