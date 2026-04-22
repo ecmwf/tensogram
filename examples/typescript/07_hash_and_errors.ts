@@ -18,8 +18,8 @@
  * **v3 note.** Frame-level integrity verification moved from the
  * decoder to the validate API (plans/WIRE_FORMAT.md §11).
  * `decode(buf, { verifyHash: true })` is a no-op; corruption
- * surfaces through `tensogram validate --checksum` (or the TS
- * `validate` wrapper when the slot-level accessor lands).
+ * surfaces through the `validate` / `validateFile` wrappers — see
+ * `08_validate.ts` for a dedicated walk-through.
  */
 
 import {
