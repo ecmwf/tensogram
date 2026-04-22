@@ -31,6 +31,27 @@ def _write(path: str, meta: dict, objs: list) -> None:
             f.append(meta, objs)
 
 
+class TestNestedRootIsAtomic:
+    """Shallow root-key merge: ``base[i]["mars"]`` entirely shadows
+    ``desc.params["mars"]``.  Pinned as a sibling to the zarr regression
+    so the two backends don't drift into different merge semantics.
+    """
+
+    def test_base_mars_without_param_shadows_descriptor_mars_param(self, tmp_path: Path):
+        path = str(tmp_path / "nested_shadow.tgm")
+        meta = {"version": 2, "base": [{"mars": {"levtype": "sfc"}}]}
+        desc = {
+            "type": "ntensor",
+            "shape": [4, 4],
+            "dtype": "float32",
+            "mars": {"param": "2t"},
+        }
+        _write(path, meta, [(desc, np.zeros((4, 4), dtype=np.float32))])
+
+        ds = xr.open_dataset(path, engine="tensogram")
+        assert list(ds.data_vars) == ["object_0"]
+
+
 class TestXarrayFallbackUnchanged:
     def test_descriptor_name_surfaces_as_variable_name(self, tmp_path: Path):
         path = str(tmp_path / "descriptor_name.tgm")

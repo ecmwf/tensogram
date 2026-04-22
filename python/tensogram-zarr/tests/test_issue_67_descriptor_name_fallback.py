@@ -197,6 +197,29 @@ class TestDuplicateNamesStillSuffixed:
             assert sorted(root.keys()) == ["temp", "temp_1"]
 
 
+class TestNestedRootIsAtomic:
+    """The base+params merge is shallow, root-key atomic: if ``base[i]`` has
+    a root key, the entire sub-tree in ``desc.params`` under that key is
+    shadowed — no deep merge.  Pinned to lock semantics against future
+    accidental deep-merge "fixes".  Matches xarray's ``_merge_per_object_meta``.
+    """
+
+    def test_base_mars_without_param_shadows_descriptor_mars_param(self, tmp_path: Path):
+        path = str(tmp_path / "nested_shadow.tgm")
+        meta = {"version": 2, "base": [{"mars": {"levtype": "sfc"}}]}
+        desc = {
+            "type": "ntensor",
+            "shape": [4, 4],
+            "dtype": "float32",
+            "mars": {"param": "2t"},
+        }
+        _write(path, meta, [(desc, np.zeros((4, 4), dtype=np.float32))])
+
+        with TensogramStore(path, mode="r") as store:
+            root = zarr.open_group(store=store, mode="r")
+            assert list(root.keys()) == ["object_0"]
+
+
 class TestExistingBehaviourUnchanged:
     def test_canonical_base_name_still_works(self, tmp_path: Path):
         path = str(tmp_path / "base_only.tgm")
