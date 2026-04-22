@@ -45,8 +45,16 @@ name = "09_file_api"
 path = "src/bin/09_file_api.rs"
 
 [[bin]]
+name = "10_iterators"
+path = "src/bin/10_iterators.rs"
+
+[[bin]]
 name = "11_encode_pre_encoded"
 path = "src/bin/11_encode_pre_encoded.rs"
+
+[[bin]]
+name = "11_streaming"
+path = "src/bin/11_streaming.rs"
 
 [[bin]]
 name = "12_convert_netcdf"
@@ -61,6 +69,10 @@ path = "src/bin/13_validate.rs"
 name = "14_remote_access"
 path = "src/bin/14_remote_access.rs"
 required-features = ["remote"]
+
+[[bin]]
+name = "16_multi_threaded_pipeline"
+path = "src/bin/16_multi_threaded_pipeline.rs"
 
 [features]
 default = []
