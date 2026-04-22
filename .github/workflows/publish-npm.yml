@@ -30,18 +30,13 @@ jobs:
           curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
             | tar xJ --strip-components=1 -C /usr/local
 
-      - name: Build WASM
-        run: |
-          wasm-pack build rust/tensogram-wasm --release \
-            --target web --out-dir ../../typescript/wasm --out-name tensogram_wasm
-
       - name: Install TypeScript deps
         working-directory: typescript
         run: npm ci
 
-      - name: Build distributable
+      - name: Build (WASM + TS)
         working-directory: typescript
-        run: npx tsc
+        run: npm run build
 
       - name: Check if version already published
         id: version-check
