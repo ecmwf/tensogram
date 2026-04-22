@@ -484,8 +484,8 @@ class TensogramStore(ZarrStore):
         name_counts: dict[str, int] = {}
         for i, desc in enumerate(descriptors):
             base_entry = base[i] if i < len(base) else {}
-            per_obj = _merge_base_with_desc_params(base_entry, desc)
-            raw_name = resolve_variable_name(i, per_obj, None, self._variable_key)
+            merged_meta = _merge_base_with_desc_params(base_entry, desc)
+            raw_name = resolve_variable_name(i, merged_meta, None, self._variable_key)
             name = _sanitize_key_segment(raw_name)
             if name in name_counts:
                 name_counts[name] += 1
