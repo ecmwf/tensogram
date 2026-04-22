@@ -36,8 +36,8 @@ dask = ["dask[array]"]
 tensogram = "tensogram_xarray.backend:TensogramBackendEntrypoint"
 
 [tool.hatch.version]
-source = "env"
-variable = "VERSION"
+source = "code"
+path = "src/tensogram_xarray/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tensogram_xarray"]

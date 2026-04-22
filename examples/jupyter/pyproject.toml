@@ -62,8 +62,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
-source = "env"
-variable = "VERSION"
+source = "code"
+path = "tensogram_jupyter_examples/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tensogram_jupyter_examples"]

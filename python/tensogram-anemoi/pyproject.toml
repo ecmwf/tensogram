@@ -35,8 +35,8 @@ dev = ["pytest>=7.0", "ruff>=0.4"]
 tensogram = "tensogram_anemoi.output:TensogramOutput"
 
 [tool.hatch.version]
-source = "env"
-variable = "VERSION"
+source = "code"
+path = "src/tensogram_anemoi/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tensogram_anemoi"]
