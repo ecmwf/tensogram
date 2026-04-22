@@ -22,7 +22,6 @@ from pathlib import Path
 import numpy as np
 import tensogram
 import xarray as xr
-
 from tensogram_xarray.mapping import resolve_variable_name
 from tensogram_xarray.merge import open_datasets
 from tensogram_xarray.scanner import scan_file

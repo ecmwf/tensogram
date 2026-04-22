@@ -144,9 +144,7 @@ class TestCrossCheckWithEncode:
     def test_matches_stamped_hash_float32(self):
         values = np.array([1.5, 2.5, 3.5, 4.5], dtype=np.float32)
         raw = values.tobytes()
-        msg = tensogram.encode(
-            {"version": 3}, [(_descriptor_for([4], "float32"), values)]
-        )
+        msg = tensogram.encode({"version": 3}, [(_descriptor_for([4], "float32"), values)])
         # compute_hash is stable for the raw bytes.
         digest = tensogram.compute_hash(raw)
         assert isinstance(digest, str)
@@ -169,9 +167,7 @@ class TestCrossCheckWithEncode:
         # without crossing any sensitive pipeline boundary.
         values = np.arange(10_000, dtype=np.float64)
         raw = values.tobytes()
-        msg = tensogram.encode(
-            {"version": 3}, [(_descriptor_for([10_000], "float64"), values)]
-        )
+        msg = tensogram.encode({"version": 3}, [(_descriptor_for([10_000], "float64"), values)])
         assert len(tensogram.compute_hash(raw)) == 16
         report = tensogram.validate(msg, level="checksum")
         assert report["hash_verified"]

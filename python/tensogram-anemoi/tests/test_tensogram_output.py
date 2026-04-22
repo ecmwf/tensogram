@@ -163,7 +163,6 @@ def test_write_and_read_local(tmp_path):
             np.testing.assert_allclose(field_arr, states[i]["fields"][name], rtol=1e-6)
 
 
-
 def test_variable_filter(tmp_path):
     """Only the selected variable and coordinates are written."""
     path = tmp_path / "filtered.tgm"
@@ -187,7 +186,9 @@ def test_simple_packing_encoding(tmp_path):
     """simple_packing round-trip stays within expected quantisation error."""
     path = tmp_path / "packed.tgm"
     context = _make_context(["2t"])
-    output = TensogramOutput(context, str(path), encoding="simple_packing", bits=16, compression="zstd")
+    output = TensogramOutput(
+        context, str(path), encoding="simple_packing", bits=16, compression="zstd"
+    )
 
     rng = np.random.default_rng(42)
     values = (rng.random(N_GRID) * 50 + 250).astype(np.float32)
@@ -454,7 +455,9 @@ def test_stack_shape(tmp_path):
 
     for obj_idx in range(2, 2 + len(PL_PARAMS)):
         desc, arr = objects[obj_idx]
-        assert arr.shape == (N_GRID, len(PL_LEVELS)), f"expected ({N_GRID}, {len(PL_LEVELS)}), got {arr.shape}"
+        assert arr.shape == (N_GRID, len(PL_LEVELS)), (
+            f"expected ({N_GRID}, {len(PL_LEVELS)}), got {arr.shape}"
+        )
 
 
 def test_stack_levels_metadata(tmp_path):
@@ -533,7 +536,9 @@ def test_stack_non_pl_fields_written_flat(tmp_path):
     assert len(objects) == 4
 
     flat_entries = [
-        meta.base[i]["anemoi"] for i in range(2, len(objects)) if meta.base[i]["anemoi"].get("variable") == "2t"
+        meta.base[i]["anemoi"]
+        for i in range(2, len(objects))
+        if meta.base[i]["anemoi"].get("variable") == "2t"
     ]
     assert len(flat_entries) == 1
     assert "levels" not in flat_entries[0]

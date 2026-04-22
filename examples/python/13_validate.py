@@ -66,12 +66,20 @@ def main():
     print("\n=== NaN/Inf detection (full mode) ===\n")
 
     nan_data = np.array([1.0, float("nan"), 3.0], dtype=np.float64)
+    # 0.17+ rejects NaN on encode by default.  Opt into the NaN
+    # bitmask companion frame so the message can carry NaN values;
+    # the default decode path restores them to canonical quiet-NaN.
+    # Full-level validate cross-checks every NaN / Inf in the decoded
+    # payload against the frame's mask companion.
     nan_msg = tensogram.encode(
         {"version": 2},
         [({"type": "ntensor", "shape": [3], "dtype": "float64"}, nan_data)],
+        allow_nan=True,
     )
 
     report = tensogram.validate(nan_msg, level="full")
+    if not report["issues"]:
+        print("  full validate OK — every NaN position matches its mask")
     for issue in report["issues"]:
         print(f"  [{issue['severity']}] {issue['code']}: {issue['description']}")
 
