@@ -253,32 +253,27 @@ Then open `http://localhost:3000`.
 
 ## Repository Layout
 
-```
-rust/
-├── tensogram/       Core encode/decode library
-├── tensogram-encodings/  Encoding pipeline + compression codecs
-├── tensogram-cli/        CLI binary (tensogram command)
-├── tensogram-ffi/        C FFI layer
-├── tensogram-szip/       Pure-Rust szip implementation
-├── tensogram-sz3/        SZ3 lossy compressor bindings
-├── tensogram-wasm/       WebAssembly bindings
-├── tensogram-grib/       GRIB importer (ecCodes, excluded from default build)
-├── tensogram-netcdf/     NetCDF importer (libnetcdf, excluded from default build)
-└── benchmarks/           Benchmark suite
-python/
-├── bindings/             Python bindings (PyO3, excluded from default build)
-├── tensogram-xarray/     xarray backend engine (Python package)
-├── tensogram-zarr/       Zarr v3 store backend (Python package)
-├── tensogram-anemoi/     anemoi-inference output plugin (Python package)
-└── tests/                Python test suite
-cpp/
-├── include/              C++ wrapper header + C header
-├── tests/                C++ GoogleTest suite
-└── CMakeLists.txt        CMake build system
-examples/{rust,cpp,python}/
-docs/                     mdBook documentation
-.github/workflows/ci.yml  CI matrix (Rust, Python, C++, GRIB, xarray, zarr, docs)
-```
+High-level shape of the repository — for the full crate/package breakdown
+see [`plans/ARCHITECTURE.md`](plans/ARCHITECTURE.md).
+
+- **`rust/`** — Core Rust workspace: encode/decode library, encoding pipeline,
+  compression codec crates, CLI binary, C FFI layer, WASM bindings, GRIB and
+  NetCDF importers, benchmarks.
+- **`python/`** — PyO3 bindings (published as `tensogram` on PyPI) plus
+  pure-Python extras for xarray, Zarr v3, and anemoi-inference integration.
+- **`cpp/`** — C++ wrapper over the C FFI: headers, CMake build, GoogleTest suite.
+- **`typescript/`** — TypeScript bindings over the WASM crate, published as
+  `@ecmwf.int/tensogram` on npm.
+- **`tensoscope/`** — Browser-based interactive `.tgm` viewer, built on the
+  TypeScript + WASM package.
+- **`examples/`** — Runnable examples per language (Rust, C++, Python,
+  TypeScript, Jupyter).
+- **`docs/`** — mdBook user guide published at
+  [sites.ecmwf.int/docs/tensogram/main](https://sites.ecmwf.int/docs/tensogram/main).
+- **`plans/`** — Design documents: architecture, wire-format spec, style guide,
+  roadmap.
+- **`.github/workflows/`** — CI matrix, publish workflows (crates.io, PyPI,
+  npm), docs deployment, and CI image build.
 
 ## Copyright and License
 
