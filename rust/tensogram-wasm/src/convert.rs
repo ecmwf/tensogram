@@ -135,6 +135,37 @@ pub(crate) fn to_js<T: Serialize>(val: &T) -> Result<JsValue, JsError> {
         .map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Serialize a [`GlobalMetadata`] to JavaScript with the wire-format
+/// version injected as `version`.
+///
+/// The `version` field was removed from the Rust `GlobalMetadata`
+/// struct in v3 — the wire version now lives exclusively in the
+/// preamble (see `plans/WIRE_FORMAT.md` §3).  TypeScript callers
+/// still observe a `version` key on decoded metadata for ergonomic
+/// access; this helper synthesises it from [`tensogram::WIRE_VERSION`].
+///
+/// Any user-supplied free-form `"version"` key in `_extra_` remains
+/// reachable via `metadata._extra_.version` — the synthetic top-level
+/// `version` is purely the wire-format answer.
+pub(crate) fn metadata_to_js(meta: &tensogram::GlobalMetadata) -> Result<JsValue, JsError> {
+    let obj = to_js(meta)?;
+    // The serialised form is a plain JS object (via json_compatible
+    // serializer).  Inject the synthetic `version` field in place so
+    // callers always see it, regardless of whether the CBOR frame
+    // carried one (it does not, in v3).
+    let reflect = js_sys::Reflect::set(
+        &obj,
+        &JsValue::from_str("version"),
+        &JsValue::from(tensogram::WIRE_VERSION),
+    );
+    if reflect.is_err() {
+        return Err(JsError::new(
+            "internal: failed to set synthetic `version` on metadata JS object",
+        ));
+    }
+    Ok(obj)
+}
+
 /// Create a zero-copy `Float32Array` view into a byte slice living in WASM memory.
 ///
 /// Uses `wasm_bindgen::memory()` + byte offset to construct the view without

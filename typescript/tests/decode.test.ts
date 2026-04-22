@@ -19,7 +19,7 @@ import {
 import { defaultMeta, makeDescriptor } from './helpers.js';
 
 describe('Phase 1 — decode wrapper', () => {
-  it('decodeMetadata returns the correct version', async () => {
+  it('decodeMetadata returns the wire-format version (from preamble)', async () => {
     await init();
     const msg = encode(defaultMeta(), [
       {
@@ -28,7 +28,8 @@ describe('Phase 1 — decode wrapper', () => {
       },
     ]);
     const meta = decodeMetadata(msg);
-    expect(meta.version).toBe(2);
+    // v3: the wire version is fixed at 3 and comes from the preamble.
+    expect(meta.version).toBe(3);
   });
 
   it('decodeObject retrieves a single object by index', async () => {

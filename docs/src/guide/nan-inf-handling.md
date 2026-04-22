@@ -65,7 +65,7 @@ import tensogram
 
 data = np.array([1.0, np.nan, 3.0], dtype=np.float64)
 msg = tensogram.encode(
-    {"version": 3},
+    {},
     [(desc, data)],
     allow_nan=True,
 )

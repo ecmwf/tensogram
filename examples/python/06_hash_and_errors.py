@@ -19,7 +19,7 @@ import numpy as np
 import tensogram
 
 data = np.ones(100, dtype=np.float32)
-metadata = {"version": 3}
+metadata = {}
 descriptor = {
     "type": "ntensor",
     "shape": [100],

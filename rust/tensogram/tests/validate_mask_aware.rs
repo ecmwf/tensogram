@@ -21,7 +21,6 @@ use tensogram::*;
 
 fn make_global_meta() -> GlobalMetadata {
     GlobalMetadata {
-        version: 3,
         ..Default::default()
     }
 }

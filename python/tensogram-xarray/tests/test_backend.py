@@ -61,7 +61,7 @@ class TestOpenDatasetSimple:
 
     def test_metadata_in_attrs(self, simple_tgm: Path):
         ds = xr.open_dataset(str(simple_tgm), engine="tensogram")
-        assert "tensogram_version" in ds.attrs
+        assert "tensogram_wire_version" in ds.attrs
 
 
 class TestOpenDatasetWithDimNames:

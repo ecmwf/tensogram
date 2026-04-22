@@ -16,8 +16,7 @@ vocabularies can coexist without collision:
 
 ```json
 {
-  "version": 3,
-  "base": [{
+     "base": [{
     "mars":   { "class": "od", "param": "2t" },
     "cf":     { "standard_name": "air_temperature", "units": "K" },
     "custom": { "experiment": "run-042" }

@@ -829,12 +829,37 @@ class TestErrors:
         with pytest.raises(ValueError, match="FramingError"):
             tensogram.decode(msg[:20])
 
-    def test_encode_missing_version(self):
-        """Encoding without 'version' key should raise ValueError."""
+    def test_encode_empty_metadata_accepted(self):
+        """Metadata is free-form — ``tensogram.encode({}, ...)`` must succeed
+        (the wire-format version lives in the preamble, see
+        ``plans/WIRE_FORMAT.md`` §3)."""
         desc = make_descriptor([10], dtype="float32")
         data = np.ones(10, dtype=np.float32)
-        with pytest.raises(ValueError, match="version"):
-            tensogram.encode({}, [(desc, data)])
+        msg = tensogram.encode({}, [(desc, data)])
+        meta, objects = tensogram.decode(msg)
+        assert meta.version == tensogram.WIRE_VERSION == 3
+        assert len(objects) == 1
+
+    def test_encode_arbitrary_top_level_key_routed_to_extra(self):
+        """Unknown top-level keys flow into ``_extra_`` — they are NOT
+        rejected.  This is the free-form rule."""
+        desc = make_descriptor([4], dtype="float32")
+        data = np.ones(4, dtype=np.float32)
+        msg = tensogram.encode({"foo": "bar"}, [(desc, data)])
+        meta, _ = tensogram.decode(msg)
+        assert meta["foo"] == "bar"
+        assert dict(meta.extra).get("foo") == "bar"
+
+    def test_encode_legacy_version_key_routed_to_extra(self):
+        """A caller who still supplies ``{"version": N, ...}`` writes ``N``
+        as a free-form annotation into ``_extra_``.  The wire-format
+        version remains sourced from the preamble (always 3 here)."""
+        desc = make_descriptor([4], dtype="float32")
+        data = np.ones(4, dtype=np.float32)
+        msg = tensogram.encode({"version": 99}, [(desc, data)])
+        meta, _ = tensogram.decode(msg)
+        assert meta.version == 3  # preamble-sourced, not the user's 99
+        assert meta.extra["version"] == 99
 
     def test_encode_missing_dtype(self):
         """Encoding without 'dtype' in descriptor should raise ValueError."""
@@ -950,12 +975,20 @@ class TestEdgeCases:
         _, arr = objects[0]
         np.testing.assert_array_equal(arr, data)
 
-    def test_version_1(self):
-        """Version 1 should also work."""
+    def test_user_supplied_version_is_free_form(self):
+        """A user-supplied top-level ``version`` is a free-form
+        annotation (routed to ``_extra_``); it does NOT change the
+        wire-format version, which is sourced from the preamble.
+
+        See ``plans/WIRE_FORMAT.md`` §3."""
         data = np.ones(10, dtype=np.float32)
         msg = encode_simple(data, version=1)
         meta, objects = tensogram.decode(msg)
-        assert meta.version == 1
+        # Wire version comes from the preamble (always 3 in the
+        # current library), not from the user's `version=1`.
+        assert meta.version == tensogram.WIRE_VERSION == 3
+        # The user's value lives on as a free-form extra annotation.
+        assert meta.extra["version"] == 1
         _, arr = objects[0]
         np.testing.assert_array_equal(arr, data)
 
@@ -1888,12 +1921,17 @@ class TestMetadataEdgeCases:
         # First base entry wins
         assert meta["mars"]["param"] == "2t"
 
-    def test_missing_version_rejected(self):
-        """Metadata dict without 'version' raises ValueError."""
+    def test_empty_metadata_accepted(self):
+        """Metadata is free-form — an empty dict is valid input.
+
+        The wire-format version is carried in the preamble (see
+        ``plans/WIRE_FORMAT.md`` §3), not in the CBOR metadata frame."""
         data = np.ones(4, dtype=np.float32)
         desc = make_descriptor([4], dtype="float32")
-        with pytest.raises((ValueError, TypeError, KeyError), match="version"):
-            tensogram.encode({}, [(desc, data)])
+        msg = tensogram.encode({}, [(desc, data)])
+        meta, objects = tensogram.decode(msg)
+        assert meta.version == 3
+        assert len(objects) == 1
 
     def test_base_with_non_dict_entry_rejected(self):
         """base entries must be dicts."""

@@ -518,12 +518,17 @@ class TensogramStore(ZarrStore):
         import tensogram
 
         # Build global metadata from group attributes.
-        # In the new metadata model, message-level annotations go into
-        # ``extra`` (any unknown top-level keys), and per-object metadata
-        # goes into ``base`` (list of dicts, one per object).
-        global_meta: dict[str, Any] = {"version": 3}
-        # Reserved top-level keys that must not be overwritten by group attrs.
-        _reserved_top = {"version", "base", "_extra_", "extra", "_reserved_"}
+        # In the free-form metadata model, message-level annotations
+        # go into ``_extra_`` (any unknown top-level keys flow there
+        # automatically on encode), and per-object metadata goes into
+        # ``base`` (list of dicts, one per object).  The wire-format
+        # version is NOT included here — it lives in the preamble
+        # exclusively (see ``plans/WIRE_FORMAT.md`` §3).
+        global_meta: dict[str, Any] = {}
+        # Library-managed top-level keys that must not be overwritten
+        # by user-provided group attrs.  Note: ``version`` is NOT in
+        # this set — it is a free-form key like any other now.
+        _reserved_top = {"base", "_extra_", "extra", "_reserved_"}
         clean_attrs = {
             k: v
             for k, v in self._write_group_attrs.items()

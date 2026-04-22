@@ -33,7 +33,7 @@ namespace {
 std::string dtype_json(const std::string& dtype, std::size_t elem_size,
                        std::size_t count)
 {
-    return R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[)" +
+    return R"({"version":3,"descriptors":[{"type":"ndarray","ndim":1,"shape":[)" +
            std::to_string(count) +
            R"(],"strides":[)" + std::to_string(elem_size) +
            R"(],"dtype":")" + dtype +
@@ -256,7 +256,7 @@ TEST(EdgeCaseTest, Uint64RoundTrip) {
 
 TEST(EdgeCaseTest, BigEndianRoundTrip) {
     // Encode as big-endian.  Decode returns native-endian by default.
-    std::string json = R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[2],"strides":[4],"dtype":"float32","byte_order":"big","encoding":"none","filter":"none","compression":"none"}]})";
+    std::string json = R"({"version":3,"descriptors":[{"type":"ndarray","ndim":1,"shape":[2],"strides":[4],"dtype":"float32","byte_order":"big","encoding":"none","filter":"none","compression":"none"}]})";
 
     // Provide big-endian bytes for 1.0f and 2.0f
     // IEEE 754 big-endian: 1.0f = 3F800000, 2.0f = 40000000
@@ -355,7 +355,7 @@ TEST(EdgeCaseTest, HashMismatchDetection) {
 // ---------------------------------------------------------------------------
 
 TEST(EdgeCaseTest, MultiObjectMixedDtypes) {
-    std::string json = R"({"version":2,"descriptors":[)"
+    std::string json = R"({"version":3,"descriptors":[)"
         R"({"type":"ndarray","ndim":1,"shape":[3],"strides":[4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"},)"
         R"({"type":"ndarray","ndim":1,"shape":[2],"strides":[4],"dtype":"int32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
 

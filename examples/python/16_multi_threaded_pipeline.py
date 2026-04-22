@@ -48,7 +48,7 @@ def main() -> None:
     n = 16_000_000
     rng = np.random.default_rng(42)
     values = 250.0 + rng.standard_normal(n).astype(np.float64) * 30.0
-    meta = {"version": 3, "base": [{}]}
+    meta = {"base": [{}]}
     desc = {"type": "ntensor", "shape": [n], "dtype": "float64"}
 
     print(f"Encode {n} f64 values (= {values.nbytes / (1024 * 1024):.1f} MiB):")

@@ -31,8 +31,7 @@ mask[::2] = 1  # alternate rows are land
 # Shared keys (class, date, step, type) are repeated in each entry —
 # the library does not track what is common vs varying.
 metadata = {
-    "version": 3,
-    "base": [
+        "base": [
         {
             "mars": {
                 "class": "od",

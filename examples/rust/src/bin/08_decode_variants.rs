@@ -53,7 +53,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let desc2 = make_descriptor(vec![8, 8], Dtype::Uint8); // obj 2: 8×8 u8
 
     let global_meta = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -80,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let meta = decode_metadata(&message)?;
         println!("decode_metadata():");
-        println!("  version={}", meta.version);
+        println!("  wire version={}", tensogram::WIRE_VERSION);
         println!("  extra keys: {:?}", meta.extra.keys().collect::<Vec<_>>());
     }
 

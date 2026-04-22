@@ -31,8 +31,7 @@ int main() {
 
     // -- 2. Describe the tensor as JSON metadata --
     const std::string metadata_json = R"({
-        "version": 3,
-        "descriptors": [{
+                "descriptors": [{
             "type": "ndarray",
             "ndim": 2,
             "shape": [100, 200],

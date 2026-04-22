@@ -1211,7 +1211,9 @@ class TestScanMessageWithExtra:
     def test_scan_message_no_extra(self):
         """scan_message with no extra returns empty common_meta."""
         data = np.ones((3,), dtype=np.float32)
-        msg = bytes(tensogram.encode({"version": 3}, [(_desc([3]), data)]))
+        # Free-form CBOR metadata: the wire-format version lives in the
+        # preamble, not in the CBOR frame.
+        msg = bytes(tensogram.encode({}, [(_desc([3]), data)]))
 
         objects = scan_message(msg)
         assert len(objects) == 1

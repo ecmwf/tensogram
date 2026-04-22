@@ -82,7 +82,6 @@ mod tests {
         let mut extra = BTreeMap::new();
         extra.insert("param".to_string(), ciborium::Value::Text("2t".to_string()));
         let meta = GlobalMetadata {
-            version: 3,
             extra,
             ..Default::default()
         };

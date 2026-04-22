@@ -140,7 +140,14 @@ def build_group_zarr_json(
     if hasattr(meta, "extra") and meta.extra:
         attrs.update(meta.extra)
 
-    attrs["_tensogram_version"] = meta.version
+    # Wire-format version comes from the preamble (see
+    # ``plans/WIRE_FORMAT.md`` §3).  ``meta.version`` surfaces that
+    # preamble-sourced value; we record it as an underscore-prefixed
+    # attribute so the Zarr group advertises the wire format it came
+    # from.  Renamed from ``_tensogram_version`` → ``_tensogram_wire_version``
+    # in 0.17 to avoid any collision with a user-supplied free-form
+    # ``version`` annotation, which now flows through ``_extra_``.
+    attrs["_tensogram_wire_version"] = meta.version
     attrs["_tensogram_variables"] = variable_names
 
     return {

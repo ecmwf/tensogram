@@ -131,7 +131,7 @@ TEST(AllowNanInfTest, StreamingEncoderHonoursAllowNan) {
     opts.allow_nan = true;
     opts.small_mask_threshold_bytes = 0;
     {
-        tensogram::streaming_encoder enc(path, R"({"version":2})", opts);
+        tensogram::streaming_encoder enc(path, R"({"version":3})", opts);
         const std::string desc_json =
             R"({"type":"ndarray","ndim":1,"shape":[3],"strides":[8],)"
             R"("dtype":"float64","byte_order":"little",)"

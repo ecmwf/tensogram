@@ -126,8 +126,11 @@ class TensogramOutput(Output):
         if self._handle is None:
             raise RuntimeError(f"{self!r}: write_step called before open() or after close()")
 
+        # The wire-format version is carried by the tensogram preamble
+        # (see ``plans/WIRE_FORMAT.md`` §3); the CBOR metadata frame is
+        # free-form, so we only populate the library-interpreted
+        # sections here.
         global_meta = {
-            "version": 3,
             "base": [],
             "_extra_": {},
         }

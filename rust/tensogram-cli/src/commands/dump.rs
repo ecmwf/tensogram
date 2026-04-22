@@ -54,7 +54,10 @@ pub fn run(
                 );
             } else {
                 println!("=== Message {i} ===");
-                println!("version: {}", global_meta.version);
+                // Wire version comes from the preamble (see
+                // `plans/WIRE_FORMAT.md` §3).  The `global_meta` struct no
+                // longer carries it — the CBOR metadata frame is free-form.
+                println!("version: {}", tensogram::WIRE_VERSION);
                 println!("objects: {}", objects.len());
                 for (j, (desc, _)) in objects.iter().enumerate() {
                     println!(
@@ -108,7 +111,6 @@ mod tests {
         let mut extra = BTreeMap::new();
         extra.insert("param".to_string(), ciborium::Value::Text("2t".to_string()));
         let meta = GlobalMetadata {
-            version: 3,
             extra,
             ..Default::default()
         };

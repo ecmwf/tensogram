@@ -113,7 +113,7 @@ def create_test_files(output_dir: Path) -> list[Path]:
             objects.append((desc, field))
 
         with tensogram.TensogramFile.create(str(path)) as f:
-            f.append({"version": 3}, objects)
+            f.append({}, objects)
 
         print(
             f"  Created {path.name}: {len(objects)} objects ({len(objects) - 2} levels + 2 coords)"

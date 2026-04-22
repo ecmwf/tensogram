@@ -25,23 +25,21 @@ import type { DataObjectDescriptor, GlobalMetadata } from '../types.js';
 
 /**
  * Assert that `meta` is shaped like a `GlobalMetadata` the encoder can
- * process: plain object, non-negative integer `version`, no
- * client-written `_reserved_`, and every `base[i]` entry is a plain
- * object with no `_reserved_` key.
+ * process: a plain object, no client-written `_reserved_`, and every
+ * `base[i]` entry is a plain object with no `_reserved_` key.
+ *
+ * The CBOR metadata frame is free-form (see
+ * `plans/WIRE_FORMAT.md` §6.1) — the only library-enforced invariants
+ * are the `_reserved_` protection and the shape of `base`.  Any
+ * top-level `version` the caller supplies is carried through as a
+ * free-form `_extra_` annotation; the wire-format version itself
+ * lives in the preamble (see `plans/WIRE_FORMAT.md` §3) and is
+ * accessible at `WIRE_VERSION`.
  */
 export function assertValidMetadata(meta: GlobalMetadata): void {
   if (meta === null || typeof meta !== 'object') {
     throw new InvalidArgumentError(
       `metadata must be a plain object, got ${typeof meta}`,
-    );
-  }
-  if (
-    typeof meta.version !== 'number' ||
-    !Number.isInteger(meta.version) ||
-    meta.version < 0
-  ) {
-    throw new InvalidArgumentError(
-      `metadata.version must be a non-negative integer, got ${String(meta.version)}`,
     );
   }
   if ('_reserved_' in meta && meta._reserved_ !== undefined) {

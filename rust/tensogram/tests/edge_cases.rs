@@ -19,7 +19,6 @@ use tensogram::*;
 
 fn make_global_meta() -> GlobalMetadata {
     GlobalMetadata {
-        version: 3,
         ..Default::default()
     }
 }
@@ -164,8 +163,7 @@ fn zero_element_multidim_tensor_roundtrips() {
 fn empty_message_no_data_objects() {
     let meta = make_global_meta();
     let encoded = encode(&meta, &[], &EncodeOptions::default()).unwrap();
-    let (decoded_meta, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert_eq!(decoded_meta.version, 3);
+    let (_decoded_meta, objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
     assert!(objects.is_empty());
 }
 
@@ -177,7 +175,6 @@ fn empty_message_with_custom_metadata() {
         ciborium::Value::Text("test".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 3,
         extra,
         ..Default::default()
     };
@@ -750,7 +747,6 @@ fn decode_metadata_only() {
         ciborium::Value::Text("ecmwf".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };
@@ -1007,7 +1003,6 @@ fn metadata_namespaces_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 3,
         base: vec![base_entry],
         extra,
         ..Default::default()
@@ -2006,8 +2001,7 @@ fn decode_descriptors_returns_descriptors_without_data() {
     )
     .unwrap();
 
-    let (decoded_meta, descriptors) = decode_descriptors(&encoded).unwrap();
-    assert_eq!(decoded_meta.version, 3);
+    let (_decoded_meta, descriptors) = decode_descriptors(&encoded).unwrap();
     assert_eq!(descriptors.len(), 2);
     assert_eq!(descriptors[0].shape, vec![4]);
     assert_eq!(descriptors[0].dtype, Dtype::Float32);
@@ -2020,8 +2014,7 @@ fn decode_descriptors_empty_message() {
     let meta = make_global_meta();
     let encoded = encode(&meta, &[], &EncodeOptions::default()).unwrap();
 
-    let (decoded_meta, descriptors) = decode_descriptors(&encoded).unwrap();
-    assert_eq!(decoded_meta.version, 3);
+    let (_decoded_meta, descriptors) = decode_descriptors(&encoded).unwrap();
     assert!(descriptors.is_empty());
 }
 
@@ -2085,7 +2078,6 @@ fn u64_param_missing_rejected() {
 #[test]
 fn global_metadata_default_version_is_2() {
     let meta = GlobalMetadata::default();
-    assert_eq!(meta.version, 3);
     assert!(meta.base.is_empty());
     assert!(meta.reserved.is_empty());
     assert!(meta.extra.is_empty());
@@ -2111,7 +2103,6 @@ fn global_metadata_serde_reserved_rename() {
         ciborium::Value::Text("test".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 3,
         reserved,
         ..Default::default()
     };
@@ -2126,7 +2117,6 @@ fn global_metadata_serde_extra_rename() {
     let mut extra = BTreeMap::new();
     extra.insert("custom".to_string(), ciborium::Value::Integer(42.into()));
     let meta = GlobalMetadata {
-        version: 3,
         extra,
         ..Default::default()
     };
@@ -2156,7 +2146,6 @@ fn compute_common_all_empty_entries() {
 fn framing_base_auto_extends_when_fewer_than_objects() {
     // Encode with 0 base entries but 3 objects → decoder should auto-extend base
     let meta = GlobalMetadata {
-        version: 3,
         base: vec![], // Fewer than objects
         ..Default::default()
     };
@@ -2228,7 +2217,6 @@ fn encode_base_exactly_matches_descriptors() {
         ciborium::Value::Text("msl".to_string()),
     );
     let meta = GlobalMetadata {
-        version: 3,
         base: vec![entry0, entry1],
         ..Default::default()
     };
@@ -2284,8 +2272,7 @@ fn stress_100_data_objects_roundtrip() {
     assert_eq!(offsets.len(), 1);
 
     // Decode all objects
-    let (decoded_meta, decoded_objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert_eq!(decoded_meta.version, 3);
+    let (_decoded_meta, decoded_objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
     assert_eq!(decoded_objects.len(), num_objects);
 
     // Verify each object's data round-trips correctly
@@ -2437,8 +2424,7 @@ fn streaming_encoder_finish_immediately_produces_valid_message() {
     );
 
     // Decode should succeed with 0 objects
-    let (decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
-    assert_eq!(decoded_meta.version, 3);
+    let (_decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
     assert!(
         objects.is_empty(),
         "streaming zero-object message should decode to 0 objects"
@@ -2472,7 +2458,6 @@ fn unicode_metadata_emoji_and_cjk_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 3,
         extra,
         ..Default::default()
     };
@@ -2854,7 +2839,6 @@ fn unicode_metadata_emoji_keys_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 3,
         extra,
         ..Default::default()
     };
@@ -2880,7 +2864,6 @@ fn unicode_metadata_cjk_values_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 3,
         extra,
         ..Default::default()
     };
@@ -2906,7 +2889,6 @@ fn unicode_metadata_empty_string_key_roundtrip() {
     );
 
     let meta = GlobalMetadata {
-        version: 3,
         extra,
         ..Default::default()
     };
@@ -3199,11 +3181,10 @@ async fn async_file_api_round_trips_data() {
     );
 
     // ── decode_message_async ────────────────────────────────────────────────
-    let (dec_meta, objects) = file
+    let (_dec_meta, objects) = file
         .decode_message_async(0, &DecodeOptions::default())
         .await
         .unwrap();
-    assert_eq!(dec_meta.version, 3, "decode_message_async: wrong version");
     assert_eq!(objects.len(), 1, "decode_message_async: wrong object count");
     assert_eq!(
         objects[0].1.as_slice(),
@@ -3212,8 +3193,7 @@ async fn async_file_api_round_trips_data() {
     );
 
     // ── decode_metadata_async ────────────────────────────────────────────────
-    let dec_meta2 = file.decode_metadata_async(0).await.unwrap();
-    assert_eq!(dec_meta2.version, 3, "decode_metadata_async: wrong version");
+    let _dec_meta2 = file.decode_metadata_async(0).await.unwrap();
 
     // ── decode_descriptors_async ─────────────────────────────────────────────
     let (_, descs) = file.decode_descriptors_async(0).await.unwrap();

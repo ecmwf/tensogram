@@ -62,11 +62,12 @@ pub fn decode(
 /// Decode only the global metadata from a message (no payload decoding).
 ///
 /// @param buf - Raw .tgm message bytes
-/// @returns Plain JS object with version, base, _reserved_, _extra_ fields
+/// @returns Plain JS object with version (synthesised from the
+///   preamble), base, _reserved_, _extra_ fields
 #[wasm_bindgen]
 pub fn decode_metadata(buf: &[u8]) -> Result<JsValue, JsError> {
     let meta = core::decode_metadata(buf).map_err(js_err)?;
-    to_js(&meta)
+    metadata_to_js(&meta)
 }
 
 /// Decode a single object by index.
@@ -177,9 +178,12 @@ pub struct DecodedMessage {
 
 #[wasm_bindgen]
 impl DecodedMessage {
-    /// Global metadata as a plain JS object.
+    /// Global metadata as a plain JS object.  The wire-format
+    /// `version` is synthesised from the preamble (v3: always `3`)
+    /// for TypeScript ergonomics — see `metadata_to_js` in
+    /// `convert.rs`.
     pub fn metadata(&self) -> Result<JsValue, JsError> {
-        to_js(&self.metadata)
+        metadata_to_js(&self.metadata)
     }
 
     /// Number of data objects in the message.

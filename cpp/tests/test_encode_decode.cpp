@@ -27,7 +27,6 @@ TEST(EncodeDecodeTest, BasicFloat32RoundTrip) {
     std::vector<float> values = {1.0f, 2.0f, 3.0f, 4.0f};
 
     std::string json = R"({
-        "version": 2,
         "descriptors": [{
             "type": "ndarray",
             "ndim": 1,
@@ -49,7 +48,7 @@ TEST(EncodeDecodeTest, BasicFloat32RoundTrip) {
     ASSERT_FALSE(encoded.empty());
 
     auto msg = tensogram::decode(encoded.data(), encoded.size());
-    EXPECT_EQ(msg.version(), 2u);
+    EXPECT_EQ(msg.version(), 3u);
     EXPECT_EQ(msg.num_objects(), 1u);
 
     auto obj = msg.object(0);
@@ -94,7 +93,7 @@ TEST(EncodeDecodeTest, MetadataAccess) {
 
     auto msg = tensogram::decode(encoded.data(), encoded.size());
     auto meta = msg.get_metadata();
-    EXPECT_EQ(meta.version(), 2u);
+    EXPECT_EQ(meta.version(), 3u);
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +105,7 @@ TEST(EncodeDecodeTest, DecodeMetadataOnly) {
     auto encoded = test_helpers::encode_simple_f32(values);
 
     auto meta = tensogram::decode_metadata(encoded.data(), encoded.size());
-    EXPECT_EQ(meta.version(), 2u);
+    EXPECT_EQ(meta.version(), 3u);
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +185,6 @@ TEST(EncodeDecodeTest, HashVerification) {
     std::vector<float> values = {1.0f, 2.0f, 3.0f};
 
     std::string json = R"({
-        "version": 2,
         "descriptors": [{
             "type": "ndarray",
             "ndim": 1,

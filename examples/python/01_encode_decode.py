@@ -27,7 +27,7 @@ print(f"Input: shape={temps.shape}  dtype={temps.dtype}  size={temps.nbytes} byt
 # ── 2. Describe the message ───────────────────────────────────────────────────
 #
 # Metadata and descriptors are plain dicts.
-metadata = {"version": 3}
+metadata = {}
 descriptor = {
     "type": "ntensor",
     "shape": list(temps.shape),

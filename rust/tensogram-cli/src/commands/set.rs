@@ -251,7 +251,6 @@ mod tests {
 
     fn make_global_meta() -> GlobalMetadata {
         GlobalMetadata {
-            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         }
@@ -300,13 +299,13 @@ mod tests {
         let encoded = encode(&global_meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
         std::fs::write(&input, encoded).unwrap();
 
-        let original = decode_metadata(&std::fs::read(&input).unwrap()).unwrap();
+        // Decode metadata so we exercise `decode_metadata` end-to-end.
+        // The wire version lives in the preamble, so we don't assert
+        // against `original.version` — it is no longer a struct field.
+        let _original = decode_metadata(&std::fs::read(&input).unwrap()).unwrap();
         // Decode full message (v3: per-object hash lives in frame footer)
         let (_, _original_objects) =
             decode(&std::fs::read(&input).unwrap(), &DecodeOptions::default()).unwrap();
-
-        // Verify version is accessible from global metadata
-        assert_eq!(original.version, 3);
 
         // Use "extra.source=new" to target the extra map where source lives
         run(&input, &output, "extra.source=new", None).unwrap();

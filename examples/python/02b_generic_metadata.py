@@ -32,8 +32,7 @@ import tensogram
 # top-level key inside a base entry becomes a namespace; there is no
 # library-imposed schema.
 metadata = {
-    "version": 3,
-    "base": [
+        "base": [
         {
             "product": {
                 "name": "intensity",

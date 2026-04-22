@@ -78,8 +78,7 @@ def _make_range_handler(file_data: bytes):
 # ── Create a sample TGM file ─────────────────────────────────────────────────
 
 meta = {
-    "version": 3,
-    "base": [
+        "base": [
         {"mars": {"param": "2t", "step": 0, "date": "20260401"}},
         {"mars": {"param": "msl", "step": 0, "date": "20260401"}},
     ],

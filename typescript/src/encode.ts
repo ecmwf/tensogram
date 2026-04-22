@@ -27,7 +27,7 @@ import type { EncodeInput, EncodeOptions, GlobalMetadata } from './types.js';
  * Encode global metadata + a list of `(descriptor, data)` pairs into a
  * single Tensogram message.
  *
- * @param metadata - Global metadata (`version: 2` required)
+ * @param metadata - Global metadata (free-form CBOR; only `base`, `_reserved_`, and `_extra_` are library-interpreted)
  * @param objects  - Data objects; each `data` is any `ArrayBufferView`
  *                   (`TypedArray`, `DataView`, ...) in native byte order
  * @param options  - Optional hash selection and strict-finite flags

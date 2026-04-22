@@ -41,7 +41,6 @@ fn make_descriptor() -> DataObjectDescriptor {
 
 fn make_global_meta() -> GlobalMetadata {
     GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     }

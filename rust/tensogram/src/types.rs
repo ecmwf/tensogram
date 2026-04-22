@@ -125,7 +125,8 @@ pub struct DataObjectDescriptor {
 
 /// Global message metadata (carried in header/footer metadata frames).
 ///
-/// The metadata frame CBOR has three named sections plus `version`:
+/// The CBOR metadata frame is **fully free-form**.  The only named
+/// top-level sections the library interprets are:
 /// - `base`: per-object metadata array — one entry per data object, each
 ///   entry holds ALL structured metadata for that object independently.
 ///   The encoder auto-populates `_reserved_.tensor` (ndim/shape/strides/dtype)
@@ -134,11 +135,12 @@ pub struct DataObjectDescriptor {
 ///   Client code can read but MUST NOT write — the encoder validates this.
 /// - `_extra_`: client-writable catch-all for ad-hoc message-level annotations.
 ///
-/// Unknown CBOR keys at the top level are silently ignored on decode.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Any other top-level key supplied by the caller (including a stray
+/// legacy `"version"` key) is routed into `_extra_` on decode.  The
+/// wire-format version lives **only** in the preamble — see
+/// [`crate::wire::WIRE_VERSION`] and [`crate::wire::Preamble`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GlobalMetadata {
-    pub version: u16,
-
     /// Per-object metadata array.  Each entry holds ALL structured metadata
     /// for that data object.  Entries are independent — no tracking of what
     /// is common across objects.
@@ -201,17 +203,6 @@ pub struct IndexFrame {
 pub struct HashFrame {
     pub algorithm: String,
     pub hashes: Vec<String>,
-}
-
-impl Default for GlobalMetadata {
-    fn default() -> Self {
-        Self {
-            version: crate::wire::WIRE_VERSION,
-            base: Vec::new(),
-            reserved: BTreeMap::new(),
-            extra: BTreeMap::new(),
-        }
-    }
 }
 
 /// A decoded object: its descriptor paired with its raw decoded payload bytes.

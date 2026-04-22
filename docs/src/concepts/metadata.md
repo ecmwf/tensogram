@@ -8,8 +8,8 @@ In v3, metadata lives in two distinct places:
 
 | Level | Where it lives | What it contains |
 |---|---|---|
-| **Global** | Header or footer metadata frame | `GlobalMetadata`: version + `base` (per-object metadata array) + `_reserved_` (library internals) + `_extra_` (client annotations) |
-| **Per-object** | Each data object frame's CBOR descriptor | `DataObjectDescriptor`: tensor shape, encoding pipeline, hash, plus `params` for encoding parameters |
+| **Global** | Header or footer metadata frame | `GlobalMetadata`: `base` (per-object metadata array) + `_reserved_` (library internals) + `_extra_` (client annotations). The **wire-format version lives in the preamble**, not in the CBOR metadata frame. |
+| **Per-object** | Each data object frame's CBOR descriptor | `DataObjectDescriptor`: tensor shape, encoding pipeline, plus `params` for encoding parameters |
 
 Each data object carries its own descriptor inline within its frame.
 
@@ -19,7 +19,6 @@ The global metadata frame contains a `GlobalMetadata` struct with three named se
 
 ```rust
 GlobalMetadata {
-    version: 3,
     base: Vec::new(),              // one BTreeMap per data object (independent entries)
     reserved: BTreeMap::new(),     // library internals (_reserved_ in CBOR)
     extra: BTreeMap::new(),        // client-writable catch-all (_extra_ in CBOR)
@@ -31,7 +30,6 @@ vocabulary):
 
 ```json
 {
-  "version": 3,
   "base": [
     {
       "mars": {
@@ -51,7 +49,6 @@ pipeline might use a BIDS namespace:
 
 ```json
 {
-  "version": 3,
   "base": [{
     "bids": { "subject": "sub-01", "session": "ses-01",
               "task": "rest", "run": 1 }
@@ -63,7 +60,6 @@ A materials-simulation pipeline might use a custom namespace:
 
 ```json
 {
-  "version": 3,
   "base": [{
     "material": { "composition": "Fe3O4", "lattice": "cubic", "T_K": 300.0 }
   }]
@@ -73,7 +69,21 @@ A materials-simulation pipeline might use a custom namespace:
 The library does not know or care which vocabulary is used — it simply
 stores, serialises, and returns the keys you supply.
 
-The `version` field is required (u16). The `base` array holds per-object metadata. `_extra_` is a **free-form** catch-all -- you can add any key using any CBOR value type. The library does not interpret or validate these keys. Your application layer assigns meaning.
+**There are no required top-level keys.**  The CBOR metadata frame is
+**fully free-form** — only `base`, `_reserved_`, and `_extra_` are
+library-interpreted.  Any other top-level key the caller supplies
+(including a stray legacy `"version"` from pre-0.17 producers) is
+routed into `_extra_` on decode so the data round-trips cleanly.
+`_extra_` itself is a **free-form** catch-all — you can add any key
+using any CBOR value type.  The library does not interpret or validate
+these keys.  Your application layer assigns meaning.
+
+> **Reading the wire version.** The wire-format version is carried in
+> the preamble (see `../format/wire-format.md` §3).  Rust callers use
+> `tensogram::WIRE_VERSION`; Python uses `tensogram.WIRE_VERSION`;
+> TypeScript uses `WIRE_VERSION` from `@ecmwf.int/tensogram`; FFI /
+> C++ callers call `tgm_message_version` / `msg.version()`.  All of
+> these resolve to the constant `3` in v3.
 
 ## Per-Object Metadata in `base`
 
@@ -122,10 +132,13 @@ For example, a data object's CBOR descriptor might look like:
   "filter": "none",
   "compression": "szip",
   "reference_value": 230.5,
-  "bits_per_value": 16,
-  "hash": { "type": "xxh3", "value": "a1b2c3d4e5f6..." }
+  "bits_per_value": 16
 }
 ```
+
+> In v3 the per-object payload hash lives in the frame footer's
+> inline `[hash u64]` slot (see `../format/wire-format.md` §2.2),
+> not in the CBOR descriptor.
 
 Here, `reference_value` and `bits_per_value` live in the `params` map. Application metadata such as MARS keys belongs in `base[i]["mars"]` in the global metadata.
 
@@ -137,7 +150,6 @@ MARS vocabulary lives under `"mars"`:
 
 ```json
 {
-  "version": 3,
   "base": [
     {
       "mars": {
@@ -179,7 +191,6 @@ A preceder carries a `GlobalMetadata` CBOR with a single-entry `base` array for 
 
 ```json
 {
-  "version": 3,
   "base": [{"product": {"name": "temperature"}, "units": "K"}]
 }
 ```

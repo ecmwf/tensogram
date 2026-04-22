@@ -21,7 +21,7 @@ import tensogram
 
 # Encode a 2D temperature field
 temps = np.random.randn(100, 200).astype(np.float32) + 273.15
-meta = {"version": 3}
+meta = {}
 desc = {"type": "ntensor", "shape": [100, 200], "dtype": "float32"}
 
 msg = tensogram.encode(meta, [(desc, temps)])
@@ -40,7 +40,7 @@ print(array.shape)  # (100, 200)
 
 ```python
 msg = tensogram.encode(
-    {"version": 3},
+    {},
     [({"type": "ntensor", "shape": [3], "dtype": "float32"}, np.array([1, 2, 3], dtype=np.float32))],
     hash="xxh3",  # default; use None to skip hashing
 )
@@ -143,7 +143,7 @@ spectrum = np.random.randn(256).astype(np.float64)
 mask = np.array([1, 0, 1, 1, 0], dtype=np.uint8)
 
 msg = tensogram.encode(
-    {"version": 3},
+    {},
     [
         ({"type": "ntensor", "shape": [256], "dtype": "float64", "compression": "zstd"}, spectrum),
         ({"type": "ntensor", "shape": [5], "dtype": "uint8"}, mask),
@@ -258,7 +258,7 @@ with tensogram.TensogramFile.create("forecast.tgm") as f:
         data = model.run(step)
         desc = {"type": "ntensor", "shape": list(data.shape), "dtype": "float32",
                 "compression": "zstd"}
-        f.append({"version": 3, "base": [{"step": step}]}, [(desc, data)])
+        f.append({"base": [{"step": step}]}, [(desc, data)])
 ```
 
 Each `append` encodes one message and writes it to the end of the file. Messages are independent and self-describing.
@@ -286,7 +286,7 @@ The first access triggers a streaming scan that records message offsets. After t
 For building a message one object at a time in memory:
 
 ```python
-enc = tensogram.StreamingEncoder({"version": 3}, hash="xxh3")
+enc = tensogram.StreamingEncoder({}, hash="xxh3")
 for desc, data in objects:
     enc.write_object(desc, data)
 msg = enc.finish()  # returns complete message as bytes

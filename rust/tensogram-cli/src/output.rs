@@ -28,9 +28,13 @@ pub fn format_json<K: AsRef<str>>(
 ) -> String {
     let mut map = serde_json::Map::new();
 
+    // Expose the wire-format version as a synthetic `version` JSON key
+    // for ops tooling that depends on it.  The wire version lives in
+    // the preamble (see `plans/WIRE_FORMAT.md` §3); the CBOR metadata
+    // frame itself is free-form.
     map.insert(
         "version".to_string(),
-        serde_json::Value::Number(serde_json::Number::from(metadata.version)),
+        serde_json::Value::Number(serde_json::Number::from(tensogram::WIRE_VERSION)),
     );
 
     // Add base array (per-object metadata)
@@ -169,7 +173,6 @@ mod tests {
 
     fn make_meta(extra: BTreeMap<String, ciborium::Value>) -> GlobalMetadata {
         GlobalMetadata {
-            version: 3,
             extra,
             ..Default::default()
         }
@@ -333,7 +336,6 @@ mod tests {
             )]),
         );
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -357,7 +359,6 @@ mod tests {
             ciborium::Value::Text("exp01".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             extra,
             ..Default::default()
@@ -372,7 +373,6 @@ mod tests {
     #[test]
     fn json_empty_base_and_extra() {
         let meta = GlobalMetadata {
-            version: 3,
             ..Default::default()
         };
         let json = format_json::<String>(&meta, None, None);
@@ -387,7 +387,6 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("param".to_string(), ciborium::Value::Text("2t".to_string()));
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };

@@ -31,7 +31,8 @@ describe('Phase 0 — scaffold + WASM integration', () => {
     expect(msg.byteLength).toBeGreaterThan(data.byteLength);
 
     const decoded = decode(msg);
-    expect(decoded.metadata.version).toBe(2);
+    // Wire version is carried in the preamble; v3 is fixed at 3.
+    expect(decoded.metadata.version).toBe(3);
     expect(decoded.objects).toHaveLength(1);
 
     const out = decoded.objects[0].data() as Float32Array;

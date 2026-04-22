@@ -43,7 +43,7 @@ std::string f32_descriptor(std::size_t count) {
 TEST(StreamingTest, CreateWriteFinishDecode) {
     TempFile tmp;
 
-    std::string meta_json = R"({"version":2})";
+    std::string meta_json = R"({"version":3})";
     {
         tensogram::streaming_encoder enc(tmp.path, meta_json);
 
@@ -79,7 +79,7 @@ TEST(StreamingTest, CreateWriteFinishDecode) {
 TEST(StreamingTest, ObjectCountIncrements) {
     TempFile tmp;
 
-    std::string meta_json = R"({"version":2})";
+    std::string meta_json = R"({"version":3})";
     tensogram::streaming_encoder enc(tmp.path, meta_json);
 
     EXPECT_EQ(enc.object_count(), 0u);
@@ -108,7 +108,7 @@ TEST(StreamingTest, ObjectCountIncrements) {
 TEST(StreamingTest, MultiObjectStreaming) {
     TempFile tmp;
 
-    std::string meta_json = R"({"version":2})";
+    std::string meta_json = R"({"version":3})";
     tensogram::streaming_encoder enc(tmp.path, meta_json);
 
     for (int i = 0; i < 5; ++i) {
@@ -138,7 +138,7 @@ TEST(StreamingTest, MultiObjectStreaming) {
 TEST(StreamingTest, ReadBackVerifyData) {
     TempFile tmp;
 
-    std::string meta_json = R"({"version":2})";
+    std::string meta_json = R"({"version":3})";
     {
         tensogram::streaming_encoder enc(tmp.path, meta_json);
 
@@ -181,7 +181,7 @@ TEST(StreamingTest, StreamingEncoderRAII) {
 
     // Create and immediately destroy WITHOUT calling finish()
     {
-        std::string meta_json = R"({"version":2})";
+        std::string meta_json = R"({"version":3})";
         tensogram::streaming_encoder enc(tmp.path, meta_json);
 
         std::vector<float> values = {1.0f};
@@ -203,7 +203,7 @@ TEST(StreamingTest, StreamingEncoderRAII) {
 TEST(StreamingTest, StreamingWithHash) {
     TempFile tmp;
 
-    std::string meta_json = R"({"version":2})";
+    std::string meta_json = R"({"version":3})";
     tensogram::encode_options opts;
     opts.hash_algo = "xxh3";
 
@@ -237,7 +237,7 @@ TEST(StreamingTest, StreamingWithHash) {
 TEST(StreamingTest, PrecederRoundTrip) {
     TempFile tmp;
 
-    std::string meta_json = R"({"version":2})";
+    std::string meta_json = R"({"version":3})";
     {
         tensogram::streaming_encoder enc(tmp.path, meta_json);
 
@@ -275,7 +275,7 @@ TEST(StreamingTest, PrecederRoundTrip) {
 TEST(StreamingTest, PrecederMixedObjects) {
     TempFile tmp;
 
-    std::string meta_json = R"({"version":2})";
+    std::string meta_json = R"({"version":3})";
     {
         tensogram::streaming_encoder enc(tmp.path, meta_json);
 
@@ -311,7 +311,7 @@ TEST(StreamingTest, PrecederMixedObjects) {
 TEST(StreamingTest, PrecederDoubleWriteThrows) {
     TempFile tmp;
 
-    std::string meta_json = R"({"version":2})";
+    std::string meta_json = R"({"version":3})";
     tensogram::streaming_encoder enc(tmp.path, meta_json);
 
     enc.write_preceder(R"({})");
@@ -325,7 +325,7 @@ TEST(StreamingTest, PrecederDoubleWriteThrows) {
 TEST(StreamingTest, PrecederNonObjectJsonThrows) {
     TempFile tmp;
 
-    std::string meta_json = R"({"version":2})";
+    std::string meta_json = R"({"version":3})";
     tensogram::streaming_encoder enc(tmp.path, meta_json);
 
     EXPECT_THROW(enc.write_preceder(R"([1,2,3])"), tensogram::metadata_error);

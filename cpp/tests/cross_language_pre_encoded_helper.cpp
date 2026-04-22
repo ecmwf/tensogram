@@ -67,7 +67,7 @@ int main() {
 
     // Build descriptor JSON for encoding="none" (raw pass-through).
     std::string json =
-        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[1024],)"
+        R"({"version":3,"descriptors":[{"type":"ndarray","ndim":1,"shape":[1024],)"
         R"("strides":[8],"dtype":"float64","byte_order":"little",)"
         R"("encoding":"none","filter":"none","compression":"none"}]})";
 

@@ -13,7 +13,6 @@ use tensogram_encodings::simple_packing;
 fn make_float32_descriptor(shape: Vec<u64>) -> (GlobalMetadata, DataObjectDescriptor) {
     let strides = compute_strides(&shape);
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -56,7 +55,6 @@ fn make_mars_pair(shape: Vec<u64>, param: &str) -> (GlobalMetadata, DataObjectDe
     );
 
     let global = GlobalMetadata {
-        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };
@@ -106,8 +104,7 @@ fn test_full_round_trip_single_object() {
     assert_eq!(&encoded[0..8], b"TENSOGRM");
     assert_eq!(&encoded[encoded.len() - 8..], b"39277777");
 
-    let (decoded_meta, decoded_objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
-    assert_eq!(decoded_meta.version, 3);
+    let (_decoded_meta, decoded_objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
     assert_eq!(decoded_objects.len(), 1);
     assert_eq!(decoded_objects[0].1, data);
 }
@@ -117,7 +114,6 @@ fn test_multi_object_message() {
     let strides1 = compute_strides(&[4, 5]);
 
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -172,15 +168,12 @@ fn test_decode_metadata_only() {
     let data = vec![0u8; 10 * 4];
 
     let encoded = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
-    let meta = decode_metadata(&encoded).unwrap();
-
-    assert_eq!(meta.version, 3);
+    let _meta = decode_metadata(&encoded).unwrap();
 }
 
 #[test]
 fn test_decode_single_object_by_index() {
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -229,7 +222,6 @@ fn test_decode_single_object_by_index() {
 #[test]
 fn test_zero_object_message() {
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -315,7 +307,6 @@ fn test_simple_packing_round_trip() {
     );
 
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -361,7 +352,6 @@ fn test_shuffle_round_trip() {
     );
 
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -452,7 +442,6 @@ fn test_decode_range_shuffle_rejected() {
     );
 
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -524,7 +513,6 @@ fn test_namespaced_metadata_round_trip() {
 #[test]
 fn test_validate_object_overflow() {
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -577,7 +565,6 @@ fn test_cross_endian_round_trip() {
     let be_data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -671,7 +658,6 @@ fn test_decode_range_cross_endian_native() {
     let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -711,7 +697,6 @@ fn test_decode_range_wire_byte_order_opt_out() {
     let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
 
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -770,7 +755,6 @@ fn test_simple_packing_rejects_non_f64() {
     );
 
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -804,7 +788,6 @@ fn test_simple_packing_rejects_non_f64() {
 #[test]
 fn test_validate_ndim_mismatch() {
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -845,7 +828,6 @@ fn test_param_out_of_bounds() {
     );
 
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -908,7 +890,6 @@ fn make_szip_packing_pair(
     );
 
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -942,7 +923,6 @@ fn make_szip_raw_pair(num_values: u64, dtype: Dtype) -> (GlobalMetadata, DataObj
     );
 
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -1132,7 +1112,6 @@ fn test_szip_shuffle_round_trip() {
     );
 
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -1175,7 +1154,6 @@ fn test_szip_shuffle_decode_range_rejected() {
     );
 
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -1237,7 +1215,6 @@ fn test_szip_multi_object_mixed_compression() {
     let packed_data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
 
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -1367,7 +1344,6 @@ fn test_szip_decode_range_multiple_ranges() {
 #[test]
 fn test_validate_empty_obj_type() {
     let global = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -1413,16 +1389,12 @@ fn test_metadata_base_reserved_round_trip() {
     );
 
     let global = GlobalMetadata {
-        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };
 
     let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
-    let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap();
-
-    assert_eq!(decoded_meta.version, 3);
-    // base must have one entry with user-supplied + auto-populated keys.
+    let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap(); // base must have one entry with user-supplied + auto-populated keys.
     assert_eq!(decoded_meta.base.len(), 1);
     assert_eq!(
         decoded_meta.base[0].get("centre"),
@@ -1469,16 +1441,12 @@ fn test_metadata_empty_sections_not_serialized() {
     );
 
     let global = GlobalMetadata {
-        version: 3,
         extra,
         ..Default::default()
     };
 
     let msg = encode(&global, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
-    let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap();
-
-    assert_eq!(decoded_meta.version, 3);
-    // Encoder auto-populates base with one entry per object.
+    let (decoded_meta, _) = decode(&msg, &DecodeOptions::default()).unwrap(); // Encoder auto-populates base with one entry per object.
     assert_eq!(
         decoded_meta.base.len(),
         1,
@@ -1533,7 +1501,6 @@ fn test_deep_nested_metadata_round_trip() {
     base_entry.insert("nested".to_string(), value);
 
     let global = GlobalMetadata {
-        version: 3,
         base: vec![base_entry],
         ..Default::default()
     };
@@ -1582,7 +1549,6 @@ fn buffered_postamble_total_length_equals_message_length() {
     use tensogram::wire::POSTAMBLE_SIZE;
 
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -1622,7 +1588,6 @@ fn streaming_non_seekable_zero_total_length_preamble_and_postamble() {
     use tensogram::wire::POSTAMBLE_SIZE;
 
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -1674,7 +1639,6 @@ fn streaming_seekable_backfill_patches_both_total_length_slots() {
     use tensogram::wire::POSTAMBLE_SIZE;
 
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -1720,7 +1684,6 @@ fn streaming_seekable_backfill_patches_both_total_length_slots() {
 #[test]
 fn postamble_end_magic_always_at_last_8_bytes() {
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -1765,7 +1728,6 @@ fn encode_sample(version_tag: u32) -> Vec<u8> {
     // Produce a small, well-formed message with a per-message tag so
     // callers can tell messages apart by payload.
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -1915,7 +1877,6 @@ fn scan_file_bidirectional_matches_in_memory() {
 
 fn encode_sample_hashed(create_header: bool, create_footer: bool) -> Vec<u8> {
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -2004,7 +1965,6 @@ fn buffered_encode_both_flags_emits_both_aggregates() {
 #[test]
 fn buffered_encode_without_hashing_clears_aggregate() {
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -2048,7 +2008,6 @@ fn bitmask_payload_128_bits() -> Vec<u8> {
 #[test]
 fn compression_rle_round_trips_bitmask() {
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -2074,7 +2033,6 @@ fn compression_rle_round_trips_bitmask() {
 #[test]
 fn compression_roaring_round_trips_bitmask() {
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -2101,7 +2059,6 @@ fn compression_roaring_round_trips_bitmask() {
 fn compression_rle_rejects_non_bitmask_dtype() {
     // Pin the dtype guard: rle on float32 is an encode-time error.
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -2129,7 +2086,6 @@ fn compression_rle_rejects_non_bitmask_dtype() {
 #[test]
 fn compression_roaring_rejects_non_bitmask_dtype() {
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -2308,7 +2264,6 @@ fn validate_detects_hash_frame_aggregate_tamper() {
     use tensogram::wire::{FRAME_COMMON_FOOTER_SIZE, FrameHeader};
 
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -2390,7 +2345,6 @@ fn validate_detects_hash_frame_aggregate_tamper() {
 #[test]
 fn validate_accepts_both_hash_aggregates_when_identical() {
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -2436,7 +2390,6 @@ fn validate_accepts_both_hash_aggregates_when_identical() {
 fn data_object_inline_hashes_happy_path() {
     use tensogram::framing::data_object_inline_hashes;
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -2474,7 +2427,6 @@ fn data_object_inline_hashes_happy_path() {
 fn data_object_inline_hashes_none_when_hashing_disabled() {
     use tensogram::framing::data_object_inline_hashes;
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -2510,7 +2462,6 @@ fn data_object_inline_hashes_none_when_hashing_disabled() {
 fn data_object_inline_hashes_rejects_truncated_buffer() {
     use tensogram::framing::data_object_inline_hashes;
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {
@@ -2655,7 +2606,6 @@ fn scan_file_handles_streaming_message() {
     use tensogram::streaming::StreamingEncoder;
 
     let global = GlobalMetadata {
-        version: 3,
         ..Default::default()
     };
     let desc = DataObjectDescriptor {

@@ -245,9 +245,11 @@ impl PyDataObjectDescriptor {
 
 /// Message-level metadata.
 ///
-/// Access version via ``meta.version``, per-object metadata via ``meta.base``,
-/// and extra keys via dict syntax:
-/// ``meta["mars"]``, ``"mars" in meta``, ``meta.extra``.
+/// Access wire-format version via ``meta.version`` (always ``3`` in the
+/// current library — sourced from the preamble, not from any CBOR
+/// field).  Per-object metadata lives in ``meta.base``; extra keys are
+/// reachable via dict syntax (``meta["mars"]``, ``"mars" in meta``,
+/// ``meta.extra``).
 #[pyclass(name = "Metadata", from_py_object)]
 #[derive(Clone)]
 struct PyMetadata {
@@ -256,9 +258,15 @@ struct PyMetadata {
 
 #[pymethods]
 impl PyMetadata {
+    /// Wire-format version of the message this metadata came from.
+    ///
+    /// The value is sourced from the preamble (see
+    /// `plans/WIRE_FORMAT.md` §3) — not from any CBOR key.  In the
+    /// current library this always returns :data:`tensogram.WIRE_VERSION`
+    /// (``3``) because the decoder rejects any other preamble version.
     #[getter]
     fn version(&self) -> u16 {
-        self.inner.version
+        tensogram_lib::WIRE_VERSION
     }
 
     /// Per-object metadata list.  ``meta.base[i]`` is a dict of
@@ -324,7 +332,7 @@ impl PyMetadata {
     fn __repr__(&self) -> String {
         format!(
             "Metadata(version={}, base_len={}, extra_keys={:?})",
-            self.inner.version,
+            tensogram_lib::WIRE_VERSION,
             self.inner.base.len(),
             self.inner.extra.keys().collect::<Vec<_>>()
         )
@@ -409,7 +417,7 @@ impl PyTensogramFile {
     /// Append one message.
     ///
     /// Args:
-    ///     global_meta_dict: ``{"version": 3, ...}`` with any extra keys.
+    ///     global_meta_dict: ``{"base": [...], ...}`` with any extra keys.
     ///     descriptors_and_data: list of ``(descriptor_dict, data)`` pairs.
     ///         Each descriptor_dict requires ``type``, ``shape``, ``dtype`` and
     ///         optionally ``byte_order``, ``encoding``, ``filter``, ``compression``.
@@ -876,7 +884,7 @@ impl PyFileIter {
 /// Encode arrays into a Tensogram wire-format message.
 ///
 /// Args:
-///     global_meta_dict: ``{"version": 3, ...}`` with any extra keys.
+///     global_meta_dict: ``{"base": [...], ...}`` with any extra keys.
 ///     descriptors_and_data: list of ``(descriptor_dict, numpy_array)`` pairs.
 ///     hash: ``"xxh3"`` (default) or ``None`` to skip integrity hashing.
 ///
@@ -947,7 +955,7 @@ fn py_encode<'py>(
 /// computes and stamps the payload hash.
 ///
 /// Args:
-///     global_meta_dict: ``{"version": 3, ...}`` with any extra keys.
+///     global_meta_dict: ``{"base": [...], ...}`` with any extra keys.
 ///     descriptors_and_data: list of ``(descriptor_dict, bytes)`` pairs.  The
 ///         second element of each pair **must** be a ``bytes``-like object —
 ///         numpy arrays are rejected because pre-encoded payloads are
@@ -1368,7 +1376,7 @@ fn compute_packing_params(
 ///
 /// Example::
 ///
-///     enc = tensogram.StreamingEncoder({"version": 3})
+///     enc = tensogram.StreamingEncoder({})
 ///     enc.write_object({"type": "ntensor", "shape": [4], "dtype": "float32"},
 ///                      np.ones(4, dtype=np.float32))
 ///     msg = enc.finish()
@@ -1382,7 +1390,7 @@ impl PyStreamingEncoder {
     /// Begin a new streaming message.
     ///
     /// Args:
-    ///     global_meta_dict: ``{"version": 3, ...}`` with any extra keys.
+    ///     global_meta_dict: ``{"base": [...], ...}`` with any extra keys.
     ///     hash: ``"xxh3"`` (default) or ``None`` to skip integrity hashing.
     ///     threads: thread budget for intra-codec parallelism inside
     ///         :meth:`write_object` (axis B only — streaming encoding
@@ -2735,6 +2743,12 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__has_grib__", cfg!(feature = "grib"))?;
     m.add("__has_netcdf__", cfg!(feature = "netcdf"))?;
 
+    // Wire-format version constant.  See `plans/WIRE_FORMAT.md` §3 —
+    // the version lives in the preamble of every message, never in the
+    // CBOR metadata frame.  Exposed here so tooling and notebooks can
+    // read it without having to decode a message first.
+    m.add("WIRE_VERSION", tensogram_lib::WIRE_VERSION)?;
+
     Ok(())
 }
 
@@ -2990,15 +3004,18 @@ fn objects_with_masks_to_python(
 
 /// Build a GlobalMetadata from a Python dict.
 ///
-/// Required key: `version` (int).
-/// Optional keys: `base` (list of dicts), `_extra_` or `extra` (dict).
-/// All other keys → `extra`.
+/// The CBOR metadata frame is **fully free-form** (see
+/// `plans/WIRE_FORMAT.md` §6.1).  The only top-level keys the library
+/// interprets are ``"base"`` (list of per-object dicts) and ``"_extra_"``
+/// / ``"extra"`` (convenience alias for message-level free-form keys).
+///
+/// Anything else supplied by the caller — including a stray legacy
+/// ``"version"`` key — flows into ``_extra_``.  The wire-format version
+/// lives exclusively in the preamble and is not settable from here.
+///
+/// ``"_reserved_"`` remains protected: it is the library-managed
+/// provenance namespace and cannot be written by client code.
 fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata> {
-    let version: u16 = dict
-        .get_item("version")?
-        .ok_or_else(|| PyValueError::new_err("missing 'version'"))?
-        .extract()?;
-
     let base = match dict.get_item("base")? {
         Some(v) => {
             let list = v
@@ -3044,7 +3061,10 @@ fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata>
         )));
     }
 
-    let known_keys = ["version", "base", "_extra_", "extra", RESERVED_KEY];
+    // Known (library-interpreted) top-level keys.  `"version"` is NOT
+    // here: it is a free-form key like any other and flows into
+    // ``_extra_`` when present.
+    let known_keys = ["base", "_extra_", "extra", RESERVED_KEY];
     let mut extra = explicit_extra;
     for (k, v) in dict.iter() {
         let key: String = k.extract()?;
@@ -3054,7 +3074,6 @@ fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata>
     }
 
     Ok(GlobalMetadata {
-        version,
         base,
         reserved: BTreeMap::new(),
         extra,

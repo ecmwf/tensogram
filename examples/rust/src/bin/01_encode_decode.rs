@@ -48,7 +48,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let global_meta = GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     };
@@ -96,9 +95,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // pipeline, and returns raw bytes in the logical dtype.
     let (decoded_meta, decoded_objects) = decode(&message, &DecodeOptions::default())?;
 
+    // Wire version lives in the preamble (see `plans/WIRE_FORMAT.md` §3).
+    let _ = &decoded_meta;
     println!(
-        "Decoded: version={}, {} object(s)",
-        decoded_meta.version,
+        "Decoded: wire version={}, {} object(s)",
+        tensogram::WIRE_VERSION,
         decoded_objects.len()
     );
     println!(

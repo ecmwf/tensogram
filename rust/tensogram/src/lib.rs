@@ -59,7 +59,7 @@ pub use validate::{
     FileIssue, FileValidationReport, IssueCode, IssueSeverity, ValidateOptions, ValidationIssue,
     ValidationLevel, ValidationReport, validate_buffer, validate_file, validate_message,
 };
-pub use wire::{FrameType, MessageFlags};
+pub use wire::{FrameType, MessageFlags, WIRE_VERSION};
 
 #[cfg(feature = "remote")]
 pub use remote::is_remote_url;

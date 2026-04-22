@@ -117,7 +117,7 @@ describe('Property: encode → decode round-trip is bit-exact for float32', () =
           filter: 'none',
           compression: 'none',
         };
-        const meta: GlobalMetadata = { version: 2, base: [{ mars }] };
+        const meta: GlobalMetadata = { /* free-form metadata */ base: [{ mars }] };
 
         const msg = encode(meta, [{ descriptor: desc, data }]);
         const decoded = decode(msg);

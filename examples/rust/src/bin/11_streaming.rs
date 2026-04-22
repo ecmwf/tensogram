@@ -50,7 +50,6 @@ fn make_descriptor(shape: Vec<u64>) -> DataObjectDescriptor {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── 1. Stream to an in-memory buffer ────────────────────────────────────
     let meta = GlobalMetadata {
-        version: 3,
         extra: {
             let mut m = BTreeMap::new();
             m.insert(
@@ -93,8 +92,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
     println!(
-        "\nDecoded: version={}, {} objects",
-        decoded_meta.version,
+        "\nDecoded: wire version={}, {} objects",
+        tensogram::WIRE_VERSION,
         objects.len()
     );
     println!("  Base metadata: {:?}", decoded_meta.base);

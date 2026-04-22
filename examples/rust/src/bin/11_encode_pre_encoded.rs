@@ -97,8 +97,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = EncodeOptions::default();
     let message = encode_pre_encoded(&meta, &[(&packed_desc, packed_bytes.as_slice())], &options)?;
 
-    // 5. Decode the message and verify the round-trip.
-    let (decoded_meta, decoded_objects) = decode(
+    // 5. Decode the message and verify the round-trip.  The wire-format
+    // version lives in the preamble (see `plans/WIRE_FORMAT.md` §3) —
+    // the returned `GlobalMetadata` has no `version` field of its own.
+    let (_decoded_meta, decoded_objects) = decode(
         &message,
         &DecodeOptions {
             native_byte_order: false,
@@ -108,8 +110,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (decoded_desc, decoded_payload) = decoded_objects
         .first()
         .ok_or_else(|| std::io::Error::other("missing decoded object"))?;
-
-    assert_eq!(decoded_meta.version, 3);
     assert_eq!(decoded_desc.encoding, "simple_packing");
     assert_eq!(decoded_desc.compression, "szip");
     assert_eq!(
