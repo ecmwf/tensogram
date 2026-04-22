@@ -142,6 +142,37 @@ def test_warning_fires_on_tensogram_file_append(tmp_path: Path):
     assert "'name'" in str(user_warnings[0].message)
 
 
+def test_warning_fires_on_encode_pre_encoded():
+    desc = {
+        "type": "ntensor",
+        "shape": [4],
+        "dtype": "float32",
+        "encoding": "none",
+        "filter": "none",
+        "compression": "none",
+        "name": "x",
+    }
+    payload = _zero().tobytes()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        tensogram.encode_pre_encoded({"version": 2}, [(desc, payload)])
+    user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+    assert len(user_warnings) == 1
+    assert "'name'" in str(user_warnings[0].message)
+
+
+def test_warning_fires_on_streaming_encoder_write_object():
+    desc = {"type": "ntensor", "shape": [4], "dtype": "float32", "name": "x"}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        encoder = tensogram.StreamingEncoder({"version": 2})
+        encoder.write_object(desc, _zero())
+        encoder.finish()
+    user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+    assert len(user_warnings) == 1
+    assert "'name'" in str(user_warnings[0].message)
+
+
 def test_warning_is_suppressible_by_filterwarnings():
     desc = {"type": "ntensor", "shape": [4], "dtype": "float32", "name": "x"}
     with warnings.catch_warnings(record=True) as caught:
@@ -158,3 +189,22 @@ def test_key_preserved_in_params_despite_warning():
     decoded = tensogram.decode(msg)
     decoded_desc, _ = decoded.objects[0]
     assert decoded_desc.params["name"] == "kept"
+
+
+def test_warning_is_attributed_to_caller_line():
+    desc = {"type": "ntensor", "shape": [4], "dtype": "float32", "name": "x"}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        tensogram.encode({"version": 2}, [(desc, _zero())])  # warning-source
+    user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+    assert len(user_warnings) == 1
+    w = user_warnings[0]
+    assert w.filename == __file__, (
+        f"warning should point at the user's encode() call site, got {w.filename}"
+    )
+    with open(__file__) as f:
+        source_line = f.readlines()[w.lineno - 1]
+    assert "warning-source" in source_line, (
+        f"line {w.lineno} of this file does not carry the warning-source "
+        f"marker (got: {source_line!r})"
+    )
