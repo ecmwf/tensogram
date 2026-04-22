@@ -55,7 +55,7 @@ async function main(): Promise<void> {
   let totalBytes = 0;
 
   const enc = new StreamingEncoder(
-    { version: 2 },
+    { version: 3 },
     {
       onBytes: (chunk) => {
         // IMPORTANT: copy the chunk if you need it to survive past the

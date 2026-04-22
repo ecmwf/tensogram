@@ -9,8 +9,8 @@
 //! Decode-side companion to [`crate::substitute_and_mask`].
 //!
 //! When a data-object frame carries a `masks` sub-map
-//! (`NTensorFrame`, wire type 9 — see `plans/BITMASK_FRAME.md`
-//! §7), this module:
+//! (`NTensorFrame`, wire type 9 — see `plans/WIRE_FORMAT.md`
+//! §6.5), this module:
 //!
 //! 1. Parses each present mask's [`crate::types::MaskDescriptor`]
 //!    from the descriptor.
@@ -26,7 +26,7 @@
 //!
 //! The restored bits are **canonical** — bit-exact NaN payloads and
 //! mixed-component complex kinds are not preserved.  This is a
-//! documented trade-off; see `plans/BITMASK_FRAME.md` §7.1.
+//! documented trade-off; see `plans/WIRE_FORMAT.md` §6.5.4.
 
 use crate::dtype::Dtype;
 use crate::error::{Result, TensogramError};
@@ -381,7 +381,7 @@ fn half_canonical(kind: Kind, byte_order: ByteOrder, half: Half) -> [u8; 2] {
 /// always the `0.0`-substituted decoded bytes — masks are **not**
 /// applied.  Advanced callers can apply them manually, aggregate
 /// across kinds, or convert to their own domain types.  See
-/// `plans/BITMASK_FRAME.md` §7.3.
+/// `docs/src/guide/nan-inf-handling.md`.
 #[derive(Debug, Clone)]
 pub struct DecodedObjectWithMasks {
     /// Object descriptor, including the `masks` sub-map when
@@ -404,7 +404,7 @@ pub struct DecodedMaskSet {
     /// Positions that held NaN at encode time, or `None` when the
     /// frame carried no NaN mask.  For complex dtypes a single bit
     /// covers BOTH (real, imag) components — see
-    /// `plans/BITMASK_FRAME.md` §4 for the priority rule.
+    /// `plans/WIRE_FORMAT.md` §6.5.2 for the priority rule.
     pub nan: Option<Vec<bool>>,
     /// Positions that held `+∞`, or `None`.  Never overlaps with
     /// `nan` at the same index (encoder's priority rule assigns

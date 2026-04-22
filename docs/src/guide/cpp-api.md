@@ -22,7 +22,7 @@ cmake --build build -j
 #include <tensogram.hpp>
 
 // Encode
-std::string meta_json = R"({"version": 2, "descriptors": [...]})";
+std::string meta_json = R"({"version": 3, "descriptors": [...]})";
 std::vector<float> data(100 * 200, 0.0f);
 auto encoded = tensogram::encode(
     meta_json,

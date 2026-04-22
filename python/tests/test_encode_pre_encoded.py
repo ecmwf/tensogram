@@ -35,7 +35,7 @@ import tensogram
 # ---------------------------------------------------------------------------
 
 
-def make_global_meta(version: int = 2, **extra: Any) -> dict[str, Any]:
+def make_global_meta(version: int = 3, **extra: Any) -> dict[str, Any]:
     """Build a global metadata dict."""
     return {"version": version, **extra}
 
@@ -153,7 +153,7 @@ class TestEncodePreEncodedSimplePacking:
             encoding="simple_packing",
             **params,
         )
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
 
         # Encode via pre-encoded path
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, packed_bytes)]))
@@ -179,7 +179,7 @@ class TestEncodePreEncodedSimplePacking:
             encoding="simple_packing",
             **params,
         )
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
 
         # Path A: normal encode
         msg_a = bytes(tensogram.encode(meta, [(desc, temps)]))
@@ -235,7 +235,7 @@ class TestEncodePreEncodedSzip:
             szip_flags=8,
             **params,
         )
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
 
         # Step 1: Encode normally with szip compression to get valid block offsets
         msg_orig = bytes(tensogram.encode(meta, [(desc_szip, temps)]))
@@ -309,7 +309,7 @@ class TestEncodePreEncodedSzip:
             szip_block_offsets=[0, 200, 100],  # not monotonic
             **params,
         )
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises(ValueError, match="szip_block_offsets must be strictly increasing"):
             tensogram.encode_pre_encoded(meta, [(desc, packed)])
 
@@ -334,7 +334,7 @@ class TestEncodePreEncodedSzip:
             szip_block_offsets=[0, 100, 200],
             **params,
         )
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises(ValueError, match="szip_block_offsets provided but compression"):
             tensogram.encode_pre_encoded(meta, [(desc, packed)])
 
@@ -402,7 +402,7 @@ class TestEncodePreEncodedRejectsInvalid:
             byte_order="little",
             encoding="bogus_encoding",
         )
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises(ValueError, match="encoding"):
             tensogram.encode_pre_encoded(meta, [(desc, data)])
 
@@ -417,7 +417,7 @@ class TestEncodePreEncodedRejectsInvalid:
         """Missing shape in descriptor raises ValueError."""
         data = b"\x00" * 40
         desc = {"type": "ntensor", "dtype": "float32"}
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises(ValueError, match="shape"):
             tensogram.encode_pre_encoded(meta, [(desc, data)])
 
@@ -425,7 +425,7 @@ class TestEncodePreEncodedRejectsInvalid:
         """Unknown dtype string raises ValueError."""
         data = b"\x00" * 40
         desc = make_descriptor(shape=[10], dtype="complex256")
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises(ValueError, match="unknown dtype"):
             tensogram.encode_pre_encoded(meta, [(desc, data)])
 
@@ -433,7 +433,7 @@ class TestEncodePreEncodedRejectsInvalid:
         """encode_pre_encoded must reject numpy arrays (requires bytes)."""
         arr = np.arange(10, dtype=np.float32)
         desc = make_descriptor(shape=[10], dtype="float32", byte_order="little")
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises((ValueError, TypeError)):
             tensogram.encode_pre_encoded(meta, [(desc, arr)])
 
@@ -448,7 +448,7 @@ class TestEncodePreEncodedZeroObjects:
 
     def test_zero_objects(self):
         """Pre-encoding an empty list of objects produces a valid message."""
-        meta = make_global_meta(2, note="empty")
+        meta = make_global_meta(3, note="empty")
         msg = bytes(tensogram.encode_pre_encoded(meta, []))
         decoded_meta, objects = tensogram.decode(msg)
         assert len(objects) == 0
@@ -465,7 +465,7 @@ class TestStreamingEncoderPreEncoded:
 
     def test_mixed_mode(self):
         """Alternate write_object (normal) and write_object_pre_encoded."""
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         enc = tensogram.StreamingEncoder(meta)
 
         # Object 0: normal encode
@@ -505,7 +505,7 @@ class TestStreamingEncoderPreEncoded:
 
     def test_streaming_pre_encoded_only(self):
         """StreamingEncoder with only pre-encoded writes."""
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         enc = tensogram.StreamingEncoder(meta)
 
         arr = np.arange(20, dtype=np.float64)
@@ -525,7 +525,7 @@ class TestStreamingEncoderPreEncoded:
 
     def test_streaming_finish_twice_raises(self):
         """Calling finish() twice on a StreamingEncoder raises RuntimeError."""
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         enc = tensogram.StreamingEncoder(meta)
         enc.finish()
         with pytest.raises(RuntimeError, match="already finished"):
@@ -549,7 +549,7 @@ class TestEncodePreEncodedRejectsSzipOffsetsForNonSzip:
             byte_order="little",
             szip_block_offsets=[0, 80, 160],
         )
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises(ValueError, match="szip_block_offsets"):
             tensogram.encode_pre_encoded(meta, [(desc, data)])
 
@@ -571,7 +571,7 @@ class TestEncodePreEncodedEdgeCases:
             dtype="float32",
             byte_order="little",
         )
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw)]))
 
         _, objects = tensogram.decode(msg)
@@ -593,7 +593,7 @@ class TestEncodePreEncodedEdgeCases:
             dtype="int64",
             byte_order="little",
         )
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
 
         msg = bytes(
             tensogram.encode_pre_encoded(
@@ -614,7 +614,7 @@ class TestEncodePreEncodedEdgeCases:
         data = np.ones(10, dtype=np.float32)
         raw = data.tobytes()
         desc = make_descriptor(shape=[10], dtype="float32", byte_order="little")
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
 
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw)], hash=None))
         _, objects = tensogram.decode(msg)
@@ -641,7 +641,7 @@ class TestEncodePreEncodedEdgeCases:
             dtype="float32",
             byte_order="big",
         )
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw_be)]))
 
         _, objects = tensogram.decode(msg)
@@ -660,7 +660,7 @@ class TestEncodePreEncodedEdgeCases:
             dtype="float32",
             byte_order="big",
         )
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw_be)]))
 
         # native_byte_order=False: get raw wire bytes (big-endian)
@@ -677,7 +677,7 @@ class TestEncodePreEncodedEdgeCases:
         raw_be = data.byteswap().tobytes()
 
         desc = make_descriptor(shape=[5], dtype="float32", byte_order="big")
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw_be)]))
 
         # native=True (default): values match
@@ -694,7 +694,7 @@ class TestEncodePreEncodedEdgeCases:
         data = np.ones(5, dtype=np.float32)
         raw = data.tobytes()
         desc = make_descriptor(shape=[5], dtype="float32", byte_order="little")
-        meta = make_global_meta(2, experiment="test-01", step=42)
+        meta = make_global_meta(3, experiment="test-01", step=42)
 
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw)]))
         decoded_meta, _ = tensogram.decode(msg)
@@ -711,7 +711,7 @@ class TestEncodePreEncodedEdgeCases:
             byte_order="little",
             my_custom_key="hello",
         )
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
 
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw)]))
         _, objects = tensogram.decode(msg)
@@ -732,7 +732,7 @@ class TestEncodePreEncodedAdditionalEdgeCases:
         data = np.arange(8, dtype=np.float32)
         raw = bytearray(data.tobytes())
         desc = make_descriptor(shape=[8], dtype="float32", byte_order="little")
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
 
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw)]))
         _, objects = tensogram.decode(msg)
@@ -744,7 +744,7 @@ class TestEncodePreEncodedAdditionalEdgeCases:
         data = np.arange(8, dtype=np.float32)
         raw = memoryview(data.tobytes())
         desc = make_descriptor(shape=[8], dtype="float32", byte_order="little")
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
 
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw)]))
         _, objects = tensogram.decode(msg)
@@ -754,7 +754,7 @@ class TestEncodePreEncodedAdditionalEdgeCases:
     def test_empty_bytes_zero_element_shape(self):
         """Empty bytes with shape=[0] succeeds."""
         desc = make_descriptor(shape=[0], dtype="float32", byte_order="little")
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
 
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, b"")]))
         _, objects = tensogram.decode(msg)
@@ -764,19 +764,19 @@ class TestEncodePreEncodedAdditionalEdgeCases:
 
     def test_non_tuple_in_list_raises(self):
         """Non-tuple element in the data list raises ValueError."""
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises((ValueError, TypeError)):
             tensogram.encode_pre_encoded(meta, ["not a tuple"])
 
     def test_non_dict_descriptor_raises(self):
         """Non-dict as descriptor raises ValueError."""
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises((ValueError, TypeError)):
             tensogram.encode_pre_encoded(meta, [("not_a_dict", b"\x00" * 4)])
 
     def test_tuple_wrong_length_raises(self):
         """Tuple with wrong length raises ValueError."""
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises((ValueError, TypeError)):
             tensogram.encode_pre_encoded(meta, [({}, b"\x00", "extra")])
 
@@ -784,21 +784,21 @@ class TestEncodePreEncodedAdditionalEdgeCases:
         """encode_pre_encoded error message includes the rejected type name."""
         arr = np.arange(10, dtype=np.float32)
         desc = make_descriptor(shape=[10], dtype="float32", byte_order="little")
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises((ValueError, TypeError), match=r"ndarray|numpy|got"):
             tensogram.encode_pre_encoded(meta, [(desc, arr)])
 
     def test_rejects_int_data_with_type_in_error(self):
         """Passing an int as data shows the type name in the error."""
         desc = make_descriptor(shape=[1], dtype="float32", byte_order="little")
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises((ValueError, TypeError), match=r"int|got"):
             tensogram.encode_pre_encoded(meta, [(desc, 42)])
 
     def test_rejects_none_data_with_type_in_error(self):
         """Passing None as data shows the type name in the error."""
         desc = make_descriptor(shape=[1], dtype="float32", byte_order="little")
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises((ValueError, TypeError), match=r"None|got"):
             tensogram.encode_pre_encoded(meta, [(desc, None)])
 
@@ -807,7 +807,7 @@ class TestEncodePreEncodedAdditionalEdgeCases:
         data = np.array([42.0], dtype=np.float32)
         raw = data.tobytes()
         desc = make_descriptor(shape=[1], dtype="float32", byte_order="little")
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
 
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw)]))
         _, objects = tensogram.decode(msg)
@@ -821,7 +821,7 @@ class TestEncodePreEncodedAdditionalEdgeCases:
         desc = make_descriptor(shape=[3, 4], dtype="float32", byte_order="little")
         # strides for row-major float32 2D
         desc["strides"] = [16, 4]
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
 
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw)]))
         _, objects = tensogram.decode(msg)
@@ -830,7 +830,7 @@ class TestEncodePreEncodedAdditionalEdgeCases:
 
     def test_streaming_write_after_finish_raises(self):
         """write_object_pre_encoded after finish() raises RuntimeError."""
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         enc = tensogram.StreamingEncoder(meta)
         enc.finish()
         desc = make_descriptor(shape=[4], dtype="float32", byte_order="little")
@@ -839,7 +839,7 @@ class TestEncodePreEncodedAdditionalEdgeCases:
 
     def test_streaming_pre_encoded_multiple_objects(self):
         """StreamingEncoder with multiple pre-encoded writes."""
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         enc = tensogram.StreamingEncoder(meta)
 
         a = np.arange(5, dtype=np.float32)
@@ -862,13 +862,13 @@ class TestEncodePreEncodedAdditionalEdgeCases:
     def test_encoding_none_size_mismatch_too_short(self):
         """encoding=none with data too short raises ValueError."""
         desc = make_descriptor(shape=[10], dtype="float32", byte_order="little")
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises(ValueError, match="does not match expected"):
             tensogram.encode_pre_encoded(meta, [(desc, b"\x00" * 20)])
 
     def test_encoding_none_size_mismatch_too_long(self):
         """encoding=none with data too long raises ValueError."""
         desc = make_descriptor(shape=[4], dtype="float32", byte_order="little")
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises(ValueError, match="does not match expected"):
             tensogram.encode_pre_encoded(meta, [(desc, b"\x00" * 32)])

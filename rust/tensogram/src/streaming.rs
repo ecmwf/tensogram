@@ -86,7 +86,7 @@ pub struct StreamingEncoder<W: Write> {
     parallel_threshold_bytes: Option<usize>,
     /// Snapshot of `EncodeOptions.allow_nan` / `allow_inf` — determines
     /// whether `write_object` substitutes non-finite values and emits
-    /// a mask companion section (see `plans/BITMASK_FRAME.md`).
+    /// a mask companion section (see `plans/WIRE_FORMAT.md` §6.5).
     allow_nan: bool,
     allow_inf: bool,
     /// Per-kind mask compression method snapshots.
@@ -313,7 +313,7 @@ impl<W: Write> StreamingEncoder<W> {
         }
 
         // Compose the payload region: [encoded_payload][masks...] — see
-        // `plans/BITMASK_FRAME.md` §3.2.  When no masks were produced
+        // `plans/WIRE_FORMAT.md` §6.5.  When no masks were produced
         // (the common case) this is a zero-cost passthrough.
         let (payload_region, masks_metadata) = crate::encode::compose_payload_region(
             result.encoded_bytes,

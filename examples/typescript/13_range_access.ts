@@ -106,9 +106,9 @@ async function main(): Promise<void> {
 
   // Build a "server body" of three messages concatenated.
   const messages = [
-    encode({ version: 2 }, [{ descriptor: describe([3], 'float32'), data: new Float32Array([1, 2, 3]) }]),
-    encode({ version: 2 }, [{ descriptor: describe([2], 'float64'), data: new Float64Array([10, 20]) }]),
-    encode({ version: 2 }, [{ descriptor: describe([1], 'int32'), data: new Int32Array([42]) }]),
+    encode({ version: 3 }, [{ descriptor: describe([3], 'float32'), data: new Float32Array([1, 2, 3]) }]),
+    encode({ version: 3 }, [{ descriptor: describe([2], 'float64'), data: new Float64Array([10, 20]) }]),
+    encode({ version: 3 }, [{ descriptor: describe([1], 'int32'), data: new Int32Array([42]) }]),
   ];
   const body = concatBytes(...messages);
   console.log(`server body: ${body.byteLength} bytes across ${messages.length} messages`);

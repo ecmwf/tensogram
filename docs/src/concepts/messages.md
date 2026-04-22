@@ -28,7 +28,7 @@ block-beta
 
 ## Frame-Based Design
 
-The v2 wire format is entirely **frame-based**. Every piece of data between the Preamble and Postamble is wrapped in a frame. Each frame starts with a 4-byte marker (`FR` + a uint16 frame type), a version, flags, and a length field. This uniform structure means a decoder can skip any frame it does not understand by jumping over its declared length.
+The v3 wire format is entirely **frame-based**. Every piece of data between the Preamble and Postamble is wrapped in a frame. Each frame starts with a 4-byte marker (`FR` + a uint16 frame type), a version, flags, and a length field. This uniform structure means a decoder can skip any frame it does not understand by jumping over its declared length.
 
 Frame types:
 
@@ -37,11 +37,12 @@ Frame types:
 | 1 | Header Metadata Frame | Header |
 | 2 | Header Index Frame | Header |
 | 3 | Header Hash Frame | Header |
-| 4 | Data Object Frame | Body |
+| 4 | *(reserved — obsolete v2 `NTensorFrame`; rejected)* | — |
 | 5 | Footer Hash Frame | Footer |
 | 6 | Footer Index Frame | Footer |
 | 7 | Footer Metadata Frame | Footer |
 | 8 | Preceder Metadata Frame | Body (before a Data Object) |
+| 9 | `NTensorFrame` (data object) | Body |
 
 Padding between frames is allowed (from `ENDF` to the next `FR` marker) for 64-bit memory alignment.
 
@@ -63,10 +64,11 @@ A decoder reading a streamed message seeks to the end, reads the Postamble, then
 
 Each data object is self-contained in its own frame. The frame carries:
 
-- A **CBOR descriptor** (`DataObjectDescriptor`) describing the tensor shape, dtype, encoding pipeline, and optional hash
+- A **CBOR descriptor** (`DataObjectDescriptor`) describing the tensor shape, dtype, and encoding pipeline
 - The **binary payload** (the actual encoded tensor bytes)
+- An **inline xxh3-64 hash slot** in the frame footer (populated when the message's `HASHES_PRESENT` preamble flag is set)
 
-The CBOR descriptor can appear before or after the payload within the frame. By default it is placed after the payload, since some encoding parameters (like hash values) are only known after the payload has been written. A flag in the frame header indicates the position.
+The CBOR descriptor can appear before or after the payload within the frame. By default it is placed after the payload, since some encoding parameters are only known after the payload has been written. A flag in the frame header indicates the position.
 
 ## Messages vs Files
 
@@ -102,7 +104,7 @@ A message with no data object frames is valid. It contains only the Preamble, a 
 
 ```rust
 let metadata = GlobalMetadata {
-    version: 2,
+    version: 3,
     ..Default::default()
 };
 let msg = encode(&metadata, &[], &EncodeOptions::default()).unwrap();

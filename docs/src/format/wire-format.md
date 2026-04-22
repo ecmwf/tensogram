@@ -229,7 +229,7 @@ A Preceder Metadata Frame (type 8) optionally appears immediately before a Data 
 **CBOR structure:**
 ```cbor
 {
-  "version": 2,
+  "version": 3,
   "base": [{"mars": {"param": "2t"}, "units": "K"}]
 }
 ```

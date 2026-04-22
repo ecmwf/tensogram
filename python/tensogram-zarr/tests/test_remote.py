@@ -91,7 +91,7 @@ def serve_tgm_bytes():
 
 
 def _encode_simple_message() -> bytes:
-    meta = {"version": 2}
+    meta = {"version": 3}
     desc = {
         "type": "ntensor",
         "shape": [4],

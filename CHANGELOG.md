@@ -73,9 +73,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 This release is a clean break from v2.  There is no backward
 compatibility; v2 messages are rejected at preamble read with a
 clear error pointing at re-encoding.  The v3 spec lives at
-[`plans/WIRE_FORMAT.md`](plans/WIRE_FORMAT.md); the implementation
-plan that produced it is
-[`plans/WIRE_FORMAT_CHANGES.md`](plans/WIRE_FORMAT_CHANGES.md).
+[`plans/WIRE_FORMAT.md`](plans/WIRE_FORMAT.md).
 
 #### Preamble / postamble
 
@@ -148,9 +146,8 @@ plan that produced it is
   the wire and record their positions in up to three compressed
   bitmasks stored alongside the payload.  Decoders restore canonical
   NaN / ±Inf at the marked positions.  See
-  `plans/BITMASK_FRAME.md` and
-  `docs/src/guide/nan-inf-handling.md` for the full design and
-  usage.
+  `plans/WIRE_FORMAT.md` §6.5 and
+  `docs/src/guide/nan-inf-handling.md` for the design and usage.
 - Per-kind mask compression methods:
   `nan_mask_method` / `pos_inf_mask_method` / `neg_inf_mask_method`,
   accepting `"none"` | `"rle"` | `"roaring"` (default) | `"blosc2"` |
@@ -272,8 +269,7 @@ plan that produced it is
   The validation fires on every encode path — direct Rust calls via
   `simple_packing::encode()`, via the high-level `tensogram::encode()`,
   via PyO3, WASM, C FFI, and C++ wrapper.  Cross-language parity tests
-  pin the behaviour. See `plans/RESEARCH_NAN_HANDLING.md` §4.2.3 for
-  the rationale and the failure-mode catalogue.
+  pin the behaviour.
 
 ## [0.16.1] - 2026-04-19
 
@@ -307,21 +303,15 @@ plan that produced it is
   `"simple_packing"`, and every compressor. Primary motivation: close
   the silent-corruption gotcha where `simple_packing::compute_params`
   accepted `Inf` input and produced numerically-useless parameters
-  that decoded to NaN everywhere (see `plans/RESEARCH_NAN_HANDLING.md`
-  §3.1; also now independently guarded at the simple_packing layer).
-  Exposed across every language surface (Rust, Python, TS, C FFI,
-  C++) with cross-language parity tests. CLI global flags
-  `--reject-nan` / `--reject-inf` plus `TENSOGRAM_REJECT_NAN` /
-  `TENSOGRAM_REJECT_INF` env vars for ops rollouts. Env-var values
-  are bool-ish: `1`/`true`/`yes`/`on` enable, `0`/`false`/`no`/`off`
-  disable. New `docs/src/guide/strict-finite.md` covers the full
-  semantics.
-- **NaN-handling research memo** —
-  `plans/RESEARCH_NAN_HANDLING.md` catalogues every path through the
-  library where NaN/Inf can appear on the encode side, documents the
-  15 gaps/gotchas (from the newly closed §3.1 silent-Inf-corruption
-  to the still-open §3.3 zfp/sz3 undefined behaviour), and proposes
-  tiered future work.
+  that decoded to NaN everywhere; also now independently guarded at
+  the simple_packing layer. Exposed across every language surface
+  (Rust, Python, TS, C FFI, C++) with cross-language parity tests.
+  CLI global flags `--reject-nan` / `--reject-inf` plus
+  `TENSOGRAM_REJECT_NAN` / `TENSOGRAM_REJECT_INF` env vars for ops
+  rollouts. Env-var values are bool-ish: `1`/`true`/`yes`/`on`
+  enable, `0`/`false`/`no`/`off` disable. New
+  `docs/src/guide/strict-finite.md` covered the full semantics
+  (superseded in 0.17 by `docs/src/guide/nan-inf-handling.md`).
 - `docs/src/guide/vocabularies.md` — a developer-guide page listing example
   application vocabularies (MARS, CF, BIDS, DICOM, custom) and conventions
   for wiring them into Tensogram metadata.

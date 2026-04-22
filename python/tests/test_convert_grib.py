@@ -208,21 +208,19 @@ def test_pipeline_bits_default_is_16() -> None:
 
 
 @requires_grib
-def test_pipeline_bits_out_of_range_falls_back_to_none() -> None:
-    """Out-of-range ``bits`` causes a stderr warning and wire ``encoding="none"``.
+def test_pipeline_bits_out_of_range_hard_fails() -> None:
+    """Out-of-range ``bits`` is a hard ``ValueError``.
 
-    ``apply_pipeline`` rejects bit widths outside ``1..=64`` and falls back
-    to passthrough. This test pins that behaviour so a future strictening
-    (e.g. raising a ValueError at the Python boundary) is a conscious
-    decision, not an accident.
+    ``apply_pipeline`` rejects bit widths outside ``1..=64`` by surfacing
+    the ``simple_packing::compute_params`` error all the way to the
+    Python caller, rather than soft-downgrading to ``encoding="none"``
+    with a stderr warning.  The strictening was a conscious 0.17
+    decision (the earlier soft-fallback path hid data-quality issues
+    from automated callers); this test pins the hard-fail contract.
     """
     path = str(_testdata("2t.grib2"))
-    msgs = tensogram.convert_grib(path, encoding="simple_packing", bits=65)
-    _, objects = tensogram.decode(msgs[0])
-    desc, _arr = objects[0]
-    assert desc.encoding == "none", (
-        f"bits=65 should fall back to encoding='none' but wire encoding was {desc.encoding!r}"
-    )
+    with pytest.raises(ValueError, match="bits_per_value 65 exceeds maximum of 64"):
+        tensogram.convert_grib(path, encoding="simple_packing", bits=65)
 
 
 @requires_grib

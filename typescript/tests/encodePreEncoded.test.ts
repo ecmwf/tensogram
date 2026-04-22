@@ -43,8 +43,7 @@ describe('Scope C.1 — encodePreEncoded', () => {
     // slot, not on the CBOR descriptor (plans/WIRE_FORMAT.md §2.4).
     // `descriptor.hash` on the decoded output is always undefined.
     // `computeHash` still returns a stable 16-char hex digest that
-    // can be compared to the inline slot via a future Message-level
-    // accessor (tracked in plans/WIRE_FORMAT_CHANGES.md follow-ups).
+    // callers can compare against the preamble-level validation.
     const values = new Float64Array([1.25, 2.5, 3.75, 4.0]);
     const bytes = new Uint8Array(values.buffer, values.byteOffset, values.byteLength);
     const msg = encodePreEncoded(defaultMeta(), [

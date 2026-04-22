@@ -66,7 +66,7 @@ pub const MAX_REASONABLE_BINARY_SCALE: i32 = 256;
 /// Runs unconditionally at the top of every encode call.  Cheap —
 /// two scalar checks, no allocations on the happy path.
 ///
-/// Covered failure modes (per `plans/RESEARCH_NAN_HANDLING.md` §4.2.3):
+/// Covered failure modes:
 /// - FM1: non-finite `reference_value` → silent corruption (decode
 ///   recovers `Inf` / `NaN` everywhere).
 /// - FM2: `|binary_scale_factor| > MAX_REASONABLE_BINARY_SCALE` →
@@ -283,8 +283,8 @@ pub fn encode_with_threads(
 ) -> Result<Vec<u8>, PackingError> {
     // Safety net: check params before any real work.  Catches
     // hand-crafted or mutated params that would otherwise produce
-    // silently-wrong output (see `plans/RESEARCH_NAN_HANDLING.md`
-    // §4.2.3 for the full catalogue of failure modes).
+    // silently-wrong output.  See `validate_params` for the full
+    // catalogue of failure modes.
     validate_params(params)?;
 
     if params.bits_per_value > 64 {
@@ -1298,7 +1298,7 @@ mod tests {
         assert!(encode(&[1.0], &params).is_err());
     }
 
-    // ── Standalone-API safety-net tests (plans/RESEARCH_NAN_HANDLING.md §4.2.3) ──
+    // ── Standalone-API safety-net tests for `validate_params` ──
     //
     // These pin the behaviour of `encode_with_threads`'s `validate_params`
     // check for hand-crafted / mutated `SimplePackingParams` that would

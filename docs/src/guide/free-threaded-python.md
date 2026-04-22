@@ -46,7 +46,7 @@ import numpy as np
 import tensogram
 
 data = np.random.randn(1_000_000).astype(np.float32)
-meta = {"version": 2, "base": [{}]}
+meta = {"version": 3, "base": [{}]}
 desc = {"type": "ntensor", "shape": [1_000_000], "dtype": "float32"}
 msg = tensogram.encode(meta, [(desc, data)])
 

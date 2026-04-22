@@ -65,7 +65,7 @@ async function main(): Promise<void> {
   // Build a multi-message "feed": three temperature fields back-to-back.
   const encoder = (values: number[], param: string): Uint8Array =>
     encode(
-      { version: 2, base: [{ mars: { param } }] },
+      { version: 3, base: [{ mars: { param } }] },
       [{ descriptor: describe([values.length], 'float32'), data: new Float32Array(values) }],
     );
 

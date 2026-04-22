@@ -127,7 +127,7 @@ class TensogramOutput(Output):
             raise RuntimeError(f"{self!r}: write_step called before open() or after close()")
 
         global_meta = {
-            "version": 2,
+            "version": 3,
             "base": [],
             "_extra_": {},
         }
@@ -151,7 +151,7 @@ class TensogramOutput(Output):
                 {
                     "name": _COORD_NAME_MAP[coord_name],
                     "anemoi": {"variable": coord_name},
-                    "dim_names": [_COORD_NAME_MAP[coord_name]],
+                    "dim_names": [coord_name],
                 }
             )
             descriptors_and_data.append(
@@ -187,7 +187,9 @@ class TensogramOutput(Output):
             try:
                 self._handle.flush()
             except Exception:
-                LOG.warning("TensogramOutput: failed to flush output stream before close", exc_info=True)
+                LOG.warning(
+                    "TensogramOutput: failed to flush output stream before close", exc_info=True
+                )
             self._handle.close()
             self._handle = None
 
@@ -208,7 +210,10 @@ class TensogramOutput(Output):
                 continue
             variable = self.typed_variables.get(name)
             if variable is None:
-                LOG.warning("TensogramOutput: no typed variable for %r -- metadata will be incomplete", name)
+                LOG.warning(
+                    "TensogramOutput: no typed variable for %r -- metadata will be incomplete",
+                    name,
+                )
             grib = getattr(variable, "grib_keys", {}) if variable else {}
             base_entry, descriptor, arr = self._build_field_object(name, grib, values, mars_extra)
             global_meta["base"].append(base_entry)
@@ -230,7 +235,10 @@ class TensogramOutput(Output):
                 continue
             variable = self.typed_variables.get(name)
             if variable is None:
-                LOG.warning("TensogramOutput: no typed variable for %r -- metadata will be incomplete", name)
+                LOG.warning(
+                    "TensogramOutput: no typed variable for %r -- metadata will be incomplete",
+                    name,
+                )
             grib = getattr(variable, "grib_keys", {}) if variable else {}
             if variable is not None and variable.is_pressure_level:
                 param = variable.param
@@ -240,7 +248,9 @@ class TensogramOutput(Output):
                 non_pl.append((name, grib, values))
 
         if not pl_groups:
-            LOG.warning("TensogramOutput: stack_pressure_levels=True but no pressure-level fields found")
+            LOG.warning(
+                "TensogramOutput: stack_pressure_levels=True but no pressure-level fields found"
+            )
 
         for name, grib, values in non_pl:
             base_entry, descriptor, arr = self._build_field_object(name, grib, values, mars_extra)
@@ -310,7 +320,11 @@ class TensogramOutput(Output):
         arrays = [self._prepare_array(item[3]) for item in group]
         stacked = np.column_stack(arrays)
 
-        mars = {**mars_extra, **{k: v for k, v in first_grib.items() if k != "level"}, "levelist": levels}
+        mars = {
+            **mars_extra,
+            **{k: v for k, v in first_grib.items() if k != "level"},
+            "levelist": levels,
+        }
 
         base_entry: dict = {
             "name": param,

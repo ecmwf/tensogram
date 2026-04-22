@@ -125,8 +125,9 @@ calendar dates. The CF `units` string (`"days since 1970-01-01"`) and
 
 Tensogram extracts only the **root group** of a NetCDF-4 file. If sub-groups
 are detected the importer prints a warning to stderr and continues with the
-root variables. Sub-group support is intentionally out of scope for v1 — most
-operational datasets keep their data variables at the root anyway.
+root variables. Sub-group support is intentionally out of scope for this
+release — most operational datasets keep their data variables at the root
+anyway.
 
 ## Splitting modes
 
@@ -206,8 +207,10 @@ Recovery options, in order of effort:
 
 1. **Drop the `--encoding simple_packing` flag AND pass
    `--allow-nan`.** The default pipeline (`encoding="none"`)
-   combined with the NaN bitmask companion frame round-trips NaN
-   values losslessly.  See [NaN / Inf Handling](nan-inf-handling.md).
+   combined with the NaN bitmask companion frame preserves NaN
+   *positions*; decode restores a canonical quiet-NaN at each
+   position (specific NaN payloads are not preserved — see
+   [NaN / Inf Handling](nan-inf-handling.md)).
 2. **Substitute non-finite values** with an in-band sentinel before
    conversion if you need simple_packing throughout.
 3. **Split the conversion** with `--split-by variable` and re-run
@@ -266,10 +269,12 @@ copy makes CF-aware tooling cheaper because it can ignore the verbose
 - **No string or char variables.** They are skipped with a warning.
 - **No NetCDF-4 enhanced types** (`compound`, `vlen`, `enum`, `opaque`).
 - **Root group only.** Sub-groups are skipped with a warning.
-- **No `tensogram-python` bindings.** The Python ecosystem talks to
-  `convert-netcdf` through `subprocess`. The library API is Rust-only in v1.
 - **`simple_packing` is `f64`-only.** Mixed-dtype files convert cleanly but
   only `f64` variables get packed.
+
+The importer is also available from Python via
+[`tensogram.convert_netcdf()`](python-api.md#convert_netcdfpath-options-listbytes)
+when the wheel is built with the `netcdf` feature.
 
 ## Library API
 

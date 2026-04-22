@@ -14,7 +14,7 @@
 //! - `allow_nan` / `allow_inf` both `false` — the first NaN / ±Inf is
 //!   reported as a [`TensogramError::Encoding`], no allocation or
 //!   copy.  This is the default encode policy (see
-//!   `plans/BITMASK_FRAME.md` §2).
+//!   `docs/src/guide/nan-inf-handling.md`).
 //!
 //! - either / both flags `true` — for each allowed kind, the
 //!   corresponding bit in a per-kind [`Vec<bool>`] is set and the
@@ -37,7 +37,7 @@
 //!
 //! For `complex64` / `complex128`, a single element (the (real, imag)
 //! pair) contributes to **at most one** mask, following the priority
-//! rule from `plans/BITMASK_FRAME.md` §4:
+//! rule from `plans/WIRE_FORMAT.md` §6.5.2:
 //!
 //! 1. NaN wins over any Inf.
 //! 2. +Inf wins over -Inf.
@@ -47,7 +47,7 @@
 //! (see [`crate::restore`]) the canonical bit pattern of the kind
 //! is restored to **both** components — bit-exact NaN payloads and
 //! mixed real/imag kinds are not preserved.  This is a documented
-//! lossy trade-off per `plans/BITMASK_FRAME.md` §7.1.
+//! lossy trade-off per `plans/WIRE_FORMAT.md` §6.5.4.
 //!
 //! ## Parallelism
 //!

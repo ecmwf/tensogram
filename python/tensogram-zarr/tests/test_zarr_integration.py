@@ -144,7 +144,7 @@ class TestZarrFullRoundTrip:
 
         with tensogram.TensogramFile.create(path) as f:
             f.append(
-                {"version": 2, "base": [{"name": "data"}]},
+                {"version": 3, "base": [{"name": "data"}]},
                 [({"type": "ntensor", "shape": [3, 4], "dtype": dtype_str}, original)],
             )
 
@@ -160,7 +160,7 @@ class TestZarrFullRoundTrip:
 
         with tensogram.TensogramFile.create(path) as f:
             f.append(
-                {"version": 2, "base": [{"name": "big"}]},
+                {"version": 3, "base": [{"name": "big"}]},
                 [({"type": "ntensor", "shape": [100, 200], "dtype": "float64"}, original)],
             )
 
@@ -177,7 +177,7 @@ class TestZarrFullRoundTrip:
 
         with tensogram.TensogramFile.create(path) as f:
             f.append(
-                {"version": 2, "base": [{"name": "vector"}]},
+                {"version": 3, "base": [{"name": "vector"}]},
                 [({"type": "ntensor", "shape": [5], "dtype": "int32"}, original)],
             )
 
@@ -192,7 +192,7 @@ class TestZarrFullRoundTrip:
 
         with tensogram.TensogramFile.create(path) as f:
             f.append(
-                {"version": 2, "base": [{"name": "spectra"}]},
+                {"version": 3, "base": [{"name": "spectra"}]},
                 [({"type": "ntensor", "shape": [10, 20, 30], "dtype": "float32"}, original)],
             )
 

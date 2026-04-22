@@ -89,8 +89,9 @@ typedef struct {
 
 /**
  * Mask-companion options for encode entry points (see
- * `plans/BITMASK_FRAME.md` §6.3).  Pass a pointer to this struct to
- * opt into NaN / ±Inf substitution with bitmask companion frames.
+ * `plans/WIRE_FORMAT.md` §6.5 and `docs/src/guide/nan-inf-handling.md`).
+ * Pass a pointer to this struct to opt into NaN / ±Inf substitution
+ * with bitmask companion frames.
  *
  * Each `*_mask_method` string is one of `"none"`, `"rle"`,
  * `"roaring"`, `"lz4"`, `"zstd"`, or `"blosc2"`; pass `NULL` to use

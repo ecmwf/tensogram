@@ -10,7 +10,8 @@
 
 Covers the NaN / Inf bitmask companion frame (type 9,
 ``NTensorFrame``) introduced in 0.17 (see
-``plans/BITMASK_FRAME.md``).  These tests exercise:
+``plans/WIRE_FORMAT.md`` §6.5 and
+``docs/src/guide/nan-inf-handling.md``).  These tests exercise:
 
 - default-reject policy (``allow_nan`` / ``allow_inf`` both False)
 - masked-encode round-trip (NaN restored on decode)
@@ -27,7 +28,7 @@ import pytest
 import tensogram
 
 
-def _meta(version: int = 2) -> dict:
+def _meta(version: int = 3) -> dict:
     return {"version": version}
 
 
@@ -291,12 +292,8 @@ def test_decode_with_masks_returns_substituted_payload_plus_masks() -> None:
     # Masks are numpy bool arrays of length n_elements.  Only kinds
     # that were actually present appear in the dict.
     assert set(masks.keys()) == {"nan", "inf+"}
-    np.testing.assert_array_equal(
-        masks["nan"], np.array([False, True, False, False, False])
-    )
-    np.testing.assert_array_equal(
-        masks["inf+"], np.array([False, False, False, True, False])
-    )
+    np.testing.assert_array_equal(masks["nan"], np.array([False, True, False, False, False]))
+    np.testing.assert_array_equal(masks["inf+"], np.array([False, False, False, True, False]))
 
 
 def test_decode_with_masks_returns_empty_dict_without_masks() -> None:
@@ -327,12 +324,6 @@ def test_decode_with_masks_all_three_kinds_produce_separate_bool_arrays() -> Non
     np.testing.assert_array_equal(payload, expected_payload)
 
     assert set(masks.keys()) == {"nan", "inf+", "inf-"}
-    np.testing.assert_array_equal(
-        masks["nan"], [True, False, False, False, False, False]
-    )
-    np.testing.assert_array_equal(
-        masks["inf+"], [False, False, True, False, False, False]
-    )
-    np.testing.assert_array_equal(
-        masks["inf-"], [False, False, False, False, True, False]
-    )
+    np.testing.assert_array_equal(masks["nan"], [True, False, False, False, False, False])
+    np.testing.assert_array_equal(masks["inf+"], [False, False, True, False, False, False])
+    np.testing.assert_array_equal(masks["inf-"], [False, False, False, False, True, False])

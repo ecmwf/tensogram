@@ -81,7 +81,7 @@ print(f"Packed payload: {len(packed_bytes)} bytes  ({bpv} bits x {n} values)")
 
 # ── 2. Build descriptor and encode ──────────────────────────────────────────
 
-metadata = {"version": 2, "source": "pre-encoded example"}
+metadata = {"version": 3, "source": "pre-encoded example"}
 descriptor = {
     "type": "ntensor",
     "shape": [n],
@@ -125,7 +125,7 @@ raw_desc = {
     "compression": "none",
 }
 
-msg_raw = bytes(tensogram.encode_pre_encoded({"version": 2}, [(raw_desc, raw_bytes)]))
+msg_raw = bytes(tensogram.encode_pre_encoded({"version": 3}, [(raw_desc, raw_bytes)]))
 _, objs_raw = tensogram.decode(msg_raw)
 _, decoded_raw = objs_raw[0]
 np.testing.assert_array_equal(decoded_raw, raw_data)
@@ -135,7 +135,7 @@ print("Raw encoding=none round-trip: OK")
 #
 # The streaming encoder also supports write_object_pre_encoded().
 
-enc = tensogram.StreamingEncoder({"version": 2})
+enc = tensogram.StreamingEncoder({"version": 3})
 enc.write_object_pre_encoded(descriptor, packed_bytes)
 enc.write_object_pre_encoded(raw_desc, raw_bytes)
 stream_msg = bytes(enc.finish())

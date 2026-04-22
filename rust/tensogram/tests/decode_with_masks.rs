@@ -7,8 +7,9 @@
 // does it submit to any jurisdiction.
 
 //! Integration tests for decode-side NaN / Inf reconstruction and
-//! the new `decode_with_masks` API (Commit 6 of
-//! `plans/BITMASK_FRAME.md`).
+//! the `decode_with_masks` API.  See
+//! `docs/src/guide/nan-inf-handling.md` for the user contract and
+//! `plans/WIRE_FORMAT.md` §6.5 for the wire-format spec.
 //!
 //! These cover:
 //! - Default decode (`restore_non_finite = true`) restores canonical

@@ -35,7 +35,7 @@ int main() {
     // For comparison, `pipeline` is placed at the top level: it becomes
     // a message-level _extra_ annotation, covering the whole message.
     const std::string metadata_json = R"({
-        "version": 2,
+        "version": 3,
         "descriptors": [{
             "type": "ndarray",
             "ndim": 2,

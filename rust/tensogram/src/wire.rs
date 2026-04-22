@@ -108,8 +108,8 @@ pub enum FrameType {
     /// per-kind method / offset / length), then the 20-byte type-
     /// specific footer `[cbor_offset u64][hash u64][ENDF]`.
     ///
-    /// See `plans/BITMASK_FRAME.md` for the mask design and
-    /// `plans/WIRE_FORMAT.md` §6.5 for the full frame layout.
+    /// See `plans/WIRE_FORMAT.md` §6.5 for the full frame layout and
+    /// mask design.
     NTensorFrame = 9,
 }
 

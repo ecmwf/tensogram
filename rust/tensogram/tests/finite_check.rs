@@ -17,7 +17,8 @@
 //! tests for that path live in `tests/allow_nan_inf.rs`.
 //!
 //! Cross-references:
-//! - Design: `plans/BITMASK_FRAME.md` §2 (default-behaviour flip).
+//! - Design: `docs/src/guide/nan-inf-handling.md`.
+//! - Wire-format spec: `plans/WIRE_FORMAT.md` §6.5.
 //! - Substitution internals: `rust/tensogram/src/substitute_and_mask.rs`.
 
 use std::collections::BTreeMap;

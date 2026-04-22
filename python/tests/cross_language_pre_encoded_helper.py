@@ -27,7 +27,7 @@ def main() -> None:
     values = np.array([200.0 + i * 0.125 for i in range(1024)], dtype=np.float64)
     raw_bytes = values.astype("<f8", copy=False).tobytes()  # explicit little-endian
 
-    global_meta = {"version": 2}
+    global_meta = {"version": 3}
     descriptor = {
         "type": "ndarray",
         "ndim": 1,

@@ -152,9 +152,9 @@ Strides are validated for length: `strides.len()` must match `shape.len()`. Non-
 
 ## Version Constraints
 
-- `version: 0` and `version: 1` are deprecated and must be rejected by the decoder.
-- `version: 2` is the current version.
-- Higher versions (3+) are reserved for future use and will be valid once defined.
+- `version: 0`, `version: 1`, and `version: 2` are no longer supported — decoders hard-fail on any preamble whose version is not `3`.
+- `version: 3` is the current wire format version.
+- Higher versions (4+) are reserved for future use and will be valid once defined.
 
 ## NaN/Infinity in Simple Packing Parameters
 
@@ -313,13 +313,13 @@ GRIB-converted data objects have empty `desc.params` — all metadata lives in `
 
 ## Metadata Model Edge Cases (base / _reserved_ / _extra_)
 
-The v2 metadata model has three sections: `base` (per-object), `_reserved_` (library internals), and `_extra_` (client annotations). These create several non-obvious edge cases.
+The metadata model has three sections: `base` (per-object), `_reserved_` (library internals), and `_extra_` (client annotations). These create several non-obvious edge cases.
 
 ### _reserved_ is Protected
 
 Client code **must not** set `_reserved_` in any context:
-- Python: `tensogram.encode({"version": 2, "_reserved_": {...}})` raises `ValueError`.
-- Python: `encode({"version": 2, "base": [{"_reserved_": {...}}]})` raises `ValueError`.
+- Python: `tensogram.encode({"version": 3, "_reserved_": {...}})` raises `ValueError`.
+- Python: `encode({"version": 3, "base": [{"_reserved_": {...}}]})` raises `ValueError`.
 - FFI: JSON with `"base": [{"_reserved_": {...}}]` returns `TgmError::Metadata`.
 - CLI: `set -s _reserved_.tensor.ndim=5` returns an error.
 
@@ -399,7 +399,7 @@ CLI `dump -j` and `ls -j` output uses the wire-format structure:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "base": [{"mars": {"param": "2t"}, "_reserved_": {"tensor": {"ndim": 1}}}],
   "extra": {"custom": "value"}
 }

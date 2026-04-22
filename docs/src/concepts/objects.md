@@ -24,19 +24,18 @@ DataObjectDescriptor {
     filter: "shuffle",             // or "none"
     compression: "szip",           // or "none", "zstd", "lz4", etc.
 
+    // ── Optional NaN / Inf bitmask companion ──
+    masks: None,                   // or Some(MasksMetadata { .. })
+
     // ── Flexible parameters (encoding only) ──
     params: BTreeMap::from([       // BTreeMap<String, ciborium::Value>
         ("reference_value".into(), ciborium::Value::Float(230.5)),
         ("bits_per_value".into(), ciborium::Value::Integer(16.into())),
     ]),
-
-    // ── Integrity ──
-    hash: Some(HashDescriptor {
-        hash_type: "xxh3",
-        value: "a1b2c3d4e5f6...",
-    }),
 }
 ```
+
+In v3 the per-object integrity hash lives in an **inline 8-byte slot in the frame footer**, not on the descriptor. The slot is populated when the message's `HASHES_PRESENT` preamble flag is set (the default).
 
 The `params` map is flattened into the CBOR alongside the fixed fields, so the on-wire CBOR is a single flat map. This keeps things simple for decoders -- no nested "encoding" or "tensor" sub-objects to navigate.
 

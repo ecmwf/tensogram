@@ -3,8 +3,8 @@
 // This software is licensed under the terms of the Apache Licence Version 2.0
 // which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
 //
-// Tests for the allow_nan / allow_inf TypeScript bindings (Commit 10
-// of plans/BITMASK_FRAME.md).
+// Tests for the allow_nan / allow_inf TypeScript bindings.
+// See docs/src/guide/nan-inf-handling.md for the user contract.
 
 import { describe, expect, it } from 'vitest';
 import { decode, encode, init, StreamingEncoder } from '../src/index.js';

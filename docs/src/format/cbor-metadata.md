@@ -1,6 +1,6 @@
 # CBOR Metadata Schema
 
-Tensogram v2 uses CBOR (Concise Binary Object Representation) for all structured metadata. There are four kinds of CBOR structures in a message, each living in its own frame:
+Tensogram v3 uses CBOR (Concise Binary Object Representation) for all structured metadata. There are four kinds of CBOR structures in a message, each living in its own frame:
 
 1. **GlobalMetadata** — in header or footer metadata frames
 2. **DataObjectDescriptor** — inside each data object frame
@@ -15,7 +15,7 @@ The global metadata frame contains a single CBOR map. The only required key is `
 
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
-| `version` | uint | Yes | Format version. Currently `2` |
+| `version` | uint | Yes | Format version. Currently `3` |
 | `base` | array of maps | No | Per-object metadata — one entry per data object, each entry holds ALL metadata for that object independently |
 | `_reserved_` | map | No | Library internals (provenance: encoder, time, uuid). Client code MUST NOT write to this. |
 | `_extra_` | map | No | Client-writable catch-all for ad-hoc message-level annotations |
@@ -100,7 +100,7 @@ A complete example with two data objects (temperature and wind fields):
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "base": [
     {
       "mars": {
@@ -176,13 +176,16 @@ Each data object frame contains its own CBOR descriptor. This descriptor fully d
 | `byte_order` | text | Yes | `"big"` or `"little"` |
 | `encoding` | text | Yes | `"none"` or `"simple_packing"` |
 | `filter` | text | Yes | `"none"` or `"shuffle"` |
-| `compression` | text | Yes | `"none"`, `"szip"`, `"zstd"`, `"lz4"`, `"blosc2"`, `"zfp"`, or `"sz3"` |
-| `hash` | map | No | Integrity hash of the payload (see below) |
+| `compression` | text | Yes | `"none"`, `"szip"`, `"zstd"`, `"lz4"`, `"blosc2"`, `"zfp"`, `"sz3"`, `"rle"`, or `"roaring"` (last two `bitmask` dtype only) |
 | `masks` | map | No | NaN / Inf bitmask companion descriptors (see below) |
 | *encoding params* | various | Conditional | Required when `encoding != "none"` |
 | *filter params* | various | Conditional | Required when `filter != "none"` |
 | *compression params* | various | Conditional | Required when `compression != "none"` |
 | *any other key* | any | No | Per-object encoding parameters |
+
+> **Note.** The `hash` key is **not** part of the descriptor in v3.
+> Per-object integrity is carried by an inline 8-byte slot at the end
+> of each frame's footer; see [`plans/WIRE_FORMAT.md`](https://github.com/ecmwf/tensogram/blob/main/plans/WIRE_FORMAT.md) §2.4.
 
 ### Example: Temperature Field Descriptor
 
@@ -203,15 +206,11 @@ Here is what a descriptor might look like for a global temperature field at 0.25
   "bits_per_value": 16,
   "filter": "none",
   "compression": "zstd",
-  "zstd_level": 3,
-  "hash": {
-    "type": "xxh3",
-    "value": "a1b2c3d4e5f60718"
-  }
+  "zstd_level": 3
 }
 ```
 
-The `params` field in `DataObjectDescriptor` is for encoding parameters only (e.g. `reference_value`, `bits_per_value`). MARS keys and other application metadata are stored in the global metadata `base[i]["mars"]`.
+The `params` field in `DataObjectDescriptor` is for encoding parameters only (e.g. `reference_value`, `bits_per_value`). MARS keys and other application metadata are stored in the global metadata `base[i]["mars"]`. Per-object hashes live in the frame's inline hash slot, not in the descriptor.
 
 ### Encoding Parameters (simple_packing)
 
@@ -270,15 +269,6 @@ The `params` field in `DataObjectDescriptor` is for encoding parameters only (e.
 |-----|------|-------------|
 | `sz3_error_bound_mode` | text | `"abs"`, `"rel"`, or `"psnr"` |
 | `sz3_error_bound` | float | Error bound value |
-
-### Hash Descriptor
-
-The optional `hash` field records an integrity digest of the raw payload bytes.
-
-| Key | Type | Description |
-|-----|------|-------------|
-| `type` | text | `"xxh3"` |
-| `value` | text | Hex-encoded digest |
 
 ### NaN / Inf mask companion (`masks`)
 

@@ -7,7 +7,7 @@
 // does it submit to any jurisdiction.
 
 //! Exhaustive test matrix for the NaN / Inf bitmask companion frame
-//! (Commit 14 of `plans/BITMASK_FRAME.md` §11).
+//! (see `plans/WIRE_FORMAT.md` §6.5).
 //!
 //! Matrix axes:
 //! - dtype: f64, c64 (sampled: f16, bf16, f32, c128 in separate tests)

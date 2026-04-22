@@ -10,12 +10,10 @@ This page walks you through encoding and decoding a real tensor — a 2D tempera
 cargo add tensogram
 ```
 
-Or add it to your `Cargo.toml` manually:
-
-```toml
-[dependencies]
-tensogram = "0.15"
-```
+`cargo add` pulls the latest published version. To pin an explicit
+version, add the dependency to `Cargo.toml` by hand; see the
+[crates.io page](https://crates.io/crates/tensogram) for the
+current version.
 
 Optional features:
 
@@ -76,11 +74,9 @@ fn main() {
         .flat_map(|i| (273.15f32 + (i as f32 / 100.0)).to_be_bytes())
         .collect();
 
-    // 2. Describe the tensor
-    let global = GlobalMetadata {
-        version: 2,
-        ..Default::default()
-    };
+    // 2. Describe the tensor (`GlobalMetadata::default()` stamps the
+    //    current wire version).
+    let global = GlobalMetadata::default();
 
     let desc = DataObjectDescriptor {
         obj_type: "ntensor".to_string(),
@@ -92,8 +88,8 @@ fn main() {
         encoding: "none".to_string(),
         filter: "none".to_string(),
         compression: "none".to_string(),
+        masks: None,
         params: BTreeMap::new(),
-        hash: None, // hash is added automatically by EncodeOptions::default()
     };
 
     // 3. Encode — produces a self-contained message
@@ -143,7 +139,6 @@ let mut entry = BTreeMap::new();
 entry.insert("mars".to_string(), Value::Map(mars_map));
 
 let global = GlobalMetadata {
-    version: 2,
     base: vec![entry], // one entry per data object
     ..Default::default()
 };
@@ -158,8 +153,8 @@ let desc = DataObjectDescriptor {
     encoding: "none".to_string(),
     filter: "none".to_string(),
     compression: "none".to_string(),
+    masks: None,
     params: BTreeMap::new(),
-    hash: None,
 };
 ```
 

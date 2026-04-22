@@ -94,7 +94,7 @@ with tensogram.TensogramFile.create("temperature_20260401.tgm") as f:
         desc = _desc([NLAT, NLON], name=f"temperature_{level_hpa}hPa")
         objects.append((desc, field))
 
-    f.append({"version": 2}, objects)
+    f.append({"version": 3}, objects)
 ```
 
 ### Step 2: Open with Dask Lazy Loading

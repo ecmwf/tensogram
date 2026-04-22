@@ -402,10 +402,10 @@ fn neg_infinity_reference_value_rejected() {
 // ── 7b. Standalone-API safety net via the high-level `encode()` path ────────
 //
 // `simple_packing::encode_with_threads` now validates the params it
-// receives (see plans/RESEARCH_NAN_HANDLING.md §4.2.3).  The high-level
-// `tensogram::encode` delegates to it through the pipeline, so the
-// validation also fires when a caller supplies a malformed
-// `binary_scale_factor` via the descriptor params.
+// receives.  The high-level `tensogram::encode` delegates to it
+// through the pipeline, so the validation also fires when a caller
+// supplies a malformed `binary_scale_factor` via the descriptor
+// params.
 
 #[test]
 fn unreasonable_binary_scale_factor_rejected() {

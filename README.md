@@ -95,7 +95,7 @@ output:
     stack_pressure_levels: true
 ```
 
-Each forecast step is encoded and appended to the `.tgm` file as it is produced. See `examples/python/` and the [plugin docs](docs/src/guide/anemoi-plugin.md) for the full option reference and reading the output back.
+Each forecast step is encoded and appended to the `.tgm` file as it is produced. See `examples/python/` and the [plugin docs](docs/src/guide/anemoi-integration.md) for the full option reference and reading the output back.
 
 ### CLI
 
@@ -119,7 +119,7 @@ let desc = DataObjectDescriptor {
     shape: vec![100, 200], strides: vec![200, 1],
     dtype: Dtype::Float32, byte_order: ByteOrder::Big,
     encoding: "simple_packing".into(), filter: "none".into(),
-    compression: "szip".into(), params, hash: None,
+    compression: "szip".into(), masks: None, params,
 };
 
 let message = encode(&meta, &[(&desc, &raw)], &EncodeOptions::default())?;
@@ -139,7 +139,7 @@ data = np.random.randn(100, 200).astype(np.float32)
 # for tensor shape/dtype and encoding parameters; put "name"/"units"/etc.
 # there and xarray/zarr fall back but emit a UserWarning.
 msg = tensogram.encode(
-    {"version": 2, "base": [{"product": {"name": "temperature", "units": "K"}}]},
+    {"version": 3, "base": [{"product": {"name": "temperature", "units": "K"}}]},
     [({"type": "ntensor", "shape": [100, 200], "dtype": "float32",
        "encoding": "simple_packing", "compression": "szip"}, data)],
 )

@@ -90,7 +90,7 @@ def tgm_path(tmp_path):
     path = str(tmp_path / "test.tgm")
     with tensogram.TensogramFile.create(path) as f:
         for i in range(3):
-            meta = {"version": 2, "base": [{"index": i}]}
+            meta = {"version": 3, "base": [{"index": i}]}
             desc = {
                 "type": "ntensor",
                 "shape": [10],

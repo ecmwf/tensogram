@@ -25,7 +25,7 @@ import tensogram
 def make_field(param: str, step: int):
     """Return (metadata_dict, descriptor_dict, data) for one forecast field."""
     metadata = {
-        "version": 2,
+        "version": 3,
         "base": [
             {
                 "mars": {

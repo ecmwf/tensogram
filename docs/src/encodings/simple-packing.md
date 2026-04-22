@@ -59,8 +59,6 @@ semantics.  Simple packing cannot represent non-finite values at
 all, so the mask companion is only available on the pass-through
 encoding path.
 
-[memo]: https://github.com/ecmwf/tensogram/blob/main/plans/RESEARCH_NAN_HANDLING.md
-
 ```rust
 // Both rejected:
 let with_nan = vec![1.0_f64, 2.0, f64::NAN, 4.0];
@@ -199,11 +197,11 @@ let desc = DataObjectDescriptor {
     encoding: "simple_packing".into(),
     filter: "none".into(),
     compression: "none".into(),
+    masks: None,
     params: p,
-    hash: None,
 };
 
-let global = GlobalMetadata { version: 2, ..Default::default() };
+let global = GlobalMetadata::default();
 
 let msg = encode(&global, &[(&desc, &raw)], &EncodeOptions::default()).unwrap();
 println!("Packed size: {} bytes (was {} bytes)", msg.len(), raw.len());

@@ -32,9 +32,9 @@ The `extra` (serialized as `_extra_`), `reserved` (serialized as `_reserved_`), 
 - Avoids the non-determinism of `HashMap`.
 - Makes it easy to read and write keys without worrying about order.
 
-## Frame-Based Wire Format (v2)
+## Frame-Based Wire Format (v3)
 
-The v2 wire format uses a frame-based structure instead of the v1 monolithic binary header.
+Tensogram uses a frame-based wire format. For the normative byte-level specification, see [`plans/WIRE_FORMAT.md`](https://github.com/ecmwf/tensogram/blob/main/plans/WIRE_FORMAT.md) — this section summarises the structure so contributors working on the decoder can orient themselves.
 
 ### Preamble (24 bytes)
 
@@ -42,7 +42,7 @@ The v2 wire format uses a frame-based structure instead of the v1 monolithic bin
 MAGIC "TENSOGRM" (8) + version u16 (2) + flags u16 (2) + reserved u32 (4) + total_length u64 (8)
 ```
 
-The preamble flags indicate which optional frames are present (header/footer metadata, index, hashes). `total_length = 0` signals streaming mode.
+The preamble `version` field must be exactly `3`. Preamble flags indicate which optional frames are present (header/footer metadata, index, hashes) plus the message-wide `HASHES_PRESENT` bit. `total_length = 0` signals streaming mode.
 
 ### Frame Header (16 bytes)
 
@@ -52,25 +52,39 @@ Every frame (metadata, index, hash, data object) starts with:
 "FR" (2) + frame_type u16 (2) + version u16 (2) + flags u16 (2) + total_length u64 (8)
 ```
 
-And ends with `"ENDF"` (4 bytes). Frame versions are independent of message version.
+### Common Frame Footer (12 bytes)
 
-### Data Object Frame Layout
-
-Each data object is a self-contained frame:
+Every frame ends with a 12-byte tail:
 
 ```text
-Frame header (16B) + [CBOR descriptor] + payload bytes + [CBOR descriptor] + cbor_offset u64 (8B) + "ENDF" (4B)
+hash u64 (8)  +  "ENDF" (4)
 ```
 
-The `cbor_offset` is the byte offset from the frame start to the CBOR descriptor. A flag bit controls whether the CBOR descriptor appears before or after the payload (default: after, since encoding parameters like hash are only known after encoding completes).
+The `hash` slot is populated with the xxh3-64 digest of the frame body when `HASHES_PRESENT` is set; otherwise it is `0x0000000000000000`. Frame versions are independent of message version.
 
-### Postamble (16 bytes)
+### Data Object Frame Layout (`NTensorFrame`, type 9)
+
+Each data object is a self-contained frame with an extended 20-byte footer:
 
 ```text
-first_footer_offset u64 (8) + END_MAGIC "39277777" (8)
+Frame header (16B)
+  + payload bytes
+  + [mask blobs: nan / inf+ / inf-]  (optional)
+  + CBOR descriptor
+  + cbor_offset u64 (8B)
+  + hash u64 (8B)
+  + "ENDF" (4B)
 ```
 
-`first_footer_offset` is never zero. It points to the first footer frame, or to the postamble itself when no footer frames are present.
+The `cbor_offset` is the byte offset from the frame start to the CBOR descriptor. A flag bit controls whether the CBOR descriptor appears before or after the payload (default: after). The inline hash slot at `frame_end − 12` is the single source of truth for per-object integrity; the `hash` field was removed from the `DataObjectDescriptor` in v3.
+
+### Postamble (24 bytes)
+
+```text
+first_footer_offset u64 (8) + total_length u64 (8) + END_MAGIC "39277777" (8)
+```
+
+`first_footer_offset` is never zero. It points to the first footer frame, or to the postamble itself when no footer frames are present. The mirrored `total_length` makes the postamble self-locating from any byte position inside a message, enabling backward and bidirectional scans.
 
 ### Two-Pass Index Construction
 

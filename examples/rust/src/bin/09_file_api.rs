@@ -43,7 +43,7 @@ fn make_forecast_message(
     entry.insert("mars".to_string(), mars);
 
     let global_meta = GlobalMetadata {
-        version: 2,
+        version: 3,
         base: vec![entry],
         ..Default::default()
     };

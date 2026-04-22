@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .first()
         .ok_or_else(|| std::io::Error::other("missing decoded object"))?;
 
-    assert_eq!(decoded_meta.version, 2);
+    assert_eq!(decoded_meta.version, 3);
     assert_eq!(decoded_desc.encoding, "simple_packing");
     assert_eq!(decoded_desc.compression, "szip");
     assert_eq!(

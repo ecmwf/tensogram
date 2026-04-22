@@ -27,7 +27,7 @@ import tensogram
 # Message-level extra metadata can be added as top-level keys in the dict
 # (anything besides "version", "base", "extra" goes into `extra`).
 metadata = {
-    "version": 2,
+    "version": 3,
     "base": [
         {
             "mars": {

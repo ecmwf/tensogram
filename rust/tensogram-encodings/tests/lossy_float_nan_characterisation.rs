@@ -12,9 +12,8 @@
 //! These tests exist because the wrappers in
 //! `rust/tensogram-encodings/src/compression/{zfp,sz3}.rs` forward
 //! the caller's input to the upstream C/C++ library without any
-//! pre-compress scan (see `plans/RESEARCH_NAN_HANDLING.md` §3.3).
-//! The observable behaviour varies across upstream versions and is
-//! undefined by contract.
+//! pre-compress scan.  The observable behaviour varies across upstream
+//! versions and is undefined by contract.
 //!
 //! Each test:
 //!   1. Builds an input mixing finite values with a known-bad value at
@@ -30,8 +29,8 @@
 //!      - `G` — garbage: values everywhere have no relationship to
 //!        the original, or the output length changed.
 //!
-//! The findings for our pinned upstream versions are appended to
-//! `plans/RESEARCH_NAN_HANDLING.md` §10.
+//! The findings serve as an authoritative behavioural record for
+//! our pinned upstream versions; any drift fails these tests.
 //!
 //! # Why characterise instead of defending upfront?
 //!

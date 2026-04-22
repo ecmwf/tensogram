@@ -65,7 +65,7 @@ def create_streaming_tgm(path: str) -> int:
     with tensogram.TensogramFile.create(path) as f:
         for param, long_name, shape in PARAMS:
             meta = {
-                "version": 2,
+                "version": 3,
                 "base": [
                     {
                         "mars": {

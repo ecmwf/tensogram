@@ -1,37 +1,63 @@
 # tensogram
 
-The primary Tensogram library for fast binary N-tensor message format.
-
-This crate provides encode, decode, file I/O, and streaming capabilities for scientific data. It supports self-describing messages with CBOR metadata, multiple tensors per message, partial decode, and remote access to cloud storage.
+The primary Tensogram library: encode and decode binary N-tensor
+scientific messages with self-describing CBOR metadata.
 
 ## Usage
 
 ```rust
-use tensogram::{encode, decode, EncodeOptions, DecodeOptions};
+use std::collections::BTreeMap;
+use tensogram::{
+    encode, decode, ByteOrder, DataObjectDescriptor, DecodeOptions,
+    Dtype, EncodeOptions, GlobalMetadata,
+};
+
+// Describe the tensor.
+let desc = DataObjectDescriptor {
+    obj_type: "ntensor".into(),
+    ndim: 2,
+    shape: vec![100, 200],
+    strides: vec![200, 1],
+    dtype: Dtype::Float32,
+    byte_order: ByteOrder::native(),
+    encoding: "none".into(),
+    filter: "none".into(),
+    compression: "none".into(),
+    masks: None,
+    params: BTreeMap::new(),
+};
+
+// `GlobalMetadata::default()` stamps the current wire version (3).
+let meta = GlobalMetadata::default();
+let data = vec![0u8; 100 * 200 * 4];
 
 let message = encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
 let (_, objects) = decode(&message, &DecodeOptions::default())?;
+assert_eq!(objects[0].1, data);
+# Ok::<(), tensogram::TensogramError>(())
 ```
 
-```rust
-// File API with partial decode
-use tensogram::{TensogramFile, decode_range};
+## Features
 
-let file = TensogramFile::open("data.tgm")?;
-let slice = decode_range(&file, 0, &[0..100, 50..150])?;
-```
+- Self-describing messages — CBOR metadata travels with the data
+- Multiple tensors per message, each with its own shape, dtype, and
+  encoding pipeline
+- `TensogramFile` for multi-message `.tgm` files with O(1) random
+  access
+- Partial range decode via `decode_range`
+- Optional Cargo features: `mmap` (zero-copy reads), `async` (tokio),
+  `remote` (S3/GCS/Azure/HTTP via `object_store`)
 
 ## Installation
 
-```toml
-[dependencies]
-tensogram = { version = "0.14", features = ["mmap", "async", "remote"] }
+```bash
+cargo add tensogram
 ```
 
 ## Documentation
 
-- Full documentation: https://sites.ecmwf.int/docs/tensogram/main/
-- Repository: https://github.com/ecmwf/tensogram
+- Full documentation: <https://sites.ecmwf.int/docs/tensogram/main/>
+- Repository: <https://github.com/ecmwf/tensogram>
 
 ## License
 

@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   // bytes; it only validates the descriptor and wraps the bytes in a
   // data-object frame.
   const msg = encodePreEncoded(
-    { version: 2, base: [{ mars: { param: 'tile' } }] },
+    { version: 3, base: [{ mars: { param: 'tile' } }] },
     [{ descriptor: describe([4, 4], 'float32'), data: bytes }],
   );
   console.log(`pre-encoded message: ${msg.byteLength} bytes`);

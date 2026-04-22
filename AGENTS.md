@@ -54,7 +54,6 @@
 - plans/TODO.md -- features decided to implement (accepted backlog)
 - plans/IDEAS.md -- ideas for possible future features (not yet decided)
 - plans/TEST.md -- test plan and coverage summary
-- plans/PLAN.md -- HISTORICAL: iteration 0 planning decisions (read-only)
 - CHANGELOG.md -- release history
 
 Follow plans/DESIGN.md principles and plans/STYLE.md conventions in all code.
@@ -87,9 +86,7 @@ This project contains Rust, Python, C, C++ and TypeScript code
 - Typecheck: `make ts-typecheck` (strict, covers src + tests)
 - Test: `make ts-test` (vitest)
 - Run an example: `cd examples/typescript && npm install && npx tsx 01_encode_decode.ts`
-- Design doc: `plans/TYPESCRIPT_WRAPPER.md`
 - User-facing docs: `docs/src/guide/typescript-api.md`
-- Scope: Phase 0–2 shipped (typed surface, dtype dispatch, metadata helpers); Phase 3 streaming + Phase 4 file API are follow-ups. See `plans/TYPESCRIPT_WRAPPER.md`.
 
 ## Tensoscope (React SPA)
 
@@ -114,7 +111,7 @@ cd tensoscope && npm run build
 ```bash
 cd tensoscope && make build && make run
 ```
-Serves at http://localhost:8080/ (set BASE_PATH env var to deploy under a subpath)
+Serves at http://localhost:8000/ (set BASE_PATH env var to deploy under a subpath)
 
 # Version control
 - Git project in github.com/ecmwf/tensogram

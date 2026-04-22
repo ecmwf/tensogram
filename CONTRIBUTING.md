@@ -4,7 +4,7 @@ Thank you for your interest in contributing. This guide will get you from zero t
 
 ## Prerequisites
 
-- **Rust 1.85+** (`rustup install stable`)
+- **Rust 1.87+** (`rustup install stable`)
 - **C compiler** (for libaec, zfp, blosc2 FFI dependencies)
 - Optional: Python 3.9+ and `uv` for Python bindings (`pip install uv` or https://docs.astral.sh/uv/getting-started/installation/)
 - Optional: Node ≥ 20 and `wasm-pack` (`cargo install wasm-pack`) for the TypeScript wrapper
@@ -195,8 +195,8 @@ cargo build -p tensogram-ffi
 ## TypeScript Wrapper
 
 The TS wrapper lives in `typescript/` and is driven by `wasm-pack` (for the WASM glue)
-plus `tsc` + `vitest` (for the TS layer). The scope and design are in
-`plans/TYPESCRIPT_WRAPPER.md`; user-facing docs in `docs/src/guide/typescript-api.md`.
+plus `tsc` + `vitest` (for the TS layer). User-facing docs live in
+`docs/src/guide/typescript-api.md`.
 
 ```bash
 # One-time setup

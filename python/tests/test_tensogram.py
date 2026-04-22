@@ -34,7 +34,7 @@ import tensogram
 # ---------------------------------------------------------------------------
 
 
-def make_global_meta(version: int = 2, **extra: Any) -> dict[str, Any]:
+def make_global_meta(version: int = 3, **extra: Any) -> dict[str, Any]:
     """Build a global metadata dict."""
     return {"version": version, **extra}
 
@@ -64,7 +64,7 @@ def make_descriptor(
 def encode_simple(
     data: np.ndarray,
     dtype: str | None = None,
-    version: int = 2,
+    version: int = 3,
     hash_algo: str | None = "xxh3",
     extra_meta: dict | None = None,
     extra_desc: dict | None = None,
@@ -177,7 +177,7 @@ class TestMultiObject:
         f32 = np.arange(12, dtype=np.float32).reshape(3, 4)
         u8 = np.array([0, 128, 255], dtype=np.uint8)
 
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         desc_f32 = make_descriptor([3, 4], dtype="float32")
         desc_u8 = make_descriptor([3], dtype="uint8")
         msg = bytes(tensogram.encode(meta, [(desc_f32, f32), (desc_u8, u8)]))
@@ -195,7 +195,7 @@ class TestMultiObject:
             np.zeros(5, dtype=np.int32),
             np.full(3, 42, dtype=np.uint8),
         ]
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         pairs = [
             (make_descriptor([10], dtype="float32"), arrays[0]),
             (make_descriptor([5], dtype="int32"), arrays[1]),
@@ -219,9 +219,9 @@ class TestDecodeMetadata:
 
     def test_basic(self):
         data = np.ones(10, dtype=np.float32)
-        msg = encode_simple(data, version=2)
+        msg = encode_simple(data, version=3)
         meta = tensogram.decode_metadata(msg)
-        assert meta.version == 2
+        assert meta.version == 3
 
     def test_extra_keys(self):
         """Extra keys in global metadata round-trip."""
@@ -251,11 +251,11 @@ class TestDecodeMetadata:
 
     def test_repr(self):
         data = np.ones(10, dtype=np.float32)
-        msg = encode_simple(data, version=2)
+        msg = encode_simple(data, version=3)
         meta = tensogram.decode_metadata(msg)
         r = repr(meta)
         assert "Metadata" in r
-        assert "version=2" in r
+        assert "version=3" in r
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +278,7 @@ class TestDecodeObject:
         """Decode specific object from multi-object message."""
         a = np.ones(10, dtype=np.float32)
         b = np.full(5, 99, dtype=np.int32)
-        meta_dict = make_global_meta(2)
+        meta_dict = make_global_meta(3)
         pairs = [
             (make_descriptor([10], dtype="float32"), a),
             (make_descriptor([5], dtype="int32"), b),
@@ -358,7 +358,7 @@ class TestDecodeRange:
         """decode_range on a specific object in a multi-object message."""
         a = np.arange(100, dtype=np.float32)
         b = np.arange(50, dtype=np.float32) + 1000
-        meta_dict = make_global_meta(2)
+        meta_dict = make_global_meta(3)
         pairs = [
             (make_descriptor([100], dtype="float32"), a),
             (make_descriptor([50], dtype="float32"), b),
@@ -549,9 +549,7 @@ class TestDataObjectDescriptor:
         `descriptor.hash` is retained on the Python class for source
         compatibility but returns None regardless of whether the
         encoder wrote a hash slot.  Use `tensogram validate --checksum`
-        or the upcoming `Message.inline_hashes()` accessor (tracked in
-        plans/WIRE_FORMAT_CHANGES.md open follow-ups) for frame-level
-        integrity.
+        for frame-level integrity.
         """
         data = np.ones(10, dtype=np.float32)
         msg = encode_simple(data, hash_algo="xxh3")
@@ -571,7 +569,7 @@ class TestDataObjectDescriptor:
     def test_params(self):
         """Extra keys in descriptor dict become params."""
         data = np.ones(10, dtype=np.float32)
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         desc_dict = make_descriptor([10], dtype="float32", my_custom_key="hello")
         msg = bytes(tensogram.encode(meta, [(desc_dict, data)]))
         _, objects = tensogram.decode(msg)
@@ -598,9 +596,9 @@ class TestMetadata:
 
     def test_version(self):
         data = np.ones(10, dtype=np.float32)
-        msg = encode_simple(data, version=2)
+        msg = encode_simple(data, version=3)
         meta, _ = tensogram.decode(msg)
-        assert meta.version == 2
+        assert meta.version == 3
 
     def test_extra_dict(self):
         data = np.ones(10, dtype=np.float32)
@@ -635,9 +633,9 @@ class TestMetadata:
 
     def test_repr_contains_version(self):
         data = np.ones(10, dtype=np.float32)
-        msg = encode_simple(data, version=2)
+        msg = encode_simple(data, version=3)
         meta, _ = tensogram.decode(msg)
-        assert "version=2" in repr(meta)
+        assert "version=3" in repr(meta)
 
 
 # ---------------------------------------------------------------------------
@@ -652,7 +650,7 @@ class TestTensogramFile:
         path = str(tmp_path / "test.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(10, dtype=np.float32)
-            meta = make_global_meta(2)
+            meta = make_global_meta(3)
             desc = make_descriptor([10], dtype="float32")
             f.append(meta, [(desc, data)])
             assert f.message_count() == 1
@@ -662,7 +660,7 @@ class TestTensogramFile:
         with tensogram.TensogramFile.create(path) as f:
             for i in range(5):
                 data = np.full(10, i, dtype=np.float32)
-                meta = make_global_meta(2)
+                meta = make_global_meta(3)
                 desc = make_descriptor([10], dtype="float32")
                 f.append(meta, [(desc, data)])
             assert f.message_count() == 5
@@ -672,7 +670,7 @@ class TestTensogramFile:
         data = np.arange(20, dtype=np.float32)
 
         with tensogram.TensogramFile.create(path) as f:
-            meta = make_global_meta(2)
+            meta = make_global_meta(3)
             desc = make_descriptor([20], dtype="float32")
             f.append(meta, [(desc, data)])
 
@@ -687,7 +685,7 @@ class TestTensogramFile:
         data = np.ones(10, dtype=np.float32)
 
         with tensogram.TensogramFile.create(path) as f:
-            meta = make_global_meta(2)
+            meta = make_global_meta(3)
             desc = make_descriptor([10], dtype="float32")
             f.append(meta, [(desc, data)])
 
@@ -709,7 +707,7 @@ class TestTensogramFile:
             for i in range(3):
                 data = np.full(5, float(i), dtype=np.float32)
                 expected.append(data.copy())
-                meta = make_global_meta(2)
+                meta = make_global_meta(3)
                 desc = make_descriptor([5], dtype="float32")
                 f.append(meta, [(desc, data)])
 
@@ -729,7 +727,7 @@ class TestTensogramFile:
 
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(10, dtype=np.float32)
-            meta = make_global_meta(2, source="test", step=6)
+            meta = make_global_meta(3, source="test", step=6)
             desc = make_descriptor([10], dtype="float32")
             f.append(meta, [(desc, data)])
 
@@ -744,7 +742,7 @@ class TestTensogramFile:
 
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(10, dtype=np.float32)
-            meta = make_global_meta(2)
+            meta = make_global_meta(3)
             desc = make_descriptor([10], dtype="float32")
             f.append(meta, [(desc, data)], hash="xxh3")
 
@@ -759,7 +757,7 @@ class TestTensogramFile:
         with tensogram.TensogramFile.create(path) as f:
             assert len(f) == 0
             data = np.ones(10, dtype=np.float32)
-            meta = make_global_meta(2)
+            meta = make_global_meta(3)
             desc = make_descriptor([10], dtype="float32")
             f.append(meta, [(desc, data)])
             assert len(f) == 1
@@ -770,7 +768,7 @@ class TestTensogramFile:
         with tensogram.TensogramFile.create(path) as f:
             assert isinstance(f, tensogram.TensogramFile)
             data = np.ones(10, dtype=np.float32)
-            meta = make_global_meta(2)
+            meta = make_global_meta(3)
             desc = make_descriptor([10], dtype="float32")
             f.append(meta, [(desc, data)])
 
@@ -840,7 +838,7 @@ class TestErrors:
 
     def test_encode_missing_dtype(self):
         """Encoding without 'dtype' in descriptor should raise ValueError."""
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         desc = {"type": "ntensor", "shape": [10]}  # no dtype
         data = np.ones(10, dtype=np.float32)
         with pytest.raises(ValueError, match="dtype"):
@@ -848,7 +846,7 @@ class TestErrors:
 
     def test_encode_missing_shape(self):
         """Encoding without 'shape' in descriptor should raise ValueError."""
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         desc = {"type": "ntensor", "dtype": "float32"}  # no shape
         data = np.ones(10, dtype=np.float32)
         with pytest.raises(ValueError, match="shape"):
@@ -856,7 +854,7 @@ class TestErrors:
 
     def test_encode_unknown_dtype(self):
         """Unknown dtype string should raise ValueError."""
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         desc = make_descriptor([10], dtype="complex256")
         data = np.ones(10, dtype=np.float32)
         with pytest.raises(ValueError, match="unknown dtype"):
@@ -865,14 +863,14 @@ class TestErrors:
     def test_encode_unknown_hash(self):
         """Unknown hash algorithm should raise ValueError."""
         data = np.ones(10, dtype=np.float32)
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         desc = make_descriptor([10], dtype="float32")
         with pytest.raises(ValueError, match="unknown hash"):
             tensogram.encode(meta, [(desc, data)], hash="sha256")
 
     def test_encode_unknown_byte_order(self):
         """Unknown byte_order should raise ValueError."""
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         desc = make_descriptor([10], dtype="float32", byte_order="middle")
         data = np.ones(10, dtype=np.float32)
         with pytest.raises(ValueError, match="unknown byte_order"):
@@ -912,8 +910,7 @@ class TestErrors:
         report = tensogram.validate(bytes(corrupted), level="checksum")
         codes = [issue["code"] for issue in report["issues"]]
         assert any(
-            c in ("hash_mismatch", "decode_pipeline_failed", "cbor_offset_invalid")
-            for c in codes
+            c in ("hash_mismatch", "decode_pipeline_failed", "cbor_offset_invalid") for c in codes
         ), f"expected integrity or structural error in validate report, got: {report}"
 
     def test_file_open_nonexistent(self, tmp_path):
@@ -923,7 +920,7 @@ class TestErrors:
 
     def test_encode_bad_pair_format(self):
         """Passing non-tuple elements should raise."""
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         with pytest.raises((ValueError, TypeError)):
             # Pass a list of dicts instead of (dict, array) tuples
             tensogram.encode(meta, [make_descriptor([10])])
@@ -939,7 +936,7 @@ class TestEdgeCases:
 
     def test_zero_object_message(self):
         """Encoding a message with zero data objects."""
-        meta = make_global_meta(2, note="empty")
+        meta = make_global_meta(3, note="empty")
         msg = bytes(tensogram.encode(meta, []))
         decoded_meta, objects = tensogram.decode(msg)
         assert len(objects) == 0
@@ -1026,7 +1023,7 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             a = np.ones(10, dtype=np.float32)
             b = np.zeros(5, dtype=np.uint8)
-            meta = make_global_meta(2)
+            meta = make_global_meta(3)
             pairs = [
                 (make_descriptor([10], dtype="float32"), a),
                 (make_descriptor([5], dtype="uint8"), b),
@@ -1049,7 +1046,7 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for i in range(n):
                 data = np.full(10, float(i), dtype=np.float32)
-                meta = make_global_meta(2, index=i)
+                meta = make_global_meta(3, index=i)
                 desc = make_descriptor([10], dtype="float32")
                 f.append(meta, [(desc, data)])
             assert f.message_count() == n
@@ -1066,7 +1063,7 @@ class TestEdgeCases:
     def test_native_endian_roundtrip(self):
         """Encode and decode with native byte order — values should match."""
         data = np.arange(10, dtype=np.float32)
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         desc = make_descriptor([10], dtype="float32")
         msg = bytes(tensogram.encode(meta, [(desc, data)]))
         _, objects = tensogram.decode(msg)
@@ -1093,14 +1090,14 @@ class TestEdgeCases:
         """decode_metadata on multi-object message only reads metadata."""
         a = np.ones(100, dtype=np.float32)
         b = np.zeros(50, dtype=np.uint8)
-        meta_dict = make_global_meta(2, source="multi")
+        meta_dict = make_global_meta(3, source="multi")
         pairs = [
             (make_descriptor([100], dtype="float32"), a),
             (make_descriptor([50], dtype="uint8"), b),
         ]
         msg = bytes(tensogram.encode(meta_dict, pairs))
         meta = tensogram.decode_metadata(msg)
-        assert meta.version == 2
+        assert meta.version == 3
         assert meta["source"] == "multi"
 
     def test_file_decode_message_out_of_range(self, tmp_path):
@@ -1108,7 +1105,7 @@ class TestEdgeCases:
         path = str(tmp_path / "test.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(10, dtype=np.float32)
-            meta = make_global_meta(2)
+            meta = make_global_meta(3)
             desc = make_descriptor([10], dtype="float32")
             f.append(meta, [(desc, data)])
 
@@ -1169,7 +1166,7 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for i in range(n):
                 data = np.full(10, float(i), dtype=np.float32)
-                meta = make_global_meta(2, index=i)
+                meta = make_global_meta(3, index=i)
                 desc = make_descriptor([10], dtype="float32")
                 f.append(meta, [(desc, data)])
 
@@ -1200,7 +1197,7 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for _i in range(3):
                 data = np.zeros(4, dtype=np.float32)
-                f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+                f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
 
         with tensogram.TensogramFile.open(path) as f:
             it = iter(f)
@@ -1217,7 +1214,7 @@ class TestEdgeCases:
         path = str(tmp_path / "stop.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
 
         with tensogram.TensogramFile.open(path) as f:
             it = iter(f)
@@ -1232,7 +1229,7 @@ class TestEdgeCases:
             for i in range(5):
                 data = np.full(8, float(i), dtype=np.float32)
                 f.append(
-                    make_global_meta(2, index=i),
+                    make_global_meta(3, index=i),
                     [(make_descriptor([8], dtype="float32"), data)],
                 )
 
@@ -1247,7 +1244,7 @@ class TestEdgeCases:
         path = str(tmp_path / "oob.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
 
         with tensogram.TensogramFile.open(path) as f:
             with pytest.raises(IndexError):
@@ -1262,7 +1259,7 @@ class TestEdgeCases:
             for i in range(5):
                 data = np.full(8, float(i), dtype=np.float32)
                 f.append(
-                    make_global_meta(2, index=i),
+                    make_global_meta(3, index=i),
                     [(make_descriptor([8], dtype="float32"), data)],
                 )
 
@@ -1282,7 +1279,7 @@ class TestEdgeCases:
             for i in range(6):
                 data = np.full(4, float(i), dtype=np.float32)
                 f.append(
-                    make_global_meta(2, index=i),
+                    make_global_meta(3, index=i),
                     [(make_descriptor([4], dtype="float32"), data)],
                 )
 
@@ -1299,7 +1296,7 @@ class TestEdgeCases:
             for i in range(5):
                 data = np.full(4, float(i), dtype=np.float32)
                 f.append(
-                    make_global_meta(2, index=i),
+                    make_global_meta(3, index=i),
                     [(make_descriptor([4], dtype="float32"), data)],
                 )
 
@@ -1316,7 +1313,7 @@ class TestEdgeCases:
             for i in range(4):
                 data = np.full(4, float(i), dtype=np.float32)
                 f.append(
-                    make_global_meta(2, index=i),
+                    make_global_meta(3, index=i),
                     [(make_descriptor([4], dtype="float32"), data)],
                 )
 
@@ -1332,7 +1329,7 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for _i in range(3):
                 data = np.zeros(4, dtype=np.float32)
-                f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+                f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
 
         with tensogram.TensogramFile.open(path) as f:
             assert f[2:2] == []
@@ -1343,7 +1340,7 @@ class TestEdgeCases:
         path = str(tmp_path / "badkey.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
 
         with tensogram.TensogramFile.open(path) as f, pytest.raises(TypeError):
             f["bad"]
@@ -1366,7 +1363,7 @@ class TestEdgeCases:
         data = np.ones(4, dtype=np.float32)
         with tensogram.TensogramFile.create(path) as f:
             f.append(
-                make_global_meta(2, tag="test"),
+                make_global_meta(3, tag="test"),
                 [(make_descriptor([4], dtype="float32"), data)],
             )
 
@@ -1387,7 +1384,7 @@ class TestEdgeCases:
         data = np.ones(4, dtype=np.float32)
         msg_bytes = encode_simple(data)
         meta, objects = tensogram.decode(msg_bytes)
-        assert meta.version == 2
+        assert meta.version == 3
         assert len(objects) == 1
 
     # ── Buffer iteration ──
@@ -1397,7 +1394,7 @@ class TestEdgeCases:
         msgs = []
         for i in range(4):
             data = np.full(8, float(i), dtype=np.float32)
-            meta = make_global_meta(2, index=i)
+            meta = make_global_meta(3, index=i)
             desc = make_descriptor([8], dtype="float32")
             msgs.append(bytes(tensogram.encode(meta, [(desc, data)])))
 
@@ -1416,7 +1413,7 @@ class TestEdgeCases:
     def test_iter_messages_len(self):
         """iter_messages supports len() tracking remaining."""
         data = np.ones(4, dtype=np.float32)
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         desc = make_descriptor([4], dtype="float32")
         msg = bytes(tensogram.encode(meta, [(desc, data)]))
         buf = msg * 3
@@ -1430,7 +1427,7 @@ class TestEdgeCases:
         """iter_messages raises StopIteration after exhaustion."""
         data = np.ones(4, dtype=np.float32)
         msg = bytes(
-            tensogram.encode(make_global_meta(2), [(make_descriptor([4], dtype="float32"), data)])
+            tensogram.encode(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
         )
 
         it = tensogram.iter_messages(msg)
@@ -1441,7 +1438,7 @@ class TestEdgeCases:
     def test_iter_messages_with_garbage(self):
         """iter_messages skips garbage between valid messages."""
         data = np.ones(4, dtype=np.float32)
-        meta = make_global_meta(2, tag="valid")
+        meta = make_global_meta(3, tag="valid")
         desc = make_descriptor([4], dtype="float32")
         msg = bytes(tensogram.encode(meta, [(desc, data)]))
 
@@ -1454,7 +1451,7 @@ class TestEdgeCases:
     def test_iter_messages_verify_hash(self):
         """iter_messages with verify_hash=True on hashed data."""
         data = np.arange(16, dtype=np.float32)
-        meta = make_global_meta(2)
+        meta = make_global_meta(3)
         desc = make_descriptor([16], dtype="float32")
         msg = bytes(tensogram.encode(meta, [(desc, data)], hash="xxh3"))
 
@@ -1476,7 +1473,7 @@ class TestMetadataCoverage:
     def _encode_with_mars(self):
         """Encode a message with per-object base metadata."""
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {
                     "mars": {
@@ -1535,7 +1532,7 @@ class TestMetadataCoverage:
     def test_getitem_base_precedence(self):
         """__getitem__ checks base entries first, then extra."""
         meta_dict = {
-            "version": 2,
+            "version": 3,
             "base": [{"shared": "from_base"}],
             "_extra_": {"shared": "from_extra"},
         }
@@ -1559,7 +1556,7 @@ class TestMetadataCoverage:
     def test_contains(self):
         """__contains__ checks both base entries and extra."""
         meta_dict = {
-            "version": 2,
+            "version": 3,
             "base": [{"b_key": 1}],
             "e_key": 2,
         }
@@ -1586,7 +1583,7 @@ class TestMetadataCoverage:
         """Message with no base metadata (zero objects)."""
         msg = bytes(
             tensogram.encode(
-                {"version": 2},
+                {"version": 3},
                 [],
             )
         )
@@ -1674,7 +1671,7 @@ class TestDescriptorCoverage:
         """Extra keys in descriptor dict end up in params."""
         data = np.ones(8, dtype=np.float32)
         desc_dict = make_descriptor([8], custom_key="hello", numeric_param=42)
-        msg = bytes(tensogram.encode(make_global_meta(2), [(desc_dict, data)]))
+        msg = bytes(tensogram.encode(make_global_meta(3), [(desc_dict, data)]))
         _, objects = tensogram.decode(msg)
         desc, _ = objects[0]
         assert desc.params["custom_key"] == "hello"
@@ -1746,8 +1743,7 @@ class TestErrorCoverage:
         report = tensogram.validate(bytes(msg), level="checksum")
         codes = [issue["code"] for issue in report["issues"]]
         assert any(
-            c in ("hash_mismatch", "decode_pipeline_failed", "cbor_offset_invalid")
-            for c in codes
+            c in ("hash_mismatch", "decode_pipeline_failed", "cbor_offset_invalid") for c in codes
         ), f"expected integrity error, got: {report}"
 
     def test_encode_shape_mismatch(self):
@@ -1755,35 +1751,35 @@ class TestErrorCoverage:
         data = np.ones(10, dtype=np.float32)
         desc = make_descriptor([5, 5])  # 25 elements, data has 10
         with pytest.raises(ValueError, match=r"does not match|[Ss]ize|[Ll]ength"):
-            tensogram.encode(make_global_meta(2), [(desc, data)])
+            tensogram.encode(make_global_meta(3), [(desc, data)])
 
     def test_encode_missing_descriptor_field(self):
         """Descriptor missing 'type' raises ValueError."""
         data = np.ones(4, dtype=np.float32)
         bad_desc = {"shape": [4], "dtype": "float32"}  # no "type"
         with pytest.raises(ValueError, match="type"):
-            tensogram.encode(make_global_meta(2), [(bad_desc, data)])
+            tensogram.encode(make_global_meta(3), [(bad_desc, data)])
 
     def test_encode_missing_shape(self):
         """Descriptor missing 'shape' raises ValueError."""
         data = np.ones(4, dtype=np.float32)
         bad_desc = {"type": "ntensor", "dtype": "float32"}
         with pytest.raises(ValueError, match="shape"):
-            tensogram.encode(make_global_meta(2), [(bad_desc, data)])
+            tensogram.encode(make_global_meta(3), [(bad_desc, data)])
 
     def test_encode_missing_dtype(self):
         """Descriptor missing 'dtype' raises ValueError."""
         data = np.ones(4, dtype=np.float32)
         bad_desc = {"type": "ntensor", "shape": [4]}
         with pytest.raises(ValueError, match="dtype"):
-            tensogram.encode(make_global_meta(2), [(bad_desc, data)])
+            tensogram.encode(make_global_meta(3), [(bad_desc, data)])
 
     def test_encode_bad_byte_order(self):
         """Invalid byte_order raises ValueError."""
         data = np.ones(4, dtype=np.float32)
         desc = make_descriptor([4], byte_order="middle")
         with pytest.raises(ValueError, match="byte_order"):
-            tensogram.encode(make_global_meta(2), [(desc, data)])
+            tensogram.encode(make_global_meta(3), [(desc, data)])
 
     def test_file_not_found(self):
         """Opening nonexistent file raises OSError."""
@@ -1795,7 +1791,7 @@ class TestErrorCoverage:
         path = str(tmp_path / "test.tgm")
         with tensogram.TensogramFile.create(path) as f:
             f.append(
-                make_global_meta(2),
+                make_global_meta(3),
                 [(make_descriptor([4]), np.ones(4, dtype=np.float32))],
             )
         with (
@@ -1817,7 +1813,7 @@ class TestMetadataEdgeCases:
         """Client code cannot set _reserved_ in base entries."""
         data = np.ones(4, dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"_reserved_": {"tensor": {"ndim": 1}}}],
         }
         desc = make_descriptor([4], dtype="float32")
@@ -1828,7 +1824,7 @@ class TestMetadataEdgeCases:
         """Client code cannot set _reserved_ at the top level."""
         data = np.ones(4, dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "_reserved_": {"encoder": "fake"},
         }
         desc = make_descriptor([4], dtype="float32")
@@ -1850,14 +1846,14 @@ class TestMetadataEdgeCases:
 
     def test_base_on_empty_message(self):
         """meta.base is [] for zero-object message."""
-        msg = bytes(tensogram.encode({"version": 2}, []))
+        msg = bytes(tensogram.encode({"version": 3}, []))
         meta = tensogram.decode_metadata(msg)
         assert meta.base == []
 
     def test_base_none_rejected(self):
         """base=None should be rejected."""
         data = np.ones(4, dtype=np.float32)
-        meta = {"version": 2, "base": None}
+        meta = {"version": 3, "base": None}
         desc = make_descriptor([4], dtype="float32")
         with pytest.raises((ValueError, TypeError)):
             tensogram.encode(meta, [(desc, data)])
@@ -1866,7 +1862,7 @@ class TestMetadataEdgeCases:
         """_extra_ takes precedence over 'extra' when both are present."""
         data = np.ones(4, dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "_extra_": {"key": "from_wire"},
             "extra": {"key": "from_alias"},
         }
@@ -1879,7 +1875,7 @@ class TestMetadataEdgeCases:
     def test_base_first_match_semantics(self):
         """__getitem__ returns the first base entry match, not all."""
         meta_dict = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"mars": {"param": "2t"}},
                 {"mars": {"param": "msl"}},
@@ -1902,7 +1898,7 @@ class TestMetadataEdgeCases:
     def test_base_with_non_dict_entry_rejected(self):
         """base entries must be dicts."""
         data = np.ones(4, dtype=np.float32)
-        meta = {"version": 2, "base": ["not_a_dict"]}
+        meta = {"version": 3, "base": ["not_a_dict"]}
         desc = make_descriptor([4], dtype="float32")
         with pytest.raises((ValueError, TypeError)):
             tensogram.encode(meta, [(desc, data)])
@@ -1910,7 +1906,7 @@ class TestMetadataEdgeCases:
     def test_empty_base_list(self):
         """base=[] is valid (zero per-object metadata)."""
         data = np.ones(4, dtype=np.float32)
-        meta = {"version": 2, "base": []}
+        meta = {"version": 3, "base": []}
         desc = make_descriptor([4], dtype="float32")
         msg = bytes(tensogram.encode(meta, [(desc, data)]))
         decoded_meta = tensogram.decode_metadata(msg)
@@ -2026,7 +2022,7 @@ class TestFileSliceCoverage:
             for i in range(6):
                 data = np.full(4, float(i), dtype=np.float32)
                 f.append(
-                    make_global_meta(2, index=i),
+                    make_global_meta(3, index=i),
                     [(make_descriptor([4], dtype="float32"), data)],
                 )
         return path
@@ -2172,7 +2168,7 @@ class TestDecodeDescriptorsCoverage:
         data = np.arange(12, dtype=np.float32).reshape(3, 4)
         msg = encode_simple(data)
         meta, descriptors = tensogram.decode_descriptors(msg)
-        assert meta.version == 2
+        assert meta.version == 3
         assert len(descriptors) == 1
         assert descriptors[0].shape == [3, 4]
         assert descriptors[0].dtype == "float32"
@@ -2183,7 +2179,7 @@ class TestDecodeDescriptorsCoverage:
         d2 = make_descriptor([8], dtype="int32")
         msg = bytes(
             tensogram.encode(
-                make_global_meta(2),
+                make_global_meta(3),
                 [
                     (d1, np.ones(4, dtype=np.float32)),
                     (d2, np.ones(8, dtype=np.int32)),
@@ -2214,14 +2210,14 @@ class TestMessageUnpackingCoverage:
         """decode() result supports tuple unpacking."""
         msg = encode_simple(np.ones(4, dtype=np.float32))
         meta, objects = tensogram.decode(msg)
-        assert meta.version == 2
+        assert meta.version == 3
         assert len(objects) == 1
 
     def test_decode_attribute_access(self):
         """decode() result supports attribute access."""
         msg = encode_simple(np.ones(4, dtype=np.float32))
         result = tensogram.decode(msg)
-        assert result.metadata.version == 2
+        assert result.metadata.version == 3
         assert len(result.objects) == 1
 
     def test_file_decode_message(self, tmp_path):
@@ -2229,7 +2225,7 @@ class TestMessageUnpackingCoverage:
         path = str(tmp_path / "test.tgm")
         with tensogram.TensogramFile.create(path) as f:
             f.append(
-                make_global_meta(2, tag="x"),
+                make_global_meta(3, tag="x"),
                 [(make_descriptor([4]), np.ones(4, dtype=np.float32))],
             )
         with tensogram.TensogramFile.open(path) as f:
@@ -2243,20 +2239,20 @@ class TestMessageUnpackingCoverage:
         path = str(tmp_path / "test.tgm")
         with tensogram.TensogramFile.create(path) as f:
             f.append(
-                make_global_meta(2, v=99),
+                make_global_meta(3, v=99),
                 [(make_descriptor([4]), np.ones(4, dtype=np.float32))],
             )
         with tensogram.TensogramFile.open(path) as f:
             msg = f[0]
             assert msg.metadata["v"] == 99
             meta, _objects = msg
-            assert meta.version == 2
+            assert meta.version == 3
 
     def test_iter_messages_returns_message(self):
         """iter_messages yields Message namedtuples."""
         buf = encode_simple(np.ones(4, dtype=np.float32))
         for msg in tensogram.iter_messages(buf):
-            assert msg.metadata.version == 2
+            assert msg.metadata.version == 3
             _meta, objects = msg
             assert len(objects) == 1
 
@@ -2329,7 +2325,7 @@ class TestNativeEndianCoverage:
         because the library returns decoded bytes in native byte order."""
         data = np.arange(20, dtype=np_dtype)
         desc = make_descriptor(list(data.shape), dtype=dtype_str)
-        msg = bytes(tensogram.encode(make_global_meta(2), [(desc, data)]))
+        msg = bytes(tensogram.encode(make_global_meta(3), [(desc, data)]))
         _, objects = tensogram.decode(msg)
         _, decoded = objects[0]
         np.testing.assert_array_equal(decoded, data)
@@ -2379,7 +2375,7 @@ class TestDictToGlobalMetadataCoverage:
         """
         data = np.ones(4, dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "extra": "not_a_dict",  # non-dict: must raise
         }
         desc = make_descriptor([4], dtype="float32")
@@ -2390,7 +2386,7 @@ class TestDictToGlobalMetadataCoverage:
         """Keys not in known_keys go to extra."""
         data = np.ones(4, dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "custom_field": "hello",
             "another": 42,
         }
@@ -2404,7 +2400,7 @@ class TestDictToGlobalMetadataCoverage:
         """_extra_ key takes priority over extra alias."""
         data = np.ones(4, dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "_extra_": {"from_wire": True},
             "extra": {"from_alias": True},
         }
@@ -2417,7 +2413,7 @@ class TestDictToGlobalMetadataCoverage:
     def test_base_empty_list_with_objects(self):
         """Empty base list with objects: encoder auto-populates base."""
         data = np.ones(4, dtype=np.float32)
-        meta = {"version": 2, "base": []}
+        meta = {"version": 3, "base": []}
         desc = make_descriptor([4], dtype="float32")
         msg = bytes(tensogram.encode(meta, [(desc, data)]))
         decoded_meta = tensogram.decode_metadata(msg)
@@ -2427,7 +2423,7 @@ class TestDictToGlobalMetadataCoverage:
     def test_no_base_key(self):
         """Missing base key: defaults to empty."""
         data = np.ones(4, dtype=np.float32)
-        meta = {"version": 2, "note": "no base"}
+        meta = {"version": 3, "note": "no base"}
         desc = make_descriptor([4], dtype="float32")
         msg = bytes(tensogram.encode(meta, [(desc, data)]))
         decoded_meta = tensogram.decode_metadata(msg)
@@ -2437,7 +2433,7 @@ class TestDictToGlobalMetadataCoverage:
         """Base entries with nested dicts round-trip."""
         data = np.ones(4, dtype=np.float32)
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [{"mars": {"class": "od", "param": "2t"}, "source": "test"}],
         }
         desc = make_descriptor([4], dtype="float32")
@@ -2462,7 +2458,7 @@ class TestPyMetadataAccessCoverage:
         """Key only in extra is found by __getitem__."""
         data = np.ones(4, dtype=np.float32)
         meta_dict = {
-            "version": 2,
+            "version": 3,
             "base": [{"mars": {"param": "2t"}}],
             "only_in_extra": "found",
         }
@@ -2475,7 +2471,7 @@ class TestPyMetadataAccessCoverage:
         """Key in base is detected by __contains__."""
         data = np.ones(4, dtype=np.float32)
         meta_dict = {
-            "version": 2,
+            "version": 3,
             "base": [{"custom_key": "val"}],
         }
         desc = make_descriptor([4], dtype="float32")
@@ -2513,14 +2509,14 @@ class TestPyMetadataAccessCoverage:
         meta = tensogram.decode_metadata(msg)
         r = repr(meta)
         assert "Metadata" in r
-        assert "version=2" in r
+        assert "version=3" in r
         assert "base_len=" in r
         assert "extra_keys=" in r
 
     def test_getitem_multi_base_first_wins(self):
         """__getitem__ with multiple base entries returns first match."""
         meta_dict = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"param": "first_value"},
                 {"param": "second_value"},
@@ -2535,7 +2531,7 @@ class TestPyMetadataAccessCoverage:
     def test_contains_with_multi_base(self):
         """__contains__ returns True if key in any base entry."""
         meta_dict = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"a": 1},
                 {"b": 2},
@@ -2593,7 +2589,7 @@ class TestUnicodeMetadata:
         """Unicode in per-object base metadata survives round-trip."""
         data = np.ones(4, dtype=np.float32)
         meta_dict = {
-            "version": 2,
+            "version": 3,
             "base": [{"name": "気温", "units": "°C", "note": "🌡️ surface"}],
         }
         desc = make_descriptor([4], dtype="float32")
@@ -2662,7 +2658,7 @@ class TestBoolCborRoundtrip:
         """Bool values in per-object base metadata survive round-trip."""
         data = np.ones(4, dtype=np.float32)
         meta_dict = {
-            "version": 2,
+            "version": 3,
             "base": [{"is_valid": True, "is_forecast": False}],
         }
         desc = make_descriptor([4], dtype="float32")
@@ -2688,4 +2684,4 @@ class TestComputeStridesOverflow:
         huge_shape = [2**63, 2]
         desc = make_descriptor(huge_shape, dtype="float32")
         with pytest.raises(ValueError, match=r"[Oo]verflow|strides"):
-            tensogram.encode(make_global_meta(2), [(desc, data)])
+            tensogram.encode(make_global_meta(3), [(desc, data)])

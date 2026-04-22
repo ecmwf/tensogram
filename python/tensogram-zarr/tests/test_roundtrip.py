@@ -29,7 +29,7 @@ class TestTgmToZarrRoundTrip:
         # Write with tensogram
         with tensogram.TensogramFile.create(path) as f:
             f.append(
-                {"version": 2, "source": "test"},
+                {"version": 3, "source": "test"},
                 [
                     ({"type": "ntensor", "shape": [4, 5], "dtype": "float32"}, original),
                 ],
@@ -56,7 +56,7 @@ class TestTgmToZarrRoundTrip:
         with tensogram.TensogramFile.create(path) as f:
             f.append(
                 {
-                    "version": 2,
+                    "version": 3,
                     "base": [{"name": "floats"}, {"name": "ints"}],
                 },
                 [
@@ -198,7 +198,7 @@ class TestDuplicateNames:
 
         # Two objects with the same name
         meta = {
-            "version": 2,
+            "version": 3,
             "base": [
                 {"name": "field"},
                 {"name": "field"},

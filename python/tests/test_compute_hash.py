@@ -134,20 +134,17 @@ class TestErrorSurface:
 class TestCrossCheckWithEncode:
     """v3 parity invariant — `encode` stamps a hash in the frame
     footer's inline slot.  Since Python doesn't yet surface the
-    inline slot directly (tracked as a pass-5 follow-up in
-    plans/WIRE_FORMAT_CHANGES.md), these tests verify the round-trip
-    via `validate_message` at `checksum` level: a well-formed
-    message encoded with `hash="xxh3"` must pass integrity
-    validation, and the `compute_hash` helper returns a stable
-    xxh3-64 digest over the raw bytes.
+    inline slot directly, these tests verify the round-trip via
+    `validate_message` at `checksum` level: a well-formed message
+    encoded with `hash="xxh3"` must pass integrity validation, and
+    the `compute_hash` helper returns a stable xxh3-64 digest over
+    the raw bytes.
     """
 
     def test_matches_stamped_hash_float32(self):
         values = np.array([1.5, 2.5, 3.5, 4.5], dtype=np.float32)
         raw = values.tobytes()
-        msg = tensogram.encode(
-            {"version": 3}, [(_descriptor_for([4], "float32"), values)]
-        )
+        msg = tensogram.encode({"version": 3}, [(_descriptor_for([4], "float32"), values)])
         # compute_hash is stable for the raw bytes.
         digest = tensogram.compute_hash(raw)
         assert isinstance(digest, str)
@@ -170,9 +167,7 @@ class TestCrossCheckWithEncode:
         # without crossing any sensitive pipeline boundary.
         values = np.arange(10_000, dtype=np.float64)
         raw = values.tobytes()
-        msg = tensogram.encode(
-            {"version": 3}, [(_descriptor_for([10_000], "float64"), values)]
-        )
+        msg = tensogram.encode({"version": 3}, [(_descriptor_for([10_000], "float64"), values)])
         assert len(tensogram.compute_hash(raw)) == 16
         report = tensogram.validate(msg, level="checksum")
         assert report["hash_verified"]

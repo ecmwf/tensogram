@@ -38,8 +38,8 @@ truly concurrent operations (core async methods take `&self`, no mutex).
 
 | Component | What changed |
 |-----------|-------------|
-| `tensogram-core/file.rs` | All async methods `&mut self` → `&self`. Added `decode_range_async`, `decode_range_batch_async`, `decode_object_batch_async`, `prefetch_layouts_async`, `message_count_async`. Sync batch: `decode_range_batch`, `decode_object_batch`. |
-| `tensogram-core/remote.rs` | Added `read_range_async`, `read_range_batch_async`, `read_object_batch_async`, `ensure_all_layouts_batch_async` (batched layout discovery via `get_ranges`), `message_count_async`. Sync batch: `read_range_batch`, `read_object_batch`. |
+| `tensogram/file.rs` | All async methods `&mut self` → `&self`. Added `decode_range_async`, `decode_range_batch_async`, `decode_object_batch_async`, `prefetch_layouts_async`, `message_count_async`. Sync batch: `decode_range_batch`, `decode_object_batch`. |
+| `tensogram/remote.rs` | Added `read_range_async`, `read_range_batch_async`, `read_object_batch_async`, `ensure_all_layouts_batch_async` (batched layout discovery via `get_ranges`), `message_count_async`. Sync batch: `read_range_batch`, `read_object_batch`. |
 | `tensogram-python` | `PyAsyncTensogramFile` (`Arc<TensogramFile>`, no mutex), `PyAsyncTensogramFileIter`, sync `file_decode_range_batch` and `file_decode_object_batch` on `PyTensogramFile`. `pyo3-async-runtimes` dependency. |
 | Tests | Async/batch tests in `test_async.py`, shared fixtures in `conftest.py`. |
 | Docs | `python-api.md` async section, example `15_async_operations.py`, examples README. |
@@ -54,7 +54,7 @@ controls this across all interfaces.
 | Component | What changed |
 |-----------|-------------|
 | `tensogram-encodings` | `ByteOrder::native()`, `byteswap()`, `PipelineConfig.swap_unit_size`, `decode_pipeline`/`decode_range_pipeline` gain `native_byte_order` param, ZFP/SZ3 made byte-order-aware |
-| `tensogram-core` | `Dtype::swap_unit_size()`, `DecodeOptions.native_byte_order`, threaded through all decode paths + iterators |
+| `tensogram` | `Dtype::swap_unit_size()`, `DecodeOptions.native_byte_order`, threaded through all decode paths + iterators |
 | `tensogram-python` | `native_byte_order=True` on `decode()`, `decode_object()`, `decode_range()`, `TensogramFile.decode_message()`. Default `byte_order` → native |
 | `tensogram-ffi` | `native_byte_order` param on all decode functions |
 | C++ wrapper | `decode_options.native_byte_order` threaded to all decode + iterator calls |
@@ -74,10 +74,10 @@ count.
 | Component | What changed |
 |-----------|-------------|
 | `tensogram-encodings/pipeline.rs` | New `PipelineConfig.compute_hash: bool` flag and `PipelineResult.hash: Option<u64>`; new `copy_and_hash` helper fuses the passthrough copy with `Xxh3Default::update` in 64 KiB chunks; hash is produced at each codec exit point while the buffer is cache-hot.  Added `xxhash-rust` workspace dependency. |
-| `tensogram-core/encode.rs` | `encode_one_object` sets `config.compute_hash = options.hash_algorithm.is_some()` in `EncodeMode::Raw` and populates the descriptor's `HashDescriptor` from `PipelineResult.hash`.  `EncodeMode::PreEncoded` unchanged (no pipeline to fuse with). |
-| `tensogram-core/hash.rs` | New `pub(crate) format_xxh3_digest(u64) -> String` helper — single source of truth for `"{digest:016x}"` formatting, used by both the pipeline-inline path and the legacy post-hoc `compute_hash`. |
-| `tensogram-core/streaming.rs` | `write_object_inner` refactored to use new `write_data_object_frame_hashed` helper that writes directly to the `W: Write` sink, hashing the payload in 64 KiB chunks during the single pass.  Reduces streaming payload reads from three (hash → memcpy → write) to one.  CBOR size is pre-computed via a placeholder digest (xxh3 is fixed-width), guarded by a debug assert. |
-| Tests | New `pipeline.rs` unit tests: `streaming_and_oneshot_xxh3_agree`, `pipeline_hash_none_when_disabled`, `pipeline_hash_matches_post_hoc_for_{passthrough,simple_packing,lz4}`, `pipeline_f64_hash_matches_post_hoc`, `pipeline_hash_byte_identical_across_threads_transparent`.  New integration suite `tensogram-core/tests/hash_while_encoding.rs` covering buffered/streaming hash parity, no-hash passthrough, multi-thread determinism, and `verify_hash` round-trip. |
+| `tensogram/encode.rs` | `encode_one_object` sets `config.compute_hash = options.hash_algorithm.is_some()` in `EncodeMode::Raw` and populates the descriptor's `HashDescriptor` from `PipelineResult.hash`.  `EncodeMode::PreEncoded` unchanged (no pipeline to fuse with). |
+| `tensogram/hash.rs` | New `pub(crate) format_xxh3_digest(u64) -> String` helper — single source of truth for `"{digest:016x}"` formatting, used by both the pipeline-inline path and the legacy post-hoc `compute_hash`. |
+| `tensogram/streaming.rs` | `write_object_inner` refactored to use new `write_data_object_frame_hashed` helper that writes directly to the `W: Write` sink, hashing the payload in 64 KiB chunks during the single pass.  Reduces streaming payload reads from three (hash → memcpy → write) to one.  CBOR size is pre-computed via a placeholder digest (xxh3 is fixed-width), guarded by a debug assert. |
+| Tests | New `pipeline.rs` unit tests: `streaming_and_oneshot_xxh3_agree`, `pipeline_hash_none_when_disabled`, `pipeline_hash_matches_post_hoc_for_{passthrough,simple_packing,lz4}`, `pipeline_f64_hash_matches_post_hoc`, `pipeline_hash_byte_identical_across_threads_transparent`.  New integration suite `tensogram/tests/hash_while_encoding.rs` covering buffered/streaming hash parity, no-hash passthrough, multi-thread determinism, and `verify_hash` round-trip. |
 | Benchmarks | New `hash_overhead.rs` criterion bench comparing `no_hash`, `two_pass_hash`, `fused_inline_hash` across `{none+none, none+lz4, sp24+szip, sp24+zstd3}` on 16 Mi float64 (128 MiB).  Passthrough case: ~11% total encode speedup, recovering ~24% of hash overhead.  Heavy pipelines (sp24+szip): within noise, as expected — encode dominates. |
 
 ### Determinism contract
@@ -90,7 +90,7 @@ worker-completion-ordered output, which round-trips losslessly.
 
 ### What did NOT change
 
-- Public APIs of `tensogram-core`, `tensogram-ffi`, `tensogram-cli`,
+- Public APIs of `tensogram`, `tensogram-ffi`, `tensogram-cli`,
   `tensogram-wasm`, and every language binding (Python, C++, WASM, TS).
 - Wire format — every `.tgm` byte is identical to pre-change output.
 - Golden files — verified by the existing `tests/golden_files.rs` suite.
@@ -120,10 +120,10 @@ an axis-B-friendly codec, to avoid N×M thread over-subscription.
 
 | Component | What changed |
 |-----------|-------------|
-| `tensogram-core/parallel.rs` | new private module: `resolve_budget`, `with_pool`, `run_maybe_pooled`, `is_axis_b_friendly`, `use_axis_a`, `should_parallelise`; constants `DEFAULT_PARALLEL_THRESHOLD_BYTES` (64 KiB) and `ENV_THREADS="TENSOGRAM_THREADS"` re-exported from the crate root |
-| `tensogram-core/encode.rs` | `encode_one_object` extracted; axis-A/B dispatch at the top of `encode_inner` |
-| `tensogram-core/decode.rs` | axis-A/B dispatch in `decode`, `decode_object`, `decode_range_from_payload`; `decode_single_object_with_backend` gains `intra_codec_threads` arg |
-| `tensogram-core/streaming.rs` | `StreamingEncoder` captures `EncodeOptions.threads` at construction and forwards to every `write_object` pipeline call (axis B only — streaming semantics preclude axis A) |
+| `tensogram/parallel.rs` | new private module: `resolve_budget`, `with_pool`, `run_maybe_pooled`, `is_axis_b_friendly`, `use_axis_a`, `should_parallelise`; constants `DEFAULT_PARALLEL_THRESHOLD_BYTES` (64 KiB) and `ENV_THREADS="TENSOGRAM_THREADS"` re-exported from the crate root |
+| `tensogram/encode.rs` | `encode_one_object` extracted; axis-A/B dispatch at the top of `encode_inner` |
+| `tensogram/decode.rs` | axis-A/B dispatch in `decode`, `decode_object`, `decode_range_from_payload`; `decode_single_object_with_backend` gains `intra_codec_threads` arg |
+| `tensogram/streaming.rs` | `StreamingEncoder` captures `EncodeOptions.threads` at construction and forwards to every `write_object` pipeline call (axis B only — streaming semantics preclude axis A) |
 | `tensogram-encodings/pipeline.rs` | `PipelineConfig.intra_codec_threads` threaded into every codec builder |
 | `tensogram-encodings/simple_packing.rs` | `encode_with_threads`, `decode_with_threads`, `compute_params_with_threads`; parallel aligned + generic (LCM-chunked) paths; shared `splat_aligned`/`gather_aligned` helpers |
 | `tensogram-encodings/shuffle.rs` | `shuffle_with_threads`, `unshuffle_with_threads`; 64 KiB threshold for parallel path |
@@ -226,15 +226,14 @@ streaming. Compiles to `wasm32-unknown-unknown` via `wasm-pack`.
 - **`tensogram-szip`.** Pure-Rust CCSDS 121.0-B-3 AEC/SZIP codec —
   encode, decode, range-decode; FFI cross-validated against libaec.
 - **Feature gates.** `szip-pure` and `zstd-pure` in `tensogram-encodings`
-  and `tensogram-core`; mutually exclusive with `szip` / `zstd` (C FFI).
+  and `tensogram`; mutually exclusive with `szip` / `zstd` (C FFI).
 - **Build / test.** `wasm-pack build rust/tensogram-wasm --target web`,
   `wasm-pack test --node rust/tensogram-wasm`.
 
 ## TypeScript wrapper (`@ecmwf.int/tensogram`)
 
 Ergonomic typed layer over `tensogram-wasm` for browser + Node consumers.
-Design doc: `plans/TYPESCRIPT_WRAPPER.md`. User guide:
-`docs/src/guide/typescript-api.md`.
+User guide: `docs/src/guide/typescript-api.md`.
 
 - **Package.** `typescript/` — ESM-only, strict TS, Node ≥ 20, built
   via `wasm-pack build --target web` + `tsc`. Package name
@@ -274,9 +273,9 @@ Design doc: `plans/TYPESCRIPT_WRAPPER.md`. User guide:
   `maxBufferBytes`, and per-message corruption via `onError` without
   breaking iteration. Cleans up on early `break`, throws, and aborts.
 - **Cross-language parity.** TS decodes the same
-  `rust/tensogram-core/tests/golden/*.tgm` fixtures that Rust,
-  Python, and C++ verify — full parity matrix in
-  `plans/TYPESCRIPT_WRAPPER.md`.
+  `rust/tensogram/tests/golden/*.tgm` fixtures that Rust,
+  Python, and C++ verify; see the parity section of
+  `docs/src/guide/typescript-api.md`.
 - **Property-based robustness.** `fast-check` invariants pin
   `mapTensogramError` totality, `encode → decode` bit-exactness across
   random shapes + MARS metadata, and the "no panic on random bytes"
@@ -294,9 +293,9 @@ Design doc: `plans/TYPESCRIPT_WRAPPER.md`. User guide:
 ## TypeScript wrapper — Scope C.1 (API-surface parity)
 
 Closes the parity gap with Rust / Python / FFI / C++ for every
-concept on the cross-language matrix in
-`plans/TYPESCRIPT_WRAPPER.md`.  Changes are additive on the WASM
-side; the only breaking change on the TS side is that
+concept on the cross-language matrix (see the parity section of
+`docs/src/guide/typescript-api.md`).  Changes are additive on the
+WASM side; the only breaking change on the TS side is that
 `TensogramFile#rawMessage` is now async (needed for the lazy HTTP
 backend).
 
@@ -318,7 +317,6 @@ backend).
 | `typescript/tests/` | Per-module test files: `range.test.ts`, `hash.test.ts`, `simplePacking.test.ts`, `validate.test.ts`, `encodePreEncoded.test.ts`, `streamingEncoder.test.ts`, `append.test.ts`, `lazyFromUrl.test.ts`.  Golden-file parity: the validate suite decodes every golden `.tgm` fixture. |
 | `examples/typescript/` | `04_decode_range.ts`, `08_validate.ts`, `11_encode_pre_encoded.ts`, `12_streaming_encoder.ts`, `13_range_access.ts`.  `06_file_api.ts` updated for the async `rawMessage` signature. |
 | `docs/src/guide/typescript-api.md` | New sections on pre-encoded bytes, validate, streaming encoder, append, lazy Range access, and the Scope-C API additions table.  Cross-language parity matrix refreshed. |
-| `plans/TYPESCRIPT_WRAPPER.md` | Parity matrix now shows every Scope-C.1 entry as ✓; Scope-C.3 / C.4 items moved into the follow-ups section. |
 
 ## TypeScript wrapper — Scope C.2 (half-precision + complex dtypes)
 
@@ -366,7 +364,6 @@ produced) now pass an `onBytes` callback at construction time.
 | `rust/tensogram-wasm/tests/wasm_tests.rs` | 5 new `wasm_bindgen_test`s: round-trip, construction-time delivery + magic check, bytes-written tracking, callback-throw propagation, non-function rejection.  All existing tests updated to pass `None` for the new constructor arg. |
 | `examples/typescript/14_streaming_callback.ts` | Runnable example: collects chunks into a JS array, reassembles via concatenation, decodes to prove semantic equivalence with the buffered path. |
 | `docs/src/guide/typescript-api.md` | New "Streaming `StreamingEncoder` (no full-message buffering)" section covering the full contract (synchronous, chunk ownership, error propagation, mode detection). |
-| `plans/TYPESCRIPT_WRAPPER.md` | Follow-up list notes that Python / FFI / C++ remain buffered-only and documents the extension pattern for future parity. |
 | `CHANGELOG.md` | New entry under "Added — TypeScript wrapper: streaming `StreamingEncoder`". |
 
 ## `simple_packing` — Infinity rejection in the Rust core
@@ -398,7 +395,6 @@ it.
 | `python/bindings/src/lib.rs` | New `py_compute_hash` function wrapping `tensogram_lib::compute_hash`.  Accepts `PyBackedBytes` (zero-copy over `bytes` / `bytearray`); unknown algorithm names route through the existing `to_py_err` for a clean `ValueError`. |
 | `python/tests/test_compute_hash.py` | 18 tests covering shape (16-char lowercase hex), determinism, known vector (xxh3 of `b"hello world"`), empty buffer (known constant `2d06800538d394c2`), `bytes` / `bytearray` acceptance, explicit rejection of `memoryview` / `numpy.ndarray` with a documented conversion path, unknown-algo `ValueError`, and byte-level parity with the hash stamped by `encode` on a no-pipeline object.  The parity test pins Python's `compute_hash` to the same byte-level contract as the Rust core, WASM, FFI, and TypeScript implementations — any drift fails the test simultaneously. |
 | `CHANGELOG.md` | New entry under Python bindings. |
-| `plans/TYPESCRIPT_WRAPPER.md` | Parity matrix now shows ✓ for Python's `compute_hash`. |
 
 ## `tensogram-benchmarks`
 
@@ -429,7 +425,7 @@ comparison against ecCodes.
 - Docs: `docs/src/guide/benchmarks.md`,
   `docs/src/guide/benchmark-results.md`.
 
-## `tensogram-core`
+## `tensogram`
 
 - `wire.rs` — v2 frame-based wire format: Preamble (24 B), FrameHeader
   (16 B), Postamble (16 B), `FrameType` enum (incl. `PrecederMetadata`
@@ -783,7 +779,7 @@ comparison against ecCodes.
 
 ## Golden test files
 
-Canonical `.tgm` files in `rust/tensogram-core/tests/golden/` used for
+Canonical `.tgm` files in `rust/tensogram/tests/golden/` used for
 byte-for-byte cross-language verification:
 `simple_f32.tgm`, `multi_object.tgm`, `mars_metadata.tgm`,
 `multi_message.tgm`, `hash_xxh3.tgm`.

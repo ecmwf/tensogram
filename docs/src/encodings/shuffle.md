@@ -70,8 +70,8 @@ let desc = DataObjectDescriptor {
     encoding: "none".to_string(),
     filter: "shuffle".to_string(),
     compression: "none".to_string(),
+    masks: None,
     params,
-    hash: None,
 };
 ```
 

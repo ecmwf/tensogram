@@ -7,25 +7,16 @@
 **/target
 **/pkg
 **/build/
+docs/book/
 python/**/dist/
 python/bindings/Cargo.lock
-
-/docs/book
-**/.venv
-**/.ruff_cache
-**/__pycache__
-**/.pytest_cache
-**/.ipynb_checkpoints
-*.so
-*.dylib
-*.pyd
-*.swp
-*.swo
-*~
-.DS_Store
-.idea/
-tensogram-grib/Cargo.lock
+rust/tensogram-grib/Cargo.lock
 rust/tensogram-netcdf/Cargo.lock
 rust/tensogram-wasm/Cargo.lock
+# Python virtualenv, caches, and maturin-installed extension modules
+.venv/
+**/__pycache__/
+*.pyc
+python/bindings/python/tensogram/tensogram*.so
 # TODO do we want to have uv.locks ignored?
 **/uv.lock

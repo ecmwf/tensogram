@@ -38,11 +38,11 @@ For speculative ideas, see `IDEAS.md`.
     StreamingDecoder with buffer limit, error visibility, and reset.
     Zero-copy TypedArray views for f32/f64/i32/u8 with zero-length safety.
 
-  - [x] ~~**typescript-wrapper (Scope B)**~~ — see `plans/TYPESCRIPT_WRAPPER.md`
-    and `DONE.md`. New `typescript/` package, typed encode / decode / scan,
-    dtype dispatch, metadata helpers, streaming (`decodeStream`),
-    `TensogramFile.open/fromUrl/fromBytes`, 87 tests, 6 examples, CI job,
-    mdBook page, Makefile targets.
+  - [x] ~~**typescript-wrapper (Scope B)**~~ — see `DONE.md` and
+    `docs/src/guide/typescript-api.md`. New `typescript/` package,
+    typed encode / decode / scan, dtype dispatch, metadata helpers,
+    streaming (`decodeStream`), `TensogramFile.open/fromUrl/fromBytes`,
+    87 tests, 6 examples, CI job, mdBook page, Makefile targets.
 
   - [x] ~~**typescript-wrapper (Scope C.1) — API-surface parity**~~
     Closed the gap between the TS wrapper and the other language
@@ -150,8 +150,10 @@ For speculative ideas, see `IDEAS.md`.
   - make the docs interactive. 
   - since we have WASM, you can embed demos in the docs
 
-- [ ] jupyter-notebooks:
-  - add examples using jupyter notebooks
+- [x] ~~jupyter-notebooks~~ → `examples/jupyter/` with five narrative
+  notebooks (quickstart/MARS, encoding fidelity, GRIB, NetCDF+xarray,
+  validation+threads). CI-tested via `pytest --nbval-lax`. See
+  `docs/src/guide/jupyter-notebooks.md`.
 
 ## Builds
 
@@ -187,11 +189,13 @@ For speculative ideas, see `IDEAS.md`.
   tests.  See `DONE.md` for the full breakdown and
   `docs/src/guide/multi-threaded-pipeline.md` for the API reference.
 
-- [ ] **hash-while-encoding**:
-  - explore a possible optimisation to compute the xxhash while the encoding is happening
-  - this would save a second pass through the buffer
-  - analyse if this makes sense and if it brings a benefit
- 
+- [x] ~~hash-while-encoding~~ → inline xxh3-64 hashing fused into the
+  encoding pipeline. Eliminates a second pass over the encoded payload
+  for transparent codecs; passthrough workloads see ~11% faster encode.
+  Output bytes, descriptor contents, and wire format unchanged — every
+  `.tgm` byte-identical to pre-change output. See `DONE.md` →
+  *Hash-while-encoding*.
+
 - [x] ~~minimise-mem-alloc~~ → documented in DESIGN.md "Memory Strategy" section. Pipeline uses `Cow` for zero-copy when no encoding/filter/compression. Metadata-only ops never touch payloads. xarray/zarr use lazy loading.
 
 - [x] ~~add-benchmarks~~:

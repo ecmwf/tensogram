@@ -45,7 +45,7 @@ function describe(shape: number[], dtype: DataObjectDescriptor['dtype']): DataOb
 }
 
 function buildMessage(values: number[]): Uint8Array {
-  return encode({ version: 2 }, [
+  return encode({ version: 3 }, [
     { descriptor: describe([values.length], 'float32'), data: new Float32Array(values) },
   ]);
 }

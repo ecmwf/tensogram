@@ -8,8 +8,11 @@ Wraps the Rust core (via WebAssembly) with a typed, idiomatic TS API:
 
 - Strong types for metadata, descriptors, dtypes, and errors
 - Dtype-aware payload dispatch (`object.data()` returns the correct TypedArray)
-- Web Streams API for progressive decode (Phase 3, in progress)
-- Node + browser file helpers with HTTP Range support (Phase 4, in progress)
+- Web Streams API for progressive decode (`decodeStream`)
+- Node + browser file helpers with HTTP Range support (`TensogramFile`)
+- Full API parity with Rust / Python / C++ (encode/decode/validate,
+  streaming encoder, pre-encoded bytes, first-class half-precision +
+  complex view classes)
 
 ## Install
 
@@ -37,7 +40,7 @@ const temps = new Float32Array(100 * 200);
 for (let i = 0; i < temps.length; i++) temps[i] = 273.15 + i / 100;
 
 const msg = encode(
-  { version: 2 },
+  { version: 3 },
   [{
     descriptor: {
       type: 'ntensor', ndim: 2,
@@ -55,11 +58,6 @@ console.log(objects[0].data());  // Float32Array(20000)
 
 See the [user guide](../docs/src/guide/typescript-api.md) for the full API
 and [examples/typescript/](../examples/typescript/) for runnable scripts.
-
-## Design
-
-See [`plans/TYPESCRIPT_WRAPPER.md`](../plans/TYPESCRIPT_WRAPPER.md) for the
-full design doc (architecture, phases, test strategy, follow-ups).
 
 ## Licence
 

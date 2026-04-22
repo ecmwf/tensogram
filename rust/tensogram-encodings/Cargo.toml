@@ -39,7 +39,7 @@ tracing.workspace = true
 xxhash-rust.workspace = true
 # Roaring is used by the bitmask companion frame (NTensorFrame).
 # Pure-Rust, verified to build on wasm32-unknown-unknown — mandatory
-# everywhere, not feature-gated (per plans/BITMASK_FRAME.md).
+# everywhere, not feature-gated (see plans/WIRE_FORMAT.md §6.5).
 roaring = "0.11"
 libaec-sys = { workspace = true, optional = true }
 tensogram-szip = { workspace = true, optional = true }

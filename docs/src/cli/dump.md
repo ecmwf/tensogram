@@ -22,7 +22,7 @@ tensogram dump [OPTIONS] [FILES]...
 ```bash
 $ tensogram dump forecast.tgm
 ─── Message 0 ───
-version    : 1
+version    : 3
 mars.class : od
 mars.type  : fc
 mars.date  : 20260401
@@ -38,7 +38,6 @@ mars.step  : 0
   encoding : none
   filter   : none
   compression: none
-  hash     : xxh3:a3f0123456789abc
 
 ─── Message 1 ───
 ...
@@ -61,7 +60,7 @@ With `-j`, each message is a JSON object:
 {
   "message": 0,
   "metadata": {
-    "version": 2,
+    "version": 3,
     "base": [
       {
         "mars": {"class": "od", "type": "fc", "date": "20260401", "step": 0, "param": "2t"},
@@ -71,10 +70,14 @@ With `-j`, each message is a JSON object:
   },
   "objects": [
     {"type": "ntensor", "ndim": 2, "shape": [721, 1440], "dtype": "float32",
-     "encoding": "none", "hash": {"type": "xxh3", "value": "a3f0..."}}
+     "encoding": "none"}
   ]
 }
 ```
+
+> **Note.** Per-object integrity hashes live in the frame's inline
+> hash slot (see [wire-format.md §Common Frame Footer](../format/wire-format.md))
+> and are not surfaced as a `hash` field on the decoded descriptor.
 
 ## When to Use dump vs ls
 

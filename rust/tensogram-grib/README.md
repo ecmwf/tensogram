@@ -9,21 +9,26 @@ into Tensogram pipelines.
 
 ## Requirements
 
-Requires ecCodes C library (e.g. `apt install libeccodes-dev` or `brew install eccodes`).
+Requires the ecCodes C library (e.g. `apt install libeccodes-dev` or
+`brew install eccodes`).
 
 ## Usage
 
-```rust
-use tensogram_grib::{convert_grib, GribConvertOptions};
+```rust,ignore
+use std::path::Path;
+use tensogram_grib::{convert_grib_file, ConvertOptions};
 
-convert_grib("forecast.grib", "forecast.tgm", &GribConvertOptions::default())?;
+let messages = convert_grib_file(
+    Path::new("forecast.grib"),
+    &ConvertOptions::default(),
+)?;
+// messages: Vec<Vec<u8>> — each element is a complete Tensogram wire-format message.
 ```
 
 ## Installation
 
-```toml
-[dependencies]
-tensogram-grib = "0.14"
+```bash
+cargo add tensogram-grib
 ```
 
 ## CLI
@@ -35,8 +40,8 @@ tensogram convert-grib forecast.grib -o forecast.tgm
 
 ## Documentation
 
-- Full docs: https://sites.ecmwf.int/docs/tensogram/main/
-- Repository: https://github.com/ecmwf/tensogram
+- Full documentation: <https://sites.ecmwf.int/docs/tensogram/main/>
+- Repository: <https://github.com/ecmwf/tensogram>
 
 ## License
 

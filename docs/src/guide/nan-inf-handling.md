@@ -21,10 +21,11 @@ encode:
    together (the flag covers both signs; two per-sign bitmasks are
    written when both kinds appear in the payload).
 
-The mask companion is formally called the *`NTensorFrame`* —
-wire-format type 9, defined in
-[plans/BITMASK_FRAME.md](https://github.com/ecmwf/tensogram/blob/main/plans/BITMASK_FRAME.md)
-and [the wire-format reference](../format/wire-format.md#ntensormaskedframe-type-9).
+The mask companion is part of the *`NTensorFrame`* — wire-format
+type 9.  For the byte-level specification, see
+[the wire-format reference](../format/wire-format.md#ntensorframe-type-9)
+and the normative spec in
+[plans/WIRE_FORMAT.md §6.5](https://github.com/ecmwf/tensogram/blob/main/plans/WIRE_FORMAT.md).
 
 ## When to use which policy
 
@@ -64,7 +65,7 @@ import tensogram
 
 data = np.array([1.0, np.nan, 3.0], dtype=np.float64)
 msg = tensogram.encode(
-    {"version": 2},
+    {"version": 3},
     [(desc, data)],
     allow_nan=True,
 )
@@ -78,7 +79,7 @@ decoded = tensogram.decode(msg)
 import { encode, decode } from '@ecmwf.int/tensogram';
 
 const msg = encode(
-    { version: 2 },
+    { version: 3 },
     [{ descriptor, data: new Float64Array([1, NaN, 3]) }],
     { allowNan: true },
 );
@@ -136,8 +137,8 @@ kinds for complex dtypes are therefore flattened to the canonical
 form through a mask round-trip.  If you need bit-exact NaN
 preservation, pre-encode your payload and use
 `encode_pre_encoded` to bypass the substitute-and-mask stage
-entirely.  See [`plans/BITMASK_FRAME.md` §7.1](https://github.com/ecmwf/tensogram/blob/main/plans/BITMASK_FRAME.md#71-lossy-reconstruction--documented-limitation)
-for the full design rationale.
+entirely.  See [plans/WIRE_FORMAT.md §6.5.4](https://github.com/ecmwf/tensogram/blob/main/plans/WIRE_FORMAT.md)
+for the normative spec.
 
 ## Mask compression methods
 

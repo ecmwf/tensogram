@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   await init();
 
   // 1. Valid buffer — expect zero error-severity issues and hash_verified=true.
-  const good = encode({ version: 2 }, [
+  const good = encode({ version: 3 }, [
     { descriptor: describe([4], 'float32'), data: new Float32Array([1, 2, 3, 4]) },
   ]);
   const goodReport = validate(good);
@@ -72,10 +72,10 @@ async function main(): Promise<void> {
   try {
     const path = join(tmp, 'multi.tgm');
     // Concatenate two valid messages into a single file.
-    const m1 = encode({ version: 2 }, [
+    const m1 = encode({ version: 3 }, [
       { descriptor: describe([2], 'float32'), data: new Float32Array([10, 20]) },
     ]);
-    const m2 = encode({ version: 2 }, [
+    const m2 = encode({ version: 3 }, [
       { descriptor: describe([3], 'float64'), data: new Float64Array([0.1, 0.2, 0.3]) },
     ]);
     const combined = new Uint8Array(m1.byteLength + m2.byteLength);
