@@ -32,16 +32,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build WASM
-        run: |
-          wasm-pack build rust/tensogram-wasm --release \
-            --target web --out-dir ../../typescript/wasm --out-name tensogram_wasm
-
-      - name: Build TypeScript wrapper
-        working-directory: typescript
-        run: |
-          npm ci || npm install --no-audit --no-fund
-          npx tsc
+      - name: Build WASM and TypeScript
+        run: make ts-build
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
