@@ -44,8 +44,14 @@ rust-lint: rust-clippy rust-fmt ## Run all Rust lints (clippy + fmt)
 # ── Python ────────────────────────────────────────────────────────────────
 
 PYTHON  ?= uv run python
-MATURIN ?= uv run --with maturin maturin
 RUFF    ?= uv run --with ruff ruff
+# `--no-project` keeps `uv run` from discovering python/bindings/pyproject.toml
+# and trying to install `tensogram` (incl. its `[all]` extras) before maturin
+# even starts. Without it, every minor-version release fails at wheel build
+# time because the new sibling extras (tensogram-xarray / tensogram-zarr at
+# the new minor) don't exist on PyPI yet — the publish flow itself is what
+# uploads them. maturin still reads pyproject.toml directly for the build.
+MATURIN ?= uv run --no-project --with maturin maturin
 RUFF_CFG ?= python/bindings/pyproject.toml
 # Space-separated --interpreter flags passed to maturin build; defaults to
 # auto-discovery. Override in CI: MATURIN_INTERP_ARGS="--interpreter /path/to/py"
