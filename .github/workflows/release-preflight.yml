@@ -62,20 +62,24 @@ jobs:
 
           check_version "VERSION" "$(cat VERSION)"
 
+          # Workspace root [workspace.package] version. Since #74 the in-workspace
+          # member crates (rust/tensogram, rust/tensogram-encodings,
+          # rust/tensogram-szip, rust/tensogram-sz3, rust/tensogram-sz3-sys,
+          # rust/tensogram-cli, rust/tensogram-ffi, rust/benchmarks,
+          # examples/rust) inherit via `version.workspace = true`, so this single
+          # check covers all of them.
+          WS_VER=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          check_version "Cargo.toml [workspace.package]" "$WS_VER"
+
+          # Excluded crates: not workspace members (PyO3 needs the Python
+          # linker, GRIB/NetCDF/WASM each link against incompatible C libs /
+          # target the wasm32 platform). Each has an explicit
+          # `version = "X.Y.Z"` that must be bumped individually.
           for toml in \
-            rust/tensogram/Cargo.toml \
-            rust/tensogram-encodings/Cargo.toml \
-            rust/tensogram-szip/Cargo.toml \
-            rust/tensogram-sz3/Cargo.toml \
-            rust/tensogram-sz3-sys/Cargo.toml \
-            rust/tensogram-cli/Cargo.toml \
-            rust/tensogram-ffi/Cargo.toml \
+            python/bindings/Cargo.toml \
             rust/tensogram-grib/Cargo.toml \
             rust/tensogram-netcdf/Cargo.toml \
-            rust/tensogram-wasm/Cargo.toml \
-            python/bindings/Cargo.toml \
-            rust/benchmarks/Cargo.toml \
-            examples/rust/Cargo.toml; do
+            rust/tensogram-wasm/Cargo.toml; do
             VER=$(grep '^version' "$toml" | head -1 | sed 's/.*"\(.*\)"/\1/')
             check_version "$toml" "$VER"
           done
