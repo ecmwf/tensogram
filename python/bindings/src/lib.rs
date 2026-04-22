@@ -12,10 +12,11 @@
 //! numpy integration. All tensor data crosses the boundary as numpy arrays.
 
 use std::collections::BTreeMap;
+use std::ffi::CString;
 use std::path::Path;
 
 use numpy::PyArrayMethods;
-use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyIOError, PyRuntimeError, PyUserWarning, PyValueError};
 // `PyFileNotFoundError` is only referenced from the GRIB/NetCDF converter
 // error-mapping helpers, which are themselves cfg-gated.  Gate the import
 // so `--no-default-features --features async` builds do not warn.
@@ -3142,11 +3143,18 @@ fn dict_to_data_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<DataObje
         "hash",
     ];
     let mut params = BTreeMap::new();
+    let mut misplaced_metadata_keys: Vec<String> = Vec::new();
     for (k, v) in dict.iter() {
         let key: String = k.extract()?;
         if !reserved_keys.contains(&key.as_str()) {
+            if is_metadata_like_key(&key) {
+                misplaced_metadata_keys.push(key.clone());
+            }
             params.insert(key, py_to_cbor(&v)?);
         }
+    }
+    if !misplaced_metadata_keys.is_empty() {
+        warn_misplaced_metadata(dict.py(), &misplaced_metadata_keys)?;
     }
 
     Ok(DataObjectDescriptor {
@@ -3162,6 +3170,62 @@ fn dict_to_data_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<DataObje
         params,
         masks: None,
     })
+}
+
+/// Keys that look like application metadata rather than encoding parameters.
+///
+/// When a user places one of these in the descriptor dict, it is still
+/// captured into ``DataObjectDescriptor.params`` for wire compatibility,
+/// but a ``UserWarning`` is emitted pointing at ``meta['base'][i]`` as
+/// the correct location.  Keys fall into three groups:
+///
+/// * Consumed by zarr/xarray's naming chain (``resolve_variable_name``).
+/// * Consumed by xarray's dimension logic (``base[i]["dim_names"]``).
+/// * Obvious namespace roots from established vocabularies.
+///
+/// See issue #67 and ``python/tensogram-zarr/src/tensogram_zarr/mapping.py``
+/// for the naming-chain key list.
+const METADATA_LIKE_DESCRIPTOR_KEYS: &[&str] = &[
+    "name",
+    "param",
+    "shortName",
+    "long_name",
+    "description",
+    "units",
+    "dim_names",
+    "mars",
+    "cf",
+    "product",
+    "instrument",
+];
+
+fn is_metadata_like_key(key: &str) -> bool {
+    METADATA_LIKE_DESCRIPTOR_KEYS.contains(&key)
+}
+
+/// Emit a single aggregated ``UserWarning`` listing descriptor keys that
+/// look like application metadata.  Multi-object messages thus warn at
+/// most once per descriptor rather than once per key.
+fn warn_misplaced_metadata(py: Python<'_>, keys: &[String]) -> PyResult<()> {
+    let key_list = keys
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let message = format!(
+        "descriptor contains application-metadata-like keys ({key_list}) \
+         that were captured into DataObjectDescriptor.params.  Application \
+         metadata belongs in meta['base'][i] — placing it in the descriptor \
+         dict works (xarray/zarr fall back to descriptor params) but is not \
+         canonical and may produce unexpected results in downstream tools. \
+         See examples/python/02b_generic_metadata.py for the recommended \
+         pattern."
+    );
+    let c_message = CString::new(message)
+        .map_err(|_| PyValueError::new_err("internal: warning message contained NUL"))?;
+    let warning_type = py.get_type::<PyUserWarning>();
+    PyErr::warn(py, &warning_type, &c_message, 2)?;
+    Ok(())
 }
 
 fn parse_dtype(s: &str) -> PyResult<Dtype> {
