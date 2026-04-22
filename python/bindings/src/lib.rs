@@ -3224,7 +3224,7 @@ fn warn_misplaced_metadata(py: Python<'_>, keys: &[String]) -> PyResult<()> {
     let c_message = CString::new(message)
         .map_err(|_| PyValueError::new_err("internal: warning message contained NUL"))?;
     let warning_type = py.get_type::<PyUserWarning>();
-    PyErr::warn(py, &warning_type, &c_message, 2)?;
+    PyErr::warn(py, &warning_type, &c_message, 1)?;
     Ok(())
 }
 
