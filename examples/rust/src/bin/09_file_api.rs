@@ -164,7 +164,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// ── helpers to navigate MARS map ──────────────────────────────────────────────
+// ── helpers to read typed values out of a CBOR map ────────────────────────────
 
 fn get_text<'a>(map: &'a Value, key: &str) -> &'a str {
     if let Value::Map(entries) = map {

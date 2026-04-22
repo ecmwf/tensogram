@@ -18,9 +18,6 @@
 //!     segmentation mask, and a 1-D array of acquisition timestamps.
 //!   * An ML-pipeline message carrying a batch of input features, a label
 //!     tensor, and a validity bitmask.
-//!
-//! This example uses weather metadata (MARS) as concrete context, but the
-//! same mechanism works with any application vocabulary.
 
 use std::collections::BTreeMap;
 

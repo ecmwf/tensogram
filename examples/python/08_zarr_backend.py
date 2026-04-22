@@ -97,7 +97,7 @@ def read_with_zarr(path: str) -> None:
         print(f"  {name}: shape={arr.shape}, dtype={arr.dtype}")
 
     # Access group attributes (from GlobalMetadata)
-    print(f"\nMARS metadata: {dict(root.attrs).get('mars', {})}")
+    print(f"\nPer-object attrs (mars namespace): {dict(root.attrs).get('mars', {})}")
     print(f"Source: {root.attrs.get('source', 'unknown')}")
 
     # Read array data
