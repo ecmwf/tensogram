@@ -24,6 +24,8 @@ python/bindings/Cargo.lock
 *~
 .DS_Store
 .idea/
-rust/tensogram-grib/Cargo.lock
+tensogram-grib/Cargo.lock
 rust/tensogram-netcdf/Cargo.lock
 rust/tensogram-wasm/Cargo.lock
+# TODO do we want to have uv.locks ignored?
+**/uv.lock
