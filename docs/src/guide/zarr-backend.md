@@ -78,6 +78,12 @@ By default, the store tries these metadata paths to name arrays:
 5. `shortName`
 6. Falls back to `object_<index>`
 
+Each path is resolved against the object's `meta.base[i]` dict first and
+then against the descriptor's `params` dict (matching the xarray
+backend's long-standing behaviour).  The per-key precedence still
+applies: a higher-priority key in either source wins; base wins only
+for the same key.
+
 You can override with any dot-path, including non-MARS vocabularies:
 
 ```python
@@ -90,6 +96,27 @@ store = TensogramStore.open_tgm("scans.tgm", variable_key="bids.task")
 # Custom vocabulary
 store = TensogramStore.open_tgm("data.tgm", variable_key="product.name")
 ```
+
+### Common pitfall: `name` in the descriptor dict
+
+Application metadata belongs in `meta["base"][i]`, not in the descriptor:
+
+```python
+# ✗ Avoid — triggers a UserWarning; works via fallback but is not canonical
+desc = {"type": "ntensor", "shape": [10, 8], "dtype": "float32",
+        "name": "temperature"}  # ← goes into desc.params, flagged
+tensogram.encode({"version": 2}, [(desc, data)])
+
+# ✓ Canonical — the simplest form
+meta = {"version": 2, "base": [{"name": "temperature"}]}
+desc = {"type": "ntensor", "shape": [10, 8], "dtype": "float32"}
+tensogram.encode(meta, [(desc, data)])
+```
+
+The descriptor fallback exists so files produced by the ✗ form still
+surface the correct names in zarr (and xarray); the write-side warning
+exists so the mistake is visible at the time it's made.
+See [issue #67](https://github.com/ecmwf/tensogram/issues/67).
 
 ## Multi-message files
 
