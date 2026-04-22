@@ -15,7 +15,6 @@ members = [
 # require the Python linker). It is excluded from default workspace builds.
 exclude = [
     "python/bindings",
-    "rust/tensogram-core-redirect",
     "rust/tensogram-grib",
     "rust/tensogram-netcdf",
     "rust/tensogram-wasm",

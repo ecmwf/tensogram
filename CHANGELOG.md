@@ -273,6 +273,20 @@ clear error pointing at re-encoding.  The v3 spec lives at
   via PyO3, WASM, C FFI, and C++ wrapper.  Cross-language parity tests
   pin the behaviour.
 
+### Removed — BREAKING
+
+- **`tensogram-core` redirect crate removed.** The
+  `rust/tensogram-core-redirect/` directory has been deleted and is no
+  longer part of the workspace; no new versions of `tensogram-core` will
+  be published to crates.io. The redirect was introduced in 0.15 (when
+  the crate was renamed `tensogram-core` → `tensogram`) as a thin
+  `pub use tensogram::*;` shim to give downstream users a grace period
+  to migrate; three minor versions later we are retiring it.
+  Users still depending on `tensogram-core` should switch to
+  `cargo add tensogram` directly. The previously published
+  `tensogram-core@0.14.0` through `tensogram-core@0.16.1` remain
+  available on crates.io as (now-frozen) re-exports.
+
 ## [0.16.1] - 2026-04-19
 
 ### Fixed

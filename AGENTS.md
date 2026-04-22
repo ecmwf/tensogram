@@ -137,7 +137,6 @@ Serves at http://localhost:8000/ (set BASE_PATH env var to deploy under a subpat
         `rust/tensogram-ffi`, `rust/benchmarks`, `examples/rust`.
     - The excluded Cargo.toml files (not workspace members, updated individually):
         `python/bindings/Cargo.toml`
-        `rust/tensogram-core-redirect/Cargo.toml`
         `rust/tensogram-grib/Cargo.toml`
         `rust/tensogram-netcdf/Cargo.toml`
         `rust/tensogram-wasm/Cargo.toml`
