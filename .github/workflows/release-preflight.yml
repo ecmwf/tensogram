@@ -28,7 +28,7 @@ jobs:
     name: Validate release readiness
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     container:
-      image: eccr.ecmwf.int/tensogram/ci:1.2.0
+      image: eccr.ecmwf.int/tensogram/ci:1.3.0
       credentials:
         username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
         password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
