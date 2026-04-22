@@ -6,8 +6,8 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
-//! Integration tests for mask-aware `validate --full` (Commit 8 of
-//! `plans/BITMASK_FRAME.md`).
+//! Integration tests for mask-aware `validate --full`.
+//! See `plans/WIRE_FORMAT.md` §11.2 for the spec.
 //!
 //! Covers:
 //! - Masked NaN/Inf positions do NOT raise NanDetected / InfDetected

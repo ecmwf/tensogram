@@ -134,12 +134,11 @@ class TestErrorSurface:
 class TestCrossCheckWithEncode:
     """v3 parity invariant — `encode` stamps a hash in the frame
     footer's inline slot.  Since Python doesn't yet surface the
-    inline slot directly (tracked as a pass-5 follow-up in
-    plans/WIRE_FORMAT_CHANGES.md), these tests verify the round-trip
-    via `validate_message` at `checksum` level: a well-formed
-    message encoded with `hash="xxh3"` must pass integrity
-    validation, and the `compute_hash` helper returns a stable
-    xxh3-64 digest over the raw bytes.
+    inline slot directly, these tests verify the round-trip via
+    `validate_message` at `checksum` level: a well-formed message
+    encoded with `hash="xxh3"` must pass integrity validation, and
+    the `compute_hash` helper returns a stable xxh3-64 digest over
+    the raw bytes.
     """
 
     def test_matches_stamped_hash_float32(self):

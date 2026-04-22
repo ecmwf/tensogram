@@ -17,7 +17,7 @@
 //! Pure-Rust and verified to build on `wasm32-unknown-unknown`, so
 //! available on every platform without feature-gating — this is the
 //! default [`crate::bitmask::MaskMethod`] per
-//! `plans/BITMASK_FRAME.md`.
+//! `plans/WIRE_FORMAT.md` §6.5.
 //!
 //! # Index range
 //!

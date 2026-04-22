@@ -7,7 +7,7 @@
 // does it submit to any jurisdiction.
 
 //! Integration tests for the `--allow-nan` / `--allow-inf` CLI flags
-//! and matching env vars (Commit 12 of `plans/BITMASK_FRAME.md` §9).
+//! and matching env vars.  See `docs/src/guide/nan-inf-handling.md`.
 
 use std::process::Command;
 

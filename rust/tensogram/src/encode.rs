@@ -74,7 +74,7 @@ pub struct EncodeOptions {
     /// When `true`, NaN values in float / complex payloads are
     /// substituted with `0.0` and recorded in a bitmask companion
     /// section of the data-object frame (wire type 9
-    /// `NTensorFrame`, see `plans/BITMASK_FRAME.md`).  When
+    /// `NTensorFrame`, see `plans/WIRE_FORMAT.md` §6.5).  When
     /// `false` (the default) any NaN in the input is a hard encode
     /// error.
     pub allow_nan: bool,
@@ -224,7 +224,9 @@ fn encode_one_object(
     //   0.17 default finite check: first NaN / Inf errors out.
     // - Either flag true — substitute non-finite values with the
     //   dtype-specific zero and collect per-kind bitmasks for the
-    //   frame-writing stage.  See `plans/BITMASK_FRAME.md` §6.1.
+    //   frame-writing stage.  See `plans/WIRE_FORMAT.md` §6.5 and
+    //   `docs/src/guide/nan-inf-handling.md` for the user-facing
+    //   semantics.
     //
     // Pre-encoded bytes are opaque: skip the stage.
     let (pipeline_input, mask_set) = if matches!(mode, EncodeMode::Raw) {
@@ -334,7 +336,7 @@ fn encode_one_object(
     // order `nan`, `inf+`, `inf-` (matching the CBOR key sort order),
     // and each kind's CBOR descriptor records its byte offset and
     // length relative to the region start.  See
-    // `plans/BITMASK_FRAME.md` §3.2.
+    // `plans/WIRE_FORMAT.md` §6.5.
     let (payload_region, masks_metadata) = compose_payload_region(
         encoded_payload,
         mask_set,
@@ -1179,7 +1181,7 @@ fn encode_one_mask(
 }
 
 /// Build the `params` sub-map for a [`MaskDescriptor`] per
-/// `plans/BITMASK_FRAME.md` §3.3.  Empty for the parameter-less
+/// `plans/WIRE_FORMAT.md` §6.5.1.  Empty for the parameter-less
 /// methods; populated for `zstd` / `blosc2`.
 fn mask_params_cbor(method: &MaskMethod) -> BTreeMap<String, ciborium::Value> {
     let mut params = BTreeMap::new();

@@ -1024,7 +1024,7 @@ fn py_decode(
 /// mapped to a boolean numpy array of length ``n_elements``.  An
 /// empty dict means the frame carried no mask companion.
 ///
-/// See :doc:`nan-inf-handling` and ``plans/BITMASK_FRAME.md`` §7.3.
+/// See :doc:`nan-inf-handling` and ``plans/WIRE_FORMAT.md`` §6.5.
 #[pyfunction]
 #[pyo3(
     name = "decode_with_masks",
@@ -2751,7 +2751,7 @@ fn make_encode_options(hash: Option<&str>, threads: u32) -> PyResult<EncodeOptio
 /// Python-facing `encode` / `append` / `StreamingEncoder.create`
 /// entry points.
 ///
-/// Mask method names follow [`plans/BITMASK_FRAME.md` §3.3]:
+/// Mask method names follow [`plans/WIRE_FORMAT.md` §6.5.1]:
 /// `"none"` | `"rle"` | `"roaring"` | `"lz4"` | `"zstd"` |
 /// `"blosc2"`.  Missing sentinels use the library defaults
 /// (`Roaring` for methods, `128` for the small-mask fallback

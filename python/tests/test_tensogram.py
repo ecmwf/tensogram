@@ -549,9 +549,7 @@ class TestDataObjectDescriptor:
         `descriptor.hash` is retained on the Python class for source
         compatibility but returns None regardless of whether the
         encoder wrote a hash slot.  Use `tensogram validate --checksum`
-        or the upcoming `Message.inline_hashes()` accessor (tracked in
-        plans/WIRE_FORMAT_CHANGES.md open follow-ups) for frame-level
-        integrity.
+        for frame-level integrity.
         """
         data = np.ones(10, dtype=np.float32)
         msg = encode_simple(data, hash_algo="xxh3")

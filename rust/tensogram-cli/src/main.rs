@@ -45,7 +45,8 @@ struct Cli {
     ///
     /// Set `TENSOGRAM_ALLOW_NAN=1` (or `true`, `yes`, `on`) in the
     /// environment for the same effect.  See
-    /// `plans/BITMASK_FRAME.md` for the wire-format details.
+    /// `docs/src/guide/nan-inf-handling.md` for the contract and
+    /// `plans/WIRE_FORMAT.md` §6.5 for the wire-format details.
     #[arg(
         long,
         global = true,

@@ -396,7 +396,7 @@ pub fn decode_data_object_frame(buf: &[u8]) -> Result<(DataObjectDescriptor, &[u
         //
         // `payload_region` = [encoded_payload][mask_nan][mask_inf+][mask_inf-]
         // when descriptor.masks is Some; just [encoded_payload] otherwise.
-        // See `plans/BITMASK_FRAME.md` §3.2.
+        // See `plans/WIRE_FORMAT.md` §6.5.
         let payload_start = FRAME_HEADER_SIZE;
         let cbor_start = cbor_offset;
         let cbor_end = cbor_offset_pos; // v3: end-of-CBOR = start-of-footer (end-16)
@@ -828,7 +828,7 @@ pub struct DecodedMessage<'a> {
     ///
     /// `mask_region_slice` is empty when the frame has no masks;
     /// otherwise it holds the raw compressed mask bytes.  See
-    /// `plans/BITMASK_FRAME.md` §3.2 for the region layout.
+    /// `plans/WIRE_FORMAT.md` §6.5 for the region layout.
     pub objects: Vec<(DataObjectDescriptor, &'a [u8], &'a [u8], usize)>,
     /// Per-object preceder metadata, parallel to `objects`.
     /// `Some(map)` if a PrecederMetadata frame preceded that object.

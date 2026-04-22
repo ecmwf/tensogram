@@ -25,8 +25,7 @@
  *   dtype introspection and dispatch
  * - {@link TensogramError} and subclasses — typed error hierarchy
  *
- * See `docs/src/guide/typescript-api.md` for the user guide and
- * `plans/TYPESCRIPT_WRAPPER.md` for the design doc.
+ * See `docs/src/guide/typescript-api.md` for the user guide.
  */
 
 export { init } from './init.js';

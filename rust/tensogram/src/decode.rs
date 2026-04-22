@@ -77,7 +77,7 @@ pub struct DecodeOptions {
     /// `NTensorFrame` `masks` sub-map, decompress the masks
     /// and write the canonical NaN / +Inf / -Inf bit pattern at
     /// every `1` position in the decoded output.  See
-    /// `plans/BITMASK_FRAME.md` §7.1 for the (lossy) reconstruction
+    /// `plans/WIRE_FORMAT.md` §6.5.4 for the (lossy) reconstruction
     /// caveat — only the canonical quiet-NaN / ±∞ bit pattern is
     /// restored; specific NaN payloads are not preserved.
     ///
@@ -188,7 +188,8 @@ pub fn decode_metadata(buf: &[u8]) -> Result<GlobalMetadata> {
 /// missing-count statistics without materialising the canonical
 /// NaN / Inf bytes).
 ///
-/// See `plans/BITMASK_FRAME.md` §7.3.
+/// See `docs/src/guide/nan-inf-handling.md` for the companion user
+/// guide and `plans/WIRE_FORMAT.md` §6.5 for the wire-format details.
 pub fn decode_with_masks(
     buf: &[u8],
     options: &DecodeOptions,
@@ -203,7 +204,7 @@ pub fn decode_with_masks(
 
     // Local options snapshot with restore_non_finite forced off —
     // this API returns masks alongside a 0-substituted payload by
-    // design, matching the `plans/BITMASK_FRAME.md` §7.3 contract.
+    // design.
     let mut decode_opts = options.clone();
     decode_opts.restore_non_finite = false;
 
@@ -339,7 +340,7 @@ pub fn decode_range(
     let (desc, payload_bytes, mask_region, _) = &msg.objects[object_index];
     let mut parts = decode_range_from_payload(desc, payload_bytes, ranges, options)?;
     // Apply mask-aware NaN / Inf restoration to each requested
-    // sub-range.  See `plans/BITMASK_FRAME.md` §7.4.
+    // sub-range (see `docs/src/guide/nan-inf-handling.md`).
     if options.restore_non_finite && desc.masks.is_some() {
         let mask_set = crate::restore::decode_mask_set(desc, mask_region)?;
         crate::restore::restore_non_finite_into_ranges(

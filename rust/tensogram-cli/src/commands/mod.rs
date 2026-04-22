@@ -28,8 +28,8 @@ pub mod validate;
 ///
 /// Defaults correspond to the library's default-reject policy — pass
 /// `--allow-nan` / `--allow-inf` on the CLI (or set the matching env
-/// vars, see `plans/BITMASK_FRAME.md` §9) to opt in to the bitmask
-/// companion frame.
+/// vars, see `docs/src/guide/nan-inf-handling.md`) to opt in to the
+/// bitmask companion frame.
 #[derive(Debug, Clone, Default)]
 pub struct MaskCliOptions {
     pub allow_nan: bool,

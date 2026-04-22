@@ -325,7 +325,7 @@ pub(crate) fn validate_metadata(
 
         // Split obj.payload into (data_payload, mask_region) when the
         // frame carries a `masks` sub-map — see
-        // `plans/BITMASK_FRAME.md` §3.2.  Before this split, `payload`
+        // `plans/WIRE_FORMAT.md` §6.5.  Before this split, `payload`
         // spans the entire payload region including any trailing mask
         // bytes; Level 3 / Level 4 expect the narrowed slice so that
         // `decode_pipeline` sees only the encoded tensor data.

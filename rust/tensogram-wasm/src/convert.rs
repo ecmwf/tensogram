@@ -42,7 +42,8 @@ pub(crate) fn build_encode_options(hash: Option<bool>) -> EncodeOptions {
 
 /// Build an [`EncodeOptions`] from the full JS kwargs set for the
 /// NaN / Inf bitmask companion frame.  See
-/// [`plans/BITMASK_FRAME.md`] for the semantics.
+/// `docs/src/guide/nan-inf-handling.md` for the semantics and
+/// `plans/WIRE_FORMAT.md` §6.5 for the wire-format details.
 ///
 /// - `hash`: `true` (default) or `false` to disable hashing.
 /// - `allow_nan` / `allow_inf`: both default `false` (reject policy).

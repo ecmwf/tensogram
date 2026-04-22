@@ -6,8 +6,8 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
-//! Integration tests for the `allow_nan` / `allow_inf` encode path
-//! introduced by Commit 5 of `plans/BITMASK_FRAME.md`.
+//! Integration tests for the `allow_nan` / `allow_inf` encode path.
+//! See `docs/src/guide/nan-inf-handling.md` for the user contract.
 //!
 //! Scope of this commit: encode-side only.  The tests verify that
 //! the type-9 `NTensorFrame` is emitted with a correctly
@@ -397,7 +397,7 @@ fn complex64_nan_restored_to_both_components() {
 
     // Default decode: both real and imag components restore to NaN
     // (documented lossy behaviour — bit-exact NaN payloads are NOT
-    // preserved; see plans/BITMASK_FRAME.md §7.1).
+    // preserved; see `plans/WIRE_FORMAT.md` §6.5.4).
     let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
     let f: Vec<f32> = objects[0]
         .1

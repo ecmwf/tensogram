@@ -306,7 +306,7 @@ export interface MessagePosition {
 /**
  * Mask compression methods recognised by the NaN / Inf companion
  * bitmask frame (wire type 9 `NTensorFrame`, see
- * `plans/BITMASK_FRAME.md` §3.3).
+ * `plans/WIRE_FORMAT.md` §6.5.1).
  */
 export type MaskMethod =
   | 'none'
@@ -328,7 +328,7 @@ export interface EncodeOptions {
    * substituted with `0.0` and recorded in a bitmask companion
    * section of the data-object frame.  When `false` (the default),
    * any NaN in the input is a hard encode error.  See
-   * `plans/BITMASK_FRAME.md`.
+   * `docs/src/guide/nan-inf-handling.md`.
    */
   allowNan?: boolean;
   /**
@@ -364,7 +364,7 @@ export interface DecodeOptions {
    * Set to `false` to receive the `0.0`-substituted bytes as they
    * are on disk.  Only meaningful for frames produced with
    * `allowNan` / `allowInf` on encode.  See
-   * `plans/BITMASK_FRAME.md` §7.
+   * `docs/src/guide/nan-inf-handling.md`.
    */
   restoreNonFinite?: boolean;
 }

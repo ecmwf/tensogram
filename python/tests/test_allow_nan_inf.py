@@ -10,7 +10,8 @@
 
 Covers the NaN / Inf bitmask companion frame (type 9,
 ``NTensorFrame``) introduced in 0.17 (see
-``plans/BITMASK_FRAME.md``).  These tests exercise:
+``plans/WIRE_FORMAT.md`` §6.5 and
+``docs/src/guide/nan-inf-handling.md``).  These tests exercise:
 
 - default-reject policy (``allow_nan`` / ``allow_inf`` both False)
 - masked-encode round-trip (NaN restored on decode)

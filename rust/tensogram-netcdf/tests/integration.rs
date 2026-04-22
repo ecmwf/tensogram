@@ -72,7 +72,7 @@ fn simple_2d_data_roundtrip() {
 fn multi_dtype_preserves_native_dtypes() {
     // multi_dtype.nc contains a 'f64_with_nan' variable.  Default
     // encode rejects NaN, so opt in via allow_nan — matches the
-    // policy documented in plans/BITMASK_FRAME.md §2.
+    // policy documented in docs/src/guide/nan-inf-handling.md.
     let path = testdata("multi_dtype.nc");
     let opts = ConvertOptions {
         encode_options: tensogram::EncodeOptions {

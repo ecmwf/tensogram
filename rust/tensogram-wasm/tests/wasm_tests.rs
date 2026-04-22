@@ -2560,10 +2560,9 @@ fn compute_hash_is_stable_for_raw_bytes() {
     // descriptor — it lives in the frame footer's inline slot
     // (plans/WIRE_FORMAT.md §2.4).  Testing cross-equality with
     // the inline slot from the WASM side requires a public
-    // slot-accessor API that isn't yet surfaced (tracked in
-    // plans/WIRE_FORMAT_CHANGES.md open follow-ups).  Until
-    // then, we pin `compute_hash` stability: the same raw bytes
-    // always produce the same 16-character hex digest.
+    // slot-accessor API that isn't yet surfaced.  Until then, we
+    // pin `compute_hash` stability: the same raw bytes always
+    // produce the same 16-character hex digest.
     let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let a = tensogram_wasm::compute_hash(&payload, None).unwrap();
     let b = tensogram_wasm::compute_hash(&payload, None).unwrap();

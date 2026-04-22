@@ -6,8 +6,8 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
-//! Integration tests for mask-aware `decode_range` (Commit 7 of
-//! `plans/BITMASK_FRAME.md`).
+//! Integration tests for mask-aware `decode_range`.
+//! See `plans/WIRE_FORMAT.md` §6.5 for the wire-format spec.
 //!
 //! Verifies that partial-range decodes on payloads with NaN / Inf
 //! masks restore canonical bit patterns only at positions that fall

@@ -134,7 +134,7 @@ pub(crate) struct ObjectContext<'a> {
     pub payload: &'a [u8],
     /// Mask-region bytes trailing the data payload.  Empty when the
     /// frame has no masks; populated in Level 2 from the descriptor's
-    /// `masks` sub-map.  See `plans/BITMASK_FRAME.md` §3.2.
+    /// `masks` sub-map.  See `plans/WIRE_FORMAT.md` §6.5.
     pub mask_region: &'a [u8],
     /// Byte offset of the data object frame within the message.
     pub frame_offset: usize,

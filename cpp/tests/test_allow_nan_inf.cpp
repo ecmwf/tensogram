@@ -9,8 +9,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 ECMWF
 //
-// Tests for the allow_nan / allow_inf C++ bindings (Commit 11 of
-// plans/BITMASK_FRAME.md).
+// Tests for the allow_nan / allow_inf C++ bindings.
+// See docs/src/guide/nan-inf-handling.md for the user contract.
 
 #include <gtest/gtest.h>
 #include <tensogram.hpp>

@@ -32,7 +32,7 @@ pub struct HashDescriptor {
 }
 
 /// On-wire descriptor for one of the three NaN / Inf companion-frame
-/// masks (see `plans/BITMASK_FRAME.md` §3.3).
+/// masks (see `plans/WIRE_FORMAT.md` §6.5.1).
 ///
 /// `offset` and `length` locate the mask blob inside the frame's
 /// payload region; `method` names the compression scheme (`rle`,
@@ -57,7 +57,7 @@ pub struct MaskDescriptor {
 }
 
 /// Top-level `masks` sub-map for the `NTensorFrame` (wire type 9,
-/// see `plans/BITMASK_FRAME.md` §3.3).
+/// see `plans/WIRE_FORMAT.md` §6.5).
 ///
 /// All three fields are optional — a frame can carry any subset (or
 /// none, in which case the entire `masks` sub-map is absent).  Field
@@ -107,9 +107,10 @@ pub struct DataObjectDescriptor {
     pub compression: String,
 
     /// Optional NaN / Inf companion-mask metadata (`NTensorFrame`,
-    /// wire type 9 — see `plans/BITMASK_FRAME.md`).  `None` means no
-    /// mask sections are present, and the frame is byte-compatible with
-    /// the legacy `NTensorFrame` layout.
+    /// wire type 9 — see `plans/WIRE_FORMAT.md` §6.5).  `None` means
+    /// no mask sections are present, and the frame is byte-compatible
+    /// with an `NTensorFrame` emitted without the `allow_nan` /
+    /// `allow_inf` opt-in.
     ///
     /// Declared **before** `params` so that the flattened `params` map
     /// below does not absorb the `masks` key at deserialisation time.

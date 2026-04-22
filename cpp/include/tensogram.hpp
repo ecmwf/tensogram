@@ -199,7 +199,8 @@ struct encode_options {
     /// When true, NaN values in float / complex payloads are substituted
     /// with `0.0` and recorded in a bitmask companion section of the
     /// data-object frame.  When false (the default), any NaN input is a
-    /// hard encode error.  See `plans/BITMASK_FRAME.md`.
+    /// hard encode error.  See `docs/src/guide/nan-inf-handling.md`
+    /// and `plans/WIRE_FORMAT.md` §6.5.
     bool allow_nan = false;
     /// When true, `+Inf` AND `-Inf` values are substituted with `0.0` and
     /// recorded in per-sign bitmasks.  Default false (reject).

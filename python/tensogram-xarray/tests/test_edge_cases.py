@@ -381,7 +381,7 @@ class TestWireFormatEdgeCases:
         meta = {"version": 2, "base": [{"name": "nan_field"}]}
         with tensogram.TensogramFile.create(path) as f:
             # allow_nan=True opts into the NaN companion-mask wire
-            # format (see BITMASK_FRAME.md §2).
+            # format (see docs/src/guide/nan-inf-handling.md).
             f.append(meta, [(_desc([3, 4]), data)], allow_nan=True)
 
         ds = xr.open_dataset(path, engine="tensogram", variable_key="name")

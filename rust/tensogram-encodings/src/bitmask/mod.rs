@@ -9,7 +9,7 @@
 //! Compressed bitmasks for the NaN / Inf bitmask companion frame.
 //!
 //! Used by `NTensorFrame` (wire type 9, see
-//! `plans/BITMASK_FRAME.md` §3) to record the positions of NaN / +Inf /
+//! `plans/WIRE_FORMAT.md` §6.5) to record the positions of NaN / +Inf /
 //! -Inf values in a float payload.  The payload itself has those
 //! positions substituted with `0.0`; the bitmask tells the decoder
 //! where to restore the non-finite values on decode.
@@ -40,8 +40,8 @@ pub mod roaring;
 use thiserror::Error;
 
 /// Bitmask compression method selector.  Serialised in the CBOR
-/// descriptor's `masks[kind].method` field; see `plans/BITMASK_FRAME.md`
-/// §3.3 for the schema.
+/// descriptor's `masks[kind].method` field; see `plans/WIRE_FORMAT.md`
+/// §6.5.1 for the schema.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum MaskMethod {
     /// Bit-level run-length encoding.  See [`rle`] for on-wire layout.

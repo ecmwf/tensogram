@@ -67,9 +67,7 @@ describe('Scope C.1 — computeHash', () => {
     // frame footer's inline slot (plans/WIRE_FORMAT.md §2.4), so
     // `descriptor.hash` is always undefined on the TS-side decoded
     // output.  The standalone `computeHash` helper remains a
-    // cross-language-stable digest function; a Message-level
-    // inline-hash accessor is tracked as a pass-5 follow-up in
-    // plans/WIRE_FORMAT_CHANGES.md.
+    // cross-language-stable digest function.
     const values = new Float32Array([1.25, 2.5, 3.75, 4.0]);
     const raw = new Uint8Array(values.buffer, values.byteOffset, values.byteLength);
     const a = computeHash(raw);
