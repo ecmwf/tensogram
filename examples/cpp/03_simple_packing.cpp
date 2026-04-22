@@ -37,7 +37,7 @@ int main() {
     constexpr std::uint32_t bits_per_value = 16;
     constexpr std::int32_t decimal_scale_factor = 0;
 
-    tgm_error err = tgm_simple_packing_compute_params(
+    [[maybe_unused]] tgm_error err = tgm_simple_packing_compute_params(
         temps.data(), temps.size(),
         bits_per_value, decimal_scale_factor,
         &reference_value, &binary_scale_factor);
@@ -71,7 +71,7 @@ int main() {
     assert(obj.encoding() == "simple_packing");
 
     const double* decoded = obj.data_as<double>();
-    const std::size_t count = obj.element_count<double>();
+    [[maybe_unused]] const std::size_t count = obj.element_count<double>();
     assert(count == static_cast<std::size_t>(N));
 
     // -- Measure quantization error --
