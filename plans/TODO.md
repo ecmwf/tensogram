@@ -304,9 +304,10 @@ For speculative ideas, see `IDEAS.md`.
       `config.num_values` is attacker-controllable via the tensor-shape
       CBOR of a malformed `.tgm` file, so a pathological value drives
       an infallible allocation that can abort the process (DoS).
-    - blosc2 was fixed in-PR for #69 by dropping `expected_size` trust
-      entirely and using `Vec::new()` + per-chunk `try_reserve` (size
-      comes from the codec's own frame trailer, not the descriptor).
+    - blosc2 was fixed in PR #69 (which closes issue #68) by dropping
+      `expected_size` trust entirely and using `Vec::new()` + per-chunk
+      `try_reserve` (size comes from the codec's own frame trailer, not
+      the descriptor).
     - Remaining affected codecs:
         - `rust/tensogram-encodings/src/libaec.rs:150` —
           `vec![0u8; expected_size]` inside szip's `aec_decompress`
@@ -322,7 +323,7 @@ For speculative ideas, see `IDEAS.md`.
         - Switch the remaining codecs to `try_reserve` + growable
           allocation so allocation failures surface as
           `CompressionError` instead of aborting the process.
-    - Spun out of the Copilot review on #69.
+    - Spun out of the Copilot review on PR #69.
 
 ## Viewer
 

@@ -108,12 +108,21 @@ impl Blosc2Compressor {
         dparams
     }
 
-    /// Compress `data` into an SChunk whose per-chunk byte size is at most
-    /// `requested_chunk_bytes`.  Private test seam so that unit tests can
-    /// exercise the multi-chunk path with small buffers without having to
-    /// allocate [`DEFAULT_BLOSC2_CHUNK_BYTES`] worth of scratch memory.
-    /// Production callers reach this via [`Compressor::compress`], which
-    /// passes `DEFAULT_BLOSC2_CHUNK_BYTES`.
+    /// Compress `data` into an SChunk.  The effective per-chunk byte size
+    /// is `requested_chunk_bytes` floored to a multiple of `typesize` and
+    /// clamped to [`BLOSC2_MAX_BUFFERSIZE`] at the top.  In the edge case
+    /// `requested_chunk_bytes < typesize` it is rounded UP to exactly one
+    /// `typesize`, so the effective size can exceed the requested value
+    /// when the caller asks for less than a single element.  Production
+    /// callers never hit that edge because [`DEFAULT_BLOSC2_CHUNK_BYTES`]
+    /// (256 MiB) is always comfortably larger than blosc2's maximum
+    /// typesize (255 bytes).
+    ///
+    /// Private test seam so that unit tests can exercise the multi-chunk
+    /// path with small buffers without having to allocate
+    /// [`DEFAULT_BLOSC2_CHUNK_BYTES`] worth of scratch memory.  Production
+    /// callers reach this via [`Compressor::compress`], which passes
+    /// [`DEFAULT_BLOSC2_CHUNK_BYTES`].
     fn compress_with_chunk_bytes(
         &self,
         data: &[u8],

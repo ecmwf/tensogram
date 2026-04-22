@@ -90,7 +90,7 @@ implement until promoted to `TODO.md`.
   case or microbenchmark motivates the wire-format addition;
   `blosc2_frame_get_offsets` has been a public `BLOSC_EXPORT` since
   at least v2.7.1, so the upstream surface is stable.  Spun out of
-  the #68 multi-chunk fix review.
+  the issue #68 multi-chunk fix review (PR #69).
 
 ## CI
 
