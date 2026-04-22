@@ -49,6 +49,10 @@ jobs:
         if: steps.version-check.outputs.already_published == 'false'
         working-directory: typescript
         env:
+          # Named TEMPORARY_NPMJS_APIKEY because the plan is to migrate to
+          # npm trusted publishing (OIDC, no long-lived token) once it is
+          # available for the @ecmwf.int scope. Until that migration lands
+          # this secret is the production credential and is safe to use.
           NODE_AUTH_TOKEN: ${{ secrets.TEMPORARY_NPMJS_APIKEY }}
         run: |
           cp ../LICENSE ./LICENSE
