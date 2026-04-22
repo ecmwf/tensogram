@@ -1,0 +1,170 @@
+name: Publish Python packages to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      use_test_pypi:
+        description: "Upload to Test PyPI instead of production PyPI"
+        type: boolean
+        default: false
+
+jobs:
+  # ── tensogram (native extension — maturin + PyO3) ─────────────────────────
+
+  build-tensogram-linux:
+    name: Build tensogram wheels (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # Uses the same maturin build args as `make python-dist`, wrapped in the
+      # manylinux_2_28 container that is required for Linux-compatible wheels.
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python/bindings
+          target: x86_64
+          manylinux: manylinux_2_28
+          args: --release --out dist --find-interpreter
+          before-script-linux: yum install -y clang-devel
+          sccache: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-tensogram-linux-x86_64
+          path: python/bindings/dist/
+
+  build-tensogram-macos:
+    name: Build tensogram wheels (macOS arm64)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: astral-sh/setup-uv@v3
+
+      # Install all supported CPython versions (including free-threaded) so
+      # they are available to maturin via explicit --interpreter flags.
+      - name: Install supported CPython versions
+        run: |
+          uv python install \
+            3.9 3.10 3.11 3.12 3.13 3.14 \
+            cpython-3.13+freethreaded cpython-3.14+freethreaded
+
+      - name: Build wheels
+        run: |
+          ARGS=""
+          for v in 3.9 3.10 3.11 3.12 3.13 3.14 \
+                   cpython-3.13+freethreaded cpython-3.14+freethreaded; do
+            ARGS="$ARGS --interpreter $(uv python find $v)"
+          done
+          make python-dist MATURIN_INTERP_ARGS="$ARGS"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-tensogram-macos-arm64
+          path: python/bindings/dist/
+
+  build-tensogram-freethreaded:
+    name: Build tensogram free-threaded wheels (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: astral-sh/setup-uv@v3
+
+      - name: Install free-threaded Python versions
+        run: |
+          uv python install cpython-3.13+freethreaded cpython-3.14+freethreaded
+
+      - name: Build free-threaded wheels
+        run: |
+          ARGS=""
+          for v in cpython-3.13+freethreaded cpython-3.14+freethreaded; do
+            ARGS="$ARGS --interpreter $(uv python find $v)"
+          done
+          make python-dist MATURIN_INTERP_ARGS="$ARGS"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-tensogram-freethreaded
+          path: python/bindings/dist/
+
+  # ── Pure-Python extras (hatchling) ────────────────────────────────────────
+
+  build-extras:
+    name: Build pure-Python extra packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build wheels
+        run: make python-dist-extras
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-extras
+          path: dist/extras/
+
+  # ── Publish ───────────────────────────────────────────────────────────────
+
+  publish:
+    name: Publish to ${{ inputs.use_test_pypi && 'Test PyPI' || 'PyPI' }}
+    needs:
+      - build-tensogram-linux
+      - build-tensogram-macos
+      - build-tensogram-freethreaded
+      - build-extras
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.use_test_pypi && 'test-pypi' || 'pypi' }}
+    permissions:
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: List and check artifacts
+        run: |
+          ls -la dist/
+          python -m pip install twine
+          python -m twine check dist/*
+
+      - name: Publish to Test PyPI
+        if: inputs.use_test_pypi
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          password: ${{ secrets.PYPI_TEST_API_TOKEN }}
+          skip-existing: true
+          verbose: true
+
+      - name: Publish to PyPI
+        if: ${{ !inputs.use_test_pypi }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
