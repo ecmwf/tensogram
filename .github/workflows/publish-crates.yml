@@ -96,7 +96,7 @@ jobs:
         env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
         run: /tmp/publish-crate.sh tensogram-encodings -p tensogram-encodings
 
-      - name: "5/11 — tensogram"
+      - name: "5/10 — tensogram"
         env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}" }
         run: /tmp/publish-crate.sh tensogram -p tensogram
 
