@@ -101,6 +101,12 @@ pub struct DataObjectDescriptor {
     pub dtype: Dtype,
 
     // ── Encoding pipeline ──
+    /// Wire byte order for the payload.  Optional on deserialize — a
+    /// missing key defaults to [`ByteOrder::native()`], matching the
+    /// behaviour of the Python binding's dict-to-descriptor path and
+    /// the payload bytes a caller typically produces with
+    /// native-endian conversions (`to_ne_bytes`, `std::vector<T>`, etc.).
+    #[serde(default = "ByteOrder::native")]
     pub byte_order: ByteOrder,
     pub encoding: String,
     pub filter: String,
@@ -250,5 +256,38 @@ mod tests {
         assert!(!nan_only.is_empty());
         assert!(!pos_only.is_empty());
         assert!(!neg_only.is_empty());
+    }
+
+    #[test]
+    fn descriptor_deserialize_defaults_byte_order_to_native() {
+        let json = r#"{
+            "type": "ntensor",
+            "ndim": 1,
+            "shape": [4],
+            "strides": [1],
+            "dtype": "float32",
+            "encoding": "none",
+            "filter": "none",
+            "compression": "none"
+        }"#;
+        let desc: DataObjectDescriptor =
+            serde_json::from_str(json).expect("deserialize should succeed without byte_order");
+        assert_eq!(desc.byte_order, ByteOrder::native());
+    }
+
+    #[test]
+    fn descriptor_deserialize_honours_explicit_byte_order() {
+        for (literal, expected) in [("little", ByteOrder::Little), ("big", ByteOrder::Big)] {
+            let json = format!(
+                r#"{{
+                    "type": "ntensor", "ndim": 1, "shape": [4], "strides": [1],
+                    "dtype": "float32", "byte_order": "{literal}",
+                    "encoding": "none", "filter": "none", "compression": "none"
+                }}"#
+            );
+            let desc: DataObjectDescriptor = serde_json::from_str(&json)
+                .expect("deserialize should accept explicit byte_order");
+            assert_eq!(desc.byte_order, expected);
+        }
     }
 }
