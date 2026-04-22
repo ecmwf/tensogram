@@ -61,6 +61,8 @@ CBOR.
   `plans/WIRE_FORMAT.md` §6.1, `plans/DESIGN.md`, `plans/ARCHITECTURE.md`,
   and every `examples/{rust,python,cpp,typescript,jupyter}` file.
 
+## [0.17.0] - 2026-04-22
+
 ### Fixed
 
 - `tensogram-zarr`: `TensogramStore` now falls back to descriptor-level
@@ -326,6 +328,33 @@ clear error pointing at re-encoding.  The v3 spec lives at
   `simple_packing::encode()`, via the high-level `tensogram::encode()`,
   via PyO3, WASM, C FFI, and C++ wrapper.  Cross-language parity tests
   pin the behaviour.
+
+### Removed — BREAKING
+
+- **`tensogram-core` redirect crate removed.** The
+  `rust/tensogram-core-redirect/` directory has been deleted and is no
+  longer part of the workspace; no new versions of `tensogram-core` will
+  be published to crates.io. The redirect was introduced in 0.15 (when
+  the crate was renamed `tensogram-core` → `tensogram`) as a thin
+  `pub use tensogram::*;` shim to give downstream users a grace period
+  to migrate; three minor versions later we are retiring it.
+  Users still depending on `tensogram-core` should switch to
+  `cargo add tensogram` directly. The previously published
+  `tensogram-core@0.14.0` through `tensogram-core@0.16.1` remain
+  available on crates.io as (now-frozen) re-exports.
+
+### Stats
+
+- Rust workspace: 1487 tests passing (1593 with `remote` + `async`
+  feature coverage).  Excluded-crate suites run separately: 387 tests
+  across `tensogram-grib`, `tensogram-netcdf`, and `tensogram-cli` built
+  with `grib` + `netcdf`.
+- Python: 526 + 242 + 235 tests across `python/tests/`,
+  `python/tensogram-xarray/tests/`, and `python/tensogram-zarr/tests/`
+  (29 skipped on CPython 3.13 and 3.13t free-threaded).  Jupyter
+  notebooks: 32 structural-guard + 46 nbval-lax tests.
+- C++: 143 tests (Linux + macOS).  WASM: 161 tests.
+  TypeScript (vitest): 319 tests.
 
 ## [0.16.1] - 2026-04-19
 

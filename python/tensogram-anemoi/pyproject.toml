@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tensogram-anemoi"
-version = "0.16.1"
+version = "0.17.0"
 description = "anemoi-inference output plugin for tensogram .tgm files"
 readme = {text = "anemoi-inference output plugin for tensogram .tgm files", content-type = "text/plain"}
 requires-python = ">=3.11"
@@ -17,7 +17,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Atmospheric Science",
 ]
 dependencies = [
-    "tensogram>=0.16.1,<0.17",
+    "tensogram>=0.17.0,<0.18",
     "anemoi-inference>=0.4,<0.11",
     "fsspec",
     "numpy",
