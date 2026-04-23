@@ -3,6 +3,33 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed — `regular_ll` longitude convention
+
+GRIB-derived `.tgm` files from ECMWF open-data (where the grid scans
+from the dateline eastwards, `longitudeOfFirstGridPointInDegrees =
+180`) rendered 180° off in Tensoscope — Sahara appeared where the
+Pacific should be and vice versa.  Root cause: the converter lifted
+only the ecCodes `mars` namespace, which does not include the grid's
+corner coordinates, so the viewer had to guess the longitude
+convention and guessed the wrong one.
+
+- **`tensogram-grib`** now lifts the four `regular_ll` corner-point
+  keys from the `geography` namespace and emits a canonical
+  `mars.area = [N, W, S, E]` alongside `mars.grid`.  A new pure
+  helper `compute_regular_ll_area` handles the one unambiguous
+  normalisation (full-global dateline-first → `west = -180`) and
+  refuses everything else it cannot express as a monotone
+  `[N, W, S, E]` tuple (non-standard scan modes,
+  dateline-crossing regional subdomains).  Non-`regular_ll` grids
+  (`reduced_gg`, octahedral `O*`, Gaussian `N*`) are unchanged.
+- **Tensoscope** reads `mars.area` when present.  For legacy files
+  without it, the inference fallback default flipped from
+  `[0, 360]` to `[-180, 180]` (a documented compatibility bridge)
+  with a one-shot `console.warn` explaining how to re-convert for
+  accurate geometry.
+
 ## [0.18.1] - 2026-04-23
 
 ### Added — Tensoscope: render GRIB-derived `.tgm` files without preprocessing

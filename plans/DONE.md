@@ -655,6 +655,17 @@ comparison against ecCodes.
 - Honours shared `PipelineArgs` via the `apply_pipeline` helper, so
   `--encoding/--bits/--filter/--compression/--compression-level`
   produce descriptors byte-identical to `convert-netcdf`.
+- For `regular_ll` grids with standard scan mode, lifts the four
+  corner-point keys from the `geography` namespace into a canonical
+  `mars.area = [N, W, S, E]` via the pure helper
+  `compute_regular_ll_area` (module `area.rs`).  The only normalisation
+  applied is the full-global dateline-first case (raw ecCodes
+  `lon_first = 180, lon_last = 179.75` on a 0.25° grid, as used by
+  ECMWF open-data) which is shifted to `west = -180, east = 179.75`;
+  non-standard scan, dateline-crossing regional subdomains,
+  non-`regular_ll` grids, and degenerate inputs are all rejected (no
+  `mars.area` emitted), leaving downstream consumers free to either
+  fall back to a compat default or refuse to render.
 
 ## `tensogram-xarray`
 
@@ -742,6 +753,20 @@ comparison against ecCodes.
   marching-squares algorithm is required.
 - **State.** Zustand store (`useAppStore.ts`) owns selected file, field,
   step, and colour scale.
+- **Coordinate inference.** For GRIB-derived files that ship no
+  explicit latitude / longitude coordinate objects,
+  `inferAxesFromMarsGrid` synthesises 1-D axes from
+  `mars.grid = "regular_ll"` + `mars.area` (emitted by
+  `tensogram-grib` for supported grids) or, failing that, from a
+  documented compatibility-bridge default — `[N=90, W=-180, S=-90,
+  E=180]`, chosen to match the ECMWF open-data dateline-first
+  convention that is the common source of such files.  A one-shot
+  `console.warn` fires when the bridge default is used so the
+  provenance gap is visible.  `expandAxesIfRectangularGrid`
+  meshgrids the 1-D axes into per-point arrays for the regrid
+  worker.  Non-`regular_ll` grids (`reduced_gg`, octahedral `O*`,
+  Gaussian `N*`) return `null` — their geometry cannot be inferred
+  from shape alone.
 - **Deployment.** nginx Docker image; `BASE_PATH` env var for subpath
   deployments. Makefile targets: `build`, `push`, `run`, `stop`.
 
