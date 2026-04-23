@@ -130,7 +130,7 @@ For speculative ideas, see `IDEAS.md`.
     - develop a loader for earthkit-data to load tensogram data
     - support loading files and streaming 
     - support decoding and encoding
-    - support integration with Python array interface as Earthkit data does
+    - support integration with Python array interface as Earthkit data does (see also earthkit-utils)
     - add this code to the tensogram-xarray module, such that the earthkit extension can use to export to xarray
 - [ ] **torch**
     - convenience methods for tensogram as/from torch, to avoid the numpy intermediary. Wilder ideas and optimizations are additionally given in IDEAS.md
