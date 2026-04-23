@@ -56,6 +56,6 @@ npx tsx 01_encode_decode.ts
 | [`12_streaming_encoder.ts`](12_streaming_encoder.ts) | Frame-at-a-time `StreamingEncoder` with per-object preceders |
 | [`13_range_access.ts`](13_range_access.ts) | Lazy `TensogramFile.fromUrl` over HTTP Range requests |
 | [`14_streaming_callback.ts`](14_streaming_callback.ts) | `StreamingEncoder` with `onBytes` callback — no full-message buffering |
-
-Numbers 15+ are reserved to stay in step with the `examples/python/`
-numbering.
+| [`15_remote_access.ts`](15_remote_access.ts) | Per-message `messageMetadata` / `messageDescriptors` / `messageObject` / `messageObjectRange` against a self-contained Range-capable Node HTTP server (mirrors Python 14, Rust 14) |
+| [`16_remote_batch.ts`](16_remote_batch.ts) | `prefetchLayouts` + `messageObjectBatch` with bounded concurrency; the mock server records peak in-flight to demonstrate the per-host cap |
+| [`17_remote_s3_signed_fetch.ts`](17_remote_s3_signed_fetch.ts) | `createAwsSigV4Fetch` against a mock S3 that enforces `Authorization: AWS4-HMAC-SHA256 …`
