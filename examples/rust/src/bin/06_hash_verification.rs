@@ -6,7 +6,7 @@
 // granted to it by virtue of its status as an intergovernmental organisation nor
 // does it submit to any jurisdiction.
 
-//! Example 06 — Integrity and hash verification (wire-format v3)
+//! Example 06 — Integrity and hash verification
 //!
 //! Every frame carries an inline xxh3-64 hash slot.  When the
 //! preamble's `HASHES_PRESENT` flag is set (the default), those slots
@@ -14,12 +14,11 @@
 //! `Integrity` or above recomputes the per-frame body hashes and
 //! compares them to the inline values.
 //!
-//! Importantly, **`decode` is not the integrity surface in v3.**  Both
-//! the buffered and streaming decoders treat the inline hash slots as
+//! Importantly, **`decode` is not the integrity surface.**  Both the
+//! buffered and streaming decoders treat the inline hash slots as
 //! opaque: they round-trip corrupted messages without complaining.
 //! The canonical path to detect corruption is `validate_message`
-//! (or the `tensogram validate --checksum` CLI).  See
-//! `plans/WIRE_FORMAT.md §11` for the rationale.
+//! (or the `tensogram validate --checksum` CLI).
 //!
 //! Run:
 //!
@@ -84,15 +83,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let unhashed = encode(&meta, &[(&desc, &data)], &no_hash_opts)?;
     println!("Unhashed message: {} bytes", unhashed.len());
 
-    // ── 3. Decode is hash-agnostic in v3 ──────────────────────────────────────
+    // ── 3. Decode is hash-agnostic ────────────────────────────────────────────
     //
     // Both messages round-trip through `decode`.  `verify_hash: true`
-    // is accepted for API compatibility but no longer performs
-    // integrity checking — use `validate_message` for that.
+    // is accepted for API compatibility but does not perform integrity
+    // checking — use `validate_message` for that.
 
     decode(&hashed, &DecodeOptions::default())?;
     decode(&unhashed, &DecodeOptions::default())?;
-    println!("\nBoth messages decode cleanly (decode is hash-agnostic in v3).");
+    println!("\nBoth messages decode cleanly (decode is hash-agnostic).");
 
     // ── 4. validate_message at Integrity level checks inline hashes ───────────
 
@@ -119,7 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!report.hash_verified);
     // The integrity level emits a single `NoHashAvailable` warning when
     // `HASHES_PRESENT=0`, not an error.  Pinning the code here documents
-    // the v3 contract the example is teaching.
+    // the contract the example is teaching.
     assert!(
         report
             .issues
@@ -152,7 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // At 16 KiB the message midpoint lands deep inside the single data
     // object frame body, so the recomputed xxh3 must disagree with the
-    // inline slot.  Assert the exact v3 contract this example teaches.
+    // inline slot.  Assert the exact contract this example teaches.
     assert!(
         report
             .issues

@@ -86,8 +86,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 2. Decode the streamed message ──────────────────────────────────────
     //
-    // Decode is hash-agnostic in v3 — for per-frame integrity verification
-    // on the streamed bytes, run `validate_message` at level `Integrity`
+    // Decode is hash-agnostic — for per-frame integrity verification on
+    // the streamed bytes, run `validate_message` at level `Integrity`
     // (see example 06).
     let (decoded_meta, objects) = decode(&message, &DecodeOptions::default())?;
     println!(

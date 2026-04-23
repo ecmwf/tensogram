@@ -97,10 +97,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 obj_data[0]
             );
         }
-        // v3: hash lives in the frame footer's inline slot (see
-        // `plans/WIRE_FORMAT.md` §2.4), not on the descriptor.
-        // Phase 6 adds an API to surface it via `objects[i]`.
-        println!("  objects[0].hash: (inline slot — phase 6 API)");
+        // Each object's hash lives in the frame footer's inline slot,
+        // not on the descriptor.  A public accessor for the slot is
+        // still landing; for now, the hash is opaque from this API.
+        println!("  objects[0].hash: (inline slot)");
         assert_eq!(objects[0].1, data0);
         assert_eq!(objects[1].1, data1);
         assert_eq!(objects[2].1, data2);
@@ -128,10 +128,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Integrity verification — use validate_message, not decode ────────────
     //
-    // In wire-format v3 `DecodeOptions::verify_hash` is accepted for API
-    // compatibility but is a no-op — integrity verification moved to
-    // `validate_message` at level `Integrity` (see example 06).  Decode
-    // is deliberately hash-agnostic.
+    // `DecodeOptions::verify_hash` is accepted for API compatibility but
+    // is a no-op — integrity verification lives in `validate_message` at
+    // level `Integrity` (see example 06).  Decode is deliberately
+    // hash-agnostic.
 
     // ── decode_range() — partial sub-slice ────────────────────────────────────
     //

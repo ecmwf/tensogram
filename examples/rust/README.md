@@ -38,7 +38,7 @@ cargo build --release -p tensogram-rust-examples --features netcdf,remote
 | `03_simple_packing.rs` | Simple-packing encoding for lossy integer quantisation (GRIB-style) |
 | `04_shuffle_filter.rs` | Byte shuffle filter for better float compressibility |
 | `05_multi_object.rs` | Multiple tensors in one message, each with its own descriptor |
-| `06_hash_verification.rs` | v3 inline hash slots and `validate_message` for corruption detection |
+| `06_hash_verification.rs` | Inline hash slots and `validate_message` for corruption detection |
 | `07_scan_buffer.rs` | Scanning a multi-message buffer with `scan()` |
 | `08_decode_variants.rs` | `decode` / `decode_metadata` / `decode_object` / `decode_range` |
 | `09_file_api.rs` | `TensogramFile` — create, append, open, index, iterate |
