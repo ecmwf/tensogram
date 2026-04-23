@@ -123,6 +123,9 @@ function App() {
         <div className="sidebar-brand">
           <img src={logo} alt="" className="sidebar-brand-logo" />
           <span className="sidebar-brand-name">Tensoscope</span>
+          <span className="sidebar-brand-version" title={`@ecmwf.int/tensogram ${__TG_VERSION__}`}>
+            v{__APP_VERSION__}
+          </span>
         </div>
         <FileOpenDialog />
         <FieldSelector />

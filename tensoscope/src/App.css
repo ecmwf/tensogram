@@ -250,6 +250,14 @@ h2 {
   letter-spacing: 0.02em;
 }
 
+.sidebar-brand-version {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  cursor: default;
+}
+
 .welcome-hint {
   margin: 0;
   color: var(--text-dim);

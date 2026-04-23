@@ -3,10 +3,16 @@ import react from '@vitejs/plugin-react'
 import wasm from 'vite-plugin-wasm'
 import cesium from 'vite-plugin-cesium'
 import path from 'path'
+import { readFileSync } from 'fs'
 
 const tensogramPkg = path.resolve(
   __dirname, 'node_modules/@ecmwf.int/tensogram/dist/index.js',
 )
+
+const appPkg = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8')) as { version: string };
+const tgPkg = JSON.parse(readFileSync(
+  path.resolve(__dirname, 'node_modules/@ecmwf.int/tensogram/package.json'), 'utf-8',
+)) as { version: string };
 
 /** Vite plugin: proxy /api/proxy?url=... to bypass CORS for remote .tgm files.
  *  Forwards the request method and Range header so TensogramFile.fromUrl can
@@ -68,6 +74,10 @@ function corsProxy(): Plugin {
 // https://vite.dev/config/
 export default defineConfig({
   base: './',
+  define: {
+    __APP_VERSION__: JSON.stringify(appPkg.version),
+    __TG_VERSION__: JSON.stringify(tgPkg.version),
+  },
   plugins: [react(), wasm(), cesium(), corsProxy()],
   resolve: {
     alias: {
