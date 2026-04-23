@@ -533,6 +533,18 @@ function PalettePicker({
 
 // ── ColorScaleControls (public) ───────────────────────────────────────────────
 
+const MINIMISE_BTN: React.CSSProperties = {
+  background: 'none',
+  border: 'none',
+  color: '#666',
+  cursor: 'pointer',
+  fontSize: 13,
+  padding: '0 2px',
+  lineHeight: 1,
+  display: 'flex',
+  alignItems: 'center',
+};
+
 export function ColorScaleControls({
   palette,
   colorMin,
@@ -550,6 +562,8 @@ export function ColorScaleControls({
   onCustomStopsChange,
   onDisplayUnitChange,
 }: ColorScaleControlsProps) {
+  const [minimised, setMinimised] = useState(false);
+
   const group = getUnitGroup(nativeUnits);
   const toDisplay = useMemo(
     () => group ? (v: number) => group.toDisplay(v, displayUnit) : undefined,
@@ -571,49 +585,62 @@ export function ColorScaleControls({
 
   return (
     <div style={PANEL}>
-      <div style={SECTION_LABEL}>Colour Palette</div>
-      <PalettePicker
-        palette={palette}
-        paletteReversed={paletteReversed}
-        customStops={customStops}
-        onPaletteChange={onPaletteChange}
-        onPaletteReversedChange={onPaletteReversedChange}
-        onCustomStopsChange={onCustomStopsChange}
-      />
-
-      {palette === 'custom' && (
-        <GradientEditor stops={customStops} onChange={onCustomStopsChange} />
-      )}
-
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={SECTION_LABEL}>Range</div>
-        <UnitToggle
-          nativeUnits={nativeUnits}
-          displayUnit={displayUnit}
-          onDisplayUnitChange={onDisplayUnitChange}
-        />
+        <div style={SECTION_LABEL}>Colour Palette</div>
+        <button
+          style={MINIMISE_BTN}
+          onClick={() => setMinimised(m => !m)}
+          title={minimised ? 'Expand' : 'Minimise'}
+        >
+          {minimised ? '▴' : '▾'}
+        </button>
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <SpinboxInput
-          label="Min"
-          value={colorMin}
-          step={step}
-          onChange={onColorMinChange}
-          onDoubleClick={resetRange}
-          toDisplay={toDisplay}
-          toNative={toNative}
-        />
-        <SpinboxInput
-          label="Max"
-          value={colorMax}
-          step={step}
-          onChange={onColorMaxChange}
-          onDoubleClick={resetRange}
-          toDisplay={toDisplay}
-          toNative={toNative}
-        />
-      </div>
-      <span style={HINT}>Double-click to reset to data range</span>
+      {!minimised && (
+        <>
+          <PalettePicker
+            palette={palette}
+            paletteReversed={paletteReversed}
+            customStops={customStops}
+            onPaletteChange={onPaletteChange}
+            onPaletteReversedChange={onPaletteReversedChange}
+            onCustomStopsChange={onCustomStopsChange}
+          />
+
+          {palette === 'custom' && (
+            <GradientEditor stops={customStops} onChange={onCustomStopsChange} />
+          )}
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={SECTION_LABEL}>Range</div>
+            <UnitToggle
+              nativeUnits={nativeUnits}
+              displayUnit={displayUnit}
+              onDisplayUnitChange={onDisplayUnitChange}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <SpinboxInput
+              label="Min"
+              value={colorMin}
+              step={step}
+              onChange={onColorMinChange}
+              onDoubleClick={resetRange}
+              toDisplay={toDisplay}
+              toNative={toNative}
+            />
+            <SpinboxInput
+              label="Max"
+              value={colorMax}
+              step={step}
+              onChange={onColorMaxChange}
+              onDoubleClick={resetRange}
+              toDisplay={toDisplay}
+              toNative={toNative}
+            />
+          </div>
+          <span style={HINT}>Double-click to reset to data range</span>
+        </>
+      )}
     </div>
   );
 }

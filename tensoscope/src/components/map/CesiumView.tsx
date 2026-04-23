@@ -10,6 +10,7 @@ import {
   Math as CesiumMath,
   Credit,
   Entity,
+  ConstantProperty,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import './CesiumView.css';
@@ -90,24 +91,31 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount }: CesiumViewP
     const viewer = viewerRef.current;
     if (!viewer) return;
 
-    if (overlayRef.current) {
-      viewer.entities.remove(overlayRef.current);
-      overlayRef.current = undefined;
+    if (!fieldImage) {
+      if (overlayRef.current) {
+        overlayRef.current.show = false;
+      }
+      return;
     }
 
-    if (!fieldImage) return;
-
-    overlayRef.current = viewer.entities.add({
-      rectangle: {
-        coordinates: Rectangle.fromDegrees(-180, -85, 180, 85),
-        material: new ImageMaterialProperty({
-          image: fieldImage.dataUrl,
-          transparent: true,
-          color: new Color(1, 1, 1, 0.7),
-        }),
-        fill: true,
-      },
-    });
+    if (overlayRef.current) {
+      // Update the image URL in-place to avoid a blank frame between remove and re-add.
+      overlayRef.current.show = true;
+      const mat = overlayRef.current.rectangle!.material as ImageMaterialProperty;
+      mat.image = new ConstantProperty(fieldImage.dataUrl);
+    } else {
+      overlayRef.current = viewer.entities.add({
+        rectangle: {
+          coordinates: Rectangle.fromDegrees(-180, -85, 180, 85),
+          material: new ImageMaterialProperty({
+            image: fieldImage.dataUrl,
+            transparent: true,
+            color: new Color(1, 1, 1, 0.7),
+          }),
+          fill: true,
+        },
+      });
+    }
   }, [fieldImage]);
 
   return <div ref={containerRef} className="cesium-container" />;
