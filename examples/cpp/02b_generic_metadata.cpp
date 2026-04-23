@@ -37,7 +37,7 @@ int main() {
     const std::string metadata_json = R"({
         "version": 3,
         "descriptors": [{
-            "type": "ndarray",
+            "type": "ntensor",
             "ndim": 2,
             "shape": [512, 512],
             "strides": [2048, 4],

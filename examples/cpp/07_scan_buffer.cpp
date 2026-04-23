@@ -30,7 +30,7 @@
 static std::vector<std::uint8_t> make_message(const char* param, int step) {
     char json[512];
     std::snprintf(json, sizeof(json),
-        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[10],"strides":[1],"dtype":"float32","encoding":"none","filter":"none","compression":"none"}],"base":[{"mars":{"param":"%s","step":%d}}]})",
+        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[10],"strides":[4],"dtype":"float32","encoding":"none","filter":"none","compression":"none"}],"base":[{"mars":{"param":"%s","step":%d}}]})",
         param, step);
 
     std::vector<float> data(10, 0.0f);

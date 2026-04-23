@@ -40,10 +40,10 @@ int main() {
     const std::string metadata_json = R"({
         "version": 3,
         "descriptors": [
-            {"type":"ntensor","ndim":2,"shape":[10,20],"strides":[20,1],
+            {"type":"ntensor","ndim":2,"shape":[10,20],"strides":[80,4],
              "dtype":"float32",
              "encoding":"none","filter":"none","compression":"none"},
-            {"type":"ntensor","ndim":1,"shape":[5],"strides":[1],
+            {"type":"ntensor","ndim":1,"shape":[5],"strides":[8],
              "dtype":"float64",
              "encoding":"none","filter":"none","compression":"none"},
             {"type":"ntensor","ndim":2,"shape":[8,8],"strides":[8,1],

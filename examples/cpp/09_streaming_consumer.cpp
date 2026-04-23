@@ -40,7 +40,7 @@
 static std::string descriptor_json(const char* param) {
     char buf[512];
     std::snprintf(buf, sizeof(buf),
-        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":2,"shape":[181,360],"strides":[360,1],"dtype":"float32","encoding":"none","filter":"none","compression":"none"}],"base":[{"mars":{"param":"%s","step":0}}]})",
+        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":2,"shape":[181,360],"strides":[1440,4],"dtype":"float32","encoding":"none","filter":"none","compression":"none"}],"base":[{"mars":{"param":"%s","step":0}}]})",
         param);
     return buf;
 }
