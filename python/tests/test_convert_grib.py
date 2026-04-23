@@ -117,6 +117,29 @@ def test_convert_grib_mars_keys_present() -> None:
 
 
 @requires_grib
+def test_convert_grib_emits_mars_area_for_regular_ll() -> None:
+    """``regular_ll`` files carry a canonical ``mars.area = [N, W, S, E]``.
+
+    The Tensoscope viewer consumes this tuple to place data on a map.
+    Without it, Tensoscope renders ECMWF open-data files 180° off —
+    this test pins the converter-side fix (see
+    ``rust/tensogram-grib/src/area.rs``).
+
+    Bundled fixtures are all dateline-first full-global scans, so the
+    normalisation path turns raw ``lon_first = 180`` into ``W = -180``.
+    """
+    messages = tensogram.convert_grib(str(_testdata("2t.grib2")))
+    meta = tensogram.decode_metadata(messages[0])
+    mars = meta.base[0].get("mars")
+    assert isinstance(mars, dict)
+    assert "area" in mars, "regular_ll fixture must emit mars.area"
+    area = mars["area"]
+    assert isinstance(area, list), f"mars.area must be a list, got {type(area).__name__}"
+    assert len(area) == 4, f"mars.area must have 4 elements, got {len(area)}"
+    assert area == [90.0, -180.0, -90.0, 179.75]
+
+
+@requires_grib
 def test_preserve_all_keys_populates_grib_namespace() -> None:
     """``preserve_all_keys=True`` lifts non-MARS namespaces into ``base[i]["grib"]``."""
     messages = tensogram.convert_grib(
