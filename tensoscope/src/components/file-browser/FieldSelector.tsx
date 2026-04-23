@@ -2,132 +2,13 @@
 
 import { useState, useMemo } from 'react';
 import { useAppStore } from '../../store/useAppStore';
-import type { ObjectInfo } from '../../tensogram';
-
-// ── Metadata helpers ────────────────────────────────────────────────
-
-interface MarsMetadata {
-  step?: number;
-  param?: string;
-  levtype?: string;
-  levelist?: number | string;
-  level?: number | string;
-  [key: string]: unknown;
-}
-
-function getMars(v: ObjectInfo): MarsMetadata {
-  return (v.metadata?.mars as MarsMetadata) ?? {};
-}
-
-function getMarsLevel(mars: MarsMetadata): number | null {
-  const raw = mars.levelist ?? mars.level;
-  if (raw == null) return null;
-  if (mars.levtype === 'sfc') return null;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
-}
-
-function getPackedLevels(v: ObjectInfo, coordLength: number): number[] | null {
-  if (v.shape.length <= 1) return null;
-  const levelDimSize = v.shape.find((s) => s !== coordLength);
-  if (!levelDimSize || levelDimSize <= 1) return null;
-
-  const anemoi = v.metadata?.anemoi as Record<string, unknown> | undefined;
-  const levels = anemoi?.levels as number[] | undefined;
-  if (levels && levels.length === levelDimSize) return levels;
-
-  return Array.from({ length: levelDimSize }, (_, i) => i);
-}
-
-// ── Grouping types ──────────────────────────────────────────────────
-
-type LevelStrategy =
-  | { kind: 'none' }
-  | { kind: 'packed'; levels: number[]; dim: number }
-  | { kind: 'per-object'; levels: number[] };
-
-interface ParamEntry {
-  step: number;
-  marsLevel: number | null;
-  variable: ObjectInfo;
-}
-
-interface ParamGroup {
-  param: string;
-  levtype: string;
-  units: string;
-  levelStrategy: LevelStrategy;
-  entries: ParamEntry[];
-}
-
-function groupByParam(variables: ObjectInfo[], coordLength: number): ParamGroup[] {
-  const map = new Map<string, ParamGroup>();
-
-  for (const v of variables) {
-    const mars = getMars(v);
-    const param = mars.param ?? v.name;
-    const step = Number(mars.step ?? 0);
-    const marsLevel = getMarsLevel(mars);
-
-    let group = map.get(param);
-    if (!group) {
-      const packed = getPackedLevels(v, coordLength);
-      let levelStrategy: LevelStrategy;
-      if (packed && packed.length > 1) {
-        const dim = v.shape.findIndex((s) => s !== coordLength);
-        levelStrategy = { kind: 'packed', levels: packed, dim: dim >= 0 ? dim : 1 };
-      } else {
-        levelStrategy = { kind: 'none' };
-      }
-      group = {
-        param,
-        levtype: mars.levtype ?? '',
-        units: (v.metadata?.units as string) ?? '',
-        levelStrategy,
-        entries: [],
-      };
-      map.set(param, group);
-    }
-    group.entries.push({ step, marsLevel, variable: v });
-  }
-
-  for (const group of map.values()) {
-    if (group.levelStrategy.kind === 'none') {
-      const levelSet = new Set<number>();
-      for (const e of group.entries) {
-        if (e.marsLevel != null) levelSet.add(e.marsLevel);
-      }
-      if (levelSet.size > 1) {
-        group.levelStrategy = {
-          kind: 'per-object',
-          levels: [...levelSet].sort((a, b) => a - b),
-        };
-      }
-    }
-    group.entries.sort((a, b) => {
-      const la = a.marsLevel ?? -Infinity;
-      const lb = b.marsLevel ?? -Infinity;
-      if (la !== lb) return la - lb;
-      return a.step - b.step;
-    });
-  }
-
-  return Array.from(map.values()).sort((a, b) => a.param.localeCompare(b.param));
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────
-
-function getLevels(group: ParamGroup): number[] {
-  if (group.levelStrategy.kind === 'none') return [];
-  return group.levelStrategy.levels;
-}
-
-function getEntriesForLevel(group: ParamGroup, level: number | null): ParamEntry[] {
-  if (group.levelStrategy.kind === 'per-object' && level != null) {
-    return group.entries.filter((e) => e.marsLevel === level);
-  }
-  return group.entries;
-}
+import {
+  getEntriesForLevel,
+  getLevels,
+  groupByParam,
+  type ParamEntry,
+  type ParamGroup,
+} from './groupByParam';
 
 function levelUnit(levtype: string): string {
   if (levtype === 'pl') return ' hPa';

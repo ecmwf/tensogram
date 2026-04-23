@@ -31,11 +31,11 @@ function getMarsLevel(mars: Record<string, unknown>): number | null {
  */
 export function useAnimationSequence(
   fileIndex: FileIndex | null,
-  paramName: string | null,
+  paramName: string | number | null,
   selectedLevel: number | null,
 ): AnimationFrame[] {
   return useMemo(() => {
-    if (!fileIndex || !paramName) return [];
+    if (!fileIndex || paramName == null) return [];
 
     const matched = fileIndex.variables.filter((v) => {
       const mars = v.metadata?.mars as Record<string, unknown> | undefined;

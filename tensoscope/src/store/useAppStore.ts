@@ -150,9 +150,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         result = await viewer.decodeField(msgIdx, objIdx);
       }
 
-      // Apply per-variable auto-style if available, otherwise use data range
+      // Apply per-variable auto-style if available, otherwise use data range.
+      // mars.param can be either a short string ("2t", "t", ...) or a
+      // GRIB integer code (167, 130, ...); getAutoStyle handles both.
       const mars = varInfo?.metadata?.mars as Record<string, unknown> | undefined;
-      const param = (mars?.param as string) ?? varInfo?.name;
+      const marsParam = mars?.param as string | number | undefined;
+      const param = marsParam ?? varInfo?.name;
       const style = getAutoStyle(param);
 
       set({
