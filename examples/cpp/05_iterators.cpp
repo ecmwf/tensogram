@@ -20,10 +20,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <random>
 #include <string>
 #include <vector>
-
-#include <unistd.h>
 
 int main() {
     // -- 1. Buffer iteration --
@@ -58,7 +57,8 @@ int main() {
     std::printf("\n=== File iterator ===\n");
 
     const auto tmp = std::filesystem::temp_directory_path() /
-                     ("tensogram_example_05_" + std::to_string(::getpid()) + ".tgm");
+                     ("tensogram_example_05_" +
+                      std::to_string(std::random_device{}()) + ".tgm");
     const std::string path_str = tmp.string();
     const char* path = path_str.c_str();
     {

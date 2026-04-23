@@ -33,10 +33,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 #include <vector>
-
-#include <unistd.h>
 
 static std::string descriptor_json(const char* param) {
     char buf[512];
@@ -48,7 +47,8 @@ static std::string descriptor_json(const char* param) {
 
 int main() {
     const auto tmp = std::filesystem::temp_directory_path() /
-                     ("tensogram_example_09_" + std::to_string(::getpid()) + ".tgm");
+                     ("tensogram_example_09_" +
+                      std::to_string(std::random_device{}()) + ".tgm");
     const std::string tgm_path_str = tmp.string();
     const char* tgm_path = tgm_path_str.c_str();
     const char* PARAMS[] = {"2t", "10u", "10v", "msl"};

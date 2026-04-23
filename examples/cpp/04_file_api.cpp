@@ -17,10 +17,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <random>
 #include <string>
 #include <vector>
-
-#include <unistd.h>
 
 /// Build JSON for a simple 10x20 float32 message with per-object metadata.
 ///
@@ -37,7 +36,8 @@ static std::string make_json(const char* param, int step) {
 
 int main() {
     const auto tmp = std::filesystem::temp_directory_path() /
-                     ("tensogram_example_04_" + std::to_string(::getpid()) + ".tgm");
+                     ("tensogram_example_04_" +
+                      std::to_string(std::random_device{}()) + ".tgm");
     const std::string path_str = tmp.string();
     const char* path = path_str.c_str();
 

@@ -33,10 +33,9 @@ extern "C" {
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <random>
 #include <string>
 #include <vector>
-
-#include <unistd.h>
 
 // -----------------------------------------------------------------------
 // Manual bit-packing helper (MSB-first, big-endian bit order)
@@ -177,7 +176,8 @@ int main() {
 
     // Write to a temp file, then decode
     const auto tmp = std::filesystem::temp_directory_path() /
-                     ("tensogram_example_11_" + std::to_string(::getpid()) + ".tgm");
+                     ("tensogram_example_11_" +
+                      std::to_string(std::random_device{}()) + ".tgm");
     const std::string tmp_path_str = tmp.string();
     const char* tmp_path = tmp_path_str.c_str();
     {
