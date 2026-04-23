@@ -25,10 +25,11 @@ convention and guessed the wrong one.
   dateline-crossing regional subdomains).  Non-`regular_ll` grids
   (`reduced_gg`, octahedral `O*`, Gaussian `N*`) are unchanged.
 - **Tensoscope** reads `mars.area` when present.  For legacy files
-  without it, the inference fallback default flipped from
-  `[0, 360]` to `[-180, 180]` (a documented compatibility bridge)
-  with a one-shot `console.warn` explaining how to re-convert for
-  accurate geometry.
+  without it, the inference fallback is now formalised as a named
+  `DEFAULT_REGULAR_LL_AREA` constant (the `[-180, 180]` dateline-
+  first default already landed in #86) and emits a one-shot
+  `console.warn` the first time the fallback fires, explaining
+  how to re-convert for accurate geometry.
 
 ## [0.18.1] - 2026-04-23
 

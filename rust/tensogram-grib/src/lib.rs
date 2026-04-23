@@ -20,7 +20,7 @@
 //! apt install libeccodes-dev # Debian/Ubuntu
 //! ```
 
-pub mod area;
+mod area;
 pub mod converter;
 pub mod error;
 pub mod metadata;

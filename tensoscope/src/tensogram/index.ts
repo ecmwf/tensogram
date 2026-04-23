@@ -439,7 +439,8 @@ export function inferAxesFromMarsGrid(
       legacyAreaDefaultWarned = true;
       console.warn(
         'Tensoscope: file has mars.grid = "regular_ll" but no mars.area; ' +
-          'assuming ECMWF open-data dateline-first [-180, 180] convention. ' +
+          'assuming ECMWF open-data dateline-first default area ' +
+          '(north = 90, west = -180, south = -90, east = 180). ' +
           'Re-convert the source GRIB with a tensogram-grib build that emits ' +
           'mars.area from the geography namespace for accurate rendering of ' +
           'Greenwich-first or regional grids.',

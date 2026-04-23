@@ -143,11 +143,12 @@ fn extract_messages<D: Debug>(
         }
 
         // For regular_ll grids, also lift the geography corner keys into
-        // `mars.area = [N, W, S, E]` (via `compute_regular_ll_area`).  This
-        // is what the Tensoscope viewer consumes to place data on the map;
-        // without it the viewer has to fall back to a guessed default
-        // convention, which misrenders ECMWF open-data (dateline-first)
-        // files by 180°.
+        // `mars.area = [N, W, S, E]` (via `compute_regular_ll_area`).  The
+        // Tensoscope viewer consumes this to place data on the map; without
+        // it the geometry is ambiguous, and the viewer's compat-bridge
+        // default will misrender any file whose scan convention differs
+        // from its default (e.g. Greenwich-first files under a dateline-
+        // first default, or vice versa).
         if grid_type.as_deref() == Some("regular_ll") {
             let geo = RegularLlGeometry {
                 lat_first: msg
