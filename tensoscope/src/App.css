@@ -739,173 +739,51 @@ h2 {
 }
 
 /* ── Projection Picker ── */
-.projection-picker {
+/* ── Map Controls Bar (top-left) ── */
+.map-controls-bar {
   position: absolute;
   top: 16px;
   left: 16px;
   z-index: 11;
-}
-
-.projection-toggle {
-  background: rgba(30, 30, 30, 0.85);
-  border: 2px solid #444;
-  border-radius: 6px;
-  cursor: pointer;
-  padding: 0;
-  overflow: hidden;
-  display: block;
-}
-
-.projection-toggle:hover {
-  border-color: var(--accent);
-}
-
-.projection-toggle-img {
-  display: block;
-  width: 52px;
-  height: 40px;
-  object-fit: cover;
-  border-radius: 4px;
-  pointer-events: none;
-}
-
-.projection-panel {
-  display: none;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 6px;
-  padding: 10px;
-  background: rgba(26, 28, 36, 0.95);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-  max-width: 160px;
-}
-
-.projection-panel-open {
-  display: flex;
-}
-
-.projection-thumb {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  background: none;
-  border: 2px solid transparent;
-  border-radius: 6px;
-  cursor: pointer;
-  padding: 4px;
-  transition: border-color 0.15s;
-}
-
-.projection-thumb:hover {
-  border-color: var(--border);
-}
-
-.projection-thumb-active {
-  border-color: var(--accent);
-}
-
-.projection-thumb-map {
-  width: 52px;
-  height: 40px;
-  border-radius: 4px;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.projection-thumb-label {
-  color: var(--text-dim);
-  font-size: 11px;
-}
-
-.projection-thumb-active .projection-thumb-label {
-  color: var(--accent);
-}
-
-/* ── Render Mode Picker ── */
-.render-mode-picker {
-  position: absolute;
-  top: 60px;   /* sits below the projection-picker toggle button */
-  left: 16px;
-  z-index: 10;
-}
-
-.render-mode-toggle {
-  display: flex;
-  align-items: center;
   gap: 6px;
-  background: rgba(20, 20, 30, 0.85);
-  border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 8px;
-  padding: 5px 10px;
-  color: rgba(255,255,255,0.85);
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.15s;
 }
 
-.render-mode-toggle:hover {
-  background: rgba(30, 30, 50, 0.95);
-}
-
-.render-mode-toggle-label {
-  flex: 1;
-}
-
-.render-mode-arrow {
-  display: inline-block;
-  font-size: 11px;
-  opacity: 0.7;
-  transition: transform 0.15s;
-}
-
-.render-mode-arrow-open {
-  transform: rotate(180deg);
-}
-
-.render-mode-panel {
-  margin-top: 4px;
-  background: rgba(20, 20, 30, 0.95);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 8px;
-  padding: 4px;
+/* ── Shared pill style for projection + render-mode pickers ── */
+.map-picker-pill {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(-4px);
-  transition: opacity 0.15s, transform 0.15s;
+  background: rgba(20, 22, 32, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  overflow: hidden;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
-.render-mode-panel-open {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0);
-}
-
-.render-mode-option {
-  padding: 5px 12px;
-  border-radius: 5px;
+.map-picker-btn {
+  padding: 5px 14px;
   border: none;
   background: transparent;
-  color: rgba(255,255,255,0.6);
+  color: rgba(255, 255, 255, 0.5);
   font-size: 12px;
   cursor: pointer;
-  text-align: left;
-  transition: background 0.1s, color 0.1s;
+  transition: background 0.12s, color 0.12s;
+  white-space: nowrap;
+  font-family: inherit;
 }
 
-.render-mode-option:hover {
-  background: rgba(255,255,255,0.08);
-  color: #fff;
+.map-picker-btn + .map-picker-btn {
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.render-mode-option-active {
-  background: rgba(255,255,255,0.15);
+.map-picker-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.map-picker-btn-active {
+  background: rgba(255, 255, 255, 0.14);
   color: #fff;
-  font-weight: 600;
+  font-weight: 500;
 }
