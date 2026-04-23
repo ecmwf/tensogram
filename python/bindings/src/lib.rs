@@ -3121,8 +3121,9 @@ fn get_string_or_default(dict: &Bound<'_, PyDict>, key: &str, default: &str) -> 
 /// Build a DataObjectDescriptor from a Python dict.
 ///
 /// Required keys: `type`, `shape`, `dtype`.
-/// Optional keys: `strides`, `byte_order` (default "little"),
-///   `encoding` / `filter` / `compression` (default "none").
+/// Optional keys: `strides` (defaults to row-major from `shape`),
+///   `byte_order` (defaults to native), `encoding` / `filter` /
+///   `compression` (default "none").
 /// All other keys are stored in `params`.
 fn dict_to_data_object_descriptor(dict: &Bound<'_, PyDict>) -> PyResult<DataObjectDescriptor> {
     let obj_type: String = dict

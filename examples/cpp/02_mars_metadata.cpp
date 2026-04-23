@@ -28,18 +28,20 @@ int main() {
     // no common/varying split on the wire). Here we have a single object
     // so `base` has one entry.
     //
-    // Top-level keys outside `"version"`, `"descriptors"`, and `"base"`
-    // are treated as message-level `_extra_` annotations — use those
-    // for provenance notes that apply to the whole message, not to an
-    // individual object.
+    // Top-level keys outside `"descriptors"` and `"base"` are treated
+    // as message-level `_extra_` annotations — use those for
+    // provenance notes that apply to the whole message, not to an
+    // individual object.  A legacy `"version"` entry is tolerated and
+    // also flows into `_extra_`; the wire-format version lives in the
+    // preamble (see `plans/WIRE_FORMAT.md` §3), not in the CBOR
+    // metadata frame.
     const std::string metadata_json = R"({
-                "descriptors": [{
-            "type": "ndarray",
+        "descriptors": [{
+            "type": "ntensor",
             "ndim": 2,
             "shape": [721, 1440],
             "strides": [5760, 4],
             "dtype": "float32",
-            "byte_order": "little",
             "encoding": "none",
             "filter": "none",
             "compression": "none"

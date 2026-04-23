@@ -19,6 +19,9 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <random>
+#include <string>
 #include <vector>
 
 int main() {
@@ -27,10 +30,10 @@ int main() {
 
     // Encode 3 messages with different element counts
     auto e1 = tensogram::encode(
-        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[2],"strides":[4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})",
+        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[2],"strides":[4],"dtype":"float32","encoding":"none","filter":"none","compression":"none"}]})",
         {{reinterpret_cast<const std::uint8_t*>("\0\0\x80\x3f\0\0\0\x40"), 8}});
     auto e2 = tensogram::encode(
-        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[3],"strides":[4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})",
+        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[3],"strides":[4],"dtype":"float32","encoding":"none","filter":"none","compression":"none"}]})",
         {{reinterpret_cast<const std::uint8_t*>("\0\0\x80\x3f\0\0\0\x40\0\0\x40\x40"), 12}});
 
     // Concatenate into a single buffer
@@ -53,7 +56,11 @@ int main() {
     // -- 2. File iteration --
     std::printf("\n=== File iterator ===\n");
 
-    const char* path = "/tmp/tensogram_iter_example.tgm";
+    const auto tmp = std::filesystem::temp_directory_path() /
+                     ("tensogram_example_05_" +
+                      std::to_string(std::random_device{}()) + ".tgm");
+    const std::string path_str = tmp.string();
+    const char* path = path_str.c_str();
     {
         auto f = tensogram::file::create(path);
         f.append_raw(e1);
@@ -80,9 +87,9 @@ int main() {
     std::vector<float> fvals = {1.0f, 2.0f};
     std::vector<double> dvals = {10.0, 20.0, 30.0};
 
-    std::string multi_json = R"({"version":2,"descriptors":[)"
-        R"({"type":"ndarray","ndim":1,"shape":[2],"strides":[4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"},)"
-        R"({"type":"ndarray","ndim":1,"shape":[3],"strides":[8],"dtype":"float64","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
+    std::string multi_json = R"({"version":3,"descriptors":[)"
+        R"({"type":"ntensor","ndim":1,"shape":[2],"strides":[4],"dtype":"float32","encoding":"none","filter":"none","compression":"none"},)"
+        R"({"type":"ntensor","ndim":1,"shape":[3],"strides":[8],"dtype":"float64","encoding":"none","filter":"none","compression":"none"}]})";
 
     std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
         {reinterpret_cast<const std::uint8_t*>(fvals.data()),

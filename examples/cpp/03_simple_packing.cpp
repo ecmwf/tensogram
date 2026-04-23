@@ -37,7 +37,7 @@ int main() {
     constexpr std::uint32_t bits_per_value = 16;
     constexpr std::int32_t decimal_scale_factor = 0;
 
-    tgm_error err = tgm_simple_packing_compute_params(
+    [[maybe_unused]] tgm_error err = tgm_simple_packing_compute_params(
         temps.data(), temps.size(),
         bits_per_value, decimal_scale_factor,
         &reference_value, &binary_scale_factor);
@@ -48,7 +48,7 @@ int main() {
     std::snprintf(ref_buf, sizeof(ref_buf), "%.17g", reference_value);
 
     std::string json =
-        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[1000],"strides":[8],"dtype":"float64","byte_order":"little","encoding":"simple_packing","filter":"none","compression":"none","bits_per_value":)" +
+        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[1000],"strides":[8],"dtype":"float64","encoding":"simple_packing","filter":"none","compression":"none","bits_per_value":)" +
         std::to_string(bits_per_value) +
         R"(,"reference_value":)" + std::string(ref_buf) +
         R"(,"binary_scale_factor":)" + std::to_string(binary_scale_factor) +
@@ -71,7 +71,7 @@ int main() {
     assert(obj.encoding() == "simple_packing");
 
     const double* decoded = obj.data_as<double>();
-    const std::size_t count = obj.element_count<double>();
+    [[maybe_unused]] const std::size_t count = obj.element_count<double>();
     assert(count == static_cast<std::size_t>(N));
 
     // -- Measure quantization error --

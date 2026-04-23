@@ -54,3 +54,14 @@ if(BUILD_TESTING)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+# ---------------------------------------------------------------------------
+# Examples
+# ---------------------------------------------------------------------------
+option(BUILD_EXAMPLES "Build C++ examples" ON)
+if(BUILD_EXAMPLES)
+    add_subdirectory(
+        "${CMAKE_CURRENT_SOURCE_DIR}/../examples/cpp"
+        "${CMAKE_CURRENT_BINARY_DIR}/examples_build"
+    )
+endif()

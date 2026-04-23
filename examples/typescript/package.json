@@ -9,10 +9,18 @@
     "02": "tsx 02_mars_metadata.ts",
     "02b": "tsx 02b_generic_metadata.ts",
     "03": "tsx 03_multi_object.ts",
+    "04": "tsx 04_decode_range.ts",
     "05": "tsx 05_streaming_fetch.ts",
     "06": "tsx 06_file_api.ts",
     "07": "tsx 07_hash_and_errors.ts",
-    "all": "npm run 01 && npm run 02 && npm run 02b && npm run 03 && npm run 05 && npm run 06 && npm run 07"
+    "08": "tsx 08_validate.ts",
+    "09": "tsx 09_streaming_consumer.ts",
+    "10": "tsx 10_iterators.ts",
+    "11": "tsx 11_encode_pre_encoded.ts",
+    "12": "tsx 12_streaming_encoder.ts",
+    "13": "tsx 13_range_access.ts",
+    "14": "tsx 14_streaming_callback.ts",
+    "all": "npm run 01 && npm run 02 && npm run 02b && npm run 03 && npm run 04 && npm run 05 && npm run 06 && npm run 07 && npm run 08 && npm run 09 && npm run 10 && npm run 11 && npm run 12 && npm run 13 && npm run 14"
   },
   "dependencies": {
     "@ecmwf.int/tensogram": "file:../../typescript"

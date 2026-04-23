@@ -60,9 +60,7 @@ def _make_range_handler(file_data: bytes):
                     return
                 chunk = file_data[start:end]
                 self.send_response(206)
-                self.send_header(
-                    "Content-Range", f"bytes {start}-{end - 1}/{len(file_data)}"
-                )
+                self.send_header("Content-Range", f"bytes {start}-{end - 1}/{len(file_data)}")
                 self.send_header("Content-Length", str(len(chunk)))
                 self.end_headers()
                 self.wfile.write(chunk)
@@ -88,7 +86,6 @@ descriptors = [
         "type": "ntensor",
         "shape": [72, 144],
         "dtype": "float32",
-        "byte_order": "little",
         "encoding": "none",
         "filter": "none",
         "compression": "none",
@@ -97,7 +94,6 @@ descriptors = [
         "type": "ntensor",
         "shape": [72, 144],
         "dtype": "float32",
-        "byte_order": "little",
         "encoding": "none",
         "filter": "none",
         "compression": "none",
@@ -107,9 +103,7 @@ rng = np.random.default_rng(42)
 temperature = rng.standard_normal((72, 144)).astype(np.float32) + 293.15
 pressure = rng.standard_normal((72, 144)).astype(np.float32) * 100 + 101325
 
-tgm_bytes = tensogram.encode(
-    meta, [(descriptors[0], temperature), (descriptors[1], pressure)]
-)
+tgm_bytes = tensogram.encode(meta, [(descriptors[0], temperature), (descriptors[1], pressure)])
 print(f"Encoded {len(tgm_bytes)} bytes with 2 objects")
 
 # ── Start local HTTP server ──────────────────────────────────────────────────

@@ -101,9 +101,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let msg = &corrupted_buffer[*start..*start + *len];
         let meta = decode_metadata(msg)?;
 
-        // Read the mars namespace from base[0]
-        let mars_val = meta.base.first().and_then(|e| e.get("mars"));
-        let (param, step) = if let Some(Value::Map(entries)) = mars_val {
+        // Pull the per-object namespace map off base[0] and read two keys.
+        let ns = meta.base.first().and_then(|e| e.get("mars"));
+        let (param, step) = if let Some(Value::Map(entries)) = ns {
             let param = entries
                 .iter()
                 .find(|(k, _)| matches!(k, Value::Text(s) if s == "param"))

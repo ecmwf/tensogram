@@ -16,19 +16,30 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <random>
+#include <string>
 #include <vector>
 
-/// Build JSON for a simple 10x20 float32 message with MARS metadata.
+/// Build JSON for a simple 10x20 float32 message with per-object metadata.
+///
+/// Per-object application metadata lives under `base[0]`; the library
+/// never interprets the keys, so any application vocabulary works.
+/// MARS keys are used here as concrete sample data.
 static std::string make_json(const char* param, int step) {
     char buf[512];
     std::snprintf(buf, sizeof(buf),
-        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":2,"shape":[10,20],"strides":[80,4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}],"mars":{"date":"20260401","step":"%d","type":"fc","param":"%s"}})",
+        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":2,"shape":[10,20],"strides":[80,4],"dtype":"float32","encoding":"none","filter":"none","compression":"none"}],"base":[{"mars":{"date":"20260401","step":"%d","type":"fc","param":"%s"}}]})",
         step, param);
     return buf;
 }
 
 int main() {
-    const char* path = "/tmp/tensogram_example_cpp.tgm";
+    const auto tmp = std::filesystem::temp_directory_path() /
+                     ("tensogram_example_04_" +
+                      std::to_string(std::random_device{}()) + ".tgm");
+    const std::string path_str = tmp.string();
+    const char* path = path_str.c_str();
 
     // -- 1. Create and write --
     {

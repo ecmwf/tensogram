@@ -18,14 +18,9 @@
 /// themselves and Tensogram wraps it into the wire format.
 ///
 /// Build:
-///   cmake -B build && cmake --build build
-///   Then compile manually (or add to your CMakeLists.txt):
-///   g++ -std=c++17 -I include -I crates/tensogram-ffi \
-///       examples/cpp/11_encode_pre_encoded.cpp \
-///       -L target/release -ltensogram_ffi \
-///       -framework CoreFoundation -framework Security \
-///       -framework SystemConfiguration -lc++ -lm \
-///       -o build/example_11
+///   cmake -S cpp -B build -DCMAKE_BUILD_TYPE=Release
+///   cmake --build build -j
+///   ./build/bin/11_encode_pre_encoded
 
 #include <tensogram.hpp>
 
@@ -37,6 +32,9 @@ extern "C" {
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <random>
+#include <string>
 #include <vector>
 
 // -----------------------------------------------------------------------
@@ -84,7 +82,7 @@ int main() {
     constexpr std::uint32_t bits_per_value = 16;
     constexpr std::int32_t decimal_scale_factor = 0;
 
-    tgm_error err = tgm_simple_packing_compute_params(
+    [[maybe_unused]] tgm_error err = tgm_simple_packing_compute_params(
         temps.data(), temps.size(),
         bits_per_value, decimal_scale_factor,
         &reference_value, &binary_scale_factor);
@@ -113,9 +111,9 @@ int main() {
     std::snprintf(ref_buf, sizeof(ref_buf), "%.17g", reference_value);
 
     std::string json =
-        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[)" +
+        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[)" +
         std::to_string(N) +
-        R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
+        R"(],"strides":[8],"dtype":"float64",)"
         R"("encoding":"simple_packing","filter":"none","compression":"none",)"
         R"("bits_per_value":)" + std::to_string(bits_per_value) +
         R"(,"reference_value":)" + std::string(ref_buf) +
@@ -139,7 +137,7 @@ int main() {
     assert(obj.dtype_string() == "float64");
 
     const double* decoded = obj.data_as<double>();
-    const std::size_t count = obj.element_count<double>();
+    [[maybe_unused]] const std::size_t count = obj.element_count<double>();
     assert(count == static_cast<std::size_t>(N));
 
     double max_err = 0.0;
@@ -156,8 +154,8 @@ int main() {
     for (int i = 0; i < 50; ++i) raw_data[i] = static_cast<float>(i);
 
     std::string raw_json =
-        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[50],)"
-        R"("strides":[4],"dtype":"float32","byte_order":"little",)"
+        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[50],)"
+        R"("strides":[4],"dtype":"float32",)"
         R"("encoding":"none","filter":"none","compression":"none"}]})";
 
     std::vector<std::pair<const std::uint8_t*, std::size_t>> raw_objects = {
@@ -168,7 +166,7 @@ int main() {
     auto raw_msg = tensogram::encode_pre_encoded(raw_json, raw_objects);
     auto raw_decoded = tensogram::decode(raw_msg.data(), raw_msg.size());
     auto raw_obj = raw_decoded.object(0);
-    const float* rp = raw_obj.data_as<float>();
+    [[maybe_unused]] const float* rp = raw_obj.data_as<float>();
     for (int i = 0; i < 50; ++i) {
         assert(rp[i] == static_cast<float>(i));
     }
@@ -177,14 +175,18 @@ int main() {
     // ── 5. StreamingEncoder variant ────────────────────────────────────
 
     // Write to a temp file, then decode
-    const char* tmp_path = "/tmp/tensogram_example_11.tgm";
+    const auto tmp = std::filesystem::temp_directory_path() /
+                     ("tensogram_example_11_" +
+                      std::to_string(std::random_device{}()) + ".tgm");
+    const std::string tmp_path_str = tmp.string();
+    const char* tmp_path = tmp_path_str.c_str();
     {
-        tensogram::streaming_encoder enc(tmp_path, R"({"version":2})");
+        tensogram::streaming_encoder enc(tmp_path, R"({"version":3})");
 
         // Pre-encoded simple_packing object
         std::string desc_sp =
-            R"({"type":"ndarray","ndim":1,"shape":[)" + std::to_string(N) +
-R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
+            R"({"type":"ntensor","ndim":1,"shape":[)" + std::to_string(N) +
+R"(],"strides":[8],"dtype":"float64",)"
             R"("encoding":"simple_packing","filter":"none","compression":"none",)"
             R"("bits_per_value":)" + std::to_string(bits_per_value) +
             R"(,"reference_value":)" + std::string(ref_buf) +
@@ -196,8 +198,8 @@ R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
 
         // Pre-encoded encoding=none object
         std::string desc_raw =
-            R"({"type":"ndarray","ndim":1,"shape":[50],"strides":[4],)"
-            R"("dtype":"float32","byte_order":"little",)"
+            R"({"type":"ntensor","ndim":1,"shape":[50],"strides":[4],)"
+            R"("dtype":"float32",)"
             R"("encoding":"none","filter":"none","compression":"none"})";
         enc.write_object_pre_encoded(desc_raw,
                                      reinterpret_cast<const std::uint8_t*>(raw_data.data()),
@@ -223,7 +225,7 @@ R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
 
     // Verify encoding=none object
     auto s1 = stream_msg.object(1);
-    const float* sp1 = s1.data_as<float>();
+    [[maybe_unused]] const float* sp1 = s1.data_as<float>();
     for (int i = 0; i < 50; ++i) {
         assert(sp1[i] == static_cast<float>(i));
     }

@@ -6,8 +6,7 @@
 # granted to it by virtue of its status as an intergovernmental organisation nor
 # does it submit to any jurisdiction.
 
-"""
-Example 08 -- xarray integration
+"""Example 08 — xarray integration
 
 Demonstrates how to open tensogram .tgm files as xarray Datasets using
 the ``tensogram-xarray`` backend (``engine="tensogram"``).
@@ -20,8 +19,16 @@ Covers:
   - Multi-message files with ``open_datasets()``
   - Lazy loading and the ``range_threshold`` heuristic
 
+Application metadata (``name``, ``mars``, ``cf``, ``product``, …) lives
+in ``metadata["base"][i]`` — one dict per data object, indexed
+positionally against the ``descriptors_and_data`` list passed to
+``encode`` / ``append``.  Placing these keys *inside* the descriptor
+dict triggers a ``UserWarning`` from tensogram 0.17+ (see
+``02b_generic_metadata.py`` for the same pattern on a single-object
+message).
+
 Prerequisites:
-  pip install tensogram-xarray   # or: pip install -e tensogram-xarray/
+  pip install tensogram-xarray   # or: pip install -e python/tensogram-xarray/
 """
 
 import tempfile
@@ -33,27 +40,34 @@ import tensogram_xarray
 import xarray as xr
 
 
-def _desc(shape, dtype="float32", **extra):
-    """Shorthand for building a descriptor dict."""
+def _desc(shape, dtype="float32"):
+    """Shorthand for a plain ntensor descriptor with no encoding pipeline.
+
+    Application metadata (``name``, ``mars``, ...) is deliberately NOT
+    accepted here — put those in ``metadata["base"][i]`` instead.
+
+    ``byte_order`` is deliberately omitted: the Python encoder writes
+    numpy data in native byte order, and the descriptor parser defaults
+    the missing key to native so the descriptor always matches the
+    payload on any host.
+    """
     return {
         "type": "ntensor",
         "shape": shape,
         "dtype": dtype,
-        "byte_order": "little",
         "encoding": "none",
         "filter": "none",
         "compression": "none",
-        **extra,
     }
 
 
 def example_basic(tmp: Path):
-    """1. Basic open -- single object, generic dimension names."""
+    """1. Basic open — single object, generic dimension names."""
     data = np.arange(60, dtype=np.float32).reshape(6, 10)
     path = str(tmp / "basic.tgm")
 
     with tensogram.TensogramFile.create(path) as f:
-        f.append({}, [(_desc([6, 10]), data)])
+        f.append({"base": [{}]}, [(_desc([6, 10]), data)])
 
     ds = xr.open_dataset(path, engine="tensogram")
     print("1. Basic open")
@@ -65,7 +79,11 @@ def example_basic(tmp: Path):
 
 
 def example_coords(tmp: Path):
-    """2. Coordinate auto-detection from named data objects."""
+    """2. Coordinate auto-detection from named data objects.
+
+    The xarray backend treats a 1-D object whose ``name`` matches a
+    dimension of another object as that dimension's coordinate.
+    """
     lat = np.linspace(-90, 90, 5, dtype=np.float64)
     lon = np.linspace(0, 360, 8, endpoint=False, dtype=np.float64)
     temp = np.random.default_rng(42).random((5, 8)).astype(np.float32)
@@ -73,11 +91,17 @@ def example_coords(tmp: Path):
     path = str(tmp / "coords.tgm")
     with tensogram.TensogramFile.create(path) as f:
         f.append(
-            {},
+            {
+                "base": [
+                    {"name": "latitude"},
+                    {"name": "longitude"},
+                    {"name": "temperature"},
+                ],
+            },
             [
-                (_desc([5], dtype="float64", name="latitude"), lat),
-                (_desc([8], dtype="float64", name="longitude"), lon),
-                (_desc([5, 8], name="temperature"), temp),
+                (_desc([5], dtype="float64"), lat),
+                (_desc([8], dtype="float64"), lon),
+                (_desc([5, 8]), temp),
             ],
         )
 
@@ -99,19 +123,19 @@ def example_variable_key(tmp: Path):
     path = str(tmp / "mars.tgm")
     with tensogram.TensogramFile.create(path) as f:
         f.append(
-            {},
-            [
-                (_desc([3, 4], mars={"param": "2t"}), t2m),
-                (_desc([3, 4], mars={"param": "10u"}), u10),
-            ],
+            {
+                "base": [
+                    {"mars": {"param": "2t"}},
+                    {"mars": {"param": "10u"}},
+                ],
+            },
+            [(_desc([3, 4]), t2m), (_desc([3, 4]), u10)],
         )
 
-    # Without variable_key: generic names
     ds1 = xr.open_dataset(path, engine="tensogram")
     print("3. Variable naming")
     print(f"   Without variable_key: {list(ds1.data_vars)}")
 
-    # With variable_key: names from metadata
     ds2 = xr.open_dataset(path, engine="tensogram", variable_key="mars.param")
     print(f"   With variable_key:    {list(ds2.data_vars)}")
     assert "2t" in ds2.data_vars
@@ -125,7 +149,7 @@ def example_dim_names(tmp: Path):
     path = str(tmp / "dims.tgm")
 
     with tensogram.TensogramFile.create(path) as f:
-        f.append({}, [(_desc([4, 5]), data)])
+        f.append({"base": [{}]}, [(_desc([4, 5]), data)])
 
     ds = xr.open_dataset(path, engine="tensogram", dim_names=["latitude", "longitude"])
     print("4. User-specified dim_names")
@@ -143,8 +167,10 @@ def example_multi_message(tmp: Path):
         for param in ["2t", "10u"]:
             for date in ["20260401", "20260402"]:
                 data = rng.random((3, 4), dtype=np.float32).astype(np.float32)
-                desc = _desc([3, 4], mars={"param": param, "date": date})
-                f.append({}, [(desc, data)])
+                f.append(
+                    {"base": [{"mars": {"param": param, "date": date}}]},
+                    [(_desc([3, 4]), data)],
+                )
 
     datasets = tensogram_xarray.open_datasets(path, variable_key="mars.param")
     print("5. Multi-message open_datasets()")
@@ -160,20 +186,18 @@ def example_lazy_and_threshold(tmp: Path):
     path = str(tmp / "lazy.tgm")
 
     with tensogram.TensogramFile.create(path) as f:
-        f.append({}, [(_desc([10, 100]), data)])
+        f.append({"base": [{}]}, [(_desc([10, 100]), data)])
 
-    # Default threshold (0.5): small slices use partial decode_range
     ds = xr.open_dataset(path, engine="tensogram")
-    small_slice = ds["object_0"][2:4, 10:20].values  # 200/1000 = 20%, below threshold
+    small_slice = ds["object_0"][2:4, 10:20].values
     np.testing.assert_array_equal(small_slice, data[2:4, 10:20])
     print("6. Lazy loading + range_threshold")
     print(f"   Small slice (20%): shape={small_slice.shape}, values match")
 
-    # Custom threshold (0.1): even 20% slice falls back to full decode
     ds2 = xr.open_dataset(path, engine="tensogram", range_threshold=0.1)
     small_slice2 = ds2["object_0"][2:4, 10:20].values
     np.testing.assert_array_equal(small_slice2, data[2:4, 10:20])
-    print(f"   Custom threshold=0.1: values still correct (full decode fallback)")
+    print("   Custom threshold=0.1: values still correct (full decode fallback)")
     print()
 
 

@@ -42,17 +42,24 @@ import xarray as xr
 # ---------------------------------------------------------------------------
 
 
-def _desc(shape, dtype="float32", **extra):
-    """Shorthand for building an ntensor descriptor."""
+def _desc(shape, dtype="float32"):
+    """Shorthand for a plain ntensor descriptor with no encoding pipeline.
+
+    Application metadata (``name``, ``mars``, ...) is deliberately NOT
+    accepted here — put those in ``metadata["base"][i]`` instead.
+
+    ``byte_order`` is deliberately omitted: the Python encoder writes
+    numpy data in native byte order, and the descriptor parser defaults
+    the missing key to native so the descriptor always matches the
+    payload on any host.
+    """
     return {
         "type": "ntensor",
         "shape": list(shape),
         "dtype": dtype,
-        "byte_order": "little",
         "encoding": "none",
         "filter": "none",
         "compression": "none",
-        **extra,
     }
 
 
@@ -90,10 +97,16 @@ def create_test_files(output_dir: Path) -> list[Path]:
         lat = np.linspace(-87.5, 87.5, NLAT, dtype=np.float64)
         lon = np.linspace(0, 355, NLON, dtype=np.float64)
 
+        # objects[i] is the (descriptor, data) pair for data object i.
+        # base[i] carries the per-object application metadata that
+        # tensogram-xarray and tensogram-zarr consume (name, mars, ...).
         objects = [
-            # Coordinate arrays: latitude and longitude
-            (_desc([NLAT], dtype="float64", name="latitude"), lat),
-            (_desc([NLON], dtype="float64", name="longitude"), lon),
+            (_desc([NLAT], dtype="float64"), lat),
+            (_desc([NLON], dtype="float64"), lon),
+        ]
+        base = [
+            {"name": "latitude"},
+            {"name": "longitude"},
         ]
 
         for level_hpa in LEVEL_VALUES:
@@ -105,15 +118,18 @@ def create_test_files(output_dir: Path) -> list[Path]:
             noise = rng.normal(0, 2.0, (NLAT, NLON)).astype(np.float32)
             field = (base_temp + lat_effect + time_trend + noise).astype(np.float32)
 
-            desc = _desc(
-                [NLAT, NLON],
-                mars={"param": "t", "levelist": str(level_hpa), "date": date},
-                name=f"temperature_{level_hpa}hPa",
+            objects.append((_desc([NLAT, NLON]), field))
+            base.append(
+                {
+                    "name": f"temperature_{level_hpa}hPa",
+                    "mars": {"param": "t", "levelist": str(level_hpa), "date": date},
+                }
             )
-            objects.append((desc, field))
 
         with tensogram.TensogramFile.create(str(path)) as f:
-            f.append({}, objects)
+            # Free-form CBOR metadata: no `version` key — wire version
+            # lives in the preamble (see `plans/WIRE_FORMAT.md` §3).
+            f.append({"base": base}, objects)
 
         print(
             f"  Created {path.name}: {len(objects)} objects ({len(objects) - 2} levels + 2 coords)"

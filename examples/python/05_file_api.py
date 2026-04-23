@@ -42,7 +42,6 @@ def make_field(param: str, step: int):
         "type": "ntensor",
         "shape": [72, 144],
         "dtype": "float32",
-        "byte_order": "little",
         "encoding": "none",
         "filter": "none",
         "compression": "none",

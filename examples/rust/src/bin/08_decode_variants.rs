@@ -96,10 +96,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 obj_data[0]
             );
         }
-        // v3: hash lives in the frame footer's inline slot (see
-        // `plans/WIRE_FORMAT.md` §2.4), not on the descriptor.
-        // Phase 6 adds an API to surface it via `objects[i]`.
-        println!("  objects[0].hash: (inline slot — phase 6 API)");
+        // Each object's hash lives in the frame footer's inline slot,
+        // not on the descriptor.  A public accessor for the slot is
+        // still landing; for now, the hash is opaque from this API.
+        println!("  objects[0].hash: (inline slot)");
         assert_eq!(objects[0].1, data0);
         assert_eq!(objects[1].1, data1);
         assert_eq!(objects[2].1, data2);
@@ -125,16 +125,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  index=99 → error: {}", result.unwrap_err());
     }
 
-    // ── decode_object() with hash verification ─────────────────────────────────
-    {
-        let verify_opts = DecodeOptions {
-            verify_hash: true,
-            ..Default::default()
-        };
-        let (_meta, _desc0, obj0) = decode_object(&message, 0, &verify_opts)?;
-        println!("\ndecode_object(index=0, verify_hash=true):");
-        println!("  {} bytes, hash OK", obj0.len());
-    }
+    // ── Integrity verification — use validate_message, not decode ────────────
+    //
+    // `DecodeOptions::verify_hash` is accepted for API compatibility but
+    // is a no-op — integrity verification lives in `validate_message` at
+    // level `Integrity` (see example 06).  Decode is deliberately
+    // hash-agnostic.
 
     // ── decode_range() — partial sub-slice ────────────────────────────────────
     //

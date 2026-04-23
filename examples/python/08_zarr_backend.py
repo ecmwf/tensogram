@@ -95,9 +95,14 @@ def read_with_zarr(path: str) -> None:
     for name, arr in root.members():
         print(f"  {name}: shape={arr.shape}, dtype={arr.dtype}")
 
-    # Access group attributes (from GlobalMetadata)
-    print(f"\nMARS metadata: {dict(root.attrs).get('mars', {})}")
-    print(f"Source: {root.attrs.get('source', 'unknown')}")
+    # Zarr attrs split into two places:
+    #   - root.attrs holds group-level metadata (mapped from meta.extra).
+    #   - root[name].attrs holds per-object metadata (from meta.base[i]).
+    # The MARS namespace in this example is per-object, so it lives on
+    # each array's attrs, not the group's.
+    print(f"\nGroup attrs: source = {root.attrs.get('source', 'unknown')}")
+    mars_on_2t = dict(root["2t"].attrs).get("mars", {})
+    print(f"Per-object attrs (2t): mars.param = {mars_on_2t.get('param', 'unknown')}")
 
     # Read array data
     temp = root["2t"][:]

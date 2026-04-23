@@ -9,15 +9,16 @@
 /**
  * Example 02b — Per-object metadata with a generic application namespace (TypeScript)
  *
- * Shows that the metadata mechanism in example 02 is not specific to the
- * MARS vocabulary. Any application namespace works the same way. Here we use
- * a made-up `"product"` namespace plus an `"instrument"` namespace to tag a
- * 2-D field with semantic context.
+ * Tensogram is vocabulary-agnostic: the library never interprets metadata
+ * keys.  This example attaches two parallel per-object namespaces — a
+ * made-up `"product"` namespace plus an `"instrument"` namespace — to a
+ * 2-D field, to show how any domain can model its semantics inside
+ * `base[i]`.
  *
- * The same pattern applies to any domain vocabulary: CF conventions (`"cf"`),
- * BIDS (`"bids"`), DICOM (`"dicom"`), or anything your application defines.
- * The library never interprets any of these — it simply stores and returns
- * the keys you supply.
+ * The same pattern fits any domain: CF conventions (`"cf"`), BIDS
+ * (`"bids"`), DICOM (`"dicom"`), or anything your application defines.
+ * The library simply stores and returns the keys you supply; meaning is
+ * assigned by the application layer.
  */
 
 import {

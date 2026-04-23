@@ -521,7 +521,7 @@ the rest of the frame body is known.
   "dtype":      "float64" | "float32" | … | "bitmask",
 
   ; Encoding pipeline
-  "byte_order": "big" | "little",
+  "byte_order": "big" | "little",           ; optional — absent ⇒ native
   "encoding":   "none" | "simple_packing",
   "filter":     "none" | "shuffle",
   "compression":"none" | "szip" | "zstd" | "lz4" | "blosc2"
@@ -548,6 +548,16 @@ the rest of the frame body is known.
 The `hash` field on the descriptor (present pre-v3) is **removed**.
 The inline hash slot in the frame's common footer is the sole
 source of truth for per-object integrity.
+
+**Optional `byte_order`.** The key may be omitted from the CBOR
+descriptor; decoders treat a missing key as the native byte order of
+the platform doing the deserialisation.  Encoders produced by this
+reference implementation always write the field explicitly, so the
+absent form only arises when a CBOR descriptor is constructed by an
+external tool or when the JSON convenience surface (C FFI / CLI)
+accepts a descriptor whose JSON omits the key.  The on-wire absence
+rule is strictly lenient: explicit `"big"` / `"little"` values round-
+trip unchanged.
 
 **Dtype-restricted codecs.** In v3, `compression = "rle"` and
 `compression = "roaring"` require `dtype = "bitmask"`.  The
