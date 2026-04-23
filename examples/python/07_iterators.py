@@ -49,7 +49,7 @@ def create_test_file(path, n=5):
         for i in range(n):
             data = np.full((4, 4), float(i), dtype=np.float32)
             meta = {"version": 3, "step": i, "time": i * 0.1}
-            desc = {"type": "ndarray", "shape": [4, 4], "dtype": "float32"}
+            desc = {"type": "ntensor", "shape": [4, 4], "dtype": "float32"}
             f.append(meta, [(desc, data)])
     print(f"Created {path} with {n} messages")
 
@@ -109,8 +109,8 @@ def demo_multi_object(path):
         f.append(
             meta,
             [
-                ({"type": "ndarray", "shape": [3, 3], "dtype": "float32"}, temperature),
-                ({"type": "ndarray", "shape": [3, 3], "dtype": "float32"}, humidity),
+                ({"type": "ntensor", "shape": [3, 3], "dtype": "float32"}, temperature),
+                ({"type": "ntensor", "shape": [3, 3], "dtype": "float32"}, humidity),
             ],
         )
 
@@ -130,7 +130,7 @@ def demo_buffer_iteration():
     for i in range(3):
         data = np.full(8, float(i), dtype=np.float32)
         meta = {"version": 3, "step": i}
-        desc = {"type": "ndarray", "shape": [8], "dtype": "float32"}
+        desc = {"type": "ntensor", "shape": [8], "dtype": "float32"}
         msgs.append(bytes(tensogram.encode(meta, [(desc, data)])))
 
     buf = b"".join(msgs)
