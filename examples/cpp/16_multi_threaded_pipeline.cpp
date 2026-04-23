@@ -52,7 +52,7 @@ int main() {
     const std::string metadata_json = R"({
         "version": 3,
         "descriptors": [{
-            "type": "ntensor", "ndim": 1, "shape": [2000000], "strides": [1],
+            "type": "ntensor", "ndim": 1, "shape": [2000000], "strides": [8],
             "dtype": "float64",
             "encoding": "none", "filter": "none", "compression": "none"
         }]

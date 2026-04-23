@@ -33,7 +33,7 @@ int main() {
     const std::string metadata_json = R"({
         "version": 3,
         "descriptors": [{
-            "type": "ndarray",
+            "type": "ntensor",
             "ndim": 2,
             "shape": [100, 200],
             "strides": [800, 4],
@@ -42,12 +42,14 @@ int main() {
             "filter": "none",
             "compression": "none"
         }],
-        "mars": {
-            "class": "od",
-            "type": "fc",
-            "date": "20260401",
-            "step": "6"
-        }
+        "base": [{
+            "mars": {
+                "class": "od",
+                "type": "fc",
+                "date": "20260401",
+                "step": "6"
+            }
+        }]
     })";
 
     // -- 3. Encode --
