@@ -30,11 +30,18 @@ function App() {
     error,
   } = useAppStore();
 
-  // Determine the selected parameter name for animation
+  // Determine the selected parameter identifier for animation.
+  // `mars.param` may be a short string ("2t", "t") or a GRIB integer
+  // code (167, 130); useAnimationSequence does a `===` comparison so
+  // we keep the value in its original type (no coercion) — string
+  // matches string, integer matches integer.
   const selectedParam = selectedObject && fileIndex
-    ? (fileIndex.variables.find(
+    ? ((fileIndex.variables.find(
         (v) => v.msgIndex === selectedObject.msgIdx && v.objIndex === selectedObject.objIdx,
-      )?.metadata?.mars as Record<string, unknown> | undefined)?.param as string | undefined
+      )?.metadata?.mars as Record<string, unknown> | undefined)?.param as
+        | string
+        | number
+        | undefined)
     : undefined;
 
   const frames = useAnimationSequence(fileIndex, selectedParam ?? null, selectedLevel);
@@ -96,8 +103,18 @@ function App() {
         (v) => v.msgIndex === selectedObject.msgIdx && v.objIndex === selectedObject.objIdx,
       )
     : undefined;
-  const marsParam = (selectedVar?.metadata?.mars as Record<string, unknown>)?.param as string | undefined;
-  const units = (selectedVar?.metadata?.units as string) ?? marsParam ?? '';
+  // Units: prefer an explicit `units` field on the object; fall back
+  // to the param identifier (coerced to string) so the colorbar has
+  // *something* to display even for raw GRIB files where the code is
+  // the only identifier available.
+  const marsParamRaw = (selectedVar?.metadata?.mars as Record<string, unknown>)?.param;
+  const marsParam =
+    marsParamRaw == null
+      ? ''
+      : typeof marsParamRaw === 'string'
+        ? marsParamRaw
+        : String(marsParamRaw);
+  const units = (selectedVar?.metadata?.units as string) ?? marsParam;
 
   return (
     <div className="app-layout">

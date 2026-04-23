@@ -58,9 +58,14 @@ const STYLES: Record<string, AutoStyle> = {
 
 /**
  * Look up the default style for a MARS param.
+ *
+ * Accepts `string | number | undefined` because `mars.param` in
+ * GRIB-derived files is a numeric code (167, 130, …) while in
+ * tensogram-native files it's a short string ("2t", "t", …).
  * Returns undefined if no style is defined for this param.
  */
-export function getAutoStyle(param: string | undefined): AutoStyle | undefined {
-  if (!param) return undefined;
-  return STYLES[param.toLowerCase()] ?? STYLES[param];
+export function getAutoStyle(param: string | number | undefined): AutoStyle | undefined {
+  if (param === undefined || param === null) return undefined;
+  const key = typeof param === 'string' ? param : String(param);
+  return STYLES[key.toLowerCase()] ?? STYLES[key];
 }
