@@ -39,6 +39,7 @@ import {
   ObjectError,
   rethrowTyped,
 } from './errors.js';
+import { fetchRange, type FetchRangeContext } from './internal/httpRange.js';
 import { errorMessage, withCause } from './internal/io.js';
 import type {
   AppendOptions,
@@ -211,16 +212,16 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
         contentLength > 0 &&
         contentLength <= Number.MAX_SAFE_INTEGER
       ) {
+        const ctx: FetchRangeContext = {
+          url,
+          fetchFn,
+          ...(options.headers !== undefined ? { baseHeaders: options.headers } : {}),
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+        };
         // Try the lazy path.  If lazy scan fails mid-walk (e.g.
         // streaming-mode message or unrecognised magic), fall through
         // to eager.
-        const scanResult = await lazyScanMessages(
-          url,
-          fetchFn,
-          options.headers,
-          options.signal,
-          contentLength,
-        );
+        const scanResult = await lazyScanMessages(ctx, contentLength);
         if (scanResult !== null) {
           return new TensogramFile({
             kind: 'remote-lazy',
@@ -348,15 +349,10 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
         const hit = b.cache.get(index);
         if (hit) return hit;
         const bytes = await fetchRange(
-          b.url,
-          b.fetchFn,
-          b.baseHeaders,
-          b.signal,
+          lazyFetchContext(b),
           offset,
           offset + length,
         );
-        // Simple LRU: delete + set shifts to newest, drop the oldest
-        // entry when over capacity.
         b.cache.set(index, bytes);
         if (b.cache.size > b.cacheCap) {
           const first = b.cache.keys().next();
@@ -461,6 +457,14 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
 
 // ── Lazy HTTP helpers ─────────────────────────────────────────────────────
 
+/** Build a FetchRangeContext from a LazyHttpBackend. */
+function lazyFetchContext(b: LazyHttpBackend): FetchRangeContext {
+  const ctx: FetchRangeContext = { url: b.url, fetchFn: b.fetchFn };
+  if (b.baseHeaders !== undefined) ctx.baseHeaders = b.baseHeaders;
+  if (b.signal !== undefined) ctx.signal = b.signal;
+  return ctx;
+}
+
 /**
  * Walk the file one preamble at a time, collecting each message's
  * `(offset, length)` from the preamble's `total_length` field.  A
@@ -477,10 +481,7 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
  *   body, which some servers return when Range isn't supported).
  */
 async function lazyScanMessages(
-  url: string | URL,
-  fetchFn: typeof globalThis.fetch,
-  headers: HeadersInit | undefined,
-  signal: AbortSignal | undefined,
+  ctx: FetchRangeContext,
   fileLen: number,
 ): Promise<MessagePosition[] | null> {
   const positions: MessagePosition[] = [];
@@ -489,15 +490,7 @@ async function lazyScanMessages(
   while (cursor + PREAMBLE_BYTES <= fileLen) {
     let preamble: Uint8Array;
     try {
-      preamble = await fetchRange(
-        url,
-        fetchFn,
-        headers,
-        signal,
-        cursor,
-        cursor + PREAMBLE_BYTES,
-        /* requireRange */ true,
-      );
+      preamble = await fetchRange(ctx, cursor, cursor + PREAMBLE_BYTES, /* requireRange */ true);
     } catch {
       return null; // eager fallback
     }
@@ -520,57 +513,4 @@ async function lazyScanMessages(
     cursor += totalLength;
   }
   return positions;
-}
-
-/**
- * Issue a `Range: bytes=start-end-1` request covering `[start, end)`.
- *
- * - `requireRange: true` (used during the lazy scan) throws on any
- *   non-`206` status so the caller can fall back to eager download.
- * - `requireRange: false` (the default, used for payload fetches) also
- *   accepts `200` with the full body: when the server ignores the
- *   Range header we slice the response on the client side.
- */
-async function fetchRange(
-  url: string | URL,
-  fetchFn: typeof globalThis.fetch,
-  baseHeaders: HeadersInit | undefined,
-  signal: AbortSignal | undefined,
-  start: number,
-  end: number,
-  requireRange = false,
-): Promise<Uint8Array> {
-  const headers = new Headers(baseHeaders);
-  headers.set('Range', `bytes=${start}-${end - 1}`);
-  const init: RequestInit = { method: 'GET', headers };
-  if (signal !== undefined) init.signal = signal;
-
-  let resp: Response;
-  try {
-    resp = await fetchFn(url, init);
-  } catch (err) {
-    throw withCause(new IoError(`Range fetch failed: ${errorMessage(err)}`), err);
-  }
-
-  if (resp.status === 206) {
-    const buf = await resp.arrayBuffer();
-    return new Uint8Array(buf);
-  }
-
-  if (requireRange) {
-    throw new IoError(`Range request returned HTTP ${resp.status}; falling back to eager`);
-  }
-
-  if (resp.status === 200) {
-    // Server returned the full body — slice client-side.
-    const buf = await resp.arrayBuffer();
-    if (end > buf.byteLength) {
-      throw new IoError(
-        `Server returned ${buf.byteLength} bytes but client asked for range ending at ${end}`,
-      );
-    }
-    return new Uint8Array(buf).subarray(start, end);
-  }
-
-  throw new IoError(`Range fetch: HTTP ${resp.status} ${resp.statusText || ''}`.trim());
 }
