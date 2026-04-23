@@ -38,7 +38,7 @@ import type {
  * Encode global metadata + pre-encoded object bytes into a single
  * Tensogram wire-format message.
  *
- * @param metadata - Global metadata (`version: 2` required).
+ * @param metadata - Global metadata (free-form CBOR; only `base`, `_reserved_`, and `_extra_` are library-interpreted).
  * @param objects  - `(descriptor, bytes)` pairs.  Each `data` is the
  *                   output of a prior encoding pipeline matching the
  *                   descriptor's `encoding`/`filter`/`compression`.

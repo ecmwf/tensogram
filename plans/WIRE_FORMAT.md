@@ -273,11 +273,16 @@ set without otherwise changing the ordering rules.
 
 ### 6.1 `HeaderMetadata` / `FooterMetadata` (types 1, 7)
 
-CBOR payload: the `GlobalMetadata` structure.
+CBOR payload: the `GlobalMetadata` structure.  The CBOR metadata
+frame is **fully free-form** — the library interprets only three
+top-level keys (`base`, `_reserved_`, `_extra_`).  Any other key
+the caller supplies — including a stray legacy `"version"` — is
+preserved as a free-form annotation and routed into `_extra_` on
+decode.  The wire-format version lives **exclusively in the
+preamble** (see §3); it is never duplicated in CBOR.
 
 ```cbor
 {
-  "version": 3,                          ; required — wire format version
   "base": [                              ; per-object metadata, one map per object
     { "mars": { ... }, ... },
     { "mars": { ... }, ... }
@@ -293,8 +298,12 @@ CBOR payload: the `GlobalMetadata` structure.
 }
 ```
 
-- `version` **must** equal the preamble version (3 in v3).  A
-  mismatch is a `MetadataError`.
+- **There are no required top-level keys.** An encoder MAY emit
+  an empty map (`{}`); a decoder MUST accept arbitrary top-level
+  keys.  The wire-format version is fixed by the preamble and MUST
+  NOT be written to CBOR by an encoder.  A stray `"version"` key
+  from a legacy pre-0.17 producer is tolerated and routed into
+  `_extra_` so the data round-trips cleanly.
 - `base[i]` holds ALL structured metadata for object `i`
   independently.  The encoder auto-populates `_reserved_.tensor`
   (with `ndim`, `shape`, `strides`, `dtype`) in each entry.
@@ -302,8 +311,8 @@ CBOR payload: the `GlobalMetadata` structure.
   NOT write; the encoder validates this and rejects messages where
   client code has set keys inside `_reserved_`.
 - `_extra_` is a client-writable catch-all for ad-hoc message-level
-  annotations.  Unknown top-level CBOR keys are preserved here on
-  round-trip.
+  annotations.  Every unrecognised top-level CBOR key is routed
+  here on decode, so round-trips preserve unknown input.
 
 Exactly one of `HeaderMetadata` / `FooterMetadata` **must** be
 present.  If both are present, the decoder prefers the header frame
@@ -929,6 +938,7 @@ warning from `--canonical` mode.
 | Scan direction | forward only | forward / backward / bidirectional |
 | Streaming total_length in postamble | (field did not exist) | mirrored when sink is seekable; 0 otherwise |
 | Generic data-object concept | implicit (only NTensorFrame existed) | documented — body phase holds data-object frames; new types slot in at fresh type numbers without a version bump |
+| CBOR metadata `version` key | required; cross-check against preamble | **removed** — CBOR metadata frame is free-form; wire-format version lives in the preamble alone.  Decoders route any legacy `"version"` top-level key into `_extra_` for forward-compatibility. |
 
 v2 messages are rejected at preamble read.  No migration path is
 provided.

@@ -135,7 +135,10 @@ impl StreamingDecoder {
     /// Get the global metadata from the most recently decoded message.
     pub fn metadata(&self) -> Result<JsValue, JsError> {
         match &self.global_metadata {
-            Some(meta) => to_js(meta),
+            // Use `metadata_to_js` so `version` is synthesised from
+            // the preamble for TypeScript ergonomics — the CBOR
+            // metadata frame no longer carries a `version` key in v3.
+            Some(meta) => crate::convert::metadata_to_js(meta),
             None => Ok(JsValue::NULL),
         }
     }

@@ -35,7 +35,6 @@ int main() {
     // For comparison, `pipeline` is placed at the top level: it becomes
     // a message-level _extra_ annotation, covering the whole message.
     const std::string metadata_json = R"({
-        "version": 3,
         "descriptors": [{
             "type": "ntensor",
             "ndim": 2,

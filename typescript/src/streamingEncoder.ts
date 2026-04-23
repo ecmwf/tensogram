@@ -23,7 +23,9 @@
  * Example:
  *
  * ```ts
- * const enc = new StreamingEncoder({ version: 2 });
+ * // The CBOR metadata frame is free-form; an empty `{}` is valid
+ * // input.  The wire-format version lives in the preamble.
+ * const enc = new StreamingEncoder({});
  * enc.writePreceder({ mars: { param: '2t' } });
  * enc.writeObject(descriptor, new Float32Array([1, 2, 3]));
  * enc.writeObject(otherDescriptor, new Float64Array([4, 5, 6]));
@@ -89,7 +91,7 @@ export class StreamingEncoder {
    * frame.  In buffered mode the bytes accumulate internally; in
    * streaming mode they flow to `opts.onBytes` immediately.
    *
-   * @param metadata - Global metadata (`version: 2` required).
+   * @param metadata - Global metadata (free-form CBOR; only `base`, `_reserved_`, and `_extra_` are library-interpreted).
    * @param opts     - Hash selection + optional `onBytes` sink.
    * @throws {InvalidArgumentError} when `metadata` is malformed or
    *   when `opts.onBytes` is supplied but is not a function.

@@ -214,7 +214,6 @@ fn convert_one_to_one(
         }
 
         let global_meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -256,7 +255,6 @@ fn convert_merge_all(
         .collect();
 
     let global_meta = GlobalMetadata {
-        version: 3,
         base,
         ..Default::default()
     };

@@ -67,7 +67,7 @@ def example_basic(tmp: Path):
     path = str(tmp / "basic.tgm")
 
     with tensogram.TensogramFile.create(path) as f:
-        f.append({"version": 3, "base": [{}]}, [(_desc([6, 10]), data)])
+        f.append({"base": [{}]}, [(_desc([6, 10]), data)])
 
     ds = xr.open_dataset(path, engine="tensogram")
     print("1. Basic open")
@@ -92,7 +92,6 @@ def example_coords(tmp: Path):
     with tensogram.TensogramFile.create(path) as f:
         f.append(
             {
-                "version": 3,
                 "base": [
                     {"name": "latitude"},
                     {"name": "longitude"},
@@ -125,7 +124,6 @@ def example_variable_key(tmp: Path):
     with tensogram.TensogramFile.create(path) as f:
         f.append(
             {
-                "version": 3,
                 "base": [
                     {"mars": {"param": "2t"}},
                     {"mars": {"param": "10u"}},
@@ -151,7 +149,7 @@ def example_dim_names(tmp: Path):
     path = str(tmp / "dims.tgm")
 
     with tensogram.TensogramFile.create(path) as f:
-        f.append({"version": 3, "base": [{}]}, [(_desc([4, 5]), data)])
+        f.append({"base": [{}]}, [(_desc([4, 5]), data)])
 
     ds = xr.open_dataset(path, engine="tensogram", dim_names=["latitude", "longitude"])
     print("4. User-specified dim_names")
@@ -170,7 +168,7 @@ def example_multi_message(tmp: Path):
             for date in ["20260401", "20260402"]:
                 data = rng.random((3, 4), dtype=np.float32).astype(np.float32)
                 f.append(
-                    {"version": 3, "base": [{"mars": {"param": param, "date": date}}]},
+                    {"base": [{"mars": {"param": param, "date": date}}]},
                     [(_desc([3, 4]), data)],
                 )
 
@@ -188,7 +186,7 @@ def example_lazy_and_threshold(tmp: Path):
     path = str(tmp / "lazy.tgm")
 
     with tensogram.TensogramFile.create(path) as f:
-        f.append({"version": 3, "base": [{}]}, [(_desc([10, 100]), data)])
+        f.append({"base": [{}]}, [(_desc([10, 100]), data)])
 
     ds = xr.open_dataset(path, engine="tensogram")
     small_slice = ds["object_0"][2:4, 10:20].values

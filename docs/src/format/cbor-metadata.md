@@ -11,15 +11,24 @@ All CBOR maps use **deterministic encoding** with canonical key ordering per RFC
 
 ## GlobalMetadata
 
-The global metadata frame contains a single CBOR map. The only required key is `version`; everything else is optional.
+The global metadata frame contains a single CBOR map.  The frame is
+**free-form** — the library interprets only three top-level keys
+(`base`, `_reserved_`, `_extra_`) and routes anything else into
+`_extra_` on decode.  There are **no required top-level keys**.
 
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
-| `version` | uint | Yes | Format version. Currently `3` |
 | `base` | array of maps | No | Per-object metadata — one entry per data object, each entry holds ALL metadata for that object independently |
 | `_reserved_` | map | No | Library internals (provenance: encoder, time, uuid). Client code MUST NOT write to this. |
 | `_extra_` | map | No | Client-writable catch-all for ad-hoc message-level annotations |
-| *any unknown key* | any | No | Silently ignored on decode (forward compatibility) |
+| *any other top-level key* | any | No | Routed into `_extra_` on decode (free-form passthrough; covers legacy `"version"` keys from pre-0.17 producers) |
+
+> **Wire-format version lives in the preamble.** The CBOR metadata
+> frame carries no `version` key in v3.  The preamble's 2-byte
+> `version` field is the single source of truth (currently `3`);
+> every binding exposes it as `WIRE_VERSION` (Rust / Python /
+> TypeScript) or `tgm_message_version` / `msg.version()` (FFI / C++).
+> See [`wire-format.md`](wire-format.md) §3.
 
 Each data object is self-describing via its own per-frame descriptor (see below). The `base` array provides per-object metadata at the message level so readers can discover object metadata from the global frame alone, without opening each data object frame.
 
@@ -100,7 +109,6 @@ A complete example with two data objects (temperature and wind fields):
 
 ```json
 {
-  "version": 3,
   "base": [
     {
       "mars": {

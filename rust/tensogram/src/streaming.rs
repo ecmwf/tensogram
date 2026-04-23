@@ -137,7 +137,7 @@ impl<W: Write> StreamingEncoder<W> {
         }
 
         let preamble = Preamble {
-            version: 3,
+            version: crate::wire::WIRE_VERSION,
             flags,
             reserved: 0,
             total_length: 0,
@@ -211,7 +211,6 @@ impl<W: Write> StreamingEncoder<W> {
         }
 
         let preceder_meta = GlobalMetadata {
-            version: self.global_meta.version,
             base: vec![metadata.clone()],
             ..Default::default()
         };
@@ -850,8 +849,7 @@ mod tests {
         let result = enc.finish().unwrap();
 
         // Decode should succeed
-        let (decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
-        assert_eq!(decoded_meta.version, 3);
+        let (_decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
         assert_eq!(objects.len(), 1);
         assert_eq!(objects[0].1, data);
     }
@@ -889,7 +887,7 @@ mod tests {
 
         // Buffered encode
         let buffered = encode(&meta, &[(&desc, &data)], &options).unwrap();
-        let (buf_meta, buf_objects) = decode(
+        let (_buf_meta, buf_objects) = decode(
             &buffered,
             &DecodeOptions {
                 verify_hash: true,
@@ -903,7 +901,7 @@ mod tests {
         let mut enc = StreamingEncoder::new(buf, &meta, &options).unwrap();
         enc.write_object(&desc, &data).unwrap();
         let streamed = enc.finish().unwrap();
-        let (str_meta, str_objects) = decode(
+        let (_str_meta, str_objects) = decode(
             &streamed,
             &DecodeOptions {
                 verify_hash: true,
@@ -912,8 +910,7 @@ mod tests {
         )
         .unwrap();
 
-        // Data must match (wire bytes may differ due to header vs footer layout)
-        assert_eq!(buf_meta.version, str_meta.version);
+        // Data must match (wire bytes may differ due to header vs footer layout).
         assert_eq!(buf_objects.len(), str_objects.len());
         assert_eq!(buf_objects[0].0.shape, str_objects[0].0.shape);
         assert_eq!(buf_objects[0].0.dtype, str_objects[0].0.dtype);
@@ -982,8 +979,7 @@ mod tests {
         assert_eq!(enc.object_count(), 0);
         let result = enc.finish().unwrap();
 
-        let (decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
-        assert_eq!(decoded_meta.version, 3);
+        let (_decoded_meta, objects) = decode(&result, &DecodeOptions::default()).unwrap();
         assert_eq!(objects.len(), 0);
     }
 
@@ -1043,7 +1039,6 @@ mod tests {
             ciborium::Value::Text("ecmwf".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 3,
             extra,
             ..Default::default()
         };
@@ -1105,7 +1100,6 @@ mod tests {
             ciborium::Value::Text("footer".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![footer_base],
             ..Default::default()
         };
@@ -1284,7 +1278,6 @@ mod tests {
         // and verify _reserved_ from preceder doesn't clobber.
         // We test via the framing level directly.
         let preceder_meta = GlobalMetadata {
-            version: 3,
             base: vec![prec_entry],
             ..Default::default()
         };
@@ -1325,7 +1318,6 @@ mod tests {
             )]),
         );
         let footer_meta = GlobalMetadata {
-            version: 3,
             base: vec![footer_base],
             ..Default::default()
         };
@@ -1408,7 +1400,7 @@ mod tests {
         flags.set(MessageFlags::FOOTER_METADATA);
         flags.set(MessageFlags::PRECEDER_METADATA);
         let preamble = Preamble {
-            version: 3,
+            version: crate::wire::WIRE_VERSION,
             flags,
             reserved: 0,
             total_length,

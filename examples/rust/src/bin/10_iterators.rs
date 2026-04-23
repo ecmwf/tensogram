@@ -33,7 +33,6 @@ fn make_message(param: &str, fill: u8) -> (GlobalMetadata, DataObjectDescriptor,
     entry.insert("mars".to_string(), mars);
 
     let global_meta = GlobalMetadata {
-        version: 3,
         base: vec![entry],
         ..Default::default()
     };

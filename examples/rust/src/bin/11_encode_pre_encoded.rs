@@ -174,14 +174,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Wire message: {} bytes", message.len());
 
     // ── 5. Decode and verify ────────────────────────────────────────────────
-    let (decoded_meta, decoded_objects) = decode(
+    //
+    // The wire-format version lives in the preamble (see
+    // `plans/WIRE_FORMAT.md` §3); the returned `GlobalMetadata` has
+    // no `version` field of its own, so the unused binding is named
+    // with a leading underscore.
+    let (_decoded_meta, decoded_objects) = decode(
         &message,
         &DecodeOptions {
             native_byte_order: false,
             ..DecodeOptions::default()
         },
     )?;
-    assert_eq!(decoded_meta.version, 3);
+    // Wire version comes from the preamble (see
+    // `plans/WIRE_FORMAT.md` §3); the `tensogram::WIRE_VERSION`
+    // constant is the compile-time truth.
+    assert_eq!(tensogram::WIRE_VERSION, 3);
     let (decoded_desc, decoded_payload) = decoded_objects
         .first()
         .ok_or_else(|| std::io::Error::other("missing decoded object"))?;

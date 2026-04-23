@@ -53,16 +53,31 @@ fn make_descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
     }
 }
 
+/// Build a `{product, parameter}` base entry — the generic scientific
+/// vocabulary used by the non-MARS golden fixtures.
+fn generic_base_entry(parameter: &str) -> BTreeMap<String, ciborium::Value> {
+    let mut entry = BTreeMap::new();
+    entry.insert(
+        "product".to_string(),
+        ciborium::Value::Text("efi".to_string()),
+    );
+    entry.insert(
+        "parameter".to_string(),
+        ciborium::Value::Text(parameter.to_string()),
+    );
+    entry
+}
+
 /// Generate all golden file contents in memory. Returns (filename, bytes) pairs.
 /// Does NOT write to disk — callers compare against committed files.
 fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
     let mut results = Vec::new();
 
-    // 1. Simple message: single float32 tensor [4], no compression
+    // 1. Simple message: single float32 tensor [4], no compression,
+    //    carrying a generic scientific vocabulary (`product`, `parameter`).
     {
         let meta = GlobalMetadata {
-            version: 3,
-            extra: BTreeMap::new(),
+            base: vec![generic_base_entry("pressure")],
             ..Default::default()
         };
         let desc = make_descriptor(vec![4], Dtype::Float32);
@@ -74,11 +89,15 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
         results.push(("simple_f32.tgm", msg));
     }
 
-    // 2. Multi-object: 3 tensors with different dtypes
+    // 2. Multi-object: 3 tensors with different dtypes, each labelled
+    //    with its own `parameter` under the same `product = efi` umbrella.
     {
         let meta = GlobalMetadata {
-            version: 3,
-            extra: BTreeMap::new(),
+            base: vec![
+                generic_base_entry("temperature"),
+                generic_base_entry("pressure"),
+                generic_base_entry("humidity"),
+            ],
             ..Default::default()
         };
         let desc_f32 = make_descriptor(vec![2], Dtype::Float32);
@@ -124,7 +143,6 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
             ),
         );
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![base_entry],
             ..Default::default()
         };
@@ -137,11 +155,11 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
         results.push(("mars_metadata.tgm", msg));
     }
 
-    // 4. Multi-message file
+    // 4. Multi-message file — two messages of the same `product=efi`
+    //    `parameter=pressure` field (as in a short time-series).
     {
         let meta = GlobalMetadata {
-            version: 3,
-            extra: BTreeMap::new(),
+            base: vec![generic_base_entry("pressure")],
             ..Default::default()
         };
         let desc = make_descriptor(vec![2], Dtype::Float32);
@@ -160,11 +178,10 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
         results.push(("multi_message.tgm", multi));
     }
 
-    // 5. Hash verification message (xxh3)
+    // 5. Hash verification message (xxh3) — same generic vocabulary.
     {
         let meta = GlobalMetadata {
-            version: 3,
-            extra: BTreeMap::new(),
+            base: vec![generic_base_entry("pressure")],
             ..Default::default()
         };
         let desc = make_descriptor(vec![4], Dtype::Float32);
@@ -221,7 +238,9 @@ fn test_golden_files_are_deterministic() {
             let (g_meta, g_objs) = decode(g_msg, &decode_opts)
                 .unwrap_or_else(|e| panic!("{filename}[{i}] generated decode: {e}"));
 
-            assert_eq!(c_meta.version, g_meta.version, "{filename}[{i}] version");
+            // Wire version is carried in the preamble (checked by
+            // Preamble::read_from during decode); the CBOR metadata
+            // frame is free-form and has no reserved `version` key.
             assert_eq!(c_meta.extra, g_meta.extra, "{filename}[{i}] extra");
             assert_eq!(c_objs.len(), g_objs.len(), "{filename}[{i}] object count");
 
@@ -249,15 +268,33 @@ fn regenerate_golden_files() {
 
 // ── Read-only tests — decode committed golden files ─────────────────────
 
+fn assert_product_efi_parameter(
+    base: &BTreeMap<String, ciborium::Value>,
+    expected_parameter: &str,
+) {
+    assert_eq!(
+        base.get("product"),
+        Some(&ciborium::Value::Text("efi".to_string())),
+        "golden fixture must carry product = efi"
+    );
+    assert_eq!(
+        base.get("parameter"),
+        Some(&ciborium::Value::Text(expected_parameter.to_string())),
+        "golden fixture must carry parameter = {expected_parameter}"
+    );
+}
+
 #[test]
 fn test_golden_simple_f32() {
     let data = std::fs::read(golden_dir().join("simple_f32.tgm")).unwrap();
     let (meta, objects) = decode::decode(&data, &DecodeOptions::default()).unwrap();
-
-    assert_eq!(meta.version, 3);
     assert_eq!(objects.len(), 1);
     assert_eq!(objects[0].0.shape, vec![4]);
     assert_eq!(objects[0].0.dtype, Dtype::Float32);
+    assert_product_efi_parameter(&meta.base[0], "pressure");
+    // CBOR carries no free-form top-level keys beyond the library's
+    // named sections — the wire version lives in the preamble alone.
+    assert!(meta.extra.is_empty());
 
     // Verify payload values
     let bytes = &objects[0].1;
@@ -274,9 +311,10 @@ fn test_golden_simple_f32() {
 fn test_golden_multi_object() {
     let data = std::fs::read(golden_dir().join("multi_object.tgm")).unwrap();
     let (meta, objects) = decode::decode(&data, &DecodeOptions::default()).unwrap();
-
-    assert_eq!(meta.version, 3);
     assert_eq!(objects.len(), 3);
+    assert_product_efi_parameter(&meta.base[0], "temperature");
+    assert_product_efi_parameter(&meta.base[1], "pressure");
+    assert_product_efi_parameter(&meta.base[2], "humidity");
 
     // Float32 [2]
     assert_eq!(objects[0].0.dtype, Dtype::Float32);
@@ -303,8 +341,6 @@ fn test_golden_multi_object() {
 fn test_golden_mars_metadata() {
     let data = std::fs::read(golden_dir().join("mars_metadata.tgm")).unwrap();
     let (meta, objects) = decode::decode(&data, &DecodeOptions::default()).unwrap();
-
-    assert_eq!(meta.version, 3);
     assert!(meta.base[0].contains_key("mars"));
 
     // Verify MARS keys are under base[0]["mars"]
@@ -374,8 +410,8 @@ fn test_golden_hash_xxh3() {
 
     // Decode high-level content.
     let (meta, objects) = decode::decode(&data, &DecodeOptions::default()).unwrap();
-    assert_eq!(meta.version, 3);
     assert_eq!(objects.len(), 1);
+    assert_product_efi_parameter(&meta.base[0], "pressure");
 
     // v3: the hash lives in the frame footer's inline slot.  Pin
     // the committed golden's HASHES_PRESENT flag and the

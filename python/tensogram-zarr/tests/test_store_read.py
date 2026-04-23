@@ -57,10 +57,10 @@ class TestReadRootGroup:
             assert meta["zarr_format"] == 3
             assert meta["node_type"] == "group"
 
-    def test_root_has_tensogram_version(self, simple_tgm: str):
+    def test_root_has_tensogram_wire_version(self, simple_tgm: str):
         with TensogramStore(simple_tgm, mode="r") as store:
             meta = json.loads(store._keys["zarr.json"])
-            assert meta["attributes"]["_tensogram_version"] == 3
+            assert meta["attributes"]["_tensogram_wire_version"] == 3
 
     def test_root_has_variable_list(self, multi_object_tgm: str):
         with TensogramStore(multi_object_tgm, mode="r") as store:

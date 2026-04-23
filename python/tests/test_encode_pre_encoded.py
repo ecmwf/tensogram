@@ -406,12 +406,13 @@ class TestEncodePreEncodedRejectsInvalid:
         with pytest.raises(ValueError, match="encoding"):
             tensogram.encode_pre_encoded(meta, [(desc, data)])
 
-    def test_rejects_missing_version(self):
-        """Missing version in global metadata raises ValueError."""
+    def test_accepts_empty_metadata(self):
+        """Empty metadata is valid — the CBOR metadata frame is
+        free-form.  See ``plans/WIRE_FORMAT.md`` §6.1."""
         data = b"\x00" * 40
         desc = make_descriptor(shape=[10], dtype="float32")
-        with pytest.raises(ValueError, match="version"):
-            tensogram.encode_pre_encoded({}, [(desc, data)])
+        msg = tensogram.encode_pre_encoded({}, [(desc, data)])
+        assert msg.startswith(b"TENSOGRM")
 
     def test_rejects_missing_shape(self):
         """Missing shape in descriptor raises ValueError."""

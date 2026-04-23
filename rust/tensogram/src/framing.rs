@@ -1749,7 +1749,6 @@ mod tests {
 
     fn make_global_meta() -> GlobalMetadata {
         GlobalMetadata {
-            version: 3,
             ..Default::default()
         }
     }
@@ -1875,7 +1874,6 @@ mod tests {
         assert_eq!(&msg[msg.len() - 8..], crate::wire::END_MAGIC);
 
         let decoded = decode_message(&msg).unwrap();
-        assert_eq!(decoded.global_metadata.version, 3);
         assert_eq!(decoded.objects.len(), 0);
         assert!(decoded.index.is_none()); // no objects = no index
     }
@@ -1893,8 +1891,6 @@ mod tests {
 
         let msg = encode_message(&meta, &objects, None, Default::default()).unwrap();
         let decoded = decode_message(&msg).unwrap();
-
-        assert_eq!(decoded.global_metadata.version, 3);
         assert_eq!(decoded.objects.len(), 1);
         assert_eq!(decoded.objects[0].0.shape, vec![4]);
         assert_eq!(decoded.objects[0].1, &payload[..]);
@@ -2010,9 +2006,7 @@ mod tests {
         )
         .unwrap();
 
-        let decoded_meta = decode_metadata_only(&msg).unwrap();
-        assert_eq!(decoded_meta.version, 3);
-        // _extra_ is the CBOR key name (via serde rename)
+        let decoded_meta = decode_metadata_only(&msg).unwrap(); // _extra_ is the CBOR key name (via serde rename)
         assert!(decoded_meta.extra.contains_key("test_key"));
     }
 
@@ -2227,7 +2221,6 @@ mod tests {
     /// Helper: build a preceder metadata CBOR blob with a single base entry.
     fn make_preceder_cbor(entries: std::collections::BTreeMap<String, ciborium::Value>) -> Vec<u8> {
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entries],
             ..Default::default()
         };
@@ -2306,7 +2299,6 @@ mod tests {
     fn test_decode_preceder_with_multiple_base_entries_rejected() {
         // Preceder with 2 base entries — should be rejected (must have exactly 1)
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![BTreeMap::new(), BTreeMap::new()],
             ..Default::default()
         };
@@ -2333,7 +2325,6 @@ mod tests {
     fn test_decode_preceder_with_zero_base_entries_rejected() {
         // Preceder with 0 base entries — should be rejected
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![],
             ..Default::default()
         };
@@ -2421,7 +2412,6 @@ mod tests {
             ciborium::Value::Text("footer".to_string()),
         );
         let footer_meta = GlobalMetadata {
-            version: 3,
             base: vec![footer_base],
             ..Default::default()
         };
@@ -2451,7 +2441,6 @@ mod tests {
         // Footer metadata with 3 base entries but only 1 data object
         // should be rejected (base.len > obj_count).
         let footer_meta = GlobalMetadata {
-            version: 3,
             base: vec![BTreeMap::new(), BTreeMap::new(), BTreeMap::new()],
             ..Default::default()
         };

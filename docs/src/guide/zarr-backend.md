@@ -109,10 +109,10 @@ Application metadata belongs in `meta["base"][i]`, not in the descriptor:
 # ✗ Avoid — triggers a UserWarning; works via fallback but is not canonical
 desc = {"type": "ntensor", "shape": [10, 8], "dtype": "float32",
         "name": "temperature"}  # ← goes into desc.params, flagged
-tensogram.encode({"version": 2}, [(desc, data)])
+tensogram.encode({}, [(desc, data)])
 
 # ✓ Canonical — the simplest form
-meta = {"version": 2, "base": [{"name": "temperature"}]}
+meta = { "base": [{"name": "temperature"}]}
 desc = {"type": "ntensor", "shape": [10, 8], "dtype": "float32"}
 tensogram.encode(meta, [(desc, data)])
 ```

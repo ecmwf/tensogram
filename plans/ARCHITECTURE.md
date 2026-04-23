@@ -138,30 +138,47 @@ platform-specific system libraries.
 
 ```
 src/
-├── wire.rs       Constants, Preamble, FrameHeader, Postamble, FrameType enum,
-│                 MessageFlags, DataObjectFlags
-├── framing.rs    Frame read/write, encode_message, decode_message,
-│                 scan, scan_file
-├── metadata.rs   CBOR serialization with canonical key ordering,
-│                 verify_canonical_cbor
-├── types.rs      GlobalMetadata, DataObjectDescriptor, IndexFrame, HashFrame
-├── dtype.rs      15 data types (float16..complex128, bitmask) with
-│                 swap-unit logic for native-endianness decode
-├── encode.rs     Full encode pipeline plus encode_pre_encoded bypass
-├── decode.rs     decode, decode_metadata, decode_descriptors, decode_object,
-│                 decode_range (supports split/join, native byte order)
-├── file.rs       TensogramFile: open, create, append, scan, mmap, async,
-│                 remote-aware file handle
-├── iter.rs       MessageIter, ObjectIter, FileMessageIter
-├── pipeline.rs   Shared DataPipeline + apply_pipeline helper
-│                 (used by tensogram-grib and tensogram-netcdf)
-├── hash.rs       xxh3 hashing and verification
-├── streaming.rs  StreamingEncoder<W: Write>, Preceder Metadata Frames
-├── remote.rs     object_store-backed remote access (S3/GCS/Azure/HTTP),
-│                 sync + async range reads, batched reads
-├── error.rs      TensogramError enum
-└── validate/     4-level validation (structure, metadata, integrity,
-                  fidelity) with stable IssueCode enum
+├── wire.rs                  Constants (WIRE_VERSION=3), Preamble, FrameHeader,
+│                            Postamble, FrameType enum, MessageFlags,
+│                            DataObjectFlags
+├── framing.rs               Frame read/write, encode_message,
+│                            decode_message, scan (bidirectional), scan_file
+├── metadata.rs              CBOR serialisation with canonical key ordering;
+│                            `cbor_to_global_metadata` routes unknown
+│                            top-level keys (incl. legacy "version") to
+│                            `_extra_`; verify_canonical_cbor
+├── types.rs                 GlobalMetadata (no `version` field — wire
+│                            version is in the preamble), DataObjectDescriptor,
+│                            MasksMetadata, IndexFrame, HashFrame
+├── dtype.rs                 15 data types (float16..complex128, bitmask) with
+│                            swap-unit logic for native-endianness decode
+├── encode.rs                Full encode pipeline plus encode_pre_encoded bypass
+├── decode.rs                decode, decode_metadata, decode_descriptors,
+│                            decode_object, decode_range, decode_with_masks
+├── file.rs                  TensogramFile: open, create, append, scan, mmap,
+│                            async, remote-aware file handle
+├── iter.rs                  MessageIter, ObjectIter, FileMessageIter
+├── parallel.rs              Thread-budget resolution + axis-A/axis-B dispatch
+│                            for the multi-threaded pipeline
+├── pipeline.rs              Shared DataPipeline + apply_pipeline helper
+│                            (used by tensogram-grib and tensogram-netcdf)
+├── hash.rs                  xxh3 hashing and verification
+├── streaming.rs             StreamingEncoder<W: Write>, Preceder Metadata
+│                            Frames
+├── remote.rs                object_store-backed remote access
+│                            (S3/GCS/Azure/HTTP), sync + async range reads,
+│                            batched reads
+├── restore.rs               Canonical NaN/±Inf restoration for NTensorFrame
+│                            mask companions
+├── substitute_and_mask.rs   Pre-pipeline NaN/±Inf substitution + mask build
+├── error.rs                 TensogramError enum
+└── validate/                4-level validation
+    ├── mod.rs                public API + fixture builders
+    ├── structure.rs          Level 1 — raw byte walking
+    ├── metadata.rs           Level 2 — CBOR parsing + consistency
+    ├── integrity.rs          Level 3 — hash verification
+    ├── fidelity.rs           Level 4 — decode round-trip + NaN/Inf scan
+    └── types.rs              IssueCode enum, ValidationReport, etc.
 ```
 
 ## Wire Format
@@ -169,17 +186,20 @@ src/
 A message is a self-contained binary blob:
 
 ```
-[Preamble 24B] [Header frames] [Data object frames] [Footer frames] [Postamble 16B]
+[Preamble 24B] [Header frames] [Data object frames] [Footer frames] [Postamble 24B]
 ```
 
-Each frame starts with `FR` (2 bytes) and ends with `ENDF` (4 bytes).
-The preamble opens with `TENSOGRM` (8 bytes), the postamble closes with
-`39277777` (8 bytes).
+Each frame starts with `FR` (2 bytes) and ends with a type-specific
+footer whose common tail is `[hash u64][ENDF]`.  The preamble opens
+with `TENSOGRM` (8 bytes), the postamble closes with `39277777`
+(8 bytes).  The wire-format version (currently 3) lives in the
+preamble and is never duplicated in the CBOR metadata frame.
 
-Frame types (8 total):
-`HeaderMetadata(1)`, `HeaderIndex(2)`, `HeaderHash(3)`, `DataObject(4)`,
+Frame types (9 total in v3):
+`HeaderMetadata(1)`, `HeaderIndex(2)`, `HeaderHash(3)`,
+*(4 reserved — obsolete v2 NTensorFrame)*,
 `FooterHash(5)`, `FooterIndex(6)`, `FooterMetadata(7)`,
-`PrecederMetadata(8)`.
+`PrecederMetadata(8)`, `NTensorFrame(9)`.
 
 The decoder enforces ordering: header frames first, then data objects
 (optionally each preceded by a Preceder Metadata Frame), then footer

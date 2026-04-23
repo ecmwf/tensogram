@@ -50,7 +50,7 @@ static std::string descriptor_json(std::size_t count,
 static std::string encoding_none_json(std::size_t count,
                                       const std::string& dtype = "float32",
                                       const std::string& byte_order = "little") {
-    return R"({"version":2,"descriptors":[)" + descriptor_json(count, dtype, byte_order) + R"(]})";
+    return R"({"version":3,"descriptors":[)" + descriptor_json(count, dtype, byte_order) + R"(]})";
 }
 
 /// Build a v2 JSON string for simple_packing.
@@ -59,7 +59,7 @@ static std::string simple_packing_json(std::size_t count,
                                        int binary_scale_factor,
                                        int decimal_scale_factor,
                                        int bits_per_value) {
-    return R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[)" +
+    return R"({"version":3,"descriptors":[{"type":"ndarray","ndim":1,"shape":[)" +
            std::to_string(count) +
            R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
            R"("encoding":"simple_packing","filter":"none","compression":"none",)"
@@ -209,7 +209,7 @@ TEST(EncodePreEncodedTest, MultipleObjects) {
     std::vector<float> a = {1.0f, 2.0f, 3.0f};
     std::vector<float> b = {10.0f, 20.0f};
 
-    std::string json = R"({"version":2,"descriptors":[)"
+    std::string json = R"({"version":3,"descriptors":[)"
         R"({"type":"ndarray","ndim":1,"shape":[3],"strides":[4],)"
         R"("dtype":"float32","byte_order":"little",)"
         R"("encoding":"none","filter":"none","compression":"none"},)"
@@ -246,7 +246,7 @@ TEST(EncodePreEncodedTest, MultipleObjects) {
 // -----------------------------------------------------------------------
 
 TEST(EncodePreEncodedTest, RejectsUnknownEncoding) {
-    std::string json = R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[4],)"
+    std::string json = R"({"version":3,"descriptors":[{"type":"ndarray","ndim":1,"shape":[4],)"
         R"("strides":[4],"dtype":"float32","byte_order":"little",)"
         R"("encoding":"bogus","filter":"none","compression":"none"}]})";
 
@@ -263,7 +263,7 @@ TEST(EncodePreEncodedTest, RejectsUnknownEncoding) {
 // -----------------------------------------------------------------------
 
 TEST(EncodePreEncodedTest, ZeroObjects) {
-    std::string json = R"({"version":2,"descriptors":[]})";
+    std::string json = R"({"version":3,"descriptors":[]})";
     std::vector<std::pair<const std::uint8_t*, std::size_t>> objects;
 
     auto encoded = tensogram::encode_pre_encoded(json, objects);
@@ -279,7 +279,7 @@ TEST(EncodePreEncodedTest, ZeroObjects) {
 
 TEST(EncodePreEncodedTest, StreamingMixedMode) {
     TempFile tmp;
-    std::string meta = R"({"version":2})";
+    std::string meta = R"({"version":3})";
 
     {
         tensogram::streaming_encoder enc(tmp.path, meta);
@@ -354,7 +354,7 @@ TEST(EncodePreEncodedTest, HashIsRecomputed) {
 // -----------------------------------------------------------------------
 
 TEST(EncodePreEncodedTest, MalformedJsonDescriptor) {
-    std::string json = R"({"version":2,"descriptors":[MALFORMED_JSON]})";
+    std::string json = R"({"version":3,"descriptors":[MALFORMED_JSON]})";
     std::vector<float> values = {1.0f, 2.0f};
     std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
         {reinterpret_cast<const std::uint8_t*>(values.data()),
@@ -386,7 +386,7 @@ TEST(EncodePreEncodedTest, DataSizeMismatch) {
 TEST(EncodePreEncodedTest, RoundTrip2D) {
     // 2D array [2, 3] of float32 (24 bytes)
     std::string json =
-        R"({"version":2,"descriptors":[{"type":"ndarray","ndim":2,"shape":[2,3],)"
+        R"({"version":3,"descriptors":[{"type":"ndarray","ndim":2,"shape":[2,3],)"
         R"("strides":[12,4],"dtype":"float32","byte_order":"little",)"
         R"("encoding":"none","filter":"none","compression":"none"}]})";
 
@@ -412,7 +412,7 @@ TEST(EncodePreEncodedTest, RoundTrip2D) {
 TEST(EncodePreEncodedTest, StreamingPreEncodedOnly) {
     // Streaming encoder with ONLY pre-encoded writes (no write_object).
     TempFile tmp;
-    std::string meta = R"({"version":2})";
+    std::string meta = R"({"version":3})";
 
     {
         tensogram::streaming_encoder enc(tmp.path, meta);
@@ -441,7 +441,7 @@ TEST(EncodePreEncodedTest, StreamingPreEncodedOnly) {
 TEST(EncodePreEncodedTest, StreamingMultiplePreEncoded) {
     // Streaming encoder with multiple pre-encoded objects.
     TempFile tmp;
-    std::string meta = R"({"version":2})";
+    std::string meta = R"({"version":3})";
 
     {
         tensogram::streaming_encoder enc(tmp.path, meta);

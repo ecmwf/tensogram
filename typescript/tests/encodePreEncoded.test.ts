@@ -108,8 +108,7 @@ describe('Scope C.1 — encodePreEncoded', () => {
 
   it('rejects client-written _reserved_', () => {
     const bad = {
-      version: 2,
-      _reserved_: { foo: 'bar' },
+_reserved_: { foo: 'bar' },
     } as Parameters<typeof encodePreEncoded>[0];
     expect(() =>
       encodePreEncoded(bad, [
@@ -148,8 +147,7 @@ describe('Scope C.1 — encodePreEncoded', () => {
 
   it('rejects metadata.base when not an array', () => {
     const bad = {
-      version: 2,
-      base: 'nope',
+base: 'nope',
     } as unknown as Parameters<typeof encodePreEncoded>[0];
     expect(() =>
       encodePreEncoded(bad, [
@@ -163,8 +161,7 @@ describe('Scope C.1 — encodePreEncoded', () => {
 
   it('rejects metadata.base[i] when not a plain object', () => {
     const bad = {
-      version: 2,
-      base: [null],
+base: [null],
     } as unknown as Parameters<typeof encodePreEncoded>[0];
     expect(() =>
       encodePreEncoded(bad, [
@@ -178,8 +175,7 @@ describe('Scope C.1 — encodePreEncoded', () => {
 
   it('rejects client-written _reserved_ in metadata.base[i]', () => {
     const bad = {
-      version: 2,
-      base: [{ _reserved_: { foo: 'bar' } }],
+base: [{ _reserved_: { foo: 'bar' } }],
     } as unknown as Parameters<typeof encodePreEncoded>[0];
     expect(() =>
       encodePreEncoded(bad, [

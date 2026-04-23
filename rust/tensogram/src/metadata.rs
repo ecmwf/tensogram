@@ -23,12 +23,96 @@ pub fn global_metadata_to_cbor(metadata: &GlobalMetadata) -> Result<Vec<u8>> {
 }
 
 /// Deserialize global metadata from CBOR bytes.
+///
+/// The CBOR metadata frame is free-form: only `base`, `_reserved_`, and
+/// `_extra_` are named sections the library interprets.  Any other
+/// top-level key (including a stray legacy `"version"` key emitted by
+/// pre-0.17 encoders) is routed into `_extra_` for forward-compatibility.
+/// The wire-format version lives exclusively in the preamble (see
+/// [`crate::wire::WIRE_VERSION`]).
+///
+/// # Priority rule for `_extra_` collisions
+///
+/// When the caller supplies both an explicit `_extra_` section AND a
+/// free-form top-level key with the same name (e.g.
+/// `{"_extra_": {"version": 1}, "version": 99}`), the **explicit
+/// `_extra_` entry wins**.  Free-form top-level keys only fill slots
+/// that `_extra_` did not already claim.  This matches the "explicit
+/// beats implicit" principle: a caller who spelled out an entry
+/// inside `_extra_` clearly intended it to land there verbatim.
 pub fn cbor_to_global_metadata(cbor_bytes: &[u8]) -> Result<GlobalMetadata> {
     let value: ciborium::Value = ciborium::from_reader(cbor_bytes)
         .map_err(|e| TensogramError::Metadata(format!("failed to parse CBOR: {e}")))?;
-    value
-        .deserialized()
-        .map_err(|e| TensogramError::Metadata(format!("failed to deserialize metadata: {e}")))
+
+    let map = match value {
+        ciborium::Value::Map(m) => m,
+        _ => {
+            return Err(TensogramError::Metadata(
+                "global metadata CBOR is not a map".to_string(),
+            ));
+        }
+    };
+
+    let mut meta = GlobalMetadata::default();
+    // Accumulate free-form top-level entries in a separate bucket so
+    // the explicit `_extra_` section (processed once below) can take
+    // precedence over same-named free-form keys on collision.
+    let mut free_form: BTreeMap<String, ciborium::Value> = BTreeMap::new();
+
+    for (k, v) in map {
+        // Skip non-text map keys defensively.  Canonical CBOR uses
+        // text keys for our schema (RFC 8949 §4.2 + the wire-format
+        // spec at `plans/WIRE_FORMAT.md`).  A malformed producer
+        // could still emit integer / bytes keys at the top level;
+        // those entries are silently dropped here rather than
+        // failing the decode, matching the forward-compatibility
+        // rule applied throughout the frame walker.  Dropping (as
+        // opposed to routing into `_extra_` under a synthetic name)
+        // is deliberate — the caller cannot usefully re-consume a
+        // non-text key without losing round-trip fidelity anyway,
+        // and routing would leak the malformed structure into the
+        // library-defined `_extra_` namespace.
+        let key = match k {
+            ciborium::Value::Text(s) => s,
+            _ => continue,
+        };
+
+        match key.as_str() {
+            "base" => {
+                let entries: Vec<BTreeMap<String, ciborium::Value>> =
+                    v.deserialized().map_err(|e| {
+                        TensogramError::Metadata(format!("failed to deserialize base: {e}"))
+                    })?;
+                meta.base = entries;
+            }
+            "_reserved_" => {
+                let entries: BTreeMap<String, ciborium::Value> = v.deserialized().map_err(|e| {
+                    TensogramError::Metadata(format!("failed to deserialize _reserved_: {e}"))
+                })?;
+                meta.reserved = entries;
+            }
+            "_extra_" => {
+                let entries: BTreeMap<String, ciborium::Value> = v.deserialized().map_err(|e| {
+                    TensogramError::Metadata(format!("failed to deserialize _extra_: {e}"))
+                })?;
+                meta.extra = entries;
+            }
+            // Anything else (including a stray legacy `"version"` key)
+            // flows into `_extra_` via the free-form bucket.  The
+            // explicit `_extra_` section always wins on key collisions.
+            _ => {
+                free_form.insert(key, v);
+            }
+        }
+    }
+
+    // Promote free-form keys only where `_extra_` did not already
+    // claim the slot — explicit beats implicit.
+    for (k, v) in free_form {
+        meta.extra.entry(k).or_insert(v);
+    }
+
+    Ok(meta)
 }
 
 /// Serialize a data object descriptor to deterministic CBOR bytes.
@@ -449,7 +533,6 @@ mod tests {
         base_entry.insert("mars".to_string(), mars_value);
 
         GlobalMetadata {
-            version: 3,
             base: vec![base_entry],
             ..Default::default()
         }
@@ -476,9 +559,129 @@ mod tests {
         let meta = make_test_global_metadata();
         let bytes = global_metadata_to_cbor(&meta).unwrap();
         let decoded = cbor_to_global_metadata(&bytes).unwrap();
-        assert_eq!(decoded.version, 3);
         assert_eq!(decoded.base.len(), 1);
         assert!(decoded.base[0].contains_key("mars"));
+    }
+
+    #[test]
+    fn test_cbor_has_no_version_key() {
+        // The wire-format version is carried in the preamble, NOT in the
+        // CBOR metadata frame.  A round-trip through the encoder must
+        // never stamp a top-level `"version"` key.
+        let meta = make_test_global_metadata();
+        let bytes = global_metadata_to_cbor(&meta).unwrap();
+        let value: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
+        let map = match value {
+            ciborium::Value::Map(m) => m,
+            other => panic!("expected CBOR map, got {other:?}"),
+        };
+        for (k, _) in &map {
+            if let ciborium::Value::Text(key) = k {
+                assert_ne!(
+                    key, "version",
+                    "encoder must not write a top-level `version` key to CBOR"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_legacy_version_routed_to_extra() {
+        // A producer that still emits a stray `version` top-level key
+        // (legacy encoders pre-0.17) must decode cleanly under the
+        // free-form rule — the key flows into `_extra_` instead of
+        // being rejected or silently dropped.
+        use ciborium::Value;
+
+        let legacy_map = Value::Map(vec![
+            (Value::Text("version".to_string()), Value::Integer(3.into())),
+            (
+                Value::Text("_extra_".to_string()),
+                Value::Map(vec![(
+                    Value::Text("note".to_string()),
+                    Value::Text("hi".to_string()),
+                )]),
+            ),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&legacy_map, &mut bytes).unwrap();
+
+        let decoded = cbor_to_global_metadata(&bytes).unwrap();
+        assert!(decoded.base.is_empty());
+        assert_eq!(
+            decoded.extra.get("version"),
+            Some(&Value::Integer(3.into())),
+            "legacy `version` key must land in `_extra_`"
+        );
+        assert_eq!(
+            decoded.extra.get("note"),
+            Some(&Value::Text("hi".to_string())),
+            "explicit `_extra_` entries must still be preserved"
+        );
+    }
+
+    #[test]
+    fn test_free_form_top_level_keys_routed_to_extra() {
+        // Arbitrary top-level keys the caller puts in the CBOR (e.g.
+        // `"product"`, `"foo"`) must also flow into `_extra_` on
+        // decode.  This is the free-form invariant.
+        use ciborium::Value;
+
+        let free_form = Value::Map(vec![
+            (
+                Value::Text("foo".to_string()),
+                Value::Text("bar".to_string()),
+            ),
+            (
+                Value::Text("product".to_string()),
+                Value::Text("efi".to_string()),
+            ),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&free_form, &mut bytes).unwrap();
+
+        let decoded = cbor_to_global_metadata(&bytes).unwrap();
+        assert_eq!(
+            decoded.extra.get("foo"),
+            Some(&Value::Text("bar".to_string()))
+        );
+        assert_eq!(
+            decoded.extra.get("product"),
+            Some(&Value::Text("efi".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_explicit_extra_wins_over_free_form_top_level() {
+        // When a producer emits both an explicit `_extra_` section AND
+        // a free-form top-level key of the same name, the explicit
+        // `_extra_` entry takes priority.  Matches "explicit beats
+        // implicit": a caller who spelled out the value inside `_extra_`
+        // clearly meant for that value to land there verbatim.
+        use ciborium::Value;
+
+        let colliding = Value::Map(vec![
+            (
+                Value::Text("_extra_".to_string()),
+                Value::Map(vec![(
+                    Value::Text("version".to_string()),
+                    Value::Integer(1.into()),
+                )]),
+            ),
+            (
+                Value::Text("version".to_string()),
+                Value::Integer(99.into()),
+            ),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&colliding, &mut bytes).unwrap();
+
+        let decoded = cbor_to_global_metadata(&bytes).unwrap();
+        assert_eq!(
+            decoded.extra.get("version"),
+            Some(&Value::Integer(1.into())),
+            "explicit `_extra_.version` must win over free-form top-level `version`"
+        );
     }
 
     #[test]
@@ -534,7 +737,6 @@ mod tests {
         let meta = GlobalMetadata::default();
         let bytes = global_metadata_to_cbor(&meta).unwrap();
         let decoded = cbor_to_global_metadata(&bytes).unwrap();
-        assert_eq!(decoded.version, 3);
         assert!(decoded.base.is_empty());
         assert!(decoded.extra.is_empty());
     }
@@ -623,7 +825,6 @@ mod tests {
         base1.insert("zebra".to_string(), ciborium::Value::Integer(1.into()));
         base1.insert("apple".to_string(), ciborium::Value::Integer(2.into()));
         let meta1 = GlobalMetadata {
-            version: 3,
             base: vec![base1],
             ..Default::default()
         };
@@ -632,7 +833,6 @@ mod tests {
         base2.insert("apple".to_string(), ciborium::Value::Integer(2.into()));
         base2.insert("zebra".to_string(), ciborium::Value::Integer(1.into()));
         let meta2 = GlobalMetadata {
-            version: 3,
             base: vec![base2],
             ..Default::default()
         };

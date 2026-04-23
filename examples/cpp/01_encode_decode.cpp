@@ -30,8 +30,11 @@ int main() {
         temps[i] = 273.15f + static_cast<float>(i) * 0.001f;
 
     // -- 2. Describe the tensor as JSON metadata --
+    //
+    // The CBOR metadata frame is free-form (see
+    // `plans/WIRE_FORMAT.md` §6.1) — no top-level `version` key is
+    // required.  The wire-format version lives in the preamble.
     const std::string metadata_json = R"({
-        "version": 3,
         "descriptors": [{
             "type": "ntensor",
             "ndim": 2,

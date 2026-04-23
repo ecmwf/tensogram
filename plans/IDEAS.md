@@ -31,11 +31,10 @@ implement until promoted to `TODO.md`.
 
 ## encoding / decoding
 
-- [ ] NaN bitmask companion object: use a reserved preamble flag to
-  signal that a data object has NaN values, with a succeeding bitmask
-  data object marking NaN positions. This avoids NaN in the float
-  payload (which breaks packing) while preserving missing-value
-  semantics. Needs a concrete use case before implementing.
+- (shipped) ~~NaN bitmask companion object~~ — delivered as the v3
+  `NTensorFrame` mask region with `allow_nan` / `allow_inf` encode
+  opt-ins and `restore_non_finite` on decode.  See
+  `plans/WIRE_FORMAT.md` §6.5 and `docs/src/guide/nan-inf-handling.md`.
 
 ## Optimisations
 

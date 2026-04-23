@@ -80,7 +80,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let global_meta = GlobalMetadata {
-        version: 3,
         base: vec![obj0_base],
         ..Default::default()
     };

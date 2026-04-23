@@ -38,7 +38,7 @@ print(f"  decimal_scale_factor = {params['decimal_scale_factor']}")
 print(f"  bits_per_value       = {params['bits_per_value']}")
 
 # ── 3. Encode with simple_packing ────────────────────────────────────────────
-metadata = {"version": 3}
+metadata = {}
 descriptor = {
     "type": "ntensor",
     "shape": [n],
@@ -85,7 +85,7 @@ desc_c = {
     "compression": "none",
     **params_c,
 }
-msg_c = bytes(tensogram.encode({"version": 3}, [(desc_c, constant)]))
+msg_c = bytes(tensogram.encode({}, [(desc_c, constant)]))
 _, decoded_c = tensogram.decode(msg_c).objects[0]
 np.testing.assert_allclose(decoded_c, 273.15, atol=1e-9)
 print("Constant field: OK")

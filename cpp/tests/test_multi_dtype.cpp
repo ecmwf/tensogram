@@ -30,7 +30,7 @@ namespace {
 /// Build JSON for a 1-D array of given dtype/elem_size/count.
 std::string make_json(const std::string& dtype, std::size_t elem_size,
                       std::size_t count) {
-    return R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[)" +
+    return R"({"version":3,"descriptors":[{"type":"ndarray","ndim":1,"shape":[)" +
            std::to_string(count) +
            R"(],"strides":[)" + std::to_string(elem_size) +
            R"(],"dtype":")" + dtype +

@@ -43,8 +43,7 @@ same way:
 
 ```json
 {
-  "version": 3,
-  "base": [
+     "base": [
     {
       "mars": { "class": "od", "type": "fc", "grid": "O1280", "param": "2t", "levtype": "sfc" },
       "_reserved_": {

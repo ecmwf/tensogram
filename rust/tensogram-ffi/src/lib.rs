@@ -25,13 +25,18 @@
 //!
 //! ## JSON schema for `tgm_encode`
 //!
-//! The `metadata_json` argument to `tgm_encode` must be a JSON object with:
-//! - `"version"` (integer, required): wire format version (3).
+//! The `metadata_json` argument to `tgm_encode` is a JSON object with:
 //! - `"descriptors"` (array, required): one entry per data object. Each entry
 //!   merges tensor info and encoding pipeline info into a single object:
 //!   `type`, `ndim`, `shape`, `strides`, `dtype`, `byte_order`, `encoding`,
 //!   `filter`, `compression`. Additional keys are stored as params.
-//! - Any other top-level keys (e.g. `"mars"`) are stored as global extra metadata.
+//! - `"base"` (array, optional): per-object application metadata.
+//! - Any other top-level keys (e.g. `"mars"`) are stored under the
+//!   message-level `_extra_` map.  The CBOR metadata frame is free-form —
+//!   the wire-format version lives exclusively in the preamble (see
+//!   `plans/WIRE_FORMAT.md` §3) and must NOT be supplied by callers.  A
+//!   legacy `"version"` top-level field is tolerated for pre-0.17 schema
+//!   compatibility and silently discarded.
 
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
@@ -49,6 +54,29 @@ use tensogram::{
     RESERVED_KEY, StreamingEncoder, TensogramError, TensogramFile, decode, decode_metadata,
     decode_object, decode_range, encode, encode_pre_encoded, scan,
 };
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Wire-format version emitted and required by this build of the
+/// library.
+///
+/// Mirrors [`tensogram::WIRE_VERSION`].  The value lives in the
+/// tensogram **preamble** (see `plans/WIRE_FORMAT.md` §3) — never in
+/// the CBOR metadata frame.  Exposed here so C / C++ callers can
+/// reference it without decoding a message first.  cbindgen emits
+/// this as a `#define TGM_WIRE_VERSION 3` in the generated header.
+///
+/// The literal is mirrored from `tensogram::wire::WIRE_VERSION`
+/// because cbindgen source-parses this crate and cannot resolve
+/// cross-crate constant expressions; the [`const _: () = assert!`]
+/// below keeps the two in lockstep at compile time.
+pub const TGM_WIRE_VERSION: u16 = 3;
+const _: () = assert!(
+    TGM_WIRE_VERSION == tensogram::WIRE_VERSION,
+    "TGM_WIRE_VERSION must equal tensogram::WIRE_VERSION"
+);
 
 // ---------------------------------------------------------------------------
 // Error codes
@@ -294,11 +322,20 @@ pub struct TgmScanResult {
 /// Intermediate struct used to parse the flat JSON provided to `tgm_encode`.
 ///
 /// The caller passes a single JSON object that contains both global metadata
-/// fields (`version`, and any extra namespaced keys such as `"mars"`) and a
+/// fields (any application-specific namespaced keys such as `"mars"`) and a
 /// `"descriptors"` array of per-object descriptor objects.
+///
+/// A legacy `"version"` field is tolerated (parsed and then discarded); the
+/// wire-format version lives in the preamble (see
+/// `plans/WIRE_FORMAT.md` §3) and is not settable by callers.
 #[derive(serde::Deserialize)]
 struct EncodeJson {
-    version: u16,
+    /// Legacy field: pre-0.17 callers wrote `{"version": 3, …}`.  v3
+    /// ignores the value — it's parsed solely so the JSON schema stays
+    /// backwards-compatible for third-party tools.  `None` means the
+    /// modern, free-form schema was used.
+    #[serde(default)]
+    version: Option<u16>,
     #[serde(default)]
     descriptors: Vec<DataObjectDescriptor>,
     /// Per-object metadata array (one entry per data object).
@@ -339,8 +376,14 @@ fn json_to_cbor(v: serde_json::Value) -> ciborium::Value {
 /// Parse the flat JSON blob into a `GlobalMetadata` and a list of
 /// `DataObjectDescriptor`s.
 ///
-/// The `"version"`, `"descriptors"`, and `"base"` keys are consumed; all
-/// remaining keys are forwarded into `GlobalMetadata::extra` as CBOR values.
+/// The `"descriptors"` and `"base"` keys are consumed; all remaining
+/// keys — including a legacy top-level `"version"` — are forwarded
+/// into `GlobalMetadata::extra` as CBOR values.  The wire-format
+/// version itself lives in the preamble (see `plans/WIRE_FORMAT.md`
+/// §§3, 6.1); a caller-supplied `version` is treated as a free-form
+/// annotation, matching the Python / TypeScript / Rust-core contract.
+/// On key collision with an explicit `"_extra_"` / `"extra"` entry,
+/// the explicit entry wins — "explicit beats implicit".
 fn parse_encode_json(
     json_str: &str,
 ) -> Result<(GlobalMetadata, Vec<DataObjectDescriptor>), String> {
@@ -367,20 +410,78 @@ fn parse_encode_json(
         }
     }
 
-    let cbor_extra: BTreeMap<String, ciborium::Value> = parsed
-        .extra
-        .into_iter()
-        .map(|(k, v)| (k, json_to_cbor(v)))
-        .collect();
+    let cbor_extra = merge_flattened_extras_with_version(parsed.extra, parsed.version)?;
 
     let global_metadata = GlobalMetadata {
-        version: parsed.version,
         base: cbor_base,
         extra: cbor_extra,
         ..Default::default()
     };
 
     Ok((global_metadata, parsed.descriptors))
+}
+
+/// Merge a flattened-catch-all JSON map and an optional legacy
+/// `version` integer into a single `_extra_` CBOR map under the
+/// free-form contract.
+///
+/// The `#[serde(flatten)]` catch-all sees any explicit
+/// `"_extra_"` / `"extra"` the caller supplied as just another
+/// top-level key.  To match the Python / TypeScript / Rust-core
+/// contract, we pull the explicit section out *first* and use it as
+/// the authoritative source; every other flattened key becomes a
+/// free-form entry that only fills slots the explicit section did
+/// not already claim.  `version` is handled the same way —
+/// `explicit beats implicit`.
+///
+/// The `"extra"` convenience alias (no underscores) is accepted for
+/// parity with the Python binding, which has supported both
+/// spellings since the 0.6 metadata refactor.  Using both is an
+/// error (ambiguous).
+fn merge_flattened_extras_with_version(
+    mut flattened: BTreeMap<String, serde_json::Value>,
+    legacy_version: Option<u16>,
+) -> Result<BTreeMap<String, ciborium::Value>, String> {
+    fn take_extra_map(
+        flattened: &mut BTreeMap<String, serde_json::Value>,
+        key: &str,
+    ) -> Result<Option<BTreeMap<String, serde_json::Value>>, String> {
+        match flattened.remove(key) {
+            None => Ok(None),
+            Some(serde_json::Value::Object(map)) => Ok(Some(map.into_iter().collect())),
+            Some(_) => Err(format!(
+                "'{key}' must be a JSON object when supplied at the top level"
+            )),
+        }
+    }
+
+    let under = take_extra_map(&mut flattened, "_extra_")?;
+    let plain = take_extra_map(&mut flattened, "extra")?;
+    let explicit_extra = match (under, plain) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "both '_extra_' and 'extra' supplied at the top level — choose one".to_string(),
+            );
+        }
+        (Some(m), None) | (None, Some(m)) => m,
+        (None, None) => BTreeMap::new(),
+    };
+
+    let mut cbor_extra: BTreeMap<String, ciborium::Value> = explicit_extra
+        .into_iter()
+        .map(|(k, v)| (k, json_to_cbor(v)))
+        .collect();
+    for (k, v) in flattened {
+        // Explicit `_extra_` beats implicit free-form top-level keys
+        // on collision (explicit beats implicit).
+        cbor_extra.entry(k).or_insert_with(|| json_to_cbor(v));
+    }
+    if let Some(v) = legacy_version {
+        cbor_extra
+            .entry("version".to_string())
+            .or_insert_with(|| ciborium::Value::Integer(u64::from(v).into()));
+    }
+    Ok(cbor_extra)
 }
 
 // ---------------------------------------------------------------------------
@@ -629,10 +730,14 @@ unsafe fn parse_encode_args<'a>(
 
 /// Encode a Tensogram message from JSON metadata and raw data slices.
 ///
-/// `metadata_json`: null-terminated UTF-8 JSON string. Must contain:
-///   - `"version"` (integer)
-///   - `"descriptors"` (array of per-object descriptor objects)
-///   - optional extra keys (e.g. `"mars"`) at the top level
+/// `metadata_json`: null-terminated UTF-8 JSON string with:
+///   - `"descriptors"` (array of per-object descriptor objects, required)
+///   - `"base"` (array of per-object application metadata, optional)
+///   - any other top-level keys (e.g. `"mars"`) flow into `_extra_`
+///
+/// A legacy `"version"` top-level field is tolerated and silently
+/// discarded — the wire-format version lives in the preamble, not in
+/// the CBOR metadata frame (see `plans/WIRE_FORMAT.md` §§3, 6.1).
 ///
 /// `data_ptrs` / `data_lens`: arrays of length `num_objects`, raw bytes per object.
 ///
@@ -1459,12 +1564,18 @@ pub extern "C" fn tgm_scan_free(result: *mut TgmScanResult) {
 // Message accessors
 // ---------------------------------------------------------------------------
 
-/// Returns the wire format version from a decoded message.
+/// Returns the wire format version the decoder read from the preamble.
+///
+/// v3 decoders reject any other version at preamble parse time, so
+/// this always returns [`tensogram::WIRE_VERSION`] for any live
+/// `TgmMessage` handle.  The CBOR metadata frame carries no
+/// `version` key of its own (see `plans/WIRE_FORMAT.md` §6.1).
+/// Returns `0` for a null handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_message_version(msg: *const TgmMessage) -> u64 {
     unsafe {
         as_msg(msg)
-            .map(|m| m.global_metadata.version as u64)
+            .map(|_| tensogram::WIRE_VERSION as u64)
             .unwrap_or(0)
     }
 }
@@ -1704,13 +1815,18 @@ pub extern "C" fn tgm_message_free(msg: *mut TgmMessage) {
 // Metadata accessors
 // ---------------------------------------------------------------------------
 
-/// Returns the wire format version from metadata.
+/// Returns the wire format version.
+///
+/// Sourced from [`tensogram::WIRE_VERSION`] since v3 decoders reject any
+/// other version at preamble parse time.  The CBOR metadata frame
+/// carries no `version` key of its own (see
+/// `plans/WIRE_FORMAT.md` §6.1).  Returns `0` for a null handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn tgm_metadata_version(meta: *const TgmMetadata) -> u64 {
     if meta.is_null() {
         return 0;
     }
-    unsafe { (*meta).global_metadata.version as u64 }
+    tensogram::WIRE_VERSION as u64
 }
 
 /// Returns the number of objects described in the global metadata.
@@ -2210,8 +2326,12 @@ fn lookup_string_key(global_metadata: &GlobalMetadata, key: &str) -> Option<Stri
     if key.is_empty() {
         return None;
     }
+    // `version` is a pseudo-key — the wire-format version lives in the
+    // preamble (see `plans/WIRE_FORMAT.md` §3), not in the CBOR metadata
+    // frame.  Return the constant so FFI tooling that queries the key
+    // keeps seeing `"3"`.
     if key == "version" {
-        return Some(global_metadata.version.to_string());
+        return Some(tensogram::WIRE_VERSION.to_string());
     }
 
     lookup_cbor_value(global_metadata, key).and_then(|v| match v {
@@ -2227,8 +2347,9 @@ fn lookup_string_key(global_metadata: &GlobalMetadata, key: &str) -> Option<Stri
 }
 
 fn lookup_int_key(global_metadata: &GlobalMetadata, key: &str) -> Option<i64> {
+    // `version` pseudo-key — see `lookup_string_key` for rationale.
     if key == "version" {
-        return Some(global_metadata.version as i64);
+        return Some(tensogram::WIRE_VERSION as i64);
     }
 
     lookup_cbor_value(global_metadata, key).and_then(|v| match v {
@@ -2625,7 +2746,6 @@ mod tests {
         extra: BTreeMap<String, ciborium::Value>,
     ) -> GlobalMetadata {
         GlobalMetadata {
-            version: 3,
             base,
             extra,
             ..Default::default()
@@ -2880,10 +3000,80 @@ mod tests {
     fn parse_encode_json_with_base() {
         let json = r#"{"version":3,"base":[{"mars":{"param":"2t"}}],"descriptors":[]}"#;
         let (gm, descs) = parse_encode_json(json).unwrap();
-        assert_eq!(gm.version, 3);
         assert_eq!(gm.base.len(), 1);
         assert!(gm.base[0].contains_key("mars"));
         assert!(descs.is_empty());
+    }
+
+    #[test]
+    fn parse_encode_json_legacy_version_routed_to_extra() {
+        // A caller-supplied legacy top-level `"version"` lands in
+        // `_extra_["version"]` on decode — matching the Python /
+        // TypeScript / Rust-core contract.  See Copilot review on
+        // PR #80.
+        let json = r#"{"version":3,"descriptors":[]}"#;
+        let (gm, _) = parse_encode_json(json).unwrap();
+        assert_eq!(
+            gm.extra.get("version"),
+            Some(&ciborium::Value::Integer(3u64.into())),
+            "legacy JSON `version` must round-trip via `_extra_`"
+        );
+    }
+
+    #[test]
+    fn parse_encode_json_free_form_top_level_routed_to_extra() {
+        // Parity with the Rust core + Python: unknown JSON top-level
+        // keys flow into `_extra_`.
+        let json = r#"{"source":"test","count":42,"descriptors":[]}"#;
+        let (gm, _) = parse_encode_json(json).unwrap();
+        assert_eq!(
+            gm.extra.get("source"),
+            Some(&ciborium::Value::Text("test".to_string()))
+        );
+        assert_eq!(
+            gm.extra.get("count"),
+            Some(&ciborium::Value::Integer(42u64.into()))
+        );
+    }
+
+    #[test]
+    fn parse_encode_json_explicit_extra_unpacked() {
+        // An explicit `"_extra_"` section at the top level of the FFI
+        // JSON must be unpacked into `GlobalMetadata.extra` — matching
+        // the Python / TypeScript / Rust-core contract.  If `_extra_`
+        // were treated as just another free-form key, a caller doing
+        // `{"_extra_": {"foo": "bar"}}` would end up with a nested
+        // `_extra_._extra_.foo` on the wire — clearly wrong.
+        let json = r#"{"_extra_":{"foo":"bar","count":7},"descriptors":[]}"#;
+        let (gm, _) = parse_encode_json(json).unwrap();
+        assert_eq!(
+            gm.extra.get("foo"),
+            Some(&ciborium::Value::Text("bar".to_string())),
+            "explicit `_extra_.foo` must surface at the top level of `extra`"
+        );
+        assert_eq!(
+            gm.extra.get("count"),
+            Some(&ciborium::Value::Integer(7u64.into())),
+            "explicit `_extra_.count` must surface at the top level of `extra`"
+        );
+        assert!(
+            !gm.extra.contains_key("_extra_"),
+            "there must be no nested `_extra_` key inside `extra`"
+        );
+    }
+
+    #[test]
+    fn parse_encode_json_explicit_extra_beats_free_form() {
+        // `explicit beats implicit`: when both an explicit `_extra_.X`
+        // and a free-form top-level `X` are supplied, the explicit
+        // entry wins.  Matches the Rust core + Python / TS behaviour.
+        let json = r#"{"version":99,"_extra_":{"version":1},"descriptors":[]}"#;
+        let (gm, _) = parse_encode_json(json).unwrap();
+        assert_eq!(
+            gm.extra.get("version"),
+            Some(&ciborium::Value::Integer(1u64.into())),
+            "explicit _extra_.version must win over top-level version"
+        );
     }
 
     #[test]
@@ -2915,7 +3105,6 @@ mod tests {
     fn parse_streaming_json_with_base() {
         let json = r#"{"version":3,"base":[{"mars":{"param":"2t"}}]}"#;
         let gm = parse_streaming_metadata_json(json).unwrap();
-        assert_eq!(gm.version, 3);
         assert_eq!(gm.base.len(), 1);
     }
 
@@ -2936,8 +3125,56 @@ mod tests {
     }
 
     #[test]
+    fn parse_streaming_json_explicit_extra_unpacked() {
+        // Streaming path must honour the same `_extra_` unpacking as
+        // `parse_encode_json`.
+        let json = r#"{"_extra_":{"foo":"bar"}}"#;
+        let gm = parse_streaming_metadata_json(json).unwrap();
+        assert_eq!(
+            gm.extra.get("foo"),
+            Some(&ciborium::Value::Text("bar".to_string()))
+        );
+        assert!(!gm.extra.contains_key("_extra_"));
+    }
+
+    #[test]
+    fn parse_streaming_json_explicit_extra_beats_free_form() {
+        // `explicit beats implicit` on the streaming path too.
+        let json = r#"{"version":99,"_extra_":{"version":1}}"#;
+        let gm = parse_streaming_metadata_json(json).unwrap();
+        assert_eq!(
+            gm.extra.get("version"),
+            Some(&ciborium::Value::Integer(1u64.into()))
+        );
+    }
+
+    #[test]
     fn parse_streaming_json_invalid_json() {
         assert!(parse_streaming_metadata_json("not json").is_err());
+    }
+
+    #[test]
+    fn parse_encode_json_rejects_both_extra_aliases() {
+        // `_extra_` and `extra` are aliases for the same concept;
+        // supplying both is ambiguous and rejected by the helper.
+        let json = r#"{"_extra_":{"a":1},"extra":{"b":2},"descriptors":[]}"#;
+        let err = parse_encode_json(json).unwrap_err();
+        assert!(
+            err.contains("both '_extra_' and 'extra'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_encode_json_rejects_non_object_extra() {
+        // `_extra_` must be a JSON object.  A scalar is a caller
+        // error and surfaces a clear message.
+        let json = r#"{"_extra_":42,"descriptors":[]}"#;
+        let err = parse_encode_json(json).unwrap_err();
+        assert!(
+            err.contains("'_extra_' must be a JSON object"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -6071,10 +6308,17 @@ pub struct TgmStreamingEncoder {
     inner: Option<StreamingEncoder<std::io::BufWriter<std::fs::File>>>,
 }
 
-/// JSON used for streaming encoder creation — version + optional extra/base keys.
+/// JSON used for streaming encoder creation — optional extra/base keys.
+///
+/// A legacy top-level `"version"` field is tolerated for pre-0.17
+/// schema compatibility and routed into `_extra_` on encode, matching
+/// the free-form contract of every other binding.  The wire-format
+/// version itself lives in the preamble (see
+/// `plans/WIRE_FORMAT.md` §3).
 #[derive(serde::Deserialize)]
 struct StreamingEncodeJson {
-    version: u16,
+    #[serde(default)]
+    version: Option<u16>,
     #[serde(default)]
     base: Vec<BTreeMap<String, serde_json::Value>>,
     #[serde(flatten)]
@@ -6106,14 +6350,11 @@ fn parse_streaming_metadata_json(json_str: &str) -> Result<GlobalMetadata, Strin
         }
     }
 
-    let cbor_extra: BTreeMap<String, ciborium::Value> = parsed
-        .extra
-        .into_iter()
-        .map(|(k, v)| (k, json_to_cbor(v)))
-        .collect();
-
+    // Route explicit `_extra_` / legacy `version` under the shared
+    // free-form merge rule.  Matches the `parse_encode_json` path and
+    // the Python / TypeScript / Rust-core contract.
+    let cbor_extra = merge_flattened_extras_with_version(parsed.extra, parsed.version)?;
     Ok(GlobalMetadata {
-        version: parsed.version,
         base: cbor_base,
         extra: cbor_extra,
         ..Default::default()
@@ -6122,8 +6363,11 @@ fn parse_streaming_metadata_json(json_str: &str) -> Result<GlobalMetadata, Strin
 
 /// Create a streaming encoder writing to a file.
 ///
-/// `metadata_json` must contain `"version"` key (and optional extra keys,
-/// but NOT `"descriptors"`).
+/// `metadata_json` is a free-form JSON object.  The `"descriptors"`
+/// key is NOT permitted here (objects are supplied one at a time
+/// via `tgm_streaming_encoder_write`).  A legacy top-level
+/// `"version"` is tolerated and routed into `_extra_` on encode
+/// (see `parse_streaming_metadata_json`).
 ///
 /// `hash_algo`: null-terminated string ("xxh3") or NULL for no hash.
 ///

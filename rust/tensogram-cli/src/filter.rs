@@ -66,8 +66,16 @@ pub fn lookup_key(metadata: &GlobalMetadata, key: &str) -> Option<String> {
         return None;
     }
 
+    // `version` is a pseudo-key — the wire-format version lives in the
+    // preamble (see `plans/WIRE_FORMAT.md` §3), not in the CBOR metadata
+    // frame.  We report it here as if it were a metadata field so that
+    // `tensogram ls -p version` and `tensogram get -p version` keep
+    // returning `"3"` for ops scripts that depend on the column.  Any
+    // per-message free-form `version` the caller put in the CBOR still
+    // flows through `_extra_` (see §6.1) and is reachable via
+    // `_extra_.version`.
     if parts == ["version"] {
-        return Some(metadata.version.to_string());
+        return Some(tensogram::WIRE_VERSION.to_string());
     }
 
     // Explicit _extra_.key prefix targets the extra map directly
@@ -191,7 +199,6 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("centre".into(), Value::Text("ecmwf".into()));
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -207,7 +214,6 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("mars".into(), mars);
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -224,7 +230,6 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("grib".into(), grib);
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -247,7 +252,6 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("mars".into(), mars);
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -267,7 +271,6 @@ mod tests {
         );
         entry.insert("param".into(), Value::Text("2t".into()));
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -307,7 +310,6 @@ mod tests {
         let mut entry1 = BTreeMap::new();
         entry1.insert("mars".into(), mars1);
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry0, entry1],
             ..Default::default()
         };
@@ -321,7 +323,6 @@ mod tests {
         let mut extra = BTreeMap::new();
         extra.insert("shared".into(), Value::Text("from_extra".into()));
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             extra,
             ..Default::default()
@@ -335,7 +336,6 @@ mod tests {
         let mut extra = BTreeMap::new();
         extra.insert("custom".into(), Value::Text("val".into()));
         let meta = GlobalMetadata {
-            version: 3,
             extra,
             ..Default::default()
         };
@@ -355,7 +355,6 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("a".into(), b_val);
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -376,7 +375,6 @@ mod tests {
         let mut entry1 = BTreeMap::new();
         entry1.insert("other".into(), Value::Text("val".into()));
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry0, entry1],
             ..Default::default()
         };
@@ -406,7 +404,6 @@ mod tests {
         let mut entry1 = BTreeMap::new();
         entry1.insert("param".into(), Value::Text("msl".into()));
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry0, entry1],
             ..Default::default()
         };
@@ -439,7 +436,6 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("param".into(), Value::Text("msl".into()));
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -453,7 +449,6 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("param".into(), Value::Text("sp".into()));
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -467,7 +462,6 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("class".into(), Value::Text("ea".into()));
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -481,7 +475,6 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("class".into(), Value::Text("od".into()));
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -493,7 +486,6 @@ mod tests {
     #[test]
     fn test_lookup_version() {
         let meta = GlobalMetadata {
-            version: 3,
             ..Default::default()
         };
         assert_eq!(lookup_key(&meta, "version"), Some("3".into()));
@@ -502,7 +494,6 @@ mod tests {
     #[test]
     fn test_matches_version_eq() {
         let meta = GlobalMetadata {
-            version: 3,
             ..Default::default()
         };
         let clause = parse_where("version=3").unwrap();
@@ -514,7 +505,6 @@ mod tests {
     #[test]
     fn test_matches_version_neq() {
         let meta = GlobalMetadata {
-            version: 3,
             ..Default::default()
         };
         let clause = parse_where("version!=2").unwrap();
@@ -529,7 +519,6 @@ mod tests {
         let mut extra = BTreeMap::new();
         extra.insert("source".into(), Value::Text("test".into()));
         let meta = GlobalMetadata {
-            version: 3,
             extra,
             ..Default::default()
         };

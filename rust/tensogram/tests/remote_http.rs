@@ -32,7 +32,6 @@ use tensogram::{Dtype, is_remote_url};
 
 fn make_global_meta() -> GlobalMetadata {
     GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     }
@@ -291,8 +290,7 @@ async fn test_remote_decode_message() -> Result<(), Box<dyn Error>> {
     let server = MockServer::start(msg).await?;
 
     let file = TensogramFile::open_source(server.url())?;
-    let (decoded_meta, objects) = file.decode_message(0, &DecodeOptions::default())?;
-    assert_eq!(decoded_meta.version, 3);
+    let (_decoded_meta, objects) = file.decode_message(0, &DecodeOptions::default())?;
     assert_eq!(objects.len(), 1);
     assert_eq!(objects[0].1, data);
     Ok(())
@@ -306,9 +304,7 @@ async fn test_remote_decode_metadata() -> Result<(), Box<dyn Error>> {
     let file = TensogramFile::open_source(server.url())?;
     server.reset_count();
 
-    let meta = file.decode_metadata(0)?;
-    assert_eq!(meta.version, 3);
-
+    let _meta = file.decode_metadata(0)?;
     // First metadata call triggers layout discovery (1 header chunk read).
     // Subsequent calls should be free (cached).
     let count_after_first = server.request_count();
@@ -318,8 +314,7 @@ async fn test_remote_decode_metadata() -> Result<(), Box<dyn Error>> {
     );
 
     server.reset_count();
-    let meta2 = file.decode_metadata(0)?;
-    assert_eq!(meta2.version, 3);
+    let _meta2 = file.decode_metadata(0)?;
     assert_eq!(
         server.request_count(),
         0,
@@ -334,8 +329,7 @@ async fn test_remote_decode_descriptors() -> Result<(), Box<dyn Error>> {
     let server = MockServer::start(msg).await?;
 
     let file = TensogramFile::open_source(server.url())?;
-    let (meta, descriptors) = file.decode_descriptors(0)?;
-    assert_eq!(meta.version, 3);
+    let (_meta, descriptors) = file.decode_descriptors(0)?;
     assert_eq!(descriptors.len(), 1);
     assert_eq!(descriptors[0].shape, vec![4]);
     Ok(())
@@ -352,9 +346,8 @@ async fn test_remote_decode_object() -> Result<(), Box<dyn Error>> {
     let file = TensogramFile::open_source(server.url())?;
     server.reset_count();
 
-    let (decoded_meta, decoded_desc, decoded_data) =
+    let (_decoded_meta, decoded_desc, decoded_data) =
         file.decode_object(0, 0, &DecodeOptions::default())?;
-    assert_eq!(decoded_meta.version, 3);
     assert_eq!(decoded_desc.shape, vec![4]);
     assert_eq!(decoded_data, data);
 
@@ -419,9 +412,7 @@ async fn test_remote_multi_message_file() -> Result<(), Box<dyn Error>> {
     let file = TensogramFile::open_source(server.url())?;
     assert_eq!(file.message_count()?, 2);
 
-    let meta0 = file.decode_metadata(0)?;
-    assert_eq!(meta0.version, 3);
-
+    let _meta0 = file.decode_metadata(0)?;
     let (_, descs1) = file.decode_descriptors(1)?;
     assert_eq!(descs1[0].shape, vec![8]);
     Ok(())
@@ -571,14 +562,13 @@ async fn test_remote_matches_local_decode() -> Result<(), Box<dyn Error>> {
     let server = MockServer::start(msg.clone()).await?;
 
     // Local decode
-    let (local_meta, local_objects) = tensogram::decode::decode(&msg, &DecodeOptions::default())?;
+    let (_local_meta, local_objects) = tensogram::decode::decode(&msg, &DecodeOptions::default())?;
 
     // Remote decode
     let remote_file = TensogramFile::open_source(server.url())?;
-    let (remote_meta, remote_desc, remote_data) =
+    let (_remote_meta, remote_desc, remote_data) =
         remote_file.decode_object(0, 0, &DecodeOptions::default())?;
 
-    assert_eq!(local_meta.version, remote_meta.version);
     assert_eq!(local_objects[0].0.shape, remote_desc.shape);
     assert_eq!(local_objects[0].1, remote_data);
     Ok(())
@@ -653,9 +643,7 @@ async fn test_remote_streaming_message_open_and_decode() -> Result<(), Box<dyn E
     assert!(file.is_remote());
     assert_eq!(file.message_count()?, 1);
 
-    let meta = file.decode_metadata(0)?;
-    assert_eq!(meta.version, 3);
-
+    let _meta = file.decode_metadata(0)?;
     let (_, desc, data) = file.decode_object(0, 0, &DecodeOptions::default())?;
     assert_eq!(desc.shape, vec![4]);
     assert_eq!(data, vec![42u8; 16]);
@@ -667,13 +655,12 @@ async fn test_remote_streaming_matches_local_decode() -> Result<(), Box<dyn Erro
     let msg = encode_streaming_message(vec![10], 99)?;
     let server = MockServer::start(msg.clone()).await?;
 
-    let (local_meta, local_objects) = tensogram::decode::decode(&msg, &DecodeOptions::default())?;
+    let (_local_meta, local_objects) = tensogram::decode::decode(&msg, &DecodeOptions::default())?;
 
     let remote_file = TensogramFile::open_source(server.url())?;
-    let (remote_meta, remote_desc, remote_data) =
+    let (_remote_meta, remote_desc, remote_data) =
         remote_file.decode_object(0, 0, &DecodeOptions::default())?;
 
-    assert_eq!(local_meta.version, remote_meta.version);
     assert_eq!(local_objects[0].0.shape, remote_desc.shape);
     assert_eq!(local_objects[0].1, remote_data);
     Ok(())
@@ -740,9 +727,8 @@ async fn test_remote_streaming_index_lengths_are_frame_lengths() -> Result<(), B
     assert_eq!(desc.shape, vec![4]);
     assert_eq!(data, vec![42u8; 16]);
 
-    let (local_meta, local_objects) = tensogram::decode::decode(&msg, &DecodeOptions::default())?;
+    let (_local_meta, local_objects) = tensogram::decode::decode(&msg, &DecodeOptions::default())?;
     assert_eq!(local_objects[0].1, data);
-    assert_eq!(local_meta.version, 3);
     Ok(())
 }
 
@@ -790,8 +776,7 @@ async fn test_shared_runtime_from_sync_context() -> Result<(), Box<dyn Error>> {
     let result = std::thread::spawn(
         move || -> std::result::Result<(), Box<dyn Error + Send + Sync>> {
             let file = TensogramFile::open_source(&url)?;
-            let meta = file.decode_metadata(0)?;
-            assert_eq!(meta.version, 3);
+            let _meta = file.decode_metadata(0)?;
             let (_, desc, data) = file.decode_object(0, 0, &DecodeOptions::default())?;
             assert_eq!(desc.shape, vec![4]);
             assert_eq!(data, vec![42u8; 16]);
@@ -869,8 +854,7 @@ async fn test_async_remote_open_and_metadata() -> Result<(), Box<dyn Error>> {
     assert!(file.is_remote());
     assert_eq!(file.message_count()?, 1);
 
-    let meta = file.decode_metadata_async(0).await?;
-    assert_eq!(meta.version, 3);
+    let _meta = file.decode_metadata_async(0).await?;
     Ok(())
 }
 
@@ -884,10 +868,9 @@ async fn test_async_remote_decode_object() -> Result<(), Box<dyn Error>> {
     let server = MockServer::start(msg).await?;
 
     let file = TensogramFile::open_source_async(server.url()).await?;
-    let (decoded_meta, decoded_desc, decoded_data) = file
+    let (_decoded_meta, decoded_desc, decoded_data) = file
         .decode_object_async(0, 0, &DecodeOptions::default())
         .await?;
-    assert_eq!(decoded_meta.version, 3);
     assert_eq!(decoded_desc.shape, vec![4]);
     assert_eq!(decoded_data, data);
     Ok(())
@@ -902,8 +885,7 @@ async fn test_async_remote_decode_descriptors() -> Result<(), Box<dyn Error>> {
     let server = MockServer::start(msg).await?;
 
     let file = TensogramFile::open_source_async(server.url()).await?;
-    let (meta, descriptors) = file.decode_descriptors_async(0).await?;
-    assert_eq!(meta.version, 3);
+    let (_meta, descriptors) = file.decode_descriptors_async(0).await?;
     assert_eq!(descriptors.len(), 2);
     assert_eq!(descriptors[0].shape, vec![4]);
     assert_eq!(descriptors[1].shape, vec![8]);
@@ -920,15 +902,14 @@ async fn test_async_vs_sync_parity() -> Result<(), Box<dyn Error>> {
     let server = MockServer::start(msg).await?;
 
     let sync_file = TensogramFile::open_source(server.url())?;
-    let (sync_meta, sync_desc, sync_data) =
+    let (_sync_meta, sync_desc, sync_data) =
         sync_file.decode_object(0, 0, &DecodeOptions::default())?;
 
     let async_file = TensogramFile::open_source_async(server.url()).await?;
-    let (async_meta, async_desc, async_data) = async_file
+    let (_async_meta, async_desc, async_data) = async_file
         .decode_object_async(0, 0, &DecodeOptions::default())
         .await?;
 
-    assert_eq!(sync_meta.version, async_meta.version);
     assert_eq!(sync_desc.shape, async_desc.shape);
     assert_eq!(sync_data, async_data);
     Ok(())
@@ -955,9 +936,7 @@ async fn test_async_remote_streaming_message() -> Result<(), Box<dyn Error>> {
     let file = TensogramFile::open_source_async(server.url()).await?;
     assert!(file.is_remote());
 
-    let meta = file.decode_metadata_async(0).await?;
-    assert_eq!(meta.version, 3);
-
+    let _meta = file.decode_metadata_async(0).await?;
     let (_, desc, data) = file
         .decode_object_async(0, 0, &DecodeOptions::default())
         .await?;
@@ -1007,9 +986,7 @@ async fn test_async_remote_multi_message_scan() -> Result<(), Box<dyn Error>> {
     let file = TensogramFile::open_source_async(server.url()).await?;
     assert_eq!(file.message_count()?, 2);
 
-    let meta0 = file.decode_metadata_async(0).await?;
-    assert_eq!(meta0.version, 3);
-
+    let _meta0 = file.decode_metadata_async(0).await?;
     let (_, descs1) = file.decode_descriptors_async(1).await?;
     assert_eq!(descs1[0].shape, vec![8]);
     Ok(())
@@ -1234,9 +1211,7 @@ async fn test_async_remote_suffix_read_combines_streaming() -> Result<(), Box<dy
     assert!(file.is_remote());
     assert_eq!(file.message_count()?, 1);
 
-    let meta = file.decode_metadata_async(0).await?;
-    assert_eq!(meta.version, 3);
-
+    let _meta = file.decode_metadata_async(0).await?;
     let (_, desc, data) = file
         .decode_object_async(0, 0, &DecodeOptions::default())
         .await?;
@@ -1244,8 +1219,7 @@ async fn test_async_remote_suffix_read_combines_streaming() -> Result<(), Box<dy
     assert_eq!(data, vec![42u8; 16]);
 
     // Verify consistency with local decode
-    let (local_meta, local_objects) = tensogram::decode::decode(&msg, &DecodeOptions::default())?;
-    assert_eq!(local_meta.version, meta.version);
+    let (_local_meta, local_objects) = tensogram::decode::decode(&msg, &DecodeOptions::default())?;
     assert_eq!(local_objects[0].1, data);
     Ok(())
 }
@@ -1324,15 +1298,14 @@ async fn test_async_remote_matches_local_decode() -> Result<(), Box<dyn Error>> 
     let server = MockServer::start(msg.clone()).await?;
 
     // Local decode
-    let (local_meta, local_objects) = tensogram::decode::decode(&msg, &DecodeOptions::default())?;
+    let (_local_meta, local_objects) = tensogram::decode::decode(&msg, &DecodeOptions::default())?;
 
     // Async remote decode
     let remote_file = TensogramFile::open_source_async(server.url()).await?;
-    let (remote_meta, remote_desc, remote_data) = remote_file
+    let (_remote_meta, remote_desc, remote_data) = remote_file
         .decode_object_async(0, 0, &DecodeOptions::default())
         .await?;
 
-    assert_eq!(local_meta.version, remote_meta.version);
     assert_eq!(local_objects[0].0.shape, remote_desc.shape);
     assert_eq!(local_objects[0].1, remote_data);
     Ok(())
@@ -1383,8 +1356,7 @@ async fn test_block_on_shared_current_thread_fallback() -> Result<(), Box<dyn Er
     let result = tokio::task::spawn_blocking(move || {
         let file = TensogramFile::open_source(&url)?;
         assert!(file.is_remote());
-        let meta = file.decode_metadata(0)?;
-        assert_eq!(meta.version, 3);
+        let _meta = file.decode_metadata(0)?;
         let (_, desc, data) = file.decode_object(0, 0, &DecodeOptions::default())?;
         assert_eq!(desc.shape, vec![4]);
         assert_eq!(data, vec![42u8; 16]);

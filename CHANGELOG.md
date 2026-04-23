@@ -5,6 +5,62 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed — BREAKING (free-form CBOR metadata)
+
+The CBOR metadata frame is now **fully free-form**.  The library-
+interpreted top-level keys are just `base`, `_reserved_`, and
+`_extra_`; anything else the caller supplies flows into `_extra_`
+on decode.  The wire-format version lives exclusively in the
+preamble (see `plans/WIRE_FORMAT.md` §3) and is never written to
+CBOR.
+
+- **`GlobalMetadata.version` field removed** from the public Rust
+  struct.  Constructors that used `GlobalMetadata { version: 3, … }`
+  must drop the `version: 3` line; `GlobalMetadata::default()`
+  keeps working.  Decoded-side accessors stay:
+  - Rust: new `tensogram::WIRE_VERSION` crate-root constant.
+  - Python: `tensogram.WIRE_VERSION` module constant; `Metadata.version`
+    property still works and now sources from the preamble.
+  - TypeScript: new `WIRE_VERSION` export from
+    `@ecmwf.int/tensogram`; `metadata.version` on decoded messages
+    is synthesised from the preamble.
+  - C FFI: `tgm_message_version` / `tgm_metadata_version` retain
+    their signatures and now return the preamble-sourced
+    `WIRE_VERSION`.
+  - C++: `message::version()` / `metadata::version()` unchanged at
+    the ABI level; now preamble-sourced.
+- **Free-form top-level CBOR keys** — `tensogram.encode({}, …)` and
+  `tensogram.encode({"foo": "bar"}, …)` are now valid (previously
+  rejected with `ValueError("missing 'version'")`).  A caller who
+  still supplies `{"version": N, …}` sees `N` land in
+  `_extra_["version"]`; the wire-format version remains 3.
+- **Python/TS/FFI input validation relaxed.**  Dropped the
+  "metadata must contain a non-negative integer `version`" guard in
+  all three bindings.  `_reserved_` protection and `base[i]` shape
+  checks are unchanged.
+- **CLI pseudo-key preserved.** `tensogram ls -p version`,
+  `tensogram get -p version`, and the default `ls` column continue
+  to return `"3"` — they now source from `WIRE_VERSION` rather than
+  from any CBOR key.
+- **Zarr / xarray attribute renamed.**  The Zarr group attribute
+  `_tensogram_version` becomes `_tensogram_wire_version`; the
+  xarray dataset attribute `tensogram_version` becomes
+  `tensogram_wire_version`.  Both still source from the preamble
+  (always `3` in the current library).
+- **Golden fixtures regenerated.**  `rust/tensogram/tests/golden/*.tgm`
+  were rewritten under the new schema.  `simple_f32.tgm`,
+  `multi_object.tgm`, `multi_message.tgm`, and `hash_xxh3.tgm` now
+  carry a generic `{"product": "efi", "parameter": "pressure"}`
+  vocabulary; `mars_metadata.tgm` keeps its MARS namespace as the
+  canonical MARS-regression fixture.
+- **Anemoi plugin** stops seeding `{"version": 3}` in its output
+  metadata — the key was redundant.
+- **NetCDF / GRIB converters** stop emitting a `"version"` top-level
+  CBOR key; output bytes shrink by ~7 bytes per message.
+- **Documentation and examples** refreshed across `docs/src/**/*.md`,
+  `plans/WIRE_FORMAT.md` §6.1, `plans/DESIGN.md`, `plans/ARCHITECTURE.md`,
+  and every `examples/{rust,python,cpp,typescript,jupyter}` file.
+
 ## [0.17.0] - 2026-04-22
 
 ### Fixed
