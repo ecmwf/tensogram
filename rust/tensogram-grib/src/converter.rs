@@ -17,6 +17,7 @@ use tensogram::pipeline::apply_pipeline;
 use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
 use tensogram::{DataPipeline, Dtype, EncodeOptions, encode};
 
+use crate::area::{RegularLlGeometry, compute_regular_ll_area};
 use crate::error::GribError;
 use crate::metadata::{GribKeySet, extract_all_namespace_keys, extract_mars_keys};
 
@@ -135,9 +136,45 @@ fn extract_messages<D: Debug>(
 
         // gridType is outside the MARS namespace — read it separately
         // and store as "grid" within the mars key set.
-        if let Ok(grid_type) = KeyRead::<String>::read_key(&msg, "gridType") {
+        let grid_type: Option<String> = KeyRead::<String>::read_key(&msg, "gridType").ok();
+        if let Some(gt) = &grid_type {
             keys.keys
-                .insert("grid".to_string(), CborValue::Text(grid_type));
+                .insert("grid".to_string(), CborValue::Text(gt.clone()));
+        }
+
+        // For regular_ll grids, also lift the geography corner keys into
+        // `mars.area = [N, W, S, E]` (via `compute_regular_ll_area`).  This
+        // is what the Tensoscope viewer consumes to place data on the map;
+        // without it the viewer has to fall back to a guessed default
+        // convention, which misrenders ECMWF open-data (dateline-first)
+        // files by 180°.
+        if grid_type.as_deref() == Some("regular_ll") {
+            let geo = RegularLlGeometry {
+                lat_first: msg
+                    .read_key("latitudeOfFirstGridPointInDegrees")
+                    .unwrap_or(f64::NAN),
+                lon_first: msg
+                    .read_key("longitudeOfFirstGridPointInDegrees")
+                    .unwrap_or(f64::NAN),
+                lat_last: msg
+                    .read_key("latitudeOfLastGridPointInDegrees")
+                    .unwrap_or(f64::NAN),
+                lon_last: msg
+                    .read_key("longitudeOfLastGridPointInDegrees")
+                    .unwrap_or(f64::NAN),
+                i_scans_negatively: msg.read_key("iScansNegatively").unwrap_or(-1),
+                j_scans_positively: msg.read_key("jScansPositively").unwrap_or(-1),
+                ni: msg.read_key("Ni").unwrap_or(0),
+                i_direction_increment: msg
+                    .read_key("iDirectionIncrementInDegrees")
+                    .unwrap_or(f64::NAN),
+            };
+            if let Some(area) = compute_regular_ll_area(geo) {
+                keys.keys.insert(
+                    "area".to_string(),
+                    CborValue::Array(area.into_iter().map(CborValue::Float).collect()),
+                );
+            }
         }
 
         // Optionally extract all non-mars namespace keys.

@@ -661,3 +661,94 @@ fn test_empty_grib_file_error() {
     // ecCodes should find no messages or return an error
     assert!(result.is_err(), "empty/invalid GRIB file should fail");
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// 18. test_mars_area_regular_ll_emitted (+ friends)
+// ──────────────────────────────────────────────────────────────────────
+
+/// Unpack `mars.area` into `[f64; 4]`.  Returns `None` if the CBOR shape
+/// doesn't match the 4-float array contract emitted by
+/// `compute_regular_ll_area` — which is itself a test-worthy invariant.
+fn mars_area_as_f64s(mars: &CborValue) -> Option<[f64; 4]> {
+    let CborValue::Array(items) = cbor_map_get(mars, "area")? else {
+        return None;
+    };
+    if items.len() != 4 {
+        return None;
+    }
+    let mut out = [0.0; 4];
+    for (i, item) in items.iter().enumerate() {
+        let CborValue::Float(f) = item else {
+            return None;
+        };
+        out[i] = *f;
+    }
+    Some(out)
+}
+
+/// Every bundled regular_ll fixture must emit the same canonical
+/// `mars.area`.  They are all 0.25° global dateline-first scans
+/// (`longitudeOfFirstGridPointInDegrees = 180`,
+/// `longitudeOfLastGridPointInDegrees = 179.75`), which
+/// `compute_regular_ll_area` normalises to `W = -180`.
+#[test]
+fn test_mars_area_regular_ll_emitted() {
+    let fixtures = ["lsm.grib2", "2t.grib2", "q_150.grib2", "t_600.grib2"];
+    let expected = [90.0_f64, -180.0, -90.0, 179.75];
+
+    for name in fixtures {
+        let path = testdata().join(name);
+        let messages =
+            convert_grib_file(&path, &ConvertOptions::default()).expect("convert fixture");
+        let (meta, _) = decode(&messages[0], &decode_opts()).expect("decode");
+        let mars = get_mars_from_base(&meta);
+        let area = mars_area_as_f64s(mars)
+            .unwrap_or_else(|| panic!("{name}: mars.area missing or not [f64; 4]"));
+        assert_eq!(area, expected, "{name}: mars.area mismatch");
+    }
+}
+
+/// The dateline-first → `W = -180` normalisation is the primary bug-fix
+/// behaviour; pin it separately so a future "simplify the area helper"
+/// regression surfaces with a clear failure rather than a mysterious
+/// viewer off-by-180 report.
+#[test]
+fn test_mars_area_normalises_dateline_first() {
+    let path = testdata().join("lsm.grib2");
+    let messages =
+        convert_grib_file(&path, &ConvertOptions::default()).expect("convert lsm.grib2");
+    let (meta, _) = decode(&messages[0], &decode_opts()).expect("decode");
+    let area = mars_area_as_f64s(get_mars_from_base(&meta)).expect("mars.area present");
+
+    assert_eq!(
+        area[1], -180.0,
+        "W must be normalised from raw 180° to -180° for the full-global \
+         dateline-first convention",
+    );
+    assert!(
+        area[1] < area[3],
+        "after normalisation, W (area[1]) < E (area[3])",
+    );
+}
+
+/// The area must survive the OneToOne grouping path too — each output
+/// message carries its own `base[0].mars.area`.
+#[test]
+fn test_mars_area_emitted_in_one_to_one_grouping() {
+    let combined = make_combined_grib(&["lsm.grib2", "2t.grib2"]);
+    let opts = ConvertOptions {
+        grouping: Grouping::OneToOne,
+        ..ConvertOptions::default()
+    };
+    let messages =
+        convert_grib_file(combined.path(), &opts).expect("convert combined fixture");
+
+    assert_eq!(messages.len(), 2);
+    for (i, message) in messages.iter().enumerate() {
+        let (meta, _) = decode(message, &decode_opts()).expect("decode");
+        let mars = get_mars_from_base(&meta);
+        let area =
+            mars_area_as_f64s(mars).unwrap_or_else(|| panic!("message {i}: mars.area missing"));
+        assert_eq!(area, [90.0, -180.0, -90.0, 179.75]);
+    }
+}
