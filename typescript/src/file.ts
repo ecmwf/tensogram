@@ -39,8 +39,14 @@ import {
   ObjectError,
   rethrowTyped,
 } from './errors.js';
+import { getWbg } from './init.js';
 import { fetchRange, type FetchRangeContext } from './internal/httpRange.js';
 import { errorMessage, withCause } from './internal/io.js';
+import {
+  type MessageLayout,
+  normalisePreambleInfo,
+} from './internal/layout.js';
+import { createLimiter, DEFAULT_CONCURRENCY } from './internal/pool.js';
 import type {
   AppendOptions,
   DecodedMessage,
@@ -98,9 +104,13 @@ interface LazyHttpBackend {
   signal?: AbortSignal;
   byteLength: number;
   positions: MessagePosition[];
+  /** Per-message layout cache (preamble, index, metadata) — mirrors Rust's RemoteBackend.state. */
+  layouts: Map<number, MessageLayout>;
   /** Tiny LRU of already-fetched message bytes. */
   cache: Map<number, Uint8Array>;
   cacheCap: number;
+  /** Bounded-concurrency limiter for fan-out Range reads. */
+  limit: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 // ── TensogramFile ─────────────────────────────────────────────────────────
@@ -223,18 +233,22 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
         // to eager.
         const scanResult = await lazyScanMessages(ctx, contentLength);
         if (scanResult !== null) {
-          return new TensogramFile({
+          const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
+          const backend: LazyHttpBackend = {
             kind: 'remote-lazy',
             source: 'remote',
             url,
             fetchFn,
-            baseHeaders: options.headers,
-            signal: options.signal,
             byteLength: contentLength,
-            positions: scanResult,
+            positions: scanResult.positions,
+            layouts: scanResult.layouts,
             cache: new Map(),
             cacheCap: LAZY_CACHE_CAPACITY,
-          });
+            limit: createLimiter(concurrency),
+          };
+          if (options.headers !== undefined) backend.baseHeaders = options.headers;
+          if (options.signal !== undefined) backend.signal = options.signal;
+          return new TensogramFile(backend);
         }
       }
     }
@@ -465,10 +479,20 @@ function lazyFetchContext(b: LazyHttpBackend): FetchRangeContext {
   return ctx;
 }
 
+/** Shape returned by `lazyScanMessages` — positions plus preamble-only layouts. */
+interface LazyScanResult {
+  positions: MessagePosition[];
+  layouts: Map<number, MessageLayout>;
+}
+
 /**
  * Walk the file one preamble at a time, collecting each message's
- * `(offset, length)` from the preamble's `total_length` field.  A
- * single Range request per message (24 bytes each) is issued.
+ * `(offset, length)` from the preamble's `total_length` field and
+ * building a preamble-only `MessageLayout` cache entry per message.
+ * Metadata and index frames remain unpopulated until the caller asks
+ * for them via `messageMetadata` / `messageDescriptors` / per-object
+ * accessors; at that point the backend issues a single header-chunk
+ * or footer-suffix Range read per message.
  *
  * Returns `null` when the lazy walk cannot proceed — the caller falls
  * back to eager download.  Signals:
@@ -483,14 +507,20 @@ function lazyFetchContext(b: LazyHttpBackend): FetchRangeContext {
 async function lazyScanMessages(
   ctx: FetchRangeContext,
   fileLen: number,
-): Promise<MessagePosition[] | null> {
+): Promise<LazyScanResult | null> {
   const positions: MessagePosition[] = [];
+  const layouts = new Map<number, MessageLayout>();
   let cursor = 0;
 
   while (cursor + PREAMBLE_BYTES <= fileLen) {
-    let preamble: Uint8Array;
+    let preambleBytes: Uint8Array;
     try {
-      preamble = await fetchRange(ctx, cursor, cursor + PREAMBLE_BYTES, /* requireRange */ true);
+      preambleBytes = await fetchRange(
+        ctx,
+        cursor,
+        cursor + PREAMBLE_BYTES,
+        /* requireRange */ true,
+      );
     } catch {
       return null; // eager fallback
     }
@@ -498,19 +528,31 @@ async function lazyScanMessages(
     // `TensogramFile.scan` in eager mode tolerates leading garbage but
     // this fast-path relies on preamble-aligned messages.
     for (let i = 0; i < PREAMBLE_MAGIC.length; i++) {
-      if (preamble[i] !== PREAMBLE_MAGIC[i]) return null;
+      if (preambleBytes[i] !== PREAMBLE_MAGIC[i]) return null;
     }
-    // total_length is big-endian u64 at byte offset 16.  We use a
-    // DataView so we don't depend on host endianness.
-    const view = new DataView(preamble.buffer, preamble.byteOffset, PREAMBLE_BYTES);
-    const hi = view.getUint32(16, /* littleEndian = */ false);
-    const lo = view.getUint32(20, /* littleEndian = */ false);
-    const totalLength = hi * 0x1_0000_0000 + lo;
-    if (totalLength === 0) return null; // streaming-mode → eager
-    if (!Number.isFinite(totalLength) || totalLength < MIN_MESSAGE_BYTES) return null;
-    if (cursor + totalLength > fileLen) return null;
-    positions.push({ offset: cursor, length: totalLength });
-    cursor += totalLength;
+
+    // Parse structured preamble via WASM and normalise bigints to
+    // safe-integer numbers (throws if any field exceeds 2^53 - 1).
+    let preamble;
+    try {
+      const raw = getWbg().read_preamble_info(preambleBytes);
+      preamble = normalisePreambleInfo(raw);
+    } catch {
+      return null;
+    }
+
+    if (preamble.totalLength === 0) return null; // streaming-mode → eager
+    if (preamble.totalLength < MIN_MESSAGE_BYTES) return null;
+    if (cursor + preamble.totalLength > fileLen) return null;
+
+    const msgIdx = positions.length;
+    positions.push({ offset: cursor, length: preamble.totalLength });
+    layouts.set(msgIdx, {
+      offset: cursor,
+      length: preamble.totalLength,
+      preamble,
+    });
+    cursor += preamble.totalLength;
   }
-  return positions;
+  return { positions, layouts };
 }
