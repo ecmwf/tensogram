@@ -126,16 +126,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  index=99 → error: {}", result.unwrap_err());
     }
 
-    // ── decode_object() with hash verification ─────────────────────────────────
-    {
-        let verify_opts = DecodeOptions {
-            verify_hash: true,
-            ..Default::default()
-        };
-        let (_meta, _desc0, obj0) = decode_object(&message, 0, &verify_opts)?;
-        println!("\ndecode_object(index=0, verify_hash=true):");
-        println!("  {} bytes, hash OK", obj0.len());
-    }
+    // ── Integrity verification — use validate_message, not decode ────────────
+    //
+    // In wire-format v3 `DecodeOptions::verify_hash` is accepted for API
+    // compatibility but is a no-op — integrity verification moved to
+    // `validate_message` at level `Integrity` (see example 06).  Decode
+    // is deliberately hash-agnostic.
 
     // ── decode_range() — partial sub-slice ────────────────────────────────────
     //
