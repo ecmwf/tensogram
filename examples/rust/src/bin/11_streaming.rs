@@ -85,13 +85,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Streaming encode complete: {} bytes", message.len());
 
     // ── 2. Decode the streamed message ──────────────────────────────────────
-    let (decoded_meta, objects) = decode(
-        &message,
-        &DecodeOptions {
-            verify_hash: true,
-            ..Default::default()
-        },
-    )?;
+    //
+    // Decode is hash-agnostic in v3 — for per-frame integrity verification
+    // on the streamed bytes, run `validate_message` at level `Integrity`
+    // (see example 06).
+    let (decoded_meta, objects) = decode(&message, &DecodeOptions::default())?;
     println!(
         "\nDecoded: version={}, {} objects",
         decoded_meta.version,
