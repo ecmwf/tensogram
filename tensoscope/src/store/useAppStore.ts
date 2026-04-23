@@ -85,17 +85,25 @@ const DEFAULT_COLOR_SCALE: ColorScaleConfig = {
   displayUnit: '',
 };
 
-/** Shared logic after a Tensoscope is created. */
+/**
+ * Shared logic after a Tensoscope is created.
+ *
+ * `coordinates` is left null here — `selectField` fetches the coords
+ * for the specific message it is decoding and sets them atomically
+ * with `fieldData`, so the store's coordinates slot consistently
+ * means "coords for the currently-decoded field".  Heterogeneous
+ * multi-message files (different grids per message) would otherwise
+ * keep msg-0's coords forever.
+ */
 async function initViewer(
   viewer: Tensoscope,
   set: (partial: Partial<AppState>) => void,
 ) {
   const index = await viewer.buildIndex();
-  const coords = await viewer.fetchCoordinates(0);
   set({
     viewer,
     fileIndex: index,
-    coordinates: coords,
+    coordinates: null,
     selectedObject: null,
     selectedLevel: null,
     fieldData: null,
@@ -148,17 +156,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectField: async (msgIdx: number, objIdx: number) => {
-    const { viewer, fileIndex, coordinates, selectedLevel } = get();
+    const { viewer, fileIndex, selectedLevel } = get();
     if (!viewer || !fileIndex) return;
     set({ loading: true, error: null, selectedObject: { msgIdx, objIdx } });
     // Yield so React renders the loading state before the synchronous WASM decode blocks the thread.
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     try {
+      // Heterogeneous multi-message files may carry different grids per
+      // message; fetch the coords for the selected message so coordLength
+      // and downstream geolocation match the field we are about to decode.
+      // The wrapper's per-msgIdx cache makes repeat calls free.
+      const coords = await viewer.fetchCoordinates(msgIdx);
       const varInfo = fileIndex.variables.find(
         (v) => v.msgIndex === msgIdx && v.objIndex === objIdx,
       );
       const originalShape = varInfo?.shape ?? [];
-      const coordLength = coordinates?.lat.length ?? 0;
+      const coordLength = coords?.lat.length ?? 0;
 
       const sliceDim = decideSliceDim(originalShape, coordLength);
 
@@ -186,10 +199,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       const param = marsParam ?? varInfo?.name;
       const style = getAutoStyle(param);
 
+      // Commit data and coords together so consumers never see a field
+      // decoded against one message paired with coords from another.
       set({
         fieldData: result.data,
         fieldShape: originalShape,
         fieldStats: result.stats,
+        coordinates: coords,
         colorScale: style
           ? { ...DEFAULT_COLOR_SCALE, palette: style.palette, min: style.min, max: style.max, logScale: false, nativeUnits: style.units, displayUnit: style.units }
           : { ...get().colorScale, min: result.stats.min, max: result.stats.max, nativeUnits: '', displayUnit: '' },

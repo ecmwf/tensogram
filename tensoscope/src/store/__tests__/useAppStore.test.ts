@@ -237,3 +237,109 @@ describe('useAppStore — initViewer does not reset colorScale', () => {
     expect(colorScale.paletteReversed).toBe(true);
   });
 });
+
+// Heterogeneous multi-message files (different grids per message) must
+// have their coordinates fetched per-message, not once at file open.
+// Regression guard for Copilot's comment on PR #85: the per-msgIdx
+// cache at the Tensoscope wrapper layer is only useful if the store
+// also fetches per-message rather than reusing msg-0 coords forever.
+describe('useAppStore — selectField fetches coords per message', () => {
+  const COORDS_MSG0 = {
+    lat: new Float32Array([10, 20, 30, 40]),
+    lon: new Float32Array([0, 10, 20, 30]),
+  };
+  const COORDS_MSG1 = {
+    lat: new Float32Array([50, 60]),
+    lon: new Float32Array([100, 110]),
+  };
+
+  beforeEach(() => {
+    resetStore();
+    vi.clearAllMocks();
+    mocks.buildIndex.mockResolvedValue({
+      source: 'multi.tgm',
+      messageCount: 2,
+      variables: [
+        { msgIndex: 0, objIndex: 0, name: 'a', shape: [4], dtype: 'f32', encoding: '', compression: '', metadata: {} },
+        { msgIndex: 1, objIndex: 0, name: 'b', shape: [4], dtype: 'f32', encoding: '', compression: '', metadata: {} },
+      ],
+      coordinates: [],
+    });
+    mocks.fetchCoordinates.mockImplementation(async (msgIdx: number) =>
+      msgIdx === 0 ? COORDS_MSG0 : COORDS_MSG1,
+    );
+    mocks.decodeField.mockResolvedValue(DECODED_FIELD);
+    // Both decode paths must succeed so selectField reaches the
+    // atomic final set; msg-1's shorter coords force the slice path.
+    mocks.decodeFieldSlice.mockResolvedValue({
+      data: new Float32Array([5, 6]),
+      shape: [2],
+      stats: { min: 5, max: 6, mean: 5.5, std: 0.5 },
+    });
+    mocks.fromFile.mockImplementation(async () => ({
+      buildIndex: mocks.buildIndex,
+      fetchCoordinates: mocks.fetchCoordinates,
+      decodeField: mocks.decodeField,
+      decodeFieldSlice: mocks.decodeFieldSlice,
+      close: mocks.close,
+    }));
+  });
+
+  it('calls fetchCoordinates with the selected msgIdx, not always 0', async () => {
+    await useAppStore.getState().openLocalFile(new File([], 'multi.tgm'));
+    mocks.fetchCoordinates.mockClear();
+
+    await useAppStore.getState().selectField(1, 0);
+
+    expect(mocks.fetchCoordinates).toHaveBeenCalledWith(1);
+    expect(mocks.fetchCoordinates).not.toHaveBeenCalledWith(0);
+  });
+
+  it('stores the selected message coords, not msg-0 stale coords', async () => {
+    await useAppStore.getState().openLocalFile(new File([], 'multi.tgm'));
+    // Auto-select took msg 0; coords should reflect msg 0.
+    expect(useAppStore.getState().coordinates?.lat).toEqual(COORDS_MSG0.lat);
+
+    await useAppStore.getState().selectField(1, 0);
+
+    expect(useAppStore.getState().coordinates?.lat).toEqual(COORDS_MSG1.lat);
+    expect(useAppStore.getState().coordinates?.lon).toEqual(COORDS_MSG1.lon);
+  });
+
+  it('initViewer does not eagerly fetch coords for msg 0', async () => {
+    // Shifted index: first variable lives on msg 3, not msg 0.  The
+    // old code pre-fetched msg 0 unconditionally, wasting work and
+    // seeding the store with wrong coords; after the fix selectField
+    // is the only caller.
+    mocks.buildIndex.mockResolvedValue({
+      source: 'shifted.tgm',
+      messageCount: 5,
+      variables: [
+        { msgIndex: 3, objIndex: 1, name: 'x', shape: [4], dtype: 'f32', encoding: '', compression: '', metadata: {} },
+      ],
+      coordinates: [],
+    });
+
+    await useAppStore.getState().openLocalFile(new File([], 'shifted.tgm'));
+
+    const calls = mocks.fetchCoordinates.mock.calls.map((c) => c[0]);
+    expect(calls).not.toContain(0);
+    expect(calls).toContain(3);
+  });
+
+  it('decideSliceDim uses the selected message coord length', async () => {
+    // msg 0 ships 4-point coords, msg 1 ships 2-point coords.  Both
+    // variables have shape [4].  On msg 1, total (4) is a multiple
+    // of coordLength (2) → decideSliceDim picks dim 0 → decodeFieldSlice
+    // is called; on msg 0 with coord length 4, total === coord length
+    // → no slice → decodeField is called.
+    await useAppStore.getState().openLocalFile(new File([], 'multi.tgm'));
+    expect(mocks.decodeField).toHaveBeenCalledTimes(1);
+    expect(mocks.decodeFieldSlice).not.toHaveBeenCalled();
+
+    await useAppStore.getState().selectField(1, 0);
+
+    expect(mocks.decodeFieldSlice).toHaveBeenCalledTimes(1);
+    expect(mocks.decodeFieldSlice).toHaveBeenLastCalledWith(1, 0, 0, 0);
+  });
+});
