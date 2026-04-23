@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.18.0] - 2026-04-23
 
 ### Added — TypeScript / WASM / Tensoscope: browser-usable remote + async parity
 
@@ -159,6 +159,18 @@ CBOR.
 - **Documentation and examples** refreshed across `docs/src/**/*.md`,
   `plans/WIRE_FORMAT.md` §6.1, `plans/DESIGN.md`, `plans/ARCHITECTURE.md`,
   and every `examples/{rust,python,cpp,typescript,jupyter}` file.
+
+### Stats
+
+- Rust workspace: 1505 tests passing (824 with `tensogram --features
+  remote,async`).  Excluded-crate suites: 36 across `tensogram-grib`
+  + `tensogram-netcdf`.
+- Python: 530 + 242 + 235 tests across `python/tests/`,
+  `python/tensogram-xarray/tests/`, and `python/tensogram-zarr/tests/`
+  (45 skipped on CPython 3.14).
+- WASM: 172 tests (161 lib + 11 new `layout_tests` suite).
+- TypeScript (vitest): 376 tests across 27 files.
+- Tensoscope (vitest): 12 tests.
 
 ## [0.17.0] - 2026-04-22
 
