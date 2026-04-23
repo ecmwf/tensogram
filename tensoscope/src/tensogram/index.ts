@@ -391,6 +391,21 @@ export function expandAxesIfRectangularGrid(
 }
 
 /**
+ * Compat-bridge default `[N, W, S, E]` for `regular_ll` files that
+ * ship no explicit `mars.area`.  Matches ECMWF open-data
+ * (dateline-first — the common provenance for such files).  Changing
+ * these numbers flips the whole fallback hemisphere: don't.
+ */
+const DEFAULT_REGULAR_LL_AREA = {
+  north: 90,
+  west: -180,
+  south: -90,
+  east: 180,
+} as const;
+
+let legacyAreaDefaultWarned = false;
+
+/**
  * Infer 1-D latitude + longitude axes from `mars.grid` metadata + the
  * variable's shape, for files that ship no explicit coordinate
  * objects.  Currently supports `regular_ll` (the common
@@ -415,14 +430,25 @@ export function inferAxesFromMarsGrid(
     if (gridKind !== 'regular_ll') continue;
 
     const [nLat, nLon] = v.shape;
-    // MARS "area": [north, west, south, east].  Default to a full
-    // global domain when absent — matches ECMWF operational data.
-    // Use [-180, 180) longitude range to match the worker's expectation.
+    // MARS "area": [north, west, south, east].  When absent, fall back
+    // to the DEFAULT_REGULAR_LL_AREA compat bridge — matches ECMWF
+    // open-data's dateline-first convention and the regrid worker's
+    // [-180, 180) longitude expectation.
     const area = Array.isArray(mars.area) ? (mars.area as unknown[]) : null;
-    const north = toNumber(area?.[0]) ?? 90;
-    const west = toNumber(area?.[1]) ?? -180;
-    const south = toNumber(area?.[2]) ?? -90;
-    const east = toNumber(area?.[3]) ?? 180;
+    if (!area && !legacyAreaDefaultWarned) {
+      legacyAreaDefaultWarned = true;
+      console.warn(
+        'Tensoscope: file has mars.grid = "regular_ll" but no mars.area; ' +
+          'assuming ECMWF open-data dateline-first [-180, 180] convention. ' +
+          'Re-convert the source GRIB with a tensogram-grib build that emits ' +
+          'mars.area from the geography namespace for accurate rendering of ' +
+          'Greenwich-first or regional grids.',
+      );
+    }
+    const north = toNumber(area?.[0]) ?? DEFAULT_REGULAR_LL_AREA.north;
+    const west = toNumber(area?.[1]) ?? DEFAULT_REGULAR_LL_AREA.west;
+    const south = toNumber(area?.[2]) ?? DEFAULT_REGULAR_LL_AREA.south;
+    const east = toNumber(area?.[3]) ?? DEFAULT_REGULAR_LL_AREA.east;
 
     const lat = new Float32Array(nLat);
     for (let i = 0; i < nLat; i++) {
