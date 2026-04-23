@@ -26,7 +26,7 @@
 
 A library to encode and decode binary N-tensor scientific data with semantic metadata attached to the data.
 
-Tensogram is designed for scientific computing at scale — Machine Learning, Weather and Climate, Earth observation, Fluid mechanics, Medical and Microscopy imaging, Materials simulation, etc. It is vocabulary-agnostic: the library never interprets metadata keys, so application layers (conventions, in-house namespaces, etc) own meaning.
+Tensogram is designed for scientific computing at scale — Machine Learning, Weather and Climate, Earth observation, Fluid mechanics,  Materials simulation, etc. It is vocabulary-agnostic: the library never interprets metadata keys, so application layers (conventions, in-house namespaces, etc) own meaning.
 
 Tensogram defines a binary message format, not strictly a file format. Multiple messages can be appended to a file, each carrying its own begin/terminator codes. This means it is a serialisable format that can be sent over the network, encoded into in-memory buffers, saved to file-systems, stored in archival systems and decoded with zero-copy.
 
