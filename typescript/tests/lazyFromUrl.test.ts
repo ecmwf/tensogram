@@ -292,6 +292,30 @@ describe('Scope C.1 — TensogramFile.fromUrl Range backend', () => {
     }
   });
 
+  it('bails to eager when preamble advertises total_length below preamble+postamble', async () => {
+    // A v3 preamble(24) + v3 postamble(24) = 48 bytes minimum. Any
+    // lower `total_length` is impossible on the wire, so the lazy
+    // scanner must refuse to walk.  We pick 40 specifically because it
+    // matches the old (v2-era) minimum — this test would silently pass
+    // under the stale POSTAMBLE_BYTES = 16 constant.
+    const full = makeMessage([1, 2, 3, 4, 5]);
+    const patched = new Uint8Array(full);
+    // Rewrite total_length at offset 16 to 40 (big-endian u64).
+    for (let i = 16; i < 24; i++) patched[i] = 0;
+    patched[23] = 40;
+    const { fetch: fakeFetch, requests } = makeRangeServer(patched);
+
+    const file = await TensogramFile.fromUrl('https://example.invalid/tiny.tgm', {
+      fetch: fakeFetch,
+    });
+    try {
+      const nonRangeGets = requests.filter((r) => r.method === 'GET' && !r.range);
+      expect(nonRangeGets.length).toBeGreaterThan(0);
+    } finally {
+      file.close();
+    }
+  });
+
   it('throws InvalidArgumentError when no fetch implementation is available', async () => {
     const prevFetch = globalThis.fetch;
     // Simulate an environment that doesn't provide a fetch implementation.

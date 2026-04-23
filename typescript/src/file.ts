@@ -56,8 +56,8 @@ import type {
 
 /** Bytes in the fixed Tensogram preamble. */
 const PREAMBLE_BYTES = 24;
-/** Bytes in the fixed Tensogram postamble. */
-const POSTAMBLE_BYTES = 16;
+/** Bytes in the fixed Tensogram postamble (`[first_footer_offset u64][total_length u64][end_magic 8]`). */
+const POSTAMBLE_BYTES = 24;
 /** Minimum wire-format message length — preamble + postamble with no frames. */
 const MIN_MESSAGE_BYTES = PREAMBLE_BYTES + POSTAMBLE_BYTES;
 /** Lazy HTTP backend's per-message LRU cache size. */
