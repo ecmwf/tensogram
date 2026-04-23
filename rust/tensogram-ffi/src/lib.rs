@@ -56,6 +56,29 @@ use tensogram::{
 };
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Wire-format version emitted and required by this build of the
+/// library.
+///
+/// Mirrors [`tensogram::WIRE_VERSION`].  The value lives in the
+/// tensogram **preamble** (see `plans/WIRE_FORMAT.md` §3) — never in
+/// the CBOR metadata frame.  Exposed here so C / C++ callers can
+/// reference it without decoding a message first.  cbindgen emits
+/// this as a `#define TGM_WIRE_VERSION 3` in the generated header.
+///
+/// The literal is mirrored from `tensogram::wire::WIRE_VERSION`
+/// because cbindgen source-parses this crate and cannot resolve
+/// cross-crate constant expressions; the [`const _: () = assert!`]
+/// below keeps the two in lockstep at compile time.
+pub const TGM_WIRE_VERSION: u16 = 3;
+const _: () = assert!(
+    TGM_WIRE_VERSION == tensogram::WIRE_VERSION,
+    "TGM_WIRE_VERSION must equal tensogram::WIRE_VERSION"
+);
+
+// ---------------------------------------------------------------------------
 // Error codes
 // ---------------------------------------------------------------------------
 

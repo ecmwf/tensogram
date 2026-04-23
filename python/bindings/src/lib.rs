@@ -3015,6 +3015,15 @@ fn objects_with_masks_to_python(
 ///
 /// ``"_reserved_"`` remains protected: it is the library-managed
 /// provenance namespace and cannot be written by client code.
+///
+/// # Priority rule for `_extra_` collisions
+///
+/// When a caller supplies both an explicit ``_extra_`` (or ``extra``)
+/// section AND a free-form top-level key with the same name (e.g.
+/// ``{"_extra_": {"version": 1}, "version": 99}``), the **explicit
+/// section wins**.  Free-form top-level keys only fill slots that
+/// ``_extra_`` did not already claim — matching the "explicit beats
+/// implicit" principle.
 fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata> {
     let base = match dict.get_item("base")? {
         Some(v) => {
@@ -3037,18 +3046,24 @@ fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata>
         None => Vec::new(),
     };
 
-    // Accept both "_extra_" (wire name) and "extra" (convenience alias)
+    // Accept both "_extra_" (wire name) and "extra" (convenience alias).
+    // Either must be a dict when present — the error carries the key the
+    // caller actually supplied so they can fix the right place.
     let explicit_extra = match dict.get_item("_extra_")? {
-        Some(v) => py_dict_to_btree(&v)?,
+        Some(v) => {
+            if v.cast::<PyDict>().is_err() {
+                return Err(PyValueError::new_err("'_extra_' must be a dict"));
+            }
+            py_dict_to_btree(&v)?
+        }
         None => match dict.get_item("extra")? {
             Some(v) => {
-                if v.cast::<PyDict>().is_ok() {
-                    py_dict_to_btree(&v)?
-                } else {
+                if v.cast::<PyDict>().is_err() {
                     return Err(PyValueError::new_err(
                         "'extra' must be a dict when provided as a convenience alias for '_extra_'",
                     ));
                 }
+                py_dict_to_btree(&v)?
             }
             None => BTreeMap::new(),
         },
@@ -3065,10 +3080,12 @@ fn dict_to_global_metadata(dict: &Bound<'_, PyDict>) -> PyResult<GlobalMetadata>
     // here: it is a free-form key like any other and flows into
     // ``_extra_`` when present.
     let known_keys = ["base", "_extra_", "extra", RESERVED_KEY];
+    // Explicit `_extra_` beats implicit free-form top-level keys on
+    // collision — only fill slots that `_extra_` did not already claim.
     let mut extra = explicit_extra;
     for (k, v) in dict.iter() {
         let key: String = k.extract()?;
-        if !known_keys.contains(&key.as_str()) {
+        if !known_keys.contains(&key.as_str()) && !extra.contains_key(&key) {
             extra.insert(key, py_to_cbor(&v)?);
         }
     }

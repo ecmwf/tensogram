@@ -46,6 +46,19 @@ extern "C" {
 namespace tensogram {
 
 // ============================================================
+// Constants
+// ============================================================
+
+/// Wire-format version emitted and required by this build of the
+/// library.
+///
+/// Mirrors the C macro `TGM_WIRE_VERSION` and the Rust constant
+/// `tensogram::WIRE_VERSION`.  The value lives in the tensogram
+/// preamble (see `plans/WIRE_FORMAT.md` §3) — never in the CBOR
+/// metadata frame.  Decoders reject any other preamble version.
+inline constexpr std::uint16_t wire_version = TGM_WIRE_VERSION;
+
+// ============================================================
 // Error hierarchy
 // ============================================================
 

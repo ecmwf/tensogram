@@ -211,8 +211,7 @@ impl StreamingEncoder {
         neg_inf_mask_method: Option<String>,
         small_mask_threshold_bytes: Option<usize>,
     ) -> Result<StreamingEncoder, JsError> {
-        let metadata: core::GlobalMetadata =
-            serde_wasm_bindgen::from_value(metadata_js).map_err(js_err)?;
+        let metadata = metadata_from_js(&metadata_js)?;
         let options = build_encode_options_full(
             hash,
             allow_nan,

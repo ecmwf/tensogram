@@ -20,6 +20,23 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+/**
+ * Wire-format version emitted and required by this build of the
+ * library.
+ *
+ * Mirrors [`tensogram::WIRE_VERSION`].  The value lives in the
+ * tensogram **preamble** (see `plans/WIRE_FORMAT.md` §3) — never in
+ * the CBOR metadata frame.  Exposed here so C / C++ callers can
+ * reference it without decoding a message first.  cbindgen emits
+ * this as a `#define TGM_WIRE_VERSION 3` in the generated header.
+ *
+ * The literal is mirrored from `tensogram::wire::WIRE_VERSION`
+ * because cbindgen source-parses this crate and cannot resolve
+ * cross-crate constant expressions; the [`const _: () = assert!`]
+ * below keeps the two in lockstep at compile time.
+ */
+#define TGM_WIRE_VERSION 3
+
 typedef enum {
   TGM_ERROR_OK = 0,
   TGM_ERROR_FRAMING = 1,
@@ -145,10 +162,14 @@ void tgm_bytes_free(tgm_bytes_t buf);
 /**
  * Encode a Tensogram message from JSON metadata and raw data slices.
  *
- * `metadata_json`: null-terminated UTF-8 JSON string. Must contain:
- *   - `"version"` (integer)
- *   - `"descriptors"` (array of per-object descriptor objects)
- *   - optional extra keys (e.g. `"mars"`) at the top level
+ * `metadata_json`: null-terminated UTF-8 JSON string with:
+ *   - `"descriptors"` (array of per-object descriptor objects, required)
+ *   - `"base"` (array of per-object application metadata, optional)
+ *   - any other top-level keys (e.g. `"mars"`) flow into `_extra_`
+ *
+ * A legacy `"version"` top-level field is tolerated and silently
+ * discarded — the wire-format version lives in the preamble, not in
+ * the CBOR metadata frame (see `plans/WIRE_FORMAT.md` §§3, 6.1).
  *
  * `data_ptrs` / `data_lens`: arrays of length `num_objects`, raw bytes per object.
  *
@@ -353,7 +374,13 @@ tgm_scan_entry_t tgm_scan_entry(const tgm_scan_result_t *result, size_t index);
 void tgm_scan_free(tgm_scan_result_t *result);
 
 /**
- * Returns the wire format version from a decoded message.
+ * Returns the wire format version the decoder read from the preamble.
+ *
+ * v3 decoders reject any other version at preamble parse time, so
+ * this always returns [`tensogram::WIRE_VERSION`] for any live
+ * `TgmMessage` handle.  The CBOR metadata frame carries no
+ * `version` key of its own (see `plans/WIRE_FORMAT.md` §6.1).
+ * Returns `0` for a null handle.
  */
 uint64_t tgm_message_version(const tgm_message_t *msg);
 
@@ -407,7 +434,26 @@ const uint8_t *tgm_object_data(const tgm_message_t *msg, size_t decoded_index, s
 const char *tgm_payload_encoding(const tgm_message_t *msg, size_t index);
 
 /**
- * Returns 1 if the object descriptor has a hash, 0 otherwise.
+ * Returns 1 if the i-th data object has a populated inline hash
+ * slot, 0 otherwise.
+ *
+ * In v3 the per-object hash lives in the frame footer's inline
+ * slot (see `plans/WIRE_FORMAT.md` §2.4) rather than the CBOR
+ * descriptor.  v3 hashing is a message-wide toggle: either every
+ * frame's slot is populated (preamble flag `HASHES_PRESENT = 1`)
+ * or every slot is zero (`HASHES_PRESENT = 0`).  This accessor
+ * returns 1 when the i-th slot holds a non-zero xxh3-64 digest,
+ * and 0 when the slot is zero (most commonly the whole-message
+ * `HASHES_PRESENT = 0` case) or when the index is out of range.
+ *
+ * A zero slot on a message that advertises `HASHES_PRESENT = 1`
+ * is a structural anomaly (tamper or writer bug) — surface via
+ * `tgm_validate` at the `checksum` / `integrity` level, which
+ * will report a HashMismatch against the body's recomputed digest.
+ *
+ * The matching hex digest is available via
+ * [`tgm_object_hash_value`]; the algorithm tag (always
+ * `"xxh3"` in v3) via [`tgm_object_hash_type`].
  */
 int32_t tgm_payload_has_hash(const tgm_message_t *msg, size_t index);
 
@@ -453,7 +499,12 @@ const char *tgm_object_hash_value(const tgm_message_t *msg, size_t index);
 void tgm_message_free(tgm_message_t *msg);
 
 /**
- * Returns the wire format version from metadata.
+ * Returns the wire format version.
+ *
+ * Sourced from [`tensogram::WIRE_VERSION`] since v3 decoders reject any
+ * other version at preamble parse time.  The CBOR metadata frame
+ * carries no `version` key of its own (see
+ * `plans/WIRE_FORMAT.md` §6.1).  Returns `0` for a null handle.
  */
 uint64_t tgm_metadata_version(const tgm_metadata_t *meta);
 

@@ -163,6 +163,45 @@ describe('Phase 1 — encode wrapper', () => {
     expect(() => encode({ version: 'not-a-number' as unknown as number }, [])).not.toThrow();
   });
 
+  it('routes free-form top-level keys into _extra_ on decode', async () => {
+    // Regression: serde-wasm-bindgen's derived Deserialize on
+    // GlobalMetadata used to silently drop unknown top-level fields.
+    // The TS → WASM bridge now manually routes them into `_extra_`,
+    // matching the Rust core's cbor_to_global_metadata contract.
+    await init();
+    const data = new Float32Array([1, 2, 3, 4]);
+    const msg = encode(
+      { foo: 'bar', product: 'efi' },
+      [{ descriptor: makeDescriptor([4], 'float32'), data }],
+    );
+    const decoded = decode(msg);
+    try {
+      expect(decoded.metadata._extra_).toBeDefined();
+      expect(decoded.metadata._extra_?.foo).toBe('bar');
+      expect(decoded.metadata._extra_?.product).toBe('efi');
+    } finally {
+      decoded.close();
+    }
+  });
+
+  it('explicit _extra_ wins over free-form top-level on key collision', async () => {
+    // `explicit beats implicit`: when both `_extra_.X` and top-level
+    // `X` are supplied, the explicit section takes priority.  Matches
+    // the Rust core + Python contract.
+    await init();
+    const data = new Float32Array([1]);
+    const msg = encode(
+      { version: 99, _extra_: { version: 1 } },
+      [{ descriptor: makeDescriptor([1], 'float32'), data }],
+    );
+    const decoded = decode(msg);
+    try {
+      expect(decoded.metadata._extra_?.version).toBe(1);
+    } finally {
+      decoded.close();
+    }
+  });
+
   it('rejects non-array metadata.base', async () => {
     await init();
     expect(() =>

@@ -135,6 +135,101 @@ pub(crate) fn to_js<T: Serialize>(val: &T) -> Result<JsValue, JsError> {
         .map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Deserialize a JavaScript metadata object into a
+/// [`tensogram::GlobalMetadata`] with the free-form routing rule.
+///
+/// Mirrors the Rust core's [`tensogram::metadata::cbor_to_global_metadata`]:
+/// only `base`, `_reserved_`, and `_extra_` are library-interpreted.
+/// Every other top-level key the caller supplied (for example a legacy
+/// `"version"` or a free-form `"foo"`) flows into `_extra_`.  Explicit
+/// `_extra_` entries beat free-form top-level keys on collision.
+///
+/// Using `serde_wasm_bindgen::from_value` directly would silently drop
+/// unknown top-level fields, so the TypeScript binding would lose any
+/// user-supplied free-form key at the WASM boundary — this helper
+/// exists to close that gap.
+pub(crate) fn metadata_from_js(
+    metadata_js: &JsValue,
+) -> Result<tensogram::GlobalMetadata, JsError> {
+    use std::collections::BTreeMap;
+    use tensogram::RESERVED_KEY;
+
+    // Reject outright non-object input.
+    if !metadata_js.is_object() || metadata_js.is_null() {
+        return Err(JsError::new(&format!(
+            "metadata must be a plain object, got {metadata_js:?}"
+        )));
+    }
+
+    let obj: &js_sys::Object = metadata_js.unchecked_ref();
+
+    // Reject `_reserved_` at the top level — library-managed namespace.
+    if js_sys::Reflect::has(obj, &JsValue::from_str(RESERVED_KEY))
+        .map_err(|_| JsError::new("internal: Reflect.has failed on metadata object"))?
+    {
+        return Err(JsError::new(&format!(
+            "'{RESERVED_KEY}' must not be set by client code — the encoder populates it"
+        )));
+    }
+
+    // Pull `base` explicitly so serde-wasm-bindgen handles the nested
+    // CBOR conversion (lists of dicts → Vec<BTreeMap>).  Absent ≡ empty.
+    let base: Vec<BTreeMap<String, ciborium::Value>> =
+        match js_sys::Reflect::get(obj, &JsValue::from_str("base"))
+            .map_err(|_| JsError::new("internal: Reflect.get('base') failed"))?
+        {
+            v if v.is_undefined() => Vec::new(),
+            v => serde_wasm_bindgen::from_value(v).map_err(js_err)?,
+        };
+
+    // Reject `_reserved_` inside any `base[i]` entry for parity with
+    // the Rust core + Python validators.
+    for (i, entry) in base.iter().enumerate() {
+        if entry.contains_key(RESERVED_KEY) {
+            return Err(JsError::new(&format!(
+                "base[{i}] must not contain '{RESERVED_KEY}' — the encoder populates it"
+            )));
+        }
+    }
+
+    // Pull `_extra_` explicitly (authoritative — wins collisions).
+    let mut extra: BTreeMap<String, ciborium::Value> =
+        match js_sys::Reflect::get(obj, &JsValue::from_str("_extra_"))
+            .map_err(|_| JsError::new("internal: Reflect.get('_extra_') failed"))?
+        {
+            v if v.is_undefined() => BTreeMap::new(),
+            v => serde_wasm_bindgen::from_value(v).map_err(js_err)?,
+        };
+
+    // Everything else becomes a free-form `_extra_` entry.  Explicit
+    // `_extra_` beats implicit free-form on same-name collisions.
+    const KNOWN: &[&str] = &["base", "_extra_", RESERVED_KEY];
+    let own_keys = js_sys::Object::keys(obj);
+    for i in 0..own_keys.length() {
+        let key_val = own_keys.get(i);
+        let key = match key_val.as_string() {
+            Some(s) => s,
+            None => continue, // defensive: non-string key
+        };
+        if KNOWN.contains(&key.as_str()) {
+            continue;
+        }
+        if extra.contains_key(&key) {
+            continue; // explicit _extra_ already claimed this slot
+        }
+        let value = js_sys::Reflect::get(obj, &key_val)
+            .map_err(|_| JsError::new("internal: Reflect.get for free-form key failed"))?;
+        let cbor: ciborium::Value = serde_wasm_bindgen::from_value(value).map_err(js_err)?;
+        extra.insert(key, cbor);
+    }
+
+    Ok(tensogram::GlobalMetadata {
+        base,
+        reserved: BTreeMap::new(),
+        extra,
+    })
+}
+
 /// Serialize a [`GlobalMetadata`] to JavaScript with the wire-format
 /// version injected as `version`.
 ///

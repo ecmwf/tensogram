@@ -30,6 +30,16 @@ pub fn global_metadata_to_cbor(metadata: &GlobalMetadata) -> Result<Vec<u8>> {
 /// pre-0.17 encoders) is routed into `_extra_` for forward-compatibility.
 /// The wire-format version lives exclusively in the preamble (see
 /// [`crate::wire::WIRE_VERSION`]).
+///
+/// # Priority rule for `_extra_` collisions
+///
+/// When the caller supplies both an explicit `_extra_` section AND a
+/// free-form top-level key with the same name (e.g.
+/// `{"_extra_": {"version": 1}, "version": 99}`), the **explicit
+/// `_extra_` entry wins**.  Free-form top-level keys only fill slots
+/// that `_extra_` did not already claim.  This matches the "explicit
+/// beats implicit" principle: a caller who spelled out an entry
+/// inside `_extra_` clearly intended it to land there verbatim.
 pub fn cbor_to_global_metadata(cbor_bytes: &[u8]) -> Result<GlobalMetadata> {
     let value: ciborium::Value = ciborium::from_reader(cbor_bytes)
         .map_err(|e| TensogramError::Metadata(format!("failed to parse CBOR: {e}")))?;
@@ -44,6 +54,10 @@ pub fn cbor_to_global_metadata(cbor_bytes: &[u8]) -> Result<GlobalMetadata> {
     };
 
     let mut meta = GlobalMetadata::default();
+    // Accumulate free-form top-level entries in a separate bucket so
+    // the explicit `_extra_` section (processed once below) can take
+    // precedence over same-named free-form keys on collision.
+    let mut free_form: BTreeMap<String, ciborium::Value> = BTreeMap::new();
 
     for (k, v) in map {
         // Skip non-text map keys defensively.  Canonical CBOR uses
@@ -72,18 +86,21 @@ pub fn cbor_to_global_metadata(cbor_bytes: &[u8]) -> Result<GlobalMetadata> {
                 let entries: BTreeMap<String, ciborium::Value> = v.deserialized().map_err(|e| {
                     TensogramError::Metadata(format!("failed to deserialize _extra_: {e}"))
                 })?;
-                for (ek, ev) in entries {
-                    meta.extra.insert(ek, ev);
-                }
+                meta.extra = entries;
             }
             // Anything else (including a stray legacy `"version"` key)
-            // flows into `_extra_`.  This is the free-form rule: no
-            // top-level key is reserved beyond `base`, `_reserved_`,
-            // and `_extra_` itself.
+            // flows into `_extra_` via the free-form bucket.  The
+            // explicit `_extra_` section always wins on key collisions.
             _ => {
-                meta.extra.insert(key, v);
+                free_form.insert(key, v);
             }
         }
+    }
+
+    // Promote free-form keys only where `_extra_` did not already
+    // claim the slot — explicit beats implicit.
+    for (k, v) in free_form {
+        meta.extra.entry(k).or_insert(v);
     }
 
     Ok(meta)
@@ -622,6 +639,39 @@ mod tests {
         assert_eq!(
             decoded.extra.get("product"),
             Some(&Value::Text("efi".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_explicit_extra_wins_over_free_form_top_level() {
+        // When a producer emits both an explicit `_extra_` section AND
+        // a free-form top-level key of the same name, the explicit
+        // `_extra_` entry takes priority.  Matches "explicit beats
+        // implicit": a caller who spelled out the value inside `_extra_`
+        // clearly meant for that value to land there verbatim.
+        use ciborium::Value;
+
+        let colliding = Value::Map(vec![
+            (
+                Value::Text("_extra_".to_string()),
+                Value::Map(vec![(
+                    Value::Text("version".to_string()),
+                    Value::Integer(1.into()),
+                )]),
+            ),
+            (
+                Value::Text("version".to_string()),
+                Value::Integer(99.into()),
+            ),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&colliding, &mut bytes).unwrap();
+
+        let decoded = cbor_to_global_metadata(&bytes).unwrap();
+        assert_eq!(
+            decoded.extra.get("version"),
+            Some(&Value::Integer(1.into())),
+            "explicit `_extra_.version` must win over free-form top-level `version`"
         );
     }
 

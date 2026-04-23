@@ -861,6 +861,22 @@ class TestErrors:
         assert meta.version == 3  # preamble-sourced, not the user's 99
         assert meta.extra["version"] == 99
 
+    def test_explicit_extra_wins_over_free_form_top_level(self):
+        """When both ``_extra_`` (explicit) and a free-form top-level key
+        carry the same name, the explicit ``_extra_`` entry wins —
+        ``explicit beats implicit``.  See
+        ``rust/tensogram/src/metadata.rs::cbor_to_global_metadata``."""
+        desc = make_descriptor([4], dtype="float32")
+        data = np.ones(4, dtype=np.float32)
+        msg = tensogram.encode(
+            {"version": 99, "_extra_": {"version": 1}},
+            [(desc, data)],
+        )
+        meta, _ = tensogram.decode(msg)
+        assert meta.extra["version"] == 1, (
+            "explicit _extra_.version must win over free-form top-level version"
+        )
+
     def test_encode_missing_dtype(self):
         """Encoding without 'dtype' in descriptor should raise ValueError."""
         meta = make_global_meta(3)

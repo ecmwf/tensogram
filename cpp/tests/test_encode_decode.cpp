@@ -109,6 +109,22 @@ TEST(EncodeDecodeTest, DecodeMetadataOnly) {
 }
 
 // ---------------------------------------------------------------------------
+// Wire-version constant parity
+// ---------------------------------------------------------------------------
+
+TEST(EncodeDecodeTest, WireVersionConstantMatchesDecoded) {
+    // The C macro, the C++ constant, and any decoded message's
+    // `version()` accessor must all agree — they all source from the
+    // single compile-time constant in the Rust core.
+    std::vector<float> values = {1.0f};
+    auto encoded = test_helpers::encode_simple_f32(values);
+    auto msg = tensogram::decode(encoded.data(), encoded.size());
+    EXPECT_EQ(tensogram::wire_version, 3u);
+    EXPECT_EQ(tensogram::wire_version, static_cast<std::uint16_t>(TGM_WIRE_VERSION));
+    EXPECT_EQ(msg.version(), tensogram::wire_version);
+}
+
+// ---------------------------------------------------------------------------
 // Decode single object
 // ---------------------------------------------------------------------------
 
