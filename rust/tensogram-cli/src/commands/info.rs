@@ -23,8 +23,11 @@ pub fn run(files: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>> {
 
         if count > 0 {
             let msg = file.read_message(0)?;
-            let metadata = decode_metadata(&msg)?;
-            println!("  Version: {}", metadata.version);
+            // Call decode_metadata to verify the first message parses; the
+            // wire version itself lives in the preamble (the decoder already
+            // rejects any other version than WIRE_VERSION).
+            let _ = decode_metadata(&msg)?;
+            println!("  Version: {}", tensogram::WIRE_VERSION);
         }
         println!();
     }
@@ -53,10 +56,7 @@ mod tests {
             masks: None,
         };
         let data = vec![0u8; 16]; // 4 × f32
-        let meta = GlobalMetadata {
-            version: 3,
-            ..Default::default()
-        };
+        let meta = GlobalMetadata::default();
         for _ in 0..n_messages {
             f.append(&meta, &[(&desc, &data)], &EncodeOptions::default())
                 .unwrap();

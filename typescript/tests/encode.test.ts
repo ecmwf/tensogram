@@ -13,17 +13,19 @@ import {
 import { defaultMeta, makeDescriptor } from './helpers.js';
 
 describe('Phase 1 — encode wrapper', () => {
-  it('rejects metadata without version', async () => {
+  it('accepts empty metadata (CBOR frame is free-form)', async () => {
+    // The wire-format version lives in the preamble (see
+    // `plans/WIRE_FORMAT.md` §3); the CBOR metadata frame has no
+    // required top-level keys.  An empty `{}` is valid input.
     await init();
-    // @ts-expect-error — intentional misuse
-    expect(() => encode({}, [])).toThrow(InvalidArgumentError);
+    expect(() => encode({}, [])).not.toThrow();
   });
 
   it('rejects _reserved_ from client code', async () => {
     await init();
     expect(() =>
       encode(
-        { version: 2, _reserved_: { encoder: { name: 'fake' } } },
+        {_reserved_: { encoder: { name: 'fake' } } },
         [],
       ),
     ).toThrow(/_reserved_/);
@@ -33,7 +35,7 @@ describe('Phase 1 — encode wrapper', () => {
     await init();
     expect(() =>
       encode(
-        { version: 2, base: [{ _reserved_: { tensor: { ndim: 0 } } }] },
+        {base: [{ _reserved_: { tensor: { ndim: 0 } } }] },
         [
           {
             descriptor: makeDescriptor([1], 'float32'),
@@ -149,17 +151,62 @@ describe('Phase 1 — encode wrapper', () => {
     expect(() => encode('not-a-meta', [])).toThrow(InvalidArgumentError);
   });
 
-  it('rejects negative or fractional version', async () => {
+  it('accepts any user-supplied `version` value (free-form annotation)', async () => {
     await init();
-    expect(() => encode({ version: -1 }, [])).toThrow(InvalidArgumentError);
-    expect(() => encode({ version: 1.5 }, [])).toThrow(InvalidArgumentError);
+    // The wire-format version is carried in the preamble (see
+    // `plans/WIRE_FORMAT.md` §3); a top-level `version` in the
+    // caller's metadata dict is now just a free-form extra key and
+    // flows into `_extra_` on decode.  Previous input-validation
+    // behaviour (rejecting negative/fractional integers) is gone.
+    expect(() => encode({ version: -1 }, [])).not.toThrow();
+    expect(() => encode({ version: 1.5 }, [])).not.toThrow();
+    expect(() => encode({ version: 'not-a-number' as unknown as number }, [])).not.toThrow();
+  });
+
+  it('routes free-form top-level keys into _extra_ on decode', async () => {
+    // Regression: serde-wasm-bindgen's derived Deserialize on
+    // GlobalMetadata used to silently drop unknown top-level fields.
+    // The TS → WASM bridge now manually routes them into `_extra_`,
+    // matching the Rust core's cbor_to_global_metadata contract.
+    await init();
+    const data = new Float32Array([1, 2, 3, 4]);
+    const msg = encode(
+      { foo: 'bar', product: 'efi' },
+      [{ descriptor: makeDescriptor([4], 'float32'), data }],
+    );
+    const decoded = decode(msg);
+    try {
+      expect(decoded.metadata._extra_).toBeDefined();
+      expect(decoded.metadata._extra_?.foo).toBe('bar');
+      expect(decoded.metadata._extra_?.product).toBe('efi');
+    } finally {
+      decoded.close();
+    }
+  });
+
+  it('explicit _extra_ wins over free-form top-level on key collision', async () => {
+    // `explicit beats implicit`: when both `_extra_.X` and top-level
+    // `X` are supplied, the explicit section takes priority.  Matches
+    // the Rust core + Python contract.
+    await init();
+    const data = new Float32Array([1]);
+    const msg = encode(
+      { version: 99, _extra_: { version: 1 } },
+      [{ descriptor: makeDescriptor([1], 'float32'), data }],
+    );
+    const decoded = decode(msg);
+    try {
+      expect(decoded.metadata._extra_?.version).toBe(1);
+    } finally {
+      decoded.close();
+    }
   });
 
   it('rejects non-array metadata.base', async () => {
     await init();
     expect(() =>
       // @ts-expect-error intentional
-      encode({ version: 2, base: 'not-an-array' }, []),
+      encode({base: 'not-an-array' }, []),
     ).toThrow(/base must be an array/);
   });
 
@@ -167,14 +214,14 @@ describe('Phase 1 — encode wrapper', () => {
     await init();
     expect(() =>
       // @ts-expect-error intentional
-      encode({ version: 2, base: [42] }, []),
+      encode({base: [42] }, []),
     ).toThrow(/base\[0\] must be a plain object/);
   });
 
   it('rejects non-array objects parameter', async () => {
     await init();
     // @ts-expect-error intentional
-    expect(() => encode({ version: 2 }, 'not-an-array')).toThrow(
+    expect(() => encode({}, 'not-an-array')).toThrow(
       /objects must be an array/,
     );
   });
@@ -183,14 +230,14 @@ describe('Phase 1 — encode wrapper', () => {
     await init();
     expect(() =>
       // @ts-expect-error intentional
-      encode({ version: 2 }, [42]),
+      encode({}, [42]),
     ).toThrow(/objects\[0\] must be a/);
   });
 
   it('rejects non-ArrayBufferView data fields', async () => {
     await init();
     expect(() =>
-      encode({ version: 2 }, [
+      encode({}, [
         {
           descriptor: makeDescriptor([3], 'float32'),
           // @ts-expect-error intentional
@@ -203,7 +250,7 @@ describe('Phase 1 — encode wrapper', () => {
   it('rejects non-object descriptor fields', async () => {
     await init();
     expect(() =>
-      encode({ version: 2 }, [
+      encode({}, [
         {
           // @ts-expect-error intentional
           descriptor: 'bad-descriptor',
@@ -216,7 +263,7 @@ describe('Phase 1 — encode wrapper', () => {
   it('rejects non-string descriptor.type', async () => {
     await init();
     expect(() =>
-      encode({ version: 2 }, [
+      encode({}, [
         {
           // @ts-expect-error intentional
           descriptor: { ...makeDescriptor([3], 'float32'), type: 42 },
@@ -229,7 +276,7 @@ describe('Phase 1 — encode wrapper', () => {
   it('rejects non-array descriptor.shape', async () => {
     await init();
     expect(() =>
-      encode({ version: 2 }, [
+      encode({}, [
         {
           // @ts-expect-error intentional
           descriptor: { ...makeDescriptor([3], 'float32'), shape: 'scalar' },
@@ -243,7 +290,6 @@ describe('Phase 1 — encode wrapper', () => {
     await init();
     const data = new Float32Array([1, 2, 3]);
     const makeMeta = () => ({
-      version: 2,
       base: [{ mars: { param: '2t', class: 'od' } }],
     });
     const a = encode(makeMeta(), [

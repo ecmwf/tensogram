@@ -192,8 +192,15 @@ describe('Scope C.1 — StreamingEncoder', () => {
   });
 
   it('rejects invalid metadata up front', () => {
-    // @ts-expect-error intentional: version is required
-    expect(() => new StreamingEncoder({})).toThrow(InvalidArgumentError);
+    // Metadata must be an object (not null) — but it may be empty.
+    // Empty `{}` is now valid input: the CBOR metadata frame is
+    // free-form and carries no required keys (see
+    // `plans/WIRE_FORMAT.md` §6.1).
+    expect(
+      () =>
+        // @ts-expect-error intentional: null is still rejected
+        new StreamingEncoder(null),
+    ).toThrow(InvalidArgumentError);
   });
 
   it('rejects a non-ArrayBufferView data argument', () => {

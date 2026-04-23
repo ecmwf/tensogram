@@ -48,7 +48,9 @@ def create_test_file(path, n=5):
     with tensogram.TensogramFile.create(path) as f:
         for i in range(n):
             data = np.full((4, 4), float(i), dtype=np.float32)
-            meta = {"version": 3, "step": i, "time": i * 0.1}
+            # Free-form CBOR metadata: `step` / `time` are just
+            # caller-supplied annotations that flow into `_extra_`.
+            meta = {"step": i, "time": i * 0.1}
             desc = {"type": "ntensor", "shape": [4, 4], "dtype": "float32"}
             f.append(meta, [(desc, data)])
     print(f"Created {path} with {n} messages")
@@ -105,7 +107,7 @@ def demo_multi_object(path):
     with tensogram.TensogramFile.create(path) as f:
         temperature = np.random.rand(3, 3).astype(np.float32)
         humidity = np.random.rand(3, 3).astype(np.float32)
-        meta = {"version": 3, "source": "sensor"}
+        meta = {"source": "sensor"}
         f.append(
             meta,
             [
@@ -129,7 +131,7 @@ def demo_buffer_iteration():
     msgs = []
     for i in range(3):
         data = np.full(8, float(i), dtype=np.float32)
-        meta = {"version": 3, "step": i}
+        meta = {"step": i}
         desc = {"type": "ntensor", "shape": [8], "dtype": "float32"}
         msgs.append(bytes(tensogram.encode(meta, [(desc, data)])))
 

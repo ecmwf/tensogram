@@ -33,7 +33,8 @@ descriptor = {
     "filter": "none",
     "compression": "none",
 }
-metadata = {"version": 3}
+# The CBOR metadata frame is free-form — no `version` required.
+metadata = {}
 
 
 # ── 1. Default encode populates the inline hash slots ────────────────────────

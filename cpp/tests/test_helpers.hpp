@@ -31,7 +31,7 @@ namespace test_helpers {
 
 /// Build a minimal v2 JSON descriptor for a 1-D float32 message.
 inline std::string simple_f32_json(std::size_t count) {
-    return R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[)" +
+    return R"({"version":3,"descriptors":[{"type":"ndarray","ndim":1,"shape":[)" +
            std::to_string(count) +
            R"(],"strides":[4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
 }

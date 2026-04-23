@@ -30,19 +30,22 @@ Tensogram is designed for scientific computing at scale — Machine Learning, We
 
 Tensogram defines a binary message format, not strictly a file format. Multiple messages can be appended to a file, each carrying its own begin/terminator codes. This means it is a serialisable format that can be sent over the network, encoded into in-memory buffers, saved to file-systems, stored in archival systems and decoded with zero-copy.
 
+**NOTE** Tensogram is develop through Agentic Engineering by Humans working in tandem with AI Code Agents.
+
 ## Features
 
 - **Self-describing messages** — CBOR-encoded metadata vocabulary agnostic
 - **N-Tensor support** — multiple tensors of different dtypes per message (float16 through float64, int8 through int64, complex, bfloat16)
 - **Robustness** — robust Rust library with 'no panic' policy where all fallible operations return `Result<T, TensogramError>`
-- **File API** — `TensogramFile` for multi-message `.tgm` files: append, random-access read, iterate, and decode individual messages or objects
 - **Partial decode** — `decode_range` minimises IO by extracting sub-tensor slices without decoding the full data objects, with random-access support for szip, blosc2, and zfp.
+- **File API** — `TensogramFile` for multi-message `.tgm` files: append, random-access read, iterate, and decode individual messages or objects
 - **Remote access** — read `.tgm` files directly from S3, GCS, Azure Blob, or HTTP via `object_store` integration (`open_remote`, `open_source`)
 - **Async API** — full async counterparts for file open, message read, decode, and iteration via tokio (`open_async`, `decode_message_async`, etc.)
 - **Streaming encoder** — progressive encode/transmit without buffering the full message; preceder metadata frames enable consumer-side streaming decode
 - **Compression** — szip, zstd, lz4, blosc2, zfp, sz3 per data object; pure-Rust backends available (`szip-pure`, `zstd-pure`) for environments without C libraries
-- **Hash verification** — xxHash xxh3-64 integrity check per frame
+- **Hash verified integrity** — xxHash xxh3-64 integrity check per frame
 - **Validation** — 4-level structural and data integrity validation with optional JSON output (`tensogram validate --quick|--checksum|--full`)
+- **Threaded** - multi-threaded encoding/decoding
 - **CLI** — `tensogram info/ls/dump/get/set/copy/merge/split/reshuffle/convert-grib/convert-netcdf` with `--strategy first|last|error` merge conflict resolution
 - **Optional features** — `mmap` (zero-copy file reads), `async` (tokio I/O), `remote` (S3/GCS/Azure/HTTP)
 

@@ -158,8 +158,7 @@ pub fn encode_pre_encoded(
     objects_js: js_sys::Array,
     hash: Option<bool>,
 ) -> Result<js_sys::Uint8Array, JsError> {
-    let metadata: core::GlobalMetadata =
-        serde_wasm_bindgen::from_value(metadata_js).map_err(js_err)?;
+    let metadata = metadata_from_js(&metadata_js)?;
     let (descriptors, data_vec) = extract_descriptor_data_pairs(&objects_js)?;
     let pairs: Vec<(&core::DataObjectDescriptor, &[u8])> = descriptors
         .iter()

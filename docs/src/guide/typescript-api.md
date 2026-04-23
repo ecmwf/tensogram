@@ -84,7 +84,7 @@ await init({ wasmInput: new URL('...', import.meta.url) });  // custom location
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `metadata` | `GlobalMetadata` | Wire-format metadata; `version: 3` is required |
+| `metadata` | `GlobalMetadata` | Free-form metadata; only `base`, `_reserved_`, `_extra_` are library-interpreted. An empty `{}` is valid. The wire-format version lives in the preamble — see [`WIRE_VERSION`](#wire_version). |
 | `objects` | `Array<{ descriptor, data }>` | Each `data` is a `TypedArray` or `Uint8Array` |
 | `opts.hash` | `'xxh3' \| false` | Hash algorithm. Default `'xxh3'`. Pass `false` to disable. |
 

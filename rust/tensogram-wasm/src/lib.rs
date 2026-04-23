@@ -63,11 +63,12 @@ pub fn decode(
 /// Decode only the global metadata from a message (no payload decoding).
 ///
 /// @param buf - Raw .tgm message bytes
-/// @returns Plain JS object with version, base, _reserved_, _extra_ fields
+/// @returns Plain JS object with version (synthesised from the
+///   preamble), base, _reserved_, _extra_ fields
 #[wasm_bindgen]
 pub fn decode_metadata(buf: &[u8]) -> Result<JsValue, JsError> {
     let meta = core::decode_metadata(buf).map_err(js_err)?;
-    to_js(&meta)
+    metadata_to_js(&meta)
 }
 
 /// Decode a single object by index.
@@ -136,8 +137,7 @@ pub fn encode(
     neg_inf_mask_method: Option<String>,
     small_mask_threshold_bytes: Option<usize>,
 ) -> Result<js_sys::Uint8Array, JsError> {
-    let metadata: core::GlobalMetadata =
-        serde_wasm_bindgen::from_value(metadata_js).map_err(js_err)?;
+    let metadata = metadata_from_js(&metadata_js)?;
     let (descriptors, data_vec) = extract_descriptor_data_pairs(&objects_js)?;
     let pairs: Vec<(&core::DataObjectDescriptor, &[u8])> = descriptors
         .iter()
@@ -178,9 +178,12 @@ pub struct DecodedMessage {
 
 #[wasm_bindgen]
 impl DecodedMessage {
-    /// Global metadata as a plain JS object.
+    /// Global metadata as a plain JS object.  The wire-format
+    /// `version` is synthesised from the preamble (v3: always `3`)
+    /// for TypeScript ergonomics — see `metadata_to_js` in
+    /// `convert.rs`.
     pub fn metadata(&self) -> Result<JsValue, JsError> {
-        to_js(&self.metadata)
+        metadata_to_js(&self.metadata)
     }
 
     /// Number of data objects in the message.

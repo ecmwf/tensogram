@@ -70,7 +70,7 @@ import numpy as np
 import tensogram
 
 data = np.arange(60, dtype=np.float32).reshape(6, 10)
-meta = {"version": 3}
+meta = {}
 desc = {"type": "ntensor", "shape": [6, 10], "dtype": "float32",
         "byte_order": "little", "encoding": "none",
         "filter": "none", "compression": "none"}
@@ -121,7 +121,7 @@ lat = np.linspace(-90, 90, 5, dtype=np.float64)
 lon = np.linspace(0, 360, 8, endpoint=False, dtype=np.float64)
 temp = np.random.default_rng(42).random((5, 8)).astype(np.float32)
 
-meta = {"version": 3, "base": [
+meta = {"base": [
     {"name": "latitude"},
     {"name": "longitude"},
     {"name": "temperature"},
@@ -193,8 +193,7 @@ axis-ordered list into each `base[i]` entry under the `dim_names` key:
 
 ```python
 meta = {
-    "version": 2,
-    "base": [
+        "base": [
         {"name": "reflectance",       "dim_names": ["time", "y", "x"]},
         {"name": "count_flash_all",   "dim_names": ["time"]},
         {"name": "ny",                "dim_names": ["y"]},
@@ -244,8 +243,7 @@ identifying the parameter, you can use `variable_key` to name the variables.
 t2m = np.ones((3, 4), dtype=np.float32) * 273.15
 u10 = np.ones((3, 4), dtype=np.float32) * 5.0
 
-meta = {"version": 3,
-    "base": [
+meta = {     "base": [
         {"mars": {"class": "od", "date": "20260401", "type": "fc", "param": "2t", "levtype": "sfc"}},
         {"mars": {"class": "od", "date": "20260401", "type": "fc", "param": "10u", "levtype": "sfc"}},
     ],
@@ -314,8 +312,7 @@ with tensogram.TensogramFile.create("multi.tgm") as f:
     for param in ["2t", "10u"]:
         for date in ["20260401", "20260402"]:
             data = rng.random((3, 4), dtype=np.float32).astype(np.float32)
-            meta = {"version": 3,
-                    "base": [{"mars": {"param": param, "date": date}}]}
+            meta = {                     "base": [{"mars": {"param": param, "date": date}}]}
             desc = {"type": "ntensor", "shape": [3, 4], "dtype": "float32",
                     "byte_order": "little", "encoding": "none",
                     "filter": "none", "compression": "none"}
@@ -358,17 +355,17 @@ them into compatible groups.
 ```python
 with tensogram.TensogramFile.create("hetero.tgm") as f:
     # Message 0: 2D float32 temperature field
-    f.append({"version": 3, "base": [{"name": "temp"}]},
+    f.append({"base": [{"name": "temp"}]},
              [({"type": "ntensor", "shape": [3, 4], "dtype": "float32", ...},
                np.ones((3, 4), dtype=np.float32))])
 
     # Message 1: 2D float32 wind field (same shape -- compatible)
-    f.append({"version": 3, "base": [{"name": "wind"}]},
+    f.append({"base": [{"name": "wind"}]},
              [({"type": "ntensor", "shape": [3, 4], "dtype": "float32", ...},
                np.ones((3, 4), dtype=np.float32) * 2)])
 
     # Message 2: 1D int32 counts (different shape AND dtype -- incompatible)
-    f.append({"version": 3, "base": [{"name": "counts"}]},
+    f.append({"base": [{"name": "counts"}]},
              [({"type": "ntensor", "shape": [5], "dtype": "int32", ...},
                np.array([1, 2, 3, 4, 5], dtype=np.int32))])
 ```

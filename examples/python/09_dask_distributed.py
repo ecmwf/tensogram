@@ -127,7 +127,9 @@ def create_test_files(output_dir: Path) -> list[Path]:
             )
 
         with tensogram.TensogramFile.create(str(path)) as f:
-            f.append({"version": 3, "base": base}, objects)
+            # Free-form CBOR metadata: no `version` key — wire version
+            # lives in the preamble (see `plans/WIRE_FORMAT.md` §3).
+            f.append({"base": base}, objects)
 
         print(
             f"  Created {path.name}: {len(objects)} objects ({len(objects) - 2} levels + 2 coords)"

@@ -31,6 +31,15 @@
 export { init } from './init.js';
 export type { InitOptions } from './init.js';
 
+/**
+ * Wire-format version emitted and required by this library.
+ *
+ * The value lives in the tensogram **preamble** (see
+ * `plans/WIRE_FORMAT.md` §3) — it is never written to the CBOR
+ * metadata frame.  Decoders reject any other preamble version.
+ */
+export const WIRE_VERSION = 3;
+
 export { encode } from './encode.js';
 export { decode, decodeMetadata, decodeObject, scan } from './decode.js';
 export { decodeStream } from './streaming.js';

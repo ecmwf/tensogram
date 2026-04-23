@@ -404,7 +404,6 @@ fn encode_as_one_message(
         extracted.iter().map(|ev| ev.base_entry.clone()).collect();
 
     let global_meta = GlobalMetadata {
-        version: 3,
         base,
         ..Default::default()
     };
@@ -432,7 +431,6 @@ fn encode_one_per_variable(
 
     for ev in extracted {
         let global_meta = GlobalMetadata {
-            version: 3,
             base: vec![ev.base_entry.clone()],
             ..Default::default()
         };

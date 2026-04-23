@@ -153,7 +153,7 @@ TEST(IteratorTest, ObjectIteratorSingleObject) {
 
 TEST(IteratorTest, ObjectIteratorMultiObject) {
     // Build a 2-object message
-    std::string json = R"({"version":2,"descriptors":[)"
+    std::string json = R"({"version":3,"descriptors":[)"
         R"({"type":"ndarray","ndim":1,"shape":[2],"strides":[4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"},)"
         R"({"type":"ndarray","ndim":1,"shape":[3],"strides":[8],"dtype":"float64","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
 
@@ -190,7 +190,7 @@ TEST(IteratorTest, ObjectIteratorMultiObject) {
 
 TEST(IteratorTest, MessageRangeBasedFor) {
     // Multi-object message
-    std::string json = R"({"version":2,"descriptors":[)"
+    std::string json = R"({"version":3,"descriptors":[)"
         R"({"type":"ndarray","ndim":1,"shape":[1],"strides":[4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"},)"
         R"({"type":"ndarray","ndim":1,"shape":[1],"strides":[4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
 

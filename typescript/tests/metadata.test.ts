@@ -20,8 +20,7 @@ describe('Phase 2 — metadata helpers', () => {
     await init();
     const msg = encode(
       {
-        version: 2,
-        base: [
+base: [
           { mars: { param: '2t', class: 'od' } },
         ],
       },
@@ -41,8 +40,7 @@ describe('Phase 2 — metadata helpers', () => {
     await init();
     const msg = encode(
       {
-        version: 2,
-        base: [
+base: [
           { mars: { param: '2t' } },
           { mars: { param: 'msl' } },
         ],
@@ -65,7 +63,7 @@ describe('Phase 2 — metadata helpers', () => {
   it('getMetaKey falls back to _extra_', async () => {
     await init();
     const msg = encode(
-      { version: 2, _extra_: { source: 'ifs-cycle49r2' } },
+      {_extra_: { source: 'ifs-cycle49r2' } },
       [],
     );
     const meta = decodeMetadata(msg);
@@ -77,7 +75,7 @@ describe('Phase 2 — metadata helpers', () => {
   it('getMetaKey hides _reserved_', async () => {
     await init();
     // The encoder populates _reserved_ itself; we use it here via decode.
-    const msg = encode({ version: 2 }, []);
+    const msg = encode({}, []);
     const meta = decodeMetadata(msg);
     // _reserved_ exists on the decoded side, but the lookup must NOT see it.
     expect(meta._reserved_).toBeDefined();
@@ -87,7 +85,7 @@ describe('Phase 2 — metadata helpers', () => {
   });
 
   it('getMetaKey returns undefined for missing keys', () => {
-    const meta = { version: 2, base: [{ foo: 1 }], _extra_: {} };
+    const meta = {base: [{ foo: 1 }], _extra_: {} };
     expect(getMetaKey(meta, 'nonexistent')).toBeUndefined();
     expect(getMetaKey(meta, 'foo.bar.baz')).toBeUndefined();
     expect(getMetaKey(meta, '')).toBeUndefined();
@@ -95,8 +93,7 @@ describe('Phase 2 — metadata helpers', () => {
 
   it('computeCommon extracts shared keys across base entries', () => {
     const meta = {
-      version: 2,
-      base: [
+base: [
         { class: 'od', type: 'fc', param: '2t' },
         { class: 'od', type: 'fc', param: 'msl' },
         { class: 'od', type: 'fc', param: '10u' },
@@ -108,15 +105,14 @@ describe('Phase 2 — metadata helpers', () => {
   });
 
   it('computeCommon returns {} for an empty base', () => {
-    expect(computeCommon({ version: 2 })).toEqual({});
-    expect(computeCommon({ version: 2, base: [] })).toEqual({});
+    expect(computeCommon({})).toEqual({});
+    expect(computeCommon({base: [] })).toEqual({});
   });
 
   it('computeCommon returns the full entry if there is only one base entry', () => {
     expect(
       computeCommon({
-        version: 2,
-        base: [{ mars: { param: '2t' }, foo: 'bar' }],
+base: [{ mars: { param: '2t' }, foo: 'bar' }],
       }),
     ).toEqual({ mars: { param: '2t' }, foo: 'bar' });
   });
@@ -124,8 +120,7 @@ describe('Phase 2 — metadata helpers', () => {
   it('computeCommon skips _reserved_', () => {
     expect(
       computeCommon({
-        version: 2,
-        base: [
+base: [
           { class: 'od', _reserved_: { tensor: { ndim: 1 } } },
           { class: 'od', _reserved_: { tensor: { ndim: 2 } } },
         ],
@@ -136,8 +131,7 @@ describe('Phase 2 — metadata helpers', () => {
   it('computeCommon handles nested maps correctly', () => {
     expect(
       computeCommon({
-        version: 2,
-        base: [
+base: [
           { mars: { class: 'od', param: '2t' } },
           { mars: { class: 'od', param: 'msl' } },
         ],
@@ -166,12 +160,12 @@ describe('Phase 2 — metadata helpers', () => {
   });
 
   it('getMetaKey returns undefined for empty path', () => {
-    const meta = { version: 2, _extra_: { foo: 'bar' } };
+    const meta = {_extra_: { foo: 'bar' } };
     expect(getMetaKey(meta, '')).toBeUndefined();
   });
 
   it('getMetaKey _reserved_ prefix always hidden', () => {
-    const meta = { version: 2, _extra_: { reserved: 'visible' } };
+    const meta = {_extra_: { reserved: 'visible' } };
     // 'reserved' (without underscore) as an _extra_ key IS visible
     expect(getMetaKey(meta, '_extra_.reserved')).toBe('visible');
     // But '_reserved_' or 'reserved.X' at the top path is always hidden
@@ -183,8 +177,7 @@ describe('Phase 2 — metadata helpers', () => {
     await init();
     const msg = encode(
       {
-        version: 2,
-        base: [{ mars: { param: '2t', class: 'od' } }],
+base: [{ mars: { param: '2t', class: 'od' } }],
       },
       [
         {

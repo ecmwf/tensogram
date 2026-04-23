@@ -32,7 +32,7 @@ TEST(DescriptorTest, Ndim1D) {
 
 TEST(DescriptorTest, Ndim2D) {
     // 2x3 float32 array
-    std::string json = R"({"version":2,"descriptors":[{"type":"ndarray","ndim":2,"shape":[2,3],"strides":[12,4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
+    std::string json = R"({"version":3,"descriptors":[{"type":"ndarray","ndim":2,"shape":[2,3],"strides":[12,4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
     std::vector<float> values = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
     std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
         {reinterpret_cast<const std::uint8_t*>(values.data()),
@@ -49,7 +49,7 @@ TEST(DescriptorTest, Ndim2D) {
 // ---------------------------------------------------------------------------
 
 TEST(DescriptorTest, ShapeAndStrides) {
-    std::string json = R"({"version":2,"descriptors":[{"type":"ndarray","ndim":2,"shape":[2,3],"strides":[12,4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
+    std::string json = R"({"version":3,"descriptors":[{"type":"ndarray","ndim":2,"shape":[2,3],"strides":[12,4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
     std::vector<float> values = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
     std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
         {reinterpret_cast<const std::uint8_t*>(values.data()),
@@ -82,7 +82,7 @@ TEST(DescriptorTest, DtypeStringFloat32) {
 }
 
 TEST(DescriptorTest, DtypeStringFloat64) {
-    std::string json = R"({"version":2,"descriptors":[{"type":"ndarray","ndim":1,"shape":[2],"strides":[8],"dtype":"float64","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
+    std::string json = R"({"version":3,"descriptors":[{"type":"ndarray","ndim":1,"shape":[2],"strides":[8],"dtype":"float64","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
     std::vector<double> values = {1.0, 2.0};
     std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
         {reinterpret_cast<const std::uint8_t*>(values.data()),

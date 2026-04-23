@@ -414,7 +414,7 @@ class TestEmptyExtra:
             root = json.loads(store._keys["zarr.json"])
             attrs = root["attributes"]
             # Should have internal attrs but no custom ones
-            assert "_tensogram_version" in attrs
+            assert "_tensogram_wire_version" in attrs
             assert "_tensogram_variables" in attrs
 
 

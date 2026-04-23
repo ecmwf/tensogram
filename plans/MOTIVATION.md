@@ -3,9 +3,8 @@
 ## The Problem
 
 Scientific computing routinely produces and moves N-dimensional tensor data at
-scale — weather and climate forecasts, Earth observation, medical and microscopy
-imaging, genomics pipelines, particle-physics detector frames, materials
-simulation, satellite imagery, machine-learning inputs, weights and outputs.
+scale — weather and climate forecasts, Earth observation, CFD, satellite imagery, 
+machine-learning inputs, weights and outputs.
 Moving that data between producers and consumers hits three recurring friction
 points:
 
@@ -95,11 +94,11 @@ nothing in the format is weather-specific.
 Tensogram complements rather than replaces existing formats. It provides
 **importers** for GRIB (via ecCodes) and NetCDF (via libnetcdf) so that data
 in those formats can be brought into Tensogram pipelines without a lossy
-re-modelling step. Going the other way — Tensogram → other — is out of scope
+re-modelling step. Going the other way — Tensogram → other — is currently out of scope
 because Tensogram's data model is a superset of 1-D and 2-D formats and a
-faithful down-conversion is often impossible.
+faithful down-conversion is often difficult if not impossible.
 
-Existing formats remain appropriate for external distribution, archival, and
+We believe that existing formats remain appropriate for distribution, archival, and
 standards-driven exchange. Tensogram targets the internal pipeline layer
 where speed of vocabulary evolution and N-dimensional tensor support matter.
 
@@ -108,7 +107,7 @@ where speed of vocabulary evolution and N-dimensional tensor support matter.
 - **Tensogram → other-format writers.** Initial scope is one-way import.
 - **Observation / column formats** (BUFR, ODB, Arrow-like tabular data).
   Potentially a future direction.
-- **Domain-specific vocabularies.** MARS, CF conventions, DICOM, BIDS, and
+- **Domain-specific vocabularies.** WMO/GRIB, CF conventions, and
   so on live above the library.
 
 ## Success criteria
@@ -120,7 +119,7 @@ where speed of vocabulary evolution and N-dimensional tensor support matter.
    library and the same API.
 3. **Cross-language interop:** messages encoded in Rust decode identically
    in Python, C++, and TypeScript/WASM.
-4. **Production readiness:** no memory safety issues, comprehensive test
+4. **Production readiness:** no memory safety issues, no undefined behaviour or library aborts, comprehensive test
    suite, documented API.
 5. **Performance baseline:** encode/decode throughput measured against
    established references for representative data sizes.

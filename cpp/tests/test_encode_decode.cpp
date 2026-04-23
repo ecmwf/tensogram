@@ -27,7 +27,6 @@ TEST(EncodeDecodeTest, BasicFloat32RoundTrip) {
     std::vector<float> values = {1.0f, 2.0f, 3.0f, 4.0f};
 
     std::string json = R"({
-        "version": 2,
         "descriptors": [{
             "type": "ndarray",
             "ndim": 1,
@@ -49,7 +48,7 @@ TEST(EncodeDecodeTest, BasicFloat32RoundTrip) {
     ASSERT_FALSE(encoded.empty());
 
     auto msg = tensogram::decode(encoded.data(), encoded.size());
-    EXPECT_EQ(msg.version(), 2u);
+    EXPECT_EQ(msg.version(), 3u);
     EXPECT_EQ(msg.num_objects(), 1u);
 
     auto obj = msg.object(0);
@@ -94,7 +93,7 @@ TEST(EncodeDecodeTest, MetadataAccess) {
 
     auto msg = tensogram::decode(encoded.data(), encoded.size());
     auto meta = msg.get_metadata();
-    EXPECT_EQ(meta.version(), 2u);
+    EXPECT_EQ(meta.version(), 3u);
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +105,23 @@ TEST(EncodeDecodeTest, DecodeMetadataOnly) {
     auto encoded = test_helpers::encode_simple_f32(values);
 
     auto meta = tensogram::decode_metadata(encoded.data(), encoded.size());
-    EXPECT_EQ(meta.version(), 2u);
+    EXPECT_EQ(meta.version(), 3u);
+}
+
+// ---------------------------------------------------------------------------
+// Wire-version constant parity
+// ---------------------------------------------------------------------------
+
+TEST(EncodeDecodeTest, WireVersionConstantMatchesDecoded) {
+    // The C macro, the C++ constant, and any decoded message's
+    // `version()` accessor must all agree — they all source from the
+    // single compile-time constant in the Rust core.
+    std::vector<float> values = {1.0f};
+    auto encoded = test_helpers::encode_simple_f32(values);
+    auto msg = tensogram::decode(encoded.data(), encoded.size());
+    EXPECT_EQ(tensogram::wire_version, 3u);
+    EXPECT_EQ(tensogram::wire_version, static_cast<std::uint16_t>(TGM_WIRE_VERSION));
+    EXPECT_EQ(msg.version(), tensogram::wire_version);
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +201,6 @@ TEST(EncodeDecodeTest, HashVerification) {
     std::vector<float> values = {1.0f, 2.0f, 3.0f};
 
     std::string json = R"({
-        "version": 2,
         "descriptors": [{
             "type": "ndarray",
             "ndim": 1,

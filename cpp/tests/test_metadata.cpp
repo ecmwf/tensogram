@@ -26,7 +26,7 @@ namespace {
 
 /// Build JSON with extra top-level metadata keys.
 std::string json_with_metadata(std::size_t count) {
-    return R"({"version":2,"mars":{"class":"od","type":"an","stream":"oper","expver":"0001"},"custom_int":42,"custom_float":3.14,"descriptors":[{"type":"ndarray","ndim":1,"shape":[)" +
+    return R"({"version":3,"mars":{"class":"od","type":"an","stream":"oper","expver":"0001"},"custom_int":42,"custom_float":3.14,"descriptors":[{"type":"ndarray","ndim":1,"shape":[)" +
            std::to_string(count) +
            R"(],"strides":[4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
 }
@@ -52,7 +52,7 @@ TEST(MetadataTest, VersionAccessor) {
     std::vector<float> values = {1.0f};
     auto encoded = test_helpers::encode_simple_f32(values);
     auto meta = tensogram::decode_metadata(encoded.data(), encoded.size());
-    EXPECT_EQ(meta.version(), 2u);
+    EXPECT_EQ(meta.version(), 3u);
 }
 
 // ---------------------------------------------------------------------------
@@ -155,7 +155,7 @@ TEST(MetadataTest, MetadataFromDecodedMessage) {
     auto msg = tensogram::decode(encoded.data(), encoded.size());
     auto meta = msg.get_metadata();
 
-    EXPECT_EQ(meta.version(), 2u);
+    EXPECT_EQ(meta.version(), 3u);
     EXPECT_EQ(meta.get_string("mars.class"), "od");
     EXPECT_EQ(meta.get_int("custom_int", 0), 42);
 }
@@ -194,7 +194,7 @@ TEST(MetadataTest, EmptyMetadataNoExtraKeys) {
 // ---------------------------------------------------------------------------
 
 TEST(MetadataTest, MultipleMetadataSections) {
-    std::string json = R"({"version":2,"mars":{"class":"od","type":"an"},"product":{"name":"temperature","units":"K"},"descriptors":[{"type":"ndarray","ndim":1,"shape":[2],"strides":[4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
+    std::string json = R"({"version":3,"mars":{"class":"od","type":"an"},"product":{"name":"temperature","units":"K"},"descriptors":[{"type":"ndarray","ndim":1,"shape":[2],"strides":[4],"dtype":"float32","byte_order":"little","encoding":"none","filter":"none","compression":"none"}]})";
 
     std::vector<float> values = {273.15f, 300.0f};
     std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {

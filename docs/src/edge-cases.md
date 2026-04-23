@@ -318,8 +318,8 @@ The metadata model has three sections: `base` (per-object), `_reserved_` (librar
 ### _reserved_ is Protected
 
 Client code **must not** set `_reserved_` in any context:
-- Python: `tensogram.encode({"version": 3, "_reserved_": {...}})` raises `ValueError`.
-- Python: `encode({"version": 3, "base": [{"_reserved_": {...}}]})` raises `ValueError`.
+- Python: `tensogram.encode({"_reserved_": {...}})` raises `ValueError`.
+- Python: `encode({"base": [{"_reserved_": {...}}]})` raises `ValueError`.
 - FFI: JSON with `"base": [{"_reserved_": {...}}]` returns `TgmError::Metadata`.
 - CLI: `set -s _reserved_.tensor.ndim=5` returns an error.
 
@@ -399,8 +399,7 @@ CLI `dump -j` and `ls -j` output uses the wire-format structure:
 
 ```json
 {
-  "version": 3,
-  "base": [{"mars": {"param": "2t"}, "_reserved_": {"tensor": {"ndim": 1}}}],
+     "base": [{"mars": {"param": "2t"}, "_reserved_": {"tensor": {"ndim": 1}}}],
   "extra": {"custom": "value"}
 }
 ```

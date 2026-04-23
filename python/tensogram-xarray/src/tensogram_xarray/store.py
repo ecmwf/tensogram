@@ -264,7 +264,22 @@ class TensogramDataStore:
         extra = getattr(self._meta, "extra", None)
         if extra and isinstance(extra, dict):
             attrs.update(strip_structural_keys(extra))
-        attrs["tensogram_version"] = getattr(self._meta, "version", 2)
+        # The wire-format version lives in the preamble (see
+        # ``plans/WIRE_FORMAT.md`` §3).  ``meta.version`` sources from
+        # that preamble-derived value; we surface it as a namespaced
+        # attribute so downstream xarray tooling knows which wire
+        # format the file was encoded against.  The attribute name
+        # changed from ``tensogram_version`` to
+        # ``tensogram_wire_version`` in 0.17 to avoid collisions with
+        # any user-supplied ``version`` key, which now flows through
+        # ``_extra_`` like every other free-form annotation.
+        attrs["tensogram_wire_version"] = getattr(
+            self._meta,
+            "version",
+            # Fallback for producers that somehow decoded without a
+            # preamble — should never happen in practice.
+            3,
+        )
         return attrs
 
     def _get_per_object_meta(self, obj_index: int, desc: Any) -> dict[str, Any]:

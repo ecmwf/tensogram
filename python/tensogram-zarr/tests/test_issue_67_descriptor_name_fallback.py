@@ -97,9 +97,7 @@ class TestPrecedenceAcrossSources:
             root = zarr.open_group(store=store, mode="r")
             assert list(root.keys()) == ["from_base"]
 
-    def test_higher_priority_descriptor_key_beats_lower_priority_base_key(
-        self, tmp_path: Path
-    ):
+    def test_higher_priority_descriptor_key_beats_lower_priority_base_key(self, tmp_path: Path):
         path = str(tmp_path / "priority.tgm")
         meta = {"version": 2, "base": [{"param": "T"}]}
         desc = {
@@ -133,9 +131,7 @@ class TestVariableKeyWithMergedMeta:
 
 
 class TestPerObjectFallback:
-    def test_object_with_base_and_object_without_resolve_independently(
-        self, tmp_path: Path
-    ):
+    def test_object_with_base_and_object_without_resolve_independently(self, tmp_path: Path):
         path = str(tmp_path / "mixed.tgm")
         meta = {
             "version": 2,

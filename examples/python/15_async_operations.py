@@ -29,7 +29,7 @@ import tensogram
 def create_test_file(path: str) -> None:
     with tensogram.TensogramFile.create(path) as f:
         for i in range(20):
-            meta = {"version": 3, "base": [{"step": i}]}
+            meta = {"base": [{"step": i}]}
             desc = {
                 "type": "ntensor",
                 "shape": [100, 200],

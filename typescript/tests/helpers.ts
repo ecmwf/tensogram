@@ -36,7 +36,9 @@ export function makeDescriptor(shape: readonly number[], dtype: Dtype): DataObje
   };
 }
 
-/** Minimal v2 metadata. */
+/** Minimal metadata — the CBOR frame is free-form, so an empty
+ *  object is valid input.  The wire-format version lives in the
+ *  preamble and is supplied automatically by the encoder. */
 export function defaultMeta(): GlobalMetadata {
-  return { version: 2 };
+  return {};
 }

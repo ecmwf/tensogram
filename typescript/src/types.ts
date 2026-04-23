@@ -141,19 +141,44 @@ export type BaseEntry = {
 /**
  * Global metadata carried in the header or footer metadata frame.
  *
- * See `plans/WIRE_FORMAT.md` and `docs/src/format/cbor-metadata.md` for
- * the CBOR schema.
+ * The CBOR metadata frame is **free-form** — the only library-
+ * interpreted top-level sections are `base`, `_reserved_`, and
+ * `_extra_`.  Any other key (including a stray legacy `version`)
+ * flows into `_extra_` on decode.  The wire-format version lives
+ * in the preamble (see `plans/WIRE_FORMAT.md` §3); import
+ * {@link WIRE_VERSION} from this package for the compile-time value.
+ *
+ * On decoded messages, `version` is populated from the preamble and
+ * is therefore always `3` in the current library.  It is optional on
+ * encode input — if omitted, the preamble supplies it automatically.
  */
-export interface GlobalMetadata {
-  /** Wire format version. Currently `2`. */
-  version: number;
+export type GlobalMetadata = {
+  /**
+   * Wire-format version of the message this metadata came from
+   * (sourced from the preamble on decode).  Optional on encode input:
+   * if provided, it is treated as a free-form annotation and flows
+   * into `_extra_`; the real wire version is always
+   * {@link WIRE_VERSION}.
+   */
+  version?: number;
   /** Per-object metadata, one entry per data object. */
   base?: BaseEntry[];
   /** Library-managed provenance. Do not write. */
   _reserved_?: { readonly [key: string]: CborValue };
   /** Client-writable message-level annotations. */
   _extra_?: { readonly [key: string]: CborValue };
-}
+} & {
+  /**
+   * Any other caller-supplied top-level key.  The CBOR metadata
+   * frame is free-form (see `plans/WIRE_FORMAT.md` §6.1): anything
+   * besides `base`, `_reserved_`, `_extra_`, and the synthetic
+   * `version` read-back accessor flows into `_extra_` on decode.
+   * Declared here so strict TypeScript configurations accept
+   * free-form metadata like `{ foo: 'bar', product: 'efi' }` on
+   * encode input.
+   */
+  readonly [key: string]: CborValue | BaseEntry[] | undefined;
+};
 
 /**
  * A single decoded object, with its descriptor and a dtype-aware view

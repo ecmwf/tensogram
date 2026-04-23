@@ -119,10 +119,10 @@ byte-identical descriptors for the same options.
 ### Per-Object Metadata
 
 - **GlobalMetadata** (in header/footer metadata frame):
-  - `version` — wire format version (currently 2)
   - `base` — per-object metadata array, one entry per data object, each entry holds ALL structured metadata for that object independently (no tracking of commonalities)
   - `_reserved_` — library internals (provenance: encoder info, time, uuid). Client code can read but MUST NOT write.
-  - `_extra_` — client-writable catch-all for ad-hoc message-level annotations
+  - `_extra_` — client-writable catch-all for ad-hoc message-level annotations, plus a catch-all for any unknown top-level CBOR keys routed here on decode.
+  - The CBOR metadata frame has **no required top-level keys**. The wire-format version lives exclusively in the preamble (see `WIRE_FORMAT.md` §3) — it is never written to CBOR.
 
 - **DataObjectDescriptor** (per data object frame) — encoding parameters only:
   - Tensor description: `obj_type`, `ndim`, `shape`, `strides`, `dtype`, `byte_order`
@@ -201,10 +201,12 @@ Each data object describes its tensor via `shape` + `strides`, separating logica
 
 ## Version Compatibility
 
-- Version is a single unsigned integer, currently 2.
-- **Minor evolution (same version):** New CBOR keys or encoding types don't bump the version. Decoders ignore unknown keys and reject unknown encodings gracefully.
-- **Version bump:** Only for wire format structural changes. Decoders reject unrecognized versions.
-- **No backward compatibility obligation across version bumps.** The version field exists to fail fast.
+- Version is a single unsigned 16-bit integer carried **only in the 24-byte
+  preamble** (see `WIRE_FORMAT.md` §3).  Currently `3`.  The CBOR metadata
+  frame is free-form and never carries `version`.
+- **Minor evolution (same version):** New CBOR keys or encoding types don't bump the version. Decoders ignore unknown keys (including a stray legacy `"version"` in old CBOR, which is routed to `_extra_`) and reject unknown encodings gracefully.
+- **Version bump:** Only for wire-format structural changes. Decoders reject unrecognized preamble versions.
+- **No backward compatibility obligation across version bumps.** The preamble version field exists to fail fast.
 
 ## Error Handling & Recovery
 

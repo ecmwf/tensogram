@@ -1255,7 +1255,6 @@ mod tests {
     fn test_base_more_entries_than_descriptors_rejected() {
         // base has 5 entries but only 2 descriptors — should error.
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![
                 BTreeMap::new(),
                 BTreeMap::new(),
@@ -1291,7 +1290,6 @@ mod tests {
     fn test_base_fewer_entries_than_descriptors_auto_extended() {
         // base has 0 entries but 3 descriptors — auto-extends, _reserved_ inserted.
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![],
             ..Default::default()
         };
@@ -1336,7 +1334,6 @@ mod tests {
             ciborium::Value::Text("not-the-real-base".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -1349,9 +1346,10 @@ mod tests {
         let msg = encode(&meta, &[(&desc, data.as_slice())], &options).unwrap();
         let (decoded, _) = decode(&msg, &DecodeOptions::default()).unwrap();
 
-        // Top-level version is still 2
-        assert_eq!(decoded.version, 3);
-        // base[0] should have both custom keys preserved
+        // `version` and `base` are just free-form keys inside a
+        // per-object `base[0]` entry — they have no special meaning
+        // there.  The wire-format version lives in the preamble
+        // (see `plans/WIRE_FORMAT.md` §3), not in CBOR metadata.
         assert_eq!(
             decoded.base[0].get("version"),
             Some(&ciborium::Value::Text("my-version".to_string()))
@@ -1373,7 +1371,6 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("foo".to_string(), nested);
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -1405,7 +1402,6 @@ mod tests {
             ciborium::Value::Text("bad".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 3,
             reserved,
             ..Default::default()
         };
@@ -1429,7 +1425,6 @@ mod tests {
         let mut entry = BTreeMap::new();
         entry.insert("_reserved_".to_string(), ciborium::Value::Map(vec![]));
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             ..Default::default()
         };
@@ -1566,7 +1561,6 @@ mod tests {
             ciborium::Value::Text("extra-mars".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry],
             extra,
             ..Default::default()
@@ -1593,7 +1587,6 @@ mod tests {
     #[test]
     fn test_empty_extra_omitted_from_cbor() {
         let meta = GlobalMetadata {
-            version: 3,
             extra: BTreeMap::new(),
             ..Default::default()
         };
@@ -1626,7 +1619,6 @@ mod tests {
         let mut extra = BTreeMap::new();
         extra.insert("nested".to_string(), nested.clone());
         let meta = GlobalMetadata {
-            version: 3,
             extra,
             ..Default::default()
         };
@@ -1645,47 +1637,57 @@ mod tests {
     // ── Category 4: Serde deserialization ────────────────────────────────
 
     #[test]
-    fn test_old_common_payload_keys_silently_ignored() {
-        // Simulate a message with legacy "common" / "payload" keys at top
-        // level.  GlobalMetadata does NOT set `deny_unknown_fields`, so
-        // unknown keys should be silently ignored.
+    fn test_legacy_top_level_keys_routed_to_extra() {
+        // Simulate a legacy v2-style message carrying `common` / `payload`
+        // and a stray `version` top-level key.  Under the free-form rule
+        // (see `plans/WIRE_FORMAT.md` §6.1), these unknown keys must flow
+        // into `_extra_` rather than being silently dropped — the wire
+        // version lives exclusively in the preamble (see [`crate::wire`]).
         use ciborium::Value;
         let cbor = Value::Map(vec![
-            (Value::Text("version".to_string()), Value::Integer(3.into())),
             (Value::Text("common".to_string()), Value::Map(vec![])),
             (Value::Text("payload".to_string()), Value::Array(vec![])),
+            (Value::Text("version".to_string()), Value::Integer(3.into())),
         ]);
         let mut bytes = Vec::new();
         ciborium::into_writer(&cbor, &mut bytes).unwrap();
 
         let decoded: GlobalMetadata = crate::metadata::cbor_to_global_metadata(&bytes).unwrap();
-        assert_eq!(decoded.version, 3);
         assert!(decoded.base.is_empty());
-        assert!(decoded.extra.is_empty());
         assert!(decoded.reserved.is_empty());
+        assert!(decoded.extra.contains_key("common"));
+        assert!(decoded.extra.contains_key("payload"));
+        assert_eq!(
+            decoded.extra.get("version"),
+            Some(&Value::Integer(3.into()))
+        );
     }
 
     #[test]
-    fn test_old_reserved_key_name_ignored() {
-        // "reserved" (old name) should be ignored, only "_reserved_" is captured.
+    fn test_old_reserved_key_name_routed_to_extra() {
+        // "reserved" (unescaped, old v1 name) is NOT the library-managed
+        // namespace — only the exact key `_reserved_` is.  Under the
+        // free-form rule, `reserved` is just another top-level key and
+        // flows into `_extra_` on decode.
         use ciborium::Value;
-        let cbor = Value::Map(vec![
-            (Value::Text("version".to_string()), Value::Integer(3.into())),
-            (
-                Value::Text("reserved".to_string()),
-                Value::Map(vec![(
-                    Value::Text("rogue".to_string()),
-                    Value::Text("value".to_string()),
-                )]),
-            ),
-        ]);
+        let cbor = Value::Map(vec![(
+            Value::Text("reserved".to_string()),
+            Value::Map(vec![(
+                Value::Text("rogue".to_string()),
+                Value::Text("value".to_string()),
+            )]),
+        )]);
         let mut bytes = Vec::new();
         ciborium::into_writer(&cbor, &mut bytes).unwrap();
 
         let decoded: GlobalMetadata = crate::metadata::cbor_to_global_metadata(&bytes).unwrap();
         assert!(
             decoded.reserved.is_empty(),
-            "old 'reserved' key should be ignored"
+            "legacy 'reserved' must NOT bleed into library-managed `_reserved_`"
+        );
+        assert!(
+            decoded.extra.contains_key("reserved"),
+            "legacy 'reserved' key must land in `_extra_`"
         );
     }
 
@@ -1699,7 +1701,6 @@ mod tests {
         let mut entry1 = BTreeMap::new();
         entry1.insert("_reserved_".to_string(), ciborium::Value::Map(vec![]));
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![entry0, entry1],
             ..Default::default()
         };
@@ -1732,7 +1733,6 @@ mod tests {
             ciborium::Value::Text("val1".to_string()),
         );
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![e0, e1],
             ..Default::default()
         };
@@ -1845,7 +1845,6 @@ mod tests {
         extra.insert("custom".to_string(), Value::Integer(42.into()));
 
         let meta = GlobalMetadata {
-            version: 3,
             base: vec![base_entry],
             reserved,
             extra,
@@ -1855,8 +1854,6 @@ mod tests {
         let cbor_bytes = crate::metadata::global_metadata_to_cbor(&meta).unwrap();
         let decoded: GlobalMetadata =
             crate::metadata::cbor_to_global_metadata(&cbor_bytes).unwrap();
-
-        assert_eq!(decoded.version, 3);
         assert_eq!(decoded.base.len(), 1);
         assert_eq!(
             decoded.base[0].get("key"),

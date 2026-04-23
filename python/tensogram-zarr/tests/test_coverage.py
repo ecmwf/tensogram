@@ -503,7 +503,7 @@ class TestBuildGroupMissingAttrs:
 
         result = build_group_zarr_json(Meta(), ["arr"])
         assert result["attributes"]["source"] == "test"
-        assert result["attributes"]["_tensogram_version"] == 2
+        assert result["attributes"]["_tensogram_wire_version"] == 2
 
     def test_with_extra(self):
         class Meta:
@@ -966,7 +966,7 @@ class TestBuildGroupNoExtra:
 
         # No extra attribute at all
         result = build_group_zarr_json(Meta(), ["arr"])
-        assert result["attributes"]["_tensogram_version"] == 2
+        assert result["attributes"]["_tensogram_wire_version"] == 2
         assert result["attributes"]["_tensogram_variables"] == ["arr"]
 
     def test_none_extra(self):
@@ -975,7 +975,7 @@ class TestBuildGroupNoExtra:
             extra: ClassVar[None] = None
 
         result = build_group_zarr_json(Meta(), [])
-        assert result["attributes"]["_tensogram_version"] == 2
+        assert result["attributes"]["_tensogram_wire_version"] == 2
 
     def test_empty_extra(self):
         class Meta:
@@ -983,7 +983,7 @@ class TestBuildGroupNoExtra:
             extra: ClassVar[dict[str, object]] = {}
 
         result = build_group_zarr_json(Meta(), ["a"])
-        assert result["attributes"]["_tensogram_version"] == 2
+        assert result["attributes"]["_tensogram_wire_version"] == 2
 
 
 # ===================================================================

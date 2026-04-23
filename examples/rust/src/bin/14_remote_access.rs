@@ -25,7 +25,6 @@ use tensogram::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let meta = GlobalMetadata {
-        version: 3,
         base: Vec::new(),
         ..Default::default()
     };
@@ -67,8 +66,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         file.message_count()?,
     );
 
-    let meta = file.decode_metadata(0)?;
-    println!("Metadata: version={}", meta.version);
+    let _meta = file.decode_metadata(0)?;
+    // Wire version lives in the preamble (see `plans/WIRE_FORMAT.md` §3).
+    println!("Metadata: wire version={}", tensogram::WIRE_VERSION);
 
     let (_, descriptors) = file.decode_descriptors(0)?;
     println!("Descriptors: {} objects", descriptors.len());

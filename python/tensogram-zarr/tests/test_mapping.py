@@ -154,7 +154,7 @@ class TestGroupZarrJson:
         assert result["zarr_format"] == 3
         assert result["node_type"] == "group"
         assert result["attributes"]["mars"] == {"class": "od"}
-        assert result["attributes"]["_tensogram_version"] == 2
+        assert result["attributes"]["_tensogram_wire_version"] == 2
         assert result["attributes"]["_tensogram_variables"] == ["temp", "pressure"]
 
 

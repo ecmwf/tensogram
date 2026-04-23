@@ -120,7 +120,8 @@ describe('Phase 4 — TensogramFile', () => {
       await init();
       const file = TensogramFile.fromBytes(makeMessage([1, 2, 3]));
       const meta = await file.messageMetadata(0);
-      expect(meta.version).toBe(2);
+      // Wire version is carried in the preamble; v3 is fixed at 3.
+      expect(meta.version).toBe(3);
     });
 
     it('async iteration yields every message', async () => {
