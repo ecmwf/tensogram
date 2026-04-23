@@ -131,24 +131,29 @@ export const useAppStore = create<AppState>((set, get) => ({
       const originalShape = varInfo?.shape ?? [];
       const coordLength = coordinates?.lat.length ?? 0;
 
+      // Level-slicing applies only when one dimension of `shape` matches
+      // the coordinate length — that's the marker of a `[levels, grid]`-shaped
+      // tensor where the non-matching dim is a stack of vertical levels.
+      // For truly 2-D gridded data `[nlat, nlon]` with meshgridded coords
+      // of length `nlat*nlon`, no dim matches and we want the full field
+      // rendered as-is (not sliced to a single row of pixels).
+      const hasSpatialDim = coordLength > 0 && originalShape.includes(coordLength);
+      const sliceDim = hasSpatialDim
+        ? originalShape.findIndex((s) => s !== coordLength)
+        : -1;
+
       let result: DecodedField;
-      if (originalShape.length > 1 && coordLength > 0) {
-        const sliceDim = originalShape.findIndex((s) => s !== coordLength);
-        if (sliceDim >= 0) {
-          // Resolve slice index from selectedLevel if possible
-          let sliceIdx = 0;
-          if (selectedLevel != null) {
-            const anemoi = varInfo?.metadata?.anemoi as Record<string, unknown> | undefined;
-            const levels = anemoi?.levels as number[] | undefined;
-            if (levels) {
-              const idx = levels.indexOf(selectedLevel);
-              if (idx >= 0) sliceIdx = idx;
-            }
+      if (sliceDim >= 0) {
+        let sliceIdx = 0;
+        if (selectedLevel != null) {
+          const anemoi = varInfo?.metadata?.anemoi as Record<string, unknown> | undefined;
+          const levels = anemoi?.levels as number[] | undefined;
+          if (levels) {
+            const idx = levels.indexOf(selectedLevel);
+            if (idx >= 0) sliceIdx = idx;
           }
-          result = await viewer.decodeFieldSlice(msgIdx, objIdx, sliceDim, sliceIdx);
-        } else {
-          result = await viewer.decodeField(msgIdx, objIdx);
         }
+        result = await viewer.decodeFieldSlice(msgIdx, objIdx, sliceDim, sliceIdx);
       } else {
         result = await viewer.decodeField(msgIdx, objIdx);
       }
