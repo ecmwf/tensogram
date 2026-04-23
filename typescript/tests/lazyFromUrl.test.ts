@@ -336,6 +336,94 @@ describe('Scope C.1 — TensogramFile.fromUrl Range backend', () => {
     }
   });
 
+  it('messageObject fetches only the target frame (not the full message)', async () => {
+    // Two-object message; messageObject(0, 1) should fetch the second
+    // frame's bytes only.
+    const msg = encode(defaultMeta(), [
+      {
+        descriptor: makeDescriptor([100_000], 'float32'),
+        data: new Float32Array(100_000),
+      },
+      {
+        descriptor: makeDescriptor([4], 'float32'),
+        data: new Float32Array([1, 2, 3, 4]),
+      },
+    ]);
+    const { fetch: fakeFetch, requests } = makeRangeServer(msg);
+    const file = await TensogramFile.fromUrl('https://example.invalid/two.tgm', {
+      fetch: fakeFetch,
+    });
+    try {
+      const before = requests.length;
+      const decoded = await file.messageObject(0, 1);
+      try {
+        expect(Array.from(decoded.objects[0].data() as Float32Array)).toEqual([1, 2, 3, 4]);
+      } finally {
+        decoded.close();
+      }
+      const newRequests = requests.slice(before);
+      const totalNewBytes = newRequests.reduce((sum, r) => sum + (r.bytes ?? 0), 0);
+      // Tight object frame is ~32 bytes payload + framing; together
+      // with the layout-discovery fetch, the total is well under
+      // 256 KB and far less than the full message.
+      expect(totalNewBytes).toBeLessThan(msg.byteLength);
+    } finally {
+      file.close();
+    }
+  });
+
+  it('messageObjectRange decodes partial ranges from one frame only', async () => {
+    const msg = encode(defaultMeta(), [
+      {
+        descriptor: makeDescriptor([1_000_000], 'float32'),
+        data: new Float32Array(1_000_000).map((_, i) => i),
+      },
+    ]);
+    const { fetch: fakeFetch } = makeRangeServer(msg);
+    const file = await TensogramFile.fromUrl('https://example.invalid/range.tgm', {
+      fetch: fakeFetch,
+    });
+    try {
+      const result = await file.messageObjectRange(0, 0, [
+        [10, 5],
+        [100, 3],
+      ]);
+      expect(result.parts).toHaveLength(2);
+      expect(Array.from(result.parts[0] as Float32Array)).toEqual([10, 11, 12, 13, 14]);
+      expect(Array.from(result.parts[1] as Float32Array)).toEqual([100, 101, 102]);
+    } finally {
+      file.close();
+    }
+  });
+
+  it('messageObjectRange supports join: true', async () => {
+    const msg = encode(defaultMeta(), [
+      {
+        descriptor: makeDescriptor([100], 'float32'),
+        data: new Float32Array(100).map((_, i) => i),
+      },
+    ]);
+    const { fetch: fakeFetch } = makeRangeServer(msg);
+    const file = await TensogramFile.fromUrl('https://example.invalid/join.tgm', {
+      fetch: fakeFetch,
+    });
+    try {
+      const result = await file.messageObjectRange(
+        0,
+        0,
+        [
+          [0, 3],
+          [10, 2],
+        ],
+        { join: true },
+      );
+      expect(result.parts).toHaveLength(1);
+      expect(Array.from(result.parts[0] as Float32Array)).toEqual([0, 1, 2, 10, 11]);
+    } finally {
+      file.close();
+    }
+  });
+
   it('bails to eager when preamble advertises total_length below preamble+postamble', async () => {
     // A v3 preamble(24) + v3 postamble(24) = 48 bytes minimum. Any
     // lower `total_length` is impossible on the wire, so the lazy

@@ -16,36 +16,13 @@
 
 import { getWbg } from './init.js';
 import { rethrowTyped, InvalidArgumentError } from './errors.js';
-import { typedArrayFor } from './dtype.js';
+import { wrapWbgDecodedMessage, type WbgDecodedMessage } from './internal/wbgWrap.js';
 import type {
-  DataObjectDescriptor,
   DecodedMessage,
-  DecodedObject,
   DecodeOptions,
   GlobalMetadata,
   MessagePosition,
-  TypedArray,
 } from './types.js';
-
-// wasm-bindgen generates `DecodedMessage` as an opaque class; we treat
-// it structurally here and only hold it as an opaque handle.
-interface WbgDecodedMessage {
-  free(): void;
-  metadata(): GlobalMetadata;
-  object_count(): number;
-  object_descriptor(index: number): unknown;
-  object_data_u8(index: number): Uint8Array;
-  object_byte_length(index: number): number;
-}
-
-// Only invoked if the wrapper is GC'd without an explicit close().
-const finalizationRegistry = new FinalizationRegistry<WbgDecodedMessage>((handle) => {
-  try {
-    handle.free();
-  } catch {
-    // best-effort cleanup
-  }
-});
 
 /**
  * Decode all objects from a complete Tensogram message.
@@ -120,65 +97,7 @@ export function scan(buf: Uint8Array): MessagePosition[] {
 // ── internals ──────────────────────────────────────────────────────────────
 
 function buildDecodedMessage(handle: WbgDecodedMessage): DecodedMessage {
-  // Hoist the metadata once; .data()/.dataView() pull payload bytes
-  // lazily per call so objects[] is cheap to construct.
-  const metadata = rethrowTyped(() => handle.metadata());
-
-  const count = handle.object_count();
-  const objects: DecodedObject[] = [];
-  let closed = false;
-
-  // `for (let i = ...)` creates a fresh per-iteration binding, so the
-  // closures below capture the correct index directly.
-  for (let i = 0; i < count; i++) {
-    const descriptor = rethrowTyped(
-      () => handle.object_descriptor(i) as DataObjectDescriptor,
-    );
-    const byteLength = handle.object_byte_length(i);
-
-    const obj: DecodedObject = {
-      descriptor,
-      byteLength,
-      data(): TypedArray {
-        assertOpen(closed);
-        const bytes = rethrowTyped(() => handle.object_data_u8(i));
-        return typedArrayFor(descriptor.dtype, bytes, /* copy */ true);
-      },
-      dataView(): TypedArray {
-        assertOpen(closed);
-        const bytes = rethrowTyped(() => handle.object_data_u8(i));
-        return typedArrayFor(descriptor.dtype, bytes, /* copy */ false);
-      },
-    };
-
-    objects.push(obj);
-  }
-
-  const msg: DecodedMessage = {
-    metadata,
-    objects,
-    close(): void {
-      if (closed) return;
-      closed = true;
-      finalizationRegistry.unregister(msg);
-      try {
-        handle.free();
-      } catch {
-        // best-effort; free is idempotent on our side
-      }
-    },
-  };
-
-  finalizationRegistry.register(msg, handle, msg);
-  return msg;
-}
-
-function assertOpen(closed: boolean): void {
-  if (closed) {
-    throw new InvalidArgumentError(
-      'decoded message has been closed — payload access is no longer valid',
-    );
-  }
+  return wrapWbgDecodedMessage(handle);
 }
 
 function assertUint8Array(buf: unknown, name: string): asserts buf is Uint8Array {

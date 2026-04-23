@@ -32,6 +32,7 @@
  */
 
 import { decode, decodeMetadata, scan } from './decode.js';
+import { typedArrayFor } from './dtype.js';
 import { encode } from './encode.js';
 import {
   InvalidArgumentError,
@@ -49,17 +50,21 @@ import {
   normalisePreambleInfo,
 } from './internal/layout.js';
 import { createLimiter, DEFAULT_CONCURRENCY } from './internal/pool.js';
+import { concatBytes, flattenRangePairs } from './internal/rangePack.js';
 import type {
   AppendOptions,
   DataObjectDescriptor,
   DecodedMessage,
   DecodeOptions,
+  DecodeRangeOptions,
+  DecodeRangeResult,
   EncodeInput,
   FileSource,
   FromUrlOptions,
   GlobalMetadata,
   MessagePosition,
   OpenFileOptions,
+  RangePair,
 } from './types.js';
 
 // ── Module-level constants ────────────────────────────────────────────────
@@ -459,6 +464,75 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     return { metadata, descriptors };
   }
 
+  /**
+   * Decode a single object from a single message.
+   *
+   * For the lazy-HTTP backend, this issues exactly one Range GET for
+   * the target object's frame bytes (after `#ensureLayout` populates
+   * the index — at most one extra header-chunk or footer-suffix
+   * Range).  Mirrors Rust `RemoteBackend::read_object`.
+   *
+   * For local / in-memory / eager-HTTP backends, downloads (or
+   * subarrays) the message and uses `decodeObject(buf, idx)`.
+   */
+  async messageObject(
+    msgIndex: number,
+    objectIndex: number,
+    options?: DecodeOptions,
+  ): Promise<DecodedMessage> {
+    this.#assertOpen();
+    this.#assertMessageIndex(msgIndex);
+    if (!Number.isInteger(objectIndex) || objectIndex < 0) {
+      throw new InvalidArgumentError(
+        `objectIndex must be a non-negative integer, got ${String(objectIndex)}`,
+      );
+    }
+    const b = this.#backend;
+    if (b.kind === 'remote-lazy') {
+      const layout = await this.#ensureLayout(b, msgIndex);
+      if (layout.index) {
+        return await this.#decodeObjectFromIndex(b, layout, objectIndex, options);
+      }
+    }
+    const slice = await this.rawMessage(msgIndex);
+    const { decodeObject } = await import('./decode.js');
+    return decodeObject(slice, objectIndex, options);
+  }
+
+  /**
+   * Decode partial sub-tensor ranges from a single object in a single
+   * message.
+   *
+   * Same Range-economy as `messageObject` for the lazy-HTTP backend:
+   * one Range for the object's frame, then `decodeRangeFromFrame` on
+   * the WASM side.  Local / in-memory / eager-HTTP backends use the
+   * standard `decodeRange(buf, ...)` path.
+   */
+  async messageObjectRange(
+    msgIndex: number,
+    objectIndex: number,
+    ranges: readonly RangePair[],
+    options?: DecodeRangeOptions,
+  ): Promise<DecodeRangeResult> {
+    this.#assertOpen();
+    this.#assertMessageIndex(msgIndex);
+    if (!Number.isInteger(objectIndex) || objectIndex < 0) {
+      throw new InvalidArgumentError(
+        `objectIndex must be a non-negative integer, got ${String(objectIndex)}`,
+      );
+    }
+    const b = this.#backend;
+    if (b.kind === 'remote-lazy') {
+      const layout = await this.#ensureLayout(b, msgIndex);
+      if (layout.index) {
+        return await this.#decodeRangeFromIndex(b, layout, objectIndex, ranges, options);
+      }
+    }
+    const slice = await this.rawMessage(msgIndex);
+    const { decodeRange } = await import('./range.js');
+    return decodeRange(slice, objectIndex, ranges, options);
+  }
+
   /** Async iterate every message in wire order. */
   async *[Symbol.asyncIterator](): AsyncIterator<DecodedMessage> {
     for (let i = 0; i < this.messageCount; i++) {
@@ -592,14 +666,106 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
         layout.offset + off,
         layout.offset + off + idx.lengths[i],
       );
-      return rethrowTyped(
-        () =>
-          wbg.decode_object_from_frame(frameBytes, false, false).object_descriptor(
-            0,
-          ) as DataObjectDescriptor,
+      const decoded = rethrowTyped(() =>
+        wbg.decode_object_from_frame(frameBytes, false, false),
       );
+      try {
+        return decoded.object_descriptor(0) as DataObjectDescriptor;
+      } finally {
+        decoded.free();
+      }
     });
     return await Promise.all(tasks.map((t) => b.limit(t)));
+  }
+
+  /**
+   * Decode one object given a populated layout index — issues exactly
+   * one Range GET for the target frame.
+   */
+  async #decodeObjectFromIndex(
+    b: LazyHttpBackend,
+    layout: MessageLayout,
+    objectIndex: number,
+    options?: DecodeOptions,
+  ): Promise<DecodedMessage> {
+    const idx = layout.index;
+    if (!idx) throw new IoError('message has no index frame');
+    if (objectIndex >= idx.offsets.length) {
+      throw new ObjectError(
+        `object index ${objectIndex} out of range (have ${idx.offsets.length})`,
+      );
+    }
+    const frameStart = layout.offset + idx.offsets[objectIndex];
+    const frameEnd = frameStart + idx.lengths[objectIndex];
+    const frameBytes = await b.limit(() => fetchRange(lazyFetchContext(b), frameStart, frameEnd));
+    return await this.#wrapWasmDecodedObject(frameBytes, options);
+  }
+
+  /**
+   * Decode partial ranges from one object given a populated layout
+   * index — one Range GET for the frame, then decode_range_from_frame
+   * on the WASM side.
+   */
+  async #decodeRangeFromIndex(
+    b: LazyHttpBackend,
+    layout: MessageLayout,
+    objectIndex: number,
+    ranges: readonly RangePair[],
+    options?: DecodeRangeOptions,
+  ): Promise<DecodeRangeResult> {
+    const idx = layout.index;
+    if (!idx) throw new IoError('message has no index frame');
+    if (objectIndex >= idx.offsets.length) {
+      throw new ObjectError(
+        `object index ${objectIndex} out of range (have ${idx.offsets.length})`,
+      );
+    }
+    const frameStart = layout.offset + idx.offsets[objectIndex];
+    const frameEnd = frameStart + idx.lengths[objectIndex];
+    const frameBytes = await b.limit(() => fetchRange(lazyFetchContext(b), frameStart, frameEnd));
+    const flat = flattenRangePairs(ranges);
+    const wbg = getWbg();
+    const result = rethrowTyped(
+      () =>
+        wbg.decode_range_from_frame(frameBytes, flat, options?.verifyHash ?? false) as {
+          descriptor: DataObjectDescriptor;
+          parts: Uint8Array[];
+        },
+    );
+    if (options?.join) {
+      const joined = concatBytes(result.parts);
+      return {
+        descriptor: result.descriptor,
+        parts: [typedArrayFor(result.descriptor.dtype, joined, /* copy */ false)],
+      };
+    }
+    return {
+      descriptor: result.descriptor,
+      parts: result.parts.map((p) =>
+        typedArrayFor(result.descriptor.dtype, p, /* copy */ false),
+      ),
+    };
+  }
+
+  /**
+   * Wrap WASM `decode_object_from_frame` output in the same
+   * `DecodedMessage` shape that `decode()` produces, so callers can
+   * use object.data() / object.dataView() on the single object.
+   */
+  async #wrapWasmDecodedObject(
+    frameBytes: Uint8Array,
+    options?: DecodeOptions,
+  ): Promise<DecodedMessage> {
+    const { wrapWbgDecodedMessage } = await import('./internal/wbgWrap.js');
+    const wbg = getWbg();
+    const handle = rethrowTyped(() =>
+      wbg.decode_object_from_frame(
+        frameBytes,
+        options?.verifyHash ?? false,
+        options?.restoreNonFinite ?? true,
+      ),
+    );
+    return wrapWbgDecodedMessage(handle);
   }
 
   // ── Write ──
