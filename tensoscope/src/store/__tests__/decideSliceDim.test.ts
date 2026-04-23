@@ -66,11 +66,15 @@ describe('decideSliceDim', () => {
     expect(decideSliceDim([13500], 1000)).toBe(-1);
   });
 
-  it('slices on large multiples (hypothetical 4-D ensemble)', () => {
-    // [nEnsemble, nLev, nLat, nLon] with meshed coords.  Picks dim 0
-    // (ensemble), which is consistent with "slice the outermost
-    // non-spatial dim" even for rank ≥ 4 — a latent feature, not
-    // wired into the UI today, but guaranteed not to crash.
+  it('picks dim 0 on rank-4 shapes but does not fully flatten them', () => {
+    // [nEnsemble, nLev, nLat, nLon] with meshed coords matches the
+    // "multiple-of-coord" rule so decideSliceDim returns 0.  But the
+    // caller only performs a single `decodeFieldSlice` — slicing dim 0
+    // at index 0 leaves a 3-D tensor [nLev, nLat, nLon] which still
+    // exceeds coordLength.  Full rank-4 support would require a
+    // recursive / iterative slice, tracked as a follow-up.  The
+    // current behaviour is: pick the outermost dim, best-effort on
+    // everything else.
     expect(decideSliceDim([5, 37, 721, 1440], 721 * 1440)).toBe(0);
   });
 });
