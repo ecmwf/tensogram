@@ -142,7 +142,9 @@ Serves at http://localhost:8000/ (set BASE_PATH env var to deploy under a subpat
         `rust/tensogram-wasm/Cargo.toml`
       Also update any pinned workspace dependency version strings in the root `Cargo.toml`
       (e.g. `tensogram-szip = { …, version = "=0.16.1" }`, `tensogram-sz3`, etc.).
-    - `pyproject.toml` in EVERY Python package under `python/`, AND
+    - `pyproject.toml` in EVERY Python package under `python/`
+      (currently `bindings`, `tensogram-xarray`, `tensogram-zarr`,
+      `tensogram-anemoi`, `tensogram-earthkit`), AND
       `examples/jupyter/pyproject.toml` (the Jupyter notebook deps manifest).
     - `package.json` in EVERY JS package — discover them with
       `find . -name package.json -not -path './**/node_modules/*' -not -path './target/*'`

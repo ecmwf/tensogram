@@ -42,6 +42,7 @@
 - [Dask Integration](guide/dask-integration.md)
 - [Zarr v3 Backend](guide/zarr-backend.md)
 - [anemoi-inference Integration](guide/anemoi-integration.md)
+- [earthkit-data Integration](guide/earthkit-integration.md)
 - [Free-Threaded Python](guide/free-threaded-python.md)
 - [Multi-Threaded Coding Pipeline](guide/multi-threaded-pipeline.md)
 - [Benchmarks](guide/benchmarks.md)

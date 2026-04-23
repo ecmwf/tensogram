@@ -26,6 +26,7 @@ Repo: ecmwf/tensogram
 | `tensogram-netcdf` | `tests/integration.rs` (+ Python e2e via `subprocess` in `python/tests/test_convert_netcdf.py`) | NetCDF-3 + NetCDF-4 round-trips, split modes, CF lifting |
 | `tensogram-xarray` | `python/tensogram-xarray/tests/*.py` | Backend engine, coordinate detection, hypercube stacking, remote |
 | `tensogram-zarr` | `python/tensogram-zarr/tests/*.py` | Zarr v3 store read + write, mapping, edge cases, remote |
+| `tensogram-earthkit` | `python/tensogram-earthkit/tests/*.py` | earthkit-data source + encoder plugins, MARS FieldList path, xarray non-MARS path, memory + stream + remote inputs, array-namespace interop |
 | `tensogram-benchmarks` | `tests/smoke.rs` + per-binary unit | Smoke coverage so benchmarks do not silently rot |
 
 To see current counts, run `cargo test --workspace`, `cargo test` in
@@ -59,6 +60,11 @@ languages — these numbers are the source of truth.
   remote.
 - **`tensogram-zarr`**: read path, write path, mapping layer, remote
   lazy reads, byte-range requests.
+- **`tensogram-earthkit`**: source + encoder entry-point discovery,
+  MARS vs non-MARS path dispatch, FieldList construction from MARS
+  metadata, xarray delegation to tensogram-xarray, memory + stream +
+  remote inputs, round-trip through the encoder, array-namespace
+  interop (numpy / torch).
 
 ## Key interactions to verify
 

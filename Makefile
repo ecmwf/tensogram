@@ -12,6 +12,7 @@
 .PHONY: help all check test lint fmt docs clean \
         rust-check rust-test rust-lint rust-fmt rust-clippy \
         python-build python-dist python-dist-extras python-test python-lint python-fmt \
+        earthkit-install earthkit-test earthkit-lint \
         cpp-build cpp-test \
         wasm-test docs-build \
         ts-install ts-build ts-test ts-typecheck \
@@ -90,6 +91,21 @@ python-lint: ## Run ruff check on Python code
 
 python-fmt: ## Check Python formatting
 	$(RUFF) format --check --config $(RUFF_CFG) python/tests/ python/tensogram-xarray/ python/tensogram-zarr/
+
+# ── earthkit-data integration ────────────────────────────────────────────
+
+earthkit-install: ## Install the earthkit-data integration package (editable, with dev extras)
+	if [ ! -d .venv ] ; then uv venv ; fi
+	uv pip install earthkit-data earthkit-utils
+	uv pip install -e python/tensogram-xarray/
+	uv pip install -e "python/tensogram-earthkit/[dev]"
+
+earthkit-test: earthkit-install ## Run tensogram-earthkit tests
+	$(PYTHON) -m pytest python/tensogram-earthkit/tests/ -v
+
+earthkit-lint: ## Run ruff on the tensogram-earthkit package
+	$(RUFF) check python/tensogram-earthkit/
+	$(RUFF) format --check python/tensogram-earthkit/
 
 # ── C++ ───────────────────────────────────────────────────────────────────
 

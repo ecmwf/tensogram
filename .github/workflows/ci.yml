@@ -148,6 +148,45 @@ jobs:
         if: always()
         run: rm -rf "$TMPDIR" .venv target
 
+  # ── Linux: earthkit-data integration ───────────────────────────
+  test-earthkit:
+    name: Test (earthkit-data integration)
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.3.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
+
+      - name: tensogram-earthkit (3.12)
+        run: |
+          uv python install 3.12
+          uv venv .venv --python 3.12
+          . .venv/bin/activate
+          uv pip install maturin pytest numpy ruff earthkit-data earthkit-utils
+          cd python/bindings && maturin develop && cd ../..
+          uv pip install -e python/tensogram-xarray/
+          uv pip install -e "python/tensogram-earthkit/[dev]"
+          ruff check python/tensogram-earthkit/
+          ruff format --check python/tensogram-earthkit/
+          python -m pytest python/tensogram-earthkit/tests/ -v
+
+      - name: Smoke-test example
+        run: |
+          . .venv/bin/activate
+          python examples/python/18_earthkit_integration.py
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-adv-stats
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" .venv target
+
   # ── Linux: Jupyter notebooks (executes examples/jupyter/*.ipynb end-to-end) ──
   notebooks:
     name: Test (Jupyter notebooks)
@@ -311,6 +350,16 @@ jobs:
   #         ruff check --config python/bindings/pyproject.toml python/tests/
   #         python -m pytest python/tests/ -v
   #         cargo check --manifest-path python/bindings/Cargo.toml --no-default-features
+  #
+  #     - name: Test earthkit-data integration (macOS)
+  #       run: |
+  #         . .venv/bin/activate
+  #         uv pip install earthkit-data earthkit-utils
+  #         uv pip install -e python/tensogram-xarray/
+  #         uv pip install -e "python/tensogram-earthkit/[dev]"
+  #         ruff check python/tensogram-earthkit/
+  #         ruff format --check python/tensogram-earthkit/
+  #         python -m pytest python/tensogram-earthkit/tests/ -v
   #
   #     - name: sccache stats
   #       if: always()
