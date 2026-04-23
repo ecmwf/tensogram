@@ -314,6 +314,84 @@ pub fn decode_object(
     Ok((msg.global_metadata, desc.clone(), decoded))
 }
 
+/// Decode a single data-object frame, given its complete bytes.
+///
+/// Mirrors [`decode_object`] but takes the bytes of one frame rather
+/// than a full message.  Used by callers that obtained a single frame
+/// via range-fetching (e.g. the WASM layout helpers that let the
+/// TypeScript wrapper issue per-object HTTP Range reads) or by the
+/// remote backend once it has fetched one indexed frame.
+///
+/// Returns `(descriptor, decoded_bytes)`.  There is no
+/// `GlobalMetadata` in the return value because a single frame does
+/// not carry it — the caller is expected to have it from a separate
+/// metadata or header-chunk fetch.
+pub fn decode_object_from_frame(
+    frame_bytes: &[u8],
+    options: &DecodeOptions,
+) -> Result<(DataObjectDescriptor, Vec<u8>)> {
+    let (desc, payload_bytes, mask_region, _) = framing::decode_data_object_frame(frame_bytes)?;
+
+    let budget = crate::parallel::resolve_budget(options.threads);
+    let parallel = crate::parallel::should_parallelise(
+        budget,
+        payload_bytes.len(),
+        options.parallel_threshold_bytes,
+    );
+    let intra_codec_threads = if parallel { budget } else { 0 };
+
+    let mut decoded =
+        crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, || {
+            decode_single_object_with_backend(
+                &desc,
+                payload_bytes,
+                options,
+                options.compression_backend,
+                intra_codec_threads,
+            )
+        })?;
+
+    if options.restore_non_finite {
+        crate::restore::restore_non_finite_into(
+            &mut decoded,
+            &desc,
+            mask_region,
+            output_byte_order(&desc, options),
+        )?;
+    }
+
+    Ok((desc, decoded))
+}
+
+/// Decode partial ranges from a single data-object frame.
+///
+/// Companion to [`decode_object_from_frame`] for the
+/// `decode_range` code path: takes one frame's bytes, extracts the
+/// requested element ranges from its payload, and applies mask-aware
+/// non-finite restoration per range.
+///
+/// Returns `(descriptor, parts)` in the same shape as
+/// [`decode_range`].
+pub fn decode_range_from_frame(
+    frame_bytes: &[u8],
+    ranges: &[(u64, u64)],
+    options: &DecodeOptions,
+) -> Result<(DataObjectDescriptor, Vec<Vec<u8>>)> {
+    let (desc, payload_bytes, mask_region, _) = framing::decode_data_object_frame(frame_bytes)?;
+    let mut parts = decode_range_from_payload(&desc, payload_bytes, ranges, options)?;
+    if options.restore_non_finite && desc.masks.is_some() {
+        let mask_set = crate::restore::decode_mask_set(&desc, mask_region)?;
+        crate::restore::restore_non_finite_into_ranges(
+            &mut parts,
+            &desc,
+            ranges,
+            &mask_set,
+            output_byte_order(&desc, options),
+        )?;
+    }
+    Ok((desc, parts))
+}
+
 /// Decode partial ranges from a data object.
 ///
 /// `ranges` is a list of (element_offset, element_count) pairs.
