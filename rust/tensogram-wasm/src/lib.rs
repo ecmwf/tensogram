@@ -24,6 +24,7 @@
 mod convert;
 mod encoder;
 mod extras;
+mod layout;
 mod streaming;
 
 use convert::*;
@@ -248,6 +249,20 @@ impl DecodedMessage {
         }
         Ok(&self.objects[index].1)
     }
+
+    /// Build a handle owning exactly one decoded object and an empty
+    /// `GlobalMetadata`.  Used by `layout::decode_object_from_frame`
+    /// when the caller has fetched a single frame over HTTP Range and
+    /// will get its metadata separately (from the cached layout).
+    pub(crate) fn from_single_object(
+        descriptor: core::DataObjectDescriptor,
+        data: Vec<u8>,
+    ) -> Self {
+        Self {
+            metadata: core::GlobalMetadata::default(),
+            objects: vec![(descriptor, data)],
+        }
+    }
 }
 
 // ── StreamingDecoder re-export ───────────────────────────────────────────────
@@ -257,6 +272,14 @@ pub use streaming::StreamingDecoder;
 // ── StreamingEncoder re-export ───────────────────────────────────────────────
 
 pub use encoder::StreamingEncoder;
+
+// ── Layout helpers (preamble, postamble, header/footer, single-frame) ───────
+
+pub use layout::{
+    decode_object_from_frame, decode_range_from_frame, parse_descriptor_cbor, parse_footer_chunk,
+    parse_header_chunk, read_data_object_frame_footer, read_data_object_frame_header,
+    read_postamble_info, read_preamble_info,
+};
 
 // ── Scope-C exports (decode_range, compute_hash, validate, …) ───────────────
 

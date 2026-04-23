@@ -2692,7 +2692,18 @@ fn validate_buffer_unknown_level_errors() {
 #[wasm_bindgen_test]
 fn streaming_encoder_single_object_round_trip() {
     let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
-    let mut enc = tensogram_wasm::StreamingEncoder::new(meta_js, Some(true), None, None, None, None, None, None, None).unwrap();
+    let mut enc = tensogram_wasm::StreamingEncoder::new(
+        meta_js,
+        Some(true),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(enc.object_count().unwrap(), 0);
 
     let desc = make_descriptor(vec![3], Dtype::Float32);
@@ -2713,7 +2724,18 @@ fn streaming_encoder_single_object_round_trip() {
 #[wasm_bindgen_test]
 fn streaming_encoder_finish_closes_handle() {
     let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
-    let mut enc = tensogram_wasm::StreamingEncoder::new(meta_js, Some(false), None, None, None, None, None, None, None).unwrap();
+    let mut enc = tensogram_wasm::StreamingEncoder::new(
+        meta_js,
+        Some(false),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     let _ = enc.finish().unwrap();
     // Further access raises an error rather than panicking.
     let meta_js2 = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
@@ -2724,7 +2746,10 @@ fn streaming_encoder_finish_closes_handle() {
             .is_err()
     );
     // And constructing a brand-new encoder still works.
-    let mut enc2 = tensogram_wasm::StreamingEncoder::new(meta_js2, None, None, None, None, None, None, None, None).unwrap();
+    let mut enc2 = tensogram_wasm::StreamingEncoder::new(
+        meta_js2, None, None, None, None, None, None, None, None,
+    )
+    .unwrap();
     assert_eq!(enc2.object_count().unwrap(), 0);
     let _ = enc2.finish().unwrap();
 }
@@ -2733,7 +2758,18 @@ fn streaming_encoder_finish_closes_handle() {
 fn streaming_encoder_preceder_merges_into_base() {
     use std::collections::BTreeMap as Map;
     let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
-    let mut enc = tensogram_wasm::StreamingEncoder::new(meta_js, Some(false), None, None, None, None, None, None, None).unwrap();
+    let mut enc = tensogram_wasm::StreamingEncoder::new(
+        meta_js,
+        Some(false),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let mut prec: Map<String, ciborium::Value> = Map::new();
     prec.insert("units".to_string(), ciborium::Value::Text("K".to_string()));
@@ -2755,7 +2791,10 @@ fn streaming_encoder_preceder_merges_into_base() {
 #[wasm_bindgen_test]
 fn streaming_encoder_consecutive_preceders_rejected() {
     let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
-    let mut enc = tensogram_wasm::StreamingEncoder::new(meta_js, None, None, None, None, None, None, None, None).unwrap();
+    let mut enc = tensogram_wasm::StreamingEncoder::new(
+        meta_js, None, None, None, None, None, None, None, None,
+    )
+    .unwrap();
     let empty_js = serde_wasm_bindgen::to_value(&serde_json::json!({})).unwrap();
     enc.write_preceder(empty_js.clone()).unwrap();
     assert!(enc.write_preceder(empty_js).is_err());
@@ -2802,7 +2841,18 @@ fn streaming_encoder_callback_mode_round_trip() {
     // for the same input — the callback just chunks the delivery.
     let (cb, chunks) = make_collector();
     let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
-    let mut enc = tensogram_wasm::StreamingEncoder::new(meta_js, Some(true), Some(cb), None, None, None, None, None, None).unwrap();
+    let mut enc = tensogram_wasm::StreamingEncoder::new(
+        meta_js,
+        Some(true),
+        Some(cb),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let desc = make_descriptor(vec![3], Dtype::Float32);
     let desc_js = serde_wasm_bindgen::to_value(&desc).unwrap();
@@ -2829,7 +2879,18 @@ fn streaming_encoder_callback_invoked_during_construction() {
     // first user call.
     let (cb, chunks) = make_collector();
     let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
-    let _enc = tensogram_wasm::StreamingEncoder::new(meta_js, Some(false), Some(cb), None, None, None, None, None, None).unwrap();
+    let _enc = tensogram_wasm::StreamingEncoder::new(
+        meta_js,
+        Some(false),
+        Some(cb),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     assert!(chunks.length() > 0);
     // And the first bytes emitted must start with the Tensogram magic.
     let first: js_sys::Uint8Array = chunks.get(0).unchecked_into();
@@ -2845,7 +2906,18 @@ fn streaming_encoder_bytes_written_tracks_callback_bytes() {
     // in the internal buffer").
     let (cb, _) = make_collector();
     let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
-    let mut enc = tensogram_wasm::StreamingEncoder::new(meta_js, Some(false), Some(cb), None, None, None, None, None, None).unwrap();
+    let mut enc = tensogram_wasm::StreamingEncoder::new(
+        meta_js,
+        Some(false),
+        Some(cb),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let before = enc.bytes_written().unwrap();
     assert!(before > 0.0); // preamble + header already emitted
@@ -2866,7 +2938,17 @@ fn streaming_encoder_callback_error_propagates() {
     // out of the constructor itself.
     let bad_cb = js_sys::Function::new_no_args("throw new Error('sink failed');");
     let meta_js = serde_wasm_bindgen::to_value(&default_metadata()).unwrap();
-    let result = tensogram_wasm::StreamingEncoder::new(meta_js, Some(false), Some(bad_cb), None, None, None, None, None, None);
+    let result = tensogram_wasm::StreamingEncoder::new(
+        meta_js,
+        Some(false),
+        Some(bad_cb),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(result.is_err(), "throwing callback must propagate as error");
 }
 
@@ -2881,6 +2963,16 @@ fn streaming_encoder_rejects_non_function_callback() {
     // real function.  Non-function inputs are rejected at the wasm-
     // bindgen conversion layer — covered by the TS-side test.
     let cb = js_sys::Function::new_no_args("");
-    let enc = tensogram_wasm::StreamingEncoder::new(meta_js, None, Some(cb), None, None, None, None, None, None);
+    let enc = tensogram_wasm::StreamingEncoder::new(
+        meta_js,
+        None,
+        Some(cb),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(enc.is_ok());
 }
