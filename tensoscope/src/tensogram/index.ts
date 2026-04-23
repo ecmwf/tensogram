@@ -97,7 +97,14 @@ export class Tensoscope {
   private file: TensogramFile;
   private _source: string;
   private _index: FileIndex | null = null;
-  private _coords: CoordinateData | null = null;
+  /**
+   * Per-message coordinate cache.  Heterogeneous multi-message files
+   * may carry different grids in different messages; keying by
+   * `msgIdx` lets each call to {@link fetchCoordinates} return the
+   * coordinates for that specific message without silently reusing
+   * message 0's geometry.
+   */
+  private readonly _coords = new Map<number, CoordinateData>();
 
   private constructor(file: TensogramFile, source: string) {
     this.file = file;
@@ -257,7 +264,8 @@ export class Tensoscope {
    * and we return the file's coords as-is.
    */
   async fetchCoordinates(msgIdx: number): Promise<CoordinateData | null> {
-    if (this._coords) return this._coords;
+    const cached = this._coords.get(msgIdx);
+    if (cached) return cached;
 
     const index = await this.buildIndex();
     const latInfo = index.coordinates.find(
@@ -267,14 +275,14 @@ export class Tensoscope {
       (c) => c.msgIndex === msgIdx && LON_NAMES.has(c.name.toLowerCase()),
     );
 
-    let latAxis: Float32Array | null = null;
-    let lonAxis: Float32Array | null = null;
     // Scope inference + expansion to the variables of the requested
     // message.  Heterogeneous multi-message files may have different
     // grids in different messages and should not pick up an axis from
     // some other message.
     const msgVariables = index.variables.filter((v) => v.msgIndex === msgIdx);
 
+    let latAxis: Float32Array;
+    let lonAxis: Float32Array;
     if (latInfo && lonInfo) {
       latAxis = (await this.decodeField(latInfo.msgIndex, latInfo.objIndex)).data;
       lonAxis = (await this.decodeField(lonInfo.msgIndex, lonInfo.objIndex)).data;
@@ -290,8 +298,9 @@ export class Tensoscope {
     }
 
     const expanded = expandAxesIfRectangularGrid(latAxis, lonAxis, msgVariables);
-    this._coords = expanded ?? { lat: latAxis, lon: lonAxis };
-    return this._coords;
+    const coords = expanded ?? { lat: latAxis, lon: lonAxis };
+    this._coords.set(msgIdx, coords);
+    return coords;
   }
 
   close(): void {
@@ -434,10 +443,21 @@ export function inferAxesFromMarsGrid(
   return null;
 }
 
-/** Convert a CborValue to a plain number when possible. */
+/**
+ * Convert a CborValue to a plain finite number when possible.
+ *
+ * Guards against `bigint` values that overflow a `number` — converting
+ * a very large `bigint` via `Number(v)` silently returns `Infinity`,
+ * which would then propagate into generated lat/lon arrays and
+ * destroy the grid.  Return `null` on overflow so the caller falls
+ * back to a safe default.
+ */
 function toNumber(v: unknown): number | null {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
-  if (typeof v === 'bigint') return Number(v);
+  if (typeof v === 'bigint') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
   return null;
 }
 
