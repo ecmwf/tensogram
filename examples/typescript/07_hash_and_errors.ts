@@ -15,11 +15,10 @@
  * single `catch (e) { if (e instanceof TensogramError) ... }`
  * handles every library-raised error.
  *
- * **v3 note.** Frame-level integrity verification moved from the
- * decoder to the validate API (plans/WIRE_FORMAT.md §11).
- * `decode(buf, { verifyHash: true })` is a no-op; corruption
- * surfaces through the `validate` / `validateFile` wrappers — see
- * `08_validate.ts` for a dedicated walk-through.
+ * **Integrity note.** Frame-level integrity verification lives in the
+ * `validate` / `validateFile` wrappers — `decode(buf, { verifyHash:
+ * true })` is a no-op.  See `08_validate.ts` for the dedicated
+ * walk-through.
  */
 
 import {
@@ -64,22 +63,22 @@ async function main(): Promise<void> {
   console.log(`clean decode: OK (${clean.objects.length} object)`);
   clean.close();
 
-  // 2. v3: decode is no longer the integrity-verification surface.
-  //     A byte flip in the payload may decode silently (the inline
-  //     hash slot mismatch is not checked at decode time).  Use the
-  //     validate API to detect the mismatch.  Structural tamper
-  //     still surfaces as FramingError.
+  // 2. Decode is not the integrity-verification surface.
+  //    A byte flip in the payload may decode silently (the inline
+  //    hash slot mismatch is not checked at decode time).  Use the
+  //    validate API to detect the mismatch.  Structural tamper still
+  //    surfaces as FramingError.
   const tampered = new Uint8Array(msg);
   tampered[500] ^= 0xff;
   try {
     const d = decode(tampered, { verifyHash: true });
-    console.log('tamper not detected at decode (expected in v3 — use validate for integrity)');
+    console.log('tamper not detected at decode (use validate for integrity)');
     d.close();
   } catch (err) {
     if (err instanceof FramingError) {
       console.log(`tamper landed on structural byte: ${err.message}`);
     } else if (err instanceof HashMismatchError) {
-      // Won't hit in v3, but catch defensively.
+      // The current decode path does not surface this; catch defensively.
       console.log(`HashMismatchError: expected=${err.expected} actual=${err.actual}`);
     } else {
       throw err;

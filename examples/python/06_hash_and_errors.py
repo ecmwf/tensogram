@@ -6,7 +6,7 @@
 # granted to it by virtue of its status as an intergovernmental organisation nor
 # does it submit to any jurisdiction.
 
-"""Example 06 — Integrity and error handling (wire-format v3)
+"""Example 06 — Integrity and error handling
 
 Every frame carries an inline xxh3-64 hash slot.  When the preamble's
 ``HASHES_PRESENT`` flag is set (the default), those slots are populated
@@ -14,10 +14,9 @@ at encode time and ``tensogram.validate(..., level='default')``
 recomputes the per-frame body hashes and compares them to the inline
 values.
 
-Importantly, ``tensogram.decode()`` is **not** the integrity surface in
-v3.  ``verify_hash=True`` is accepted for API compatibility but no
-longer performs integrity checking — use ``tensogram.validate()``
-instead.  See ``plans/WIRE_FORMAT.md §11`` for the rationale.
+Importantly, ``tensogram.decode()`` is **not** the integrity surface.
+``verify_hash=True`` is accepted for API compatibility but does not
+perform integrity checking — use ``tensogram.validate()`` instead.
 """
 
 import numpy as np
@@ -45,14 +44,14 @@ print(f"Hashed message:   {len(hashed)} bytes")
 unhashed = bytes(tensogram.encode(metadata, [(descriptor, data)], hash=None))
 print(f"Unhashed message: {len(unhashed)} bytes")
 
-# ── 3. Decode is hash-agnostic in v3 ─────────────────────────────────────────
+# ── 3. Decode is hash-agnostic ───────────────────────────────────────────────
 #
 # Both messages round-trip through ``decode``.  ``verify_hash=True`` is
-# accepted for API compatibility but no longer performs integrity
+# accepted for API compatibility but does not perform integrity
 # checking — use ``tensogram.validate()`` for that.
 tensogram.decode(hashed, verify_hash=True)
 tensogram.decode(unhashed, verify_hash=True)
-print("\nBoth messages decode cleanly (decode is hash-agnostic in v3).")
+print("\nBoth messages decode cleanly (decode is hash-agnostic).")
 
 # ── 4. validate() at the default level checks inline hashes ─────────────────
 print("\n=== validate(clean, hashed) ===")
@@ -75,7 +74,7 @@ print(
 assert not report["hash_verified"]
 # The integrity level emits a ``no_hash_available`` warning when
 # ``HASHES_PRESENT=0``, not an error.  Pinning the code here documents
-# the v3 contract the example is teaching.
+# the contract the example is teaching.
 assert any(i["code"] == "no_hash_available" for i in report["issues"]), (
     "expected no_hash_available warning on unhashed clean message"
 )
@@ -98,7 +97,7 @@ for issue in report["issues"]:
     print(f"  [{issue['severity']}/{issue['level']}] {issue['code']}: {issue['description']}")
 # At 16 KiB the message midpoint lands deep inside the single data
 # object frame body, so the recomputed xxh3 must disagree with the
-# inline slot.  Assert the exact v3 contract this example teaches.
+# inline slot.  Assert the exact contract this example teaches.
 assert any(i["code"] == "hash_mismatch" for i in report["issues"]), (
     "expected hash_mismatch on a payload-byte flip"
 )

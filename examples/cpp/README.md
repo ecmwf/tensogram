@@ -14,7 +14,7 @@ C++17 interface over the C FFI.
 | `03_simple_packing.cpp` | Lossy quantization via simple_packing with error measurement |
 | `04_file_api.cpp` | File API: create, append, open, random-access decode |
 | `05_iterators.cpp` | All iterator patterns: buffer, file, object, and range-based for |
-| `06_hash_and_errors.cpp` | v3 inline hash slots, `validate()` for corruption detection, typed-exception hierarchy |
+| `06_hash_and_errors.cpp` | Inline hash slots, `validate()` for corruption detection, typed-exception hierarchy |
 | `07_scan_buffer.cpp` | Scanning a multi-message buffer with `scan()`, skipping corrupt regions |
 | `08_decode_variants.cpp` | `decode` / `decode_metadata` / `decode_object` / `decode_range` |
 | `09_streaming_consumer.cpp` | Consumer-side streaming: scan a growing buffer, decode messages as they arrive |

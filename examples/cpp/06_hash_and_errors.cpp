@@ -15,10 +15,10 @@
 /// recomputes the per-frame body hashes and compares them to the inline
 /// values.
 ///
-/// Importantly, `tensogram::decode` is **not** the integrity surface in
-/// wire-format v3: `decode_options::verify_hash = true` is accepted for
-/// API compatibility but no longer performs integrity checking — use
-/// `tensogram::validate()` for that.  See `plans/WIRE_FORMAT.md §11`.
+/// Importantly, `tensogram::decode` is **not** the integrity surface:
+/// `decode_options::verify_hash = true` is accepted for API
+/// compatibility but does not perform integrity checking — use
+/// `tensogram::validate()` for that.
 ///
 /// Build:
 ///   cmake -S cpp -B build -DCMAKE_BUILD_TYPE=Release
@@ -63,13 +63,13 @@ int main() {
     std::printf("Hashed message:   %zu bytes\n", hashed.size());
     std::printf("Unhashed message: %zu bytes\n", unhashed.size());
 
-    // ── 2. decode is hash-agnostic in v3 ──────────────────────────────────
+    // ── 2. decode is hash-agnostic ────────────────────────────────────────
     {
         tensogram::decode_options verify;
         verify.verify_hash = true;
         auto m1 = tensogram::decode(hashed.data(),   hashed.size(),   verify);
         auto m2 = tensogram::decode(unhashed.data(), unhashed.size(), verify);
-        std::printf("\nBoth messages decode cleanly (decode is hash-agnostic in v3).\n");
+        std::printf("\nBoth messages decode cleanly (decode is hash-agnostic).\n");
         (void)m1; (void)m2;
     }
 

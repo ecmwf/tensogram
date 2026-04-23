@@ -92,9 +92,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── 4. Decode ─────────────────────────────────────────────────────────────
     //
     // decode() parses the preamble, reads CBOR metadata, and for each object
-    // runs the inverse pipeline and returns bytes in the logical dtype.  In
-    // wire-format v3, integrity verification lives in `validate_message`
-    // (see example 06) — decode itself is hash-agnostic.
+    // runs the inverse pipeline and returns bytes in the logical dtype.
+    // Integrity verification lives in `validate_message` (see example 06) —
+    // decode itself is hash-agnostic.
     let (decoded_meta, decoded_objects) = decode(&message, &DecodeOptions::default())?;
 
     println!(
