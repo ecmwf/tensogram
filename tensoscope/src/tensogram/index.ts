@@ -417,11 +417,12 @@ export function inferAxesFromMarsGrid(
     const [nLat, nLon] = v.shape;
     // MARS "area": [north, west, south, east].  Default to a full
     // global domain when absent — matches ECMWF operational data.
+    // Use [-180, 180) longitude range to match the worker's expectation.
     const area = Array.isArray(mars.area) ? (mars.area as unknown[]) : null;
     const north = toNumber(area?.[0]) ?? 90;
-    const west = toNumber(area?.[1]) ?? 0;
+    const west = toNumber(area?.[1]) ?? -180;
     const south = toNumber(area?.[2]) ?? -90;
-    const east = toNumber(area?.[3]) ?? 360;
+    const east = toNumber(area?.[3]) ?? 180;
 
     const lat = new Float32Array(nLat);
     for (let i = 0; i < nLat; i++) {
@@ -433,10 +434,15 @@ export function inferAxesFromMarsGrid(
     // east ≡ west (mod 360).  For partial longitudinal bands the
     // last sample sits exactly at `east`.
     const lon = new Float32Array(nLon);
-    const spansCircle = Math.abs(east - west) >= 360 - 1e-6;
+    const spansCircle = Math.abs(east - west - 360) < 1e-6;
     const denom = spansCircle ? nLon : Math.max(nLon - 1, 1);
     for (let j = 0; j < nLon; j++) {
       lon[j] = west + (j * (east - west)) / denom;
+    }
+    // Normalize to [-180, 180) to match worker expectation
+    for (let j = 0; j < nLon; j++) {
+      if (lon[j] >= 180) lon[j] -= 360;
+      else if (lon[j] < -180) lon[j] += 360;
     }
     return { lat, lon };
   }

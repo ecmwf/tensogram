@@ -38,8 +38,8 @@ describe('inferAxesFromMarsGrid', () => {
     expect(result!.lat[0]).toBe(90);
     expect(result!.lat[720]).toBe(-90);
     expect(result!.lat[360]).toBeCloseTo(0, 5);
-    expect(result!.lon[0]).toBe(0);
-    expect(result!.lon[1439]).toBeCloseTo(359.75, 3);
+    expect(result!.lon[0]).toBe(-180);
+    expect(result!.lon[1439]).toBeCloseTo(179.75, 3);
   });
 
   it('honours mars.area [north, west, south, east] for regional grids', () => {
@@ -57,14 +57,14 @@ describe('inferAxesFromMarsGrid', () => {
   });
 
   it('uses endpoint-exclusive longitude when area wraps a full circle', () => {
+    // When no area is specified, defaults are [-180, 180) which spans 360°
     const result = inferAxesFromMarsGrid([
       makeVar([90, 180], { grid: 'regular_ll' }),
     ]);
     expect(result).not.toBeNull();
-    // 360 / 180 = 2°, last sample at 358°, not 360° (which would
-    // alias with 0°).
-    expect(result!.lon[0]).toBe(0);
-    expect(result!.lon[179]).toBeCloseTo(358, 3);
+    // 360 / 180 = 2°, last sample at 178° (endpoints exclusive)
+    expect(result!.lon[0]).toBe(-180);
+    expect(result!.lon[179]).toBeCloseTo(178, 3);
   });
 
   it('returns null for unsupported grid kinds', () => {
