@@ -12,8 +12,17 @@ jobs:
   # ── tensogram (native extension — maturin + PyO3) ─────────────────────────
 
   build-tensogram-linux:
-    name: Build tensogram wheels (Linux x86_64)
-    runs-on: ubuntu-24.04
+    name: Build tensogram wheels (${{ matrix.label }})
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      matrix:
+        include:
+          - runs-on: ubuntu-24.04
+            label: Linux x86_64
+            artifact-name: wheels-tensogram-linux-x86_64
+          - runs-on: ubuntu-24.04-arm
+            label: Linux aarch64
+            artifact-name: wheels-tensogram-linux-aarch64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,7 +52,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-tensogram-linux-x86_64
+          name: ${{ matrix.artifact-name }}
           path: python/bindings/dist/
 
   build-tensogram-macos:
