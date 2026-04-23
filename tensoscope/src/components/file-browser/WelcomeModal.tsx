@@ -80,7 +80,7 @@ export function WelcomeModal() {
               type="text"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://... or s3://..."
+              placeholder="https:// URL (use a presigned URL for private S3/GCS/Azure)"
               disabled={isBusy}
               className="path-input"
               aria-label="Remote URL"

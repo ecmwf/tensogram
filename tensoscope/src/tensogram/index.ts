@@ -9,12 +9,21 @@
 import {
   init as tgInit,
   TensogramFile,
-  decodeObject,
 } from '@ecmwf.int/tensogram';
 import type {
   BaseEntry,
   CborValue,
 } from '@ecmwf.int/tensogram';
+
+/**
+ * Cap on the per-batch prefetch size.  We chunk through the message
+ * indices so a 10 000-message file doesn't try to start 10 000
+ * Promises at once even though the per-host concurrency limiter
+ * would only let 6 of them run.
+ */
+const PREFETCH_CHUNK_SIZE = 64;
+/** Bounded-concurrency cap for prefetch and per-object fetches. */
+const REMOTE_CONCURRENCY = 6;
 
 // ── Public types ────────────────────────────────────────────────────────
 
@@ -125,12 +134,28 @@ export class Tensoscope {
 
   // ── Index ───────────────────────────────────────────────────────────
 
-  /** Build the file index from metadata only (fast, no payload decode). */
+  /**
+   * Build the file index from metadata only (fast, no payload decode).
+   *
+   * For remote files this calls `prefetchLayouts` in chunks of
+   * `PREFETCH_CHUNK_SIZE` so the per-host browser concurrency limit
+   * (6) is honoured and very large files don't queue thousands of
+   * Promises at once.  The subsequent `messageMetadata(i)` loop then
+   * hits the warm layout cache and makes no network calls.
+   */
   async buildIndex(): Promise<FileIndex> {
     if (this._index) return this._index;
 
     const variables: ObjectInfo[] = [];
     const coordinates: CoordinateInfo[] = [];
+
+    if (this.file.source === 'remote') {
+      const indices = Array.from({ length: this.file.messageCount }, (_, i) => i);
+      for (let off = 0; off < indices.length; off += PREFETCH_CHUNK_SIZE) {
+        const chunk = indices.slice(off, off + PREFETCH_CHUNK_SIZE);
+        await this.file.prefetchLayouts(chunk, { concurrency: REMOTE_CONCURRENCY });
+      }
+    }
 
     for (let msgIdx = 0; msgIdx < this.file.messageCount; msgIdx++) {
       const meta = await this.file.messageMetadata(msgIdx);
@@ -180,14 +205,19 @@ export class Tensoscope {
 
   // ── Field decode ──────────────────────────────────────────────────────
 
-  /** Decode a single object and return as Float32Array with stats. */
+  /**
+   * Decode a single object and return as Float32Array with stats.
+   *
+   * For remote files this calls `messageObject(msgIdx, objIdx)`,
+   * which on the lazy HTTP backend issues exactly one Range GET for
+   * the target object's frame instead of downloading the whole
+   * message — a major bandwidth saving for multi-tensor messages.
+   */
   async decodeField(msgIdx: number, objIdx: number): Promise<DecodedField> {
-    const raw = await this.file.rawMessage(msgIdx);
-    const msg = decodeObject(raw, objIdx);
+    const msg = await this.file.messageObject(msgIdx, objIdx);
     try {
       const obj = msg.objects[0];
       const typed = obj.data();
-      // Convert to Float32Array if needed
       const data = typed instanceof Float32Array
         ? typed
         : new Float32Array(typed as unknown as ArrayLike<number>);
