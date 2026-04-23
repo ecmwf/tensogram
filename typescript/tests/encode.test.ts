@@ -25,7 +25,7 @@ describe('Phase 1 — encode wrapper', () => {
     await init();
     expect(() =>
       encode(
-        { /* free-form metadata */ _reserved_: { encoder: { name: 'fake' } } },
+        {_reserved_: { encoder: { name: 'fake' } } },
         [],
       ),
     ).toThrow(/_reserved_/);
@@ -35,7 +35,7 @@ describe('Phase 1 — encode wrapper', () => {
     await init();
     expect(() =>
       encode(
-        { /* free-form metadata */ base: [{ _reserved_: { tensor: { ndim: 0 } } }] },
+        {base: [{ _reserved_: { tensor: { ndim: 0 } } }] },
         [
           {
             descriptor: makeDescriptor([1], 'float32'),
@@ -206,7 +206,7 @@ describe('Phase 1 — encode wrapper', () => {
     await init();
     expect(() =>
       // @ts-expect-error intentional
-      encode({ /* free-form metadata */ base: 'not-an-array' }, []),
+      encode({base: 'not-an-array' }, []),
     ).toThrow(/base must be an array/);
   });
 
@@ -214,7 +214,7 @@ describe('Phase 1 — encode wrapper', () => {
     await init();
     expect(() =>
       // @ts-expect-error intentional
-      encode({ /* free-form metadata */ base: [42] }, []),
+      encode({base: [42] }, []),
     ).toThrow(/base\[0\] must be a plain object/);
   });
 

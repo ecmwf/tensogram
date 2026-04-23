@@ -20,3 +20,4 @@ rust/tensogram-wasm/Cargo.lock
 python/bindings/python/tensogram/tensogram*.so
 # TODO do we want to have uv.locks ignored?
 **/uv.lock
+examples/jupyter/tensogram_jupyter_examples.egg-info/

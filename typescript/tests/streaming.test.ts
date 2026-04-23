@@ -125,7 +125,7 @@ describe('Phase 3 — decodeStream', () => {
     await init();
     const msg = encode(
       {
-        /* free-form metadata */         base: [
+base: [
           { mars: { param: '2t' } },
           { mars: { param: '10u' } },
         ],
