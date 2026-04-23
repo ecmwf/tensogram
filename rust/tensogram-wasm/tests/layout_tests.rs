@@ -51,10 +51,7 @@ fn descriptor(shape: Vec<u64>, dtype: Dtype) -> DataObjectDescriptor {
 }
 
 fn meta() -> GlobalMetadata {
-    GlobalMetadata {
-        version: 3,
-        ..Default::default()
-    }
+    GlobalMetadata::default()
 }
 
 fn encode_one_object(data: Vec<u8>) -> Vec<u8> {

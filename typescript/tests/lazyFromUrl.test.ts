@@ -81,6 +81,71 @@ function makeRangeServer(body: Uint8Array): {
   return { fetch: fetchFn, requests };
 }
 
+/**
+ * Range-capable fetch that also exposes a peak-in-flight metric.
+ * Uses an artificial delay so concurrent requests overlap in time
+ * and the limiter cap can be observed.
+ */
+function makeMetricRangeServer(body: Uint8Array): {
+  fetch: typeof globalThis.fetch;
+  peakInFlight: () => number;
+  totalRequests: () => number;
+} {
+  let inFlight = 0;
+  let peak = 0;
+  let total = 0;
+  const fetchFn: typeof globalThis.fetch = async (
+    _input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    total++;
+    try {
+      // Tiny delay so the await actually overlaps requests.
+      await new Promise((r) => setTimeout(r, 5));
+      const method = init?.method ?? 'GET';
+      if (method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: {
+            'accept-ranges': 'bytes',
+            'content-length': String(body.byteLength),
+          },
+        });
+      }
+      const range =
+        init?.headers instanceof Headers ? init.headers.get('range') : undefined;
+      if (range) {
+        const m = /^bytes=(\d+)-(\d+)$/.exec(range);
+        if (!m) return new Response('bad range', { status: 416 });
+        const start = parseInt(m[1], 10);
+        const end = parseInt(m[2], 10);
+        const sliceLen = end - start + 1;
+        const copy = new ArrayBuffer(sliceLen);
+        new Uint8Array(copy).set(body.subarray(start, end + 1));
+        return new Response(copy, {
+          status: 206,
+          headers: {
+            'content-range': `bytes ${start}-${end}/${body.byteLength}`,
+            'content-length': String(sliceLen),
+          },
+        });
+      }
+      const copy = new ArrayBuffer(body.byteLength);
+      new Uint8Array(copy).set(body);
+      return new Response(copy, { status: 200 });
+    } finally {
+      inFlight--;
+    }
+  };
+  return {
+    fetch: fetchFn,
+    peakInFlight: () => peak,
+    totalRequests: () => total,
+  };
+}
+
 /** Build a mock fetch whose server does NOT advertise Range support. */
 function makeNoRangeServer(body: Uint8Array): {
   fetch: typeof globalThis.fetch;
@@ -316,9 +381,12 @@ describe('Scope C.1 — TensogramFile.fromUrl Range backend', () => {
     try {
       const before = requests.length;
       const meta = await file.messageMetadata(0);
-      // defaultMeta() carries version = 2 — the user-supplied
-      // metadata version field, not the wire-format version.
-      expect(meta.version).toBe(2);
+      // `version` on decoded metadata is synthesised from the
+      // preamble — always equal to the wire-format `WIRE_VERSION`
+      // (currently 3), regardless of what the caller passed at encode
+      // time.  See `plans/WIRE_FORMAT.md` §6.1 ("CBOR metadata is
+      // free-form; the version lives in the preamble").
+      expect(meta.version).toBe(3);
       const newRequests = requests.slice(before);
       expect(newRequests.length).toBeLessThanOrEqual(1);
       const totalNewBytes = newRequests.reduce((sum, r) => sum + (r.bytes ?? 0), 0);
@@ -520,7 +588,10 @@ describe('Scope C.1 — TensogramFile.fromUrl Range backend', () => {
       const beforeMeta = requests.length;
       for (let i = 0; i < 4; i++) {
         const meta = await file.messageMetadata(i);
-        expect(meta.version).toBe(2);
+        // Synthetic `version` is sourced from the preamble — see the
+        // longer note on the `messageMetadata fetches header chunk only`
+        // test above.
+        expect(meta.version).toBe(3);
       }
       expect(requests.length).toBe(beforeMeta);
     } finally {
@@ -631,6 +702,207 @@ describe('Scope C.1 — TensogramFile.fromUrl Range backend', () => {
     await expect(
       TensogramFile.fromUrl('https://example.invalid/404.tgm', { fetch: fakeFetch }),
     ).rejects.toThrow(/HTTP 404/);
+  });
+
+  it('messageDescriptors returns one descriptor per object on the lazy backend', async () => {
+    // Three objects of mixed shape — verifies the index-frame walk
+    // and per-frame CBOR descriptor parse round-trip cleanly without
+    // decoding payloads.  All three frames are below the prefix
+    // threshold so the small-frame (full-frame fetch) path runs.
+    const msg = encode(defaultMeta(), [
+      {
+        descriptor: makeDescriptor([4], 'float32'),
+        data: new Float32Array([1, 2, 3, 4]),
+      },
+      {
+        descriptor: makeDescriptor([2, 3], 'float32'),
+        data: new Float32Array([1, 2, 3, 4, 5, 6]),
+      },
+      {
+        descriptor: makeDescriptor([5], 'int32'),
+        data: new Int32Array([10, 20, 30, 40, 50]),
+      },
+    ]);
+    const { fetch: fakeFetch } = makeRangeServer(msg);
+    const file = await TensogramFile.fromUrl('https://example.invalid/desc.tgm', {
+      fetch: fakeFetch,
+    });
+    try {
+      const { metadata, descriptors } = await file.messageDescriptors(0);
+      expect(metadata.version).toBe(3);
+      expect(descriptors).toHaveLength(3);
+      expect(descriptors[0].shape).toEqual([4]);
+      expect(descriptors[0].dtype).toBe('float32');
+      expect(descriptors[1].shape).toEqual([2, 3]);
+      expect(descriptors[1].dtype).toBe('float32');
+      expect(descriptors[2].shape).toEqual([5]);
+      expect(descriptors[2].dtype).toBe('int32');
+
+      // Cached on the layout: a second call makes zero descriptor-CBOR
+      // round trips.  We can't directly observe the request count cheaply
+      // here without a metrics fixture, but a re-call must succeed and
+      // return shape-equal descriptors.
+      const second = await file.messageDescriptors(0);
+      expect(second.descriptors.map((d) => d.shape)).toEqual(
+        descriptors.map((d) => d.shape),
+      );
+    } finally {
+      file.close();
+    }
+  });
+
+  it('messageDescriptors works on the eager backend without parse_footer_chunk error', async () => {
+    // Regression: an earlier draft of messageDescriptors called
+    // `parse_footer_chunk(slice)` on the *full* message bytes and
+    // discarded the result.  That call could throw on valid messages
+    // when stray "FR" sequences appeared inside compressed payload
+    // bytes (e.g., szip / zstd output).  We force the eager backend
+    // by supplying a server that omits Accept-Ranges, then verify
+    // descriptors decode successfully even when the raw payload byte
+    // pattern does contain "FR" markers — which we manufacture by
+    // including 0x46 0x52 ("FR") in a Uint8 payload.
+    const trickyPayload = new Uint8Array([
+      0x46, 0x52, // "FR" — would have tripped the old eager-path bug
+      0x00, 0x09, // type 9 (NTensorFrame) → looks frame-shaped to scanner
+      0x00, 0x00, // version
+      0x00, 0x00, // flags
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, // length 16 bytes — within bounds
+      0xff, 0xff, // garbage to fill out
+    ]);
+    const msg = encode(defaultMeta(), [
+      { descriptor: makeDescriptor([trickyPayload.byteLength], 'uint8'), data: trickyPayload },
+    ]);
+    const { fetch: fakeFetch } = makeNoRangeServer(msg);
+    const file = await TensogramFile.fromUrl('https://example.invalid/eager-desc.tgm', {
+      fetch: fakeFetch,
+    });
+    try {
+      const { metadata, descriptors } = await file.messageDescriptors(0);
+      expect(metadata.version).toBe(3);
+      expect(descriptors).toHaveLength(1);
+      expect(descriptors[0].dtype).toBe('uint8');
+      expect(descriptors[0].shape).toEqual([trickyPayload.byteLength]);
+    } finally {
+      file.close();
+    }
+  });
+
+  it('messageObjectRangeBatch decodes the same range across many messages', async () => {
+    // Six messages, each with one float32 object of the same shape.
+    // Batch-decode a partial range of each in parallel under a small
+    // concurrency cap so the limiter actually serialises some calls.
+    const N = 6;
+    const msgs = Array.from({ length: N }, (_, i) =>
+      encode(defaultMeta(), [
+        {
+          descriptor: makeDescriptor([10], 'float32'),
+          data: new Float32Array(10).map((_, k) => i * 100 + k),
+        },
+      ]),
+    );
+    const body = concatBytes(...msgs);
+    const { fetch: fakeFetch, requests } = makeRangeServer(body);
+
+    const file = await TensogramFile.fromUrl('https://example.invalid/range-batch.tgm', {
+      fetch: fakeFetch,
+      concurrency: 2,
+    });
+    try {
+      const results = await file.messageObjectRangeBatch(
+        Array.from({ length: N }, (_, i) => i),
+        0,
+        [
+          [0, 2],
+          [5, 3],
+        ],
+      );
+      expect(results).toHaveLength(N);
+      for (let i = 0; i < N; i++) {
+        expect(results[i].parts).toHaveLength(2);
+        const head = Array.from(results[i].parts[0] as Float32Array);
+        expect(head).toEqual([i * 100 + 0, i * 100 + 1]);
+        const middle = Array.from(results[i].parts[1] as Float32Array);
+        expect(middle).toEqual([i * 100 + 5, i * 100 + 6, i * 100 + 7]);
+      }
+      // Sanity: the batch made at least one network call.
+      expect(requests.length).toBeGreaterThan(1);
+    } finally {
+      file.close();
+    }
+  });
+
+  it('messageDescriptors descriptor fan-out respects the concurrency cap', async () => {
+    // Regression for the inner-fetchRange bypass: build a multi-object
+    // message whose object frames each exceed DESCRIPTOR_PREFIX_THRESHOLD
+    // (64 KB) so #fetchOneDescriptor takes the large-frame branch and
+    // issues 3 raw fetches per descriptor (header + footer + CBOR).
+    // Without routing those leaf fetches through `b.limit`, peak
+    // in-flight would balloon to 6+ even at concurrency = 2.
+    const N_OBJECTS = 4;
+    const ELEMS = 20_000; // 20k float32 = 80 KB > 64 KB threshold
+    const objects = Array.from({ length: N_OBJECTS }, (_, i) => ({
+      descriptor: makeDescriptor([ELEMS], 'float32'),
+      data: new Float32Array(ELEMS).map((_, k) => i * 100 + k),
+    }));
+    const msg = encode(defaultMeta(), objects);
+    const server = makeMetricRangeServer(msg);
+    const file = await TensogramFile.fromUrl('https://example.invalid/big-desc.tgm', {
+      fetch: server.fetch,
+      concurrency: 2,
+    });
+    try {
+      const { descriptors } = await file.messageDescriptors(0);
+      expect(descriptors).toHaveLength(N_OBJECTS);
+      // Cap is 2: peak in-flight HTTP requests for the entire open
+      // + descriptor fan-out must never exceed 2.  Without the
+      // limiter wiring around the per-descriptor leaf fetches this
+      // would hit 6+ (two outer descriptor tasks each firing
+      // header + footer + CBOR in parallel).
+      expect(server.peakInFlight()).toBeLessThanOrEqual(2);
+    } finally {
+      file.close();
+    }
+  });
+
+  it('messageObjectRangeBatch supports join: true and per-call concurrency', async () => {
+    // Smaller scenario but with the join option set, mirroring the
+    // single-call `messageObjectRange supports join: true` test.
+    const msgs = Array.from({ length: 3 }, (_, i) =>
+      encode(defaultMeta(), [
+        {
+          descriptor: makeDescriptor([8], 'float32'),
+          data: new Float32Array(8).map((_, k) => i * 10 + k),
+        },
+      ]),
+    );
+    const body = concatBytes(...msgs);
+    const { fetch: fakeFetch } = makeRangeServer(body);
+    const file = await TensogramFile.fromUrl('https://example.invalid/range-join.tgm', {
+      fetch: fakeFetch,
+    });
+    try {
+      const results = await file.messageObjectRangeBatch(
+        [0, 1, 2],
+        0,
+        [
+          [0, 2],
+          [4, 2],
+        ],
+        { join: true, concurrency: 1 },
+      );
+      expect(results).toHaveLength(3);
+      for (let i = 0; i < 3; i++) {
+        expect(results[i].parts).toHaveLength(1);
+        expect(Array.from(results[i].parts[0] as Float32Array)).toEqual([
+          i * 10 + 0,
+          i * 10 + 1,
+          i * 10 + 4,
+          i * 10 + 5,
+        ]);
+      }
+    } finally {
+      file.close();
+    }
   });
 
   it('falls back to eager when the advertised Content-Length is past MAX_SAFE_INTEGER', async () => {

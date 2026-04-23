@@ -46,9 +46,25 @@ const finalizationRegistry = new FinalizationRegistry<WbgDecodedMessage>((handle
   }
 });
 
-/** Wrap a wbg handle in the public DecodedMessage shape. */
-export function wrapWbgDecodedMessage(handle: WbgDecodedMessage): DecodedMessage {
-  const metadata = rethrowTyped(() => handle.metadata()) as DecodedMessage['metadata'];
+/**
+ * Wrap a wbg handle in the public DecodedMessage shape.
+ *
+ * `metadataOverride` lets callers (e.g. the lazy file backend's
+ * `messageObject`) substitute the WASM handle's own metadata with the
+ * message's real cached `GlobalMetadata`.  Mutating in place — instead
+ * of spreading `{ ...wrapped, metadata }` — keeps the returned object's
+ * identity stable so the `FinalizationRegistry` registration below can
+ * still observe GC and free the handle.  Spreading would create a new
+ * object, leaving the registry key unreachable and silently leaking
+ * the WASM handle whenever the caller forgot to call `close()`.
+ */
+export function wrapWbgDecodedMessage(
+  handle: WbgDecodedMessage,
+  metadataOverride?: DecodedMessage['metadata'],
+): DecodedMessage {
+  const metadata =
+    metadataOverride ??
+    (rethrowTyped(() => handle.metadata()) as DecodedMessage['metadata']);
   const count = handle.object_count();
   const objects: DecodedObject[] = [];
   let closed = false;

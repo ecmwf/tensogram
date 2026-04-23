@@ -25,7 +25,6 @@ use tensogram::{Dtype, metadata};
 
 fn meta() -> GlobalMetadata {
     GlobalMetadata {
-        version: 3,
         extra: BTreeMap::new(),
         ..Default::default()
     }

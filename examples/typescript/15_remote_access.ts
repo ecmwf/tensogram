@@ -47,11 +47,20 @@ function describe(shape: number[]): DataObjectDescriptor {
   };
 }
 
+/** Resolved handle to the in-process HTTP server. */
+interface ServerHandle {
+  url: string;
+  close: () => Promise<void>;
+}
+
 /**
  * Serve `body` over HTTP with full Range support.  Mirrors the
  * Python example's _make_range_handler exactly, in Node.
+ *
+ * Returns a `Promise<ServerHandle>` that resolves once the OS has
+ * assigned the port; the caller `await`s it before issuing requests.
  */
-function serveRangeBody(body: Uint8Array): { url: string; close: () => Promise<void> } {
+function serveRangeBody(body: Uint8Array): Promise<ServerHandle> {
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
     if (req.method === 'HEAD') {
       res.writeHead(200, {
@@ -83,8 +92,8 @@ function serveRangeBody(body: Uint8Array): { url: string; close: () => Promise<v
     res.end(Buffer.from(body));
   };
 
-  const server = createServer(handler);
-  return new Promise<{ url: string; close: () => Promise<void> }>((resolve) => {
+  return new Promise<ServerHandle>((resolve) => {
+    const server = createServer(handler);
     server.listen(0, '127.0.0.1', () => {
       const addr = server.address();
       if (!addr || typeof addr === 'string') {
@@ -93,13 +102,10 @@ function serveRangeBody(body: Uint8Array): { url: string; close: () => Promise<v
       const url = `http://127.0.0.1:${addr.port}/forecast.tgm`;
       resolve({
         url,
-        close: () =>
-          new Promise<void>((res) =>
-            server.close(() => res()),
-          ),
+        close: () => new Promise<void>((res) => server.close(() => res())),
       });
     });
-  }) as unknown as { url: string; close: () => Promise<void> };
+  });
 }
 
 async function main(): Promise<void> {
@@ -126,7 +132,7 @@ async function main(): Promise<void> {
   console.log(`Encoded ${tgm.byteLength} bytes with 2 objects`);
 
   // ── Stand up the local Range-capable server ───────────────────────────
-  const server = await Promise.resolve(serveRangeBody(tgm));
+  const server = await serveRangeBody(tgm);
   try {
     console.log(`Serving at ${server.url}`);
 

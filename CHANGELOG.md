@@ -5,6 +5,105 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — TypeScript / WASM / Tensoscope: browser-usable remote + async parity
+
+`@ecmwf.int/tensogram` is now feature-comparable with the Rust core's
+`object_store` integration over HTTP(S) and AWS-signed HTTPS.  The
+TypeScript wrapper, the WASM crate, and the Tensoscope viewer all
+move from "download the whole message" to "fetch only the bytes you
+ask for", with bounded-concurrency fan-out tuned to typical browser
+per-host limits.
+
+- **Layout-aware per-object access on `TensogramFile.fromUrl`** over
+  HTTP Range:
+  - `messageMetadata(i)` — 256 KB header chunk (or footer suffix),
+    instead of full-message download.
+  - `messageDescriptors(i)` — header + footer + CBOR-prefix
+    optimisation; full frame for frames ≤ 64 KB, mirrors Rust
+    `read_descriptor_only`.
+  - `messageObject(i, j)` — exactly one `Range: bytes=…` GET for the
+    target object's frame.
+  - `messageObjectRange(i, j, ranges)` — partial sub-tensor decode
+    against a single fetched frame.
+  - `messageObjectBatch` / `messageObjectRangeBatch` — parallel
+    fan-out with bounded concurrency.
+  - `prefetchLayouts(msgIndices)` — pre-warm the per-message layout
+    cache so subsequent metadata / descriptor / per-object reads
+    make zero extra round trips.
+- **Bounded-concurrency pool** (default 6, configurable via
+  `FromUrlOptions.concurrency` and per-call `opts.concurrency`).  The
+  outer batch limiter and the shared per-host pool are independent
+  so the nested-pool deadlock path stays closed (regression-tested).
+- **AWS SigV4 helper**:
+  - `signAwsV4Request(input, creds)` — pure signer.  Byte-for-byte
+    against AWS `sig-v4-test-suite` vectors (get-vanilla,
+    duplicate-query-key ordering, header-value trim, session token,
+    pre-encoded path round-trip).  Web Crypto only — no transitive
+    deps.
+  - `createAwsSigV4Fetch(creds, opts?)` — `fetch`-compatible wrapper
+    pluggable directly into `FromUrlOptions.fetch`.  Read-only
+    (`UNSIGNED-PAYLOAD` semantics over an empty body); for write
+    paths use a presigned URL.
+- **WASM additions**: nine new `#[wasm_bindgen]` exports in a new
+  `layout.rs` module (`read_preamble_info`, `read_postamble_info`,
+  `parse_header_chunk`, `parse_footer_chunk`,
+  `read_data_object_frame_header`, `read_data_object_frame_footer`,
+  `parse_descriptor_cbor`, `decode_object_from_frame`,
+  `decode_range_from_frame`).  These let the TS wrapper compose
+  per-object Range reads without re-implementing wire-format
+  parsing.  Header / footer chunk parsers route metadata through
+  `metadata_to_js` so the lazy backend's `metadata.version` is the
+  same wire-format integer the eager backend has always returned.
+- **Rust core addition**: one new public function,
+  `decode::decode_object_from_frame` (plus
+  `decode_range_from_frame`) — both take one frame's bytes in
+  isolation, mirroring `decode_object` / `decode_range`.  Used by
+  the WASM single-frame helpers and by the `remote` backend when it
+  has fetched one indexed frame via Range.
+- **Tensoscope** uses `prefetchLayouts` + `messageMetadata` for
+  `buildIndex` (chunked at 64 indices to keep the per-host
+  concurrency limit honoured) and `messageObject` for `decodeField`
+  (one Range GET per displayed field instead of a whole-message
+  download).  Misleading `s3://` placeholders in the file-open
+  dialogs are replaced with accurate "https:// URL (use a presigned
+  URL for private S3/GCS/Azure)" guidance.
+
+### Fixed
+
+- **TypeScript `POSTAMBLE_BYTES`**: `typescript/src/file.ts` had the
+  v2 value (16); fixed to v3's 24.  Fixes a silent off-by-8 in the
+  lazy-scan `total_length` minimum-size check.
+- **TypeScript `messageDescriptors` eager path**: removed a
+  `parse_footer_chunk(slice)` call against the *full* message bytes
+  whose result was discarded.  The call could throw on valid
+  messages where stray `FR` byte sequences appeared inside payloads
+  (notably compressed streams), failing `messageDescriptors`
+  entirely.  Eager fallback now goes straight to the standard
+  `decode(slice)` route.
+- **TypeScript `wrapWbgDecodedMessage` lifecycle**: the lazy
+  backend's `messageObject` returned `{ ...wrapped, metadata }` —
+  spreading into a fresh object that bypassed the
+  `FinalizationRegistry` registration on the wrapped object,
+  silently leaking the WASM handle whenever the caller forgot to
+  call `close()`.  `wrapWbgDecodedMessage` now accepts an optional
+  `metadataOverride` argument that's applied in place; the returned
+  identity stays stable so GC finalisation still runs.
+- **TypeScript AWS SigV4 fetch**: when `input` is a `Request`,
+  `createAwsSigV4Fetch` now merges `init.headers` over
+  `input.headers` before signing — matching standard `fetch`
+  semantics.  Previously a caller passing
+  `(request, { headers: { Range: '…' } })` silently lost the Range
+  header (and the resulting signature was for a Range-less request).
+- **TypeScript descriptor-fetch concurrency cap**: the inner
+  `fetchRange` calls inside `#fetchOneDescriptor` (header + footer
+  parallel reads, CBOR-region fetch, and the prefix-doubling loop)
+  now route through the backend's bounded-concurrency limiter.
+  Previously each descriptor task held an outer slot via
+  `b.limit(t)` and then fired multiple ungoverned leaf fetches —
+  burst exceeded the documented per-host cap.  The outer wrap is
+  removed (it would deadlock at low caps when leaves also acquire
+  slots) so the limiter applies once at the leaf level.
+
 ### Changed — BREAKING (free-form CBOR metadata)
 
 The CBOR metadata frame is now **fully free-form**.  The library-

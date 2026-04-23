@@ -457,17 +457,13 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
         return { metadata: layout.metadata, descriptors };
       }
     }
+    // Eager fallback: in-memory / local-file / eager-HTTP backend.
+    // `parse_footer_chunk` is *not* called here — it expects a footer-
+    // region slice and would error on stray "FR" sequences inside
+    // arbitrary payload bytes.  The full-message decode below is the
+    // source of truth and is cheap when bytes are already in memory.
     const slice = await this.rawMessage(index);
     const metadata = decodeMetadata(slice);
-    const positions = rethrowTyped(() => {
-      const raw = getWbg().parse_footer_chunk(slice);
-      return raw as unknown;
-    });
-    // Fall back to decoding the full message to extract descriptors,
-    // because `parse_footer_chunk` against a full message is not the
-    // right shape (it expects a footer-region slice). The eager path
-    // uses the standard decode route.
-    void positions;
     const decoded = decode(slice);
     const descriptors = decoded.objects.map((o) => o.descriptor);
     decoded.close();
@@ -783,6 +779,16 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
    * helpers.  For larger frames we fetch only the header + footer +
    * CBOR region, which can be a few KB even for hundred-megabyte
    * frames.  Mirrors Rust `RemoteBackend::read_descriptor_only`.
+   *
+   * Concurrency: every leaf `fetchRange` call inside
+   * `#fetchOneDescriptor` is routed through `b.limit`, so the
+   * configured cap (default 6) bounds total in-flight HTTP requests
+   * — including the parallel header+footer fetches and the CBOR
+   * prefix-doubling loop.  We deliberately do *not* wrap the outer
+   * descriptor task in `b.limit` as well: doing so would deadlock at
+   * low concurrency caps, because each task holds an outer slot
+   * while waiting for inner-fetch slots that no other task can
+   * release.
    */
   async #fetchDescriptors(
     b: LazyHttpBackend,
@@ -790,16 +796,18 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
   ): Promise<DataObjectDescriptor[]> {
     const idx = layout.index;
     if (!idx) throw new IoError('message has no index frame');
-    const tasks = idx.offsets.map((off, i) => () =>
+    const tasks = idx.offsets.map((off, i) =>
       this.#fetchOneDescriptor(b, layout.offset + off, idx.lengths[i]),
     );
-    return await Promise.all(tasks.map((t) => b.limit(t)));
+    return await Promise.all(tasks);
   }
 
   /**
    * Fetch a single descriptor, using the prefix optimisation when
    * the frame is large enough to make the extra round-trip
-   * worthwhile.
+   * worthwhile.  Every `fetchRange` call inside this method goes
+   * through `b.limit` so the configured per-host concurrency cap is
+   * respected even when many descriptor tasks are in flight.
    */
   async #fetchOneDescriptor(
     b: LazyHttpBackend,
@@ -809,22 +817,31 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     const wbg = getWbg();
 
     if (frameLength <= DESCRIPTOR_PREFIX_THRESHOLD) {
-      const frameBytes = await fetchRange(
-        lazyFetchContext(b),
-        frameAbsStart,
-        frameAbsStart + frameLength,
+      const frameBytes = await b.limit(() =>
+        fetchRange(lazyFetchContext(b), frameAbsStart, frameAbsStart + frameLength),
       );
       return await this.#parseDescriptorFromFullFrame(frameBytes);
     }
 
     // Large frame: fetch header (16 B) + footer (last 20 B) to learn
     // the CBOR region's offset, then fetch the CBOR region itself.
+    // Each leaf fetch is independently throttled by `b.limit` — under
+    // a busy pool this naturally serialises inside one descriptor
+    // task instead of bypassing the cap.
     const [headerBytes, footerBytes] = await Promise.all([
-      fetchRange(lazyFetchContext(b), frameAbsStart, frameAbsStart + DATA_OBJECT_FRAME_HEADER_BYTES),
-      fetchRange(
-        lazyFetchContext(b),
-        frameAbsStart + frameLength - DATA_OBJECT_FRAME_FOOTER_BYTES,
-        frameAbsStart + frameLength,
+      b.limit(() =>
+        fetchRange(
+          lazyFetchContext(b),
+          frameAbsStart,
+          frameAbsStart + DATA_OBJECT_FRAME_HEADER_BYTES,
+        ),
+      ),
+      b.limit(() =>
+        fetchRange(
+          lazyFetchContext(b),
+          frameAbsStart + frameLength - DATA_OBJECT_FRAME_FOOTER_BYTES,
+          frameAbsStart + frameLength,
+        ),
       ),
     ]);
 
@@ -857,7 +874,9 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
 
     if (header.cbor_after_payload) {
       // CBOR lives in [cborAbsStart, footerAbsStart) — fetch it exactly.
-      const cborBytes = await fetchRange(lazyFetchContext(b), cborAbsStart, footerAbsStart);
+      const cborBytes = await b.limit(() =>
+        fetchRange(lazyFetchContext(b), cborAbsStart, footerAbsStart),
+      );
       return rethrowTyped(() => wbg.parse_descriptor_cbor(cborBytes) as DataObjectDescriptor);
     }
 
@@ -869,7 +888,9 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     // read_descriptor_only (prefix_size doubles to max_cbor_len).
     while (true) {
       const readEnd = Math.min(cborAbsStart + prefixSize, footerAbsStart);
-      const prefixBytes = await fetchRange(lazyFetchContext(b), cborAbsStart, readEnd);
+      const prefixBytes = await b.limit(() =>
+        fetchRange(lazyFetchContext(b), cborAbsStart, readEnd),
+      );
       try {
         return rethrowTyped(
           () => getWbg().parse_descriptor_cbor(prefixBytes) as DataObjectDescriptor,
@@ -1011,10 +1032,14 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
    * `DecodedMessage` shape that `decode()` produces, so callers can
    * use object.data() / object.dataView() on the single object.
    *
-   * `metadata` is the message's real cached metadata (not the
-   * default-constructed placeholder the WASM helper returns), so
-   * consumers of messageObject / messageObjectBatch see the actual
-   * GlobalMetadata.
+   * Passes the message's real cached metadata as the
+   * `metadataOverride` so consumers of messageObject /
+   * messageObjectBatch see the actual `GlobalMetadata` rather than
+   * the default-constructed placeholder the WASM single-frame helper
+   * returns.  The override is wired in at construction time inside
+   * `wrapWbgDecodedMessage` so the returned object's identity stays
+   * stable — vital for the wrapper's `FinalizationRegistry` to
+   * observe GC and free the handle if `close()` is forgotten.
    */
   async #wrapWasmDecodedObject(
     frameBytes: Uint8Array,
@@ -1030,8 +1055,7 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
         options?.restoreNonFinite ?? true,
       ),
     );
-    const wrapped = wrapWbgDecodedMessage(handle);
-    return { ...wrapped, metadata };
+    return wrapWbgDecodedMessage(handle, metadata);
   }
 
   // ── Write ──

@@ -28,7 +28,7 @@
 //! TypeScript wrapper's error mapper sees a consistent shape.
 
 use crate::DecodedMessage;
-use crate::convert::{js_err, to_js};
+use crate::convert::{js_err, metadata_to_js, to_js};
 use serde::Serialize;
 use tensogram::{
     self as core, DecodeOptions,
@@ -40,6 +40,33 @@ use tensogram::{
     },
 };
 use wasm_bindgen::prelude::*;
+
+/// Set `(metadata, index)` on `out` with the metadata routed through
+/// [`metadata_to_js`] so the wire-format `version` field gets
+/// synthesised.  Without this the lazy-backend output would silently
+/// return `metadata.version === undefined` while the eager-backend
+/// [`crate::decode_metadata`] path returned `metadata.version ===
+/// WIRE_VERSION` — a real cross-backend divergence the lazy
+/// `messageMetadata` / `messageObject` tests rely on being absent.
+fn set_metadata_and_index(
+    out: &js_sys::Object,
+    metadata: Option<core::GlobalMetadata>,
+    index: Option<IndexFrameJs>,
+) -> Result<(), JsError> {
+    let meta_val = match metadata {
+        Some(m) => metadata_to_js(&m)?,
+        None => JsValue::NULL,
+    };
+    js_sys::Reflect::set(out, &JsValue::from_str("metadata"), &meta_val)
+        .map_err(|_| JsError::new("internal: failed to set chunk.metadata"))?;
+    let index_val = match index {
+        Some(idx) => to_js(&idx)?,
+        None => JsValue::NULL,
+    };
+    js_sys::Reflect::set(out, &JsValue::from_str("index"), &index_val)
+        .map_err(|_| JsError::new("internal: failed to set chunk.index"))?;
+    Ok(())
+}
 
 // ── Return shapes ────────────────────────────────────────────────────────────
 
@@ -67,19 +94,6 @@ struct PostambleInfoJs {
 struct IndexFrameJs {
     offsets: Vec<u64>,
     lengths: Vec<u64>,
-}
-
-#[derive(Serialize)]
-struct HeaderChunkJs {
-    metadata: Option<core::GlobalMetadata>,
-    index: Option<IndexFrameJs>,
-    body_start: Option<u64>,
-}
-
-#[derive(Serialize)]
-struct FooterChunkJs {
-    metadata: Option<core::GlobalMetadata>,
-    index: Option<IndexFrameJs>,
 }
 
 #[derive(Serialize)]
@@ -165,11 +179,9 @@ pub fn parse_header_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
         return Err(JsError::new("header chunk does not start with TENSOGRM"));
     }
 
-    let mut out = HeaderChunkJs {
-        metadata: None,
-        index: None,
-        body_start: None,
-    };
+    let mut metadata: Option<core::GlobalMetadata> = None;
+    let mut index: Option<IndexFrameJs> = None;
+    let mut body_start: Option<u64> = None;
 
     let mut pos = PREAMBLE_SIZE;
     while pos + FRAME_HEADER_SIZE <= chunk.len() {
@@ -197,7 +209,7 @@ pub fn parse_header_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
             fh.frame_type,
             FrameType::NTensorFrame | FrameType::PrecederMetadata
         ) {
-            out.body_start = Some(pos as u64);
+            body_start = Some(pos as u64);
             break;
         }
 
@@ -208,11 +220,11 @@ pub fn parse_header_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
         let payload = &chunk[pos + FRAME_HEADER_SIZE..frame_end - FRAME_COMMON_FOOTER_SIZE];
         match fh.frame_type {
             FrameType::HeaderMetadata => {
-                out.metadata = Some(cbor_to_global_metadata(payload).map_err(js_err)?);
+                metadata = Some(cbor_to_global_metadata(payload).map_err(js_err)?);
             }
             FrameType::HeaderIndex => {
                 let idx = cbor_to_index(payload).map_err(js_err)?;
-                out.index = Some(IndexFrameJs {
+                index = Some(IndexFrameJs {
                     offsets: idx.offsets,
                     lengths: idx.lengths,
                 });
@@ -224,17 +236,23 @@ pub fn parse_header_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
         pos = aligned.min(chunk.len());
     }
 
-    to_js(&out)
+    let out = js_sys::Object::new();
+    set_metadata_and_index(&out, metadata, index)?;
+    let body_start_val = match body_start {
+        Some(b) => JsValue::from(b),
+        None => JsValue::NULL,
+    };
+    js_sys::Reflect::set(&out, &JsValue::from_str("body_start"), &body_start_val)
+        .map_err(|_| JsError::new("internal: failed to set header_chunk.body_start"))?;
+    Ok(out.into())
 }
 
 /// Parse footer metadata + index from a chunk that covers the footer
 /// region — i.e. `[first_footer_offset, message_end - POSTAMBLE_SIZE)`.
 #[wasm_bindgen]
 pub fn parse_footer_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
-    let mut out = FooterChunkJs {
-        metadata: None,
-        index: None,
-    };
+    let mut metadata: Option<core::GlobalMetadata> = None;
+    let mut index: Option<IndexFrameJs> = None;
 
     let mut pos = 0usize;
     while pos + FRAME_HEADER_SIZE <= chunk.len() {
@@ -262,11 +280,11 @@ pub fn parse_footer_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
         let payload = &chunk[pos + FRAME_HEADER_SIZE..frame_end - FRAME_COMMON_FOOTER_SIZE];
         match fh.frame_type {
             FrameType::FooterMetadata => {
-                out.metadata = Some(cbor_to_global_metadata(payload).map_err(js_err)?);
+                metadata = Some(cbor_to_global_metadata(payload).map_err(js_err)?);
             }
             FrameType::FooterIndex => {
                 let idx = cbor_to_index(payload).map_err(js_err)?;
-                out.index = Some(IndexFrameJs {
+                index = Some(IndexFrameJs {
                     offsets: idx.offsets,
                     lengths: idx.lengths,
                 });
@@ -278,7 +296,9 @@ pub fn parse_footer_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
         pos = aligned.min(chunk.len());
     }
 
-    to_js(&out)
+    let out = js_sys::Object::new();
+    set_metadata_and_index(&out, metadata, index)?;
+    Ok(out.into())
 }
 
 // ── Per-frame header + footer + descriptor CBOR ──────────────────────────────

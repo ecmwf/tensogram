@@ -153,4 +153,61 @@ describe('createAwsSigV4Fetch — integration', () => {
       }),
     ).toThrow();
   });
+
+  it('merges init.headers when input is a Request (matches fetch semantics)', async () => {
+    // Regression: an earlier draft of buildSignedRequest only used
+    // `input.headers` when `input` was a Request, silently dropping
+    // anything in `init.headers`.  Standard fetch semantics put
+    // init.headers in charge — so a caller passing
+    // (request, { headers: { Range: 'bytes=0-99' } }) expects Range
+    // to be present in (and signed for) the outgoing request.
+    let outgoing: Headers | null = null;
+    const inner: typeof globalThis.fetch = async (
+      _url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      outgoing =
+        init?.headers instanceof Headers ? init.headers : new Headers(init?.headers);
+      return new Response('ok', { status: 200 });
+    };
+    const signed = createAwsSigV4Fetch(CREDS, { fetchImpl: inner });
+    const baseReq = new Request(
+      'https://my-bucket.s3.us-east-1.amazonaws.com/data.tgm',
+      { headers: { 'X-Existing': 'baseline' } },
+    );
+    await signed(baseReq, { headers: { Range: 'bytes=0-99', 'X-Existing': 'override' } });
+    expect(outgoing).not.toBeNull();
+    // Range from init.headers must reach the wire AND be reflected
+    // in the SignedHeaders list of Authorization (case-insensitive).
+    expect(outgoing!.get('range')).toBe('bytes=0-99');
+    // init.headers wins on collision (same precedence as new Request(input, init)).
+    expect(outgoing!.get('x-existing')).toBe('override');
+    const auth = outgoing!.get('authorization') ?? '';
+    expect(auth).toMatch(/^AWS4-HMAC-SHA256 /);
+    // SignedHeaders must include `range` (lowercase, per SigV4 spec).
+    expect(auth).toMatch(/SignedHeaders=[^,]*\brange\b/);
+  });
+
+  it('does not lose Range when caller passes a Request alone (no init.headers)', async () => {
+    // The Request itself carries the Range header; init.headers is
+    // empty.  The signed request must still include Range and sign it.
+    let outgoing: Headers | null = null;
+    const inner: typeof globalThis.fetch = async (
+      _url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      outgoing =
+        init?.headers instanceof Headers ? init.headers : new Headers(init?.headers);
+      return new Response('ok', { status: 200 });
+    };
+    const signed = createAwsSigV4Fetch(CREDS, { fetchImpl: inner });
+    const baseReq = new Request(
+      'https://my-bucket.s3.us-east-1.amazonaws.com/data.tgm',
+      { headers: { Range: 'bytes=10-20' } },
+    );
+    await signed(baseReq);
+    expect(outgoing!.get('range')).toBe('bytes=10-20');
+    const auth = outgoing!.get('authorization') ?? '';
+    expect(auth).toMatch(/SignedHeaders=[^,]*\brange\b/);
+  });
 });

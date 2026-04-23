@@ -220,33 +220,63 @@ describe('signAwsV4Request — query-string canonicalisation edge cases', () => 
 
 describe('signAwsV4Request — URI path encoding edge cases', () => {
   it('does not double-encode %HH triplets already in URL.pathname', async () => {
-    // /a%20b (space encoded in URL input) must sign as /a%20b, not /a%2520b.
+    // Two equivalent inputs:
+    //   - literal space in the path (the URL constructor encodes it
+    //     to %20 on its own);
+    //   - the same space already pre-encoded as %20.
+    // Both must sign identically — i.e., the signer must NOT
+    // re-encode %20 as %2520.  A naive `encodeURIComponent` over the
+    // pathname would fail this test because it would turn the
+    // pre-encoded form into %252520 (encode the % as well) while
+    // leaving the literal-space form at %20.
+    const literalSpace = await signAwsV4Request(
+      awsSuiteInput('GET', 'https://example.amazonaws.com/a b'),
+      AWS_CREDS,
+    );
     const preencoded = await signAwsV4Request(
       awsSuiteInput('GET', 'https://example.amazonaws.com/a%20b'),
       AWS_CREDS,
     );
-    // The URL constructor encodes the space the same way; the two
-    // forms must produce the same signature.
-    const withSpace = await signAwsV4Request(
-      awsSuiteInput('GET', 'https://example.amazonaws.com/a%20b'),
+    expect(literalSpace.authorization).toBe(preencoded.authorization);
+
+    // And both must differ from a hypothetical double-encoded
+    // signing — pinned via a path that contains a literal `%20`
+    // sequence assembled by URL.pathname assignment.  We can't
+    // legally have `%20` sit unencoded in a URL string, so we use
+    // `URL`'s pathname setter which does NOT re-encode existing
+    // %HH triplets.
+    const u = new URL('https://example.amazonaws.com/');
+    u.pathname = '/a%20b';
+    const viaPathname = await signAwsV4Request(
+      {
+        method: 'GET',
+        url: u,
+        headers: new Headers({ host: 'example.amazonaws.com' }),
+        payloadHash: EMPTY_SHA256,
+        timestamp: AWS_TIMESTAMP,
+        includeContentSha256: false,
+      },
       AWS_CREDS,
     );
-    expect(preencoded.authorization).toBe(withSpace.authorization);
+    expect(viaPathname.authorization).toBe(preencoded.authorization);
   });
 
   it('handles paths with %2F (encoded slash) without second-encoding', async () => {
-    const result = await signAwsV4Request(
+    // /a%2Fb must canonicalise to /a%2Fb (NOT /a%252Fb).  The signature
+    // is taken against the canonical URI; we pin it by signing twice,
+    // once with the same pre-encoded form and once with /a/b which
+    // contains an unescaped slash that the canonicaliser leaves alone.
+    // The two MUST differ — otherwise the canonicaliser is treating
+    // %2F and / interchangeably (bug).
+    const encodedSlash = await signAwsV4Request(
       awsSuiteInput('GET', 'https://example.amazonaws.com/a%2Fb'),
       AWS_CREDS,
     );
-    // The canonical URI has the %2F preserved, NOT %252F.  If it were
-    // %252F, the signature would differ from a freshly-signed request
-    // against the same encoded URL.
-    const again = await signAwsV4Request(
-      awsSuiteInput('GET', 'https://example.amazonaws.com/a%2Fb'),
+    const literalSlash = await signAwsV4Request(
+      awsSuiteInput('GET', 'https://example.amazonaws.com/a/b'),
       AWS_CREDS,
     );
-    expect(result.authorization).toBe(again.authorization);
+    expect(encodedSlash.authorization).not.toBe(literalSlash.authorization);
   });
 });
 
