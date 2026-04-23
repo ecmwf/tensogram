@@ -38,6 +38,12 @@ export { TensogramFile } from './file.js';
 export { getMetaKey, computeCommon, cborValuesEqual } from './metadata.js';
 export { DTYPE_BYTE_WIDTH, payloadByteSize, shapeElementCount, typedArrayFor, isDtype, SUPPORTED_DTYPES } from './dtype.js';
 
+// ── Optional auth helpers ─────────────────────────────────────────────────
+export { signAwsV4Request } from './auth/signAwsV4.js';
+export type { SigV4Credentials, SigV4Input, SigV4Result } from './auth/signAwsV4.js';
+export { createAwsSigV4Fetch } from './auth/awsSigV4Fetch.js';
+export type { AwsSigV4FetchOptions } from './auth/awsSigV4Fetch.js';
+
 // ── Scope C.1 — API parity ────────────────────────────────────────────────
 export { decodeRange } from './range.js';
 export { computeHash } from './hash.js';
