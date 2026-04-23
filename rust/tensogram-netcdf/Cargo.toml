@@ -1,6 +1,6 @@
 [package]
 name = "tensogram-netcdf"
-version = "0.18.0"
+version = "0.18.1"
 edition = "2024"
 rust-version = "1.87"
 license = "Apache-2.0"
@@ -14,8 +14,8 @@ categories = ["science"]
 authors = ["ECMWF <software@ecmwf.int>"]
 
 [dependencies]
-tensogram = { path = "../tensogram", version = "=0.18.0" }
-tensogram-encodings = { path = "../tensogram-encodings", version = "=0.18.0" }
+tensogram = { path = "../tensogram", version = "=0.18.1" }
+tensogram-encodings = { path = "../tensogram-encodings", version = "=0.18.1" }
 netcdf = { version = "0.12", default-features = false }
 thiserror = "2"
 ciborium = "0.2"

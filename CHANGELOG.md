@@ -3,6 +3,82 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.18.1] - 2026-04-23
+
+### Added — Tensoscope: render GRIB-derived `.tgm` files without preprocessing
+
+ECMWF-operational GRIB-derived `.tgm` files (converted via
+`tensogram convert-grib`) now open directly in Tensoscope without any
+Python-side coordinate preprocessing.  All changes are confined to the
+browser layer — no wire-format, CLI, or core-library changes.
+
+- **Auto-expand 1-D lat/lon axes** — files that ship 1-D latitude /
+  longitude axes plus 2-D `[nLat, nLon]` data (the common GRIB /
+  NetCDF layout) now auto-meshgrid in the viewer instead of requiring
+  a Python pre-pass.  Already-meshgridded files pass through
+  unchanged.
+- **Infer lat/lon axes from `mars.grid`** — files with no explicit
+  coordinate objects but `mars.grid = "regular_ll"` now have their
+  axes synthesised from the data shape plus `mars.area` (default
+  `[90, 0, -90, 360]`), with endpoint-exclusive longitude on full
+  360° wrap.  Reduced, octahedral, and Gaussian grids (`reduced_gg`,
+  `O*`, `N*`) return `null` and will need per-point coords emitted
+  by `tensogram-grib` in a future release.
+- **Per-message coordinate cache** — `fetchCoordinates(msgIdx)` is
+  now keyed per message, so heterogeneous multi-message files with
+  different grids per message each render against the right mesh
+  instead of silently reusing message 0's coords.
+
+### Fixed
+
+- **Integer `mars.param` codes** — sidebar and field-selection on
+  GRIB-derived files that use ECMWF integer param codes
+  (`167`, `130`, …) no longer crash.  `decodeFieldSlice` and
+  `groupByParam` coerce `bigint` param values via a safe `toNumber`
+  helper.
+- **Slicing on truly 2-D gridded data** — `selectField` no longer
+  level-slices `[721, 1440]` meshed fields and renders them as a
+  "donut in the north"; `decideSliceDim` returns `-1` when
+  `total === coordLength`.
+- **Slicing on packed-level 3-D fields** — `[N_lev, nLat, nLon]`
+  fields with meshed coords slice on dim 0 as expected.
+  `decideSliceDim` handles "one or more leading level-like dims
+  above the grid" via integer-multiple detection instead of
+  per-dim matching.
+- **Stale msg-0 coordinates** — `useAppStore.selectField` fetches
+  per-message coords and commits them atomically with `fieldData`
+  in the same store update; `initViewer` no longer eager-fetches
+  msg 0.  Multi-message files with different grids per message now
+  render consistently.
+- **`mars.area` infinity guard** — `toNumber()` rejects `bigint`
+  values that overflow to `Infinity` via `Number(v)`; pathological
+  areas fall back to safe defaults instead of propagating
+  `Infinity` into generated lat/lon arrays.
+- **Map flash / reset on file open** — eliminated the visible
+  reset of camera and styling when loading a new file (#84).
+
+### CI / Infrastructure
+
+- **Tensoscope CI** — `.github/workflows/ci.yml` now runs
+  `make ts-install` + `make ts-build` before `tensoscope/npm ci`, so
+  vitest can resolve `@ecmwf.int/tensogram` through
+  `file:../typescript`.  Pure-helper tests (`expandAxes`,
+  `inferAxesFromMars`, `decideSliceDim`) no longer fail to load.
+- **PyPI Linux aarch64 wheels** — `publish-pypi.yml` now builds
+  Linux `aarch64` wheels alongside `x86_64` (#83).
+
+### Stats
+
+- Rust workspace: 1505 passed, 5 ignored, 0 failed
+- `tensogram` with `remote,async` features: 824 passed, 2 ignored
+- `tensogram-grib`: 36 passed
+- `tensogram-netcdf`: 69 passed
+- Python `tensogram`: 535 passed, 40 skipped
+- Python `tensogram-xarray`: 242 passed
+- Python `tensogram-zarr`: 235 passed
+- Tensoscope (vitest): 54 passed across 7 files
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `mdbook build docs/`: clean
+
 ## [0.18.0] - 2026-04-23
 
 ### Added — TypeScript / WASM / Tensoscope: browser-usable remote + async parity

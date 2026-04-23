@@ -38,7 +38,7 @@ sz3 = ["tensogram-encodings/sz3"]
 threads = ["dep:rayon", "tensogram-encodings/threads"]
 
 [dependencies]
-tensogram-encodings = { path = "../tensogram-encodings", version = "=0.18.0", default-features = false }
+tensogram-encodings = { path = "../tensogram-encodings", version = "=0.18.1", default-features = false }
 thiserror.workspace = true
 ciborium = { workspace = true }
 serde.workspace = true
