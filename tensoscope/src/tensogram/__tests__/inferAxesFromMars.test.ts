@@ -28,7 +28,8 @@ function makeVar(shape: number[], mars: Record<string, unknown>): ObjectInfo {
 }
 
 describe('inferAxesFromMarsGrid', () => {
-  it('infers 721×1440 global quarter-degree lat/lon from regular_ll', () => {
+  it('defaults to [-180, 180] for regular_ll without mars.area (dateline-first compat bridge)', () => {
+    // Pinned to DEFAULT_REGULAR_LL_AREA in index.ts.
     const result = inferAxesFromMarsGrid([
       makeVar([721, 1440], { grid: 'regular_ll', param: 167 }),
     ]);
@@ -42,7 +43,40 @@ describe('inferAxesFromMarsGrid', () => {
     expect(result!.lon[1439]).toBeCloseTo(179.75, 3);
   });
 
-  it('honours mars.area [north, west, south, east] for regional grids', () => {
+  it('honours mars.area [N, W, S, E] = [90, -180, -90, 179.75] (converter output)', () => {
+    // Shape emitted by compute_regular_ll_area for a dateline-first
+    // full-global fixture; must match the compat-bridge default so
+    // re-conversion is a no-op.
+    const result = inferAxesFromMarsGrid([
+      makeVar([721, 1440], {
+        grid: 'regular_ll',
+        area: [90, -180, -90, 179.75],
+      }),
+    ]);
+    expect(result).not.toBeNull();
+    expect(result!.lon[0]).toBe(-180);
+    expect(result!.lon[1439]).toBeCloseTo(179.75, 3);
+  });
+
+  it('honours mars.area [90, 0, -90, 359.75] (Greenwich-first, MARS archive / ERA5)', () => {
+    // Pass-through: the default flip to dateline-first must not leak
+    // into the explicit-area branch.  Post-emit normalisation in the
+    // helper shifts values > 180 back into [-180, 180], so the tail of
+    // the lon array lands in negative territory — see the assertion
+    // at index 1439 below.
+    const result = inferAxesFromMarsGrid([
+      makeVar([721, 1440], {
+        grid: 'regular_ll',
+        area: [90, 0, -90, 359.75],
+      }),
+    ]);
+    expect(result).not.toBeNull();
+    expect(result!.lon[0]).toBe(0);
+    // Raw 359.75 gets normalised to -0.25 (one step west of Greenwich).
+    expect(result!.lon[1439]).toBeCloseTo(-0.25, 3);
+  });
+
+  it('honours mars.area [N, W, S, E] for regional grids', () => {
     const result = inferAxesFromMarsGrid([
       makeVar([100, 200], {
         grid: 'regular_ll',
@@ -57,12 +91,13 @@ describe('inferAxesFromMarsGrid', () => {
   });
 
   it('uses endpoint-exclusive longitude when area wraps a full circle', () => {
-    // When no area is specified, defaults are [-180, 180) which spans 360°
+    // No mars.area → defaults [-180, 180) (full 360° circle).  Last
+    // sample sits one step before east (178°, not 180°, since east ≡
+    // west mod 360 would alias j=N with j=0).
     const result = inferAxesFromMarsGrid([
       makeVar([90, 180], { grid: 'regular_ll' }),
     ]);
     expect(result).not.toBeNull();
-    // 360 / 180 = 2°, last sample at 178° (endpoints exclusive)
     expect(result!.lon[0]).toBe(-180);
     expect(result!.lon[179]).toBeCloseTo(178, 3);
   });
