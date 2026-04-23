@@ -44,11 +44,14 @@ import { fetchRange, type FetchRangeContext } from './internal/httpRange.js';
 import { errorMessage, withCause } from './internal/io.js';
 import {
   type MessageLayout,
+  normaliseFrameIndex,
+  normalisePostambleInfo,
   normalisePreambleInfo,
 } from './internal/layout.js';
 import { createLimiter, DEFAULT_CONCURRENCY } from './internal/pool.js';
 import type {
   AppendOptions,
+  DataObjectDescriptor,
   DecodedMessage,
   DecodeOptions,
   EncodeInput,
@@ -69,6 +72,10 @@ const POSTAMBLE_BYTES = 24;
 const MIN_MESSAGE_BYTES = PREAMBLE_BYTES + POSTAMBLE_BYTES;
 /** Lazy HTTP backend's per-message LRU cache size. */
 const LAZY_CACHE_CAPACITY = 32;
+/** Header-chunk size used when populating a header-indexed layout (matches Rust 256 KB). */
+const HEADER_CHUNK_BYTES = 256 * 1024;
+/** Footer-suffix size used when populating a footer-indexed layout (matches Rust 256 KB). */
+const FOOTER_SUFFIX_BYTES = 256 * 1024;
 /** The magic header every Tensogram preamble starts with. */
 const PREAMBLE_MAGIC = new TextEncoder().encode('TENSOGRM');
 
@@ -383,10 +390,73 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     return decode(slice, options);
   }
 
-  /** Decode only the global metadata for a single message. */
+  /**
+   * Decode only the global metadata for a single message.
+   *
+   * For the lazy-HTTP backend, this fetches at most a 256 KB header
+   * chunk (when the message is header-indexed) or a 256 KB footer
+   * suffix (when footer-indexed) instead of downloading the full
+   * message.  Cached for subsequent calls on the same index.
+   */
   async messageMetadata(index: number): Promise<GlobalMetadata> {
+    this.#assertOpen();
+    this.#assertMessageIndex(index);
+    const b = this.#backend;
+    if (b.kind === 'remote-lazy') {
+      const layout = await this.#ensureLayout(b, index);
+      if (layout.metadata) return layout.metadata;
+    }
     const slice = await this.rawMessage(index);
-    return decodeMetadata(slice);
+    const meta = decodeMetadata(slice);
+    if (b.kind === 'remote-lazy') {
+      const layout = b.layouts.get(index);
+      if (layout) layout.metadata = meta;
+    }
+    return meta;
+  }
+
+  /**
+   * Decode metadata + all per-object descriptors for a single message,
+   * without materialising payload bytes.
+   *
+   * For the lazy-HTTP backend, this reuses the cached layout's index
+   * frame and issues at most one Range request per data-object frame
+   * (descriptor-prefix optimisation will be added in a follow-up
+   * commit).  For local / in-memory / eager-HTTP backends, falls
+   * through to the core `decodeDescriptors` helper.
+   */
+  async messageDescriptors(
+    index: number,
+  ): Promise<{ metadata: GlobalMetadata; descriptors: DataObjectDescriptor[] }> {
+    this.#assertOpen();
+    this.#assertMessageIndex(index);
+    const b = this.#backend;
+    if (b.kind === 'remote-lazy') {
+      const layout = await this.#ensureLayout(b, index);
+      if (layout.metadata && layout.descriptors) {
+        return { metadata: layout.metadata, descriptors: layout.descriptors };
+      }
+      if (layout.metadata && layout.index) {
+        const descriptors = await this.#fetchDescriptors(b, layout);
+        layout.descriptors = descriptors;
+        return { metadata: layout.metadata, descriptors };
+      }
+    }
+    const slice = await this.rawMessage(index);
+    const metadata = decodeMetadata(slice);
+    const positions = rethrowTyped(() => {
+      const raw = getWbg().parse_footer_chunk(slice);
+      return raw as unknown;
+    });
+    // Fall back to decoding the full message to extract descriptors,
+    // because `parse_footer_chunk` against a full message is not the
+    // right shape (it expects a footer-region slice). The eager path
+    // uses the standard decode route.
+    void positions;
+    const decoded = decode(slice);
+    const descriptors = decoded.objects.map((o) => o.descriptor);
+    decoded.close();
+    return { metadata, descriptors };
   }
 
   /** Async iterate every message in wire order. */
@@ -394,6 +464,142 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     for (let i = 0; i < this.messageCount; i++) {
       yield await this.message(i);
     }
+  }
+
+  // ── Lazy-HTTP internals ──
+
+  /**
+   * Bounds-check a message index against the backend's position table.
+   * Used by all public per-message accessors so errors are consistent
+   * regardless of backend.
+   */
+  #assertMessageIndex(index: number): void {
+    if (!Number.isInteger(index) || index < 0 || index >= this.#backend.positions.length) {
+      throw new ObjectError(
+        `message index ${index} out of range (have ${this.#backend.positions.length})`,
+      );
+    }
+  }
+
+  /**
+   * Populate the metadata + index fields of a lazy-HTTP backend's
+   * layout entry for one message, reading the appropriate header
+   * chunk or footer suffix via HTTP Range.  No-op when the layout is
+   * already fully populated.
+   */
+  async #ensureLayout(b: LazyHttpBackend, index: number): Promise<MessageLayout> {
+    const layout = b.layouts.get(index);
+    if (!layout) {
+      throw new ObjectError(`missing layout entry for message index ${index}`);
+    }
+    if (layout.metadata && layout.index) return layout;
+
+    const flags = layout.preamble;
+    if (flags.hasHeaderMetadata && flags.hasHeaderIndex) {
+      await this.#populateFromHeader(b, layout);
+    } else if (flags.hasFooterMetadata && flags.hasFooterIndex) {
+      await this.#populateFromFooterSuffix(b, layout);
+    } else {
+      throw new IoError(
+        'lazy HTTP access requires header-indexed or footer-indexed messages',
+      );
+    }
+    return layout;
+  }
+
+  /**
+   * Fetch up to 256 KB from the start of the message, parse header
+   * metadata + index frames out of it, and populate the layout
+   * entry.  Mirrors Rust's `RemoteBackend::discover_header_layout_locked`.
+   */
+  async #populateFromHeader(b: LazyHttpBackend, layout: MessageLayout): Promise<void> {
+    const chunkSize = Math.min(layout.length, HEADER_CHUNK_BYTES);
+    const bytes = await b.limit(() =>
+      fetchRange(lazyFetchContext(b), layout.offset, layout.offset + chunkSize),
+    );
+    const parsed = rethrowTyped(() => getWbg().parse_header_chunk(bytes)) as {
+      metadata: GlobalMetadata | null;
+      index: { offsets: BigUint64Array; lengths: BigUint64Array } | null;
+    };
+    if (!parsed.metadata || !parsed.index) {
+      throw new IoError(
+        'header chunk did not yield metadata + index (chunk too small or footer-indexed)',
+      );
+    }
+    layout.metadata = parsed.metadata;
+    layout.index = normaliseFrameIndex(parsed.index);
+  }
+
+  /**
+   * Fetch up to 256 KB from the end of the message (the postamble
+   * plus the footer region), parse metadata + index frames out of
+   * it, and populate the layout entry.  Mirrors Rust's
+   * `RemoteBackend::discover_footer_layout_from_suffix_locked`.  Falls
+   * back to a separate Range for the footer if it lives outside the
+   * 256 KB suffix window.
+   */
+  async #populateFromFooterSuffix(b: LazyHttpBackend, layout: MessageLayout): Promise<void> {
+    const suffixSize = Math.min(layout.length, FOOTER_SUFFIX_BYTES);
+    const suffixStart = layout.offset + layout.length - suffixSize;
+    const suffix = await b.limit(() =>
+      fetchRange(lazyFetchContext(b), suffixStart, layout.offset + layout.length),
+    );
+    const postamble = normalisePostambleInfo(
+      rethrowTyped(() => getWbg().read_postamble_info(suffix)),
+    );
+    const footerAbsStart = layout.offset + postamble.firstFooterOffset;
+    const footerAbsEnd = layout.offset + layout.length - POSTAMBLE_BYTES;
+    if (footerAbsStart >= footerAbsEnd) {
+      throw new IoError('footer region is empty or postamble offset is past the footer');
+    }
+    let footerBytes: Uint8Array;
+    if (footerAbsStart >= suffixStart) {
+      const localStart = footerAbsStart - suffixStart;
+      const localEnd = suffix.length - POSTAMBLE_BYTES;
+      footerBytes = suffix.subarray(localStart, localEnd);
+    } else {
+      footerBytes = await b.limit(() =>
+        fetchRange(lazyFetchContext(b), footerAbsStart, footerAbsEnd),
+      );
+    }
+    const parsed = rethrowTyped(() => getWbg().parse_footer_chunk(footerBytes)) as {
+      metadata: GlobalMetadata | null;
+      index: { offsets: BigUint64Array; lengths: BigUint64Array } | null;
+    };
+    if (!parsed.metadata || !parsed.index) {
+      throw new IoError('footer chunk did not yield metadata + index');
+    }
+    layout.metadata = parsed.metadata;
+    layout.index = normaliseFrameIndex(parsed.index);
+  }
+
+  /**
+   * Fetch descriptors for every object, one full-frame Range request
+   * per object.  The descriptor-prefix optimisation (fetch only
+   * header+footer+CBOR for huge frames) will layer on top in a later
+   * commit; this commit establishes the correctness baseline.
+   */
+  async #fetchDescriptors(
+    b: LazyHttpBackend,
+    layout: MessageLayout,
+  ): Promise<DataObjectDescriptor[]> {
+    const idx = layout.index;
+    if (!idx) throw new IoError('message has no index frame');
+    const wbg = getWbg();
+    const tasks = idx.offsets.map((off, i) => async () => {
+      const frameBytes = await fetchRange(
+        lazyFetchContext(b),
+        layout.offset + off,
+        layout.offset + off + idx.lengths[i],
+      );
+      return rethrowTyped(
+        () =>
+          wbg.decode_object_from_frame(frameBytes, false, false).object_descriptor(
+            0,
+          ) as DataObjectDescriptor,
+      );
+    });
+    return await Promise.all(tasks.map((t) => b.limit(t)));
   }
 
   // ── Write ──

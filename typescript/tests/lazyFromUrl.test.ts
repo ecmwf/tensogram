@@ -25,9 +25,9 @@ import { defaultMeta, initOnce, makeDescriptor } from './helpers.js';
 /** Build a mock fetch that serves the supplied bytes with Range support. */
 function makeRangeServer(body: Uint8Array): {
   fetch: typeof globalThis.fetch;
-  requests: Array<{ method: string; range?: string }>;
+  requests: Array<{ method: string; range?: string; bytes?: number }>;
 } {
-  const requests: Array<{ method: string; range?: string }> = [];
+  const requests: Array<{ method: string; range?: string; bytes?: number }> = [];
   const fetchFn: typeof globalThis.fetch = async (
     _input: string | URL | Request,
     init?: RequestInit,
@@ -37,7 +37,12 @@ function makeRangeServer(body: Uint8Array): {
       init?.headers instanceof Headers
         ? init.headers.get('range')
         : init?.headers && (init.headers as Record<string, string>)['Range'];
-    requests.push({ method, range: rangeHeader ?? undefined });
+    let bytes: number | undefined;
+    if (rangeHeader) {
+      const m = /^bytes=(\d+)-(\d+)$/.exec(rangeHeader);
+      if (m) bytes = parseInt(m[2], 10) - parseInt(m[1], 10) + 1;
+    }
+    requests.push({ method, range: rangeHeader ?? undefined, bytes });
 
     if (method === 'HEAD') {
       return new Response(null, {
@@ -287,6 +292,45 @@ describe('Scope C.1 — TensogramFile.fromUrl Range backend', () => {
       // find the message because it walks for END_MAGIC when
       // total_length is 0.
       expect(file.messageCount).toBe(1);
+    } finally {
+      file.close();
+    }
+  });
+
+  it('messageMetadata fetches header chunk only (not the full message)', async () => {
+    // Build a message > 256 KB so the header-chunk cap actually
+    // kicks in.  100k float32s = 400 KB raw payload + ~100 B header
+    // overhead — comfortably larger than HEADER_CHUNK_BYTES (256 KB).
+    const big = encode(defaultMeta(), [
+      {
+        descriptor: makeDescriptor([100_000], 'float32'),
+        data: new Float32Array(100_000),
+      },
+    ]);
+    expect(big.byteLength).toBeGreaterThan(256 * 1024);
+    const { fetch: fakeFetch, requests } = makeRangeServer(big);
+
+    const file = await TensogramFile.fromUrl('https://example.invalid/big.tgm', {
+      fetch: fakeFetch,
+    });
+    try {
+      const before = requests.length;
+      const meta = await file.messageMetadata(0);
+      // defaultMeta() carries version = 2 — the user-supplied
+      // metadata version field, not the wire-format version.
+      expect(meta.version).toBe(2);
+      const newRequests = requests.slice(before);
+      expect(newRequests.length).toBeLessThanOrEqual(1);
+      const totalNewBytes = newRequests.reduce((sum, r) => sum + (r.bytes ?? 0), 0);
+      // Critically, the bytes fetched must be strictly less than the
+      // full message size — otherwise the optimisation has regressed.
+      expect(totalNewBytes).toBeLessThan(big.byteLength);
+      expect(totalNewBytes).toBeLessThanOrEqual(256 * 1024);
+
+      // Second call hits the layout cache: zero new requests.
+      const beforeCached = requests.length;
+      await file.messageMetadata(0);
+      expect(requests.length).toBe(beforeCached);
     } finally {
       file.close();
     }
