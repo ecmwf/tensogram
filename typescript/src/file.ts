@@ -433,11 +433,12 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
    * Decode metadata + all per-object descriptors for a single message,
    * without materialising payload bytes.
    *
-   * For the lazy-HTTP backend, this reuses the cached layout's index
-   * frame and issues at most one Range request per data-object frame
-   * (descriptor-prefix optimisation will be added in a follow-up
-   * commit).  For local / in-memory / eager-HTTP backends, falls
-   * through to the core `decodeDescriptors` helper.
+   * For the lazy-HTTP backend this reuses the cached layout's index
+   * frame and fetches only the descriptor CBOR per object — full
+   * frame for frames up to `DESCRIPTOR_PREFIX_THRESHOLD` (64 KB) and
+   * header (16 B) + footer (20 B) + CBOR region for larger frames.
+   * For local / in-memory / eager-HTTP backends, falls through to the
+   * core `decodeDescriptors` helper on the full message bytes.
    */
   async messageDescriptors(
     index: number,
