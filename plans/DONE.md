@@ -968,6 +968,41 @@ Standalone pip package at `python/tensogram-anemoi/` that registers
 - `_extra_["dim_names"]` carries axis-size→name hints for the tensogram-xarray backend.
 - Coordinate arrays (lat/lon) use `"grid_latitude"` / `"grid_longitude"` names, outside `KNOWN_COORD_NAMES`, so all objects share one flat dimension in xarray.
 
+## earthkit-data integration (`tensogram-earthkit`)
+
+Standalone pip package at `python/tensogram-earthkit/` that registers
+tensogram as a first-class source **and** encoder with
+[`ecmwf/earthkit-data`](https://github.com/ecmwf/earthkit-data), so
+users load and write `.tgm` content through the same surface they use
+for GRIB, NetCDF, BUFR, etc.
+
+| Component | What was built |
+|-----------|---------------|
+| `src/tensogram_earthkit/source.py` | `TensogramSource(FileSource)` — entry point `earthkit.data.sources.tensogram`. Accepts local path, remote URL, bytes, bytearray, memoryview. Bytes inputs are materialised to a temp file that's unlinked via `weakref.finalize`. |
+| `src/tensogram_earthkit/encoder.py` | `TensogramEncoder(Encoder)` — entry point `earthkit.data.encoders.tensogram`. Encodes FieldLists and xarray Datasets to lossless `.tgm` bytes via `tensogram.encode`. Exposes `TensogramEncodedData` for target consumers. |
+| `src/tensogram_earthkit/detection.py` | `_match_magic(buf, deeper_check)` and `is_mars_tensogram(meta)` — magic-byte detection and per-object MARS discriminator. |
+| `src/tensogram_earthkit/readers/{file,memory,stream}.py` | Reader-shaped modules exposing `reader` / `memory_reader` / `stream_reader` callables matching earthkit-data's internal registry contract, so a future upstream PR is a verbatim directory copy. |
+| `src/tensogram_earthkit/fieldlist.py` | `TensogramSimpleFieldList` — MARS FieldList whose `to_xarray()` delegates to `tensogram-xarray`. |
+| `src/tensogram_earthkit/field.py` + `ArrayField` | Array-namespace interop (numpy / torch / cupy / jax) inherited from `earthkit.data.sources.array_list.ArrayField`. |
+| `src/tensogram_earthkit/mars.py` | `field_to_base_entry` / `base_entry_to_usermetadata` / `has_mars_namespace` — the bidirectional MARS ↔ tensogram `base[i]` mapping. |
+| `src/tensogram_earthkit/data.py` | `TensogramData` — thin facade with `available_types = ("xarray", "numpy", "fieldlist")`. |
+| `tests/` | 86 pytest cases: detection, source discovery, MARS / non-MARS / memory / stream / remote / encoder / array-namespace paths, with parity checks against tensogram-xarray for every xarray output. |
+| `docs/src/guide/earthkit-integration.md` | User guide with mermaid architecture diagrams, decode / encode snippets, edge cases. Linked from `SUMMARY.md`. |
+| `examples/python/18_earthkit_integration.py` | End-to-end example exercising MARS FieldList + xarray + encoder round-trip + torch namespace. |
+| `Makefile` | `earthkit-install`, `earthkit-test`, `earthkit-lint` targets. |
+| `.github/workflows/ci.yml` | New `test-earthkit` job on Linux (self-hosted).  An equivalent step is also captured in the (currently disabled) `main-macos` job so the macOS surface comes back automatically when that runner is re-enabled. |
+
+**Design decisions:**
+
+- Dual decode paths — MARS tensograms produce a FieldList, non-MARS tensograms produce xarray directly. The per-object MARS discriminator (`base[i]["mars"]` non-empty) is the single branch point.
+- FieldList `to_xarray()` always delegates to `tensogram-xarray`'s `TensogramBackendEntrypoint.open_dataset` so coordinate detection, dim-name resolution, and lazy backing arrays live in exactly one place.
+- Source-plugin only (not a reader-plugin): we do not register with earthkit-data's internal reader registry (which has no entry-point support) and instead use the `source.reader` hook. The reader-shaped module layout makes a future upstream PR mechanical.
+- Bytes / bytearray / memoryview inputs go through a temp-file that's unlinked automatically via `weakref.finalize` when the source is collected. `close()` can also trigger early cleanup.
+- Byte streams are drained and dispatched via the memory path. True progressive (yield-as-each-message-arrives) streaming is a follow-up — blocked by the xarray backend needing a concrete file and the FieldList contract requiring `__len__` up-front.
+- Remote URLs (`http://`, `https://`, `s3://`, `gs://`, `az://`) are forwarded to `tensogram.TensogramFile.open_remote`; `storage_options` is threaded through to both the xarray backend and the FieldList builder.
+- The encoder writes a lossless pass-through message (encoding / filter / compression all `"none"`). Callers who want a tuned pipeline use the `tensogram` Python API directly; the earthkit path prioritises round-trip fidelity.
+- Array-namespace (torch / cupy / jax) interop is inherited from `earthkit.data.sources.array_list.ArrayField`, which uses `earthkit-utils.array` internally — no duplication here.
+
 ## simple_packing ergonomics: auto-compute + `sp_*` key rename
 
 Two paired changes to the `simple_packing` encoding that together

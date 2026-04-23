@@ -124,14 +124,21 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Integration with other software
 
-- [ ] **earthkit-data-integration**:
-    - data loader inside earthkit-data
-    - research the code of ecmwf/earthkit-data on github, latest verison.
-    - develop a loader for earthkit-data to load tensogram data
-    - support loading files and streaming 
-    - support decoding and encoding
-    - support integration with Python array interface as Earthkit data does (see also earthkit-utils)
-    - add this code to the tensogram-xarray module, such that the earthkit extension can use to export to xarray
+- [x] ~~**earthkit-data-integration**~~ → `python/tensogram-earthkit/`.
+    New pip package registering tensogram as both a source
+    (`earthkit.data.sources.tensogram`) and an encoder
+    (`earthkit.data.encoders.tensogram`). Supports local files,
+    remote URLs (`http(s)`, `s3`, `gs`, `az`), bytes / bytearray /
+    memoryview inputs, and byte streams. MARS-keyed tensograms
+    produce a FieldList whose `to_xarray()` delegates to
+    `tensogram-xarray`; non-MARS tensograms go straight to xarray.
+    The encoder writes lossless FieldLists or xarray Datasets back
+    out, preserving MARS keys on round-trip. Array-namespace
+    (numpy / torch / cupy / jax) interop via earthkit-utils is
+    inherited from `ArrayField`. 86 pytest cases, docs page at
+    `docs/src/guide/earthkit-integration.md`, example at
+    `examples/python/18_earthkit_integration.py`, new `test-earthkit`
+    CI job (Linux + macOS).
 - [ ] **torch**
     - convenience methods for tensogram as/from torch, to avoid the numpy intermediary. Wilder ideas and optimizations are additionally given in IDEAS.md
 - [ ] **nvidia stack**
