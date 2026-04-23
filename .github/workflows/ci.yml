@@ -466,8 +466,16 @@ jobs:
         password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
 
-      - name: Install deps
+      # tensoscope depends on @ecmwf.int/tensogram via file:../typescript;
+      # vitest cannot resolve the package until the wrapper is built.
+      - name: Install typescript deps
+        run: make ts-install
+      - name: Build WASM + TypeScript (wasm-pack → typescript/wasm, tsc → dist)
+        run: make ts-build
+
+      - name: Install tensoscope deps
         working-directory: tensoscope
         run: npm ci || npm install --no-audit --no-fund
 
@@ -475,6 +483,10 @@ jobs:
         working-directory: tensoscope
         run: npm test
 
+      - name: sccache stats
+        if: always()
+        run: sccache --show-adv-stats
+
       - name: Cleanup
         if: always()
-        run: rm -rf tensoscope/node_modules
+        run: rm -rf "$TMPDIR" target tensoscope/node_modules typescript/node_modules typescript/dist typescript/wasm
