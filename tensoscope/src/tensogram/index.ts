@@ -240,7 +240,22 @@ export class Tensoscope {
 
   // ── Coordinates ───────────────────────────────────────────────────────
 
-  /** Decode and cache lat/lon coordinate arrays for a message. */
+  /**
+   * Decode and cache lat/lon coordinate arrays for a message.
+   *
+   * When a file ships 1-D latitude + longitude axes and one or more
+   * data variables shaped `[nLat, nLon]` (the natural
+   * regular-rectangular-grid layout for GRIB / NetCDF climate data),
+   * the renderer's downstream worker wants per-point coordinates —
+   * one `(lat, lon)` pair per data cell.  We detect that layout here
+   * and expand the axes into a full meshgrid so callers never have
+   * to worry about it.
+   *
+   * If the file already ships per-point coords (lat and lon of
+   * length `nLat * nLon`, as produced by
+   * `examples/.../add_coords_meshed.py`), the expansion is a no-op
+   * and we return the file's coords as-is.
+   */
   async fetchCoordinates(msgIdx: number): Promise<CoordinateData | null> {
     if (this._coords) return this._coords;
 
@@ -253,9 +268,11 @@ export class Tensoscope {
     );
     if (!latInfo || !lonInfo) return null;
 
-    const lat = (await this.decodeField(latInfo.msgIndex, latInfo.objIndex)).data;
-    const lon = (await this.decodeField(lonInfo.msgIndex, lonInfo.objIndex)).data;
-    this._coords = { lat, lon };
+    const latAxis = (await this.decodeField(latInfo.msgIndex, latInfo.objIndex)).data;
+    const lonAxis = (await this.decodeField(lonInfo.msgIndex, lonInfo.objIndex)).data;
+
+    const expanded = expandAxesIfRectangularGrid(latAxis, lonAxis, index.variables);
+    this._coords = expanded ?? { lat: latAxis, lon: lonAxis };
     return this._coords;
   }
 
@@ -303,6 +320,47 @@ function computeStats(data: Float32Array): FieldStats {
     mean,
     std: Math.sqrt(Math.max(0, variance)),
   };
+}
+
+/**
+ * Detect a regular rectangular grid and expand 1-D lat/lon axes to
+ * per-point arrays.  Exported for unit testing.
+ *
+ * Returns `null` when no expansion is needed — either because a
+ * matching `[nLat, nLon]` variable is not present, or because the
+ * coords are already full-length.
+ *
+ * @internal
+ */
+export function expandAxesIfRectangularGrid(
+  lat: Float32Array,
+  lon: Float32Array,
+  variables: readonly ObjectInfo[],
+): CoordinateData | null {
+  const nLat = lat.length;
+  const nLon = lon.length;
+  if (nLat === 0 || nLon === 0) return null;
+  // When the file already ships meshgridded coords (lat.length === full
+  // grid size), no data variable will have shape [lat.length, nLon] —
+  // the `gridMatch` search below then returns undefined, which is
+  // exactly the no-op answer we want.  No extra guard needed here.
+  const gridMatch = variables.find(
+    (v) => v.shape.length === 2 && v.shape[0] === nLat && v.shape[1] === nLon,
+  );
+  if (!gridMatch) return null;
+
+  const n = nLat * nLon;
+  const latFull = new Float32Array(n);
+  const lonFull = new Float32Array(n);
+  for (let i = 0; i < nLat; i++) {
+    const base = i * nLon;
+    const latVal = lat[i];
+    for (let j = 0; j < nLon; j++) {
+      latFull[base + j] = latVal;
+      lonFull[base + j] = lon[j];
+    }
+  }
+  return { lat: latFull, lon: lonFull };
 }
 
 /** Slice a flat array along one dimension of a multi-dimensional shape. */
