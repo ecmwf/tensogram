@@ -97,13 +97,36 @@ describe('inferAxesFromMarsGrid', () => {
   });
 
   it('picks the first 2-D regular_ll variable and ignores the rest', () => {
-    const result = inferAxesFromMarsGrid([
-      makeVar([5, 10, 20], { grid: 'regular_ll' }),
+    const lat = new Float32Array([1, 2]);
+    const lon = new Float32Array([10, 20, 30]);
+    const variables = [
+      makeVar([5, 2, 3], { grid: 'regular_ll' }),
       makeVar([73, 144], { grid: 'regular_ll' }),
       makeVar([100, 200], { grid: 'regular_ll' }),
-    ]);
+    ];
+    const result = inferAxesFromMarsGrid(variables);
     expect(result).not.toBeNull();
     expect(result!.lat.length).toBe(73);
     expect(result!.lon.length).toBe(144);
+  });
+
+  it('falls back to defaults when mars.area contains a non-finite bigint', () => {
+    // Corrupt or absurd CBOR-encoded areas — a bigint that overflows a
+    // JS number via Number(v) — must not silently produce Infinity
+    // coordinates.  toNumber returns null in that case and the
+    // defaults kick in.
+    const hugeBigint = 1n << 2000n;
+    const result = inferAxesFromMarsGrid([
+      makeVar([10, 20], {
+        grid: 'regular_ll',
+        area: [hugeBigint, 0, -90, 360],
+      }),
+    ]);
+    expect(result).not.toBeNull();
+    // Defaults: north=90 (since the overflowing bigint failed toNumber).
+    expect(result!.lat[0]).toBe(90);
+    expect(Number.isFinite(result!.lat[0])).toBe(true);
+    expect(Number.isFinite(result!.lat[result!.lat.length - 1])).toBe(true);
+    expect(Number.isFinite(result!.lon[0])).toBe(true);
   });
 });
