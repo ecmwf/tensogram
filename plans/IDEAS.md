@@ -3,6 +3,13 @@
 Speculative ideas for possible future work. Not yet accepted. Do not
 implement until promoted to `TODO.md`.
 
+## Feedback
+
+Add here feedback ideas:
+
+- [ ] Ipsum Verbum
+
+
 ## Tools
 
 - [ ] `tensogram filter` subcommand (v2 rules engine)
