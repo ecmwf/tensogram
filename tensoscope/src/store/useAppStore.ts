@@ -72,7 +72,6 @@ async function initViewer(
     fieldData: null,
     fieldShape: [],
     fieldStats: null,
-    colorScale: DEFAULT_COLOR_SCALE,
     loading: false,
     error: null,
   });
@@ -98,6 +97,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (prev) prev.close();
       const viewer = await Tensoscope.fromFile(file);
       await initViewer(viewer, set);
+      const first = get().fileIndex?.variables[0];
+      if (first) await get().selectField(first.msgIndex, first.objIndex);
     } catch (err) {
       set({ loading: false, error: String(err) });
     }
@@ -110,6 +111,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (prev) prev.close();
       const viewer = await Tensoscope.fromUrl(url);
       await initViewer(viewer, set);
+      const first = get().fileIndex?.variables[0];
+      if (first) await get().selectField(first.msgIndex, first.objIndex);
     } catch (err) {
       set({ loading: false, error: String(err) });
     }

@@ -124,16 +124,17 @@ export function MapView(props: MapViewProps) {
               <Layer
                 id="field-overlay-layer"
                 type="raster"
-                paint={{ 'raster-opacity': 0.7 }}
+                paint={{ 'raster-opacity': 0.7, 'raster-fade-duration': 0 }}
               />
             </Source>
           )}
         </Map>
       )}
 
-      <ProjectionPicker current={activePreset.id} onSelect={handlePresetSelect} />
-
-      {data && <RenderModePicker mode={renderMode} onChange={setRenderMode} />}
+      <div className="map-controls-bar">
+        <ProjectionPicker current={activePreset.id} onSelect={handlePresetSelect} />
+        {data && <RenderModePicker mode={renderMode} onChange={setRenderMode} />}
+      </div>
 
       {data && (
         <>
