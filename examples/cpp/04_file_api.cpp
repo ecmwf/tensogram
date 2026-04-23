@@ -16,7 +16,11 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <string>
 #include <vector>
+
+#include <unistd.h>
 
 /// Build JSON for a simple 10x20 float32 message with per-object metadata.
 ///
@@ -32,7 +36,10 @@ static std::string make_json(const char* param, int step) {
 }
 
 int main() {
-    const char* path = "/tmp/tensogram_example_cpp.tgm";
+    const auto tmp = std::filesystem::temp_directory_path() /
+                     ("tensogram_example_04_" + std::to_string(::getpid()) + ".tgm");
+    const std::string path_str = tmp.string();
+    const char* path = path_str.c_str();
 
     // -- 1. Create and write --
     {

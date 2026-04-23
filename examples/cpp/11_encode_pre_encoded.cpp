@@ -32,7 +32,11 @@ extern "C" {
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <string>
 #include <vector>
+
+#include <unistd.h>
 
 // -----------------------------------------------------------------------
 // Manual bit-packing helper (MSB-first, big-endian bit order)
@@ -172,7 +176,10 @@ int main() {
     // ── 5. StreamingEncoder variant ────────────────────────────────────
 
     // Write to a temp file, then decode
-    const char* tmp_path = "/tmp/tensogram_example_11.tgm";
+    const auto tmp = std::filesystem::temp_directory_path() /
+                     ("tensogram_example_11_" + std::to_string(::getpid()) + ".tgm");
+    const std::string tmp_path_str = tmp.string();
+    const char* tmp_path = tmp_path_str.c_str();
     {
         tensogram::streaming_encoder enc(tmp_path, R"({"version":3})");
 

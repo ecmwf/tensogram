@@ -31,9 +31,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
+
+#include <unistd.h>
 
 static std::string descriptor_json(const char* param) {
     char buf[512];
@@ -44,7 +47,10 @@ static std::string descriptor_json(const char* param) {
 }
 
 int main() {
-    const char* tgm_path = "/tmp/tensogram_stream_demo.tgm";
+    const auto tmp = std::filesystem::temp_directory_path() /
+                     ("tensogram_example_09_" + std::to_string(::getpid()) + ".tgm");
+    const std::string tgm_path_str = tmp.string();
+    const char* tgm_path = tgm_path_str.c_str();
     const char* PARAMS[] = {"2t", "10u", "10v", "msl"};
 
     // ── 1. Create a multi-message .tgm file on disk ───────────────────────
