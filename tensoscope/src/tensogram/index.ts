@@ -406,6 +406,49 @@ const DEFAULT_REGULAR_LL_AREA = {
 let legacyAreaDefaultWarned = false;
 
 /**
+ * Strictly validate a candidate `mars.area` CBOR value as a 4-tuple of
+ * finite numbers.  Returns `null` when the input is missing OR
+ * malformed (not an array, wrong length, or any element that
+ * `toNumber` cannot coerce to a finite JS number).  The caller treats
+ * both null cases identically — fall back to the full
+ * `DEFAULT_REGULAR_LL_AREA` — but uses the `'area' in mars` check to
+ * distinguish "absent" vs "malformed" when emitting the warn.
+ */
+function parseMarsArea(
+  raw: unknown,
+): [number, number, number, number] | null {
+  if (!Array.isArray(raw) || raw.length !== 4) return null;
+  const n = toNumber(raw[0]);
+  const w = toNumber(raw[1]);
+  const s = toNumber(raw[2]);
+  const e = toNumber(raw[3]);
+  if (n === null || w === null || s === null || e === null) return null;
+  return [n, w, s, e];
+}
+
+/**
+ * Emit the one-shot compat-bridge warn when falling back to defaults.
+ * Distinguishes "mars.area absent" (common case for pre-fix converter
+ * output) from "mars.area present but malformed" (a producer bug)
+ * so the remediation message is accurate.
+ */
+function maybeWarnMissingOrInvalidArea(areaKeyPresent: boolean): void {
+  if (legacyAreaDefaultWarned) return;
+  legacyAreaDefaultWarned = true;
+  const condition = areaKeyPresent
+    ? 'mars.area is present but not a 4-element array of finite numbers'
+    : 'mars.grid = "regular_ll" but no mars.area';
+  console.warn(
+    `Tensoscope: ${condition}; ` +
+      'assuming ECMWF open-data dateline-first default area ' +
+      '(north = 90, west = -180, south = -90, east = 180). ' +
+      'Re-convert the source GRIB with a tensogram-grib build that emits ' +
+      'mars.area from the geography namespace for accurate rendering of ' +
+      'Greenwich-first or regional grids.',
+  );
+}
+
+/**
  * Infer 1-D latitude + longitude axes from `mars.grid` metadata + the
  * variable's shape, for files that ship no explicit coordinate
  * objects.  Currently supports `regular_ll` (the common
@@ -430,26 +473,20 @@ export function inferAxesFromMarsGrid(
     if (gridKind !== 'regular_ll') continue;
 
     const [nLat, nLon] = v.shape;
-    // MARS "area": [north, west, south, east].  When absent, fall back
-    // to the DEFAULT_REGULAR_LL_AREA compat bridge — matches ECMWF
-    // open-data's dateline-first convention and the regrid worker's
-    // [-180, 180) longitude expectation.
-    const area = Array.isArray(mars.area) ? (mars.area as unknown[]) : null;
-    if (!area && !legacyAreaDefaultWarned) {
-      legacyAreaDefaultWarned = true;
-      console.warn(
-        'Tensoscope: file has mars.grid = "regular_ll" but no mars.area; ' +
-          'assuming ECMWF open-data dateline-first default area ' +
-          '(north = 90, west = -180, south = -90, east = 180). ' +
-          'Re-convert the source GRIB with a tensogram-grib build that emits ' +
-          'mars.area from the geography namespace for accurate rendering of ' +
-          'Greenwich-first or regional grids.',
-      );
+    // All-or-nothing: either the whole mars.area is a valid
+    // [N, W, S, E] tuple of finite numbers, or we fall back to the
+    // full DEFAULT_REGULAR_LL_AREA compat bridge.  Mixing explicit
+    // and default values would silently produce hybrid geometry
+    // (e.g. explicit N with default W/S/E) that misplaces the grid
+    // without any warning signal.
+    const area = parseMarsArea(mars.area);
+    if (area === null) {
+      maybeWarnMissingOrInvalidArea('area' in mars);
     }
-    const north = toNumber(area?.[0]) ?? DEFAULT_REGULAR_LL_AREA.north;
-    const west = toNumber(area?.[1]) ?? DEFAULT_REGULAR_LL_AREA.west;
-    const south = toNumber(area?.[2]) ?? DEFAULT_REGULAR_LL_AREA.south;
-    const east = toNumber(area?.[3]) ?? DEFAULT_REGULAR_LL_AREA.east;
+    const north = area?.[0] ?? DEFAULT_REGULAR_LL_AREA.north;
+    const west = area?.[1] ?? DEFAULT_REGULAR_LL_AREA.west;
+    const south = area?.[2] ?? DEFAULT_REGULAR_LL_AREA.south;
+    const east = area?.[3] ?? DEFAULT_REGULAR_LL_AREA.east;
 
     const lat = new Float32Array(nLat);
     for (let i = 0; i < nLat; i++) {

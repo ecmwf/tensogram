@@ -145,11 +145,12 @@ describe('inferAxesFromMarsGrid', () => {
     expect(result!.lon.length).toBe(144);
   });
 
-  it('falls back to defaults when mars.area contains a non-finite bigint', () => {
+  it('falls back to full defaults when mars.area contains a non-finite bigint', () => {
     // Corrupt or absurd CBOR-encoded areas — a bigint that overflows a
     // JS number via Number(v) — must not silently produce Infinity
-    // coordinates.  toNumber returns null in that case and the
-    // defaults kick in.
+    // coordinates.  All-or-nothing validation: one bad element kicks
+    // the WHOLE area out (not just that one element), so the
+    // DEFAULT_REGULAR_LL_AREA applies to every corner.
     const hugeBigint = 1n << 2000n;
     const result = inferAxesFromMarsGrid([
       makeVar([10, 20], {
@@ -158,10 +159,49 @@ describe('inferAxesFromMarsGrid', () => {
       }),
     ]);
     expect(result).not.toBeNull();
-    // Defaults: north=90 (since the overflowing bigint failed toNumber).
+    // All four defaults kicked in — verify the west default (not the 0
+    // that was in the explicit-but-rejected area) applies.
     expect(result!.lat[0]).toBe(90);
-    expect(Number.isFinite(result!.lat[0])).toBe(true);
+    expect(result!.lon[0]).toBe(-180);
     expect(Number.isFinite(result!.lat[result!.lat.length - 1])).toBe(true);
-    expect(Number.isFinite(result!.lon[0])).toBe(true);
+    expect(Number.isFinite(result!.lon[result!.lon.length - 1])).toBe(true);
+  });
+
+  it('falls back to full defaults when mars.area has wrong length', () => {
+    // A 3-element area is malformed — treat as absent, do NOT use the
+    // first 3 as N, W, S and default the E.
+    const result = inferAxesFromMarsGrid([
+      makeVar([10, 20], {
+        grid: 'regular_ll',
+        area: [60, -30, 20],
+      }),
+    ]);
+    expect(result).not.toBeNull();
+    expect(result!.lat[0]).toBe(90);
+    expect(result!.lon[0]).toBe(-180);
+  });
+
+  it('falls back to full defaults when mars.area has 5 elements', () => {
+    const result = inferAxesFromMarsGrid([
+      makeVar([10, 20], {
+        grid: 'regular_ll',
+        area: [60, -30, 20, 70, 0],
+      }),
+    ]);
+    expect(result).not.toBeNull();
+    expect(result!.lat[0]).toBe(90);
+    expect(result!.lon[0]).toBe(-180);
+  });
+
+  it('falls back to full defaults when mars.area contains a non-numeric entry', () => {
+    const result = inferAxesFromMarsGrid([
+      makeVar([10, 20], {
+        grid: 'regular_ll',
+        area: [60, 'thirty-degrees-west', 20, 70],
+      }),
+    ]);
+    expect(result).not.toBeNull();
+    expect(result!.lat[0]).toBe(90);
+    expect(result!.lon[0]).toBe(-180);
   });
 });
