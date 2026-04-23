@@ -424,6 +424,122 @@ describe('Scope C.1 — TensogramFile.fromUrl Range backend', () => {
     }
   });
 
+  it('messageObjectBatch fans out with bounded concurrency', async () => {
+    // Build a 6-message file; each message holds one tiny object.
+    const msgs = Array.from({ length: 6 }, (_, i) =>
+      encode(defaultMeta(), [
+        {
+          descriptor: makeDescriptor([2], 'float32'),
+          data: new Float32Array([i, i + 0.5]),
+        },
+      ]),
+    );
+    const body = concatBytes(...msgs);
+    const { fetch: fakeFetch, requests } = makeRangeServer(body);
+
+    const file = await TensogramFile.fromUrl('https://example.invalid/six.tgm', {
+      fetch: fakeFetch,
+      concurrency: 2,
+    });
+    try {
+      const results = await file.messageObjectBatch([0, 1, 2, 3, 4, 5], 0);
+      expect(results).toHaveLength(6);
+      for (let i = 0; i < 6; i++) {
+        expect(Array.from(results[i].objects[0].data() as Float32Array)).toEqual([i, i + 0.5]);
+        results[i].close();
+      }
+      // Sanity: the batch made network activity (we're not just hitting cache).
+      expect(requests.length).toBeGreaterThan(1);
+    } finally {
+      file.close();
+    }
+  });
+
+  it('prefetchLayouts warms cache so messageMetadata is free afterwards', async () => {
+    const msgs = Array.from({ length: 4 }, (_, i) =>
+      encode(defaultMeta(), [
+        {
+          descriptor: makeDescriptor([3], 'float32'),
+          data: new Float32Array([i, i, i]),
+        },
+      ]),
+    );
+    const body = concatBytes(...msgs);
+    const { fetch: fakeFetch, requests } = makeRangeServer(body);
+
+    const file = await TensogramFile.fromUrl('https://example.invalid/prefetch.tgm', {
+      fetch: fakeFetch,
+    });
+    try {
+      const beforePrefetch = requests.length;
+      await file.prefetchLayouts([0, 1, 2, 3]);
+      const afterPrefetch = requests.length;
+      expect(afterPrefetch).toBeGreaterThan(beforePrefetch);
+
+      // Now messageMetadata for any of those indices must be free.
+      const beforeMeta = requests.length;
+      for (let i = 0; i < 4; i++) {
+        const meta = await file.messageMetadata(i);
+        expect(meta.version).toBe(2);
+      }
+      expect(requests.length).toBe(beforeMeta);
+    } finally {
+      file.close();
+    }
+  });
+
+  it('messageObjectBatch with concurrency = 1 still progresses (no nested-pool deadlock)', async () => {
+    // Regression: an earlier draft routed both batch slots and inner
+    // layout-discovery slots through the same shared backend limiter.
+    // With concurrency = 1 (or any cap matching the batch size), all
+    // slots got held by outer messageObject calls waiting for inner
+    // layout fetches that could never enter the queue, deadlocking.
+    // The current design uses an independent batch limiter so inner
+    // calls always have the shared pool free.
+    const msgs = Array.from({ length: 3 }, (_, i) =>
+      encode(defaultMeta(), [
+        {
+          descriptor: makeDescriptor([1], 'float32'),
+          data: new Float32Array([i + 1]),
+        },
+      ]),
+    );
+    const body = concatBytes(...msgs);
+    const { fetch: fakeFetch } = makeRangeServer(body);
+    const file = await TensogramFile.fromUrl('https://example.invalid/three.tgm', {
+      fetch: fakeFetch,
+    });
+    try {
+      const results = await file.messageObjectBatch([0, 1, 2], 0, { concurrency: 1 });
+      expect(results.map((r) => (r.objects[0].data() as Float32Array)[0])).toEqual([1, 2, 3]);
+      results.forEach((r) => r.close());
+    } finally {
+      file.close();
+    }
+  });
+
+  it('prefetchLayouts is a no-op on the eager backend', async () => {
+    const msg = encode(defaultMeta(), [
+      {
+        descriptor: makeDescriptor([2], 'float32'),
+        data: new Float32Array([1, 2]),
+      },
+    ]);
+    const { fetch: fakeFetch, requests } = makeNoRangeServer(msg);
+    const file = await TensogramFile.fromUrl('https://example.invalid/eager.tgm', {
+      fetch: fakeFetch,
+    });
+    try {
+      const before = requests.length;
+      await file.prefetchLayouts([0]);
+      // Eager backend already has all bytes in memory; prefetchLayouts
+      // makes zero new HTTP calls.
+      expect(requests.length).toBe(before);
+    } finally {
+      file.close();
+    }
+  });
+
   it('bails to eager when preamble advertises total_length below preamble+postamble', async () => {
     // A v3 preamble(24) + v3 postamble(24) = 48 bytes minimum. Any
     // lower `total_length` is impossible on the wire, so the lazy

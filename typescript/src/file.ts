@@ -533,6 +533,98 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     return decodeRange(slice, objectIndex, ranges, options);
   }
 
+  /**
+   * Decode the same object across many messages in parallel.
+   *
+   * Each call uses its own bounded-concurrency limiter (default 6,
+   * overridable via `options.concurrency`) so the batch never starves
+   * the shared backend pool used by inner layout-discovery fetches —
+   * the outer and inner pools are independent.  Callers can request
+   * hundreds of messages without overwhelming browser per-host limits.
+   *
+   * For local / in-memory / eager-HTTP backends, falls through to a
+   * sequential loop over `messageObject` (zero benefit to fan-out
+   * when bytes are already in memory).
+   */
+  async messageObjectBatch(
+    msgIndices: readonly number[],
+    objectIndex: number,
+    options?: DecodeOptions & { concurrency?: number },
+  ): Promise<DecodedMessage[]> {
+    this.#assertOpen();
+    if (!Array.isArray(msgIndices)) {
+      throw new InvalidArgumentError('msgIndices must be an array');
+    }
+    for (const i of msgIndices) this.#assertMessageIndex(i);
+    const b = this.#backend;
+    if (b.kind === 'remote-lazy') {
+      const limit = createLimiter(options?.concurrency ?? DEFAULT_CONCURRENCY);
+      return Promise.all(
+        msgIndices.map((i) => limit(() => this.messageObject(i, objectIndex, options))),
+      );
+    }
+    const out: DecodedMessage[] = [];
+    for (const i of msgIndices) {
+      out.push(await this.messageObject(i, objectIndex, options));
+    }
+    return out;
+  }
+
+  /**
+   * Decode partial ranges from the same object across many messages
+   * in parallel.  Same concurrency story as `messageObjectBatch`.
+   */
+  async messageObjectRangeBatch(
+    msgIndices: readonly number[],
+    objectIndex: number,
+    ranges: readonly RangePair[],
+    options?: DecodeRangeOptions & { concurrency?: number },
+  ): Promise<DecodeRangeResult[]> {
+    this.#assertOpen();
+    if (!Array.isArray(msgIndices)) {
+      throw new InvalidArgumentError('msgIndices must be an array');
+    }
+    for (const i of msgIndices) this.#assertMessageIndex(i);
+    const b = this.#backend;
+    if (b.kind === 'remote-lazy') {
+      const limit = createLimiter(options?.concurrency ?? DEFAULT_CONCURRENCY);
+      return Promise.all(
+        msgIndices.map((i) =>
+          limit(() => this.messageObjectRange(i, objectIndex, ranges, options)),
+        ),
+      );
+    }
+    const out: DecodeRangeResult[] = [];
+    for (const i of msgIndices) {
+      out.push(await this.messageObjectRange(i, objectIndex, ranges, options));
+    }
+    return out;
+  }
+
+  /**
+   * Pre-warm the layout cache for the given messages so subsequent
+   * `messageMetadata` / `messageDescriptors` / `messageObject` /
+   * `messageObjectRange` calls hit the cache and make zero extra
+   * network calls (per message — the per-object frame fetches still
+   * happen).  No-op for local / in-memory / eager-HTTP backends.
+   */
+  async prefetchLayouts(
+    msgIndices: readonly number[],
+    options?: { concurrency?: number },
+  ): Promise<void> {
+    this.#assertOpen();
+    const b = this.#backend;
+    if (b.kind !== 'remote-lazy') return;
+    if (!Array.isArray(msgIndices)) {
+      throw new InvalidArgumentError('msgIndices must be an array');
+    }
+    for (const i of msgIndices) this.#assertMessageIndex(i);
+    const limit = createLimiter(options?.concurrency ?? DEFAULT_CONCURRENCY);
+    await Promise.all(
+      msgIndices.map((i) => limit(() => this.#ensureLayout(b, i).then(() => {}))),
+    );
+  }
+
   /** Async iterate every message in wire order. */
   async *[Symbol.asyncIterator](): AsyncIterator<DecodedMessage> {
     for (let i = 0; i < this.messageCount; i++) {
