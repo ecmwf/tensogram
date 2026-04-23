@@ -910,7 +910,8 @@ mod tests {
         )
         .unwrap();
 
-        // Data must match (wire bytes may differ due to header vs footer layout)        assert_eq!(buf_objects.len(), str_objects.len());
+        // Data must match (wire bytes may differ due to header vs footer layout).
+        assert_eq!(buf_objects.len(), str_objects.len());
         assert_eq!(buf_objects[0].0.shape, str_objects[0].0.shape);
         assert_eq!(buf_objects[0].0.dtype, str_objects[0].0.dtype);
         assert_eq!(buf_objects[0].1, str_objects[0].1);

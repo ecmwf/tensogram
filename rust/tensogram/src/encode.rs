@@ -1346,7 +1346,10 @@ mod tests {
         let msg = encode(&meta, &[(&desc, data.as_slice())], &options).unwrap();
         let (decoded, _) = decode(&msg, &DecodeOptions::default()).unwrap();
 
-        // Top-level version is still 2        // base[0] should have both custom keys preserved
+        // `version` and `base` are just free-form keys inside a
+        // per-object `base[0]` entry — they have no special meaning
+        // there.  The wire-format version lives in the preamble
+        // (see `plans/WIRE_FORMAT.md` §3), not in CBOR metadata.
         assert_eq!(
             decoded.base[0].get("version"),
             Some(&ciborium::Value::Text("my-version".to_string()))

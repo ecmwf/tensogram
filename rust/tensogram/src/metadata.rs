@@ -61,8 +61,17 @@ pub fn cbor_to_global_metadata(cbor_bytes: &[u8]) -> Result<GlobalMetadata> {
 
     for (k, v) in map {
         // Skip non-text map keys defensively.  Canonical CBOR uses
-        // text keys for our schema, but a malformed producer could
-        // emit anything; we want to neither panic nor lose data.
+        // text keys for our schema (RFC 8949 §4.2 + the wire-format
+        // spec at `plans/WIRE_FORMAT.md`).  A malformed producer
+        // could still emit integer / bytes keys at the top level;
+        // those entries are silently dropped here rather than
+        // failing the decode, matching the forward-compatibility
+        // rule applied throughout the frame walker.  Dropping (as
+        // opposed to routing into `_extra_` under a synthetic name)
+        // is deliberate — the caller cannot usefully re-consume a
+        // non-text key without losing round-trip fidelity anyway,
+        // and routing would leak the malformed structure into the
+        // library-defined `_extra_` namespace.
         let key = match k {
             ciborium::Value::Text(s) => s,
             _ => continue,

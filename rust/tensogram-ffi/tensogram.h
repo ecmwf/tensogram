@@ -714,8 +714,11 @@ tgm_error tgm_compute_hash(const uint8_t *data,
 /**
  * Create a streaming encoder writing to a file.
  *
- * `metadata_json` must contain `"version"` key (and optional extra keys,
- * but NOT `"descriptors"`).
+ * `metadata_json` is a free-form JSON object.  The `"descriptors"`
+ * key is NOT permitted here (objects are supplied one at a time
+ * via `tgm_streaming_encoder_write`).  A legacy top-level
+ * `"version"` is tolerated and routed into `_extra_` on encode
+ * (see `parse_streaming_metadata_json`).
  *
  * `hash_algo`: null-terminated string ("xxh3") or NULL for no hash.
  *
