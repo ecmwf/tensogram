@@ -348,6 +348,55 @@ need to know the raw bit layout or interleaving.
 - Scope-B TS tests (145 of them) still pass — the only breakage was
   the intentional `rawMessage` async change, which was mechanical.
 
+## TypeScript wrapper — Scope C.5 (browser-usable remote + async parity)
+
+Brings the TypeScript wrapper, the WASM crate, and the Tensoscope
+viewer to remote-access parity with the Rust `tensogram` crate's
+`object_store` integration over HTTP(S) and AWS-signed HTTPS.  The
+Rust core already had S3 / GCS / Azure / HTTP via `object_store`;
+this scope ports the user-facing pieces that matter for browser
+consumers — without re-implementing wire-format parsing in TS.
+
+| Component | What changed |
+|-----------|-------------|
+| `rust/tensogram/src/decode.rs` | New public `decode_object_from_frame(frame_bytes, options)` and `decode_range_from_frame(frame_bytes, ranges, options)` — same axis-A/axis-B dispatch and mask-aware NaN/Inf restoration as `decode_object` / `decode_range`, but take one frame's bytes in isolation.  Used by the WASM single-frame helpers and any consumer that has fetched one indexed frame via Range. |
+| `rust/tensogram/tests/decode_object_from_frame.rs` | New parity suite: 4 tests covering uncompressed and zstd round-trips against `decode::decode_object` / `decode::decode_range`, plus a non-frame rejection check.  Reads index frame manually so the test reproduces the lazy backend's actual fetch shape. |
+| `rust/tensogram-wasm/src/layout.rs` | New module exporting nine `#[wasm_bindgen]` helpers: `read_preamble_info`, `read_postamble_info`, `parse_header_chunk`, `parse_footer_chunk`, `read_data_object_frame_header`, `read_data_object_frame_footer`, `parse_descriptor_cbor`, `decode_object_from_frame`, `decode_range_from_frame`.  Each routes errors through `convert::js_err` and (for chunk parsers) routes metadata through `convert::metadata_to_js` so the synthesised wire-format `version` field matches the eager-backend `decode_metadata` path. |
+| `rust/tensogram-wasm/src/lib.rs` | Re-exports the layout helpers; adds `DecodedMessage::from_single_object(desc, data)` constructor used by `layout::decode_object_from_frame`. |
+| `rust/tensogram-wasm/tests/layout_tests.rs` | 11 new `wasm_bindgen_test`s covering boundary normalisation (number↔bigint), preamble/postamble parsing, header + footer chunk parse round-trips, frame-header + frame-footer reads, descriptor-CBOR round-trip, and `decode_object_from_frame` / `decode_range_from_frame` parity against the encoded fixture. |
+| `typescript/src/file.ts` | `POSTAMBLE_BYTES` corrected from 16 (v2) to 24 (v3).  `LazyHttpBackend` gains a per-message `MessageLayout` cache (preamble + optional metadata + index + descriptors) mirroring Rust `RemoteBackend.state`.  New public methods: `messageMetadata(i)` (header chunk or footer suffix only); `messageDescriptors(i)` (index + per-frame descriptor-prefix optimisation); `messageObject(i, j)` (one Range per frame); `messageObjectRange(i, j, ranges)` (partial sub-tensor decode against one fetched frame); `messageObjectBatch` / `messageObjectRangeBatch` (parallel fan-out with bounded concurrency); `prefetchLayouts(msgIndices)` (pre-warm the layout cache).  All Range fetches inside descriptor logic route through `b.limit` so the per-host cap is never bypassed; the outer per-task limiter is removed because nesting limiter slots would deadlock at low caps. |
+| `typescript/src/internal/layout.ts` | Numeric-safety boundary: `safeNumberFromBigint` rejects WASM-returned u64 values above `Number.MAX_SAFE_INTEGER` (TS file positions are JS `number` throughout — files larger than 2^53 − 1 must use the Rust or Python bindings).  Normalisers for `PreambleInfo`, `PostambleInfo`, `FrameFooterInfo`, `FrameIndex`. |
+| `typescript/src/internal/pool.ts` | FIFO bounded-concurrency limiter (`createLimiter(concurrency)`).  Default 6, matching typical browser per-host connection limits.  Exact in-flight cap; rejects do not starve subsequent tasks. |
+| `typescript/src/internal/httpRange.ts` | Reusable `fetchRange(ctx, start, end, requireRange?)` helper.  Routes through any caller-supplied `fetch` implementation; tolerates `200 OK` with full body when `requireRange = false`. |
+| `typescript/src/internal/wbgWrap.ts` | Shared adapter that wraps a wasm-bindgen `DecodedMessage` handle in the public `DecodedMessage` interface.  `FinalizationRegistry` cleanup keyed on the returned identity; new `metadataOverride` parameter lets the lazy backend's `messageObject` substitute the message's real cached metadata in place (mutating the wrapped object instead of spreading, which would have leaked the WASM handle). |
+| `typescript/src/internal/rangePack.ts` | `flattenRangePairs(ranges)` and `concatBytes(parts)` — extracted from `range.ts` so both buffer-level `decodeRange` and per-message `messageObjectRange` paths share the same range-pair packing and byte-concat routines. |
+| `typescript/src/decode.ts`, `typescript/src/range.ts` | Refactored to use the shared `wbgWrap` and `rangePack` helpers.  Public surface unchanged. |
+| `typescript/src/types.ts` | `FromUrlOptions.concurrency` field added (default 6). |
+| `typescript/src/auth/signAwsV4.ts` | Pure AWS Signature V4 signer.  Web Crypto only.  Byte-for-byte against `aws-sig-v4-test-suite` vectors (get-vanilla, query-string canonicalisation incl. duplicate-key ordering, header value trim and inner-whitespace collapse, session token, pre-encoded path round-trip). |
+| `typescript/src/auth/awsSigV4Fetch.ts` | `createAwsSigV4Fetch(creds, opts?)` — `fetch`-compatible wrapper pluggable into `FromUrlOptions.fetch`.  Read-only (signs over the SHA-256 of an empty body); for write paths use a presigned URL.  Header merge for `Request` inputs follows standard `fetch` semantics — `init.headers` overrides `input.headers`. |
+| `typescript/src/index.ts` | Re-exports `signAwsV4Request`, `createAwsSigV4Fetch`, and the SigV4 type aliases. |
+| `typescript/tests/layout.test.ts` | 16 tests pinning the WASM↔TS numeric boundary (number / bigint / 2^53 / u64::MAX / negative / NaN / fractional). |
+| `typescript/tests/pool.test.ts` | 7 tests covering FIFO order, exact in-flight cap, single-slot serialisation, rejection propagation without starvation, the never-resolving-task-doesn't-starve case, invalid-concurrency rejection, and the `DEFAULT_CONCURRENCY = 6` constant. |
+| `typescript/tests/lazyFromUrl.test.ts` | New test cases on top of the existing Scope-C.1 suite: `messageMetadata` fetches header chunk only; `messageObject` fetches one frame only; `messageObject` returns the real cached metadata (not a default-constructed placeholder); `messageObjectRange` and `messageObjectRangeBatch` round-trip; `messageObjectBatch` fans out within concurrency; `prefetchLayouts` warms cache; `messageDescriptors` lazy + eager paths (the eager path used to throw on stray `FR` byte sequences inside payloads); descriptor fan-out respects the concurrency cap; nested-pool deadlock regression at concurrency = 1; `total_length < PREAMBLE_BYTES + POSTAMBLE_BYTES` bails to eager (the v3 24-byte postamble fix); MAX_SAFE_INTEGER fallback. |
+| `typescript/tests/signAwsV4.test.ts` | 12 tests covering AWS test vectors, anti-replay, query canonicalisation, and URI path encoding (literal-space vs pre-encoded `%20` round-trip; `%2F` not folded into `/`). |
+| `typescript/tests/awsSigV4Fetch.test.ts` | 5 integration tests: signed requests accepted by a strict-auth mock S3, unsigned rejected, no-fetch-impl rejection, `init.headers` merges over `Request` headers (regression test for the fix that put Range back on signed requests), and Request-only Range header survives signing. |
+| `tensoscope/src/tensogram/index.ts` | Migrated to layout-aware reads.  `buildIndex` calls `prefetchLayouts` in chunks of 64 (concurrency 6) so very large files don't queue thousands of Promises at once.  `decodeField` uses `messageObject(msgIdx, objIdx)` — one Range GET for the target object's frame instead of a whole-message download. |
+| `tensoscope/src/components/file-browser/{FileOpenDialog,WelcomeModal}.tsx` | URL placeholder copy: replaced misleading `s3://` suggestion with "https:// URL (use a presigned URL for private S3/GCS/Azure)" — TypeScript scheme adapters are out of scope for this package. |
+| `tensoscope/src/tensogram/__tests__/viewer.test.ts` | Lightweight structural-guard tests asserting the wrapper imports `TensogramFile` and not `decodeObject`, `buildIndex` calls `prefetchLayouts` before its `messageMetadata` loop, and `decodeField` uses `messageObject` (not `rawMessage` + `decodeObject`). |
+| `examples/typescript/15_remote_access.ts` | End-to-end remote-access demo: in-process Range-capable HTTP server, then `messageMetadata` / `messageDescriptors` / `messageObject` / `messageObjectRange` against it.  Mirrors `examples/python/14_remote_access.py` and `examples/rust/src/bin/14_remote_access.rs`. |
+| `examples/typescript/16_remote_batch.ts` | Demonstrates `prefetchLayouts` + `messageObjectBatch` with bounded concurrency.  Mock server records peak in-flight to prove the per-host cap is honoured. |
+| `examples/typescript/17_remote_s3_signed_fetch.ts` | `createAwsSigV4Fetch` against a mock S3 that enforces `Authorization: AWS4-HMAC-SHA256 …`.  Demonstrates the unsigned→401, signed→200 transition. |
+| `typescript/README.md`, `docs/src/guide/typescript-api.md` | Document the new layout-aware methods, the concurrency option, and the AWS SigV4 helpers. |
+| `plans/TODO.md` | Adds `remote 7 — TS lazy scan: 256 KB forward-chunk variant` to the accepted backlog (deferred pending a benchmark that shows the round-trip saving outweighs the larger per-message fetches). |
+
+### What's intentionally not in scope
+
+- Direct `s3://` / `gs://` / `az://` URL adapters in TS (would require
+  full protocol clients per scheme — separate scope).
+- Azure Shared Key signing, Google HMAC signing — use presigned URLs.
+- The 256 KB forward-chunk-during-scan variant — tracked as
+  `remote 7` in `plans/TODO.md` pending a benchmark.
+
 ## TypeScript wrapper — streaming `StreamingEncoder` (Pass 6)
 
 Closes the "callback-per-frame" gap flagged in Pass 4's focus list.

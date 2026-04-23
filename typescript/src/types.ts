@@ -436,6 +436,14 @@ export interface FromUrlOptions {
   headers?: HeadersInit;
   /** AbortSignal passed through to the underlying fetch. */
   signal?: AbortSignal;
+  /**
+   * Maximum number of concurrent HTTP Range requests for fan-out
+   * operations (`messageObjectBatch`, `prefetchLayouts`, descriptor
+   * prefix fetches). Default is `6`, matching typical browser
+   * per-host connection limits.  Setting `1` forces serial fetches;
+   * any positive integer is accepted.
+   */
+  concurrency?: number;
 }
 
 /** Options for {@link TensogramFile.open}. */

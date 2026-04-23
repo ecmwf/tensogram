@@ -23,6 +23,7 @@
 import { getWbg } from './init.js';
 import { rethrowTyped, InvalidArgumentError } from './errors.js';
 import { typedArrayFor } from './dtype.js';
+import { concatBytes, flattenRangePairs } from './internal/rangePack.js';
 import type {
   DataObjectDescriptor,
   DecodeRangeOptions,
@@ -71,7 +72,7 @@ export function decodeRange(
     throw new InvalidArgumentError('ranges must be an array of [offset, count] pairs');
   }
 
-  const flat = flattenRanges(ranges);
+  const flat = flattenRangePairs(ranges);
   const wbg = getWbg();
   const result = rethrowTyped(
     () =>
@@ -89,7 +90,7 @@ export function decodeRange(
   // (the WASM side allocates at offset 0).
   const rawParts = result.parts;
   if (opts?.join) {
-    const joined = concat(rawParts);
+    const joined = concatBytes(rawParts);
     return {
       descriptor: result.descriptor,
       parts: [typedArrayFor(result.descriptor.dtype, joined, /* copy */ false)],
@@ -100,68 +101,4 @@ export function decodeRange(
     typedArrayFor(result.descriptor.dtype, p, /* copy */ false),
   );
   return { descriptor: result.descriptor, parts: typedParts };
-}
-
-/**
- * Pack `ranges` into the flat `BigUint64Array` expected by the WASM
- * boundary: `[off0, count0, off1, count1, ...]`.  Rejects negative /
- * fractional values; promotes `number` to `bigint` losslessly within
- * safe-integer range and lets `bigint` inputs flow through.
- */
-function flattenRanges(ranges: readonly RangePair[]): BigUint64Array {
-  const out = new BigUint64Array(ranges.length * 2);
-  for (let i = 0; i < ranges.length; i++) {
-    const pair = ranges[i];
-    if (!Array.isArray(pair) || pair.length !== 2) {
-      throw new InvalidArgumentError(
-        `ranges[${i}] must be a [offset, count] pair, got ${JSON.stringify(pair)}`,
-      );
-    }
-    out[2 * i] = toBigUint64(pair[0], i, 'offset');
-    out[2 * i + 1] = toBigUint64(pair[1], i, 'count');
-  }
-  return out;
-}
-
-/** 2^64 − 1 — the inclusive upper bound of an unsigned 64-bit integer. */
-const U64_MAX = 0xffff_ffff_ffff_ffffn;
-
-function toBigUint64(v: number | bigint, i: number, field: string): bigint {
-  if (typeof v === 'bigint') {
-    if (v < 0n || v > U64_MAX) {
-      throw new InvalidArgumentError(
-        `ranges[${i}].${field} must fit in an unsigned 64-bit integer, got ${v}`,
-      );
-    }
-    return v;
-  }
-  if (typeof v === 'number') {
-    if (!Number.isFinite(v) || v < 0 || !Number.isInteger(v)) {
-      throw new InvalidArgumentError(
-        `ranges[${i}].${field} must be a non-negative integer, got ${v}`,
-      );
-    }
-    if (v > Number.MAX_SAFE_INTEGER) {
-      throw new InvalidArgumentError(
-        `ranges[${i}].${field} exceeds Number.MAX_SAFE_INTEGER — pass a bigint`,
-      );
-    }
-    return BigInt(v);
-  }
-  throw new InvalidArgumentError(
-    `ranges[${i}].${field} must be a number or bigint, got ${typeof v}`,
-  );
-}
-
-/** Concatenate a list of byte arrays into a single `Uint8Array`. */
-function concat(parts: readonly Uint8Array[]): Uint8Array {
-  let total = 0;
-  for (const p of parts) total += p.byteLength;
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const p of parts) {
-    out.set(p, off);
-    off += p.byteLength;
-  }
-  return out;
 }

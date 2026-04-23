@@ -20,7 +20,10 @@
     "12": "tsx 12_streaming_encoder.ts",
     "13": "tsx 13_range_access.ts",
     "14": "tsx 14_streaming_callback.ts",
-    "all": "npm run 01 && npm run 02 && npm run 02b && npm run 03 && npm run 04 && npm run 05 && npm run 06 && npm run 07 && npm run 08 && npm run 09 && npm run 10 && npm run 11 && npm run 12 && npm run 13 && npm run 14"
+    "15": "tsx 15_remote_access.ts",
+    "16": "tsx 16_remote_batch.ts",
+    "17": "tsx 17_remote_s3_signed_fetch.ts",
+    "all": "npm run 01 && npm run 02 && npm run 02b && npm run 03 && npm run 04 && npm run 05 && npm run 06 && npm run 07 && npm run 08 && npm run 09 && npm run 10 && npm run 11 && npm run 12 && npm run 13 && npm run 14 && npm run 15 && npm run 16 && npm run 17"
   },
   "dependencies": {
     "@ecmwf.int/tensogram": "file:../../typescript"
