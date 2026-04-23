@@ -13,6 +13,9 @@
   <a href="https://pypi.org/project/tensogram/">
     <img src="https://img.shields.io/pypi/v/tensogram.svg" alt="PyPI">
   </a>
+  <a href="https://www.npmjs.com/package/@ecmwf.int/tensogram">
+    <img src="https://img.shields.io/npm/v/@ecmwf.int/tensogram.svg" alt="npm">
+  </a>
   <a href="https://sites.ecmwf.int/docs/tensogram/main">
     <img src="https://img.shields.io/badge/docs-online-blue" alt="Documentation">
   </a>
