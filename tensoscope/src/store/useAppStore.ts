@@ -6,6 +6,35 @@ import type { FileIndex, DecodedField, CoordinateData } from '../tensogram';
 import { getAutoStyle } from '../components/map/autoStyles';
 import type { CustomStop } from '../components/map/colormaps';
 
+/**
+ * Decide which axis of a field to slice down to 2-D before rendering.
+ *
+ * `coordLength` is the length of the per-point (meshgridded) lat array
+ * Tensoscope caches; it equals the flattened spatial grid size.
+ *
+ * Three cases, in order:
+ *
+ *  - `total === coordLength` — the field IS the spatial grid (e.g.
+ *    `[nLat, nLon]` meshed, or `[nSpatial]` already flattened).  No
+ *    slicing; the renderer consumes the full tensor.
+ *  - `total` is a positive integer multiple of `coordLength` — one
+ *    or more leading "level-like" dims stack the spatial grid.  Slice
+ *    dim 0 (matches both `[N_lev, nLat, nLon]` and `[N_lev, nSpatial]`).
+ *  - Otherwise — shape and coords do not fit together.  Decode the
+ *    full tensor as best-effort; rendering will fail further
+ *    downstream if the mismatch is real.
+ *
+ * Exported for unit testing.  @internal
+ */
+export function decideSliceDim(shape: readonly number[], coordLength: number): number {
+  if (coordLength <= 0 || shape.length === 0) return -1;
+  let total = 1;
+  for (const s of shape) total *= s;
+  if (total === coordLength) return -1;
+  if (total > coordLength && total % coordLength === 0) return 0;
+  return -1;
+}
+
 export interface FieldStats {
   min: number;
   max: number;
@@ -128,16 +157,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const originalShape = varInfo?.shape ?? [];
       const coordLength = coordinates?.lat.length ?? 0;
 
-      // Level-slicing applies only when one dimension of `shape` matches
-      // the coordinate length — that's the marker of a `[levels, grid]`-shaped
-      // tensor where the non-matching dim is a stack of vertical levels.
-      // For truly 2-D gridded data `[nlat, nlon]` with meshgridded coords
-      // of length `nlat*nlon`, no dim matches and we want the full field
-      // rendered as-is (not sliced to a single row of pixels).
-      const hasSpatialDim = coordLength > 0 && originalShape.includes(coordLength);
-      const sliceDim = hasSpatialDim
-        ? originalShape.findIndex((s) => s !== coordLength)
-        : -1;
+      const sliceDim = decideSliceDim(originalShape, coordLength);
 
       let result: DecodedField;
       if (sliceDim >= 0) {

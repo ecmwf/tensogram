@@ -269,6 +269,12 @@ export class Tensoscope {
 
     let latAxis: Float32Array | null = null;
     let lonAxis: Float32Array | null = null;
+    // Scope inference + expansion to the variables of the requested
+    // message.  Heterogeneous multi-message files may have different
+    // grids in different messages and should not pick up an axis from
+    // some other message.
+    const msgVariables = index.variables.filter((v) => v.msgIndex === msgIdx);
+
     if (latInfo && lonInfo) {
       latAxis = (await this.decodeField(latInfo.msgIndex, latInfo.objIndex)).data;
       lonAxis = (await this.decodeField(lonInfo.msgIndex, lonInfo.objIndex)).data;
@@ -277,13 +283,13 @@ export class Tensoscope {
       // from `mars.grid` + data shape.  This covers GRIB-derived
       // files that ship only data, relying on the grid-kind metadata
       // hint for geolocation.
-      const inferred = inferAxesFromMarsGrid(index.variables);
+      const inferred = inferAxesFromMarsGrid(msgVariables);
       if (!inferred) return null;
       latAxis = inferred.lat;
       lonAxis = inferred.lon;
     }
 
-    const expanded = expandAxesIfRectangularGrid(latAxis, lonAxis, index.variables);
+    const expanded = expandAxesIfRectangularGrid(latAxis, lonAxis, msgVariables);
     this._coords = expanded ?? { lat: latAxis, lon: lonAxis };
     return this._coords;
   }
