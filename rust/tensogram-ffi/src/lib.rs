@@ -410,25 +410,7 @@ fn parse_encode_json(
         }
     }
 
-    // The `#[serde(flatten)]` `extra` field catches every top-level
-    // JSON key that isn't `version`, `descriptors`, or `base`.  A
-    // caller-supplied legacy `"version"` was pulled out by the
-    // `version: Option<u16>` field before it could reach `extra`; we
-    // route it back through `_extra_["version"]` here so every
-    // binding agrees on the free-form contract.
-    let mut cbor_extra: BTreeMap<String, ciborium::Value> = parsed
-        .extra
-        .into_iter()
-        .map(|(k, v)| (k, json_to_cbor(v)))
-        .collect();
-    if let Some(v) = parsed.version {
-        // Explicit `_extra_["version"]` (if the caller also wrote
-        // one via a nested field — possible in future schema
-        // extensions) wins on collision.
-        cbor_extra
-            .entry("version".to_string())
-            .or_insert_with(|| ciborium::Value::Integer(u64::from(v).into()));
-    }
+    let cbor_extra = merge_flattened_extras_with_version(parsed.extra, parsed.version)?;
 
     let global_metadata = GlobalMetadata {
         base: cbor_base,
@@ -437,6 +419,69 @@ fn parse_encode_json(
     };
 
     Ok((global_metadata, parsed.descriptors))
+}
+
+/// Merge a flattened-catch-all JSON map and an optional legacy
+/// `version` integer into a single `_extra_` CBOR map under the
+/// free-form contract.
+///
+/// The `#[serde(flatten)]` catch-all sees any explicit
+/// `"_extra_"` / `"extra"` the caller supplied as just another
+/// top-level key.  To match the Python / TypeScript / Rust-core
+/// contract, we pull the explicit section out *first* and use it as
+/// the authoritative source; every other flattened key becomes a
+/// free-form entry that only fills slots the explicit section did
+/// not already claim.  `version` is handled the same way —
+/// `explicit beats implicit`.
+///
+/// The `"extra"` convenience alias (no underscores) is accepted for
+/// parity with the Python binding, which has supported both
+/// spellings since the 0.6 metadata refactor.  Using both is an
+/// error (ambiguous).
+fn merge_flattened_extras_with_version(
+    mut flattened: BTreeMap<String, serde_json::Value>,
+    legacy_version: Option<u16>,
+) -> Result<BTreeMap<String, ciborium::Value>, String> {
+    fn take_extra_map(
+        flattened: &mut BTreeMap<String, serde_json::Value>,
+        key: &str,
+    ) -> Result<Option<BTreeMap<String, serde_json::Value>>, String> {
+        match flattened.remove(key) {
+            None => Ok(None),
+            Some(serde_json::Value::Object(map)) => Ok(Some(map.into_iter().collect())),
+            Some(_) => Err(format!(
+                "'{key}' must be a JSON object when supplied at the top level"
+            )),
+        }
+    }
+
+    let under = take_extra_map(&mut flattened, "_extra_")?;
+    let plain = take_extra_map(&mut flattened, "extra")?;
+    let explicit_extra = match (under, plain) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "both '_extra_' and 'extra' supplied at the top level — choose one".to_string(),
+            );
+        }
+        (Some(m), None) | (None, Some(m)) => m,
+        (None, None) => BTreeMap::new(),
+    };
+
+    let mut cbor_extra: BTreeMap<String, ciborium::Value> = explicit_extra
+        .into_iter()
+        .map(|(k, v)| (k, json_to_cbor(v)))
+        .collect();
+    for (k, v) in flattened {
+        // Explicit `_extra_` beats implicit free-form top-level keys
+        // on collision (explicit beats implicit).
+        cbor_extra.entry(k).or_insert_with(|| json_to_cbor(v));
+    }
+    if let Some(v) = legacy_version {
+        cbor_extra
+            .entry("version".to_string())
+            .or_insert_with(|| ciborium::Value::Integer(u64::from(v).into()));
+    }
+    Ok(cbor_extra)
 }
 
 // ---------------------------------------------------------------------------
@@ -2992,6 +3037,46 @@ mod tests {
     }
 
     #[test]
+    fn parse_encode_json_explicit_extra_unpacked() {
+        // An explicit `"_extra_"` section at the top level of the FFI
+        // JSON must be unpacked into `GlobalMetadata.extra` — matching
+        // the Python / TypeScript / Rust-core contract.  If `_extra_`
+        // were treated as just another free-form key, a caller doing
+        // `{"_extra_": {"foo": "bar"}}` would end up with a nested
+        // `_extra_._extra_.foo` on the wire — clearly wrong.
+        let json = r#"{"_extra_":{"foo":"bar","count":7},"descriptors":[]}"#;
+        let (gm, _) = parse_encode_json(json).unwrap();
+        assert_eq!(
+            gm.extra.get("foo"),
+            Some(&ciborium::Value::Text("bar".to_string())),
+            "explicit `_extra_.foo` must surface at the top level of `extra`"
+        );
+        assert_eq!(
+            gm.extra.get("count"),
+            Some(&ciborium::Value::Integer(7u64.into())),
+            "explicit `_extra_.count` must surface at the top level of `extra`"
+        );
+        assert!(
+            !gm.extra.contains_key("_extra_"),
+            "there must be no nested `_extra_` key inside `extra`"
+        );
+    }
+
+    #[test]
+    fn parse_encode_json_explicit_extra_beats_free_form() {
+        // `explicit beats implicit`: when both an explicit `_extra_.X`
+        // and a free-form top-level `X` are supplied, the explicit
+        // entry wins.  Matches the Rust core + Python / TS behaviour.
+        let json = r#"{"version":99,"_extra_":{"version":1},"descriptors":[]}"#;
+        let (gm, _) = parse_encode_json(json).unwrap();
+        assert_eq!(
+            gm.extra.get("version"),
+            Some(&ciborium::Value::Integer(1u64.into())),
+            "explicit _extra_.version must win over top-level version"
+        );
+    }
+
+    #[test]
     fn parse_encode_json_without_base() {
         let json = r#"{"version":3,"descriptors":[]}"#;
         let (gm, _) = parse_encode_json(json).unwrap();
@@ -3040,8 +3125,56 @@ mod tests {
     }
 
     #[test]
+    fn parse_streaming_json_explicit_extra_unpacked() {
+        // Streaming path must honour the same `_extra_` unpacking as
+        // `parse_encode_json`.
+        let json = r#"{"_extra_":{"foo":"bar"}}"#;
+        let gm = parse_streaming_metadata_json(json).unwrap();
+        assert_eq!(
+            gm.extra.get("foo"),
+            Some(&ciborium::Value::Text("bar".to_string()))
+        );
+        assert!(!gm.extra.contains_key("_extra_"));
+    }
+
+    #[test]
+    fn parse_streaming_json_explicit_extra_beats_free_form() {
+        // `explicit beats implicit` on the streaming path too.
+        let json = r#"{"version":99,"_extra_":{"version":1}}"#;
+        let gm = parse_streaming_metadata_json(json).unwrap();
+        assert_eq!(
+            gm.extra.get("version"),
+            Some(&ciborium::Value::Integer(1u64.into()))
+        );
+    }
+
+    #[test]
     fn parse_streaming_json_invalid_json() {
         assert!(parse_streaming_metadata_json("not json").is_err());
+    }
+
+    #[test]
+    fn parse_encode_json_rejects_both_extra_aliases() {
+        // `_extra_` and `extra` are aliases for the same concept;
+        // supplying both is ambiguous and rejected by the helper.
+        let json = r#"{"_extra_":{"a":1},"extra":{"b":2},"descriptors":[]}"#;
+        let err = parse_encode_json(json).unwrap_err();
+        assert!(
+            err.contains("both '_extra_' and 'extra'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_encode_json_rejects_non_object_extra() {
+        // `_extra_` must be a JSON object.  A scalar is a caller
+        // error and surfaces a clear message.
+        let json = r#"{"_extra_":42,"descriptors":[]}"#;
+        let err = parse_encode_json(json).unwrap_err();
+        assert!(
+            err.contains("'_extra_' must be a JSON object"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -6217,20 +6350,10 @@ fn parse_streaming_metadata_json(json_str: &str) -> Result<GlobalMetadata, Strin
         }
     }
 
-    // A legacy top-level `"version"` field is routed through
-    // `_extra_` on decode (matching the cross-binding contract).
-    // Explicit `_extra_["version"]` (should it ever appear in
-    // future schema extensions) wins on collision.
-    let mut cbor_extra: BTreeMap<String, ciborium::Value> = parsed
-        .extra
-        .into_iter()
-        .map(|(k, v)| (k, json_to_cbor(v)))
-        .collect();
-    if let Some(v) = parsed.version {
-        cbor_extra
-            .entry("version".to_string())
-            .or_insert_with(|| ciborium::Value::Integer(u64::from(v).into()));
-    }
+    // Route explicit `_extra_` / legacy `version` under the shared
+    // free-form merge rule.  Matches the `parse_encode_json` path and
+    // the Python / TypeScript / Rust-core contract.
+    let cbor_extra = merge_flattened_extras_with_version(parsed.extra, parsed.version)?;
     Ok(GlobalMetadata {
         base: cbor_base,
         extra: cbor_extra,
