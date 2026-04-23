@@ -454,3 +454,27 @@ jobs:
       - name: Cleanup
         if: always()
         run: rm -rf "$TMPDIR" target typescript/node_modules typescript/dist typescript/wasm examples/typescript/node_modules
+
+  # ── Tensoscope: vitest unit tests ────────────────────────────────
+  tensoscope:
+    name: Tensoscope
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.3.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        working-directory: tensoscope
+        run: npm ci || npm install --no-audit --no-fund
+
+      - name: Run tests (vitest)
+        working-directory: tensoscope
+        run: npm test
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf tensoscope/node_modules
