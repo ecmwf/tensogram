@@ -275,6 +275,14 @@ For speculative ideas, see `IDEAS.md`.
   - Python `file_decode_range(msg_index, obj_index, ranges, join, verify_hash)`: file-level range decode binding
   - xarray `array.py`: uses `file_decode_range` for both local and remote (replaces buffer-level `decode_range` and remote `file_decode_object` fallback)
   - 3 Rust tests: single range, remote-vs-local parity, out-of-range error
+- [ ] **remote 7 — TS lazy scan: 256 KB forward-chunk variant**:
+  - during `lazyScanMessages`, fetch one 256 KB chunk per message instead of 24 bytes
+  - for header-indexed messages, parse metadata + index inline via `parse_header_chunk`
+    (saves the second round trip `#ensureLayout` would otherwise do)
+  - gated by a benchmark that shows the round-trip saving outweighs the larger
+    per-message fetches on realistic server latencies (RTT ≥ 20 ms)
+  - requires the current preamble-only walk to remain as the fallback when any
+    chunk-parse fails (bail-to-eager path should stay identical)
 
 ## Python Async Bindings
 

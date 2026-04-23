@@ -290,14 +290,42 @@ interface TensogramFile extends AsyncIterable<DecodedMessage> {
   readonly byteLength: number;
   readonly source: 'local' | 'remote' | 'buffer';
 
+  // Whole-message access (unchanged since Scope B).
   message(index: number, opts?: DecodeOptions): Promise<DecodedMessage>;
   messageMetadata(index: number): Promise<GlobalMetadata>;
-  rawMessage(index: number): Uint8Array;
+  rawMessage(index: number): Promise<Uint8Array>;
+
+  // Layout-aware per-object access (new — cheap over HTTP Range).
+  messageDescriptors(index: number): Promise<{
+    metadata: GlobalMetadata;
+    descriptors: DataObjectDescriptor[];
+  }>;
+  messageObject(msgIndex: number, objectIndex: number,
+    opts?: DecodeOptions): Promise<DecodedMessage>;
+  messageObjectRange(msgIndex: number, objectIndex: number,
+    ranges: readonly RangePair[],
+    opts?: DecodeRangeOptions): Promise<DecodeRangeResult>;
+
+  // Bounded-concurrency fan-out.
+  messageObjectBatch(msgIndices: readonly number[], objectIndex: number,
+    opts?: DecodeOptions & { concurrency?: number }): Promise<DecodedMessage[]>;
+  messageObjectRangeBatch(msgIndices: readonly number[], objectIndex: number,
+    ranges: readonly RangePair[],
+    opts?: DecodeRangeOptions & { concurrency?: number }): Promise<DecodeRangeResult[]>;
+  prefetchLayouts(msgIndices: readonly number[],
+    opts?: { concurrency?: number }): Promise<void>;
 
   [Symbol.asyncIterator](): AsyncIterator<DecodedMessage>;
   close(): void;
 }
 ```
+
+> **Numeric limit.**  All TensogramFile file positions are JavaScript
+> `number` values, capped at `Number.MAX_SAFE_INTEGER` (2<sup>53</sup> − 1,
+> ≈ 9 PB).  Files larger than that must be processed via the Rust or
+> Python bindings; the TS wrapper throws
+> `InvalidArgumentError` when a WASM-returned `u64` exceeds the safe
+> range.
 
 Usage:
 
@@ -336,9 +364,10 @@ Downloads the file over HTTPS using the ambient `globalThis.fetch`.
 
 | Option | Type | Description |
 |---|---|---|
-| `fetch` | `typeof fetch` | Override the fetch implementation (useful for tests and for browsers with a polyfill). |
+| `fetch` | `typeof fetch` | Override the fetch implementation (useful for tests and for browsers with a polyfill, and for AWS-authenticated S3 via [`createAwsSigV4Fetch`](#aws-signed-s3-compatible-access)). |
 | `headers` | `HeadersInit` | Extra request headers (auth, etc.). |
 | `signal` | `AbortSignal` | Cancels the download. |
+| `concurrency` | `number` | Per-host concurrency cap for fan-out operations (`messageObjectBatch`, `prefetchLayouts`, descriptor prefix fetches).  Defaults to `6`, matching typical browser per-host connection limits. |
 
 ### `TensogramFile.fromBytes(bytes)`
 
@@ -348,18 +377,31 @@ the `TensogramFile`.
 
 ### Range-based lazy access
 
-Since Scope C, `TensogramFile.fromUrl` automatically probes the server
-for HTTP Range support.  When the `HEAD` response advertises
-`Accept-Ranges: bytes` and a finite `Content-Length`, the file
-switches to a **lazy backend**:
+`TensogramFile.fromUrl` automatically probes the server for HTTP
+Range support.  When the `HEAD` response advertises `Accept-Ranges:
+bytes` and a finite `Content-Length`, the file switches to a **lazy
+backend**:
 
 - The initial open issues a small `HEAD` + one 24-byte Range read per
   message preamble to build the boundary index.  **No payload data is
   downloaded.**
-- `rawMessage(i)` / `message(i)` fetch just the requested message's
-  bytes via a `Range: bytes=offset-(offset+length-1)` GET.
-- A small LRU caches recently-fetched message bytes so repeat reads
-  are free.
+- `rawMessage(i)` / `message(i)` fetch the full message via a
+  `Range: bytes=offset-(offset+length-1)` GET and cache it in a
+  32-entry LRU.
+- `messageMetadata(i)` fetches at most a 256 KB header chunk (or
+  256 KB footer suffix for footer-indexed messages) and caches
+  the decoded `GlobalMetadata` in a per-message `MessageLayout`
+  entry.  Subsequent metadata reads are free.
+- `messageDescriptors(i)` uses the cached index frame and the
+  descriptor-prefix optimisation (header + footer + CBOR region for
+  large frames, full frame for small ones) so a 10-object message
+  with 100 MB frames fetches only a few KB per descriptor.
+- `messageObject(i, j)` and `messageObjectRange(i, j, ranges)` each
+  issue exactly one Range GET for the target object's frame bytes.
+- `messageObjectBatch`, `messageObjectRangeBatch`, and
+  `prefetchLayouts` fan out with bounded concurrency (default 6,
+  configurable via `FromUrlOptions.concurrency` or per-call
+  `opts.concurrency`).
 
 When the server omits `Accept-Ranges`, returns non-`200` on HEAD, or
 the file uses streaming-mode messages (`total_length=0` — the writer
@@ -369,6 +411,39 @@ memory use and timing.
 
 Browser callers using `fromUrl` directly need CORS to expose the
 `Accept-Ranges`, `Content-Range`, and `Content-Length` headers.
+
+### AWS-signed (S3-compatible) access
+
+For authenticated reads against S3 or any S3-compatible HTTPS
+endpoint, wrap `fetch` with `createAwsSigV4Fetch` and pass it through
+`FromUrlOptions.fetch`:
+
+```ts
+import { createAwsSigV4Fetch, TensogramFile } from '@ecmwf.int/tensogram';
+
+const signedFetch = createAwsSigV4Fetch({
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+  region: 'eu-west-1',
+  // Optional: `sessionToken` for STS credentials; `service` for non-S3
+  // S3-compatible endpoints (default 's3').
+});
+
+const file = await TensogramFile.fromUrl(
+  'https://my-bucket.s3.eu-west-1.amazonaws.com/data.tgm',
+  { fetch: signedFetch },
+);
+```
+
+The pure signer `signAwsV4Request` is also exported for callers that
+want to manage the request lifecycle themselves.  Both are covered by
+byte-for-byte AWS `sig-v4-test-suite` parity tests, including
+query-string canonicalisation, header value trim, session-token
+handling, and pre-encoded path round-tripping.
+
+Azure Blob and Google Cloud Storage are not yet supported by a bundled
+helper — generate a presigned URL in your control plane and pass it as
+a plain HTTPS URL instead.
 
 ### Append (Node local file system)
 

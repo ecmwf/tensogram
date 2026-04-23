@@ -45,6 +45,7 @@ import { fetchRange, type FetchRangeContext } from './internal/httpRange.js';
 import { errorMessage, withCause } from './internal/io.js';
 import {
   type MessageLayout,
+  normaliseFrameFooter,
   normaliseFrameIndex,
   normalisePostambleInfo,
   normalisePreambleInfo,
@@ -81,6 +82,14 @@ const LAZY_CACHE_CAPACITY = 32;
 const HEADER_CHUNK_BYTES = 256 * 1024;
 /** Footer-suffix size used when populating a footer-indexed layout (matches Rust 256 KB). */
 const FOOTER_SUFFIX_BYTES = 256 * 1024;
+/** Frames up to this size are fetched in full for descriptor extraction (matches Rust 64 KB). */
+const DESCRIPTOR_PREFIX_THRESHOLD = 64 * 1024;
+/** Initial prefix size tried when parsing descriptor CBOR that precedes payload (matches Rust 8 KB). */
+const DESCRIPTOR_PREFIX_INITIAL_BYTES = 8 * 1024;
+/** Size of the common frame header in v3 (2 + 2 + 2 + 2 + 8 bytes). */
+const DATA_OBJECT_FRAME_HEADER_BYTES = 16;
+/** Size of a data-object frame footer in v3 ([cbor_offset 8][hash 8][ENDF 4]). */
+const DATA_OBJECT_FRAME_FOOTER_BYTES = 20;
 /** The magic header every Tensogram preamble starts with. */
 const PREAMBLE_MAGIC = new TextEncoder().encode('TENSOGRM');
 
@@ -703,6 +712,12 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
    * `RemoteBackend::discover_footer_layout_from_suffix_locked`.  Falls
    * back to a separate Range for the footer if it lives outside the
    * 256 KB suffix window.
+   *
+   * Validates the postamble's `end_magic_ok` flag and range bounds
+   * (`firstFooterOffset >= PREAMBLE_BYTES`, `totalLength == layout.length`)
+   * before trusting any of its fields — otherwise a corrupt or
+   * byzantine server could drive range arithmetic into arbitrary
+   * offsets.
    */
   async #populateFromFooterSuffix(b: LazyHttpBackend, layout: MessageLayout): Promise<void> {
     const suffixSize = Math.min(layout.length, FOOTER_SUFFIX_BYTES);
@@ -713,11 +728,29 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     const postamble = normalisePostambleInfo(
       rethrowTyped(() => getWbg().read_postamble_info(suffix)),
     );
+    if (!postamble.endMagicOk) {
+      throw new IoError('footer suffix: postamble end_magic check failed');
+    }
+    if (postamble.totalLength !== layout.length) {
+      throw new IoError(
+        `footer suffix: postamble total_length (${postamble.totalLength}) ` +
+          `does not match preamble total_length (${layout.length})`,
+      );
+    }
+    if (postamble.firstFooterOffset < PREAMBLE_BYTES) {
+      throw new IoError(
+        `footer suffix: first_footer_offset (${postamble.firstFooterOffset}) ` +
+          `is inside the preamble (< ${PREAMBLE_BYTES})`,
+      );
+    }
+    if (postamble.firstFooterOffset >= layout.length - POSTAMBLE_BYTES) {
+      throw new IoError(
+        `footer suffix: first_footer_offset (${postamble.firstFooterOffset}) ` +
+          `is at or past the postamble start (${layout.length - POSTAMBLE_BYTES})`,
+      );
+    }
     const footerAbsStart = layout.offset + postamble.firstFooterOffset;
     const footerAbsEnd = layout.offset + layout.length - POSTAMBLE_BYTES;
-    if (footerAbsStart >= footerAbsEnd) {
-      throw new IoError('footer region is empty or postamble offset is past the footer');
-    }
     let footerBytes: Uint8Array;
     if (footerAbsStart >= suffixStart) {
       const localStart = footerAbsStart - suffixStart;
@@ -740,10 +773,15 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
   }
 
   /**
-   * Fetch descriptors for every object, one full-frame Range request
-   * per object.  The descriptor-prefix optimisation (fetch only
-   * header+footer+CBOR for huge frames) will layer on top in a later
-   * commit; this commit establishes the correctness baseline.
+   * Fetch descriptors for every object without decoding payloads.
+   *
+   * For frames below DESCRIPTOR_PREFIX_THRESHOLD we fetch the whole
+   * frame (cheaper than multiple tiny Ranges) and parse the CBOR out
+   * via the composed `read_data_object_frame_header` +
+   * `read_data_object_frame_footer` + `parse_descriptor_cbor` WASM
+   * helpers.  For larger frames we fetch only the header + footer +
+   * CBOR region, which can be a few KB even for hundred-megabyte
+   * frames.  Mirrors Rust `RemoteBackend::read_descriptor_only`.
    */
   async #fetchDescriptors(
     b: LazyHttpBackend,
@@ -751,28 +789,153 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
   ): Promise<DataObjectDescriptor[]> {
     const idx = layout.index;
     if (!idx) throw new IoError('message has no index frame');
-    const wbg = getWbg();
-    const tasks = idx.offsets.map((off, i) => async () => {
-      const frameBytes = await fetchRange(
-        lazyFetchContext(b),
-        layout.offset + off,
-        layout.offset + off + idx.lengths[i],
-      );
-      const decoded = rethrowTyped(() =>
-        wbg.decode_object_from_frame(frameBytes, false, false),
-      );
-      try {
-        return decoded.object_descriptor(0) as DataObjectDescriptor;
-      } finally {
-        decoded.free();
-      }
-    });
+    const tasks = idx.offsets.map((off, i) => () =>
+      this.#fetchOneDescriptor(b, layout.offset + off, idx.lengths[i]),
+    );
     return await Promise.all(tasks.map((t) => b.limit(t)));
   }
 
   /**
+   * Fetch a single descriptor, using the prefix optimisation when
+   * the frame is large enough to make the extra round-trip
+   * worthwhile.
+   */
+  async #fetchOneDescriptor(
+    b: LazyHttpBackend,
+    frameAbsStart: number,
+    frameLength: number,
+  ): Promise<DataObjectDescriptor> {
+    const wbg = getWbg();
+
+    if (frameLength <= DESCRIPTOR_PREFIX_THRESHOLD) {
+      const frameBytes = await fetchRange(
+        lazyFetchContext(b),
+        frameAbsStart,
+        frameAbsStart + frameLength,
+      );
+      return await this.#parseDescriptorFromFullFrame(frameBytes);
+    }
+
+    // Large frame: fetch header (16 B) + footer (last 20 B) to learn
+    // the CBOR region's offset, then fetch the CBOR region itself.
+    const [headerBytes, footerBytes] = await Promise.all([
+      fetchRange(lazyFetchContext(b), frameAbsStart, frameAbsStart + DATA_OBJECT_FRAME_HEADER_BYTES),
+      fetchRange(
+        lazyFetchContext(b),
+        frameAbsStart + frameLength - DATA_OBJECT_FRAME_FOOTER_BYTES,
+        frameAbsStart + frameLength,
+      ),
+    ]);
+
+    const header = rethrowTyped(() => wbg.read_data_object_frame_header(headerBytes)) as {
+      is_data_object: boolean;
+      cbor_after_payload: boolean;
+    };
+    if (!header.is_data_object) {
+      throw new IoError(
+        'descriptor fetch: frame at index is not a data-object frame',
+      );
+    }
+    const footer = normaliseFrameFooter(
+      rethrowTyped(() => wbg.read_data_object_frame_footer(footerBytes)),
+    );
+    if (!footer.endMagicOk) {
+      throw new IoError('descriptor fetch: frame missing ENDF trailer');
+    }
+    if (footer.cborOffset < DATA_OBJECT_FRAME_HEADER_BYTES) {
+      throw new IoError(
+        `descriptor fetch: cbor_offset (${footer.cborOffset}) below frame header size (${DATA_OBJECT_FRAME_HEADER_BYTES})`,
+      );
+    }
+
+    const cborAbsStart = frameAbsStart + footer.cborOffset;
+    const footerAbsStart = frameAbsStart + frameLength - DATA_OBJECT_FRAME_FOOTER_BYTES;
+    if (cborAbsStart >= footerAbsStart) {
+      throw new IoError('descriptor fetch: cbor_offset points at or past the frame footer');
+    }
+
+    if (header.cbor_after_payload) {
+      // CBOR lives in [cborAbsStart, footerAbsStart) — fetch it exactly.
+      const cborBytes = await fetchRange(lazyFetchContext(b), cborAbsStart, footerAbsStart);
+      return rethrowTyped(() => wbg.parse_descriptor_cbor(cborBytes) as DataObjectDescriptor);
+    }
+
+    // CBOR precedes payload — fetch an 8 KB prefix and grow on EOF.
+    const maxCborLen = footerAbsStart - cborAbsStart;
+    let prefixSize = Math.min(maxCborLen, DESCRIPTOR_PREFIX_INITIAL_BYTES);
+    // Up to 4 doublings covers 128 KB; that's larger than any realistic
+    // single-descriptor CBOR blob and also the cap in Rust's
+    // read_descriptor_only (prefix_size doubles to max_cbor_len).
+    while (true) {
+      const readEnd = Math.min(cborAbsStart + prefixSize, footerAbsStart);
+      const prefixBytes = await fetchRange(lazyFetchContext(b), cborAbsStart, readEnd);
+      try {
+        return rethrowTyped(
+          () => getWbg().parse_descriptor_cbor(prefixBytes) as DataObjectDescriptor,
+        );
+      } catch (err) {
+        if (prefixSize >= maxCborLen) throw err;
+        prefixSize = Math.min(prefixSize * 2, maxCborLen);
+      }
+    }
+  }
+
+  /** Parse the descriptor from a frame we've already fetched in full. */
+  async #parseDescriptorFromFullFrame(frameBytes: Uint8Array): Promise<DataObjectDescriptor> {
+    const wbg = getWbg();
+    const footer = normaliseFrameFooter(
+      rethrowTyped(() =>
+        wbg.read_data_object_frame_footer(
+          frameBytes.subarray(frameBytes.byteLength - DATA_OBJECT_FRAME_FOOTER_BYTES),
+        ),
+      ),
+    );
+    if (!footer.endMagicOk) {
+      throw new IoError('descriptor fetch: frame missing ENDF trailer');
+    }
+    if (footer.cborOffset < DATA_OBJECT_FRAME_HEADER_BYTES) {
+      throw new IoError(
+        `descriptor fetch: cbor_offset (${footer.cborOffset}) below frame header size`,
+      );
+    }
+    const header = rethrowTyped(() =>
+      wbg.read_data_object_frame_header(frameBytes.subarray(0, DATA_OBJECT_FRAME_HEADER_BYTES)),
+    ) as { cbor_after_payload: boolean };
+    const footerStart = frameBytes.byteLength - DATA_OBJECT_FRAME_FOOTER_BYTES;
+    if (footer.cborOffset >= footerStart) {
+      throw new IoError('descriptor fetch: cbor_offset past the frame footer');
+    }
+    if (header.cbor_after_payload) {
+      const cbor = frameBytes.subarray(footer.cborOffset, footerStart);
+      return rethrowTyped(() => wbg.parse_descriptor_cbor(cbor) as DataObjectDescriptor);
+    }
+    // CBOR before payload — try the whole pre-footer region; if that
+    // can't be decoded, we have no way to know the exact length in
+    // isolation (we'd need the bytes the payload consumes).  But the
+    // full-frame path is only hit for small frames, so decoding the
+    // region up to the footer is fine: CBOR decoders stop at the end
+    // of a well-formed value and the rest is the encoded payload,
+    // which is binary garbage as CBOR — so we try the full slice and
+    // if that fails, shrink back to the 8 KB default.
+    const maxCborLen = footerStart - footer.cborOffset;
+    const full = frameBytes.subarray(footer.cborOffset, footerStart);
+    try {
+      return rethrowTyped(() => wbg.parse_descriptor_cbor(full) as DataObjectDescriptor);
+    } catch {
+      // Fall back: just parse the first prefix — CBOR is self-delimiting.
+      const prefix = frameBytes.subarray(
+        footer.cborOffset,
+        footer.cborOffset + Math.min(maxCborLen, DESCRIPTOR_PREFIX_INITIAL_BYTES),
+      );
+      return rethrowTyped(() => wbg.parse_descriptor_cbor(prefix) as DataObjectDescriptor);
+    }
+  }
+
+  /**
    * Decode one object given a populated layout index — issues exactly
-   * one Range GET for the target frame.
+   * one Range GET for the target frame.  Returns a DecodedMessage whose
+   * `metadata` is the message's real cached metadata (from
+   * `#ensureLayout`), not a default-constructed placeholder.
    */
   async #decodeObjectFromIndex(
     b: LazyHttpBackend,
@@ -787,10 +950,13 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
         `object index ${objectIndex} out of range (have ${idx.offsets.length})`,
       );
     }
+    if (!layout.metadata) {
+      throw new IoError('message metadata not populated after ensureLayout');
+    }
     const frameStart = layout.offset + idx.offsets[objectIndex];
     const frameEnd = frameStart + idx.lengths[objectIndex];
     const frameBytes = await b.limit(() => fetchRange(lazyFetchContext(b), frameStart, frameEnd));
-    return await this.#wrapWasmDecodedObject(frameBytes, options);
+    return await this.#wrapWasmDecodedObject(frameBytes, layout.metadata, options);
   }
 
   /**
@@ -843,9 +1009,15 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
    * Wrap WASM `decode_object_from_frame` output in the same
    * `DecodedMessage` shape that `decode()` produces, so callers can
    * use object.data() / object.dataView() on the single object.
+   *
+   * `metadata` is the message's real cached metadata (not the
+   * default-constructed placeholder the WASM helper returns), so
+   * consumers of messageObject / messageObjectBatch see the actual
+   * GlobalMetadata.
    */
   async #wrapWasmDecodedObject(
     frameBytes: Uint8Array,
+    metadata: GlobalMetadata,
     options?: DecodeOptions,
   ): Promise<DecodedMessage> {
     const { wrapWbgDecodedMessage } = await import('./internal/wbgWrap.js');
@@ -857,7 +1029,8 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
         options?.restoreNonFinite ?? true,
       ),
     );
-    return wrapWbgDecodedMessage(handle);
+    const wrapped = wrapWbgDecodedMessage(handle);
+    return { ...wrapped, metadata };
   }
 
   // ── Write ──
@@ -950,13 +1123,22 @@ interface LazyScanResult {
 }
 
 /**
- * Walk the file one preamble at a time, collecting each message's
- * `(offset, length)` from the preamble's `total_length` field and
- * building a preamble-only `MessageLayout` cache entry per message.
- * Metadata and index frames remain unpopulated until the caller asks
- * for them via `messageMetadata` / `messageDescriptors` / per-object
- * accessors; at that point the backend issues a single header-chunk
- * or footer-suffix Range read per message.
+ * Walk the file one preamble at a time (24-byte Range per message),
+ * collecting each message's `(offset, length)` from the preamble's
+ * `total_length` field and building a preamble-only `MessageLayout`
+ * cache entry per message.  Metadata and index frames remain
+ * unpopulated until the caller asks for them via `messageMetadata`
+ * / `messageDescriptors` / per-object accessors; at that point the
+ * backend issues a single header-chunk or footer-suffix Range read
+ * per message.
+ *
+ * **Not a 256 KB forward-chunk walk.**  The plan initially proposed
+ * reading 256 KB per message and parsing header metadata + index
+ * inline so header-indexed messages would be ready without a second
+ * round trip; this shipped version is the simpler preamble-only
+ * walk.  The fused-chunk variant is tracked as a follow-up in
+ * `plans/TODO.md` — it needs a benchmark to confirm the round-trip
+ * saving outweighs the larger per-message fetches.
  *
  * Returns `null` when the lazy walk cannot proceed — the caller falls
  * back to eager download.  Signals:

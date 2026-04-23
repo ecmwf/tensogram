@@ -372,6 +372,46 @@ describe('Scope C.1 — TensogramFile.fromUrl Range backend', () => {
     }
   });
 
+  it('messageObject returns the real cached metadata (not a default placeholder)', async () => {
+    // Regression: an earlier draft had messageObject returning a
+    // DecodedMessage whose `metadata` was GlobalMetadata::default()
+    // from the WASM side, not the message's real metadata.  This
+    // test guards against that.
+    const mars = { param: '2t', step: 0, date: '20260401' };
+    const meta = {
+      version: 3,
+      base: [{ mars }, { mars }],
+    };
+    const msg = encode(meta, [
+      {
+        descriptor: makeDescriptor([4], 'float32'),
+        data: new Float32Array([1, 2, 3, 4]),
+      },
+      {
+        descriptor: makeDescriptor([4], 'float32'),
+        data: new Float32Array([5, 6, 7, 8]),
+      },
+    ]);
+    const { fetch: fakeFetch } = makeRangeServer(msg);
+    const file = await TensogramFile.fromUrl('https://example.invalid/meta.tgm', {
+      fetch: fakeFetch,
+    });
+    try {
+      const decoded = await file.messageObject(0, 1);
+      try {
+        expect(decoded.metadata.version).toBe(3);
+        expect(decoded.metadata.base).toBeDefined();
+        expect(decoded.metadata.base?.length).toBe(2);
+        const base0 = decoded.metadata.base?.[0] as Record<string, unknown>;
+        expect((base0?.mars as Record<string, unknown>)?.param).toBe('2t');
+      } finally {
+        decoded.close();
+      }
+    } finally {
+      file.close();
+    }
+  });
+
   it('messageObjectRange decodes partial ranges from one frame only', async () => {
     const msg = encode(defaultMeta(), [
       {

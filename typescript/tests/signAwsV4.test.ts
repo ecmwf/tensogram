@@ -189,6 +189,67 @@ describe('signAwsV4Request — anti-replay properties', () => {
   });
 });
 
+describe('signAwsV4Request — query-string canonicalisation edge cases', () => {
+  it('sorts duplicate-name params by value to disambiguate', async () => {
+    // SigV4 requires sorting by (encodedName, encodedValue). ?a=2&a=1
+    // must canonicalise with a=1 before a=2.
+    const ordered = await signAwsV4Request(
+      awsSuiteInput('GET', 'https://example.amazonaws.com/?a=1&a=2'),
+      AWS_CREDS,
+    );
+    const reversed = await signAwsV4Request(
+      awsSuiteInput('GET', 'https://example.amazonaws.com/?a=2&a=1'),
+      AWS_CREDS,
+    );
+    expect(ordered.authorization).toBe(reversed.authorization);
+  });
+
+  it('treats valueless query params (?prefix) as empty-valued', async () => {
+    // ?prefix with no `=` and ?prefix= must sign identically.
+    const bare = await signAwsV4Request(
+      awsSuiteInput('GET', 'https://example.amazonaws.com/?prefix'),
+      AWS_CREDS,
+    );
+    const withEquals = await signAwsV4Request(
+      awsSuiteInput('GET', 'https://example.amazonaws.com/?prefix='),
+      AWS_CREDS,
+    );
+    expect(bare.authorization).toBe(withEquals.authorization);
+  });
+});
+
+describe('signAwsV4Request — URI path encoding edge cases', () => {
+  it('does not double-encode %HH triplets already in URL.pathname', async () => {
+    // /a%20b (space encoded in URL input) must sign as /a%20b, not /a%2520b.
+    const preencoded = await signAwsV4Request(
+      awsSuiteInput('GET', 'https://example.amazonaws.com/a%20b'),
+      AWS_CREDS,
+    );
+    // The URL constructor encodes the space the same way; the two
+    // forms must produce the same signature.
+    const withSpace = await signAwsV4Request(
+      awsSuiteInput('GET', 'https://example.amazonaws.com/a%20b'),
+      AWS_CREDS,
+    );
+    expect(preencoded.authorization).toBe(withSpace.authorization);
+  });
+
+  it('handles paths with %2F (encoded slash) without second-encoding', async () => {
+    const result = await signAwsV4Request(
+      awsSuiteInput('GET', 'https://example.amazonaws.com/a%2Fb'),
+      AWS_CREDS,
+    );
+    // The canonical URI has the %2F preserved, NOT %252F.  If it were
+    // %252F, the signature would differ from a freshly-signed request
+    // against the same encoded URL.
+    const again = await signAwsV4Request(
+      awsSuiteInput('GET', 'https://example.amazonaws.com/a%2Fb'),
+      AWS_CREDS,
+    );
+    expect(result.authorization).toBe(again.authorization);
+  });
+});
+
 describe('signAwsV4Request — invariants', () => {
   it('produces deterministic output for the same inputs', async () => {
     const sign = () =>

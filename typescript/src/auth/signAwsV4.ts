@@ -198,33 +198,84 @@ function buildCanonicalRequest(
 }
 
 /**
- * Canonicalise a URI path segment-by-segment — each segment is
- * URI-encoded except for unreserved characters and forward slashes.
- * Empty path becomes `/`.  S3 special-cases double-encoding for
- * non-`s3` services; we always single-encode (matches the
- * `get-vanilla` test vector).
+ * Canonicalise a URI path segment-by-segment.
+ *
+ * `URL.pathname` already contains percent-encoded octets for
+ * characters outside the URL-safe set (e.g. `/a%20b` stays
+ * `%20`-escaped).  Re-encoding those as `%2520` corrupts the
+ * signature, so we preserve any valid three-char `%HH` triplet and
+ * only encode bytes that are not already escaped.  This matches AWS
+ * SigV4 behaviour on `/a%20b`, `/a%2Fb`, and Unicode paths.
+ *
+ * Empty path becomes `/`.  We single-encode (matches the
+ * `get-vanilla` test vector); S3 accepts single-encoded paths —
+ * double-encoding is a non-S3 quirk we do not need.
  */
 function canonicaliseUri(path: string): string {
   if (path === '') return '/';
   return path
     .split('/')
-    .map((segment) => uriEncode(segment, /* encodeSlash */ false))
+    .map((segment) => encodePreservingEscapes(segment))
     .join('/');
 }
 
-/** Canonicalise the query string — sorted by name, with each name and value URI-encoded. */
+/**
+ * URI-encode a string segment while leaving valid `%HH` triplets
+ * alone, so `URL.pathname`-style pre-encoded input round-trips
+ * through signing.
+ */
+function encodePreservingEscapes(s: string): string {
+  let out = '';
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (
+      ch === '%' &&
+      i + 2 < s.length &&
+      isHexDigit(s[i + 1]) &&
+      isHexDigit(s[i + 2])
+    ) {
+      out += s.slice(i, i + 3).toUpperCase();
+      i += 3;
+      continue;
+    }
+    out += uriEncode(ch, /* encodeSlash */ false);
+    i += 1;
+  }
+  return out;
+}
+
+/** ASCII hex-digit check. */
+function isHexDigit(c: string): boolean {
+  return (
+    (c >= '0' && c <= '9') ||
+    (c >= 'A' && c <= 'F') ||
+    (c >= 'a' && c <= 'f')
+  );
+}
+
+/**
+ * Canonicalise the query string per SigV4: each parameter is
+ * URI-encoded first, then the parameter list is sorted
+ * lexicographically by the encoded name; if two parameters share
+ * the same name, the tiebreaker is the encoded value.  This matches
+ * AWS's sig-v4-test-suite behaviour on `?a=2&a=1`-style duplicate-
+ * key cases.
+ *
+ * Valueless parameters (`?prefix` — no `=`) sign as `prefix=` with
+ * an empty encoded value, mirroring what AWS does.
+ */
 function canonicaliseQuery(params: URLSearchParams): string {
   const pairs: Array<[string, string]> = [];
   params.forEach((value, name) => {
-    pairs.push([name, value]);
+    pairs.push([uriEncode(name, true), uriEncode(value, true)]);
   });
-  pairs.sort(([a], [b]) => {
-    if (a === b) return 0;
-    return a < b ? -1 : 1;
+  pairs.sort((a, b) => {
+    if (a[0] !== b[0]) return a[0] < b[0] ? -1 : 1;
+    if (a[1] !== b[1]) return a[1] < b[1] ? -1 : 1;
+    return 0;
   });
-  return pairs
-    .map(([k, v]) => `${uriEncode(k, true)}=${uriEncode(v, true)}`)
-    .join('&');
+  return pairs.map(([k, v]) => `${k}=${v}`).join('&');
 }
 
 /** AWS-style URI encoding: same as RFC 3986 but optionally encodes `/`. */

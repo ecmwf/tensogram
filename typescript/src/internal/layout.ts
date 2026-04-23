@@ -131,11 +131,36 @@ export function normalisePreambleInfo(raw: unknown): PreambleInfo {
   };
 }
 
+/** Fields from a data-object frame footer. */
+export interface FrameFooterInfo {
+  cborOffset: number;
+  endMagicOk: boolean;
+}
+
 /** WASM-side PostambleInfo shape. */
 interface WbgPostambleInfo {
   first_footer_offset: number | bigint;
   total_length: number | bigint;
   end_magic_ok: boolean;
+}
+
+/** WASM-side DataObjectFooter shape. */
+interface WbgFrameFooterInfo {
+  cbor_offset: number | bigint;
+  hash_hex: string;
+  end_magic_ok: boolean;
+}
+
+/** Convert WASM data-object frame footer into its normalised TS form. */
+export function normaliseFrameFooter(raw: unknown): FrameFooterInfo {
+  if (!raw || typeof raw !== 'object') {
+    throw new InvalidArgumentError('FrameFooter: expected an object from WASM');
+  }
+  const r = raw as WbgFrameFooterInfo;
+  return {
+    cborOffset: safeNumberFromBigint(r.cbor_offset, 'frame.cbor_offset'),
+    endMagicOk: r.end_magic_ok,
+  };
 }
 
 /** Convert WASM PostambleInfo into its normalised TS form. */

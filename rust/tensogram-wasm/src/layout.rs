@@ -201,6 +201,10 @@ pub fn parse_header_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
             break;
         }
 
+        if &chunk[frame_end - FRAME_END.len()..frame_end] != FRAME_END {
+            return Err(JsError::new("header frame missing ENDF trailer"));
+        }
+
         let payload = &chunk[pos + FRAME_HEADER_SIZE..frame_end - FRAME_COMMON_FOOTER_SIZE];
         match fh.frame_type {
             FrameType::HeaderMetadata => {
@@ -250,6 +254,10 @@ pub fn parse_footer_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
             Some(e) if e <= chunk.len() => e,
             _ => break,
         };
+
+        if &chunk[frame_end - FRAME_END.len()..frame_end] != FRAME_END {
+            return Err(JsError::new("footer frame missing ENDF trailer"));
+        }
 
         let payload = &chunk[pos + FRAME_HEADER_SIZE..frame_end - FRAME_COMMON_FOOTER_SIZE];
         match fh.frame_type {
