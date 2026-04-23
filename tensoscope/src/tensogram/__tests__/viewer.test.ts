@@ -56,30 +56,34 @@ describe('Tensoscope viewer source uses layout-aware reads', () => {
     expect(source).not.toMatch(/import\s*{[^}]*\bdecodeObject\b[^}]*}\s*from\s*'@ecmwf\.int\/tensogram'/);
   });
 
-  it('buildIndex prefetches layouts before iterating messageMetadata', () => {
+  it('buildIndex prefetches metadata via concurrent messageMetadata calls before the main loop', () => {
     const path = 'src/tensogram/index.ts';
     if (!existsSync(path)) return;
     const source = readFileSync(path, 'utf8');
-    // prefetchLayouts is called in buildIndex.
     const buildIdx = source.indexOf('async buildIndex');
     expect(buildIdx).toBeGreaterThan(-1);
-    const prefetchCallIdx = source.indexOf('prefetchLayouts', buildIdx);
-    const messageMetadataCallIdx = source.indexOf('messageMetadata', buildIdx);
-    expect(prefetchCallIdx).toBeGreaterThan(-1);
-    expect(messageMetadataCallIdx).toBeGreaterThan(-1);
-    // Prefetch must come before the loop that reads metadata, so
-    // the loop hits the warm cache.
-    expect(prefetchCallIdx).toBeLessThan(messageMetadataCallIdx);
+    // Must use Promise.all for concurrent prefetch (not prefetchLayouts which no longer exists).
+    const promiseAllIdx = source.indexOf('Promise.all', buildIdx);
+    const messageMetadataInLoopIdx = source.indexOf('messageMetadata', buildIdx);
+    expect(promiseAllIdx).toBeGreaterThan(-1);
+    expect(messageMetadataInLoopIdx).toBeGreaterThan(-1);
+    // Concurrent prefetch block must come before the sequential metadata loop.
+    expect(promiseAllIdx).toBeLessThan(messageMetadataInLoopIdx);
+    // Must NOT use the removed prefetchLayouts API.
+    expect(source.indexOf('prefetchLayouts', buildIdx)).toBe(-1);
   });
 
-  it('decodeField uses messageObject (one-Range fetch), not rawMessage', () => {
+  it('decodeField uses file.message() (per-message decode), not rawMessage or messageObject', () => {
     const path = 'src/tensogram/index.ts';
     if (!existsSync(path)) return;
     const source = readFileSync(path, 'utf8');
     const decodeFieldIdx = source.indexOf('async decodeField');
     expect(decodeFieldIdx).toBeGreaterThan(-1);
     const block = source.slice(decodeFieldIdx, decodeFieldIdx + 800);
-    expect(block).toMatch(/messageObject/);
+    // Uses the current TensogramFile.message() API.
+    expect(block).toMatch(/this\.file\.message\(/);
+    // Must NOT fall back to the removed messageObject or expensive rawMessage.
+    expect(block).not.toMatch(/messageObject/);
     expect(block).not.toMatch(/rawMessage/);
   });
 });

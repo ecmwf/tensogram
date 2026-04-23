@@ -60,14 +60,28 @@ export function getMarsLevel(mars: MarsMetadata): number | null {
 
 export function getPackedLevels(v: ObjectInfo, coordLength: number): number[] | null {
   if (v.shape.length <= 1) return null;
-  const levelDimSize = v.shape.find((s) => s !== coordLength);
-  if (!levelDimSize || levelDimSize <= 1) return null;
 
   const anemoi = v.metadata?.anemoi as Record<string, unknown> | undefined;
-  const levels = anemoi?.levels as number[] | undefined;
-  if (levels && levels.length === levelDimSize) return levels;
+  const anoMetaLevels = anemoi?.levels as number[] | undefined;
 
-  return Array.from({ length: levelDimSize }, (_, i) => i);
+  if (coordLength > 0) {
+    // Use total-product comparison (same logic as decideSliceDim in useAppStore):
+    //   total === coordLength  → pure spatial field ([nLat, nLon]), no levels
+    //   total is a multiple   → total/coordLength packed level slices
+    let total = 1;
+    for (const s of v.shape) total *= s;
+    if (total === coordLength) return null;
+    if (total > coordLength && total % coordLength === 0) {
+      const nLevels = total / coordLength;
+      if (anoMetaLevels && anoMetaLevels.length === nLevels) return anoMetaLevels;
+      return Array.from({ length: nLevels }, (_, i) => i);
+    }
+    return null;
+  }
+
+  // coordLength === 0 (coordinates not yet loaded): only trust explicit anemoi.levels
+  if (anoMetaLevels && anoMetaLevels.length > 1) return anoMetaLevels;
+  return null;
 }
 
 export function groupByParam(variables: ObjectInfo[], coordLength: number): ParamGroup[] {
