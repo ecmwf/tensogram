@@ -157,16 +157,10 @@ export class Tensoscope {
     const coordinates: CoordinateInfo[] = [];
 
     if (this.file.source === 'remote') {
-      // Warm the internal metadata cache in bounded-concurrency batches so a
-      // large remote file doesn't queue thousands of serial Range requests.
       const indices = Array.from({ length: this.file.messageCount }, (_, i) => i);
       for (let off = 0; off < indices.length; off += PREFETCH_CHUNK_SIZE) {
         const chunk = indices.slice(off, off + PREFETCH_CHUNK_SIZE);
-        for (let ci = 0; ci < chunk.length; ci += REMOTE_CONCURRENCY) {
-          await Promise.all(
-            chunk.slice(ci, ci + REMOTE_CONCURRENCY).map((i) => this.file.messageMetadata(i)),
-          );
-        }
+        await this.file.prefetchLayouts(chunk, { concurrency: REMOTE_CONCURRENCY });
       }
     }
 
@@ -227,9 +221,9 @@ export class Tensoscope {
    * message — a major bandwidth saving for multi-tensor messages.
    */
   async decodeField(msgIdx: number, objIdx: number): Promise<DecodedField> {
-    const msg = await this.file.message(msgIdx);
+    const msg = await this.file.messageObject(msgIdx, objIdx);
     try {
-      const obj = msg.objects[objIdx];
+      const obj = msg.objects[0];
       const typed = obj.data();
       const data = typed instanceof Float32Array
         ? typed
