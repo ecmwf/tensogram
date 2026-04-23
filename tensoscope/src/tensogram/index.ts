@@ -266,10 +266,22 @@ export class Tensoscope {
     const lonInfo = index.coordinates.find(
       (c) => c.msgIndex === msgIdx && LON_NAMES.has(c.name.toLowerCase()),
     );
-    if (!latInfo || !lonInfo) return null;
 
-    const latAxis = (await this.decodeField(latInfo.msgIndex, latInfo.objIndex)).data;
-    const lonAxis = (await this.decodeField(lonInfo.msgIndex, lonInfo.objIndex)).data;
+    let latAxis: Float32Array | null = null;
+    let lonAxis: Float32Array | null = null;
+    if (latInfo && lonInfo) {
+      latAxis = (await this.decodeField(latInfo.msgIndex, latInfo.objIndex)).data;
+      lonAxis = (await this.decodeField(lonInfo.msgIndex, lonInfo.objIndex)).data;
+    } else {
+      // Fallback: no explicit coordinate objects.  Try to infer axes
+      // from `mars.grid` + data shape.  This covers GRIB-derived
+      // files that ship only data, relying on the grid-kind metadata
+      // hint for geolocation.
+      const inferred = inferAxesFromMarsGrid(index.variables);
+      if (!inferred) return null;
+      latAxis = inferred.lat;
+      lonAxis = inferred.lon;
+    }
 
     const expanded = expandAxesIfRectangularGrid(latAxis, lonAxis, index.variables);
     this._coords = expanded ?? { lat: latAxis, lon: lonAxis };
@@ -361,6 +373,66 @@ export function expandAxesIfRectangularGrid(
     }
   }
   return { lat: latFull, lon: lonFull };
+}
+
+/**
+ * Infer 1-D latitude + longitude axes from `mars.grid` metadata + the
+ * variable's shape, for files that ship no explicit coordinate
+ * objects.  Currently supports `regular_ll` (the common
+ * constant-step global lat/lon grid); returns `null` for any other
+ * grid kind (`reduced_gg`, octahedral `O*`, Gaussian `N*`, etc.) —
+ * those require either a per-point lat/lon pair in the file or a
+ * grid-definition lookup that this thin viewer layer can't do
+ * standalone.
+ *
+ * Exported for unit-testing.  @internal
+ */
+export function inferAxesFromMarsGrid(
+  variables: readonly ObjectInfo[],
+): { lat: Float32Array; lon: Float32Array } | null {
+  for (const v of variables) {
+    if (v.shape.length !== 2) continue;
+    const mars = v.metadata?.mars as Record<string, unknown> | undefined;
+    if (!mars) continue;
+    const grid = mars.grid;
+    if (typeof grid !== 'string') continue;
+    const gridKind = grid.toLowerCase();
+    if (gridKind !== 'regular_ll') continue;
+
+    const [nLat, nLon] = v.shape;
+    // MARS "area": [north, west, south, east].  Default to a full
+    // global domain when absent — matches ECMWF operational data.
+    const area = Array.isArray(mars.area) ? (mars.area as unknown[]) : null;
+    const north = toNumber(area?.[0]) ?? 90;
+    const west = toNumber(area?.[1]) ?? 0;
+    const south = toNumber(area?.[2]) ?? -90;
+    const east = toNumber(area?.[3]) ?? 360;
+
+    const lat = new Float32Array(nLat);
+    for (let i = 0; i < nLat; i++) {
+      lat[i] = north + (i * (south - north)) / Math.max(nLat - 1, 1);
+    }
+
+    // Longitude endpoint handling: when the area spans a full 360°
+    // circle the last sample sits one step before `east` because
+    // east ≡ west (mod 360).  For partial longitudinal bands the
+    // last sample sits exactly at `east`.
+    const lon = new Float32Array(nLon);
+    const spansCircle = Math.abs(east - west) >= 360 - 1e-6;
+    const denom = spansCircle ? nLon : Math.max(nLon - 1, 1);
+    for (let j = 0; j < nLon; j++) {
+      lon[j] = west + (j * (east - west)) / denom;
+    }
+    return { lat, lon };
+  }
+  return null;
+}
+
+/** Convert a CborValue to a plain number when possible. */
+function toNumber(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'bigint') return Number(v);
+  return null;
 }
 
 /** Slice a flat array along one dimension of a multi-dimensional shape. */
