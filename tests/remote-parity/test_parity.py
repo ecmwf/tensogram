@@ -41,6 +41,8 @@ from run_parity import (
     _OPS,
     _RUST_DRIVER_BIN,
     DriverCase,
+    Language,
+    Op,
     collect_events,
     filter_scan_events,
 )
@@ -88,9 +90,9 @@ _FULL_SCAN_OPS: tuple[str, ...] = ("message-count", "read-last")
 
 @pytest.mark.parametrize("fixture", _FIXTURES, ids=list(_FIXTURES))
 @pytest.mark.parametrize("op", _FULL_SCAN_OPS, ids=list(_FULL_SCAN_OPS))
-def test_rust_ts_parity_on_full_scan_ops(fixture: str, op: str, events) -> None:
-    rust_case = DriverCase(fixture=fixture, language="rust", op=op)  # type: ignore[arg-type]
-    ts_case = DriverCase(fixture=fixture, language="ts", op=op)  # type: ignore[arg-type]
+def test_rust_ts_parity_on_full_scan_ops(fixture: str, op: Op, events) -> None:
+    rust_case = DriverCase(fixture=fixture, language="rust", op=op)
+    ts_case = DriverCase(fixture=fixture, language="ts", op=op)
     rust_scan = filter_scan_events(events[rust_case.run_id])
     ts_scan = filter_scan_events(events[ts_case.run_id])
     assert [(e.scan_round, e.direction, e.logical_range) for e in rust_scan] == [
@@ -124,9 +126,9 @@ _FULL_SCAN_OPS_LAYOUT: tuple[str, ...] = ("message-count", "read-last")
 @pytest.mark.parametrize("op", _FULL_SCAN_OPS_LAYOUT, ids=list(_FULL_SCAN_OPS_LAYOUT))
 @pytest.mark.parametrize("fixture", _FIXTURES, ids=list(_FIXTURES))
 def test_full_scan_offsets_match_fixture_layout(
-    fixture: str, language: str, op: str, events, fixture_layouts
+    fixture: str, language: Language, op: Op, events, fixture_layouts
 ) -> None:
-    case = DriverCase(fixture=fixture, language=language, op=op)  # type: ignore[arg-type]
+    case = DriverCase(fixture=fixture, language=language, op=op)
     scan_events = filter_scan_events(events[case.run_id])
     expected_starts = [offset for offset, _length in fixture_layouts[fixture]]
     actual_starts = [e.logical_range[0] for e in scan_events]
@@ -166,12 +168,17 @@ def test_open_divergence_rust_lazy_ts_eager(fixture: str, events) -> None:
     behaviour. Update the assertion deliberately.
     """
     expected_n = _EXPECTED_MESSAGE_COUNTS[fixture]
-    rust_open = filter_scan_events(events[f"{fixture}-rust-open-forward"])
-    ts_open = filter_scan_events(events[f"{fixture}-ts-open-forward"])
+    rust_case = DriverCase(fixture=fixture, language="rust", op="open")
+    ts_case = DriverCase(fixture=fixture, language="ts", op="open")
+    rust_open = filter_scan_events(events[rust_case.run_id])
+    ts_open = filter_scan_events(events[ts_case.run_id])
 
     assert len(rust_open) == 1, (
         f"Rust open is expected to issue exactly one preamble GET; "
         f"got {len(rust_open)} for {fixture}"
+    )
+    assert len(ts_open) == expected_n, (
+        f"TS open is expected to walk all {expected_n} preambles; got {len(ts_open)} for {fixture}"
     )
     assert len(ts_open) == expected_n, (
         f"TS open is expected to walk all {expected_n} preambles; got {len(ts_open)} for {fixture}"

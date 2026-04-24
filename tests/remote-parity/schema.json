@@ -23,7 +23,7 @@
     },
     "category": {
       "enum": ["probe", "scan", "payload", "fallback", "error"],
-      "description": "'probe' = HEAD / Range-support check (excluded from parity). 'scan' = a 24-byte preamble / 24-byte postamble / 8-byte END_MAGIC discovery read that belongs to the scan walk (compared for parity). 'payload' = bulk data-object fetch (logged, not compared). 'fallback' = HTTP 200 eager full-body download (logged, not compared). 'error' = non-200/non-206 response (logged, not compared). Future PRs (bidirectional / eager footer discovery) extend 'scan' semantics via classifier.py, not this enum."
+      "description": "'probe' = HEAD / Range-support check (excluded from parity). 'scan' = a 24-byte preamble read that belongs to the current forward-only scan walk (compared for parity). 'payload' = bulk data-object fetch (logged, not compared). 'fallback' = HTTP 200 eager full-body download (logged, not compared). 'error' = non-200/non-206 response (logged, not compared). Future work (bidirectional walking, eager footer / END_MAGIC discovery) may extend `classifier.py` to recognise additional scan-walk reads, but those are not part of the current 'scan' contract described by this schema."
     },
     "logical_range": {
       "type": "array",
