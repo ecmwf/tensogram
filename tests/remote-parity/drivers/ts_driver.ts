@@ -16,8 +16,9 @@
  * request logs can be compared round-for-round.
  *
  * Like the Rust driver, this emits no logs of its own. The mock server
- * captures every HTTP request on its side, tagged by the run_id in the
- * URL path; the orchestrator fetches those logs after the driver exits.
+ * captures every HTTP request, tagged by the run_id in the URL path;
+ * the orchestrator collects that captured request log from the
+ * in-process server after the driver exits.
  */
 
 import { init, TensogramFile } from '@ecmwf.int/tensogram';
@@ -30,8 +31,10 @@ function parseArgs(argv: string[]): { url: string; op: Op } {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--url') {
+      if (i + 1 >= argv.length) throw new Error('--url requires a value');
       url = argv[++i];
     } else if (arg === '--op') {
+      if (i + 1 >= argv.length) throw new Error('--op requires a value');
       const value = argv[++i];
       if (!isOp(value)) throw new Error(`unknown --op '${value}'`);
       op = value;

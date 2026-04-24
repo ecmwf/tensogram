@@ -89,10 +89,16 @@ def _logical_from_range(range_header: str | None, response_bytes: int) -> tuple[
 
     if spec.startswith("-"):
         try:
-            suffix_len = int(spec[1:])
+            int(spec[1:])
         except ValueError:
             return (0, response_bytes)
-        return (max(0, 0), suffix_len)
+        # Suffix ranges (`bytes=-n`) identify the last n bytes of the
+        # object, but without the total object size or a parsed
+        # `Content-Range` header we can't recover the true logical
+        # start offset here. Fall back to the observed response span;
+        # capturing total size is tracked for when bidirectional scan
+        # adds suffix-range usage.
+        return (0, response_bytes)
 
     if "-" not in spec:
         return (0, response_bytes)

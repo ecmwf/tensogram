@@ -290,22 +290,23 @@ For speculative ideas, see `IDEAS.md`.
   Split into the sub-tasks below; land in order, each gated by the
   cross-language parity harness (first sub-task).
 
-  - [ ] **parity harness foundation** (`tests/remote-parity/`, ~800 LOC).
-    Python `mock_server.py` with Range + HEAD + serialized per-`run_id`
-    request logging.  Deterministic fixture generator emitting 10 starter
-    `.tgm` files (single / 2 / 10 / 100 messages + streaming-tail +
-    streaming-mid + footer-idx + header-idx + mixed + valid-prefix-
-    streaming-tail). JSON-schema `ScanEvent` log contract with
-    `{ run_id, scan_round, direction, category, logical_range,
-    physical_requests }`; orchestrator normalizes inclusive HTTP ranges
-    to `[start, end_exclusive)` and filters `category: "scan"` events
-    only.  Rust + TS drivers exercising **current forward-only
-    behaviour** emit logs in this schema; Rust and TS produce
-    bit-identical `scan`-category logs on every fixture.  Fail-closed
-    `--regen` tool for golden updates.  Minimal instrumentation landed
-    in production code (`#[tracing::instrument]` call-site annotations
-    in `remote.rs`; optional `debug: boolean` emitter in
-    `typescript/src/internal/httpRange.ts`).
+  - [ ] **parity harness foundation** (`tests/remote-parity/`, initial
+    scaffold landed). Python `mock_server.py` with Range + HEAD +
+    per-`run_id` request logging, plus the orchestrator plumbing that
+    normalizes inclusive HTTP ranges to `[start, end_exclusive)` and
+    classifies events into `probe / scan / payload / fallback / error`.
+    JSON-schema `ScanEvent` log contract.  Rust + TS drivers exercise
+    **current forward-only behaviour** against four committed
+    header-indexed `.tgm` fixtures (single / 2 / 10 / 100 messages)
+    and emit comparable `scan`-category events; the pytest suite
+    asserts cross-language equivalence on full-scan ops, scan-event
+    shape invariants, and offset alignment with the live fixture
+    layout via `tensogram.scan` — no committed snapshots, so the
+    harness survives intentional fixture regenerations and is robust
+    to legitimate changes in scan patterns.  Follow-on remote-8
+    sub-tasks expand the fixture corpus (streaming, footer-indexed,
+    mixed) and add any production-code instrumentation needed in
+    `remote.rs` and `typescript/src/internal/httpRange.ts`.
 
   - [ ] **Rust state refactor — zero behaviour change** (`remote.rs`,
     ~300 LOC).  Introduce internal `RemoteScanOptions { bidirectional:
