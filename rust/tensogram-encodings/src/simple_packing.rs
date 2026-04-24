@@ -39,10 +39,13 @@ pub enum PackingError {
         num_values: usize,
         bytes_per_value: usize,
     },
-    /// Total-bits math overflowed before any slice or allocation step.
-    /// Fires when a hostile descriptor claims a `num_values` that, when
-    /// multiplied by `bits_per_value`, exceeds `u128` (effectively never
-    /// on any realistic platform, but the check is cheap insurance).
+    /// Total-bits math overflowed `u128` before any slice or
+    /// allocation step. Structurally unreachable under the current
+    /// public API — `usize::MAX * 64` still fits in `u128` on every
+    /// supported target, and `bits_per_value > 64` is rejected earlier
+    /// via [`BitsPerValueTooLarge`](PackingError::BitsPerValueTooLarge).
+    /// The variant is kept as defensive insurance so a future increase
+    /// in the `bits_per_value` width does not silently wrap.
     #[error("bit-count overflow: {num_values} values × {bits_per_value} bits per value")]
     BitCountOverflow {
         num_values: usize,

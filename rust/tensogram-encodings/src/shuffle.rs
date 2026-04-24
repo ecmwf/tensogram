@@ -34,6 +34,13 @@ fn try_reserve_shuffle(out: &mut Vec<u8>, n: usize) -> Result<(), ShuffleError> 
         })
 }
 
+fn try_clone(data: &[u8]) -> Result<Vec<u8>, ShuffleError> {
+    let mut out: Vec<u8> = Vec::new();
+    try_reserve_shuffle(&mut out, data.len())?;
+    out.extend_from_slice(data);
+    Ok(out)
+}
+
 /// Minimum input length below which the parallel shuffle skips the
 /// rayon split.  Below ~64 KiB the parallel split overhead dominates.
 #[cfg(feature = "threads")]
@@ -62,7 +69,7 @@ pub fn shuffle_with_threads(
         return Err(ShuffleError::InvalidElementSize);
     }
     if element_size == 1 || data.is_empty() {
-        return Ok(data.to_vec());
+        return try_clone(data);
     }
     if !data.len().is_multiple_of(element_size) {
         return Err(ShuffleError::Misaligned {
@@ -124,7 +131,7 @@ pub fn unshuffle_with_threads(
         return Err(ShuffleError::InvalidElementSize);
     }
     if element_size == 1 || data.is_empty() {
-        return Ok(data.to_vec());
+        return try_clone(data);
     }
     if !data.len().is_multiple_of(element_size) {
         return Err(ShuffleError::Misaligned {
@@ -311,5 +318,16 @@ mod tests {
             ),
             "unshuffle with misaligned data must return Err(Misaligned)"
         );
+    }
+
+    #[test]
+    fn try_reserve_shuffle_rejects_pathological_capacity() {
+        let mut v: Vec<u8> = Vec::new();
+        let err = try_reserve_shuffle(&mut v, usize::MAX)
+            .expect_err("reservation at usize::MAX must fail the capacity check");
+        match err {
+            ShuffleError::AllocationFailed { .. } => {}
+            other => panic!("expected AllocationFailed, got {other:?}"),
+        }
     }
 }
