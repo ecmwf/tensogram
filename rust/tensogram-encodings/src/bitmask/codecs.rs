@@ -22,7 +22,7 @@ use super::{Bitmask, MaskError, packing};
 /// the `method = "none"` on-wire format, chosen automatically by the
 /// encoder-integration layer for masks smaller than
 /// `small_mask_threshold_bytes` (default 128).
-pub fn encode_none(bits: &[bool]) -> Vec<u8> {
+pub fn encode_none(bits: &[bool]) -> Result<Vec<u8>, MaskError> {
     packing::pack(bits)
 }
 
@@ -35,7 +35,7 @@ pub fn decode_none(bytes: &[u8], n_elements: usize) -> Result<Bitmask, MaskError
 
 #[cfg(feature = "lz4")]
 pub fn encode_lz4(bits: &[bool]) -> Result<Vec<u8>, MaskError> {
-    let packed = packing::pack(bits);
+    let packed = packing::pack(bits)?;
     Ok(lz4_flex::compress_prepend_size(&packed))
 }
 
@@ -60,7 +60,7 @@ pub fn decode_lz4(_bytes: &[u8], _n_elements: usize) -> Result<Bitmask, MaskErro
 
 #[cfg(feature = "zstd")]
 pub fn encode_zstd(bits: &[bool], level: Option<i32>) -> Result<Vec<u8>, MaskError> {
-    let packed = packing::pack(bits);
+    let packed = packing::pack(bits)?;
     let level = level.unwrap_or(3);
     zstd::encode_all(packed.as_slice(), level)
         .map_err(|e| MaskError::Codec(format!("zstd encode: {e}")))
@@ -100,7 +100,7 @@ pub fn encode_blosc2(
     use blosc2::chunk::SChunk;
     use blosc2::{CParams, DParams, Filter};
 
-    let packed = packing::pack(bits);
+    let packed = packing::pack(bits)?;
     if packed.is_empty() {
         return Ok(Vec::new());
     }
@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn none_roundtrip() {
         let bits = sample_mask();
-        let enc = encode_none(&bits);
+        let enc = encode_none(&bits).unwrap();
         let dec = decode_none(&enc, bits.len()).unwrap();
         assert_eq!(dec, bits);
     }

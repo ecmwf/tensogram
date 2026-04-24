@@ -1164,7 +1164,8 @@ fn encode_one_mask(
     };
 
     let blob = match &method {
-        MaskMethod::None => bitmask::codecs::encode_none(bits),
+        MaskMethod::None => bitmask::codecs::encode_none(bits)
+            .map_err(|e| TensogramError::Encoding(format!("bitmask pack: {e}")))?,
         MaskMethod::Rle => bitmask::rle::encode(bits),
         MaskMethod::Roaring => bitmask::roaring::encode(bits)
             .map_err(|e| TensogramError::Encoding(format!("roaring mask encode: {e}")))?,

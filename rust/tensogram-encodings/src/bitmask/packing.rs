@@ -26,16 +26,24 @@ use super::{Bitmask, MaskError};
 /// Pack a `&[bool]` into MSB-first bit-packed bytes.
 ///
 /// Returns `ceil(bits.len() / 8)` bytes.  Trailing bits in the final
-/// byte are zero-filled.
-pub fn pack(bits: &[bool]) -> Vec<u8> {
+/// byte are zero-filled.  The output buffer is reserved fallibly so
+/// this function can be called safely on decode paths where
+/// `bits.len()` is descriptor-derived and potentially pathological.
+pub fn pack(bits: &[bool]) -> Result<Vec<u8>, MaskError> {
     let n_bytes = bits.len().div_ceil(8);
-    let mut out = vec![0u8; n_bytes];
+    let mut out: Vec<u8> = Vec::new();
+    out.try_reserve_exact(n_bytes)
+        .map_err(|e| MaskError::AllocationFailed {
+            bytes: n_bytes,
+            reason: e.to_string(),
+        })?;
+    out.resize(n_bytes, 0);
     for (i, &b) in bits.iter().enumerate() {
         if b {
             out[i / 8] |= 1 << (7 - (i % 8));
         }
     }
-    out
+    Ok(out)
 }
 
 /// Unpack MSB-first bit-packed bytes into `n_elements` bools.
@@ -75,19 +83,19 @@ mod tests {
 
     #[test]
     fn pack_empty() {
-        assert!(pack(&[]).is_empty());
+        assert!(pack(&[]).unwrap().is_empty());
     }
 
     #[test]
     fn pack_single_bit_set() {
-        assert_eq!(pack(&[true]), vec![0b1000_0000]);
-        assert_eq!(pack(&[false]), vec![0b0000_0000]);
+        assert_eq!(pack(&[true]).unwrap(), vec![0b1000_0000]);
+        assert_eq!(pack(&[false]).unwrap(), vec![0b0000_0000]);
     }
 
     #[test]
     fn pack_full_byte_msb_first() {
         let bits = [true, true, true, true, false, false, false, false];
-        assert_eq!(pack(&bits), vec![0b1111_0000]);
+        assert_eq!(pack(&bits).unwrap(), vec![0b1111_0000]);
     }
 
     #[test]
@@ -96,21 +104,21 @@ mod tests {
         let bits = [
             true, false, true, false, true, false, true, false, true, false,
         ];
-        assert_eq!(pack(&bits), vec![0b1010_1010, 0b1000_0000]);
+        assert_eq!(pack(&bits).unwrap(), vec![0b1010_1010, 0b1000_0000]);
     }
 
     #[test]
     fn pack_multi_byte() {
         // 16 bits, alternating — yields two 0xAA bytes.
         let bits: Vec<bool> = (0..16).map(|i| i % 2 == 0).collect();
-        assert_eq!(pack(&bits), vec![0xAA, 0xAA]);
+        assert_eq!(pack(&bits).unwrap(), vec![0xAA, 0xAA]);
     }
 
     #[test]
     fn unpack_roundtrip() {
         for n in [1usize, 7, 8, 9, 15, 16, 17, 64, 65, 256, 1000] {
             let bits: Vec<bool> = (0..n).map(|i| i % 3 == 0 || i % 7 == 1).collect();
-            let packed = pack(&bits);
+            let packed = pack(&bits).unwrap();
             assert_eq!(packed.len(), n.div_ceil(8));
             let unpacked = unpack(&packed, n).unwrap();
             assert_eq!(unpacked, bits, "roundtrip failed for n={n}");
