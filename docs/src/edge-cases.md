@@ -36,7 +36,7 @@ Simple packing cannot represent NaN. The quantization formula maps the range `[m
 
 **Mitigation:** turn on strict-finite encoding (see docs). It catches Inf upstream of the simple_packing encoder and fails with a clean `EncodingError` before the corruption path runs.
 
-**Also:** `extract_simple_packing_params` catches a non-finite `reference_value` in the descriptor, so callers going through the high-level `encode()` API are protected when the computed reference happens to be `±Inf` (e.g. data like `[1.0, -Inf]`). But for data like `[1.0, +Inf, 3.0]` the reference is `1.0` (finite) and only `binary_scale_factor` overflows — that's not caught without the strict flag.
+**Also:** `extract_simple_packing_params` catches a non-finite `sp_reference_value` in the descriptor, so callers going through the high-level `encode()` API are protected when the computed reference happens to be `±Inf` (e.g. data like `[1.0, -Inf]`). But for data like `[1.0, +Inf, 3.0]` the reference is `1.0` (finite) and only `sp_binary_scale_factor` overflows — that's not caught without the strict flag.
 
 ## Decode Range on Compressed Data
 
@@ -69,7 +69,7 @@ If a message was encoded with `hash_algorithm: None` (no hash), and you decode i
 
 ## Constant-Value Fields with simple_packing
 
-If all values in a field are identical (range = 0), `compute_params()` sets `binary_scale_factor` such that all packed integers are 0, and the full value is recovered from `reference_value` alone. This is correct and handled without special cases.
+If all values in a field are identical (range = 0), `compute_params()` sets `sp_binary_scale_factor` such that all packed integers are 0, and the full value is recovered from `sp_reference_value` alone. This is correct and handled without special cases.
 
 ## Very Short Buffers
 
@@ -158,7 +158,7 @@ Strides are validated for length: `strides.len()` must match `shape.len()`. Non-
 
 ## NaN/Infinity in Simple Packing Parameters
 
-If `reference_value` is NaN or Infinity, encoding fails immediately with a clear error. This value is used in the quantization formula and would produce corrupt output. (`binary_scale_factor` and `decimal_scale_factor` are integers and cannot be NaN/Infinity.)
+If `sp_reference_value` is NaN or Infinity, encoding fails immediately with a clear error. This value is used in the quantization formula and would produce corrupt output. (`sp_binary_scale_factor` and `sp_decimal_scale_factor` are integers and cannot be NaN/Infinity.)
 
 ## Duplicate CBOR Keys
 

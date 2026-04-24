@@ -967,3 +967,72 @@ Standalone pip package at `python/tensogram-anemoi/` that registers
 - Pressure-level stacking produces 2-D `(n_grid, n_levels)` objects with `"levelist": [...]` in the `"anemoi"` namespace (MARS convention).
 - `_extra_["dim_names"]` carries axis-size→name hints for the tensogram-xarray backend.
 - Coordinate arrays (lat/lon) use `"grid_latitude"` / `"grid_longitude"` names, outside `KNOWN_COORD_NAMES`, so all objects share one flat dimension in xarray.
+
+## simple_packing ergonomics: auto-compute + `sp_*` key rename
+
+Two paired changes to the `simple_packing` encoding that together
+drop the pre-encode `compute_packing_params` step from 99% of user
+code.
+
+### Wire-format rename to `sp_*` prefix
+
+Every other codec's descriptor params use a codec-prefix convention
+(`szip_rsi`, `zstd_level`, `blosc2_codec`, `zfp_rate`,
+`shuffle_element_size`).  `simple_packing` is now consistent:
+
+| Old                  | New                      |
+|----------------------|--------------------------|
+| `reference_value`    | `sp_reference_value`     |
+| `binary_scale_factor`| `sp_binary_scale_factor` |
+| `decimal_scale_factor`| `sp_decimal_scale_factor`|
+| `bits_per_value`     | `sp_bits_per_value`      |
+
+Preamble version stays at 3 (the structural wire layout is unchanged
+— only CBOR descriptor keys rename).  Pre-rename v3 messages with
+unprefixed simple_packing keys are no longer decodable; no
+deprecation path because the software is pre-public.
+
+### Encoder auto-compute
+
+When the descriptor carries `encoding: "simple_packing"` +
+`sp_bits_per_value` and the derived keys are absent, the encoder
+calls `simple_packing::compute_params` on the input bytes and stamps
+the full four-key set into the descriptor.  The encoded message
+therefore remains fully self-describing — decoders see no difference
+from a hand-written explicit descriptor.
+
+| Knob                       | Default                     |
+|----------------------------|-----------------------------|
+| `sp_bits_per_value`        | required (no default)       |
+| `sp_decimal_scale_factor`  | `0` when absent             |
+| `sp_reference_value`       | auto-computed when absent   |
+| `sp_binary_scale_factor`   | auto-computed when absent   |
+
+When the caller supplies explicit `sp_reference_value` +
+`sp_binary_scale_factor`, the encoder trusts them verbatim (Q2(b)
+from the design plan).  This supports advanced workflows that need
+pinned reference values across a time-series.
+
+### Components touched
+
+| Layer | What changed |
+|-------|-------------|
+| `rust/tensogram/src/encode.rs` | New `resolve_simple_packing_params(&mut desc, data_bytes)` called at the top of `encode_one_object` (Raw mode only).  Helper `bytes_as_f64_vec` respects the descriptor's `byte_order`.  `extract_simple_packing_params` reads the new `sp_*` keys. |
+| `rust/tensogram/src/streaming.rs` | `StreamingEncoder::write_object` invokes the same resolver before building the pipeline config; `write_object_pre_encoded` is unchanged (pre-encoded bytes are opaque). |
+| `rust/tensogram/src/pipeline.rs::apply_pipeline` | Stamps the four `sp_*` keys; automatically propagates the rename through `convert-grib` and `convert-netcdf`. |
+| `python/bindings/src/lib.rs::compute_packing_params` | Returns a dict with `sp_*`-prefixed keys so `desc = {..., **params}` continues to work. |
+| `rust/tensogram-wasm/src/extras.rs::simple_packing_compute_params` | WASM export returns an object with `sp_*` keys. |
+| `typescript/src/types.ts::SimplePackingParams` | Interface fields renamed to `sp_*`. |
+| `rust/tensogram-cli/src/commands/set.rs` | Immutable-key list covers the new names. |
+| Test suites (Rust / Python / C++ / TS) | Every test literal using the old names has been updated.  New BDD suite `rust/tensogram/tests/simple_packing_auto_compute.rs` (8 scenarios) + mirrored Python suite `python/tests/test_simple_packing_auto_compute.py` (9 scenarios) exercise happy path, explicit-wins, missing knob, NaN rejection, streaming, defaults, non-f64 dtype, and byte-for-byte parity with the explicit path. |
+| Examples | `examples/python/03_simple_packing.py` leads with the ergonomic form and demonstrates the explicit path as a secondary option. `examples/python/11_encode_pre_encoded.py`, `examples/rust/src/bin/{03,11}_*.rs`, `examples/cpp/{03,11}_*.cpp` updated. |
+| Docs | `docs/src/encodings/simple-packing.md` gains a "Quick start — auto-compute" section; `docs/src/guide/encode-pre-encoded.md`, `docs/src/guide/encoding.md`, `docs/src/format/cbor-metadata.md`, `plans/WIRE_FORMAT.md` and the concept pages use the new key names. |
+
+### What did NOT change
+
+- Preamble wire version (stays at 3).
+- Software version (will be bumped at release time).
+- `simple_packing::compute_params` Rust signature, `SimplePackingParams` struct fields (those are internal Rust identifiers, separate from wire keys).
+- `PackingError::InvalidParams { field }` internal field names (still the Rust struct field identifiers; tests assert on those).
+- Golden `.tgm` fixtures (none use `simple_packing`).
+- Any non-`simple_packing` codec.

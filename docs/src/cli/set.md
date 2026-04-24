@@ -65,10 +65,10 @@ The following keys **cannot** be modified because they describe the physical str
 | `szip_block_size` | Szip compression block parameter |
 | `szip_flags` | Szip compression flags |
 | `szip_block_offsets` | Szip block seek table |
-| `reference_value` | Simple packing quantization parameter |
-| `binary_scale_factor` | Simple packing quantization parameter |
-| `decimal_scale_factor` | Simple packing quantization parameter |
-| `bits_per_value` | Simple packing quantization parameter |
+| `sp_reference_value` | Simple packing quantization parameter |
+| `sp_binary_scale_factor` | Simple packing quantization parameter |
+| `sp_decimal_scale_factor` | Simple packing quantization parameter |
+| `sp_bits_per_value` | Simple packing quantization parameter |
 | `shuffle_element_size` | Shuffle filter parameter |
 
 Attempting to modify any of these returns an error before any output is written.

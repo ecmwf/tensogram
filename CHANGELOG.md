@@ -5,6 +5,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed — `simple_packing` ergonomics: auto-compute + `sp_*` key rename
+
+The encoder now auto-computes `sp_reference_value` and
+`sp_binary_scale_factor` from the input data when they are absent
+from the descriptor, so the simplest usable descriptor is:
+
+```python
+desc = {"type": "ntensor", "shape": [...], "dtype": "float64",
+        "encoding": "simple_packing", "sp_bits_per_value": 16,
+        "compression": "zstd"}
+tensogram.encode(meta, [(desc, data)])
+```
+
+No more explicit `compute_packing_params` + dict-spread call for the
+common case.
+
+- **Wire format**: the four `simple_packing` descriptor keys have
+  been renamed to match the `<codec>_<key>` convention used by every
+  other codec (`szip_*`, `zstd_*`, `blosc2_*`, `zfp_*`, `shuffle_*`):
+
+  | Old                  | New                     |
+  |----------------------|-------------------------|
+  | `reference_value`    | `sp_reference_value`    |
+  | `binary_scale_factor`| `sp_binary_scale_factor`|
+  | `decimal_scale_factor`| `sp_decimal_scale_factor`|
+  | `bits_per_value`     | `sp_bits_per_value`     |
+
+  Preamble wire version stays at 3; pre-rename v3 messages with
+  unprefixed simple_packing keys are no longer readable (pre-public
+  software, no deprecation path).
+
+- **Auto-compute contract**: `sp_bits_per_value` is required at encode
+  time.  `sp_decimal_scale_factor` defaults to 0 when absent.  When
+  both `sp_reference_value` and `sp_binary_scale_factor` are supplied
+  by the caller, the encoder trusts them verbatim (advanced / pinned
+  use cases).  Pre-encoded payloads (`encode_pre_encoded`) are opaque
+  and still require the full four-key explicit set.
+
+- **`compute_packing_params`** remains public on every binding.  Its
+  returned dict now uses the `sp_*`-prefixed keys so
+  `desc = {..., **params}` continues to work naturally.
+
+- **Cross-language**: identical API surface in Rust, Python, C++,
+  TypeScript, and WASM.  `convert-grib` and `convert-netcdf` emit the
+  new keys automatically via the centralised `pipeline::apply_pipeline`
+  helper.
+
 ### Security — cross-codec preallocation hardening
 
 Every descriptor-derived allocation on the decode path is now fallible,

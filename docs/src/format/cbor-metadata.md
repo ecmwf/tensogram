@@ -208,26 +208,26 @@ Here is what a descriptor might look like for a global temperature field at 0.25
   "dtype": "float32",
   "byte_order": "little",
   "encoding": "simple_packing",
-  "reference_value": 193.72,
-  "binary_scale_factor": -16,
-  "decimal_scale_factor": 0,
-  "bits_per_value": 16,
+  "sp_reference_value": 193.72,
+  "sp_binary_scale_factor": -16,
+  "sp_decimal_scale_factor": 0,
+  "sp_bits_per_value": 16,
   "filter": "none",
   "compression": "zstd",
   "zstd_level": 3
 }
 ```
 
-The `params` field in `DataObjectDescriptor` is for encoding parameters only (e.g. `reference_value`, `bits_per_value`). MARS keys and other application metadata are stored in the global metadata `base[i]["mars"]`. Per-object hashes live in the frame's inline hash slot, not in the descriptor.
+The `params` field in `DataObjectDescriptor` is for encoding parameters only (e.g. `sp_reference_value`, `sp_bits_per_value`). MARS keys and other application metadata are stored in the global metadata `base[i]["mars"]`. Per-object hashes live in the frame's inline hash slot, not in the descriptor.
 
 ### Encoding Parameters (simple_packing)
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `reference_value` | float | Minimum value in the original data |
-| `binary_scale_factor` | int | Power-of-2 scaling factor |
-| `decimal_scale_factor` | int | Power-of-10 scaling factor |
-| `bits_per_value` | uint | Number of bits per packed value (1-64) |
+| `sp_reference_value` | float | Minimum value in the original data |
+| `sp_binary_scale_factor` | int | Power-of-2 scaling factor |
+| `sp_decimal_scale_factor` | int | Power-of-10 scaling factor |
+| `sp_bits_per_value` | uint | Number of bits per packed value (1-64) |
 
 ### Filter Parameters (shuffle)
 
