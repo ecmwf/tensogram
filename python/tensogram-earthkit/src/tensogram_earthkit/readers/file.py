@@ -9,9 +9,10 @@
 """File-backed tensogram reader.
 
 The :class:`TensogramFileReader` is a :class:`earthkit.data.readers.Reader`
-that owns the path to a local ``.tgm`` file and serves the three exports
-earthkit-data's data model expects: :meth:`to_xarray`, :meth:`to_numpy`,
-and (in Cycle 3, when MARS keys are present) :meth:`to_fieldlist`.
+that owns the path to a tensogram ``.tgm`` file (local or remote) and
+serves the three conversions earthkit-data's data model expects:
+:meth:`to_xarray`, :meth:`to_numpy`, and — when the file carries MARS
+metadata — :meth:`to_fieldlist`.
 
 Delegation:
 
@@ -19,9 +20,12 @@ Delegation:
   :class:`tensogram_xarray.backend.TensogramBackendEntrypoint` so the
   coordinate auto-detection, dim-name resolution, and lazy backing-array
   logic live in exactly one place.
-* :meth:`to_numpy` resolves through the xarray path for non-MARS files
-  (single-variable convenience); the MARS path in Cycle 3 routes through
-  :class:`FieldList`.
+* :meth:`to_numpy` resolves through the xarray path for single-variable
+  files; multi-variable files raise (use :meth:`to_xarray` or
+  :meth:`to_fieldlist` instead).
+* :meth:`to_fieldlist` builds a MARS-flavoured FieldList via
+  :func:`tensogram_earthkit.fieldlist.build_fieldlist_from_path`; for
+  non-MARS files it raises :class:`NotImplementedError`.
 
 The module-level :func:`reader` callable matches earthkit-data's reader
 protocol — both the discovery path (with ``magic`` + ``deeper_check``)
@@ -161,16 +165,6 @@ class TensogramFileReader(Reader):
         from tensogram_earthkit.fieldlist import build_fieldlist_from_path
 
         return build_fieldlist_from_path(str(self.path), storage_options=self._storage_options)
-
-    # -- FieldList-shape convenience (source uses these) ----------------------
-
-    def _fieldlist_or_none(self) -> Any:
-        """Return the MARS FieldList, or ``None`` for non-MARS files."""
-        if not self._is_mars():
-            return None
-        from tensogram_earthkit.fieldlist import build_fieldlist_from_path
-
-        return build_fieldlist_from_path(str(self.path))
 
     def __len__(self) -> int:
         fl = self._fieldlist_or_none()

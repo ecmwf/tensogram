@@ -24,11 +24,19 @@ refactoring.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
+import weakref
 from typing import Any
 
 from tensogram_earthkit.detection import _match_magic
+
+
+def _cleanup_tempfile(path: str) -> None:
+    """Finaliser callback — unlink silently if the file is still there."""
+    with contextlib.suppress(OSError):
+        os.unlink(path)
 
 
 def memory_reader(
@@ -44,6 +52,9 @@ def memory_reader(
     Materialises *buffer* to a temp file and delegates to
     :class:`TensogramFileReader`.  Returns ``None`` when the magic
     does not match (discovery path).
+
+    The temp file is unlinked via :func:`weakref.finalize` once the
+    returned reader is garbage-collected.
     """
     # Use the buffer as magic when nothing was pre-peeked.
     if magic is None:
@@ -63,6 +74,8 @@ def memory_reader(
         raise
 
     reader = TensogramFileReader(source, path)
-    # Lash the temp-file lifetime onto the reader so GC cleans it up.
-    reader._tgm_owned_tempfile = path
+    # Schedule the temp file for cleanup once the reader is collected.
+    # Without this, every memory_reader call would leak a .tgm file
+    # under the system temp dir.
+    weakref.finalize(reader, _cleanup_tempfile, path)
     return reader

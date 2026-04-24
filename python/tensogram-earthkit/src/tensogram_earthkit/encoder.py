@@ -92,21 +92,21 @@ class TensogramEncodedData(EncodedData):
 
     prefer_file_path = False
 
-    def __init__(self, bytes_: bytes, metadata: dict | None = None) -> None:
-        self._bytes = bytes_
+    def __init__(self, payload: bytes, metadata: dict | None = None) -> None:
+        self._payload = payload
         self._metadata = metadata or {}
 
     def to_bytes(self) -> bytes:
-        return self._bytes
+        return self._payload
 
     def to_file(self, file: Any) -> None:
         """Write bytes to *file* — path string or file-like object."""
         if isinstance(file, (str, bytes)):
             with open(file, "wb") as fh:
-                fh.write(self._bytes)
+                fh.write(self._payload)
             return
         # file-like object
-        file.write(self._bytes)
+        file.write(self._payload)
 
     def metadata(self, key: Any = None) -> Any:
         if key is None:
@@ -126,19 +126,18 @@ class TensogramEncoder(Encoder):
         if data is None:
             raise ValueError("tensogram encoder requires a data object to encode")
 
-        # Double-dispatch through the wrapper machinery the same way
-        # NetCDFEncoder does — this makes the encoder work against
-        # arbitrary earthkit data types without an explicit dispatch.
-        from earthkit.data.wrappers import get_wrapper
+        # Fast-path xarray inputs — no need to round-trip through the
+        # earthkit-data wrapper machinery.  xarray is always available
+        # because tensogram-xarray is a hard dependency of this package.
+        import xarray as xr
 
-        # Import xarray lazily since it is an optional dep
-        try:
-            import xarray as xr
-        except ImportError:  # pragma: no cover - xarray required via tensogram-xarray
-            xr = None
-
-        if xr is not None and isinstance(data, (xr.Dataset, xr.DataArray)):
+        if isinstance(data, (xr.Dataset, xr.DataArray)):
             return self._encode_xarray(data, **kwargs)
+
+        # Double-dispatch through the wrapper machinery the same way
+        # NetCDFEncoder does — this lets the encoder accept arbitrary
+        # earthkit data types without an explicit dispatch table.
+        from earthkit.data.wrappers import get_wrapper
 
         data = get_wrapper(data, fieldlist=False)
         return data._encode(self, **kwargs)

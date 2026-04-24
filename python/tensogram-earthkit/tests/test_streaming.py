@@ -31,7 +31,6 @@ from __future__ import annotations
 import io
 
 import numpy as np
-import pytest
 import xarray as xr
 
 from tensogram_earthkit.readers.stream import stream_reader
@@ -138,23 +137,17 @@ class TestStreamThroughEarthkit:
     """End-to-end via ``ekd.from_source("stream", …)`` with our reader."""
 
     def test_from_source_stream(self, nonmars_tensogram_bytes) -> None:
-        """Our stream_reader integrates when invoked via earthkit-data.
+        """Drain a stream, then route the bytes through ``ekd.from_source``.
 
-        Note: ``ekd.from_source("stream", …)`` does magic-byte-based
-        reader discovery across the built-in readers directory.  Because
-        our reader is not yet installed in earthkit-data's readers/
-        tree, this direct path would resolve to UnknownStreamReader.
-        The supported invocation is our ``tensogram`` source — when
-        fed a stream it drains it and dispatches via the memory path
-        internally.
+        ``ekd.from_source("stream", …)`` itself dispatches across
+        earthkit-data's built-in readers/ tree, where our reader does
+        not (yet) live, so it would resolve to ``UnknownStreamReader``.
+        The supported invocation is the ``tensogram`` source with the
+        drained bytes — internally it uses the memory path.
         """
-        stream = _stream_like(nonmars_tensogram_bytes)
-        # We deliberately do NOT test ekd.from_source("stream", …) here
-        # because our package doesn't live inside earthkit-data.
-        # Users invoke via the tensogram source with bytes (memory path).
         import earthkit.data as ekd
 
+        stream = _stream_like(nonmars_tensogram_bytes)
         data = ekd.from_source("tensogram", stream.read())
         arr = data.to_numpy()
         assert arr.shape == (2, 3, 4)
-        pytest.importorskip("xarray")
