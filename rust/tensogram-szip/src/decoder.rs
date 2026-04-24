@@ -66,7 +66,16 @@ pub(crate) fn decode(
     let id_len = params::id_len(bps, flags);
     let pp = flags & params::AEC_DATA_PREPROCESS != 0;
     let signed = flags & params::AEC_DATA_SIGNED != 0;
-    let samples_per_rsi = rsi_blocks * block_size;
+    // Guard `rsi_blocks * block_size` with `checked_mul`: under
+    // `AEC_NOT_ENFORCE` these are caller-supplied parameters and their
+    // product can overflow on 32-bit targets (or with an exceptionally
+    // malformed header on 64-bit) before the later `try_reserve_exact`
+    // gets a chance to reject the value.
+    let samples_per_rsi = rsi_blocks.checked_mul(block_size).ok_or_else(|| {
+        AecError::Data(format!(
+            "rsi ({rsi_blocks}) x block_size ({block_size}) overflows usize"
+        ))
+    })?;
     let total_samples = expected_size / byte_width;
 
     let xmax = if signed {
@@ -85,7 +94,18 @@ pub(crate) fn decode(
 
     let se_table = SeTable::new();
     let mut reader = BitReader::new(data);
-    let mut all_samples: Vec<u32> = Vec::with_capacity(total_samples);
+    // Fallible reservation: `total_samples` is derived from the untrusted
+    // `expected_size` (which itself comes from the tensor descriptor in
+    // the wire format).  A hostile value is rejected here as a
+    // `CompressionError` rather than aborting the process via the
+    // infallible `Vec::with_capacity` path.  Mirrors the blosc2 fix in
+    // PR #69.
+    let mut all_samples: Vec<u32> = Vec::new();
+    all_samples.try_reserve_exact(total_samples).map_err(|e| {
+        AecError::Data(format!(
+            "failed to reserve {total_samples} u32 samples for szip decode: {e}"
+        ))
+    })?;
 
     while all_samples.len() < total_samples {
         let remaining = total_samples - all_samples.len();
@@ -238,7 +258,12 @@ fn decode_rsi(
 ) -> Result<Vec<u32>, AecError> {
     let samples_per_rsi = rsi_blocks * block_size;
     let modi = 1u32 << id_len;
-    let mut rsi_buffer: Vec<u32> = Vec::with_capacity(samples_per_rsi);
+    let mut rsi_buffer: Vec<u32> = Vec::new();
+    rsi_buffer.try_reserve_exact(samples_per_rsi).map_err(|e| {
+        AecError::Data(format!(
+            "failed to reserve {samples_per_rsi} u32 samples for szip RSI buffer: {e}"
+        ))
+    })?;
 
     // Track block state matching libaec's m_next_cds
     let mut has_ref = pp; // first block has ref if preprocessing
@@ -401,7 +426,19 @@ fn decode_uncomp(
 
 fn write_samples(samples: &[u32], byte_width: usize, flags: u32) -> Result<Vec<u8>, AecError> {
     let msb = flags & params::AEC_DATA_MSB != 0;
-    let mut out = Vec::with_capacity(samples.len() * byte_width);
+    let out_bytes = samples.len().checked_mul(byte_width).ok_or_else(|| {
+        AecError::Data(format!(
+            "output byte count overflows usize: {} samples x {} bytes",
+            samples.len(),
+            byte_width
+        ))
+    })?;
+    let mut out: Vec<u8> = Vec::new();
+    out.try_reserve_exact(out_bytes).map_err(|e| {
+        AecError::Data(format!(
+            "failed to reserve {out_bytes} bytes for szip sample output: {e}"
+        ))
+    })?;
 
     for &val in samples {
         match byte_width {
@@ -438,4 +475,24 @@ fn write_samples(samples: &[u32], byte_width: usize, flags: u32) -> Result<Vec<u
     }
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_samples_rejects_overflowing_byte_count() {
+        let samples = [0u32; 2];
+        let err = write_samples(&samples, usize::MAX, 0).expect_err(
+            "byte_width = usize::MAX must fail the checked_mul, not the size-1..=4 match",
+        );
+        match err {
+            AecError::Data(msg) => assert!(
+                msg.contains("overflows usize"),
+                "error should report overflow, got: {msg}"
+            ),
+            other => panic!("expected AecError::Data, got {other:?}"),
+        }
+    }
 }

@@ -1381,4 +1381,76 @@ mod tests {
             "transparent simple_packing must produce byte-identical hashes across thread counts: {hashes:?}"
         );
     }
+
+    // ── Preallocation-DoS hardening (end-to-end) ────────────────────────
+    //
+    // Integration tests for the cross-codec `expected_size` preallocation
+    // hardening.  A malformed descriptor with a hostile `num_values` must
+    // surface as a `PipelineError::Compression` through the normal error
+    // channel, not as a process abort.  Covers both szip backends when
+    // both features are compiled in.
+
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
+    fn szip_hostile_config(num_values: usize, backend: CompressionBackend) -> PipelineConfig {
+        PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::Szip {
+                bits_per_sample: 8,
+                block_size: 16,
+                rsi: 64,
+                flags: 0,
+            },
+            num_values,
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 1,
+            swap_unit_size: 1,
+            compression_backend: backend,
+            intra_codec_threads: 0,
+            compute_hash: false,
+        }
+    }
+
+    #[cfg(any(feature = "szip", feature = "szip-pure"))]
+    fn small_szip_payload(backend: CompressionBackend) -> Vec<u8> {
+        // Encode 256 bytes honestly with the selected backend so we have
+        // a real szip-compressed payload the decode pipeline will accept
+        // up to the reservation step.
+        let data: Vec<u8> = (0..256).map(|i| i as u8).collect();
+        let honest = PipelineConfig {
+            num_values: data.len(),
+            ..szip_hostile_config(data.len(), backend)
+        };
+        encode_pipeline(&data, &honest).unwrap().encoded_bytes
+    }
+
+    #[cfg(feature = "szip")]
+    #[test]
+    fn pipeline_rejects_malicious_num_values_szip_ffi() {
+        let payload = small_szip_payload(CompressionBackend::Ffi);
+        let hostile = szip_hostile_config(usize::MAX, CompressionBackend::Ffi);
+
+        let err = decode_pipeline(&payload, &hostile, false)
+            .expect_err("expected allocation failure, not success nor abort");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("failed to reserve"),
+            "error should report allocation failure, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "szip-pure")]
+    #[test]
+    fn pipeline_rejects_malicious_num_values_szip_pure() {
+        let payload = small_szip_payload(CompressionBackend::Pure);
+        let hostile = szip_hostile_config(usize::MAX, CompressionBackend::Pure);
+
+        let err = decode_pipeline(&payload, &hostile, false)
+            .expect_err("expected allocation failure, not success nor abort");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("failed to reserve"),
+            "error should report allocation failure, got: {msg}"
+        );
+    }
 }

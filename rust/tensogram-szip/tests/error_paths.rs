@@ -261,3 +261,45 @@ mod range_errors {
         assert!(result.is_err());
     }
 }
+
+// ── Preallocation-DoS hardening ─────────────────────────────────────────────
+//
+// Regression tests for the pure-Rust half of the cross-codec `expected_size`
+// preallocation hardening.  Before the fix, a malicious descriptor whose
+// shape product was close to `usize::MAX` could drive the decoder into an
+// infallible `Vec::with_capacity(total_samples)` that aborted the process.
+// After the fix, the untrusted size is reserved fallibly and rejected
+// cleanly as `AecError::Data`.
+mod preallocation_hardening {
+    use super::*;
+
+    #[test]
+    fn decompress_rejects_pathological_expected_size() {
+        let (compressed, _, _) = compress_ramp();
+
+        let err = aec_decompress(&compressed, usize::MAX, &default_params())
+            .expect_err("expected allocation failure, not success nor abort");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("failed to reserve"),
+            "error should report allocation failure, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn decompress_rejects_expected_size_overflowing_isize() {
+        // `try_reserve_exact` on `Vec<u32>` multiplies by 4 bytes, so
+        // anything above ~ isize::MAX/4 is rejected by the Rust-layer
+        // capacity check even without the OS allocator getting involved.
+        let (compressed, _, _) = compress_ramp();
+        let pathological = isize::MAX as usize + 1;
+
+        let err = aec_decompress(&compressed, pathological, &default_params())
+            .expect_err("expected allocation failure, not success nor abort");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("failed to reserve"),
+            "error should report allocation failure, got: {msg}"
+        );
+    }
+}
