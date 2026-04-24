@@ -92,6 +92,7 @@ function App() {
   }, []);
 
   const onDragEnd = useCallback(() => {
+    if (!dragging.current) return;
     dragging.current = false;
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
