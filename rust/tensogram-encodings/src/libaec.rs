@@ -298,6 +298,16 @@ pub fn aec_decompress(
                 )));
             }
         };
+        // Strict equality: a full decompress is only honest when the
+        // codec writes exactly the descriptor-declared number of bytes.
+        // A short decode (even with `AEC_OK`) indicates a truncated /
+        // malformed stream that should not be accepted silently.
+        if decoded_len != expected_size {
+            aec_decode_end(&mut strm);
+            return Err(CompressionError::Szip(format!(
+                "aec_decode wrote {decoded_len} bytes, expected {expected_size} (truncated or malformed stream)"
+            )));
+        }
         aec_decode_end(&mut strm);
 
         out.set_len(decoded_len);
@@ -413,6 +423,17 @@ pub fn aec_decompress_range(
                 )));
             }
         };
+        // Strict equality: the caller asked for exactly `byte_size`
+        // bytes starting at `byte_pos`; a short write (even with
+        // `AEC_OK`) means the range request could not be fully
+        // satisfied, which for a range API is indistinguishable from
+        // a truncated / malformed input at the caller's level.
+        if decoded_len != byte_size {
+            aec_decode_end(&mut strm);
+            return Err(CompressionError::Szip(format!(
+                "aec_decode_range wrote {decoded_len} bytes, expected {byte_size} (truncated or malformed range)"
+            )));
+        }
         aec_decode_end(&mut strm);
 
         out.set_len(decoded_len);
