@@ -1,0 +1,15 @@
+[workspace]
+
+[package]
+name = "remote-parity-rust-driver"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[[bin]]
+name = "remote-parity-rust-driver"
+path = "src/main.rs"
+
+[dependencies]
+tensogram = { path = "../../../../rust/tensogram", features = ["remote"] }
