@@ -490,17 +490,17 @@ class TestComputePackingParams:
     def test_basic(self):
         values = np.linspace(200.0, 300.0, 1000, dtype=np.float64)
         params = tensogram.compute_packing_params(values, 16, 0)
-        assert "reference_value" in params
-        assert "binary_scale_factor" in params
-        assert "decimal_scale_factor" in params
-        assert "bits_per_value" in params
-        assert params["bits_per_value"] == 16
+        assert "sp_reference_value" in params
+        assert "sp_binary_scale_factor" in params
+        assert "sp_decimal_scale_factor" in params
+        assert "sp_bits_per_value" in params
+        assert params["sp_bits_per_value"] == 16
 
     def test_constant_field(self):
         """All-same values should produce valid params."""
         values = np.full(100, 273.15, dtype=np.float64)
         params = tensogram.compute_packing_params(values, 16, 0)
-        assert params["reference_value"] == pytest.approx(273.15, abs=1e-6)
+        assert params["sp_reference_value"] == pytest.approx(273.15, abs=1e-6)
 
     def test_nan_rejected(self):
         """NaN values should raise ValueError."""
@@ -1187,8 +1187,8 @@ class TestEdgeCases:
         """compute_packing_params with decimal_scale_factor != 0."""
         values = np.linspace(200.0, 300.0, 100, dtype=np.float64)
         params = tensogram.compute_packing_params(values, 16, 2)
-        assert params["decimal_scale_factor"] == 2
-        assert params["bits_per_value"] == 16
+        assert params["sp_decimal_scale_factor"] == 2
+        assert params["sp_bits_per_value"] == 16
 
     def test_encode_decode_preserves_data(self):
         """Encoding the same data twice produces structurally identical output.
@@ -1981,21 +1981,21 @@ class TestPackingParamsCoverage:
         """Single-element array produces valid params."""
         values = np.array([300.0], dtype=np.float64)
         params = tensogram.compute_packing_params(values, 16, 0)
-        assert params["reference_value"] == pytest.approx(300.0, abs=1e-4)
+        assert params["sp_reference_value"] == pytest.approx(300.0, abs=1e-4)
 
     def test_constant_field(self):
         """All-same values produce valid params."""
         values = np.full(100, 273.15, dtype=np.float64)
         params = tensogram.compute_packing_params(values, 16, 0)
-        assert params["reference_value"] == pytest.approx(273.15, abs=1e-6)
-        assert params["bits_per_value"] == 16
+        assert params["sp_reference_value"] == pytest.approx(273.15, abs=1e-6)
+        assert params["sp_bits_per_value"] == 16
 
     def test_various_bits(self):
         """Different bits_per_value produce valid params."""
         values = np.linspace(200, 300, 100, dtype=np.float64)
         for bpv in [1, 8, 12, 16, 24, 32]:
             params = tensogram.compute_packing_params(values, bpv, 0)
-            assert params["bits_per_value"] == bpv
+            assert params["sp_bits_per_value"] == bpv
 
     def test_positive_infinity_rejected(self):
         """Positive infinity is rejected alongside NaN — a finite range

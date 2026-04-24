@@ -85,9 +85,9 @@ def test_no_warning_for_known_encoding_param_names():
         "type": "ntensor",
         "shape": [4],
         "dtype": "float32",
-        "reference_value": 0.0,
-        "bits_per_value": 16,
-        "decimal_scale_factor": 2,
+        "sp_reference_value": 0.0,
+        "sp_bits_per_value": 16,
+        "sp_decimal_scale_factor": 2,
     }
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

@@ -523,10 +523,10 @@ class TestBuildArrayParamsBranch:
             filter: ClassVar[str] = "none"
             compression: ClassVar[str] = "none"
             hash: ClassVar[None] = None
-            params: ClassVar[dict[str, object]] = {"bits_per_value": 16, "reference_value": 0.5}
+            params: ClassVar[dict[str, object]] = {"sp_bits_per_value": 16, "sp_reference_value": 0.5}
 
         result = build_array_zarr_json(Desc())
-        assert result["attributes"]["_tensogram_params"]["bits_per_value"] == 16
+        assert result["attributes"]["_tensogram_params"]["sp_bits_per_value"] == 16
 
     def test_scalar_shape(self):
         """Empty shape → chunk_shape should be [1]."""
@@ -871,7 +871,7 @@ class TestParseArrayZarrJsonStripping:
                 "_tensogram_filter": "none",
                 "_tensogram_compression": "none",
                 "_tensogram_hash": {"type": "xxh3", "value": "abc"},
-                "_tensogram_params": {"bits_per_value": 16},
+                "_tensogram_params": {"sp_bits_per_value": 16},
                 "units": "K",
             },
         }
