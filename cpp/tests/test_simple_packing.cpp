@@ -90,11 +90,11 @@ TEST(SimplePackingTest, RoundTripApproximate) {
     std::snprintf(ref_buf, sizeof(ref_buf), "%.17g", reference_value);
 
     std::string json =
-        R"({"version":3,"descriptors":[{"type":"ndarray","ndim":1,"shape":[5],"strides":[8],"dtype":"float64","byte_order":"little","encoding":"simple_packing","filter":"none","compression":"none","bits_per_value":)" +
+        R"({"version":3,"descriptors":[{"type":"ndarray","ndim":1,"shape":[5],"strides":[8],"dtype":"float64","byte_order":"little","encoding":"simple_packing","filter":"none","compression":"none","sp_bits_per_value":)" +
         std::to_string(bits_per_value) +
-        R"(,"reference_value":)" + std::string(ref_buf) +
-        R"(,"binary_scale_factor":)" + std::to_string(binary_scale_factor) +
-        R"(,"decimal_scale_factor":)" + std::to_string(decimal_scale_factor) +
+        R"(,"sp_reference_value":)" + std::string(ref_buf) +
+        R"(,"sp_binary_scale_factor":)" + std::to_string(binary_scale_factor) +
+        R"(,"sp_decimal_scale_factor":)" + std::to_string(decimal_scale_factor) +
         R"(}]})";
 
     // For simple_packing, we pass the raw double values which get packed internally

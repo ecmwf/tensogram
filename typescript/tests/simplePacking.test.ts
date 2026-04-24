@@ -27,22 +27,22 @@ describe('Scope C.1 — simplePackingComputeParams', () => {
       16,
       0,
     );
-    expect(p.reference_value).toBe(200);
-    expect(p.bits_per_value).toBe(16);
-    expect(p.decimal_scale_factor).toBe(0);
-    expect(typeof p.binary_scale_factor).toBe('number');
+    expect(p.sp_reference_value).toBe(200);
+    expect(p.sp_bits_per_value).toBe(16);
+    expect(p.sp_decimal_scale_factor).toBe(0);
+    expect(typeof p.sp_binary_scale_factor).toBe('number');
   });
 
   it('accepts a plain number[] input', () => {
     const p = simplePackingComputeParams([0, 1, 2, 3, 4, 5], 8);
-    expect(p.reference_value).toBe(0);
-    expect(p.bits_per_value).toBe(8);
+    expect(p.sp_reference_value).toBe(0);
+    expect(p.sp_bits_per_value).toBe(8);
   });
 
   it('handles zero-bit constant field', () => {
     const p = simplePackingComputeParams([42, 42, 42], 0);
-    expect(p.bits_per_value).toBe(0);
-    expect(p.reference_value).toBe(42);
+    expect(p.sp_bits_per_value).toBe(0);
+    expect(p.sp_reference_value).toBe(42);
   });
 
   it('rejects NaN values via InvalidArgumentError', () => {

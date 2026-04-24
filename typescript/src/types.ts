@@ -90,7 +90,7 @@ export interface HashDescriptor {
  * Data object descriptor (in-wire CBOR under a data object frame).
  *
  * The `encoding`-, `filter`-, and `compression`-specific parameters
- * (e.g. `reference_value`, `bits_per_value`, `zstd_level`,
+ * (e.g. `sp_reference_value`, `sp_bits_per_value`, `zstd_level`,
  * `szip_block_offsets`) are carried as extra top-level keys, so the
  * interface uses an index signature rather than enumerating them.
  */
@@ -117,7 +117,7 @@ export interface DataObjectDescriptor {
   hash?: HashDescriptor;
   /**
    * Encoding pipeline parameters, flattened alongside the fixed fields.
-   * E.g. `reference_value`, `bits_per_value`, `zstd_level`,
+   * E.g. `sp_reference_value`, `sp_bits_per_value`, `zstd_level`,
    * `szip_block_offsets`.
    */
   readonly [key: string]: CborValue | readonly CborValue[] | HashDescriptor | string | number | readonly number[] | undefined;
@@ -513,16 +513,32 @@ export interface PreEncodedInput {
   data: Uint8Array;
 }
 
-/** Simple-packing params produced by {@link simplePackingComputeParams}. */
+/** Simple-packing params produced by {@link simplePackingComputeParams}.
+ *
+ * Keys use the ``sp_`` prefix to match the on-wire descriptor convention
+ * (see ``plans/WIRE_FORMAT.md``) so callers can spread the result
+ * straight into a descriptor literal:
+ *
+ * ```ts
+ * const params = await simplePackingComputeParams(values, 16, 0);
+ * const desc = { encoding: "simple_packing", shape: [N], dtype: "float64", ...params };
+ * ```
+ *
+ * Since tensogram 0.19 the encoder also auto-computes these values
+ * when the descriptor carries only `sp_bits_per_value` (and optionally
+ * `sp_decimal_scale_factor`) — calling this function explicitly is
+ * only needed if the caller wants to cache or inspect the derived
+ * params across multiple encodes.
+ */
 export interface SimplePackingParams {
   /** First value the packed integer `0` represents. */
-  reference_value: number;
+  sp_reference_value: number;
   /** Power-of-2 scale (E).  Applied as `2^(-E)` during encode. */
-  binary_scale_factor: number;
+  sp_binary_scale_factor: number;
   /** Power-of-10 scale (D).  Applied as `10^D` during encode. */
-  decimal_scale_factor: number;
+  sp_decimal_scale_factor: number;
   /** Width of each packed integer in bits (1–64; 0 for constant fields). */
-  bits_per_value: number;
+  sp_bits_per_value: number;
 }
 
 /** Validation depth levels, matching the Rust `ValidationLevel` enum. */

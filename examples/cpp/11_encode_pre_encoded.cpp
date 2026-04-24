@@ -115,10 +115,10 @@ int main() {
         std::to_string(N) +
         R"(],"strides":[8],"dtype":"float64",)"
         R"("encoding":"simple_packing","filter":"none","compression":"none",)"
-        R"("bits_per_value":)" + std::to_string(bits_per_value) +
-        R"(,"reference_value":)" + std::string(ref_buf) +
-        R"(,"binary_scale_factor":)" + std::to_string(binary_scale_factor) +
-        R"(,"decimal_scale_factor":)" + std::to_string(decimal_scale_factor) +
+        R"("sp_bits_per_value":)" + std::to_string(bits_per_value) +
+        R"(,"sp_reference_value":)" + std::string(ref_buf) +
+        R"(,"sp_binary_scale_factor":)" + std::to_string(binary_scale_factor) +
+        R"(,"sp_decimal_scale_factor":)" + std::to_string(decimal_scale_factor) +
         R"(}]})";
 
     std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
@@ -188,10 +188,10 @@ int main() {
             R"({"type":"ntensor","ndim":1,"shape":[)" + std::to_string(N) +
 R"(],"strides":[8],"dtype":"float64",)"
             R"("encoding":"simple_packing","filter":"none","compression":"none",)"
-            R"("bits_per_value":)" + std::to_string(bits_per_value) +
-            R"(,"reference_value":)" + std::string(ref_buf) +
-            R"(,"binary_scale_factor":)" + std::to_string(binary_scale_factor) +
-            R"(,"decimal_scale_factor":)" + std::to_string(decimal_scale_factor) +
+            R"("sp_bits_per_value":)" + std::to_string(bits_per_value) +
+            R"(,"sp_reference_value":)" + std::string(ref_buf) +
+            R"(,"sp_binary_scale_factor":)" + std::to_string(binary_scale_factor) +
+            R"(,"sp_decimal_scale_factor":)" + std::to_string(decimal_scale_factor) +
             R"(})";
         enc.write_object_pre_encoded(desc_sp,
                                      packed_bytes.data(), packed_bytes.size());
