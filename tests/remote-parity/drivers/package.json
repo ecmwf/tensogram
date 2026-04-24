@@ -1,0 +1,18 @@
+{
+  "name": "remote-parity-ts-driver",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TypeScript driver for the tensogram remote-parity harness. Not published.",
+  "type": "module",
+  "scripts": {
+    "driver": "tsx ts_driver.ts"
+  },
+  "dependencies": {
+    "@ecmwf.int/tensogram": "file:../../../typescript"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}
