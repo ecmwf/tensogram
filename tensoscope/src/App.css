@@ -821,7 +821,7 @@ h2 {
     min-width: 0;
     max-width: none;
     height: var(--sheet-height, 28px);
-    overflow-y: hidden;
+    overflow-y: auto;
     overflow-x: hidden;
     z-index: 100;
     border-right: none;
