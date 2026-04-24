@@ -15,8 +15,7 @@ binary, no `npm install`, no fixtures). It exercises:
 - `classifier.RoundBuilder` — round assignment invariants
 - `mock_server` — HEAD/Range/404/416/path-traversal behaviour
 - `run_parity.collect_events` — duplicate-run_id guard
-- Schema conformance — every golden + every freshly normalised event
-  validates against `schema.json` (no external `jsonschema` dep)
+- Schema contract — keys + enums match the ScanEvent schema
 """
 
 from __future__ import annotations
@@ -41,11 +40,10 @@ from classifier import (
     classify,
 )
 from mock_server import MockServer
-from run_parity import DriverCase, collect_events
+from run_parity import DriverCase, _check_no_duplicate_run_ids
 
 _THIS_DIR = pathlib.Path(__file__).resolve().parent
 _FIXTURES_DIR = _THIS_DIR / "fixtures"
-_GOLDENS_DIR = _THIS_DIR / "goldens"
 _SCHEMA_PATH = _THIS_DIR / "schema.json"
 
 
@@ -216,15 +214,20 @@ class TestMockServer:
 
 
 class TestDuplicateRunIdGuard:
-    def test_collect_events_rejects_duplicates(self) -> None:
+    def test_rejects_duplicates(self) -> None:
         case = DriverCase(fixture="single-msg", language="rust", op="open")  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="duplicate run_id"):
-            collect_events([case, case])
+            _check_no_duplicate_run_ids([case, case])
+
+    def test_accepts_unique_cases(self) -> None:
+        cases = [
+            DriverCase(fixture="single-msg", language="rust", op="open"),  # type: ignore[arg-type]
+            DriverCase(fixture="single-msg", language="ts", op="open"),  # type: ignore[arg-type]
+        ]
+        _check_no_duplicate_run_ids(cases)
 
 
-class TestSchemaConformance:
-    """Shape-level conformance without an external ``jsonschema`` dep."""
-
+class TestSchemaContract:
     @pytest.fixture(scope="class")
     def schema(self) -> dict:
         return json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -241,21 +244,18 @@ class TestSchemaConformance:
             "physical_requests",
         }
 
-    def test_all_goldens_match_required_shape(self, schema: dict) -> None:
-        if not _GOLDENS_DIR.exists():
-            pytest.skip("goldens/ missing; run tools/regen_goldens.py --regen")
-        required = set(schema["required"])
-        category_enum = set(schema["properties"]["category"]["enum"])
-        direction_enum = set(schema["properties"]["direction"]["enum"])
-        for path in sorted(_GOLDENS_DIR.glob("*.json")):
-            events = json.loads(path.read_text(encoding="utf-8"))
-            for i, event in enumerate(events):
-                where = f"{path.name}[{i}]"
-                assert set(event.keys()) == required, f"{where}: key mismatch"
-                assert event["category"] in category_enum, f"{where}: bad category"
-                assert event["direction"] in direction_enum, f"{where}: bad direction"
-                assert event["scan_round"] >= -1, f"{where}: bad scan_round"
-                lr = event["logical_range"]
-                assert isinstance(lr, list), f"{where}: logical_range must be a list"
-                assert len(lr) == 2, f"{where}: logical_range must have 2 entries"
-                assert 0 <= lr[0] <= lr[1], f"{where}: invalid range"
+    def test_classified_event_serialises_to_required_shape(self, schema: dict) -> None:
+        from run_parity import ScanEvent
+
+        event = ScanEvent(
+            run_id="unit-test-shape",
+            scan_round=0,
+            direction="forward",
+            category="scan",
+            logical_range=(0, PREAMBLE_BYTES),
+            physical_requests=({"method": "GET", "headers": {}, "status": 206},),
+        )
+        rendered = event.to_dict()
+        assert set(rendered.keys()) == set(schema["required"])
+        assert rendered["category"] in schema["properties"]["category"]["enum"]
+        assert rendered["direction"] in schema["properties"]["direction"]["enum"]

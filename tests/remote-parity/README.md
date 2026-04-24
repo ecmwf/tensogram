@@ -13,18 +13,39 @@ is validated — in particular the upcoming bidirectional-scan work
 tracked in `plans/TODO.md` → *remote 8*.
 
 The harness currently covers **forward-only** behaviour; any change
-must keep parity or explicitly regenerate goldens with review.
+must keep the parametric invariants in `test_parity.py` green.
 
 ## Design
 
 A Python mock HTTP server with Range + HEAD support logs every incoming
 request, tagged with a `run_id` taken from the URL path. Per-language
 drivers drive `TensogramFile` operations against that server; the
-orchestrator then compares the server-side request log between languages
-and against checked-in golden logs.
+orchestrator then normalises the captured request log into a stream
+of `ScanEvent`s (see `schema.json`), which the pytest suite asserts
+against parametric invariants — no committed snapshot files.
 
 **No production code changes are required.** Instrumentation lives
 entirely on the mock-server side.
+
+## What we assert
+
+The harness deliberately avoids snapshot/golden files: this code is
+still evolving, and pinning the exact request sequence would mean
+regenerating snapshots on every legitimate change. Instead it asserts:
+
+- **Cross-language equivalence** for ops where both backends do a
+  full forward scan (`message-count`, `read-last`): Rust and TS must
+  emit the same `(scan_round, direction, logical_range)` sequence.
+- **Per-event shape invariants**: every scan event is a 24-byte
+  forward read; `scan_round` increments contiguously from 0; offsets
+  are strictly increasing and unique.
+- **Layout match**: for `message-count`, the offsets emitted match
+  the fixture's actual message starts (computed live via
+  `tensogram.scan(fixture_bytes)` — no offset values hardcoded).
+- **Documented divergence**: Rust `open` issues exactly 1 scan event;
+  TS `open` walks all N preambles. If either backend changes its
+  open-time laziness, the test fails loudly and the assertion is
+  updated deliberately.
 
 ### Event schema
 
@@ -69,8 +90,8 @@ both backends to cover the same range — `message-count` and
 `read-last`. For `open` and `read-first` the request sequences
 diverge by design. This is captured by
 `test_open_divergence_rust_lazy_ts_eager`: if either backend changes
-its open-time laziness, the test fails loudly and the assertion (and
-any affected goldens) must be updated deliberately.
+its open-time laziness, the test fails loudly and the assertion is
+updated deliberately.
 
 This asymmetry is an input to the bidirectional-scan design — later
 work must decide whether to keep it, reconcile it, or document it as
@@ -89,20 +110,19 @@ tests/remote-parity/
 ├── README.md                  # this file
 ├── schema.json                # JSON Schema for ScanEvent
 ├── mock_server.py             # Python http.server with Range + request log
-├── run_parity.py              # orchestrator: starts server, drives each language, diffs
-├── test_parity.py             # pytest entry
+├── classifier.py              # request → ScanEvent classification + round builder
+├── run_parity.py              # orchestrator: starts server, runs each driver
+├── test_parity.py             # pytest: parametric parity invariants
+├── test_unit.py               # pytest: classifier, mock server, schema contract
 ├── tools/
-│   ├── gen_fixtures.py        # deterministic .tgm generator
-│   └── regen_goldens.py       # fail-closed regeneration (explicit --regen)
+│   └── gen_fixtures.py        # .tgm fixture generator
 ├── fixtures/                  # generated .tgm files (checked in)
 │   ├── single-msg.tgm
 │   ├── two-msg.tgm
 │   ├── ten-msg.tgm
 │   └── hundred-msg.tgm
-├── goldens/                   # expected event logs per (fixture × language)
-│   └── <fixture>-<lang>-forward.json
 └── drivers/
-    ├── rust_driver/           # cargo bin (workspace crate)
+    ├── rust_driver/           # standalone cargo bin
     │   ├── Cargo.toml
     │   └── src/main.rs
     └── ts_driver.ts           # Node script using @ecmwf.int/tensogram
@@ -114,14 +134,12 @@ tests/remote-parity/
 # Generate fixtures (once, or after format changes):
 python tests/remote-parity/tools/gen_fixtures.py
 
-# Full parity check (starts server, runs all drivers, diffs against goldens):
+# Run all driver/op combinations and print scan-event counts:
 python tests/remote-parity/run_parity.py
 
-# As pytest (CI):
-pytest tests/remote-parity/test_parity.py -v
-
-# Regenerate goldens after a known-intentional change:
-python tests/remote-parity/tools/regen_goldens.py --regen --fixture single-msg
+# As pytest:
+make remote-parity            # builds drivers and runs the full suite
+pytest tests/remote-parity/   # runs the suite assuming drivers are built
 ```
 
 ## Current scope
@@ -136,10 +154,3 @@ python tests/remote-parity/tools/regen_goldens.py --regen --fixture single-msg
 - Streaming-tail / streaming-mid fixtures — TypeScript currently bails to eager download when it encounters a streaming (`total_length == 0`) message, which makes `scan`-category request logs non-comparable. These fixtures land once that divergence is fixed or explicitly documented.
 - Footer-indexed fixtures — added alongside eager footer-indexed backward discovery.
 - Mixed header+footer fixtures — same.
-
-## Golden update policy
-
-Goldens are **fail-closed**: CI never auto-regenerates them. When a change
-legitimately alters the scan request sequence, re-run
-`tools/regen_goldens.py --regen --fixture <name>` locally, review the
-diff, and commit.
