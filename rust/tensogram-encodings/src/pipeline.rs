@@ -742,10 +742,23 @@ pub fn decode_range_pipeline(
         }
         EncodingType::None => {
             let elem_size = config.dtype_byte_width;
-            let bs = (sample_offset as usize)
+            // `usize::try_from` rather than `as usize` so a `u64`
+            // sample offset/count truncating on 32-bit surfaces as a
+            // typed error instead of slicing into bogus memory.
+            let offset_usize = usize::try_from(sample_offset).map_err(|_| {
+                PipelineError::Range(format!(
+                    "sample_offset {sample_offset} exceeds usize on this target"
+                ))
+            })?;
+            let count_usize = usize::try_from(sample_count).map_err(|_| {
+                PipelineError::Range(format!(
+                    "sample_count {sample_count} exceeds usize on this target"
+                ))
+            })?;
+            let bs = offset_usize
                 .checked_mul(elem_size)
                 .ok_or_else(|| PipelineError::Range("byte offset overflow".to_string()))?;
-            let sz = (sample_count as usize)
+            let sz = count_usize
                 .checked_mul(elem_size)
                 .ok_or_else(|| PipelineError::Range("byte count overflow".to_string()))?;
             (bs, sz, None)
@@ -764,7 +777,7 @@ pub fn decode_range_pipeline(
                     "range ({sample_offset}, {sample_count}) exceeds payload size"
                 )));
             }
-            encoded[byte_start..byte_end].to_vec()
+            try_clone_bytes(&encoded[byte_start..byte_end])?
         }
         Some(compressor) => {
             compressor.decompress_range(encoded, block_offsets, byte_start, byte_size)?
@@ -787,10 +800,15 @@ pub fn decode_range_pipeline(
             Ok(result)
         }
         EncodingType::SimplePacking(params) => {
+            let count_usize = usize::try_from(sample_count).map_err(|_| {
+                PipelineError::Range(format!(
+                    "sample_count {sample_count} exceeds usize on this target"
+                ))
+            })?;
             let values = simple_packing::decode_range(
                 &decompressed,
                 bit_offset_in_chunk.unwrap_or(0),
-                sample_count as usize,
+                count_usize,
                 params,
             )?;
             f64_to_bytes(&values, target_byte_order)
@@ -816,6 +834,18 @@ fn estimate_decompressed_size(config: &PipelineConfig) -> usize {
             total_bits.div_ceil(8).min(usize::MAX as u128) as usize
         }
     }
+}
+
+pub(crate) fn try_clone_bytes(src: &[u8]) -> Result<Vec<u8>, PipelineError> {
+    let mut out: Vec<u8> = Vec::new();
+    out.try_reserve_exact(src.len()).map_err(|e| {
+        PipelineError::Range(format!(
+            "failed to reserve {} bytes for range output clone: {e}",
+            src.len()
+        ))
+    })?;
+    out.extend_from_slice(src);
+    Ok(out)
 }
 
 fn bytes_to_f64(data: &[u8], byte_order: ByteOrder) -> Result<Vec<f64>, PipelineError> {

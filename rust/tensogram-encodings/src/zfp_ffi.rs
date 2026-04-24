@@ -163,7 +163,15 @@ pub fn zfp_decompress_range_f64(
         )));
     }
 
-    Ok(all[sample_offset..end].to_vec())
+    let mut out: Vec<f64> = Vec::new();
+    out.try_reserve_exact(sample_count).map_err(|e| {
+        err(format!(
+            "failed to reserve {} bytes for zfp range output: {e}",
+            sample_count.saturating_mul(std::mem::size_of::<f64>()),
+        ))
+    })?;
+    out.extend_from_slice(&all[sample_offset..end]);
+    Ok(out)
 }
 
 /// Set the ZFP compression mode on a stream.
