@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
+import tensogram_earthkit as tek
 from tensogram_earthkit import detection, mars
 from tensogram_earthkit.encoder import (
     TensogramEncodedData,
@@ -566,8 +567,6 @@ class TestTensogrmMagicConstant:
 
 class TestPublicAPI:
     def test_top_level_re_exports_present(self) -> None:
-        import tensogram_earthkit as tek
-
         for name in (
             "TENSOGRM_MAGIC",
             "TensogramData",
@@ -582,7 +581,5 @@ class TestPublicAPI:
 
     def test_all_declarations_are_consistent(self) -> None:
         """Every name in ``__all__`` must be importable from the module."""
-        import tensogram_earthkit as tek
-
         for name in tek.__all__:
             getattr(tek, name)  # raises if missing
