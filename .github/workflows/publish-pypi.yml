@@ -87,6 +87,8 @@ jobs:
                    cpython-3.13+freethreaded cpython-3.14+freethreaded; do
             ARGS="$ARGS --interpreter $(uv python find $v)"
           done
+          # NOTE aligned macos target with https://github.com/ecmwf/python-develop-bundle
+          export MACOS_DEPLOYMENT_TARGET="13.0"
           make python-dist MATURIN_INTERP_ARGS="$ARGS"
 
       - uses: actions/upload-artifact@v4
