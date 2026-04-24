@@ -450,47 +450,60 @@ silent corruption path where an `i32::MAX`-saturated
 with `0.0` and records their positions in a bitmask companion
 section.
 
-### Malformed Descriptor — Pathological Tensor Size (szip)
+### Malformed Descriptor — Pathological Tensor Size
 
 A corrupted or hostile `.tgm` file whose tensor descriptor declares an
 unrealistic element count (for example, `shape: [2^40]`) drives
 `num_values × dtype_byte_width` to a multi-terabyte value on decode.
 
-For the **szip compression codec** — both the C FFI backend (via
-libaec) and the pure-Rust `tensogram-szip` crate — every allocation on
-the decode path that derives from this untrusted size is fallible:
-`Vec::try_reserve_exact` on the output buffer, the per-RSI scratch
-buffer and the sample-serialisation buffer, `checked_mul` on the
-sample-count → byte-count conversion, and `checked_sub` on the
-bytes-written arithmetic the FFI path reports back. A hostile size
-therefore surfaces as a **Compression error** whose message begins
-with `"failed to reserve"` (or, for the multiplication overflow case,
-`"overflows usize"`) rather than aborting the process.
+Every descriptor-derived allocation on the decode path is fallible:
 
-Blosc2 is likewise hardened (see the PR #69 fix notes): it ignores the
-caller-supplied hint entirely and reserves fallibly per chunk against
-its own frame-trailer metadata.
+- **szip** (both C FFI and pure-Rust backends): `Vec::try_reserve_exact`
+  on the output buffer, the per-RSI scratch buffer and the sample
+  serialisation buffer; `checked_mul` on the sample-count → byte-count
+  conversion; `checked_sub` on the FFI bytes-written arithmetic that
+  drives `set_len`. The FFI backend additionally runs the same
+  `AecParams` validation as the pure-Rust backend (rejects
+  `bits_per_sample ∉ [1..=32]`, `block_size == 0`, invalid block sizes
+  without `AEC_NOT_ENFORCE`, `rsi ∉ [1..=4096]`, and `AEC_RESTRICTED`
+  with `bits_per_sample > 4`).
+- **simple_packing** decode: `try_reserve_exact` on the output
+  `Vec<f64>` in both aligned and generic paths (sequential and
+  rayon-parallel); `checked_mul` on `num_values × bits_per_value`
+  (promoted to `u128`) and on the range-decode `bit_offset + num_values × bpv`
+  arithmetic.
+- **Bitmask decoders** (`packing::unpack`, `rle::decode`,
+  `roaring::decode`): shared `try_reserve_mask` helper reserves the
+  output `Vec<bool>` fallibly. The RLE path's run-length overflow
+  check was also reworked so `run + out.len() > n_elements` cannot
+  itself overflow on hostile input.
+- **zfp**: `zfp_ffi::zfp_decompress_f64` reserves the output buffer
+  via `try_reserve_exact`; serialisation back to bytes uses
+  `checked_mul` on `values.len() × 8` and fallible reservation for
+  the byte buffer.
+- **Shuffle filter**: `unshuffle` reserves its output buffer fallibly
+  so a large decompressed stage cannot abort the shuffle stage even
+  when the host is close to OOM.
+- **blosc2**: ignores the caller-supplied hint entirely and reserves
+  fallibly per chunk against its own frame-trailer metadata.
 
-**Not yet hardened — known limitations:** The other codec (`zfp`) and
-two non-compression allocation sites still use infallible
-preallocation from descriptor-derived element counts. A `.tgm` crafted
-to route through any of the following paths can still trigger an
-allocation abort rather than a typed error:
+A hostile size therefore surfaces through the normal error channel as
+a typed error. The specific variants and their message prefixes:
 
-- `EncodingType::SimplePacking` on the decode path —
-  `simple_packing::decode*` uses `Vec::with_capacity(num_values)` for
-  the output `Vec<f64>`.
-- Bitmask companion frames — `bitmask::{packing,rle,roaring}::decode`
-  use `Vec::with_capacity(n_elements)`.
-- `CompressionType::Zfp` — `zfp_ffi::zfp_decompress_f64` does
-  `vec![0.0f64; num_values]` on a descriptor-derived `num_values`.
+| Codec / stage | Error variant | Prefix |
+|---|---|---|
+| szip (FFI) | `CompressionError::Szip` | `"failed to reserve"` |
+| szip (pure) | `AecError::Data` | `"failed to reserve"` |
+| simple_packing | `PackingError::AllocationFailed` / `BitCountOverflow` / `OutputSizeOverflow` | `"failed to reserve"` / `"bit-count overflow"` / `"output size overflow"` |
+| bitmask | `MaskError::AllocationFailed` | `"failed to reserve"` |
+| zfp / sz3 | `CompressionError::Zfp` / `CompressionError::Sz3` | `"failed to reserve"` |
+| shuffle | `ShuffleError::AllocationFailed` | `"failed to reserve"` |
+| pipeline f64↔bytes | `PipelineError::Range` | `"failed to reserve"` / `"overflows usize"` |
 
-These are tracked in `plans/TODO.md` as separate follow-up items. For
-now, callers that accept `.tgm` input from untrusted sources should
-either validate the descriptor shape before decode (structure-level
-`tensogram validate --quick` confirms the shape is well-formed) or
-restrict the accepted pipelines to szip and the other
-already-hardened codecs.
+This means a caller processing untrusted `.tgm` input (remote reads,
+user uploads, multi-tenant services) can rely on the normal
+`Result<_, TensogramError>` / exception channel to signal the problem.
+No defensive size-cap is needed at the call site.
 
 ### File Not Found / Permission Denied
 
@@ -563,15 +576,16 @@ and `unimplemented!()` in non-test code paths. The library guarantees:
 - `u64 → usize` conversions use `usize::try_from()` to prevent truncation
   on 32-bit platforms.
 - Array indexing is guarded by prior bounds checks.
-- **Untrusted sizes in the szip and blosc2 decode paths** (the
-  descriptor's `num_values × dtype_byte_width`, range-decode lengths,
-  per-codec internal size hints) are reserved via
-  `Vec::try_reserve_exact`, so allocation failure surfaces as a typed
-  error rather than aborting the process. Other decode paths
-  (`simple_packing`, bitmask decoders, `zfp`) still use infallible
-  preallocation — see [Malformed Descriptor — Pathological Tensor
-  Size (szip)](#malformed-descriptor--pathological-tensor-size-szip)
-  for the known limitations and the remediation plan.
+- **Untrusted sizes derived from the wire format** (the descriptor's
+  `num_values × dtype_byte_width`, range-decode lengths, per-codec
+  internal size hints, bitmask element counts) are reserved via
+  `Vec::try_reserve_exact` on every decode path, so allocation failure
+  surfaces as a typed error rather than aborting the process. Size
+  arithmetic that could overflow `usize` (`num_values × bits_per_value`,
+  `samples × byte_width`) is guarded by `checked_mul` / `u128`
+  promotion. See [Malformed Descriptor — Pathological Tensor
+  Size](#malformed-descriptor--pathological-tensor-size) for the
+  per-codec error variants.
 - FFI boundary code returns error codes instead of panicking, and uses
   `unwrap_or_default()` only for `CString::new()` (interior null fallback).
 - The scan functions (`scan`, `scan_file`) tolerate truncation of
