@@ -284,6 +284,202 @@ For speculative ideas, see `IDEAS.md`.
   - requires the current preamble-only walk to remain as the fallback when any
     chunk-parse fails (bail-to-eager path should stay identical)
 
+- [ ] **remote 8 — bidirectional scan across Rust / Python / TS+WASM**:
+  Reader-side only — **zero wire-format changes**; existing `.tgm`
+  files gain the speedup automatically when read by a new client.
+  Split into the sub-tasks below; land in order, each gated by the
+  cross-language parity harness (first sub-task).
+
+  - [ ] **parity harness foundation** (`tests/remote-parity/`, ~800 LOC).
+    Python `mock_server.py` with Range + HEAD + serialized per-`run_id`
+    request logging.  Deterministic fixture generator emitting 10 starter
+    `.tgm` files (single / 2 / 10 / 100 messages + streaming-tail +
+    streaming-mid + footer-idx + header-idx + mixed + valid-prefix-
+    streaming-tail). JSON-schema `ScanEvent` log contract with
+    `{ run_id, scan_round, direction, category, logical_range,
+    physical_requests }`; orchestrator normalizes inclusive HTTP ranges
+    to `[start, end_exclusive)` and filters `category: "scan"` events
+    only.  Rust + TS drivers exercising **current forward-only
+    behaviour** emit logs in this schema; Rust and TS produce
+    bit-identical `scan`-category logs on every fixture.  Fail-closed
+    `--regen` tool for golden updates.  Minimal instrumentation landed
+    in production code (`#[tracing::instrument]` call-site annotations
+    in `remote.rs`; optional `debug: boolean` emitter in
+    `typescript/src/internal/httpRange.ts`).
+
+  - [ ] **Rust state refactor — zero behaviour change** (`remote.rs`,
+    ~300 LOC).  Introduce internal `RemoteScanOptions { bidirectional:
+    bool, max_message_size: u64 }` with `Default` → `{ false, 4 GiB }`.
+    Extend `RemoteState` with unused / zero-initialised
+    `suffix_rev: Vec<MessageLayout>`, `prev_scan_offset: u64`,
+    `bwd_active: bool`, `fwd_terminated: bool`, `gap_closed: bool`;
+    compute `scan_complete = gap_closed || (fwd_terminated &&
+    suffix_rev.is_empty())` — equals today's `scan_complete` because
+    `suffix_rev` is always empty.  Extract helpers `is_layout_ready`,
+    `record_forward_hop`, `walkers_overlap`, `snapshot_offsets`.
+    Every existing `state.scan_complete` read/write migrated to the new
+    accessors.  All existing remote tests pass unchanged; the parity
+    harness produces byte-identical Rust forward-only logs.
+
+  - [ ] **Rust bidirectional implementation** (`remote.rs`, ~600
+    LOC).  `scan_prev_locked` / `scan_prev_async` backward hop via
+    `Postamble::read_from`.  `scan_bidirectional_hop_locked` / `_async`
+    coordinates one forward + one backward hop per round via
+    `store.get_ranges(&[fwd_r, bwd_r])` — **not** `tokio::join!`.
+    Round 2 uses the batched API for length-dependent backward-preamble
+    validation; forward walker deliberately does NOT validate
+    `END_MAGIC` (matches current remote semantics, avoids doubling
+    forward GETs).  Streaming edge case (`fwd_total == 0` in Round 1)
+    skips forward Round 2 and handles via current streaming branch.
+    Explicit format-vs-transport error taxonomy: bad magic / parse
+    error / `total_length > max_message_size` / `total_length == 0`
+    are format errors and disable backward (forward remains canonical);
+    network timeout / 503 / short read / abort are transport errors
+    and propagate with **zero state mutation** and **no partial
+    backward commit** — "bidirectional is an optimisation, never a
+    recovery mode".  Dual-offset atomic commit: both
+    `next_scan_offset == snap.next` and `prev_scan_offset ==
+    snap.prev` must hold on reacquire.  On `fwd_terminated` before
+    `gap_closed`, **discard `suffix_rev`** to preserve current remote
+    semantics (zero regression).  `#[tracing::instrument]` events for
+    `remote_scan.mode`, `.fallback_reason`, `.fwd_terminated`,
+    `.gap_closed`.  Every read accessor (`read_message`,
+    `read_metadata`, `read_descriptors`, `read_object`,
+    `message_count`, `ensure_all_layouts_batch_async`, all async
+    variants) audited for dual-list migration.  Tests cover every row
+    of the error taxonomy, 1-message concurrent-caller race (no
+    duplicate commit), `total_length > 4 GiB + 1` fuzz boundary,
+    backward `msg_start < next_scan_offset` overlap, transport-error
+    retry leaves state clean.  Still internal only — public API
+    unchanged.
+
+  - [ ] **Rust + Python public surface** (`file.rs`,
+    `python/bindings/`, ~200 LOC).  `TensogramFile::open_remote` /
+    `open_remote_async` / `open_source` / `open_source_async` gain
+    `scan_opts: Option<&RemoteScanOptions>` (default `None` →
+    forward-only).  Python `PyTensogramFile.open_remote(source,
+    storage_options=None, *, bidirectional=False)` keyword across
+    sync, async, and `open_source` dispatch (URL-aware).  Eager type
+    validation: `bidirectional=1` or `bidirectional="yes"` raises
+    `ValueError` at call site, not on first method call.  Parity
+    harness Rust driver gains `--bidirectional` flag; new harness
+    assertion: forward-only and bidirectional produce identical final
+    `{ positions, layouts }` on every fixture.  TS driver remains
+    forward-only.
+
+  - [ ] **TypeScript bidirectional walker** (`typescript/src/`,
+    ~600 LOC).  No Rust / WASM changes — `read_postamble_info`
+    already ships at `rust/tensogram-wasm/src/layout.rs:147`.
+    `FromUrlOptions.bidirectional?: boolean` (default `false`) and
+    `FromUrlOptions.debug?: boolean` added to `typescript/src/types.ts`.
+    Rewrite `lazyScanMessages` in `file.ts` with a two-cursor walker
+    when `bidirectional === true`; require `concurrency >= 2`
+    otherwise throw `InvalidArgumentError` synchronously from
+    `fromUrl`.  Round 1 uses `Promise.allSettled([fetchRange(fwd,
+    fwd+24), fetchRange(bwd-24, bwd)])` with a per-round child
+    `AbortController` derived from the user `opts.signal`; on
+    one-side failure, abort the sibling fetch to avoid wasted work.
+    Parse forward preamble via `getWbg().read_preamble_info`, backward
+    postamble via `getWbg().read_postamble_info`.  Round 2 paired
+    fetch for backward preamble validation — no forward Round 2
+    (matches Rust).  Mirror the Rust fallback taxonomy byte-for-byte.
+    Internal `layoutsRev` array, merged into `positions` on
+    `gapClosed`.  `debug: true` emits `tensogram:scan:mode`,
+    `:fallback`, `:fwdTerminated`, `:gapClosed` via `console.debug`.
+    Never use multi-range `Range: bytes=a-b,c-d` (CORS /
+    server-compatibility risk).  Tests mirror every Rust bidirectional
+    test; Node http mock gains Range-request counter per scan round
+    (pattern from `rust/tensogram/tests/remote_http.rs:155-166`).
+    Tensoscope smoke test: `TensogramFile.fromUrl(proxyUrl,
+    { bidirectional: true })` works through the existing CORS proxy
+    (`tensoscope/src/tensogram/index.ts:138`).  Parity harness TS
+    driver gains `--bidirectional`.
+
+  - [ ] **parity harness: bidirectional assertions**
+    (`tests/remote-parity/`, ~200 LOC).  Orchestrator runs 4
+    combinations per fixture: `{ rust, ts } × { bidirectional:
+    false, true }`.  Ordered comparison across scan rounds; unordered
+    multiset comparison within a round (duplicates detected by count;
+    `Promise.all` / `get_ranges` reordering allowed).  Four assertions
+    per fixture: Rust-false vs TS-false (forward regression guard),
+    Rust-true vs TS-true (cross-language bidirectional parity),
+    Rust-false vs Rust-true (final positions identical, request
+    patterns may differ), TS-false vs TS-true (same).  Goldens
+    regenerated via `--regen`, checked into `tests/remote-parity/
+    goldens/`.  No new fixtures — all scenarios already shipped in the
+    harness foundation.
+
+  - [ ] **eager footer-indexed backward discovery** (Rust + TS,
+    ~400 LOC).  For footer-indexed messages discovered on the
+    backward walk only, reuse the already-fetched postamble's
+    `first_footer_offset` to compute the footer region and fetch it
+    in the same round (via `store.get_ranges` in Rust, paired
+    `fetchRange` in TS) — populating `global_metadata` and `index`
+    inline.  **Header-indexed messages on backward: no eager
+    discovery** — net-worse cost/benefit because forward discovery
+    already fetches a 256 KB header chunk at message start in one
+    GET; backward would need postamble + preamble + separate header
+    chunk = 3 GETs.  Falls back to lazy `ensure_layout_async` for
+    header-indexed.  TS uses existing `parse_footer_chunk` WASM
+    export.  Parity harness fixtures extended with 2-3 new
+    footer-indexed fixtures sized to measure GET reduction.  Tests:
+    `read_metadata(N-1)` on a 100-message footer-indexed file with
+    `bidirectional=true` uses fewer GETs than the plain bidirectional
+    implementation alone; header-indexed parity shows no regression.
+    **Stays separate from the default-flip decision** — flip decision
+    should be based on a stable feature.
+
+  - [ ] **benchmarks, docs, default-flip decision** (all languages,
+    ~400 LOC + docs).  Benchmarks live in existing infrastructure:
+    `rust/benchmarks/benches/remote_scan.rs` (Criterion),
+    `rust/benchmarks/python/bench_remote_scan.py` (pytest-benchmark
+    alongside `bench_threading.py`),
+    `typescript/test/remote_scan.bench.ts` (Vitest `bench()`).
+    Scenarios at tiers `{ 1, 10, 100, 1000 }` messages:
+    `message_count`, `read_message(0)`, `read_message(N-1)`,
+    `read_message(N/2)`, `iter`.  Metrics: physical HTTP request
+    count (primary gate), bytes fetched (regression check),
+    wall-clock (informational only — CI noise unreliable).
+    **Flip criterion**: bidirectional ≤ forward-only on request
+    count AND bytes fetched at every tier × every scenario, across
+    Rust + Python + TS.  Tiny `+1` exceptions on N=1 allowed only
+    if wall-clock clearly wins and the extra request is justified.
+    If criterion met: flip defaults in `RemoteScanOptions::default()`,
+    Python keyword defaults across four entry points, TS
+    `FromUrlOptions.bidirectional` default — all together, no
+    divergent per-language defaults.  If criterion fails anywhere:
+    keep defaults `false` across all languages; ship as opt-in.
+    Observability examples:
+    `examples/observability/remote_scan_trace.rs` (Rust `tracing`),
+    `examples/observability/remote_scan_trace.ts` (TS `debug: true`).
+    Docs: rewrite `plans/WIRE_FORMAT.md §9.3` to document remote
+    backend support + format-vs-transport taxonomy; update
+    `docs/src/guide/remote-access.md` with honest framing
+    ("approximately halves GETs for tail / full-scan in well-formed
+    files"; not "O(1) tail access"); update
+    `docs/src/guide/typescript-api.md` + `python-api.md`; entry in
+    `plans/DONE.md` in house style (no version numbers, no test
+    counts, shape-focused table).  Release notes highlight: "old
+    `.tgm` files gain the speedup automatically when read by a new
+    client — no migration, no re-encoding, no wire-format bump; opt
+    out with `bidirectional=False`".
+
+  - [ ] **adaptive direction** *(optional, deferred)*.  Only pursued
+    if the default-flip benchmarks reveal a specific workload
+    measurably benefiting from walker scheduling.  Documented
+    honestly: "walker scheduling, not indexed tail access" —
+    backward-discovered messages have unknown absolute indices before
+    `gap_closed`, so adaptive direction cannot accelerate
+    index-targeted reads below the crossover point.
+
+  Out of scope for all sub-tasks above: C++ remote (no remote today),
+  CLI remote (local paths only today), custom fetch-injection hooks
+  in Rust, multi-range Range headers in TS, HTTP/2 detection gating,
+  hidden env-var kill switch (public `bidirectional=False` option
+  is the kill switch), migration tooling (reader-side only).  Wire
+  format spec stays at v3; golden test fixtures require no
+  regeneration.
+
 ## Python Async Bindings
 
 - [x] **Python asyncio support**:
