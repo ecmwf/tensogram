@@ -79,7 +79,19 @@ pub fn zfp_decompress_f64(
         return Ok(Vec::new());
     }
 
-    let mut output = vec![0.0f64; num_values];
+    // Fallible reservation: `num_values` flows from the descriptor via
+    // `ZfpCompressor`, so an attacker-supplied value must not abort the
+    // process through an infallible `vec![0.0f64; N]`. The subsequent
+    // `resize` cannot reallocate because `capacity` already equals
+    // `num_values`; it only writes the zero-fill libzfp then overwrites.
+    let mut output: Vec<f64> = Vec::new();
+    output.try_reserve_exact(num_values).map_err(|e| {
+        err(format!(
+            "failed to reserve {} bytes for zfp decompression: {e}",
+            num_values.saturating_mul(std::mem::size_of::<f64>()),
+        ))
+    })?;
+    output.resize(num_values, 0.0);
 
     unsafe {
         let ztype = zfp_sys_cc::zfp_type_zfp_type_double;
@@ -293,5 +305,17 @@ mod tests {
         let compressed = zfp_compress_f64(&values, &mode).unwrap();
         let decoded = zfp_decompress_f64(&compressed, values.len(), &mode).unwrap();
         assert_eq!(decoded.len(), values.len());
+    }
+
+    #[test]
+    fn zfp_decompress_rejects_pathological_num_values() {
+        let mode = ZfpMode::FixedRate { rate: 16.0 };
+        let err = zfp_decompress_f64(&[1u8, 2, 3, 4], usize::MAX, &mode)
+            .expect_err("usize::MAX num_values must fail the capacity check");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("failed to reserve"),
+            "error should report allocation failure, got: {msg}"
+        );
     }
 }

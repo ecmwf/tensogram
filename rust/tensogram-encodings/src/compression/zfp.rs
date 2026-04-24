@@ -49,7 +49,7 @@ impl Compressor for ZfpCompressor {
         let values = zfp_ffi::zfp_decompress_f64(data, self.num_values, &self.mode)?;
         // Write in the wire byte order so the pipeline's byteswap step can
         // uniformly convert wire → native without special-casing lossy codecs.
-        Ok(f64_to_bytes(&values, self.byte_order))
+        f64_to_bytes(&values, self.byte_order)
     }
 
     fn decompress_range(
@@ -71,7 +71,7 @@ impl Compressor for ZfpCompressor {
             sample_count,
         )?;
 
-        Ok(f64_to_bytes(&values, self.byte_order))
+        f64_to_bytes(&values, self.byte_order)
     }
 }
 
@@ -95,14 +95,26 @@ fn bytes_to_f64_native(data: &[u8]) -> Result<Vec<f64>, CompressionError> {
 }
 
 /// Serialise f64 values to bytes in the specified byte order.
-fn f64_to_bytes(values: &[f64], byte_order: ByteOrder) -> Vec<u8> {
-    values
-        .iter()
-        .flat_map(|v| match byte_order {
+fn f64_to_bytes(values: &[f64], byte_order: ByteOrder) -> Result<Vec<u8>, CompressionError> {
+    let bytes_len = values.len().checked_mul(8).ok_or_else(|| {
+        CompressionError::Zfp(format!(
+            "f64-to-byte output length overflows usize: {} values x 8 bytes",
+            values.len()
+        ))
+    })?;
+    let mut out: Vec<u8> = Vec::new();
+    out.try_reserve_exact(bytes_len).map_err(|e| {
+        CompressionError::Zfp(format!(
+            "failed to reserve {bytes_len} bytes for zfp output serialisation: {e}"
+        ))
+    })?;
+    for v in values {
+        out.extend_from_slice(&match byte_order {
             ByteOrder::Big => v.to_be_bytes(),
             ByteOrder::Little => v.to_le_bytes(),
-        })
-        .collect()
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
