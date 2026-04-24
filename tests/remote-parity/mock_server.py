@@ -328,6 +328,9 @@ def main(argv: list[str] | None = None) -> int:
         print("press Ctrl-C to stop")
         threading.Event().wait()
     except KeyboardInterrupt:
+        # Ctrl-C is the documented way to stop this stand-alone server;
+        # swallow the interrupt so the user gets a clean exit. Cleanup
+        # happens in the `finally` block below.
         pass
     finally:
         server.stop()
