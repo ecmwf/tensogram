@@ -23,7 +23,7 @@
  *   ...baseDescriptor,
  *   encoding: 'simple_packing',
  *   compression: 'szip',
- *   ...params,  // contributes reference_value, binary_scale_factor, …
+ *   ...params,  // contributes sp_reference_value, sp_binary_scale_factor, …
  * };
  * ```
  */

@@ -63,10 +63,10 @@ static std::string simple_packing_json(std::size_t count,
            std::to_string(count) +
            R"(],"strides":[8],"dtype":"float64","byte_order":"little",)"
            R"("encoding":"simple_packing","filter":"none","compression":"none",)"
-           R"("reference_value":)" + std::to_string(reference_value) +
-           R"(,"binary_scale_factor":)" + std::to_string(binary_scale_factor) +
-           R"(,"decimal_scale_factor":)" + std::to_string(decimal_scale_factor) +
-           R"(,"bits_per_value":)" + std::to_string(bits_per_value) +
+           R"("sp_reference_value":)" + std::to_string(reference_value) +
+           R"(,"sp_binary_scale_factor":)" + std::to_string(binary_scale_factor) +
+           R"(,"sp_decimal_scale_factor":)" + std::to_string(decimal_scale_factor) +
+           R"(,"sp_bits_per_value":)" + std::to_string(bits_per_value) +
            R"(}]})";
 }
 

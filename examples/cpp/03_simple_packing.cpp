@@ -48,11 +48,11 @@ int main() {
     std::snprintf(ref_buf, sizeof(ref_buf), "%.17g", reference_value);
 
     std::string json =
-        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[1000],"strides":[8],"dtype":"float64","encoding":"simple_packing","filter":"none","compression":"none","bits_per_value":)" +
+        R"({"version":3,"descriptors":[{"type":"ntensor","ndim":1,"shape":[1000],"strides":[8],"dtype":"float64","encoding":"simple_packing","filter":"none","compression":"none","sp_bits_per_value":)" +
         std::to_string(bits_per_value) +
-        R"(,"reference_value":)" + std::string(ref_buf) +
-        R"(,"binary_scale_factor":)" + std::to_string(binary_scale_factor) +
-        R"(,"decimal_scale_factor":)" + std::to_string(decimal_scale_factor) +
+        R"(,"sp_reference_value":)" + std::string(ref_buf) +
+        R"(,"sp_binary_scale_factor":)" + std::to_string(binary_scale_factor) +
+        R"(,"sp_decimal_scale_factor":)" + std::to_string(decimal_scale_factor) +
         R"(}]})";
 
     // -- Encode --
