@@ -23,6 +23,7 @@ export interface ColorScaleControlsProps {
   onPaletteReversedChange: (v: boolean) => void;
   onCustomStopsChange: (stops: CustomStop[]) => void;
   onDisplayUnitChange: (unit: string) => void;
+  initialMinimised?: boolean;
 }
 
 // ── Shared styles ────────────────────────────────────────────────────────────
@@ -561,8 +562,9 @@ export function ColorScaleControls({
   onPaletteReversedChange,
   onCustomStopsChange,
   onDisplayUnitChange,
+  initialMinimised,
 }: ColorScaleControlsProps) {
-  const [minimised, setMinimised] = useState(false);
+  const [minimised, setMinimised] = useState(initialMinimised ?? false);
 
   const group = getUnitGroup(nativeUnits);
   const toDisplay = useMemo(

@@ -34,6 +34,7 @@ export interface MapViewProps {
   nativeUnits: string;
   displayUnit: string;
   onDisplayUnitChange: (unit: string) => void;
+  colorScaleInitialMinimised?: boolean;
 }
 
 export function MapView(props: MapViewProps) {
@@ -45,6 +46,7 @@ export function MapView(props: MapViewProps) {
     onPaletteReversedChange, onCustomStopsChange,
     dataMin, dataMax,
     nativeUnits, displayUnit, onDisplayUnitChange,
+    colorScaleInitialMinimised,
   } = props;
 
   const [activePreset, setActivePreset] = useState<ProjectionPreset>(PROJECTION_PRESETS[0]);
@@ -138,7 +140,7 @@ export function MapView(props: MapViewProps) {
 
       {data && (
         <>
-          <div style={{ position: 'absolute', bottom: 40, right: 16, zIndex: 10 }}>
+          <div style={{ position: 'absolute', bottom: 'calc(var(--sheet-height, 32px) + 8px)', right: 16, zIndex: 10 }}>
             <ColorBar
               min={colorMin}
               max={colorMax}
@@ -168,6 +170,7 @@ export function MapView(props: MapViewProps) {
               onPaletteReversedChange={onPaletteReversedChange}
               onCustomStopsChange={onCustomStopsChange}
               onDisplayUnitChange={onDisplayUnitChange}
+              initialMinimised={colorScaleInitialMinimised}
             />
           </div>
         </>

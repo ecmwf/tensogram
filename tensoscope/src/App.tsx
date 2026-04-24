@@ -14,6 +14,9 @@ import { useAnimationSequence } from './components/animation/useAnimationSequenc
 import { useAnimationPlayer } from './components/animation/useAnimationPlayer';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAppStore } from './store/useAppStore';
+import { useIsMobile } from './hooks/useIsMobile';
+import { snapSheet, sheetHeightCss } from './components/mobile/sheetSnap';
+import type { SheetState } from './components/mobile/sheetSnap';
 
 function App() {
   const {
@@ -62,10 +65,16 @@ function App() {
     onStepForward: () => player.setFrame(Math.min(frames.length - 1, player.currentFrameIndex + 1)),
   });
 
+  const isMobile = useIsMobile();
+  const [sheetState, setSheetState] = useState<SheetState>('collapsed');
+
   const [sidebarWidth, setSidebarWidth] = useState(380);
   const dragging = useRef(false);
   const startX = useRef(0);
   const startWidth = useRef(0);
+  const sheetDragging = useRef(false);
+  const sheetStartY = useRef(0);
+  const sheetStartState = useRef<SheetState>('collapsed');
 
   const onDragStart = useCallback((e: React.MouseEvent) => {
     dragging.current = true;
@@ -83,6 +92,7 @@ function App() {
   }, []);
 
   const onDragEnd = useCallback(() => {
+    if (!dragging.current) return;
     dragging.current = false;
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
@@ -96,6 +106,53 @@ function App() {
       window.removeEventListener('mouseup', onDragEnd);
     };
   }, [onDragMove, onDragEnd]);
+
+  const prevFileIndex = useRef<typeof fileIndex>(null);
+  useEffect(() => {
+    if (isMobile && prevFileIndex.current === null && fileIndex !== null) {
+      setSheetState(s => s === 'collapsed' ? 'half' : s);
+    }
+    prevFileIndex.current = fileIndex;
+  }, [fileIndex, isMobile]);
+
+  const onSheetDragStart = useCallback((e: React.MouseEvent) => {
+    sheetDragging.current = true;
+    sheetStartY.current = e.clientY;
+    sheetStartState.current = sheetState;
+    document.body.style.userSelect = 'none';
+  }, [sheetState]);
+
+  const onSheetTouchStart = useCallback((e: React.TouchEvent) => {
+    sheetDragging.current = true;
+    sheetStartY.current = e.touches[0].clientY;
+    sheetStartState.current = sheetState;
+  }, [sheetState]);
+
+  useEffect(() => {
+    const onMouseUp = (e: MouseEvent) => {
+      if (!sheetDragging.current) return;
+      sheetDragging.current = false;
+      document.body.style.userSelect = '';
+      setSheetState(snapSheet(sheetStartState.current, e.clientY - sheetStartY.current));
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (!sheetDragging.current) return;
+      sheetDragging.current = false;
+      const touch = e.changedTouches[0];
+      setSheetState(snapSheet(sheetStartState.current, touch.clientY - sheetStartY.current));
+    };
+    const onTouchCancel = () => {
+      sheetDragging.current = false;
+    };
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('touchend', onTouchEnd);
+    window.addEventListener('touchcancel', onTouchCancel);
+    return () => {
+      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchcancel', onTouchCancel);
+    };
+  }, []);
 
   // Find units for the selected variable -- prefer auto-style units, then metadata
   const selectedVar = selectedObject && fileIndex
@@ -117,9 +174,17 @@ function App() {
   const units = (selectedVar?.metadata?.units as string) ?? marsParam;
 
   return (
-    <div className="app-layout">
+    <div
+      className="app-layout"
+      style={isMobile ? { '--sheet-height': sheetHeightCss(sheetState) } as React.CSSProperties : undefined}
+    >
       {!fileIndex && <WelcomeModal />}
-      <aside className="sidebar" style={{ width: sidebarWidth }}>
+      <aside className="sidebar" style={isMobile ? {} : { width: sidebarWidth }}>
+        <div
+          className="sheet-drag-handle"
+          onMouseDown={onSheetDragStart}
+          onTouchStart={onSheetTouchStart}
+        />
         <div className="sidebar-brand">
           <img src={logo} alt="" className="sidebar-brand-logo" />
           <span className="sidebar-brand-name">Tensoscope</span>
@@ -144,6 +209,7 @@ function App() {
           </div>
         )}
         <MapView
+          colorScaleInitialMinimised={isMobile}
           data={fieldData}
           lat={coordinates?.lat ?? null}
           lon={coordinates?.lon ?? null}

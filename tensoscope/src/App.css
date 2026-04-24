@@ -746,6 +746,11 @@ h2 {
   background: var(--accent);
 }
 
+/* Hidden on desktop, shown inside the sheet on mobile */
+.sheet-drag-handle {
+  display: none;
+}
+
 /* ── Projection Picker ── */
 /* ── Map Controls Bar (top-left) ── */
 .map-controls-bar {
@@ -794,4 +799,66 @@ h2 {
   background: rgba(255, 255, 255, 0.14);
   color: #fff;
   font-weight: 500;
+}
+
+/* ── Mobile layout (≤767px): sidebar becomes a bottom sheet ── */
+@media (max-width: 767px) {
+  .app-layout {
+    display: block;
+  }
+
+  .map-area {
+    height: 100svh;
+    flex: none;
+  }
+
+  .sidebar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    height: var(--sheet-height, 28px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    z-index: 100;
+    border-right: none;
+    border-top: 1px solid var(--border);
+    border-radius: 12px 12px 0 0;
+    transition: height 0.25s ease;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.4);
+  }
+
+  .sidebar-resize-handle {
+    display: none;
+  }
+
+  .animation-bar {
+    bottom: var(--sheet-height, 0px);
+    transition: bottom 0.25s ease;
+  }
+
+  .welcome-modal {
+    max-width: calc(100vw - 32px);
+  }
+
+  .sheet-drag-handle {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 28px;
+    cursor: grab;
+    flex-shrink: 0;
+    touch-action: none;
+  }
+
+  .sheet-drag-handle::before {
+    content: '';
+    width: 40px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+  }
 }
