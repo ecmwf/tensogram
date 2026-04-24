@@ -203,19 +203,28 @@ pub fn aec_decompress(
 
     validate_params(params)?;
 
-    // The only honest case for `expected_size == 0` is an empty
-    // compressed stream; a non-empty payload paired with a claimed-zero
-    // output would otherwise silently discard whatever it decodes to.
-    if expected_size == 0 {
-        if data.is_empty() {
-            return Ok(Vec::new());
+    // Reject the two malformed pairings that would otherwise silently
+    // return `Ok(empty)`:
+    //   * `expected_size == 0` with non-empty compressed data would
+    //     discard whatever the data decodes to.
+    //   * `expected_size > 0` with empty compressed data would claim a
+    //     successful decode of a truncated/missing payload.
+    // The only honest case is both sides empty, which round-trips as
+    // an empty Vec.
+    match (expected_size, data.is_empty()) {
+        (0, true) => return Ok(Vec::new()),
+        (0, false) => {
+            return Err(CompressionError::Szip(
+                "expected_size=0 with non-empty compressed stream (malformed descriptor)"
+                    .to_string(),
+            ));
         }
-        return Err(CompressionError::Szip(
-            "expected_size=0 with non-empty compressed stream (malformed descriptor)".to_string(),
-        ));
-    }
-    if data.is_empty() {
-        return Ok(Vec::new());
+        (_, true) => {
+            return Err(CompressionError::Szip(format!(
+                "expected_size={expected_size} with empty compressed stream (truncated or malformed payload)"
+            )));
+        }
+        _ => {}
     }
 
     let flags = effective_flags(params);
