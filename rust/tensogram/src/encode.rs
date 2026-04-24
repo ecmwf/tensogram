@@ -23,9 +23,9 @@ use tensogram_encodings::pipeline::Sz3ErrorBound;
 #[cfg(feature = "zfp")]
 use tensogram_encodings::pipeline::ZfpMode;
 use tensogram_encodings::pipeline::{
-    self, CompressionType, EncodingType, FilterType, PipelineConfig,
+    self, ByteOrder, CompressionType, EncodingType, FilterType, PipelineConfig,
 };
-use tensogram_encodings::simple_packing::SimplePackingParams;
+use tensogram_encodings::simple_packing::{self, SimplePackingParams};
 
 /// Options for encoding.
 #[derive(Debug, Clone)]
@@ -257,16 +257,24 @@ fn encode_one_object(
         .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
     let dtype = desc.dtype;
 
+    // Build the descriptor we will emit on the wire.  For Raw mode this
+    // includes the auto-compute step: when `encoding=simple_packing` and
+    // the user left out `sp_reference_value` / `sp_binary_scale_factor`
+    // we derive them from the data here so the final descriptor carries
+    // the full explicit 4-key set.  `PreEncoded` skips this — the bytes
+    // are opaque, the user must have supplied complete params.
+    let mut final_desc = desc.clone();
+    if matches!(mode, EncodeMode::Raw) {
+        resolve_simple_packing_params(&mut final_desc, pipeline_input.as_ref())?;
+    }
+
     let mut config = build_pipeline_config_with_backend(
-        desc,
+        &final_desc,
         num_elements,
         dtype,
         options.compression_backend,
         intra_codec_threads,
     )?;
-
-    // Build the final descriptor with computed fields
-    let mut final_desc = desc.clone();
 
     // When xxh3 hashing is requested and we are running the pipeline
     // (Raw mode), ask the pipeline to compute it inline — this avoids
@@ -927,6 +935,159 @@ fn extract_simple_packing_params(
             |_| TensogramError::Metadata("sp_bits_per_value out of u32 range".to_string()),
         )?,
     })
+}
+
+/// Auto-compute the reference / binary-scale params for a
+/// `simple_packing` descriptor when they are absent.
+///
+/// When a caller writes (in any language):
+///
+/// ```text
+/// desc = { encoding: "simple_packing", sp_bits_per_value: 16, ... }
+/// ```
+///
+/// the four-key explicit form
+/// (`sp_reference_value` + `sp_binary_scale_factor` + the two knob
+/// keys) is derived from the input data on the fly.  The descriptor
+/// is then stamped with all four so that the wire-format representation
+/// stays self-describing.
+///
+/// Contract:
+/// * No-op when `encoding != "simple_packing"`.
+/// * No-op when both `sp_reference_value` and `sp_binary_scale_factor`
+///   are already present — the user's explicit values win, matching
+///   the Q2(b) decision from `plans/DONE.md`.
+/// * `sp_bits_per_value` is required — error otherwise.
+/// * `sp_decimal_scale_factor` defaults to `0` when absent.
+/// * The data bytes are interpreted as float64 in the descriptor's
+///   declared byte order — simple_packing is float64-only, which is
+///   re-checked at pipeline-build time with a friendlier error for
+///   the explicit-params path.
+pub(crate) fn resolve_simple_packing_params(
+    desc: &mut DataObjectDescriptor,
+    data_bytes: &[u8],
+) -> Result<()> {
+    if desc.encoding != "simple_packing" {
+        return Ok(());
+    }
+    // Explicit computed params present → Q2(b): trust them, skip the
+    // auto-compute work entirely.  We still default the user-knob keys
+    // (sp_decimal_scale_factor) when absent so the pipeline's
+    // extract_simple_packing_params doesn't fault on a missing key.
+    if desc.params.contains_key("sp_reference_value")
+        && desc.params.contains_key("sp_binary_scale_factor")
+    {
+        desc.params
+            .entry("sp_decimal_scale_factor".to_string())
+            .or_insert(ciborium::Value::Integer(0i64.into()));
+        return Ok(());
+    }
+
+    let bits_per_value = match desc.params.get("sp_bits_per_value") {
+        Some(v) => u32::try_from(extract_u64(v)?).map_err(|_| {
+            TensogramError::Metadata("sp_bits_per_value out of u32 range".to_string())
+        })?,
+        None => {
+            return Err(TensogramError::Metadata(
+                "simple_packing requires sp_bits_per_value (the encoder can \
+                 auto-compute sp_reference_value + sp_binary_scale_factor from \
+                 the data, but the bit-width and decimal scale are the user \
+                 knobs).  Provide at least sp_bits_per_value, or the full \
+                 explicit 4-key set."
+                    .to_string(),
+            ));
+        }
+    };
+    let decimal_scale_factor = match desc.params.get("sp_decimal_scale_factor") {
+        Some(v) => i32::try_from(extract_i64(v)?).map_err(|_| {
+            TensogramError::Metadata("sp_decimal_scale_factor out of i32 range".to_string())
+        })?,
+        None => 0,
+    };
+
+    // simple_packing only supports float64.  Checked here with an
+    // auto-compute-aware message; `build_pipeline_config` checks again
+    // for the explicit-params path.
+    if desc.dtype.byte_width() != 8 {
+        return Err(TensogramError::Encoding(format!(
+            "simple_packing only supports float64 dtype; got {:?}",
+            desc.dtype
+        )));
+    }
+
+    let values = bytes_as_f64_vec(data_bytes, desc.byte_order)?;
+    let params = simple_packing::compute_params(&values, bits_per_value, decimal_scale_factor)
+        .map_err(|e| TensogramError::Encoding(e.to_string()))?;
+
+    desc.params.insert(
+        "sp_reference_value".to_string(),
+        ciborium::Value::Float(params.reference_value),
+    );
+    desc.params.insert(
+        "sp_binary_scale_factor".to_string(),
+        ciborium::Value::Integer(i64::from(params.binary_scale_factor).into()),
+    );
+    desc.params.insert(
+        "sp_decimal_scale_factor".to_string(),
+        ciborium::Value::Integer(i64::from(params.decimal_scale_factor).into()),
+    );
+    desc.params.insert(
+        "sp_bits_per_value".to_string(),
+        ciborium::Value::Integer(i64::from(params.bits_per_value).into()),
+    );
+    Ok(())
+}
+
+/// Extract a u64 from a ciborium value, accepting integer-valued
+/// `Integer` nodes only.  Floats and other shapes are rejected.
+fn extract_u64(v: &ciborium::Value) -> Result<u64> {
+    match v {
+        ciborium::Value::Integer(i) => {
+            let n: i128 = (*i).into();
+            u64::try_from(n).map_err(|_| {
+                TensogramError::Metadata(format!("integer value {n} out of u64 range"))
+            })
+        }
+        other => Err(TensogramError::Metadata(format!(
+            "expected integer, got {other:?}"
+        ))),
+    }
+}
+
+fn extract_i64(v: &ciborium::Value) -> Result<i64> {
+    match v {
+        ciborium::Value::Integer(i) => {
+            let n: i128 = (*i).into();
+            i64::try_from(n).map_err(|_| {
+                TensogramError::Metadata(format!("integer value {n} out of i64 range"))
+            })
+        }
+        other => Err(TensogramError::Metadata(format!(
+            "expected integer, got {other:?}"
+        ))),
+    }
+}
+
+/// Reinterpret raw bytes as float64 honouring the descriptor's
+/// byte order.  Used by the simple_packing auto-compute path.
+fn bytes_as_f64_vec(bytes: &[u8], byte_order: ByteOrder) -> Result<Vec<f64>> {
+    if !bytes.len().is_multiple_of(8) {
+        return Err(TensogramError::Metadata(format!(
+            "simple_packing: input byte length {} is not a multiple of 8 (float64)",
+            bytes.len()
+        )));
+    }
+    Ok(bytes
+        .chunks_exact(8)
+        .map(|c| {
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(c);
+            match byte_order {
+                ByteOrder::Big => f64::from_be_bytes(buf),
+                ByteOrder::Little => f64::from_le_bytes(buf),
+            }
+        })
+        .collect())
 }
 
 pub(crate) fn get_f64_param(params: &BTreeMap<String, ciborium::Value>, key: &str) -> Result<f64> {

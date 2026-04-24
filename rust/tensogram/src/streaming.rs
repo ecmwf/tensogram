@@ -282,8 +282,15 @@ impl<W: Write> StreamingEncoder<W> {
             0
         };
 
+        // Resolve simple_packing params up front (auto-compute from the
+        // post-substitute bytes if the user left out sp_reference_value /
+        // sp_binary_scale_factor).  Must happen BEFORE pipeline config
+        // construction because the pipeline reads the four sp_* keys.
+        let mut final_desc = desc.clone();
+        crate::encode::resolve_simple_packing_params(&mut final_desc, pipeline_input.as_ref())?;
+
         let config = crate::encode::build_pipeline_config_with_backend(
-            desc,
+            &final_desc,
             num_elements,
             desc.dtype,
             tensogram_encodings::pipeline::CompressionBackend::default(),
@@ -295,9 +302,6 @@ impl<W: Write> StreamingEncoder<W> {
                 pipeline::encode_pipeline(pipeline_input.as_ref(), &config)
             })
             .map_err(|e| TensogramError::Encoding(e.to_string()))?;
-
-        // Build final descriptor with computed fields
-        let mut final_desc = desc.clone();
 
         if let Some(offsets) = &result.block_offsets {
             final_desc.params.insert(

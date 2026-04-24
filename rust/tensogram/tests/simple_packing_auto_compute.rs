@@ -1,0 +1,371 @@
+// (C) Copyright 2026- ECMWF and individual contributors.
+//
+// This software is licensed under the terms of the Apache Licence Version 2.0
+// which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+// In applying this licence, ECMWF does not waive the privileges and immunities
+// granted to it by virtue of its status as an intergovernmental organisation nor
+// does it submit to any jurisdiction.
+
+//! BDD scenarios for the `simple_packing` auto-compute encoder path.
+//!
+//! User story:
+//!
+//! > I want to write a descriptor with just ``encoding: "simple_packing"``
+//! > and ``sp_bits_per_value: 16`` (the knob), and have the encoder
+//! > derive ``sp_reference_value`` / ``sp_binary_scale_factor`` from my
+//! > data automatically.
+//!
+//! The tests cover the seven scenarios from the design plan, each
+//! written as a `#[test]` that reads like a Given/When/Then.
+
+use std::collections::BTreeMap;
+
+use ciborium::Value as CborValue;
+use tensogram::{
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
+    HashAlgorithm, decode, encode,
+};
+
+fn make_global_meta() -> GlobalMetadata {
+    GlobalMetadata::default()
+}
+
+/// Build a minimal simple_packing descriptor carrying only the user
+/// knobs.  The encoder should auto-compute the rest.
+fn make_auto_desc(shape: Vec<u64>, bits_per_value: i64) -> DataObjectDescriptor {
+    let mut params = BTreeMap::new();
+    params.insert(
+        "sp_bits_per_value".to_string(),
+        CborValue::Integer(bits_per_value.into()),
+    );
+    DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: shape.len() as u64,
+        shape: shape.clone(),
+        strides: c_strides(&shape),
+        dtype: Dtype::Float64,
+        byte_order: ByteOrder::native(),
+        encoding: "simple_packing".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params,
+        masks: None,
+    }
+}
+
+fn c_strides(shape: &[u64]) -> Vec<u64> {
+    if shape.is_empty() {
+        return vec![];
+    }
+    let mut strides = vec![1u64; shape.len()];
+    for i in (0..shape.len() - 1).rev() {
+        strides[i] = strides[i + 1] * shape[i + 1];
+    }
+    strides
+}
+
+fn f64_bytes(values: &[f64]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_ne_bytes()).collect()
+}
+
+fn get_i64(params: &BTreeMap<String, CborValue>, key: &str) -> i64 {
+    match params.get(key) {
+        Some(CborValue::Integer(i)) => {
+            let n: i128 = (*i).into();
+            i64::try_from(n).unwrap_or_else(|_| panic!("{key} not in i64 range"))
+        }
+        other => panic!("{key} missing or wrong type: {other:?}"),
+    }
+}
+
+fn get_f64(params: &BTreeMap<String, CborValue>, key: &str) -> f64 {
+    match params.get(key) {
+        Some(CborValue::Float(f)) => *f,
+        Some(CborValue::Integer(i)) => {
+            let n: i128 = (*i).into();
+            n as f64
+        }
+        other => panic!("{key} missing or wrong type: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S1 — happy path: user supplies only sp_bits_per_value; auto-compute
+//      fills in sp_reference_value + sp_binary_scale_factor; decode
+//      round-trips within quantization tolerance.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn s1_auto_compute_roundtrips_within_tolerance() {
+    let desc = make_auto_desc(vec![4], 16);
+    let values: Vec<f64> = vec![270.0, 275.0, 280.0, 285.0];
+    let data = f64_bytes(&values);
+
+    let bytes = encode(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .expect("auto-compute encode should succeed");
+
+    let (_meta, objects) = decode(&bytes, &DecodeOptions::default()).expect("decode");
+    assert_eq!(objects.len(), 1);
+    let (returned_desc, payload) = &objects[0];
+
+    // Every 4 sp_* keys must be present after encode.
+    assert!(returned_desc.params.contains_key("sp_reference_value"));
+    assert!(returned_desc.params.contains_key("sp_binary_scale_factor"));
+    assert!(returned_desc.params.contains_key("sp_bits_per_value"));
+    assert!(returned_desc.params.contains_key("sp_decimal_scale_factor"));
+    assert_eq!(get_i64(&returned_desc.params, "sp_bits_per_value"), 16);
+    assert_eq!(get_i64(&returned_desc.params, "sp_decimal_scale_factor"), 0);
+
+    // Values round-trip within 16-bit simple_packing tolerance.
+    assert_eq!(payload.len(), values.len() * 8);
+    let decoded: Vec<f64> = payload
+        .chunks_exact(8)
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+        .collect();
+    let tolerance = (values.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+        - values.iter().cloned().fold(f64::INFINITY, f64::min))
+        / f64::from(1u32 << 16);
+    for (i, (v, d)) in values.iter().zip(decoded.iter()).enumerate() {
+        assert!(
+            (v - d).abs() <= tolerance,
+            "index {i}: original {v}, decoded {d}, tolerance {tolerance}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S2 — explicit computed params win (Q2 option b).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn s2_explicit_computed_params_are_used_verbatim() {
+    let mut desc = make_auto_desc(vec![4], 16);
+    // Explicit sp_reference_value + sp_binary_scale_factor — the auto
+    // computer should see these and short-circuit, using them as-is.
+    desc.params
+        .insert("sp_reference_value".to_string(), CborValue::Float(200.0));
+    desc.params.insert(
+        "sp_binary_scale_factor".to_string(),
+        CborValue::Integer(5i64.into()),
+    );
+    let values: Vec<f64> = vec![270.0, 275.0, 280.0, 285.0];
+    let data = f64_bytes(&values);
+
+    let bytes = encode(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .expect("explicit params encode should succeed");
+
+    let (_meta, objects) = decode(&bytes, &DecodeOptions::default()).expect("decode");
+    let (returned_desc, _payload) = &objects[0];
+    // Values must be preserved verbatim — not replaced by the derived
+    // ones that auto-compute would have produced.
+    assert_eq!(get_f64(&returned_desc.params, "sp_reference_value"), 200.0);
+    assert_eq!(get_i64(&returned_desc.params, "sp_binary_scale_factor"), 5);
+}
+
+// ---------------------------------------------------------------------------
+// S3 — missing sp_bits_per_value → clear error.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn s3_missing_bits_per_value_is_a_clear_error() {
+    let mut desc = make_auto_desc(vec![4], 16);
+    desc.params.clear(); // drop sp_bits_per_value
+    let values: Vec<f64> = vec![270.0, 275.0, 280.0, 285.0];
+    let data = f64_bytes(&values);
+
+    let err = encode(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("sp_bits_per_value"),
+        "error must name the missing key: {err}"
+    );
+    assert!(
+        err.contains("auto-compute"),
+        "error must mention the auto-compute facility: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// S4 — NaN in data: auto-compute must surface the underlying
+//      PackingError::NanValue, not a cryptic failure.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn s4_nan_in_data_is_rejected_cleanly() {
+    let desc = make_auto_desc(vec![4], 16);
+    let values: Vec<f64> = vec![270.0, f64::NAN, 280.0, 285.0];
+    let data = f64_bytes(&values);
+
+    // Default options have allow_nan=false — the substitute_and_mask
+    // stage errors out BEFORE auto-compute runs.  Either way the
+    // caller sees "NaN".
+    let err = encode(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.to_lowercase().contains("nan"),
+        "error must mention NaN: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// S5 — auto-compute works in the streaming encoder too.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn s5_streaming_encoder_auto_computes() {
+    use std::io::Cursor;
+    use tensogram::StreamingEncoder;
+
+    let desc = make_auto_desc(vec![4], 16);
+    let values: Vec<f64> = vec![270.0, 275.0, 280.0, 285.0];
+    let data = f64_bytes(&values);
+
+    let buf = Cursor::new(Vec::<u8>::new());
+    let meta = make_global_meta();
+    let opts = EncodeOptions::default();
+    let mut enc = StreamingEncoder::new(buf, &meta, &opts).expect("streaming encoder");
+    enc.write_object(&desc, &data)
+        .expect("streaming write_object auto-compute");
+    let finished = enc.finish().expect("finish");
+
+    let bytes = finished.into_inner();
+    let (_meta, objects) = decode(&bytes, &DecodeOptions::default()).expect("decode streamed");
+    let (returned_desc, _payload) = &objects[0];
+    assert!(returned_desc.params.contains_key("sp_reference_value"));
+    assert!(returned_desc.params.contains_key("sp_binary_scale_factor"));
+}
+
+// ---------------------------------------------------------------------------
+// S6 — sp_decimal_scale_factor defaults to 0 when absent.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn s6_decimal_scale_factor_defaults_to_zero() {
+    let desc = make_auto_desc(vec![4], 16);
+    let values: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0];
+    let data = f64_bytes(&values);
+
+    let bytes = encode(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .expect("encode");
+    let (_meta, objects) = decode(&bytes, &DecodeOptions::default()).unwrap();
+    let (returned_desc, _) = &objects[0];
+    assert_eq!(
+        get_i64(&returned_desc.params, "sp_decimal_scale_factor"),
+        0,
+        "default must be 0 when the user omits the key"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// S7 — non-float64 dtype + simple_packing is rejected with a clear
+//      error at auto-compute time (same message as the explicit path).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn s7_non_f64_dtype_rejected_at_auto_compute() {
+    let mut desc = make_auto_desc(vec![4], 16);
+    desc.dtype = Dtype::Float32;
+    let values: Vec<f32> = vec![270.0, 275.0, 280.0, 285.0];
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+
+    let err = encode(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("simple_packing only supports float64"),
+        "error must name the dtype constraint: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Parity check — auto-computed output equals explicit path on the
+// same data.  This is the key invariant: the ergonomic form produces
+// byte-equivalent output to the expert form.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn auto_compute_matches_explicit_path_byte_for_byte() {
+    let values: Vec<f64> = vec![100.0, 105.5, 110.25, 115.125, 120.0625, 125.0, 130.0];
+    let data = f64_bytes(&values);
+
+    // Explicit path — caller pre-computes params.
+    let explicit_params = tensogram_encodings::simple_packing::compute_params(&values, 16, 0)
+        .expect("compute_params");
+    let mut explicit_desc = make_auto_desc(vec![values.len() as u64], 16);
+    explicit_desc.params.insert(
+        "sp_reference_value".to_string(),
+        CborValue::Float(explicit_params.reference_value),
+    );
+    explicit_desc.params.insert(
+        "sp_binary_scale_factor".to_string(),
+        CborValue::Integer(i64::from(explicit_params.binary_scale_factor).into()),
+    );
+    explicit_desc.params.insert(
+        "sp_decimal_scale_factor".to_string(),
+        CborValue::Integer(0i64.into()),
+    );
+
+    // Auto-compute path — caller only sets sp_bits_per_value.
+    let auto_desc = make_auto_desc(vec![values.len() as u64], 16);
+
+    // Deterministic encode options — both paths must produce the same
+    // payload bytes (provenance timestamps still differ at the CBOR
+    // metadata level, so we compare the decoded descriptor params +
+    // decoded payload rather than raw wire bytes).
+    let opts = EncodeOptions {
+        hash_algorithm: Some(HashAlgorithm::Xxh3),
+        ..EncodeOptions::default()
+    };
+
+    let explicit_bytes = encode(&make_global_meta(), &[(&explicit_desc, &data)], &opts).unwrap();
+    let auto_bytes = encode(&make_global_meta(), &[(&auto_desc, &data)], &opts).unwrap();
+
+    let (_e_meta, e_objects) = decode(&explicit_bytes, &DecodeOptions::default()).unwrap();
+    let (_a_meta, a_objects) = decode(&auto_bytes, &DecodeOptions::default()).unwrap();
+
+    let (e_desc, e_payload) = &e_objects[0];
+    let (a_desc, a_payload) = &a_objects[0];
+
+    for key in [
+        "sp_reference_value",
+        "sp_binary_scale_factor",
+        "sp_decimal_scale_factor",
+        "sp_bits_per_value",
+    ] {
+        assert_eq!(
+            e_desc.params.get(key),
+            a_desc.params.get(key),
+            "descriptor key {key} must match"
+        );
+    }
+    assert_eq!(
+        e_payload, a_payload,
+        "encoded payloads must match byte-for-byte"
+    );
+}
