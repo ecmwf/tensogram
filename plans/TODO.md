@@ -308,63 +308,45 @@ For speculative ideas, see `IDEAS.md`.
 - [x] ~~code coverage~~ → All CLI subcommands have dedicated tests (ls, dump, get, set, copy, merge, split, reshuffle, validate, convert-grib, convert-netcdf). Encodings: `simple_packing` and `zfp` covered. FFI exercised through the C++ wrapper test suite.
 - [x] ~~add logging trace~~ → `tracing` crate instrumented on encode/decode/scan/file/pipeline. Activate with `TENSOGRAM_LOG=debug`
 
-- [x] ~~**cross-codec `expected_size` preallocation hardening (szip)**~~ →
-  Fallible allocation across both szip backends (FFI `aec_decompress` +
-  `aec_decompress_range` in `libaec.rs`; pure-Rust `decode`, `decode_rsi`,
-  `write_samples` in `tensogram-szip`). `checked_mul` added to
-  `samples_per_rsi` and `write_samples` sample-count → byte-count math.
-  `checked_sub` added to the `decoded_len = expected_size - avail_out`
-  arithmetic that feeds `set_len`. Hostile `num_values` now surfaces as
-  `CompressionError::Szip` / `AecError::Data` with a `"failed to
-  reserve"` prefix instead of aborting the process.
-  Static cap deliberately NOT introduced — rejected because legitimate
-  multi-GiB scientific workloads make any usable cap too permissive to
-  block attackers. See `DONE.md` → *Preallocation hardening for szip
-  decode paths* for the full rationale and soundness notes on the FFI
-  `set_len` pattern. Closes the szip half of issue #68 / PR #69.
-
-- [ ] **preallocation hardening — `simple_packing` decode paths**:
-    - `simple_packing::decode_aligned`, `decode_generic`, `decode_range`,
-      and the parallel variants in
-      `rust/tensogram-encodings/src/simple_packing.rs` all call
-      `Vec::with_capacity(num_values)` on descriptor-derived
-      `num_values` for the output `Vec<f64>`, giving 8× amplification.
-    - Reachable without any compression codec in play
-      (`CompressionType::None + EncodingType::SimplePacking`), so a
-      malformed `.tgm` can still abort the process through this path
-      after the szip hardening landed.
-    - Fix shape mirrors the szip fix: switch `Vec::with_capacity` to
-      `Vec::new()` + `try_reserve_exact` and surface allocation
-      failures as `PackingError::AllocationFailed` (new variant).
-
-- [ ] **preallocation hardening — bitmask decode paths**:
-    - `bitmask::packing::unpack`, `bitmask::rle::decode`,
-      `bitmask::roaring::decode` each call `Vec::with_capacity(n_elements)`
-      (or `vec![false; n_elements]`) on descriptor-derived `n_elements`.
-    - RLE is especially cheap to attack: a tiny compressed blob can
-      claim a huge run count.
-    - Fix: same `try_reserve_exact` pattern; new `MaskError::AllocationFailed`
-      variant.
-
-- [ ] **preallocation hardening — `zfp_decompress_f64`**:
-    - `rust/tensogram-encodings/src/zfp_ffi.rs:82` —
-      `vec![0.0f64; num_values]` on `num_values` sourced from
-      `ZfpCompressor` which reads from the descriptor. 8× amplification,
-      eager zero-fill forces commit under Linux overcommit.
-    - Fix: `Vec::try_reserve_exact(num_values)` + avoid the eager
-      zero-fill (libzfp writes every f64 it produces into the output
-      slice passed via `zfp_field_1d`).
-
-- [ ] **FFI-vs-pure szip parameter validation asymmetry**:
-    - `rust/tensogram-szip/src/lib.rs` calls `params::validate()` on
-      every entry point.
-    - `rust/tensogram-encodings/src/libaec.rs` (FFI path) does not
-      apply the same pre-validation; it relies on libaec returning
-      non-zero status codes.
-    - Add a shared validation step (or lift `params::validate` into
-      `tensogram-encodings` as a small helper) so the two backends
-      reject malformed AEC parameters consistently before touching the
-      FFI boundary.
+- [x] ~~**cross-codec `expected_size` preallocation hardening**~~ →
+  Fallible allocation on every descriptor-derived decode-path site
+  across all codecs, encodings, filters, and bitmask decoders:
+    - szip (FFI and pure-Rust): `aec_decompress` / `aec_decompress_range`
+      in `libaec.rs`; `decode`, `decode_rsi`, `write_samples` in
+      `tensogram-szip`. `checked_mul` on `samples_per_rsi` and
+      `samples × byte_width`; `checked_sub` on the `set_len` length math.
+    - `simple_packing` decode paths: all sequential + rayon-parallel
+      variants (`decode_aligned`, `decode_aligned_par`, `decode_generic`,
+      `decode_generic_par`, `decode_range`, and the bpv=0 fast paths).
+      `num_values × bits_per_value` is now `u128`-promoted with a
+      `BitCountOverflow` error variant; byte-count conversion uses
+      `usize::try_from` to surface `OutputSizeOverflow` cleanly.
+    - Bitmask decoders (`bitmask::packing::unpack`, `bitmask::rle::decode`,
+      `bitmask::roaring::decode`): shared `try_reserve_mask` helper;
+      RLE's run-length overflow check reworked to avoid its own
+      `usize` overflow.
+    - `zfp_ffi::zfp_decompress_f64` and the wrapper's f64 → bytes
+      serialisation.
+    - `pipeline::{bytes_to_f64, f64_to_bytes}` and the per-codec
+      copies in `compression/{zfp,sz3}.rs`.
+    - `shuffle::{shuffle,unshuffle}_with_threads` output buffers.
+    - FFI szip parameter validation: `libaec.rs` now runs the same
+      `AecParams` validation as the pure-Rust crate (rejects
+      `bits_per_sample ∉ [1..=32]`, `block_size == 0`, invalid block
+      sizes without `AEC_NOT_ENFORCE`, `rsi ∉ [1..=4096]`, and
+      `AEC_RESTRICTED` with `bits_per_sample > 4`). Both backends also
+      now reject `block_size == 0` under `AEC_NOT_ENFORCE` (previous
+      gap).
+  Hostile descriptor sizes surface as typed errors
+  (`CompressionError::Szip` / `AecError::Data` / `PackingError::*` /
+  `MaskError::AllocationFailed` / `CompressionError::Zfp` /
+  `PipelineError::Range`) with a `"failed to reserve"` or
+  `"overflow"` prefix rather than aborting the process.
+  Static cap deliberately NOT introduced — legitimate multi-GiB
+  scientific workloads make any usable cap too permissive to block
+  attackers. See `DONE.md` → *Preallocation hardening across decode
+  paths* for the full rationale, soundness notes on the FFI `set_len`
+  pattern, and the per-codec test matrix. Closes issue #68 / PR #69.
 
 ## Viewer
 

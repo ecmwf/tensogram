@@ -812,46 +812,60 @@ comparison against ecCodes.
   error paths (encoding, decoding, streaming, CLI) and the no-panic
   guarantee.
 
-## Preallocation hardening for szip decode paths
+## Preallocation hardening across decode paths
 
 A malformed `.tgm` descriptor whose tensor-shape product drove
 `num_values × dtype_byte_width` into the terabyte range previously
-aborted the decode process via infallible allocations in the szip
-codecs. Fallible reservation was already in place for blosc2 but not
-for szip; this closes the szip half of the gap.
+aborted the decode process via infallible allocations scattered across
+the codec, encoding, filter, and bitmask layers. Every descriptor-
+derived allocation on the decode path is now fallible, and every
+size-arithmetic step that could wrap `usize` on hostile input is
+guarded.
 
 | Component | What changed |
 |-----------|-------------|
-| `tensogram-encodings/src/libaec.rs` | `aec_decompress` and `aec_decompress_range` now use `Vec::new()` + `try_reserve_exact` + `set_len(decoded_len)` in place of `vec![0u8; N]`. Trust-model doc comments on both entry points. `expected_size == 0` early-returns to avoid the `NonNull::dangling()` pointer class on zero-capacity `Vec`s. `checked_sub` on `expected_size - avail_out` guards against a misbehaving libaec feeding the `set_len` an absurd length. A hostile `expected_size` / `byte_size` surfaces as `CompressionError::Szip` with a `"failed to reserve"` prefix rather than aborting the process. The removal of the eager zero-fill is also a small honest-path win. |
-| `tensogram-szip/src/decoder.rs` | The `decode` main output buffer, `decode_rsi` scratch buffer, and `write_samples` sample-serialisation buffer all switched from `Vec::with_capacity` to fallible `try_reserve_exact`. `write_samples` additionally guards the `samples.len() * byte_width` multiplication with `checked_mul`, and `samples_per_rsi = rsi_blocks * block_size` is now a `checked_mul` to survive 32-bit targets and `AEC_NOT_ENFORCE` parameter combinations. |
-| Tests | New in-module regression tests in `libaec.rs` (FFI path) and new `preallocation_hardening` module in `tensogram-szip/tests/error_paths.rs` (pure path) assert that `usize::MAX` / `isize::MAX + 1` sentinels surface as typed errors. End-to-end integration tests in `pipeline.rs::tests` exercise the full `decode_pipeline` with a hostile `PipelineConfig.num_values` against both the FFI and pure-Rust szip backends. |
-| Docs | `docs/src/guide/error-handling.md` gains a *Malformed Descriptor — Pathological Tensor Size (szip)* subsection and a new bullet under the *No-Panic Guarantee* on fallible allocation from untrusted wire-format sizes. The subsection also lists the remaining unhardened paths (`simple_packing`, bitmask, `zfp`) as explicit known limitations so callers don't mistake this for a cross-codec guarantee. |
+| `tensogram-encodings/src/libaec.rs` | `aec_decompress` and `aec_decompress_range` use `Vec::new()` + `try_reserve_exact` + `set_len(decoded_len)` in place of `vec![0u8; N]`. Trust-model doc comments on both entry points. `expected_size == 0` short-circuits to avoid the `NonNull::dangling` edge case. `checked_sub` on `expected_size - avail_out` guards `set_len`. A new `validate_params` helper rejects invalid `AecParams` (matching the pure-Rust crate): `bits_per_sample` outside `1..=32`, `block_size == 0`, invalid block sizes without `AEC_NOT_ENFORCE`, `rsi` outside `1..=4096`, `AEC_RESTRICTED` combined with `bits_per_sample > 4`. |
+| `tensogram-szip/src/` | Decoder output, `decode_rsi` scratch, and `write_samples` output all use `try_reserve_exact`. `checked_mul` on `rsi_blocks × block_size` and on `samples × byte_width`. `params::validate` tightened to reject `block_size == 0` under `AEC_NOT_ENFORCE`. |
+| `tensogram-encodings/src/simple_packing.rs` | Every decode-side allocation (`decode`, `decode_aligned`, `decode_aligned_par`, `decode_generic`, `decode_generic_par`, `decode_range`, and both `bits_per_value == 0` fast paths) uses a shared `try_reserve_f64` helper. `num_values × bpv` arithmetic promoted to `u128`, surfaced as a new `PackingError::BitCountOverflow` variant. Byte-count conversion uses `usize::try_from` producing `OutputSizeOverflow`. New `PackingError::AllocationFailed { bytes, reason }` variant. Parallel helpers now return `Result<Vec<f64>, PackingError>` and reserve before rayon dispatch (no partial output on failure). |
+| `tensogram-encodings/src/bitmask/` | `try_reserve_mask` shared helper in `mod.rs`. `packing::unpack`, `rle::decode`, `roaring::decode` all use it. New `MaskError::AllocationFailed`. RLE's run-length overflow check reworked from `out.len() + run > n_elements` (itself overflow-prone) to `run > n_elements - out.len()` (safe after the guaranteed `out.len() <= n_elements` invariant). |
+| `tensogram-encodings/src/zfp_ffi.rs` | `zfp_decompress_f64` uses `try_reserve_exact` + `resize`. |
+| `tensogram-encodings/src/compression/{zfp,sz3}.rs` | The per-codec `f64_to_bytes` helpers now return `Result<Vec<u8>, CompressionError>`, with `checked_mul` on `values.len() × 8` and fallible byte-buffer reservation. |
+| `tensogram-encodings/src/pipeline.rs` | `bytes_to_f64` and `f64_to_bytes` return `Result<_, PipelineError>` with the same guards. |
+| `tensogram-encodings/src/shuffle.rs` | Output buffers use `try_reserve_shuffle` helper; new `ShuffleError::AllocationFailed`. |
+| Tests | Helper-level tests (`try_reserve_f64`, `try_reserve_mask`, `aec_decompress` / `aec_decompress_range` with `usize::MAX`), public-API tests (simple_packing `decode` / `decode_range` with `usize::MAX` both at `bpv=0` and `bpv=64`, `zfp_decompress_f64` with `usize::MAX`, roaring with `u32::MAX + 1`), FFI parameter-validator parity tests covering all invalid combinations, and end-to-end `decode_pipeline` integration tests against both szip backends, simple_packing, and zfp. |
+| Docs | `docs/src/guide/error-handling.md` — *Malformed Descriptor — Pathological Tensor Size* subsection with the per-codec / per-stage error-variant table; the No-Panic Guarantee bullet list now calls out `checked_mul`/`u128` promotion alongside `try_reserve_exact`. |
 
 Design choices worth recording:
 
-- **No static cap.** Imposing a documented maximum decompressed size in
-  `estimate_decompressed_size` was considered and rejected — the
-  library's target workloads (ERA5, ML weights, high-res climate
-  simulations) routinely produce legitimate multi-GiB single objects,
-  so any cap that fits them is too permissive to block attackers, and
-  any cap that blocks attackers breaks honest use. Fallible allocation
-  is sufficient on its own.
+- **No static cap.** Imposing a documented maximum decompressed size
+  was considered and rejected — the library's target workloads (ERA5,
+  ML weights, high-res climate simulations) routinely produce
+  legitimate multi-GiB single objects, so any cap that fits them is
+  too permissive to block attackers, and any cap that blocks
+  attackers breaks honest use. Fallible allocation is sufficient on
+  its own.
 - **Sound FFI buffer pattern.** `aec_decompress` keeps `len == 0`
   during the FFI call and only `set_len(decoded_len)` after libaec
   reports how many bytes it wrote. No uninitialised memory is ever
   observable through the `Vec` API; this avoids the UB trap of
   calling `set_len(expected_size)` before the bytes are written.
-- **Szip-only scope.** The fix covers the two szip backends. Four
-  sibling paths share the same threat model but are deliberately left
-  for focused follow-up PRs, tracked as separate items in `TODO.md`:
-  `simple_packing::decode*` (8× amplified output, reachable through
-  `CompressionType::None + EncodingType::SimplePacking` with no
-  compressor involved at all); `bitmask::{packing,rle,roaring}::decode`
-  (especially RLE, where a tiny compressed blob can claim a huge run
-  count); `zfp_ffi::zfp_decompress_f64` (infallible `vec![0.0f64; N]`
-  on descriptor-derived `num_values`); and the FFI-vs-pure szip
-  parameter-validation asymmetry (pure backend runs `params::validate`
-  on entry, FFI path does not).
+- **Checked arithmetic at every width-conversion step.** `u128`
+  promotion for `num_values × bits_per_value`, `checked_mul` for
+  sample-count → byte-count, `checked_sub` for the `expected_size -
+  avail_out` math that drives `set_len`, `checked_add` (via
+  rearrangement) for the RLE run-length accumulator.
+- **Parallel path ordering.** All rayon-parallel decoders reserve the
+  output buffer and resize it to length `num_values` *before* any
+  `par_iter_mut` / `par_chunks_mut` call. A reservation failure
+  cannot leave rayon with a partial output buffer — it errors out
+  before dispatch.
+- **FFI / pure parity contract.** The szip parameter validator in
+  `libaec.rs` is a mirror of `params::validate` in `tensogram-szip`.
+  Both are now tightened to reject `block_size == 0` even under
+  `AEC_NOT_ENFORCE` (the previous policy would have led to
+  divide-by-zero / infinite loops later in the decoder). Parity is
+  asserted by tests on the FFI side; the pure-Rust side already had
+  coverage.
 
 ## Examples
 
