@@ -135,6 +135,16 @@ fn aec_compress_impl(
 }
 
 /// Decompress an entire AEC-compressed stream.
+///
+/// # Trust model
+///
+/// `expected_size` is treated as **untrusted**. It originates from the
+/// tensor descriptor in the wire format (via
+/// `estimate_decompressed_size`) and a malformed `.tgm` file can inflate
+/// it to an arbitrary value. The buffer is therefore reserved with
+/// [`Vec::try_reserve_exact`]; an oversized request surfaces as
+/// [`CompressionError::Szip`] with a `"failed to reserve"` prefix rather
+/// than aborting the process.
 pub fn aec_decompress(
     data: &[u8],
     expected_size: usize,
@@ -142,19 +152,50 @@ pub fn aec_decompress(
 ) -> Result<Vec<u8>, CompressionError> {
     use libaec_sys::*;
 
-    if data.is_empty() {
+    if data.is_empty() || expected_size == 0 {
         return Ok(Vec::new());
     }
 
     let flags = effective_flags(params);
-    let mut out = vec![0u8; expected_size];
 
+    // Reserve capacity fallibly — untrusted `expected_size` must not be
+    // allowed to abort the process via an infallible allocator panic.
+    // We deliberately do NOT zero-initialise the buffer: libaec writes
+    // every byte it produces (see SAFETY note below), and the previous
+    // `vec![0u8; N]` form forced the kernel to commit every page up
+    // front, which was both slower and the mechanism that made hostile
+    // sizes lethal under Linux overcommit.
+    let mut out: Vec<u8> = Vec::new();
+    out.try_reserve_exact(expected_size).map_err(|e| {
+        CompressionError::Szip(format!(
+            "failed to reserve {expected_size} bytes for szip decompression: {e}"
+        ))
+    })?;
+
+    // SAFETY contract for the FFI call below:
+    //   * The `expected_size == 0` early return above means we reach
+    //     this point with `expected_size >= 1`, so the preceding
+    //     `try_reserve_exact` gave us `capacity() >= 1` — `as_mut_ptr`
+    //     is therefore a valid pointer into the backing allocation
+    //     rather than the `NonNull::dangling()` that would be returned
+    //     for a zero-capacity `Vec`.
+    //   * libaec writes forward into `next_out` for at most `avail_out`
+    //     bytes and never reads from it.
+    //   * `out.len()` remains `0` during the entire FFI call, so no
+    //     uninitialised bytes are ever logically "inside" the `Vec`.
+    //   * After decode we `set_len(decoded_len)`, where `decoded_len` is
+    //     `checked_sub`'d from `expected_size` against the reported
+    //     `avail_out`. Every byte in `0..decoded_len` is initialised by
+    //     libaec.
+    //   * On any error path we return before `set_len`, so the `Vec` is
+    //     dropped with `len == 0` and no destructor runs on
+    //     uninitialised memory.
     unsafe {
         let mut strm: aec_stream = std::mem::zeroed();
         strm.next_in = data.as_ptr();
         strm.avail_in = data.len();
         strm.next_out = out.as_mut_ptr();
-        strm.avail_out = out.len();
+        strm.avail_out = expected_size;
         strm.bits_per_sample = params.bits_per_sample;
         strm.block_size = params.block_size;
         strm.rsi = params.rsi;
@@ -170,10 +211,19 @@ pub fn aec_decompress(
             )));
         }
 
-        let decoded_len = out.len() - strm.avail_out;
+        // `checked_sub` guards against a misbehaving libaec leaving
+        // `avail_out > expected_size` (not legal per the libaec contract,
+        // but cheap insurance against the wrapping arithmetic that would
+        // otherwise feed `set_len` an absurd length).
+        let decoded_len = expected_size.checked_sub(strm.avail_out).ok_or_else(|| {
+            CompressionError::Szip(format!(
+                "aec_decode reported avail_out={} > expected_size={expected_size}",
+                strm.avail_out
+            ))
+        })?;
         aec_decode_end(&mut strm);
 
-        out.truncate(decoded_len);
+        out.set_len(decoded_len);
         Ok(out)
     }
 }
@@ -182,6 +232,15 @@ pub fn aec_decompress(
 ///
 /// `block_offsets` are bit offsets of RSI block boundaries in the compressed stream.
 /// `byte_pos` and `byte_size` specify the byte range within the decompressed output to extract.
+///
+/// # Trust model
+///
+/// `byte_size` is treated as **untrusted**. For honest callers it is the
+/// requested range length, but an attacker-supplied descriptor can make
+/// upstream range-math produce arbitrary values. The output buffer is
+/// reserved with [`Vec::try_reserve_exact`]; an oversized request
+/// surfaces as [`CompressionError::Szip`] with a `"failed to reserve"`
+/// prefix rather than aborting the process.
 pub fn aec_decompress_range(
     data: &[u8],
     block_offsets: &[u64],
@@ -201,15 +260,28 @@ pub fn aec_decompress_range(
     }
 
     let flags = effective_flags(params);
-    let mut out = vec![0u8; byte_size];
+
+    // Fallible reservation — mirrors `aec_decompress` above; see its
+    // trust-model doc comment for the full rationale.
+    let mut out: Vec<u8> = Vec::new();
+    out.try_reserve_exact(byte_size).map_err(|e| {
+        CompressionError::Szip(format!(
+            "failed to reserve {byte_size} bytes for szip range decode: {e}"
+        ))
+    })?;
     let offsets_usize: Vec<usize> = block_offsets.iter().map(|&o| o as usize).collect();
 
+    // SAFETY: identical reasoning to `aec_decompress`; `out.len() == 0`
+    // throughout the FFI call, `capacity >= byte_size`, libaec only
+    // writes forward into `next_out`, and `set_len(decoded_len)` runs
+    // only on success with `decoded_len = byte_size - strm.avail_out`
+    // bytes all initialised by libaec.
     unsafe {
         let mut strm: aec_stream = std::mem::zeroed();
         strm.next_in = data.as_ptr();
         strm.avail_in = data.len();
         strm.next_out = out.as_mut_ptr();
-        strm.avail_out = out.len();
+        strm.avail_out = byte_size;
         strm.bits_per_sample = params.bits_per_sample;
         strm.block_size = params.block_size;
         strm.rsi = params.rsi;
@@ -231,10 +303,17 @@ pub fn aec_decompress_range(
             )));
         }
 
-        let decoded_len = out.len() - strm.avail_out;
+        // `checked_sub` guards against a misbehaving libaec (see the
+        // matching note in `aec_decompress`).
+        let decoded_len = byte_size.checked_sub(strm.avail_out).ok_or_else(|| {
+            CompressionError::Szip(format!(
+                "aec_decode_range reported avail_out={} > byte_size={byte_size}",
+                strm.avail_out
+            ))
+        })?;
         aec_decode_end(&mut strm);
 
-        out.truncate(decoded_len);
+        out.set_len(decoded_len);
         Ok(out)
     }
 }
@@ -466,5 +545,48 @@ mod tests {
             Err(_) => {} // Error is acceptable
             Ok(decompressed) => assert_ne!(decompressed, data, "corruption should change output"),
         }
+    }
+
+    // ── Preallocation-DoS hardening ──────────────────────────────────────
+    //
+    // Regression tests for the cross-codec `expected_size` preallocation
+    // hardening.  Before the fix, a malicious descriptor whose shape
+    // product was close to `usize::MAX` could drive `aec_decompress` (or
+    // `aec_decompress_range`) into an infallible `vec![0u8; N]` that
+    // aborted the process.  After the fix, the untrusted size is
+    // reserved fallibly and rejected cleanly as `CompressionError::Szip`.
+
+    fn small_real_compressed_blob() -> (Vec<u8>, AecParams) {
+        let params = default_params(8);
+        let data: Vec<u8> = (0..256).map(|i| i as u8).collect();
+        let (compressed, _) = aec_compress(&data, &params).unwrap();
+        (compressed, params)
+    }
+
+    #[test]
+    fn aec_decompress_rejects_pathological_expected_size() {
+        let (compressed, params) = small_real_compressed_blob();
+
+        let err = aec_decompress(&compressed, usize::MAX, &params)
+            .expect_err("expected allocation failure, not success nor abort");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("failed to reserve"),
+            "error should report allocation failure, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn aec_decompress_range_rejects_pathological_byte_size() {
+        let (compressed, params) = small_real_compressed_blob();
+        let offsets: Vec<u64> = Vec::new();
+
+        let err = aec_decompress_range(&compressed, &offsets, 0, usize::MAX, &params)
+            .expect_err("expected allocation failure, not success nor abort");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("failed to reserve"),
+            "error should report allocation failure, got: {msg}"
+        );
     }
 }
