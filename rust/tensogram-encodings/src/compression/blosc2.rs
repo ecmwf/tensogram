@@ -277,7 +277,16 @@ impl Compressor for Blosc2Compressor {
                 items.len()
             )));
         }
-        Ok(items[offset_in_items..end].to_vec())
+        let slice = &items[offset_in_items..end];
+        let mut out: Vec<u8> = Vec::new();
+        out.try_reserve_exact(slice.len()).map_err(|e| {
+            CompressionError::Blosc2(format!(
+                "failed to reserve {} bytes for blosc2 range output: {e}",
+                slice.len()
+            ))
+        })?;
+        out.extend_from_slice(slice);
+        Ok(out)
     }
 }
 
