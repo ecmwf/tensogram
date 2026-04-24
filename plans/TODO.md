@@ -346,7 +346,8 @@ For speculative ideas, see `IDEAS.md`.
   scientific workloads make any usable cap too permissive to block
   attackers. See `DONE.md` → *Preallocation hardening across decode
   paths* for the full rationale, soundness notes on the FFI `set_len`
-  pattern, and the per-codec test matrix. Closes issue #68 / PR #69.
+  pattern, and the per-codec test matrix. Follows the fallible-
+  allocation pattern first established for blosc2 in PR #69.
 
 ## Viewer
 
