@@ -490,15 +490,21 @@ Every descriptor-derived allocation on the decode path is fallible:
 A hostile size therefore surfaces through the normal error channel as
 a typed error. The specific variants and their message prefixes:
 
-| Codec / stage | Error variant | Prefix |
+| Codec / stage | Error variant (as seen from `TensogramError`) | Prefix |
 |---|---|---|
-| szip (FFI) | `CompressionError::Szip` | `"failed to reserve"` |
-| szip (pure) | `AecError::Data` | `"failed to reserve"` |
+| szip (both backends, via FFI wrapper) | `CompressionError::Szip` | `"failed to reserve"` |
 | simple_packing | `PackingError::AllocationFailed` / `BitCountOverflow` / `OutputSizeOverflow` | `"failed to reserve"` / `"bit-count overflow"` / `"output size overflow"` |
-| bitmask | `MaskError::AllocationFailed` | `"failed to reserve"` |
-| zfp / sz3 | `CompressionError::Zfp` / `CompressionError::Sz3` | `"failed to reserve"` |
+| bitmask decoders | `MaskError::AllocationFailed` | `"failed to reserve"` |
+| zfp | `CompressionError::Zfp` | `"failed to reserve"` |
+| sz3 | `CompressionError::Sz3` | `"failed to reserve"` |
+| blosc2 | `CompressionError::Blosc2` | `"failed to reserve"` |
 | shuffle | `ShuffleError::AllocationFailed` | `"failed to reserve"` |
-| pipeline f64↔bytes | `PipelineError::Range` | `"failed to reserve"` / `"overflows usize"` |
+| pipeline f64↔bytes + range math | `PipelineError::Range` | `"failed to reserve"` / `"overflow"` / `"exceeds usize"` |
+
+Note: the `szip (pure)` backend surfaces `AecError::Data` internally,
+but the wrapper in `tensogram-encodings/src/compression/szip_pure.rs`
+converts it to `CompressionError::Szip` at the trait boundary, so
+callers always see the FFI form.
 
 This means a caller processing untrusted `.tgm` input (remote reads,
 user uploads, multi-tenant services) can rely on the normal
