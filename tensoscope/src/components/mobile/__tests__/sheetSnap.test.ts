@@ -31,6 +31,15 @@ describe('snapSheet', () => {
     expect(snapSheet('half', 30)).toBe('half');
   });
 
+  it('delta exactly at threshold (60) snaps', () => {
+    expect(snapSheet('half', 60)).toBe('collapsed');
+    expect(snapSheet('half', -60)).toBe('full');
+  });
+
+  it('delta of zero does not snap', () => {
+    expect(snapSheet('half', 0)).toBe('half');
+  });
+
   it('large upward delta from collapsed skips directly to full', () => {
     expect(snapSheet('collapsed', -130)).toBe('full');
   });

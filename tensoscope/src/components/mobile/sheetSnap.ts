@@ -19,7 +19,7 @@ export function snapSheet(current: SheetState, deltaY: number): SheetState {
   if (deltaY < 0) {
     if (current === 'collapsed') return Math.abs(deltaY) > THRESHOLD * 2 ? 'full' : 'half';
     if (current === 'half') return 'full';
-    return 'full';
+    return 'full'; // current === 'full', already at top
   }
 
   if (current === 'full') return deltaY > THRESHOLD * 2 ? 'collapsed' : 'half';
