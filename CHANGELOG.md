@@ -5,6 +5,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Security — cross-codec preallocation hardening
+
+Every descriptor-derived allocation on the decode path is now fallible,
+and every size-arithmetic step that could wrap `usize` on hostile input
+is guarded by `checked_mul` / `u128` promotion. A malformed `.tgm`
+whose tensor-shape product drives `num_values × dtype_byte_width` into
+the terabyte range previously aborted the decode process via infallible
+`Vec::with_capacity` / `vec![_; N]` calls scattered across the codec,
+encoding, filter, and bitmask layers; it now surfaces as a typed error
+through the normal `Result<_, TensogramError>` channel.
+
+- **szip** (both C-FFI via libaec and the pure-Rust `tensogram-szip`
+  crate): fallible output / RSI-buffer / sample-serialisation
+  reservations, `checked_mul` on `rsi × block_size × byte_width`,
+  `checked_sub` on the `set_len` length math, `checked_add` on range
+  arithmetic, `try_reserve_exact` + per-element `usize::try_from` on
+  the FFI block-offsets conversion. The FFI backend now runs the same
+  `AecParams` validator as the pure-Rust crate, including the new
+  `block_size == 0` rejection shared by both.
+- **simple_packing** decode: `try_reserve_exact` in every sequential
+  and rayon-parallel path; `num_values × bits_per_value` promoted to
+  `u128` with a new `PackingError::BitCountOverflow`; byte-count
+  conversion raises `OutputSizeOverflow`.
+- **Bitmask decoders** (`packing::unpack`, `rle::decode`,
+  `roaring::decode`, `packing::pack` when called from RLE/Roaring
+  decompress): shared `try_reserve_mask` helper; RLE run-length
+  overflow check reworked to the overflow-safe form
+  `run > n_elements - out.len()`; `packing::pack` is now fallible.
+- **zfp / sz3**: `try_reserve_exact` on decompress and on the f64 → byte
+  serialisation; `checked_mul` / `checked_add` on range arithmetic.
+- **blosc2**: `checked_add` on byte-range math; range output cloned
+  fallibly.
+- **Shuffle** (`shuffle` + `unshuffle`): new
+  `ShuffleError::AllocationFailed`; even the `element_size == 1`
+  short-circuit uses a fallible `try_clone`.
+- **Pipeline** (`bytes_to_f64`, `f64_to_bytes`, range bit math): all
+  fallible, with `u128` promotion for the range-decode bit positions
+  and `usize::try_from` at the `u64 → usize` boundary.
+- **No static cap**: rejected because legitimate scientific workloads
+  produce multi-GiB single objects; fallible allocation alone is
+  sufficient.
+
 ### Fixed — `regular_ll` longitude convention
 
 GRIB-derived `.tgm` files from ECMWF open-data (where the grid scans
