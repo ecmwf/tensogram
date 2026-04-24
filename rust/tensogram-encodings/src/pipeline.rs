@@ -511,7 +511,7 @@ pub fn encode_pipeline(
     let encoded: Cow<'_, [u8]> = match &config.encoding {
         EncodingType::None => Cow::Borrowed(data),
         EncodingType::SimplePacking(params) => {
-            let values = bytes_to_f64(data, config.byte_order);
+            let values = bytes_to_f64(data, config.byte_order)?;
             Cow::Owned(simple_packing::encode_with_threads(
                 &values,
                 params,
@@ -578,7 +578,7 @@ pub fn encode_pipeline_f64(
         .then(xxhash_rust::xxh3::Xxh3Default::new);
 
     let encoded: Cow<'_, [u8]> = match &config.encoding {
-        EncodingType::None => Cow::Owned(f64_to_bytes(values, config.byte_order)),
+        EncodingType::None => Cow::Owned(f64_to_bytes(values, config.byte_order)?),
         EncodingType::SimplePacking(params) => Cow::Owned(simple_packing::encode_with_threads(
             values,
             params,
@@ -676,7 +676,7 @@ pub fn decode_pipeline(
                 params,
                 config.intra_codec_threads,
             )?;
-            f64_to_bytes(&values, target_byte_order)
+            f64_to_bytes(&values, target_byte_order)?
         }
     };
 
@@ -778,7 +778,7 @@ pub fn decode_range_pipeline(
                 sample_count as usize,
                 params,
             )?;
-            Ok(f64_to_bytes(&values, target_byte_order))
+            f64_to_bytes(&values, target_byte_order)
         }
     }
 }
@@ -803,27 +803,46 @@ fn estimate_decompressed_size(config: &PipelineConfig) -> usize {
     }
 }
 
-fn bytes_to_f64(data: &[u8], byte_order: ByteOrder) -> Vec<f64> {
-    data.chunks_exact(8)
-        .map(|chunk| {
-            let mut arr = [0u8; 8];
-            arr.copy_from_slice(chunk);
-            match byte_order {
-                ByteOrder::Big => f64::from_be_bytes(arr),
-                ByteOrder::Little => f64::from_le_bytes(arr),
-            }
-        })
-        .collect()
+fn bytes_to_f64(data: &[u8], byte_order: ByteOrder) -> Result<Vec<f64>, PipelineError> {
+    let n = data.len() / 8;
+    let mut out: Vec<f64> = Vec::new();
+    out.try_reserve_exact(n).map_err(|e| {
+        PipelineError::Range(format!(
+            "failed to reserve {} bytes for byte-to-f64 conversion: {e}",
+            n.saturating_mul(std::mem::size_of::<f64>()),
+        ))
+    })?;
+    for chunk in data.chunks_exact(8) {
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(chunk);
+        out.push(match byte_order {
+            ByteOrder::Big => f64::from_be_bytes(arr),
+            ByteOrder::Little => f64::from_le_bytes(arr),
+        });
+    }
+    Ok(out)
 }
 
-fn f64_to_bytes(values: &[f64], byte_order: ByteOrder) -> Vec<u8> {
-    values
-        .iter()
-        .flat_map(|v| match byte_order {
+fn f64_to_bytes(values: &[f64], byte_order: ByteOrder) -> Result<Vec<u8>, PipelineError> {
+    let bytes_len = values.len().checked_mul(8).ok_or_else(|| {
+        PipelineError::Range(format!(
+            "f64-to-byte output length overflows usize: {} values x 8 bytes",
+            values.len()
+        ))
+    })?;
+    let mut out: Vec<u8> = Vec::new();
+    out.try_reserve_exact(bytes_len).map_err(|e| {
+        PipelineError::Range(format!(
+            "failed to reserve {bytes_len} bytes for f64-to-byte conversion: {e}"
+        ))
+    })?;
+    for v in values {
+        out.extend_from_slice(&match byte_order {
             ByteOrder::Big => v.to_be_bytes(),
             ByteOrder::Little => v.to_le_bytes(),
-        })
-        .collect()
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -872,7 +891,7 @@ mod tests {
 
         let result = encode_pipeline(&data, &config).unwrap();
         let decoded = decode_pipeline(&result.encoded_bytes, &config, false).unwrap();
-        let decoded_values = bytes_to_f64(&decoded, ByteOrder::Little);
+        let decoded_values = bytes_to_f64(&decoded, ByteOrder::Little).unwrap();
 
         for (orig, dec) in values.iter().zip(decoded_values.iter()) {
             assert!((orig - dec).abs() < 0.01, "orig={orig}, dec={dec}");
@@ -1447,6 +1466,80 @@ mod tests {
 
         let err = decode_pipeline(&payload, &hostile, false)
             .expect_err("expected allocation failure, not success nor abort");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("failed to reserve"),
+            "error should report allocation failure, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn pipeline_rejects_malicious_num_values_simple_packing() {
+        // simple_packing with no compressor is the easiest descriptor-
+        // driven abort path after the szip hardening: a malformed shape
+        // takes `num_values` straight into simple_packing::decode_with_threads.
+        let values: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let sp_params = simple_packing::compute_params(&values, 16, 0).unwrap();
+
+        let honest = PipelineConfig {
+            encoding: EncodingType::SimplePacking(sp_params.clone()),
+            filter: FilterType::None,
+            compression: CompressionType::None,
+            num_values: values.len(),
+            byte_order: ByteOrder::Little,
+            dtype_byte_width: 8,
+            swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let payload = encode_pipeline(&data, &honest).unwrap().encoded_bytes;
+
+        let hostile = PipelineConfig {
+            num_values: usize::MAX,
+            ..honest
+        };
+        let err = decode_pipeline(&payload, &hostile, false)
+            .expect_err("pathological num_values on simple_packing must surface as an error");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("overflow")
+                || msg.contains("failed to reserve")
+                || msg.contains("Insufficient")
+                || msg.contains("insufficient"),
+            "error should report a guard-check failure, got: {msg}"
+        );
+    }
+
+    #[cfg(feature = "zfp")]
+    #[test]
+    fn pipeline_rejects_malicious_num_values_zfp() {
+        let values: Vec<f64> = (0..64).map(|i| (i as f64) * 0.1).collect();
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+
+        let honest = PipelineConfig {
+            encoding: EncodingType::None,
+            filter: FilterType::None,
+            compression: CompressionType::Zfp {
+                mode: ZfpMode::FixedRate { rate: 16.0 },
+            },
+            num_values: values.len(),
+            byte_order: ByteOrder::native(),
+            dtype_byte_width: 8,
+            swap_unit_size: 8,
+            compression_backend: CompressionBackend::default(),
+            intra_codec_threads: 0,
+            compute_hash: false,
+        };
+        let payload = encode_pipeline(&data, &honest).unwrap().encoded_bytes;
+
+        let hostile = PipelineConfig {
+            num_values: usize::MAX,
+            ..honest
+        };
+        let err = decode_pipeline(&payload, &hostile, false)
+            .expect_err("pathological num_values on zfp must surface as an error");
         let msg = format!("{err}");
         assert!(
             msg.contains("failed to reserve"),

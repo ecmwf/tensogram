@@ -17,6 +17,21 @@ pub enum ShuffleError {
         data_len: usize,
         element_size: usize,
     },
+    /// Fallible output-buffer reservation failed — surfaced instead of
+    /// the process-abort that would otherwise come from an infallible
+    /// `vec![0u8; data.len()]` when `data.len()` is pathologically
+    /// large (e.g. after a preceding decompression honestly produced a
+    /// very large buffer and the host is now close to OOM).
+    #[error("failed to reserve {bytes} bytes for shuffle output: {reason}")]
+    AllocationFailed { bytes: usize, reason: String },
+}
+
+fn try_reserve_shuffle(out: &mut Vec<u8>, n: usize) -> Result<(), ShuffleError> {
+    out.try_reserve_exact(n)
+        .map_err(|e| ShuffleError::AllocationFailed {
+            bytes: n,
+            reason: e.to_string(),
+        })
 }
 
 /// Minimum input length below which the parallel shuffle skips the
@@ -61,7 +76,9 @@ pub fn shuffle_with_threads(
     {
         if threads >= 2 && element_size >= 2 && data.len() >= PARALLEL_SHUFFLE_MIN_BYTES {
             use rayon::prelude::*;
-            let mut output = vec![0u8; data.len()];
+            let mut output: Vec<u8> = Vec::new();
+            try_reserve_shuffle(&mut output, data.len())?;
+            output.resize(data.len(), 0);
             output
                 .par_chunks_exact_mut(num_elements)
                 .enumerate()
@@ -74,7 +91,9 @@ pub fn shuffle_with_threads(
         }
     }
 
-    let mut output = vec![0u8; data.len()];
+    let mut output: Vec<u8> = Vec::new();
+    try_reserve_shuffle(&mut output, data.len())?;
+    output.resize(data.len(), 0);
     for byte_idx in 0..element_size {
         for elem in 0..num_elements {
             output[byte_idx * num_elements + elem] = data[elem * element_size + byte_idx];
@@ -124,7 +143,9 @@ pub fn unshuffle_with_threads(
         // each chunk can read its `element_size` stripes independently.
         if threads >= 2 && element_size >= 2 && data.len() >= PARALLEL_SHUFFLE_MIN_BYTES {
             use rayon::prelude::*;
-            let mut output = vec![0u8; data.len()];
+            let mut output: Vec<u8> = Vec::new();
+            try_reserve_shuffle(&mut output, data.len())?;
+            output.resize(data.len(), 0);
             // Split output into element-aligned chunks.  ~4 KiB per
             // chunk amortises rayon split cost; minimum 64 elements so
             // tiny element_size values still get decent chunks.
@@ -153,7 +174,9 @@ pub fn unshuffle_with_threads(
     // Sequential fallback — inverse of shuffle: scatter each source
     // byte (from plane `byte_idx`, position `elem`) into the
     // `byte_idx`-th byte of output element `elem`.
-    let mut output = vec![0u8; data.len()];
+    let mut output: Vec<u8> = Vec::new();
+    try_reserve_shuffle(&mut output, data.len())?;
+    output.resize(data.len(), 0);
     for byte_idx in 0..element_size {
         for elem in 0..num_elements {
             output[elem * element_size + byte_idx] = data[byte_idx * num_elements + elem];
