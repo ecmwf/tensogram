@@ -38,12 +38,61 @@ pub fn aec_compress_no_offsets(
     Ok(bytes)
 }
 
+/// Reject AEC parameter combinations that libaec would fail on, or that
+/// would drive the decoder into divide-by-zero / infinite-loop territory
+/// (`block_size == 0`, `rsi == 0`).  Mirrors the pure-Rust backend's
+/// `params::validate` so both szip implementations reject the same
+/// malformed input up front, before any FFI boundary is crossed.
+fn validate_params(params: &AecParams) -> Result<(), CompressionError> {
+    use libaec_sys::*;
+
+    if params.bits_per_sample == 0 || params.bits_per_sample > 32 {
+        return Err(CompressionError::Szip(format!(
+            "bits_per_sample must be 1..=32, got {}",
+            params.bits_per_sample
+        )));
+    }
+    if params.block_size == 0 {
+        return Err(CompressionError::Szip(
+            "block_size must be non-zero".to_string(),
+        ));
+    }
+    if params.flags & AEC_NOT_ENFORCE != 0 {
+        if params.block_size & 1 != 0 {
+            return Err(CompressionError::Szip(format!(
+                "block_size must be even, got {}",
+                params.block_size
+            )));
+        }
+    } else if !matches!(params.block_size, 8 | 16 | 32 | 64) {
+        return Err(CompressionError::Szip(format!(
+            "block_size must be 8, 16, 32, or 64, got {}",
+            params.block_size
+        )));
+    }
+    if params.rsi == 0 || params.rsi > 4096 {
+        return Err(CompressionError::Szip(format!(
+            "rsi must be 1..=4096, got {}",
+            params.rsi
+        )));
+    }
+    if params.flags & AEC_RESTRICTED != 0 && params.bits_per_sample > 4 {
+        return Err(CompressionError::Szip(format!(
+            "AEC_RESTRICTED requires bits_per_sample <= 4, got {}",
+            params.bits_per_sample
+        )));
+    }
+    Ok(())
+}
+
 fn aec_compress_impl(
     data: &[u8],
     params: &AecParams,
     track_offsets: bool,
 ) -> Result<(Vec<u8>, Vec<u64>), CompressionError> {
     use libaec_sys::*;
+
+    validate_params(params)?;
 
     if data.is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -152,6 +201,8 @@ pub fn aec_decompress(
 ) -> Result<Vec<u8>, CompressionError> {
     use libaec_sys::*;
 
+    validate_params(params)?;
+
     if data.is_empty() || expected_size == 0 {
         return Ok(Vec::new());
     }
@@ -249,6 +300,8 @@ pub fn aec_decompress_range(
     params: &AecParams,
 ) -> Result<Vec<u8>, CompressionError> {
     use libaec_sys::*;
+
+    validate_params(params)?;
 
     if byte_size == 0 {
         return Ok(Vec::new());
@@ -588,5 +641,97 @@ mod tests {
             msg.contains("failed to reserve"),
             "error should report allocation failure, got: {msg}"
         );
+    }
+
+    // ── FFI parameter validator parity ──────────────────────────────────
+    //
+    // The FFI backend must reject the same invalid `AecParams` as the
+    // pure-Rust backend's `params::validate`. These tests assert the
+    // parity contract — without them the FFI path could drift from the
+    // pure-Rust path unnoticed.
+
+    fn tiny_compressed_blob() -> Vec<u8> {
+        let data: Vec<u8> = (0..32).map(|i| i as u8).collect();
+        let (compressed, _) = aec_compress(&data, &default_params(8)).unwrap();
+        compressed
+    }
+
+    #[test]
+    fn validate_rejects_bits_per_sample_zero() {
+        let mut params = default_params(8);
+        params.bits_per_sample = 0;
+        let err = aec_decompress(&tiny_compressed_blob(), 32, &params)
+            .expect_err("bits_per_sample=0 must be rejected");
+        assert!(format!("{err}").contains("bits_per_sample"));
+    }
+
+    #[test]
+    fn validate_rejects_bits_per_sample_over_32() {
+        let mut params = default_params(8);
+        params.bits_per_sample = 33;
+        let err = aec_decompress(&tiny_compressed_blob(), 32, &params)
+            .expect_err("bits_per_sample=33 must be rejected");
+        assert!(format!("{err}").contains("bits_per_sample"));
+    }
+
+    #[test]
+    fn validate_rejects_block_size_zero() {
+        let mut params = default_params(8);
+        params.block_size = 0;
+        let err = aec_decompress(&tiny_compressed_blob(), 32, &params)
+            .expect_err("block_size=0 must be rejected");
+        assert!(format!("{err}").contains("block_size"));
+    }
+
+    #[test]
+    fn validate_rejects_invalid_block_size_without_not_enforce() {
+        let mut params = default_params(8);
+        params.block_size = 7;
+        let err = aec_decompress(&tiny_compressed_blob(), 32, &params)
+            .expect_err("block_size=7 must be rejected without AEC_NOT_ENFORCE");
+        assert!(format!("{err}").contains("block_size"));
+    }
+
+    #[test]
+    fn validate_rejects_rsi_zero() {
+        let mut params = default_params(8);
+        params.rsi = 0;
+        let err = aec_decompress(&tiny_compressed_blob(), 32, &params)
+            .expect_err("rsi=0 must be rejected");
+        assert!(format!("{err}").contains("rsi"));
+    }
+
+    #[test]
+    fn validate_rejects_rsi_over_4096() {
+        let mut params = default_params(8);
+        params.rsi = 4097;
+        let err = aec_decompress(&tiny_compressed_blob(), 32, &params)
+            .expect_err("rsi=4097 must be rejected");
+        assert!(format!("{err}").contains("rsi"));
+    }
+
+    #[test]
+    fn validate_rejects_restricted_with_bps_over_4() {
+        let mut params = default_params(8);
+        params.flags |= libaec_sys::AEC_RESTRICTED;
+        let err = aec_decompress(&tiny_compressed_blob(), 32, &params)
+            .expect_err("AEC_RESTRICTED with bits_per_sample>4 must be rejected");
+        assert!(format!("{err}").contains("RESTRICTED"));
+    }
+
+    #[test]
+    fn validate_accepts_not_enforce_even_block_size() {
+        // Even block sizes outside {8,16,32,64} are valid under
+        // AEC_NOT_ENFORCE. Round-trip must succeed.
+        let params = AecParams {
+            bits_per_sample: 8,
+            block_size: 6,
+            rsi: 64,
+            flags: libaec_sys::AEC_DATA_PREPROCESS | libaec_sys::AEC_NOT_ENFORCE,
+        };
+        let data: Vec<u8> = (0..96).map(|i| i as u8).collect();
+        let (compressed, _) = aec_compress(&data, &params).unwrap();
+        let decoded = aec_decompress(&compressed, data.len(), &params).unwrap();
+        assert_eq!(decoded, data);
     }
 }

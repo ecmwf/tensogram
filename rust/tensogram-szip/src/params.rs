@@ -109,6 +109,9 @@ pub(crate) fn validate(params: &AecParams) -> Result<(), crate::AecError> {
         )));
     }
 
+    if params.block_size == 0 {
+        return Err(AecError::Config("block_size must be non-zero".to_string()));
+    }
     if params.flags & AEC_NOT_ENFORCE != 0 {
         if params.block_size & 1 != 0 {
             return Err(AecError::Config(format!(
