@@ -134,10 +134,10 @@ class TestEncodePreEncodedSimplePacking:
 
         # Compute packing parameters via the library helper
         params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
-        ref_val = params["reference_value"]
-        bsf = params["binary_scale_factor"]
-        dsf = params["decimal_scale_factor"]
-        bpv = params["bits_per_value"]
+        ref_val = params["sp_reference_value"]
+        bsf = params["sp_binary_scale_factor"]
+        dsf = params["sp_decimal_scale_factor"]
+        bpv = params["sp_bits_per_value"]
 
         # Manually pack in Python
         packed_bytes = simple_pack_python(temps, ref_val, bsf, dsf, bpv)
@@ -189,10 +189,10 @@ class TestEncodePreEncodedSimplePacking:
         # Path B: manually pack then encode_pre_encoded
         packed = simple_pack_python(
             temps,
-            params["reference_value"],
-            params["binary_scale_factor"],
-            params["decimal_scale_factor"],
-            params["bits_per_value"],
+            params["sp_reference_value"],
+            params["sp_binary_scale_factor"],
+            params["sp_decimal_scale_factor"],
+            params["sp_bits_per_value"],
         )
         msg_b = bytes(tensogram.encode_pre_encoded(meta, [(desc, packed)]))
         _, objs_b = tensogram.decode(msg_b)
@@ -253,10 +253,10 @@ class TestEncodePreEncodedSzip:
         # Step 2: Build a manually packed payload (simple_packing, no szip)
         packed_bytes = simple_pack_python(
             temps,
-            params["reference_value"],
-            params["binary_scale_factor"],
-            params["decimal_scale_factor"],
-            params["bits_per_value"],
+            params["sp_reference_value"],
+            params["sp_binary_scale_factor"],
+            params["sp_decimal_scale_factor"],
+            params["sp_bits_per_value"],
         )
 
         # Step 3: Build a pre-encoded descriptor with valid szip_block_offsets
@@ -292,10 +292,10 @@ class TestEncodePreEncodedSzip:
         params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
         packed = simple_pack_python(
             temps,
-            params["reference_value"],
-            params["binary_scale_factor"],
-            params["decimal_scale_factor"],
-            params["bits_per_value"],
+            params["sp_reference_value"],
+            params["sp_binary_scale_factor"],
+            params["sp_decimal_scale_factor"],
+            params["sp_bits_per_value"],
         )
         desc = make_descriptor(
             shape=[n],
@@ -320,10 +320,10 @@ class TestEncodePreEncodedSzip:
         params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
         packed = simple_pack_python(
             temps,
-            params["reference_value"],
-            params["binary_scale_factor"],
-            params["decimal_scale_factor"],
-            params["bits_per_value"],
+            params["sp_reference_value"],
+            params["sp_binary_scale_factor"],
+            params["sp_decimal_scale_factor"],
+            params["sp_bits_per_value"],
         )
         desc = make_descriptor(
             shape=[n],
