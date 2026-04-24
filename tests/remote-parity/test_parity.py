@@ -180,6 +180,3 @@ def test_open_divergence_rust_lazy_ts_eager(fixture: str, events) -> None:
     assert len(ts_open) == expected_n, (
         f"TS open is expected to walk all {expected_n} preambles; got {len(ts_open)} for {fixture}"
     )
-    assert len(ts_open) == expected_n, (
-        f"TS open is expected to walk all {expected_n} preambles; got {len(ts_open)} for {fixture}"
-    )
