@@ -14,6 +14,7 @@ corresponding test here, pinning the behaviour for Pass-3 hardening.
 
 from __future__ import annotations
 
+import importlib
 import io
 from pathlib import Path
 
@@ -22,7 +23,6 @@ import numpy as np
 import pytest
 import xarray as xr
 
-import tensogram_earthkit as tek
 from tensogram_earthkit import detection, mars
 from tensogram_earthkit.encoder import (
     TensogramEncodedData,
@@ -566,7 +566,17 @@ class TestTensogrmMagicConstant:
 
 
 class TestPublicAPI:
+    """Guardrail tests for the top-level package namespace.
+
+    Uses :func:`importlib.import_module` rather than a module-level
+    ``import tensogram_earthkit as tek`` alias so this file stays on
+    the ``from <package> import ...`` form throughout — CodeQL flags
+    files that mix ``import X`` with ``from X import Y`` for the same
+    package.
+    """
+
     def test_top_level_re_exports_present(self) -> None:
+        tek = importlib.import_module("tensogram_earthkit")
         for name in (
             "TENSOGRM_MAGIC",
             "TensogramData",
@@ -581,5 +591,6 @@ class TestPublicAPI:
 
     def test_all_declarations_are_consistent(self) -> None:
         """Every name in ``__all__`` must be importable from the module."""
+        tek = importlib.import_module("tensogram_earthkit")
         for name in tek.__all__:
             getattr(tek, name)  # raises if missing
