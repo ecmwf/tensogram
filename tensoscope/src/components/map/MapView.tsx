@@ -140,7 +140,7 @@ export function MapView(props: MapViewProps) {
 
       {data && (
         <>
-          <div style={{ position: 'absolute', bottom: 'calc(var(--sheet-height, 0px) + 8px)', right: 16, zIndex: 10 }}>
+          <div style={{ position: 'absolute', bottom: 'calc(var(--sheet-height, 32px) + 8px)', right: 16, zIndex: 10 }}>
             <ColorBar
               min={colorMin}
               max={colorMax}

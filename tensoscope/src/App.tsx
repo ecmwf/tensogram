@@ -109,11 +109,11 @@ function App() {
 
   const prevFileIndex = useRef<typeof fileIndex>(null);
   useEffect(() => {
-    if (prevFileIndex.current === null && fileIndex !== null) {
+    if (isMobile && prevFileIndex.current === null && fileIndex !== null) {
       setSheetState(s => s === 'collapsed' ? 'half' : s);
     }
     prevFileIndex.current = fileIndex;
-  }, [fileIndex]);
+  }, [fileIndex, isMobile]);
 
   const onSheetDragStart = useCallback((e: React.MouseEvent) => {
     sheetDragging.current = true;
@@ -141,11 +141,16 @@ function App() {
       const touch = e.changedTouches[0];
       setSheetState(snapSheet(sheetStartState.current, touch.clientY - sheetStartY.current));
     };
+    const onTouchCancel = () => {
+      sheetDragging.current = false;
+    };
     window.addEventListener('mouseup', onMouseUp);
     window.addEventListener('touchend', onTouchEnd);
+    window.addEventListener('touchcancel', onTouchCancel);
     return () => {
       window.removeEventListener('mouseup', onMouseUp);
       window.removeEventListener('touchend', onTouchEnd);
+      window.removeEventListener('touchcancel', onTouchCancel);
     };
   }, []);
 
@@ -171,7 +176,7 @@ function App() {
   return (
     <div
       className="app-layout"
-      style={{ '--sheet-height': sheetHeightCss(sheetState) } as React.CSSProperties}
+      style={isMobile ? { '--sheet-height': sheetHeightCss(sheetState) } as React.CSSProperties : undefined}
     >
       {!fileIndex && <WelcomeModal />}
       <aside className="sidebar" style={isMobile ? {} : { width: sidebarWidth }}>
