@@ -8,7 +8,7 @@
 
 """Regenerate the checked-in ``.tgm`` fixtures for the remote-parity harness.
 
-**Fixtures are binary golden artifacts.** Re-running this script
+**Fixtures are binary committed artefacts.** Re-running this script
 produces **different bytes** each time because ``tensogram.encode``
 stamps a fresh UTC timestamp and RFC-4122 v4 UUID into each message's
 reserved provenance, and the encoder version string is baked in too —
@@ -16,10 +16,11 @@ so any tensogram version bump can shift offsets slightly.
 
 The parity harness relies on the committed bytes being stable across
 a CI run (both drivers observe the same file), not across
-regenerations. Re-run this tool only when the wire format changes,
-the tensogram encoder version bumps, or the fixture set expands.
-Review the diff, commit, and re-baseline goldens via
-``tools/regen_goldens.py --regen``.
+regenerations. The pytest suite computes expected message offsets
+live from the fixture via ``tensogram.scan``, so it survives the
+intentional regenerations. Re-run this tool only when the wire format
+changes, the encoder version bumps, or the fixture set expands;
+review the diff and commit.
 
 Current scope: header-indexed, non-streaming fixtures only. See
 README.md for the rationale and deferral list.
