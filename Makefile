@@ -145,9 +145,10 @@ remote-parity-rust-build: ## Build the parity-harness Rust driver (isolated carg
 remote-parity-ts-install: ts-build ## Install parity-harness TS driver deps (uses npm ci)
 	cd $(_PARITY_DRIVERS_DIR) && npm ci || npm install --no-audit --no-fund
 
-# Fixtures are binary goldens — regenerating produces different bytes
-# (encoder stamps fresh timestamp + UUID). Run only on intentional
-# changes; re-baseline goldens with `tools/regen_goldens.py --regen`.
+# Fixtures are committed binary artefacts — regenerating produces
+# different bytes (encoder stamps fresh timestamp + UUID). The pytest
+# suite computes expected offsets live from the fixture, so it
+# survives intentional regenerations. Run only on intentional changes.
 remote-parity-fixtures: ## (Re)generate .tgm fixtures — commit the diff after review
 	if [ ! -d .venv ] ; then uv venv ; fi
 	$(PYTHON) $(_PARITY_DIR)/tools/gen_fixtures.py
@@ -158,7 +159,7 @@ remote-parity-build: remote-parity-rust-build remote-parity-ts-install ## Build 
 remote-parity: remote-parity-build ## Run the full parity harness (rebuilds drivers + pytest)
 	$(PYTHON) -m pytest $(_PARITY_DIR)/ -v
 
-remote-parity-clean: ## Remove parity-harness build artefacts (keeps fixtures and goldens)
+remote-parity-clean: ## Remove parity-harness build artefacts (keeps fixtures)
 	rm -rf $(_PARITY_DIR)/drivers/rust_driver/target/
 	rm -rf $(_PARITY_DRIVERS_DIR)/node_modules/
 	find $(_PARITY_DIR) -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

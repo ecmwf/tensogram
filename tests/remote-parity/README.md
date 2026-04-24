@@ -39,9 +39,9 @@ regenerating snapshots on every legitimate change. Instead it asserts:
 - **Per-event shape invariants**: every scan event is a 24-byte
   forward read; `scan_round` increments contiguously from 0; offsets
   are strictly increasing and unique.
-- **Layout match**: for `message-count`, the offsets emitted match
-  the fixture's actual message starts (computed live via
-  `tensogram.scan(fixture_bytes)` — no offset values hardcoded).
+- **Layout match**: for `message-count` and `read-last`, the offsets
+  emitted match the fixture's actual message starts (computed live
+  via `tensogram.scan(fixture_bytes)` — no offset values hardcoded).
 - **Documented divergence**: Rust `open` issues exactly 1 scan event;
   TS `open` walks all N preambles. If either backend changes its
   open-time laziness, the test fails loudly and the assertion is
@@ -53,7 +53,7 @@ See `schema.json`. Each logged request is normalised to:
 
 ```
 {
-  "run_id":     "single-msg-rust-forward",
+  "run_id":     "single-msg-rust-message-count-forward",
   "scan_round": 0,
   "direction":  "forward",
   "category":   "probe" | "scan" | "payload" | "fallback",

@@ -53,7 +53,12 @@ def _descriptor(shape: tuple[int, ...]) -> dict:
 
 
 def _encode_one(msg_index: int, shape: tuple[int, ...]) -> bytes:
-    """Deterministic single-message encode. Payload is a simple ramp seeded by msg_index."""
+    """Encode one message with a deterministic payload (ramp seeded by msg_index).
+
+    The encoded *bytes* are NOT reproducible across runs because
+    `tensogram.encode` stamps fresh timestamp + UUID into provenance;
+    the deterministic part is the payload shape and ramp values.
+    """
     count = 1
     for dim in shape:
         count *= dim

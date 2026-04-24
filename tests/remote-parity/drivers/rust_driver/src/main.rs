@@ -18,9 +18,9 @@
 //! - `read-last` — read the last message (index = count - 1).
 //!
 //! The driver does not emit logs itself. The mock server captures every
-//! HTTP request on its side, tagged by the `run_id` embedded in the URL
-//! path. The orchestrator fetches those logs via `GET /_log/<run_id>`
-//! after the driver exits.
+//! HTTP request, tagged by the `run_id` embedded in the URL path; the
+//! orchestrator collects that captured request log from the in-process
+//! server after the driver exits.
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
