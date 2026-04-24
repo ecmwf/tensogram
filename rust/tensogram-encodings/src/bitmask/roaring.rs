@@ -77,7 +77,9 @@ pub fn decode(bytes: &[u8], n_elements: usize) -> Result<Bitmask, MaskError> {
     }
     let bm = RoaringBitmap::deserialize_from(bytes)
         .map_err(|e| MaskError::Roaring(format!("deserialize: {e}")))?;
-    let mut out = vec![false; n_elements];
+    let mut out: Vec<bool> = Vec::new();
+    super::try_reserve_mask(&mut out, n_elements)?;
+    out.resize(n_elements, false);
     for key in bm.iter() {
         let k = key as usize;
         if k >= n_elements {

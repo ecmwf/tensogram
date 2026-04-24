@@ -102,7 +102,8 @@ pub fn decode(bytes: &[u8], n_elements: usize) -> Result<Bitmask, MaskError> {
         }
     };
 
-    let mut out = Vec::with_capacity(n_elements);
+    let mut out: Vec<bool> = Vec::new();
+    super::try_reserve_mask(&mut out, n_elements)?;
     let mut current = start_bit;
     let mut cursor = 1;
     while cursor < bytes.len() {
@@ -119,11 +120,17 @@ pub fn decode(bytes: &[u8], n_elements: usize) -> Result<Bitmask, MaskError> {
                 "run count {run} exceeds usize — malformed or truncated"
             ))
         })?;
-        if out.len() + run_usize > n_elements {
+        // `out.len() + run_usize` can itself overflow on hostile input,
+        // so rearrange the comparison to work on the remaining budget
+        // instead: `run_usize > n_elements - out.len()`. Safe because the
+        // only way to exit this branch with `out.len() > n_elements` is
+        // for a prior iteration to have already returned an error.
+        let remaining = n_elements - out.len();
+        if run_usize > remaining {
             return Err(MaskError::Rle(format!(
                 "run overruns element count: decoded {}..{} but only {n_elements} declared",
                 out.len(),
-                out.len() + run_usize
+                out.len().saturating_add(run_usize)
             )));
         }
         for _ in 0..run_usize {

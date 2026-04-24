@@ -150,6 +150,20 @@ pub enum MaskError {
     Roaring(String),
     #[error("underlying codec error: {0}")]
     Codec(String),
+    /// Fallible output-buffer reservation failed — a descriptor-derived
+    /// `n_elements` is too large for the allocator to satisfy. Surfaced
+    /// instead of the process-abort that would otherwise come from an
+    /// infallible `Vec::with_capacity` / `vec![false; N]`.
+    #[error("failed to reserve {bytes} bytes for bitmask decode: {reason}")]
+    AllocationFailed { bytes: usize, reason: String },
+}
+
+pub(crate) fn try_reserve_mask(v: &mut Vec<bool>, n: usize) -> Result<(), MaskError> {
+    v.try_reserve_exact(n)
+        .map_err(|e| MaskError::AllocationFailed {
+            bytes: n,
+            reason: e.to_string(),
+        })
 }
 
 /// A bitmask is represented in memory as a vector of `bool` with length
@@ -160,3 +174,34 @@ pub enum MaskError {
 /// Conversion to / from the bit-packed wire representation is handled
 /// by [`packing`].
 pub type Bitmask = Vec<bool>;
+
+#[cfg(test)]
+mod allocation_tests {
+    use super::*;
+
+    #[test]
+    fn try_reserve_mask_rejects_pathological_capacity() {
+        let mut v: Vec<bool> = Vec::new();
+        let err = try_reserve_mask(&mut v, isize::MAX as usize + 1)
+            .expect_err("reservation beyond isize::MAX must fail capacity check");
+        match err {
+            MaskError::AllocationFailed { .. } => {}
+            other => panic!("expected AllocationFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn roaring_decode_rejects_addressable_limit() {
+        // The pre-existing `> u32::MAX` guard fires for n_elements one
+        // past the addressable range, producing a `Malformed` error
+        // rather than an allocation abort.  After the hardening the
+        // guard still dominates for this sentinel, and the
+        // allocation-helper path is covered by the test above.
+        let err = roaring::decode(&[], u32::MAX as usize + 1)
+            .expect_err("roaring must reject n_elements > u32::MAX");
+        match err {
+            MaskError::Malformed(_) => {}
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+}

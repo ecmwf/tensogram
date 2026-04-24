@@ -53,7 +53,8 @@ pub fn unpack(bytes: &[u8], n_elements: usize) -> Result<Bitmask, MaskError> {
             actual: bytes.len(),
         });
     }
-    let mut out = Vec::with_capacity(n_elements);
+    let mut out: Vec<bool> = Vec::new();
+    super::try_reserve_mask(&mut out, n_elements)?;
     for i in 0..n_elements {
         let bit = (bytes[i / 8] >> (7 - (i % 8))) & 1;
         out.push(bit == 1);
