@@ -849,6 +849,16 @@ pub(crate) fn try_clone_bytes(src: &[u8]) -> Result<Vec<u8>, PipelineError> {
 }
 
 fn bytes_to_f64(data: &[u8], byte_order: ByteOrder) -> Result<Vec<f64>, PipelineError> {
+    // Reject partial trailing bytes rather than silently truncating —
+    // `chunks_exact(8)` would otherwise drop them, which on the encode
+    // side (simple_packing) would feed a truncated value stream into
+    // the encoder without any error.
+    if !data.len().is_multiple_of(8) {
+        return Err(PipelineError::Range(format!(
+            "byte-to-f64 input length {} is not a multiple of 8",
+            data.len()
+        )));
+    }
     let n = data.len() / 8;
     let mut out: Vec<f64> = Vec::new();
     out.try_reserve_exact(n).map_err(|e| {

@@ -292,7 +292,14 @@ fn decode_rsi(
     max_samples: usize,
     se_table: &SeTable,
 ) -> Result<Vec<u32>, AecError> {
-    let samples_per_rsi = rsi_blocks * block_size;
+    // Independent checked_mul even though every current caller
+    // (`decode`, `decode_range`) already guards this product — keeps the
+    // helper self-protective if a future caller is added that forgets.
+    let samples_per_rsi = rsi_blocks.checked_mul(block_size).ok_or_else(|| {
+        AecError::Data(format!(
+            "rsi_blocks ({rsi_blocks}) x block_size ({block_size}) overflows usize"
+        ))
+    })?;
     let modi = 1u32 << id_len;
     let mut rsi_buffer: Vec<u32> = Vec::new();
     rsi_buffer.try_reserve_exact(samples_per_rsi).map_err(|e| {
