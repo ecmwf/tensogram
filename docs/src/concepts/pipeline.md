@@ -105,8 +105,8 @@ DataObjectDescriptor {
     compression: "szip".into(),
     masks: None,
     params: BTreeMap::from([
-        ("reference_value".into(), Value::Float(230.5)),
-        ("bits_per_value".into(), Value::Integer(16.into())),
+        ("sp_reference_value".into(), Value::Float(230.5)),
+        ("sp_bits_per_value".into(), Value::Integer(16.into())),
     ]),
 }
 ```

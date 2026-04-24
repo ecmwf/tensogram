@@ -34,12 +34,14 @@ n = 1000
 temps = np.linspace(249.15, 349.05, n, dtype=np.float64)
 print(f"Source: {n} float64 values  raw={temps.nbytes} bytes")
 
-# Compute packing parameters via the library helper
+# Compute packing parameters via the library helper.
+# The returned dict keys are ``sp_*`` prefixed so the caller can
+# spread them straight into a descriptor (see step 2).
 params = tensogram.compute_packing_params(temps, bits_per_value=16, decimal_scale_factor=0)
-ref_val = params["reference_value"]
-bsf = params["binary_scale_factor"]
-dsf = params["decimal_scale_factor"]
-bpv = params["bits_per_value"]
+ref_val = params["sp_reference_value"]
+bsf = params["sp_binary_scale_factor"]
+dsf = params["sp_decimal_scale_factor"]
+bpv = params["sp_bits_per_value"]
 
 print(f"Packing params: ref={ref_val:.4f}  bsf={bsf}  dsf={dsf}  bpv={bpv}")
 

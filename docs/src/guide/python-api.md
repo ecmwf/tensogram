@@ -61,7 +61,7 @@ Every object in a message is described by a dict. The three required keys define
 | `"filter"` | no | `"none"` | Filter stage — see below |
 | `"compression"` | no | `"none"` | Compression stage — see below |
 
-Any additional keys (e.g. `"reference_value"`, `"bits_per_value"`) are stored in the descriptor's `.params` dict and passed through to the encoding pipeline.
+Any additional keys (e.g. `"sp_reference_value"`, `"sp_bits_per_value"`) are stored in the descriptor's `.params` dict and passed through to the encoding pipeline.
 
 ### The encoding pipeline
 

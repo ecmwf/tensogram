@@ -529,10 +529,10 @@ the rest of the frame body is known.
              |  "rle"  | "roaring",       ; rle/roaring: bitmask dtype only
 
   ; Encoding-specific parameters (flattened into the map)
-  "reference_value":       ...,
-  "binary_scale_factor":   ...,
-  "decimal_scale_factor":  ...,
-  "bits_per_value":        ...,
+  "sp_reference_value":       ...,
+  "sp_binary_scale_factor":   ...,
+  "sp_decimal_scale_factor":  ...,
+  "sp_bits_per_value":        ...,
   "szip_block_offsets":    [...],
   ...
 

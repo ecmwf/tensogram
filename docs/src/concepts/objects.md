@@ -29,8 +29,8 @@ DataObjectDescriptor {
 
     // ── Flexible parameters (encoding only) ──
     params: BTreeMap::from([       // BTreeMap<String, ciborium::Value>
-        ("reference_value".into(), ciborium::Value::Float(230.5)),
-        ("bits_per_value".into(), ciborium::Value::Integer(16.into())),
+        ("sp_reference_value".into(), ciborium::Value::Float(230.5)),
+        ("sp_bits_per_value".into(), ciborium::Value::Integer(16.into())),
     ]),
 }
 ```

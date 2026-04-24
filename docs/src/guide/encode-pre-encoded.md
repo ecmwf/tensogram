@@ -117,10 +117,10 @@ let pre_encoded_bytes: Vec<u8> = /* from GPU */;
 let szip_offsets_bits: Vec<u64> = vec![0, 8192, 16384, /* ... */];
 
 let mut params: BTreeMap<String, ciborium::Value> = BTreeMap::new();
-params.insert("bits_per_value".into(), Value::Integer(24u64.into()));
-params.insert("reference_value".into(), Value::Float(0.0));
-params.insert("binary_scale_factor".into(), Value::Integer((-10i64).into()));
-params.insert("decimal_scale_factor".into(), Value::Integer(0i64.into()));
+params.insert("sp_bits_per_value".into(), Value::Integer(24u64.into()));
+params.insert("sp_reference_value".into(), Value::Float(0.0));
+params.insert("sp_binary_scale_factor".into(), Value::Integer((-10i64).into()));
+params.insert("sp_decimal_scale_factor".into(), Value::Integer(0i64.into()));
 params.insert("szip_rsi".into(), Value::Integer(128i64.into()));
 params.insert("szip_block_size".into(), Value::Integer(16i64.into()));
 params.insert("szip_flags".into(), Value::Integer(8i64.into()));

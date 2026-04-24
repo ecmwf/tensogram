@@ -9,6 +9,74 @@ A 16-bit simple_packing payload is 8× smaller than the equivalent float64 and
 for most bounded-range scientific measurements (temperatures, voltages,
 pressures, intensity counts).
 
+## Quick start — auto-compute
+
+The encoder computes `sp_reference_value` and `sp_binary_scale_factor`
+for you — you only need to choose `sp_bits_per_value` (the knob), and
+optionally `sp_decimal_scale_factor` (defaults to `0`).
+
+```python
+import tensogram
+import numpy as np
+
+temps = np.random.randn(200, 200, 50, 10).astype(np.float64) + 273.15
+desc = {
+    "type": "ntensor",
+    "shape": [200, 200, 50, 10],
+    "dtype": "float64",
+    "encoding": "simple_packing",
+    "sp_bits_per_value": 16,
+    "compression": "zstd",
+}
+buf = tensogram.encode({"parameter": "temperature", "unit": "K"},
+                       [(desc, temps)])
+```
+
+That's it — no explicit `compute_packing_params` call, no four-key
+spread into the descriptor.  The four canonical keys are stamped into
+the wire format automatically so the file remains fully
+self-describing.
+
+The same ergonomic form works from every language binding:
+
+```rust
+// Rust
+let desc = DataObjectDescriptor {
+    encoding: "simple_packing".into(),
+    params: BTreeMap::from([
+        ("sp_bits_per_value".into(), Value::Integer(16i64.into())),
+    ]),
+    ..descriptor_defaults()
+};
+```
+
+```typescript
+// TypeScript
+const desc = {
+    type: "ntensor", shape: [N], dtype: "float64",
+    encoding: "simple_packing", sp_bits_per_value: 16,
+};
+await encode(meta, [{ descriptor: desc, data }]);
+```
+
+### When to use the explicit form
+
+The explicit 4-key form (with `sp_reference_value` and
+`sp_binary_scale_factor` supplied by the caller) remains supported
+and wins over auto-compute on a per-object basis.  Use it when you
+need:
+
+* the same `sp_reference_value` pinned across a time-series so
+  downstream delta-encoding works on the packed integers;
+* control over `sp_binary_scale_factor` when the data distribution is
+  known a priori (avoids a min/max scan over huge buffers);
+* repeatable encodes against a shared set of params computed once
+  via [`compute_packing_params`](#compute_params).
+
+When both explicit and auto-compute keys are present on the
+descriptor, **the explicit values win** — the encoder does not
+recompute them.
+
 ## How It Works
 
 Given a set of float64 values `V[i]`:
@@ -45,7 +113,7 @@ flowchart TD
 contains any NaN or ±Infinity values. Simple packing has no
 representation for non-finite numbers (unlike IEEE 754 floats), and
 feeding `Inf` through the range / scale-factor derivation would
-produce an `i32::MAX`-saturated `binary_scale_factor` that silently
+produce an `i32::MAX`-saturated `sp_binary_scale_factor` that silently
 decodes to `NaN` everywhere. Both are errors at the codec entry:
 
 - NaN → `PackingError::NanValue(index)`
@@ -72,7 +140,7 @@ assert!(compute_params(&with_inf, 16, 0).is_err());
 Beyond input-value validation, `encode()` also checks the
 `SimplePackingParams` it receives:
 
-- `reference_value` must be finite (`NaN` / `±Inf` → error).
+- `sp_reference_value` must be finite (`NaN` / `±Inf` → error).
 - `|binary_scale_factor| ≤ 256`. The threshold catches the
   `i32::MAX`-saturation fingerprint from feeding `Inf` through
   `compute_params` indirectly; real-world data (`|bsf| ≤ 60`) fits
@@ -179,12 +247,12 @@ let params = simple_packing::compute_params(&values, 16, 0).unwrap();
 
 // Build descriptor with packing params
 let mut p = BTreeMap::new();
-p.insert("reference_value".into(), Value::Float(params.reference_value));
-p.insert("binary_scale_factor".into(),
+p.insert("sp_reference_value".into(), Value::Float(params.reference_value));
+p.insert("sp_binary_scale_factor".into(),
     Value::Integer((params.binary_scale_factor as i64).into()));
-p.insert("decimal_scale_factor".into(),
+p.insert("sp_decimal_scale_factor".into(),
     Value::Integer((params.decimal_scale_factor as i64).into()));
-p.insert("bits_per_value".into(),
+p.insert("sp_bits_per_value".into(),
     Value::Integer((params.bits_per_value as i64).into()));
 
 let desc = DataObjectDescriptor {

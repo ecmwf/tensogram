@@ -116,7 +116,7 @@ This lets readers discover the shape, type, and per-object metadata of every obj
 
 ## DataObjectDescriptor
 
-The `params` field of each `DataObjectDescriptor` is a `BTreeMap<String, ciborium::Value>` for **encoding parameters only** (e.g. `reference_value`, `bits_per_value`). These are flattened into the CBOR descriptor alongside the fixed tensor fields.
+The `params` field of each `DataObjectDescriptor` is a `BTreeMap<String, ciborium::Value>` for **encoding parameters only** (e.g. `sp_reference_value`, `sp_bits_per_value`). These are flattened into the CBOR descriptor alongside the fixed tensor fields.
 
 For example, a data object's CBOR descriptor might look like:
 
@@ -131,8 +131,8 @@ For example, a data object's CBOR descriptor might look like:
   "encoding": "simple_packing",
   "filter": "none",
   "compression": "szip",
-  "reference_value": 230.5,
-  "bits_per_value": 16
+  "sp_reference_value": 230.5,
+  "sp_bits_per_value": 16
 }
 ```
 
@@ -140,7 +140,7 @@ For example, a data object's CBOR descriptor might look like:
 > inline `[hash u64]` slot (see `../format/wire-format.md` §2.2),
 > not in the CBOR descriptor.
 
-Here, `reference_value` and `bits_per_value` live in the `params` map. Application metadata such as MARS keys belongs in `base[i]["mars"]` in the global metadata.
+Here, `sp_reference_value` and `sp_bits_per_value` live in the `params` map. Application metadata such as MARS keys belongs in `base[i]["mars"]` in the global metadata.
 
 ## Namespaced Keys
 

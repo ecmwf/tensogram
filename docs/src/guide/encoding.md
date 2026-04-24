@@ -80,13 +80,13 @@ let params = simple_packing::compute_params(&values, 16, 0)?;
 
 // Put the parameters into the descriptor
 let mut packing_params = BTreeMap::new();
-packing_params.insert("reference_value".into(),
+packing_params.insert("sp_reference_value".into(),
     Value::Float(params.reference_value));
-packing_params.insert("binary_scale_factor".into(),
+packing_params.insert("sp_binary_scale_factor".into(),
     Value::Integer((params.binary_scale_factor as i64).into()));
-packing_params.insert("decimal_scale_factor".into(),
+packing_params.insert("sp_decimal_scale_factor".into(),
     Value::Integer((params.decimal_scale_factor as i64).into()));
-packing_params.insert("bits_per_value".into(),
+packing_params.insert("sp_bits_per_value".into(),
     Value::Integer((params.bits_per_value as i64).into()));
 
 let desc = DataObjectDescriptor {
