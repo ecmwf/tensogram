@@ -127,9 +127,9 @@ pub(crate) fn decode(
             let reference = rsi_buffer[0];
             let mapped = &rsi_buffer[1..];
             if signed {
-                preprocessor::postprocess_signed(reference, mapped, bps, xmax)
+                preprocessor::postprocess_signed(reference, mapped, bps, xmax)?
             } else {
-                preprocessor::postprocess_unsigned(reference, mapped, xmax)
+                preprocessor::postprocess_unsigned(reference, mapped, xmax)?
             }
         } else {
             rsi_buffer
@@ -161,7 +161,28 @@ pub(crate) fn decode_range(
 
     let flags = params::effective_flags(p);
     let byte_width = params::sample_byte_width(p.bits_per_sample, flags);
-    let rsi_size = p.rsi as usize * p.block_size as usize * byte_width;
+    let bps = p.bits_per_sample;
+    let block_size = p.block_size as usize;
+    let rsi_blocks = p.rsi as usize;
+    // Promote every descriptor-driven multiplication to `checked_mul`
+    // before ANY use: both `rsi_size = samples_per_rsi * byte_width`
+    // and the subsequent `rsi_n * rsi_size` can overflow on 32-bit /
+    // `AEC_NOT_ENFORCE` inputs with large parameters.
+    let samples_per_rsi = rsi_blocks.checked_mul(block_size).ok_or_else(|| {
+        AecError::Data(format!(
+            "rsi ({rsi_blocks}) x block_size ({block_size}) overflows usize"
+        ))
+    })?;
+    let rsi_size = samples_per_rsi.checked_mul(byte_width).ok_or_else(|| {
+        AecError::Data(format!(
+            "samples_per_rsi ({samples_per_rsi}) x byte_width ({byte_width}) overflows usize"
+        ))
+    })?;
+    if rsi_size == 0 {
+        return Err(AecError::Data(
+            "rsi_size computes to zero (block_size or byte_width is 0)".into(),
+        ));
+    }
 
     let rsi_n = byte_pos / rsi_size;
     if rsi_n >= block_offsets.len() {
@@ -172,26 +193,23 @@ pub(crate) fn decode_range(
         )));
     }
 
-    let rsi_byte_offset = rsi_n * rsi_size;
-    let local_byte_pos = byte_pos - rsi_byte_offset;
+    let rsi_byte_offset = rsi_n.checked_mul(rsi_size).ok_or_else(|| {
+        AecError::Data(format!(
+            "rsi_byte_offset = {rsi_n} x {rsi_size} overflows usize"
+        ))
+    })?;
+    let local_byte_pos = byte_pos.checked_sub(rsi_byte_offset).ok_or_else(|| {
+        AecError::Data(format!(
+            "byte_pos {byte_pos} is before rsi_byte_offset {rsi_byte_offset}"
+        ))
+    })?;
 
     let bit_offset = block_offsets[rsi_n];
     let mut reader = BitReader::from_bit_offset(data, bit_offset);
 
-    let bps = p.bits_per_sample;
-    let block_size = p.block_size as usize;
-    let rsi_blocks = p.rsi as usize;
     let id_len = params::id_len(bps, flags);
     let pp = flags & params::AEC_DATA_PREPROCESS != 0;
     let signed = flags & params::AEC_DATA_SIGNED != 0;
-    // Match the `checked_mul` guard in the full-decode path so
-    // malformed `rsi * block_size` on 32-bit / AEC_NOT_ENFORCE inputs
-    // surfaces as a typed error, not a wrapping-multiplication panic.
-    let samples_per_rsi = rsi_blocks.checked_mul(block_size).ok_or_else(|| {
-        AecError::Data(format!(
-            "rsi ({rsi_blocks}) x block_size ({block_size}) overflows usize"
-        ))
-    })?;
     let se_table = SeTable::new();
 
     let xmax = if signed {
@@ -219,9 +237,9 @@ pub(crate) fn decode_range(
         let reference = rsi_buffer[0];
         let mapped = &rsi_buffer[1..];
         if signed {
-            preprocessor::postprocess_signed(reference, mapped, bps, xmax)
+            preprocessor::postprocess_signed(reference, mapped, bps, xmax)?
         } else {
-            preprocessor::postprocess_unsigned(reference, mapped, xmax)
+            preprocessor::postprocess_unsigned(reference, mapped, xmax)?
         }
     } else {
         rsi_buffer
@@ -244,7 +262,16 @@ pub(crate) fn decode_range(
         )));
     }
 
-    Ok(output[local_byte_pos..end].to_vec())
+    let slice = &output[local_byte_pos..end];
+    let mut out: Vec<u8> = Vec::new();
+    out.try_reserve_exact(slice.len()).map_err(|e| {
+        AecError::Data(format!(
+            "failed to reserve {} bytes for szip range output: {e}",
+            slice.len()
+        ))
+    })?;
+    out.extend_from_slice(slice);
+    Ok(out)
 }
 
 // ── RSI-level decoder ────────────────────────────────────────────────────────
