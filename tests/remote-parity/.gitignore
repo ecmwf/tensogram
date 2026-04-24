@@ -1,0 +1,3 @@
+drivers/node_modules/
+drivers/rust_driver/target/
+__pycache__/

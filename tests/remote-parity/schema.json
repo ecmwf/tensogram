@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ecmwf.int/tensogram/tests/remote-parity/scan-event.json",
+  "title": "Remote parity scan event",
+  "description": "One normalised HTTP request observed by the mock server, tagged with its run identity and classified by category. See tests/remote-parity/README.md.",
+  "type": "object",
+  "required": ["run_id", "scan_round", "direction", "category", "logical_range", "physical_requests"],
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "description": "Identifies the driver run, e.g. 'single-msg-rust-message-count-forward'. Taken from the first path segment of the URL. Must start with an alphanumeric character to avoid collision with reserved underscore-prefixed control endpoints (/_reset, /_log/<run_id>).",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "scan_round": {
+      "type": "integer",
+      "minimum": -1,
+      "description": "Zero-based round index for 'scan' events (forward-only currently; bidirectional will pair forward + backward events under the same round). Non-scan events use -1."
+    },
+    "direction": {
+      "enum": ["forward", "backward", "none"],
+      "description": "Which cursor the request advances. 'none' for probes, payloads, fallbacks, and errors that are not part of a scan walk."
+    },
+    "category": {
+      "enum": ["probe", "scan", "payload", "fallback", "error"],
+      "description": "'probe' = HEAD / Range-support check (excluded from parity). 'scan' = a 24-byte preamble / 24-byte postamble / 8-byte END_MAGIC discovery read that belongs to the scan walk (compared for parity). 'payload' = bulk data-object fetch (logged, not compared). 'fallback' = HTTP 200 eager full-body download (logged, not compared). 'error' = non-200/non-206 response (logged, not compared). Future PRs (bidirectional / eager footer discovery) extend 'scan' semantics via classifier.py, not this enum."
+    },
+    "logical_range": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 0 },
+      "minItems": 2,
+      "maxItems": 2,
+      "description": "[start, end_exclusive) — the inclusive HTTP byte range 'bytes=a-b' is normalised here to '[a, b+1)'. For HEAD probes with no range, [0, 0]."
+    },
+    "physical_requests": {
+      "type": "array",
+      "description": "Diagnostic only. NOT compared for parity. The raw HTTP request(s) that produced this logical range. Backends that coalesce multi-range GETs (object_store multipart/byteranges) emit one entry per physical request; backends that issue independent GETs emit one entry.",
+      "items": {
+        "type": "object",
+        "required": ["method", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "method": { "enum": ["GET", "HEAD"] },
+          "headers": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "status": { "type": "integer", "minimum": 100, "maximum": 599 }
+        }
+      }
+    }
+  }
+}
