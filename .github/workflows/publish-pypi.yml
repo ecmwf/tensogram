@@ -14,15 +14,19 @@ jobs:
   build-tensogram-linux:
     name: Build tensogram wheels (${{ matrix.label }})
     runs-on: ${{ matrix.runs-on }}
+    container:
+      image: quay.io/pypa/${{ matrix.manylinux }}_${{ matrix.arch }}
     strategy:
       matrix:
         include:
           - runs-on: ubuntu-24.04
             label: Linux x86_64
-            artifact-name: wheels-tensogram-linux-x86_64
+            manylinux: manylinux_2_28
+            arch: x86_64
           - runs-on: ubuntu-24.04-arm
             label: Linux aarch64
-            artifact-name: wheels-tensogram-linux-aarch64
+            manylinux: manylinux_2_28
+            arch: aarch64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,8 +39,9 @@ jobs:
       # Install all supported CPython versions (including free-threaded) so
       # they are available to maturin via explicit --interpreter flags.
       # Maturin produces manylinux-tagged wheels automatically on Linux.
-      - name: Install supported CPython versions
+      - name: Install supported CPython versions and Clang
         run: |
+          dnf install -y clang-devel
           uv python install \
             3.11 3.12 3.13 3.14 \
             cpython-3.13+freethreaded cpython-3.14+freethreaded
@@ -48,11 +53,11 @@ jobs:
                    cpython-3.13+freethreaded cpython-3.14+freethreaded; do
             ARGS="$ARGS --interpreter $(uv python find $v)"
           done
-          make python-dist MATURIN_INTERP_ARGS="$ARGS"
+          make python-dist MATURIN_INTERP_ARGS="$ARGS" MATURIN_COMPAT=${{ matrix.manylinux }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact-name }}
+          name: wheels-tensogram-linux-${{ matrix.arch }}
           path: python/bindings/dist/
 
   build-tensogram-macos:
