@@ -203,7 +203,18 @@ pub fn aec_decompress(
 
     validate_params(params)?;
 
-    if data.is_empty() || expected_size == 0 {
+    // The only honest case for `expected_size == 0` is an empty
+    // compressed stream; a non-empty payload paired with a claimed-zero
+    // output would otherwise silently discard whatever it decodes to.
+    if expected_size == 0 {
+        if data.is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err(CompressionError::Szip(
+            "expected_size=0 with non-empty compressed stream (malformed descriptor)".to_string(),
+        ));
+    }
+    if data.is_empty() {
         return Ok(Vec::new());
     }
 
