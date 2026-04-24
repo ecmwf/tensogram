@@ -19,18 +19,17 @@ shapes are accepted:
 
 * a filesystem path (``str`` / :class:`pathlib.Path`) — read directly;
 * a remote URL (``s3://``, ``gs://``, ``az://``, ``http://``,
-  ``https://``) — read directly (Cycle 6);
+  ``https://``) — handed off to ``tensogram.TensogramFile.open_remote``;
 * bytes-like content (``bytes`` / ``bytearray`` / ``memoryview``) —
   materialised to a temp file owned by the source; the temp file is
   unlinked when the source is garbage-collected or explicitly closed.
 
-Byte streams are routed through :mod:`.readers.stream` (Cycle 5).
+Byte streams are routed through :mod:`.readers.stream`.
 """
 
 from __future__ import annotations
 
 import contextlib
-import logging
 import os
 import tempfile
 import weakref
@@ -39,8 +38,6 @@ from typing import Any
 from earthkit.data.sources.file import FileSource
 
 from tensogram_earthkit.readers.file import reader as file_reader
-
-LOG = logging.getLogger(__name__)
 
 _BytesLike = (bytes, bytearray, memoryview)
 
@@ -100,7 +97,7 @@ class TensogramSource(FileSource):
         storage_options: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        # Stash storage_options for later (remote access, Cycle 6).
+        # Stashed for the remote path — see TensogramFileReader._storage_options.
         self.storage_options = storage_options
 
         if isinstance(path, _BytesLike):

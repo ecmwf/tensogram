@@ -20,8 +20,8 @@ Two small functions:
   :attr:`UserMetadata.geography` can report the grid shape.
 
 Keeping this isolated from :mod:`.fieldlist` means the encoder in
-Cycle 7 can reuse the reverse direction (:func:`field_to_base_entry`)
-without importing the reader side.
+:mod:`.encoder` can reuse the reverse direction
+(:func:`field_to_base_entry`) without importing the reader side.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def extract_mars_keys(base_entry: dict[str, Any]) -> dict[str, Any]:
 
     out: dict[str, Any] = {}
     for k, v in base_entry.items():
-        if k == "_reserved_" or k == "mars":
+        if k in ("_reserved_", "mars"):
             continue
         out[k] = v
 

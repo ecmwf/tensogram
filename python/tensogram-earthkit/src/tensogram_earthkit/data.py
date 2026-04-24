@@ -32,10 +32,13 @@ class TensogramData:
         self._reader = reader
 
     def to_xarray(self, **kwargs: Any) -> Any:
+        """Decode the file as an :class:`xarray.Dataset`."""
         return self._reader.to_xarray(**kwargs)
 
     def to_fieldlist(self, **kwargs: Any) -> Any:
+        """Build a MARS :class:`FieldList`; raises for non-MARS content."""
         return self._reader.to_fieldlist(**kwargs)
 
     def to_numpy(self, **kwargs: Any) -> Any:
+        """Return the single decoded ndarray for a one-variable message."""
         return self._reader.to_numpy(**kwargs)
