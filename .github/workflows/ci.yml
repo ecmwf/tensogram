@@ -241,85 +241,86 @@ jobs:
         run: rm -rf "$TMPDIR" .venv target
 
   # ── macOS: lint + test + GRIB + NetCDF + Python ────────────────
-  main-macos:
-    name: Main (macOS)
-    runs-on: [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]
-    env:
-      RUSTUP_HOME: ${{ github.workspace }}/.rustup
-      CARGO_HOME: ${{ github.workspace }}/.cargo
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p "$TMPDIR"
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Install sccache
-        run: brew list sccache &>/dev/null || brew install sccache
-
-      - name: Install system dependencies
-        run: |
-          for pkg in netcdf hdf5 eccodes; do
-            brew list --formula "$pkg" >/dev/null 2>&1 || brew install "$pkg"
-          done
-          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix eccodes)/lib/pkgconfig:$(brew --prefix netcdf)/lib/pkgconfig:$(brew --prefix hdf5)/lib/pkgconfig" >> "$GITHUB_ENV"
-          echo "ECCODES_DIR=$(brew --prefix eccodes)" >> "$GITHUB_ENV"
-
-      - name: Format check
-        run: cargo fmt --check
-
-      - name: Clippy
-        run: |
-          cargo clippy --workspace --all-targets -- -D warnings
-          cargo clippy -p tensogram --all-targets --features "remote,async" -- -D warnings
-          cargo clippy -p tensogram-cli --all-targets --features "grib,netcdf" -- -D warnings
-          cargo clippy --manifest-path rust/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
-
-      - name: Test
-        run: cargo test --workspace
-
-      - name: Test (remote feature)
-        run: cargo test -p tensogram --features remote
-
-      - name: Test (remote + async features)
-        run: cargo test -p tensogram --features "remote,async"
-
-      - name: Test (GRIB)
-        run: |
-          cargo test --manifest-path rust/tensogram-grib/Cargo.toml
-          cargo test -p tensogram-cli --features grib
-
-      - name: Test (NetCDF)
-        run: |
-          cargo clippy --manifest-path rust/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
-          cargo test --manifest-path rust/tensogram-netcdf/Cargo.toml
-          cargo test -p tensogram-cli --features netcdf
-
-      - name: Build and test Python bindings
-        run: |
-          uv python install 3.13
-          uv venv .venv --python 3.13
-          . .venv/bin/activate
-          uv pip install maturin pytest pytest-asyncio numpy ruff
-          cd python/bindings && maturin develop && cd ../..
-          ruff check --config python/bindings/pyproject.toml python/tests/
-          python -m pytest python/tests/ -v
-          cargo check --manifest-path python/bindings/Cargo.toml --no-default-features
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-adv-stats || true
-
-      - name: Cleanup
-        if: always()
-        run: |
-          sccache --stop-server || true
-          rm -rf "$TMPDIR" .venv build .rustup .cargo .sccache .llvm target
+  # TEMPORARILY DISABLED: self-hosted macOS runners are problematic.
+  # main-macos:
+  #   name: Main (macOS)
+  #   runs-on: [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]
+  #   env:
+  #     RUSTUP_HOME: ${{ github.workspace }}/.rustup
+  #     CARGO_HOME: ${{ github.workspace }}/.cargo
+  #     SCCACHE_DIR: ${{ github.workspace }}/.sccache
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: mkdir -p "$TMPDIR"
+  #     - uses: dtolnay/rust-toolchain@stable
+  #       with:
+  #         components: clippy, rustfmt
+  #
+  #     - uses: astral-sh/setup-uv@v5
+  #       with:
+  #         enable-cache: true
+  #
+  #     - name: Install sccache
+  #       run: brew list sccache &>/dev/null || brew install sccache
+  #
+  #     - name: Install system dependencies
+  #       run: |
+  #         for pkg in netcdf hdf5 eccodes; do
+  #           brew list --formula "$pkg" >/dev/null 2>&1 || brew install "$pkg"
+  #         done
+  #         echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix eccodes)/lib/pkgconfig:$(brew --prefix netcdf)/lib/pkgconfig:$(brew --prefix hdf5)/lib/pkgconfig" >> "$GITHUB_ENV"
+  #         echo "ECCODES_DIR=$(brew --prefix eccodes)" >> "$GITHUB_ENV"
+  #
+  #     - name: Format check
+  #       run: cargo fmt --check
+  #
+  #     - name: Clippy
+  #       run: |
+  #         cargo clippy --workspace --all-targets -- -D warnings
+  #         cargo clippy -p tensogram --all-targets --features "remote,async" -- -D warnings
+  #         cargo clippy -p tensogram-cli --all-targets --features "grib,netcdf" -- -D warnings
+  #         cargo clippy --manifest-path rust/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
+  #
+  #     - name: Test
+  #       run: cargo test --workspace
+  #
+  #     - name: Test (remote feature)
+  #       run: cargo test -p tensogram --features remote
+  #
+  #     - name: Test (remote + async features)
+  #       run: cargo test -p tensogram --features "remote,async"
+  #
+  #     - name: Test (GRIB)
+  #       run: |
+  #         cargo test --manifest-path rust/tensogram-grib/Cargo.toml
+  #         cargo test -p tensogram-cli --features grib
+  #
+  #     - name: Test (NetCDF)
+  #       run: |
+  #         cargo clippy --manifest-path rust/tensogram-netcdf/Cargo.toml --all-targets -- -D warnings
+  #         cargo test --manifest-path rust/tensogram-netcdf/Cargo.toml
+  #         cargo test -p tensogram-cli --features netcdf
+  #
+  #     - name: Build and test Python bindings
+  #       run: |
+  #         uv python install 3.13
+  #         uv venv .venv --python 3.13
+  #         . .venv/bin/activate
+  #         uv pip install maturin pytest pytest-asyncio numpy ruff
+  #         cd python/bindings && maturin develop && cd ../..
+  #         ruff check --config python/bindings/pyproject.toml python/tests/
+  #         python -m pytest python/tests/ -v
+  #         cargo check --manifest-path python/bindings/Cargo.toml --no-default-features
+  #
+  #     - name: sccache stats
+  #       if: always()
+  #       run: sccache --show-adv-stats || true
+  #
+  #     - name: Cleanup
+  #       if: always()
+  #       run: |
+  #         sccache --stop-server || true
+  #         rm -rf "$TMPDIR" .venv build .rustup .cargo .sccache .llvm target
 
   # ── C++: Linux ─────────────────────────────────────────────────
   cpp-linux:
@@ -352,39 +353,40 @@ jobs:
         run: rm -rf "$TMPDIR" build target
 
   # ── C++: macOS ─────────────────────────────────────────────────
-  cpp-macos:
-    name: C++ (macOS)
-    runs-on: [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]
-    env:
-      RUSTUP_HOME: ${{ github.workspace }}/.rustup
-      CARGO_HOME: ${{ github.workspace }}/.cargo
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p "$TMPDIR"
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install sccache
-        run: brew list sccache &>/dev/null || brew install sccache
-
-      - name: Build and test
-        run: |
-          cargo build --release -p tensogram-ffi
-          cmake -S cpp -B build -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-          cmake --build build -j
-          ctest --test-dir build --output-on-failure
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-adv-stats || true
-
-      - name: Cleanup
-        if: always()
-        run: |
-          sccache --stop-server || true
-          rm -rf "$TMPDIR" build .rustup .cargo .sccache target
+  # TEMPORARILY DISABLED: self-hosted macOS runners are problematic.
+  # cpp-macos:
+  #   name: C++ (macOS)
+  #   runs-on: [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]
+  #   env:
+  #     RUSTUP_HOME: ${{ github.workspace }}/.rustup
+  #     CARGO_HOME: ${{ github.workspace }}/.cargo
+  #     SCCACHE_DIR: ${{ github.workspace }}/.sccache
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: mkdir -p "$TMPDIR"
+  #     - uses: dtolnay/rust-toolchain@stable
+  #
+  #     - name: Install sccache
+  #       run: brew list sccache &>/dev/null || brew install sccache
+  #
+  #     - name: Build and test
+  #       run: |
+  #         cargo build --release -p tensogram-ffi
+  #         cmake -S cpp -B build -DCMAKE_BUILD_TYPE=Release \
+  #           -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+  #           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+  #         cmake --build build -j
+  #         ctest --test-dir build --output-on-failure
+  #
+  #     - name: sccache stats
+  #       if: always()
+  #       run: sccache --show-adv-stats || true
+  #
+  #     - name: Cleanup
+  #       if: always()
+  #       run: |
+  #         sccache --stop-server || true
+  #         rm -rf "$TMPDIR" build .rustup .cargo .sccache target
 
   # ── WASM: build + test ────────────────────────────────────────
   wasm:
