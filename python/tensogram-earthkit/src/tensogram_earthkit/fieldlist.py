@@ -33,6 +33,8 @@ from earthkit.data.sources.array_list import ArrayField
 
 from tensogram_earthkit.mars import base_entry_to_usermetadata, has_mars_namespace
 
+__all__ = ["TensogramSimpleFieldList", "build_fieldlist_from_path"]
+
 
 class TensogramSimpleFieldList(SimpleFieldList):
     """:class:`SimpleFieldList` that remembers its backing tensogram file.

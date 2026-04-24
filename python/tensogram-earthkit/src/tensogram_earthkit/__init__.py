@@ -23,6 +23,27 @@ Internally the package is organised in reader-shaped modules
 (:mod:`.readers.file`, :mod:`.readers.memory`, :mod:`.readers.stream`) so
 the code can be lifted into ``ecmwf/earthkit-data``'s ``readers/`` tree
 upstream later without re-structuring.
+
+The public names below are convenience re-exports; the earthkit-data
+integration goes through entry points and does not require importing
+anything from this module directly.
 """
 
 from __future__ import annotations
+
+from tensogram_earthkit.data import TensogramData
+from tensogram_earthkit.detection import TENSOGRM_MAGIC, is_mars_tensogram
+from tensogram_earthkit.encoder import TensogramEncodedData, TensogramEncoder
+from tensogram_earthkit.fieldlist import TensogramSimpleFieldList, build_fieldlist_from_path
+from tensogram_earthkit.source import TensogramSource
+
+__all__ = [
+    "TENSOGRM_MAGIC",
+    "TensogramData",
+    "TensogramEncodedData",
+    "TensogramEncoder",
+    "TensogramSimpleFieldList",
+    "TensogramSource",
+    "build_fieldlist_from_path",
+    "is_mars_tensogram",
+]

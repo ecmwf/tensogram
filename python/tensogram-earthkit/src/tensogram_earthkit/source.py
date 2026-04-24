@@ -39,6 +39,8 @@ from earthkit.data.sources.file import FileSource
 
 from tensogram_earthkit.readers.file import reader as file_reader
 
+__all__ = ["TensogramSource", "source"]
+
 _BytesLike = (bytes, bytearray, memoryview)
 
 

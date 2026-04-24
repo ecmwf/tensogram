@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from typing import Any
 
+__all__ = ["TensogramData"]
+
 
 class TensogramData:
     """Thin facade over a :class:`TensogramFileReader`."""

@@ -26,7 +26,15 @@ Keeping this isolated from :mod:`.fieldlist` means the encoder in
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
+
+__all__ = [
+    "base_entry_to_usermetadata",
+    "extract_mars_keys",
+    "field_to_base_entry",
+    "has_mars_namespace",
+]
 
 
 def extract_mars_keys(base_entry: dict[str, Any]) -> dict[str, Any]:
@@ -133,19 +141,7 @@ def field_to_base_entry(field: Any) -> dict[str, Any]:
     MARS keys into the ``mars`` sub-map, and stashes the rest in
     ``_extra_`` so nothing is dropped on round-trips.
     """
-    # Pull everything the field exposes.  ``field.metadata()`` with no
-    # args returns the underlying metadata object; we iterate it as a
-    # dict.  UserMetadata supports ``keys()`` / ``items()``.
-    try:
-        items = dict(field.metadata().items())
-    except (AttributeError, TypeError):
-        # Best-effort fallback — some metadata types may not be
-        # iterable.  Pull the well-known MARS keys one by one.
-        items = {}
-        for k in _MARS_CANONICAL_KEYS:
-            v = field.metadata(k, default=None)
-            if v is not None:
-                items[k] = v
+    items = _collect_field_metadata(field)
 
     mars: dict[str, Any] = {}
     extras: dict[str, Any] = {}
@@ -161,3 +157,41 @@ def field_to_base_entry(field: Any) -> dict[str, Any]:
     if extras:
         entry["_extra_"] = extras
     return entry
+
+
+def _collect_field_metadata(field: Any) -> dict[str, Any]:
+    """Return a flat metadata dict for *field* — robust to Field variants.
+
+    Not every earthkit :class:`Field` implementation exposes the same
+    metadata interface.  Three strategies are attempted in order:
+
+    1. ``field.metadata().items()`` — works for dict-backed
+       :class:`UserMetadata`.
+    2. ``field.metadata(k)`` per canonical MARS key — works for
+       read-only metadata objects that only support ``__getitem__``
+       or ``metadata(key)``.
+    3. Empty dict — the field has no readable metadata, caller's
+       resulting base entry will be empty.
+    """
+    metadata_obj = None
+    with contextlib.suppress(AttributeError, TypeError):
+        metadata_obj = field.metadata()
+
+    if metadata_obj is not None:
+        try:
+            return dict(metadata_obj.items())
+        except (AttributeError, TypeError):
+            pass
+
+    # Fallback: ask for each canonical MARS key individually.  Each
+    # lookup is guarded because older Field implementations may raise
+    # on missing keys instead of returning None.
+    out: dict[str, Any] = {}
+    for k in _MARS_CANONICAL_KEYS:
+        try:
+            v = field.metadata(k)
+        except (KeyError, AttributeError, TypeError, ValueError):
+            continue
+        if v is not None:
+            out[k] = v
+    return out
