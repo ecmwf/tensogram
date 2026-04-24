@@ -32,10 +32,10 @@ const IMMUTABLE_KEYS: &[&str] = &[
     "szip_block_size",
     "szip_flags",
     "szip_block_offsets",
-    "reference_value",
-    "binary_scale_factor",
-    "decimal_scale_factor",
-    "bits_per_value",
+    "sp_reference_value",
+    "sp_binary_scale_factor",
+    "sp_decimal_scale_factor",
+    "sp_bits_per_value",
     "shuffle_element_size",
 ];
 

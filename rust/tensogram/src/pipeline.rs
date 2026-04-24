@@ -154,19 +154,19 @@ pub fn apply_pipeline(
                 })?;
                 desc.encoding = "simple_packing".to_string();
                 desc.params.insert(
-                    "reference_value".to_string(),
+                    "sp_reference_value".to_string(),
                     CborValue::Float(params.reference_value),
                 );
                 desc.params.insert(
-                    "binary_scale_factor".to_string(),
+                    "sp_binary_scale_factor".to_string(),
                     CborValue::Integer((i64::from(params.binary_scale_factor)).into()),
                 );
                 desc.params.insert(
-                    "decimal_scale_factor".to_string(),
+                    "sp_decimal_scale_factor".to_string(),
                     CborValue::Integer((i64::from(params.decimal_scale_factor)).into()),
                 );
                 desc.params.insert(
-                    "bits_per_value".to_string(),
+                    "sp_bits_per_value".to_string(),
                     CborValue::Integer((i64::from(params.bits_per_value)).into()),
                 );
                 applied_simple_packing = true;
@@ -325,10 +325,10 @@ mod tests {
         let values = [0.0_f64, 1.0, 2.0, 3.0];
         apply_pipeline(&mut desc, Some(&values), &p, "test").unwrap();
         assert_eq!(desc.encoding, "simple_packing");
-        assert_eq!(int_param(&desc, "bits_per_value"), 16);
-        assert_eq!(int_param(&desc, "decimal_scale_factor"), 0);
-        assert!(desc.params.contains_key("reference_value"));
-        assert!(desc.params.contains_key("binary_scale_factor"));
+        assert_eq!(int_param(&desc, "sp_bits_per_value"), 16);
+        assert_eq!(int_param(&desc, "sp_decimal_scale_factor"), 0);
+        assert!(desc.params.contains_key("sp_reference_value"));
+        assert!(desc.params.contains_key("sp_binary_scale_factor"));
     }
 
     #[test]
@@ -408,7 +408,7 @@ mod tests {
         let values = [1.0_f64, 2.0, 3.0, 4.0];
         apply_pipeline(&mut desc, Some(&values), &p, "clean_var").unwrap();
         assert_eq!(desc.encoding, "simple_packing");
-        assert!(desc.params.contains_key("reference_value"));
+        assert!(desc.params.contains_key("sp_reference_value"));
     }
 
     #[test]
@@ -593,7 +593,7 @@ mod tests {
         assert_eq!(desc.encoding, "simple_packing");
         assert_eq!(desc.filter, "shuffle");
         assert_eq!(desc.compression, "zstd");
-        assert_eq!(int_param(&desc, "bits_per_value"), 24);
+        assert_eq!(int_param(&desc, "sp_bits_per_value"), 24);
         assert_eq!(int_param(&desc, "shuffle_element_size"), 3);
         assert_eq!(int_param(&desc, "zstd_level"), 5);
     }

@@ -133,19 +133,19 @@ fn encode_simple_packing_plus_szip_byte_identical() {
     let params = tensogram_encodings::simple_packing::compute_params(&values, 24, 0).unwrap();
     desc.encoding = "simple_packing".to_string();
     desc.params.insert(
-        "reference_value".to_string(),
+        "sp_reference_value".to_string(),
         Value::Float(params.reference_value),
     );
     desc.params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_binary_scale_factor".to_string(),
         Value::Integer((i64::from(params.binary_scale_factor)).into()),
     );
     desc.params.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         Value::Integer((i64::from(params.decimal_scale_factor)).into()),
     );
     desc.params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         Value::Integer((i64::from(params.bits_per_value)).into()),
     );
     desc.compression = "szip".to_string();

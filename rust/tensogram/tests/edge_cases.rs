@@ -319,19 +319,19 @@ fn version_2_accepted() {
 fn make_simple_packing_desc(reference_value: f64) -> DataObjectDescriptor {
     let mut params = BTreeMap::new();
     params.insert(
-        "reference_value".to_string(),
+        "sp_reference_value".to_string(),
         ciborium::Value::Float(reference_value),
     );
     params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer(0.into()),
     );
     params.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         ciborium::Value::Integer(0.into()),
     );
     params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         ciborium::Value::Integer(16.into()),
     );
 
@@ -362,7 +362,7 @@ fn nan_reference_value_rejected() {
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(
-        msg.contains("finite") || msg.contains("NaN") || msg.contains("reference_value"),
+        msg.contains("finite") || msg.contains("NaN") || msg.contains("sp_reference_value"),
         "expected NaN error, got: {msg}"
     );
 }
@@ -379,7 +379,7 @@ fn infinity_reference_value_rejected() {
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(
-        msg.contains("finite") || msg.contains("inf") || msg.contains("reference_value"),
+        msg.contains("finite") || msg.contains("inf") || msg.contains("sp_reference_value"),
         "expected infinity error, got: {msg}"
     );
 }
@@ -413,7 +413,7 @@ fn unreasonable_binary_scale_factor_rejected() {
     // encode fails clearly.
     let mut desc = make_simple_packing_desc(273.15);
     desc.params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer((i64::from(i32::MAX)).into()),
     );
     let data: Vec<u8> = [270.0_f64, 275.0, 280.0, 285.0]
@@ -428,6 +428,11 @@ fn unreasonable_binary_scale_factor_rejected() {
     )
     .unwrap_err()
     .to_string();
+    // Error message quotes the `PackingError::InvalidParams.field` —
+    // that's the Rust struct field name (internal), not the wire-format
+    // `sp_*` key name.  Keeping the assertion on the internal name
+    // pins both the human-readable error text and the invariant that
+    // the validation-layer error is the one surfacing here.
     assert!(
         err.contains("binary_scale_factor"),
         "error must name the field: {err}"
@@ -440,7 +445,7 @@ fn binary_scale_factor_at_threshold_accepted() {
     // Threshold is inclusive: `|bsf| == 256` passes the safety net.
     let mut desc = make_simple_packing_desc(0.0);
     desc.params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer(256i64.into()),
     );
     let data: Vec<u8> = [1.0_f64, 2.0, 3.0, 4.0]
@@ -462,7 +467,7 @@ fn realistic_binary_scale_factor_accepted() {
     for bsf in [-60_i64, -20, -1, 0, 1, 20, 60] {
         let mut desc = make_simple_packing_desc(273.15);
         desc.params.insert(
-            "binary_scale_factor".to_string(),
+            "sp_binary_scale_factor".to_string(),
             ciborium::Value::Integer(bsf.into()),
         );
         let data: Vec<u8> = [273.15_f64, 283.0, 293.0, 303.0]
@@ -904,7 +909,7 @@ fn get_f64_param_wrong_type() {
     let mut desc = make_simple_packing_desc(0.0);
     // Replace reference_value with a string
     desc.params.insert(
-        "reference_value".to_string(),
+        "sp_reference_value".to_string(),
         ciborium::Value::Text("not_a_number".to_string()),
     );
     let data = vec![0u8; 32];
@@ -919,7 +924,7 @@ fn get_i64_param_wrong_type() {
     let mut desc = make_simple_packing_desc(0.0);
     // Replace binary_scale_factor with a float
     desc.params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Float(3.15),
     );
     let data = vec![0u8; 32];
@@ -932,7 +937,7 @@ fn get_i64_param_wrong_type() {
 fn missing_required_param() {
     let meta = make_global_meta();
     let mut desc = make_simple_packing_desc(0.0);
-    desc.params.remove("bits_per_value");
+    desc.params.remove("sp_bits_per_value");
     let data = vec![0u8; 32];
     let result = encode(&meta, &[(&desc, &data)], &EncodeOptions::default());
     assert!(result.is_err());
@@ -1104,7 +1109,7 @@ fn f64_param_from_integer_value() {
     let mut desc = make_simple_packing_desc(0.0);
     // Use an integer instead of float for reference_value
     desc.params.insert(
-        "reference_value".to_string(),
+        "sp_reference_value".to_string(),
         ciborium::Value::Integer(100.into()),
     );
     let data = vec![0u8; 32];
@@ -1596,7 +1601,7 @@ fn u64_param_negative_value_rejected() {
     let meta = make_global_meta();
     let mut desc = make_simple_packing_desc(0.0);
     desc.params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         ciborium::Value::Integer((-1).into()),
     );
     let data = vec![0u8; 32];

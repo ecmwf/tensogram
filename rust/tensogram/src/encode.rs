@@ -907,23 +907,25 @@ pub(crate) fn build_pipeline_config_with_backend(
 fn extract_simple_packing_params(
     params: &BTreeMap<String, ciborium::Value>,
 ) -> Result<SimplePackingParams> {
-    let reference_value = get_f64_param(params, "reference_value")?;
+    let reference_value = get_f64_param(params, "sp_reference_value")?;
     if reference_value.is_nan() || reference_value.is_infinite() {
         return Err(TensogramError::Metadata(format!(
-            "reference_value must be finite, got {reference_value}"
+            "sp_reference_value must be finite, got {reference_value}"
         )));
     }
     Ok(SimplePackingParams {
         reference_value,
-        binary_scale_factor: i32::try_from(get_i64_param(params, "binary_scale_factor")?).map_err(
-            |_| TensogramError::Metadata("binary_scale_factor out of i32 range".to_string()),
-        )?,
-        decimal_scale_factor: i32::try_from(get_i64_param(params, "decimal_scale_factor")?)
+        binary_scale_factor: i32::try_from(get_i64_param(params, "sp_binary_scale_factor")?)
             .map_err(|_| {
-                TensogramError::Metadata("decimal_scale_factor out of i32 range".to_string())
+                TensogramError::Metadata("sp_binary_scale_factor out of i32 range".to_string())
             })?,
-        bits_per_value: u32::try_from(get_u64_param(params, "bits_per_value")?)
-            .map_err(|_| TensogramError::Metadata("bits_per_value out of u32 range".to_string()))?,
+        decimal_scale_factor: i32::try_from(get_i64_param(params, "sp_decimal_scale_factor")?)
+            .map_err(|_| {
+                TensogramError::Metadata("sp_decimal_scale_factor out of i32 range".to_string())
+            })?,
+        bits_per_value: u32::try_from(get_u64_param(params, "sp_bits_per_value")?).map_err(
+            |_| TensogramError::Metadata("sp_bits_per_value out of u32 range".to_string()),
+        )?,
     })
 }
 

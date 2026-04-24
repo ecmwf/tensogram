@@ -83,19 +83,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut params = BTreeMap::new();
     params.insert(
-        "reference_value".to_string(),
+        "sp_reference_value".to_string(),
         Value::Float(packing.reference_value),
     );
     params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_binary_scale_factor".to_string(),
         Value::Integer((packing.binary_scale_factor as i64).into()),
     );
     params.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         Value::Integer((packing.decimal_scale_factor as i64).into()),
     );
     params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         Value::Integer((packing.bits_per_value as i64).into()),
     );
     params.insert("szip_rsi".to_string(), Value::Integer(128.into()));

@@ -62,19 +62,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // DataObjectDescriptor so decode() can reconstruct them.
     let mut packing_params: BTreeMap<String, Value> = BTreeMap::new();
     packing_params.insert(
-        "reference_value".into(),
+        "sp_reference_value".into(),
         Value::Float(params.reference_value),
     );
     packing_params.insert(
-        "binary_scale_factor".into(),
+        "sp_binary_scale_factor".into(),
         Value::Integer((params.binary_scale_factor as i64).into()),
     );
     packing_params.insert(
-        "decimal_scale_factor".into(),
+        "sp_decimal_scale_factor".into(),
         Value::Integer((params.decimal_scale_factor as i64).into()),
     );
     packing_params.insert(
-        "bits_per_value".into(),
+        "sp_bits_per_value".into(),
         Value::Integer((params.bits_per_value as i64).into()),
     );
 

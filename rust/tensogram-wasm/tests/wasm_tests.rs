@@ -2563,11 +2563,11 @@ fn simple_packing_compute_params_basic() {
     let values = [200.0f64, 210.0, 220.0, 230.0, 240.0];
     let result = tensogram_wasm::simple_packing_compute_params(&values, 16, 0).unwrap();
     let obj = js_sys::Object::from(result);
-    let ref_v = js_sys::Reflect::get(&obj, &"reference_value".into())
+    let ref_v = js_sys::Reflect::get(&obj, &"sp_reference_value".into())
         .unwrap()
         .as_f64()
         .unwrap();
-    let bpv = js_sys::Reflect::get(&obj, &"bits_per_value".into())
+    let bpv = js_sys::Reflect::get(&obj, &"sp_bits_per_value".into())
         .unwrap()
         .as_f64()
         .unwrap();
@@ -2586,7 +2586,7 @@ fn simple_packing_compute_params_zero_bits() {
     // bits=0 → constant-field packing, reference = first value
     let values = [42.0f64, 42.0, 42.0];
     let result = tensogram_wasm::simple_packing_compute_params(&values, 0, 0).unwrap();
-    let bpv = js_sys::Reflect::get(&result, &"bits_per_value".into())
+    let bpv = js_sys::Reflect::get(&result, &"sp_bits_per_value".into())
         .unwrap()
         .as_f64()
         .unwrap();

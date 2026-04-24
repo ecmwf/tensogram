@@ -44,19 +44,19 @@ fn bench_encode_paths(c: &mut Criterion) {
     // ── Build params map (ciborium Values) ────────────────────────────────────
     let mut params_map: BTreeMap<String, ciborium::Value> = BTreeMap::new();
     params_map.insert(
-        "reference_value".to_string(),
+        "sp_reference_value".to_string(),
         ciborium::Value::Float(sp_params.reference_value),
     );
     params_map.insert(
-        "binary_scale_factor".to_string(),
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer((sp_params.binary_scale_factor as i64).into()),
     );
     params_map.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         ciborium::Value::Integer((sp_params.decimal_scale_factor as i64).into()),
     );
     params_map.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         ciborium::Value::Integer((sp_params.bits_per_value as i64).into()),
     );
     // szip parameters (RSI=128 restart interval, block_size=16, flags=8 = AEC_DATA_PREPROCESS)
