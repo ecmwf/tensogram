@@ -116,9 +116,24 @@ pub(crate) fn preprocess_signed(
 /// Post-process (undo preprocessing) for unsigned samples.
 ///
 /// Given a reference sample and mapped values, reconstruct the
-/// original sample stream.
-pub(crate) fn postprocess_unsigned(reference: u32, mapped: &[u32], xmax: u32) -> Vec<u32> {
-    let mut output = Vec::with_capacity(mapped.len() + 1);
+/// original sample stream. Reserves the output buffer fallibly so a
+/// pathological `mapped.len()` (driven by hostile RSI parameters) is
+/// rejected as [`AecError::Data`] rather than aborting the process.
+pub(crate) fn postprocess_unsigned(
+    reference: u32,
+    mapped: &[u32],
+    xmax: u32,
+) -> Result<Vec<u32>, crate::AecError> {
+    let cap = mapped
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| crate::AecError::Data("postprocess output length overflows usize".into()))?;
+    let mut output: Vec<u32> = Vec::new();
+    output.try_reserve_exact(cap).map_err(|e| {
+        crate::AecError::Data(format!(
+            "failed to reserve {cap} u32 samples for szip postprocess (unsigned): {e}"
+        ))
+    })?;
     output.push(reference);
 
     let med = xmax / 2 + 1;
@@ -145,7 +160,7 @@ pub(crate) fn postprocess_unsigned(reference: u32, mapped: &[u32], xmax: u32) ->
         last = next;
     }
 
-    output
+    Ok(output)
 }
 
 /// Post-process (undo preprocessing) for signed samples.
@@ -162,9 +177,18 @@ pub(crate) fn postprocess_signed(
     mapped: &[u32],
     bits_per_sample: u32,
     xmax: u32,
-) -> Vec<u32> {
+) -> Result<Vec<u32>, crate::AecError> {
     let m = 1u32 << (bits_per_sample - 1);
-    let mut output = Vec::with_capacity(mapped.len() + 1);
+    let cap = mapped
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| crate::AecError::Data("postprocess output length overflows usize".into()))?;
+    let mut output: Vec<u32> = Vec::new();
+    output.try_reserve_exact(cap).map_err(|e| {
+        crate::AecError::Data(format!(
+            "failed to reserve {cap} u32 samples for szip postprocess (signed): {e}"
+        ))
+    })?;
 
     // Sign extend the reference sample
     let ref_signed = ((reference_raw ^ m).wrapping_sub(m)) as i32;
@@ -211,7 +235,7 @@ pub(crate) fn postprocess_signed(
         last = next;
     }
 
-    output
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -224,7 +248,7 @@ mod tests {
         let xmax = 255u32;
 
         let (reference, mapped) = preprocess_unsigned(&samples, xmax);
-        let reconstructed = postprocess_unsigned(reference, &mapped, xmax);
+        let reconstructed = postprocess_unsigned(reference, &mapped, xmax).unwrap();
 
         assert_eq!(reconstructed, samples);
     }
@@ -235,7 +259,7 @@ mod tests {
         let xmax = 255u32;
 
         let (reference, mapped) = preprocess_unsigned(&samples, xmax);
-        let reconstructed = postprocess_unsigned(reference, &mapped, xmax);
+        let reconstructed = postprocess_unsigned(reference, &mapped, xmax).unwrap();
 
         assert_eq!(reconstructed, samples);
     }
@@ -248,7 +272,7 @@ mod tests {
         let (reference, mapped) = preprocess_unsigned(&samples, xmax);
         // All deltas should be zero
         assert!(mapped.iter().all(|&d| d == 0));
-        let reconstructed = postprocess_unsigned(reference, &mapped, xmax);
+        let reconstructed = postprocess_unsigned(reference, &mapped, xmax).unwrap();
         assert_eq!(reconstructed, samples);
     }
 
@@ -258,7 +282,7 @@ mod tests {
         let xmax = 255u32;
 
         let (reference, mapped) = preprocess_unsigned(&samples, xmax);
-        let reconstructed = postprocess_unsigned(reference, &mapped, xmax);
+        let reconstructed = postprocess_unsigned(reference, &mapped, xmax).unwrap();
 
         assert_eq!(reconstructed, samples);
     }
@@ -283,7 +307,7 @@ mod tests {
         let xmax = 65535u32;
 
         let (reference, mapped) = preprocess_unsigned(&samples, xmax);
-        let reconstructed = postprocess_unsigned(reference, &mapped, xmax);
+        let reconstructed = postprocess_unsigned(reference, &mapped, xmax).unwrap();
 
         assert_eq!(reconstructed, samples);
     }
@@ -298,7 +322,7 @@ mod tests {
         let xmax = 127u32; // (1 << (bps-1)) - 1
 
         let (reference, mapped) = preprocess_signed(&samples, bps, xmax);
-        let reconstructed = postprocess_signed(reference, &mapped, bps, xmax);
+        let reconstructed = postprocess_signed(reference, &mapped, bps, xmax).unwrap();
 
         assert_eq!(reconstructed, samples);
     }
@@ -311,7 +335,7 @@ mod tests {
         let samples: Vec<u32> = (0..64).map(|i| (i * 1031) % 65536).collect();
 
         let (reference, mapped) = preprocess_signed(&samples, bps, xmax);
-        let reconstructed = postprocess_signed(reference, &mapped, bps, xmax);
+        let reconstructed = postprocess_signed(reference, &mapped, bps, xmax).unwrap();
 
         assert_eq!(reconstructed, samples);
     }
@@ -327,7 +351,7 @@ mod tests {
             mapped.iter().all(|&d| d == 0),
             "constant should map to all-zero deltas"
         );
-        let reconstructed = postprocess_signed(reference, &mapped, bps, xmax);
+        let reconstructed = postprocess_signed(reference, &mapped, bps, xmax).unwrap();
         assert_eq!(reconstructed, samples);
     }
 
