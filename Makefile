@@ -56,6 +56,10 @@ RUFF_CFG ?= python/bindings/pyproject.toml
 # Space-separated --interpreter flags passed to maturin build; defaults to
 # auto-discovery. Override in CI: MATURIN_INTERP_ARGS="--interpreter /path/to/py"
 MATURIN_INTERP_ARGS ?= --find-interpreter
+# Optional maturin --compatibility target (e.g. manylinux_2_28).
+# Passed as --compatibility <value> when non-empty.
+MATURIN_COMPAT ?=
+MATURIN_COMPAT_ARG = $(if $(MATURIN_COMPAT),--compatibility $(MATURIN_COMPAT))
 
 python-build: ## Build Python bindings via maturin (dev install into .venv)
 	if [ ! -d .venv ] ; then uv venv ; fi
@@ -65,7 +69,7 @@ python-build: ## Build Python bindings via maturin (dev install into .venv)
 
 python-dist: ## Build tensogram distributable wheels for the current platform
 	if [ ! -d .venv ] ; then uv venv ; fi
-	cd python/bindings && $(MATURIN) build --release --out dist $(MATURIN_INTERP_ARGS)
+	cd python/bindings && $(MATURIN) build --release --out dist $(MATURIN_INTERP_ARGS) $(MATURIN_COMPAT_ARG)
 
 python-dist-extras: ## Build distributable wheels for pure-Python extra packages
 	uv build python/tensogram-xarray --out-dir dist/extras
