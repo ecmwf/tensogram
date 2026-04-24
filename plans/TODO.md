@@ -308,34 +308,63 @@ For speculative ideas, see `IDEAS.md`.
 - [x] ~~code coverage~~ → All CLI subcommands have dedicated tests (ls, dump, get, set, copy, merge, split, reshuffle, validate, convert-grib, convert-netcdf). Encodings: `simple_packing` and `zfp` covered. FFI exercised through the C++ wrapper test suite.
 - [x] ~~add logging trace~~ → `tracing` crate instrumented on encode/decode/scan/file/pipeline. Activate with `TENSOGRAM_LOG=debug`
 
-- [ ] **cross-codec `expected_size` preallocation hardening**:
-    - `Compressor::decompress` receives `expected_size` from
-      `estimate_decompressed_size(config)`
-      (`rust/tensogram-encodings/src/pipeline.rs:787`), which multiplies
-      `config.num_values * dtype_byte_width` with no upper-bound check.
-      `config.num_values` is attacker-controllable via the tensor-shape
-      CBOR of a malformed `.tgm` file, so a pathological value drives
-      an infallible allocation that can abort the process (DoS).
-    - blosc2 was fixed in PR #69 (which closes issue #68) by dropping
-      `expected_size` trust entirely and using `Vec::new()` + per-chunk
-      `try_reserve` (size comes from the codec's own frame trailer, not
-      the descriptor).
-    - Remaining affected codecs:
-        - `rust/tensogram-encodings/src/libaec.rs:150` —
-          `vec![0u8; expected_size]` inside szip's `aec_decompress`
-          (additionally zero-initialises the buffer, so it's worse
-          than `with_capacity`).
-        - `rust/tensogram-szip/src/decoder.rs:88` —
-          `Vec::with_capacity` on `total_samples` in the pure-Rust
-          szip backend.
-    - Recommended two-layer fix:
-        - Add an upper-bound check in `estimate_decompressed_size`
-          (or in a new descriptor-validation step on decode) so the
-          pipeline-derived sizes can't exceed a documented cap.
-        - Switch the remaining codecs to `try_reserve` + growable
-          allocation so allocation failures surface as
-          `CompressionError` instead of aborting the process.
-    - Spun out of the Copilot review on PR #69.
+- [x] ~~**cross-codec `expected_size` preallocation hardening (szip)**~~ →
+  Fallible allocation across both szip backends (FFI `aec_decompress` +
+  `aec_decompress_range` in `libaec.rs`; pure-Rust `decode`, `decode_rsi`,
+  `write_samples` in `tensogram-szip`). `checked_mul` added to
+  `samples_per_rsi` and `write_samples` sample-count → byte-count math.
+  `checked_sub` added to the `decoded_len = expected_size - avail_out`
+  arithmetic that feeds `set_len`. Hostile `num_values` now surfaces as
+  `CompressionError::Szip` / `AecError::Data` with a `"failed to
+  reserve"` prefix instead of aborting the process.
+  Static cap deliberately NOT introduced — rejected because legitimate
+  multi-GiB scientific workloads make any usable cap too permissive to
+  block attackers. See `DONE.md` → *Preallocation hardening for szip
+  decode paths* for the full rationale and soundness notes on the FFI
+  `set_len` pattern. Closes the szip half of issue #68 / PR #69.
+
+- [ ] **preallocation hardening — `simple_packing` decode paths**:
+    - `simple_packing::decode_aligned`, `decode_generic`, `decode_range`,
+      and the parallel variants in
+      `rust/tensogram-encodings/src/simple_packing.rs` all call
+      `Vec::with_capacity(num_values)` on descriptor-derived
+      `num_values` for the output `Vec<f64>`, giving 8× amplification.
+    - Reachable without any compression codec in play
+      (`CompressionType::None + EncodingType::SimplePacking`), so a
+      malformed `.tgm` can still abort the process through this path
+      after the szip hardening landed.
+    - Fix shape mirrors the szip fix: switch `Vec::with_capacity` to
+      `Vec::new()` + `try_reserve_exact` and surface allocation
+      failures as `PackingError::AllocationFailed` (new variant).
+
+- [ ] **preallocation hardening — bitmask decode paths**:
+    - `bitmask::packing::unpack`, `bitmask::rle::decode`,
+      `bitmask::roaring::decode` each call `Vec::with_capacity(n_elements)`
+      (or `vec![false; n_elements]`) on descriptor-derived `n_elements`.
+    - RLE is especially cheap to attack: a tiny compressed blob can
+      claim a huge run count.
+    - Fix: same `try_reserve_exact` pattern; new `MaskError::AllocationFailed`
+      variant.
+
+- [ ] **preallocation hardening — `zfp_decompress_f64`**:
+    - `rust/tensogram-encodings/src/zfp_ffi.rs:82` —
+      `vec![0.0f64; num_values]` on `num_values` sourced from
+      `ZfpCompressor` which reads from the descriptor. 8× amplification,
+      eager zero-fill forces commit under Linux overcommit.
+    - Fix: `Vec::try_reserve_exact(num_values)` + avoid the eager
+      zero-fill (libzfp writes every f64 it produces into the output
+      slice passed via `zfp_field_1d`).
+
+- [ ] **FFI-vs-pure szip parameter validation asymmetry**:
+    - `rust/tensogram-szip/src/lib.rs` calls `params::validate()` on
+      every entry point.
+    - `rust/tensogram-encodings/src/libaec.rs` (FFI path) does not
+      apply the same pre-validation; it relies on libaec returning
+      non-zero status codes.
+    - Add a shared validation step (or lift `params::validate` into
+      `tensogram-encodings` as a small helper) so the two backends
+      reject malformed AEC parameters consistently before touching the
+      FFI boundary.
 
 ## Viewer
 

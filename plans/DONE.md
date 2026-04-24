@@ -812,6 +812,47 @@ comparison against ecCodes.
   error paths (encoding, decoding, streaming, CLI) and the no-panic
   guarantee.
 
+## Preallocation hardening for szip decode paths
+
+A malformed `.tgm` descriptor whose tensor-shape product drove
+`num_values × dtype_byte_width` into the terabyte range previously
+aborted the decode process via infallible allocations in the szip
+codecs. Fallible reservation was already in place for blosc2 but not
+for szip; this closes the szip half of the gap.
+
+| Component | What changed |
+|-----------|-------------|
+| `tensogram-encodings/src/libaec.rs` | `aec_decompress` and `aec_decompress_range` now use `Vec::new()` + `try_reserve_exact` + `set_len(decoded_len)` in place of `vec![0u8; N]`. Trust-model doc comments on both entry points. `expected_size == 0` early-returns to avoid the `NonNull::dangling()` pointer class on zero-capacity `Vec`s. `checked_sub` on `expected_size - avail_out` guards against a misbehaving libaec feeding the `set_len` an absurd length. A hostile `expected_size` / `byte_size` surfaces as `CompressionError::Szip` with a `"failed to reserve"` prefix rather than aborting the process. The removal of the eager zero-fill is also a small honest-path win. |
+| `tensogram-szip/src/decoder.rs` | The `decode` main output buffer, `decode_rsi` scratch buffer, and `write_samples` sample-serialisation buffer all switched from `Vec::with_capacity` to fallible `try_reserve_exact`. `write_samples` additionally guards the `samples.len() * byte_width` multiplication with `checked_mul`, and `samples_per_rsi = rsi_blocks * block_size` is now a `checked_mul` to survive 32-bit targets and `AEC_NOT_ENFORCE` parameter combinations. |
+| Tests | New in-module regression tests in `libaec.rs` (FFI path) and new `preallocation_hardening` module in `tensogram-szip/tests/error_paths.rs` (pure path) assert that `usize::MAX` / `isize::MAX + 1` sentinels surface as typed errors. End-to-end integration tests in `pipeline.rs::tests` exercise the full `decode_pipeline` with a hostile `PipelineConfig.num_values` against both the FFI and pure-Rust szip backends. |
+| Docs | `docs/src/guide/error-handling.md` gains a *Malformed Descriptor — Pathological Tensor Size (szip)* subsection and a new bullet under the *No-Panic Guarantee* on fallible allocation from untrusted wire-format sizes. The subsection also lists the remaining unhardened paths (`simple_packing`, bitmask, `zfp`) as explicit known limitations so callers don't mistake this for a cross-codec guarantee. |
+
+Design choices worth recording:
+
+- **No static cap.** Imposing a documented maximum decompressed size in
+  `estimate_decompressed_size` was considered and rejected — the
+  library's target workloads (ERA5, ML weights, high-res climate
+  simulations) routinely produce legitimate multi-GiB single objects,
+  so any cap that fits them is too permissive to block attackers, and
+  any cap that blocks attackers breaks honest use. Fallible allocation
+  is sufficient on its own.
+- **Sound FFI buffer pattern.** `aec_decompress` keeps `len == 0`
+  during the FFI call and only `set_len(decoded_len)` after libaec
+  reports how many bytes it wrote. No uninitialised memory is ever
+  observable through the `Vec` API; this avoids the UB trap of
+  calling `set_len(expected_size)` before the bytes are written.
+- **Szip-only scope.** The fix covers the two szip backends. Four
+  sibling paths share the same threat model but are deliberately left
+  for focused follow-up PRs, tracked as separate items in `TODO.md`:
+  `simple_packing::decode*` (8× amplified output, reachable through
+  `CompressionType::None + EncodingType::SimplePacking` with no
+  compressor involved at all); `bitmask::{packing,rle,roaring}::decode`
+  (especially RLE, where a tiny compressed blob can claim a huge run
+  count); `zfp_ffi::zfp_decompress_f64` (infallible `vec![0.0f64; N]`
+  on descriptor-derived `num_values`); and the FFI-vs-pure szip
+  parameter-validation asymmetry (pure backend runs `params::validate`
+  on entry, FFI path does not).
+
 ## Examples
 
 ### Rust
