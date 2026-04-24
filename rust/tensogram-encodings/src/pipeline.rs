@@ -719,11 +719,26 @@ pub fn decode_range_pipeline(
     // Phase 1: Compute byte range needed from the (possibly compressed) stream
     let (byte_start, byte_size, bit_offset_in_chunk) = match &config.encoding {
         EncodingType::SimplePacking(params) => {
-            let bit_start = sample_offset * params.bits_per_value as u64;
-            let bit_count = sample_count * params.bits_per_value as u64;
-            let bs = (bit_start / 8) as usize;
-            let be = (bit_start + bit_count).div_ceil(8) as usize;
-            (bs, be - bs, Some((bit_start % 8) as usize))
+            // Promote to u128 for the bit-position arithmetic so a hostile
+            // `sample_offset` or `sample_count` cannot silently wrap.
+            let bpv = params.bits_per_value as u128;
+            let bit_start_u128 = (sample_offset as u128)
+                .checked_mul(bpv)
+                .ok_or_else(|| PipelineError::Range("bit start overflow".to_string()))?;
+            let bit_count_u128 = (sample_count as u128)
+                .checked_mul(bpv)
+                .ok_or_else(|| PipelineError::Range("bit count overflow".to_string()))?;
+            let bit_end_u128 = bit_start_u128
+                .checked_add(bit_count_u128)
+                .ok_or_else(|| PipelineError::Range("bit end overflow".to_string()))?;
+            let bs = usize::try_from(bit_start_u128 / 8)
+                .map_err(|_| PipelineError::Range("byte start exceeds usize".to_string()))?;
+            let be = usize::try_from(bit_end_u128.div_ceil(8))
+                .map_err(|_| PipelineError::Range("byte end exceeds usize".to_string()))?;
+            let size = be
+                .checked_sub(bs)
+                .ok_or_else(|| PipelineError::Range("byte range invariant violated".to_string()))?;
+            (bs, size, Some((bit_start_u128 % 8) as usize))
         }
         EncodingType::None => {
             let elem_size = config.dtype_byte_width;
