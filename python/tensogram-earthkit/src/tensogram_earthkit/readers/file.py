@@ -98,11 +98,16 @@ class TensogramFileReader(Reader):
         return tensogram.decode_metadata(raw)
 
     def _is_mars(self) -> bool:
-        """``True`` when the first message carries per-object MARS metadata."""
+        """``True`` when the first message carries per-object MARS metadata.
+
+        Returns ``False`` when the file is empty / unreadable — narrow
+        exception classes only.  Programming errors (attribute / type
+        errors) are deliberately NOT swallowed so bugs surface cleanly.
+        """
         try:
             meta = self._decode_first_metadata()
-        except Exception:  # pragma: no cover - defensive
-            LOG.debug("could not read first message metadata from %s", self.path)
+        except (OSError, ValueError) as exc:
+            LOG.debug("could not read first message metadata from %s: %s", self.path, exc)
             return False
         return is_mars_tensogram(meta)
 

@@ -29,6 +29,9 @@ from earthkit.data.encoders import EncodedData, Encoder
 
 from tensogram_earthkit.mars import field_to_base_entry
 
+__all__ = ["TensogramEncodedData", "TensogramEncoder", "encoder"]
+
+
 # ---------------------------------------------------------------------------
 # EncodedData envelope
 # ---------------------------------------------------------------------------
@@ -162,7 +165,11 @@ class TensogramEncoder(Encoder):
         if hasattr(data, "__iter__") and hasattr(data, "__len__"):
             return self._encode_fieldlist(data, **kwargs)
 
-        raise ValueError(f"cannot encode {type(data).__name__} as tensogram")
+        raise ValueError(
+            f"cannot encode {type(data).__name__} as tensogram — "
+            "supported inputs are earthkit FieldList / Field and xarray "
+            "Dataset / DataArray"
+        )
 
     def _encode_field(self, field: Any, **_kwargs: Any) -> EncodedData:
         return self._encode_fieldlist_like([field])
@@ -174,6 +181,12 @@ class TensogramEncoder(Encoder):
         import xarray as xr
 
         if isinstance(data, xr.DataArray):
+            # DataArrays without a name would surface as a variable
+            # keyed by ``None`` and serialise as the literal string
+            # ``"None"`` in the base entry.  Synthesise a stable name
+            # so the round-trip stays deterministic.
+            if data.name is None:
+                data = data.rename("data")
             datasets = [data.to_dataset()]
         elif isinstance(data, xr.Dataset):
             datasets = [data]
@@ -186,7 +199,11 @@ class TensogramEncoder(Encoder):
 
         for ds in datasets:
             for name, var in ds.data_vars.items():
-                arr = np.asarray(var.values)
+                # Force C-contiguous so the descriptor strides match
+                # the raw bytes the encoder will write.  Non-contiguous
+                # arrays (transposed / sliced views) would otherwise
+                # round-trip to garbage.
+                arr = np.ascontiguousarray(var.values)
                 descriptors.append(_make_descriptor(arr))
                 arrays.append(arr)
                 # Stash the xarray variable name so it round-trips.
@@ -194,6 +211,9 @@ class TensogramEncoder(Encoder):
                 if var.attrs:
                     entry["_extra_"] = {k: str(v) for k, v in var.attrs.items()}
                 base.append(entry)
+
+        if not descriptors:
+            raise ValueError("cannot encode an xarray object with no data variables")
 
         meta = {"base": base, "_extra_": {"encoder": "tensogram-earthkit"}}
         import tensogram
@@ -218,6 +238,9 @@ class TensogramEncoder(Encoder):
             target_shape = tuple(getattr(field, "shape", arr.shape))
             if arr.shape != target_shape and arr.size == int(np.prod(target_shape)):
                 arr = arr.reshape(target_shape)
+            # Force C-contiguous so the descriptor strides match the
+            # raw bytes the encoder will write (see _encode_xarray).
+            arr = np.ascontiguousarray(arr)
             descriptors.append(_make_descriptor(arr))
             arrays.append(arr)
             base.append(field_to_base_entry(field))

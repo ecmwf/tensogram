@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from typing import Any
 
+__all__ = ["TENSOGRM_MAGIC", "is_mars_tensogram"]
+
 # Message preamble magic.  See ``plans/WIRE_FORMAT.md`` §3 in the main
 # tensogram documentation for the full preamble byte layout.
 TENSOGRM_MAGIC: bytes = b"TENSOGRM"
