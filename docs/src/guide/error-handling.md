@@ -450,6 +450,48 @@ silent corruption path where an `i32::MAX`-saturated
 with `0.0` and records their positions in a bitmask companion
 section.
 
+### Malformed Descriptor — Pathological Tensor Size (szip)
+
+A corrupted or hostile `.tgm` file whose tensor descriptor declares an
+unrealistic element count (for example, `shape: [2^40]`) drives
+`num_values × dtype_byte_width` to a multi-terabyte value on decode.
+
+For the **szip compression codec** — both the C FFI backend (via
+libaec) and the pure-Rust `tensogram-szip` crate — every allocation on
+the decode path that derives from this untrusted size is fallible:
+`Vec::try_reserve_exact` on the output buffer, the per-RSI scratch
+buffer and the sample-serialisation buffer, `checked_mul` on the
+sample-count → byte-count conversion, and `checked_sub` on the
+bytes-written arithmetic the FFI path reports back. A hostile size
+therefore surfaces as a **Compression error** whose message begins
+with `"failed to reserve"` (or, for the multiplication overflow case,
+`"overflows usize"`) rather than aborting the process.
+
+Blosc2 is likewise hardened (see the PR #69 fix notes): it ignores the
+caller-supplied hint entirely and reserves fallibly per chunk against
+its own frame-trailer metadata.
+
+**Not yet hardened — known limitations:** The other codec (`zfp`) and
+two non-compression allocation sites still use infallible
+preallocation from descriptor-derived element counts. A `.tgm` crafted
+to route through any of the following paths can still trigger an
+allocation abort rather than a typed error:
+
+- `EncodingType::SimplePacking` on the decode path —
+  `simple_packing::decode*` uses `Vec::with_capacity(num_values)` for
+  the output `Vec<f64>`.
+- Bitmask companion frames — `bitmask::{packing,rle,roaring}::decode`
+  use `Vec::with_capacity(n_elements)`.
+- `CompressionType::Zfp` — `zfp_ffi::zfp_decompress_f64` does
+  `vec![0.0f64; num_values]` on a descriptor-derived `num_values`.
+
+These are tracked in `plans/TODO.md` as separate follow-up items. For
+now, callers that accept `.tgm` input from untrusted sources should
+either validate the descriptor shape before decode (structure-level
+`tensogram validate --quick` confirms the shape is well-formed) or
+restrict the accepted pipelines to szip and the other
+already-hardened codecs.
+
 ### File Not Found / Permission Denied
 
 `TensogramFile.open()` raises **OSError** (Python), **io\_error** (C++),
@@ -521,6 +563,15 @@ and `unimplemented!()` in non-test code paths. The library guarantees:
 - `u64 → usize` conversions use `usize::try_from()` to prevent truncation
   on 32-bit platforms.
 - Array indexing is guarded by prior bounds checks.
+- **Untrusted sizes in the szip and blosc2 decode paths** (the
+  descriptor's `num_values × dtype_byte_width`, range-decode lengths,
+  per-codec internal size hints) are reserved via
+  `Vec::try_reserve_exact`, so allocation failure surfaces as a typed
+  error rather than aborting the process. Other decode paths
+  (`simple_packing`, bitmask decoders, `zfp`) still use infallible
+  preallocation — see [Malformed Descriptor — Pathological Tensor
+  Size (szip)](#malformed-descriptor--pathological-tensor-size-szip)
+  for the known limitations and the remediation plan.
 - FFI boundary code returns error codes instead of panicking, and uses
   `unwrap_or_default()` only for `CString::new()` (interior null fallback).
 - The scan functions (`scan`, `scan_file`) tolerate truncation of
