@@ -75,8 +75,24 @@ pub fn zfp_decompress_f64(
     num_values: usize,
     mode: &ZfpMode,
 ) -> Result<Vec<f64>, CompressionError> {
-    if num_values == 0 {
-        return Ok(Vec::new());
+    // Same honest/malformed matrix as szip's `aec_decompress`: only
+    // `num_values == 0 && compressed.is_empty()` is a legitimate
+    // empty-in / empty-out round-trip; the two mixed cases below are
+    // malformed-descriptor symptoms and must not silently return empty.
+    match (num_values, compressed.is_empty()) {
+        (0, true) => return Ok(Vec::new()),
+        (0, false) => {
+            return Err(err(
+                "num_values=0 with non-empty compressed stream (malformed zfp descriptor)"
+                    .to_string(),
+            ));
+        }
+        (_, true) => {
+            return Err(err(format!(
+                "num_values={num_values} with empty compressed stream (truncated or malformed payload)"
+            )));
+        }
+        _ => {}
     }
 
     // Fallible reservation: `num_values` flows from the descriptor via
