@@ -149,14 +149,14 @@ remote-parity-ts-install: ts-build ## Install parity-harness TS driver deps (use
 # different bytes (encoder stamps fresh timestamp + UUID). The pytest
 # suite computes expected offsets live from the fixture, so it
 # survives intentional regenerations. Run only on intentional changes.
-remote-parity-fixtures: ## (Re)generate .tgm fixtures — commit the diff after review
-	if [ ! -d .venv ] ; then uv venv ; fi
+remote-parity-fixtures: python-build ## (Re)generate .tgm fixtures — commit the diff after review
 	$(PYTHON) $(_PARITY_DIR)/tools/gen_fixtures.py
 
-remote-parity-build: remote-parity-rust-build remote-parity-ts-install ## Build every parity-harness driver
+remote-parity-build: remote-parity-rust-build remote-parity-ts-install python-build ## Build every parity-harness driver
 	@echo "parity harness drivers ready"
 
 remote-parity: remote-parity-build ## Run the full parity harness (rebuilds drivers + pytest)
+	uv pip install pytest numpy
 	$(PYTHON) -m pytest $(_PARITY_DIR)/ -v
 
 remote-parity-clean: ## Remove parity-harness build artefacts (keeps fixtures)
