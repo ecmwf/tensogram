@@ -75,7 +75,8 @@ impl Compressor for RleCompressor {
         let n_elements = u32::from_be_bytes(*prefix) as usize;
         let bits = rle::decode(rle_bytes, n_elements)
             .map_err(|e| CompressionError::Unknown(format!("RLE decode: {e}")))?;
-        let packed = packing::pack(&bits);
+        let packed = packing::pack(&bits)
+            .map_err(|e| CompressionError::Unknown(format!("RLE repack: {e}")))?;
         if packed.len() != expected_size {
             return Err(CompressionError::Unknown(format!(
                 "RLE decompressed size {} != expected {}",

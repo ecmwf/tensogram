@@ -60,7 +60,8 @@ impl Compressor for RoaringCompressor {
         let n_elements = u32::from_be_bytes(*prefix) as usize;
         let bits = roaring::decode(blob, n_elements)
             .map_err(|e| CompressionError::Unknown(format!("Roaring decode: {e}")))?;
-        let packed = packing::pack(&bits);
+        let packed = packing::pack(&bits)
+            .map_err(|e| CompressionError::Unknown(format!("Roaring repack: {e}")))?;
         if packed.len() != expected_size {
             return Err(CompressionError::Unknown(format!(
                 "Roaring decompressed size {} != expected {}",

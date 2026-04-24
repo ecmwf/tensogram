@@ -690,7 +690,8 @@ mod tests {
             ..Default::default()
         });
         let mut short_payload = vec![0u8; 16]; // only 2×f64 — wrong
-        let mask_region: Vec<u8> = bitmask::codecs::encode_none(&[false, true, false, true]);
+        let mask_region: Vec<u8> =
+            bitmask::codecs::encode_none(&[false, true, false, true]).unwrap();
         let err =
             restore_non_finite_into(&mut short_payload, &desc, &mask_region, ByteOrder::native())
                 .unwrap_err();
