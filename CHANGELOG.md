@@ -5,6 +5,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed — PyPI Linux wheels are installable on glibc ≥ 2.28
+
+Linux wheels published to PyPI are tagged `manylinux_2_28` for both
+x86_64 and aarch64 and are installable on distributions with
+glibc ≥ 2.28 (RHEL/AlmaLinux 8+, Debian 10+, Ubuntu 18.10+, Fedora 29+).
+The publish workflow builds each wheel inside the corresponding
+`quay.io/pypa/manylinux_2_28_<arch>` image via `PyO3/maturin-action`
+for all six supported interpreters: `cp311`, `cp312`, `cp313`,
+`cp314`, `cp313t`, `cp314t`.  A tag-verification step in the workflow
+confirms the produced wheels carry the expected platform tag before
+artifact upload.
+
 ### Fixed — `regular_ll` longitude convention
 
 GRIB-derived `.tgm` files from ECMWF open-data (where the grid scans

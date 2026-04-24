@@ -18,37 +18,70 @@ jobs:
       matrix:
         include:
           - runs-on: ubuntu-24.04
+            target: x86_64
             label: Linux x86_64
             artifact-name: wheels-tensogram-linux-x86_64
+            manylinux-container: quay.io/pypa/manylinux_2_28_x86_64:latest
           - runs-on: ubuntu-24.04-arm
+            target: aarch64
             label: Linux aarch64
             artifact-name: wheels-tensogram-linux-aarch64
+            manylinux-container: quay.io/pypa/manylinux_2_28_aarch64:latest
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: astral-sh/setup-uv@v3
-
-      # Install all supported CPython versions (including free-threaded) so
-      # they are available to maturin via explicit --interpreter flags.
-      # Maturin produces manylinux-tagged wheels automatically on Linux.
-      - name: Install supported CPython versions
-        run: |
-          uv python install \
-            3.11 3.12 3.13 3.14 \
-            cpython-3.13+freethreaded cpython-3.14+freethreaded
-
+      # Build inside the manylinux_2_28 container so the produced binary is
+      # linked against glibc 2.28 and installable on distributions with
+      # glibc >= 2.28. Interpreters are passed as explicit paths so the
+      # free-threaded cp313t / cp314t builds are included deterministically.
       - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: 2_28
+          container: ${{ matrix.manylinux-container }}
+          working-directory: python/bindings
+          # clang-devel provides libclang for the blosc2-sys bindgen step.
+          before-script-linux: |
+            dnf install -y clang-devel
+          sccache: true
+          args: >-
+            --release
+            --out dist
+            --interpreter
+            /opt/python/cp311-cp311/bin/python
+            /opt/python/cp312-cp312/bin/python
+            /opt/python/cp313-cp313/bin/python
+            /opt/python/cp314-cp314/bin/python
+            /opt/python/cp313-cp313t/bin/python
+            /opt/python/cp314-cp314t/bin/python
+
+      # Verify the produced wheels carry the expected platform tag and
+      # match the expected interpreter count before upload.
+      - name: Verify wheel tags
+        shell: bash
         run: |
-          ARGS=""
-          for v in 3.11 3.12 3.13 3.14 \
-                   cpython-3.13+freethreaded cpython-3.14+freethreaded; do
-            ARGS="$ARGS --interpreter $(uv python find $v)"
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(python/bindings/dist/*.whl)
+          if [ "${#wheels[@]}" -ne 6 ]; then
+            echo "Expected 6 wheels (cp311/cp312/cp313/cp314/cp313t/cp314t), got ${#wheels[@]}"
+            printf '  %s\n' "${wheels[@]}"
+            exit 1
+          fi
+          for wheel in "${wheels[@]}"; do
+            name="$(basename "$wheel")"
+            case "$name" in
+              *-manylinux_2_28_${{ matrix.target }}.whl) ;;
+              *)
+                echo "Unexpected platform tag on $name (expected manylinux_2_28_${{ matrix.target }})"
+                exit 1
+                ;;
+            esac
           done
-          make python-dist MATURIN_INTERP_ARGS="$ARGS"
+          echo "All 6 wheels tagged manylinux_2_28_${{ matrix.target }}"
 
       - uses: actions/upload-artifact@v4
         with:
