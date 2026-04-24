@@ -349,6 +349,59 @@ For speculative ideas, see `IDEAS.md`.
   pattern, and the per-codec test matrix. Follows the fallible-
   allocation pattern first established for blosc2 in PR #69.
 
+- [ ] **descriptor ↔ frame-payload consistency checks on decode**:
+    - Complementary to the preallocation hardening above: instead of
+      *surviving* a pathological `num_values` via fallible allocation
+      after the fact, *reject* malformed descriptors cheaper and earlier
+      by cross-checking the descriptor's claimed output size against the
+      frame's actual payload length (known from the frame header)
+      before any decompression runs.
+    - Three tiers of strictness depending on the pipeline:
+        - **Exact** for `encoding="none" + compression="none"`:
+          `frame_payload_bytes == num_values × dtype_byte_width`
+          (and `ceil(num_values / 8)` for the `bitmask` dtype). A
+          mismatch in either direction is categorically malformed.
+        - **Exact** for `encoding="simple_packing" + compression="none"`:
+          `frame_payload_bytes == ceil(num_values × bits_per_value / 8)`.
+          The current simple_packing decoder rejects too-small payloads
+          with `InsufficientData` but silently ignores too-much data
+          — this TODO tightens the too-much-data direction too.
+        - **Plausibility ratio** for compressed codecs (`zstd`, `lz4`,
+          `szip`, `blosc2`, `zfp`, `sz3`):
+          `num_values × dtype_byte_width ≤ frame_payload_bytes ×
+          MAX_PLAUSIBLE_RATIO`. Pick a conservative cap (probably
+          around `1000×`) that accommodates pathological-but-legitimate
+          high-compression inputs (RLE on all-zero bitmasks,
+          szip on constant data) while still rejecting claims wildly
+          disproportionate to the compressed payload.
+    - Fit: `pipeline::decode_pipeline` gains a
+      `validate_descriptor_size(encoded.len(), config)` step right
+      before the `compressor.decompress(encoded, expected_size)` call.
+      `decode_range_pipeline` gets a matching check sized against
+      the sliced chunk rather than the full frame.
+    - New error: `PipelineError::DescriptorSizeMismatch { claimed_bytes,
+      payload_bytes, codec }`, marked `#[non_exhaustive]` consistent
+      with the other error enums hardened in PR #90.
+    - Why separate from the preallocation-hardening PR:
+        - Distinct mechanism (upstream structural validation vs
+          downstream fallible allocation).
+        - More specific operator-visible errors ("descriptor claims
+          4 TiB but frame is 50 bytes") than the generic
+          "failed to reserve".
+        - Distinct test matrix (one per encoding × compression ×
+          {match, too-small, too-big, ratio-plausible, ratio-implausible}).
+    - Tests (behaviour-driven):
+        - Exact tier: passthrough / bitmask / simple_packing
+          round-trips with matched sizes succeed; with off-by-one
+          payload lengths surface `DescriptorSizeMismatch`.
+        - Ratio tier: hand-craft a `.tgm` with 20-byte compressed
+          payload + descriptor claiming 4 TiB decoded size, assert
+          the typed error fires before any decompression is
+          attempted.
+        - Boundary: a descriptor claiming `compressed × 1000` bytes
+          is accepted; `compressed × 1001` is rejected (or whatever
+          ratio is picked).
+
 ## Viewer
 
 - [ ] Loading spinner/skeleton on map while field is being regridded
