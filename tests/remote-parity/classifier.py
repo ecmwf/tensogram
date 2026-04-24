@@ -32,8 +32,6 @@ Category = Literal["probe", "scan", "payload", "fallback", "error"]
 Direction = Literal["forward", "backward", "none"]
 
 PREAMBLE_BYTES = 24
-POSTAMBLE_BYTES = 24
-END_MAGIC_BYTES = 8
 NON_SCAN_ROUND = -1
 
 
@@ -74,7 +72,7 @@ def classify(observation: Observation) -> Classified:
         return Classified("error", "none", logical_range, physical)
 
     length = logical_range[1] - logical_range[0]
-    if length in (PREAMBLE_BYTES, POSTAMBLE_BYTES, END_MAGIC_BYTES):
+    if length == PREAMBLE_BYTES:
         return Classified("scan", "forward", logical_range, physical)
 
     return Classified("payload", "none", logical_range, physical)

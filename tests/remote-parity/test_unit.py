@@ -8,13 +8,16 @@
 
 """Unit tests for the remote-parity harness internals.
 
-Every test here runs with no external build artefacts (no Rust driver
-binary, no `npm install`, no fixtures). It exercises:
+These tests do not require the Rust driver binary or `npm install`
+under `drivers/`, but the `TestMockServer` cases serve checked-in
+fixtures from `fixtures/` and skip when those are missing.
+Run `tools/gen_fixtures.py` (or `make remote-parity-fixtures`) to
+populate them. Coverage:
 
 - `classifier.classify` — status-aware categorisation, range parsing
 - `classifier.RoundBuilder` — round assignment invariants
 - `mock_server` — HEAD/Range/404/416/path-traversal behaviour
-- `run_parity.collect_events` — duplicate-run_id guard
+- `run_parity._check_no_duplicate_run_ids` — duplicate-run_id guard
 - Schema contract — keys + enums match the ScanEvent schema
 """
 
@@ -31,9 +34,7 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
 from classifier import (
-    END_MAGIC_BYTES,
     NON_SCAN_ROUND,
-    POSTAMBLE_BYTES,
     PREAMBLE_BYTES,
     Observation,
     RoundBuilder,
@@ -66,20 +67,11 @@ class TestClassify:
         assert r.direction == "forward"
         assert r.logical_range == (0, PREAMBLE_BYTES)
 
-    def test_get_206_postamble_is_scan(self) -> None:
-        r = classify(Observation("GET", "bytes=500-523", 206, POSTAMBLE_BYTES))
-        assert r.category == "scan"
-        assert r.logical_range == (500, 524)
-
-    def test_get_206_end_magic_is_scan(self) -> None:
-        r = classify(Observation("GET", "bytes=1000-1007", 206, END_MAGIC_BYTES))
-        assert r.category == "scan"
-        assert r.logical_range == (1000, 1008)
-
-    def test_get_206_large_is_payload(self) -> None:
-        r = classify(Observation("GET", "bytes=100-10099", 206, 10000))
-        assert r.category == "payload"
-        assert r.direction == "none"
+    def test_get_206_non_preamble_size_is_payload(self) -> None:
+        for length in (8, 16, 32, 256, 10000):
+            r = classify(Observation("GET", f"bytes=0-{length - 1}", 206, length))
+            assert r.category == "payload", f"length={length}"
+            assert r.direction == "none", f"length={length}"
 
     @pytest.mark.parametrize("status", [404, 416, 500, 503])
     def test_non_success_status_is_error(self, status: int) -> None:
@@ -215,14 +207,14 @@ class TestMockServer:
 
 class TestDuplicateRunIdGuard:
     def test_rejects_duplicates(self) -> None:
-        case = DriverCase(fixture="single-msg", language="rust", op="open")  # type: ignore[arg-type]
+        case = DriverCase(fixture="single-msg", language="rust", op="open")
         with pytest.raises(ValueError, match="duplicate run_id"):
             _check_no_duplicate_run_ids([case, case])
 
     def test_accepts_unique_cases(self) -> None:
         cases = [
-            DriverCase(fixture="single-msg", language="rust", op="open"),  # type: ignore[arg-type]
-            DriverCase(fixture="single-msg", language="ts", op="open"),  # type: ignore[arg-type]
+            DriverCase(fixture="single-msg", language="rust", op="open"),
+            DriverCase(fixture="single-msg", language="ts", op="open"),
         ]
         _check_no_duplicate_run_ids(cases)
 
