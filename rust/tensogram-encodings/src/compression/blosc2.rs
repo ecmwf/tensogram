@@ -256,9 +256,13 @@ impl Compressor for Blosc2Compressor {
             return Err(CompressionError::Blosc2("typesize is 0".to_string()));
         }
 
-        // Convert byte range to item range
+        // Convert byte range to item range with checked arithmetic —
+        // `byte_pos + byte_size` can wrap on hostile input.
         let item_start = byte_pos / ts;
-        let item_end = (byte_pos + byte_size).div_ceil(ts);
+        let byte_end = byte_pos
+            .checked_add(byte_size)
+            .ok_or_else(|| CompressionError::Blosc2("byte range overflow".to_string()))?;
+        let item_end = byte_end.div_ceil(ts);
 
         let items = schunk.items(item_start..item_end).map_err(map_err)?;
 

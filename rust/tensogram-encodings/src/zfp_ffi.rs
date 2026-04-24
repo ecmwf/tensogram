@@ -152,7 +152,11 @@ pub fn zfp_decompress_range_f64(
     // isn't exposed through the simple compress/decompress API.
     let all = zfp_decompress_f64(compressed, total_values, mode)?;
 
-    let end = sample_offset + sample_count;
+    let end = sample_offset.checked_add(sample_count).ok_or_else(|| {
+        err(format!(
+            "range end overflow: sample_offset {sample_offset} + sample_count {sample_count}"
+        ))
+    })?;
     if end > all.len() {
         return Err(err(format!(
             "range ({sample_offset}, {sample_count}) exceeds total values {total_values}"
