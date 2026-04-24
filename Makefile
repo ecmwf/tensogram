@@ -14,7 +14,9 @@
         python-build python-dist python-dist-extras python-test python-lint python-fmt \
         cpp-build cpp-test \
         wasm-test docs-build \
-        ts-install ts-build ts-test ts-typecheck
+        ts-install ts-build ts-test ts-typecheck \
+        remote-parity-rust-build remote-parity-ts-install remote-parity-fixtures \
+        remote-parity-build remote-parity remote-parity-clean
 
 # ── Defaults ──────────────────────────────────────────────────────────────
 
@@ -122,6 +124,45 @@ ts-typecheck: ts-build ## Strict typecheck source + tests
 docs-build: ## Build mdbook documentation
 	mdbook build docs/
 
+# ── Remote parity harness ─────────────────────────────────────────────────
+#
+# Cross-language HTTP parity test infra under `tests/remote-parity/`.
+# Drives Rust `TensogramFile::open_remote` and TS `TensogramFile.fromUrl`
+# against a Python mock server and diffs the request sequences. Not
+# folded into `make test` because it needs the TS WASM build, an extra
+# `npm install`, and a Rust release binary built outside the main
+# workspace.
+
+_PARITY_DIR = tests/remote-parity
+_PARITY_RUST_MANIFEST = $(_PARITY_DIR)/drivers/rust_driver/Cargo.toml
+_PARITY_DRIVERS_DIR = $(_PARITY_DIR)/drivers
+
+# The Rust driver is its own cargo project (empty `[workspace]`) so it
+# must be built explicitly — `cargo build --workspace` won't see it.
+remote-parity-rust-build: ## Build the parity-harness Rust driver (isolated cargo project)
+	cargo build --release --manifest-path $(_PARITY_RUST_MANIFEST)
+
+remote-parity-ts-install: ts-build ## Install parity-harness TS driver deps (uses npm ci)
+	cd $(_PARITY_DRIVERS_DIR) && npm ci || npm install --no-audit --no-fund
+
+# Fixtures are binary goldens — regenerating produces different bytes
+# (encoder stamps fresh timestamp + UUID). Run only on intentional
+# changes; re-baseline goldens with `tools/regen_goldens.py --regen`.
+remote-parity-fixtures: ## (Re)generate .tgm fixtures — commit the diff after review
+	if [ ! -d .venv ] ; then uv venv ; fi
+	$(PYTHON) $(_PARITY_DIR)/tools/gen_fixtures.py
+
+remote-parity-build: remote-parity-rust-build remote-parity-ts-install ## Build every parity-harness driver
+	@echo "parity harness drivers ready"
+
+remote-parity: remote-parity-build ## Run the full parity harness (rebuilds drivers + pytest)
+	$(PYTHON) -m pytest $(_PARITY_DIR)/ -v
+
+remote-parity-clean: ## Remove parity-harness build artefacts (keeps fixtures and goldens)
+	rm -rf $(_PARITY_DIR)/drivers/rust_driver/target/
+	rm -rf $(_PARITY_DRIVERS_DIR)/node_modules/
+	find $(_PARITY_DIR) -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
 # ── Aggregates ────────────────────────────────────────────────────────────
 
 check: rust-check ## Check all builds
@@ -131,7 +172,7 @@ fmt: rust-fmt python-fmt ## Check all formatting
 
 # ── Cleanup ───────────────────────────────────────────────────────────────
 
-clean: ## Remove build artifacts
+clean: remote-parity-clean ## Remove build artifacts (delegates parity-harness cleanup to remote-parity-clean)
 	cargo clean
 	rm -rf build/
 	rm -rf .venv/
