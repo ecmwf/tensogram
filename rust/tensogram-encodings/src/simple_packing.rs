@@ -39,6 +39,21 @@ pub enum PackingError {
         num_values: usize,
         bytes_per_value: usize,
     },
+    /// Total-bits math overflowed before any slice or allocation step.
+    /// Fires when a hostile descriptor claims a `num_values` that, when
+    /// multiplied by `bits_per_value`, exceeds `u128` (effectively never
+    /// on any realistic platform, but the check is cheap insurance).
+    #[error("bit-count overflow: {num_values} values × {bits_per_value} bits per value")]
+    BitCountOverflow {
+        num_values: usize,
+        bits_per_value: u32,
+    },
+    /// Fallible output-buffer reservation failed — the descriptor-derived
+    /// `num_values` is too large for the allocator to satisfy. Guards
+    /// against pathological sizes aborting the process in place of an
+    /// infallible `vec![_; N]` / `Vec::with_capacity`.
+    #[error("failed to reserve {bytes} bytes for packing output: {reason}")]
+    AllocationFailed { bytes: usize, reason: String },
     /// Internal invariant violation — specialised aligned-width encoder
     /// was invoked with an unsupported byte width. This is unreachable
     /// under the public API; surfaced as an error instead of panicking
@@ -594,12 +609,29 @@ pub fn decode_with_threads(
     }
 
     if params.bits_per_value == 0 {
-        return Ok(vec![params.reference_value; num_values]);
+        let mut values: Vec<f64> = Vec::new();
+        try_reserve_f64(&mut values, num_values)?;
+        values.resize(num_values, params.reference_value);
+        return Ok(values);
     }
 
     let bpv = params.bits_per_value;
-    let total_bits = num_values as u64 * bpv as u64;
-    let required_bytes = total_bits.div_ceil(8) as usize;
+    // u128 arithmetic: a hostile `num_values * bpv` still fits in u128
+    // for any `num_values` representable in `usize` (u64), so this
+    // cannot overflow unless bpv somehow exceeds u64 — caught by the
+    // earlier bits_per_value>64 check.
+    let total_bits =
+        (num_values as u128)
+            .checked_mul(bpv as u128)
+            .ok_or(PackingError::BitCountOverflow {
+                num_values,
+                bits_per_value: bpv,
+            })?;
+    let required_bytes =
+        usize::try_from(total_bits.div_ceil(8)).map_err(|_| PackingError::OutputSizeOverflow {
+            num_values,
+            bytes_per_value: bpv.div_ceil(8) as usize,
+        })?;
     if packed.len() < required_bytes {
         return Err(PackingError::InsufficientData {
             expected: required_bytes,
@@ -620,13 +652,13 @@ pub fn decode_with_threads(
     if parallel {
         #[cfg(feature = "threads")]
         {
-            return Ok(match bpv {
+            return match bpv {
                 8 => decode_aligned_par::<1>(packed, num_values, refv, inv_scale),
                 16 => decode_aligned_par::<2>(packed, num_values, refv, inv_scale),
                 24 => decode_aligned_par::<3>(packed, num_values, refv, inv_scale),
                 32 => decode_aligned_par::<4>(packed, num_values, refv, inv_scale),
                 _ => decode_generic_par(packed, num_values, refv, inv_scale, bpv),
-            });
+            };
         }
     }
 
@@ -635,8 +667,16 @@ pub fn decode_with_threads(
         16 => decode_aligned::<2>(packed, num_values, refv, inv_scale),
         24 => decode_aligned::<3>(packed, num_values, refv, inv_scale),
         32 => decode_aligned::<4>(packed, num_values, refv, inv_scale),
-        _ => Ok(decode_generic(packed, num_values, refv, inv_scale, bpv)),
+        _ => decode_generic(packed, num_values, refv, inv_scale, bpv),
     }
+}
+
+fn try_reserve_f64(v: &mut Vec<f64>, n: usize) -> Result<(), PackingError> {
+    v.try_reserve_exact(n)
+        .map_err(|e| PackingError::AllocationFailed {
+            bytes: n.saturating_mul(std::mem::size_of::<f64>()),
+            reason: e.to_string(),
+        })
 }
 
 /// Read `N` MSB-first big-endian bytes from `chunk` as a `u64`.
@@ -677,7 +717,8 @@ fn decode_aligned<const N: usize>(
         return Err(PackingError::UnsupportedAlignedWidth(N));
     }
 
-    let mut values = Vec::with_capacity(num_values);
+    let mut values: Vec<f64> = Vec::new();
+    try_reserve_f64(&mut values, num_values)?;
     for chunk in packed[..num_values * N].chunks_exact(N) {
         let packed_int = gather_aligned::<N>(chunk);
         values.push(refv + inv_scale * packed_int as f64);
@@ -692,10 +733,12 @@ fn decode_aligned_par<const N: usize>(
     num_values: usize,
     refv: f64,
     inv_scale: f64,
-) -> Vec<f64> {
+) -> Result<Vec<f64>, PackingError> {
     use rayon::prelude::*;
 
-    let mut values = vec![0.0f64; num_values];
+    let mut values: Vec<f64> = Vec::new();
+    try_reserve_f64(&mut values, num_values)?;
+    values.resize(num_values, 0.0);
     values
         .par_iter_mut()
         .zip(packed[..num_values * N].par_chunks_exact(N))
@@ -703,7 +746,7 @@ fn decode_aligned_par<const N: usize>(
             let packed_int = gather_aligned::<N>(chunk);
             *out = refv + inv_scale * packed_int as f64;
         });
-    values
+    Ok(values)
 }
 
 /// Parallel generic decode for non-byte-aligned bit widths.  Uses the
@@ -716,7 +759,7 @@ fn decode_generic_par(
     refv: f64,
     inv_scale: f64,
     bpv: u32,
-) -> Vec<f64> {
+) -> Result<Vec<f64>, PackingError> {
     use rayon::prelude::*;
 
     let bpv_usize = bpv as usize;
@@ -725,7 +768,9 @@ fn decode_generic_par(
     let bytes_per_chunk = values_per_chunk * bpv_usize / 8;
 
     let full_chunks = num_values / values_per_chunk;
-    let mut values = vec![0.0f64; num_values];
+    let mut values: Vec<f64> = Vec::new();
+    try_reserve_f64(&mut values, num_values)?;
+    values.resize(num_values, 0.0);
 
     {
         let head_values_slice = &mut values[..full_chunks * values_per_chunk];
@@ -758,7 +803,7 @@ fn decode_generic_par(
         }
     }
 
-    values
+    Ok(values)
 }
 
 fn decode_generic(
@@ -767,8 +812,9 @@ fn decode_generic(
     refv: f64,
     inv_scale: f64,
     bpv: u32,
-) -> Vec<f64> {
-    let mut values = Vec::with_capacity(num_values);
+) -> Result<Vec<f64>, PackingError> {
+    let mut values: Vec<f64> = Vec::new();
+    try_reserve_f64(&mut values, num_values)?;
     let mut bit_pos: u64 = 0;
 
     for _ in 0..num_values {
@@ -776,7 +822,7 @@ fn decode_generic(
         values.push(refv + inv_scale * packed_int as f64);
         bit_pos += bpv as u64;
     }
-    values
+    Ok(values)
 }
 
 /// Decode a range of packed values starting at an arbitrary bit offset.
@@ -795,13 +841,30 @@ pub fn decode_range(
     }
 
     if params.bits_per_value == 0 {
-        return Ok(vec![params.reference_value; num_values]);
+        let mut values: Vec<f64> = Vec::new();
+        try_reserve_f64(&mut values, num_values)?;
+        values.resize(num_values, params.reference_value);
+        return Ok(values);
     }
 
     let bpv = params.bits_per_value;
 
-    let end_bit = bit_offset as u64 + num_values as u64 * bpv as u64;
-    let required_bytes = end_bit.div_ceil(8) as usize;
+    let end_bit = (bit_offset as u128)
+        .checked_add((num_values as u128).checked_mul(bpv as u128).ok_or(
+            PackingError::BitCountOverflow {
+                num_values,
+                bits_per_value: bpv,
+            },
+        )?)
+        .ok_or(PackingError::BitCountOverflow {
+            num_values,
+            bits_per_value: bpv,
+        })?;
+    let required_bytes =
+        usize::try_from(end_bit.div_ceil(8)).map_err(|_| PackingError::OutputSizeOverflow {
+            num_values,
+            bytes_per_value: bpv.div_ceil(8) as usize,
+        })?;
     if packed.len() < required_bytes {
         return Err(PackingError::InsufficientData {
             expected: required_bytes,
@@ -812,7 +875,8 @@ pub fn decode_range(
     let d_factor = 10f64.powi(-params.decimal_scale_factor);
     let e_factor = 2f64.powi(params.binary_scale_factor);
 
-    let mut values = Vec::with_capacity(num_values);
+    let mut values: Vec<f64> = Vec::new();
+    try_reserve_f64(&mut values, num_values)?;
     let mut bit_pos = bit_offset as u64;
 
     for _ in 0..num_values {
@@ -1713,5 +1777,96 @@ mod tests {
         write_bits(&mut buf, 5, 0b1111_0000_1111, 12);
         let val = read_bits(&buf, 5, 12);
         assert_eq!(val, 0b1111_0000_1111);
+    }
+
+    // ── Preallocation / overflow hardening ────────────────────────────────
+    //
+    // Regression tests for the descriptor-driven allocation / arithmetic
+    // guards.  Before the fix, a malformed descriptor whose `num_values`
+    // was close to `usize::MAX` could abort the decode process via
+    // `Vec::with_capacity` / `vec![_; N]` or via panicking / wrapping
+    // arithmetic on `num_values * bits_per_value`.  After the fix each
+    // path surfaces a typed `PackingError` instead.
+
+    #[test]
+    fn try_reserve_f64_rejects_pathological_capacity() {
+        let mut v: Vec<f64> = Vec::new();
+        let err = try_reserve_f64(&mut v, usize::MAX)
+            .expect_err("try_reserve of usize::MAX f64s must fail the capacity check");
+        match err {
+            PackingError::AllocationFailed { .. } => {}
+            other => panic!("expected AllocationFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_rejects_bit_count_overflow() {
+        // num_values * bits_per_value would overflow u128 only for
+        // values beyond usize's range; instead exercise the subsequent
+        // `usize::try_from` by picking a num_values where
+        // `num_values * bpv / 8` exceeds `usize::MAX`.  A bpv of 64 and
+        // num_values close to usize::MAX does the job: the u128 product
+        // does not overflow but the byte-count conversion to usize does.
+        let params = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 64,
+        };
+        let err = decode(&[], usize::MAX, &params)
+            .expect_err("pathological num_values must surface as an error");
+        match err {
+            PackingError::OutputSizeOverflow { .. } | PackingError::BitCountOverflow { .. } => {}
+            other => panic!("expected OutputSizeOverflow or BitCountOverflow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_bpv_zero_rejects_pathological_num_values() {
+        // The bpv==0 fast path is a different reservation code path.
+        let params = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 0,
+        };
+        let err = decode(&[], usize::MAX, &params)
+            .expect_err("bpv=0 with usize::MAX num_values must surface as an error");
+        match err {
+            PackingError::AllocationFailed { .. } => {}
+            other => panic!("expected AllocationFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_range_rejects_pathological_num_values() {
+        let params = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 64,
+        };
+        let err = decode_range(&[], 0, usize::MAX, &params)
+            .expect_err("pathological num_values must surface as an error");
+        match err {
+            PackingError::OutputSizeOverflow { .. } | PackingError::BitCountOverflow { .. } => {}
+            other => panic!("expected OutputSizeOverflow or BitCountOverflow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_range_bpv_zero_rejects_pathological_num_values() {
+        let params = SimplePackingParams {
+            reference_value: 0.0,
+            binary_scale_factor: 0,
+            decimal_scale_factor: 0,
+            bits_per_value: 0,
+        };
+        let err = decode_range(&[], 0, usize::MAX, &params)
+            .expect_err("bpv=0 with usize::MAX num_values must surface as an error");
+        match err {
+            PackingError::AllocationFailed { .. } => {}
+            other => panic!("expected AllocationFailed, got {other:?}"),
+        }
     }
 }
