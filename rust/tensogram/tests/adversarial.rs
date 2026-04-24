@@ -142,17 +142,20 @@ fn test_adversarial_empty_buffer_rejected() {
 fn test_adversarial_negative_cbor_int_wraps() {
     let below_i32_min: i64 = i32::MIN as i64 - 1;
     let mut params = BTreeMap::new();
-    params.insert("reference_value".to_string(), ciborium::Value::Float(0.0));
     params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_reference_value".to_string(),
+        ciborium::Value::Float(0.0),
+    );
+    params.insert(
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer(below_i32_min.into()),
     );
     params.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         ciborium::Value::Integer(0.into()),
     );
     params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         ciborium::Value::Integer(16.into()),
     );
 
@@ -182,6 +185,8 @@ fn test_adversarial_negative_cbor_int_wraps() {
         result
     );
     let msg = result.unwrap_err().to_string();
+    // Error quotes the `PackingError::InvalidParams.field` — that's the
+    // Rust struct field name (internal), not the wire-format `sp_*` key.
     assert!(
         msg.contains("binary_scale_factor"),
         "expected 'binary_scale_factor' in error message, got: {msg}"
@@ -191,17 +196,20 @@ fn test_adversarial_negative_cbor_int_wraps() {
 #[test]
 fn test_adversarial_non_f64_simple_packing() {
     let mut params = BTreeMap::new();
-    params.insert("reference_value".to_string(), ciborium::Value::Float(0.0));
     params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_reference_value".to_string(),
+        ciborium::Value::Float(0.0),
+    );
+    params.insert(
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer(0.into()),
     );
     params.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         ciborium::Value::Integer(0.into()),
     );
     params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         ciborium::Value::Integer(16.into()),
     );
 

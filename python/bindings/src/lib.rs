@@ -1335,8 +1335,21 @@ fn py_compute_hash(data: PyBackedBytes, algo: &str) -> PyResult<String> {
 ///     bits_per_value: quantization depth (e.g. 16).
 ///     decimal_scale_factor: decimal scaling (usually 0).
 ///
-/// Returns a dict with keys ``reference_value``, ``binary_scale_factor``,
-/// ``decimal_scale_factor``, ``bits_per_value``.
+/// Returns a dict with ``sp_``-prefixed keys:
+/// ``sp_reference_value``, ``sp_binary_scale_factor``,
+/// ``sp_decimal_scale_factor``, ``sp_bits_per_value``.
+///
+/// The dict can be spread directly into a descriptor literal::
+///
+///     params = tensogram.compute_packing_params(data.ravel(), 16, 0)
+///     desc = {"type": "ntensor", "encoding": "simple_packing",
+///             "shape": [...], "dtype": "float64", **params}
+///
+/// Since tensogram 0.19 the encoder also auto-computes these values
+/// when the descriptor carries only ``sp_bits_per_value`` (and
+/// optionally ``sp_decimal_scale_factor``) — calling this function
+/// explicitly is only needed if the caller wants to cache or inspect
+/// the derived params across multiple encodes.
 #[pyfunction]
 fn compute_packing_params(
     py: Python<'_>,
@@ -1355,10 +1368,10 @@ fn compute_packing_params(
     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
 
     let dict = PyDict::new(py);
-    dict.set_item("reference_value", params.reference_value)?;
-    dict.set_item("binary_scale_factor", params.binary_scale_factor)?;
-    dict.set_item("decimal_scale_factor", params.decimal_scale_factor)?;
-    dict.set_item("bits_per_value", params.bits_per_value)?;
+    dict.set_item("sp_reference_value", params.reference_value)?;
+    dict.set_item("sp_binary_scale_factor", params.binary_scale_factor)?;
+    dict.set_item("sp_decimal_scale_factor", params.decimal_scale_factor)?;
+    dict.set_item("sp_bits_per_value", params.bits_per_value)?;
     Ok(dict.into_any().unbind())
 }
 

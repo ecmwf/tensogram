@@ -527,7 +527,7 @@ fn simple_2d_with_simple_packing_24bit() {
     let bpv = objects[0]
         .0
         .params
-        .get("bits_per_value")
+        .get("sp_bits_per_value")
         .expect("bits_per_value param");
     if let ciborium::Value::Integer(i) = bpv {
         let n: i128 = (*i).into();
@@ -537,9 +537,9 @@ fn simple_2d_with_simple_packing_24bit() {
     }
     // simple_packing also requires reference_value, binary_scale_factor,
     // decimal_scale_factor — verify they're present.
-    assert!(objects[0].0.params.contains_key("reference_value"));
-    assert!(objects[0].0.params.contains_key("binary_scale_factor"));
-    assert!(objects[0].0.params.contains_key("decimal_scale_factor"));
+    assert!(objects[0].0.params.contains_key("sp_reference_value"));
+    assert!(objects[0].0.params.contains_key("sp_binary_scale_factor"));
+    assert!(objects[0].0.params.contains_key("sp_decimal_scale_factor"));
 }
 
 #[test]

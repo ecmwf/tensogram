@@ -74,19 +74,19 @@ fn make_simple_packing_desc(
 ) -> DataObjectDescriptor {
     let mut params = BTreeMap::new();
     params.insert(
-        "reference_value".to_string(),
+        "sp_reference_value".to_string(),
         ciborium::Value::Float(p.reference_value),
     );
     params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer((p.binary_scale_factor as i64).into()),
     );
     params.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         ciborium::Value::Integer((p.decimal_scale_factor as i64).into()),
     );
     params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         ciborium::Value::Integer((p.bits_per_value as i64).into()),
     );
     DataObjectDescriptor {
@@ -111,19 +111,19 @@ fn make_szip_simple_packing_desc(
 ) -> DataObjectDescriptor {
     let mut params = BTreeMap::new();
     params.insert(
-        "reference_value".to_string(),
+        "sp_reference_value".to_string(),
         ciborium::Value::Float(p.reference_value),
     );
     params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer((p.binary_scale_factor as i64).into()),
     );
     params.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         ciborium::Value::Integer((p.decimal_scale_factor as i64).into()),
     );
     params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         ciborium::Value::Integer((p.bits_per_value as i64).into()),
     );
     params.insert("szip_rsi".to_string(), ciborium::Value::Integer(128.into()));

@@ -261,18 +261,20 @@ fn f64_simple_packing_with_nan_round_trip() {
 
     let mut desc = make_descriptor(vec![32], Dtype::Float64);
     desc.encoding = "simple_packing".to_string();
-    desc.params
-        .insert("reference_value".to_string(), ciborium::Value::Float(10.0));
     desc.params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_reference_value".to_string(),
+        ciborium::Value::Float(10.0),
+    );
+    desc.params.insert(
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer(0.into()),
     );
     desc.params.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         ciborium::Value::Integer(0.into()),
     );
     desc.params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         ciborium::Value::Integer(16.into()),
     );
 

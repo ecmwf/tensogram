@@ -98,15 +98,15 @@ pub fn compute_hash(data: &[u8], algo: Option<String>) -> Result<String, JsError
 
 // ── simple_packing_compute_params ────────────────────────────────────────────
 
-/// JS-side shape of the simple-packing params — matches the snake_case
-/// keys a descriptor's `params` map expects, so the caller can spread
-/// the result straight into a descriptor literal.
+/// JS-side shape of the simple-packing params — matches the ``sp_``-prefixed
+/// snake_case keys a descriptor's `params` map expects, so the caller can
+/// spread the result straight into a descriptor literal.
 #[derive(Serialize)]
 struct SimplePackingParamsJs {
-    reference_value: f64,
-    binary_scale_factor: i32,
-    decimal_scale_factor: i32,
-    bits_per_value: u32,
+    sp_reference_value: f64,
+    sp_binary_scale_factor: i32,
+    sp_decimal_scale_factor: i32,
+    sp_bits_per_value: u32,
 }
 
 /// Compute the simple-packing parameters (reference value, binary/decimal
@@ -117,10 +117,17 @@ struct SimplePackingParamsJs {
 ///   constant-field packing).
 /// @param decimal_scale_factor - Power-of-10 scaling applied before
 ///   packing.  Typically `0`.
-/// @returns Plain JS object with snake_case keys matching the on-wire
-///   descriptor params: `{ reference_value, binary_scale_factor,
-///   decimal_scale_factor, bits_per_value }`.  Spread into a descriptor
-///   to apply: `{ ...computed, encoding: "simple_packing", …}`.
+/// @returns Plain JS object with ``sp_``-prefixed keys matching the
+///   on-wire descriptor params: `{ sp_reference_value,
+///   sp_binary_scale_factor, sp_decimal_scale_factor, sp_bits_per_value }`.
+///   Spread into a descriptor to apply:
+///   `{ ...computed, encoding: "simple_packing", …}`.
+///
+///   Note: since tensogram ≥ 0.19 the encoder also auto-computes these
+///   values when the descriptor carries only `sp_bits_per_value`
+///   (and optionally `sp_decimal_scale_factor`) — calling this function
+///   explicitly is only needed if the caller wants to cache or inspect
+///   the derived params.
 #[wasm_bindgen]
 pub fn simple_packing_compute_params(
     values: &[f64],
@@ -130,10 +137,10 @@ pub fn simple_packing_compute_params(
     let params = simple_packing::compute_params(values, bits_per_value, decimal_scale_factor)
         .map_err(|e| JsError::new(&format!("encoding error: {e}")))?;
     to_js(&SimplePackingParamsJs {
-        reference_value: params.reference_value,
-        binary_scale_factor: params.binary_scale_factor,
-        decimal_scale_factor: params.decimal_scale_factor,
-        bits_per_value: params.bits_per_value,
+        sp_reference_value: params.reference_value,
+        sp_binary_scale_factor: params.binary_scale_factor,
+        sp_decimal_scale_factor: params.decimal_scale_factor,
+        sp_bits_per_value: params.bits_per_value,
     })
 }
 

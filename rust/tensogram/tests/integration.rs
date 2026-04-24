@@ -290,19 +290,19 @@ fn test_simple_packing_round_trip() {
 
     let mut packing_params = BTreeMap::new();
     packing_params.insert(
-        "reference_value".to_string(),
+        "sp_reference_value".to_string(),
         ciborium::Value::Float(params.reference_value),
     );
     packing_params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer((params.binary_scale_factor as i64).into()),
     );
     packing_params.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         ciborium::Value::Integer((params.decimal_scale_factor as i64).into()),
     );
     packing_params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         ciborium::Value::Integer((params.bits_per_value as i64).into()),
     );
 
@@ -546,19 +546,19 @@ fn test_cross_endian_round_trip() {
 
     let mut packing_params = BTreeMap::new();
     packing_params.insert(
-        "reference_value".to_string(),
+        "sp_reference_value".to_string(),
         ciborium::Value::Float(params.reference_value),
     );
     packing_params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer((params.binary_scale_factor as i64).into()),
     );
     packing_params.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         ciborium::Value::Integer((params.decimal_scale_factor as i64).into()),
     );
     packing_params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         ciborium::Value::Integer((params.bits_per_value as i64).into()),
     );
 
@@ -738,19 +738,19 @@ fn test_simple_packing_rejects_non_f64() {
 
     let mut packing_params = BTreeMap::new();
     packing_params.insert(
-        "reference_value".to_string(),
+        "sp_reference_value".to_string(),
         ciborium::Value::Float(params.reference_value),
     );
     packing_params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer((params.binary_scale_factor as i64).into()),
     );
     packing_params.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         ciborium::Value::Integer((params.decimal_scale_factor as i64).into()),
     );
     packing_params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         ciborium::Value::Integer((params.bits_per_value as i64).into()),
     );
 
@@ -813,17 +813,20 @@ fn test_validate_ndim_mismatch() {
 #[test]
 fn test_param_out_of_bounds() {
     let mut packing_params = BTreeMap::new();
-    packing_params.insert("reference_value".to_string(), ciborium::Value::Float(0.0));
     packing_params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_reference_value".to_string(),
+        ciborium::Value::Float(0.0),
+    );
+    packing_params.insert(
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer(i64::MAX.into()),
     );
     packing_params.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         ciborium::Value::Integer(0.into()),
     );
     packing_params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         ciborium::Value::Integer(16.into()),
     );
 
@@ -850,7 +853,7 @@ fn test_param_out_of_bounds() {
     assert!(result.is_err(), "expected Err but got Ok");
     let msg = result.unwrap_err().to_string();
     assert!(
-        msg.contains("binary_scale_factor"),
+        msg.contains("sp_binary_scale_factor"),
         "expected 'binary_scale_factor' in error, got: {msg}"
     );
 }
@@ -864,19 +867,19 @@ fn make_szip_packing_pair(
 ) -> (GlobalMetadata, DataObjectDescriptor) {
     let mut packing_params = BTreeMap::new();
     packing_params.insert(
-        "reference_value".to_string(),
+        "sp_reference_value".to_string(),
         ciborium::Value::Float(params.reference_value),
     );
     packing_params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer((params.binary_scale_factor as i64).into()),
     );
     packing_params.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         ciborium::Value::Integer((params.decimal_scale_factor as i64).into()),
     );
     packing_params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         ciborium::Value::Integer((params.bits_per_value as i64).into()),
     );
     packing_params.insert("szip_rsi".to_string(), ciborium::Value::Integer(128.into()));
@@ -1187,19 +1190,19 @@ fn test_szip_multi_object_mixed_compression() {
 
     let mut packing_params = BTreeMap::new();
     packing_params.insert(
-        "reference_value".to_string(),
+        "sp_reference_value".to_string(),
         ciborium::Value::Float(packing.reference_value),
     );
     packing_params.insert(
-        "binary_scale_factor".to_string(),
+        "sp_binary_scale_factor".to_string(),
         ciborium::Value::Integer((packing.binary_scale_factor as i64).into()),
     );
     packing_params.insert(
-        "decimal_scale_factor".to_string(),
+        "sp_decimal_scale_factor".to_string(),
         ciborium::Value::Integer((packing.decimal_scale_factor as i64).into()),
     );
     packing_params.insert(
-        "bits_per_value".to_string(),
+        "sp_bits_per_value".to_string(),
         ciborium::Value::Integer((packing.bits_per_value as i64).into()),
     );
     packing_params.insert("szip_rsi".to_string(), ciborium::Value::Integer(128.into()));
