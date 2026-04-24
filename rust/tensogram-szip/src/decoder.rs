@@ -184,7 +184,14 @@ pub(crate) fn decode_range(
     let id_len = params::id_len(bps, flags);
     let pp = flags & params::AEC_DATA_PREPROCESS != 0;
     let signed = flags & params::AEC_DATA_SIGNED != 0;
-    let samples_per_rsi = rsi_blocks * block_size;
+    // Match the `checked_mul` guard in the full-decode path so
+    // malformed `rsi * block_size` on 32-bit / AEC_NOT_ENFORCE inputs
+    // surfaces as a typed error, not a wrapping-multiplication panic.
+    let samples_per_rsi = rsi_blocks.checked_mul(block_size).ok_or_else(|| {
+        AecError::Data(format!(
+            "rsi ({rsi_blocks}) x block_size ({block_size}) overflows usize"
+        ))
+    })?;
     let se_table = SeTable::new();
 
     let xmax = if signed {
@@ -222,20 +229,22 @@ pub(crate) fn decode_range(
 
     let output = write_samples(&final_samples, byte_width, flags)?;
 
-    if local_byte_pos + byte_size > output.len() {
+    let end = local_byte_pos.checked_add(byte_size).ok_or_else(|| {
+        AecError::Data(format!(
+            "range end overflow: local_byte_pos {local_byte_pos} + byte_size {byte_size}"
+        ))
+    })?;
+    if end > output.len() {
         return Err(AecError::Data(format!(
-            "range [{}, {}) exceeds decoded RSI #{} output ({} bytes, {} samples × {} byte_width, expected {})",
-            byte_pos,
-            byte_pos + byte_size,
-            rsi_n,
+            "range [{byte_pos}, {}) exceeds decoded RSI #{rsi_n} output ({} bytes, {} samples x {byte_width} byte_width, expected {})",
+            byte_pos.saturating_add(byte_size),
             output.len(),
             final_samples.len(),
-            byte_width,
-            samples_per_rsi * byte_width,
+            samples_per_rsi.saturating_mul(byte_width),
         )));
     }
 
-    Ok(output[local_byte_pos..local_byte_pos + byte_size].to_vec())
+    Ok(output[local_byte_pos..end].to_vec())
 }
 
 // ── RSI-level decoder ────────────────────────────────────────────────────────

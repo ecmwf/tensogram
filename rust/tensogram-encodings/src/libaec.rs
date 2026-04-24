@@ -265,13 +265,19 @@ pub fn aec_decompress(
         // `checked_sub` guards against a misbehaving libaec leaving
         // `avail_out > expected_size` (not legal per the libaec contract,
         // but cheap insurance against the wrapping arithmetic that would
-        // otherwise feed `set_len` an absurd length).
-        let decoded_len = expected_size.checked_sub(strm.avail_out).ok_or_else(|| {
-            CompressionError::Szip(format!(
-                "aec_decode reported avail_out={} > expected_size={expected_size}",
-                strm.avail_out
-            ))
-        })?;
+        // otherwise feed `set_len` an absurd length).  Call
+        // `aec_decode_end` unconditionally on this error path too so
+        // the stream state is never leaked.
+        let decoded_len = match expected_size.checked_sub(strm.avail_out) {
+            Some(n) => n,
+            None => {
+                let avail = strm.avail_out;
+                aec_decode_end(&mut strm);
+                return Err(CompressionError::Szip(format!(
+                    "aec_decode reported avail_out={avail} > expected_size={expected_size}"
+                )));
+            }
+        };
         aec_decode_end(&mut strm);
 
         out.set_len(decoded_len);
@@ -322,7 +328,24 @@ pub fn aec_decompress_range(
             "failed to reserve {byte_size} bytes for szip range decode: {e}"
         ))
     })?;
-    let offsets_usize: Vec<usize> = block_offsets.iter().map(|&o| o as usize).collect();
+    // Build the usize offsets fallibly: `block_offsets.len()` is
+    // small and attacker-bounded by the number of RSI blocks, but
+    // `u64 -> usize` can truncate on 32-bit targets, so use
+    // `usize::try_from` to surface the overflow as a typed error.
+    let mut offsets_usize: Vec<usize> = Vec::new();
+    offsets_usize
+        .try_reserve_exact(block_offsets.len())
+        .map_err(|e| {
+            CompressionError::Szip(format!(
+                "failed to reserve {} offsets for szip range decode: {e}",
+                block_offsets.len(),
+            ))
+        })?;
+    for &o in block_offsets {
+        offsets_usize.push(usize::try_from(o).map_err(|_| {
+            CompressionError::Szip(format!("RSI block offset {o} exceeds usize on this target"))
+        })?);
+    }
 
     // SAFETY: identical reasoning to `aec_decompress`; `out.len() == 0`
     // throughout the FFI call, `capacity >= byte_size`, libaec only
@@ -357,13 +380,19 @@ pub fn aec_decompress_range(
         }
 
         // `checked_sub` guards against a misbehaving libaec (see the
-        // matching note in `aec_decompress`).
-        let decoded_len = byte_size.checked_sub(strm.avail_out).ok_or_else(|| {
-            CompressionError::Szip(format!(
-                "aec_decode_range reported avail_out={} > byte_size={byte_size}",
-                strm.avail_out
-            ))
-        })?;
+        // matching note in `aec_decompress`).  Call `aec_decode_end`
+        // unconditionally on this error path so the stream state is
+        // never leaked.
+        let decoded_len = match byte_size.checked_sub(strm.avail_out) {
+            Some(n) => n,
+            None => {
+                let avail = strm.avail_out;
+                aec_decode_end(&mut strm);
+                return Err(CompressionError::Szip(format!(
+                    "aec_decode_range reported avail_out={avail} > byte_size={byte_size}"
+                )));
+            }
+        };
         aec_decode_end(&mut strm);
 
         out.set_len(decoded_len);
