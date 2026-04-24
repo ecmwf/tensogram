@@ -97,9 +97,10 @@ pub fn zfp_decompress_f64(
 
     // Fallible reservation: `num_values` flows from the descriptor via
     // `ZfpCompressor`, so an attacker-supplied value must not abort the
-    // process through an infallible `vec![0.0f64; N]`. The subsequent
-    // `resize` cannot reallocate because `capacity` already equals
-    // `num_values`; it only writes the zero-fill libzfp then overwrites.
+    // process through an infallible `vec![0.0f64; N]`. After
+    // `try_reserve_exact(num_values)` the capacity is at least
+    // `num_values`, so the subsequent `resize` only performs the
+    // zero-fill that libzfp then overwrites — no reallocation.
     let mut output: Vec<f64> = Vec::new();
     output.try_reserve_exact(num_values).map_err(|e| {
         err(format!(
