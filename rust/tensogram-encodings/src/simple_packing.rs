@@ -9,6 +9,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum PackingError {
     #[error("NaN value encountered at index {0}")]
     NanValue(usize),

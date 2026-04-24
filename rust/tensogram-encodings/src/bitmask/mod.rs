@@ -133,6 +133,7 @@ impl MaskMethod {
 /// [`crate::TensogramError::Compression`] by the encoder integration
 /// layer.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum MaskError {
     #[error(
         "unknown mask method {0:?} (expected \"none\" | \"rle\" | \"roaring\" | \"lz4\" | \"zstd\" | \"blosc2\")"

@@ -9,6 +9,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq)]
+#[non_exhaustive]
 pub enum ShuffleError {
     #[error("element_size must not be zero")]
     InvalidElementSize,
