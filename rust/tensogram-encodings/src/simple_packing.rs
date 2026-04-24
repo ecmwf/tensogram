@@ -54,8 +54,10 @@ pub enum PackingError {
     /// Fallible output-buffer reservation failed — the descriptor-derived
     /// `num_values` is too large for the allocator to satisfy. Guards
     /// against pathological sizes aborting the process in place of an
-    /// infallible `vec![_; N]` / `Vec::with_capacity`.
-    #[error("failed to reserve {bytes} bytes for packing output: {reason}")]
+    /// infallible `vec![_; N]` / `Vec::with_capacity`. Fires from the
+    /// `simple_packing` decode paths that produce the `Vec<f64>` output
+    /// buffer.
+    #[error("failed to reserve {bytes} bytes for simple_packing decode output buffer: {reason}")]
     AllocationFailed { bytes: usize, reason: String },
     /// Internal invariant violation — specialised aligned-width encoder
     /// was invoked with an unsupported byte width. This is unreachable

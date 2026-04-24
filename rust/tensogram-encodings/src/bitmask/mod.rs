@@ -150,11 +150,13 @@ pub enum MaskError {
     Roaring(String),
     #[error("underlying codec error: {0}")]
     Codec(String),
-    /// Fallible output-buffer reservation failed — a descriptor-derived
-    /// `n_elements` is too large for the allocator to satisfy. Surfaced
-    /// instead of the process-abort that would otherwise come from an
-    /// infallible `Vec::with_capacity` / `vec![false; N]`.
-    #[error("failed to reserve {bytes} bytes for bitmask decode: {reason}")]
+    /// Fallible bitmask-buffer reservation failed — a descriptor-derived
+    /// `n_elements` (on decode) or `bits.len()` (on the repack path that
+    /// compression codecs call after decode) is too large for the
+    /// allocator to satisfy. Surfaced instead of the process-abort that
+    /// would otherwise come from an infallible `Vec::with_capacity` /
+    /// `vec![false; N]` / `vec![0u8; N]`.
+    #[error("failed to reserve {bytes} bytes for bitmask buffer: {reason}")]
     AllocationFailed { bytes: usize, reason: String },
 }
 
