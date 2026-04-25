@@ -155,6 +155,8 @@ _EXPECTED_MESSAGE_COUNTS: dict[str, int] = {
     "two-msg": 2,
     "ten-msg": 10,
     "hundred-msg": 100,
+    "single-msg-footer": 1,
+    "ten-msg-footer": 10,
 }
 
 
@@ -207,9 +209,7 @@ def test_read_first_divergence_rust_lazy_ts_eager(fixture: str, events) -> None:
 
 @pytest.mark.parametrize("language", ["rust", "ts"], ids=["rust", "ts"])
 @pytest.mark.parametrize("fixture", _FIXTURES, ids=list(_FIXTURES))
-def test_forward_vs_bidirectional_layouts_equal(
-    fixture: str, language: Language, events
-) -> None:
+def test_forward_vs_bidirectional_layouts_equal(fixture: str, language: Language, events) -> None:
     """Forward-only and bidirectional walkers must agree on the final layout set.
 
     The walkers may issue different HTTP request patterns — that is the
@@ -221,9 +221,7 @@ def test_forward_vs_bidirectional_layouts_equal(
     Runs once per language so a divergence in either Rust or TS gets
     its own named failure.
     """
-    fwd_case = DriverCase(
-        fixture=fixture, language=language, op="dump-layout", mode="forward"
-    )
+    fwd_case = DriverCase(fixture=fixture, language=language, op="dump-layout", mode="forward")
     bidir_case = DriverCase(
         fixture=fixture, language=language, op="dump-layout", mode="bidirectional"
     )

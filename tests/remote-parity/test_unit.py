@@ -278,6 +278,7 @@ class TestSchemaContract:
             "category",
             "logical_range",
             "physical_requests",
+            "role",
         }
 
     def test_classified_event_serialises_to_required_shape(self, schema: dict) -> None:
