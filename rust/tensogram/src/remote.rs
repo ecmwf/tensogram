@@ -167,13 +167,13 @@ struct MessageLayout {
 
 // ── Backward hop primitives ──────────────────────────────────────────────────
 
-/// Outcome of parsing a backward-fetch round before backward-preamble
-/// validation (Round 2).  Pure — does not touch state.
+/// Outcome of parsing the backward postamble fetch.  Pure — does not
+/// touch state.
 #[derive(Debug)]
 enum BackwardOutcome {
     /// Postamble parsed cleanly.  `msg_start` is the candidate
     /// message-start offset; the caller still has to validate the
-    /// preamble at that offset (Round 2).
+    /// preamble at that offset before committing.
     NeedPreambleValidation { msg_start: u64, length: u64 },
     /// Format error — the backward walker yields and any provisional
     /// suffix layouts are discarded.  The string identifies which
@@ -192,8 +192,8 @@ enum BackwardOutcome {
 /// `[snap.prev - POSTAMBLE_SIZE, snap.prev)`.  Implausible
 /// `total_length` values are rejected by the arithmetic underflow
 /// (`total > snap.prev`) and forward-overlap (`msg_start < snap.next`)
-/// guards; Round-2 preamble validation catches anything that slips
-/// through, at the cost of a single 24-byte GET.
+/// guards; the candidate-preamble validation step catches anything
+/// that slips through, at the cost of a single 24-byte GET.
 fn parse_backward_postamble(pa_bytes: &[u8], snap: &ScanSnapshot) -> BackwardOutcome {
     let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
 
@@ -227,15 +227,15 @@ fn parse_backward_postamble(pa_bytes: &[u8], snap: &ScanSnapshot) -> BackwardOut
     }
 }
 
-/// Outcome of validating Round 2 of a bidirectional round (the
-/// backward preamble fetched at the candidate `msg_start`).
+/// Outcome of validating the backward preamble fetched at the
+/// candidate `msg_start` produced by [`parse_backward_postamble`].
 #[derive(Debug)]
 enum BackwardCommit {
     Format(&'static str),
     Layout(MessageLayout),
 }
 
-/// Validate the backward preamble (Round 2) and produce a
+/// Validate the backward candidate preamble and produce a
 /// commit-or-yield decision.  `msg_start` and `length` are the
 /// candidate values from the matching [`BackwardOutcome`].
 fn validate_backward_preamble(
@@ -296,6 +296,20 @@ enum ForwardOutcome {
         preamble: Preamble,
         msg_end: u64,
     },
+    /// Forward parsed cleanly but `msg_end` exceeds the bidirectional
+    /// dispatcher's `bound` (= `prev_scan_offset`) while still fitting
+    /// within `file_size`.  Reachable only when `suffix_rev` already
+    /// holds a backward-committed layout with a corrupt offset —
+    /// forward's reading of the message length is canonical, so the
+    /// commit decision disables backward (clearing `suffix_rev`) and
+    /// records the forward hop.  Forward-only mode never produces this
+    /// variant because the dispatcher passes `bound = file_size`.
+    ExceedsBound {
+        offset: u64,
+        length: u64,
+        preamble: Preamble,
+        msg_end: u64,
+    },
     /// Streaming preamble (`total_length == 0`).  Caller decides
     /// whether to record a streaming-tail layout (forward-only) or
     /// disable backward (bidirectional, see commit decision table).
@@ -342,14 +356,26 @@ fn parse_forward_preamble(
         let remaining = file_size - pos;
         return ForwardOutcome::Streaming(remaining);
     }
-    match pos.checked_add(msg_len) {
-        Some(end) if msg_len >= min_message_size && end <= bound => ForwardOutcome::Hit {
+    let end = match pos.checked_add(msg_len) {
+        Some(e) => e,
+        None => return ForwardOutcome::Terminate("length-out-of-range-fwd"),
+    };
+    if msg_len < min_message_size || end > file_size {
+        return ForwardOutcome::Terminate("length-out-of-range-fwd");
+    }
+    if end > bound {
+        return ForwardOutcome::ExceedsBound {
             offset: pos,
             length: msg_len,
             preamble,
             msg_end: end,
-        },
-        _ => ForwardOutcome::Terminate("length-out-of-range-fwd"),
+        };
+    }
+    ForwardOutcome::Hit {
+        offset: pos,
+        length: msg_len,
+        preamble,
+        msg_end: end,
     }
 }
 
@@ -828,15 +854,23 @@ impl RemoteBackend {
         let bound = snap.prev;
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
 
-        // Walkers about to overlap?  One bounded forward step
-        // closes the gap; backward never gets called at this point.
+        // The paired postamble fetch needs a non-overlapping pair of
+        // 24-byte ranges: the forward preamble at `[next, next+24)`
+        // and the backward postamble at `[prev-24, prev)`.  Those two
+        // ranges are disjoint iff `prev >= next + min_message_size`
+        // (= `next + 48`), which is exactly the smallest gap in which
+        // a single well-formed message can fit.  When the gap holds
+        // exactly one message, same-message detection in
+        // `commit_or_yield_backward` handles the meet correctly and
+        // `close_gap` fires from `apply_round_outcomes`.
+        //
         // Saturating addition handles the (astronomical) case where
         // `snap.next` is so close to `u64::MAX` that the unchecked
         // sum would wrap; saturation to `u64::MAX` correctly forces
         // the forward fallback.  Past this guard we know
-        // `snap.prev >= snap.next + 2 * min_message_size`, so the
+        // `snap.prev >= snap.next + min_message_size`, so the
         // unchecked range constructions below cannot wrap.
-        if snap.prev < snap.next.saturating_add(2 * min_message_size) {
+        if snap.prev < snap.next.saturating_add(min_message_size) {
             return self.scan_fwd_step_locked(state, bound);
         }
 
@@ -875,11 +909,11 @@ impl RemoteBackend {
         Ok(())
     }
 
-    /// Apply the (forward, backward, optional Round-2) outcomes of a
-    /// single bidirectional round to the locked state.  Backward is
-    /// processed first so a format/streaming yield can fire before
-    /// the forward commit; this keeps the "forward terminate clears
-    /// suffix" path simple.
+    /// Apply the forward, backward, and (optional) candidate-preamble
+    /// outcomes of a single bidirectional round to the locked state.
+    /// Backward is processed first so a format/streaming yield can
+    /// fire before the forward commit; this keeps the "forward
+    /// terminate clears suffix" path simple.
     fn apply_round_outcomes(
         &self,
         state: &mut RemoteState,
@@ -915,6 +949,31 @@ impl RemoteBackend {
                     global_metadata: None,
                 });
             }
+            ForwardOutcome::ExceedsBound {
+                offset,
+                length,
+                preamble,
+                msg_end,
+            } => {
+                // Forward parsed a message whose end exceeds the
+                // bidirectional dispatcher's `bound` (= `prev_scan_offset`)
+                // while still fitting inside `file_size`.  That can only
+                // happen if `suffix_rev` already holds a backward layout
+                // with a corrupt offset — forward's reading is canonical,
+                // so disable backward (clearing `suffix_rev`) before
+                // committing the forward hop.  Subsequent steps revert
+                // to forward-only with `bound = file_size`.
+                state.disable_backward("forward-exceeds-backward-bound");
+                debug_assert_eq!(offset, state.next_scan_offset);
+                debug_assert_eq!(msg_end, offset + length);
+                state.record_forward_hop(MessageLayout {
+                    offset,
+                    length,
+                    preamble,
+                    index: None,
+                    global_metadata: None,
+                });
+            }
             ForwardOutcome::Streaming(_remaining) => {
                 // Streaming preamble in bidirectional mode is a
                 // contradiction: backward has discovered tail
@@ -933,23 +992,24 @@ impl RemoteBackend {
         }
     }
 
-    /// Decide what to do with a Round-2-validated backward layout
-    /// before the forward commit fires.  Five mutually-exclusive
-    /// outcomes:
+    /// Decide what to do with a backward candidate layout once the
+    /// candidate-preamble validation has run, before the forward
+    /// commit fires.  Five mutually-exclusive outcomes:
     ///
-    /// 1. Round-2 validation reported `Format(reason)`: disable
-    ///    backward with that reason.
-    /// 2. `bwd_active == false`: a concurrent caller disabled the
-    ///    walker between Round 1 and Round 2; silently drop the
-    ///    layout.
-    /// 3. `same_message_as_forward`: the 1-message file and odd-count
-    ///    middle-meet case — forward will commit this exact layout
-    ///    itself.  Yield silently (do NOT call `disable_backward` —
-    ///    that would clear `suffix_rev` from earlier rounds).
-    /// 4. True overlap (`fwd.msg_end > layout.offset`): only happens
-    ///    on corruption; disable backward with
-    ///    `backward-overlaps-forward`.
-    /// 5. Otherwise: commit the backward hop.
+    /// - validation reported `Format(reason)`: disable backward with
+    ///   that reason.
+    /// - `bwd_active == false`: a concurrent caller disabled the
+    ///   walker between the postamble fetch and the candidate-preamble
+    ///   fetch; silently drop the layout.
+    /// - `same_message_as_forward`: the 1-message file and odd-count
+    ///   middle-meet case — forward will commit this exact layout
+    ///   itself.  Yield silently (do NOT call `disable_backward` —
+    ///   that would clear `suffix_rev` from earlier hops).
+    /// - Forward Hit overlapping the candidate (`fwd.msg_end >
+    ///   layout.offset`) or forward ExceedsBound: backward's claim
+    ///   conflicts with a canonical forward reading; disable backward
+    ///   with the matching reason and let the forward branch commit.
+    /// - Otherwise: record the backward hop.
     fn commit_or_yield_backward(
         state: &mut RemoteState,
         fwd: &ForwardOutcome,
@@ -968,13 +1028,15 @@ impl RemoteBackend {
         if same_message_as_forward(fwd, &layout) {
             return;
         }
-        if let ForwardOutcome::Hit { msg_end, .. } = fwd {
-            if *msg_end > layout.offset {
+        match fwd {
+            ForwardOutcome::Hit { msg_end, .. } if *msg_end > layout.offset => {
                 state.disable_backward("backward-overlaps-forward");
-                return;
             }
+            ForwardOutcome::ExceedsBound { .. } => {
+                state.disable_backward("forward-exceeds-backward-bound");
+            }
+            _ => state.record_backward_hop(layout),
         }
-        state.record_backward_hop(layout);
     }
 
     fn ensure_message_locked(&self, state: &mut RemoteState, msg_idx: usize) -> Result<()> {
@@ -1005,7 +1067,10 @@ impl RemoteBackend {
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
         let pos = state.next_scan_offset;
 
-        if pos + min_message_size > self.file_size {
+        // Saturating addition: see `scan_fwd_step_locked` for the
+        // proof that this guard is sufficient to keep the unchecked
+        // `pos + chunk_size` range below from wrapping.
+        if pos.saturating_add(min_message_size) > self.file_size {
             state.terminate_forward("eof");
             return Ok(());
         }
@@ -2017,10 +2082,12 @@ impl RemoteBackend {
         let bound = snap.prev;
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
 
-        // See `scan_bidir_round_locked` for why saturating addition is
-        // sufficient here and why the unchecked range constructions
-        // immediately below cannot wrap once this guard passes.
-        if snap.prev < snap.next.saturating_add(2 * min_message_size) {
+        // See `scan_bidir_round_locked` for why a `min_message_size`
+        // threshold (the smallest disjoint pair of preamble/postamble
+        // ranges) is the correct floor and why the unchecked range
+        // constructions immediately below cannot wrap once this guard
+        // passes.
+        if snap.prev < snap.next.saturating_add(min_message_size) {
             return self.scan_fwd_step_async(bound).await;
         }
 
@@ -2089,7 +2156,10 @@ impl RemoteBackend {
             state.next_scan_offset
         };
 
-        if pos + min_message_size > self.file_size {
+        // Saturating addition: see `scan_fwd_step_locked` for the
+        // proof that this guard is sufficient to keep the unchecked
+        // `pos + chunk_size` range below from wrapping.
+        if pos.saturating_add(min_message_size) > self.file_size {
             let mut state = self.lock_state()?;
             if state.next_scan_offset == pos {
                 state.terminate_forward("eof");
@@ -3511,7 +3581,7 @@ mod bidir_http_tests {
 
     /// Forge a postamble.total_length that differs from the
     /// preamble.total_length but is otherwise plausible.  The
-    /// Round-2 cross-validator must yield with
+    /// candidate-preamble cross-validator must yield with
     /// `preamble-postamble-length-mismatch`; forward completes
     /// using its own (correct) preamble.total_length reading.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
