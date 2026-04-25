@@ -468,7 +468,7 @@ describe('TensogramFile.fromUrl bidirectional walker', () => {
     const body = makeNMessages(4);
     const aborts: number[] = [];
     let nextCall = 0;
-    const slowAbortAwareFetch: typeof globalThis.fetch = async (input, init) => {
+    const slowAbortAwareFetch: typeof globalThis.fetch = async (_input, init) => {
       const callIdx = ++nextCall;
       const sig = init?.signal;
       return new Promise((resolve, reject) => {
@@ -508,19 +508,23 @@ describe('TensogramFile.fromUrl bidirectional walker', () => {
             }
             const start = parseInt(m[1], 10);
             const end = parseInt(m[2], 10);
-            const slice = body.slice(start, end + 1);
+            const sliceLen = end - start + 1;
+            const sliceBuf = new ArrayBuffer(sliceLen);
+            new Uint8Array(sliceBuf).set(body.subarray(start, end + 1));
             resolve(
-              new Response(slice, {
+              new Response(sliceBuf, {
                 status: 206,
                 headers: {
                   'content-range': `bytes ${start}-${end}/${body.byteLength}`,
-                  'content-length': String(slice.byteLength),
+                  'content-length': String(sliceLen),
                 },
               }),
             );
             return;
           }
-          resolve(new Response(body, { status: 200 }));
+          const fullBuf = new ArrayBuffer(body.byteLength);
+          new Uint8Array(fullBuf).set(body);
+          resolve(new Response(fullBuf, { status: 200 }));
         }, 100);
         sig?.addEventListener(
           'abort',
