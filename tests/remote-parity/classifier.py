@@ -110,7 +110,12 @@ def _logical_from_range(range_header: str | None, response_bytes: int) -> tuple[
             end_inclusive = int(end_s)
         except ValueError:
             return (start, start + response_bytes)
-        return (start, end_inclusive + 1)
+        # Clamp to the bytes actually served: if the client asked beyond
+        # EOF, the mock server (and most HTTP servers) return only the
+        # available suffix. Trusting the request range here would inflate
+        # logical_range past what was observed and cause spurious parity
+        # mismatches.
+        return (start, min(end_inclusive + 1, start + response_bytes))
     return (start, start + response_bytes)
 
 
