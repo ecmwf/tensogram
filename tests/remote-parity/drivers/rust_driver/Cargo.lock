@@ -1641,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram"
-version = "0.18.1"
+version = "0.19.0"
 dependencies = [
  "bytes",
  "ciborium",
@@ -1659,7 +1659,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-encodings"
-version = "0.18.1"
+version = "0.19.0"
 dependencies = [
  "blosc2",
  "blosc2-rs-sys",
@@ -1678,7 +1678,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-sz3"
-version = "0.18.1"
+version = "0.19.0"
 dependencies = [
  "tensogram-sz3-sys",
  "thiserror",
@@ -1687,7 +1687,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-sz3-sys"
-version = "0.18.1"
+version = "0.19.0"
 dependencies = [
  "cc",
  "zstd-sys",
