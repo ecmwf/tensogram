@@ -13,7 +13,7 @@ tensogram = { path = "...", features = ["remote"] }
 use tensogram::TensogramFile;
 
 // Auto-detect: local path or remote URL.  The second argument
-// is `scan_opts: Option<&RemoteScanOptions>` — pass `None` for
+// is `scan_opts: Option<RemoteScanOptions>` — pass `None` for
 // the forward-only walker (see "Bidirectional scan" below).
 let mut file = TensogramFile::open_source("https://example.com/data.tgm", None)?;
 
