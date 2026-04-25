@@ -222,8 +222,10 @@ def test_eager_footer_one_fetch_per_backward_discovered_message(
     expected_eager = msg_count // 2
     assert footer_fetches == expected_eager, (
         f"{bidir.run_id}: expected {expected_eager} eager-footer fetches "
-        f"(floor({msg_count}/2) backward-discovered messages) and zero post-scan "
-        f"lazy fetches; got {footer_fetches}"
+        f"(floor({msg_count}/2) backward-discovered messages) and zero lazy "
+        f"populate calls on read-metadata(N-1); got {footer_fetches}.  "
+        f"If the lazy populate had fired (eager apply failed), this count "
+        f"would be {expected_eager + 1} for the {fixture} fixture."
     )
 
 

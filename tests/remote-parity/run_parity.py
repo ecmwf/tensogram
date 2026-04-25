@@ -184,7 +184,7 @@ def normalise_log(
             ),
             layout,
         )
-        scan_round = builder.assign(classified)
+        scan_round, role = builder.assign(classified)
         events.append(
             ScanEvent(
                 run_id=run_id,
@@ -193,7 +193,7 @@ def normalise_log(
                 category=classified.category,
                 logical_range=classified.logical_range,
                 physical_requests=(classified.physical,),
-                role=classified.role,
+                role=role,
             )
         )
     return events

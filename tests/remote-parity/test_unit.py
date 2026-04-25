@@ -36,6 +36,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from classifier import (
     NON_SCAN_ROUND,
     PREAMBLE_BYTES,
+    FixtureLayout,
     Observation,
     RoundBuilder,
     classify,
@@ -118,22 +119,92 @@ class TestRoundBuilder:
         builder = RoundBuilder()
         a = classify(Observation("GET", "bytes=0-23", 206, PREAMBLE_BYTES))
         b = classify(Observation("GET", "bytes=100-123", 206, PREAMBLE_BYTES))
-        assert builder.assign(a) == 0
-        assert builder.assign(b) == 1
+        round_a, _ = builder.assign(a)
+        round_b, _ = builder.assign(b)
+        assert round_a == 0
+        assert round_b == 1
 
     def test_non_scan_events_get_non_scan_round(self) -> None:
         builder = RoundBuilder()
         probe = classify(Observation("HEAD", None, 200, 0))
-        assert builder.assign(probe) == NON_SCAN_ROUND
+        round_id, _ = builder.assign(probe)
+        assert round_id == NON_SCAN_ROUND
 
     def test_round_counter_ignores_non_scan(self) -> None:
         builder = RoundBuilder()
         scan0 = classify(Observation("GET", "bytes=0-23", 206, PREAMBLE_BYTES))
         probe = classify(Observation("HEAD", None, 200, 0))
         scan1 = classify(Observation("GET", "bytes=100-123", 206, PREAMBLE_BYTES))
-        assert builder.assign(scan0) == 0
-        assert builder.assign(probe) == NON_SCAN_ROUND
-        assert builder.assign(scan1) == 1
+        r0, _ = builder.assign(scan0)
+        rp, _ = builder.assign(probe)
+        r1, _ = builder.assign(scan1)
+        assert r0 == 0
+        assert rp == NON_SCAN_ROUND
+        assert r1 == 1
+
+
+class TestRoundBuilderBidirectional:
+    """Bidirectional state machine: a round contains distinct roles;
+    a role-collision opens a new round.  Either of the paired
+    fwd/bwd requests can arrive first on the wire.
+    """
+
+    @staticmethod
+    def _layout(starts: tuple[int, ...], length: int) -> FixtureLayout:
+        return FixtureLayout(
+            message_starts=frozenset(starts),
+            message_ends=frozenset(s + length for s in starts),
+            total_size=max(starts) + length if starts else 0,
+        )
+
+    def test_paired_fwd_then_bwd_share_round(self) -> None:
+        layout = self._layout((0, 100), 100)
+        builder = RoundBuilder(forward_only=False)
+        fwd = classify(Observation("GET", "bytes=0-23", 206, PREAMBLE_BYTES), layout)
+        bwd_pa = classify(Observation("GET", "bytes=176-199", 206, PREAMBLE_BYTES), layout)
+        round_a, role_a = builder.assign(fwd)
+        round_b, role_b = builder.assign(bwd_pa)
+        assert (round_a, role_a) == (0, "fwd_preamble")
+        assert (round_b, role_b) == (0, "bwd_postamble")
+
+    def test_reordered_paired_bwd_then_fwd_share_round(self) -> None:
+        layout = self._layout((0, 100), 100)
+        builder = RoundBuilder(forward_only=False)
+        bwd_pa = classify(Observation("GET", "bytes=176-199", 206, PREAMBLE_BYTES), layout)
+        fwd = classify(Observation("GET", "bytes=0-23", 206, PREAMBLE_BYTES), layout)
+        round_b, role_b = builder.assign(bwd_pa)
+        round_f, role_f = builder.assign(fwd)
+        assert (round_b, role_b) == (0, "bwd_postamble")
+        assert (round_f, role_f) == (0, "fwd_preamble")
+
+    def test_role_collision_opens_new_round(self) -> None:
+        layout = self._layout((0, 100, 200), 100)
+        builder = RoundBuilder(forward_only=False)
+        a = classify(Observation("GET", "bytes=0-23", 206, PREAMBLE_BYTES), layout)
+        b = classify(Observation("GET", "bytes=100-123", 206, PREAMBLE_BYTES), layout)
+        c = classify(Observation("GET", "bytes=200-223", 206, PREAMBLE_BYTES), layout)
+        ra, role_a = builder.assign(a)
+        rb, role_b = builder.assign(b)
+        rc, role_c = builder.assign(c)
+        assert (ra, role_a) == (0, "fwd_preamble")
+        assert (rb, role_b) == (1, "fwd_preamble")
+        assert (rc, role_c) == (2, "fwd_preamble")
+
+    def test_paired_then_new_paired_round(self) -> None:
+        layout = self._layout((0, 100, 200, 300), 100)
+        builder = RoundBuilder(forward_only=False)
+        fwd0 = classify(Observation("GET", "bytes=0-23", 206, PREAMBLE_BYTES), layout)
+        bwd0 = classify(Observation("GET", "bytes=376-399", 206, PREAMBLE_BYTES), layout)
+        fwd1 = classify(Observation("GET", "bytes=100-123", 206, PREAMBLE_BYTES), layout)
+        bwd1 = classify(Observation("GET", "bytes=276-299", 206, PREAMBLE_BYTES), layout)
+        r0a, role_0a = builder.assign(fwd0)
+        r0b, role_0b = builder.assign(bwd0)
+        r1a, role_1a = builder.assign(fwd1)
+        r1b, role_1b = builder.assign(bwd1)
+        assert (r0a, role_0a) == (0, "fwd_preamble")
+        assert (r0b, role_0b) == (0, "bwd_postamble")
+        assert (r1a, role_1a) == (1, "fwd_preamble")
+        assert (r1b, role_1b) == (1, "bwd_postamble")
 
 
 class TestMockServer:

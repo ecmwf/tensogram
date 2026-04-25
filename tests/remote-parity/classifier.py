@@ -184,57 +184,48 @@ def _physical_dict(observation: Observation) -> dict:
 
 @dataclass
 class RoundBuilder:
-    """Assigns ``scan_round`` to classified events in observation order.
+    """Assigns ``scan_round`` and propagates the classifier-assigned
+    role to events in observation order.
 
     Forward-only contract: every ``scan`` event starts a new round.
-    Non-scan events get ``scan_round = NON_SCAN_ROUND``.
 
-    Bidirectional contract: a round contains at most one
-    ``fwd_preamble``, one ``bwd_postamble``, and one
-    ``bwd_preamble_validation`` (which is a ``fwd_preamble``-shaped
-    fetch following a ``bwd_postamble`` in the same round).  Either
-    of the paired requests can start a round: ``Promise.allSettled``
-    and ``store.get_ranges`` parallelise the pair, so the mock-server
-    log can observe them in either order.
+    Bidirectional contract: a round groups events with distinct
+    roles; encountering a role that's already in the current round
+    opens a new one.  This keeps the paired forward-preamble +
+    backward-postamble in the same round (the two fetches are
+    parallel and may arrive in either order) but starts a new round
+    on the next role-collision — which is the cleanest unambiguous
+    rule that can be derived from wire observations alone.
+
+    Note: a backward-preamble-validation fetch (sequential after the
+    paired pair) shares the wire shape of a forward preamble.  The
+    classifier cannot distinguish them from the request log without
+    walker state; this builder therefore does NOT attempt to
+    relabel.  The ``bwd_preamble_validation`` ScanRole is reserved
+    for future analysis paths that have access to dispatcher hooks.
+
+    Non-scan events get ``scan_round = NON_SCAN_ROUND`` and keep
+    their classifier-assigned role (typically ``"none"``).
     """
 
     forward_only: bool = True
     _next_round: int = 0
     _round_has: set[ScanRole] = field(default_factory=set)
 
-    def assign(self, c: Classified) -> int:
+    def assign(self, c: Classified) -> tuple[int, ScanRole]:
         if c.category != "scan":
-            return NON_SCAN_ROUND
+            return NON_SCAN_ROUND, c.role
         if self.forward_only:
             r = self._next_round
             self._next_round += 1
-            return r
+            return r, c.role
         return self._assign_bidirectional(c.role)
 
-    def _assign_bidirectional(self, role: ScanRole) -> int:
-        # The 8 disambiguation rules below cover every possible
-        # arrival order of a paired round + its preamble validation.
-        relabel: ScanRole = role
-        if role == "fwd_preamble" and "bwd_postamble" in self._round_has:
-            # A `fwd_preamble`-shaped fetch following a `bwd_postamble`
-            # within the same round is the backward preamble validation,
-            # not a fresh forward preamble.
-            relabel = "bwd_preamble_validation"
-
-        # Open a new round when this role would conflict with the
-        # current round's already-seen roles.
-        opens_new = (
-            (relabel == "fwd_preamble" and "fwd_preamble" in self._round_has)
-            or (relabel == "bwd_postamble" and "bwd_postamble" in self._round_has)
-            or (
-                relabel == "bwd_preamble_validation"
-                and "bwd_preamble_validation" in self._round_has
-            )
-        )
-        if opens_new:
+    def _assign_bidirectional(self, role: ScanRole) -> tuple[int, ScanRole]:
+        if role in self._round_has:
             self._open_new_round()
-        self._round_has.add(relabel)
-        return self._next_round
+        self._round_has.add(role)
+        return self._next_round, role
 
     def _open_new_round(self) -> None:
         self._next_round += 1
