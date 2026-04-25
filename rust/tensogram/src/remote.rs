@@ -3432,6 +3432,90 @@ mod bidir_http_tests {
         );
     }
 
+    /// `validate_scan_opts` must reject an absurdly small
+    /// `max_message_size` with bidirectional enabled — the
+    /// backward walker would yield on every postamble so the option
+    /// combination is incoherent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bidir_rejects_max_message_size_below_min() {
+        let buf = make_message(vec![4], 0);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let result = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions {
+                bidirectional: true,
+                max_message_size: 1,
+            },
+        );
+        assert!(
+            matches!(result, Err(TensogramError::Remote(ref msg)) if msg.contains("below the minimum")),
+            "open_with_scan_opts must reject max_message_size below min_message_size when bidirectional",
+        );
+    }
+
+    /// Forge a postamble whose `total_length` is between 1 and
+    /// `PREAMBLE_SIZE + POSTAMBLE_SIZE - 1`.  Backward must yield
+    /// with `length-below-minimum-bwd`; forward completes the scan.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bidir_postamble_length_below_minimum_yields_backward() {
+        let mut buf = make_message(vec![4], 7);
+        let pa_start = buf.len() - POSTAMBLE_SIZE;
+        let total_off = pa_start + 8;
+        buf[total_off..total_off + 8].copy_from_slice(&1u64.to_be_bytes());
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions {
+                bidirectional: true,
+                max_message_size: 4 * 1024 * 1024 * 1024,
+            },
+        )
+        .expect("open");
+        let count = backend.message_count().expect("count");
+        assert_eq!(
+            count, 1,
+            "below-min postamble: forward still finds the message"
+        );
+    }
+
+    /// Forge a postamble.total_length that differs from the
+    /// preamble.total_length but is otherwise plausible.  The
+    /// Round-2 cross-validator must yield with
+    /// `preamble-postamble-length-mismatch`; forward completes
+    /// using its own (correct) preamble.total_length reading.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bidir_preamble_postamble_length_mismatch_yields_backward() {
+        let buf_a = make_message(vec![4], 11);
+        let buf_b = make_message(vec![8], 22);
+        let mut buf = concat_messages(vec![buf_a.clone(), buf_b.clone()]);
+        // Patch the postamble at file end to claim a smaller length
+        // than the preamble actually says.  Backward computes
+        // msg_start from this fake length, fetches that preamble,
+        // sees a mismatch with its own claim, and yields.
+        let actual_len_b = buf_b.len() as u64;
+        let fake_len_b = actual_len_b - 8;
+        let pa_start = buf.len() - POSTAMBLE_SIZE;
+        let total_off = pa_start + 8;
+        buf[total_off..total_off + 8].copy_from_slice(&fake_len_b.to_be_bytes());
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions {
+                bidirectional: true,
+                max_message_size: 4 * 1024 * 1024 * 1024,
+            },
+        )
+        .expect("open");
+        let count = backend.message_count().expect("count");
+        assert_eq!(
+            count, 2,
+            "length-mismatch backward yield: forward still finds both messages",
+        );
+    }
+
     /// `[streaming, normal]` synthetic file: forward sees a streaming
     /// preamble at offset 0 and reads END_MAGIC at file_size-8 (which
     /// happens to be the END_MAGIC of the trailing normal message),
