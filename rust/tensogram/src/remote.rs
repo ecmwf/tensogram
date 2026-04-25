@@ -390,20 +390,25 @@ pub(crate) struct RemoteBackend {
 /// Two-cursor scan state for the bidirectional walker.
 ///
 /// The forward cursor (`next_scan_offset`) and the backward cursor
-/// (`prev_scan_offset`) bound the unknown gap.  In forward-only mode
-/// (`bwd_active = false`), `suffix_rev` stays empty and
-/// `prev_scan_offset` stays at `file_size`, collapsing the state
-/// machine to today's behaviour — `scan_complete()` reduces to the
-/// pre-existing `fwd_terminated` semantics.
+/// (`prev_scan_offset`) bound the unknown gap **while bidirectional
+/// is active**.  After `disable_backward`, `prev_scan_offset` is
+/// intentionally left stale — `forward_bound()` ignores it once
+/// `suffix_rev` is empty and reverts to `file_size`, so subsequent
+/// forward-only steps cover the full file.
 ///
 /// Invariants pinned by the helpers below and the unit tests:
 ///
-/// 1. `next_scan_offset <= prev_scan_offset <= file_size` while
-///    scanning is in progress.
+/// 1. While `bwd_active || !suffix_rev.is_empty()`:
+///    `next_scan_offset <= prev_scan_offset <= file_size`.
+///    Once backward is disabled and the suffix is cleared,
+///    `prev_scan_offset` is meaningless and never read.
 /// 2. `layouts` is a contiguous forward prefix; `next_scan_offset`
 ///    is the end of that prefix.
-/// 3. `suffix_rev` is a contiguous EOF-first suffix; `prev_scan_offset`
-///    is the start of its first entry while `bwd_active`.
+/// 3. While `bwd_active`, `suffix_rev` is an EOF-first stack of
+///    backward-discovered layouts (last push is the **leftmost**
+///    layout, closest to the forward walker), and
+///    `prev_scan_offset` is the offset of that leftmost / most
+///    recently pushed entry.
 /// 4. `bwd_active => !gap_closed && !fwd_terminated`.
 /// 5. `gap_closed => suffix_rev.is_empty() && !bwd_active && scan_complete()`.
 /// 6. `fwd_terminated => suffix_rev.is_empty() && !bwd_active`
@@ -480,11 +485,6 @@ impl RemoteState {
         self.gap_closed || (self.fwd_terminated && self.suffix_rev.is_empty())
     }
 
-    /// `true` once forward and backward cursors have met or crossed.
-    fn walkers_overlap(&self) -> bool {
-        self.next_scan_offset >= self.prev_scan_offset
-    }
-
     /// Append a forward-discovered layout, advance the cursor, bump
     /// the epoch.
     fn record_forward_hop(&mut self, layout: MessageLayout) {
@@ -493,7 +493,12 @@ impl RemoteState {
             "forward end must fit in u64; validated by scan_next before recording",
         );
         let end = layout.offset + layout.length;
-        debug_assert!(end <= self.prev_scan_offset);
+        // `prev_scan_offset` is only a meaningful upper bound while
+        // backward is live (invariant 1).  Post-`disable_backward`,
+        // `prev_scan_offset` is stale and the forward walker may
+        // legitimately advance past it on its way to `file_size`.
+        let backward_live = self.bwd_active || !self.suffix_rev.is_empty();
+        debug_assert!(!backward_live || end <= self.prev_scan_offset);
         let offset = layout.offset;
         let length = layout.length;
         self.layouts.push(layout);
@@ -948,7 +953,7 @@ impl RemoteBackend {
             ForwardOutcome::Terminate(reason) => state.terminate_forward(reason),
         }
 
-        if state.bwd_active && state.walkers_overlap() {
+        if state.bwd_active && state.next_scan_offset == state.prev_scan_offset {
             state.close_gap();
         }
     }
@@ -2008,10 +2013,30 @@ impl RemoteBackend {
     /// method's docstring.  Lock-around-await: snapshot before the
     /// paired fetch, validate the same snapshot on reacquire, then
     /// commit through [`Self::apply_round_outcomes`].
+    ///
+    /// Re-checks `bwd_active && !fwd_terminated` under the initial
+    /// lock — `scan_step_async` already made that decision before
+    /// dropping the lock, but a concurrent caller may have disabled
+    /// the backward walker (or terminated forward) in the meantime.
+    /// Without the recheck, a stale dispatch would snapshot the
+    /// post-mutation `prev_scan_offset` and use it as the forward
+    /// bound, terminating forward at a stale offset rather than at
+    /// `file_size`.
     async fn scan_bidir_round_async(&self) -> Result<()> {
-        let snap = {
+        let snap_opt: Option<ScanSnapshot> = {
             let state = self.lock_state()?;
-            state.snapshot()
+            if state.scan_complete() {
+                return Ok(());
+            }
+            if state.bwd_active && !state.fwd_terminated {
+                Some(state.snapshot())
+            } else {
+                None
+            }
+        };
+        let snap = match snap_opt {
+            Some(snap) => snap,
+            None => return self.scan_fwd_step_async(self.file_size).await,
         };
         let bound = snap.prev;
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
@@ -3024,6 +3049,97 @@ mod tests {
         assert_eq!(opts.max_message_size, 1024);
         assert!(opts.bidirectional);
     }
+
+    fn snap_at(prev: u64) -> ScanSnapshot {
+        ScanSnapshot {
+            next: 0,
+            prev,
+            epoch: 0,
+        }
+    }
+
+    #[test]
+    fn parse_backward_postamble_short_fetch_yields_format() {
+        let buf = vec![0u8; POSTAMBLE_SIZE - 1];
+        match parse_backward_postamble(&buf, &snap_at(POSTAMBLE_SIZE as u64), u64::MAX) {
+            BackwardOutcome::Format("short-fetch-bwd") => {}
+            other => panic!("expected short-fetch-bwd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_backward_postamble_bad_end_magic_yields_format() {
+        let mut buf = vec![0u8; POSTAMBLE_SIZE];
+        buf[POSTAMBLE_SIZE - crate::wire::END_MAGIC.len()..].copy_from_slice(b"NOTMAGIC");
+        match parse_backward_postamble(&buf, &snap_at(POSTAMBLE_SIZE as u64), u64::MAX) {
+            BackwardOutcome::Format("bad-end-magic-bwd") => {}
+            other => panic!("expected bad-end-magic-bwd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_backward_postamble_arith_underflow_yields_format() {
+        let mut buf = vec![0u8; POSTAMBLE_SIZE];
+        buf[8..16].copy_from_slice(&u64::MAX.to_be_bytes());
+        buf[POSTAMBLE_SIZE - crate::wire::END_MAGIC.len()..]
+            .copy_from_slice(crate::wire::END_MAGIC);
+        match parse_backward_postamble(&buf, &snap_at(100), u64::MAX) {
+            BackwardOutcome::Format("backward-arith-underflow") => {}
+            other => panic!("expected backward-arith-underflow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_backward_postamble_overlap_with_forward_yields_format() {
+        let mut buf = vec![0u8; POSTAMBLE_SIZE];
+        let total: u64 = 200;
+        buf[8..16].copy_from_slice(&total.to_be_bytes());
+        buf[POSTAMBLE_SIZE - crate::wire::END_MAGIC.len()..]
+            .copy_from_slice(crate::wire::END_MAGIC);
+        let snap = ScanSnapshot {
+            next: 100,
+            prev: 250,
+            epoch: 0,
+        };
+        match parse_backward_postamble(&buf, &snap, u64::MAX) {
+            BackwardOutcome::Format("backward-overlaps-forward") => {}
+            other => panic!("expected backward-overlaps-forward, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_backward_preamble_short_fetch_yields_format() {
+        let buf = vec![0u8; PREAMBLE_SIZE - 1];
+        match validate_backward_preamble(&buf, 0, 100) {
+            BackwardCommit::Format("short-fetch-bwd") => {}
+            other => panic!("expected short-fetch-bwd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_backward_preamble_bad_magic_yields_format() {
+        let buf = vec![0u8; PREAMBLE_SIZE];
+        match validate_backward_preamble(&buf, 0, 100) {
+            BackwardCommit::Format("bad-magic-bwd") => {}
+            other => panic!("expected bad-magic-bwd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_backward_preamble_streaming_at_non_tail_yields_format() {
+        let preamble = Preamble {
+            version: crate::wire::WIRE_VERSION,
+            flags: MessageFlags::default(),
+            reserved: 0,
+            total_length: 0,
+        };
+        let mut buf = Vec::with_capacity(PREAMBLE_SIZE);
+        preamble.write_to(&mut buf);
+        match validate_backward_preamble(&buf, 0, 100) {
+            BackwardCommit::Format("streaming-preamble-non-tail") => {}
+            other => panic!("expected streaming-preamble-non-tail, got {other:?}"),
+        }
+    }
 }
 
 #[cfg(all(test, feature = "async"))]
@@ -3520,17 +3636,22 @@ mod bidir_http_tests {
         );
     }
 
-    /// `[streaming, normal]` synthetic file: forward sees a streaming
-    /// preamble at offset 0 and reads END_MAGIC at file_size-8 (which
-    /// happens to be the END_MAGIC of the trailing normal message),
-    /// matching today's forward-only behaviour.  Bidirectional must
-    /// not "recover" the trailing normal message via backward
-    /// discovery — that would expose data forward-only scanning can
-    /// never reach, violating the "bidirectional is never recovery"
-    /// invariant.
+    /// `[normal, streaming, normal]` synthetic file: open consumes
+    /// the leading normal message via forward-only `scan_next_locked`,
+    /// then bidirectional dispatch fires.  Forward sees a streaming
+    /// preamble at the second message; backward discovers the third
+    /// message's postamble.  The `streaming-fwd-non-tail` branch in
+    /// `apply_round_outcomes` must disable backward (clearing the
+    /// freshly-discovered third-message layout); subsequent
+    /// forward-only steps then match the forward-only baseline
+    /// exactly.  Validates "bidirectional is never recovery": a
+    /// streaming preamble in the middle of the gap cannot be used
+    /// to surface tail content that forward-only scanning would
+    /// otherwise swallow into the streaming layout.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn bidir_streaming_first_then_normal_tail_no_recovery() {
-        let mut streaming = make_message(vec![4], 1);
+    async fn bidir_streaming_in_middle_no_recovery() {
+        let normal_a = make_message(vec![4], 1);
+        let mut streaming = make_message(vec![8], 2);
         let preamble_total_off = 16;
         for byte in &mut streaming[preamble_total_off..preamble_total_off + 8] {
             *byte = 0;
@@ -3540,8 +3661,8 @@ mod bidir_http_tests {
         for byte in &mut streaming[total_off..total_off + 8] {
             *byte = 0;
         }
-        let normal = make_message(vec![8], 2);
-        let buf = concat_messages(vec![streaming, normal]);
+        let normal_b = make_message(vec![16], 3);
+        let buf = concat_messages(vec![normal_a, streaming, normal_b]);
 
         let server = MockObjectStore::start(buf).await.expect("start");
 
@@ -3566,7 +3687,7 @@ mod bidir_http_tests {
 
         assert_eq!(
             bidir_count, fwd_count,
-            "streaming-first abuse case: bidirectional must match forward-only ({fwd_count} layouts)",
+            "streaming-in-middle: bidirectional must match forward-only ({fwd_count} layouts)",
         );
     }
 }
