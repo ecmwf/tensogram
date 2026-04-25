@@ -90,8 +90,6 @@ const DESCRIPTOR_PREFIX_INITIAL_BYTES = 8 * 1024;
 const DATA_OBJECT_FRAME_HEADER_BYTES = 16;
 /** Size of a data-object frame footer in v3 ([cbor_offset 8][hash 8][ENDF 4]). */
 const DATA_OBJECT_FRAME_FOOTER_BYTES = 20;
-/** The magic header every Tensogram preamble starts with. */
-const PREAMBLE_MAGIC = new TextEncoder().encode('TENSOGRM');
 
 // ── Internal backend types ────────────────────────────────────────────────
 
@@ -218,6 +216,12 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
         'TensogramFile.fromUrl: no fetch implementation is available',
       );
     }
+    if (options.bidirectional === true && options.concurrency === 1) {
+      throw new InvalidArgumentError(
+        'TensogramFile.fromUrl: bidirectional scan requires concurrency >= 2; ' +
+          'concurrency: 1 would serialise the paired Range fetch and defeat the purpose',
+      );
+    }
 
     // ── Probe for Range support ──
     let probe: Response | undefined;
@@ -249,12 +253,17 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
           ...(options.headers !== undefined ? { baseHeaders: options.headers } : {}),
           ...(options.signal !== undefined ? { signal: options.signal } : {}),
         };
+        const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
+        const limit = createLimiter(concurrency);
         // Try the lazy path.  If lazy scan fails mid-walk (e.g.
         // streaming-mode message or unrecognised magic), fall through
         // to eager.
-        const scanResult = await lazyScanMessages(ctx, contentLength);
+        const scanResult = await lazyScanMessages(ctx, contentLength, {
+          bidirectional: options.bidirectional ?? false,
+          debug: options.debug ?? false,
+          limit,
+        });
         if (scanResult !== null) {
-          const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
           const backend: LazyHttpBackend = {
             kind: 'remote-lazy',
             source: 'remote',
@@ -265,7 +274,7 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
             layouts: scanResult.layouts,
             cache: new Map(),
             cacheCap: LAZY_CACHE_CAPACITY,
-            limit: createLimiter(concurrency),
+            limit,
           };
           if (options.headers !== undefined) backend.baseHeaders = options.headers;
           if (options.signal !== undefined) backend.signal = options.signal;
@@ -339,6 +348,22 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
   /** Number of messages indexed from the file. */
   get messageCount(): number {
     return this.#backend.positions.length;
+  }
+
+  /**
+   * Per-message `(offset, length)` layouts in file order.
+   *
+   * Populated by the open-time scan; this accessor is passive — it
+   * does not trigger additional fetches.  Returns a fresh array of
+   * fresh objects each call so callers cannot mutate the backend's
+   * internal positions.  Forward-only and bidirectional opens
+   * produce identical layouts on well-formed files; the parity
+   * harness uses this to assert walker-mode equivalence.  Mirrors
+   * the Rust `TensogramFile::message_layouts` and Python
+   * `PyTensogramFile.message_layouts` accessors.
+   */
+  get messageLayouts(): readonly { offset: number; length: number }[] {
+    return this.#backend.positions.map((p) => ({ offset: p.offset, length: p.length }));
   }
 
   /** Total byte length of the backing file. */
@@ -1147,83 +1172,432 @@ interface LazyScanResult {
   layouts: Map<number, MessageLayout>;
 }
 
+type Limiter = <T>(fn: () => Promise<T>) => Promise<T>;
+
+interface LazyScanOptions {
+  bidirectional: boolean;
+  debug: boolean;
+  limit: Limiter;
+}
+
 /**
- * Walk the file one preamble at a time (24-byte Range per message),
- * collecting each message's `(offset, length)` from the preamble's
- * `total_length` field and building a preamble-only `MessageLayout`
- * cache entry per message.  Metadata and index frames remain
- * unpopulated until the caller asks for them via `messageMetadata`
- * / `messageDescriptors` / per-object accessors; at that point the
- * backend issues a single header-chunk or footer-suffix Range read
- * per message.
+ * Discriminated outcome shapes mirroring the Rust
+ * `tensogram::remote_scan_parse::{ForwardOutcome, BackwardOutcome,
+ * BackwardCommit}` enums.  The WASM exports serialise each enum
+ * via `#[serde(tag = "kind", rename_all_fields = "camelCase")]` so
+ * the discriminant is the `kind` field and field names are camelCase.
+ */
+type ForwardOutcome =
+  | { kind: 'Hit'; offset: bigint; length: bigint; msgEnd: bigint }
+  | { kind: 'ExceedsBound'; offset: bigint; length: bigint; msgEnd: bigint }
+  | { kind: 'Streaming'; remaining: bigint }
+  | { kind: 'Terminate'; reason: string };
+
+type BackwardOutcome =
+  | { kind: 'Format'; reason: string }
+  | { kind: 'Streaming' }
+  | { kind: 'NeedPreambleValidation'; msgStart: bigint; length: bigint };
+
+type BackwardCommit =
+  | { kind: 'Format'; reason: string }
+  | { kind: 'Layout'; offset: bigint; length: bigint };
+
+interface ScanState {
+  next: number;
+  prev: number;
+  layouts: { offset: number; length: number; preamble: PreambleInfo }[];
+  suffixRev: { offset: number; length: number; preamble: PreambleInfo }[];
+  bwdActive: boolean;
+  fwdTerminated: boolean;
+  gapClosed: boolean;
+}
+
+type PreambleInfo = MessageLayout['preamble'];
+
+/**
+ * Drive the lazy open-time scan.
  *
- * **Not a 256 KB forward-chunk walk.**  The plan initially proposed
- * reading 256 KB per message and parsing header metadata + index
- * inline so header-indexed messages would be ready without a second
- * round trip; this shipped version is the simpler preamble-only
- * walk.  The fused-chunk variant is tracked as a follow-up in
- * `plans/TODO.md` — it needs a benchmark to confirm the round-trip
- * saving outweighs the larger per-message fetches.
+ * State-machine dispatcher mirroring Rust's `scan_step_locked`:
+ * each iteration either issues a paired bidirectional round (when
+ * `bwdActive && !fwdTerminated`) or a forward-only step.  Backward
+ * yields (format error, streaming preamble, gap-below-min, overlap,
+ * exceeds-bound) transition the loop into forward-only continuation
+ * from `state.next` — never bail-to-eager, never restart from offset
+ * 0.
  *
- * Returns `null` when the lazy walk cannot proceed — the caller falls
- * back to eager download.  Signals:
- *
- * - non-`TENSOGRM` magic encountered;
- * - streaming-mode message (`total_length == 0`) — would require
- *   walking frame-by-frame, an optimisation we don't attempt;
- * - advertised length exceeds the file;
- * - any Range response that isn't 206 (including 200 with the whole
- *   body, which some servers return when Range isn't supported).
+ * Returns `null` only on unrecoverable errors (transport failure on
+ * a Range fetch, magic mismatch on the forward step's preamble) so
+ * the caller can fall back to eager download.
  */
 async function lazyScanMessages(
   ctx: FetchRangeContext,
   fileLen: number,
+  options: LazyScanOptions,
 ): Promise<LazyScanResult | null> {
-  const positions: MessagePosition[] = [];
-  const layouts = new Map<number, MessageLayout>();
-  let cursor = 0;
+  if (options.debug) {
+    console.debug(
+      'tensogram:scan:mode',
+      options.bidirectional ? 'bidirectional' : 'forward-only',
+    );
+  }
+  const state: ScanState = {
+    next: 0,
+    prev: fileLen,
+    layouts: [],
+    suffixRev: [],
+    bwdActive: options.bidirectional,
+    fwdTerminated: false,
+    gapClosed: false,
+  };
 
-  while (cursor + PREAMBLE_BYTES <= fileLen) {
-    let preambleBytes: Uint8Array;
+  while (!scanComplete(state)) {
+    const ok =
+      state.bwdActive && !state.fwdTerminated
+        ? await tryBidirectionalRound(ctx, fileLen, state, options)
+        : await tryForwardStep(ctx, fileLen, state, options);
+    if (!ok) return null;
+  }
+  if (state.layouts.length === 0 && state.suffixRev.length === 0 && !state.gapClosed) {
+    return null;
+  }
+  return finaliseScan(state);
+}
+
+function scanComplete(s: ScanState): boolean {
+  return s.gapClosed || (s.fwdTerminated && s.suffixRev.length === 0);
+}
+
+async function tryBidirectionalRound(
+  ctx: FetchRangeContext,
+  fileLen: number,
+  state: ScanState,
+  options: LazyScanOptions,
+): Promise<boolean> {
+  const minSize = MIN_MESSAGE_BYTES;
+  if (state.prev < state.next + minSize) {
+    if (state.next === state.prev) {
+      closeGap(state, options);
+      return true;
+    }
+    disableBackward(state, 'gap-below-min-message-size', options);
+    return true;
+  }
+
+  if (ctx.signal?.aborted) return false;
+
+  const childCtl = new AbortController();
+  const onParentAbort = (): void => childCtl.abort();
+  ctx.signal?.addEventListener('abort', onParentAbort, { once: true });
+
+  let fwdBytes: Uint8Array;
+  let bwdBytes: Uint8Array;
+  try {
+    const fwdPromise = options.limit(() =>
+      fetchRange(ctx, state.next, state.next + PREAMBLE_BYTES, true, childCtl.signal),
+    );
+    const bwdPromise = options.limit(() =>
+      fetchRange(ctx, state.prev - POSTAMBLE_BYTES, state.prev, true, childCtl.signal),
+    );
+    // Sibling abort: as soon as either side rejects, abort the
+    // still-pending one so the round resolves promptly instead of
+    // waiting for a hung fetch to time out at the network layer.
+    // The original promises are still awaited by `allSettled` below;
+    // the side-channel `catch` only attaches an extra abort handler.
+    const cancelSiblingOnReject = (p: Promise<unknown>): void => {
+      p.catch(() => childCtl.abort());
+    };
+    cancelSiblingOnReject(fwdPromise);
+    cancelSiblingOnReject(bwdPromise);
+    const [fwdRes, bwdRes] = await Promise.allSettled([fwdPromise, bwdPromise]);
+
+    if (fwdRes.status === 'rejected' || bwdRes.status === 'rejected') {
+      childCtl.abort();
+      return false;
+    }
+    fwdBytes = fwdRes.value;
+    bwdBytes = bwdRes.value;
+  } finally {
+    ctx.signal?.removeEventListener('abort', onParentAbort);
+  }
+
+  const wbg = getWbg();
+  const fwdOutcome = wbg.parse_forward_preamble_outcome(
+    fwdBytes,
+    BigInt(state.next),
+    BigInt(fileLen),
+    BigInt(state.prev),
+  ) as ForwardOutcome;
+  const bwdOutcome = wbg.parse_backward_postamble_outcome(
+    bwdBytes,
+    BigInt(state.next),
+    BigInt(state.prev),
+  ) as BackwardOutcome;
+
+  let validation: BackwardCommit | undefined;
+  let candidatePreambleBytes: Uint8Array | undefined;
+  if (bwdOutcome.kind === 'NeedPreambleValidation') {
+    const msgStart = Number(bwdOutcome.msgStart);
     try {
-      preambleBytes = await fetchRange(
-        ctx,
-        cursor,
-        cursor + PREAMBLE_BYTES,
-        /* requireRange */ true,
+      candidatePreambleBytes = await options.limit(() =>
+        fetchRange(ctx, msgStart, msgStart + PREAMBLE_BYTES, true),
       );
     } catch {
-      return null; // eager fallback
+      return false;
     }
-    // Verify the magic prefix.  Any mismatch aborts the lazy walk —
-    // `TensogramFile.scan` in eager mode tolerates leading garbage but
-    // this fast-path relies on preamble-aligned messages.
-    for (let i = 0; i < PREAMBLE_MAGIC.length; i++) {
-      if (preambleBytes[i] !== PREAMBLE_MAGIC[i]) return null;
-    }
-
-    // Parse structured preamble via WASM and normalise bigints to
-    // safe-integer numbers (throws if any field exceeds 2^53 - 1).
-    let preamble;
-    try {
-      const raw = getWbg().read_preamble_info(preambleBytes);
-      preamble = normalisePreambleInfo(raw);
-    } catch {
-      return null;
-    }
-
-    if (preamble.totalLength === 0) return null; // streaming-mode → eager
-    if (preamble.totalLength < MIN_MESSAGE_BYTES) return null;
-    if (cursor + preamble.totalLength > fileLen) return null;
-
-    const msgIdx = positions.length;
-    positions.push({ offset: cursor, length: preamble.totalLength });
-    layouts.set(msgIdx, {
-      offset: cursor,
-      length: preamble.totalLength,
-      preamble,
-    });
-    cursor += preamble.totalLength;
+    validation = wbg.validate_backward_preamble_outcome(
+      candidatePreambleBytes,
+      BigInt(bwdOutcome.msgStart),
+      BigInt(bwdOutcome.length),
+    ) as BackwardCommit;
   }
+
+  applyRoundOutcomes(
+    state,
+    fwdBytes,
+    candidatePreambleBytes,
+    fwdOutcome,
+    bwdOutcome,
+    validation,
+    options,
+  );
+  return true;
+}
+
+async function tryForwardStep(
+  ctx: FetchRangeContext,
+  fileLen: number,
+  state: ScanState,
+  options: LazyScanOptions,
+): Promise<boolean> {
+  if (state.next + PREAMBLE_BYTES > fileLen) {
+    terminateForward(state, 'eof', options);
+    return true;
+  }
+  if (ctx.signal?.aborted) return false;
+
+  let preambleBytes: Uint8Array;
+  try {
+    preambleBytes = await options.limit(() =>
+      fetchRange(ctx, state.next, state.next + PREAMBLE_BYTES, true),
+    );
+  } catch {
+    return false;
+  }
+
+  const wbg = getWbg();
+  const outcome = wbg.parse_forward_preamble_outcome(
+    preambleBytes,
+    BigInt(state.next),
+    BigInt(fileLen),
+    BigInt(fileLen),
+  ) as ForwardOutcome;
+
+  switch (outcome.kind) {
+    case 'Hit': {
+      const layout = buildLayoutFromPreamble(
+        preambleBytes,
+        Number(outcome.offset),
+        Number(outcome.length),
+      );
+      if (layout === null) return false;
+      recordForwardHop(state, layout, options);
+      return true;
+    }
+    case 'Streaming':
+      return false;
+    case 'Terminate': {
+      if (state.layouts.length === 0 && state.suffixRev.length === 0) {
+        return false;
+      }
+      terminateForward(state, outcome.reason, options);
+      return true;
+    }
+    case 'ExceedsBound':
+      return false;
+  }
+}
+
+function applyRoundOutcomes(
+  state: ScanState,
+  fwdPreambleBytes: Uint8Array,
+  candidatePreambleBytes: Uint8Array | undefined,
+  fwd: ForwardOutcome,
+  bwd: BackwardOutcome,
+  validation: BackwardCommit | undefined,
+  options: LazyScanOptions,
+): void {
+  if (bwd.kind === 'Format') {
+    disableBackward(state, bwd.reason, options);
+  } else if (bwd.kind === 'Streaming') {
+    disableBackward(state, 'streaming-zero-bwd', options);
+  } else if (validation !== undefined) {
+    commitOrYieldBackward(state, candidatePreambleBytes, fwd, validation, options);
+  } else {
+    disableBackward(state, 'missing-candidate-preamble', options);
+  }
+
+  switch (fwd.kind) {
+    case 'Hit': {
+      const layout = buildLayoutFromPreamble(
+        fwdPreambleBytes,
+        Number(fwd.offset),
+        Number(fwd.length),
+      );
+      if (layout !== null) recordForwardHop(state, layout, options);
+      break;
+    }
+    case 'ExceedsBound': {
+      disableBackward(state, 'forward-exceeds-backward-bound', options);
+      const layout = buildLayoutFromPreamble(
+        fwdPreambleBytes,
+        Number(fwd.offset),
+        Number(fwd.length),
+      );
+      if (layout !== null) recordForwardHop(state, layout, options);
+      break;
+    }
+    case 'Streaming':
+      disableBackward(state, 'streaming-fwd-non-tail', options);
+      break;
+    case 'Terminate':
+      terminateForward(state, fwd.reason, options);
+      break;
+  }
+
+  if (state.bwdActive && state.next === state.prev) {
+    closeGap(state, options);
+  }
+}
+
+function commitOrYieldBackward(
+  state: ScanState,
+  candidatePreambleBytes: Uint8Array | undefined,
+  fwd: ForwardOutcome,
+  validation: BackwardCommit,
+  options: LazyScanOptions,
+): void {
+  if (validation.kind === 'Format') {
+    disableBackward(state, validation.reason, options);
+    return;
+  }
+  if (!state.bwdActive) return;
+
+  const layoutOffset = Number(validation.offset);
+  const layoutLength = Number(validation.length);
+
+  if (
+    fwd.kind === 'Hit' &&
+    Number(fwd.offset) === layoutOffset &&
+    Number(fwd.length) === layoutLength
+  ) {
+    return;
+  }
+
+  if (fwd.kind === 'Hit' && Number(fwd.msgEnd) > layoutOffset) {
+    disableBackward(state, 'backward-overlaps-forward', options);
+    return;
+  }
+  if (fwd.kind === 'ExceedsBound') {
+    disableBackward(state, 'forward-exceeds-backward-bound', options);
+    return;
+  }
+
+  if (candidatePreambleBytes === undefined) {
+    disableBackward(state, 'missing-candidate-preamble', options);
+    return;
+  }
+  const layout = buildLayoutFromPreamble(
+    candidatePreambleBytes,
+    layoutOffset,
+    layoutLength,
+  );
+  if (layout === null) {
+    disableBackward(state, 'preamble-parse-error-bwd', options);
+    return;
+  }
+  recordBackwardHop(state, layout, options);
+}
+
+function buildLayoutFromPreamble(
+  preambleBytes: Uint8Array,
+  offset: number,
+  length: number,
+): { offset: number; length: number; preamble: PreambleInfo } | null {
+  try {
+    const raw = getWbg().read_preamble_info(preambleBytes);
+    const preamble = normalisePreambleInfo(raw);
+    return { offset, length, preamble };
+  } catch {
+    return null;
+  }
+}
+
+function recordForwardHop(
+  state: ScanState,
+  layout: { offset: number; length: number; preamble: PreambleInfo },
+  options: LazyScanOptions,
+): void {
+  state.layouts.push(layout);
+  state.next = layout.offset + layout.length;
+  if (options.debug) {
+    console.debug('tensogram:scan:hop', {
+      direction: 'fwd',
+      offset: layout.offset,
+      length: layout.length,
+    });
+  }
+}
+
+function recordBackwardHop(
+  state: ScanState,
+  layout: { offset: number; length: number; preamble: PreambleInfo },
+  options: LazyScanOptions,
+): void {
+  state.suffixRev.push(layout);
+  state.prev = layout.offset;
+  if (options.debug) {
+    console.debug('tensogram:scan:hop', {
+      direction: 'bwd',
+      offset: layout.offset,
+      length: layout.length,
+    });
+  }
+}
+
+function disableBackward(state: ScanState, reason: string, options: LazyScanOptions): void {
+  state.bwdActive = false;
+  state.suffixRev.length = 0;
+  if (options.debug) console.debug('tensogram:scan:fallback', reason);
+}
+
+function terminateForward(state: ScanState, reason: string, options: LazyScanOptions): void {
+  state.fwdTerminated = true;
+  state.bwdActive = false;
+  state.suffixRev.length = 0;
+  if (options.debug) console.debug('tensogram:scan:fwd-terminated', reason);
+}
+
+function closeGap(state: ScanState, options: LazyScanOptions): void {
+  state.gapClosed = true;
+  if (options.debug) console.debug('tensogram:scan:gap-closed');
+}
+
+function finaliseScan(state: ScanState): LazyScanResult {
+  const reversed = state.suffixRev.slice().reverse();
+  const positions: MessagePosition[] = [
+    ...state.layouts.map((l) => ({ offset: l.offset, length: l.length })),
+    ...reversed.map((l) => ({ offset: l.offset, length: l.length })),
+  ];
+  const layouts = new Map<number, MessageLayout>();
+  state.layouts.forEach((l, i) => {
+    layouts.set(i, { offset: l.offset, length: l.length, preamble: l.preamble });
+  });
+  reversed.forEach((l, j) => {
+    layouts.set(state.layouts.length + j, {
+      offset: l.offset,
+      length: l.length,
+      preamble: l.preamble,
+    });
+  });
   return { positions, layouts };
 }
