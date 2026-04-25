@@ -9,7 +9,7 @@ const tensogramPkg = path.resolve(
   __dirname, 'node_modules/@ecmwf.int/tensogram/dist/index.js',
 )
 
-const appPkg = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8')) as { version: string };
+const appVersion = readFileSync(path.resolve(__dirname, '../VERSION'), 'utf-8').trim();
 const tgPkg = JSON.parse(readFileSync(
   path.resolve(__dirname, 'node_modules/@ecmwf.int/tensogram/package.json'), 'utf-8',
 )) as { version: string };
@@ -75,7 +75,7 @@ function corsProxy(): Plugin {
 export default defineConfig({
   base: './',
   define: {
-    __APP_VERSION__: JSON.stringify(appPkg.version),
+    __APP_VERSION__: JSON.stringify(appVersion),
     __TG_VERSION__: JSON.stringify(tgPkg.version),
   },
   plugins: [react(), wasm(), cesium(), corsProxy()],
