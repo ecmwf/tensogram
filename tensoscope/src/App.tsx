@@ -213,6 +213,11 @@ function App() {
   const units = (selectedVar?.metadata?.units as string) ?? marsParam;
 
   const [clickPoint, setClickPoint] = useState<ClickPoint | null>(null);
+  const [inspectedScreenPos, setInspectedScreenPos] = useState<{ x: number; y: number } | null>(null);
+
+  const gridSpacing = coordinates
+    ? Math.sqrt(360 * 170 / Math.max(1, coordinates.lat.length))
+    : null;
 
   const paramName = selectedVar?.name ?? marsParam ?? '';
 
@@ -234,6 +239,10 @@ function App() {
     frames,
     selectedLevel,
   });
+
+  const selectedPoint = inspectionResult
+    ? { lat: inspectionResult.pointLat, lon: inspectionResult.pointLon }
+    : null;
 
   return (
     <div
@@ -292,6 +301,10 @@ function App() {
           displayUnit={colorScale.displayUnit}
           onDisplayUnitChange={(u) => setColorScale({ displayUnit: u })}
           onMapClick={setClickPoint}
+          selectedPoint={selectedPoint}
+          selectedPointGridSpacing={gridSpacing}
+          onSelectedPointScreen={(x, y) => setInspectedScreenPos({ x, y })}
+          onSelectedPointOutOfView={() => { setClickPoint(null); setInspectedScreenPos(null); }}
         />
         {frames.length > 1 && (
           <div className="animation-bar">
@@ -313,43 +326,17 @@ function App() {
             />
           </div>
         )}
-        {clickPoint !== null && (
-          <div
-            style={{
-              position: 'absolute',
-              top: clickPoint.screenY,
-              left: clickPoint.screenX,
-              width: 0,
-              height: 0,
-              pointerEvents: 'none',
-              zIndex: 19,
-            }}
-          >
-            <svg
-              width={16}
-              height={16}
-              style={{ position: 'absolute', top: -8, left: -8, overflow: 'visible' }}
-              viewBox="-8 -8 16 16"
-            >
-              <circle cx={0} cy={0} r={5} fill="none" stroke="#fff" strokeWidth={1.5} />
-              <line x1={-8} y1={0} x2={-6} y2={0} stroke="#fff" strokeWidth={1.5} />
-              <line x1={6} y1={0} x2={8} y2={0} stroke="#fff" strokeWidth={1.5} />
-              <line x1={0} y1={-8} x2={0} y2={-6} stroke="#fff" strokeWidth={1.5} />
-              <line x1={0} y1={6} x2={0} y2={8} stroke="#fff" strokeWidth={1.5} />
-            </svg>
-          </div>
-        )}
-        {clickPoint !== null && inspectionResult !== null && (
+        {clickPoint !== null && inspectionResult !== null && inspectedScreenPos !== null && (
           <PointInspector
             result={inspectionResult}
-            screenX={clickPoint.screenX}
-            screenY={clickPoint.screenY}
+            screenX={inspectedScreenPos.x}
+            screenY={inspectedScreenPos.y}
             paramName={paramName}
             levelLabel={levelLabel}
             nativeUnits={colorScale.nativeUnits}
             displayUnit={colorScale.displayUnit}
             onDisplayUnitChange={(u) => setColorScale({ displayUnit: u })}
-            onClose={() => setClickPoint(null)}
+            onClose={() => { setClickPoint(null); setInspectedScreenPos(null); }}
           />
         )}
       </main>

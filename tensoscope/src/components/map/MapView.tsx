@@ -37,6 +37,10 @@ export interface MapViewProps {
   onDisplayUnitChange: (unit: string) => void;
   colorScaleInitialMinimised?: boolean;
   onMapClick?: (point: ClickPoint) => void;
+  selectedPoint?: { lat: number; lon: number } | null;
+  selectedPointGridSpacing?: number | null;
+  onSelectedPointScreen?: (x: number, y: number) => void;
+  onSelectedPointOutOfView?: () => void;
 }
 
 export function MapView(props: MapViewProps) {
@@ -50,6 +54,10 @@ export function MapView(props: MapViewProps) {
     nativeUnits, displayUnit, onDisplayUnitChange,
     colorScaleInitialMinimised,
     onMapClick,
+    selectedPoint,
+    selectedPointGridSpacing,
+    onSelectedPointScreen,
+    onSelectedPointOutOfView,
   } = props;
 
   const [activePreset, setActivePreset] = useState<ProjectionPreset>(PROJECTION_PRESETS[0]);
@@ -66,6 +74,13 @@ export function MapView(props: MapViewProps) {
   const [cesiumBounds, setCesiumBounds] = useState<ViewBounds | null>(null);
   const [cesiumViewSize, setCesiumViewSize] = useState<{ width: number; height: number }>({ width: 1024, height: 512 });
 
+  const selectedPointRef = useRef(selectedPoint);
+  const onSelectedPointScreenRef = useRef(onSelectedPointScreen);
+  const onSelectedPointOutOfViewRef = useRef(onSelectedPointOutOfView);
+  useEffect(() => { selectedPointRef.current = selectedPoint; }, [selectedPoint]);
+  useEffect(() => { onSelectedPointScreenRef.current = onSelectedPointScreen; }, [onSelectedPointScreen]);
+  useEffect(() => { onSelectedPointOutOfViewRef.current = onSelectedPointOutOfView; }, [onSelectedPointOutOfView]);
+
   const captureViewport = useCallback(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -73,6 +88,17 @@ export function MapView(props: MapViewProps) {
     setViewportBounds({ west: b.getWest(), east: b.getEast(), south: b.getSouth(), north: b.getNorth() });
     const canvas = map.getCanvas();
     setViewportSize({ width: canvas.width, height: canvas.height });
+
+    const pt = selectedPointRef.current;
+    if (!pt) return;
+    const screen = map.project([pt.lon, pt.lat]);
+    onSelectedPointScreenRef.current?.(screen.x, screen.y);
+    const cw = canvas.clientWidth;
+    const ch = canvas.clientHeight;
+    const margin = 80;
+    if (screen.x < -margin || screen.x > cw + margin || screen.y < -margin || screen.y > ch + margin) {
+      onSelectedPointOutOfViewRef.current?.();
+    }
   }, []);
 
   const isGlobe = activePreset.id === 'globe';
@@ -108,6 +134,13 @@ export function MapView(props: MapViewProps) {
       mapRef.current.flyTo({ center: [cameraCenter.lon, cameraCenter.lat], zoom: mapRef.current.getZoom(), duration: 0 });
     }
   }, [cameraCenter, isGlobe]);
+
+  // Recompute screen position when the selected point changes (snapping update)
+  useEffect(() => {
+    if (isGlobe || !selectedPoint || !mapRef.current) return;
+    const screen = mapRef.current.project([selectedPoint.lon, selectedPoint.lat]);
+    onSelectedPointScreenRef.current?.(screen.x, screen.y);
+  }, [selectedPoint, isGlobe]);
 
   // ── Overlay props ────────────────────────────────────────────────────
   //
@@ -186,6 +219,7 @@ export function MapView(props: MapViewProps) {
           style={{ width: '100%', height: '100%' }}
           onLoad={captureViewport}
           onMoveEnd={captureViewport}
+          onZoomEnd={captureViewport}
           onClick={handleMapClick}
         >
           {flatImage && (
@@ -193,6 +227,29 @@ export function MapView(props: MapViewProps) {
               <Layer id="field-overlay-layer" type="raster" paint={{ 'raster-opacity': 0.7, 'raster-fade-duration': 0 }} />
             </Source>
           )}
+          {selectedPoint && (() => {
+            const spacing = selectedPointGridSpacing ?? 2;
+            const baseRadius = spacing * 0.356;
+            return (
+              <Source
+                id="selected-point"
+                type="geojson"
+                data={{ type: 'Feature', geometry: { type: 'Point', coordinates: [selectedPoint.lon, selectedPoint.lat] }, properties: {} }}
+              >
+                <Layer
+                  id="selected-point-circle"
+                  type="circle"
+                  paint={{
+                    'circle-radius': ['interpolate', ['exponential', 2], ['zoom'], 0, Math.max(baseRadius, 2), 10, Math.max(baseRadius * 1024, 4)],
+                    'circle-color': 'transparent',
+                    'circle-stroke-width': 2,
+                    'circle-stroke-color': '#ffffff',
+                    'circle-stroke-opacity': 0.9,
+                  }}
+                />
+              </Source>
+            );
+          })()}
         </Map>
       )}
 

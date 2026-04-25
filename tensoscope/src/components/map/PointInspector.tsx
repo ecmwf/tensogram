@@ -25,6 +25,16 @@ function fmt(v: number): string {
   return parseFloat(v.toPrecision(4)).toString();
 }
 
+/** Format a tick label with precision driven by the chart's value range. */
+function fmtTick(v: number, range: number): string {
+  if (!Number.isFinite(v)) return 'N/A';
+  if (range === 0) return fmt(v);
+  const tickInterval = range / 3;
+  if (tickInterval >= 10000 || tickInterval < 0.001) return v.toExponential(2);
+  const decimals = Math.max(0, Math.ceil(-Math.log10(tickInterval)) + 1);
+  return v.toFixed(Math.min(decimals, 6));
+}
+
 function yForValue(v: number, min: number, max: number): number {
   if (max === min) return PADDING_TOP + DATA_H / 2;
   return PADDING_TOP + (1 - (v - min) / (max - min)) * DATA_H;
@@ -60,6 +70,7 @@ function TimeSeriesChart({ entries, toDisplay }: TimeSeriesChartProps) {
   const displayed = entries.map((e) => toDisplay(e.value));
   const min = Math.min(...displayed);
   const max = Math.max(...displayed);
+  const range = max - min;
   const n = entries.length;
 
   const points = displayed
@@ -83,7 +94,7 @@ function TimeSeriesChart({ entries, toDisplay }: TimeSeriesChartProps) {
             <line x1={Y_AXIS_X - 3} y1={y} x2={Y_AXIS_X} y2={y} stroke="#555" strokeWidth={1} />
             <line x1={Y_AXIS_X} y1={y} x2={SVG_W} y2={y} stroke="#2a2a3e" strokeWidth={1} />
             <text x={Y_AXIS_X - 5} y={y + 3} fontSize={9} fill="#666" textAnchor="end">
-              {fmt(v)}
+              {fmtTick(v, range)}
             </text>
           </g>
         );
