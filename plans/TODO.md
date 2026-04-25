@@ -388,31 +388,80 @@ For speculative ideas, see `IDEAS.md`.
     `{ positions, layouts }` on every fixture.  TS driver remains
     forward-only.
 
-  - [ ] **TypeScript bidirectional walker** (`typescript/src/`,
-    ~600 LOC).  No Rust / WASM changes — `read_postamble_info`
-    already ships at `rust/tensogram-wasm/src/layout.rs:147`.
+  - [ ] **TypeScript bidirectional walker** (~300 LOC TS +
+    ~150 LOC `tensogram-wasm` exports + thin TS bindings).  Pure
+    parsing and taxonomy stay in one source of truth (Rust); TS
+    keeps the JS-shaped pieces (fetch loop, AbortController,
+    streaming fallback).
+
+    **WASM additions** (`rust/tensogram-wasm/src/`).  Wrap the
+    pure functions already shipped in `rust/tensogram/src/remote.rs`
+    as `#[wasm_bindgen]` exports that take byte slices + cursor
+    values and return JS-shaped outcome objects:
+
+    - `parse_backward_postamble_outcome(pa_bytes, snap_next,
+      snap_prev)` → `{ kind: "Format" | "Streaming" |
+      "NeedPreambleValidation", reason?, msgStart?, length? }`.
+    - `validate_backward_preamble_outcome(preamble_bytes,
+      msg_start, length)` → `{ kind: "Format" | "Layout", reason?,
+      layout? }`.
+    - `parse_forward_preamble_outcome(preamble_bytes, pos,
+      file_size, bound)` → `{ kind: "Hit" | "ExceedsBound" |
+      "Streaming" | "Terminate", offset?, length?, msgEnd?,
+      remaining?, reason? }`.
+    - `same_message_check(fwd_offset, fwd_length, layout_offset,
+      layout_length)` → `bool`.
+
+    Reason strings (`bad-end-magic-bwd`, `length-below-minimum-bwd`,
+    `gap-below-min-message-size`, `forward-exceeds-backward-bound`,
+    `streaming-preamble-non-tail`, `preamble-postamble-length-mismatch`,
+    etc.) come straight from the Rust constants — no string
+    duplication, no drift.
+
+    **TypeScript walker** (`typescript/src/`).
     `FromUrlOptions.bidirectional?: boolean` (default `false`) and
     `FromUrlOptions.debug?: boolean` added to `typescript/src/types.ts`.
     Rewrite `lazyScanMessages` in `file.ts` with a two-cursor walker
     when `bidirectional === true`; require `concurrency >= 2`
     otherwise throw `InvalidArgumentError` synchronously from
-    `fromUrl`.  Round 1 uses `Promise.allSettled([fetchRange(fwd,
-    fwd+24), fetchRange(bwd-24, bwd)])` with a per-round child
-    `AbortController` derived from the user `opts.signal`; on
-    one-side failure, abort the sibling fetch to avoid wasted work.
-    Parse forward preamble via `getWbg().read_preamble_info`, backward
-    postamble via `getWbg().read_postamble_info`.  Round 2 paired
-    fetch for backward preamble validation — no forward Round 2
-    (matches Rust).  Mirror the Rust fallback taxonomy byte-for-byte.
-    Internal `layoutsRev` array, merged into `positions` on
-    `gapClosed`.  `debug: true` emits `tensogram:scan:mode`,
-    `:fallback`, `:fwdTerminated`, `:gapClosed` via `console.debug`.
-    Never use multi-range `Range: bytes=a-b,c-d` (CORS /
-    server-compatibility risk).  Tests mirror every Rust bidirectional
-    test; Node http mock gains Range-request counter per scan round
-    (pattern from `rust/tensogram/tests/remote_http.rs:155-166`).
-    Tensoscope smoke test: `TensogramFile.fromUrl(proxyUrl,
-    { bidirectional: true })` works through the existing CORS proxy
+    `fromUrl`.
+
+    Per scan iteration: `Promise.allSettled([fetchRange(next,
+    next+24), fetchRange(prev-24, prev)])` with a per-iteration
+    child `AbortController` derived from the user `opts.signal`;
+    on one-side failure, abort the sibling fetch to avoid wasted
+    work.  Hand the bytes to
+    `parse_backward_postamble_outcome` and
+    `parse_forward_preamble_outcome`; when the postamble parse
+    returns `NeedPreambleValidation`, fetch the candidate preamble
+    and call `validate_backward_preamble_outcome`.  Apply outcomes
+    via a small TS dispatch (≈30 lines) that mirrors
+    `apply_round_outcomes` / `commit_or_yield_backward`: same five
+    mutually-exclusive cases, decisions taken on the parsed
+    outcomes.  Internal `layoutsRev` array, merged into `positions`
+    when walkers meet.
+
+    **TypeScript state**: cursor offsets as `bigint`, layouts as
+    plain TS objects, flags as booleans.  No `scan_epoch` —
+    serialise scan iterations through the existing JS Promise-chain
+    lock; reentrancy via concurrent `await`s on the same backend
+    is the only race vector and the chain serialises it
+    naturally.
+
+    `debug: true` emits `tensogram:scan:mode`, `:fallback`,
+    `:fwdTerminated`, `:gapClosed`, and per-hop events via
+    `console.debug` — same vocabulary as the Rust `tracing` events
+    on `tensogram::remote_scan`.  Never multi-range `Range:
+    bytes=a-b,c-d` (CORS / server-compatibility risk).
+
+    **Tests**.  Vitest suite mirrors every Rust bidirectional test
+    (1 / 2 / 3 / 10-message files, streaming-postamble yield,
+    streaming-in-the-middle no-recovery, corrupt END_MAGIC, length
+    mismatch, gap-below-min, forward-exceeds-backward-bound).  Node
+    http mock counts Range requests per iteration (pattern from
+    `rust/tensogram/tests/remote_http.rs`).  Tensoscope smoke test:
+    `TensogramFile.fromUrl(proxyUrl, { bidirectional: true })`
+    works through the existing CORS proxy
     (`tensoscope/src/tensogram/index.ts:138`).  Parity harness TS
     driver gains `--bidirectional`.
 
