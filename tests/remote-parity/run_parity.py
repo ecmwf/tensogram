@@ -17,6 +17,7 @@ scan-event shape, scaling against the fixture's actual layout).
 
 from __future__ import annotations
 
+import contextlib
 import os
 import pathlib
 import shutil
@@ -164,6 +165,27 @@ def _ensure_prereqs() -> None:
 _DRIVER_TIMEOUT_S = 60
 
 
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """Reap a timed-out driver and its descendants.
+
+    `killpg` on the new session reaps the whole tree, but it can fail
+    with `ProcessLookupError` when the group is already gone, or with
+    a broader `OSError` on platforms without process-group support.
+    Either way we fall back to killing the direct child if it's still
+    around so the timeout never turns into a secondary harness error.
+    """
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+        return
+    except ProcessLookupError:
+        return
+    except OSError:
+        pass
+    if proc.poll() is None:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+
+
 def _run_driver(case: DriverCase, url: str) -> None:
     if case.language == "rust":
         cmd = [str(_RUST_DRIVER_BIN), "--url", url, "--op", case.op]
@@ -195,7 +217,7 @@ def _run_driver(case: DriverCase, url: str) -> None:
         try:
             stdout, stderr = proc.communicate(timeout=_DRIVER_TIMEOUT_S)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+            _kill_process_tree(proc)
             stdout, stderr = proc.communicate()
             raise RuntimeError(
                 f"driver {case.language}/{case.op}@{case.fixture} "
