@@ -954,18 +954,22 @@ impl RemoteBackend {
     }
 
     /// Decide what to do with a Round-2-validated backward layout
-    /// before the forward commit fires.  Three branches:
+    /// before the forward commit fires.  Five mutually-exclusive
+    /// outcomes:
     ///
-    /// - `bwd_active == false`: a concurrent caller disabled the
-    ///   walker between Round 1 and Round 2; silently drop the
-    ///   layout.
-    /// - `same_message_as_forward`: the 1-message file and odd-count
-    ///   middle-meet case — forward will commit this exact layout
-    ///   itself.  Yield silently (do NOT call `disable_backward` —
-    ///   that would clear `suffix_rev` from earlier rounds).
-    /// - true overlap (`fwd.msg_end > layout.offset`): only happens
-    ///   on corruption; disable backward.
-    /// - otherwise: commit the backward hop.
+    /// 1. Round-2 validation reported `Format(reason)`: disable
+    ///    backward with that reason.
+    /// 2. `bwd_active == false`: a concurrent caller disabled the
+    ///    walker between Round 1 and Round 2; silently drop the
+    ///    layout.
+    /// 3. `same_message_as_forward`: the 1-message file and odd-count
+    ///    middle-meet case — forward will commit this exact layout
+    ///    itself.  Yield silently (do NOT call `disable_backward` —
+    ///    that would clear `suffix_rev` from earlier rounds).
+    /// 4. True overlap (`fwd.msg_end > layout.offset`): only happens
+    ///    on corruption; disable backward with
+    ///    `backward-overlaps-forward`.
+    /// 5. Otherwise: commit the backward hop.
     fn commit_or_yield_backward(
         state: &mut RemoteState,
         fwd: &ForwardOutcome,
