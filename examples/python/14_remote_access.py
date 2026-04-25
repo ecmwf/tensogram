@@ -124,8 +124,16 @@ assert not tensogram.is_remote_url("/tmp/local.tgm")
 print(f"is_remote_url({url!r}) = True")
 
 # ── Open remote file ─────────────────────────────────────────────────────────
+#
+# Pass `bidirectional=True` to opt in to the bidirectional walker, which
+# alternates forward and backward hops to roughly halve the number of HTTP
+# `GET`s needed for tail / full-scan access on header-indexed files.  The
+# walker returns identical layouts to the forward-only default; only the
+# discovery path differs.
 
 f = tensogram.TensogramFile.open_remote(url, {})
+# Equivalent opt-in form:
+#   f = tensogram.TensogramFile.open_remote(url, {}, bidirectional=True)
 print(f"\nOpened remote: source={f.source()}")
 print(f"  is_remote = {f.is_remote()}")
 print(f"  messages  = {f.message_count()}")

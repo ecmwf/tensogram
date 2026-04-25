@@ -45,7 +45,8 @@ _RUST_DRIVER_BIN = (
 _TS_DRIVER_SCRIPT = _DRIVERS_DIR / "ts_driver.ts"
 
 Language = Literal["rust", "ts"]
-Op = Literal["open", "message-count", "read-first", "read-last"]
+Op = Literal["open", "message-count", "read-first", "read-last", "dump-layout"]
+Mode = Literal["forward", "bidirectional"]
 
 _FIXTURES: tuple[str, ...] = (
     "single-msg",
@@ -60,6 +61,9 @@ _OPS: tuple[Op, ...] = (
     "read-first",
     "read-last",
 )
+
+_RUST_LAYOUT_OPS: tuple[Op, ...] = ("dump-layout",)
+_RUST_LAYOUT_MODES: tuple[Mode, ...] = ("forward", "bidirectional")
 
 
 @dataclass(frozen=True)
@@ -87,11 +91,17 @@ class DriverCase:
     fixture: str
     language: Language
     op: Op
-    mode: Literal["forward"] = "forward"
+    mode: Mode = "forward"
 
     @property
     def run_id(self) -> str:
         return f"{self.fixture}-{self.language}-{self.op}-{self.mode}"
+
+
+@dataclass(frozen=True)
+class RunResult:
+    events: list[ScanEvent]
+    stdout: str
 
 
 def normalise_log(run_id: str, records: list[RequestRecord]) -> list[ScanEvent]:
@@ -130,6 +140,12 @@ def _all_cases() -> list[DriverCase]:
         for language in ("rust", "ts"):
             for op in _OPS:
                 cases.append(DriverCase(fixture=fixture, language=language, op=op))
+    for fixture in _FIXTURES:
+        for op in _RUST_LAYOUT_OPS:
+            for mode in _RUST_LAYOUT_MODES:
+                cases.append(
+                    DriverCase(fixture=fixture, language="rust", op=op, mode=mode)
+                )
     return cases
 
 
@@ -213,10 +229,17 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
             proc.kill()
 
 
-def _run_driver(case: DriverCase, url: str) -> None:
+def _run_driver(case: DriverCase, url: str) -> str:
     if case.language == "rust":
         cmd = [str(_RUST_DRIVER_BIN), "--url", url, "--op", case.op]
+        if case.mode == "bidirectional":
+            cmd.append("--bidirectional")
     else:
+        if case.mode != "forward":
+            raise ValueError(
+                f"TypeScript driver does not support mode='{case.mode}' "
+                f"(case={case.run_id}); only Rust runs the bidirectional walker."
+            )
         cmd = [
             "npx",
             "tsx",
@@ -275,6 +298,7 @@ def _run_driver(case: DriverCase, url: str) -> None:
             f"  stdout: {stdout.strip()}\n"
             f"  stderr: {stderr.strip()}"
         )
+    return stdout
 
 
 def _check_no_duplicate_run_ids(cases: list[DriverCase]) -> None:
@@ -289,17 +313,17 @@ def _check_no_duplicate_run_ids(cases: list[DriverCase]) -> None:
         seen.add(case.run_id)
 
 
-def collect_events(cases: list[DriverCase]) -> dict[str, list[ScanEvent]]:
+def collect_events(cases: list[DriverCase]) -> dict[str, RunResult]:
     if not cases:
         raise ValueError("collect_events: no driver cases provided")
     _check_no_duplicate_run_ids(cases)
     _ensure_prereqs()
 
-    result: dict[str, list[ScanEvent]] = {}
+    result: dict[str, RunResult] = {}
     with MockServer(_FIXTURES_DIR) as server:
         for case in cases:
             url = server.url_for(case.run_id, f"{case.fixture}.tgm")
-            _run_driver(case, url)
+            stdout = _run_driver(case, url)
             records = server.log_for(case.run_id)
             if not records:
                 raise RuntimeError(
@@ -307,7 +331,10 @@ def collect_events(cases: list[DriverCase]) -> dict[str, list[ScanEvent]]:
                     "no server-side requests — likely a wrong URL or run_id; "
                     "check the driver's stderr."
                 )
-            result[case.run_id] = normalise_log(case.run_id, records)
+            result[case.run_id] = RunResult(
+                events=normalise_log(case.run_id, records),
+                stdout=stdout,
+            )
     return result
 
 
@@ -329,12 +356,12 @@ def main(argv: list[str] | None = None) -> int:
         print("no cases match", file=sys.stderr)
         return 2
 
-    events = collect_events(cases)
-    print(f"{'case':<55} {'scan events':>12}")
-    print("-" * 70)
+    results = collect_events(cases)
+    print(f"{'case':<60} {'scan events':>12}")
+    print("-" * 75)
     for case in cases:
-        scan_count = len(filter_scan_events(events[case.run_id]))
-        print(f"{case.run_id:<55} {scan_count:>12}")
+        scan_count = len(filter_scan_events(results[case.run_id].events))
+        print(f"{case.run_id:<60} {scan_count:>12}")
     return 0
 
 

@@ -26,7 +26,7 @@ use tensogram::decode::DecodeOptions;
 use tensogram::encode::{self, EncodeOptions};
 use tensogram::file::TensogramFile;
 use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
-use tensogram::{Dtype, is_remote_url};
+use tensogram::{Dtype, RemoteScanOptions, is_remote_url};
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -275,7 +275,7 @@ async fn test_remote_open_and_message_count() -> Result<(), Box<dyn Error>> {
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     assert!(file.is_remote());
     assert_eq!(file.message_count()?, 1);
     Ok(())
@@ -289,7 +289,7 @@ async fn test_remote_decode_message() -> Result<(), Box<dyn Error>> {
     let msg = encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     let (_decoded_meta, objects) = file.decode_message(0, &DecodeOptions::default())?;
     assert_eq!(objects.len(), 1);
     assert_eq!(objects[0].1, data);
@@ -301,7 +301,7 @@ async fn test_remote_decode_metadata() -> Result<(), Box<dyn Error>> {
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     server.reset_count();
 
     let _meta = file.decode_metadata(0)?;
@@ -328,7 +328,7 @@ async fn test_remote_decode_descriptors() -> Result<(), Box<dyn Error>> {
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     let (_meta, descriptors) = file.decode_descriptors(0)?;
     assert_eq!(descriptors.len(), 1);
     assert_eq!(descriptors[0].shape, vec![4]);
@@ -343,7 +343,7 @@ async fn test_remote_decode_object() -> Result<(), Box<dyn Error>> {
     let msg = encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     server.reset_count();
 
     let (_decoded_meta, decoded_desc, decoded_data) =
@@ -369,7 +369,7 @@ async fn test_remote_multi_object_decode_single() -> Result<(), Box<dyn Error>> 
     let msg = encode_multi_object_message(&shapes, &fills)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
 
     // Read only the second object
     let (_, desc, data) = file.decode_object(0, 1, &DecodeOptions::default())?;
@@ -390,7 +390,7 @@ async fn test_remote_multi_object_descriptors() -> Result<(), Box<dyn Error>> {
     let msg = encode_multi_object_message(&shapes, &fills)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     let (_, descriptors) = file.decode_descriptors(0)?;
     assert_eq!(descriptors.len(), 2);
     assert_eq!(descriptors[0].shape, vec![4]);
@@ -409,7 +409,7 @@ async fn test_remote_multi_message_file() -> Result<(), Box<dyn Error>> {
 
     let server = MockServer::start(combined).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     assert_eq!(file.message_count()?, 2);
 
     let _meta0 = file.decode_metadata(0)?;
@@ -425,9 +425,123 @@ async fn test_remote_object_out_of_range() -> Result<(), Box<dyn Error>> {
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
-    let result = file.decode_object(0, 5, &DecodeOptions::default());
+    let file = TensogramFile::open_source(server.url(), None)?;
+    let result = file.decode_range(0, 5, &[(0, 1)], &DecodeOptions::default());
     assert!(result.is_err());
+    Ok(())
+}
+
+// ── Public scan_opts surface ────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_open_remote_bidirectional_layouts_match_forward() -> Result<(), Box<dyn Error>> {
+    let msg1 = encode_test_message(vec![4], 10)?;
+    let msg2 = encode_test_message(vec![8], 20)?;
+    let msg3 = encode_test_message(vec![16], 30)?;
+    let mut combined = msg1.clone();
+    combined.extend_from_slice(&msg2);
+    combined.extend_from_slice(&msg3);
+
+    let server = MockServer::start(combined).await?;
+    let storage: BTreeMap<String, String> = BTreeMap::new();
+
+    let fwd = TensogramFile::open_remote(&server.url(), &storage, None)?;
+    let fwd_layouts = fwd.message_layouts()?;
+
+    let opts = RemoteScanOptions {
+        bidirectional: true,
+    };
+    let bidir = TensogramFile::open_remote(&server.url(), &storage, Some(&opts))?;
+    let bidir_layouts = bidir.message_layouts()?;
+
+    assert_eq!(fwd_layouts, bidir_layouts);
+    assert_eq!(fwd_layouts.len(), 3);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_open_remote_some_false_equivalent_to_none() -> Result<(), Box<dyn Error>> {
+    let msg = encode_test_message(vec![4], 42)?;
+    let server = MockServer::start(msg).await?;
+    let storage: BTreeMap<String, String> = BTreeMap::new();
+
+    let none_file = TensogramFile::open_remote(&server.url(), &storage, None)?;
+    let none_layouts = none_file.message_layouts()?;
+
+    let opts = RemoteScanOptions::default();
+    let some_file = TensogramFile::open_remote(&server.url(), &storage, Some(&opts))?;
+    let some_layouts = some_file.message_layouts()?;
+
+    assert_eq!(none_layouts, some_layouts);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_open_source_local_path_ignores_scan_opts() -> Result<(), Box<dyn Error>> {
+    let msg = encode_test_message(vec![4], 42)?;
+    let tmpdir = tempfile::tempdir().map_err(|e| Box::new(e) as Box<dyn Error>)?;
+    let path = tmpdir.path().join("local.tgm");
+    std::fs::write(&path, &msg).map_err(|e| Box::new(e) as Box<dyn Error>)?;
+    let path_str = path.to_str().expect("utf-8 path");
+
+    let opts = RemoteScanOptions {
+        bidirectional: true,
+    };
+    let file = TensogramFile::open_source(path_str, Some(&opts))?;
+    assert!(!file.is_remote());
+    assert_eq!(file.message_count()?, 1);
+
+    let layouts = file.message_layouts()?;
+    assert_eq!(layouts.len(), 1);
+    assert_eq!(layouts[0].offset, 0);
+    assert_eq!(layouts[0].length as usize, msg.len());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_open_remote_async_bidirectional_layouts_match_forward() -> Result<(), Box<dyn Error>>
+{
+    let msg1 = encode_test_message(vec![4], 10)?;
+    let msg2 = encode_test_message(vec![8], 20)?;
+    let mut combined = msg1.clone();
+    combined.extend_from_slice(&msg2);
+
+    let server = MockServer::start(combined).await?;
+    let storage: BTreeMap<String, String> = BTreeMap::new();
+
+    let fwd = TensogramFile::open_remote_async(&server.url(), &storage, None).await?;
+    let fwd_layouts = fwd.message_layouts_async().await?;
+
+    let opts = RemoteScanOptions {
+        bidirectional: true,
+    };
+    let bidir = TensogramFile::open_remote_async(&server.url(), &storage, Some(&opts)).await?;
+    let bidir_layouts = bidir.message_layouts_async().await?;
+
+    assert_eq!(fwd_layouts, bidir_layouts);
+    assert_eq!(fwd_layouts.len(), 2);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_message_layouts_local_and_remote_agree() -> Result<(), Box<dyn Error>> {
+    let msg1 = encode_test_message(vec![4], 10)?;
+    let msg2 = encode_test_message(vec![8], 20)?;
+    let mut combined = msg1.clone();
+    combined.extend_from_slice(&msg2);
+
+    let tmpdir = tempfile::tempdir().map_err(|e| Box::new(e) as Box<dyn Error>)?;
+    let path = tmpdir.path().join("local.tgm");
+    std::fs::write(&path, &combined).map_err(|e| Box::new(e) as Box<dyn Error>)?;
+
+    let local = TensogramFile::open(&path)?;
+    let local_layouts = local.message_layouts()?;
+
+    let server = MockServer::start(combined).await?;
+    let remote = TensogramFile::open_source(server.url(), None)?;
+    let remote_layouts = remote.message_layouts()?;
+
+    assert_eq!(local_layouts, remote_layouts);
     Ok(())
 }
 
@@ -438,7 +552,7 @@ async fn test_remote_request_count_header_indexed() -> Result<(), Box<dyn Error>
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     let open_requests = server.request_count();
 
     server.reset_count();
@@ -466,7 +580,7 @@ async fn test_remote_lazy_open_only_reads_first_preamble() -> Result<(), Box<dyn
     combined.extend_from_slice(&msg2);
     let server = MockServer::start(combined).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     let open_requests = server.request_count();
     assert_eq!(
         open_requests, 2,
@@ -495,7 +609,7 @@ async fn test_eager_layout_combines_scan_and_discover() -> Result<(), Box<dyn Er
     combined.extend_from_slice(&msg2);
     let server = MockServer::start(combined).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     server.reset_count();
     let (_, desc, data) = file.decode_object(1, 0, &DecodeOptions::default())?;
     let eager_requests = server.request_count();
@@ -514,7 +628,7 @@ async fn test_eager_layout_streaming_falls_back() -> Result<(), Box<dyn Error>> 
     let msg = encode_streaming_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     server.reset_count();
     let (_, desc, data) = file.decode_object(0, 0, &DecodeOptions::default())?;
 
@@ -530,7 +644,7 @@ async fn test_remote_repeated_object_reads_use_cache() -> Result<(), Box<dyn Err
     let msg = encode_multi_object_message(&shapes, &fills)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     server.reset_count();
 
     // First object read
@@ -565,7 +679,7 @@ async fn test_remote_matches_local_decode() -> Result<(), Box<dyn Error>> {
     let (_local_meta, local_objects) = tensogram::decode::decode(&msg, &DecodeOptions::default())?;
 
     // Remote decode
-    let remote_file = TensogramFile::open_source(server.url())?;
+    let remote_file = TensogramFile::open_source(server.url(), None)?;
     let (_remote_meta, remote_desc, remote_data) =
         remote_file.decode_object(0, 0, &DecodeOptions::default())?;
 
@@ -578,7 +692,7 @@ async fn test_remote_matches_local_decode() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn test_remote_invalid_url() -> Result<(), Box<dyn Error>> {
-    let result = TensogramFile::open_source("http://[invalid-url]/file.tgm");
+    let result = TensogramFile::open_source("http://[invalid-url]/file.tgm", None);
     assert!(result.is_err());
     Ok(())
 }
@@ -601,7 +715,7 @@ fn test_open_source_local_path() -> Result<(), Box<dyn Error>> {
     let path = path.to_str().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "path is not valid UTF-8")
     })?;
-    let file = TensogramFile::open_source(path)?;
+    let file = TensogramFile::open_source(path, None)?;
     assert!(!file.is_remote());
     assert_eq!(file.message_count()?, 1);
     Ok(())
@@ -613,7 +727,7 @@ async fn test_remote_source_returns_url() -> Result<(), Box<dyn Error>> {
     let server = MockServer::start(msg).await?;
     let url = server.url();
 
-    let file = TensogramFile::open_source(url.clone())?;
+    let file = TensogramFile::open_source(url.clone(), None)?;
     assert_eq!(file.source(), url);
     Ok(())
 }
@@ -639,7 +753,7 @@ async fn test_remote_streaming_message_open_and_decode() -> Result<(), Box<dyn E
     let msg = encode_streaming_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     assert!(file.is_remote());
     assert_eq!(file.message_count()?, 1);
 
@@ -657,7 +771,7 @@ async fn test_remote_streaming_matches_local_decode() -> Result<(), Box<dyn Erro
 
     let (_local_meta, local_objects) = tensogram::decode::decode(&msg, &DecodeOptions::default())?;
 
-    let remote_file = TensogramFile::open_source(server.url())?;
+    let remote_file = TensogramFile::open_source(server.url(), None)?;
     let (_remote_meta, remote_desc, remote_data) =
         remote_file.decode_object(0, 0, &DecodeOptions::default())?;
 
@@ -685,7 +799,7 @@ async fn test_remote_streaming_multi_object() -> Result<(), Box<dyn Error>> {
     let msg = enc.finish().map_err(std::io::Error::other)?;
 
     let server = MockServer::start(msg).await?;
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
 
     let (_, descs) = file.decode_descriptors(0)?;
     assert_eq!(descs.len(), 2);
@@ -706,7 +820,7 @@ async fn test_remote_mixed_buffered_then_streaming() -> Result<(), Box<dyn Error
     combined.extend_from_slice(&streaming_msg);
 
     let server = MockServer::start(combined).await?;
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     assert_eq!(file.message_count()?, 2);
 
     let (_, _, data0) = file.decode_object(0, 0, &DecodeOptions::default())?;
@@ -722,7 +836,7 @@ async fn test_remote_streaming_index_lengths_are_frame_lengths() -> Result<(), B
     let msg = encode_streaming_message(vec![4], 42)?;
     let server = MockServer::start(msg.clone()).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     let (_, desc, data) = file.decode_object(0, 0, &DecodeOptions::default())?;
     assert_eq!(desc.shape, vec![4]);
     assert_eq!(data, vec![42u8; 16]);
@@ -747,7 +861,7 @@ async fn test_shared_runtime_concurrent_reads() -> Result<(), Box<dyn Error>> {
             let u = url.clone();
             std::thread::spawn(
                 move || -> std::result::Result<(), Box<dyn Error + Send + Sync>> {
-                    let file = TensogramFile::open_source(&u)?;
+                    let file = TensogramFile::open_source(&u, None)?;
                     let (_, desc, data) = file.decode_object(0, 0, &DecodeOptions::default())?;
                     assert_eq!(desc.shape, vec![4]);
                     assert_eq!(data, vec![10u8; 16]);
@@ -775,7 +889,7 @@ async fn test_shared_runtime_from_sync_context() -> Result<(), Box<dyn Error>> {
 
     let result = std::thread::spawn(
         move || -> std::result::Result<(), Box<dyn Error + Send + Sync>> {
-            let file = TensogramFile::open_source(&url)?;
+            let file = TensogramFile::open_source(&url, None)?;
             let _meta = file.decode_metadata(0)?;
             let (_, desc, data) = file.decode_object(0, 0, &DecodeOptions::default())?;
             assert_eq!(desc.shape, vec![4]);
@@ -801,7 +915,7 @@ async fn test_descriptor_only_matches_full_read() -> Result<(), Box<dyn Error>> 
     let msg = encode_multi_object_message(&shapes, &fills)?;
     let server = MockServer::start(msg.clone()).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     let (_, remote_descs) = file.decode_descriptors(0)?;
 
     let (_, local_descs) = tensogram::decode::decode_descriptors(&msg)?;
@@ -829,7 +943,7 @@ async fn test_descriptor_only_large_frame_exercises_fast_path() -> Result<(), Bo
     );
     let server = MockServer::start(msg.clone()).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     let (_, remote_descs) = file.decode_descriptors(0)?;
     let (_, local_descs) = tensogram::decode::decode_descriptors(&msg)?;
 
@@ -850,7 +964,7 @@ async fn test_async_remote_open_and_metadata() -> Result<(), Box<dyn Error>> {
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     assert!(file.is_remote());
     assert_eq!(file.message_count()?, 1);
 
@@ -867,7 +981,7 @@ async fn test_async_remote_decode_object() -> Result<(), Box<dyn Error>> {
     let msg = encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     let (_decoded_meta, decoded_desc, decoded_data) = file
         .decode_object_async(0, 0, &DecodeOptions::default())
         .await?;
@@ -884,7 +998,7 @@ async fn test_async_remote_decode_descriptors() -> Result<(), Box<dyn Error>> {
     let msg = encode_multi_object_message(&shapes, &fills)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     let (_meta, descriptors) = file.decode_descriptors_async(0).await?;
     assert_eq!(descriptors.len(), 2);
     assert_eq!(descriptors[0].shape, vec![4]);
@@ -901,11 +1015,11 @@ async fn test_async_vs_sync_parity() -> Result<(), Box<dyn Error>> {
     let msg = encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
     let server = MockServer::start(msg).await?;
 
-    let sync_file = TensogramFile::open_source(server.url())?;
+    let sync_file = TensogramFile::open_source(server.url(), None)?;
     let (_sync_meta, sync_desc, sync_data) =
         sync_file.decode_object(0, 0, &DecodeOptions::default())?;
 
-    let async_file = TensogramFile::open_source_async(server.url()).await?;
+    let async_file = TensogramFile::open_source_async(server.url(), None).await?;
     let (_async_meta, async_desc, async_data) = async_file
         .decode_object_async(0, 0, &DecodeOptions::default())
         .await?;
@@ -921,7 +1035,7 @@ async fn test_async_remote_read_message() -> Result<(), Box<dyn Error>> {
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg.clone()).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     let remote_msg = file.read_message_async(0).await?;
     assert_eq!(remote_msg, msg);
     Ok(())
@@ -933,7 +1047,7 @@ async fn test_async_remote_streaming_message() -> Result<(), Box<dyn Error>> {
     let msg = encode_streaming_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     assert!(file.is_remote());
 
     let _meta = file.decode_metadata_async(0).await?;
@@ -951,7 +1065,7 @@ async fn test_async_remote_object_out_of_range() -> Result<(), Box<dyn Error>> {
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     let result = file
         .decode_object_async(0, 5, &DecodeOptions::default())
         .await;
@@ -965,7 +1079,7 @@ async fn test_async_remote_message_index_out_of_range() -> Result<(), Box<dyn Er
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     let result = file.decode_metadata_async(5).await;
     assert!(result.is_err());
     Ok(())
@@ -983,7 +1097,7 @@ async fn test_async_remote_multi_message_scan() -> Result<(), Box<dyn Error>> {
 
     let server = MockServer::start(combined).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     assert_eq!(file.message_count()?, 2);
 
     let _meta0 = file.decode_metadata_async(0).await?;
@@ -1003,7 +1117,7 @@ async fn test_async_eager_layout_combines_scan_and_discover() -> Result<(), Box<
     combined.extend_from_slice(&msg2);
     let server = MockServer::start(combined).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     server.reset_count();
     let (_, desc, data) = file
         .decode_object_async(1, 0, &DecodeOptions::default())
@@ -1020,7 +1134,7 @@ async fn test_async_eager_layout_streaming_falls_back() -> Result<(), Box<dyn Er
     let msg = encode_streaming_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     server.reset_count();
     let (_, desc, data) = file
         .decode_object_async(0, 0, &DecodeOptions::default())
@@ -1041,7 +1155,7 @@ async fn test_async_descriptor_only_matches_full_read() -> Result<(), Box<dyn Er
     let msg = encode_multi_object_message(&shapes, &fills)?;
     let server = MockServer::start(msg.clone()).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     let (_, remote_descs) = file.decode_descriptors_async(0).await?;
 
     let (_, local_descs) = tensogram::decode::decode_descriptors(&msg)?;
@@ -1071,7 +1185,7 @@ async fn test_async_descriptor_only_large_frame_exercises_fast_path() -> Result<
     );
     let server = MockServer::start(msg.clone()).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     let (_, remote_descs) = file.decode_descriptors_async(0).await?;
     let (_, local_descs) = tensogram::decode::decode_descriptors(&msg)?;
 
@@ -1099,7 +1213,7 @@ async fn test_async_remote_decode_range_single_range() -> Result<(), Box<dyn Err
 
     // Use sync API to test the range (async decode_range not exposed on TensogramFile,
     // but the async layout discovery path is exercised by open_source_async + sync range)
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     let ranges = vec![(2u64, 3u64)];
     let (_, parts) = file.decode_range(0, 0, &ranges, &DecodeOptions::default())?;
     assert_eq!(parts.len(), 1);
@@ -1119,7 +1233,7 @@ async fn test_async_remote_decode_range_matches_local() -> Result<(), Box<dyn Er
     let ranges = vec![(0u64, 4u64), (8u64, 4u64)];
     let opts = DecodeOptions::default();
 
-    let remote_file = TensogramFile::open_source(server.url())?;
+    let remote_file = TensogramFile::open_source(server.url(), None)?;
     let (_, remote_parts) = remote_file.decode_range(0, 0, &ranges, &opts)?;
 
     let (_, local_parts) = tensogram::decode_range(&msg, 0, &ranges, &opts)?;
@@ -1137,7 +1251,7 @@ async fn test_async_remote_decode_range_out_of_range_object() -> Result<(), Box<
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     let result = file.decode_range(0, 5, &[(0, 1)], &DecodeOptions::default());
     assert!(result.is_err());
     Ok(())
@@ -1151,7 +1265,7 @@ async fn test_async_remote_request_budget_header_indexed() -> Result<(), Box<dyn
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     let open_requests = server.request_count();
 
     server.reset_count();
@@ -1181,7 +1295,7 @@ async fn test_async_remote_lazy_open_only_reads_first_preamble() -> Result<(), B
     combined.extend_from_slice(&msg2);
     let server = MockServer::start(combined).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
 
     let (_, desc, data) = file
         .decode_object_async(0, 0, &DecodeOptions::default())
@@ -1207,7 +1321,7 @@ async fn test_async_remote_suffix_read_combines_streaming() -> Result<(), Box<dy
     let msg = encode_streaming_message(vec![4], 42)?;
     let server = MockServer::start(msg.clone()).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     assert!(file.is_remote());
     assert_eq!(file.message_count()?, 1);
 
@@ -1236,7 +1350,7 @@ async fn test_async_remote_mixed_buffered_then_streaming() -> Result<(), Box<dyn
     combined.extend_from_slice(&streaming_msg);
 
     let server = MockServer::start(combined).await?;
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     assert_eq!(file.message_count()?, 2);
 
     let (_, _, data0) = file
@@ -1261,7 +1375,7 @@ async fn test_async_remote_repeated_object_reads_use_cache() -> Result<(), Box<d
     let msg = encode_multi_object_message(&shapes, &fills)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
     server.reset_count();
 
     // First object read
@@ -1301,7 +1415,7 @@ async fn test_async_remote_matches_local_decode() -> Result<(), Box<dyn Error>> 
     let (_local_meta, local_objects) = tensogram::decode::decode(&msg, &DecodeOptions::default())?;
 
     // Async remote decode
-    let remote_file = TensogramFile::open_source_async(server.url()).await?;
+    let remote_file = TensogramFile::open_source_async(server.url(), None).await?;
     let (_remote_meta, remote_desc, remote_data) = remote_file
         .decode_object_async(0, 0, &DecodeOptions::default())
         .await?;
@@ -1321,7 +1435,7 @@ async fn test_async_remote_multi_object_decode_single() -> Result<(), Box<dyn Er
     let msg = encode_multi_object_message(&shapes, &fills)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source_async(server.url()).await?;
+    let file = TensogramFile::open_source_async(server.url(), None).await?;
 
     // Read only the second object
     let (_, desc, data) = file
@@ -1354,7 +1468,7 @@ async fn test_block_on_shared_current_thread_fallback() -> Result<(), Box<dyn Er
     // open_source → RemoteBackend::open → block_on_shared which will hit the
     // current-thread fallback branch.
     let result = tokio::task::spawn_blocking(move || {
-        let file = TensogramFile::open_source(&url)?;
+        let file = TensogramFile::open_source(&url, None)?;
         assert!(file.is_remote());
         let _meta = file.decode_metadata(0)?;
         let (_, desc, data) = file.decode_object(0, 0, &DecodeOptions::default())?;
@@ -1382,7 +1496,7 @@ async fn test_remote_decode_range_single_range() -> Result<(), Box<dyn Error>> {
     let msg = encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     let ranges = vec![(2u64, 3u64)];
     let (_, parts) = file.decode_range(0, 0, &ranges, &DecodeOptions::default())?;
     assert_eq!(parts.len(), 1);
@@ -1401,7 +1515,7 @@ async fn test_remote_decode_range_matches_local() -> Result<(), Box<dyn Error>> 
     let ranges = vec![(0u64, 4u64), (8u64, 4u64)];
     let opts = DecodeOptions::default();
 
-    let remote_file = TensogramFile::open_source(server.url())?;
+    let remote_file = TensogramFile::open_source(server.url(), None)?;
     let (_, remote_parts) = remote_file.decode_range(0, 0, &ranges, &opts)?;
 
     let (_, local_parts) = tensogram::decode_range(&msg, 0, &ranges, &opts)?;
@@ -1418,7 +1532,7 @@ async fn test_remote_decode_range_out_of_range_object() -> Result<(), Box<dyn Er
     let msg = encode_test_message(vec![4], 42)?;
     let server = MockServer::start(msg).await?;
 
-    let file = TensogramFile::open_source(server.url())?;
+    let file = TensogramFile::open_source(server.url(), None)?;
     let result = file.decode_range(0, 5, &[(0, 1)], &DecodeOptions::default());
     assert!(result.is_err());
     Ok(())

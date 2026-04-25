@@ -171,3 +171,74 @@ class TestPythonRemoteErrors:
             pytest.raises(RuntimeError, match="iteration not supported"),
         ):
             iter(f)
+
+
+# ---------------------------------------------------------------------------
+# Bidirectional scan opt-in
+# ---------------------------------------------------------------------------
+
+
+class TestBidirectionalKwarg:
+    def test_default_is_forward_only(self, serve_tgm_bytes):
+        msg = encode_test_message([4])
+        url = serve_tgm_bytes(msg)
+
+        with tensogram.TensogramFile.open_remote(url) as f:
+            assert f.message_count() == 1
+
+    def test_open_remote_bidirectional_layouts_match_forward_only(
+        self, serve_tgm_bytes
+    ):
+        msg1 = encode_test_message([4], fill=10.0)
+        msg2 = encode_test_message([8], fill=20.0)
+        msg3 = encode_test_message([16], fill=30.0)
+        url = serve_tgm_bytes(msg1 + msg2 + msg3)
+
+        with tensogram.TensogramFile.open_remote(url) as fwd:
+            fwd_count = fwd.message_count()
+
+        with tensogram.TensogramFile.open_remote(url, bidirectional=True) as bidir:
+            bidir_count = bidir.message_count()
+
+        assert fwd_count == bidir_count == 3
+
+    def test_open_with_bidirectional_kwarg(self, serve_tgm_bytes):
+        msg = encode_test_message([4])
+        url = serve_tgm_bytes(msg)
+
+        with tensogram.TensogramFile.open(url, bidirectional=True) as f:
+            assert f.is_remote()
+            assert f.message_count() == 1
+
+    def test_open_local_path_with_bidirectional_kwarg_is_no_op(self, tmp_path):
+        path = str(tmp_path / "local.tgm")
+        with tensogram.TensogramFile.create(path) as f:
+            meta = make_global_meta()
+            desc = make_descriptor([4])
+            data = np.full([4], 1.0, dtype=np.float32)
+            f.append(meta, [(desc, data)])
+
+        with tensogram.TensogramFile.open(path, bidirectional=True) as f:
+            assert not f.is_remote()
+            assert f.message_count() == 1
+
+    def test_bidirectional_must_be_bool_int_rejected(self, serve_tgm_bytes):
+        msg = encode_test_message([4])
+        url = serve_tgm_bytes(msg)
+
+        with pytest.raises(TypeError):
+            tensogram.TensogramFile.open_remote(url, bidirectional=1)
+
+    def test_bidirectional_must_be_bool_str_rejected(self, serve_tgm_bytes):
+        msg = encode_test_message([4])
+        url = serve_tgm_bytes(msg)
+
+        with pytest.raises(TypeError):
+            tensogram.TensogramFile.open_remote(url, bidirectional="yes")
+
+    def test_bidirectional_is_keyword_only(self, serve_tgm_bytes):
+        msg = encode_test_message([4])
+        url = serve_tgm_bytes(msg)
+
+        with pytest.raises(TypeError):
+            tensogram.TensogramFile.open_remote(url, None, True)

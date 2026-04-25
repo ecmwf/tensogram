@@ -374,19 +374,28 @@ For speculative ideas, see `IDEAS.md`.
     yield, and corrupt END_MAGIC graceful degradation.  Public
     API unchanged.
 
-  - [ ] **Rust + Python public surface** (`file.rs`,
-    `python/bindings/`, ~200 LOC).  `TensogramFile::open_remote` /
-    `open_remote_async` / `open_source` / `open_source_async` gain
+  - [x] ~~**Rust + Python public surface**~~ — `RemoteScanOptions`
+    promoted to a `pub` cfg-independent type re-exported from the
+    crate root (so `open_source` accepts it whether or not the
+    `remote` feature is enabled).  `TensogramFile::open_remote` /
+    `open_remote_async` / `open_source` / `open_source_async` gained
     `scan_opts: Option<&RemoteScanOptions>` (default `None` →
-    forward-only).  Python `PyTensogramFile.open_remote(source,
-    storage_options=None, *, bidirectional=False)` keyword across
-    sync, async, and `open_source` dispatch (URL-aware).  Eager type
-    validation: `bidirectional=1` or `bidirectional="yes"` raises
-    `ValueError` at call site, not on first method call.  Parity
-    harness Rust driver gains `--bidirectional` flag; new harness
-    assertion: forward-only and bidirectional produce identical final
-    `{ positions, layouts }` on every fixture.  TS driver remains
-    forward-only.
+    forward-only).  New `pub fn message_layouts()` (and async sibling)
+    returns `Vec<MessageLayout>` so callers can compare layouts
+    discovered by either walker without re-reading payload.  Internal
+    `remote::MessageLayout` renamed to `remote::CachedLayout` to free
+    the public name.  Python `PyTensogramFile.open(...)` /
+    `open_remote(...)` and the matching `PyAsyncTensogramFile`
+    siblings gained a keyword-only `bidirectional: bool` argument
+    (default `False`).  PyO3's strict `bool` extractor rejects
+    `bidirectional=1` / `="yes"` with `TypeError` at the call site
+    (before any I/O), satisfying the eager-validation requirement.
+    Parity-harness Rust driver gained a `--bidirectional` flag and a
+    `dump-layout` op that emits per-message JSON layouts; orchestrator
+    captures driver stdout via a new `RunResult { events, stdout }`
+    return shape; new `test_rust_forward_vs_bidirectional_layouts_equal`
+    asserts walker-mode equivalence on every fixture.  TS driver
+    remains forward-only.  See `DONE.md` for the full breakdown.
 
   - [ ] **TypeScript bidirectional walker** (~300 LOC TS +
     ~150 LOC `tensogram-wasm` exports + thin TS bindings).  Pure

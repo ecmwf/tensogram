@@ -31,6 +31,7 @@ all: check test lint ## Run all checks, tests, and lints
 
 rust-check: ## Check Rust workspace compiles
 	cargo check --workspace
+	cargo check -p tensogram --no-default-features
 
 rust-test: ## Run all Rust tests
 	cargo test --workspace
