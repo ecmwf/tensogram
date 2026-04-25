@@ -846,7 +846,12 @@ impl RemoteBackend {
     /// forward keeps going.
     fn scan_bidir_round_locked(&self, state: &mut RemoteState) -> Result<()> {
         let snap = state.snapshot();
-        let bound = state.prev_scan_offset;
+        // In bidirectional mode `prev_scan_offset` IS the forward
+        // bound: it equals `file_size` while `suffix_rev` is empty
+        // and the start of the leftmost suffix layout otherwise.  In
+        // forward-only mode this function is never reached (the
+        // dispatcher routes to `scan_fwd_step_locked` directly).
+        let bound = snap.prev;
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
 
         // Walkers about to overlap?  One bounded forward step
@@ -909,30 +914,7 @@ impl RemoteBackend {
                 let validation = bwd_round2
                     .map(|bytes| validate_backward_preamble(bytes, msg_start, length))
                     .unwrap_or(BackwardCommit::Format("missing-round2-buffer"));
-                match validation {
-                    BackwardCommit::Format(reason) => state.disable_backward(reason),
-                    BackwardCommit::Layout(layout) => {
-                        if !state.bwd_active {
-                            // Concurrent caller already disabled — drop the layout.
-                        } else if same_message_as_forward(&fwd, &layout) {
-                            // Forward and backward identified the same message
-                            // (1-message file or odd-count meet at the middle
-                            // message).  Commit forward only; leave suffix_rev
-                            // from previous rounds untouched.
-                        } else if let ForwardOutcome::Hit { msg_end, .. } = fwd {
-                            if msg_end > layout.offset {
-                                // True overlap — backward computed an offset
-                                // before forward's new commit, which only
-                                // happens on corruption.
-                                state.disable_backward("backward-overlaps-forward");
-                            } else {
-                                state.record_backward_hop(layout);
-                            }
-                        } else {
-                            state.record_backward_hop(layout);
-                        }
-                    }
-                }
+                Self::commit_or_yield_backward(state, &fwd, validation);
             }
         }
 
@@ -969,6 +951,46 @@ impl RemoteBackend {
         if state.bwd_active && state.walkers_overlap() {
             state.close_gap();
         }
+    }
+
+    /// Decide what to do with a Round-2-validated backward layout
+    /// before the forward commit fires.  Three branches:
+    ///
+    /// - `bwd_active == false`: a concurrent caller disabled the
+    ///   walker between Round 1 and Round 2; silently drop the
+    ///   layout.
+    /// - `same_message_as_forward`: the 1-message file and odd-count
+    ///   middle-meet case — forward will commit this exact layout
+    ///   itself.  Yield silently (do NOT call `disable_backward` —
+    ///   that would clear `suffix_rev` from earlier rounds).
+    /// - true overlap (`fwd.msg_end > layout.offset`): only happens
+    ///   on corruption; disable backward.
+    /// - otherwise: commit the backward hop.
+    fn commit_or_yield_backward(
+        state: &mut RemoteState,
+        fwd: &ForwardOutcome,
+        validation: BackwardCommit,
+    ) {
+        let layout = match validation {
+            BackwardCommit::Format(reason) => {
+                state.disable_backward(reason);
+                return;
+            }
+            BackwardCommit::Layout(layout) => layout,
+        };
+        if !state.bwd_active {
+            return;
+        }
+        if same_message_as_forward(fwd, &layout) {
+            return;
+        }
+        if let ForwardOutcome::Hit { msg_end, .. } = fwd {
+            if *msg_end > layout.offset {
+                state.disable_backward("backward-overlaps-forward");
+                return;
+            }
+        }
+        state.record_backward_hop(layout);
     }
 
     fn ensure_message_locked(&self, state: &mut RemoteState, msg_idx: usize) -> Result<()> {
