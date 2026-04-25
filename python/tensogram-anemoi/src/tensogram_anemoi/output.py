@@ -285,10 +285,12 @@ class TensogramOutput(Output):
             "compression": self.compression,
         }
         if self.encoding == "simple_packing" and self.bits is not None:
-            import tensogram
-
-            sp_params = tensogram.compute_packing_params(arr.ravel(), self.bits, 0)
-            descriptor.update(sp_params)
+            # Let the encoder auto-compute sp_reference_value and
+            # sp_binary_scale_factor from the payload at encode time.
+            # Callers who want the same reference value pinned across
+            # many fields can drop in to `tensogram.compute_packing_params`
+            # and spread the returned dict into the descriptor instead.
+            descriptor["sp_bits_per_value"] = self.bits
         return descriptor
 
     def _build_field_object(
