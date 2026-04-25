@@ -619,3 +619,12 @@ For speculative ideas, see `IDEAS.md`.
 - [ ] Keyboard shortcuts: space play/pause, arrow keys step
 - [ ] Resizable sidebar (drag handle)
 - [ ] Handle polar stereographic projections and single-point fields
+- [ ] Re-enable and fix high-res viewport rendering in the map overlay (currently
+  commented out in `tensoscope/src/components/map/MapView.tsx`): viewport-specific
+  renders for the flat map (`viewportFlatProps`) and globe (`globeProps` with
+  `cesiumBounds`) were disabled due to an opacity seam caused by two semi-transparent
+  layers stacking. The masking infrastructure (`excludeBounds` / `applyExcludeMask`
+  in `FieldOverlay.tsx`) was written to fix this but has a timing bug where the global
+  image renders via the LRU cache on first load (bypassing `rawRef` population) so the
+  mask is never applied. The fallback Cesium entity was also removed from `CesiumView`
+  for the same reason.

@@ -2,15 +2,14 @@
  * FieldOverlay -- renders a colormapped unstructured field via MapLibre's
  * native image source.
  *
- * MapLibre interpolates image sources in Web Mercator projection space,
- * so we regrid into Mercator y-spacing for correct geographic alignment.
- *
  * Heavy computation (regridding + colormapping) runs in a Web Worker to
  * keep the main thread responsive. Results are cached by an LRU so that
  * revisiting a previously rendered field/zoom combination is instant.
  *
- * Grid resolution adapts to both the source data density and the current
- * map zoom level: coarser when zoomed out, sharper when zoomed in.
+ * When viewport bounds and dimensions are supplied the grid covers only the
+ * visible area at screen resolution, giving sharp rendering at any zoom
+ * level. Without bounds it falls back to a full-globe render (used by Cesium
+ * and as a background fallback on the flat map).
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -19,6 +18,13 @@ import type { CustomStop } from './colormaps';
 import RegridWorker from './regrid.worker?worker';
 import { getNumBands } from './contourUtils';
 
+export interface ViewBounds {
+  west: number;
+  east: number;
+  south: number;
+  north: number;
+}
+
 export interface FieldOverlayProps {
   data: Float32Array;
   lat: Float32Array;
@@ -26,11 +32,14 @@ export interface FieldOverlayProps {
   colorMin: number;
   colorMax: number;
   palette: string;
-  zoom?: number;
   paletteReversed?: boolean;
   customStops?: CustomStop[];
   renderMode: 'heatmap' | 'contours';
   mapProjection?: 'mercator' | 'geographic';
+  viewportWidth?: number;
+  viewportHeight?: number;
+  bounds?: ViewBounds;
+  excludeBounds?: ViewBounds | null;
 }
 
 export interface FieldImage {
@@ -38,15 +47,10 @@ export interface FieldImage {
   coordinates: [[number, number], [number, number], [number, number], [number, number]];
 }
 
-const LAT_MAX = 85;
-const LAT_MIN = -85;
-
-const COORDINATES: FieldImage['coordinates'] = [
-  [-180, LAT_MAX],
-  [180, LAT_MAX],
-  [180, LAT_MIN],
-  [-180, LAT_MIN],
-];
+const LAT_MAX_MERCATOR = 85;
+const LAT_MIN_MERCATOR = -85;
+const LAT_MAX_GEOGRAPHIC = 90;
+const LAT_MIN_GEOGRAPHIC = -90;
 
 // ── Mercator helpers ──────────────────────────────────────────────────
 
@@ -61,9 +65,6 @@ function mercYToLat(y: number): number {
   return (2 * Math.atan(Math.exp(y)) - Math.PI / 2) * RAD2DEG;
 }
 
-const Y_TOP = latToMercY(LAT_MAX);
-const Y_RANGE = Y_TOP - latToMercY(LAT_MIN);
-
 // ── Adaptive grid parameters ──────────────────────────────────────────
 
 interface GridParams {
@@ -71,58 +72,50 @@ interface GridParams {
   height: number;
   binDeg: number;
   rowLats: Float64Array;
+  lonMin: number;
+  lonMax: number;
+  latMin: number;
+  latMax: number;
+  mapProjection: 'mercator' | 'geographic';
 }
 
-/**
- * Compute output grid dimensions.
- *
- * `scaleFactor` ranges from ~0.3 (zoomed out) to 1.0 (zoomed in enough
- * to see full native resolution). It multiplies the native-resolution
- * grid size so that zoomed-out views render smaller, faster images.
- */
 function computeGridParams(
   nPoints: number,
-  scaleFactor: number,
   mapProjection: 'mercator' | 'geographic',
+  lonMin: number,
+  lonMax: number,
+  latMin: number,
+  latMax: number,
+  viewportWidth: number,
+  viewportHeight: number,
 ): GridParams {
   const avgSpacing = Math.sqrt(360 * 170 / Math.max(1, nPoints));
-  const cellDeg = Math.max(0.1, Math.min(2, avgSpacing * 0.7));
-  const nativeWidth = Math.ceil(360 / cellDeg);
-
-  const width = Math.min(1440, Math.max(180, Math.round(nativeWidth * scaleFactor)));
-  const heightRaw = mapProjection === 'geographic'
-    ? width * (LAT_MAX - LAT_MIN) / 360
-    : width * Y_RANGE / (2 * Math.PI);
-  const height = Math.min(1440, Math.max(180, Math.round(heightRaw)));
   const binDeg = Math.max(1, Math.ceil(avgSpacing * 1.5));
+
+  const width = Math.min(4096, Math.max(64, viewportWidth));
+  const height = Math.min(4096, Math.max(64, viewportHeight));
+
+  const latMax_ = mapProjection === 'geographic' ? LAT_MAX_GEOGRAPHIC : LAT_MAX_MERCATOR;
+  const latMin_ = mapProjection === 'geographic' ? LAT_MIN_GEOGRAPHIC : LAT_MIN_MERCATOR;
+  const clampedLatMax = Math.min(latMax_, latMax);
+  const clampedLatMin = Math.max(latMin_, latMin);
 
   const rowLats = new Float64Array(height);
   if (mapProjection === 'geographic') {
     for (let row = 0; row < height; row++) {
-      rowLats[row] = LAT_MAX - (row + 0.5) / height * (LAT_MAX - LAT_MIN);
+      rowLats[row] = clampedLatMax - (row + 0.5) / height * (clampedLatMax - clampedLatMin);
     }
   } else {
+    const yTop = latToMercY(clampedLatMax);
+    const yBot = latToMercY(clampedLatMin);
+    const yRange = yTop - yBot;
     for (let row = 0; row < height; row++) {
-      const mercY = Y_TOP - (row + 0.5) / height * Y_RANGE;
+      const mercY = yTop - (row + 0.5) / height * yRange;
       rowLats[row] = mercYToLat(mercY);
     }
   }
 
-  return { width, height, binDeg, rowLats };
-}
-
-/**
- * Map zoom level to a grid scale factor.
- * zoom 0-1  -> 0.3 (very coarse)
- * zoom 2-3  -> 0.5
- * zoom 4+   -> 1.0 (full native res)
- */
-function zoomToScale(zoom: number | undefined): number {
-  if (zoom == null) return 0.6; // sensible default
-  if (zoom <= 1) return 0.3;
-  if (zoom >= 4) return 1.0;
-  // Linear interpolation between zoom 1 (0.3) and zoom 4 (1.0)
-  return 0.3 + (zoom - 1) * (0.7 / 3);
+  return { width, height, binDeg, rowLats, lonMin, lonMax, latMin: clampedLatMin, latMax: clampedLatMax, mapProjection };
 }
 
 // ── Image cache ──────────────────────────────────────────────────────
@@ -132,14 +125,12 @@ interface CacheEntry {
   key: string;
 }
 
-const IMAGE_CACHE_SIZE = 12;
+const IMAGE_CACHE_SIZE = 64;
 const imageCache: CacheEntry[] = [];
 
-/** Cheap fingerprint: length + a few sampled values to distinguish different fields of equal size. */
 function dataFingerprint(data: Float32Array): string {
   const n = data.length;
   if (n === 0) return '0';
-  // Sample 4 evenly spaced values
   const a = data[0];
   const b = data[n >> 2];
   const c = data[n >> 1];
@@ -154,6 +145,10 @@ function cacheKey(
   palette: string,
   gridW: number,
   gridH: number,
+  lonMin: number,
+  lonMax: number,
+  latMin: number,
+  latMax: number,
   paletteReversed: boolean,
   customStops: CustomStop[] | undefined,
   renderMode: 'heatmap' | 'contours',
@@ -162,22 +157,62 @@ function cacheKey(
   const palKey = palette
     + (paletteReversed ? ':r' : '')
     + (palette === 'custom' && customStops ? ':' + JSON.stringify(customStops) : '');
-  return `${dataFingerprint(data)}:${colorMin}:${colorMax}:${palKey}:${gridW}x${gridH}:${renderMode}:${mapProjection}`;
+  // Quantise bounds to 0.5° so minor pan jitter doesn't bust the cache
+  const q = (v: number) => (Math.round(v * 2) / 2).toFixed(1);
+  return `${dataFingerprint(data)}:${colorMin}:${colorMax}:${palKey}:${gridW}x${gridH}:${q(lonMin)},${q(lonMax)},${q(latMin)},${q(latMax)}:${renderMode}:${mapProjection}`;
 }
 
 function getCached(key: string): string | null {
   const idx = imageCache.findIndex((e) => e.key === key);
   if (idx < 0) return null;
-  // Move to front (most recently used)
   const [entry] = imageCache.splice(idx, 1);
   imageCache.unshift(entry);
   return entry.dataUrl;
 }
 
 function putCache(key: string, dataUrl: string): void {
-  // Evict oldest if full
   if (imageCache.length >= IMAGE_CACHE_SIZE) imageCache.pop();
   imageCache.unshift({ key, dataUrl });
+}
+
+// ── Exclude-region masking ───────────────────────────────────────────
+//
+// Used by the global (full-extent) render to zero-out pixels covered by the
+// viewport-specific render so both layers read at the same opacity (0.7)
+// with no additive stacking in the overlap region.
+
+function applyExcludeMask(
+  rgba: Uint8ClampedArray,
+  params: GridParams,
+  excl: ViewBounds,
+): Uint8ClampedArray {
+  const out = rgba.slice();
+  const { width, height, lonMin, lonMax, latMin, latMax, mapProjection } = params;
+  const lonSpan = lonMax - lonMin;
+
+  const x0 = Math.max(0, Math.floor((excl.west  - lonMin) / lonSpan * width));
+  const x1 = Math.min(width, Math.ceil((excl.east  - lonMin) / lonSpan * width));
+
+  let y0: number, y1: number;
+  if (mapProjection === 'geographic') {
+    const latSpan = latMax - latMin;
+    y0 = Math.max(0, Math.floor((latMax - Math.min(latMax, excl.north)) / latSpan * height));
+    y1 = Math.min(height, Math.ceil((latMax - Math.max(latMin, excl.south)) / latSpan * height));
+  } else {
+    const yTop = latToMercY(latMax);
+    const yBot = latToMercY(latMin);
+    const yRange = yTop - yBot;
+    y0 = Math.max(0, Math.floor((yTop - latToMercY(Math.min(latMax, excl.north))) / yRange * height));
+    y1 = Math.min(height, Math.ceil((yTop - latToMercY(Math.max(latMin, excl.south))) / yRange * height));
+  }
+
+  for (let row = y0; row < y1; row++) {
+    const base = row * width * 4;
+    for (let col = x0; col < x1; col++) {
+      out[base + col * 4 + 3] = 0;
+    }
+  }
+  return out;
 }
 
 // ── Shared worker instance ───────────────────────────────────────────
@@ -216,25 +251,23 @@ function requestRegrid(
     const id = ++workerSeq;
     pendingCallbacks.set(id, (rgba, w, h) => resolve({ rgba, width: w, height: h }));
     const worker = getWorker();
-    worker.postMessage(
-      {
-        id,
-        srcLat,
-        srcLon,
-        srcData,
-        lut,
-        colorMin,
-        colorMax,
-        width: params.width,
-        height: params.height,
-        binDeg: params.binDeg,
-        rowLats: params.rowLats,
-        renderMode,
-        numBands,
-      },
-      // Transfer arrays to avoid copying (worker gets ownership)
-      // We clone them first since the caller may still need them
-    );
+    worker.postMessage({
+      id,
+      srcLat,
+      srcLon,
+      srcData,
+      lut,
+      colorMin,
+      colorMax,
+      width: params.width,
+      height: params.height,
+      binDeg: params.binDeg,
+      rowLats: params.rowLats,
+      lonMin: params.lonMin,
+      lonMax: params.lonMax,
+      renderMode,
+      numBands,
+    });
   });
 }
 
@@ -251,47 +284,154 @@ function rgbaToDataUrl(rgba: Uint8ClampedArray, width: number, height: number): 
   return canvas.toDataURL();
 }
 
+// ── Bounds resolution ─────────────────────────────────────────────────
+
+/**
+ * Resolve the effective rendering window from the overlay props.
+ *
+ * When bounds cross the antimeridian (east > 180 or west < -180) or span
+ * more than 330° in longitude, fall back to the full global extent so there
+ * are no gaps near the dateline.
+ */
+function resolveBounds(props: FieldOverlayProps): {
+  lonMin: number; lonMax: number; latMin: number; latMax: number;
+  vw: number; vh: number;
+} {
+  const { bounds, viewportWidth, viewportHeight, mapProjection = 'mercator' } = props;
+
+  const latMax_ = mapProjection === 'geographic' ? LAT_MAX_GEOGRAPHIC : LAT_MAX_MERCATOR;
+  const latMin_ = mapProjection === 'geographic' ? LAT_MIN_GEOGRAPHIC : LAT_MIN_MERCATOR;
+
+  // Global fallback defaults
+  const globalVw = mapProjection === 'geographic' ? 2048 : 1440;
+  const globalVh = mapProjection === 'geographic' ? 1024 : 720;
+
+  if (!bounds) {
+    return { lonMin: -180, lonMax: 180, latMin: latMin_, latMax: latMax_, vw: viewportWidth ?? globalVw, vh: viewportHeight ?? globalVh };
+  }
+
+  const { west, east, south, north } = bounds;
+  const lonSpan = east - west;
+
+  // Antimeridian crossing or nearly-global view: use full extent
+  if (west < -180 || east > 180 || lonSpan > 330) {
+    return { lonMin: -180, lonMax: 180, latMin: latMin_, latMax: latMax_, vw: viewportWidth ?? globalVw, vh: viewportHeight ?? globalVh };
+  }
+
+  return {
+    lonMin: Math.max(-180, west),
+    lonMax: Math.min(180, east),
+    latMin: Math.max(latMin_, south),
+    latMax: Math.min(latMax_, north),
+    vw: viewportWidth ?? globalVw,
+    vh: viewportHeight ?? globalVh,
+  };
+}
+
 // ── React hook ────────────────────────────────────────────────────────
+
+interface RawRender {
+  rgba: Uint8ClampedArray;
+  width: number;
+  height: number;
+  coords: FieldImage['coordinates'];
+  params: GridParams;
+}
 
 export function useFieldImage(props: FieldOverlayProps | null): FieldImage | null {
   const [image, setImage] = useState<FieldImage | null>(null);
   const requestIdRef = useRef(0);
+  // Stores the last unmasked render result so the exclude mask can be
+  // re-applied cheaply when the viewport bounds change without re-running
+  // the worker.
+  const rawRef = useRef<RawRender | null>(null);
+
+  const applyAndSet = useCallback((raw: RawRender, excl: ViewBounds | null | undefined) => {
+    const rgba = excl ? applyExcludeMask(raw.rgba, raw.params, excl) : raw.rgba;
+    setImage({ dataUrl: rgbaToDataUrl(rgba, raw.width, raw.height), coordinates: raw.coords });
+  }, []);
 
   const render = useCallback(async () => {
     if (!props || !props.data || props.data.length === 0) {
       setImage(null);
+      rawRef.current = null;
       return;
     }
-    const { data, lat, lon, colorMin, colorMax, palette, zoom, paletteReversed = false, customStops, renderMode, mapProjection = 'mercator' } = props;
+    const {
+      data, lat, lon, colorMin, colorMax, palette,
+      paletteReversed = false, customStops, renderMode,
+      mapProjection = 'mercator', excludeBounds,
+    } = props;
     const numBands = getNumBands(palette, customStops);
 
-    const scale = zoomToScale(zoom);
-    const params = computeGridParams(data.length, scale, mapProjection);
-    const key = cacheKey(data, colorMin, colorMax, palette, params.width, params.height, paletteReversed, customStops, renderMode, mapProjection);
+    const { lonMin, lonMax, latMin, latMax, vw, vh } = resolveBounds(props);
 
-    // Check cache first
-    const cached = getCached(key);
-    if (cached) {
-      setImage({ dataUrl: cached, coordinates: COORDINATES });
-      return;
+    const params = computeGridParams(data.length, mapProjection, lonMin, lonMax, latMin, latMax, vw, vh);
+    const key = cacheKey(
+      data, colorMin, colorMax, palette,
+      params.width, params.height,
+      lonMin, lonMax, latMin, latMax,
+      paletteReversed, customStops, renderMode, mapProjection,
+    );
+
+    const coords: FieldImage['coordinates'] = [
+      [lonMin, params.latMax],
+      [lonMax, params.latMax],
+      [lonMax, params.latMin],
+      [lonMin, params.latMin],
+    ];
+
+    // LRU cache stores unmasked dataUrls; skip for masked renders because we
+    // need the raw RGBA to re-apply the mask when excludeBounds changes.
+    if (!excludeBounds) {
+      const cached = getCached(key);
+      if (cached) {
+        setImage({ dataUrl: cached, coordinates: coords });
+        return;
+      }
     }
 
     const reqId = ++requestIdRef.current;
+    // Do not clear image state here -- keep previous image visible while the
+    // new render runs (double-buffer: no blank frame on bounds/zoom change).
     const lut = getPaletteLUT(palette, { reversed: paletteReversed, customStops });
 
     const result = await requestRegrid(lat, lon, data, lut, colorMin, colorMax, params, renderMode, numBands);
-
-    // Only apply if this is still the most recent request (prevents stale results)
     if (reqId !== requestIdRef.current) return;
 
-    const dataUrl = rgbaToDataUrl(result.rgba, result.width, result.height);
-    putCache(key, dataUrl);
-    setImage({ dataUrl, coordinates: COORDINATES });
-  }, [props?.data, props?.lat, props?.lon, props?.colorMin, props?.colorMax, props?.palette, props?.zoom, props?.paletteReversed, props?.customStops, props?.renderMode, props?.mapProjection]);
+    const raw: RawRender = { rgba: result.rgba, width: result.width, height: result.height, coords, params };
+    rawRef.current = raw;
 
+    if (!excludeBounds) {
+      const dataUrl = rgbaToDataUrl(result.rgba, result.width, result.height);
+      putCache(key, dataUrl);
+      setImage({ dataUrl, coordinates: coords });
+    } else {
+      applyAndSet(raw, excludeBounds);
+    }
+  }, [
+    props?.data, props?.lat, props?.lon,
+    props?.colorMin, props?.colorMax, props?.palette,
+    props?.paletteReversed, props?.customStops, props?.renderMode, props?.mapProjection,
+    props?.viewportWidth, props?.viewportHeight,
+    props?.bounds?.west, props?.bounds?.east, props?.bounds?.south, props?.bounds?.north,
+    applyAndSet,
+    // Only track presence of excludeBounds, not its value. Going null→non-null
+    // triggers a one-time re-render so rawRef gets populated from a fresh worker
+    // result (the cache is skipped when excludeBounds is set). Subsequent bound
+    // changes are handled cheaply by the re-mask effect below.
+    !!props?.excludeBounds,
+  ]);
+
+  useEffect(() => { render(); }, [render]);
+
+  // Re-mask the last render when excludeBounds changes (e.g. user pans the
+  // viewport) without re-running the expensive worker.
+  const excl = props?.excludeBounds;
   useEffect(() => {
-    render();
-  }, [render]);
+    if (!rawRef.current || !excl) return;
+    applyAndSet(rawRef.current, excl);
+  }, [excl?.west, excl?.east, excl?.south, excl?.north, applyAndSet]);
 
   return image;
 }

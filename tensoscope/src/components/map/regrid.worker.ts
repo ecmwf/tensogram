@@ -19,7 +19,9 @@ interface RegridRequest {
   width: number;
   height: number;
   binDeg: number;
-  rowLats: Float64Array;  // pre-computed Mercator-spaced latitudes per row
+  rowLats: Float64Array;  // pre-computed latitudes per row (Mercator or geographic)
+  lonMin: number;         // western edge of the rendered window (degrees)
+  lonMax: number;         // eastern edge of the rendered window (degrees)
   renderMode: 'heatmap' | 'contours';
   numBands: number;
 }
@@ -34,7 +36,8 @@ interface RegridResponse {
 // ── Regrid + colormap ────────────────────────────────────────────────────
 
 function regridAndColormap(req: RegridRequest): RegridResponse {
-  const { srcLat, srcLon, srcData, lut, colorMin, colorMax, width, height, binDeg, rowLats, renderMode, numBands } = req;
+  const { srcLat, srcLon, srcData, lut, colorMin, colorMax, width, height, binDeg, rowLats, lonMin, lonMax, renderMode, numBands } = req;
+  const lonSpan = lonMax - lonMin;
   const n = srcData.length;
 
   const binsLon = Math.ceil(360 / binDeg);
@@ -83,7 +86,7 @@ function regridAndColormap(req: RegridRequest): RegridResponse {
     const rowOffset = row * width * 4;
 
     for (let col = 0; col < width; col++) {
-      const targetLon = -180 + (col + 0.5) * (360 / width);
+      const targetLon = lonMin + (col + 0.5) * (lonSpan / width);
       const bi = Math.max(0, Math.min(binsLon - 1, (targetLon + 180) / binDeg | 0));
 
       let bestDist = Infinity;

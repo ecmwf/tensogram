@@ -7,7 +7,7 @@ import { ColorBar } from './ColorBar';
 import { ColorScaleControls } from './ColorScaleControls';
 import { CesiumView } from './CesiumView';
 import { RenderModePicker } from './RenderModePicker';
-import type { FieldOverlayProps } from './FieldOverlay';
+import type { FieldOverlayProps, ViewBounds } from './FieldOverlay';
 import { ProjectionPicker, PROJECTION_PRESETS } from './ProjectionPicker';
 import type { ProjectionPreset } from './ProjectionPicker';
 import type { CustomStop } from './colormaps';
@@ -51,11 +51,28 @@ export function MapView(props: MapViewProps) {
 
   const [activePreset, setActivePreset] = useState<ProjectionPreset>(PROJECTION_PRESETS[0]);
   const [renderMode, setRenderMode] = useState<'heatmap' | 'contours'>('heatmap');
-  const [zoom, setZoom] = useState(1.5);
   const [cameraCenter, setCameraCenter] = useState({ lat: 20, lon: 0 });
   const mapRef = useRef<MapRef>(null);
-  const zoomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const justSwitchedToFlatRef = useRef(false);
+
+  // Flat map viewport state
+  const [viewportBounds, setViewportBounds] = useState<ViewBounds | null>(null);
+  const [viewportSize, setViewportSize] = useState<{ width: number; height: number } | null>(null);
+
+  // Globe viewport state (from Cesium camera change callback)
+  const [cesiumBounds, setCesiumBounds] = useState<ViewBounds | null>(null);
+  const [cesiumViewSize, setCesiumViewSize] = useState<{ width: number; height: number }>({ width: 1024, height: 512 });
+
+  const captureViewport = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const b = map.getBounds();
+    setViewportBounds({ west: b.getWest(), east: b.getEast(), south: b.getSouth(), north: b.getNorth() });
+    const canvas = map.getCanvas();
+    setViewportSize({ width: canvas.width, height: canvas.height });
+  }, []);
+
+  const isGlobe = activePreset.id === 'globe';
 
   const handlePresetSelect = (preset: ProjectionPreset) => {
     if (preset.id === activePreset.id) return;
@@ -63,9 +80,8 @@ export function MapView(props: MapViewProps) {
       const centre = mapRef.current.getCenter();
       setCameraCenter({ lat: centre.lat, lon: centre.lng });
     }
-    if (preset.id === 'flat') {
-      justSwitchedToFlatRef.current = true;
-    }
+    if (preset.id === 'flat') justSwitchedToFlatRef.current = true;
+    if (preset.id !== 'flat') setViewportBounds(null);
     setActivePreset(preset);
   };
 
@@ -73,39 +89,79 @@ export function MapView(props: MapViewProps) {
     setCameraCenter({ lat, lon });
   };
 
-  const handleZoomEnd = useCallback(() => {
-    if (zoomTimerRef.current) clearTimeout(zoomTimerRef.current);
-    zoomTimerRef.current = setTimeout(() => {
-      const map = mapRef.current;
-      if (map) setZoom(map.getZoom());
-    }, 200);
-  }, []);
-
-  const isGlobe = activePreset.id === 'globe';
-
-  // After Cesium unmounts and saves its camera position, fly MapLibre to that position.
-  // initialViewState on <Map> is mount-only, so we must use flyTo after the switch.
   useEffect(() => {
     if (!isGlobe && justSwitchedToFlatRef.current && mapRef.current) {
       justSwitchedToFlatRef.current = false;
-      mapRef.current.flyTo({ center: [cameraCenter.lon, cameraCenter.lat], zoom, duration: 0 });
+      mapRef.current.flyTo({ center: [cameraCenter.lon, cameraCenter.lat], zoom: mapRef.current.getZoom(), duration: 0 });
     }
-  }, [cameraCenter, isGlobe, zoom]);
+  }, [cameraCenter, isGlobe]);
 
-  const overlayProps: FieldOverlayProps | null =
-    data && lat && lon
-      ? { data, lat, lon, colorMin, colorMax, palette, zoom, paletteReversed, customStops, renderMode, mapProjection: isGlobe ? 'geographic' : 'mercator' }
-      : null;
+  // ── Overlay props ────────────────────────────────────────────────────
+  //
+  // Single-layer rendering: one image shown at a time per view mode.
+  //
+  // Globe: viewport-aware render (cesiumBounds) when the camera position is
+  //   known, falling back to a full-extent 2048×1024 render on first load.
+  //   A separate full-extent render is kept as a low-res fallback shown via
+  //   the ?? operator so the globe is never blank.
+  //
+  // Flat: screen-resolution render of the visible viewport when bounds are
+  //   known, falling back to a full-extent 1440×720 render otherwise.
+  //   Only one MapLibre source/layer is active at any time.
 
-  const fieldImage = useFieldImage(overlayProps);
+  // High-res globe viewport render disabled:
+  // const globeProps: FieldOverlayProps | null = isGlobe && data && lat && lon ? {
+  //   data, lat, lon, colorMin, colorMax, palette, paletteReversed, customStops,
+  //   renderMode, mapProjection: 'geographic',
+  //   ...(cesiumBounds
+  //     ? { bounds: cesiumBounds, viewportWidth: cesiumViewSize.width, viewportHeight: cesiumViewSize.height }
+  //     : { viewportWidth: 2048, viewportHeight: 1024 }),
+  // } : null;
+  const globeProps: FieldOverlayProps | null = null;
+
+  const globalGlobeProps: FieldOverlayProps | null = isGlobe && data && lat && lon ? {
+    data, lat, lon, colorMin, colorMax, palette, paletteReversed, customStops,
+    renderMode, mapProjection: 'geographic',
+    viewportWidth: 2048, viewportHeight: 1024,
+  } : null;
+
+  const globalFlatProps: FieldOverlayProps | null = !isGlobe && data && lat && lon ? {
+    data, lat, lon, colorMin, colorMax, palette, paletteReversed, customStops,
+    renderMode, mapProjection: 'mercator',
+    viewportWidth: 1440, viewportHeight: 720,
+  } : null;
+
+  // High-res flat viewport render disabled:
+  // const viewportFlatProps: FieldOverlayProps | null =
+  //   !isGlobe && data && lat && lon && viewportBounds && viewportSize ? {
+  //     data, lat, lon, colorMin, colorMax, palette, paletteReversed, customStops,
+  //     renderMode, mapProjection: 'mercator',
+  //     bounds: viewportBounds,
+  //     viewportWidth: viewportSize.width,
+  //     viewportHeight: viewportSize.height,
+  //   } : null;
+  const viewportFlatProps: FieldOverlayProps | null = null;
+
+  // Hooks must always be called in the same order regardless of isGlobe.
+  const globeImage = useFieldImage(globeProps);
+  const globalGlobeImage = useFieldImage(globalGlobeProps);
+  const globalFlatImage = useFieldImage(globalFlatProps);
+  const viewportFlatImage = useFieldImage(viewportFlatProps);
+
+  // High-res viewport rendering disabled; re-enable by restoring:
+  //   const flatImage = viewportFlatImage ?? globalFlatImage;
+  //   const cesiumImage = globeImage ?? globalGlobeImage;
+  const flatImage = globalFlatImage;
+  const cesiumImage = globalGlobeImage;
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       {isGlobe ? (
         <CesiumView
-          fieldImage={fieldImage}
+          fieldImage={cesiumImage}
           initialCenter={cameraCenter}
           onUnmount={handleCesiumUnmount}
+          onViewChange={(b, w, h) => { setCesiumBounds(b); setCesiumViewSize({ width: w, height: h }); }}
         />
       ) : (
         <Map
@@ -114,20 +170,12 @@ export function MapView(props: MapViewProps) {
           mapStyle={BASEMAP_STYLE}
           projection={activePreset.type as any}
           style={{ width: '100%', height: '100%' }}
-          onZoomEnd={handleZoomEnd}
+          onLoad={captureViewport}
+          onMoveEnd={captureViewport}
         >
-          {fieldImage && (
-            <Source
-              id="field-overlay"
-              type="image"
-              url={fieldImage.dataUrl}
-              coordinates={fieldImage.coordinates}
-            >
-              <Layer
-                id="field-overlay-layer"
-                type="raster"
-                paint={{ 'raster-opacity': 0.7, 'raster-fade-duration': 0 }}
-              />
+          {flatImage && (
+            <Source id="field-overlay" type="image" url={flatImage.dataUrl} coordinates={flatImage.coordinates}>
+              <Layer id="field-overlay-layer" type="raster" paint={{ 'raster-opacity': 0.7, 'raster-fade-duration': 0 }} />
             </Source>
           )}
         </Map>
@@ -152,7 +200,6 @@ export function MapView(props: MapViewProps) {
               displayUnit={displayUnit}
             />
           </div>
-
           <div style={{ position: 'absolute', top: 16, right: 16, zIndex: 10 }}>
             <ColorScaleControls
               palette={palette}

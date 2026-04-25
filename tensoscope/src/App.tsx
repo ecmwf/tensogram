@@ -13,10 +13,38 @@ import { StepSlider } from './components/animation/StepSlider';
 import { useAnimationSequence } from './components/animation/useAnimationSequence';
 import { useAnimationPlayer } from './components/animation/useAnimationPlayer';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
-import { useAppStore } from './store/useAppStore';
+import { useAppStore, decideSliceDim } from './store/useAppStore';
 import { useIsMobile } from './hooks/useIsMobile';
 import { snapSheet, sheetHeightCss } from './components/mobile/sheetSnap';
 import type { SheetState } from './components/mobile/sheetSnap';
+import { getFrameCache } from './tensogram/frameCache';
+import type { CachedFrame } from './tensogram/frameCache';
+
+async function decodeFrameForCache(msgIdx: number, objIdx: number): Promise<CachedFrame> {
+  const { viewer, fileIndex, selectedLevel } = useAppStore.getState();
+  if (!viewer || !fileIndex) throw new Error('viewer not ready');
+  const coords = await viewer.fetchCoordinates(msgIdx);
+  const varInfo = fileIndex.variables.find((v) => v.msgIndex === msgIdx && v.objIndex === objIdx);
+  const originalShape = varInfo?.shape ?? [];
+  const coordLength = coords?.lat.length ?? 0;
+  const sliceDim = decideSliceDim(originalShape, coordLength);
+  let result;
+  if (sliceDim >= 0) {
+    let sliceIdx = 0;
+    if (selectedLevel != null) {
+      const anemoi = varInfo?.metadata?.anemoi as Record<string, unknown> | undefined;
+      const levels = anemoi?.levels as number[] | undefined;
+      if (levels) {
+        const idx = levels.indexOf(selectedLevel);
+        if (idx >= 0) sliceIdx = idx;
+      }
+    }
+    result = await viewer.decodeFieldSlice(msgIdx, objIdx, sliceDim, sliceIdx);
+  } else {
+    result = await viewer.decodeField(msgIdx, objIdx);
+  }
+  return { data: result.data, coordinates: coords, stats: result.stats, shape: originalShape };
+}
 
 function App() {
   const {
@@ -53,10 +81,17 @@ function App() {
     const frame = frames[index];
     if (frame) {
       selectField(frame.msgIdx, frame.objIdx);
+      getFrameCache()?.prefetch(frames, index, decodeFrameForCache);
     }
   };
 
   const player = useAnimationPlayer(frames.length, handleFrameChange);
+
+  // Flush the frame cache when level changes — cached frames encode the
+  // selected level at decode time, so stale entries must be discarded.
+  useEffect(() => {
+    getFrameCache()?.flush();
+  }, [selectedLevel]);
 
   useKeyboardShortcuts({
     enabled: frames.length > 1,
