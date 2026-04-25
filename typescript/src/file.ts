@@ -1369,7 +1369,7 @@ async function tryForwardStep(
   state: ScanState,
   options: LazyScanOptions,
 ): Promise<boolean> {
-  if (state.next + PREAMBLE_BYTES > fileLen) {
+  if (state.next + MIN_MESSAGE_BYTES > fileLen) {
     terminateForward(state, 'eof', options);
     return true;
   }
