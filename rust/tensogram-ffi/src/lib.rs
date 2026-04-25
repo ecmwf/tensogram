@@ -6247,6 +6247,42 @@ mod tests {
             .unwrap();
         assert!(msg.contains("null"), "expected null-arg msg, got: {msg}");
     }
+
+    // ── tgm_doctor_to_json ──
+
+    #[test]
+    fn ffi_doctor_to_json_returns_parseable_json() {
+        let mut out = super::TgmBytes {
+            data: ptr::null_mut(),
+            len: 0,
+        };
+        let err = super::tgm_doctor_to_json(&mut out);
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!out.data.is_null());
+        assert!(out.len > 0);
+
+        let json_bytes = unsafe { slice::from_raw_parts(out.data, out.len) };
+        let json_str = std::str::from_utf8(json_bytes).expect("doctor JSON is UTF-8");
+        let parsed: serde_json::Value = serde_json::from_str(json_str).expect("doctor JSON parses");
+
+        // Schema parity with Python / WASM / Rust core: same three top-level keys.
+        let obj = parsed.as_object().expect("top-level object");
+        for key in ["build", "features", "self_test"] {
+            assert!(obj.contains_key(key), "missing key '{key}' in: {obj:?}");
+        }
+
+        super::tgm_bytes_free(out);
+    }
+
+    #[test]
+    fn ffi_doctor_to_json_null_out() {
+        let err = super::tgm_doctor_to_json(ptr::null_mut());
+        assert!(matches!(err, super::TgmError::InvalidArg));
+        let msg = unsafe { CStr::from_ptr(super::tgm_last_error()) }
+            .to_str()
+            .unwrap();
+        assert!(msg.contains("null"), "expected null-arg msg, got: {msg}");
+    }
 }
 
 /// Compute a hash of the given data.
@@ -6293,6 +6329,68 @@ pub extern "C" fn tgm_compute_hash(
         len: bytes.len(),
     };
     std::mem::forget(bytes);
+    unsafe {
+        *out = result;
+    }
+    TgmError::Ok
+}
+
+// ---------------------------------------------------------------------------
+// Doctor: environment diagnostics
+// ---------------------------------------------------------------------------
+
+/// Run environment diagnostics and serialise the report as a JSON byte buffer.
+///
+/// The report mirrors `tensogram::doctor::run_diagnostics()` and the
+/// `tensogram doctor` CLI subcommand.  Cross-language parity: the same
+/// JSON shape is produced by the Python `tensogram.doctor()` and the
+/// WASM `doctor()` exports — see `docs/src/cli/doctor.md` for the
+/// schema.  The C FFI build does **not** run the GRIB or NetCDF
+/// converter self-tests (those features are CLI-only), so the
+/// `self_test` array covers only the core encode/decode pipeline plus
+/// the codecs compiled into the dylib.
+///
+/// On success returns `TgmError::Ok` and fills `out` with a JSON
+/// payload (UTF-8, NOT null-terminated).  Use `tgm_bytes_free` to
+/// release it.  Callers can safely treat `out.data` as a `char*` of
+/// length `out.len` and pass it to `json_loads` / `nlohmann::json::parse`
+/// / equivalent.
+///
+/// On serialisation failure returns `TgmError::Encoding` and writes a
+/// human-readable description retrievable via `tgm_last_error()`.
+///
+/// # Example
+///
+/// ```c
+/// TgmBytes report = {0};
+/// if (tgm_doctor_to_json(&report) == TGM_OK) {
+///     fwrite(report.data, 1, report.len, stdout);
+///     tgm_bytes_free(report);
+/// }
+/// ```
+#[unsafe(no_mangle)]
+pub extern "C" fn tgm_doctor_to_json(out: *mut TgmBytes) -> TgmError {
+    if out.is_null() {
+        set_last_error("null out pointer");
+        return TgmError::InvalidArg;
+    }
+
+    let report = tensogram::doctor::run_diagnostics();
+    let json = match serde_json::to_string(&report) {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("failed to serialise doctor report: {e}"));
+            return TgmError::Encoding;
+        }
+    };
+
+    // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
+    let mut bytes = json.into_bytes().into_boxed_slice().into_vec();
+    let result = TgmBytes {
+        data: bytes.as_mut_ptr(),
+        len: bytes.len(),
+    };
+    std::mem::forget(bytes); // ownership transferred to C
     unsafe {
         *out = result;
     }

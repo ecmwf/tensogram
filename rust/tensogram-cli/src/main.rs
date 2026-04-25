@@ -228,6 +228,12 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Report environment diagnostics: build info, compiled-in features, self-test
+    Doctor {
+        /// Machine-parseable JSON output
+        #[arg(long)]
+        json: bool,
+    },
     /// Convert NetCDF files to Tensogram format (requires libnetcdf)
     #[cfg(feature = "netcdf")]
     ConvertNetcdf {
@@ -369,13 +375,15 @@ fn main() {
             threads,
             &mask_cli,
         ),
+        Commands::Doctor { json } => commands::doctor::run(json),
     };
 
     if let Err(e) = result {
-        // ValidationFailed is a clean exit — the validate command already
-        // printed its own FAILED output, so just set exit code 1.
+        // ValidationFailed / DoctorFailed are clean exits — the command
+        // already printed its own output, so just set exit code 1.
         if e.downcast_ref::<commands::validate::ValidationFailed>()
             .is_some()
+            || e.downcast_ref::<commands::doctor::DoctorFailed>().is_some()
         {
             process::exit(1);
         }

@@ -30,6 +30,33 @@
 
 ---
 
+## `tensogram doctor` — environment diagnostics subcommand
+
+A top-level CLI subcommand that reports compiled-in features, backend library
+versions, and runs a self-test of the encode/decode pipeline plus the GRIB and
+NetCDF converters.  Designed so support tickets can include a single
+`tensogram doctor --json` dump that captures the full environment.
+
+| Component | What was built |
+|-----------|---------------|
+| `tensogram-encodings/src/version.rs` | Feature-gated `BackendVersion` lookups for every codec: runtime FFI calls for C libraries (`ZSTD_versionString`, `blosc2_get_version_string`, `zfp_version_string`), a tiny C shim for libaec (`AEC_VERSION_STR`), and compile-time `Cargo.lock` snapshots via the `built` crate for pure-Rust deps |
+| `tensogram-encodings/build.rs` | Compiles the libaec version shim via `cc::Build` and invokes `built::write_built_file()` |
+| `tensogram-encodings/build_shim/libaec_version.c` | Exposes `AEC_VERSION_STR` as `tensogram_libaec_version()` |
+| `tensogram/build.rs` | Invokes `built::write_built_file()` for tensogram-core deps |
+| `tensogram/src/doctor/version.rs` | Feature-gated lookups for `remote` (object_store), `mmap` (memmap2), `async` (tokio), `grib` (`codes_get_api_version`), `netcdf` (`nc_inq_libvers`) |
+| `tensogram/src/doctor/mod.rs` | Public data model (`DoctorReport`, `BuildInfo`, `FeatureStatus`, `FeatureState`, `SelfTestResult`, `SelfTestOutcome`), `run_diagnostics()`, `run_self_test()` with core and per-codec rows |
+| `tensogram-cli/src/commands/doctor.rs` | `TempFileGuard` drop-guard, embedded fixtures via `include_bytes!`, converter self-tests, human and JSON renderers, `DoctorFailed` sentinel |
+| `tensogram-cli/src/main.rs` | `Doctor` variant in `Commands`, dispatch arm, `DoctorFailed` → exit code 1 |
+| `tensogram-cli/tests/doctor_cli.rs` | Integration tests: exit 0 + `Status: HEALTHY`, `--json` produces valid JSON with expected keys |
+| `share/tensogram/doctor/` | `sanity.grib2` (4×4 GRIB2 2t), `sanity-classic.nc` (2×2 f32 NetCDF-3), `sanity-hdf5.nc` (2×2 f32 NetCDF-4), `regenerate.py`, `README.md` |
+| `docs/src/cli/doctor.md` | Usage, flag list, output sections, JSON schema, exit codes, library API, examples |
+
+Key design choices: no external probes (compiled-in features only), `Skipped`
+rows for absent features (never `Failed`), exit code 1 only on actual test
+failures, fixtures embedded in the binary via `include_bytes!`.
+
+---
+
 ## Python async bindings
 
 `AsyncTensogramFile` exposes all read/decode operations as `asyncio`

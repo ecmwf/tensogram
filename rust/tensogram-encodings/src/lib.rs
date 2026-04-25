@@ -13,6 +13,7 @@ pub mod libaec;
 pub mod pipeline;
 pub mod shuffle;
 pub mod simple_packing;
+pub mod version;
 #[cfg(feature = "zfp")]
 pub mod zfp_ffi;
 

@@ -1352,6 +1352,52 @@ fn py_compute_hash(data: PyBackedBytes, algo: &str) -> PyResult<String> {
     Ok(tensogram_lib::compute_hash(&data, algorithm))
 }
 
+/// Run environment diagnostics and return the report as a Python dict.
+///
+/// Mirrors the Rust :func:`tensogram::doctor::run_diagnostics`, the
+/// WASM ``doctor()`` export, and the ``tensogram doctor`` CLI
+/// subcommand.  The Python build does **not** run the GRIB or NetCDF
+/// converter self-tests — those features are CLI-only — so the
+/// ``self_test`` array covers only the core encode/decode pipeline
+/// plus the codecs that were compiled into this Python wheel.
+///
+/// Returns:
+///     A ``dict`` with three top-level keys:
+///       - ``build`` (dict): version, wire-format version, target
+///         triple, and build profile.
+///       - ``features`` (list[dict]): one entry per known feature.
+///         ``state == "on"`` rows additionally carry ``backend``,
+///         ``linkage``, and (where available) ``version``.
+///       - ``self_test`` (list[dict]): one entry per self-test step
+///         with ``label`` and ``outcome`` (``"ok"`` / ``"failed"``
+///         / ``"skipped"``).
+///
+///     The shape matches the JSON schema documented in
+///     ``docs/src/cli/doctor.md``.
+///
+/// Example::
+///
+///     >>> import tensogram
+///     >>> report = tensogram.doctor()
+///     >>> report["build"]["version"]
+///     '0.19.0'
+///     >>> [f["name"] for f in report["features"] if f["state"] == "on"][:3]
+///     ['szip', 'zstd', 'lz4']
+#[pyfunction]
+#[pyo3(name = "doctor")]
+fn py_doctor(py: Python<'_>) -> PyResult<PyObject> {
+    let report = tensogram_lib::doctor::run_diagnostics();
+    // Round-trip through JSON: serde already produces the canonical
+    // shape we promise across all language bindings, and Python's
+    // built-in `json.loads` returns the matching native types
+    // (`dict`/`list`/`str`/`int`) without pulling in pythonize.
+    let json = serde_json::to_string(&report).map_err(|e| {
+        PyValueError::new_err(format!("failed to serialise doctor report: {e}"))
+    })?;
+    let json_module = py.import("json")?;
+    json_module.call_method1("loads", (json,)).map(|v| v.unbind())
+}
+
 /// Compute simple-packing parameters for a float64 array.
 ///
 /// Args:
@@ -2760,6 +2806,7 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_convert_grib, m)?)?;
     m.add_function(wrap_pyfunction!(py_convert_grib_buffer, m)?)?;
     m.add_function(wrap_pyfunction!(py_convert_netcdf, m)?)?;
+    m.add_function(wrap_pyfunction!(py_doctor, m)?)?;
     m.add_class::<PyMetadata>()?;
     m.add_class::<PyDataObjectDescriptor>()?;
     m.add_class::<PyTensogramFile>()?;
