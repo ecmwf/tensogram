@@ -182,6 +182,184 @@ struct MessageLayout {
     global_metadata: Option<GlobalMetadata>,
 }
 
+// ── Backward hop primitives ──────────────────────────────────────────────────
+
+/// Outcome of parsing a backward-fetch round before backward-preamble
+/// validation (Round 2).  Pure — does not touch state.
+#[derive(Debug)]
+enum BackwardOutcome {
+    /// Postamble parsed cleanly.  `msg_start` is the candidate
+    /// message-start offset; the caller still has to validate the
+    /// preamble at that offset (Round 2).
+    NeedPreambleValidation { msg_start: u64, length: u64 },
+    /// Format error — the backward walker yields and any provisional
+    /// suffix layouts are discarded.  The string identifies which
+    /// taxonomy row triggered.
+    Format(&'static str),
+    /// Streaming non-seekable producer (`postamble.total_length == 0`).
+    /// Backward yields; forward continues.
+    Streaming,
+}
+
+/// Parse a backward postamble fetch and decide what (if anything) to
+/// validate next.  Pure function — independent of `RemoteState` and
+/// `RemoteBackend`.
+///
+/// `pa_bytes` is expected to be the 24-byte postamble at
+/// `[snap.prev - POSTAMBLE_SIZE, snap.prev)`.  `max_message_size`
+/// caps **backward** postamble jumps only; forward scanning is bounded
+/// by `file_size` (or the bidirectional dispatcher's `prev_scan_offset`
+/// hand-off) and never consults this cap.
+fn parse_backward_postamble(
+    pa_bytes: &[u8],
+    snap: &ScanSnapshot,
+    max_message_size: u64,
+) -> BackwardOutcome {
+    let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+
+    if pa_bytes.len() < POSTAMBLE_SIZE {
+        return BackwardOutcome::Format("short-fetch-bwd");
+    }
+    if &pa_bytes[POSTAMBLE_SIZE - crate::wire::END_MAGIC.len()..] != crate::wire::END_MAGIC {
+        return BackwardOutcome::Format("bad-end-magic-bwd");
+    }
+    let postamble = match Postamble::read_from(pa_bytes) {
+        Ok(p) => p,
+        Err(_) => return BackwardOutcome::Format("postamble-parse-error"),
+    };
+    let total = postamble.total_length;
+    if total == 0 {
+        return BackwardOutcome::Streaming;
+    }
+    if total < min_message_size {
+        return BackwardOutcome::Format("length-below-minimum-bwd");
+    }
+    if total > max_message_size {
+        return BackwardOutcome::Format("length-exceeds-max");
+    }
+    let msg_start = match snap.prev.checked_sub(total) {
+        Some(s) => s,
+        None => return BackwardOutcome::Format("backward-arith-underflow"),
+    };
+    if msg_start < snap.next {
+        return BackwardOutcome::Format("backward-overlaps-forward");
+    }
+    BackwardOutcome::NeedPreambleValidation {
+        msg_start,
+        length: total,
+    }
+}
+
+/// Outcome of validating Round 2 of a bidirectional round (the
+/// backward preamble fetched at the candidate `msg_start`).
+#[derive(Debug)]
+enum BackwardCommit {
+    Format(&'static str),
+    Layout(MessageLayout),
+}
+
+/// Validate the backward preamble (Round 2) and produce a
+/// commit-or-yield decision.  `msg_start` and `length` are the
+/// candidate values from the matching [`BackwardOutcome`].
+fn validate_backward_preamble(
+    preamble_bytes: &[u8],
+    msg_start: u64,
+    length: u64,
+) -> BackwardCommit {
+    if preamble_bytes.len() < PREAMBLE_SIZE {
+        return BackwardCommit::Format("short-fetch-bwd");
+    }
+    if &preamble_bytes[..MAGIC.len()] != MAGIC {
+        return BackwardCommit::Format("bad-magic-bwd");
+    }
+    let preamble = match Preamble::read_from(preamble_bytes) {
+        Ok(p) => p,
+        Err(_) => return BackwardCommit::Format("preamble-parse-error-bwd"),
+    };
+    if preamble.total_length == 0 {
+        return BackwardCommit::Format("streaming-preamble-non-tail");
+    }
+    if preamble.total_length != length {
+        return BackwardCommit::Format("preamble-postamble-length-mismatch");
+    }
+    BackwardCommit::Layout(MessageLayout {
+        offset: msg_start,
+        length,
+        preamble,
+        index: None,
+        global_metadata: None,
+    })
+}
+
+/// Next step the eager-discovery accessors should take.  Computed
+/// while holding the lock, then dispatched without it.
+#[cfg(feature = "async")]
+#[derive(Debug)]
+enum EagerAction {
+    /// Forward-only mode: combined chunk fetch (preamble + frames in
+    /// one round trip) for the next message.
+    ScanForwardEager,
+    /// Bidirectional mode: paired preamble fetch.  Per-message
+    /// frame discovery happens later via [`RemoteBackend::ensure_layout_async`].
+    ScanBidir,
+    /// Layout exists but metadata/index frames not yet fetched.
+    Discover,
+}
+
+/// Outcome of parsing a forward preamble fetch.  Pure — does not
+/// touch state.  Mirrors the format-error taxonomy of
+/// [`scan_fwd_step_locked`] / [`scan_fwd_step_async`] so the
+/// bidirectional round can apply the commit decision before
+/// reacquiring the lock.
+#[derive(Debug)]
+enum ForwardOutcome {
+    Hit {
+        offset: u64,
+        length: u64,
+        preamble: Preamble,
+        msg_end: u64,
+    },
+    /// Streaming preamble (`total_length == 0`).  Caller decides
+    /// whether to record a streaming-tail layout (forward-only) or
+    /// disable backward (bidirectional, see commit decision table).
+    Streaming(u64),
+    Terminate(&'static str),
+}
+
+fn parse_forward_preamble(
+    preamble_bytes: &[u8],
+    pos: u64,
+    file_size: u64,
+    bound: u64,
+) -> ForwardOutcome {
+    let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+
+    if preamble_bytes.len() < PREAMBLE_SIZE {
+        return ForwardOutcome::Terminate("short-fetch-fwd");
+    }
+    if &preamble_bytes[..MAGIC.len()] != MAGIC {
+        return ForwardOutcome::Terminate("bad-magic-fwd");
+    }
+    let preamble = match Preamble::read_from(preamble_bytes) {
+        Ok(p) => p,
+        Err(_) => return ForwardOutcome::Terminate("preamble-parse-error-fwd"),
+    };
+    let msg_len = preamble.total_length;
+    if msg_len == 0 {
+        let remaining = file_size - pos;
+        return ForwardOutcome::Streaming(remaining);
+    }
+    match pos.checked_add(msg_len) {
+        Some(end) if msg_len >= min_message_size && end <= bound => ForwardOutcome::Hit {
+            offset: pos,
+            length: msg_len,
+            preamble,
+            msg_end: end,
+        },
+        _ => ForwardOutcome::Terminate("length-out-of-range-fwd"),
+    }
+}
+
 // ── Remote backend ───────────────────────────────────────────────────────────
 
 pub(crate) struct RemoteBackend {
@@ -235,6 +413,17 @@ struct RemoteState {
     scan_epoch: u64,
 }
 
+/// Snapshot of the scan cursors taken before a network round-trip.
+/// Validated for equality on lock reacquire — any mismatch means
+/// another caller mutated state in the meantime, and the in-flight
+/// work must be discarded.
+#[derive(Debug, Clone, Copy)]
+struct ScanSnapshot {
+    next: u64,
+    prev: u64,
+    epoch: u64,
+}
+
 impl RemoteState {
     /// Replaces the old `scan_complete: bool` field.  When forward-only
     /// is active (`bwd_active = false` and `suffix_rev.is_empty()`)
@@ -242,6 +431,11 @@ impl RemoteState {
     /// previous semantics.
     fn scan_complete(&self) -> bool {
         self.gap_closed || (self.fwd_terminated && self.suffix_rev.is_empty())
+    }
+
+    /// `true` once forward and backward cursors have met or crossed.
+    fn walkers_overlap(&self) -> bool {
+        self.next_scan_offset >= self.prev_scan_offset
     }
 
     /// Append a forward-discovered layout, advance the cursor, bump
@@ -256,6 +450,36 @@ impl RemoteState {
         self.layouts.push(layout);
         self.next_scan_offset = end;
         self.scan_epoch = self.scan_epoch.wrapping_add(1);
+    }
+
+    /// Append a backward-discovered layout, retreat the cursor, bump
+    /// the epoch.  Pre: `bwd_active`, layout extends from
+    /// `prev_scan_offset` exactly back to `layout.offset`.
+    fn record_backward_hop(&mut self, layout: MessageLayout) {
+        debug_assert!(self.bwd_active);
+        debug_assert!(layout.offset >= self.next_scan_offset);
+        debug_assert_eq!(layout.offset + layout.length, self.prev_scan_offset);
+        self.prev_scan_offset = layout.offset;
+        self.suffix_rev.push(layout);
+        self.scan_epoch = self.scan_epoch.wrapping_add(1);
+    }
+
+    /// Snapshot for the lock-around-await protocol.
+    fn snapshot(&self) -> ScanSnapshot {
+        ScanSnapshot {
+            next: self.next_scan_offset,
+            prev: self.prev_scan_offset,
+            epoch: self.scan_epoch,
+        }
+    }
+
+    /// `true` iff the state still matches the snapshot taken before
+    /// a network round-trip.  Used at commit time to detect any
+    /// concurrent mutation.
+    fn matches(&self, snap: &ScanSnapshot) -> bool {
+        self.next_scan_offset == snap.next
+            && self.prev_scan_offset == snap.prev
+            && self.scan_epoch == snap.epoch
     }
 
     /// Disable the backward walker and discard provisional layouts.
@@ -292,6 +516,25 @@ impl RemoteState {
             );
         }
         self.disable_backward(reason);
+    }
+
+    /// Merge `suffix_rev` into `layouts` (reversed) and mark the scan
+    /// complete.  Pre: walkers met cleanly (`next_scan_offset ==
+    /// prev_scan_offset`); `bwd_active` was true before the call.
+    fn close_gap(&mut self) {
+        debug_assert!(self.bwd_active);
+        debug_assert_eq!(self.next_scan_offset, self.prev_scan_offset);
+        let mut tail = std::mem::take(&mut self.suffix_rev);
+        tail.reverse();
+        self.layouts.extend(tail);
+        self.gap_closed = true;
+        self.bwd_active = false;
+        self.scan_epoch = self.scan_epoch.wrapping_add(1);
+        tracing::debug!(
+            target: "tensogram::remote_scan",
+            messages = self.layouts.len(),
+            "gap closed",
+        );
     }
 }
 
@@ -494,9 +737,172 @@ impl RemoteBackend {
         Ok(())
     }
 
+    /// One step of progress in whichever scan mode is active.  When
+    /// `bwd_active`, dispatches to the bidirectional paired round;
+    /// otherwise falls back to bounded forward-only.  This is the
+    /// single funnel through which every read accessor scans, so
+    /// adding new state-machine steps doesn't require touching the
+    /// accessors a second time.
+    fn scan_step_locked(&self, state: &mut RemoteState) -> Result<()> {
+        if state.scan_complete() {
+            return Ok(());
+        }
+        if state.bwd_active && !state.fwd_terminated {
+            self.scan_bidir_round_locked(state)
+        } else {
+            let bound = self.forward_bound(state);
+            self.scan_fwd_step_locked(state, bound)
+        }
+    }
+
+    /// Upper bound for the next forward hop.  In bidirectional mode,
+    /// caps at `prev_scan_offset` so the forward walker cannot
+    /// overrun into the suffix already claimed by backward.  Once
+    /// backward has yielded and `suffix_rev` is empty, the bound
+    /// reverts to `file_size`.
+    fn forward_bound(&self, state: &RemoteState) -> u64 {
+        if state.suffix_rev.is_empty() {
+            self.file_size
+        } else {
+            state.prev_scan_offset
+        }
+    }
+
+    /// One bidirectional scan round: paired forward preamble + backward
+    /// postamble fetch, followed by a backward-preamble validation
+    /// fetch when the postamble parses cleanly.  Commits the parsed
+    /// outcomes atomically through the [`RemoteState`] decision
+    /// table.
+    ///
+    /// On any *transport* error (timeout, 503, abort), state is left
+    /// unchanged and the error propagates so the caller can retry.
+    /// *Format* errors are absorbed locally — backward yields,
+    /// forward keeps going.
+    fn scan_bidir_round_locked(&self, state: &mut RemoteState) -> Result<()> {
+        let snap = state.snapshot();
+        let bound = state.prev_scan_offset;
+        let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+
+        // Walkers about to overlap?  One bounded forward step
+        // closes the gap; backward never gets called at this point.
+        if snap.prev < snap.next + 2 * min_message_size {
+            return self.scan_fwd_step_locked(state, bound);
+        }
+
+        let fwd_r = snap.next..snap.next + PREAMBLE_SIZE as u64;
+        let bwd_r = snap.prev - POSTAMBLE_SIZE as u64..snap.prev;
+
+        let bytes = block_on_shared({
+            let store = self.store.clone();
+            let path = self.path.clone();
+            let ranges = vec![fwd_r.clone(), bwd_r.clone()];
+            async move { store.get_ranges(&path, &ranges).await }
+        })?;
+        if bytes.len() != 2 {
+            return Err(TensogramError::Remote(format!(
+                "get_ranges returned {} buffers, expected 2",
+                bytes.len()
+            )));
+        }
+
+        let bwd_outcome =
+            parse_backward_postamble(&bytes[1], &snap, self.scan_opts.max_message_size);
+
+        let bwd_round2 = match &bwd_outcome {
+            BackwardOutcome::NeedPreambleValidation { msg_start, .. } => {
+                Some(self.get_range(*msg_start..*msg_start + PREAMBLE_SIZE as u64)?)
+            }
+            _ => None,
+        };
+
+        if !state.matches(&snap) {
+            return Ok(());
+        }
+
+        let fwd_kind = parse_forward_preamble(&bytes[0], snap.next, self.file_size, bound);
+        self.apply_round_outcomes(state, fwd_kind, bwd_outcome, bwd_round2.as_deref());
+        Ok(())
+    }
+
+    /// Apply the (forward, backward, optional Round-2) outcomes of a
+    /// single bidirectional round to the locked state.  Backward is
+    /// processed first so a format/streaming yield can fire before
+    /// the forward commit; this keeps the "forward terminate clears
+    /// suffix" path simple.
+    fn apply_round_outcomes(
+        &self,
+        state: &mut RemoteState,
+        fwd: ForwardOutcome,
+        bwd: BackwardOutcome,
+        bwd_round2: Option<&[u8]>,
+    ) {
+        // Apply backward first so format/streaming yields can fire
+        // before any forward commit, keeping state on the "single
+        // forward terminate clears suffix" path.
+        match bwd {
+            BackwardOutcome::Format(reason) => state.disable_backward(reason),
+            BackwardOutcome::Streaming => state.disable_backward("streaming-zero-bwd"),
+            BackwardOutcome::NeedPreambleValidation { msg_start, length } => {
+                let validation = bwd_round2
+                    .map(|bytes| validate_backward_preamble(bytes, msg_start, length))
+                    .unwrap_or(BackwardCommit::Format("missing-round2-buffer"));
+                match validation {
+                    BackwardCommit::Format(reason) => state.disable_backward(reason),
+                    BackwardCommit::Layout(layout) => {
+                        if !state.bwd_active {
+                            // Concurrent caller already disabled — drop the layout.
+                        } else if let ForwardOutcome::Hit { msg_end, .. } = fwd {
+                            if msg_end > layout.offset {
+                                state.disable_backward("backward-overlaps-forward");
+                            } else {
+                                state.record_backward_hop(layout);
+                            }
+                        } else {
+                            state.record_backward_hop(layout);
+                        }
+                    }
+                }
+            }
+        }
+
+        match fwd {
+            ForwardOutcome::Hit {
+                offset,
+                length,
+                preamble,
+                msg_end,
+            } => {
+                debug_assert_eq!(offset, state.next_scan_offset);
+                debug_assert_eq!(msg_end, offset + length);
+                state.record_forward_hop(MessageLayout {
+                    offset,
+                    length,
+                    preamble,
+                    index: None,
+                    global_metadata: None,
+                });
+            }
+            ForwardOutcome::Streaming(_remaining) => {
+                // Streaming preamble in bidirectional mode is a
+                // contradiction: backward has discovered tail
+                // content, so the streaming "tail" can't actually
+                // extend to file end.  Yield backward and let
+                // forward-only logic re-handle this position on the
+                // next step (which will set fwd_terminated on the
+                // streaming branch).
+                state.disable_backward("streaming-fwd-non-tail");
+            }
+            ForwardOutcome::Terminate(reason) => state.terminate_forward(reason),
+        }
+
+        if state.bwd_active && state.walkers_overlap() {
+            state.close_gap();
+        }
+    }
+
     fn ensure_message_locked(&self, state: &mut RemoteState, msg_idx: usize) -> Result<()> {
         while msg_idx >= state.layouts.len() && !state.scan_complete() {
-            self.scan_next_locked(state)?;
+            self.scan_step_locked(state)?;
         }
         if msg_idx >= state.layouts.len() {
             return Err(TensogramError::Framing(format!(
@@ -510,7 +916,7 @@ impl RemoteBackend {
 
     fn scan_all_locked(&self, state: &mut RemoteState) -> Result<()> {
         while !state.scan_complete() {
-            self.scan_next_locked(state)?;
+            self.scan_step_locked(state)?;
         }
         Ok(())
     }
@@ -661,7 +1067,11 @@ impl RemoteBackend {
 
     fn ensure_layout_eager_locked(&self, state: &mut RemoteState, msg_idx: usize) -> Result<()> {
         while msg_idx >= state.layouts.len() && !state.scan_complete() {
-            self.scan_and_discover_next_locked(state)?;
+            if state.bwd_active && !state.fwd_terminated {
+                self.scan_bidir_round_locked(state)?;
+            } else {
+                self.scan_and_discover_next_locked(state)?;
+            }
         }
         if msg_idx >= state.layouts.len() {
             return Err(TensogramError::Framing(format!(
@@ -1473,6 +1883,78 @@ impl RemoteBackend {
         Ok(())
     }
 
+    /// Async sibling of [`Self::scan_step_locked`]; see that method's
+    /// docstring.  Returns immediately when the scan is already
+    /// complete; otherwise dispatches to either the bidirectional
+    /// paired round or a single bounded forward hop.  `None`
+    /// signals bidirectional, `Some(bound)` signals forward-only.
+    async fn scan_step_async(&self) -> Result<()> {
+        let fwd_bound: Option<u64> = {
+            let state = self.lock_state()?;
+            if state.scan_complete() {
+                return Ok(());
+            }
+            if state.bwd_active && !state.fwd_terminated {
+                None
+            } else {
+                Some(self.forward_bound(&state))
+            }
+        };
+        match fwd_bound {
+            Some(bound) => self.scan_fwd_step_async(bound).await,
+            None => self.scan_bidir_round_async().await,
+        }
+    }
+
+    /// Async sibling of [`Self::scan_bidir_round_locked`]; see that
+    /// method's docstring.  Lock-around-await: snapshot before the
+    /// paired fetch, validate the same snapshot on reacquire, then
+    /// commit through [`Self::apply_round_outcomes`].
+    async fn scan_bidir_round_async(&self) -> Result<()> {
+        let snap = {
+            let state = self.lock_state()?;
+            state.snapshot()
+        };
+        let bound = snap.prev;
+        let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+
+        if snap.prev < snap.next + 2 * min_message_size {
+            return self.scan_fwd_step_async(bound).await;
+        }
+
+        let fwd_r = snap.next..snap.next + PREAMBLE_SIZE as u64;
+        let bwd_r = snap.prev - POSTAMBLE_SIZE as u64..snap.prev;
+        let bytes = self
+            .store
+            .get_ranges(&self.path, &[fwd_r.clone(), bwd_r.clone()])
+            .await
+            .map_err(|e| TensogramError::Remote(e.to_string()))?;
+        if bytes.len() != 2 {
+            return Err(TensogramError::Remote(format!(
+                "get_ranges returned {} buffers, expected 2",
+                bytes.len()
+            )));
+        }
+
+        let bwd_outcome =
+            parse_backward_postamble(&bytes[1], &snap, self.scan_opts.max_message_size);
+        let bwd_round2 = match &bwd_outcome {
+            BackwardOutcome::NeedPreambleValidation { msg_start, .. } => Some(
+                self.get_range_async(*msg_start..*msg_start + PREAMBLE_SIZE as u64)
+                    .await?,
+            ),
+            _ => None,
+        };
+
+        let mut state = self.lock_state()?;
+        if !state.matches(&snap) {
+            return Ok(());
+        }
+        let fwd_outcome = parse_forward_preamble(&bytes[0], snap.next, self.file_size, bound);
+        self.apply_round_outcomes(&mut state, fwd_outcome, bwd_outcome, bwd_round2.as_deref());
+        Ok(())
+    }
+
     async fn ensure_message_async(&self, msg_idx: usize) -> Result<()> {
         loop {
             let ready = {
@@ -1491,7 +1973,7 @@ impl RemoteBackend {
             };
 
             if !ready {
-                self.scan_next_async().await?;
+                self.scan_step_async().await?;
             }
         }
     }
@@ -1695,30 +2177,37 @@ impl RemoteBackend {
 
     async fn ensure_layout_eager_async(&self, msg_idx: usize) -> Result<()> {
         loop {
-            let should_scan = {
+            let action = {
                 let state = self.lock_state()?;
                 if let Some(layout) = state.layouts.get(msg_idx) {
                     if layout.global_metadata.is_some() && layout.index.is_some() {
                         return Ok(());
                     }
-                    false
+                    EagerAction::Discover
                 } else if state.scan_complete() {
                     return Err(TensogramError::Framing(format!(
                         "message index {} out of range (count={})",
                         msg_idx,
                         state.layouts.len()
                     )));
+                } else if state.bwd_active && !state.fwd_terminated {
+                    EagerAction::ScanBidir
                 } else {
-                    true
+                    EagerAction::ScanForwardEager
                 }
             };
 
-            if should_scan {
-                self.scan_and_discover_next_async().await?;
-                continue;
+            match action {
+                EagerAction::ScanBidir => {
+                    self.scan_bidir_round_async().await?;
+                }
+                EagerAction::ScanForwardEager => {
+                    self.scan_and_discover_next_async().await?;
+                }
+                EagerAction::Discover => {
+                    return self.ensure_layout_async(msg_idx).await;
+                }
             }
-
-            return self.ensure_layout_async(msg_idx).await;
         }
     }
 
@@ -1832,7 +2321,7 @@ impl RemoteBackend {
             if done {
                 break;
             }
-            self.scan_and_discover_next_async().await?;
+            self.scan_step_async().await?;
         }
         let state = self.lock_state()?;
         Ok(state.layouts.len())
@@ -2042,14 +2531,22 @@ impl RemoteBackend {
         }
         let max_idx = msg_indices.iter().copied().max().unwrap_or(0);
         loop {
-            let (need_scan, scan_complete) = {
+            let action = {
                 let state = self.lock_state()?;
-                (state.layouts.len() <= max_idx, state.scan_complete())
+                if state.layouts.len() > max_idx || state.scan_complete() {
+                    break;
+                }
+                if state.bwd_active && !state.fwd_terminated {
+                    EagerAction::ScanBidir
+                } else {
+                    EagerAction::ScanForwardEager
+                }
             };
-            if !need_scan || scan_complete {
-                break;
+            match action {
+                EagerAction::ScanBidir => self.scan_bidir_round_async().await?,
+                EagerAction::ScanForwardEager => self.scan_and_discover_next_async().await?,
+                EagerAction::Discover => unreachable!("Discover not produced for batch scan loop"),
             }
-            self.scan_and_discover_next_async().await?;
         }
 
         {
