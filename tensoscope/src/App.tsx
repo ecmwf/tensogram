@@ -14,6 +14,9 @@ import { useAnimationSequence } from './components/animation/useAnimationSequenc
 import { useAnimationPlayer } from './components/animation/useAnimationPlayer';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useAppStore, decideSliceDim } from './store/useAppStore';
+import type { ClickPoint } from './components/map/usePointInspection';
+import { usePointInspection } from './components/map/usePointInspection';
+import { PointInspector } from './components/map/PointInspector';
 import { useIsMobile } from './hooks/useIsMobile';
 import { snapSheet, sheetHeightCss } from './components/mobile/sheetSnap';
 import type { SheetState } from './components/mobile/sheetSnap';
@@ -48,6 +51,7 @@ async function decodeFrameForCache(msgIdx: number, objIdx: number): Promise<Cach
 
 function App() {
   const {
+    viewer,
     fileIndex,
     selectedObject,
     selectedLevel,
@@ -208,6 +212,29 @@ function App() {
         : String(marsParamRaw);
   const units = (selectedVar?.metadata?.units as string) ?? marsParam;
 
+  const [clickPoint, setClickPoint] = useState<ClickPoint | null>(null);
+
+  const paramName = selectedVar?.name ?? marsParam ?? '';
+
+  const levelLabel = (() => {
+    if (selectedLevel == null) return '';
+    const mars = selectedVar?.metadata?.mars as Record<string, unknown> | undefined;
+    const levtype = mars?.levtype as string | undefined;
+    if (levtype === 'pl') return `${selectedLevel} hPa`;
+    if (levtype === 'ml') return `L${selectedLevel}`;
+    return `${selectedLevel}`;
+  })();
+
+  const inspectionResult = usePointInspection({
+    point: clickPoint,
+    coordinates,
+    fieldData,
+    viewer,
+    fileIndex,
+    frames,
+    selectedLevel,
+  });
+
   return (
     <div
       className="app-layout"
@@ -232,7 +259,7 @@ function App() {
         <MetadataPanel />
       </aside>
       <div className="sidebar-resize-handle" onMouseDown={onDragStart} />
-      <main className="map-area">
+      <main className="map-area" style={{ position: 'relative' }}>
         {loading && (
           <div className="map-loading-overlay">
             <div className="map-loading-spinner" />
@@ -264,6 +291,7 @@ function App() {
           nativeUnits={colorScale.nativeUnits}
           displayUnit={colorScale.displayUnit}
           onDisplayUnitChange={(u) => setColorScale({ displayUnit: u })}
+          onMapClick={setClickPoint}
         />
         {frames.length > 1 && (
           <div className="animation-bar">
@@ -284,6 +312,19 @@ function App() {
               onSpeedChange={player.setSpeed}
             />
           </div>
+        )}
+        {clickPoint !== null && inspectionResult !== null && (
+          <PointInspector
+            result={inspectionResult}
+            screenX={clickPoint.screenX}
+            screenY={clickPoint.screenY}
+            paramName={paramName}
+            levelLabel={levelLabel}
+            nativeUnits={colorScale.nativeUnits}
+            displayUnit={colorScale.displayUnit}
+            onDisplayUnitChange={(u) => setColorScale({ displayUnit: u })}
+            onClose={() => setClickPoint(null)}
+          />
         )}
       </main>
     </div>
