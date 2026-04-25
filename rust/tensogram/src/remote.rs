@@ -3364,4 +3364,121 @@ mod bidir_http_tests {
         );
         assert!(server.range_request_count() > 0);
     }
+
+    /// `max_message_size` cap below a real message length: backward
+    /// rejects every postamble with `length-exceeds-max`; forward
+    /// completes the scan unchanged.  Validates that the bidirectional
+    /// corruption guard fires on plausible-looking but capped lengths.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bidir_max_message_size_too_small_yields_backward() {
+        let buf = concat_messages(vec![
+            make_message(vec![4], 10),
+            make_message(vec![8], 20),
+            make_message(vec![16], 30),
+        ]);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions {
+                bidirectional: true,
+                max_message_size: (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64,
+            },
+        )
+        .expect("open");
+        let count = backend.message_count().expect("count");
+        assert_eq!(
+            count, 3,
+            "max-size cap forces backward yield; forward must still find all 3",
+        );
+    }
+
+    /// Concurrent readers on a 10-message file with bidirectional
+    /// enabled.  Each task fetches a different message; the mutex +
+    /// snapshot-and-validate-on-reacquire protocol must serialise all
+    /// state mutations so every task sees a consistent view.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn bidir_concurrent_readers_consistent() {
+        let parts: Vec<Vec<u8>> = (0..10)
+            .map(|i| make_message(vec![4 + i as u64], i as u8))
+            .collect();
+        let buf = concat_messages(parts);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = Arc::new(
+            RemoteBackend::open_with_scan_opts(
+                &server.url(),
+                &empty_storage(),
+                RemoteScanOptions {
+                    bidirectional: true,
+                    max_message_size: 4 * 1024 * 1024 * 1024,
+                },
+            )
+            .expect("open"),
+        );
+        let mut handles = Vec::new();
+        for idx in 0..10 {
+            let backend = backend.clone();
+            handles.push(tokio::spawn(async move {
+                backend.read_message_async(idx).await
+            }));
+        }
+        for h in handles {
+            h.await.expect("join").expect("read_message_async");
+        }
+        let final_count = backend.message_count_async().await.expect("count");
+        assert_eq!(
+            final_count, 10,
+            "concurrent readers must converge to 10 layouts"
+        );
+    }
+
+    /// `[streaming, normal]` synthetic file: forward sees a streaming
+    /// preamble at offset 0 and reads END_MAGIC at file_size-8 (which
+    /// happens to be the END_MAGIC of the trailing normal message),
+    /// matching today's forward-only behaviour.  Bidirectional must
+    /// not "recover" the trailing normal message via backward
+    /// discovery — that would expose data forward-only scanning can
+    /// never reach, violating the "bidirectional is never recovery"
+    /// invariant.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bidir_streaming_first_then_normal_tail_no_recovery() {
+        let mut streaming = make_message(vec![4], 1);
+        let preamble_total_off = 16;
+        for byte in &mut streaming[preamble_total_off..preamble_total_off + 8] {
+            *byte = 0;
+        }
+        let pa_start = streaming.len() - POSTAMBLE_SIZE;
+        let total_off = pa_start + 8;
+        for byte in &mut streaming[total_off..total_off + 8] {
+            *byte = 0;
+        }
+        let normal = make_message(vec![8], 2);
+        let buf = concat_messages(vec![streaming, normal]);
+
+        let server = MockObjectStore::start(buf).await.expect("start");
+
+        let fwd_backend = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions::default(),
+        )
+        .expect("open forward-only");
+        let fwd_count = fwd_backend.message_count().expect("count");
+
+        let bidir_backend = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions {
+                bidirectional: true,
+                max_message_size: 4 * 1024 * 1024 * 1024,
+            },
+        )
+        .expect("open bidirectional");
+        let bidir_count = bidir_backend.message_count().expect("count");
+
+        assert_eq!(
+            bidir_count, fwd_count,
+            "streaming-first abuse case: bidirectional must match forward-only ({fwd_count} layouts)",
+        );
+    }
 }
