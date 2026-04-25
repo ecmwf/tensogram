@@ -11,28 +11,35 @@ import {
   Credit,
   Entity,
   ConstantProperty,
+  ScreenSpaceEventHandler,
+  ScreenSpaceEventType,
+  Cartographic,
 } from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import './CesiumView.css';
 import type { FieldImage, ViewBounds } from './FieldOverlay';
+import type { ClickPoint } from './usePointInspection';
 
 interface CesiumViewProps {
   fieldImage: FieldImage | null;
   initialCenter: { lat: number; lon: number };
   onUnmount: (lat: number, lon: number) => void;
   onViewChange?: (bounds: ViewBounds | null, width: number, height: number) => void;
+  onMapClick?: (point: ClickPoint) => void;
 }
 
-export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange }: CesiumViewProps) {
+export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange, onMapClick }: CesiumViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Viewer | undefined>(undefined);
   const overlayRef = useRef<Entity | undefined>(undefined);
   const onUnmountRef = useRef(onUnmount);
   const onViewChangeRef = useRef(onViewChange);
   const initialCenterRef = useRef(initialCenter);
+  const onMapClickRef = useRef(onMapClick);
 
   useEffect(() => { onUnmountRef.current = onUnmount; }, [onUnmount]);
   useEffect(() => { onViewChangeRef.current = onViewChange; }, [onViewChange]);
+  useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
 
   // Mount Cesium viewer once
   useEffect(() => {
@@ -76,6 +83,24 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange 
 
     viewerRef.current = viewer;
 
+    const clickHandler = new ScreenSpaceEventHandler(viewer.scene.canvas);
+    clickHandler.setInputAction((event: { position: { x: number; y: number } }) => {
+      const cb = onMapClickRef.current;
+      if (!cb) return;
+      const cartesian = viewer.camera.pickEllipsoid(
+        event.position,
+        viewer.scene.globe.ellipsoid,
+      );
+      if (!cartesian) return;
+      const carto = Cartographic.fromCartesian(cartesian);
+      cb({
+        lat: CesiumMath.toDegrees(carto.latitude),
+        lon: CesiumMath.toDegrees(carto.longitude),
+        screenX: event.position.x,
+        screenY: event.position.y,
+      });
+    }, ScreenSpaceEventType.LEFT_CLICK);
+
     // Debounced camera-change listener: computes the visible rectangle and
     // passes it back so the caller can request a viewport-resolution render.
     let boundsTimer: ReturnType<typeof setTimeout> | null = null;
@@ -106,6 +131,7 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange 
     return () => {
       if (boundsTimer !== null) clearTimeout(boundsTimer);
       viewer.camera.changed.removeEventListener(emitBounds);
+      clickHandler.destroy();
       const cart = viewer.camera.positionCartographic;
       onUnmountRef.current(
         CesiumMath.toDegrees(cart.latitude),
