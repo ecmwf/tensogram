@@ -371,3 +371,93 @@ fn auto_compute_matches_explicit_path_byte_for_byte() {
         "encoded payloads must match byte-for-byte"
     );
 }
+
+// ---------------------------------------------------------------------------
+// E1 — partial-explicit params reject (Pass-3 hardening).
+//
+// Providing exactly one of sp_reference_value / sp_binary_scale_factor
+// is ambiguous: auto-compute would silently overwrite the user-supplied
+// half, which is a precision footgun.  The encoder must reject it
+// up-front with a clear error pointing at the missing partner key.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e1_only_sp_reference_value_rejected() {
+    let mut desc = make_auto_desc(vec![4], 16);
+    desc.params
+        .insert("sp_reference_value".to_string(), CborValue::Float(200.0));
+    let values: Vec<f64> = vec![270.0, 275.0, 280.0, 285.0];
+    let data = f64_bytes(&values);
+
+    let err = encode(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("sp_reference_value") && err.contains("sp_binary_scale_factor"),
+        "error must name both keys: {err}"
+    );
+}
+
+#[test]
+fn e1_only_sp_binary_scale_factor_rejected() {
+    let mut desc = make_auto_desc(vec![4], 16);
+    desc.params.insert(
+        "sp_binary_scale_factor".to_string(),
+        CborValue::Integer(5i64.into()),
+    );
+    let values: Vec<f64> = vec![270.0, 275.0, 280.0, 285.0];
+    let data = f64_bytes(&values);
+
+    let err = encode(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("sp_binary_scale_factor") && err.contains("sp_reference_value"),
+        "error must name both keys: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// E2 — auto-compute uses the ORIGINAL data, not post-substitute bytes.
+//
+// When `allow_nan = true` substitutes NaN with 0.0, running auto-compute
+// on the substituted bytes would derive a distorted sp_reference_value
+// (silent precision loss).  Auto-compute must run on the pre-substitute
+// data so non-finite inputs surface as a clean PackingError, telling
+// the user to either fix the data or supply explicit params.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2_nan_data_with_allow_nan_still_rejected_by_auto_compute() {
+    use tensogram::MaskMethod;
+
+    let desc = make_auto_desc(vec![4], 16);
+    let values: Vec<f64> = vec![270.0, f64::NAN, 280.0, 285.0];
+    let data = f64_bytes(&values);
+
+    // Even with allow_nan=true (which would normally substitute NaN
+    // with 0.0 and build a mask), the auto-compute step runs on the
+    // ORIGINAL data — `compute_params` rejects the NaN before any
+    // substitution-induced precision distortion can land in the
+    // descriptor.
+    let opts = EncodeOptions {
+        allow_nan: true,
+        nan_mask_method: MaskMethod::Roaring,
+        ..EncodeOptions::default()
+    };
+    let err = encode(&make_global_meta(), &[(&desc, &data)], &opts)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.to_lowercase().contains("nan"),
+        "auto-compute should surface NaN: {err}"
+    );
+}

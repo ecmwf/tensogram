@@ -1345,11 +1345,12 @@ fn py_compute_hash(data: PyBackedBytes, algo: &str) -> PyResult<String> {
 ///     desc = {"type": "ntensor", "encoding": "simple_packing",
 ///             "shape": [...], "dtype": "float64", **params}
 ///
-/// Since tensogram 0.19 the encoder also auto-computes these values
-/// when the descriptor carries only ``sp_bits_per_value`` (and
-/// optionally ``sp_decimal_scale_factor``) — calling this function
-/// explicitly is only needed if the caller wants to cache or inspect
-/// the derived params across multiple encodes.
+/// The encoder also auto-computes these values when the descriptor
+/// carries only ``sp_bits_per_value`` (and optionally
+/// ``sp_decimal_scale_factor``) — calling this function explicitly
+/// is only needed if the caller wants to cache or inspect the derived
+/// params across multiple encodes (for example to pin
+/// ``sp_reference_value`` across a time-series).
 #[pyfunction]
 fn compute_packing_params(
     py: Python<'_>,

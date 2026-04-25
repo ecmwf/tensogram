@@ -134,6 +134,22 @@ class TestAutoComputeErrors:
         with pytest.raises(Exception, match="simple_packing only supports float64"):
             tensogram.encode({}, [(desc, data)])
 
+    def test_e1_only_sp_reference_value_rejected(self) -> None:
+        """Half-explicit params (only ref, not bsf) are ambiguous."""
+        desc = _auto_desc([4])
+        desc["sp_reference_value"] = 200.0
+        data = np.array([270.0, 275.0, 280.0, 285.0], dtype=np.float64)
+        with pytest.raises(Exception, match=r"sp_reference_value.*sp_binary_scale_factor"):
+            tensogram.encode({}, [(desc, data)])
+
+    def test_e1_only_sp_binary_scale_factor_rejected(self) -> None:
+        """Half-explicit params (only bsf, not ref) are ambiguous."""
+        desc = _auto_desc([4])
+        desc["sp_binary_scale_factor"] = 5
+        data = np.array([270.0, 275.0, 280.0, 285.0], dtype=np.float64)
+        with pytest.raises(Exception, match=r"sp_binary_scale_factor.*sp_reference_value"):
+            tensogram.encode({}, [(desc, data)])
+
 
 class TestAutoComputeDefaults:
     def test_s6_decimal_scale_factor_defaults_to_zero(self) -> None:
