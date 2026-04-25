@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import pathlib
 import sys
 
@@ -59,9 +60,7 @@ def _encode_one(msg_index: int, shape: tuple[int, ...]) -> bytes:
     `tensogram.encode` stamps fresh timestamp + UUID into provenance;
     the deterministic part is the payload shape and ramp values.
     """
-    count = 1
-    for dim in shape:
-        count *= dim
+    count = math.prod(shape)
     payload = np.arange(count, dtype=np.float32) + float(msg_index)
     descriptor = _descriptor(shape)
     metadata = {"base": [{"fixture": {"msg_index": msg_index, "shape": list(shape)}}]}

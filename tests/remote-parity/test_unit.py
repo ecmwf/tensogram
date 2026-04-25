@@ -46,6 +46,7 @@ from run_parity import DriverCase, _check_no_duplicate_run_ids
 _THIS_DIR = pathlib.Path(__file__).resolve().parent
 _FIXTURES_DIR = _THIS_DIR / "fixtures"
 _SCHEMA_PATH = _THIS_DIR / "schema.json"
+_HTTP_TIMEOUT = 5.0
 
 
 class TestClassify:
@@ -95,6 +96,22 @@ class TestClassify:
         r = classify(Observation("GET", "bytes=not-valid", 206, PREAMBLE_BYTES))
         assert r.logical_range == (0, PREAMBLE_BYTES)
 
+    def test_malformed_end_clamps_to_served_bytes(self) -> None:
+        r = classify(Observation("GET", "bytes=10-abc", 206, PREAMBLE_BYTES))
+        assert r.logical_range == (10, 10 + PREAMBLE_BYTES)
+
+    def test_inverted_range_clamps_to_served_bytes(self) -> None:
+        r = classify(Observation("GET", "bytes=10-5", 206, PREAMBLE_BYTES))
+        assert r.logical_range == (10, 10 + PREAMBLE_BYTES)
+
+    def test_negative_start_falls_back(self) -> None:
+        r = classify(Observation("GET", "bytes=--5-10", 206, PREAMBLE_BYTES))
+        assert r.logical_range == (0, PREAMBLE_BYTES)
+
+    def test_explicit_range_is_clamped_to_served(self) -> None:
+        r = classify(Observation("GET", "bytes=0-9999", 206, PREAMBLE_BYTES))
+        assert r.logical_range == (0, PREAMBLE_BYTES)
+
 
 class TestRoundBuilder:
     def test_each_scan_gets_new_round(self) -> None:
@@ -128,7 +145,8 @@ class TestMockServer:
     def test_head_returns_accept_ranges(self) -> None:
         with MockServer(_FIXTURES_DIR) as server:
             url = server.url_for("unit-test-head", "single-msg.tgm")
-            with urllib.request.urlopen(urllib.request.Request(url, method="HEAD")) as resp:
+            req = urllib.request.Request(url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
                 assert resp.status == 200
                 assert resp.headers["Accept-Ranges"] == "bytes"
                 assert int(resp.headers["Content-Length"]) > 0
@@ -137,7 +155,7 @@ class TestMockServer:
         with MockServer(_FIXTURES_DIR) as server:
             url = server.url_for("unit-test-range", "single-msg.tgm")
             req = urllib.request.Request(url, headers={"Range": "bytes=0-23"})
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
                 assert resp.status == 206
                 body = resp.read()
                 assert len(body) == 24
@@ -146,7 +164,7 @@ class TestMockServer:
         with MockServer(_FIXTURES_DIR) as server:
             url = server.url_for("unit-test-suffix", "single-msg.tgm")
             req = urllib.request.Request(url, headers={"Range": "bytes=-8"})
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
                 assert resp.status == 206
                 body = resp.read()
                 assert len(body) == 8
@@ -156,7 +174,7 @@ class TestMockServer:
             url = server.url_for("unit-test-416", "single-msg.tgm")
             req = urllib.request.Request(url, headers={"Range": "bytes=999999-9999999"})
             with pytest.raises(urllib.error.HTTPError) as excinfo:
-                urllib.request.urlopen(req)
+                urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT)
             try:
                 assert excinfo.value.code == 416
             finally:
@@ -166,7 +184,7 @@ class TestMockServer:
         with MockServer(_FIXTURES_DIR) as server:
             url = server.url_for("unit-test-404", "does-not-exist.tgm")
             with pytest.raises(urllib.error.HTTPError) as excinfo:
-                urllib.request.urlopen(url)
+                urllib.request.urlopen(url, timeout=_HTTP_TIMEOUT)
             try:
                 assert excinfo.value.code == 404
             finally:
@@ -176,7 +194,7 @@ class TestMockServer:
         with MockServer(_FIXTURES_DIR) as server:
             url = f"{server.base_url}/unit-test-traversal/../../../etc/passwd"
             with pytest.raises(urllib.error.HTTPError) as excinfo:
-                urllib.request.urlopen(url)
+                urllib.request.urlopen(url, timeout=_HTTP_TIMEOUT)
             try:
                 assert excinfo.value.code == 404
             finally:
@@ -186,10 +204,10 @@ class TestMockServer:
         with MockServer(_FIXTURES_DIR) as server:
             url = server.url_for("unit-test-log-a", "single-msg.tgm")
             req = urllib.request.Request(url, headers={"Range": "bytes=0-23"})
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
                 resp.read()
             log_url = f"{server.base_url}/_log/unit-test-log-a"
-            with urllib.request.urlopen(log_url) as log_resp:
+            with urllib.request.urlopen(log_url, timeout=_HTTP_TIMEOUT) as log_resp:
                 log_body = log_resp.read().decode("utf-8")
             entries = [json.loads(line) for line in log_body.splitlines() if line.strip()]
             assert len(entries) == 1
@@ -200,15 +218,15 @@ class TestMockServer:
         with MockServer(_FIXTURES_DIR) as server:
             url = server.url_for("unit-test-reset", "single-msg.tgm")
             req = urllib.request.Request(url, headers={"Range": "bytes=0-23"})
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:
                 resp.read()
 
             reset = urllib.request.Request(f"{server.base_url}/_reset", method="POST")
-            with urllib.request.urlopen(reset) as resp:
+            with urllib.request.urlopen(reset, timeout=_HTTP_TIMEOUT) as resp:
                 assert resp.status == 204
 
             log_url = f"{server.base_url}/_log/unit-test-reset"
-            with urllib.request.urlopen(log_url) as log_resp:
+            with urllib.request.urlopen(log_url, timeout=_HTTP_TIMEOUT) as log_resp:
                 log_body = log_resp.read().decode("utf-8")
             entries = [line for line in log_body.splitlines() if line.strip()]
             assert entries == []

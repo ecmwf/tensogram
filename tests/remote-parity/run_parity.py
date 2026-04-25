@@ -17,8 +17,10 @@ scan-event shape, scaling against the fixture's actual layout).
 
 from __future__ import annotations
 
+import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -126,10 +128,13 @@ def _all_cases() -> list[DriverCase]:
     return cases
 
 
-def _ensure_prereqs() -> None:
+def missing_prereqs() -> list[str]:
     missing: list[str] = []
-    if not _FIXTURES_DIR.exists() or not any(_FIXTURES_DIR.glob("*.tgm")):
-        missing.append(f"fixtures (run `python {_THIS_DIR / 'tools/gen_fixtures.py'}`)")
+    expected = [_FIXTURES_DIR / f"{name}.tgm" for name in _FIXTURES]
+    absent = [p for p in expected if not p.exists()]
+    if absent:
+        names = ", ".join(p.name for p in absent)
+        missing.append(f"fixtures ({names}) — run `python {_THIS_DIR / 'tools/gen_fixtures.py'}`")
     if not _RUST_DRIVER_BIN.exists():
         missing.append(
             "rust driver (run `cargo build --release --manifest-path "
@@ -142,8 +147,16 @@ def _ensure_prereqs() -> None:
         )
     if not shutil.which("npx"):
         missing.append("npx (install Node.js ≥ 20)")
+    return missing
+
+
+def _ensure_prereqs() -> None:
+    missing = missing_prereqs()
     if missing:
         raise SystemExit("remote-parity prerequisites missing:\n  - " + "\n  - ".join(missing))
+
+
+_DRIVER_TIMEOUT_S = 60
 
 
 def _run_driver(case: DriverCase, url: str) -> None:
@@ -160,21 +173,40 @@ def _run_driver(case: DriverCase, url: str) -> None:
             case.op,
         ]
     env_cwd = _DRIVERS_DIR if case.language == "ts" else _THIS_DIR
-    result = subprocess.run(
+
+    # `start_new_session=True` puts the driver in its own process
+    # group so `os.killpg` on timeout reaps the whole tree, including
+    # any descendants spawned by `npx -> tsx -> node`. Without this,
+    # `subprocess.run(timeout=...)` would only kill the direct child
+    # and leave grandchildren attached to the harness server.
+    with subprocess.Popen(
         cmd,
         cwd=env_cwd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=False,
-        timeout=60,
-    )
-    if result.returncode != 0:
+        start_new_session=True,
+    ) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=_DRIVER_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            stdout, stderr = proc.communicate()
+            raise RuntimeError(
+                f"driver {case.language}/{case.op}@{case.fixture} "
+                f"timed out after {_DRIVER_TIMEOUT_S}s\n"
+                f"  cmd: {cmd}\n"
+                f"  stdout: {stdout.strip()}\n"
+                f"  stderr: {stderr.strip()}"
+            ) from None
+
+    if proc.returncode != 0:
         raise RuntimeError(
             f"driver {case.language}/{case.op}@{case.fixture} failed "
-            f"(rc={result.returncode})\n"
+            f"(rc={proc.returncode})\n"
             f"  cmd: {cmd}\n"
-            f"  stdout: {result.stdout.strip()}\n"
-            f"  stderr: {result.stderr.strip()}"
+            f"  stdout: {stdout.strip()}\n"
+            f"  stderr: {stderr.strip()}"
         )
 
 
@@ -191,6 +223,8 @@ def _check_no_duplicate_run_ids(cases: list[DriverCase]) -> None:
 
 
 def collect_events(cases: list[DriverCase]) -> dict[str, list[ScanEvent]]:
+    if not cases:
+        raise ValueError("collect_events: no driver cases provided")
     _check_no_duplicate_run_ids(cases)
     _ensure_prereqs()
 
@@ -200,6 +234,12 @@ def collect_events(cases: list[DriverCase]) -> dict[str, list[ScanEvent]]:
             url = server.url_for(case.run_id, f"{case.fixture}.tgm")
             _run_driver(case, url)
             records = server.log_for(case.run_id)
+            if not records:
+                raise RuntimeError(
+                    f"driver {case.language}/{case.op}@{case.fixture} produced "
+                    "no server-side requests — likely a wrong URL or run_id; "
+                    "check the driver's stderr."
+                )
             result[case.run_id] = normalise_log(case.run_id, records)
     return result
 

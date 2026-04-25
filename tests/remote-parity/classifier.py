@@ -14,7 +14,7 @@ rest of the harness:
 
 - `Classifier` maps one raw HTTP observation to `(category, direction,
   logical_range)` based on status + method + range length + response
-  bytes. Status-aware: non-206/non-200 responses become ``error``.
+  bytes. Status-aware: non-2xx responses become ``error``.
 - `RoundBuilder` walks classified events in observed order and assigns
   `scan_round`. Forward-only today (one scan event per round);
   bidirectional will pair forward + backward events per round.
@@ -25,6 +25,7 @@ Schema contract is defined by `schema.json`. Non-scan events use
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -33,6 +34,8 @@ Direction = Literal["forward", "backward", "none"]
 
 PREAMBLE_BYTES = 24
 NON_SCAN_ROUND = -1
+
+_EXPLICIT_RANGE_RE = re.compile(r"^bytes=(\d+)-(\d+)$")
 
 
 @dataclass(frozen=True)
@@ -60,7 +63,9 @@ def classify(observation: Observation) -> Classified:
     logical_range = _logical_from_range(observation.range_header, observation.response_bytes)
 
     if observation.method == "HEAD":
-        return Classified("probe", "none", (0, 0), physical)
+        if observation.status == 200:
+            return Classified("probe", "none", (0, 0), physical)
+        return Classified("error", "none", logical_range, physical)
 
     if observation.method != "GET":
         return Classified("error", "none", logical_range, physical)
@@ -71,11 +76,40 @@ def classify(observation: Observation) -> Classified:
     if observation.status != 206:
         return Classified("error", "none", logical_range, physical)
 
-    length = logical_range[1] - logical_range[0]
-    if length == PREAMBLE_BYTES:
-        return Classified("scan", "forward", logical_range, physical)
+    # Scan walks issue strict explicit ranges (`bytes=N-M`, decimals
+    # only). Suffix (`bytes=-N`), open-ended (`bytes=N-`), multi-range,
+    # missing, or otherwise malformed Range headers all fall to
+    # `payload` — they are not part of the current forward-only scan
+    # contract.
+    explicit = _parse_explicit_single_range(observation.range_header)
+    if explicit is None:
+        return Classified("payload", "none", logical_range, physical)
 
-    return Classified("payload", "none", logical_range, physical)
+    start, end_inclusive = explicit
+    actual_end = min(end_inclusive + 1, start + observation.response_bytes)
+    if actual_end - start == PREAMBLE_BYTES:
+        return Classified("scan", "forward", (start, actual_end), physical)
+    return Classified("payload", "none", (start, actual_end), physical)
+
+
+def _parse_explicit_single_range(range_header: str | None) -> tuple[int, int] | None:
+    """Parse a strict ``bytes=N-M`` header into ``(start, end_inclusive)``.
+
+    Returns ``None`` for missing, suffix (``bytes=-N``), open-ended
+    (``bytes=N-``), multi-range (``bytes=a-b,c-d``), signed, or any
+    other malformed input. Matching is intentionally strict because
+    only this form is part of the scan-walk contract today.
+    """
+    if range_header is None:
+        return None
+    m = _EXPLICIT_RANGE_RE.match(range_header.strip())
+    if not m:
+        return None
+    start = int(m.group(1))
+    end_inclusive = int(m.group(2))
+    if end_inclusive < start:
+        return None
+    return start, end_inclusive
 
 
 def _logical_from_range(range_header: str | None, response_bytes: int) -> tuple[int, int]:
@@ -105,18 +139,24 @@ def _logical_from_range(range_header: str | None, response_bytes: int) -> tuple[
         start = int(start_s)
     except ValueError:
         return (0, response_bytes)
-    if end_s:
-        try:
-            end_inclusive = int(end_s)
-        except ValueError:
-            return (start, start + response_bytes)
-        # Clamp to the bytes actually served: if the client asked beyond
-        # EOF, the mock server (and most HTTP servers) return only the
-        # available suffix. Trusting the request range here would inflate
-        # logical_range past what was observed and cause spurious parity
-        # mismatches.
-        return (start, min(end_inclusive + 1, start + response_bytes))
-    return (start, start + response_bytes)
+    if start < 0:
+        return (0, response_bytes)
+
+    # Always clamp the upper bound to the bytes actually served: if the
+    # client asked beyond EOF, the mock server (and most HTTP servers)
+    # return only the available suffix. Trusting the request header here
+    # would inflate logical_range past what was observed and cause
+    # spurious parity mismatches.
+    served_end = start + response_bytes
+    if not end_s:
+        return (start, served_end)
+    try:
+        end_inclusive = int(end_s)
+    except ValueError:
+        return (start, served_end)
+    if end_inclusive < start:
+        return (start, served_end)
+    return (start, min(end_inclusive + 1, served_end))
 
 
 def _physical_dict(observation: Observation) -> dict:

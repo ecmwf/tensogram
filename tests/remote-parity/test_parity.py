@@ -35,16 +35,15 @@ import tensogram
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from classifier import PREAMBLE_BYTES
 from run_parity import (
-    _DRIVERS_DIR,
     _FIXTURES,
     _FIXTURES_DIR,
     _OPS,
-    _RUST_DRIVER_BIN,
     DriverCase,
     Language,
     Op,
     collect_events,
     filter_scan_events,
+    missing_prereqs,
 )
 
 _CASES = [
@@ -55,20 +54,9 @@ _CASES = [
 ]
 
 
-def _missing_prereqs() -> list[str]:
-    missing: list[str] = []
-    if not _FIXTURES_DIR.exists() or not any(_FIXTURES_DIR.glob("*.tgm")):
-        missing.append("fixtures/ (run tools/gen_fixtures.py)")
-    if not _RUST_DRIVER_BIN.exists():
-        missing.append("rust driver release binary (run cargo build --release)")
-    if not (_DRIVERS_DIR / "node_modules").exists():
-        missing.append("drivers/node_modules (run npm install in drivers/)")
-    return missing
-
-
 @pytest.fixture(scope="module")
 def events():
-    missing = _missing_prereqs()
+    missing = missing_prereqs()
     if missing:
         pytest.skip("remote-parity prereqs missing: " + ", ".join(missing))
     return collect_events(list(_CASES))
@@ -76,11 +64,10 @@ def events():
 
 @pytest.fixture(scope="module")
 def fixture_layouts() -> dict[str, list[tuple[int, int]]]:
+    if missing_prereqs():
+        pytest.skip("remote-parity fixtures missing")
     return {
-        name: [
-            (offset, length)
-            for offset, length in tensogram.scan((_FIXTURES_DIR / f"{name}.tgm").read_bytes())
-        ]
+        name: list(tensogram.scan((_FIXTURES_DIR / f"{name}.tgm").read_bytes()))
         for name in _FIXTURES
     }
 
@@ -179,4 +166,29 @@ def test_open_divergence_rust_lazy_ts_eager(fixture: str, events) -> None:
     )
     assert len(ts_open) == expected_n, (
         f"TS open is expected to walk all {expected_n} preambles; got {len(ts_open)} for {fixture}"
+    )
+
+
+@pytest.mark.parametrize("fixture", _FIXTURES, ids=list(_FIXTURES))
+def test_read_first_divergence_rust_lazy_ts_eager(fixture: str, events) -> None:
+    """Same Rust-lazy / TS-eager asymmetry on `read-first`.
+
+    Rust only needs the first preamble to satisfy `read_message(0)`; TS
+    has already walked every preamble at `fromUrl` time, so its
+    `read-first` issues no further scan events on top of the open-time
+    walk.
+    """
+    expected_n = _EXPECTED_MESSAGE_COUNTS[fixture]
+    rust_case = DriverCase(fixture=fixture, language="rust", op="read-first")
+    ts_case = DriverCase(fixture=fixture, language="ts", op="read-first")
+    rust_scan = filter_scan_events(events[rust_case.run_id])
+    ts_scan = filter_scan_events(events[ts_case.run_id])
+
+    assert len(rust_scan) == 1, (
+        f"Rust read-first is expected to issue exactly one preamble GET; "
+        f"got {len(rust_scan)} for {fixture}"
+    )
+    assert len(ts_scan) == expected_n, (
+        f"TS read-first is expected to have already walked all {expected_n} "
+        f"preambles at open time; got {len(ts_scan)} for {fixture}"
     )
