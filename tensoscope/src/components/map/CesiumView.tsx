@@ -11,10 +11,17 @@ import {
   Credit,
   Entity,
   ConstantProperty,
+  ConstantPositionProperty,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
   Cartographic,
+  SceneTransforms,
 } from 'cesium';
+
+function markerPixelSize(gridSpacing: number | null | undefined): number {
+  const s = gridSpacing ?? 2;
+  return Math.min(Math.max(s * 4, 8), 28);
+}
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import './CesiumView.css';
 import type { FieldImage, ViewBounds } from './FieldOverlay';
@@ -36,7 +43,7 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Viewer | undefined>(undefined);
   const overlayRef = useRef<Entity | undefined>(undefined);
-  const clickHandlerRef = useRef<ScreenSpaceEventHandler | undefined>(undefined);
+  const markerRef = useRef<Entity | undefined>(undefined);
   const selectedPointRef = useRef(selectedPoint);
   const onUnmountRef = useRef(onUnmount);
   const onViewChangeRef = useRef(onViewChange);
@@ -96,24 +103,22 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
     viewerRef.current = viewer;
 
     // Handle selected point marker position on globe
-    const updateSelectedPointScreen = useCallback(() => {
+    const updateSelectedPointScreen = () => {
       const pt = selectedPointRef.current;
       if (!pt || !onSelectedPointScreenRef.current) return;
-      const carto = Cartographic.fromDegrees(pt.lon, pt.lat);
-      const cartesian = viewer.camera.projectPointToWindow(carto);
-      if (cartesian) {
+      const worldPos = Cartesian3.fromDegrees(pt.lon, pt.lat);
+      const windowPos = SceneTransforms.worldToWindowCoordinates(viewer.scene, worldPos);
+      if (windowPos) {
         const canvas = viewer.canvas;
-        const rect = canvas.getBoundingClientRect();
-        const x = cartesian.x - rect.left;
-        const y = cartesian.y - rect.top;
+        const x = windowPos.x;
+        const y = windowPos.y;
         onSelectedPointScreenRef.current(x, y);
-        // Auto-close if marker is off-screen
         const margin = 80;
-        if (x < -margin || x > canvas.width + margin || y < -margin || y > canvas.height + margin) {
+        if (x < -margin || x > canvas.clientWidth + margin || y < -margin || y > canvas.clientHeight + margin) {
           onSelectedPointOutOfViewRef.current?.();
         }
       }
-    }, [onSelectedPointScreenRef, onSelectedPointOutOfViewRef]);
+    };
 
     // Update marker position on camera changes
     const cameraChangedHandler = () => {
@@ -181,6 +186,7 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
       viewer.destroy();
       viewerRef.current = undefined;
       overlayRef.current = undefined;
+      markerRef.current = undefined;
     };
   }, []); // mount-once: intentional empty deps
 
@@ -221,6 +227,37 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
       });
     }
   }, [fieldImage]);
+
+  // Update selected-point marker when selectedPoint or grid spacing changes
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    if (!selectedPoint) {
+      if (markerRef.current) markerRef.current.show = false;
+      return;
+    }
+
+    const position = Cartesian3.fromDegrees(selectedPoint.lon, selectedPoint.lat);
+    const pixelSize = markerPixelSize(selectedPointGridSpacing);
+
+    if (markerRef.current) {
+      markerRef.current.show = true;
+      markerRef.current.position = new ConstantPositionProperty(position);
+      markerRef.current.point!.pixelSize = new ConstantProperty(pixelSize);
+    } else {
+      markerRef.current = viewer.entities.add({
+        position,
+        point: {
+          pixelSize,
+          color: Color.TRANSPARENT,
+          outlineColor: Color.WHITE,
+          outlineWidth: 2,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        },
+      });
+    }
+  }, [selectedPoint, selectedPointGridSpacing]);
 
   return <div ref={containerRef} className="cesium-container" />;
 }

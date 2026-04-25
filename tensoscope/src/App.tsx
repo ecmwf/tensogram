@@ -300,7 +300,7 @@ function App() {
           nativeUnits={colorScale.nativeUnits}
           displayUnit={colorScale.displayUnit}
           onDisplayUnitChange={(u) => setColorScale({ displayUnit: u })}
-          onMapClick={setClickPoint}
+          onMapClick={(pt) => { setClickPoint(pt); setInspectedScreenPos({ x: pt.screenX, y: pt.screenY }); }}
           selectedPoint={selectedPoint}
           selectedPointGridSpacing={gridSpacing}
           onSelectedPointScreen={(x, y) => setInspectedScreenPos({ x, y })}

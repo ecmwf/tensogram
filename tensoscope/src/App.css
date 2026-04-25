@@ -775,6 +775,7 @@ h2 {
 }
 
 .map-picker-btn {
+  flex: 1;
   padding: 5px 14px;
   border: none;
   background: transparent;
@@ -784,6 +785,7 @@ h2 {
   transition: background 0.12s, color 0.12s;
   white-space: nowrap;
   font-family: inherit;
+  text-align: center;
 }
 
 .map-picker-btn + .map-picker-btn {

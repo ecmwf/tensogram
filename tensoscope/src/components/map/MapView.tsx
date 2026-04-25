@@ -211,8 +211,8 @@ export function MapView(props: MapViewProps) {
           onMapClick={onMapClick}
           selectedPoint={selectedPoint}
           selectedPointGridSpacing={selectedPointGridSpacing}
-          onSelectedPointScreen={(x, y) => { setInspectedScreenPos({ x, y }); captureViewport(); }}
-          onSelectedPointOutOfView={() => { setClickPoint(null); setInspectedScreenPos(null); }}
+          onSelectedPointScreen={onSelectedPointScreen}
+          onSelectedPointOutOfView={onSelectedPointOutOfView}
         />
       ) : (
         <Map
