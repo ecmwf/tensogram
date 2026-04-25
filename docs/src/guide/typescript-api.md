@@ -368,6 +368,8 @@ Downloads the file over HTTPS using the ambient `globalThis.fetch`.
 | `headers` | `HeadersInit` | Extra request headers (auth, etc.). |
 | `signal` | `AbortSignal` | Cancels the download. |
 | `concurrency` | `number` | Per-host concurrency cap for fan-out operations (`messageObjectBatch`, `prefetchLayouts`, descriptor prefix fetches).  Defaults to `6`, matching typical browser per-host connection limits. |
+| `bidirectional` | `boolean` | Enable the bidirectional remote-scan walker on open.  See [Bidirectional scan](#bidirectional-scan) below.  Default `false`. |
+| `debug` | `boolean` | Emit `console.debug` events on every walker state transition.  Default `false`. |
 
 ### `TensogramFile.fromBytes(bytes)`
 
@@ -411,6 +413,46 @@ memory use and timing.
 
 Browser callers using `fromUrl` directly need CORS to expose the
 `Accept-Ranges`, `Content-Range`, and `Content-Length` headers.
+
+### Bidirectional scan
+
+`fromUrl` accepts an opt-in `bidirectional: boolean` flag that
+enables a two-cursor walker.  The lazy backend issues paired
+forward-preamble and backward-postamble Range fetches per scan round,
+alternating with forward-only steps whenever backward yields (format
+error, streaming preamble, gap-below-min, overlap, exceeds-bound).
+On well-formed header-indexed files this roughly halves the number
+of `GET` requests needed for tail / full-scan access.
+
+```typescript
+import { init, TensogramFile } from '@ecmwf.int/tensogram';
+
+await init();
+const file = await TensogramFile.fromUrl('https://example.com/data.tgm', {
+    bidirectional: true,
+});
+console.log('messageCount:', file.messageCount);
+console.log('messageLayouts:', file.messageLayouts);
+file.close();
+```
+
+Forward-only and bidirectional opens produce identical
+`messageLayouts` on well-formed files; the parity harness asserts
+this on every fixture.  Default `false` until benchmarks confirm the
+win across every workload tier — same default across Rust, Python,
+and TypeScript.
+
+`bidirectional: true` requires `concurrency >= 2` (the default of
+`6` is fine).  Passing `concurrency: 1` alongside `bidirectional:
+true` rejects the `fromUrl` promise with `InvalidArgumentError`
+before any HTTP probe is issued, since the paired round needs two
+parallel fetches to be useful.
+
+`debug: true` emits `console.debug` events on every state transition
+— `tensogram:scan:mode`, `tensogram:scan:fallback`,
+`tensogram:scan:fwd-terminated`, `tensogram:scan:gap-closed`,
+`tensogram:scan:hop` — same vocabulary as the Rust `tracing` events
+at `target = "tensogram::remote_scan"`.
 
 ### AWS-signed (S3-compatible) access
 
