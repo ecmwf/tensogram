@@ -867,11 +867,26 @@ impl RemoteBackend {
         // Saturating addition handles the (astronomical) case where
         // `snap.next` is so close to `u64::MAX` that the unchecked
         // sum would wrap; saturation to `u64::MAX` correctly forces
-        // the forward fallback.  Past this guard we know
+        // the gap-too-small branch.  Past this guard we know
         // `snap.prev >= snap.next + min_message_size`, so the
         // unchecked range constructions below cannot wrap.
         if snap.prev < snap.next.saturating_add(min_message_size) {
-            return self.scan_fwd_step_locked(state, bound);
+            // Gap can't fit a paired fetch.  Two sub-cases:
+            //   • `next == prev`: walkers met; `close_gap` should have
+            //     fired already, but assert-and-fix-up defensively.
+            //   • otherwise: the gap is shorter than `min_message_size`,
+            //     which in a valid file is unreachable (every message
+            //     is ≥ 48 bytes).  Treat as suspected backward
+            //     corruption — disable backward (clearing `suffix_rev`)
+            //     and retry forward-only with the full file as the
+            //     bound, matching what forward-only would have done.
+            if snap.next == snap.prev {
+                state.close_gap();
+                return Ok(());
+            }
+            state.disable_backward("gap-below-min-message-size");
+            let recovery_bound = self.forward_bound(state);
+            return self.scan_fwd_step_locked(state, recovery_bound);
         }
 
         let fwd_r = snap.next..snap.next + PREAMBLE_SIZE as u64;
@@ -2089,11 +2104,24 @@ impl RemoteBackend {
 
         // See `scan_bidir_round_locked` for why a `min_message_size`
         // threshold (the smallest disjoint pair of preamble/postamble
-        // ranges) is the correct floor and why the unchecked range
+        // ranges) is the correct floor, why the unchecked range
         // constructions immediately below cannot wrap once this guard
-        // passes.
+        // passes, and why a gap below the threshold is treated as
+        // suspected backward corruption rather than as forward EOF.
         if snap.prev < snap.next.saturating_add(min_message_size) {
-            return self.scan_fwd_step_async(bound).await;
+            let recovery_bound = {
+                let mut state = self.lock_state()?;
+                if !state.matches(&snap) {
+                    return Ok(());
+                }
+                if snap.next == snap.prev {
+                    state.close_gap();
+                    return Ok(());
+                }
+                state.disable_backward("gap-below-min-message-size");
+                self.forward_bound(&state)
+            };
+            return self.scan_fwd_step_async(recovery_bound).await;
         }
 
         let fwd_r = snap.next..snap.next + PREAMBLE_SIZE as u64;
