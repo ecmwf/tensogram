@@ -51,3 +51,9 @@ blosc2-sys = { workspace = true, optional = true }
 zfp-sys-cc = { workspace = true, optional = true }
 tensogram-sz3 = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
+
+[build-dependencies]
+# `built` captures Cargo.lock dep versions at compile time for pure-Rust crates.
+built = { version = "0.7", features = ["cargo-lock"] }
+# `cc` compiles the libaec version shim (only when the `szip` feature is on).
+cc = "1"

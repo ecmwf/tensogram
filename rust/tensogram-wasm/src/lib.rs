@@ -289,3 +289,36 @@ pub use layout::{
 pub use extras::{
     compute_hash, decode_range, encode_pre_encoded, simple_packing_compute_params, validate_buffer,
 };
+
+// ── Doctor: environment diagnostics ──────────────────────────────────────────
+
+/// Collect environment diagnostics: build metadata, compiled-in feature
+/// states, and core encode/decode self-test results.
+///
+/// Mirrors the Rust `tensogram::doctor::run_diagnostics()` and the
+/// `tensogram doctor` CLI subcommand, returning a plain JS object whose
+/// shape matches the JSON schema documented in
+/// [`docs/src/cli/doctor.md`](https://sites.ecmwf.int/docs/tensogram/main/cli/doctor.html).
+///
+/// The WASM build does **not** run the GRIB or NetCDF converter
+/// self-tests — those features are CLI-only — so the `self_test` array
+/// covers only the core encode/decode pipeline plus the codecs that
+/// were compiled into this WASM bundle (typically `lz4`, `szip-pure`,
+/// and the `none` round-trip).
+///
+/// # Example
+///
+/// ```typescript
+/// import init, { doctor } from "@ecmwf.int/tensogram";
+/// await init();
+/// const report = doctor();
+/// console.log(report.build.version, report.build.target);
+/// for (const f of report.features) {
+///     console.log(f.name, f.state);
+/// }
+/// ```
+#[wasm_bindgen]
+pub fn doctor() -> Result<JsValue, JsError> {
+    let report = tensogram::doctor::run_diagnostics();
+    convert::to_js(&report)
+}

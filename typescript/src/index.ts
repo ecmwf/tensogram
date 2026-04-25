@@ -61,6 +61,8 @@ export { simplePackingComputeParams } from './simplePacking.js';
 export { validate, validateBuffer, validateFile } from './validate.js';
 export { encodePreEncoded } from './encodePreEncoded.js';
 export { StreamingEncoder } from './streamingEncoder.js';
+export { doctor } from './doctor.js';
+export type { DoctorReport, BuildInfo, FeatureStatus, SelfTestResult, Linkage, FeatureKind } from './doctor.js';
 
 // ── Scope C.2 — first-class half-precision / complex dtypes ───────────────
 //

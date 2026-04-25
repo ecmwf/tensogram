@@ -7,6 +7,7 @@
 // does it submit to any jurisdiction.
 
 pub mod decode;
+pub mod doctor;
 pub mod dtype;
 pub mod encode;
 pub mod error;

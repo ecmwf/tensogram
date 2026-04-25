@@ -712,6 +712,39 @@ tgm_error tgm_compute_hash(const uint8_t *data,
                            tgm_bytes_t *out);
 
 /**
+ * Run environment diagnostics and serialise the report as a JSON byte buffer.
+ *
+ * The report mirrors `tensogram::doctor::run_diagnostics()` and the
+ * `tensogram doctor` CLI subcommand.  Cross-language parity: the same
+ * JSON shape is produced by the Python `tensogram.doctor()` and the
+ * WASM `doctor()` exports — see `docs/src/cli/doctor.md` for the
+ * schema.  The C FFI build does **not** run the GRIB or NetCDF
+ * converter self-tests (those features are CLI-only), so the
+ * `self_test` array covers only the core encode/decode pipeline plus
+ * the codecs compiled into the dylib.
+ *
+ * On success returns `TgmError::Ok` and fills `out` with a JSON
+ * payload (UTF-8, NOT null-terminated).  Use `tgm_bytes_free` to
+ * release it.  Callers can safely treat `out.data` as a `char*` of
+ * length `out.len` and pass it to `json_loads` / `nlohmann::json::parse`
+ * / equivalent.
+ *
+ * On serialisation failure returns `TgmError::Encoding` and writes a
+ * human-readable description retrievable via `tgm_last_error()`.
+ *
+ * # Example
+ *
+ * ```c
+ * TgmBytes report = {0};
+ * if (tgm_doctor_to_json(&report) == TGM_OK) {
+ *     fwrite(report.data, 1, report.len, stdout);
+ *     tgm_bytes_free(report);
+ * }
+ * ```
+ */
+tgm_error tgm_doctor_to_json(tgm_bytes_t *out);
+
+/**
  * Create a streaming encoder writing to a file.
  *
  * `metadata_json` is a free-form JSON object.  The `"descriptors"`

@@ -5,6 +5,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [0.19.0] - 2026-04-25
 
+### Added — `tensogram doctor` environment diagnostics subcommand
+
+New top-level CLI subcommand that reports compiled-in features, backend
+library versions, and runs a self-test of the encode/decode pipeline plus
+the GRIB and NetCDF converters.
+
+```bash
+tensogram doctor          # human-readable output
+tensogram doctor --json   # machine-parseable JSON
+```
+
+- **Build section**: crate version, wire-format version, target triple, profile.
+- **Compiled-in features**: one row per known feature (`szip`, `zstd`, `lz4`,
+  `blosc2`, `zfp`, `sz3`, `threads`, `remote`, `mmap`, `async`, `grib`,
+  `netcdf`).  Each `on` row shows the backend library name, linkage model
+  (FFI or pure-Rust), and version string queried at runtime where possible.
+- **Self-test**: encode/decode round-trips for every compiled-in codec, plus
+  converter smoke tests using embedded binary fixtures.  Disabled codecs emit
+  `Skipped` rather than failing.
+- **Exit codes**: `0` healthy, `1` when any self-test row fails.
+- **Library API**: `tensogram::doctor::run_diagnostics()` returns a
+  serialisable `DoctorReport` for programmatic use.
+
 ### Added — earthkit-data integration (`tensogram-earthkit`)
 
 New pip package at `python/tensogram-earthkit/` that registers

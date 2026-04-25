@@ -53,6 +53,10 @@ url = { version = "2", optional = true }
 bytes = { version = "1", optional = true }
 rayon = { workspace = true, optional = true }
 
+[build-dependencies]
+# `built` captures Cargo.lock dep versions at compile time for pure-Rust crates.
+built = { version = "0.7", features = ["cargo-lock"] }
+
 [dev-dependencies]
 proptest.workspace = true
 serde_json.workspace = true
