@@ -83,69 +83,82 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _serve(self, *, method: str) -> None:
         parsed_path = urlsplit(self.path).path
-        match = _RUN_ID_RE.match(parsed_path)
-        if not match:
-            self._send_empty(404)
-            self._record(method, parsed_path, 404, 0)
-            return
-
-        run_id = match.group("run_id")
-        fixture_path = self.server_state.fixtures_dir / match.group("rest")
-        if not self._fixture_is_safe(fixture_path):
-            self._send_empty(404)
-            self._record(method, parsed_path, 404, 0, run_id=run_id)
-            return
-
-        try:
-            data = fixture_path.read_bytes()
-        except FileNotFoundError:
-            self._send_empty(404)
-            self._record(method, parsed_path, 404, 0, run_id=run_id)
-            return
-
-        total = len(data)
         range_header = self.headers.get("Range")
+        match = _RUN_ID_RE.match(parsed_path)
+        run_id = match.group("run_id") if match else None
+        status = 0
+        response_bytes = 0
 
-        if method == "HEAD":
-            self.send_response(200)
-            self.send_header("Content-Length", str(total))
-            self.send_header("Accept-Ranges", "bytes")
+        # try/finally so the request is always logged — even if the
+        # client closes the socket mid-write and `wfile.write()` raises
+        # BrokenPipeError. Otherwise the harness loses evidence of a
+        # request that actually reached the server.
+        try:
+            if not match:
+                status = 404
+                self._send_empty(status)
+                return
+
+            fixture_path = self.server_state.fixtures_dir / match.group("rest")
+            if not self._fixture_is_safe(fixture_path):
+                status = 404
+                self._send_empty(status)
+                return
+
+            try:
+                data = fixture_path.read_bytes()
+            except FileNotFoundError:
+                status = 404
+                self._send_empty(status)
+                return
+
+            total = len(data)
+
+            if method == "HEAD":
+                status = 200
+                self.send_response(status)
+                self.send_header("Content-Length", str(total))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                return
+
+            if range_header is None:
+                status = 200
+                self.send_response(status)
+                self.send_header("Content-Length", str(total))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                self.wfile.write(data)
+                response_bytes = total
+                return
+
+            parsed_range = self._parse_range(range_header, total)
+            if parsed_range is None:
+                status = 416
+                self.send_response(status)
+                self.send_header("Content-Range", f"bytes */{total}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+            start, end_exclusive = parsed_range
+            chunk = data[start:end_exclusive]
+            status = 206
+            self.send_response(status)
+            self.send_header("Content-Range", f"bytes {start}-{end_exclusive - 1}/{total}")
+            self.send_header("Content-Length", str(len(chunk)))
             self.end_headers()
-            self._record(method, parsed_path, 200, 0, run_id=run_id, range_header=range_header)
-            return
-
-        if range_header is None:
-            self.send_response(200)
-            self.send_header("Content-Length", str(total))
-            self.send_header("Accept-Ranges", "bytes")
-            self.end_headers()
-            self.wfile.write(data)
-            self._record(method, parsed_path, 200, total, run_id=run_id, range_header=None)
-            return
-
-        parsed_range = self._parse_range(range_header, total)
-        if parsed_range is None:
-            self.send_response(416)
-            self.send_header("Content-Range", f"bytes */{total}")
-            self.end_headers()
-            self._record(method, parsed_path, 416, 0, run_id=run_id, range_header=range_header)
-            return
-
-        start, end_exclusive = parsed_range
-        chunk = data[start:end_exclusive]
-        self.send_response(206)
-        self.send_header("Content-Range", f"bytes {start}-{end_exclusive - 1}/{total}")
-        self.send_header("Content-Length", str(len(chunk)))
-        self.end_headers()
-        self.wfile.write(chunk)
-        self._record(
-            method,
-            parsed_path,
-            206,
-            len(chunk),
-            run_id=run_id,
-            range_header=range_header,
-        )
+            self.wfile.write(chunk)
+            response_bytes = len(chunk)
+        finally:
+            self._record(
+                method,
+                parsed_path,
+                status,
+                response_bytes,
+                run_id=run_id,
+                range_header=range_header,
+            )
 
     def _send_log(self, run_id: str) -> None:
         records = self.server_state.snapshot(run_id)
@@ -277,6 +290,8 @@ class MockServer:
         return self._httpd.state.snapshot(run_id)  # type: ignore[attr-defined]
 
     def start(self) -> None:
+        if self._httpd is not None:
+            raise RuntimeError("MockServer already started")
         httpd = ThreadingHTTPServer(("127.0.0.1", self._requested_port), _Handler)
         httpd.state = _ServerState(self._fixtures_dir)  # type: ignore[attr-defined]
         self._httpd = httpd
@@ -291,6 +306,8 @@ class MockServer:
             self._httpd.server_close()
         if self._thread is not None:
             self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                raise RuntimeError("MockServer thread failed to exit within 5s")
         self._httpd = None
         self._thread = None
 

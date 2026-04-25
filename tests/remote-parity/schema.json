@@ -40,7 +40,7 @@
         "required": ["method", "status"],
         "additionalProperties": false,
         "properties": {
-          "method": { "enum": ["GET", "HEAD"] },
+          "method": { "type": "string", "pattern": "^[A-Z]+$" },
           "headers": {
             "type": "object",
             "additionalProperties": { "type": "string" }
