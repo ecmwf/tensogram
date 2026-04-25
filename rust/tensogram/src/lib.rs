@@ -24,6 +24,7 @@ mod parallel;
 pub mod pipeline;
 #[cfg(feature = "remote")]
 pub mod remote;
+pub mod remote_scan_parse;
 pub(crate) mod restore;
 pub mod scan_opts;
 pub mod streaming;
@@ -49,6 +50,10 @@ pub use iter::{FileMessageIter, MessageIter, ObjectIter, messages, objects, obje
 pub use metadata::{RESERVED_KEY, compute_common, verify_canonical_cbor};
 pub use parallel::{DEFAULT_PARALLEL_THRESHOLD_BYTES, ENV_THREADS};
 pub use pipeline::{DataPipeline, apply_pipeline};
+pub use remote_scan_parse::{
+    BackwardCommit, BackwardOutcome, ForwardOutcome, parse_backward_postamble,
+    parse_forward_preamble, same_message_check, validate_backward_preamble,
+};
 pub use scan_opts::RemoteScanOptions;
 pub use streaming::StreamingEncoder;
 pub use tensogram_encodings::bitmask::MaskMethod;
