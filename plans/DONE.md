@@ -1037,9 +1037,9 @@ pinned reference values across a time-series.
 - Golden `.tgm` fixtures (none use `simple_packing`).
 - Any non-`simple_packing` codec.
 
-### Post-review hardening
+### Hardening fixes
 
-Three follow-up fixes folded in after Copilot review on PR #97:
+Three follow-ups landed alongside the rename:
 
 | Fix | What changed |
 |-----|-------------|
@@ -1054,8 +1054,8 @@ Test additions: `s3b_explicit_path_missing_bits_per_value_is_a_clear_error` and 
 Internal-only restructuring of the remote backend to support a
 two-cursor "meet-in-the-middle" scan over HTTP Range requests.  The
 public API stays forward-only by default; the bidirectional path is
-reachable via a `pub(crate)` constructor used by tests and by the
-follow-on public-surface sub-task.
+reachable via a `pub(crate)` constructor used by tests until the
+public API is extended.
 
 | Component | What changed |
 |-----------|-------------|

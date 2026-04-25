@@ -139,10 +139,10 @@ pub fn is_remote_url(source: &str) -> bool {
 
 /// Internal knobs for the remote scan walker.
 ///
-/// Crate-private until a follow-on sub-task promotes it to the public
-/// API surface.  The default is `bidirectional = false` — the existing
-/// forward-only behaviour — so every existing call site lands here
-/// unchanged through [`RemoteBackend::open`] / [`RemoteBackend::open_async`].
+/// Crate-private until promoted to the public API.  The default is
+/// `bidirectional = false` — the existing forward-only behaviour —
+/// so every existing call site lands here unchanged through
+/// [`RemoteBackend::open`] / [`RemoteBackend::open_async`].
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RemoteScanOptions {
     /// Enable the bidirectional walker.  When `true`, the backend
@@ -892,7 +892,7 @@ impl RemoteBackend {
 
         let bwd_outcome = parse_backward_postamble(&bytes[1], &snap);
 
-        let bwd_round2 = match &bwd_outcome {
+        let candidate_preamble_bytes = match &bwd_outcome {
             BackwardOutcome::NeedPreambleValidation { msg_start, .. } => {
                 Some(self.get_range(*msg_start..*msg_start + PREAMBLE_SIZE as u64)?)
             }
@@ -905,7 +905,12 @@ impl RemoteBackend {
         // does drop and re-acquire the lock around the await, which is
         // why it needs the explicit `state.matches` check.
         let fwd_kind = parse_forward_preamble(&bytes[0], snap.next, self.file_size, bound);
-        self.apply_round_outcomes(state, fwd_kind, bwd_outcome, bwd_round2.as_deref());
+        self.apply_round_outcomes(
+            state,
+            fwd_kind,
+            bwd_outcome,
+            candidate_preamble_bytes.as_deref(),
+        );
         Ok(())
     }
 
@@ -919,15 +924,15 @@ impl RemoteBackend {
         state: &mut RemoteState,
         fwd: ForwardOutcome,
         bwd: BackwardOutcome,
-        bwd_round2: Option<&[u8]>,
+        candidate_preamble_bytes: Option<&[u8]>,
     ) {
         match bwd {
             BackwardOutcome::Format(reason) => state.disable_backward(reason),
             BackwardOutcome::Streaming => state.disable_backward("streaming-zero-bwd"),
             BackwardOutcome::NeedPreambleValidation { msg_start, length } => {
-                let validation = bwd_round2
+                let validation = candidate_preamble_bytes
                     .map(|bytes| validate_backward_preamble(bytes, msg_start, length))
-                    .unwrap_or(BackwardCommit::Format("missing-round2-buffer"));
+                    .unwrap_or(BackwardCommit::Format("missing-candidate-preamble"));
                 Self::commit_or_yield_backward(state, &fwd, validation);
             }
         }
@@ -2106,7 +2111,7 @@ impl RemoteBackend {
         }
 
         let bwd_outcome = parse_backward_postamble(&bytes[1], &snap);
-        let bwd_round2 = match &bwd_outcome {
+        let candidate_preamble_bytes = match &bwd_outcome {
             BackwardOutcome::NeedPreambleValidation { msg_start, .. } => Some(
                 self.get_range_async(*msg_start..*msg_start + PREAMBLE_SIZE as u64)
                     .await?,
@@ -2119,7 +2124,12 @@ impl RemoteBackend {
             return Ok(());
         }
         let fwd_outcome = parse_forward_preamble(&bytes[0], snap.next, self.file_size, bound);
-        self.apply_round_outcomes(&mut state, fwd_outcome, bwd_outcome, bwd_round2.as_deref());
+        self.apply_round_outcomes(
+            &mut state,
+            fwd_outcome,
+            bwd_outcome,
+            candidate_preamble_bytes.as_deref(),
+        );
         Ok(())
     }
 
@@ -3011,7 +3021,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_complete_truth_table_phase_1_equivalence() {
+    fn scan_complete_truth_table_forward_only_equivalence() {
         for fwd_terminated in [false, true] {
             for gap_closed in [false, true] {
                 let s = RemoteState {

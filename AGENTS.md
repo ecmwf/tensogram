@@ -41,7 +41,7 @@
   - Remember to add examples (see below)
 
 - IMPORTANT:
-  - when you commit your work, make sure it passess all checks, tests and lints -- by running `make all`
+  - when you commit your work, make sure it passes all checks, tests and lints -- by running `make all`
 
 - IMPORTANT: NEVER use process-ephemeral references in code, comments, docstrings,
   commit messages, or planning documents. The code outlives the workflow that
