@@ -287,8 +287,8 @@ For speculative ideas, see `IDEAS.md`.
 - [ ] **remote 8 — bidirectional scan across Rust / Python / TS+WASM**:
   Reader-side only — **zero wire-format changes**; existing `.tgm`
   files gain the speedup automatically when read by a new client.
-  Split into the sub-tasks below; land in order, each gated by the
-  cross-language parity harness (first sub-task).
+  Split into the sub-tasks below; each gated by the parity harness
+  foundation.
 
   - [x] ~~**parity harness foundation**~~ — `tests/remote-parity/`
     shipped.  Python `mock_server.py` with Range + HEAD +
