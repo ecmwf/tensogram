@@ -4,7 +4,7 @@
   "title": "Remote parity scan event",
   "description": "One normalised HTTP request observed by the mock server, tagged with its run identity and classified by category. See tests/remote-parity/README.md.",
   "type": "object",
-  "required": ["run_id", "scan_round", "direction", "category", "logical_range", "physical_requests"],
+  "required": ["run_id", "scan_round", "direction", "category", "logical_range", "physical_requests", "role"],
   "additionalProperties": false,
   "properties": {
     "run_id": {
@@ -15,15 +15,19 @@
     "scan_round": {
       "type": "integer",
       "minimum": -1,
-      "description": "Zero-based round index for 'scan' events (forward-only currently; bidirectional will pair forward + backward events under the same round). Non-scan events use -1."
+      "description": "Zero-based round index for 'scan' events. In bidirectional mode a round contains at most one forward preamble, one backward postamble, and one backward preamble validation (paired requests may arrive in either order). Non-scan events use -1."
     },
     "direction": {
       "enum": ["forward", "backward", "none"],
       "description": "Which cursor the request advances. 'none' for probes, payloads, fallbacks, and errors that are not part of a scan walk."
     },
+    "role": {
+      "enum": ["fwd_preamble", "bwd_postamble", "bwd_preamble_validation", "none"],
+      "description": "Scan-walk role assigned by the classifier and round builder. 'fwd_preamble' = forward preamble fetch at a known message start. 'bwd_postamble' = backward postamble fetch matching a known message end. 'bwd_preamble_validation' = a fwd_preamble-shaped fetch that follows a bwd_postamble in the same round. 'none' for non-scan events."
+    },
     "category": {
       "enum": ["probe", "scan", "payload", "fallback", "error"],
-      "description": "'probe' = HEAD / Range-support check (excluded from parity). 'scan' = a 24-byte preamble read that belongs to the current forward-only scan walk (compared for parity). 'payload' = bulk data-object fetch (logged, not compared). 'fallback' = HTTP 200 eager full-body download (logged, not compared). 'error' = non-200/non-206 response (logged, not compared). Future work (bidirectional walking, eager footer / END_MAGIC discovery) may extend `classifier.py` to recognise additional scan-walk reads, but those are not part of the current 'scan' contract described by this schema."
+      "description": "'probe' = HEAD / Range-support check (excluded from parity). 'scan' = a 24-byte preamble or postamble read participating in the current scan walk (compared for parity). 'payload' = bulk data-object fetch or eager-footer chunk fetch (logged, not part of scan parity). 'fallback' = HTTP 200 eager full-body download (logged, not compared). 'error' = non-200/non-206 response (logged, not compared)."
     },
     "logical_range": {
       "type": "array",

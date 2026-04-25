@@ -28,7 +28,17 @@ from dataclasses import dataclass
 from typing import Literal
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from classifier import NON_SCAN_ROUND, Category, Direction, Observation, RoundBuilder, classify
+import tensogram
+from classifier import (
+    NON_SCAN_ROUND,
+    Category,
+    Direction,
+    FixtureLayout,
+    Observation,
+    RoundBuilder,
+    ScanRole,
+    classify,
+)
 from mock_server import MockServer, RequestRecord
 
 _THIS_DIR = pathlib.Path(__file__).resolve().parent
@@ -53,6 +63,13 @@ _FIXTURES: tuple[str, ...] = (
     "two-msg",
     "ten-msg",
     "hundred-msg",
+    "single-msg-footer",
+    "ten-msg-footer",
+)
+
+_FOOTER_FIXTURES: tuple[str, ...] = (
+    "single-msg-footer",
+    "ten-msg-footer",
 )
 
 _OPS: tuple[Op, ...] = (
@@ -67,7 +84,7 @@ _LAYOUT_MODES: tuple[Mode, ...] = ("forward", "bidirectional")
 _LAYOUT_LANGUAGES: tuple[Language, ...] = ("rust", "ts")
 
 
-def is_layout_dump_case(case: "DriverCase") -> bool:
+def is_layout_dump_case(case: DriverCase) -> bool:
     """True for cases that emit `dump-layout` JSON to stdout.
 
     These cases are excluded from event-based parity assertions
@@ -88,6 +105,7 @@ class ScanEvent:
     category: Category
     logical_range: tuple[int, int]
     physical_requests: tuple[dict, ...]
+    role: ScanRole = "none"
 
     def to_dict(self) -> dict:
         return {
@@ -97,6 +115,7 @@ class ScanEvent:
             "category": self.category,
             "logical_range": list(self.logical_range),
             "physical_requests": list(self.physical_requests),
+            "role": self.role,
         }
 
 
@@ -118,8 +137,28 @@ class RunResult:
     stdout: str
 
 
-def normalise_log(run_id: str, records: list[RequestRecord]) -> list[ScanEvent]:
-    builder = RoundBuilder()
+def load_fixture_layout(fixture: str) -> FixtureLayout:
+    """Pre-compute message starts and ends for one fixture.
+
+    The classifier role-tags 24-byte explicit Range fetches by matching
+    against this layout, so it must reflect the exact bytes the mock
+    server will serve.  Re-read on every harness invocation since
+    fixtures regenerate with fresh provenance UUIDs.
+    """
+    data = (_FIXTURES_DIR / f"{fixture}.tgm").read_bytes()
+    layouts = list(tensogram.scan(data))
+    starts = frozenset(offset for offset, _length in layouts)
+    ends = frozenset(offset + length for offset, length in layouts)
+    return FixtureLayout(message_starts=starts, message_ends=ends, total_size=len(data))
+
+
+def normalise_log(
+    run_id: str,
+    records: list[RequestRecord],
+    layout: FixtureLayout | None = None,
+    forward_only: bool = True,
+) -> list[ScanEvent]:
+    builder = RoundBuilder(forward_only=forward_only)
     events: list[ScanEvent] = []
     for record in records:
         classified = classify(
@@ -128,7 +167,8 @@ def normalise_log(run_id: str, records: list[RequestRecord]) -> list[ScanEvent]:
                 range_header=record.range_header,
                 status=record.status,
                 response_bytes=record.response_bytes,
-            )
+            ),
+            layout,
         )
         scan_round = builder.assign(classified)
         events.append(
@@ -139,6 +179,7 @@ def normalise_log(run_id: str, records: list[RequestRecord]) -> list[ScanEvent]:
                 category=classified.category,
                 logical_range=classified.logical_range,
                 physical_requests=(classified.physical,),
+                role=classified.role,
             )
         )
     return events
@@ -158,9 +199,7 @@ def _all_cases() -> list[DriverCase]:
         for language in _LAYOUT_LANGUAGES:
             for op in _LAYOUT_OPS:
                 for mode in _LAYOUT_MODES:
-                    cases.append(
-                        DriverCase(fixture=fixture, language=language, op=op, mode=mode)
-                    )
+                    cases.append(DriverCase(fixture=fixture, language=language, op=op, mode=mode))
     return cases
 
 
@@ -329,6 +368,9 @@ def collect_events(cases: list[DriverCase]) -> dict[str, RunResult]:
     _check_no_duplicate_run_ids(cases)
     _ensure_prereqs()
 
+    fixtures_used = {case.fixture for case in cases}
+    layouts: dict[str, FixtureLayout] = {f: load_fixture_layout(f) for f in fixtures_used}
+
     result: dict[str, RunResult] = {}
     with MockServer(_FIXTURES_DIR) as server:
         for case in cases:
@@ -342,7 +384,12 @@ def collect_events(cases: list[DriverCase]) -> dict[str, RunResult]:
                     "check the driver's stderr."
                 )
             result[case.run_id] = RunResult(
-                events=normalise_log(case.run_id, records),
+                events=normalise_log(
+                    case.run_id,
+                    records,
+                    layout=layouts[case.fixture],
+                    forward_only=(case.mode == "forward"),
+                ),
                 stdout=stdout,
             )
     return result

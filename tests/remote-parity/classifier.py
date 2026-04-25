@@ -8,34 +8,63 @@
 
 """Request classification and scan-round assignment.
 
-Two responsibilities, kept deliberately separate so future backward-scan
-and eager footer-discovery work can extend them without touching the
-rest of the harness:
+Three responsibilities, kept deliberately separate so future scan-walker
+extensions can extend them without touching the rest of the harness:
 
-- `Classifier` maps one raw HTTP observation to `(category, direction,
-  logical_range)` based on status + method + range length + response
-  bytes. Status-aware: non-2xx responses become ``error``.
-- `RoundBuilder` walks classified events in observed order and assigns
-  `scan_round`. Forward-only today (one scan event per round);
-  bidirectional will pair forward + backward events per round.
+- ``Classifier`` maps one raw HTTP observation to ``(category, role,
+  direction, logical_range)``.  Status-aware: non-2xx responses become
+  ``error``.  When a ``FixtureLayout`` is supplied, 24-byte explicit
+  Range fetches are role-tagged by matching the range's start/end
+  against the fixture's known message starts and ends:
+    - ``[msg_start, msg_start + 24)`` → ``fwd_preamble`` (forward
+      preamble OR backward preamble validation; the round builder
+      decides which).
+    - ``[msg_end - 24, msg_end)`` → ``bwd_postamble`` (backward).
+  Without a layout, the fallback labels every 24-byte fetch
+  ``fwd_preamble`` (forward-only contract).
 
-Schema contract is defined by `schema.json`. Non-scan events use
+- ``RoundBuilder`` walks classified events in observed order and
+  assigns ``scan_round``.  Forward-only mode: every scan event starts
+  a new round.  Bidirectional mode: a round contains at most one
+  ``fwd_preamble``, one ``bwd_postamble``, and one
+  ``bwd_preamble_validation`` (a second ``fwd_preamble``-shaped fetch
+  AFTER a ``bwd_postamble``).  Either of the paired requests can
+  start a round (``Promise.allSettled`` / ``store.get_ranges`` may
+  reorder the pair).
+
+Schema contract is defined by ``schema.json``.  Non-scan events use
 ``scan_round = -1`` and ``direction = "none"``.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 Category = Literal["probe", "scan", "payload", "fallback", "error"]
 Direction = Literal["forward", "backward", "none"]
+ScanRole = Literal["fwd_preamble", "bwd_postamble", "bwd_preamble_validation", "none"]
 
 PREAMBLE_BYTES = 24
+POSTAMBLE_BYTES = 24
 NON_SCAN_ROUND = -1
 
 _EXPLICIT_RANGE_RE = re.compile(r"^bytes=(\d+)-(\d+)$")
+
+
+@dataclass(frozen=True)
+class FixtureLayout:
+    """Pre-computed message starts and ends for one fixture.
+
+    Used by the classifier to role-tag 24-byte explicit Range fetches
+    in bidirectional mode without having to observe the walker's state.
+    Computed once per fixture from ``tensogram.scan(fixture_bytes)``.
+    """
+
+    message_starts: frozenset[int]
+    message_ends: frozenset[int]
+    total_size: int
 
 
 @dataclass(frozen=True)
@@ -50,15 +79,16 @@ class Observation:
 
 @dataclass(frozen=True)
 class Classified:
-    """Result of classifying one `Observation`."""
+    """Result of classifying one ``Observation``."""
 
     category: Category
     direction: Direction
     logical_range: tuple[int, int]
     physical: dict
+    role: ScanRole = "none"
 
 
-def classify(observation: Observation) -> Classified:
+def classify(observation: Observation, layout: FixtureLayout | None = None) -> Classified:
     physical = _physical_dict(observation)
     logical_range = _logical_from_range(observation.range_header, observation.response_bytes)
 
@@ -76,30 +106,27 @@ def classify(observation: Observation) -> Classified:
     if observation.status != 206:
         return Classified("error", "none", logical_range, physical)
 
-    # Scan walks issue strict explicit ranges (`bytes=N-M`, decimals
-    # only). Suffix (`bytes=-N`), open-ended (`bytes=N-`), multi-range,
-    # missing, or otherwise malformed Range headers all fall to
-    # `payload` — they are not part of the current forward-only scan
-    # contract.
     explicit = _parse_explicit_single_range(observation.range_header)
     if explicit is None:
         return Classified("payload", "none", logical_range, physical)
 
     start, end_inclusive = explicit
     actual_end = min(end_inclusive + 1, start + observation.response_bytes)
-    if actual_end - start == PREAMBLE_BYTES:
-        return Classified("scan", "forward", (start, actual_end), physical)
+    span = actual_end - start
+    if span != PREAMBLE_BYTES:
+        return Classified("payload", "none", (start, actual_end), physical)
+
+    if layout is None:
+        return Classified("scan", "forward", (start, actual_end), physical, "fwd_preamble")
+
+    if start in layout.message_starts:
+        return Classified("scan", "forward", (start, actual_end), physical, "fwd_preamble")
+    if actual_end in layout.message_ends:
+        return Classified("scan", "backward", (start, actual_end), physical, "bwd_postamble")
     return Classified("payload", "none", (start, actual_end), physical)
 
 
 def _parse_explicit_single_range(range_header: str | None) -> tuple[int, int] | None:
-    """Parse a strict ``bytes=N-M`` header into ``(start, end_inclusive)``.
-
-    Returns ``None`` for missing, suffix (``bytes=-N``), open-ended
-    (``bytes=N-``), multi-range (``bytes=a-b,c-d``), signed, or any
-    other malformed input. Matching is intentionally strict because
-    only this form is part of the scan-walk contract today.
-    """
     if range_header is None:
         return None
     m = _EXPLICIT_RANGE_RE.match(range_header.strip())
@@ -124,12 +151,6 @@ def _logical_from_range(range_header: str | None, response_bytes: int) -> tuple[
             int(spec[1:])
         except ValueError:
             return (0, response_bytes)
-        # Suffix ranges (`bytes=-n`) identify the last n bytes of the
-        # object, but without the total object size or a parsed
-        # `Content-Range` header we can't recover the true logical
-        # start offset here. Fall back to the observed response span;
-        # capturing total size is tracked for when bidirectional scan
-        # adds suffix-range usage.
         return (0, response_bytes)
 
     if "-" not in spec:
@@ -142,11 +163,6 @@ def _logical_from_range(range_header: str | None, response_bytes: int) -> tuple[
     if start < 0:
         return (0, response_bytes)
 
-    # Always clamp the upper bound to the bytes actually served: if the
-    # client asked beyond EOF, the mock server (and most HTTP servers)
-    # return only the available suffix. Trusting the request header here
-    # would inflate logical_range past what was observed and cause
-    # spurious parity mismatches.
     served_end = start + response_bytes
     if not end_s:
         return (start, served_end)
@@ -166,23 +182,60 @@ def _physical_dict(observation: Observation) -> dict:
     return {"method": observation.method, "headers": headers, "status": observation.status}
 
 
+@dataclass
 class RoundBuilder:
-    """Assigns `scan_round` to classified events in observation order.
+    """Assigns ``scan_round`` to classified events in observation order.
 
     Forward-only contract: every ``scan`` event starts a new round.
-    Non-scan events get `scan_round = NON_SCAN_ROUND`.
+    Non-scan events get ``scan_round = NON_SCAN_ROUND``.
 
-    Bidirectional (future): forward + backward events belonging to the
-    same logical round share a `scan_round`. This class is the
-    extension point — override or subclass without touching callers.
+    Bidirectional contract: a round contains at most one
+    ``fwd_preamble``, one ``bwd_postamble``, and one
+    ``bwd_preamble_validation`` (which is a ``fwd_preamble``-shaped
+    fetch following a ``bwd_postamble`` in the same round).  Either
+    of the paired requests can start a round: ``Promise.allSettled``
+    and ``store.get_ranges`` parallelise the pair, so the mock-server
+    log can observe them in either order.
     """
 
-    def __init__(self) -> None:
-        self._next_round = 0
+    forward_only: bool = True
+    _next_round: int = 0
+    _round_has: set[ScanRole] = field(default_factory=set)
 
-    def assign(self, classified: Classified) -> int:
-        if classified.category != "scan":
+    def assign(self, c: Classified) -> int:
+        if c.category != "scan":
             return NON_SCAN_ROUND
-        round_id = self._next_round
+        if self.forward_only:
+            r = self._next_round
+            self._next_round += 1
+            return r
+        return self._assign_bidirectional(c.role)
+
+    def _assign_bidirectional(self, role: ScanRole) -> int:
+        # The 8 disambiguation rules below cover every possible
+        # arrival order of a paired round + its preamble validation.
+        relabel: ScanRole = role
+        if role == "fwd_preamble" and "bwd_postamble" in self._round_has:
+            # A `fwd_preamble`-shaped fetch following a `bwd_postamble`
+            # within the same round is the backward preamble validation,
+            # not a fresh forward preamble.
+            relabel = "bwd_preamble_validation"
+
+        # Open a new round when this role would conflict with the
+        # current round's already-seen roles.
+        opens_new = (
+            (relabel == "fwd_preamble" and "fwd_preamble" in self._round_has)
+            or (relabel == "bwd_postamble" and "bwd_postamble" in self._round_has)
+            or (
+                relabel == "bwd_preamble_validation"
+                and "bwd_preamble_validation" in self._round_has
+            )
+        )
+        if opens_new:
+            self._open_new_round()
+        self._round_has.add(relabel)
+        return self._next_round
+
+    def _open_new_round(self) -> None:
         self._next_round += 1
-        return round_id
+        self._round_has = set()
