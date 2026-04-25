@@ -313,6 +313,32 @@ function App() {
             />
           </div>
         )}
+        {clickPoint !== null && (
+          <div
+            style={{
+              position: 'absolute',
+              top: clickPoint.screenY,
+              left: clickPoint.screenX,
+              width: 0,
+              height: 0,
+              pointerEvents: 'none',
+              zIndex: 19,
+            }}
+          >
+            <svg
+              width={16}
+              height={16}
+              style={{ position: 'absolute', top: -8, left: -8, overflow: 'visible' }}
+              viewBox="-8 -8 16 16"
+            >
+              <circle cx={0} cy={0} r={5} fill="none" stroke="#fff" strokeWidth={1.5} />
+              <line x1={-8} y1={0} x2={-6} y2={0} stroke="#fff" strokeWidth={1.5} />
+              <line x1={6} y1={0} x2={8} y2={0} stroke="#fff" strokeWidth={1.5} />
+              <line x1={0} y1={-8} x2={0} y2={-6} stroke="#fff" strokeWidth={1.5} />
+              <line x1={0} y1={6} x2={0} y2={8} stroke="#fff" strokeWidth={1.5} />
+            </svg>
+          </div>
+        )}
         {clickPoint !== null && inspectionResult !== null && (
           <PointInspector
             result={inspectionResult}
