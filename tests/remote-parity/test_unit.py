@@ -156,22 +156,31 @@ class TestMockServer:
             url = server.url_for("unit-test-416", "single-msg.tgm")
             req = urllib.request.Request(url, headers={"Range": "bytes=999999-9999999"})
             with pytest.raises(urllib.error.HTTPError) as excinfo:
-                urllib.request.urlopen(req).read()
-            assert excinfo.value.code == 416
+                urllib.request.urlopen(req)
+            try:
+                assert excinfo.value.code == 416
+            finally:
+                excinfo.value.close()
 
     def test_unknown_fixture_returns_404(self) -> None:
         with MockServer(_FIXTURES_DIR) as server:
             url = server.url_for("unit-test-404", "does-not-exist.tgm")
             with pytest.raises(urllib.error.HTTPError) as excinfo:
-                urllib.request.urlopen(url).read()
-            assert excinfo.value.code == 404
+                urllib.request.urlopen(url)
+            try:
+                assert excinfo.value.code == 404
+            finally:
+                excinfo.value.close()
 
     def test_path_traversal_rejected(self) -> None:
         with MockServer(_FIXTURES_DIR) as server:
             url = f"{server.base_url}/unit-test-traversal/../../../etc/passwd"
             with pytest.raises(urllib.error.HTTPError) as excinfo:
-                urllib.request.urlopen(url).read()
-            assert excinfo.value.code == 404
+                urllib.request.urlopen(url)
+            try:
+                assert excinfo.value.code == 404
+            finally:
+                excinfo.value.close()
 
     def test_log_endpoint_returns_per_run(self) -> None:
         with MockServer(_FIXTURES_DIR) as server:
