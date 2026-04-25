@@ -1372,6 +1372,7 @@ async function tryBidirectionalRound(
             fetchRange(ctx, footerStart, footerEnd, true),
           );
         } catch {
+          if (ctx.signal?.aborted) return false;
           candidateFooterBytes = undefined;
         }
       }
