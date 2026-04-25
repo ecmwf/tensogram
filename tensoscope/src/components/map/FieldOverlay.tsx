@@ -287,22 +287,21 @@ function rgbaToDataUrl(rgba: Uint8ClampedArray, width: number, height: number): 
 // ── Bounds resolution ─────────────────────────────────────────────────
 
 /**
- * Resolve the effective rendering window from the overlay props.
+ * Resolve the effective rendering window.
  *
  * When bounds cross the antimeridian (east > 180 or west < -180) or span
  * more than 330° in longitude, fall back to the full global extent so there
  * are no gaps near the dateline.
  */
-function resolveBounds(props: FieldOverlayProps): {
-  lonMin: number; lonMax: number; latMin: number; latMax: number;
-  vw: number; vh: number;
-} {
-  const { bounds, viewportWidth, viewportHeight, mapProjection = 'mercator' } = props;
-
+function resolveBounds(
+  mapProjection: 'mercator' | 'geographic',
+  bounds: ViewBounds | undefined,
+  viewportWidth: number | undefined,
+  viewportHeight: number | undefined,
+): { lonMin: number; lonMax: number; latMin: number; latMax: number; vw: number; vh: number } {
   const latMax_ = mapProjection === 'geographic' ? LAT_MAX_GEOGRAPHIC : LAT_MAX_MERCATOR;
   const latMin_ = mapProjection === 'geographic' ? LAT_MIN_GEOGRAPHIC : LAT_MIN_MERCATOR;
 
-  // Global fallback defaults
   const globalVw = mapProjection === 'geographic' ? 2048 : 1440;
   const globalVh = mapProjection === 'geographic' ? 1024 : 720;
 

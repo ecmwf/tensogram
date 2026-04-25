@@ -47,7 +47,7 @@ export function findNearestPointIndex(
   let bestDist = Infinity;
   for (let i = 0; i < lat.length; i++) {
     const dlat = lat[i] - clickLat;
-    let dlon = ((lon[i] - clickLon + 540) % 360) - 180;
+    const dlon = ((lon[i] - clickLon + 540) % 360) - 180;
     const dist = dlat * dlat + dlon * dlon;
     if (dist < bestDist) {
       bestDist = dist;
