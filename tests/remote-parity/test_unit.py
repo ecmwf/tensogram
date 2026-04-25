@@ -200,6 +200,23 @@ class TestMockServer:
             finally:
                 excinfo.value.close()
 
+    def test_directory_path_returns_404(self) -> None:
+        # Requesting the fixtures directory itself (a directory, not a
+        # file) used to bubble IsADirectoryError out of _serve; the
+        # harness now responds with a clean 404 and logs the request.
+        with MockServer(_FIXTURES_DIR) as server:
+            (_FIXTURES_DIR / "subdir-for-test").mkdir(exist_ok=True)
+            try:
+                url = server.url_for("unit-test-isdir", "subdir-for-test")
+                with pytest.raises(urllib.error.HTTPError) as excinfo:
+                    urllib.request.urlopen(url, timeout=_HTTP_TIMEOUT)
+                try:
+                    assert excinfo.value.code == 404
+                finally:
+                    excinfo.value.close()
+            finally:
+                (_FIXTURES_DIR / "subdir-for-test").rmdir()
+
     def test_log_endpoint_returns_per_run(self) -> None:
         with MockServer(_FIXTURES_DIR) as server:
             url = server.url_for("unit-test-log-a", "single-msg.tgm")
