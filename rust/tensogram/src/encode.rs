@@ -955,8 +955,10 @@ fn extract_simple_packing_params(
 /// Contract:
 /// * No-op when `encoding != "simple_packing"`.
 /// * No-op when both `sp_reference_value` and `sp_binary_scale_factor`
-///   are already present — the user's explicit values win, matching
-///   the Q2(b) decision from `plans/DONE.md`.
+///   are already present — explicit user values win and are not
+///   recomputed.  This supports advanced workflows that pin the
+///   reference value across many objects (e.g. for time-series delta
+///   encoding downstream).
 /// * `sp_bits_per_value` is required — error otherwise.
 /// * `sp_decimal_scale_factor` defaults to `0` when absent.
 /// * The data bytes are interpreted as float64 in the descriptor's
@@ -970,9 +972,9 @@ pub(crate) fn resolve_simple_packing_params(
     if desc.encoding != "simple_packing" {
         return Ok(());
     }
-    // Explicit computed params present → Q2(b): trust them, skip the
-    // auto-compute work entirely.  We still default the user-knob keys
-    // (sp_decimal_scale_factor) when absent so the pipeline's
+    // Explicit computed params present — trust them, skip the
+    // auto-compute work entirely.  We still default the
+    // sp_decimal_scale_factor knob when absent so the pipeline's
     // extract_simple_packing_params doesn't fault on a missing key.
     if desc.params.contains_key("sp_reference_value")
         && desc.params.contains_key("sp_binary_scale_factor")
@@ -983,26 +985,24 @@ pub(crate) fn resolve_simple_packing_params(
         return Ok(());
     }
 
-    let bits_per_value = match desc.params.get("sp_bits_per_value") {
-        Some(v) => u32::try_from(extract_u64(v)?).map_err(|_| {
-            TensogramError::Metadata("sp_bits_per_value out of u32 range".to_string())
-        })?,
-        None => {
-            return Err(TensogramError::Metadata(
-                "simple_packing requires sp_bits_per_value (the encoder can \
-                 auto-compute sp_reference_value + sp_binary_scale_factor from \
-                 the data, but the bit-width and decimal scale are the user \
-                 knobs).  Provide at least sp_bits_per_value, or the full \
-                 explicit 4-key set."
-                    .to_string(),
-            ));
-        }
-    };
-    let decimal_scale_factor = match desc.params.get("sp_decimal_scale_factor") {
-        Some(v) => i32::try_from(extract_i64(v)?).map_err(|_| {
+    if !desc.params.contains_key("sp_bits_per_value") {
+        return Err(TensogramError::Metadata(
+            "simple_packing requires sp_bits_per_value (the encoder can \
+             auto-compute sp_reference_value + sp_binary_scale_factor from \
+             the data, but the bit-width and decimal scale are the user \
+             knobs).  Provide at least sp_bits_per_value, or the full \
+             explicit 4-key set."
+                .to_string(),
+        ));
+    }
+    let bits_per_value = u32::try_from(get_u64_param(&desc.params, "sp_bits_per_value")?)
+        .map_err(|_| TensogramError::Metadata("sp_bits_per_value out of u32 range".to_string()))?;
+    let decimal_scale_factor = if desc.params.contains_key("sp_decimal_scale_factor") {
+        i32::try_from(get_i64_param(&desc.params, "sp_decimal_scale_factor")?).map_err(|_| {
             TensogramError::Metadata("sp_decimal_scale_factor out of i32 range".to_string())
-        })?,
-        None => 0,
+        })?
+    } else {
+        0
     };
 
     // simple_packing only supports float64.  Checked here with an
@@ -1036,36 +1036,6 @@ pub(crate) fn resolve_simple_packing_params(
         ciborium::Value::Integer(i64::from(params.bits_per_value).into()),
     );
     Ok(())
-}
-
-/// Extract a u64 from a ciborium value, accepting integer-valued
-/// `Integer` nodes only.  Floats and other shapes are rejected.
-fn extract_u64(v: &ciborium::Value) -> Result<u64> {
-    match v {
-        ciborium::Value::Integer(i) => {
-            let n: i128 = (*i).into();
-            u64::try_from(n).map_err(|_| {
-                TensogramError::Metadata(format!("integer value {n} out of u64 range"))
-            })
-        }
-        other => Err(TensogramError::Metadata(format!(
-            "expected integer, got {other:?}"
-        ))),
-    }
-}
-
-fn extract_i64(v: &ciborium::Value) -> Result<i64> {
-    match v {
-        ciborium::Value::Integer(i) => {
-            let n: i128 = (*i).into();
-            i64::try_from(n).map_err(|_| {
-                TensogramError::Metadata(format!("integer value {n} out of i64 range"))
-            })
-        }
-        other => Err(TensogramError::Metadata(format!(
-            "expected integer, got {other:?}"
-        ))),
-    }
 }
 
 /// Reinterpret raw bytes as float64 honouring the descriptor's
