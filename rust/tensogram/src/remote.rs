@@ -393,8 +393,22 @@ pub(crate) struct RemoteBackend {
 /// (`prev_scan_offset`) bound the unknown gap.  In forward-only mode
 /// (`bwd_active = false`), `suffix_rev` stays empty and
 /// `prev_scan_offset` stays at `file_size`, collapsing the state
-/// machine to today's behaviour.  See `state_invariants` test for
-/// the full invariant list.
+/// machine to today's behaviour — `scan_complete()` reduces to the
+/// pre-existing `fwd_terminated` semantics.
+///
+/// Invariants pinned by the helpers below and the unit tests:
+///
+/// 1. `next_scan_offset <= prev_scan_offset <= file_size` while
+///    scanning is in progress.
+/// 2. `layouts` is a contiguous forward prefix; `next_scan_offset`
+///    is the end of that prefix.
+/// 3. `suffix_rev` is a contiguous EOF-first suffix; `prev_scan_offset`
+///    is the start of its first entry while `bwd_active`.
+/// 4. `bwd_active => !gap_closed && !fwd_terminated`.
+/// 5. `gap_closed => suffix_rev.is_empty() && !bwd_active && scan_complete()`.
+/// 6. `fwd_terminated => suffix_rev.is_empty() && !bwd_active`
+///    (bidirectional is never recovery — `terminate_forward` cascades
+///    to `disable_backward`).
 #[derive(Debug, Default)]
 struct RemoteState {
     /// Forward-discovered layouts.  `layouts[i]` always has stable
@@ -888,9 +902,6 @@ impl RemoteBackend {
         bwd: BackwardOutcome,
         bwd_round2: Option<&[u8]>,
     ) {
-        // Apply backward first so format/streaming yields can fire
-        // before any forward commit, keeping state on the "single
-        // forward terminate clears suffix" path.
         match bwd {
             BackwardOutcome::Format(reason) => state.disable_backward(reason),
             BackwardOutcome::Streaming => state.disable_backward("streaming-zero-bwd"),
@@ -2592,21 +2603,17 @@ impl RemoteBackend {
         }
         let max_idx = msg_indices.iter().copied().max().unwrap_or(0);
         loop {
-            let action = {
+            let bidir = {
                 let state = self.lock_state()?;
                 if state.layouts.len() > max_idx || state.scan_complete() {
                     break;
                 }
-                if state.bwd_active && !state.fwd_terminated {
-                    EagerAction::ScanBidir
-                } else {
-                    EagerAction::ScanForwardEager
-                }
+                state.bwd_active && !state.fwd_terminated
             };
-            match action {
-                EagerAction::ScanBidir => self.scan_bidir_round_async().await?,
-                EagerAction::ScanForwardEager => self.scan_and_discover_next_async().await?,
-                EagerAction::Discover => unreachable!("Discover not produced for batch scan loop"),
+            if bidir {
+                self.scan_bidir_round_async().await?;
+            } else {
+                self.scan_and_discover_next_async().await?;
             }
         }
 
