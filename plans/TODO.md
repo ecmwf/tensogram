@@ -303,51 +303,39 @@ For speculative ideas, see `IDEAS.md`.
     live fixture layout via `tensogram.scan` — no committed
     snapshots.  `make remote-parity` runs the full suite.
 
-  - [ ] **Rust state refactor — zero behaviour change** (`remote.rs`,
-    ~300 LOC).  Introduce internal `RemoteScanOptions { bidirectional:
-    bool, max_message_size: u64 }` with `Default` → `{ false, 4 GiB }`.
-    Extend `RemoteState` with unused / zero-initialised
-    `suffix_rev: Vec<MessageLayout>`, `prev_scan_offset: u64`,
-    `bwd_active: bool`, `fwd_terminated: bool`, `gap_closed: bool`;
-    compute `scan_complete = gap_closed || (fwd_terminated &&
-    suffix_rev.is_empty())` — equals today's `scan_complete` because
-    `suffix_rev` is always empty.  Extract helpers `is_layout_ready`,
-    `record_forward_hop`, `walkers_overlap`, `snapshot_offsets`.
-    Every existing `state.scan_complete` read/write migrated to the new
-    accessors.  All existing remote tests pass unchanged; the parity
-    harness produces byte-identical Rust forward-only logs.
+  - [x] ~~**Rust state refactor — zero behaviour change**~~ —
+    `RemoteScanOptions { bidirectional, max_message_size }` (default
+    `{ false, 4 GiB }`) plumbed through `open_with_scan_opts` /
+    `open_async_with_scan_opts` (`pub(crate)`).  `RemoteState`
+    extended with `suffix_rev`, `prev_scan_offset`, `bwd_active`,
+    `fwd_terminated`, `gap_closed`, plus a `scan_epoch` race-detection
+    counter.  `scan_complete: bool` replaced with computed
+    `scan_complete()` accessor.  Helpers `record_forward_hop`,
+    `terminate_forward`, `disable_backward` introduced; every
+    `state.scan_complete = true` site migrated.  Truth-table tests
+    pin Phase 1 byte-identical equivalence.
 
-  - [ ] **Rust bidirectional implementation** (`remote.rs`, ~600
-    LOC).  `scan_prev_locked` / `scan_prev_async` backward hop via
-    `Postamble::read_from`.  `scan_bidirectional_hop_locked` / `_async`
-    coordinates one forward + one backward hop per round via
-    `store.get_ranges(&[fwd_r, bwd_r])` — **not** `tokio::join!`.
-    Round 2 uses the batched API for length-dependent backward-preamble
-    validation; forward walker deliberately does NOT validate
-    `END_MAGIC` (matches current remote semantics, avoids doubling
-    forward GETs).  Streaming edge case (`fwd_total == 0` in Round 1)
-    skips forward Round 2 and handles via current streaming branch.
-    Explicit format-vs-transport error taxonomy: bad magic / parse
-    error / `total_length > max_message_size` / `total_length == 0`
-    are format errors and disable backward (forward remains canonical);
-    network timeout / 503 / short read / abort are transport errors
-    and propagate with **zero state mutation** and **no partial
-    backward commit** — "bidirectional is an optimisation, never a
-    recovery mode".  Dual-offset atomic commit: both
-    `next_scan_offset == snap.next` and `prev_scan_offset ==
-    snap.prev` must hold on reacquire.  On `fwd_terminated` before
-    `gap_closed`, **discard `suffix_rev`** to preserve current remote
-    semantics (zero regression).  `#[tracing::instrument]` events for
-    `remote_scan.mode`, `.fallback_reason`, `.fwd_terminated`,
-    `.gap_closed`.  Every read accessor (`read_message`,
-    `read_metadata`, `read_descriptors`, `read_object`,
-    `message_count`, `ensure_all_layouts_batch_async`, all async
-    variants) audited for dual-list migration.  Tests cover every row
-    of the error taxonomy, 1-message concurrent-caller race (no
-    duplicate commit), `total_length > 4 GiB + 1` fuzz boundary,
-    backward `msg_start < next_scan_offset` overlap, transport-error
-    retry leaves state clean.  Still internal only — public API
-    unchanged.
+  - [x] ~~**Rust bidirectional implementation**~~ — paired-fetch
+    bidirectional walker built on `store.get_ranges(&[fwd, bwd])`.
+    Pure parsers `parse_backward_postamble`, `validate_backward_preamble`,
+    `parse_forward_preamble` keep state-mutation under one lock
+    acquisition.  `ScanSnapshot { next, prev, epoch }` validated on
+    reacquire so any stale paired fetch fails its commit (epoch
+    bumps on every transition).  Decision table commits both
+    walkers when non-overlapping, commits forward only on
+    same-message overlap (1-msg / odd-count meet), `disable_backward`
+    on true overlap or any backward format / streaming yield, and
+    `terminate_forward` on forward format errors (which itself
+    discards `suffix_rev` — bidirectional is never recovery).
+    `forward_bound` caps forward at `prev_scan_offset` while
+    `suffix_rev` non-empty.  `scan_step_*` central dispatcher;
+    every read accessor migrated to use it (forward-only mode keeps
+    its combined-chunk discovery optimisation).  Tracing on
+    `tensogram::remote_scan`: mode / fallback / fwd_terminated /
+    gap_closed / per-hop direction+offset+length.  Six end-to-end
+    tests covering 1/2/3/10-message files, streaming-postamble
+    yield, and corrupt END_MAGIC graceful degradation.  Public
+    API unchanged.
 
   - [ ] **Rust + Python public surface** (`file.rs`,
     `python/bindings/`, ~200 LOC).  `TensogramFile::open_remote` /

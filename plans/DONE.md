@@ -1039,7 +1039,7 @@ pinned reference values across a time-series.
 
 ### Post-review hardening
 
-Three Pass-4-level fixes folded in after Copilot review on PR #97:
+Three follow-up fixes folded in after Copilot review on PR #97:
 
 | Fix | What changed |
 |-----|-------------|
@@ -1048,3 +1048,33 @@ Three Pass-4-level fixes folded in after Copilot review on PR #97:
 | **Fallible byte→f64 allocation** | `bytes_as_f64_vec` uses `try_reserve_exact` + push loop (matching `tensogram_encodings::pipeline::bytes_to_f64`) instead of an infallible `.collect()`, so encode-time auto-compute on very large inputs returns a structured `TensogramError::Encoding` on OOM rather than aborting the process. |
 
 Test additions: `s3b_explicit_path_missing_bits_per_value_is_a_clear_error` and `s8_eight_byte_non_float_dtypes_rejected` (auto + explicit paths) in `rust/tensogram/tests/simple_packing_auto_compute.rs`.  Existing `edge_cases::missing_required_param` updated to assert on the new key-named diagnostic.
+
+## Remote bidirectional scan — internal walker
+
+Internal-only restructuring of the remote backend to support a
+two-cursor "meet-in-the-middle" scan over HTTP Range requests.  The
+public API stays forward-only by default; the bidirectional path is
+reachable via a `pub(crate)` constructor used by tests and by the
+follow-on public-surface sub-task.
+
+| Component | What changed |
+|-----------|-------------|
+| `tensogram/remote.rs` — state | `RemoteState` extended with `suffix_rev`, `prev_scan_offset`, `bwd_active`, `fwd_terminated`, `gap_closed`, plus a `scan_epoch` race-detection counter.  Old `scan_complete: bool` replaced by computed `scan_complete()` accessor — collapses to `fwd_terminated` when `bwd_active=false && suffix_rev.is_empty()` so forward-only mode is byte-identical to today's behaviour. |
+| `tensogram/remote.rs` — options | New `pub(crate) RemoteScanOptions { bidirectional }` (default `false`).  `RemoteBackend::open_with_scan_opts` / `open_async_with_scan_opts` accept it; `open` / `open_async` delegate with `Default`. |
+| `tensogram/remote.rs` — algorithm | `scan_bidir_round_*` issues one forward-preamble + one backward-postamble fetch via `store.get_ranges(&[fwd, bwd])`; when the postamble parses cleanly, a candidate-preamble fetch validates the backward-discovered offset.  Pure parsers `parse_backward_postamble`, `validate_backward_preamble`, and `parse_forward_preamble` keep state-mutation under one lock acquisition. |
+| `tensogram/remote.rs` — race detection | `ScanSnapshot { next, prev, epoch }` snapshotted before the paired fetch and validated for full-equality on reacquire in the async path; the sync path holds the mutex throughout `block_on_shared` so no recheck is needed.  `scan_epoch` bumps on every state-machine transition (forward/backward hop, fallback, terminate, close) so concurrent state changes — which can leave offsets unchanged — still invalidate stale paired fetches.  `scan_bidir_round_async` re-checks `bwd_active && !fwd_terminated` under the initial lock to defeat stale dispatch from a sibling that disabled backward in flight. |
+| `tensogram/remote.rs` — commit decision | `apply_round_outcomes` + `commit_or_yield_backward` encode the commit table: forward Hit non-overlapping → record forward; same-message (1-msg file or odd-count middle meet) → forward only, leave `suffix_rev` intact; forward Hit overlapping → `disable_backward("backward-overlaps-forward")`; forward `ExceedsBound` (corrupt suffix offset) → `disable_backward("forward-exceeds-backward-bound")` then commit forward; backward format/streaming → `disable_backward(reason)`; forward format → `terminate_forward(reason)` which itself discards `suffix_rev` (bidirectional is never recovery). |
+| `tensogram/remote.rs` — overflow safety | EOF and overlap guards use `pos.saturating_add(min_message_size) > bound` and `snap.prev < snap.next.saturating_add(min_message_size)` so wraparound on `u64::MAX`-class offsets correctly forces termination / forward-fallback.  Once the saturating guard passes, the unchecked `pos + PREAMBLE_SIZE` and `snap.prev - POSTAMBLE_SIZE` range constructions cannot wrap. |
+| `tensogram/remote.rs` — bound dispatch | `forward_bound(state)` returns `prev_scan_offset` when `suffix_rev` is non-empty, else `file_size`.  `scan_fwd_step_*` accepts the bound as a parameter so the bidirectional dispatcher can prevent forward overrun into backward-claimed suffix.  `scan_next_*` keep their old signatures and pass `file_size`. |
+| `tensogram/remote.rs` — accessors | `scan_step_*` central dispatcher routes between forward-only (`scan_fwd_step_*`) and bidirectional (`scan_bidir_round_*`).  `ensure_message_*` / `scan_all_locked` / `message_count_async` funnel through `scan_step_*`.  `ensure_layout_eager_*` / `ensure_all_layouts_batch_async` dispatch via an `EagerAction` tag so forward-only mode keeps its combined-chunk discovery (preamble + frames in one round trip). |
+| `tensogram/remote.rs` — tracing | One-shot `tensogram::remote_scan` event in `open_with_scan_opts*` carrying the active scan `mode`.  Per-hop event with direction / offset / length on every `record_*_hop`.  Existing fallback / fwd_terminated / gap_closed events on the same target.  Filterable via `RUST_LOG=tensogram::remote_scan=debug`. |
+| Tests | Truth-table tests pin the `scan_complete()` byte-identical equivalence with the previous `scan_complete: bool` and the helper invariants (`record_forward_hop`, `disable_backward` idempotency, `terminate_forward` clears `suffix_rev`).  Pure parser tests cover every backward taxonomy row (short fetch, bad END_MAGIC, postamble parse error, arithmetic underflow, overlap with forward, bad MAGIC at candidate, streaming preamble at non-tail).  End-to-end hyper-mock-server tests exercise the bidirectional path: 1-message no-duplicate (same-message overlap), 2-message clean meet, 3-message odd-count meet at the middle message, 10-message full traversal, streaming-postamble yield, streaming-in-the-middle no-recovery, corrupt END_MAGIC graceful degradation, postamble length below minimum, preamble/postamble length mismatch, concurrent readers consistency. |
+
+**Design decisions:**
+- Forward-only path is byte-identical.  Default `RemoteScanOptions { bidirectional: false }` means existing call sites land on the same code path with the same Range request sequence.  The remote-parity harness produces byte-identical scan logs to pre-change `main`.
+- Backward yields without modifying forward state.  Format errors on the backward path (bad END_MAGIC, postamble parse error, length below minimum, arithmetic underflow, overlap with forward, preamble mismatch) call `disable_backward(reason)`, which sets `bwd_active=false` and clears `suffix_rev` — the backend reverts to forward-only for the rest of its lifetime.
+- Forward termination cascades into backward.  `terminate_forward` calls `disable_backward` so the invariant `fwd_terminated => suffix_rev.is_empty() && !bwd_active` always holds.  This preserves remote semantics: bidirectional may not surface a message that forward-only scanning couldn't reach.
+- Same-message detection avoids double-commit.  When a paired round produces both forward Hit and backward Layout for identical `(offset, length)` (1-message file or odd-count meet at the middle), the forward layout commits once and the backward record yields silently — `suffix_rev` from earlier hops stays intact.
+- Forward stays canonical when backward state is corrupt.  `ExceedsBound` covers the case where forward parses a clean preamble whose `msg_end` exceeds `prev_scan_offset` while still fitting inside `file_size`; backward must be wrong, so disable backward and commit forward.  Without this, bidirectional regressed vs forward-only on corrupt-backward inputs.
+- Lock-around-await with full snapshot.  Offset-only validation isn't race-complete because `disable_backward` / `terminate_forward` / `close_gap` change state without changing offsets; the `scan_epoch` counter closes that hole.  The sync path holds the mutex across `block_on_shared` so no recheck is needed there.
+- Saturating arithmetic on offset guards.  EOF and overlap checks use `saturating_add` so wraparound on `u64::MAX`-class offsets correctly forces termination; downstream range constructions are safe-by-construction once the saturating guard passes.
