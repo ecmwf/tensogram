@@ -85,6 +85,22 @@ f = await tensogram.AsyncTensogramFile.open_remote(
 )
 ```
 
+In TypeScript the same opt-in is a `FromUrlOptions` field, accepted by `TensogramFile.fromUrl` against any Range-capable HTTP server:
+
+```typescript
+import { TensogramFile, init } from '@ecmwf.int/tensogram';
+
+await init();
+const file = await TensogramFile.fromUrl('https://example.com/data.tgm', {
+    bidirectional: true,
+});
+console.log('messageCount:', file.messageCount);
+console.log('messageLayouts:', file.messageLayouts);
+file.close();
+```
+
+Set `debug: true` alongside `bidirectional: true` to emit `console.debug` events on every walker state transition (`tensogram:scan:mode`, `tensogram:scan:fallback`, `tensogram:scan:fwd-terminated`, `tensogram:scan:gap-closed`, `tensogram:scan:hop`) — same vocabulary as the Rust `tracing` events at `target = "tensogram::remote_scan"`.
+
 The default is forward-only across all bindings until benchmarks confirm the win across every workload tier. Local-file backends accept the option and silently ignore it (a single forward sweep is the only sensible strategy locally).
 
 ## Python Usage

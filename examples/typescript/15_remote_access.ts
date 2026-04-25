@@ -184,6 +184,16 @@ async function main(): Promise<void> {
     } finally {
       file.close();
     }
+
+    const bidirFile = await TensogramFile.fromUrl(server.url, {
+      bidirectional: true,
+    });
+    try {
+      console.log(`\nBidirectional scan: messageCount = ${bidirFile.messageCount}`);
+      console.log(`  messageLayouts = ${JSON.stringify(bidirFile.messageLayouts)}`);
+    } finally {
+      bidirFile.close();
+    }
   } finally {
     await server.close();
   }
