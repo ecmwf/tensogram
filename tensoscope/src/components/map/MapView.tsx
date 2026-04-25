@@ -209,6 +209,10 @@ export function MapView(props: MapViewProps) {
           onUnmount={handleCesiumUnmount}
           onViewChange={(b, w, h) => { setCesiumBounds(b); setCesiumViewSize({ width: w, height: h }); }}
           onMapClick={onMapClick}
+          selectedPoint={selectedPoint}
+          selectedPointGridSpacing={selectedPointGridSpacing}
+          onSelectedPointScreen={(x, y) => { setInspectedScreenPos({ x, y }); captureViewport(); }}
+          onSelectedPointOutOfView={() => { setClickPoint(null); setInspectedScreenPos(null); }}
         />
       ) : (
         <Map

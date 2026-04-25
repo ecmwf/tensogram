@@ -26,9 +26,13 @@ interface CesiumViewProps {
   onUnmount: (lat: number, lon: number) => void;
   onViewChange?: (bounds: ViewBounds | null, width: number, height: number) => void;
   onMapClick?: (point: ClickPoint) => void;
+  selectedPoint?: { lat: number; lon: number } | null;
+  selectedPointGridSpacing?: number | null;
+  onSelectedPointScreen?: (x: number, y: number) => void;
+  onSelectedPointOutOfView?: () => void;
 }
 
-export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange, onMapClick }: CesiumViewProps) {
+export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange, onMapClick, selectedPoint, selectedPointGridSpacing, onSelectedPointScreen, onSelectedPointOutOfView }: CesiumViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Viewer | undefined>(undefined);
   const overlayRef = useRef<Entity | undefined>(undefined);
@@ -36,10 +40,14 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
   const onViewChangeRef = useRef(onViewChange);
   const initialCenterRef = useRef(initialCenter);
   const onMapClickRef = useRef(onMapClick);
+  const onSelectedPointScreenRef = useRef(onSelectedPointScreen);
+  const onSelectedPointOutOfViewRef = useRef(onSelectedPointOutOfView);
 
   useEffect(() => { onUnmountRef.current = onUnmount; }, [onUnmount]);
   useEffect(() => { onViewChangeRef.current = onViewChange; }, [onViewChange]);
   useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
+  useEffect(() => { onSelectedPointScreenRef.current = onSelectedPointScreen; }, [onSelectedPointScreen]);
+  useEffect(() => { onSelectedPointOutOfViewRef.current = onSelectedPointOutOfView; }, [onSelectedPointOutOfView]);
 
   // Mount Cesium viewer once
   useEffect(() => {
@@ -82,6 +90,34 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
     });
 
     viewerRef.current = viewer;
+
+    // Handle selected point marker position on globe
+    const updateSelectedPointScreen = () => {
+      const pt = selectedPoint;
+      if (!pt || !onSelectedPointScreenRef.current) return;
+      const carto = Cartographic.fromDegrees(pt.lon, pt.lat);
+      const cartesian = viewer.camera.projectPointToWindow(carto);
+      if (cartesian) {
+        const canvas = viewer.canvas;
+        const rect = canvas.getBoundingClientRect();
+        const x = cartesian.x - rect.left;
+        const y = cartesian.y - rect.top;
+        onSelectedPointScreenRef.current(x, y);
+        // Auto-close if marker is off-screen
+        const margin = 80;
+        if (x < -margin || x > canvas.width + margin || y < -margin || y > canvas.height + margin) {
+          onSelectedPointOutOfViewRef.current?.();
+        }
+      }
+    };
+
+    // Update marker position on camera changes
+    const cameraChangedHandler = () => {
+      updateSelectedPointScreen();
+    };
+    viewer.camera.changed.addEventListener(cameraChangedHandler);
+    // Emit once on mount
+    updateSelectedPointScreen();
 
     const clickHandler = new ScreenSpaceEventHandler(viewer.scene.canvas);
     clickHandler.setInputAction((event: { position: { x: number; y: number } }) => {
@@ -131,6 +167,7 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
     return () => {
       if (boundsTimer !== null) clearTimeout(boundsTimer);
       viewer.camera.changed.removeEventListener(emitBounds);
+      viewer.camera.changed.removeEventListener(cameraChangedHandler);
       clickHandler.destroy();
       const cart = viewer.camera.positionCartographic;
       onUnmountRef.current(
