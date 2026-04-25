@@ -707,7 +707,14 @@ impl RemoteBackend {
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
         let pos = state.next_scan_offset;
 
-        if pos + min_message_size > bound {
+        // Saturating addition keeps the EOF check correct even when
+        // `pos` is so close to `u64::MAX` that an unchecked sum would
+        // wrap.  Anything that saturates to `u64::MAX` is by definition
+        // beyond `bound` (which is at most `file_size`), so the EOF
+        // branch fires.  This means the downstream `pos + PREAMBLE_SIZE`
+        // range below cannot wrap either: we've already established
+        // `pos + min_message_size <= bound <= file_size`.
+        if pos.saturating_add(min_message_size) > bound {
             state.terminate_forward("eof");
             return Ok(());
         }
@@ -823,7 +830,13 @@ impl RemoteBackend {
 
         // Walkers about to overlap?  One bounded forward step
         // closes the gap; backward never gets called at this point.
-        if snap.prev < snap.next + 2 * min_message_size {
+        // Saturating addition handles the (astronomical) case where
+        // `snap.next` is so close to `u64::MAX` that the unchecked
+        // sum would wrap; saturation to `u64::MAX` correctly forces
+        // the forward fallback.  Past this guard we know
+        // `snap.prev >= snap.next + 2 * min_message_size`, so the
+        // unchecked range constructions below cannot wrap.
+        if snap.prev < snap.next.saturating_add(2 * min_message_size) {
             return self.scan_fwd_step_locked(state, bound);
         }
 
@@ -852,10 +865,11 @@ impl RemoteBackend {
             _ => None,
         };
 
-        if !state.matches(&snap) {
-            return Ok(());
-        }
-
+        // No `state.matches(&snap)` recheck here: the sync path holds
+        // `&mut state` (and therefore the mutex) across `block_on_shared`,
+        // so the snapshot is guaranteed to still match.  The async sibling
+        // does drop and re-acquire the lock around the await, which is
+        // why it needs the explicit `state.matches` check.
         let fwd_kind = parse_forward_preamble(&bytes[0], snap.next, self.file_size, bound);
         self.apply_round_outcomes(state, fwd_kind, bwd_outcome, bwd_round2.as_deref());
         Ok(())
@@ -1841,7 +1855,9 @@ impl RemoteBackend {
     }
 
     /// Async counterpart of [`Self::scan_fwd_step_locked`].  See that
-    /// method's docstring for the `bound` parameter contract.
+    /// method's docstring for the `bound` parameter contract and for
+    /// the saturating-arithmetic invariant that keeps the downstream
+    /// `pos + PREAMBLE_SIZE` range from wrapping.
     async fn scan_fwd_step_async(&self, bound: u64) -> Result<()> {
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
         let pos = {
@@ -1852,7 +1868,7 @@ impl RemoteBackend {
             state.next_scan_offset
         };
 
-        if pos + min_message_size > bound {
+        if pos.saturating_add(min_message_size) > bound {
             let mut state = self.lock_state()?;
             if state.next_scan_offset == pos {
                 state.terminate_forward("eof");
@@ -2001,7 +2017,10 @@ impl RemoteBackend {
         let bound = snap.prev;
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
 
-        if snap.prev < snap.next + 2 * min_message_size {
+        // See `scan_bidir_round_locked` for why saturating addition is
+        // sufficient here and why the unchecked range constructions
+        // immediately below cannot wrap once this guard passes.
+        if snap.prev < snap.next.saturating_add(2 * min_message_size) {
             return self.scan_fwd_step_async(bound).await;
         }
 
