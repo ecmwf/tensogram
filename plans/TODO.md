@@ -304,16 +304,15 @@ For speculative ideas, see `IDEAS.md`.
     snapshots.  `make remote-parity` runs the full suite.
 
   - [x] ~~**Rust state refactor — zero behaviour change**~~ —
-    `RemoteScanOptions { bidirectional, max_message_size }` (default
-    `{ false, 4 GiB }`) plumbed through `open_with_scan_opts` /
-    `open_async_with_scan_opts` (`pub(crate)`).  `RemoteState`
-    extended with `suffix_rev`, `prev_scan_offset`, `bwd_active`,
-    `fwd_terminated`, `gap_closed`, plus a `scan_epoch` race-detection
-    counter.  `scan_complete: bool` replaced with computed
-    `scan_complete()` accessor.  Helpers `record_forward_hop`,
-    `terminate_forward`, `disable_backward` introduced; every
-    `state.scan_complete = true` site migrated.  Truth-table tests
-    pin Phase 1 byte-identical equivalence.
+    `RemoteScanOptions { bidirectional }` (default `false`) plumbed
+    through `open_with_scan_opts` / `open_async_with_scan_opts`
+    (`pub(crate)`).  `RemoteState` extended with `suffix_rev`,
+    `prev_scan_offset`, `bwd_active`, `fwd_terminated`, `gap_closed`,
+    plus a `scan_epoch` race-detection counter.  `scan_complete: bool`
+    replaced with computed `scan_complete()` accessor.  Helpers
+    `record_forward_hop`, `terminate_forward`, `disable_backward`
+    introduced; every `state.scan_complete = true` site migrated.
+    Truth-table tests pin Phase 1 byte-identical equivalence.
 
   - [x] ~~**Rust bidirectional implementation**~~ — paired-fetch
     bidirectional walker built on `store.get_ranges(&[fwd, bwd])`.

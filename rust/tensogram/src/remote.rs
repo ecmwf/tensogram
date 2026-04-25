@@ -143,7 +143,7 @@ pub fn is_remote_url(source: &str) -> bool {
 /// API surface.  The default is `bidirectional = false` — the existing
 /// forward-only behaviour — so every existing call site lands here
 /// unchanged through [`RemoteBackend::open`] / [`RemoteBackend::open_async`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RemoteScanOptions {
     /// Enable the bidirectional walker.  When `true`, the backend
     /// alternates forward and backward hops across the file using
@@ -152,23 +152,6 @@ pub(crate) struct RemoteScanOptions {
     /// `false` keeps the pre-bidirectional forward-only walker —
     /// today's default.
     pub(crate) bidirectional: bool,
-    /// Upper bound on the `total_length` value advertised by a
-    /// **postamble** during a backward hop.  Anything larger is
-    /// treated as corruption and the backward walker yields to the
-    /// forward walker.  Forward scanning is **not** affected by
-    /// this cap (it uses `file_size` as its only bound).
-    ///
-    /// Default: 4 GiB.
-    pub(crate) max_message_size: u64,
-}
-
-impl Default for RemoteScanOptions {
-    fn default() -> Self {
-        Self {
-            bidirectional: false,
-            max_message_size: 4 * 1024 * 1024 * 1024,
-        }
-    }
 }
 
 // ── Cached per-message layout ────────────────────────────────────────────────
@@ -206,15 +189,12 @@ enum BackwardOutcome {
 /// `RemoteBackend`.
 ///
 /// `pa_bytes` is expected to be the 24-byte postamble at
-/// `[snap.prev - POSTAMBLE_SIZE, snap.prev)`.  `max_message_size`
-/// caps **backward** postamble jumps only; forward scanning is bounded
-/// by `file_size` (or the bidirectional dispatcher's `prev_scan_offset`
-/// hand-off) and never consults this cap.
-fn parse_backward_postamble(
-    pa_bytes: &[u8],
-    snap: &ScanSnapshot,
-    max_message_size: u64,
-) -> BackwardOutcome {
+/// `[snap.prev - POSTAMBLE_SIZE, snap.prev)`.  Implausible
+/// `total_length` values are rejected by the arithmetic underflow
+/// (`total > snap.prev`) and forward-overlap (`msg_start < snap.next`)
+/// guards; Round-2 preamble validation catches anything that slips
+/// through, at the cost of a single 24-byte GET.
+fn parse_backward_postamble(pa_bytes: &[u8], snap: &ScanSnapshot) -> BackwardOutcome {
     let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
 
     if pa_bytes.len() < POSTAMBLE_SIZE {
@@ -233,9 +213,6 @@ fn parse_backward_postamble(
     }
     if total < min_message_size {
         return BackwardOutcome::Format("length-below-minimum-bwd");
-    }
-    if total > max_message_size {
-        return BackwardOutcome::Format("length-exceeds-max");
     }
     let msg_start = match snap.prev.checked_sub(total) {
         Some(s) => s,
@@ -471,7 +448,6 @@ fn emit_scan_mode(scan_opts: &RemoteScanOptions) {
     tracing::debug!(
         target: "tensogram::remote_scan",
         mode = mode,
-        max_message_size = scan_opts.max_message_size,
         "remote scan mode",
     );
 }
@@ -642,25 +618,11 @@ impl RemoteBackend {
         Self::open_with_scan_opts(source, storage_options, RemoteScanOptions::default())
     }
 
-    fn validate_scan_opts(opts: &RemoteScanOptions) -> Result<()> {
-        let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
-        if opts.bidirectional && opts.max_message_size < min_message_size {
-            return Err(TensogramError::Remote(format!(
-                "RemoteScanOptions.max_message_size ({}) is below the minimum \
-                 message size ({min_message_size}); the backward walker would \
-                 yield on every postamble",
-                opts.max_message_size,
-            )));
-        }
-        Ok(())
-    }
-
     pub(crate) fn open_with_scan_opts(
         source: &str,
         storage_options: &BTreeMap<String, String>,
         scan_opts: RemoteScanOptions,
     ) -> Result<Self> {
-        Self::validate_scan_opts(&scan_opts)?;
         emit_scan_mode(&scan_opts);
         let url = Url::parse(source)
             .map_err(|e| TensogramError::Remote(format!("invalid URL '{source}': {e}")))?;
@@ -881,8 +843,7 @@ impl RemoteBackend {
             )));
         }
 
-        let bwd_outcome =
-            parse_backward_postamble(&bytes[1], &snap, self.scan_opts.max_message_size);
+        let bwd_outcome = parse_backward_postamble(&bytes[1], &snap);
 
         let bwd_round2 = match &bwd_outcome {
             BackwardOutcome::NeedPreambleValidation { msg_start, .. } => {
@@ -1824,7 +1785,6 @@ impl RemoteBackend {
         storage_options: &BTreeMap<String, String>,
         scan_opts: RemoteScanOptions,
     ) -> Result<Self> {
-        Self::validate_scan_opts(&scan_opts)?;
         emit_scan_mode(&scan_opts);
         let url = Url::parse(source)
             .map_err(|e| TensogramError::Remote(format!("invalid URL '{source}': {e}")))?;
@@ -2059,8 +2019,7 @@ impl RemoteBackend {
             )));
         }
 
-        let bwd_outcome =
-            parse_backward_postamble(&bytes[1], &snap, self.scan_opts.max_message_size);
+        let bwd_outcome = parse_backward_postamble(&bytes[1], &snap);
         let bwd_round2 = match &bwd_outcome {
             BackwardOutcome::NeedPreambleValidation { msg_start, .. } => Some(
                 self.get_range_async(*msg_start..*msg_start + PREAMBLE_SIZE as u64)
@@ -2958,12 +2917,7 @@ mod tests {
         let opts = RemoteScanOptions::default();
         assert!(
             !opts.bidirectional,
-            "default must keep current forward-only behaviour"
-        );
-        assert_eq!(
-            opts.max_message_size,
-            4 * 1024 * 1024 * 1024,
-            "default backward-postamble cap is 4 GiB",
+            "default must keep current forward-only behaviour",
         );
     }
 
@@ -3040,16 +2994,6 @@ mod tests {
         assert!(!s.bwd_active);
     }
 
-    #[test]
-    fn max_message_size_is_addressable_via_options() {
-        let opts = RemoteScanOptions {
-            bidirectional: true,
-            max_message_size: 1024,
-        };
-        assert_eq!(opts.max_message_size, 1024);
-        assert!(opts.bidirectional);
-    }
-
     fn snap_at(prev: u64) -> ScanSnapshot {
         ScanSnapshot {
             next: 0,
@@ -3061,7 +3005,7 @@ mod tests {
     #[test]
     fn parse_backward_postamble_short_fetch_yields_format() {
         let buf = vec![0u8; POSTAMBLE_SIZE - 1];
-        match parse_backward_postamble(&buf, &snap_at(POSTAMBLE_SIZE as u64), u64::MAX) {
+        match parse_backward_postamble(&buf, &snap_at(POSTAMBLE_SIZE as u64)) {
             BackwardOutcome::Format("short-fetch-bwd") => {}
             other => panic!("expected short-fetch-bwd, got {other:?}"),
         }
@@ -3071,7 +3015,7 @@ mod tests {
     fn parse_backward_postamble_bad_end_magic_yields_format() {
         let mut buf = vec![0u8; POSTAMBLE_SIZE];
         buf[POSTAMBLE_SIZE - crate::wire::END_MAGIC.len()..].copy_from_slice(b"NOTMAGIC");
-        match parse_backward_postamble(&buf, &snap_at(POSTAMBLE_SIZE as u64), u64::MAX) {
+        match parse_backward_postamble(&buf, &snap_at(POSTAMBLE_SIZE as u64)) {
             BackwardOutcome::Format("bad-end-magic-bwd") => {}
             other => panic!("expected bad-end-magic-bwd, got {other:?}"),
         }
@@ -3083,7 +3027,7 @@ mod tests {
         buf[8..16].copy_from_slice(&u64::MAX.to_be_bytes());
         buf[POSTAMBLE_SIZE - crate::wire::END_MAGIC.len()..]
             .copy_from_slice(crate::wire::END_MAGIC);
-        match parse_backward_postamble(&buf, &snap_at(100), u64::MAX) {
+        match parse_backward_postamble(&buf, &snap_at(100)) {
             BackwardOutcome::Format("backward-arith-underflow") => {}
             other => panic!("expected backward-arith-underflow, got {other:?}"),
         }
@@ -3101,7 +3045,7 @@ mod tests {
             prev: 250,
             epoch: 0,
         };
-        match parse_backward_postamble(&buf, &snap, u64::MAX) {
+        match parse_backward_postamble(&buf, &snap) {
             BackwardOutcome::Format("backward-overlaps-forward") => {}
             other => panic!("expected backward-overlaps-forward, got {other:?}"),
         }
@@ -3364,7 +3308,6 @@ mod bidir_http_tests {
             &empty_storage(),
             RemoteScanOptions {
                 bidirectional: true,
-                max_message_size: 4 * 1024 * 1024 * 1024,
             },
         )
         .expect("open bidirectional");
@@ -3473,7 +3416,6 @@ mod bidir_http_tests {
             &empty_storage(),
             RemoteScanOptions {
                 bidirectional: true,
-                max_message_size: 4 * 1024 * 1024 * 1024,
             },
         )
         .expect("open");
@@ -3483,34 +3425,6 @@ mod bidir_http_tests {
             "corrupt END_MAGIC: forward path still finds both messages",
         );
         assert!(server.range_request_count() > 0);
-    }
-
-    /// `max_message_size` cap below a real message length: backward
-    /// rejects every postamble with `length-exceeds-max`; forward
-    /// completes the scan unchanged.  Validates that the bidirectional
-    /// corruption guard fires on plausible-looking but capped lengths.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn bidir_max_message_size_too_small_yields_backward() {
-        let buf = concat_messages(vec![
-            make_message(vec![4], 10),
-            make_message(vec![8], 20),
-            make_message(vec![16], 30),
-        ]);
-        let server = MockObjectStore::start(buf).await.expect("start");
-        let backend = RemoteBackend::open_with_scan_opts(
-            &server.url(),
-            &empty_storage(),
-            RemoteScanOptions {
-                bidirectional: true,
-                max_message_size: (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64,
-            },
-        )
-        .expect("open");
-        let count = backend.message_count().expect("count");
-        assert_eq!(
-            count, 3,
-            "max-size cap forces backward yield; forward must still find all 3",
-        );
     }
 
     /// Concurrent readers on a 10-message file with bidirectional
@@ -3530,7 +3444,6 @@ mod bidir_http_tests {
                 &empty_storage(),
                 RemoteScanOptions {
                     bidirectional: true,
-                    max_message_size: 4 * 1024 * 1024 * 1024,
                 },
             )
             .expect("open"),
@@ -3552,28 +3465,6 @@ mod bidir_http_tests {
         );
     }
 
-    /// `validate_scan_opts` must reject an absurdly small
-    /// `max_message_size` with bidirectional enabled — the
-    /// backward walker would yield on every postamble so the option
-    /// combination is incoherent.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn bidir_rejects_max_message_size_below_min() {
-        let buf = make_message(vec![4], 0);
-        let server = MockObjectStore::start(buf).await.expect("start");
-        let result = RemoteBackend::open_with_scan_opts(
-            &server.url(),
-            &empty_storage(),
-            RemoteScanOptions {
-                bidirectional: true,
-                max_message_size: 1,
-            },
-        );
-        assert!(
-            matches!(result, Err(TensogramError::Remote(ref msg)) if msg.contains("below the minimum")),
-            "open_with_scan_opts must reject max_message_size below min_message_size when bidirectional",
-        );
-    }
-
     /// Forge a postamble whose `total_length` is between 1 and
     /// `PREAMBLE_SIZE + POSTAMBLE_SIZE - 1`.  Backward must yield
     /// with `length-below-minimum-bwd`; forward completes the scan.
@@ -3589,7 +3480,6 @@ mod bidir_http_tests {
             &empty_storage(),
             RemoteScanOptions {
                 bidirectional: true,
-                max_message_size: 4 * 1024 * 1024 * 1024,
             },
         )
         .expect("open");
@@ -3625,7 +3515,6 @@ mod bidir_http_tests {
             &empty_storage(),
             RemoteScanOptions {
                 bidirectional: true,
-                max_message_size: 4 * 1024 * 1024 * 1024,
             },
         )
         .expect("open");
@@ -3679,7 +3568,6 @@ mod bidir_http_tests {
             &empty_storage(),
             RemoteScanOptions {
                 bidirectional: true,
-                max_message_size: 4 * 1024 * 1024 * 1024,
             },
         )
         .expect("open bidirectional");
