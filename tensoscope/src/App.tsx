@@ -62,6 +62,7 @@ function App() {
     setColorScale,
     selectField,
     loading,
+    frameLoading,
     error,
   } = useAppStore();
 
@@ -305,6 +306,7 @@ function App() {
           selectedPointGridSpacing={gridSpacing}
           onSelectedPointScreen={(x, y) => setInspectedScreenPos({ x, y })}
           onSelectedPointOutOfView={() => { setClickPoint(null); setInspectedScreenPos(null); }}
+          isLoading={frameLoading}
         />
         {frames.length > 1 && (
           <div className="animation-bar">

@@ -41,6 +41,7 @@ export interface MapViewProps {
   selectedPointGridSpacing?: number | null;
   onSelectedPointScreen?: (x: number, y: number) => void;
   onSelectedPointOutOfView?: () => void;
+  isLoading?: boolean;
 }
 
 export function MapView(props: MapViewProps) {
@@ -58,6 +59,7 @@ export function MapView(props: MapViewProps) {
     selectedPointGridSpacing,
     onSelectedPointScreen,
     onSelectedPointOutOfView,
+    isLoading,
   } = props;
 
   const [activePreset, setActivePreset] = useState<ProjectionPreset>(PROJECTION_PRESETS[0]);
@@ -189,16 +191,18 @@ export function MapView(props: MapViewProps) {
   const viewportFlatProps: FieldOverlayProps | null = null;
 
   // Hooks must always be called in the same order regardless of isGlobe.
-  const globeImage = useFieldImage(globeProps);
-  const globalGlobeImage = useFieldImage(globalGlobeProps);
-  const globalFlatImage = useFieldImage(globalFlatProps);
-  const viewportFlatImage = useFieldImage(viewportFlatProps);
+  const { image: globeImage } = useFieldImage(globeProps);
+  const { image: globalGlobeImage, isRendering: isGlobeRendering } = useFieldImage(globalGlobeProps);
+  const { image: globalFlatImage, isRendering: isFlatRendering } = useFieldImage(globalFlatProps);
+  const { image: viewportFlatImage } = useFieldImage(viewportFlatProps);
 
   // High-res viewport rendering disabled; re-enable by restoring:
   //   const flatImage = viewportFlatImage ?? globalFlatImage;
   //   const cesiumImage = globeImage ?? globalGlobeImage;
   const flatImage = globalFlatImage;
   const cesiumImage = globalGlobeImage;
+
+  const showSpinner = isLoading || isGlobeRendering || isFlatRendering;
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
@@ -298,6 +302,7 @@ export function MapView(props: MapViewProps) {
           </div>
         </>
       )}
+      {showSpinner && <div className="map-frame-spinner" />}
     </div>
   );
 }

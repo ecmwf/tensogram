@@ -67,6 +67,7 @@ interface AppState {
   colorScaleLocked: boolean;
   colorScaleParam: string | number | undefined;
   loading: boolean;
+  frameLoading: boolean;
   error: string | null;
 
   openLocalFile: (file: File) => Promise<void>;
@@ -131,6 +132,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   colorScaleLocked: false,
   colorScaleParam: undefined,
   loading: false,
+  frameLoading: false,
   error: null,
 
   openLocalFile: async (file: File) => {
@@ -193,6 +195,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         originalShape = cached.shape;
         result = { data: cached.data, shape: cached.shape, stats: cached.stats };
       } else {
+        set({ frameLoading: true });
         // Yield to prevent WASM from blocking the main thread during decode.
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
@@ -252,6 +255,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Commit data and coords together so consumers never see a field
       // decoded against one message paired with coords from another.
       set({
+        frameLoading: false,
         fieldData: result.data,
         fieldShape: originalShape,
         fieldStats: result.stats,
@@ -261,7 +265,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         colorScaleParam: marsParam,
       });
     } catch (err) {
-      set({ error: String(err) });
+      set({ frameLoading: false, error: String(err) });
     }
   },
 

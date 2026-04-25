@@ -716,6 +716,20 @@ h2 {
   to { transform: rotate(360deg); }
 }
 
+.map-frame-spinner {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: rgba(255, 255, 255, 0.85);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  z-index: 10;
+  pointer-events: none;
+}
+
 .map-error-overlay {
   background: rgba(17, 19, 24, 0.7);
   pointer-events: auto;

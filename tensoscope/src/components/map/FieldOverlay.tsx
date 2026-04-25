@@ -338,8 +338,9 @@ interface RawRender {
   params: GridParams;
 }
 
-export function useFieldImage(props: FieldOverlayProps | null): FieldImage | null {
+export function useFieldImage(props: FieldOverlayProps | null): { image: FieldImage | null; isRendering: boolean } {
   const [image, setImage] = useState<FieldImage | null>(null);
+  const [isRendering, setIsRendering] = useState(false);
   const requestIdRef = useRef(0);
   // Stores the last unmasked render result so the exclude mask can be
   // re-applied cheaply when the viewport bounds change without re-running
@@ -354,6 +355,7 @@ export function useFieldImage(props: FieldOverlayProps | null): FieldImage | nul
   const render = useCallback(async () => {
     if (!props || !props.data || props.data.length === 0) {
       setImage(null);
+      setIsRendering(false);
       rawRef.current = null;
       return;
     }
@@ -386,12 +388,14 @@ export function useFieldImage(props: FieldOverlayProps | null): FieldImage | nul
     if (!excludeBounds) {
       const cached = getCached(key);
       if (cached) {
+        setIsRendering(false);
         setImage({ dataUrl: cached, coordinates: coords });
         return;
       }
     }
 
     const reqId = ++requestIdRef.current;
+    setIsRendering(true);
     // Do not clear image state here -- keep previous image visible while the
     // new render runs (double-buffer: no blank frame on bounds/zoom change).
     const lut = getPaletteLUT(palette, { reversed: paletteReversed, customStops });
@@ -399,6 +403,7 @@ export function useFieldImage(props: FieldOverlayProps | null): FieldImage | nul
     const result = await requestRegrid(lat, lon, data, lut, colorMin, colorMax, params, renderMode, numBands);
     if (reqId !== requestIdRef.current) return;
 
+    setIsRendering(false);
     const raw: RawRender = { rgba: result.rgba, width: result.width, height: result.height, coords, params };
     rawRef.current = raw;
 
@@ -433,5 +438,5 @@ export function useFieldImage(props: FieldOverlayProps | null): FieldImage | nul
     applyAndSet(rawRef.current, excl);
   }, [excl?.west, excl?.east, excl?.south, excl?.north, applyAndSet]);
 
-  return image;
+  return { image, isRendering };
 }
