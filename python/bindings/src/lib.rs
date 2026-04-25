@@ -1447,7 +1447,7 @@ fn compute_packing_params(
 }
 
 // ---------------------------------------------------------------------------
-// PyStreamingEncoder — wraps StreamingEncoder<Vec<u8>>
+// PyStreamingEncoder — wraps StreamingEncoder<Cursor<Vec<u8>>>
 // ---------------------------------------------------------------------------
 
 /// Progressive, frame-at-a-time encoder backed by an in-memory ``bytes`` buffer.

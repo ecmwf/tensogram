@@ -545,12 +545,18 @@ describe('TensogramFile.fromUrl bidirectional walker', () => {
     const body = new Uint8Array(m1.byteLength + m2.byteLength);
     body.set(m1, 0);
     body.set(m2, m1.byteLength);
-    // Patch m2's preamble flags byte (offset m1.byteLength + 9 — preamble layout:
-    // [magic 8][version 1][flags 1][reserved 6][total_length 8]).  Set
-    // FOOTER_METADATA (bit 2) | FOOTER_INDEX (bit 3) — values 0x04 | 0x08 = 0x0C.
-    // Clear HEADER_METADATA (bit 0) | HEADER_INDEX (bit 1).
-    const flagsOff = m1.byteLength + 9;
-    body[flagsOff] = (body[flagsOff] & ~0x03) | 0x0c;
+    // Patch m2's preamble flags (u16 BE at offset 10..12 within the
+    // preamble — wire.rs layout: [magic 8][version u16][flags u16]
+    // [reserved u32][total_length u64]).  MessageFlags bit positions
+    // (wire.rs:148-156): HEADER_METADATA = 1<<0, FOOTER_METADATA = 1<<1,
+    // HEADER_INDEX = 1<<2, FOOTER_INDEX = 1<<3.  Set FOOTER_METADATA |
+    // FOOTER_INDEX (= 0x000a) and clear HEADER_METADATA | HEADER_INDEX
+    // (= 0x0005) so the TS dispatcher reads the message as
+    // footer-indexed and triggers the eager-footer code path.
+    const flagsHi = m1.byteLength + 10;
+    const flagsLo = m1.byteLength + 11;
+    body[flagsHi] = 0x00;
+    body[flagsLo] = (body[flagsLo] & ~0x05) | 0x0a;
     // Patch m2's first_footer_offset in postamble to a value inside
     // the message's payload region so footerRegionPresent returns true.
     // postamble lives at the last 24 bytes of m2; first_footer_offset
