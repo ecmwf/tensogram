@@ -144,7 +144,8 @@ export function usePointInspection(params: UsePointInspectionParams): Inspection
       point.lon,
     );
     const pointLat = coordinates.lat[pointIndex];
-    const pointLon = coordinates.lon[pointIndex];
+    const rawLon = coordinates.lon[pointIndex];
+    const pointLon = rawLon > 180 ? rawLon - 360 : rawLon < -180 ? rawLon + 360 : rawLon;
 
     if (frames.length <= 1) {
       const raw = fieldData ? fieldData[pointIndex] : NaN;
