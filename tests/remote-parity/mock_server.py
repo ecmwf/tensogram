@@ -8,8 +8,11 @@
 
 """Mock HTTP server for the remote-parity harness.
 
-Serves checked-in .tgm fixtures with Range + HEAD support and logs every
-incoming request in the `ScanEvent` schema (see `schema.json`).
+Serves checked-in .tgm fixtures with Range + HEAD support and records
+each incoming request as a raw `RequestRecord` (method, path, range
+header, status, response bytes). The orchestrator later normalises and
+classifies those raw entries into the `ScanEvent` schema in
+`schema.json`.
 
 URL shape: ``http://127.0.0.1:<port>/<run_id>/<fixture>.tgm``.
 The first path segment is the opaque run identifier used to segregate

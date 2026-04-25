@@ -56,7 +56,7 @@ See `schema.json`. Each logged request is normalised to:
   "run_id":     "single-msg-rust-message-count-forward",
   "scan_round": 0,
   "direction":  "forward",
-  "category":   "probe" | "scan" | "payload" | "fallback",
+  "category":   "probe" | "scan" | "payload" | "fallback" | "error",
   "logical_range": [start, end_exclusive],
   "physical_requests": [
     { "method": "GET", "headers": { "Range": "bytes=0-23" }, "status": 206 }
@@ -65,9 +65,10 @@ See `schema.json`. Each logged request is normalised to:
 ```
 
 Only `"scan"` events are compared for parity. `"probe"` (HEAD / Range
-support probes) and `"payload"` (bulk payload fetches) are logged but
-excluded from parity assertions; they are language- and implementation-
-specific by design.
+support probes), `"payload"` (bulk payload fetches), `"fallback"`
+(eager full-body downloads), and `"error"` (non-2xx responses) are
+logged but excluded from parity assertions; they are language- and
+implementation-specific by design.
 
 ### Parity comparison rules
 
