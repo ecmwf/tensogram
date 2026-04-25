@@ -1,3 +1,8 @@
+---
+description: Address all unresolved review comments on a GitHub PR and push fixes
+agent: build
+---
+
 # Address Pull Request Comments
 
 Review and resolve all feedback on a GitHub pull request.

@@ -1,3 +1,8 @@
+---
+description: Systematic edge-case audit and patching across the codebase
+agent: build
+---
+
 # Improve Edge Case Handling
 
 Perform a systematic edge case audit across the codebase.

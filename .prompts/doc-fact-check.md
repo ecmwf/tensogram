@@ -1,3 +1,8 @@
+---
+description: Run docs code examples and verify prose claims against the codebase
+agent: build
+---
+
 # Documentation Fact-Check
 
 Run code examples in the docs and verify prose claims against the actual codebase.

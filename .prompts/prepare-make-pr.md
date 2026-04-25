@@ -1,3 +1,8 @@
+---
+description: Run pre-flight checks then commit, push and open the PR
+agent: build
+---
+
 # Prepare and Create Pull Request
 
 Final preparation check and PR creation workflow.
