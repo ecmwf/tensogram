@@ -33,20 +33,33 @@ fn compile_libaec_version_shim() {
     // OUT_DIR is something like .../tensogram-encodings-<hash>/out
     // libaec-sys's OUT_DIR is a sibling: .../libaec-sys-<hash>/out
     // Walk up to the common build directory and search for the header.
-    let libaec_include = find_libaec_include(&out_dir);
+    let libaec_include = match find_libaec_include(&out_dir) {
+        Some(p) => p,
+        None => panic!(
+            "tensogram-encodings build script: could not find `libaec.h` in any \
+             sibling `libaec-sys-*/out/include/` directory under `{}`. \
+             The `szip` feature requires `libaec-sys` to be built first; this \
+             usually means cargo's build order didn't propagate the dependency \
+             — try `cargo clean` and rebuild, or report a bug if it persists. \
+             Source: rust/tensogram-encodings/build.rs::find_libaec_include().",
+            out_dir.display()
+        ),
+    };
 
-    let mut build = cc::Build::new();
-    build.file(&shim);
-    if let Some(include) = libaec_include {
-        build.include(include);
-    }
-    build.compile("tensogram_libaec_version_shim");
+    cc::Build::new()
+        .file(&shim)
+        .include(libaec_include)
+        .compile("tensogram_libaec_version_shim");
 }
 
-/// Search the Cargo build output tree for the libaec.h header produced by
-/// libaec-sys.  Returns the directory containing the header, or None if not
-/// found (in which case the shim will fail to compile and the caller should
-/// handle the error gracefully).
+/// Search the Cargo build output tree for the `libaec.h` header produced by
+/// libaec-sys.  Returns the directory containing the header, or `None` if
+/// the search either escapes the cargo build tree or finds no matching
+/// sibling crate.
+///
+/// Callers are expected to surface a clear error on `None` rather than
+/// continue to compile the shim — the C compiler's "header not found"
+/// message names the wrong path and is unactionable for a Rust user.
 fn find_libaec_include(out_dir: &std::path::Path) -> Option<std::path::PathBuf> {
     // OUT_DIR layout: <target>/<profile>/build/<crate>-<hash>/out
     // Go up 2 levels to reach <target>/<profile>/build/

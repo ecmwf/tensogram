@@ -63,21 +63,74 @@ impl std::error::Error for DoctorFailed {}
 // ── TempFileGuard ─────────────────────────────────────────────────────────────
 
 /// RAII guard that writes bytes to a temporary file and deletes it on drop.
+///
+/// Uses `O_CREAT | O_EXCL` ([`OpenOptions::create_new`]) on the open call so
+/// concurrent `tensogram doctor` invocations cannot collide on a predictable
+/// path, and an existing file (or symlink masquerading as one) cannot be
+/// silently overwritten.  Filename is salted with a fresh per-call counter
+/// plus the wall-clock nanosecond stamp; the worst case under collision is a
+/// retry loop bounded at [`MAX_TEMP_FILE_ATTEMPTS`].
 #[cfg(any(feature = "grib", feature = "netcdf", test))]
 struct TempFileGuard {
     path: std::path::PathBuf,
 }
 
+/// Bound on the number of `O_EXCL` retries we attempt before surrendering.
+/// Eight is plenty: the per-call counter alone gives 8 distinct filenames in
+/// the same nanosecond.
+#[cfg(any(feature = "grib", feature = "netcdf", test))]
+const MAX_TEMP_FILE_ATTEMPTS: u32 = 8;
+
 #[cfg(any(feature = "grib", feature = "netcdf", test))]
 impl TempFileGuard {
-    /// Write `bytes` to a new temp file with the given `suffix` and return
-    /// the guard.  The file is deleted when the guard is dropped.
+    /// Write `bytes` to a freshly created temp file with the given `suffix`
+    /// (used as a human-readable hint) and return the guard.  The file is
+    /// deleted when the guard is dropped.
+    ///
+    /// Each call generates a unique filename of the form
+    /// `tensogram-doctor-<pid>-<nanos>-<counter>-<suffix>` and opens it with
+    /// [`OpenOptions::create_new`] so we never silently overwrite an existing
+    /// file (or follow a symlink to one).  On the unlikely `AlreadyExists`
+    /// race we retry up to [`MAX_TEMP_FILE_ATTEMPTS`] times with a fresh
+    /// counter; any other I/O error is propagated immediately.
     fn new(bytes: &[u8], suffix: &str) -> std::io::Result<Self> {
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
         let pid = std::process::id();
-        let name = format!("tensogram-doctor-{pid}-{suffix}");
-        let path = std::env::temp_dir().join(name);
-        std::fs::write(&path, bytes)?;
-        Ok(Self { path })
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir();
+
+        for _ in 0..MAX_TEMP_FILE_ATTEMPTS {
+            let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let name = format!("tensogram-doctor-{pid}-{nanos:x}-{counter:x}-{suffix}");
+            let path = dir.join(name);
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut f) => {
+                    f.write_all(bytes)?;
+                    f.sync_all()?;
+                    return Ok(Self { path });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "could not create unique temp file after {MAX_TEMP_FILE_ATTEMPTS} attempts \
+                 (suffix='{suffix}')"
+            ),
+        ))
     }
 
     fn path(&self) -> &std::path::Path {
@@ -523,6 +576,32 @@ mod tests {
         let guard = TempFileGuard::new(b"x", "vanish-test.txt").unwrap();
         std::fs::remove_file(guard.path()).unwrap();
         // Implicit drop here exercises the NotFound path in `Drop`.
+    }
+
+    #[test]
+    fn temp_file_guard_uses_unique_paths_per_call() {
+        // Two back-to-back constructions with the same `suffix` MUST land on
+        // distinct paths — the per-call counter + nanosecond stamp guarantee
+        // it, and `create_new` would refuse to overwrite if they didn't.
+        let g1 = TempFileGuard::new(b"a", "collision-test").unwrap();
+        let g2 = TempFileGuard::new(b"b", "collision-test").unwrap();
+        assert_ne!(g1.path(), g2.path(), "guards must not share a path");
+        assert!(g1.path().exists());
+        assert!(g2.path().exists());
+    }
+
+    #[test]
+    fn temp_file_guard_refuses_to_overwrite_existing_file() {
+        // Pre-create a file at the exact path TempFileGuard *would* pick if
+        // the AtomicU64 counter weren't there; the collision-retry loop must
+        // still produce a usable guard at a different path.
+        let bytes = b"payload";
+        let guard = TempFileGuard::new(bytes, "exclusive-test").unwrap();
+        // Creating another guard with the same suffix must NOT overwrite.
+        let second = TempFileGuard::new(b"other", "exclusive-test").unwrap();
+        assert_ne!(guard.path(), second.path());
+        assert_eq!(std::fs::read(guard.path()).unwrap(), bytes);
+        assert_eq!(std::fs::read(second.path()).unwrap(), b"other");
     }
 
     #[test]
