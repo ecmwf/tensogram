@@ -34,9 +34,9 @@ use tensogram_lib::validate::{
 };
 use tensogram_lib::{
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
-    HashAlgorithm, RESERVED_KEY, StreamingEncoder, TensogramError, TensogramFile, decode,
-    decode_descriptors, decode_metadata, decode_object, decode_range, encode, encode_pre_encoded,
-    scan,
+    HashAlgorithm, RESERVED_KEY, RemoteScanOptions, StreamingEncoder, TensogramError,
+    TensogramFile, decode, decode_descriptors, decode_metadata, decode_object, decode_range,
+    encode, encode_pre_encoded, scan,
 };
 
 type PyObject = Py<PyAny>;
@@ -60,6 +60,43 @@ fn to_py_err(e: TensogramError) -> PyErr {
         )),
         TensogramError::Remote(msg) => PyIOError::new_err(format!("RemoteError: {msg}")),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Open-method helpers
+// ---------------------------------------------------------------------------
+
+/// Parse a `storage_options` PyDict into the `BTreeMap<String, String>` shape
+/// expected by `TensogramFile::open_remote*`.  Errors at the call site so
+/// async entry points fail before any await.
+fn parse_storage_options(
+    storage_options: Option<&Bound<'_, PyDict>>,
+) -> PyResult<BTreeMap<String, String>> {
+    match storage_options {
+        Some(dict) => {
+            let mut map = BTreeMap::new();
+            for (k, v) in dict.iter() {
+                let key: String = k.extract()?;
+                let val: String = v.extract::<String>().or_else(|_| {
+                    v.str().map(|s| s.to_string()).map_err(|_| {
+                        PyValueError::new_err(format!(
+                            "storage_options value for key '{key}' must be convertible to string"
+                        ))
+                    })
+                })?;
+                map.insert(key, val);
+            }
+            Ok(map)
+        }
+        None => Ok(BTreeMap::new()),
+    }
+}
+
+/// Build a `RemoteScanOptions` only when the caller opted in.
+/// `None` collapses to forward-only at the Rust layer without
+/// touching `RemoteScanOptions::default()` here.
+fn scan_opts_for(bidirectional: bool) -> Option<RemoteScanOptions> {
+    bidirectional.then_some(RemoteScanOptions { bidirectional: true })
 }
 
 // ---------------------------------------------------------------------------
@@ -362,42 +399,29 @@ struct PyTensogramFile {
 #[pymethods]
 impl PyTensogramFile {
     #[staticmethod]
-    fn open(py: Python<'_>, source: &str) -> PyResult<Self> {
+    #[pyo3(signature = (source, *, bidirectional=false))]
+    fn open(py: Python<'_>, source: &str, bidirectional: bool) -> PyResult<Self> {
+        let scan_opts = scan_opts_for(bidirectional);
         let source = source.to_string();
         let file = py
-            .detach(|| TensogramFile::open_source(&source))
+            .detach(|| TensogramFile::open_source(&source, scan_opts))
             .map_err(to_py_err)?;
         Ok(PyTensogramFile { file })
     }
 
     #[staticmethod]
-    #[pyo3(signature = (source, storage_options=None))]
+    #[pyo3(signature = (source, storage_options=None, *, bidirectional=false))]
     fn open_remote(
         py: Python<'_>,
         source: &str,
         storage_options: Option<&Bound<'_, PyDict>>,
+        bidirectional: bool,
     ) -> PyResult<Self> {
-        let opts = match storage_options {
-            Some(dict) => {
-                let mut map = BTreeMap::new();
-                for (k, v) in dict.iter() {
-                    let key: String = k.extract()?;
-                    let val: String = v.extract::<String>().or_else(|_| {
-                        v.str()
-                            .map(|s| s.to_string())
-                            .map_err(|_| PyValueError::new_err(format!(
-                                "storage_options value for key '{key}' must be convertible to string"
-                            )))
-                    })?;
-                    map.insert(key, val);
-                }
-                map
-            }
-            None => BTreeMap::new(),
-        };
+        let opts = parse_storage_options(storage_options)?;
+        let scan_opts = scan_opts_for(bidirectional);
         let source = source.to_string();
         let file = py
-            .detach(|| TensogramFile::open_remote(&source, &opts))
+            .detach(|| TensogramFile::open_remote(&source, &opts, scan_opts))
             .map_err(to_py_err)?;
         Ok(PyTensogramFile { file })
     }
@@ -1736,10 +1760,16 @@ impl PyAsyncTensogramFile {
     ///
     ///     f = await AsyncTensogramFile.open("data.tgm")
     #[staticmethod]
-    fn open<'py>(py: Python<'py>, source: &str) -> PyResult<Bound<'py, PyAny>> {
+    #[pyo3(signature = (source, *, bidirectional=false))]
+    fn open<'py>(
+        py: Python<'py>,
+        source: &str,
+        bidirectional: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let scan_opts = scan_opts_for(bidirectional);
         let source = source.to_string();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let file = TensogramFile::open_source_async(&source)
+            let file = TensogramFile::open_source_async(&source, scan_opts)
                 .await
                 .map_err(to_py_err)?;
             let is_remote = file.is_remote();
@@ -1759,40 +1789,32 @@ impl PyAsyncTensogramFile {
     /// Args:
     ///     source: Remote URL (``s3://``, ``gs://``, ``http://``, etc.).
     ///     storage_options: Optional dict of provider credentials / config.
+    ///     bidirectional: Opt-in keyword for the bidirectional remote
+    ///         scan walker (default ``False`` — forward-only).
+    ///
+    /// Type errors on ``storage_options`` and ``bidirectional`` surface
+    /// at the call site, before any I/O.
     ///
     /// Returns a coroutine; use ``await``::
     ///
     ///     f = await AsyncTensogramFile.open_remote("s3://bucket/data.tgm",
     ///                                               {"region": "eu-west-1"})
     #[staticmethod]
-    #[pyo3(signature = (source, storage_options=None))]
+    #[pyo3(signature = (source, storage_options=None, *, bidirectional=false))]
     fn open_remote<'py>(
         py: Python<'py>,
         source: &str,
         storage_options: Option<&Bound<'_, PyDict>>,
+        bidirectional: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
-        // Validate storage_options eagerly — errors at call site, not on await.
-        let opts = match storage_options {
-            Some(dict) => {
-                let mut map = BTreeMap::new();
-                for (k, v) in dict.iter() {
-                    let key: String = k.extract()?;
-                    let val: String = v.extract::<String>().or_else(|_| {
-                        v.str().map(|s| s.to_string()).map_err(|_| {
-                            PyValueError::new_err(format!("storage_options value for key '{key}' must be convertible to string"))
-                        })
-                    })?;
-                    map.insert(key, val);
-                }
-                map
-            }
-            None => BTreeMap::new(),
-        };
+        let opts = parse_storage_options(storage_options)?;
+        let scan_opts = scan_opts_for(bidirectional);
         let source = source.to_string();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let file = TensogramFile::open_remote_async(&source, &opts)
-                .await
-                .map_err(to_py_err)?;
+            let file =
+                TensogramFile::open_remote_async(&source, &opts, scan_opts)
+                    .await
+                    .map_err(to_py_err)?;
             let is_remote = file.is_remote();
             let source_str = file.source();
             let wrapped = PyAsyncTensogramFile {

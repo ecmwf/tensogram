@@ -26,6 +26,7 @@ use crate::decode::DecodeOptions;
 use crate::error::{Result, TensogramError};
 use crate::framing;
 use crate::metadata;
+use crate::scan_opts::RemoteScanOptions;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, IndexFrame};
 use crate::wire::{
     DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_COMMON_FOOTER_SIZE, FRAME_END,
@@ -135,29 +136,10 @@ pub fn is_remote_url(source: &str) -> bool {
     }
 }
 
-// ── Scan options ─────────────────────────────────────────────────────────────
-
-/// Internal knobs for the remote scan walker.
-///
-/// Crate-private until promoted to the public API.  The default is
-/// `bidirectional = false` — the existing forward-only behaviour —
-/// so every existing call site lands here unchanged through
-/// [`RemoteBackend::open`] / [`RemoteBackend::open_async`].
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct RemoteScanOptions {
-    /// Enable the bidirectional walker.  When `true`, the backend
-    /// alternates forward and backward hops across the file using
-    /// the v3 postamble's mirrored `total_length` field.
-    ///
-    /// `false` keeps the pre-bidirectional forward-only walker —
-    /// today's default.
-    pub(crate) bidirectional: bool,
-}
-
 // ── Cached per-message layout ────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-struct MessageLayout {
+struct CachedLayout {
     offset: u64,
     length: u64,
     preamble: Preamble,
@@ -232,7 +214,7 @@ fn parse_backward_postamble(pa_bytes: &[u8], snap: &ScanSnapshot) -> BackwardOut
 #[derive(Debug)]
 enum BackwardCommit {
     Format(&'static str),
-    Layout(MessageLayout),
+    Layout(CachedLayout),
 }
 
 /// Validate the backward candidate preamble and produce a
@@ -259,7 +241,7 @@ fn validate_backward_preamble(
     if preamble.total_length != length {
         return BackwardCommit::Format("preamble-postamble-length-mismatch");
     }
-    BackwardCommit::Layout(MessageLayout {
+    BackwardCommit::Layout(CachedLayout {
         offset: msg_start,
         length,
         preamble,
@@ -325,7 +307,7 @@ enum ForwardOutcome {
 /// commit decision table commits the forward layout once and skips
 /// the backward record without clearing `suffix_rev` from earlier
 /// rounds.
-fn same_message_as_forward(fwd: &ForwardOutcome, layout: &MessageLayout) -> bool {
+fn same_message_as_forward(fwd: &ForwardOutcome, layout: &CachedLayout) -> bool {
     matches!(
         fwd,
         ForwardOutcome::Hit { offset, length, .. }
@@ -421,14 +403,14 @@ pub(crate) struct RemoteBackend {
 struct RemoteState {
     /// Forward-discovered layouts.  `layouts[i]` always has stable
     /// absolute index `i` (forward indices grow contiguously from 0).
-    layouts: Vec<MessageLayout>,
+    layouts: Vec<CachedLayout>,
     /// Start of the unknown gap.  Forward walker advances this.
     next_scan_offset: u64,
 
     /// EOF-first backward-discovered layouts.  Always empty when
     /// `bwd_active = false`.  Reversed and merged into `layouts` on
     /// `gap_closed`.
-    suffix_rev: Vec<MessageLayout>,
+    suffix_rev: Vec<CachedLayout>,
     /// End of the unknown gap.  Initialised to `file_size` in
     /// [`RemoteBackend::open`] / [`RemoteBackend::open_async`].
     prev_scan_offset: u64,
@@ -489,7 +471,7 @@ impl RemoteState {
 
     /// Append a forward-discovered layout, advance the cursor, bump
     /// the epoch.
-    fn record_forward_hop(&mut self, layout: MessageLayout) {
+    fn record_forward_hop(&mut self, layout: CachedLayout) {
         debug_assert!(
             layout.offset.checked_add(layout.length).is_some(),
             "forward end must fit in u64; validated by scan_next before recording",
@@ -518,7 +500,7 @@ impl RemoteState {
     /// Append a backward-discovered layout, retreat the cursor, bump
     /// the epoch.  Pre: `bwd_active`, layout extends from
     /// `prev_scan_offset` exactly back to `layout.offset`.
-    fn record_backward_hop(&mut self, layout: MessageLayout) {
+    fn record_backward_hop(&mut self, layout: CachedLayout) {
         debug_assert!(self.bwd_active);
         debug_assert!(layout.offset >= self.next_scan_offset);
         debug_assert_eq!(layout.offset + layout.length, self.prev_scan_offset);
@@ -638,10 +620,6 @@ impl RemoteBackend {
         self.state
             .lock()
             .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))
-    }
-
-    pub(crate) fn open(source: &str, storage_options: &BTreeMap<String, String>) -> Result<Self> {
-        Self::open_with_scan_opts(source, storage_options, RemoteScanOptions::default())
     }
 
     pub(crate) fn open_with_scan_opts(
@@ -774,7 +752,7 @@ impl RemoteBackend {
                 state.terminate_forward("streaming-end-magic-mismatch");
                 return Ok(());
             }
-            state.record_forward_hop(MessageLayout {
+            state.record_forward_hop(CachedLayout {
                 offset: pos,
                 length: remaining,
                 preamble,
@@ -793,7 +771,7 @@ impl RemoteBackend {
             }
         }
 
-        state.record_forward_hop(MessageLayout {
+        state.record_forward_hop(CachedLayout {
             offset: pos,
             length: msg_len,
             preamble,
@@ -961,7 +939,7 @@ impl RemoteBackend {
             } => {
                 debug_assert_eq!(offset, state.next_scan_offset);
                 debug_assert_eq!(msg_end, offset + length);
-                state.record_forward_hop(MessageLayout {
+                state.record_forward_hop(CachedLayout {
                     offset,
                     length,
                     preamble,
@@ -986,7 +964,7 @@ impl RemoteBackend {
                 state.disable_backward("forward-exceeds-backward-bound");
                 debug_assert_eq!(offset, state.next_scan_offset);
                 debug_assert_eq!(msg_end, offset + length);
-                state.record_forward_hop(MessageLayout {
+                state.record_forward_hop(CachedLayout {
                     offset,
                     length,
                     preamble,
@@ -1126,7 +1104,7 @@ impl RemoteBackend {
                 state.terminate_forward("streaming-end-magic-mismatch");
                 return Ok(());
             }
-            state.record_forward_hop(MessageLayout {
+            state.record_forward_hop(CachedLayout {
                 offset: pos,
                 length: remaining,
                 preamble,
@@ -1148,7 +1126,7 @@ impl RemoteBackend {
         let flags = preamble.flags;
         let msg_idx = state.layouts.len();
 
-        state.record_forward_hop(MessageLayout {
+        state.record_forward_hop(CachedLayout {
             offset: pos,
             length: msg_len,
             preamble,
@@ -1459,6 +1437,22 @@ impl RemoteBackend {
             .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
         self.scan_all_locked(&mut state)?;
         Ok(state.layouts.len())
+    }
+
+    pub(crate) fn message_layouts(&self) -> Result<Vec<crate::MessageLayout>> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| TensogramError::Remote("remote state lock poisoned".to_string()))?;
+        self.scan_all_locked(&mut state)?;
+        Ok(state
+            .layouts
+            .iter()
+            .map(|l| crate::MessageLayout {
+                offset: l.offset,
+                length: l.length,
+            })
+            .collect())
     }
 
     pub(crate) fn read_message(&self, msg_idx: usize) -> Result<Vec<u8>> {
@@ -1872,13 +1866,6 @@ impl RemoteBackend {
             .map_err(|e| TensogramError::Remote(e.to_string()))
     }
 
-    pub(crate) async fn open_async(
-        source: &str,
-        storage_options: &BTreeMap<String, String>,
-    ) -> Result<Self> {
-        Self::open_async_with_scan_opts(source, storage_options, RemoteScanOptions::default()).await
-    }
-
     pub(crate) async fn open_async_with_scan_opts(
         source: &str,
         storage_options: &BTreeMap<String, String>,
@@ -2011,7 +1998,7 @@ impl RemoteBackend {
             if state.scan_complete() || state.next_scan_offset != pos {
                 return Ok(());
             }
-            state.record_forward_hop(MessageLayout {
+            state.record_forward_hop(CachedLayout {
                 offset: pos,
                 length: remaining,
                 preamble,
@@ -2037,7 +2024,7 @@ impl RemoteBackend {
         if state.scan_complete() || state.next_scan_offset != pos {
             return Ok(());
         }
-        state.record_forward_hop(MessageLayout {
+        state.record_forward_hop(CachedLayout {
             offset: pos,
             length: msg_len,
             preamble,
@@ -2255,7 +2242,7 @@ impl RemoteBackend {
             if state.scan_complete() || state.next_scan_offset != pos {
                 return Ok(());
             }
-            state.record_forward_hop(MessageLayout {
+            state.record_forward_hop(CachedLayout {
                 offset: pos,
                 length: remaining,
                 preamble,
@@ -2284,7 +2271,7 @@ impl RemoteBackend {
                 return Ok(());
             }
             let msg_idx = state.layouts.len();
-            state.record_forward_hop(MessageLayout {
+            state.record_forward_hop(CachedLayout {
                 offset: pos,
                 length: msg_len,
                 preamble,
@@ -2534,6 +2521,28 @@ impl RemoteBackend {
         }
         let state = self.lock_state()?;
         Ok(state.layouts.len())
+    }
+
+    pub(crate) async fn message_layouts_async(&self) -> Result<Vec<crate::MessageLayout>> {
+        loop {
+            let done = {
+                let state = self.lock_state()?;
+                state.scan_complete()
+            };
+            if done {
+                break;
+            }
+            self.scan_step_async().await?;
+        }
+        let state = self.lock_state()?;
+        Ok(state
+            .layouts
+            .iter()
+            .map(|l| crate::MessageLayout {
+                offset: l.offset,
+                length: l.length,
+            })
+            .collect())
     }
 
     pub(crate) async fn read_message_async(&self, msg_idx: usize) -> Result<Vec<u8>> {
@@ -3024,8 +3033,8 @@ impl RemoteBackend {
 mod tests {
     use super::*;
 
-    fn dummy_layout(offset: u64, length: u64) -> MessageLayout {
-        MessageLayout {
+    fn dummy_layout(offset: u64, length: u64) -> CachedLayout {
+        CachedLayout {
             offset,
             length,
             preamble: Preamble {

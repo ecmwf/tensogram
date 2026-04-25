@@ -30,17 +30,26 @@ export interface FetchRangeContext {
  * - `requireRange: false` (the default, used for payload fetches) also
  *   accepts `200` with the full body: when the server ignores the
  *   Range header we slice the response on the client side.
+ *
+ * `overrideSignal`, when supplied, takes precedence over
+ * `ctx.signal` for the underlying `fetch`.  Used by the bidirectional
+ * scan loop to drive a per-iteration child {@link AbortController}
+ * that cancels the sibling Range fetch when one side fails, without
+ * leaking that cancellation into post-open Range requests that still
+ * honour the user's top-level signal.
  */
 export async function fetchRange(
   ctx: FetchRangeContext,
   start: number,
   end: number,
   requireRange = false,
+  overrideSignal?: AbortSignal,
 ): Promise<Uint8Array> {
   const headers = new Headers(ctx.baseHeaders);
   headers.set('Range', `bytes=${start}-${end - 1}`);
   const init: RequestInit = { method: 'GET', headers };
-  if (ctx.signal !== undefined) init.signal = ctx.signal;
+  const signal = overrideSignal ?? ctx.signal;
+  if (signal !== undefined) init.signal = signal;
 
   let resp: Response;
   try {

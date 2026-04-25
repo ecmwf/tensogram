@@ -22,7 +22,8 @@ COPY tensoscope/package.json tensoscope/package-lock.json tensoscope/
 WORKDIR /workspace/tensoscope
 RUN npm ci
 
-# Copy the rest of the frontend source
+# Copy the rest of the frontend source and the canonical version file
+COPY VERSION /workspace/VERSION
 COPY tensoscope/ .
 
 # Replace the host symlink with the real pre-built package

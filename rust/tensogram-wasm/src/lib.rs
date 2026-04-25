@@ -25,6 +25,7 @@ mod convert;
 mod encoder;
 mod extras;
 mod layout;
+mod remote_scan;
 mod streaming;
 
 use convert::*;
@@ -282,6 +283,11 @@ pub use layout::{
     decode_object_from_frame, decode_range_from_frame, parse_descriptor_cbor, parse_footer_chunk,
     parse_header_chunk, read_data_object_frame_footer, read_data_object_frame_header,
     read_postamble_info, read_preamble_info,
+};
+
+pub use remote_scan::{
+    parse_backward_postamble_outcome, parse_forward_preamble_outcome, same_message_check,
+    validate_backward_preamble_outcome,
 };
 
 // ── Scope-C exports (decode_range, compute_hash, validate, …) ───────────────

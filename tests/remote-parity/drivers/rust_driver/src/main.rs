@@ -8,7 +8,7 @@
 
 //! Remote-parity harness driver (Rust).
 //!
-//! Usage: `remote-parity-rust-driver --url <URL> --op <OP>`
+//! Usage: `remote-parity-rust-driver --url <URL> --op <OP> [--bidirectional]`
 //!
 //! Operations:
 //!
@@ -16,21 +16,29 @@
 //! - `message-count` — full forward scan.
 //! - `read-first` — read message 0.
 //! - `read-last` — read the last message (index = count - 1).
+//! - `dump-layout` — full scan + emit `[{"offset": .., "length": ..}, ...]`
+//!   JSON to stdout.  The orchestrator parses this to compare scan
+//!   results across walker modes.
 //!
-//! The driver does not emit logs itself. The mock server captures every
-//! HTTP request, tagged by the `run_id` embedded in the URL path; the
-//! orchestrator collects that captured request log from the in-process
-//! server after the driver exits.
+//! The `--bidirectional` flag opens the file with
+//! `RemoteScanOptions { bidirectional: true }`; without it the
+//! forward-only walker is used (the default).
+//!
+//! The driver does not emit logs itself.  The mock server captures
+//! every HTTP request, tagged by the `run_id` embedded in the URL
+//! path; the orchestrator collects that captured request log from
+//! the in-process server after the driver exits.
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
-use tensogram::TensogramFile;
+use tensogram::{RemoteScanOptions, TensogramFile};
 
 #[derive(Debug)]
 struct Args {
     url: String,
     op: Op,
+    bidirectional: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -39,6 +47,7 @@ enum Op {
     MessageCount,
     ReadFirst,
     ReadLast,
+    DumpLayout,
 }
 
 impl Op {
@@ -48,6 +57,7 @@ impl Op {
             "message-count" => Ok(Op::MessageCount),
             "read-first" => Ok(Op::ReadFirst),
             "read-last" => Ok(Op::ReadLast),
+            "dump-layout" => Ok(Op::DumpLayout),
             other => Err(format!("unknown --op '{other}'")),
         }
     }
@@ -56,6 +66,7 @@ impl Op {
 fn parse_args() -> Result<Args, String> {
     let mut url: Option<String> = None;
     let mut op: Option<Op> = None;
+    let mut bidirectional = false;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -64,6 +75,9 @@ fn parse_args() -> Result<Args, String> {
             }
             "--op" => {
                 op = Some(Op::parse(&it.next().ok_or("--op requires a value")?)?);
+            }
+            "--bidirectional" => {
+                bidirectional = true;
             }
             "--help" | "-h" => {
                 print_usage();
@@ -75,18 +89,22 @@ fn parse_args() -> Result<Args, String> {
     Ok(Args {
         url: url.ok_or("missing --url")?,
         op: op.ok_or("missing --op")?,
+        bidirectional,
     })
 }
 
 fn print_usage() {
     eprintln!(
-        "usage: remote-parity-rust-driver --url <URL> --op <open|message-count|read-first|read-last>"
+        "usage: remote-parity-rust-driver --url <URL> --op <open|message-count|read-first|read-last|dump-layout> [--bidirectional]"
     );
 }
 
 fn run(args: Args) -> Result<(), String> {
     let storage: BTreeMap<String, String> = BTreeMap::new();
-    let file = TensogramFile::open_remote(&args.url, &storage)
+    let scan_opts = args
+        .bidirectional
+        .then_some(RemoteScanOptions { bidirectional: true });
+    let file = TensogramFile::open_remote(&args.url, &storage, scan_opts)
         .map_err(|e| format!("open_remote failed: {e}"))?;
 
     match args.op {
@@ -114,6 +132,24 @@ fn run(args: Args) -> Result<(), String> {
             let _ = file
                 .read_message(n - 1)
                 .map_err(|e| format!("read_message({}) failed: {e}", n - 1))?;
+            Ok(())
+        }
+        Op::DumpLayout => {
+            let layouts = file
+                .message_layouts()
+                .map_err(|e| format!("message_layouts failed: {e}"))?;
+            let mut out = String::from("[");
+            for (i, l) in layouts.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&format!(
+                    "{{\"offset\":{},\"length\":{}}}",
+                    l.offset, l.length
+                ));
+            }
+            out.push(']');
+            println!("{out}");
             Ok(())
         }
     }

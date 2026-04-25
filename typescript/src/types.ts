@@ -444,6 +444,38 @@ export interface FromUrlOptions {
    * any positive integer is accepted.
    */
   concurrency?: number;
+  /**
+   * Enable the bidirectional remote-scan walker on open.
+   *
+   * When `true`, the lazy HTTP backend issues paired forward-preamble
+   * and backward-postamble Range fetches per scan round, alternating
+   * with forward-only steps whenever backward yields (format error,
+   * streaming preamble, gap-below-min, overlap, exceeds-bound).  This
+   * roughly halves the number of `GET` requests for tail / full-scan
+   * access on header-indexed files.
+   *
+   * Mirrors the Rust `RemoteScanOptions { bidirectional: true }` and
+   * the Python `bidirectional=True` keyword argument.  Default
+   * `false` (forward-only walk, byte-identical to behaviour before
+   * this option existed).
+   *
+   * Requires `concurrency >= 2` so the paired round can fan out;
+   * passing `bidirectional: true` with `concurrency: 1` rejects
+   * the {@link TensogramFile.fromUrl} promise with
+   * `InvalidArgumentError` before any HTTP probe is issued.
+   *
+   * Falls back to the eager full-body GET when the server does not
+   * support Range requests, the same as forward-only mode.
+   */
+  bidirectional?: boolean;
+  /**
+   * Emit `console.debug` events on every scan-walker state
+   * transition (`tensogram:scan:mode`, `tensogram:scan:fallback`,
+   * `tensogram:scan:fwd-terminated`, `tensogram:scan:gap-closed`,
+   * `tensogram:scan:hop`).  Mirrors the Rust `tracing` events at
+   * `target = "tensogram::remote_scan"`.  Default `false`.
+   */
+  debug?: boolean;
 }
 
 /** Options for {@link TensogramFile.open}. */

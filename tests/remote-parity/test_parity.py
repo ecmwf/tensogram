@@ -26,6 +26,7 @@ Three layers of invariants:
 
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 
@@ -54,13 +55,20 @@ _CASES = [
     for op in _OPS
 ]
 
+_LAYOUT_CASES = [
+    DriverCase(fixture=fixture, language=language, op="dump-layout", mode=mode)
+    for fixture in _FIXTURES
+    for language in ("rust", "ts")
+    for mode in ("forward", "bidirectional")
+]
+
 
 @pytest.fixture(scope="module")
 def events():
     missing = missing_prereqs()
     if missing:
         pytest.skip("remote-parity prereqs missing: " + ", ".join(missing))
-    return collect_events(list(_CASES))
+    return collect_events([*_CASES, *_LAYOUT_CASES])
 
 
 @pytest.fixture(scope="module")
@@ -83,8 +91,8 @@ _FULL_SCAN_OPS: tuple[str, ...] = ("message-count", "read-last")
 def test_rust_ts_parity_on_full_scan_ops(fixture: str, op: Op, events) -> None:
     rust_case = DriverCase(fixture=fixture, language="rust", op=op)
     ts_case = DriverCase(fixture=fixture, language="ts", op=op)
-    rust_scan = filter_scan_events(events[rust_case.run_id])
-    ts_scan = filter_scan_events(events[ts_case.run_id])
+    rust_scan = filter_scan_events(events[rust_case.run_id].events)
+    ts_scan = filter_scan_events(events[ts_case.run_id].events)
     assert [(e.scan_round, e.direction, e.logical_range) for e in rust_scan] == [
         (e.scan_round, e.direction, e.logical_range) for e in ts_scan
     ], f"Rust vs TS scan-event divergence for {fixture}/{op}"
@@ -92,7 +100,7 @@ def test_rust_ts_parity_on_full_scan_ops(fixture: str, op: Op, events) -> None:
 
 @pytest.mark.parametrize("case", _CASES, ids=lambda c: c.run_id)
 def test_scan_event_shape_invariants(case: DriverCase, events) -> None:
-    scan_events = filter_scan_events(events[case.run_id])
+    scan_events = filter_scan_events(events[case.run_id].events)
     for i, event in enumerate(scan_events):
         where = f"{case.run_id}[{i}]"
         assert event.direction == "forward", f"{where}: forward-only walk expected"
@@ -119,7 +127,7 @@ def test_full_scan_offsets_match_fixture_layout(
     fixture: str, language: Language, op: Op, events, fixture_layouts
 ) -> None:
     case = DriverCase(fixture=fixture, language=language, op=op)
-    scan_events = filter_scan_events(events[case.run_id])
+    scan_events = filter_scan_events(events[case.run_id].events)
     expected_starts = [offset for offset, _length in fixture_layouts[fixture]]
     actual_starts = [e.logical_range[0] for e in scan_events]
     assert actual_starts == expected_starts, (
@@ -136,7 +144,7 @@ def test_no_fallback_or_error_events(case: DriverCase, events) -> None:
     surfaces an HTTP error on these fixtures, that's a regression — the
     lazy Range path should handle every committed fixture cleanly.
     """
-    bad = [e for e in events[case.run_id] if e.category in ("fallback", "error")]
+    bad = [e for e in events[case.run_id].events if e.category in ("fallback", "error")]
     assert not bad, f"{case.run_id}: unexpected non-scan events: " + ", ".join(
         f"{e.category}@{e.logical_range}" for e in bad
     )
@@ -160,8 +168,8 @@ def test_open_divergence_rust_lazy_ts_eager(fixture: str, events) -> None:
     expected_n = _EXPECTED_MESSAGE_COUNTS[fixture]
     rust_case = DriverCase(fixture=fixture, language="rust", op="open")
     ts_case = DriverCase(fixture=fixture, language="ts", op="open")
-    rust_open = filter_scan_events(events[rust_case.run_id])
-    ts_open = filter_scan_events(events[ts_case.run_id])
+    rust_open = filter_scan_events(events[rust_case.run_id].events)
+    ts_open = filter_scan_events(events[ts_case.run_id].events)
 
     assert len(rust_open) == 1, (
         f"Rust open is expected to issue exactly one preamble GET; "
@@ -184,8 +192,8 @@ def test_read_first_divergence_rust_lazy_ts_eager(fixture: str, events) -> None:
     expected_n = _EXPECTED_MESSAGE_COUNTS[fixture]
     rust_case = DriverCase(fixture=fixture, language="rust", op="read-first")
     ts_case = DriverCase(fixture=fixture, language="ts", op="read-first")
-    rust_scan = filter_scan_events(events[rust_case.run_id])
-    ts_scan = filter_scan_events(events[ts_case.run_id])
+    rust_scan = filter_scan_events(events[rust_case.run_id].events)
+    ts_scan = filter_scan_events(events[ts_case.run_id].events)
 
     assert len(rust_scan) == 1, (
         f"Rust read-first is expected to issue exactly one preamble GET; "
@@ -194,4 +202,34 @@ def test_read_first_divergence_rust_lazy_ts_eager(fixture: str, events) -> None:
     assert len(ts_scan) == expected_n, (
         f"TS read-first is expected to have already walked all {expected_n} "
         f"preambles at open time; got {len(ts_scan)} for {fixture}"
+    )
+
+
+@pytest.mark.parametrize("language", ["rust", "ts"], ids=["rust", "ts"])
+@pytest.mark.parametrize("fixture", _FIXTURES, ids=list(_FIXTURES))
+def test_forward_vs_bidirectional_layouts_equal(
+    fixture: str, language: Language, events
+) -> None:
+    """Forward-only and bidirectional walkers must agree on the final layout set.
+
+    The walkers may issue different HTTP request patterns — that is the
+    whole point of the bidirectional optimisation — but the discovered
+    `(offset, length)` layout per message must match exactly.  Any
+    drift indicates the bidirectional walker has gained or lost a
+    message somewhere along its inward sweep.
+
+    Runs once per language so a divergence in either Rust or TS gets
+    its own named failure.
+    """
+    fwd_case = DriverCase(
+        fixture=fixture, language=language, op="dump-layout", mode="forward"
+    )
+    bidir_case = DriverCase(
+        fixture=fixture, language=language, op="dump-layout", mode="bidirectional"
+    )
+    fwd_layouts = json.loads(events[fwd_case.run_id].stdout)
+    bidir_layouts = json.loads(events[bidir_case.run_id].stdout)
+    assert fwd_layouts == bidir_layouts, (
+        f"forward vs bidirectional layout divergence for {fixture}/{language}: "
+        f"forward={fwd_layouts}, bidirectional={bidir_layouts}"
     )

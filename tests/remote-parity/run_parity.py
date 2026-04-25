@@ -45,7 +45,8 @@ _RUST_DRIVER_BIN = (
 _TS_DRIVER_SCRIPT = _DRIVERS_DIR / "ts_driver.ts"
 
 Language = Literal["rust", "ts"]
-Op = Literal["open", "message-count", "read-first", "read-last"]
+Op = Literal["open", "message-count", "read-first", "read-last", "dump-layout"]
+Mode = Literal["forward", "bidirectional"]
 
 _FIXTURES: tuple[str, ...] = (
     "single-msg",
@@ -60,6 +61,23 @@ _OPS: tuple[Op, ...] = (
     "read-first",
     "read-last",
 )
+
+_LAYOUT_OPS: tuple[Op, ...] = ("dump-layout",)
+_LAYOUT_MODES: tuple[Mode, ...] = ("forward", "bidirectional")
+_LAYOUT_LANGUAGES: tuple[Language, ...] = ("rust", "ts")
+
+
+def is_layout_dump_case(case: "DriverCase") -> bool:
+    """True for cases that emit `dump-layout` JSON to stdout.
+
+    These cases are excluded from event-based parity assertions
+    because the parity classifier in ``classifier.py`` is
+    forward-scan-only and would mis-classify backward Range fetches
+    as out-of-order forward scans.  Their output is compared via the
+    layouts dumped to stdout instead — see
+    ``test_parity.test_*_forward_vs_bidirectional_layouts_equal``.
+    """
+    return case.op == "dump-layout"
 
 
 @dataclass(frozen=True)
@@ -87,11 +105,17 @@ class DriverCase:
     fixture: str
     language: Language
     op: Op
-    mode: Literal["forward"] = "forward"
+    mode: Mode = "forward"
 
     @property
     def run_id(self) -> str:
         return f"{self.fixture}-{self.language}-{self.op}-{self.mode}"
+
+
+@dataclass(frozen=True)
+class RunResult:
+    events: list[ScanEvent]
+    stdout: str
 
 
 def normalise_log(run_id: str, records: list[RequestRecord]) -> list[ScanEvent]:
@@ -130,6 +154,13 @@ def _all_cases() -> list[DriverCase]:
         for language in ("rust", "ts"):
             for op in _OPS:
                 cases.append(DriverCase(fixture=fixture, language=language, op=op))
+    for fixture in _FIXTURES:
+        for language in _LAYOUT_LANGUAGES:
+            for op in _LAYOUT_OPS:
+                for mode in _LAYOUT_MODES:
+                    cases.append(
+                        DriverCase(fixture=fixture, language=language, op=op, mode=mode)
+                    )
     return cases
 
 
@@ -213,7 +244,7 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
             proc.kill()
 
 
-def _run_driver(case: DriverCase, url: str) -> None:
+def _run_driver(case: DriverCase, url: str) -> str:
     if case.language == "rust":
         cmd = [str(_RUST_DRIVER_BIN), "--url", url, "--op", case.op]
     else:
@@ -226,6 +257,8 @@ def _run_driver(case: DriverCase, url: str) -> None:
             "--op",
             case.op,
         ]
+    if case.mode == "bidirectional":
+        cmd.append("--bidirectional")
     env_cwd = _DRIVERS_DIR if case.language == "ts" else _THIS_DIR
 
     # `start_new_session=True` puts the driver in its own process
@@ -275,6 +308,7 @@ def _run_driver(case: DriverCase, url: str) -> None:
             f"  stdout: {stdout.strip()}\n"
             f"  stderr: {stderr.strip()}"
         )
+    return stdout
 
 
 def _check_no_duplicate_run_ids(cases: list[DriverCase]) -> None:
@@ -289,17 +323,17 @@ def _check_no_duplicate_run_ids(cases: list[DriverCase]) -> None:
         seen.add(case.run_id)
 
 
-def collect_events(cases: list[DriverCase]) -> dict[str, list[ScanEvent]]:
+def collect_events(cases: list[DriverCase]) -> dict[str, RunResult]:
     if not cases:
         raise ValueError("collect_events: no driver cases provided")
     _check_no_duplicate_run_ids(cases)
     _ensure_prereqs()
 
-    result: dict[str, list[ScanEvent]] = {}
+    result: dict[str, RunResult] = {}
     with MockServer(_FIXTURES_DIR) as server:
         for case in cases:
             url = server.url_for(case.run_id, f"{case.fixture}.tgm")
-            _run_driver(case, url)
+            stdout = _run_driver(case, url)
             records = server.log_for(case.run_id)
             if not records:
                 raise RuntimeError(
@@ -307,7 +341,10 @@ def collect_events(cases: list[DriverCase]) -> dict[str, list[ScanEvent]]:
                     "no server-side requests — likely a wrong URL or run_id; "
                     "check the driver's stderr."
                 )
-            result[case.run_id] = normalise_log(case.run_id, records)
+            result[case.run_id] = RunResult(
+                events=normalise_log(case.run_id, records),
+                stdout=stdout,
+            )
     return result
 
 
@@ -329,12 +366,12 @@ def main(argv: list[str] | None = None) -> int:
         print("no cases match", file=sys.stderr)
         return 2
 
-    events = collect_events(cases)
-    print(f"{'case':<55} {'scan events':>12}")
-    print("-" * 70)
+    results = collect_events(cases)
+    print(f"{'case':<60} {'scan events':>12}")
+    print("-" * 75)
     for case in cases:
-        scan_count = len(filter_scan_events(events[case.run_id]))
-        print(f"{case.run_id:<55} {scan_count:>12}")
+        scan_count = len(filter_scan_events(results[case.run_id].events))
+        print(f"{case.run_id:<60} {scan_count:>12}")
     return 0
 
 

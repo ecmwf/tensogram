@@ -17,6 +17,25 @@ use crate::error::{Result, TensogramError};
 use crate::framing;
 use crate::types::{DataObjectDescriptor, DecodedObject, GlobalMetadata};
 
+// ── Public layout shape ─────────────────────────────────────────────────────
+
+/// Byte offset and length of a single message inside a `.tgm` file.
+///
+/// Returned in scan order by [`TensogramFile::message_layouts`] and
+/// its async sibling.  For remote files opened with
+/// [`crate::RemoteScanOptions::bidirectional`] enabled, the result is
+/// identical to the forward-only walk — bidirectional changes how the
+/// layouts are discovered, not what they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessageLayout {
+    /// Byte offset of the message preamble (frame `MAGI`).
+    pub offset: u64,
+    /// Total message length in bytes (preamble through postamble,
+    /// inclusive).  `offset + length` lands on the first byte of the
+    /// next message, or on EOF for the last one.
+    pub length: u64,
+}
+
 // ── Backend enum ─────────────────────────────────────────────────────────────
 
 enum Backend {
@@ -70,27 +89,47 @@ impl TensogramFile {
 
     /// Open a local file or remote URL.
     ///
-    /// Auto-detects remote URLs (s3://, s3a://, gs://, az://, azure://, http://, https://)
-    /// when the `remote` feature is enabled; otherwise treats the source
-    /// as a local path.
-    pub fn open_source(source: impl AsRef<str>) -> Result<Self> {
+    /// Auto-detects remote URLs (`s3://`, `s3a://`, `gs://`, `az://`,
+    /// `azure://`, `http://`, `https://`) when the `remote` feature
+    /// is enabled; otherwise treats `source` as a local path.
+    ///
+    /// `scan_opts` configures the remote scan walker.  `None` (or
+    /// `Some(RemoteScanOptions::default())`) keeps the forward-only
+    /// walk — byte-identical to behaviour before this option existed.
+    /// For local paths the value is silently ignored (a single forward
+    /// sweep over the file is the only sensible strategy locally).
+    pub fn open_source(
+        source: impl AsRef<str>,
+        scan_opts: Option<crate::RemoteScanOptions>,
+    ) -> Result<Self> {
         let source = source.as_ref();
 
         #[cfg(feature = "remote")]
         if crate::remote::is_remote_url(source) {
-            return Self::open_remote(source, &std::collections::BTreeMap::new());
+            return Self::open_remote(source, &std::collections::BTreeMap::new(), scan_opts);
         }
+        let _ = scan_opts;
 
         Self::open(source)
     }
 
-    /// Open a remote file with explicit storage options (credentials, region, etc.).
+    /// Open a remote file with explicit storage options (credentials,
+    /// region, etc.) and scan-walker configuration.
+    ///
+    /// `scan_opts = None` (or `Some(RemoteScanOptions::default())`)
+    /// runs the forward-only walker; `Some(RemoteScanOptions {
+    /// bidirectional: true })` enables the bidirectional walker that
+    /// roughly halves HTTP `GET` count for tail / full-scan access on
+    /// header-indexed files.
     #[cfg(feature = "remote")]
     pub fn open_remote(
         source: &str,
         storage_options: &std::collections::BTreeMap<String, String>,
+        scan_opts: Option<crate::RemoteScanOptions>,
     ) -> Result<Self> {
-        let remote = crate::remote::RemoteBackend::open(source, storage_options)?;
+        let opts = scan_opts.unwrap_or_default();
+        let remote =
+            crate::remote::RemoteBackend::open_with_scan_opts(source, storage_options, opts)?;
         Ok(TensogramFile {
             backend: Backend::Remote(remote),
             message_offsets: OnceLock::new(),
@@ -208,6 +247,31 @@ impl TensogramFile {
             .get()
             .ok_or_else(|| TensogramError::Framing("internal invariant violated: message_offsets was not populated by ensure_scanned() before use (this is a library bug — please report)".to_string()))?
             .len())
+    }
+
+    /// Per-message `(byte_offset, byte_length)` layout, in scan order.
+    ///
+    /// Triggers a full scan if the file has not yet been scanned.
+    /// For remote files opened with
+    /// [`crate::RemoteScanOptions::bidirectional`] enabled, the
+    /// returned layouts are identical to the forward-only walk —
+    /// only the discovery path differs.
+    pub fn message_layouts(&self) -> Result<Vec<MessageLayout>> {
+        #[cfg(feature = "remote")]
+        if let Backend::Remote(remote) = &self.backend {
+            return remote.message_layouts();
+        }
+        self.ensure_scanned()?;
+        Ok(self
+            .message_offsets
+            .get()
+            .ok_or_else(|| TensogramError::Framing("internal invariant violated: message_offsets was not populated by ensure_scanned() before use (this is a library bug — please report)".to_string()))?
+            .iter()
+            .map(|&(offset, length)| MessageLayout {
+                offset: offset as u64,
+                length: length as u64,
+            })
+            .collect())
     }
 
     pub fn append(
@@ -495,6 +559,37 @@ impl TensogramFile {
             .len())
     }
 
+    /// Async sibling of [`Self::message_layouts`].
+    #[cfg(feature = "async")]
+    pub async fn message_layouts_async(&self) -> Result<Vec<MessageLayout>> {
+        #[cfg(feature = "remote")]
+        if let Backend::Remote(remote) = &self.backend {
+            return remote.message_layouts_async().await;
+        }
+
+        if self.message_offsets.get().is_none() {
+            let p = self.local_path()?.clone();
+            let offsets = tokio::task::spawn_blocking(move || {
+                let mut file = fs::File::open(&p)?;
+                framing::scan_file(&mut file)
+            })
+            .await
+            .map_err(|e| TensogramError::Io(std::io::Error::other(e)))??;
+            let _ = self.message_offsets.set(offsets);
+        }
+
+        Ok(self
+            .message_offsets
+            .get()
+            .ok_or_else(|| TensogramError::Framing("internal invariant violated: message_offsets was not populated by ensure_scanned() before use (this is a library bug — please report)".to_string()))?
+            .iter()
+            .map(|&(offset, length)| MessageLayout {
+                offset: offset as u64,
+                length: length as u64,
+            })
+            .collect())
+    }
+
     #[cfg(feature = "async")]
     pub async fn read_message_async(&self, index: usize) -> Result<Vec<u8>> {
         #[cfg(feature = "remote")]
@@ -540,23 +635,35 @@ impl TensogramFile {
             .map_err(|e| TensogramError::Io(std::io::Error::other(e)))?
     }
 
+    /// Async sibling of [`Self::open_source`].  See that method for
+    /// the `scan_opts` contract.
     #[cfg(all(feature = "remote", feature = "async"))]
-    pub async fn open_source_async(source: impl AsRef<str>) -> Result<Self> {
+    pub async fn open_source_async(
+        source: impl AsRef<str>,
+        scan_opts: Option<crate::RemoteScanOptions>,
+    ) -> Result<Self> {
         let source = source.as_ref();
 
         if crate::remote::is_remote_url(source) {
-            return Self::open_remote_async(source, &std::collections::BTreeMap::new()).await;
+            return Self::open_remote_async(source, &std::collections::BTreeMap::new(), scan_opts)
+                .await;
         }
 
         Self::open_async(source).await
     }
 
+    /// Async sibling of [`Self::open_remote`].  See that method for
+    /// the `scan_opts` contract.
     #[cfg(all(feature = "remote", feature = "async"))]
     pub async fn open_remote_async(
         source: &str,
         storage_options: &std::collections::BTreeMap<String, String>,
+        scan_opts: Option<crate::RemoteScanOptions>,
     ) -> Result<Self> {
-        let remote = crate::remote::RemoteBackend::open_async(source, storage_options).await?;
+        let opts = scan_opts.unwrap_or_default();
+        let remote =
+            crate::remote::RemoteBackend::open_async_with_scan_opts(source, storage_options, opts)
+                .await?;
         Ok(TensogramFile {
             backend: Backend::Remote(remote),
             message_offsets: OnceLock::new(),
@@ -1298,7 +1405,7 @@ mod tests {
         )?;
 
         let path_str = path.to_str().unwrap();
-        let opened = TensogramFile::open_source(path_str)?;
+        let opened = TensogramFile::open_source(path_str, None)?;
         assert!(!opened.is_remote());
         assert_eq!(opened.message_count()?, 1);
         Ok(())
@@ -1611,7 +1718,7 @@ mod tests {
         }
 
         let path_str = path.to_str().unwrap();
-        let opened = TensogramFile::open_source(path_str)?;
+        let opened = TensogramFile::open_source(path_str, None)?;
 
         // source() should include the filename
         assert!(
@@ -1633,7 +1740,7 @@ mod tests {
 
     #[test]
     fn test_open_source_nonexistent() {
-        let result = TensogramFile::open_source("/tmp/no_such_file_tensogram_abc.tgm");
+        let result = TensogramFile::open_source("/tmp/no_such_file_tensogram_abc.tgm", None);
         match result {
             Ok(_) => panic!("expected error for nonexistent file"),
             Err(e) => {
