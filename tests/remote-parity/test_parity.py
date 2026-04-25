@@ -36,12 +36,15 @@ import tensogram
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from classifier import PREAMBLE_BYTES
 from run_parity import (
+    _BIDIR_OPS,
     _FIXTURES,
     _FIXTURES_DIR,
+    _FOOTER_FIXTURES,
     _OPS,
     DriverCase,
     Language,
     Op,
+    ScanEvent,
     collect_events,
     filter_scan_events,
     missing_fixtures,
@@ -62,13 +65,27 @@ _LAYOUT_CASES = [
     for mode in ("forward", "bidirectional")
 ]
 
+_BIDIR_CASES = [
+    DriverCase(fixture=fixture, language=language, op=op, mode=mode)
+    for fixture in _FIXTURES
+    for language in ("rust", "ts")
+    for op in _BIDIR_OPS
+    for mode in ("forward", "bidirectional")
+]
+
 
 @pytest.fixture(scope="module")
 def events():
     missing = missing_prereqs()
     if missing:
         pytest.skip("remote-parity prereqs missing: " + ", ".join(missing))
-    return collect_events([*_CASES, *_LAYOUT_CASES])
+    seen: set[str] = set()
+    cases: list[DriverCase] = []
+    for case in (*_CASES, *_LAYOUT_CASES, *_BIDIR_CASES):
+        if case.run_id not in seen:
+            seen.add(case.run_id)
+            cases.append(case)
+    return collect_events(cases)
 
 
 @pytest.fixture(scope="module")
@@ -118,6 +135,96 @@ def test_scan_event_shape_invariants(case: DriverCase, events) -> None:
 
 
 _FULL_SCAN_OPS_LAYOUT: tuple[str, ...] = ("message-count", "read-last")
+
+
+def _footer_region_payloads(scan_events: list[ScanEvent], message_length: int) -> list[ScanEvent]:
+    """Filter events down to ``payload``-category fetches that look like a
+    single footer region — strictly larger than the 24-byte
+    preamble/postamble walk and strictly smaller than the message
+    length (so coalesced paired fetches and raw-message fallbacks
+    don't contaminate the count).
+
+    For a fixture where every message has length L, the footer region
+    is at most L - PREAMBLE_BYTES - POSTAMBLE_BYTES.  Coalesced paired
+    fetches span ranges much larger than L; raw-message fallbacks
+    fetch exactly L bytes.  Filtering on ``PREAMBLE_BYTES < size < L``
+    keeps only the eager-footer chunks and the lazy footer-suffix
+    fetches.
+    """
+    return [
+        e
+        for e in scan_events
+        if e.category == "payload"
+        and PREAMBLE_BYTES < e.logical_range[1] - e.logical_range[0] < message_length
+    ]
+
+
+def _fixture_message_length(fixture: str) -> int:
+    """Read the fixture's first message length from disk.  All fixtures
+    in this harness use uniform message lengths within a file, so any
+    message's length identifies the per-message footer-region size."""
+    data = (_FIXTURES_DIR / f"{fixture}.tgm").read_bytes()
+    layouts = list(tensogram.scan(data))
+    return layouts[0][1] if layouts else 0
+
+
+@pytest.mark.parametrize("language", ["rust", "ts"], ids=["rust", "ts"])
+@pytest.mark.parametrize("fixture", _FOOTER_FIXTURES, ids=list(_FOOTER_FIXTURES))
+def test_eager_footer_one_fetch_per_backward_discovered_message(
+    fixture: str, language: Language, events
+) -> None:
+    """On a footer-indexed file, the bidirectional walker's eager-footer
+    issues exactly one footer-region fetch per backward-discovered
+    message — populating ``metadata`` + ``index`` inline so the lazy
+    ``ensure_layout`` path short-circuits on the subsequent accessor
+    call.  No additional footer-region fetch fires on
+    ``read-metadata(N-1)``.
+
+    Expected counts derive from the fixture's message count, not from
+    observed bwd_postamble events: Rust's ``store.get_ranges``
+    coalesces the paired fwd-preamble + bwd-postamble fetches into a
+    single multi-byte HTTP request that the classifier tags as
+    ``payload`` (size larger than ``PREAMBLE_BYTES``), so counting
+    ``role == "bwd_postamble"`` would undercount on Rust.
+
+    On a 1-message file, same-message detection collapses both walkers
+    onto the same layout; backward yields silently and the eager
+    footer bytes are dropped, so 0 footer fetches fire during scan.
+    The lazy ``read-metadata(0)`` accessor then issues at most 1
+    footer-region fetch (the lazy populate).
+
+    On an N-message file with N >= 2, the bidirectional walker
+    discovers ``floor(N/2)`` messages backward (the leftmost backward-
+    discovered message lives at the gap-close boundary).  Each
+    backward-discovered message triggers exactly 1 footer fetch via
+    the eager path, and the subsequent ``read-metadata(N-1)``
+    short-circuits because the accessed message landed in
+    ``suffix_rev`` already populated.
+    """
+    bidir = DriverCase(
+        fixture=fixture,
+        language=language,
+        op="read-metadata",
+        mode="bidirectional",
+    )
+    bidir_events = events[bidir.run_id].events
+    msg_length = _fixture_message_length(fixture)
+    footer_fetches = len(_footer_region_payloads(bidir_events, msg_length))
+
+    msg_count = _EXPECTED_MESSAGE_COUNTS[fixture]
+    if msg_count == 1:
+        assert footer_fetches <= 1, (
+            f"{bidir.run_id}: 1-message file should issue at most 1 footer-region "
+            f"fetch (lazy populate after same-message yield); got {footer_fetches}"
+        )
+        return
+
+    expected_eager = msg_count // 2
+    assert footer_fetches == expected_eager, (
+        f"{bidir.run_id}: expected {expected_eager} eager-footer fetches "
+        f"(floor({msg_count}/2) backward-discovered messages) and zero post-scan "
+        f"lazy fetches; got {footer_fetches}"
+    )
 
 
 @pytest.mark.parametrize("language", ["rust", "ts"], ids=["rust", "ts"])
