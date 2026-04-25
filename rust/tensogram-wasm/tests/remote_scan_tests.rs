@@ -26,8 +26,12 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;
 
 fn make_postamble(total_length: u64) -> Vec<u8> {
+    make_postamble_with_footer(total_length, 0)
+}
+
+fn make_postamble_with_footer(total_length: u64, first_footer_offset: u64) -> Vec<u8> {
     let pa = Postamble {
-        first_footer_offset: 0,
+        first_footer_offset,
         total_length,
     };
     let mut buf = Vec::with_capacity(POSTAMBLE_SIZE);
@@ -94,6 +98,18 @@ fn parse_backward_postamble_need_validation_kind_with_camelcase_fields() {
     assert_eq!(kind(&obj), "NeedPreambleValidation");
     assert_eq!(u64_field(&obj, "msgStart"), 20);
     assert_eq!(u64_field(&obj, "length"), 80);
+    assert_eq!(u64_field(&obj, "firstFooterOffset"), 0);
+}
+
+#[wasm_bindgen_test]
+fn parse_backward_postamble_need_validation_propagates_first_footer_offset() {
+    let buf = make_postamble_with_footer(200, 96);
+    let outcome = parse_backward_postamble_outcome(&buf, 0, 200).unwrap();
+    let obj: js_sys::Object = outcome.dyn_into().unwrap();
+    assert_eq!(kind(&obj), "NeedPreambleValidation");
+    assert_eq!(u64_field(&obj, "msgStart"), 0);
+    assert_eq!(u64_field(&obj, "length"), 200);
+    assert_eq!(u64_field(&obj, "firstFooterOffset"), 96);
 }
 
 #[wasm_bindgen_test]

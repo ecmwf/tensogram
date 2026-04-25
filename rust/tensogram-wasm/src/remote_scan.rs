@@ -36,7 +36,16 @@ use wasm_bindgen::prelude::*;
 /// @returns One of:
 ///   - `{ kind: "Format",                 reason: string }`
 ///   - `{ kind: "Streaming" }`
-///   - `{ kind: "NeedPreambleValidation", msgStart: bigint, length: bigint }`
+///   - `{ kind: "NeedPreambleValidation", msgStart: bigint, length: bigint, firstFooterOffset: bigint }`
+///
+/// `firstFooterOffset` mirrors the postamble's `first_footer_offset`
+/// field — relative to the candidate message start.  Equals
+/// `length - POSTAMBLE_SIZE` when the message has no footer frames,
+/// strictly less when a footer region is present.  Dispatchers can
+/// use this with `tensogram::footer_region_present` to decide whether
+/// to fold an eager footer-region fetch into the same paired round
+/// as the candidate-preamble validation; the footer fetch is
+/// best-effort and never poisons preamble validation.
 #[wasm_bindgen]
 pub fn parse_backward_postamble_outcome(
     pa_bytes: &[u8],
