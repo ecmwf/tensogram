@@ -24,6 +24,10 @@ export type Linkage = 'ffi' | 'pure-rust';
 /** Broad category of a compiled-in feature. */
 export type FeatureKind = 'compression' | 'threading' | 'io' | 'converter';
 
+/** Build profile reported by `BuildInfo.profile`.  Closed set, mirrors the
+ *  `cfg!(debug_assertions)` discriminator on the Rust side. */
+export type BuildProfile = 'release' | 'debug';
+
 /** Compile-time build metadata (mirrors `BuildInfo` in Rust). */
 export interface BuildInfo {
   /** Crate version from `Cargo.toml`, e.g. `"0.19.0"`. */
@@ -33,7 +37,7 @@ export interface BuildInfo {
   /** Rustc target triple, e.g. `"wasm32-unknown-unknown"`. */
   target: string;
   /** Build profile: `"release"` or `"debug"`. */
-  profile: string;
+  profile: BuildProfile;
 }
 
 /**

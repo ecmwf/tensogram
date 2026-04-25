@@ -6362,8 +6362,8 @@ pub extern "C" fn tgm_compute_hash(
 /// # Example
 ///
 /// ```c
-/// TgmBytes report = {0};
-/// if (tgm_doctor_to_json(&report) == TGM_OK) {
+/// tgm_bytes_t report = {0};
+/// if (tgm_doctor_to_json(&report) == TGM_ERROR_OK) {
 ///     fwrite(report.data, 1, report.len, stdout);
 ///     tgm_bytes_free(report);
 /// }
