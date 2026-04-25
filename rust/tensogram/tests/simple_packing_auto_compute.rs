@@ -15,8 +15,10 @@
 //! > derive ``sp_reference_value`` / ``sp_binary_scale_factor`` from my
 //! > data automatically.
 //!
-//! The tests cover the seven scenarios from the design plan, each
-//! written as a `#[test]` that reads like a Given/When/Then.
+//! The tests cover the seven design-plan scenarios (S1–S7) plus a
+//! parity check that auto-compute and explicit-params paths produce
+//! identical decoded output, each written as a `#[test]` that reads
+//! like a Given/When/Then.
 
 use std::collections::BTreeMap;
 

@@ -40,13 +40,26 @@ self-describing.
 The same ergonomic form works from every language binding:
 
 ```rust
-// Rust
+// Rust — only the auto-compute knob in `params`; the encoder fills in
+// the rest at encode time.
+use std::collections::BTreeMap;
+use ciborium::Value;
+
+let mut params = BTreeMap::new();
+params.insert("sp_bits_per_value".into(), Value::Integer(16i64.into()));
+
 let desc = DataObjectDescriptor {
+    obj_type: "ntensor".into(),
+    ndim: shape.len() as u64,
+    shape: shape.clone(),
+    strides: c_strides(&shape),
+    dtype: Dtype::Float64,
+    byte_order: ByteOrder::native(),
     encoding: "simple_packing".into(),
-    params: BTreeMap::from([
-        ("sp_bits_per_value".into(), Value::Integer(16i64.into())),
-    ]),
-    ..descriptor_defaults()
+    filter: "none".into(),
+    compression: "none".into(),
+    params,
+    masks: None,
 };
 ```
 
