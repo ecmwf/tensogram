@@ -485,6 +485,109 @@ describe('TensogramFile.fromUrl bidirectional walker', () => {
     }
   });
 
+  it('header-indexed bidirectional walk issues no footer-region fetches', async () => {
+    await initOnce();
+    const messages = [
+      encode(defaultMeta(), [
+        { descriptor: makeDescriptor([4], 'float32'), data: new Float32Array(4) },
+      ]),
+      encode(defaultMeta(), [
+        { descriptor: makeDescriptor([8], 'float32'), data: new Float32Array(8) },
+      ]),
+      encode(defaultMeta(), [
+        { descriptor: makeDescriptor([16], 'float32'), data: new Float32Array(16) },
+      ]),
+      encode(defaultMeta(), [
+        { descriptor: makeDescriptor([32], 'float32'), data: new Float32Array(32) },
+      ]),
+    ];
+    const body = new Uint8Array(messages.reduce((s, m) => s + m.byteLength, 0));
+    let off = 0;
+    for (const m of messages) {
+      body.set(m, off);
+      off += m.byteLength;
+    }
+    const { fetch, requests } = makeRangeServer(body);
+
+    const file = await TensogramFile.fromUrl('https://example.invalid/h.tgm', {
+      fetch,
+      bidirectional: true,
+    });
+    expect(file.messageCount).toBe(4);
+
+    // Every scan-walk Range fetch is exactly PREAMBLE_BYTES (24) wide.
+    // Eager-footer fetches would be larger (footer regions span multiple
+    // CBOR frames).  On header-indexed messages the FOOTER_INDEX flag
+    // gate must skip the speculative footer fetch entirely, so the
+    // observed request log contains only 24-byte scan ranges (plus the
+    // HEAD probe).
+    const nonProbe = requests.filter((r) => r.method !== 'HEAD' && r.bytes !== undefined);
+    for (const r of nonProbe) {
+      expect(r.bytes).toBe(24);
+    }
+    file.close();
+  });
+
+  it('synthetic FOOTER_INDEX flag triggers eager-footer fetch attempt then falls through to lazy', async () => {
+    await initOnce();
+    // Two header-indexed messages, then patch the SECOND message's
+    // preamble flags to set FOOTER_METADATA | FOOTER_INDEX bits.  The
+    // bytes don't actually contain a FooterIndex frame, so the
+    // best-effort parse will fail silently — but we can observe that
+    // the dispatcher issued an extra footer-region Range request on
+    // the backward-discovered message before falling through.
+    const m1 = encode(defaultMeta(), [
+      { descriptor: makeDescriptor([4], 'float32'), data: new Float32Array(4) },
+    ]);
+    const m2 = encode(defaultMeta(), [
+      { descriptor: makeDescriptor([16], 'float32'), data: new Float32Array(16) },
+    ]);
+    const body = new Uint8Array(m1.byteLength + m2.byteLength);
+    body.set(m1, 0);
+    body.set(m2, m1.byteLength);
+    // Patch m2's preamble flags byte (offset m1.byteLength + 9 — preamble layout:
+    // [magic 8][version 1][flags 1][reserved 6][total_length 8]).  Set
+    // FOOTER_METADATA (bit 2) | FOOTER_INDEX (bit 3) — values 0x04 | 0x08 = 0x0C.
+    // Clear HEADER_METADATA (bit 0) | HEADER_INDEX (bit 1).
+    const flagsOff = m1.byteLength + 9;
+    body[flagsOff] = (body[flagsOff] & ~0x03) | 0x0c;
+    // Patch m2's first_footer_offset in postamble to a value inside
+    // the message's payload region so footerRegionPresent returns true.
+    // postamble lives at the last 24 bytes of m2; first_footer_offset
+    // is the first 8 bytes (big-endian).
+    const m2End = body.byteLength;
+    const postambleStart = m2End - 24;
+    const fakeFooterOffset = 28; // > PREAMBLE_BYTES, < length - POSTAMBLE_BYTES
+    new DataView(body.buffer).setBigUint64(postambleStart, BigInt(fakeFooterOffset), false);
+
+    const { fetch, requests } = makeRangeServer(body);
+
+    // Walking will fail at preamble validation (the patched flags
+    // imply footer-indexed but the bytes contain header-indexed frames),
+    // OR succeed depending on whether our own forward parse cares.
+    // Either way the test asserts only that a footer-region Range was
+    // attempted before any lazy populate.
+    try {
+      const file = await TensogramFile.fromUrl('https://example.invalid/synth.tgm', {
+        fetch,
+        bidirectional: true,
+      });
+      file.close();
+    } catch {
+      // Walker may bail on synthetic mismatches; what we care about
+      // is the Range pattern logged before failure.
+    }
+
+    const fetched = requests.filter((r) => r.method !== 'HEAD' && r.bytes !== undefined);
+    const wide = fetched.filter((r) => r.bytes !== 24);
+    // The synthetic flag patching forces a footer-region fetch (≠ 24
+    // bytes) once the backward postamble is parsed.  If wide.length is
+    // 0, the dispatcher never attempted the eager-footer fetch — that
+    // would be a regression in the FOOTER_METADATA | FOOTER_INDEX
+    // detection path.
+    expect(wide.length).toBeGreaterThan(0);
+  });
+
   it('cancels in-flight Range fetches when caller aborts mid-round', async () => {
     const body = makeNMessages(4);
     const aborts: number[] = [];

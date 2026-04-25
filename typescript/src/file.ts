@@ -44,6 +44,7 @@ import { getWbg } from './init.js';
 import { fetchRange, type FetchRangeContext } from './internal/httpRange.js';
 import { errorMessage, withCause } from './internal/io.js';
 import {
+  type FrameIndex,
   type MessageLayout,
   normaliseFrameFooter,
   normaliseFrameIndex,
@@ -1196,17 +1197,30 @@ type ForwardOutcome =
 type BackwardOutcome =
   | { kind: 'Format'; reason: string }
   | { kind: 'Streaming' }
-  | { kind: 'NeedPreambleValidation'; msgStart: bigint; length: bigint };
+  | {
+      kind: 'NeedPreambleValidation';
+      msgStart: bigint;
+      length: bigint;
+      firstFooterOffset: bigint;
+    };
 
 type BackwardCommit =
   | { kind: 'Format'; reason: string }
   | { kind: 'Layout'; offset: bigint; length: bigint };
 
+interface ScanLayoutEntry {
+  offset: number;
+  length: number;
+  preamble: PreambleInfo;
+  metadata?: GlobalMetadata;
+  index?: FrameIndex;
+}
+
 interface ScanState {
   next: number;
   prev: number;
-  layouts: { offset: number; length: number; preamble: PreambleInfo }[];
-  suffixRev: { offset: number; length: number; preamble: PreambleInfo }[];
+  layouts: ScanLayoutEntry[];
+  suffixRev: ScanLayoutEntry[];
   bwdActive: boolean;
   fwdTerminated: boolean;
   gapClosed: boolean;
@@ -1335,8 +1349,12 @@ async function tryBidirectionalRound(
 
   let validation: BackwardCommit | undefined;
   let candidatePreambleBytes: Uint8Array | undefined;
+  let candidateFooterBytes: Uint8Array | undefined;
   if (bwdOutcome.kind === 'NeedPreambleValidation') {
     const msgStart = Number(bwdOutcome.msgStart);
+    const msgLen = Number(bwdOutcome.length);
+    const firstFooterOffset = Number(bwdOutcome.firstFooterOffset);
+
     try {
       candidatePreambleBytes = await options.limit(() =>
         fetchRange(ctx, msgStart, msgStart + PREAMBLE_BYTES, true),
@@ -1344,6 +1362,21 @@ async function tryBidirectionalRound(
     } catch {
       return false;
     }
+
+    if (footerRegionPresent(firstFooterOffset, msgLen)) {
+      const footerStart = msgStart + firstFooterOffset;
+      const footerEnd = msgStart + msgLen - POSTAMBLE_BYTES;
+      if (footerStart < footerEnd) {
+        try {
+          candidateFooterBytes = await options.limit(() =>
+            fetchRange(ctx, footerStart, footerEnd, true),
+          );
+        } catch {
+          candidateFooterBytes = undefined;
+        }
+      }
+    }
+
     validation = wbg.validate_backward_preamble_outcome(
       candidatePreambleBytes,
       BigInt(bwdOutcome.msgStart),
@@ -1355,12 +1388,19 @@ async function tryBidirectionalRound(
     state,
     fwdBytes,
     candidatePreambleBytes,
+    candidateFooterBytes,
     fwdOutcome,
     bwdOutcome,
     validation,
     options,
   );
   return true;
+}
+
+function footerRegionPresent(firstFooterOffset: number, length: number): boolean {
+  if (length < POSTAMBLE_BYTES) return false;
+  const footerMax = length - POSTAMBLE_BYTES;
+  return firstFooterOffset >= PREAMBLE_BYTES && firstFooterOffset < footerMax;
 }
 
 async function tryForwardStep(
@@ -1421,6 +1461,7 @@ function applyRoundOutcomes(
   state: ScanState,
   fwdPreambleBytes: Uint8Array,
   candidatePreambleBytes: Uint8Array | undefined,
+  candidateFooterBytes: Uint8Array | undefined,
   fwd: ForwardOutcome,
   bwd: BackwardOutcome,
   validation: BackwardCommit | undefined,
@@ -1431,7 +1472,14 @@ function applyRoundOutcomes(
   } else if (bwd.kind === 'Streaming') {
     disableBackward(state, 'streaming-zero-bwd', options);
   } else if (validation !== undefined) {
-    commitOrYieldBackward(state, candidatePreambleBytes, fwd, validation, options);
+    commitOrYieldBackward(
+      state,
+      candidatePreambleBytes,
+      candidateFooterBytes,
+      fwd,
+      validation,
+      options,
+    );
   } else {
     disableBackward(state, 'missing-candidate-preamble', options);
   }
@@ -1472,6 +1520,7 @@ function applyRoundOutcomes(
 function commitOrYieldBackward(
   state: ScanState,
   candidatePreambleBytes: Uint8Array | undefined,
+  candidateFooterBytes: Uint8Array | undefined,
   fwd: ForwardOutcome,
   validation: BackwardCommit,
   options: LazyScanOptions,
@@ -1515,14 +1564,59 @@ function commitOrYieldBackward(
     disableBackward(state, 'preamble-parse-error-bwd', options);
     return;
   }
+  if (candidateFooterBytes !== undefined) {
+    tryApplyEagerFooter(layout, candidateFooterBytes, options);
+  }
   recordBackwardHop(state, layout, options);
+}
+
+/**
+ * Populate `layout.metadata` and `layout.index` from a pre-fetched
+ * footer chunk when (and only when) the just-validated preamble's
+ * flags carry FOOTER_METADATA + FOOTER_INDEX.  Best-effort: any parse
+ * failure is silently swallowed and the lazy `#ensureLayout` path
+ * picks up the layout later.
+ *
+ * Header-indexed messages with a footer hash frame may have a
+ * non-empty footer region whose bytes the dispatcher fetched
+ * speculatively; for those, the FOOTER_INDEX flag check below
+ * short-circuits and the bytes are discarded harmlessly.
+ */
+function tryApplyEagerFooter(
+  layout: ScanLayoutEntry,
+  footerBytes: Uint8Array,
+  options: LazyScanOptions,
+): void {
+  const flags = layout.preamble;
+  if (!(flags.hasFooterMetadata && flags.hasFooterIndex)) {
+    return;
+  }
+  let parsed: {
+    metadata: GlobalMetadata | null;
+    index: { offsets: BigUint64Array; lengths: BigUint64Array } | null;
+  };
+  try {
+    parsed = getWbg().parse_footer_chunk(footerBytes) as typeof parsed;
+  } catch {
+    return;
+  }
+  if (parsed.metadata && parsed.index) {
+    layout.metadata = parsed.metadata;
+    layout.index = normaliseFrameIndex(parsed.index);
+    if (options.debug) {
+      console.debug('tensogram:scan:footer-eager', {
+        offset: layout.offset,
+        footerBytes: footerBytes.length,
+      });
+    }
+  }
 }
 
 function buildLayoutFromPreamble(
   preambleBytes: Uint8Array,
   offset: number,
   length: number,
-): { offset: number; length: number; preamble: PreambleInfo } | null {
+): ScanLayoutEntry | null {
   try {
     const raw = getWbg().read_preamble_info(preambleBytes);
     const preamble = normalisePreambleInfo(raw);
@@ -1534,7 +1628,7 @@ function buildLayoutFromPreamble(
 
 function recordForwardHop(
   state: ScanState,
-  layout: { offset: number; length: number; preamble: PreambleInfo },
+  layout: ScanLayoutEntry,
   options: LazyScanOptions,
 ): void {
   state.layouts.push(layout);
@@ -1550,7 +1644,7 @@ function recordForwardHop(
 
 function recordBackwardHop(
   state: ScanState,
-  layout: { offset: number; length: number; preamble: PreambleInfo },
+  layout: ScanLayoutEntry,
   options: LazyScanOptions,
 ): void {
   state.suffixRev.push(layout);
@@ -1589,15 +1683,14 @@ function finaliseScan(state: ScanState): LazyScanResult {
     ...reversed.map((l) => ({ offset: l.offset, length: l.length })),
   ];
   const layouts = new Map<number, MessageLayout>();
-  state.layouts.forEach((l, i) => {
-    layouts.set(i, { offset: l.offset, length: l.length, preamble: l.preamble });
+  const toMessageLayout = (l: ScanLayoutEntry): MessageLayout => ({
+    offset: l.offset,
+    length: l.length,
+    preamble: l.preamble,
+    metadata: l.metadata,
+    index: l.index,
   });
-  reversed.forEach((l, j) => {
-    layouts.set(state.layouts.length + j, {
-      offset: l.offset,
-      length: l.length,
-      preamble: l.preamble,
-    });
-  });
+  state.layouts.forEach((l, i) => layouts.set(i, toMessageLayout(l)));
+  reversed.forEach((l, j) => layouts.set(state.layouts.length + j, toMessageLayout(l)));
   return { positions, layouts };
 }
