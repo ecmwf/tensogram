@@ -54,17 +54,16 @@ When no options are passed, credentials are read from the environment (e.g. `AWS
 
 ## Bidirectional Scan
 
-`open_source`, `open_remote`, and their async siblings accept a `scan_opts: Option<&RemoteScanOptions>` argument. Passing `Some(&RemoteScanOptions { bidirectional: true })` enables a walker that alternates forward and backward hops across the file, using the v3 postamble's mirrored `total_length` field to walk inward from EOF in parallel with the forward sweep. On well-formed header-indexed files this roughly halves the number of HTTP `GET` requests needed for tail / full-scan access.
+`open_source`, `open_remote`, and their async siblings accept a `scan_opts: Option<RemoteScanOptions>` argument. Passing `Some(RemoteScanOptions { bidirectional: true })` enables a walker that alternates forward and backward hops across the file, using the v3 postamble's mirrored `total_length` field to walk inward from EOF in parallel with the forward sweep. On well-formed header-indexed files this roughly halves the number of HTTP `GET` requests needed for tail / full-scan access.
 
-`None` (or `Some(&RemoteScanOptions::default())`) keeps the forward-only walker. Both walkers produce identical layouts; the difference is only in the discovery path.
+`None` (or `Some(RemoteScanOptions::default())`) keeps the forward-only walker. Both walkers produce identical layouts; the difference is only in the discovery path.
 
 ```rust
 use tensogram::{RemoteScanOptions, TensogramFile};
 
-let opts = RemoteScanOptions { bidirectional: true };
 let file = TensogramFile::open_source(
     "https://example.com/data.tgm",
-    Some(&opts),
+    Some(RemoteScanOptions { bidirectional: true }),
 )?;
 ```
 
@@ -218,7 +217,7 @@ sequenceDiagram
 ```rust
 use tensogram::TensogramFile;
 
-let file = TensogramFile::open_source("s3://bucket/data.tgm")?;
+let file = TensogramFile::open_source("s3://bucket/data.tgm", None)?;
 assert!(file.is_remote());
 println!("source: {}", file.source()); // "s3://bucket/data.tgm"
 ```
@@ -268,12 +267,13 @@ When both `remote` and `async` features are enabled, async open methods are also
 
 ```rust
 // Async open (auto-detects local vs remote) — requires remote + async
-let mut file = TensogramFile::open_source_async("s3://bucket/data.tgm").await?;
+let file = TensogramFile::open_source_async("s3://bucket/data.tgm", None).await?;
 
 // Async open with explicit storage options
-let mut file = TensogramFile::open_remote_async(
+let file = TensogramFile::open_remote_async(
     "s3://bucket/data.tgm",
     &opts,
+    None,
 ).await?;
 ```
 
@@ -318,4 +318,4 @@ For frames smaller than 64 KB, the full frame is read in a single request (fewer
 - **HTTP server requirements.** The remote HTTP server must support `HEAD` requests (for file size) and `Range` request headers (for partial reads).
 - **`read_message()` and `decode_message()` download the full message** even for remote files. Use `decode_metadata()`, `decode_descriptors()`, or `decode_object()` for selective access.
 - **Zarr remote reads are lazy per-chunk.** The zarr store fetches only metadata at open time; individual chunks are decoded on first access. Local files still use eager decode for lower latency.
-- **Sequential async access.** Async methods take `&mut self`, so a single file handle cannot serve concurrent async reads. Open separate handles for parallelism.
+- **Concurrent async access.** Async methods take `&self`, so a single `TensogramFile` handle can serve concurrent async reads. The remote backend serialises forward-walker scan rounds via an internal mutex, but reads of already-discovered messages run truly concurrently — `asyncio.gather` / `tokio::join!` achieve real I/O overlap on a single handle.

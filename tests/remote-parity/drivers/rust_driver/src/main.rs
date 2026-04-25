@@ -104,7 +104,7 @@ fn run(args: Args) -> Result<(), String> {
     let scan_opts = args
         .bidirectional
         .then_some(RemoteScanOptions { bidirectional: true });
-    let file = TensogramFile::open_remote(&args.url, &storage, scan_opts.as_ref())
+    let file = TensogramFile::open_remote(&args.url, &storage, scan_opts)
         .map_err(|e| format!("open_remote failed: {e}"))?;
 
     match args.op {

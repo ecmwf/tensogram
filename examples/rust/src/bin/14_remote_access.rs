@@ -58,14 +58,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(tensogram::remote::is_remote_url(&url));
     println!("is_remote_url = true");
 
-    // Pass `Some(&RemoteScanOptions { bidirectional: true })` to opt in
+    // Pass `Some(RemoteScanOptions { bidirectional: true })` to opt in
     // to the bidirectional walker, which roughly halves the number of
     // HTTP `GET`s needed for tail / full-scan access on header-indexed
     // files.  The walker returns identical layouts to the forward-only
     // default; only the discovery path differs.
     //
     //   let opts = tensogram::RemoteScanOptions { bidirectional: true };
-    //   let file = TensogramFile::open_source(&url, Some(&opts))?;
+    //   let file = TensogramFile::open_source(&url, Some(opts))?;
     let file = TensogramFile::open_source(&url, None)?;
     println!(
         "\nOpened: source={} is_remote={} messages={}",

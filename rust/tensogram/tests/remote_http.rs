@@ -448,10 +448,13 @@ async fn test_open_remote_bidirectional_layouts_match_forward() -> Result<(), Bo
     let fwd = TensogramFile::open_remote(&server.url(), &storage, None)?;
     let fwd_layouts = fwd.message_layouts()?;
 
-    let opts = RemoteScanOptions {
-        bidirectional: true,
-    };
-    let bidir = TensogramFile::open_remote(&server.url(), &storage, Some(&opts))?;
+    let bidir = TensogramFile::open_remote(
+        &server.url(),
+        &storage,
+        Some(RemoteScanOptions {
+            bidirectional: true,
+        }),
+    )?;
     let bidir_layouts = bidir.message_layouts()?;
 
     assert_eq!(fwd_layouts, bidir_layouts);
@@ -468,8 +471,8 @@ async fn test_open_remote_some_false_equivalent_to_none() -> Result<(), Box<dyn 
     let none_file = TensogramFile::open_remote(&server.url(), &storage, None)?;
     let none_layouts = none_file.message_layouts()?;
 
-    let opts = RemoteScanOptions::default();
-    let some_file = TensogramFile::open_remote(&server.url(), &storage, Some(&opts))?;
+    let some_file =
+        TensogramFile::open_remote(&server.url(), &storage, Some(RemoteScanOptions::default()))?;
     let some_layouts = some_file.message_layouts()?;
 
     assert_eq!(none_layouts, some_layouts);
@@ -484,10 +487,12 @@ async fn test_open_source_local_path_ignores_scan_opts() -> Result<(), Box<dyn E
     std::fs::write(&path, &msg).map_err(|e| Box::new(e) as Box<dyn Error>)?;
     let path_str = path.to_str().expect("utf-8 path");
 
-    let opts = RemoteScanOptions {
-        bidirectional: true,
-    };
-    let file = TensogramFile::open_source(path_str, Some(&opts))?;
+    let file = TensogramFile::open_source(
+        path_str,
+        Some(RemoteScanOptions {
+            bidirectional: true,
+        }),
+    )?;
     assert!(!file.is_remote());
     assert_eq!(file.message_count()?, 1);
 
@@ -512,11 +517,43 @@ async fn test_open_remote_async_bidirectional_layouts_match_forward() -> Result<
     let fwd = TensogramFile::open_remote_async(&server.url(), &storage, None).await?;
     let fwd_layouts = fwd.message_layouts_async().await?;
 
-    let opts = RemoteScanOptions {
-        bidirectional: true,
-    };
-    let bidir = TensogramFile::open_remote_async(&server.url(), &storage, Some(&opts)).await?;
+    let bidir = TensogramFile::open_remote_async(
+        &server.url(),
+        &storage,
+        Some(RemoteScanOptions {
+            bidirectional: true,
+        }),
+    )
+    .await?;
     let bidir_layouts = bidir.message_layouts_async().await?;
+
+    assert_eq!(fwd_layouts, bidir_layouts);
+    assert_eq!(fwd_layouts.len(), 2);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_open_remote_bidirectional_streaming_tail_yields_to_forward()
+-> Result<(), Box<dyn Error>> {
+    let header_msg = encode_test_message(vec![4], 10)?;
+    let streaming_msg = encode_streaming_message(vec![8], 20)?;
+    let mut combined = header_msg.clone();
+    combined.extend_from_slice(&streaming_msg);
+
+    let server = MockServer::start(combined).await?;
+    let storage: BTreeMap<String, String> = BTreeMap::new();
+
+    let fwd = TensogramFile::open_remote(&server.url(), &storage, None)?;
+    let fwd_layouts = fwd.message_layouts()?;
+
+    let bidir = TensogramFile::open_remote(
+        &server.url(),
+        &storage,
+        Some(RemoteScanOptions {
+            bidirectional: true,
+        }),
+    )?;
+    let bidir_layouts = bidir.message_layouts()?;
 
     assert_eq!(fwd_layouts, bidir_layouts);
     assert_eq!(fwd_layouts.len(), 2);
