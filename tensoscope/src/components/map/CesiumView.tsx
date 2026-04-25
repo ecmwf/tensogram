@@ -36,6 +36,8 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Viewer | undefined>(undefined);
   const overlayRef = useRef<Entity | undefined>(undefined);
+  const clickHandlerRef = useRef<ScreenSpaceEventHandler | undefined>(undefined);
+  const selectedPointRef = useRef(selectedPoint);
   const onUnmountRef = useRef(onUnmount);
   const onViewChangeRef = useRef(onViewChange);
   const initialCenterRef = useRef(initialCenter);
@@ -45,9 +47,11 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
 
   useEffect(() => { onUnmountRef.current = onUnmount; }, [onUnmount]);
   useEffect(() => { onViewChangeRef.current = onViewChange; }, [onViewChange]);
+  useEffect(() => { initialCenterRef.current = initialCenter; }, [initialCenter]);
   useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
   useEffect(() => { onSelectedPointScreenRef.current = onSelectedPointScreen; }, [onSelectedPointScreen]);
   useEffect(() => { onSelectedPointOutOfViewRef.current = onSelectedPointOutOfView; }, [onSelectedPointOutOfView]);
+  useEffect(() => { selectedPointRef.current = selectedPoint; }, [selectedPoint]);
 
   // Mount Cesium viewer once
   useEffect(() => {
@@ -92,8 +96,8 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
     viewerRef.current = viewer;
 
     // Handle selected point marker position on globe
-    const updateSelectedPointScreen = () => {
-      const pt = selectedPoint;
+    const updateSelectedPointScreen = useCallback(() => {
+      const pt = selectedPointRef.current;
       if (!pt || !onSelectedPointScreenRef.current) return;
       const carto = Cartographic.fromDegrees(pt.lon, pt.lat);
       const cartesian = viewer.camera.projectPointToWindow(carto);
@@ -109,7 +113,7 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
           onSelectedPointOutOfViewRef.current?.();
         }
       }
-    };
+    }, [onSelectedPointScreenRef, onSelectedPointOutOfViewRef]);
 
     // Update marker position on camera changes
     const cameraChangedHandler = () => {
@@ -121,15 +125,15 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
 
     const clickHandler = new ScreenSpaceEventHandler(viewer.scene.canvas);
     clickHandler.setInputAction((event: { position: { x: number; y: number } }) => {
-      const cb = onMapClickRef.current;
-      if (!cb) return;
+      const pt = onMapClickRef.current;
+      if (!pt) return;
       const cartesian = viewer.camera.pickEllipsoid(
         event.position,
         viewer.scene.globe.ellipsoid,
       );
       if (!cartesian) return;
       const carto = Cartographic.fromCartesian(cartesian);
-      cb({
+      pt({
         lat: CesiumMath.toDegrees(carto.latitude),
         lon: CesiumMath.toDegrees(carto.longitude),
         screenX: event.position.x,
