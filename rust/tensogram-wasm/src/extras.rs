@@ -123,11 +123,11 @@ struct SimplePackingParamsJs {
 ///   Spread into a descriptor to apply:
 ///   `{ ...computed, encoding: "simple_packing", …}`.
 ///
-///   Note: since tensogram ≥ 0.19 the encoder also auto-computes these
-///   values when the descriptor carries only `sp_bits_per_value`
-///   (and optionally `sp_decimal_scale_factor`) — calling this function
-///   explicitly is only needed if the caller wants to cache or inspect
-///   the derived params.
+///   Note: the encoder also auto-computes these values when the
+///   descriptor carries only `sp_bits_per_value` (and optionally
+///   `sp_decimal_scale_factor`) — calling this function explicitly
+///   is only needed if the caller wants to cache or inspect the
+///   derived params across multiple encodes.
 #[wasm_bindgen]
 pub fn simple_packing_compute_params(
     values: &[f64],

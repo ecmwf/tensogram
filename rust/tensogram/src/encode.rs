@@ -263,9 +263,18 @@ fn encode_one_object(
     // we derive them from the data here so the final descriptor carries
     // the full explicit 4-key set.  `PreEncoded` skips this — the bytes
     // are opaque, the user must have supplied complete params.
+    //
+    // Use the ORIGINAL `data` (pre-substitute), not `pipeline_input`:
+    // when `allow_nan` / `allow_inf` are on, NaN / Inf get replaced
+    // with `0.0` and any auto-compute over the substituted bytes
+    // would derive a `sp_reference_value` distorted by those zeros
+    // (silent precision loss).  Using the original data makes
+    // `simple_packing::compute_params` surface non-finite inputs as a
+    // clear `PackingError`, telling the user to either supply explicit
+    // params or pre-substitute their data.
     let mut final_desc = desc.clone();
     if matches!(mode, EncodeMode::Raw) {
-        resolve_simple_packing_params(&mut final_desc, pipeline_input.as_ref())?;
+        resolve_simple_packing_params(&mut final_desc, data)?;
     }
 
     let mut config = build_pipeline_config_with_backend(
@@ -972,13 +981,32 @@ pub(crate) fn resolve_simple_packing_params(
     if desc.encoding != "simple_packing" {
         return Ok(());
     }
+
+    // The two derived keys are an all-or-nothing pair.  Providing only
+    // one would either silently get overwritten by auto-compute (if we
+    // ran it) or produce a meaningless mix of user-supplied + derived
+    // values.  Detecting this here gives the user a clear error
+    // before any encoding work happens.
+    let has_ref = desc.params.contains_key("sp_reference_value");
+    let has_bsf = desc.params.contains_key("sp_binary_scale_factor");
+    if has_ref ^ has_bsf {
+        let (set, missing) = if has_ref {
+            ("sp_reference_value", "sp_binary_scale_factor")
+        } else {
+            ("sp_binary_scale_factor", "sp_reference_value")
+        };
+        return Err(TensogramError::Metadata(format!(
+            "simple_packing: descriptor sets {set} but not {missing}.  \
+             Provide both for explicit-params encoding, or neither to \
+             let the encoder auto-compute them from the data."
+        )));
+    }
+
     // Explicit computed params present — trust them, skip the
     // auto-compute work entirely.  We still default the
     // sp_decimal_scale_factor knob when absent so the pipeline's
     // extract_simple_packing_params doesn't fault on a missing key.
-    if desc.params.contains_key("sp_reference_value")
-        && desc.params.contains_key("sp_binary_scale_factor")
-    {
+    if has_ref && has_bsf {
         desc.params
             .entry("sp_decimal_scale_factor".to_string())
             .or_insert(ciborium::Value::Integer(0i64.into()));

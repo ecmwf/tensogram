@@ -283,11 +283,14 @@ impl<W: Write> StreamingEncoder<W> {
         };
 
         // Resolve simple_packing params up front (auto-compute from the
-        // post-substitute bytes if the user left out sp_reference_value /
-        // sp_binary_scale_factor).  Must happen BEFORE pipeline config
-        // construction because the pipeline reads the four sp_* keys.
+        // ORIGINAL pre-substitute data when the user left out
+        // sp_reference_value / sp_binary_scale_factor).  Must happen
+        // BEFORE pipeline config construction because the pipeline reads
+        // the four sp_* keys.  See the parallel comment in
+        // encode::encode_one_object for why we use `data` rather than
+        // `pipeline_input`.
         let mut final_desc = desc.clone();
-        crate::encode::resolve_simple_packing_params(&mut final_desc, pipeline_input.as_ref())?;
+        crate::encode::resolve_simple_packing_params(&mut final_desc, data)?;
 
         let config = crate::encode::build_pipeline_config_with_backend(
             &final_desc,
