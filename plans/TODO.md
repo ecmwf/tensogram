@@ -329,7 +329,7 @@ For speculative ideas, see `IDEAS.md`.
   cross-language parity harness (first sub-task).
 
   - [x] ~~**parity harness foundation**~~ — `tests/remote-parity/`
-    landed via PR #94.  Python `mock_server.py` with Range + HEAD +
+    shipped.  Python `mock_server.py` with Range + HEAD +
     per-`run_id` request logging; orchestrator that normalises
     inclusive HTTP ranges to `[start, end_exclusive)` and classifies
     events into `probe / scan / payload / fallback / error`.
@@ -350,7 +350,7 @@ For speculative ideas, see `IDEAS.md`.
     replaced with computed `scan_complete()` accessor.  Helpers
     `record_forward_hop`, `terminate_forward`, `disable_backward`
     introduced; every `state.scan_complete = true` site migrated.
-    Truth-table tests pin Phase 1 byte-identical equivalence.
+    Truth-table tests pin forward-only byte-identical equivalence.
 
   - [x] ~~**Rust bidirectional implementation**~~ — paired-fetch
     bidirectional walker built on `store.get_ranges(&[fwd, bwd])`.
