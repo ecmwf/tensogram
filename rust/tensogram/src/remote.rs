@@ -135,6 +135,42 @@ pub fn is_remote_url(source: &str) -> bool {
     }
 }
 
+// ── Scan options ─────────────────────────────────────────────────────────────
+
+/// Internal knobs for the remote scan walker.
+///
+/// Crate-private until a follow-on sub-task promotes it to the public
+/// API surface.  The default is `bidirectional = false` — the existing
+/// forward-only behaviour — so every existing call site lands here
+/// unchanged through [`RemoteBackend::open`] / [`RemoteBackend::open_async`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RemoteScanOptions {
+    /// Enable the bidirectional walker.  When `true`, the backend
+    /// alternates forward and backward hops across the file using
+    /// the v3 postamble's mirrored `total_length` field.
+    ///
+    /// `false` keeps the pre-bidirectional forward-only walker —
+    /// today's default.
+    pub(crate) bidirectional: bool,
+    /// Upper bound on the `total_length` value advertised by a
+    /// **postamble** during a backward hop.  Anything larger is
+    /// treated as corruption and the backward walker yields to the
+    /// forward walker.  Forward scanning is **not** affected by
+    /// this cap (it uses `file_size` as its only bound).
+    ///
+    /// Default: 4 GiB.
+    pub(crate) max_message_size: u64,
+}
+
+impl Default for RemoteScanOptions {
+    fn default() -> Self {
+        Self {
+            bidirectional: false,
+            max_message_size: 4 * 1024 * 1024 * 1024,
+        }
+    }
+}
+
 // ── Cached per-message layout ────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -154,13 +190,109 @@ pub(crate) struct RemoteBackend {
     path: ObjectPath,
     file_size: u64,
     state: Mutex<RemoteState>,
+    scan_opts: RemoteScanOptions,
 }
 
+/// Two-cursor scan state for the bidirectional walker.
+///
+/// The forward cursor (`next_scan_offset`) and the backward cursor
+/// (`prev_scan_offset`) bound the unknown gap.  In forward-only mode
+/// (`bwd_active = false`), `suffix_rev` stays empty and
+/// `prev_scan_offset` stays at `file_size`, collapsing the state
+/// machine to today's behaviour.  See `state_invariants` test for
+/// the full invariant list.
 #[derive(Debug, Default)]
 struct RemoteState {
+    /// Forward-discovered layouts.  `layouts[i]` always has stable
+    /// absolute index `i` (forward indices grow contiguously from 0).
     layouts: Vec<MessageLayout>,
+    /// Start of the unknown gap.  Forward walker advances this.
     next_scan_offset: u64,
-    scan_complete: bool,
+
+    /// EOF-first backward-discovered layouts.  Always empty when
+    /// `bwd_active = false`.  Reversed and merged into `layouts` on
+    /// `gap_closed`.
+    suffix_rev: Vec<MessageLayout>,
+    /// End of the unknown gap.  Initialised to `file_size` in
+    /// [`RemoteBackend::open`] / [`RemoteBackend::open_async`].
+    prev_scan_offset: u64,
+    /// `true` iff bidirectional mode is requested AND the backward
+    /// walker has not yielded.  Once `false`, stays `false`.
+    bwd_active: bool,
+
+    /// Forward walker reached EOF or hit a format error and cannot
+    /// advance further.
+    fwd_terminated: bool,
+    /// Forward and backward walkers met (`next == prev`); `suffix_rev`
+    /// has been merged into `layouts`.
+    gap_closed: bool,
+
+    /// Monotone counter incremented on every state-machine transition.
+    /// The lock-around-await protocol snapshots this together with
+    /// `(next, prev)` and validates equality on reacquire so a stale
+    /// paired fetch cannot commit after a fallback or termination has
+    /// already mutated state.
+    scan_epoch: u64,
+}
+
+impl RemoteState {
+    /// Replaces the old `scan_complete: bool` field.  When forward-only
+    /// is active (`bwd_active = false` and `suffix_rev.is_empty()`)
+    /// this collapses to `fwd_terminated`, byte-identical to the
+    /// previous semantics.
+    fn scan_complete(&self) -> bool {
+        self.gap_closed || (self.fwd_terminated && self.suffix_rev.is_empty())
+    }
+
+    /// Append a forward-discovered layout, advance the cursor, bump
+    /// the epoch.
+    fn record_forward_hop(&mut self, layout: MessageLayout) {
+        debug_assert!(
+            layout.offset.checked_add(layout.length).is_some(),
+            "forward end must fit in u64; validated by scan_next before recording",
+        );
+        let end = layout.offset + layout.length;
+        debug_assert!(end <= self.prev_scan_offset);
+        self.layouts.push(layout);
+        self.next_scan_offset = end;
+        self.scan_epoch = self.scan_epoch.wrapping_add(1);
+    }
+
+    /// Disable the backward walker and discard provisional layouts.
+    /// Bumps the epoch so any in-flight paired fetch fails its
+    /// snapshot validation.  Idempotent — no-op when the walker is
+    /// already inactive and `suffix_rev` is empty.
+    fn disable_backward(&mut self, reason: &'static str) {
+        if !self.bwd_active && self.suffix_rev.is_empty() {
+            return;
+        }
+        self.bwd_active = false;
+        self.suffix_rev.clear();
+        self.scan_epoch = self.scan_epoch.wrapping_add(1);
+        tracing::debug!(
+            target: "tensogram::remote_scan",
+            reason = reason,
+            "backward walker disabled",
+        );
+    }
+
+    /// Terminate the forward walker.  Per the state-machine
+    /// invariant `fwd_terminated => suffix_rev.is_empty() &&
+    /// !bwd_active`, this also disables the backward walker and
+    /// discards any provisional suffix layouts — bidirectional is
+    /// an optimisation, never a recovery mode.
+    fn terminate_forward(&mut self, reason: &'static str) {
+        if !self.fwd_terminated {
+            self.fwd_terminated = true;
+            self.scan_epoch = self.scan_epoch.wrapping_add(1);
+            tracing::debug!(
+                target: "tensogram::remote_scan",
+                reason = reason,
+                "forward walker terminated",
+            );
+        }
+        self.disable_backward(reason);
+    }
 }
 
 impl std::fmt::Debug for RemoteBackend {
@@ -168,6 +300,7 @@ impl std::fmt::Debug for RemoteBackend {
         f.debug_struct("RemoteBackend")
             .field("source", &self.source_url)
             .field("file_size", &self.file_size)
+            .field("scan_opts", &self.scan_opts)
             .field(
                 "messages",
                 &self
@@ -193,6 +326,28 @@ impl RemoteBackend {
     }
 
     pub(crate) fn open(source: &str, storage_options: &BTreeMap<String, String>) -> Result<Self> {
+        Self::open_with_scan_opts(source, storage_options, RemoteScanOptions::default())
+    }
+
+    fn validate_scan_opts(opts: &RemoteScanOptions) -> Result<()> {
+        let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+        if opts.bidirectional && opts.max_message_size < min_message_size {
+            return Err(TensogramError::Remote(format!(
+                "RemoteScanOptions.max_message_size ({}) is below the minimum \
+                 message size ({min_message_size}); the backward walker would \
+                 yield on every postamble",
+                opts.max_message_size,
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn open_with_scan_opts(
+        source: &str,
+        storage_options: &BTreeMap<String, String>,
+        scan_opts: RemoteScanOptions,
+    ) -> Result<Self> {
+        Self::validate_scan_opts(&scan_opts)?;
         let url = Url::parse(source)
             .map_err(|e| TensogramError::Remote(format!("invalid URL '{source}': {e}")))?;
 
@@ -224,7 +379,12 @@ impl RemoteBackend {
             store,
             path,
             file_size,
-            state: Mutex::new(RemoteState::default()),
+            state: Mutex::new(RemoteState {
+                prev_scan_offset: file_size,
+                bwd_active: scan_opts.bidirectional,
+                ..RemoteState::default()
+            }),
+            scan_opts,
         };
         {
             let mut state = backend
@@ -252,27 +412,27 @@ impl RemoteBackend {
     // ── Message scanning ─────────────────────────────────────────────────
 
     fn scan_next_locked(&self, state: &mut RemoteState) -> Result<()> {
-        if state.scan_complete {
+        if state.scan_complete() {
             return Ok(());
         }
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
         let pos = state.next_scan_offset;
 
         if pos + min_message_size > self.file_size {
-            state.scan_complete = true;
+            state.terminate_forward("eof");
             return Ok(());
         }
 
         let preamble_bytes = self.get_range(pos..pos + PREAMBLE_SIZE as u64)?;
         if &preamble_bytes[..MAGIC.len()] != MAGIC {
-            state.scan_complete = true;
+            state.terminate_forward("bad-magic-fwd");
             return Ok(());
         }
 
         let preamble = match Preamble::read_from(&preamble_bytes) {
             Ok(p) => p,
             Err(_) => {
-                state.scan_complete = true;
+                state.terminate_forward("preamble-parse-error-fwd");
                 return Ok(());
             }
         };
@@ -282,48 +442,47 @@ impl RemoteBackend {
         if msg_len == 0 {
             let remaining = self.file_size - pos;
             if remaining < min_message_size {
-                state.scan_complete = true;
+                state.terminate_forward("streaming-tail-too-small");
                 return Ok(());
             }
             let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
             let end_bytes =
                 self.get_range(end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64)?;
             if &end_bytes[..] != crate::wire::END_MAGIC {
-                state.scan_complete = true;
+                state.terminate_forward("streaming-end-magic-mismatch");
                 return Ok(());
             }
-            state.layouts.push(MessageLayout {
+            state.record_forward_hop(MessageLayout {
                 offset: pos,
                 length: remaining,
                 preamble,
                 index: None,
                 global_metadata: None,
             });
-            state.scan_complete = true;
+            state.terminate_forward("streaming-tail");
             return Ok(());
         }
 
-        let msg_end = match pos.checked_add(msg_len) {
-            Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
+        match pos.checked_add(msg_len) {
+            Some(end) if msg_len >= min_message_size && end <= self.file_size => {}
             _ => {
-                state.scan_complete = true;
+                state.terminate_forward("length-out-of-range-fwd");
                 return Ok(());
             }
-        };
+        }
 
-        state.layouts.push(MessageLayout {
+        state.record_forward_hop(MessageLayout {
             offset: pos,
             length: msg_len,
             preamble,
             index: None,
             global_metadata: None,
         });
-        state.next_scan_offset = msg_end;
         Ok(())
     }
 
     fn ensure_message_locked(&self, state: &mut RemoteState, msg_idx: usize) -> Result<()> {
-        while msg_idx >= state.layouts.len() && !state.scan_complete {
+        while msg_idx >= state.layouts.len() && !state.scan_complete() {
             self.scan_next_locked(state)?;
         }
         if msg_idx >= state.layouts.len() {
@@ -337,21 +496,21 @@ impl RemoteBackend {
     }
 
     fn scan_all_locked(&self, state: &mut RemoteState) -> Result<()> {
-        while !state.scan_complete {
+        while !state.scan_complete() {
             self.scan_next_locked(state)?;
         }
         Ok(())
     }
 
     fn scan_and_discover_next_locked(&self, state: &mut RemoteState) -> Result<()> {
-        if state.scan_complete {
+        if state.scan_complete() {
             return Ok(());
         }
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
         let pos = state.next_scan_offset;
 
         if pos + min_message_size > self.file_size {
-            state.scan_complete = true;
+            state.terminate_forward("eof");
             return Ok(());
         }
 
@@ -359,14 +518,14 @@ impl RemoteBackend {
         let chunk = self.get_range(pos..pos + chunk_size)?;
 
         if chunk.len() < PREAMBLE_SIZE || &chunk[..MAGIC.len()] != MAGIC {
-            state.scan_complete = true;
+            state.terminate_forward("bad-magic-fwd");
             return Ok(());
         }
 
         let preamble = match Preamble::read_from(&chunk[..PREAMBLE_SIZE]) {
             Ok(p) => p,
             Err(_) => {
-                state.scan_complete = true;
+                state.terminate_forward("preamble-parse-error-fwd");
                 return Ok(());
             }
         };
@@ -376,46 +535,45 @@ impl RemoteBackend {
         if msg_len == 0 {
             let remaining = self.file_size - pos;
             if remaining < min_message_size {
-                state.scan_complete = true;
+                state.terminate_forward("streaming-tail-too-small");
                 return Ok(());
             }
             let end_magic_pos = self.file_size - crate::wire::END_MAGIC.len() as u64;
             let end_bytes =
                 self.get_range(end_magic_pos..end_magic_pos + crate::wire::END_MAGIC.len() as u64)?;
             if &end_bytes[..] != crate::wire::END_MAGIC {
-                state.scan_complete = true;
+                state.terminate_forward("streaming-end-magic-mismatch");
                 return Ok(());
             }
-            state.layouts.push(MessageLayout {
+            state.record_forward_hop(MessageLayout {
                 offset: pos,
                 length: remaining,
                 preamble,
                 index: None,
                 global_metadata: None,
             });
-            state.scan_complete = true;
+            state.terminate_forward("streaming-tail");
             return Ok(());
         }
 
-        let msg_end = match pos.checked_add(msg_len) {
-            Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
+        match pos.checked_add(msg_len) {
+            Some(end) if msg_len >= min_message_size && end <= self.file_size => {}
             _ => {
-                state.scan_complete = true;
+                state.terminate_forward("length-out-of-range-fwd");
                 return Ok(());
             }
-        };
+        }
 
         let flags = preamble.flags;
         let msg_idx = state.layouts.len();
 
-        state.layouts.push(MessageLayout {
+        state.record_forward_hop(MessageLayout {
             offset: pos,
             length: msg_len,
             preamble,
             index: None,
             global_metadata: None,
         });
-        state.next_scan_offset = msg_end;
 
         if flags.has(MessageFlags::HEADER_METADATA) && flags.has(MessageFlags::HEADER_INDEX) {
             let chunk_end = (msg_len as usize).min(chunk.len());
@@ -489,7 +647,7 @@ impl RemoteBackend {
     }
 
     fn ensure_layout_eager_locked(&self, state: &mut RemoteState, msg_idx: usize) -> Result<()> {
-        while msg_idx >= state.layouts.len() && !state.scan_complete {
+        while msg_idx >= state.layouts.len() && !state.scan_complete() {
             self.scan_and_discover_next_locked(state)?;
         }
         if msg_idx >= state.layouts.len() {
@@ -1133,6 +1291,15 @@ impl RemoteBackend {
         source: &str,
         storage_options: &BTreeMap<String, String>,
     ) -> Result<Self> {
+        Self::open_async_with_scan_opts(source, storage_options, RemoteScanOptions::default()).await
+    }
+
+    pub(crate) async fn open_async_with_scan_opts(
+        source: &str,
+        storage_options: &BTreeMap<String, String>,
+        scan_opts: RemoteScanOptions,
+    ) -> Result<Self> {
+        Self::validate_scan_opts(&scan_opts)?;
         let url = Url::parse(source)
             .map_err(|e| TensogramError::Remote(format!("invalid URL '{source}': {e}")))?;
 
@@ -1164,7 +1331,12 @@ impl RemoteBackend {
             store,
             path,
             file_size,
-            state: Mutex::new(RemoteState::default()),
+            state: Mutex::new(RemoteState {
+                prev_scan_offset: file_size,
+                bwd_active: scan_opts.bidirectional,
+                ..RemoteState::default()
+            }),
+            scan_opts,
         };
         backend.scan_next_async().await?;
         {
@@ -1182,7 +1354,7 @@ impl RemoteBackend {
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
         let pos = {
             let state = self.lock_state()?;
-            if state.scan_complete {
+            if state.scan_complete() {
                 return Ok(());
             }
             state.next_scan_offset
@@ -1191,7 +1363,7 @@ impl RemoteBackend {
         if pos + min_message_size > self.file_size {
             let mut state = self.lock_state()?;
             if state.next_scan_offset == pos {
-                state.scan_complete = true;
+                state.terminate_forward("eof");
             }
             return Ok(());
         }
@@ -1202,7 +1374,7 @@ impl RemoteBackend {
         if &preamble_bytes[..MAGIC.len()] != MAGIC {
             let mut state = self.lock_state()?;
             if state.next_scan_offset == pos {
-                state.scan_complete = true;
+                state.terminate_forward("bad-magic-fwd");
             }
             return Ok(());
         }
@@ -1212,7 +1384,7 @@ impl RemoteBackend {
             Err(_) => {
                 let mut state = self.lock_state()?;
                 if state.next_scan_offset == pos {
-                    state.scan_complete = true;
+                    state.terminate_forward("preamble-parse-error-fwd");
                 }
                 return Ok(());
             }
@@ -1225,7 +1397,7 @@ impl RemoteBackend {
             if remaining < min_message_size {
                 let mut state = self.lock_state()?;
                 if state.next_scan_offset == pos {
-                    state.scan_complete = true;
+                    state.terminate_forward("streaming-tail-too-small");
                 }
                 return Ok(());
             }
@@ -1237,49 +1409,48 @@ impl RemoteBackend {
             if &end_bytes[..] != crate::wire::END_MAGIC {
                 let mut state = self.lock_state()?;
                 if state.next_scan_offset == pos {
-                    state.scan_complete = true;
+                    state.terminate_forward("streaming-end-magic-mismatch");
                 }
                 return Ok(());
             }
 
             let mut state = self.lock_state()?;
-            if state.scan_complete || state.next_scan_offset != pos {
+            if state.scan_complete() || state.next_scan_offset != pos {
                 return Ok(());
             }
-            state.layouts.push(MessageLayout {
+            state.record_forward_hop(MessageLayout {
                 offset: pos,
                 length: remaining,
                 preamble,
                 index: None,
                 global_metadata: None,
             });
-            state.scan_complete = true;
+            state.terminate_forward("streaming-tail");
             return Ok(());
         }
 
-        let msg_end = match pos.checked_add(msg_len) {
-            Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
+        match pos.checked_add(msg_len) {
+            Some(end) if msg_len >= min_message_size && end <= self.file_size => {}
             _ => {
                 let mut state = self.lock_state()?;
                 if state.next_scan_offset == pos {
-                    state.scan_complete = true;
+                    state.terminate_forward("length-out-of-range-fwd");
                 }
                 return Ok(());
             }
-        };
+        }
 
         let mut state = self.lock_state()?;
-        if state.scan_complete || state.next_scan_offset != pos {
+        if state.scan_complete() || state.next_scan_offset != pos {
             return Ok(());
         }
-        state.layouts.push(MessageLayout {
+        state.record_forward_hop(MessageLayout {
             offset: pos,
             length: msg_len,
             preamble,
             index: None,
             global_metadata: None,
         });
-        state.next_scan_offset = msg_end;
         Ok(())
     }
 
@@ -1290,7 +1461,7 @@ impl RemoteBackend {
                 if msg_idx < state.layouts.len() {
                     return Ok(());
                 }
-                if state.scan_complete {
+                if state.scan_complete() {
                     return Err(TensogramError::Framing(format!(
                         "message index {} out of range (count={})",
                         msg_idx,
@@ -1310,7 +1481,7 @@ impl RemoteBackend {
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
         let pos = {
             let state = self.lock_state()?;
-            if state.scan_complete {
+            if state.scan_complete() {
                 return Ok(());
             }
             state.next_scan_offset
@@ -1319,7 +1490,7 @@ impl RemoteBackend {
         if pos + min_message_size > self.file_size {
             let mut state = self.lock_state()?;
             if state.next_scan_offset == pos {
-                state.scan_complete = true;
+                state.terminate_forward("eof");
             }
             return Ok(());
         }
@@ -1330,7 +1501,7 @@ impl RemoteBackend {
         if chunk.len() < PREAMBLE_SIZE || &chunk[..MAGIC.len()] != MAGIC {
             let mut state = self.lock_state()?;
             if state.next_scan_offset == pos {
-                state.scan_complete = true;
+                state.terminate_forward("bad-magic-fwd");
             }
             return Ok(());
         }
@@ -1340,7 +1511,7 @@ impl RemoteBackend {
             Err(_) => {
                 let mut state = self.lock_state()?;
                 if state.next_scan_offset == pos {
-                    state.scan_complete = true;
+                    state.terminate_forward("preamble-parse-error-fwd");
                 }
                 return Ok(());
             }
@@ -1353,7 +1524,7 @@ impl RemoteBackend {
             if remaining < min_message_size {
                 let mut state = self.lock_state()?;
                 if state.next_scan_offset == pos {
-                    state.scan_complete = true;
+                    state.terminate_forward("streaming-tail-too-small");
                 }
                 return Ok(());
             }
@@ -1365,52 +1536,51 @@ impl RemoteBackend {
             if &end_bytes[..] != crate::wire::END_MAGIC {
                 let mut state = self.lock_state()?;
                 if state.next_scan_offset == pos {
-                    state.scan_complete = true;
+                    state.terminate_forward("streaming-end-magic-mismatch");
                 }
                 return Ok(());
             }
 
             let mut state = self.lock_state()?;
-            if state.scan_complete || state.next_scan_offset != pos {
+            if state.scan_complete() || state.next_scan_offset != pos {
                 return Ok(());
             }
-            state.layouts.push(MessageLayout {
+            state.record_forward_hop(MessageLayout {
                 offset: pos,
                 length: remaining,
                 preamble,
                 index: None,
                 global_metadata: None,
             });
-            state.scan_complete = true;
+            state.terminate_forward("streaming-tail");
             return Ok(());
         }
 
-        let msg_end = match pos.checked_add(msg_len) {
-            Some(end) if msg_len >= min_message_size && end <= self.file_size => end,
+        match pos.checked_add(msg_len) {
+            Some(end) if msg_len >= min_message_size && end <= self.file_size => {}
             _ => {
                 let mut state = self.lock_state()?;
                 if state.next_scan_offset == pos {
-                    state.scan_complete = true;
+                    state.terminate_forward("length-out-of-range-fwd");
                 }
                 return Ok(());
             }
-        };
+        }
 
         let flags = preamble.flags;
         let msg_idx = {
             let mut state = self.lock_state()?;
-            if state.scan_complete || state.next_scan_offset != pos {
+            if state.scan_complete() || state.next_scan_offset != pos {
                 return Ok(());
             }
             let msg_idx = state.layouts.len();
-            state.layouts.push(MessageLayout {
+            state.record_forward_hop(MessageLayout {
                 offset: pos,
                 length: msg_len,
                 preamble,
                 index: None,
                 global_metadata: None,
             });
-            state.next_scan_offset = msg_end;
             msg_idx
         };
 
@@ -1513,7 +1683,7 @@ impl RemoteBackend {
                         return Ok(());
                     }
                     false
-                } else if state.scan_complete {
+                } else if state.scan_complete() {
                     return Err(TensogramError::Framing(format!(
                         "message index {} out of range (count={})",
                         msg_idx,
@@ -1638,7 +1808,7 @@ impl RemoteBackend {
         loop {
             let done = {
                 let state = self.lock_state()?;
-                state.scan_complete
+                state.scan_complete()
             };
             if done {
                 break;
@@ -1855,7 +2025,7 @@ impl RemoteBackend {
         loop {
             let (need_scan, scan_complete) = {
                 let state = self.lock_state()?;
-                (state.layouts.len() <= max_idx, state.scan_complete)
+                (state.layouts.len() <= max_idx, state.scan_complete())
             };
             if !need_scan || scan_complete {
                 break;
@@ -2126,5 +2296,122 @@ impl RemoteBackend {
             let msg_bytes = self.read_message_async(msg_idx).await?;
             crate::decode::decode_range(&msg_bytes, obj_idx, ranges, options)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_layout(offset: u64, length: u64) -> MessageLayout {
+        MessageLayout {
+            offset,
+            length,
+            preamble: Preamble {
+                version: 3,
+                flags: MessageFlags::default(),
+                reserved: 0,
+                total_length: length,
+            },
+            index: None,
+            global_metadata: None,
+        }
+    }
+
+    #[test]
+    fn scan_options_default_is_forward_only() {
+        let opts = RemoteScanOptions::default();
+        assert!(
+            !opts.bidirectional,
+            "default must keep current forward-only behaviour"
+        );
+        assert_eq!(
+            opts.max_message_size,
+            4 * 1024 * 1024 * 1024,
+            "default backward-postamble cap is 4 GiB",
+        );
+    }
+
+    #[test]
+    fn scan_complete_truth_table_phase_1_equivalence() {
+        for fwd_terminated in [false, true] {
+            for gap_closed in [false, true] {
+                let s = RemoteState {
+                    fwd_terminated,
+                    gap_closed,
+                    ..RemoteState::default()
+                };
+                let expected = gap_closed || fwd_terminated;
+                assert_eq!(
+                    s.scan_complete(),
+                    expected,
+                    "fwd_terminated={fwd_terminated} gap_closed={gap_closed}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn record_forward_hop_advances_cursor_and_bumps_epoch() {
+        let mut s = RemoteState {
+            prev_scan_offset: 1000,
+            ..RemoteState::default()
+        };
+        let epoch_before = s.scan_epoch;
+        s.record_forward_hop(dummy_layout(0, 100));
+        assert_eq!(s.next_scan_offset, 100);
+        assert_eq!(s.layouts.len(), 1);
+        assert_ne!(s.scan_epoch, epoch_before, "epoch must bump on forward hop");
+    }
+
+    #[test]
+    fn disable_backward_clears_suffix_and_disables() {
+        let mut s = RemoteState {
+            prev_scan_offset: 1000,
+            bwd_active: true,
+            ..RemoteState::default()
+        };
+        s.suffix_rev.push(dummy_layout(800, 200));
+        s.disable_backward("test");
+        assert!(!s.bwd_active);
+        assert!(s.suffix_rev.is_empty());
+    }
+
+    #[test]
+    fn disable_backward_is_idempotent_when_already_inactive() {
+        let mut s = RemoteState::default();
+        let epoch_before = s.scan_epoch;
+        s.disable_backward("test");
+        assert_eq!(
+            s.scan_epoch, epoch_before,
+            "no-op disable on already-inactive state must not bump epoch",
+        );
+    }
+
+    #[test]
+    fn terminate_forward_clears_provisional_backward_state() {
+        let mut s = RemoteState {
+            prev_scan_offset: 1000,
+            bwd_active: true,
+            ..RemoteState::default()
+        };
+        s.suffix_rev.push(dummy_layout(800, 200));
+        s.terminate_forward("test");
+        assert!(s.fwd_terminated);
+        assert!(
+            s.suffix_rev.is_empty(),
+            "fwd_terminated => suffix_rev empty (bidirectional is never recovery)",
+        );
+        assert!(!s.bwd_active);
+    }
+
+    #[test]
+    fn max_message_size_is_addressable_via_options() {
+        let opts = RemoteScanOptions {
+            bidirectional: true,
+            max_message_size: 1024,
+        };
+        assert_eq!(opts.max_message_size, 1024);
+        assert!(opts.bidirectional);
     }
 }
