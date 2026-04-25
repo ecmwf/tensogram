@@ -139,6 +139,37 @@ For speculative ideas, see `IDEAS.md`.
     `docs/src/guide/earthkit-integration.md`, example at
     `examples/python/18_earthkit_integration.py`, new `test-earthkit`
     CI job (Linux + macOS).
+- [ ] **earthkit-data-integration follow-ups** — scope notes carried
+    over from PR #88; intentionally deferred so each can land as its
+    own small PR.
+    - **upstream-readers-relocation** — open a PR against
+      [`ecmwf/earthkit-data`](https://github.com/ecmwf/earthkit-data)
+      moving the reader callables (`reader` / `memory_reader` /
+      `stream_reader`) from
+      `python/tensogram-earthkit/src/tensogram_earthkit/readers/`
+      into earthkit-data's own `readers/tensogram/` tree.  The
+      current layout was deliberately mirrored (one-to-one file
+      shape, identical callable signatures) so the upstream change
+      is a verbatim directory copy plus an entry-point adjustment.
+    - **progressive-stream-reader** — replace the current
+      drain-to-bytes path in
+      `tensogram_earthkit/readers/stream.py` with a true
+      yield-as-each-message-arrives reader.  Today the stream is
+      drained into a `bytes` buffer and dispatched through the
+      memory path because the xarray backend needs a concrete file
+      and the FieldList contract requires `__len__` up-front;
+      progressive yields will need either a streaming xarray
+      adapter or a two-pass FieldList that lets length resolve
+      lazily.
+    - **earthkit-encoder-pipelines** — let
+      `TensogramEncoder.encode` / `to_target` accept a tuned
+      encoding pipeline (`encoding`, `filter`, `compression`,
+      `bits_per_value`, …) instead of the current lossless
+      pass-through (`encoding=filter=compression="none"`).  The
+      Python `tensogram.encode` API already exposes these knobs;
+      the earthkit encoder should thread them through end-to-end so
+      the earthkit surface is feature-equivalent to the native
+      Python API.
 - [ ] **torch**
     - convenience methods for tensogram as/from torch, to avoid the numpy intermediary. Wilder ideas and optimizations are additionally given in IDEAS.md
 - [ ] **nvidia stack**

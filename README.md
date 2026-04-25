@@ -63,6 +63,7 @@ Tensogram defines a binary message format, not strictly a file format. Multiple 
 - **Dask integration** — parallel chunked computation via `xr.open_dataset(..., chunks={})` with per-chunk `decode_range` for efficient out-of-core processing
 - **Zarr v3 store** — `zarr.open_group(store=TensogramStore.open_tgm("file.tgm"), mode="r")` for standard Zarr API access with 14 bidirectionally-mapped dtypes
 - **Anemoi-inference output** — store AI weather forecast steps directly to `.tgm` via an auto-discovered plugin; each step is encoded and appended immediately, with optional pressure-level stacking, lossy simple packing, variable filtering, and remote (S3/GCS/Azure) output
+- **earthkit-data plugin** — register Tensogram as a first-class source (`earthkit.data.sources.tensogram`) **and** encoder (`earthkit.data.encoders.tensogram`); MARS-tagged tensograms surface as a FieldList, non-MARS tensograms as xarray, with array-namespace interop (numpy / torch / cupy / jax) and round-trip through `to_target`
 - **GRIB import** — bring GRIB data into Tensogram with ecCodes-driven metadata lifting and configurable namespace extraction
 - **NetCDF import** — bring NetCDF-3 and NetCDF-4 files in with CF metadata lifting (`--cf`), packed-data unpacking, and a configurable encoding/compression pipeline shared with `convert-grib`
 
