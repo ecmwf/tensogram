@@ -718,10 +718,14 @@ pub(crate) fn build_pipeline_config_with_backend(
     let encoding = match desc.encoding.as_str() {
         "none" => EncodingType::None,
         "simple_packing" => {
-            if dtype.byte_width() != 8 {
-                return Err(TensogramError::Encoding(
-                    "simple_packing only supports float64 dtype".to_string(),
-                ));
+            // Strict float64 check.  A `byte_width() != 8` test would
+            // also let `Int64` / `Uint64` / `Complex64` through, and
+            // the pipeline would then re-interpret their bytes as
+            // f64 and produce silently-wrong output.
+            if dtype != Dtype::Float64 {
+                return Err(TensogramError::Encoding(format!(
+                    "simple_packing only supports float64 dtype; got {dtype:?}"
+                )));
             }
             let params = extract_simple_packing_params(&desc.params)?;
             EncodingType::SimplePacking(params)
@@ -968,18 +972,49 @@ fn extract_simple_packing_params(
 ///   recomputed.  This supports advanced workflows that pin the
 ///   reference value across many objects (e.g. for time-series delta
 ///   encoding downstream).
-/// * `sp_bits_per_value` is required — error otherwise.
+/// * `sp_bits_per_value` is required on both the auto-compute and
+///   explicit-params paths — error otherwise.
 /// * `sp_decimal_scale_factor` defaults to `0` when absent.
 /// * The data bytes are interpreted as float64 in the descriptor's
-///   declared byte order — simple_packing is float64-only, which is
-///   re-checked at pipeline-build time with a friendlier error for
-///   the explicit-params path.
+///   declared byte order — simple_packing is strictly `Dtype::Float64`
+///   (other 8-byte dtypes such as `Int64`, `Uint64`, `Complex64` are
+///   rejected up-front to avoid silent reinterpretation).  The pipeline
+///   builder re-checks the same constraint for callers that bypass
+///   this resolver.
 pub(crate) fn resolve_simple_packing_params(
     desc: &mut DataObjectDescriptor,
     data_bytes: &[u8],
 ) -> Result<()> {
     if desc.encoding != "simple_packing" {
         return Ok(());
+    }
+
+    // simple_packing only supports float64.  Other 8-byte dtypes
+    // (Int64 / Uint64 / Complex64) would pass a byte-width check but
+    // re-interpreting their bytes as f64 produces garbage params.
+    // Tighten to exact equality with `Dtype::Float64`.
+    if desc.dtype != Dtype::Float64 {
+        return Err(TensogramError::Encoding(format!(
+            "simple_packing only supports float64 dtype; got {:?}",
+            desc.dtype
+        )));
+    }
+
+    // sp_bits_per_value is required regardless of which path we take —
+    // the explicit 4-key form needs it for the bit-packing layout, and
+    // the auto-compute form needs it for `compute_params`.  Check it
+    // here so the error is consistent and points at the canonical
+    // missing key, rather than failing later in the pipeline-config
+    // builder with a less specific message.
+    if !desc.params.contains_key("sp_bits_per_value") {
+        return Err(TensogramError::Metadata(
+            "simple_packing requires sp_bits_per_value (the encoder can \
+             auto-compute sp_reference_value + sp_binary_scale_factor from \
+             the data, but the bit-width and decimal scale are the user \
+             knobs).  Provide at least sp_bits_per_value, or the full \
+             explicit 4-key set."
+                .to_string(),
+        ));
     }
 
     // The two derived keys are an all-or-nothing pair.  Providing only
@@ -1013,16 +1048,6 @@ pub(crate) fn resolve_simple_packing_params(
         return Ok(());
     }
 
-    if !desc.params.contains_key("sp_bits_per_value") {
-        return Err(TensogramError::Metadata(
-            "simple_packing requires sp_bits_per_value (the encoder can \
-             auto-compute sp_reference_value + sp_binary_scale_factor from \
-             the data, but the bit-width and decimal scale are the user \
-             knobs).  Provide at least sp_bits_per_value, or the full \
-             explicit 4-key set."
-                .to_string(),
-        ));
-    }
     let bits_per_value = u32::try_from(get_u64_param(&desc.params, "sp_bits_per_value")?)
         .map_err(|_| TensogramError::Metadata("sp_bits_per_value out of u32 range".to_string()))?;
     let decimal_scale_factor = if desc.params.contains_key("sp_decimal_scale_factor") {
@@ -1032,16 +1057,6 @@ pub(crate) fn resolve_simple_packing_params(
     } else {
         0
     };
-
-    // simple_packing only supports float64.  Checked here with an
-    // auto-compute-aware message; `build_pipeline_config` checks again
-    // for the explicit-params path.
-    if desc.dtype.byte_width() != 8 {
-        return Err(TensogramError::Encoding(format!(
-            "simple_packing only supports float64 dtype; got {:?}",
-            desc.dtype
-        )));
-    }
 
     let values = bytes_as_f64_vec(data_bytes, desc.byte_order)?;
     let params = simple_packing::compute_params(&values, bits_per_value, decimal_scale_factor)
@@ -1068,6 +1083,11 @@ pub(crate) fn resolve_simple_packing_params(
 
 /// Reinterpret raw bytes as float64 honouring the descriptor's
 /// byte order.  Used by the simple_packing auto-compute path.
+///
+/// Uses fallible `try_reserve_exact` rather than `collect()` so that
+/// allocation failure on very large inputs surfaces as a structured
+/// `TensogramError` instead of aborting the process — matching the
+/// pattern in `tensogram_encodings::pipeline::bytes_to_f64`.
 fn bytes_as_f64_vec(bytes: &[u8], byte_order: ByteOrder) -> Result<Vec<f64>> {
     if !bytes.len().is_multiple_of(8) {
         return Err(TensogramError::Metadata(format!(
@@ -1075,17 +1095,24 @@ fn bytes_as_f64_vec(bytes: &[u8], byte_order: ByteOrder) -> Result<Vec<f64>> {
             bytes.len()
         )));
     }
-    Ok(bytes
-        .chunks_exact(8)
-        .map(|c| {
-            let mut buf = [0u8; 8];
-            buf.copy_from_slice(c);
-            match byte_order {
-                ByteOrder::Big => f64::from_be_bytes(buf),
-                ByteOrder::Little => f64::from_le_bytes(buf),
-            }
-        })
-        .collect())
+    let n = bytes.len() / 8;
+    let mut out: Vec<f64> = Vec::new();
+    out.try_reserve_exact(n).map_err(|e| {
+        TensogramError::Encoding(format!(
+            "simple_packing: failed to reserve {} bytes for byte-to-f64 \
+             conversion: {e}",
+            n.saturating_mul(std::mem::size_of::<f64>()),
+        ))
+    })?;
+    for chunk in bytes.chunks_exact(8) {
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(chunk);
+        out.push(match byte_order {
+            ByteOrder::Big => f64::from_be_bytes(buf),
+            ByteOrder::Little => f64::from_le_bytes(buf),
+        });
+    }
+    Ok(out)
 }
 
 pub(crate) fn get_f64_param(params: &BTreeMap<String, ciborium::Value>, key: &str) -> Result<f64> {

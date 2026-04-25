@@ -1024,7 +1024,7 @@ pinned reference values across a time-series.
 | `rust/tensogram-wasm/src/extras.rs::simple_packing_compute_params` | WASM export returns an object with `sp_*` keys. |
 | `typescript/src/types.ts::SimplePackingParams` | Interface fields renamed to `sp_*`. |
 | `rust/tensogram-cli/src/commands/set.rs` | Immutable-key list covers the new names. |
-| Test suites (Rust / Python / C++ / TS) | Every test literal using the old names has been updated.  New BDD suite `rust/tensogram/tests/simple_packing_auto_compute.rs` (8 scenarios) + mirrored Python suite `python/tests/test_simple_packing_auto_compute.py` (9 scenarios) exercise happy path, explicit-wins, missing knob, NaN rejection, streaming, defaults, non-f64 dtype, and byte-for-byte parity with the explicit path. |
+| Test suites (Rust / Python / C++ / TS) | Every test literal using the old names has been updated.  New BDD suite `rust/tensogram/tests/simple_packing_auto_compute.rs` + mirrored Python suite `python/tests/test_simple_packing_auto_compute.py` exercise happy path, explicit-wins, missing knob (auto-compute and explicit paths), NaN rejection, streaming, defaults, non-f64 dtype (incl. 8-byte non-float dtypes), and byte-for-byte parity with the explicit path. |
 | Examples | `examples/python/03_simple_packing.py` leads with the ergonomic form and demonstrates the explicit path as a secondary option. `examples/python/11_encode_pre_encoded.py`, `examples/rust/src/bin/{03,11}_*.rs`, `examples/cpp/{03,11}_*.cpp` updated. |
 | Docs | `docs/src/encodings/simple-packing.md` gains a "Quick start — auto-compute" section; `docs/src/guide/encode-pre-encoded.md`, `docs/src/guide/encoding.md`, `docs/src/format/cbor-metadata.md`, `plans/WIRE_FORMAT.md` and the concept pages use the new key names. |
 
@@ -1036,3 +1036,15 @@ pinned reference values across a time-series.
 - `PackingError::InvalidParams { field }` internal field names (still the Rust struct field identifiers; tests assert on those).
 - Golden `.tgm` fixtures (none use `simple_packing`).
 - Any non-`simple_packing` codec.
+
+### Post-review hardening
+
+Three Pass-4-level fixes folded in after Copilot review on PR #97:
+
+| Fix | What changed |
+|-----|-------------|
+| **Strict float64 guard** | `resolve_simple_packing_params` and `build_pipeline_config_with_backend` now check `dtype == Dtype::Float64` exactly, not `byte_width() == 8`.  `Int64` / `Uint64` / `Complex64` are 8 bytes and would otherwise have been silently re-interpreted as `f64`, producing bogus packing params.  Error message now names the offending dtype. |
+| **Pre-flight `sp_bits_per_value` check** | The presence check is hoisted ahead of the explicit-params short-circuit so missing-bpv produces a single, action-oriented diagnostic on every code path (auto-compute, ref+bsf-only, full explicit) instead of failing later with a generic "missing required" string from the param accessor. |
+| **Fallible byte→f64 allocation** | `bytes_as_f64_vec` uses `try_reserve_exact` + push loop (matching `tensogram_encodings::pipeline::bytes_to_f64`) instead of an infallible `.collect()`, so encode-time auto-compute on very large inputs returns a structured `TensogramError::Encoding` on OOM rather than aborting the process. |
+
+Test additions: `s3b_explicit_path_missing_bits_per_value_is_a_clear_error` and `s8_eight_byte_non_float_dtypes_rejected` (auto + explicit paths) in `rust/tensogram/tests/simple_packing_auto_compute.rs`.  Existing `edge_cases::missing_required_param` updated to assert on the new key-named diagnostic.
