@@ -206,13 +206,13 @@ function SpinboxInput({ label, value, step, onChange, onDoubleClick, toDisplay, 
 
 // ── UnitToggle ───────────────────────────────────────────────────────────────
 
-interface UnitToggleProps {
+export interface UnitToggleProps {
   nativeUnits: string;
   displayUnit: string;
   onDisplayUnitChange: (u: string) => void;
 }
 
-function UnitToggle({ nativeUnits, displayUnit, onDisplayUnitChange }: UnitToggleProps) {
+export function UnitToggle({ nativeUnits, displayUnit, onDisplayUnitChange }: UnitToggleProps) {
   const group = getUnitGroup(nativeUnits);
   if (!group) return null;
 
