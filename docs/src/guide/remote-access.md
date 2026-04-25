@@ -99,9 +99,20 @@ console.log('messageLayouts:', file.messageLayouts);
 file.close();
 ```
 
-Set `debug: true` alongside `bidirectional: true` to emit `console.debug` events on every walker state transition (`tensogram:scan:mode`, `tensogram:scan:fallback`, `tensogram:scan:fwd-terminated`, `tensogram:scan:gap-closed`, `tensogram:scan:hop`) — same vocabulary as the Rust `tracing` events at `target = "tensogram::remote_scan"`.
+Set `debug: true` alongside `bidirectional: true` to emit `console.debug` events on every walker state transition (`tensogram:scan:mode`, `tensogram:scan:fallback`, `tensogram:scan:fwd-terminated`, `tensogram:scan:gap-closed`, `tensogram:scan:hop`, `tensogram:scan:footer-eager`) — same vocabulary as the Rust `tracing` events at `target = "tensogram::remote_scan"`.
 
 The default is forward-only across all bindings until benchmarks confirm the win across every workload tier. Local-file backends accept the option and silently ignore it (a single forward sweep is the only sensible strategy locally).
+
+### Eager footer-indexed backward discovery
+
+When the bidirectional walker discovers a **footer-indexed** message via its postamble, the dispatcher folds an eager footer-region fetch into the same paired round as the candidate-preamble validation. The metadata + index frames land in the cached layout inline, so a subsequent `read_metadata` / `messageMetadata` accessor short-circuits without issuing a separate footer-region GET.
+
+The optimisation fires only on **footer-indexed messages discovered backward**:
+- Header-indexed messages on backward keep the lazy path. The forward walker fetches the header chunk in one GET; backward fetching postamble + preamble + separate header chunk would be net-worse (3 GETs vs 1).
+- Footer-indexed messages discovered forward keep the existing forward-only optimisation (one suffix-chunk fetch per message).
+- Header-indexed messages with footer hash frames have a non-empty footer region; the dispatcher fetches the bytes speculatively but discards them after the preamble flags reveal `HEADER_INDEX`. Cost: a few hundred bytes per such message; benefit: zero extra GETs.
+
+The footer fetch is **best-effort**: a transport failure or footer parse error never poisons preamble validation. The layout still commits via the validated preamble alone, and the lazy `ensure_layout` path picks up footer discovery on first metadata access. Behaviour is symmetric across the Rust sync, Rust async, and TypeScript dispatchers.
 
 ## Python Usage
 

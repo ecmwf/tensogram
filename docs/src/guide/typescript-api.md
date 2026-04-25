@@ -451,8 +451,30 @@ parallel fetches to be useful.
 `debug: true` emits `console.debug` events on every state transition
 — `tensogram:scan:mode`, `tensogram:scan:fallback`,
 `tensogram:scan:fwd-terminated`, `tensogram:scan:gap-closed`,
-`tensogram:scan:hop` — same vocabulary as the Rust `tracing` events
-at `target = "tensogram::remote_scan"`.
+`tensogram:scan:hop`, `tensogram:scan:footer-eager` — same vocabulary
+as the Rust `tracing` events at `target = "tensogram::remote_scan"`.
+
+#### Eager footer-indexed backward discovery
+
+When the bidirectional walker discovers a footer-indexed message via
+its postamble, the dispatcher folds an eager footer-region fetch into
+the same paired round as the candidate-preamble validation.  The
+parsed footer's `metadata` and `index` frames land in the cached
+layout inline, so a subsequent `messageMetadata(idx)` /
+`messageDescriptors(idx)` short-circuits without issuing a separate
+footer-region GET.
+
+The fetch is best-effort: if the footer Range request fails or the
+chunk fails to parse, the layout still commits via the validated
+preamble alone, and the lazy populate path picks up footer discovery
+on first metadata access.  Header-indexed messages on backward keep
+the lazy path (the eager-footer code path is gated on the
+`FOOTER_METADATA + FOOTER_INDEX` flag combination).
+
+Behaviour is symmetric across the Rust sync / async dispatchers and
+the TypeScript walker — the same wire-format outcome enum
+(`BackwardOutcome.NeedPreambleValidation`) carries the postamble's
+`first_footer_offset` so both sides decide identically.
 
 ### AWS-signed (S3-compatible) access
 
