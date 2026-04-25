@@ -160,3 +160,60 @@ TEST(SimplePackingTest, ConstantField) {
     EXPECT_EQ(err, TGM_ERROR_OK);
     EXPECT_DOUBLE_EQ(reference_value, 42.0);
 }
+
+// ---------------------------------------------------------------------------
+// Auto-compute path: descriptor with only sp_bits_per_value lets the
+// encoder derive sp_reference_value + sp_binary_scale_factor from the data.
+// ---------------------------------------------------------------------------
+
+TEST(SimplePackingTest, AutoComputeFromBitsOnly) {
+    std::vector<double> values = {270.0, 275.0, 280.0, 285.0, 290.0};
+
+    // Descriptor with only sp_bits_per_value — the encoder fills in
+    // sp_reference_value and sp_binary_scale_factor itself.
+    std::string json =
+        R"({"version":3,"descriptors":[{"type":"ndarray","ndim":1,"shape":[5],"strides":[8],"dtype":"float64","byte_order":"little","encoding":"simple_packing","filter":"none","compression":"none","sp_bits_per_value":16}]})";
+
+    std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
+        {reinterpret_cast<const std::uint8_t*>(values.data()),
+         values.size() * sizeof(double)}};
+
+    auto encoded = tensogram::encode(json, objects);
+    ASSERT_FALSE(encoded.empty());
+
+    auto msg = tensogram::decode(encoded.data(), encoded.size());
+    auto obj = msg.object(0);
+    EXPECT_EQ(obj.encoding(), "simple_packing");
+
+    // Values round-trip within 16-bit quantisation tolerance.
+    const double* decoded = obj.data_as<double>();
+    std::size_t count = obj.element_count<double>();
+    ASSERT_EQ(count, values.size());
+    const double tolerance =
+        (values.back() - values.front()) / static_cast<double>(1u << 16);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        EXPECT_NEAR(decoded[i], values[i], tolerance)
+            << "auto-compute mismatch at index " << i;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-compute rejects half-explicit params: providing only
+// sp_reference_value (without sp_binary_scale_factor) is ambiguous.
+// ---------------------------------------------------------------------------
+
+TEST(SimplePackingTest, HalfExplicitParamsRejected) {
+    std::vector<double> values = {270.0, 275.0, 280.0, 285.0};
+
+    // Provide sp_reference_value but NOT sp_binary_scale_factor.  The
+    // encoder must error rather than silently auto-compute over our
+    // half-explicit input.
+    std::string json =
+        R"({"version":3,"descriptors":[{"type":"ndarray","ndim":1,"shape":[4],"strides":[8],"dtype":"float64","byte_order":"little","encoding":"simple_packing","filter":"none","compression":"none","sp_bits_per_value":16,"sp_reference_value":200.0}]})";
+
+    std::vector<std::pair<const std::uint8_t*, std::size_t>> objects = {
+        {reinterpret_cast<const std::uint8_t*>(values.data()),
+         values.size() * sizeof(double)}};
+
+    EXPECT_THROW(tensogram::encode(json, objects), tensogram::error);
+}

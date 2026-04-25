@@ -461,3 +461,206 @@ fn e2_nan_data_with_allow_nan_still_rejected_by_auto_compute() {
         "auto-compute should surface NaN: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// E3 — auto-compute composes with shuffle + zstd (Pass-4 hardening).
+//
+// The auto-compute step happens before the pipeline-config build, so
+// shuffle / zstd / blosc2 / szip should all compose cleanly with it.
+// Pin it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e3_auto_compute_composes_with_shuffle_and_zstd() {
+    let mut desc = make_auto_desc(vec![1024], 16);
+    desc.filter = "shuffle".to_string();
+    desc.compression = "zstd".to_string();
+    // shuffle on simple_packing → element size = ceil(bits/8) = 2 bytes
+    desc.params.insert(
+        "shuffle_element_size".to_string(),
+        CborValue::Integer(2i64.into()),
+    );
+    desc.params
+        .insert("zstd_level".to_string(), CborValue::Integer(3i64.into()));
+
+    let values: Vec<f64> = (0..1024).map(|i| 270.0 + (i as f64) * 0.05).collect();
+    let data = f64_bytes(&values);
+
+    let bytes = encode(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .expect("auto-compute + shuffle + zstd should work");
+
+    let (_meta, objects) = decode(&bytes, &DecodeOptions::default()).expect("decode");
+    let (returned_desc, payload) = &objects[0];
+
+    // All four sp_* keys present after encode.
+    assert!(returned_desc.params.contains_key("sp_reference_value"));
+    assert!(returned_desc.params.contains_key("sp_binary_scale_factor"));
+    // Round-trip within 16-bit tolerance.
+    let decoded: Vec<f64> = payload
+        .chunks_exact(8)
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+        .collect();
+    let tolerance = (values.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+        - values.iter().cloned().fold(f64::INFINITY, f64::min))
+        / f64::from(1u32 << 16);
+    for (v, d) in values.iter().zip(decoded.iter()) {
+        assert!((v - d).abs() <= tolerance);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// E4 — auto-compute honours non-native byte_order (Pass-4 hardening).
+//
+// `bytes_as_f64_vec` reads the descriptor's `byte_order` to decide
+// `from_be_bytes` vs `from_le_bytes`.  When the user declares the
+// non-native order on the descriptor, the input bytes must be in that
+// order; auto-compute interprets them correctly and produces the same
+// `sp_reference_value` / `sp_binary_scale_factor` as a native-order
+// encode of the same values.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e4_auto_compute_handles_big_endian_descriptor() {
+    let values: Vec<f64> = vec![270.0, 275.0, 280.0, 285.0];
+
+    // Native-endian reference encode.
+    let mut native_desc = make_auto_desc(vec![4], 16);
+    let native_bytes = f64_bytes(&values);
+    let native_buf = encode(
+        &make_global_meta(),
+        &[(&native_desc, &native_bytes)],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
+
+    // Big-endian descriptor: caller declares the byte order AND
+    // supplies bytes in that order.
+    let mut be_desc = make_auto_desc(vec![4], 16);
+    be_desc.byte_order = ByteOrder::Big;
+    let be_bytes: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+    let be_buf = encode(
+        &make_global_meta(),
+        &[(&be_desc, &be_bytes)],
+        &EncodeOptions::default(),
+    )
+    .unwrap();
+
+    // Decoded sp_reference_value and sp_binary_scale_factor must match
+    // — auto-compute should not be byte-order-sensitive.
+    let (_, n_objs) = decode(&native_buf, &DecodeOptions::default()).unwrap();
+    let (_, b_objs) = decode(&be_buf, &DecodeOptions::default()).unwrap();
+    let n_ref = get_f64(&n_objs[0].0.params, "sp_reference_value");
+    let b_ref = get_f64(&b_objs[0].0.params, "sp_reference_value");
+    assert_eq!(
+        n_ref, b_ref,
+        "sp_reference_value must be byte-order invariant"
+    );
+
+    let n_bsf = get_i64(&n_objs[0].0.params, "sp_binary_scale_factor");
+    b_endian_assertion(b_objs[0].0.params.get("sp_binary_scale_factor"), n_bsf);
+
+    // Also check we get nearly-identical decoded values (modulo
+    // platform-native re-encoding from the decoded path).
+    let n_payload: Vec<f64> = n_objs[0]
+        .1
+        .chunks_exact(8)
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+        .collect();
+    let b_payload: Vec<f64> = b_objs[0]
+        .1
+        .chunks_exact(8)
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+        .collect();
+    for (n, b) in n_payload.iter().zip(b_payload.iter()) {
+        assert!((n - b).abs() < 1e-9);
+    }
+}
+
+fn b_endian_assertion(actual: Option<&CborValue>, expected_native: i64) {
+    match actual {
+        Some(CborValue::Integer(i)) => {
+            let n: i128 = (*i).into();
+            assert_eq!(
+                i64::try_from(n).unwrap(),
+                expected_native,
+                "sp_binary_scale_factor must be byte-order invariant"
+            );
+        }
+        other => panic!("missing sp_binary_scale_factor: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// E5 — multi-object messages can mix auto-compute and explicit-params
+//      objects (Pass-4 hardening).
+//
+// Each object's descriptor is processed independently in
+// `encode_one_object`, so a single message can hold one auto-compute
+// simple_packing object next to an explicit-params one and a
+// no-encoding one.  Pin that.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e5_multi_object_mixed_encoding_round_trips() {
+    // Object 0: auto-compute simple_packing.
+    let mut auto_desc = make_auto_desc(vec![4], 16);
+    auto_desc.params.insert(
+        "sp_decimal_scale_factor".to_string(),
+        CborValue::Integer(0i64.into()),
+    );
+    let auto_values: Vec<f64> = vec![270.0, 275.0, 280.0, 285.0];
+    let auto_data = f64_bytes(&auto_values);
+
+    // Object 1: explicit-params simple_packing.
+    let mut explicit_desc = make_auto_desc(vec![4], 16);
+    explicit_desc
+        .params
+        .insert("sp_reference_value".to_string(), CborValue::Float(100.0));
+    explicit_desc.params.insert(
+        "sp_binary_scale_factor".to_string(),
+        CborValue::Integer(2i64.into()),
+    );
+    explicit_desc.params.insert(
+        "sp_decimal_scale_factor".to_string(),
+        CborValue::Integer(0i64.into()),
+    );
+    let explicit_values: Vec<f64> = vec![100.0, 100.5, 101.0, 101.5];
+    let explicit_data = f64_bytes(&explicit_values);
+
+    // Object 2: encoding="none".
+    let mut none_desc = make_auto_desc(vec![4], 16);
+    none_desc.params.clear(); // drop sp_bits_per_value
+    none_desc.encoding = "none".to_string();
+    let none_values: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0];
+    let none_data = f64_bytes(&none_values);
+
+    let bytes = encode(
+        &make_global_meta(),
+        &[
+            (&auto_desc, &auto_data),
+            (&explicit_desc, &explicit_data),
+            (&none_desc, &none_data),
+        ],
+        &EncodeOptions::default(),
+    )
+    .expect("multi-object mixed encoding");
+
+    let (_meta, objects) = decode(&bytes, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 3);
+
+    // Object 0 gained the auto-computed keys.
+    assert!(objects[0].0.params.contains_key("sp_reference_value"));
+    assert!(objects[0].0.params.contains_key("sp_binary_scale_factor"));
+
+    // Object 1 kept its explicit values verbatim.
+    assert_eq!(get_f64(&objects[1].0.params, "sp_reference_value"), 100.0);
+    assert_eq!(get_i64(&objects[1].0.params, "sp_binary_scale_factor"), 2);
+
+    // Object 2 has no sp_* keys (it's encoding=none).
+    assert_eq!(objects[2].0.encoding, "none");
+    assert!(!objects[2].0.params.contains_key("sp_reference_value"));
+}
