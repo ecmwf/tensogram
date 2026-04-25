@@ -404,7 +404,7 @@ impl PyTensogramFile {
         let scan_opts = scan_opts_for(bidirectional);
         let source = source.to_string();
         let file = py
-            .detach(|| TensogramFile::open_source(&source, scan_opts.as_ref()))
+            .detach(|| TensogramFile::open_source(&source, scan_opts))
             .map_err(to_py_err)?;
         Ok(PyTensogramFile { file })
     }
@@ -421,7 +421,7 @@ impl PyTensogramFile {
         let scan_opts = scan_opts_for(bidirectional);
         let source = source.to_string();
         let file = py
-            .detach(|| TensogramFile::open_remote(&source, &opts, scan_opts.as_ref()))
+            .detach(|| TensogramFile::open_remote(&source, &opts, scan_opts))
             .map_err(to_py_err)?;
         Ok(PyTensogramFile { file })
     }
@@ -1723,7 +1723,7 @@ impl PyAsyncTensogramFile {
         let scan_opts = scan_opts_for(bidirectional);
         let source = source.to_string();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let file = TensogramFile::open_source_async(&source, scan_opts.as_ref())
+            let file = TensogramFile::open_source_async(&source, scan_opts)
                 .await
                 .map_err(to_py_err)?;
             let is_remote = file.is_remote();
@@ -1766,7 +1766,7 @@ impl PyAsyncTensogramFile {
         let source = source.to_string();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let file =
-                TensogramFile::open_remote_async(&source, &opts, scan_opts.as_ref())
+                TensogramFile::open_remote_async(&source, &opts, scan_opts)
                     .await
                     .map_err(to_py_err)?;
             let is_remote = file.is_remote();

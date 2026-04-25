@@ -14,7 +14,7 @@
 //! strategy); the remote backend honours `bidirectional`.
 //!
 //! This module is cfg-independent so the public open methods on
-//! [`crate::TensogramFile`] can accept `Option<&RemoteScanOptions>`
+//! [`crate::TensogramFile`] can accept `Option<RemoteScanOptions>`
 //! whether or not the `remote` Cargo feature is enabled.  Without
 //! `remote`, the type is still public but `open_source` falls
 //! through to the local-file path and the value is ignored.

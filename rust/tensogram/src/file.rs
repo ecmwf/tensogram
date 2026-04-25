@@ -94,13 +94,13 @@ impl TensogramFile {
     /// is enabled; otherwise treats `source` as a local path.
     ///
     /// `scan_opts` configures the remote scan walker.  `None` (or
-    /// `Some(&RemoteScanOptions::default())`) keeps the forward-only
+    /// `Some(RemoteScanOptions::default())`) keeps the forward-only
     /// walk — byte-identical to behaviour before this option existed.
     /// For local paths the value is silently ignored (a single forward
     /// sweep over the file is the only sensible strategy locally).
     pub fn open_source(
         source: impl AsRef<str>,
-        scan_opts: Option<&crate::RemoteScanOptions>,
+        scan_opts: Option<crate::RemoteScanOptions>,
     ) -> Result<Self> {
         let source = source.as_ref();
 
@@ -116,8 +116,8 @@ impl TensogramFile {
     /// Open a remote file with explicit storage options (credentials,
     /// region, etc.) and scan-walker configuration.
     ///
-    /// `scan_opts = None` (or `Some(&RemoteScanOptions::default())`)
-    /// runs the forward-only walker; `Some(&RemoteScanOptions {
+    /// `scan_opts = None` (or `Some(RemoteScanOptions::default())`)
+    /// runs the forward-only walker; `Some(RemoteScanOptions {
     /// bidirectional: true })` enables the bidirectional walker that
     /// roughly halves HTTP `GET` count for tail / full-scan access on
     /// header-indexed files.
@@ -125,9 +125,9 @@ impl TensogramFile {
     pub fn open_remote(
         source: &str,
         storage_options: &std::collections::BTreeMap<String, String>,
-        scan_opts: Option<&crate::RemoteScanOptions>,
+        scan_opts: Option<crate::RemoteScanOptions>,
     ) -> Result<Self> {
-        let opts = scan_opts.copied().unwrap_or_default();
+        let opts = scan_opts.unwrap_or_default();
         let remote =
             crate::remote::RemoteBackend::open_with_scan_opts(source, storage_options, opts)?;
         Ok(TensogramFile {
@@ -640,7 +640,7 @@ impl TensogramFile {
     #[cfg(all(feature = "remote", feature = "async"))]
     pub async fn open_source_async(
         source: impl AsRef<str>,
-        scan_opts: Option<&crate::RemoteScanOptions>,
+        scan_opts: Option<crate::RemoteScanOptions>,
     ) -> Result<Self> {
         let source = source.as_ref();
 
@@ -658,9 +658,9 @@ impl TensogramFile {
     pub async fn open_remote_async(
         source: &str,
         storage_options: &std::collections::BTreeMap<String, String>,
-        scan_opts: Option<&crate::RemoteScanOptions>,
+        scan_opts: Option<crate::RemoteScanOptions>,
     ) -> Result<Self> {
-        let opts = scan_opts.copied().unwrap_or_default();
+        let opts = scan_opts.unwrap_or_default();
         let remote =
             crate::remote::RemoteBackend::open_async_with_scan_opts(source, storage_options, opts)
                 .await?;
