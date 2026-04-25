@@ -528,7 +528,7 @@ fn e4_auto_compute_handles_big_endian_descriptor() {
     let values: Vec<f64> = vec![270.0, 275.0, 280.0, 285.0];
 
     // Native-endian reference encode.
-    let mut native_desc = make_auto_desc(vec![4], 16);
+    let native_desc = make_auto_desc(vec![4], 16);
     let native_bytes = f64_bytes(&values);
     let native_buf = encode(
         &make_global_meta(),
