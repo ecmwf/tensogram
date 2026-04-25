@@ -55,7 +55,14 @@ _RUST_DRIVER_BIN = (
 _TS_DRIVER_SCRIPT = _DRIVERS_DIR / "ts_driver.ts"
 
 Language = Literal["rust", "ts"]
-Op = Literal["open", "message-count", "read-first", "read-last", "dump-layout"]
+Op = Literal[
+    "open",
+    "message-count",
+    "read-first",
+    "read-last",
+    "read-metadata",
+    "dump-layout",
+]
 Mode = Literal["forward", "bidirectional"]
 
 _FIXTURES: tuple[str, ...] = (
@@ -82,6 +89,13 @@ _OPS: tuple[Op, ...] = (
 _LAYOUT_OPS: tuple[Op, ...] = ("dump-layout",)
 _LAYOUT_MODES: tuple[Mode, ...] = ("forward", "bidirectional")
 _LAYOUT_LANGUAGES: tuple[Language, ...] = ("rust", "ts")
+
+_BIDIR_OPS: tuple[Op, ...] = (
+    "message-count",
+    "read-last",
+    "read-metadata",
+)
+_BIDIR_LANGUAGES: tuple[Language, ...] = ("rust", "ts")
 
 
 def is_layout_dump_case(case: DriverCase) -> bool:
@@ -190,16 +204,35 @@ def filter_scan_events(events: list[ScanEvent]) -> list[ScanEvent]:
 
 
 def _all_cases() -> list[DriverCase]:
-    cases = []
+    seen: set[str] = set()
+    cases: list[DriverCase] = []
+
+    def _push(case: DriverCase) -> None:
+        if case.run_id in seen:
+            return
+        seen.add(case.run_id)
+        cases.append(case)
+
     for fixture in _FIXTURES:
         for language in ("rust", "ts"):
             for op in _OPS:
-                cases.append(DriverCase(fixture=fixture, language=language, op=op))
+                _push(DriverCase(fixture=fixture, language=language, op=op))
     for fixture in _FIXTURES:
         for language in _LAYOUT_LANGUAGES:
             for op in _LAYOUT_OPS:
                 for mode in _LAYOUT_MODES:
-                    cases.append(DriverCase(fixture=fixture, language=language, op=op, mode=mode))
+                    _push(DriverCase(fixture=fixture, language=language, op=op, mode=mode))
+    for fixture in _FIXTURES:
+        for language in _BIDIR_LANGUAGES:
+            for op in _BIDIR_OPS:
+                # Both forward and bidirectional are required so the
+                # cross-mode within-language test (forward layouts ==
+                # bidirectional layouts) always has both members.  The
+                # forward-mode cases for `message-count` / `read-last`
+                # already came in via the first loop above; `_push`
+                # de-duplicates by run_id.
+                for mode in ("forward", "bidirectional"):
+                    _push(DriverCase(fixture=fixture, language=language, op=op, mode=mode))
     return cases
 
 

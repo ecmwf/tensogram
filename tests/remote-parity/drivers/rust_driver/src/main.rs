@@ -16,6 +16,9 @@
 //! - `message-count` — full forward scan.
 //! - `read-first` — read message 0.
 //! - `read-last` — read the last message (index = count - 1).
+//! - `read-metadata` — read message N-1's global metadata.  Forces
+//!   layout-populate on the last message; on bidirectional + footer-
+//!   indexed files this exercises the eager-footer fast path.
 //! - `dump-layout` — full scan + emit `[{"offset": .., "length": ..}, ...]`
 //!   JSON to stdout.  The orchestrator parses this to compare scan
 //!   results across walker modes.
@@ -47,6 +50,7 @@ enum Op {
     MessageCount,
     ReadFirst,
     ReadLast,
+    ReadMetadata,
     DumpLayout,
 }
 
@@ -57,6 +61,7 @@ impl Op {
             "message-count" => Ok(Op::MessageCount),
             "read-first" => Ok(Op::ReadFirst),
             "read-last" => Ok(Op::ReadLast),
+            "read-metadata" => Ok(Op::ReadMetadata),
             "dump-layout" => Ok(Op::DumpLayout),
             other => Err(format!("unknown --op '{other}'")),
         }
@@ -95,7 +100,7 @@ fn parse_args() -> Result<Args, String> {
 
 fn print_usage() {
     eprintln!(
-        "usage: remote-parity-rust-driver --url <URL> --op <open|message-count|read-first|read-last|dump-layout> [--bidirectional]"
+        "usage: remote-parity-rust-driver --url <URL> --op <open|message-count|read-first|read-last|read-metadata|dump-layout> [--bidirectional]"
     );
 }
 
@@ -132,6 +137,18 @@ fn run(args: Args) -> Result<(), String> {
             let _ = file
                 .read_message(n - 1)
                 .map_err(|e| format!("read_message({}) failed: {e}", n - 1))?;
+            Ok(())
+        }
+        Op::ReadMetadata => {
+            let n = file
+                .message_count()
+                .map_err(|e| format!("message_count failed: {e}"))?;
+            if n == 0 {
+                return Err("file contains 0 messages".to_string());
+            }
+            let _ = file
+                .decode_metadata(n - 1)
+                .map_err(|e| format!("decode_metadata({}) failed: {e}", n - 1))?;
             Ok(())
         }
         Op::DumpLayout => {

@@ -30,7 +30,13 @@
 
 import { init, TensogramFile } from '@ecmwf.int/tensogram';
 
-type Op = 'open' | 'message-count' | 'read-first' | 'read-last' | 'dump-layout';
+type Op =
+  | 'open'
+  | 'message-count'
+  | 'read-first'
+  | 'read-last'
+  | 'read-metadata'
+  | 'dump-layout';
 
 interface Args {
   url: string;
@@ -72,13 +78,14 @@ function isOp(value: string | undefined): value is Op {
     value === 'message-count' ||
     value === 'read-first' ||
     value === 'read-last' ||
+    value === 'read-metadata' ||
     value === 'dump-layout'
   );
 }
 
 function printUsage(): void {
   console.error(
-    'usage: npx tsx ts_driver.ts --url <URL> --op <open|message-count|read-first|read-last|dump-layout> [--bidirectional]',
+    'usage: npx tsx ts_driver.ts --url <URL> --op <open|message-count|read-first|read-last|read-metadata|dump-layout> [--bidirectional]',
   );
 }
 
@@ -101,6 +108,12 @@ async function run(args: Args): Promise<void> {
         const n = file.messageCount;
         if (n === 0) throw new Error('file contains 0 messages');
         await file.rawMessage(n - 1);
+        return;
+      }
+      case 'read-metadata': {
+        const n = file.messageCount;
+        if (n === 0) throw new Error('file contains 0 messages');
+        await file.messageMetadata(n - 1);
         return;
       }
       case 'dump-layout': {
