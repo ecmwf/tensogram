@@ -326,6 +326,22 @@ enum ForwardOutcome {
     Terminate(&'static str),
 }
 
+/// `true` iff a successful forward Hit and a backward-discovered
+/// layout describe exactly the same message.  Triggers on the
+/// 1-message file (forward and backward both identify the only
+/// message) and on odd-count crossovers where the meet-in-the-middle
+/// lands on a single shared middle message.  In both cases the
+/// commit decision table commits the forward layout once and skips
+/// the backward record without clearing `suffix_rev` from earlier
+/// rounds.
+fn same_message_as_forward(fwd: &ForwardOutcome, layout: &MessageLayout) -> bool {
+    matches!(
+        fwd,
+        ForwardOutcome::Hit { offset, length, .. }
+            if *offset == layout.offset && *length == layout.length
+    )
+}
+
 fn parse_forward_preamble(
     preamble_bytes: &[u8],
     pos: u64,
@@ -887,8 +903,16 @@ impl RemoteBackend {
                     BackwardCommit::Layout(layout) => {
                         if !state.bwd_active {
                             // Concurrent caller already disabled — drop the layout.
+                        } else if same_message_as_forward(&fwd, &layout) {
+                            // Forward and backward identified the same message
+                            // (1-message file or odd-count meet at the middle
+                            // message).  Commit forward only; leave suffix_rev
+                            // from previous rounds untouched.
                         } else if let ForwardOutcome::Hit { msg_end, .. } = fwd {
                             if msg_end > layout.offset {
+                                // True overlap — backward computed an offset
+                                // before forward's new commit, which only
+                                // happens on corruption.
                                 state.disable_backward("backward-overlaps-forward");
                             } else {
                                 state.record_backward_hop(layout);
@@ -2966,5 +2990,349 @@ mod tests {
         };
         assert_eq!(opts.max_message_size, 1024);
         assert!(opts.bidirectional);
+    }
+}
+
+#[cfg(all(test, feature = "async"))]
+mod bidir_http_tests {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use http_body_util::Full;
+    use hyper::body::Bytes as HyperBytes;
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
+    use hyper::{Request, Response, StatusCode};
+    use hyper_util::rt::TokioIo;
+    use tokio::net::TcpListener;
+
+    use super::*;
+    use crate::Dtype;
+    use crate::encode::{self, EncodeOptions};
+    use crate::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
+
+    /// Tiny hyper-based mock object store.  Serves a fixed byte
+    /// buffer with single-Range support, counts every request, and
+    /// gives the test a port URL to feed `RemoteBackend::open*`.
+    struct MockObjectStore {
+        request_count: Arc<AtomicUsize>,
+        range_request_count: Arc<AtomicUsize>,
+        addr: SocketAddr,
+    }
+
+    impl MockObjectStore {
+        async fn start(data: Vec<u8>) -> std::io::Result<Self> {
+            let data = Arc::new(data);
+            let request_count = Arc::new(AtomicUsize::new(0));
+            let range_request_count = Arc::new(AtomicUsize::new(0));
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let addr = listener.local_addr()?;
+
+            let data_clone = data.clone();
+            let count_clone = request_count.clone();
+            let range_count_clone = range_request_count.clone();
+            tokio::spawn(async move {
+                loop {
+                    let (stream, _) = match listener.accept().await {
+                        Ok(v) => v,
+                        Err(_) => break,
+                    };
+                    let io = TokioIo::new(stream);
+                    let data = data_clone.clone();
+                    let count = count_clone.clone();
+                    let range_count = range_count_clone.clone();
+                    tokio::spawn(async move {
+                        let _ = http1::Builder::new()
+                            .serve_connection(
+                                io,
+                                service_fn(move |req: Request<hyper::body::Incoming>| {
+                                    let data = data.clone();
+                                    let count = count.clone();
+                                    let range_count = range_count.clone();
+                                    async move { handle(req, data, count, range_count) }
+                                }),
+                            )
+                            .await;
+                    });
+                }
+            });
+
+            Ok(MockObjectStore {
+                request_count,
+                range_request_count,
+                addr,
+            })
+        }
+
+        fn url(&self) -> String {
+            format!("http://127.0.0.1:{}/test.tgm", self.addr.port())
+        }
+
+        fn request_count(&self) -> usize {
+            self.request_count.load(Ordering::SeqCst)
+        }
+
+        fn range_request_count(&self) -> usize {
+            self.range_request_count.load(Ordering::SeqCst)
+        }
+    }
+
+    fn handle(
+        req: Request<hyper::body::Incoming>,
+        data: Arc<Vec<u8>>,
+        request_count: Arc<AtomicUsize>,
+        range_request_count: Arc<AtomicUsize>,
+    ) -> std::io::Result<Response<Full<HyperBytes>>> {
+        request_count.fetch_add(1, Ordering::SeqCst);
+
+        if req.method() == hyper::Method::HEAD {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Length", data.len())
+                .header("Accept-Ranges", "bytes")
+                .body(Full::new(HyperBytes::new()))
+                .map_err(std::io::Error::other);
+        }
+
+        if let Some(range_header) = req.headers().get("Range") {
+            range_request_count.fetch_add(1, Ordering::SeqCst);
+            let range_str = range_header.to_str().unwrap_or("");
+            if let Some((start, end_exclusive)) = parse_range(range_str, data.len()) {
+                let slice = &data[start..end_exclusive];
+                return Response::builder()
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header(
+                        "Content-Range",
+                        format!("bytes {}-{}/{}", start, end_exclusive - 1, data.len()),
+                    )
+                    .header("Content-Length", slice.len())
+                    .body(Full::new(HyperBytes::copy_from_slice(slice)))
+                    .map_err(std::io::Error::other);
+            }
+            return Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header("Content-Range", format!("bytes */{}", data.len()))
+                .body(Full::new(HyperBytes::new()))
+                .map_err(std::io::Error::other);
+        }
+
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Length", data.len())
+            .body(Full::new(HyperBytes::copy_from_slice(&data)))
+            .map_err(std::io::Error::other)
+    }
+
+    fn parse_range(header: &str, total: usize) -> Option<(usize, usize)> {
+        let header = header.strip_prefix("bytes=")?;
+        if total == 0 {
+            return None;
+        }
+        if let Some(suffix) = header.strip_prefix('-') {
+            let n: usize = suffix.parse().ok()?;
+            if n == 0 {
+                return None;
+            }
+            Some((total.saturating_sub(n), total))
+        } else if let Some((start_s, end_s)) = header.split_once('-') {
+            let start: usize = start_s.parse().ok()?;
+            if start >= total {
+                return None;
+            }
+            if end_s.is_empty() {
+                Some((start, total))
+            } else {
+                let end: usize = end_s.parse().ok()?;
+                if end < start {
+                    return None;
+                }
+                Some((start, end.min(total - 1) + 1))
+            }
+        } else {
+            None
+        }
+    }
+
+    fn make_message(shape: Vec<u64>, fill: u8) -> Vec<u8> {
+        let strides = if shape.is_empty() {
+            vec![]
+        } else {
+            let mut s = vec![1u64; shape.len()];
+            for i in (0..shape.len() - 1).rev() {
+                s[i] = s[i + 1] * shape[i + 1];
+            }
+            s
+        };
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: shape.len() as u64,
+            shape: shape.clone(),
+            strides,
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let num_bytes = shape.iter().product::<u64>() as usize * 4;
+        let data = vec![fill; num_bytes];
+        let meta = GlobalMetadata {
+            extra: BTreeMap::new(),
+            ..Default::default()
+        };
+        encode::encode(&meta, &[(&desc, &data)], &EncodeOptions::default())
+            .expect("encode test message")
+    }
+
+    fn concat_messages(parts: Vec<Vec<u8>>) -> Vec<u8> {
+        let total = parts.iter().map(|p| p.len()).sum();
+        let mut out = Vec::with_capacity(total);
+        for p in parts {
+            out.extend_from_slice(&p);
+        }
+        out
+    }
+
+    fn empty_storage() -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+
+    fn forward_layouts(url: &str) -> Vec<(u64, u64)> {
+        let backend =
+            RemoteBackend::open_with_scan_opts(url, &empty_storage(), RemoteScanOptions::default())
+                .expect("open forward-only");
+        backend.message_count().expect("count");
+        let state = backend.state.lock().expect("lock");
+        state.layouts.iter().map(|l| (l.offset, l.length)).collect()
+    }
+
+    fn bidir_layouts(url: &str) -> Vec<(u64, u64)> {
+        let backend = RemoteBackend::open_with_scan_opts(
+            url,
+            &empty_storage(),
+            RemoteScanOptions {
+                bidirectional: true,
+                max_message_size: 4 * 1024 * 1024 * 1024,
+            },
+        )
+        .expect("open bidirectional");
+        backend.message_count().expect("count");
+        let state = backend.state.lock().expect("lock");
+        state.layouts.iter().map(|l| (l.offset, l.length)).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bidir_one_message_no_duplicate() {
+        let buf = make_message(vec![4], 42);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let layouts = bidir_layouts(&server.url());
+        assert_eq!(
+            layouts.len(),
+            1,
+            "1-message file must produce exactly one layout, got {layouts:?}",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bidir_two_messages_match_forward_only() {
+        let buf = concat_messages(vec![make_message(vec![4], 10), make_message(vec![8], 20)]);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let fwd = forward_layouts(&server.url());
+        let bidir = bidir_layouts(&server.url());
+        assert_eq!(
+            fwd, bidir,
+            "2-message file: bidirectional must match forward-only"
+        );
+        assert_eq!(bidir.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bidir_three_messages_odd_count_meet() {
+        let buf = concat_messages(vec![
+            make_message(vec![4], 10),
+            make_message(vec![8], 20),
+            make_message(vec![16], 30),
+        ]);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let fwd = forward_layouts(&server.url());
+        let bidir = bidir_layouts(&server.url());
+        assert_eq!(
+            fwd, bidir,
+            "3-message file: bidirectional must match forward-only"
+        );
+        assert_eq!(bidir.len(), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bidir_ten_messages_match_forward_only() {
+        let parts: Vec<Vec<u8>> = (0..10)
+            .map(|i| make_message(vec![4 + i as u64], i as u8))
+            .collect();
+        let buf = concat_messages(parts);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let fwd = forward_layouts(&server.url());
+        let bidir = bidir_layouts(&server.url());
+        assert_eq!(
+            fwd, bidir,
+            "10-message file: bidirectional must match forward-only"
+        );
+        assert_eq!(bidir.len(), 10);
+    }
+
+    /// Streaming-mode (`postamble.total_length == 0`) encoder output:
+    /// backward must yield with `streaming-zero-bwd`; forward
+    /// completes the scan via the existing streaming-tail branch.
+    /// Validates the format-vs-transport taxonomy `Streaming` row.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bidir_streaming_postamble_yields_backward() {
+        let mut buf = make_message(vec![4], 99);
+        let pa_start = buf.len() - POSTAMBLE_SIZE;
+        let total_off = pa_start + 8;
+        for byte in &mut buf[total_off..total_off + 8] {
+            *byte = 0;
+        }
+        let preamble_total_off = 16;
+        for byte in &mut buf[preamble_total_off..preamble_total_off + 8] {
+            *byte = 0;
+        }
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let bidir = bidir_layouts(&server.url());
+        assert_eq!(
+            bidir.len(),
+            1,
+            "streaming-tail must still produce a single forward-discovered layout, got {bidir:?}",
+        );
+        assert!(server.request_count() > 0);
+    }
+
+    /// Corrupt `END_MAGIC` at file end: backward yields with
+    /// `bad-end-magic-bwd`; forward parses both messages cleanly
+    /// because non-streaming forward scanning never consults the
+    /// file-end `END_MAGIC`.  Validates that bidirectional gracefully
+    /// degrades to forward-only on backward-side corruption.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bidir_corrupt_end_magic_yields_backward() {
+        let mut buf = concat_messages(vec![make_message(vec![4], 10), make_message(vec![8], 20)]);
+        let len = buf.len();
+        buf[len - 8..].copy_from_slice(b"BADMAGIC");
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions {
+                bidirectional: true,
+                max_message_size: 4 * 1024 * 1024 * 1024,
+            },
+        )
+        .expect("open");
+        let count = backend.message_count().expect("count");
+        assert_eq!(
+            count, 2,
+            "corrupt END_MAGIC: forward path still finds both messages",
+        );
+        assert!(server.range_request_count() > 0);
     }
 }
