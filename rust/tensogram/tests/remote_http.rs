@@ -503,6 +503,7 @@ async fn test_open_source_local_path_ignores_scan_opts() -> Result<(), Box<dyn E
     Ok(())
 }
 
+#[cfg(feature = "async")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_open_remote_async_bidirectional_layouts_match_forward() -> Result<(), Box<dyn Error>>
 {
