@@ -829,14 +829,28 @@ impl RemoteBackend {
 
     /// One bidirectional scan round: paired forward preamble + backward
     /// postamble fetch, followed by a backward-preamble validation
-    /// fetch when the postamble parses cleanly.  Commits the parsed
-    /// outcomes atomically through the [`RemoteState`] decision
-    /// table.
+    /// fetch when the postamble parses cleanly, optionally followed
+    /// by an eager footer-region fetch when the postamble's
+    /// `first_footer_offset` indicates a non-empty footer.  Commits
+    /// the parsed outcomes atomically through the [`RemoteState`]
+    /// decision table.
     ///
-    /// On any *transport* error (timeout, 503, abort), state is left
-    /// unchanged and the error propagates so the caller can retry.
-    /// *Format* errors are absorbed locally — backward yields,
-    /// forward keeps going.
+    /// Fetch failure semantics:
+    ///
+    /// - **Paired forward preamble + backward postamble**: required.
+    ///   Any transport error (timeout, 503, abort) leaves state
+    ///   unchanged and propagates so the caller can retry.
+    /// - **Backward candidate preamble**: required when the
+    ///   postamble parsed cleanly.  Same error semantics as the
+    ///   paired fetch.
+    /// - **Eager footer chunk**: best-effort.  Transport errors
+    ///   are silently dropped via `.ok()`; the layout still commits
+    ///   via the validated preamble alone, and the lazy
+    ///   `ensure_layout` path picks up footer discovery on the next
+    ///   metadata access.  See [`Self::try_populate_eager_footer`].
+    ///
+    /// *Format* errors are absorbed locally regardless of which
+    /// fetch surfaces them — backward yields, forward keeps going.
     fn scan_bidir_round_locked(&self, state: &mut RemoteState) -> Result<()> {
         let snap = state.snapshot();
         // In bidirectional mode `prev_scan_offset` IS the forward
