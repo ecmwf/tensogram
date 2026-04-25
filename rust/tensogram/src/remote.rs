@@ -412,13 +412,26 @@ impl RemoteBackend {
     // ── Message scanning ─────────────────────────────────────────────────
 
     fn scan_next_locked(&self, state: &mut RemoteState) -> Result<()> {
+        self.scan_fwd_step_locked(state, self.file_size)
+    }
+
+    /// One forward hop bounded by `bound` (exclusive upper offset).
+    ///
+    /// In forward-only mode `bound == self.file_size` (today's
+    /// behaviour).  In bidirectional mode the bidirectional dispatcher
+    /// passes `state.prev_scan_offset` so the forward walker cannot
+    /// overrun into the region already claimed by the backward
+    /// walker.  Streaming preambles (`total_length == 0`) are
+    /// tail-only by spec; the streaming END_MAGIC is therefore read
+    /// at `self.file_size - 8` regardless of `bound`.
+    fn scan_fwd_step_locked(&self, state: &mut RemoteState, bound: u64) -> Result<()> {
         if state.scan_complete() {
             return Ok(());
         }
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
         let pos = state.next_scan_offset;
 
-        if pos + min_message_size > self.file_size {
+        if pos + min_message_size > bound {
             state.terminate_forward("eof");
             return Ok(());
         }
@@ -464,7 +477,7 @@ impl RemoteBackend {
         }
 
         match pos.checked_add(msg_len) {
-            Some(end) if msg_len >= min_message_size && end <= self.file_size => {}
+            Some(end) if msg_len >= min_message_size && end <= bound => {}
             _ => {
                 state.terminate_forward("length-out-of-range-fwd");
                 return Ok(());
@@ -1351,6 +1364,12 @@ impl RemoteBackend {
     }
 
     async fn scan_next_async(&self) -> Result<()> {
+        self.scan_fwd_step_async(self.file_size).await
+    }
+
+    /// Async counterpart of [`Self::scan_fwd_step_locked`].  See that
+    /// method's docstring for the `bound` parameter contract.
+    async fn scan_fwd_step_async(&self, bound: u64) -> Result<()> {
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
         let pos = {
             let state = self.lock_state()?;
@@ -1360,7 +1379,7 @@ impl RemoteBackend {
             state.next_scan_offset
         };
 
-        if pos + min_message_size > self.file_size {
+        if pos + min_message_size > bound {
             let mut state = self.lock_state()?;
             if state.next_scan_offset == pos {
                 state.terminate_forward("eof");
@@ -1430,7 +1449,7 @@ impl RemoteBackend {
         }
 
         match pos.checked_add(msg_len) {
-            Some(end) if msg_len >= min_message_size && end <= self.file_size => {}
+            Some(end) if msg_len >= min_message_size && end <= bound => {}
             _ => {
                 let mut state = self.lock_state()?;
                 if state.next_scan_offset == pos {
