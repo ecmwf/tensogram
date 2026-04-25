@@ -1,7 +1,8 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Map, Source, Layer } from 'react-map-gl/maplibre';
-import type { MapRef } from 'react-map-gl/maplibre';
+import type { MapRef, MapLayerMouseEvent } from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
+import type { ClickPoint } from './usePointInspection';
 import { useFieldImage } from './FieldOverlay';
 import { ColorBar } from './ColorBar';
 import { ColorScaleControls } from './ColorScaleControls';
@@ -35,6 +36,7 @@ export interface MapViewProps {
   displayUnit: string;
   onDisplayUnitChange: (unit: string) => void;
   colorScaleInitialMinimised?: boolean;
+  onMapClick?: (point: ClickPoint) => void;
 }
 
 export function MapView(props: MapViewProps) {
@@ -47,6 +49,7 @@ export function MapView(props: MapViewProps) {
     dataMin, dataMax,
     nativeUnits, displayUnit, onDisplayUnitChange,
     colorScaleInitialMinimised,
+    onMapClick,
   } = props;
 
   const [activePreset, setActivePreset] = useState<ProjectionPreset>(PROJECTION_PRESETS[0]);
@@ -88,6 +91,16 @@ export function MapView(props: MapViewProps) {
   const handleCesiumUnmount = (lat: number, lon: number) => {
     setCameraCenter({ lat, lon });
   };
+
+  const handleMapClick = useCallback((e: MapLayerMouseEvent) => {
+    if (!onMapClick) return;
+    onMapClick({
+      lat: e.lngLat.lat,
+      lon: e.lngLat.lng,
+      screenX: e.point.x,
+      screenY: e.point.y,
+    });
+  }, [onMapClick]);
 
   useEffect(() => {
     if (!isGlobe && justSwitchedToFlatRef.current && mapRef.current) {
@@ -162,6 +175,7 @@ export function MapView(props: MapViewProps) {
           initialCenter={cameraCenter}
           onUnmount={handleCesiumUnmount}
           onViewChange={(b, w, h) => { setCesiumBounds(b); setCesiumViewSize({ width: w, height: h }); }}
+          onMapClick={onMapClick}
         />
       ) : (
         <Map
@@ -172,6 +186,7 @@ export function MapView(props: MapViewProps) {
           style={{ width: '100%', height: '100%' }}
           onLoad={captureViewport}
           onMoveEnd={captureViewport}
+          onClick={handleMapClick}
         >
           {flatImage && (
             <Source id="field-overlay" type="image" url={flatImage.dataUrl} coordinates={flatImage.coordinates}>
