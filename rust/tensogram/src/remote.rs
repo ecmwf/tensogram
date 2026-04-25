@@ -719,13 +719,13 @@ impl RemoteBackend {
 
     /// One forward hop bounded by `bound` (exclusive upper offset).
     ///
-    /// In forward-only mode `bound == self.file_size` (today's
-    /// behaviour).  In bidirectional mode the bidirectional dispatcher
-    /// passes `state.prev_scan_offset` so the forward walker cannot
-    /// overrun into the region already claimed by the backward
-    /// walker.  Streaming preambles (`total_length == 0`) are
-    /// tail-only by spec; the streaming END_MAGIC is therefore read
-    /// at `self.file_size - 8` regardless of `bound`.
+    /// In forward-only mode `bound == self.file_size`.  In
+    /// bidirectional mode the dispatcher passes
+    /// `state.prev_scan_offset` so the forward walker cannot overrun
+    /// into the region already claimed by the backward walker.
+    /// Streaming preambles (`total_length == 0`) are tail-only by
+    /// spec; the streaming END_MAGIC is therefore read at
+    /// `self.file_size - 8` regardless of `bound`.
     fn scan_fwd_step_locked(&self, state: &mut RemoteState, bound: u64) -> Result<()> {
         if state.scan_complete() {
             return Ok(());
