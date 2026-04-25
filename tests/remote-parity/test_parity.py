@@ -55,9 +55,10 @@ _CASES = [
     for op in _OPS
 ]
 
-_RUST_LAYOUT_CASES = [
-    DriverCase(fixture=fixture, language="rust", op="dump-layout", mode=mode)
+_LAYOUT_CASES = [
+    DriverCase(fixture=fixture, language=language, op="dump-layout", mode=mode)
     for fixture in _FIXTURES
+    for language in ("rust", "ts")
     for mode in ("forward", "bidirectional")
 ]
 
@@ -67,7 +68,7 @@ def events():
     missing = missing_prereqs()
     if missing:
         pytest.skip("remote-parity prereqs missing: " + ", ".join(missing))
-    return collect_events([*_CASES, *_RUST_LAYOUT_CASES])
+    return collect_events([*_CASES, *_LAYOUT_CASES])
 
 
 @pytest.fixture(scope="module")
@@ -204,8 +205,11 @@ def test_read_first_divergence_rust_lazy_ts_eager(fixture: str, events) -> None:
     )
 
 
+@pytest.mark.parametrize("language", ["rust", "ts"], ids=["rust", "ts"])
 @pytest.mark.parametrize("fixture", _FIXTURES, ids=list(_FIXTURES))
-def test_rust_forward_vs_bidirectional_layouts_equal(fixture: str, events) -> None:
+def test_forward_vs_bidirectional_layouts_equal(
+    fixture: str, language: Language, events
+) -> None:
     """Forward-only and bidirectional walkers must agree on the final layout set.
 
     The walkers may issue different HTTP request patterns — that is the
@@ -213,16 +217,19 @@ def test_rust_forward_vs_bidirectional_layouts_equal(fixture: str, events) -> No
     `(offset, length)` layout per message must match exactly.  Any
     drift indicates the bidirectional walker has gained or lost a
     message somewhere along its inward sweep.
+
+    Runs once per language so a divergence in either Rust or TS gets
+    its own named failure.
     """
     fwd_case = DriverCase(
-        fixture=fixture, language="rust", op="dump-layout", mode="forward"
+        fixture=fixture, language=language, op="dump-layout", mode="forward"
     )
     bidir_case = DriverCase(
-        fixture=fixture, language="rust", op="dump-layout", mode="bidirectional"
+        fixture=fixture, language=language, op="dump-layout", mode="bidirectional"
     )
     fwd_layouts = json.loads(events[fwd_case.run_id].stdout)
     bidir_layouts = json.loads(events[bidir_case.run_id].stdout)
     assert fwd_layouts == bidir_layouts, (
-        f"forward vs bidirectional layout divergence for {fixture}: "
+        f"forward vs bidirectional layout divergence for {fixture}/{language}: "
         f"forward={fwd_layouts}, bidirectional={bidir_layouts}"
     )

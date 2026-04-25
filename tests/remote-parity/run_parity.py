@@ -62,8 +62,22 @@ _OPS: tuple[Op, ...] = (
     "read-last",
 )
 
-_RUST_LAYOUT_OPS: tuple[Op, ...] = ("dump-layout",)
-_RUST_LAYOUT_MODES: tuple[Mode, ...] = ("forward", "bidirectional")
+_LAYOUT_OPS: tuple[Op, ...] = ("dump-layout",)
+_LAYOUT_MODES: tuple[Mode, ...] = ("forward", "bidirectional")
+_LAYOUT_LANGUAGES: tuple[Language, ...] = ("rust", "ts")
+
+
+def is_layout_dump_case(case: "DriverCase") -> bool:
+    """True for cases that emit `dump-layout` JSON to stdout.
+
+    These cases are excluded from event-based parity assertions
+    because the parity classifier in ``classifier.py`` is
+    forward-scan-only and would mis-classify backward Range fetches
+    as out-of-order forward scans.  Their output is compared via the
+    layouts dumped to stdout instead — see
+    ``test_parity.test_*_forward_vs_bidirectional_layouts_equal``.
+    """
+    return case.op == "dump-layout"
 
 
 @dataclass(frozen=True)
@@ -141,11 +155,12 @@ def _all_cases() -> list[DriverCase]:
             for op in _OPS:
                 cases.append(DriverCase(fixture=fixture, language=language, op=op))
     for fixture in _FIXTURES:
-        for op in _RUST_LAYOUT_OPS:
-            for mode in _RUST_LAYOUT_MODES:
-                cases.append(
-                    DriverCase(fixture=fixture, language="rust", op=op, mode=mode)
-                )
+        for language in _LAYOUT_LANGUAGES:
+            for op in _LAYOUT_OPS:
+                for mode in _LAYOUT_MODES:
+                    cases.append(
+                        DriverCase(fixture=fixture, language=language, op=op, mode=mode)
+                    )
     return cases
 
 
@@ -232,14 +247,7 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
 def _run_driver(case: DriverCase, url: str) -> str:
     if case.language == "rust":
         cmd = [str(_RUST_DRIVER_BIN), "--url", url, "--op", case.op]
-        if case.mode == "bidirectional":
-            cmd.append("--bidirectional")
     else:
-        if case.mode != "forward":
-            raise ValueError(
-                f"TypeScript driver does not support mode='{case.mode}' "
-                f"(case={case.run_id}); only Rust runs the bidirectional walker."
-            )
         cmd = [
             "npx",
             "tsx",
@@ -249,6 +257,8 @@ def _run_driver(case: DriverCase, url: str) -> str:
             "--op",
             case.op,
         ]
+    if case.mode == "bidirectional":
+        cmd.append("--bidirectional")
     env_cwd = _DRIVERS_DIR if case.language == "ts" else _THIS_DIR
 
     # `start_new_session=True` puts the driver in its own process
