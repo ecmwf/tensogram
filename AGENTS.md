@@ -43,6 +43,28 @@
 - IMPORTANT:
   - when you commit your work, make sure it passess all checks, tests and lints -- by running `make all`
 
+- IMPORTANT: NEVER use process-ephemeral references in code, comments, docstrings,
+  commit messages, or planning documents. The code outlives the workflow that
+  produced it; references to that workflow age into noise.
+
+  Banned vocabulary (each becomes meaningless once the PR merges):
+  - Workflow ordinals: "Phase 2", "Pass 5", "Round 1", "Step 3"
+  - Issue-tracker references: "PR-1", "sub-task 4", "issue #94"
+  - Review-feedback severity buckets: "Critical #1", "High #2"
+  - History phrases inside code: "before this PR", "after review feedback",
+    "fixed in commit abc1234"
+
+  Replace each with a name that describes what the thing **is** or **does**:
+  - "Round 1 paired fetch" → "the paired postamble fetch"
+  - "Phase 2 state refactor" → "extracting the bidirectional state machine"
+  - "Pass 5 polish" → "documentation cleanup"
+  - "Critical #1 invariant" → "`fwd_terminated` cascades to `disable_backward`"
+
+  Git history records chronology; comment and commit text must record
+  substance. A future maintainer reading "Round 2" or "Phase 4" gains
+  nothing — those ordinals reference the author's mental sequence at write
+  time, which the reader has no access to.
+
 # Design & Purpose
 
 - README.md -- entry level generic information
