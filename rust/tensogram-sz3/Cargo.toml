@@ -14,7 +14,7 @@ keywords = ["sz3", "compression", "lossy", "scientific-data", "tensogram"]
 categories = ["science", "compression"]
 
 [dependencies]
-tensogram-sz3-sys = { path = "../tensogram-sz3-sys", version = "=0.18.1" }
+tensogram-sz3-sys = { path = "../tensogram-sz3-sys", version = "=0.19.0" }
 thiserror.workspace = true
 # zstd-sys is needed to ensure the zstd symbols that tensogram-sz3-sys's C++
 # code references are available at link time.

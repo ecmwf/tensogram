@@ -3,7 +3,90 @@
 All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.19.0] - 2026-04-25
+
+### Added — earthkit-data integration (`tensogram-earthkit`)
+
+New pip package at `python/tensogram-earthkit/` that registers
+Tensogram as a first-class **source** and **encoder** with
+[`ecmwf/earthkit-data`](https://github.com/ecmwf/earthkit-data), so
+`.tgm` content flows through the same surface that already handles
+GRIB, NetCDF, BUFR, and Zarr.
+
+```python
+import earthkit.data
+src = earthkit.data.from_source("tensogram", "file.tgm")
+ds  = src.to_xarray()           # non-MARS path
+fl  = src.to_fieldlist()        # MARS-tagged path
+src.to_target("tensogram", "out.tgm")  # round-trip via the encoder
+```
+
+- **Source plugin** — `earthkit.data.sources.tensogram` accepts local
+  paths, remote URLs (`http(s)`, `s3`, `gs`, `az`),
+  bytes / bytearray / memoryview, and byte streams.  Bytes are
+  materialised to a temp file unlinked via `weakref.finalize`.
+- **Encoder plugin** — `earthkit.data.encoders.tensogram` writes
+  lossless `.tgm` from FieldLists or xarray Datasets, preserving MARS
+  keys on round-trip.  Tuned encoding pipelines (lossy / compressed)
+  remain a deliberate follow-up (see `plans/TODO.md`).
+- **Dual decode paths** — MARS-tagged tensograms surface as a MARS
+  FieldList whose `to_xarray()` delegates to `tensogram-xarray`; non-
+  MARS tensograms go straight to xarray.  The per-object MARS
+  discriminator (`base[i]["mars"]` non-empty) is the single branch
+  point.
+- **Array-namespace interop** — numpy, torch, cupy, jax via
+  `earthkit-utils.array`, inherited from
+  `earthkit.data.sources.array_list.ArrayField` (no duplication).
+- **Shipped artefacts** — 86 pytest cases (140 collected after
+  parameterisation), docs page at
+  `docs/src/guide/earthkit-integration.md`, end-to-end example at
+  `examples/python/18_earthkit_integration.py`, dedicated
+  `Test (earthkit-data integration)` CI job (Linux), and
+  `Makefile` targets `earthkit-install` / `earthkit-test` /
+  `earthkit-lint`.
+
+### Added — remote bidirectional scan walker
+
+Remote `.tgm` scans can now walk **from both ends of the file
+simultaneously** via paired HTTP `Range` fetches.  For multi-message
+remote files this halves the wall-clock latency of cold scans
+(forward and backward fetches run as concurrent `Promise.allSettled`-
+style futures), and it lets a scan recover when one direction hits
+locally-corrupt data: backward state is treated as the suspect
+whenever the two directions disagree, so forward stays canonical.
+
+- **Bidirectional walker** — new `RemoteScanOptions` carries the
+  walker mode; default scans dispatch paired forward / backward
+  `Range` fetches and reconcile via `commit_or_yield_backward`,
+  emitting a single deterministic message stream.  `scan_fwd_step`
+  is now a bounded helper reusable from both modes.
+- **Backward-corruption recovery** — when forward and backward
+  disagree (gap below `min_message_size`, forward `msg_end >
+  prev_scan_offset`, etc.) the walker calls `disable_backward` with
+  a named reason (`gap-below-min-message-size`,
+  `forward-exceeds-backward-bound`, …), drops any layout the
+  backward state had collected, and continues forward against
+  `file_size` — matching what forward-only would have done at the
+  same offset.
+- **Scan-state hardening** — saturating arithmetic on the
+  scan-state guards (`pos + min`, `bound`, `prev_scan_offset`),
+  closing an async stale-dispatch race where a delayed backward
+  result could arrive after the lock had been released and the
+  state advanced, and fixing the gap-too-small fallback to no
+  longer drop `suffix_rev` on its way out.  The scan emits trace
+  spans recording mode, per-hop offset, and length so a single
+  `tracing` subscriber can replay any divergence.
+- **Tests** — 23 new tests covering the bidirectional taxonomy
+  (paired-fetch happy path, backward-only fallback, same-message
+  overlap, every disable-backward reason), all on top of the
+  existing forward-only baseline which remains byte-identical.
+- **TS walker** — the TypeScript surface gains a stub entry in
+  `plans/TODO.md` to leverage WASM exports of the parser primitives
+  (`parse_backward_postamble_outcome`,
+  `validate_backward_preamble_outcome`,
+  `parse_forward_preamble_outcome`, `same_message_check`) so the
+  JS walker is a thin dispatch layer over Rust, not a parallel
+  implementation.
 
 ### Changed — `simple_packing` ergonomics: auto-compute + `sp_*` key rename
 
@@ -119,6 +202,19 @@ convention and guessed the wrong one.
   first default already landed in #86) and emits a one-shot
   `console.warn` the first time the fallback fires, explaining
   how to re-convert for accurate geometry.
+
+### Stats
+
+- Rust workspace: 1546 passed, 5 ignored, 0 failed
+- `tensogram` with `remote,async` features: 863 passed, 2 ignored
+  (23 new tests covering the bidirectional walker)
+- `tensogram-grib`: 59 passed
+- `tensogram-netcdf`: 69 passed
+- Python `tensogram`: 541 passed, 46 skipped
+- Python `tensogram-xarray`: 242 passed
+- Python `tensogram-zarr`: 235 passed
+- Python `tensogram-earthkit`: 140 passed, 1 skipped (new)
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `mdbook build docs/`: clean
 
 ## [0.18.1] - 2026-04-23
 

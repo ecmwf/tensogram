@@ -1,6 +1,6 @@
 [package]
 name = "tensogram-wasm"
-version = "0.18.1"
+version = "0.19.0"
 edition = "2024"
 rust-version = "1.87"
 license = "Apache-2.0"
@@ -20,12 +20,12 @@ default-target = "wasm32-unknown-unknown"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-tensogram = { path = "../tensogram", version = "=0.18.1", default-features = false, features = [
+tensogram = { path = "../tensogram", version = "=0.19.0", default-features = false, features = [
     "lz4",
     "szip-pure",
     "zstd-pure",
 ] }
-tensogram-encodings = { path = "../tensogram-encodings", version = "=0.18.1", default-features = false, features = [
+tensogram-encodings = { path = "../tensogram-encodings", version = "=0.19.0", default-features = false, features = [
     "lz4",
     "szip-pure",
     "zstd-pure",

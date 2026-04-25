@@ -1,6 +1,6 @@
 [package]
 name = "tensogram-grib"
-version = "0.18.1"
+version = "0.19.0"
 edition = "2024"
 rust-version = "1.87"
 license = "Apache-2.0"
@@ -14,8 +14,8 @@ categories = ["science"]
 authors = ["ECMWF <software@ecmwf.int>"]
 
 [dependencies]
-tensogram = { path = "../tensogram", version = "=0.18.1" }
-tensogram-encodings = { path = "../tensogram-encodings", version = "=0.18.1" }
+tensogram = { path = "../tensogram", version = "=0.19.0" }
+tensogram-encodings = { path = "../tensogram-encodings", version = "=0.19.0" }
 eccodes = { version = "0.14", default-features = false }
 thiserror = "2"
 ciborium = "0.2"
