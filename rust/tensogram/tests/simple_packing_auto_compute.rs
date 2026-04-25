@@ -201,6 +201,53 @@ fn s3_missing_bits_per_value_is_a_clear_error() {
 }
 
 // ---------------------------------------------------------------------------
+// S3b — sp_bits_per_value missing on the *explicit* path (caller set
+//       sp_reference_value + sp_binary_scale_factor but forgot the
+//       bit-width).  The early short-circuit must not swallow this:
+//       the user gets the same clear, auto-compute-aware message that
+//       the pure auto-compute path produces, instead of a generic
+//       "missing key" failure deep in the pipeline-config builder.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn s3b_explicit_path_missing_bits_per_value_is_a_clear_error() {
+    let mut desc = make_auto_desc(vec![4], 16);
+    desc.params.clear(); // drop sp_bits_per_value
+    desc.params
+        .insert("sp_reference_value".to_string(), CborValue::Float(270.0));
+    desc.params.insert(
+        "sp_binary_scale_factor".to_string(),
+        CborValue::Integer(0i64.into()),
+    );
+    desc.params.insert(
+        "sp_decimal_scale_factor".to_string(),
+        CborValue::Integer(0i64.into()),
+    );
+    let values: Vec<f64> = vec![270.0, 275.0, 280.0, 285.0];
+    let data = f64_bytes(&values);
+
+    let err = encode(
+        &make_global_meta(),
+        &[(&desc, &data)],
+        &EncodeOptions::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("sp_bits_per_value"),
+        "explicit-path error must name the missing key: {err}"
+    );
+    assert!(
+        err.contains("auto-compute"),
+        "explicit-path error must point at the same auto-compute facility \
+         as the pure auto-compute path: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// S4 — NaN in data: auto-compute must surface the underlying
+// 	  PackingError::NanValue, not a cryptic failure.
+// ---------------------------------------------------------------------------
 // S4 — NaN in data: auto-compute must surface the underlying
 //      PackingError::NanValue, not a cryptic failure.
 // ---------------------------------------------------------------------------
@@ -303,6 +350,65 @@ fn s7_non_f64_dtype_rejected_at_auto_compute() {
         err.contains("simple_packing only supports float64"),
         "error must name the dtype constraint: {err}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// S8 — 8-byte but non-float dtypes (Int64 / Uint64 / Complex64) must
+//      also be rejected.  A naive `byte_width() != 8` guard would let
+//      these through and the encoder would re-interpret integer or
+//      complex bytes as `f64`, producing silently-wrong packing
+//      params.  Exercises both the auto-compute path and the explicit
+//      4-key path so both stay strict.
+// ---------------------------------------------------------------------------
+#[test]
+fn s8_eight_byte_non_float_dtypes_rejected() {
+    // Eight bytes of arbitrary payload — content is irrelevant since
+    // the dtype check fires before any reinterpretation.
+    let data: Vec<u8> = vec![0u8; 8 * 4];
+
+    for dtype in [Dtype::Int64, Dtype::Uint64, Dtype::Complex64] {
+        // Auto-compute path: only sp_bits_per_value set.
+        let mut auto_desc = make_auto_desc(vec![4], 16);
+        auto_desc.dtype = dtype;
+        let auto_err = encode(
+            &make_global_meta(),
+            &[(&auto_desc, &data)],
+            &EncodeOptions::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            auto_err.contains("simple_packing only supports float64"),
+            "auto-compute path must reject {dtype:?}: {auto_err}"
+        );
+
+        // Explicit 4-key path: full params supplied so the auto-compute
+        // short-circuit returns early; the dtype guard in
+        // `build_pipeline_config` must still trip.
+        let mut explicit_desc = auto_desc.clone();
+        explicit_desc
+            .params
+            .insert("sp_reference_value".to_string(), CborValue::Float(0.0));
+        explicit_desc.params.insert(
+            "sp_binary_scale_factor".to_string(),
+            CborValue::Integer(0i64.into()),
+        );
+        explicit_desc.params.insert(
+            "sp_decimal_scale_factor".to_string(),
+            CborValue::Integer(0i64.into()),
+        );
+        let explicit_err = encode(
+            &make_global_meta(),
+            &[(&explicit_desc, &data)],
+            &EncodeOptions::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            explicit_err.contains("simple_packing only supports float64"),
+            "explicit path must reject {dtype:?}: {explicit_err}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

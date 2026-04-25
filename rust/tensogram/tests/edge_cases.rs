@@ -940,8 +940,15 @@ fn missing_required_param() {
     desc.params.remove("sp_bits_per_value");
     let data = vec![0u8; 32];
     let result = encode(&meta, &[(&desc, &data)], &EncodeOptions::default());
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("missing required"));
+    let err = result.unwrap_err().to_string();
+    // The auto-compute resolver names the missing key directly so the
+    // user gets a one-line, action-oriented diagnostic instead of the
+    // generic "missing required" string from the low-level param
+    // accessor.
+    assert!(
+        err.contains("sp_bits_per_value"),
+        "error must name the missing key: {err}"
+    );
 }
 
 // ── 19. Streaming encoder edge cases ─────────────────────────────────────────
