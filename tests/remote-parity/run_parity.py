@@ -98,19 +98,6 @@ _BIDIR_OPS: tuple[Op, ...] = (
 _BIDIR_LANGUAGES: tuple[Language, ...] = ("rust", "ts")
 
 
-def is_layout_dump_case(case: DriverCase) -> bool:
-    """True for cases that emit `dump-layout` JSON to stdout.
-
-    These cases are excluded from event-based parity assertions
-    because the parity classifier in ``classifier.py`` is
-    forward-scan-only and would mis-classify backward Range fetches
-    as out-of-order forward scans.  Their output is compared via the
-    layouts dumped to stdout instead — see
-    ``test_parity.test_*_forward_vs_bidirectional_layouts_equal``.
-    """
-    return case.op == "dump-layout"
-
-
 @dataclass(frozen=True)
 class ScanEvent:
     run_id: str
