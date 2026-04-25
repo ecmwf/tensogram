@@ -424,6 +424,23 @@ struct ScanSnapshot {
     epoch: u64,
 }
 
+/// Emit a one-shot tracing event identifying which scan mode the
+/// freshly-opened backend is using.  Filterable via
+/// `RUST_LOG=tensogram::remote_scan=debug`.
+fn emit_scan_mode(scan_opts: &RemoteScanOptions) {
+    let mode = if scan_opts.bidirectional {
+        "bidirectional"
+    } else {
+        "forward-only"
+    };
+    tracing::debug!(
+        target: "tensogram::remote_scan",
+        mode = mode,
+        max_message_size = scan_opts.max_message_size,
+        "remote scan mode",
+    );
+}
+
 impl RemoteState {
     /// Replaces the old `scan_complete: bool` field.  When forward-only
     /// is active (`bwd_active = false` and `suffix_rev.is_empty()`)
@@ -447,9 +464,18 @@ impl RemoteState {
         );
         let end = layout.offset + layout.length;
         debug_assert!(end <= self.prev_scan_offset);
+        let offset = layout.offset;
+        let length = layout.length;
         self.layouts.push(layout);
         self.next_scan_offset = end;
         self.scan_epoch = self.scan_epoch.wrapping_add(1);
+        tracing::debug!(
+            target: "tensogram::remote_scan",
+            direction = "fwd",
+            offset = offset,
+            length = length,
+            "scan hop",
+        );
     }
 
     /// Append a backward-discovered layout, retreat the cursor, bump
@@ -459,9 +485,18 @@ impl RemoteState {
         debug_assert!(self.bwd_active);
         debug_assert!(layout.offset >= self.next_scan_offset);
         debug_assert_eq!(layout.offset + layout.length, self.prev_scan_offset);
+        let offset = layout.offset;
+        let length = layout.length;
         self.prev_scan_offset = layout.offset;
         self.suffix_rev.push(layout);
         self.scan_epoch = self.scan_epoch.wrapping_add(1);
+        tracing::debug!(
+            target: "tensogram::remote_scan",
+            direction = "bwd",
+            offset = offset,
+            length = length,
+            "scan hop",
+        );
     }
 
     /// Snapshot for the lock-around-await protocol.
@@ -591,6 +626,7 @@ impl RemoteBackend {
         scan_opts: RemoteScanOptions,
     ) -> Result<Self> {
         Self::validate_scan_opts(&scan_opts)?;
+        emit_scan_mode(&scan_opts);
         let url = Url::parse(source)
             .map_err(|e| TensogramError::Remote(format!("invalid URL '{source}': {e}")))?;
 
@@ -1723,6 +1759,7 @@ impl RemoteBackend {
         scan_opts: RemoteScanOptions,
     ) -> Result<Self> {
         Self::validate_scan_opts(&scan_opts)?;
+        emit_scan_mode(&scan_opts);
         let url = Url::parse(source)
             .map_err(|e| TensogramError::Remote(format!("invalid URL '{source}': {e}")))?;
 
