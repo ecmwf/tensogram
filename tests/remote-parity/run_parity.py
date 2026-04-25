@@ -128,13 +128,18 @@ def _all_cases() -> list[DriverCase]:
     return cases
 
 
-def missing_prereqs() -> list[str]:
-    missing: list[str] = []
+def missing_fixtures() -> list[str]:
     expected = [_FIXTURES_DIR / f"{name}.tgm" for name in _FIXTURES]
     absent = [p for p in expected if not p.exists()]
-    if absent:
-        names = ", ".join(p.name for p in absent)
-        missing.append(f"fixtures ({names}) — run `python {_THIS_DIR / 'tools/gen_fixtures.py'}`")
+    if not absent:
+        return []
+    names = ", ".join(p.name for p in absent)
+    return [f"fixtures ({names}) — run `python {_THIS_DIR / 'tools/gen_fixtures.py'}`"]
+
+
+def missing_prereqs() -> list[str]:
+    missing: list[str] = []
+    missing.extend(missing_fixtures())
     if not _RUST_DRIVER_BIN.exists():
         missing.append(
             "rust driver (run `cargo build --release --manifest-path "

@@ -43,6 +43,7 @@ from run_parity import (
     Op,
     collect_events,
     filter_scan_events,
+    missing_fixtures,
     missing_prereqs,
 )
 
@@ -64,8 +65,10 @@ def events():
 
 @pytest.fixture(scope="module")
 def fixture_layouts() -> dict[str, list[tuple[int, int]]]:
-    if missing_prereqs():
-        pytest.skip("remote-parity fixtures missing")
+    # Only needs the fixture files; the Rust/TS drivers don't matter here.
+    fix_missing = missing_fixtures()
+    if fix_missing:
+        pytest.skip("remote-parity fixtures missing: " + ", ".join(fix_missing))
     return {
         name: list(tensogram.scan((_FIXTURES_DIR / f"{name}.tgm").read_bytes()))
         for name in _FIXTURES

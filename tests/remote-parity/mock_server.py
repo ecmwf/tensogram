@@ -136,8 +136,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(total))
                 self.send_header("Accept-Ranges", "bytes")
                 self.end_headers()
-                self.wfile.write(data)
+                # Set BEFORE the write so a mid-stream BrokenPipe still
+                # records the intended response size in the finally log.
                 response_bytes = total
+                self.wfile.write(data)
                 return
 
             parsed_range = self._parse_range(range_header, total)
@@ -156,8 +158,8 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Range", f"bytes {start}-{end_exclusive - 1}/{total}")
             self.send_header("Content-Length", str(len(chunk)))
             self.end_headers()
-            self.wfile.write(chunk)
             response_bytes = len(chunk)
+            self.wfile.write(chunk)
         finally:
             self._record(
                 method,
