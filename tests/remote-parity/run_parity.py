@@ -34,6 +34,10 @@ from mock_server import MockServer, RequestRecord
 _THIS_DIR = pathlib.Path(__file__).resolve().parent
 _FIXTURES_DIR = _THIS_DIR / "fixtures"
 _DRIVERS_DIR = _THIS_DIR / "drivers"
+_REPO_ROOT = _THIS_DIR.parent.parent
+_TS_PACKAGE_DIR = _REPO_ROOT / "typescript"
+_TS_PACKAGE_ENTRY = _TS_PACKAGE_DIR / "dist" / "index.js"
+_TS_WASM_DIR = _TS_PACKAGE_DIR / "wasm"
 
 _RUST_DRIVER_BIN = (
     _DRIVERS_DIR / "rust_driver" / "target" / "release" / "remote-parity-rust-driver"
@@ -146,6 +150,8 @@ def missing_prereqs() -> list[str]:
             "rust driver (run `cargo build --release --manifest-path "
             f"{_DRIVERS_DIR / 'rust_driver/Cargo.toml'}`)"
         )
+    if not _TS_PACKAGE_ENTRY.exists() or not _TS_WASM_DIR.exists():
+        missing.append("ts package build (run `make ts-build`)")
     node_modules = _DRIVERS_DIR / "node_modules"
     if not node_modules.exists():
         missing.append(
@@ -168,19 +174,21 @@ _DRIVER_TIMEOUT_S = 60
 def _kill_process_tree(proc: subprocess.Popen) -> None:
     """Reap a timed-out driver and its descendants.
 
-    `killpg` on the new session reaps the whole tree, but it can fail
-    with `ProcessLookupError` when the group is already gone, or with
-    a broader `OSError` on platforms without process-group support.
-    Either way we fall back to killing the direct child if it's still
+    `killpg` on the new session reaps the whole tree on POSIX, but
+    it can fail with `ProcessLookupError` when the group is already
+    gone, with a broader `OSError` on POSIX systems where the call
+    is restricted, or simply not exist on Windows. In every failure
+    mode we fall back to killing the direct child if it's still
     around so the timeout never turns into a secondary harness error.
     """
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-        return
-    except ProcessLookupError:
-        return
-    except OSError:
-        pass
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+            return
+        except ProcessLookupError:
+            return
+        except OSError:
+            pass
     if proc.poll() is None:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
