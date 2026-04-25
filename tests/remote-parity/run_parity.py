@@ -169,19 +169,37 @@ def _ensure_prereqs() -> None:
 
 
 _DRIVER_TIMEOUT_S = 60
+_KILL_DRAIN_TIMEOUT_S = 5
 
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:
-    """Reap a timed-out driver and its descendants.
+    """Reap a timed-out driver and its descendants on POSIX or Windows.
 
-    `killpg` on the new session reaps the whole tree on POSIX, but
-    it can fail with `ProcessLookupError` when the group is already
-    gone, with a broader `OSError` on POSIX systems where the call
-    is restricted, or simply not exist on Windows. In every failure
-    mode we fall back to killing the direct child if it's still
-    around so the timeout never turns into a secondary harness error.
+    POSIX: ``killpg`` on the new session reaps the whole tree, but
+    can fail with ``ProcessLookupError`` when the group is already
+    gone or with a broader ``OSError`` on restricted systems.
+    Windows: ``killpg`` does not exist; ``taskkill /T /F /PID`` is
+    the standard way to terminate a process tree.
+
+    In every failure mode we fall back to killing the direct child
+    if it's still around so the timeout never turns into a secondary
+    harness error.
     """
-    if hasattr(os, "killpg"):
+    if proc.poll() is not None:
+        return
+
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            return
+        except OSError:
+            pass
+    elif hasattr(os, "killpg"):
         try:
             os.killpg(proc.pid, signal.SIGKILL)
             return
@@ -189,6 +207,7 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
             return
         except OSError:
             pass
+
     if proc.poll() is None:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
@@ -226,7 +245,20 @@ def _run_driver(case: DriverCase, url: str) -> None:
             stdout, stderr = proc.communicate(timeout=_DRIVER_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             _kill_process_tree(proc)
-            stdout, stderr = proc.communicate()
+            # Bounded drain after the kill: if a grandchild still holds
+            # the pipes, we don't want to convert a clean driver timeout
+            # into a hang here. The 5s budget is generous for a kill
+            # cleanup; if it elapses we surface that as the error.
+            try:
+                stdout, stderr = proc.communicate(timeout=_KILL_DRAIN_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(
+                    f"driver {case.language}/{case.op}@{case.fixture} "
+                    f"timed out after {_DRIVER_TIMEOUT_S}s and could not "
+                    f"be reaped within {_KILL_DRAIN_TIMEOUT_S}s — likely "
+                    "a descendant still holds stdout/stderr open.\n"
+                    f"  cmd: {cmd}"
+                ) from None
             raise RuntimeError(
                 f"driver {case.language}/{case.op}@{case.fixture} "
                 f"timed out after {_DRIVER_TIMEOUT_S}s\n"
