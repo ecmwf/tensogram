@@ -32,7 +32,9 @@ export interface ClickPoint {
 
 /**
  * Returns the index of the closest point in `lat`/`lon` to the click
- * coordinates using squared Euclidean distance in degrees.
+ * coordinates using squared distance in degrees. Longitude distance is
+ * computed as the minimum of the direct and wrap-around paths so grids
+ * stored in [0, 360] match clicks returned in [-180, 180].
  * Exported for testing.
  */
 export function findNearestPointIndex(
@@ -45,7 +47,7 @@ export function findNearestPointIndex(
   let bestDist = Infinity;
   for (let i = 0; i < lat.length; i++) {
     const dlat = lat[i] - clickLat;
-    const dlon = lon[i] - clickLon;
+    let dlon = ((lon[i] - clickLon + 540) % 360) - 180;
     const dist = dlat * dlat + dlon * dlon;
     if (dist < bestDist) {
       bestDist = dist;

@@ -28,6 +28,14 @@ describe('findNearestPointIndex', () => {
     // Click at lon=0: equidistant, expect first (index 0)
     expect(findNearestPointIndex(lat, lon, 0, 0)).toBe(0);
   });
+
+  it('matches a [0, 360] grid point when click lon is negative', () => {
+    // Grid stored in [0, 360]: 270° == -90°
+    const lat = new Float32Array([0, 0, 0]);
+    const lon = new Float32Array([90, 180, 270]);
+    // Click at lon=-90 (equiv to 270°), lat=0
+    expect(findNearestPointIndex(lat, lon, 0, -90)).toBe(2);
+  });
 });
 
 describe('buildLevelSliceIndex', () => {
