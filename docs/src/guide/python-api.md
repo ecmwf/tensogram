@@ -294,6 +294,30 @@ msg = enc.finish()  # returns complete message as bytes
 
 For pre-encoded payloads, use `enc.write_object_pre_encoded(desc, raw_bytes)`.
 
+#### `finish()` vs `finish_backfilled()`
+
+`finish()` produces a streaming-mode message: both the preamble and
+postamble carry `total_length = 0`, signalling "unknown length at
+write time".  Forward-only readers handle this transparently by
+walking the message's `END_MAGIC` trailer, but **backward** readers
+cannot O(1)-jump from the postamble to the message start without the
+mirrored length.
+
+`finish_backfilled()` seeks back into the in-memory cursor and patches
+both length slots with the real message length before returning.  The
+produced bytes satisfy the backward-locatability invariant from
+wire-format §7 — any reader can read the last 16 bytes of the
+postamble, take the mirrored `total_length`, and jump straight to
+the message start.  Required for fixtures or workloads that
+exercise the bidirectional remote walker (see
+[remote-access.md](remote-access.md) → *Bidirectional Scan*).
+
+```python
+enc = tensogram.StreamingEncoder({"base": [{"name": "obs"}]})
+enc.write_object(desc, payload)
+msg = enc.finish_backfilled()  # mirrored total_length in both slots
+```
+
 ## Async API
 
 `AsyncTensogramFile` provides the same operations as `TensogramFile` but as

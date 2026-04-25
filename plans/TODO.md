@@ -430,39 +430,26 @@ For speculative ideas, see `IDEAS.md`.
     test pins the Vite dev-proxy contract (pass-through, no
     serialising queue).  See `DONE.md` for the full breakdown.
 
-  - [ ] **parity harness: bidirectional assertions**
-    (`tests/remote-parity/`, ~200 LOC).  Orchestrator runs 4
-    combinations per fixture: `{ rust, ts } × { bidirectional:
-    false, true }`.  Ordered comparison across scan rounds; unordered
-    multiset comparison within a round (duplicates detected by count;
-    `Promise.all` / `get_ranges` reordering allowed).  Four assertions
-    per fixture: Rust-false vs TS-false (forward regression guard),
-    Rust-true vs TS-true (cross-language bidirectional parity),
-    Rust-false vs Rust-true (final positions identical, request
-    patterns may differ), TS-false vs TS-true (same).  Goldens
-    regenerated via `--regen`, checked into `tests/remote-parity/
-    goldens/`.  No new fixtures — all scenarios already shipped in the
-    harness foundation.
-
-  - [ ] **eager footer-indexed backward discovery** (Rust + TS,
-    ~400 LOC).  For footer-indexed messages discovered on the
-    backward walk only, reuse the already-fetched postamble's
-    `first_footer_offset` to compute the footer region and fetch it
-    in the same round (via `store.get_ranges` in Rust, paired
-    `fetchRange` in TS) — populating `global_metadata` and `index`
-    inline.  **Header-indexed messages on backward: no eager
-    discovery** — net-worse cost/benefit because forward discovery
-    already fetches a 256 KB header chunk at message start in one
-    GET; backward would need postamble + preamble + separate header
-    chunk = 3 GETs.  Falls back to lazy `ensure_layout_async` for
-    header-indexed.  TS uses existing `parse_footer_chunk` WASM
-    export.  Parity harness fixtures extended with 2-3 new
-    footer-indexed fixtures sized to measure GET reduction.  Tests:
-    `read_metadata(N-1)` on a 100-message footer-indexed file with
-    `bidirectional=true` uses fewer GETs than the plain bidirectional
-    implementation alone; header-indexed parity shows no regression.
-    **Stays separate from the default-flip decision** — flip decision
-    should be based on a stable feature.
+  - [x] ~~**parity harness: bidirectional assertions** + **eager
+    footer-indexed backward discovery**~~ — Landed together in one
+    sub-task because they share fixtures and the same harness
+    extension surface.  Pure parser's `BackwardOutcome::NeedPreambleValidation`
+    surfaces `first_footer_offset` so the bidirectional walker
+    (Rust sync + async + TypeScript) can fold an eager footer-region
+    fetch into the same paired round as the candidate-preamble
+    validation when a backward-discovered message turns out to be
+    footer-indexed.  Best-effort: footer fetch failure never poisons
+    preamble validation.  Header-indexed messages on backward stay
+    lazy (would be 3 GETs vs forward's 1, net-worse).  Parity harness
+    classifier becomes role-aware (`fwd_preamble`, `bwd_postamble`,
+    `bwd_preamble_validation`); `RoundBuilder` runs a state machine
+    in bidirectional mode that pairs forward + backward events under
+    a shared scan_round.  Two new footer-indexed fixtures generated
+    via `StreamingEncoder.finish_backfilled` (newly exposed in the
+    Python binding).  New parity test pins the structural eager-
+    footer invariant: footer-region fetch count equals
+    `floor(N/2)` (number of backward-discovered messages) and zero
+    post-scan lazy fetches.  See `DONE.md` for the full breakdown.
 
   - [ ] **benchmarks, docs, default-flip decision** (all languages,
     ~400 LOC + docs).  Benchmarks live in existing infrastructure:
