@@ -34,9 +34,10 @@
 //! ## Outcome enums and JS shape
 //!
 //! Each outcome enum is internally tagged via
-//! `#[serde(tag = "kind", rename_all = "camelCase")]` so the
-//! `serde-wasm-bindgen` JS shape is stable across language
-//! boundaries:
+//! `#[serde(tag = "kind", rename_all_fields = "camelCase")]`, which
+//! camel-cases field names while preserving variant names in the
+//! `"kind"` tag, so the `serde-wasm-bindgen` JS shape is stable
+//! across language boundaries:
 //!
 //! ```text
 //! { "kind": "Hit",                "offset": 0,  "length": 100, "msgEnd": 100 }
@@ -102,16 +103,18 @@ pub const REASON_PREAMBLE_POSTAMBLE_LENGTH_MISMATCH: &str = "preamble-postamble-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum BackwardOutcome {
-    /// Format error.  Backward yields and `suffix_rev` is preserved
-    /// (already-committed backward layouts are kept; only the active
-    /// walker stops).
+    /// Format error.  The caller disables the backward walker and
+    /// discards any provisional suffix layouts (matching Rust's
+    /// `disable_backward`); bidirectional is an optimisation, never
+    /// a recovery mode.
     Format {
         /// Stable identifier for the format violation; one of the
         /// `REASON_*_BWD` constants.
         reason: &'static str,
     },
     /// Streaming-mode message at the postamble (`total_length == 0`).
-    /// Backward yields; forward continues.
+    /// Caller disables the backward walker and discards provisional
+    /// suffix layouts; forward continues.
     Streaming,
     /// Postamble parsed cleanly.  The caller must validate the
     /// candidate preamble at `msg_start` before committing the
@@ -130,8 +133,9 @@ pub enum BackwardOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum BackwardCommit {
-    /// Format error during preamble validation.  Backward yields;
-    /// already-committed `suffix_rev` layouts are preserved.
+    /// Format error during preamble validation.  Caller disables
+    /// the backward walker and discards any provisional suffix
+    /// layouts (matching Rust's `disable_backward`).
     Format {
         /// Stable identifier; one of the `REASON_*_BWD` /
         /// `REASON_PREAMBLE_POSTAMBLE_LENGTH_MISMATCH` /

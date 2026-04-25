@@ -464,6 +464,27 @@ describe('TensogramFile.fromUrl bidirectional walker', () => {
     }
   });
 
+  it('terminates cleanly without an extra Range fetch on a truncated tail', async () => {
+    const m0 = makeMessage([1, 2, 3]);
+    const truncated = new Uint8Array(m0.byteLength + 30);
+    truncated.set(m0, 0);
+    const { fetch: fakeFetch, requests } = makeRangeServer(truncated);
+
+    const file = await TensogramFile.fromUrl('https://example.invalid/trunc.tgm', {
+      fetch: fakeFetch,
+      bidirectional: false,
+    });
+    try {
+      expect(file.messageCount).toBe(1);
+      const tailRangeFetches = rangeRequests(requests).filter(
+        (r) => r.start !== undefined && r.start >= m0.byteLength,
+      );
+      expect(tailRangeFetches.length).toBe(0);
+    } finally {
+      file.close();
+    }
+  });
+
   it('cancels in-flight Range fetches when caller aborts mid-round', async () => {
     const body = makeNMessages(4);
     const aborts: number[] = [];

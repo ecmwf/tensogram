@@ -15,9 +15,11 @@
 //!
 //! Each export accepts a byte slice plus cursor / size scalars and
 //! returns a serialised outcome object whose shape is pinned by the
-//! `#[serde(tag = "kind", rename_all = "camelCase")]` attribute on
-//! the underlying enum.  See the [`tensogram::remote_scan_parse`]
-//! module docs for the full taxonomy.
+//! `#[serde(tag = "kind", rename_all_fields = "camelCase")]`
+//! attribute on the underlying enum — only field names are
+//! camel-cased; the `"kind"` tag values stay PascalCase.  See the
+//! [`tensogram::remote_scan_parse`] module docs for the full
+//! taxonomy.
 
 use crate::convert::to_js;
 use tensogram::{
