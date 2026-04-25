@@ -107,7 +107,12 @@ class _Handler(BaseHTTPRequestHandler):
 
             try:
                 data = fixture_path.read_bytes()
-            except FileNotFoundError:
+            except OSError:
+                # FileNotFoundError, IsADirectoryError, PermissionError,
+                # ENAMETOOLONG, ELOOP — anything that prevents reading
+                # the fixture is a clean 404 from the harness's point
+                # of view. Letting it bubble would skip the response
+                # send and leave the request logged with status=0.
                 status = 404
                 self._send_empty(status)
                 return
