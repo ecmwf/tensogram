@@ -46,9 +46,16 @@
 //! { "kind": "Terminate",          "reason": "bad-magic-fwd" }
 //! { "kind": "Format",             "reason": "bad-end-magic-bwd" }
 //! { "kind": "Streaming" }
-//! { "kind": "NeedPreambleValidation", "msgStart": 8192, "length": 4096 }
+//! { "kind": "NeedPreambleValidation", "msgStart": 8192, "length": 4096, "firstFooterOffset": 4072 }
 //! { "kind": "Layout",             "offset": 8192, "length": 4096 }
 //! ```
+//!
+//! `NeedPreambleValidation` carries the postamble's
+//! `first_footer_offset` so the dispatcher can fold an eager
+//! footer-region fetch into the same paired round as the
+//! candidate-preamble validation when the message turns out to be
+//! footer-indexed.  The footer fetch is best-effort: failure never
+//! poisons preamble validation.
 //!
 //! Reason strings are stable identifiers — the parity harness pins
 //! them, and the TypeScript walker emits them through `console.debug`
@@ -120,11 +127,24 @@ pub enum BackwardOutcome {
     /// candidate preamble at `msg_start` before committing the
     /// layout — wire-format integrity requires both ends to agree on
     /// `total_length`.
+    ///
+    /// The postamble's `first_footer_offset` is also surfaced so
+    /// the dispatcher can decide whether to issue an eager
+    /// footer-region fetch alongside the candidate-preamble fetch
+    /// when the message is footer-indexed; see [`footer_region_present`]
+    /// for the predicate.
     NeedPreambleValidation {
         /// Candidate message-start offset, derived as `prev - total_length`.
         msg_start: u64,
         /// Postamble's `total_length` field.
         length: u64,
+        /// Postamble's `first_footer_offset` field — relative to the
+        /// message start.  Equals `length - POSTAMBLE_SIZE` when the
+        /// message has no footer frames; strictly less than that
+        /// when a footer region is present (header- or footer-indexed
+        /// messages with footer hash, or footer-indexed messages
+        /// carrying their `FooterIndex` frame).
+        first_footer_offset: u64,
     },
 }
 
@@ -261,7 +281,36 @@ pub fn parse_backward_postamble(
     BackwardOutcome::NeedPreambleValidation {
         msg_start,
         length: total,
+        first_footer_offset: postamble.first_footer_offset,
     }
+}
+
+/// `true` iff the message described by `(length, first_footer_offset)`
+/// has a non-empty footer region between its first footer frame and
+/// its postamble.
+///
+/// The footer region runs from `[msg_start + first_footer_offset,
+/// msg_end - POSTAMBLE_SIZE)`; it is non-empty exactly when
+/// `first_footer_offset` lies in `[PREAMBLE_SIZE, length -
+/// POSTAMBLE_SIZE)`.  All arithmetic is checked so any malformed
+/// public input returns `false` rather than panicking.
+///
+/// ```
+/// use tensogram::remote_scan_parse::footer_region_present;
+/// // Empty footer (header-indexed message with no footer frames).
+/// assert!(!footer_region_present(76, 100));
+/// // Pre-preamble footer offset is structurally invalid.
+/// assert!(!footer_region_present(0, 100));
+/// // Footer region from byte 48 up to byte 76 (postamble starts at 76).
+/// assert!(footer_region_present(48, 100));
+/// ```
+pub fn footer_region_present(first_footer_offset: u64, length: u64) -> bool {
+    let pre = PREAMBLE_SIZE as u64;
+    let pa = POSTAMBLE_SIZE as u64;
+    let Some(footer_max) = length.checked_sub(pa) else {
+        return false;
+    };
+    first_footer_offset >= pre && first_footer_offset < footer_max
 }
 
 /// Validate the backward candidate preamble against the postamble's
@@ -428,8 +477,12 @@ mod tests {
     use crate::wire::{MessageFlags, WIRE_VERSION};
 
     fn make_postamble(total_length: u64) -> Vec<u8> {
+        make_postamble_with_footer(total_length, 0)
+    }
+
+    fn make_postamble_with_footer(total_length: u64, first_footer_offset: u64) -> Vec<u8> {
         let pa = Postamble {
-            first_footer_offset: 0,
+            first_footer_offset,
             total_length,
         };
         let mut buf = Vec::with_capacity(POSTAMBLE_SIZE);
@@ -524,8 +577,53 @@ mod tests {
             BackwardOutcome::NeedPreambleValidation {
                 msg_start: 20,
                 length: 80,
+                first_footer_offset: 0,
             }
         );
+    }
+
+    #[test]
+    fn backward_need_preamble_validation_propagates_first_footer_offset() {
+        let buf = make_postamble_with_footer(200, 60);
+        let outcome = parse_backward_postamble(&buf, 0, 200);
+        assert_eq!(
+            outcome,
+            BackwardOutcome::NeedPreambleValidation {
+                msg_start: 0,
+                length: 200,
+                first_footer_offset: 60,
+            }
+        );
+    }
+
+    #[test]
+    fn footer_region_present_empty_when_offset_at_postamble() {
+        // Postamble starts at length - POSTAMBLE_SIZE = 76 for a
+        // 100-byte message; an offset equal to that means no footer
+        // frames between the data section and the postamble.
+        assert!(!footer_region_present(76, 100));
+    }
+
+    #[test]
+    fn footer_region_present_false_when_offset_before_preamble_end() {
+        assert!(!footer_region_present(0, 100));
+        assert!(!footer_region_present(23, 100));
+    }
+
+    #[test]
+    fn footer_region_present_true_when_offset_in_valid_range() {
+        assert!(footer_region_present(24, 100));
+        assert!(footer_region_present(48, 100));
+        assert!(footer_region_present(75, 100));
+    }
+
+    #[test]
+    fn footer_region_present_no_panic_on_underflow_inputs() {
+        // length < POSTAMBLE_SIZE: checked_sub returns None.
+        assert!(!footer_region_present(0, 0));
+        assert!(!footer_region_present(0, 23));
+        assert!(!footer_region_present(u64::MAX, 100));
+        assert!(!footer_region_present(0, u64::MAX));
     }
 
     #[test]
