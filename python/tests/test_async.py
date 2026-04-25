@@ -74,6 +74,48 @@ class TestAsyncOpen:
         assert "AsyncTensogramFile" in r
         assert tgm_path in r
 
+    @pytest.mark.asyncio
+    async def test_open_remote_bidirectional_kwarg(self, serve_tgm_bytes):
+        msg1 = _encode_test_message([4], fill=10.0)
+        msg2 = _encode_test_message([8], fill=20.0)
+        msg3 = _encode_test_message([16], fill=30.0)
+        url = serve_tgm_bytes(msg1 + msg2 + msg3)
+
+        fwd = await tensogram.AsyncTensogramFile.open_remote(url)
+        fwd_count = await fwd.message_count()
+
+        bidir = await tensogram.AsyncTensogramFile.open_remote(url, bidirectional=True)
+        bidir_count = await bidir.message_count()
+
+        assert fwd_count == bidir_count == 3
+
+    @pytest.mark.asyncio
+    async def test_open_with_bidirectional_kwarg(self, serve_tgm_bytes):
+        msg = _encode_test_message([4])
+        url = serve_tgm_bytes(msg)
+        f = await tensogram.AsyncTensogramFile.open(url, bidirectional=True)
+        assert f.is_remote()
+        assert await f.message_count() == 1
+
+    @pytest.mark.asyncio
+    async def test_open_local_path_with_bidirectional_kwarg_is_no_op(self, tgm_path):
+        f = await tensogram.AsyncTensogramFile.open(tgm_path, bidirectional=True)
+        assert not f.is_remote()
+
+    @pytest.mark.asyncio
+    async def test_bidirectional_int_rejected_eagerly(self, serve_tgm_bytes):
+        msg = _encode_test_message([4])
+        url = serve_tgm_bytes(msg)
+        with pytest.raises(TypeError):
+            tensogram.AsyncTensogramFile.open_remote(url, bidirectional=1)
+
+    @pytest.mark.asyncio
+    async def test_bidirectional_str_rejected_eagerly(self, serve_tgm_bytes):
+        msg = _encode_test_message([4])
+        url = serve_tgm_bytes(msg)
+        with pytest.raises(TypeError):
+            tensogram.AsyncTensogramFile.open_remote(url, bidirectional="yes")
+
 
 class TestAsyncMessageCount:
     @pytest.mark.asyncio
@@ -167,7 +209,9 @@ class TestAsyncGather:
             f.file_decode_object(2, 0),
         )
         for i, r in enumerate(results):
-            np.testing.assert_allclose(r["data"], np.full(10, float(i), dtype=np.float32))
+            np.testing.assert_allclose(
+                r["data"], np.full(10, float(i), dtype=np.float32)
+            )
 
     @pytest.mark.asyncio
     async def test_gather_mixed_operations(self, tgm_path):
@@ -189,7 +233,9 @@ class TestAsyncGather:
         )
         for i, (meta, objects) in enumerate(messages):
             assert meta.version == 3
-            np.testing.assert_allclose(objects[0][1], np.full(10, float(i), dtype=np.float32))
+            np.testing.assert_allclose(
+                objects[0][1], np.full(10, float(i), dtype=np.float32)
+            )
 
 
 class TestAsyncParity:
@@ -419,7 +465,9 @@ class TestAsyncIteration:
         assert len(messages) == 3
         for i, (meta, objects) in enumerate(messages):
             assert meta.version == 3
-            np.testing.assert_allclose(objects[0][1], np.full(10, float(i), dtype=np.float32))
+            np.testing.assert_allclose(
+                objects[0][1], np.full(10, float(i), dtype=np.float32)
+            )
 
     @pytest.mark.asyncio
     async def test_aiter_early_break(self, tgm_path):
@@ -458,7 +506,9 @@ class TestAsyncIteration:
         async for m in f:
             messages.append(m)
         assert len(messages) == 1
-        np.testing.assert_allclose(messages[0][1][0][1], np.full(4, 99.0, dtype=np.float32))
+        np.testing.assert_allclose(
+            messages[0][1][0][1], np.full(4, 99.0, dtype=np.float32)
+        )
 
     @pytest.mark.asyncio
     async def test_aiter_repr(self, tgm_path):
@@ -672,7 +722,9 @@ class TestAsyncBatchObject:
             assert "data" in r
             assert "metadata" in r
             assert "descriptor" in r
-            np.testing.assert_allclose(r["data"], np.full(10, float(i), dtype=np.float32))
+            np.testing.assert_allclose(
+                r["data"], np.full(10, float(i), dtype=np.float32)
+            )
 
     @pytest.mark.asyncio
     async def test_batch_matches_individual(self, serve_tgm_bytes):
@@ -735,7 +787,9 @@ class TestSyncBatchObject:
         results = f.file_decode_object_batch([0, 1, 2], 0)
         assert len(results) == 3
         for i, r in enumerate(results):
-            np.testing.assert_allclose(r["data"], np.full(10, float(i), dtype=np.float32))
+            np.testing.assert_allclose(
+                r["data"], np.full(10, float(i), dtype=np.float32)
+            )
 
     def test_batch_matches_individual(self, serve_tgm_bytes):
         meta = {"version": 3, "base": [{}]}

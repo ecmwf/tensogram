@@ -25,6 +25,7 @@ pub mod pipeline;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub(crate) mod restore;
+pub mod scan_opts;
 pub mod streaming;
 pub(crate) mod substitute_and_mask;
 pub mod types;
@@ -38,7 +39,7 @@ pub use decode::{
 pub use dtype::Dtype;
 pub use encode::{EncodeOptions, encode, encode_pre_encoded};
 pub use error::{Result, TensogramError};
-pub use file::TensogramFile;
+pub use file::{MessageLayout, TensogramFile};
 pub use framing::{
     ScanOptions, data_object_inline_hashes, scan, scan_file, scan_file_with_options,
     scan_with_options,
@@ -48,6 +49,7 @@ pub use iter::{FileMessageIter, MessageIter, ObjectIter, messages, objects, obje
 pub use metadata::{RESERVED_KEY, compute_common, verify_canonical_cbor};
 pub use parallel::{DEFAULT_PARALLEL_THRESHOLD_BYTES, ENV_THREADS};
 pub use pipeline::{DataPipeline, apply_pipeline};
+pub use scan_opts::RemoteScanOptions;
 pub use streaming::StreamingEncoder;
 pub use tensogram_encodings::bitmask::MaskMethod;
 pub use tensogram_encodings::pipeline::CompressionBackend;

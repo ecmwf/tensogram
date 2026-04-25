@@ -12,11 +12,13 @@ tensogram = { path = "...", features = ["remote"] }
 ```rust
 use tensogram::TensogramFile;
 
-// Auto-detect: local path or remote URL
-let mut file = TensogramFile::open_source("https://example.com/data.tgm")?;
+// Auto-detect: local path or remote URL.  The second argument
+// is `scan_opts: Option<&RemoteScanOptions>` — pass `None` for
+// the forward-only walker (see "Bidirectional scan" below).
+let mut file = TensogramFile::open_source("https://example.com/data.tgm", None)?;
 
 // S3
-let mut file = TensogramFile::open_source("s3://bucket/data.tgm")?;
+let mut file = TensogramFile::open_source("s3://bucket/data.tgm", None)?;
 ```
 
 `open_source` inspects the URL scheme and routes to the remote backend for `s3://`, `s3a://`, `gs://`, `az://`, `azure://`, `http://`, `https://`. Everything else is treated as a local path.
@@ -45,10 +47,46 @@ opts.insert("aws_access_key_id".to_string(), "AKIA...".to_string());
 opts.insert("aws_secret_access_key".to_string(), "...".to_string());
 opts.insert("region".to_string(), "eu-west-1".to_string());
 
-let mut file = TensogramFile::open_remote("s3://bucket/data.tgm", &opts)?;
+let mut file = TensogramFile::open_remote("s3://bucket/data.tgm", &opts, None)?;
 ```
 
 When no options are passed, credentials are read from the environment (e.g. `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`, `GOOGLE_APPLICATION_CREDENTIALS`).
+
+## Bidirectional Scan
+
+`open_source`, `open_remote`, and their async siblings accept a `scan_opts: Option<&RemoteScanOptions>` argument. Passing `Some(&RemoteScanOptions { bidirectional: true })` enables a walker that alternates forward and backward hops across the file, using the v3 postamble's mirrored `total_length` field to walk inward from EOF in parallel with the forward sweep. On well-formed header-indexed files this roughly halves the number of HTTP `GET` requests needed for tail / full-scan access.
+
+`None` (or `Some(&RemoteScanOptions::default())`) keeps the forward-only walker. Both walkers produce identical layouts; the difference is only in the discovery path.
+
+```rust
+use tensogram::{RemoteScanOptions, TensogramFile};
+
+let opts = RemoteScanOptions { bidirectional: true };
+let file = TensogramFile::open_source(
+    "https://example.com/data.tgm",
+    Some(&opts),
+)?;
+```
+
+In Python the same opt-in is a keyword argument, accepted on both sync and async entry points:
+
+```python
+import tensogram
+
+with tensogram.TensogramFile.open_remote(
+    "https://example.com/data.tgm",
+    bidirectional=True,
+) as f:
+    ...
+
+# Async sibling
+f = await tensogram.AsyncTensogramFile.open_remote(
+    "https://example.com/data.tgm",
+    bidirectional=True,
+)
+```
+
+The default is forward-only across all bindings until benchmarks confirm the win across every workload tier. Local-file backends accept the option and silently ignore it (a single forward sweep is the only sensible strategy locally).
 
 ## Python Usage
 
@@ -68,6 +106,14 @@ with tensogram.TensogramFile.open_remote(
 ) as f:
     print(f.source())   # "s3://bucket/data.tgm"
     print(f.is_remote()) # True
+
+# With the bidirectional walker (see "Bidirectional Scan" above)
+with tensogram.TensogramFile.open_remote(
+    "s3://bucket/data.tgm",
+    {"region": "eu-west-1"},
+    bidirectional=True,
+) as f:
+    print(f.message_count())
 ```
 
 ## xarray Usage
