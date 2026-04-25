@@ -328,23 +328,18 @@ For speculative ideas, see `IDEAS.md`.
   Split into the sub-tasks below; land in order, each gated by the
   cross-language parity harness (first sub-task).
 
-  - [ ] **parity harness foundation** (`tests/remote-parity/`, initial
-    scaffold landed). Python `mock_server.py` with Range + HEAD +
-    per-`run_id` request logging, plus the orchestrator plumbing that
-    normalizes inclusive HTTP ranges to `[start, end_exclusive)` and
-    classifies events into `probe / scan / payload / fallback / error`.
-    JSON-schema `ScanEvent` log contract.  Rust + TS drivers exercise
-    **current forward-only behaviour** against four committed
-    header-indexed `.tgm` fixtures (single / 2 / 10 / 100 messages)
-    and emit comparable `scan`-category events; the pytest suite
-    asserts cross-language equivalence on full-scan ops, scan-event
-    shape invariants, and offset alignment with the live fixture
-    layout via `tensogram.scan` — no committed snapshots, so the
-    harness survives intentional fixture regenerations and is robust
-    to legitimate changes in scan patterns.  Follow-on remote-8
-    sub-tasks expand the fixture corpus (streaming, footer-indexed,
-    mixed) and add any production-code instrumentation needed in
-    `remote.rs` and `typescript/src/internal/httpRange.ts`.
+  - [x] ~~**parity harness foundation**~~ — `tests/remote-parity/`
+    landed via PR #94.  Python `mock_server.py` with Range + HEAD +
+    per-`run_id` request logging; orchestrator that normalises
+    inclusive HTTP ranges to `[start, end_exclusive)` and classifies
+    events into `probe / scan / payload / fallback / error`.
+    JSON-schema `ScanEvent` log contract.  Rust + TS drivers
+    exercise current forward-only behaviour against four committed
+    header-indexed `.tgm` fixtures (single / 2 / 10 / 100 messages);
+    the pytest suite asserts cross-language equivalence on full-scan
+    ops, scan-event shape invariants, and offset alignment with the
+    live fixture layout via `tensogram.scan` — no committed
+    snapshots.  `make remote-parity` runs the full suite.
 
   - [ ] **Rust state refactor — zero behaviour change** (`remote.rs`,
     ~300 LOC).  Introduce internal `RemoteScanOptions { bidirectional:
