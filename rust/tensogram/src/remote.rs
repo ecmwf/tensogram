@@ -26,6 +26,7 @@ use crate::decode::DecodeOptions;
 use crate::error::{Result, TensogramError};
 use crate::framing;
 use crate::metadata;
+use crate::remote_scan_parse::footer_region_present;
 use crate::scan_opts::RemoteScanOptions;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, IndexFrame};
 use crate::wire::{
@@ -151,12 +152,25 @@ struct CachedLayout {
 
 /// Outcome of parsing the backward postamble fetch.  Pure — does not
 /// touch state.
+///
+/// The private mirror of [`crate::remote_scan_parse::BackwardOutcome`]
+/// — kept separate because this carries `Preamble` / `CachedLayout`
+/// types that cannot cross the WASM boundary.  Both must stay in
+/// parity; the parity harness fixtures surface any drift as a
+/// Rust↔TS layout divergence.
 #[derive(Debug)]
 enum BackwardOutcome {
     /// Postamble parsed cleanly.  `msg_start` is the candidate
     /// message-start offset; the caller still has to validate the
-    /// preamble at that offset before committing.
-    NeedPreambleValidation { msg_start: u64, length: u64 },
+    /// preamble at that offset before committing.  `first_footer_offset`
+    /// is surfaced so the dispatcher can fold an eager footer-region
+    /// fetch into the same paired round when the message is
+    /// footer-indexed (see [`crate::remote_scan_parse::footer_region_present`]).
+    NeedPreambleValidation {
+        msg_start: u64,
+        length: u64,
+        first_footer_offset: u64,
+    },
     /// Format error — the backward walker yields and any provisional
     /// suffix layouts are discarded.  The string identifies which
     /// taxonomy row triggered.
@@ -206,6 +220,7 @@ fn parse_backward_postamble(pa_bytes: &[u8], snap: &ScanSnapshot) -> BackwardOut
     BackwardOutcome::NeedPreambleValidation {
         msg_start,
         length: total,
+        first_footer_offset: postamble.first_footer_offset,
     }
 }
 
@@ -885,11 +900,31 @@ impl RemoteBackend {
 
         let bwd_outcome = parse_backward_postamble(&bytes[1], &snap);
 
-        let candidate_preamble_bytes = match &bwd_outcome {
-            BackwardOutcome::NeedPreambleValidation { msg_start, .. } => {
-                Some(self.get_range(*msg_start..*msg_start + PREAMBLE_SIZE as u64)?)
+        let (candidate_preamble_bytes, candidate_footer_bytes) = match &bwd_outcome {
+            BackwardOutcome::NeedPreambleValidation {
+                msg_start,
+                length,
+                first_footer_offset,
+            } => {
+                let preamble = self.get_range(*msg_start..*msg_start + PREAMBLE_SIZE as u64)?;
+                let footer = if footer_region_present(*first_footer_offset, *length) {
+                    let footer_start = msg_start.saturating_add(*first_footer_offset);
+                    let footer_end = msg_start
+                        .saturating_add(*length)
+                        .saturating_sub(POSTAMBLE_SIZE as u64);
+                    if footer_start < footer_end {
+                        // Best-effort: silently drop on failure so the lazy
+                        // `ensure_layout` path picks up footer discovery later.
+                        self.get_range(footer_start..footer_end).ok()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                (Some(preamble), footer)
             }
-            _ => None,
+            _ => (None, None),
         };
 
         // No `state.matches(&snap)` recheck here: the sync path holds
@@ -903,6 +938,7 @@ impl RemoteBackend {
             fwd_kind,
             bwd_outcome,
             candidate_preamble_bytes.as_deref(),
+            candidate_footer_bytes.as_deref(),
         );
         Ok(())
     }
@@ -918,15 +954,20 @@ impl RemoteBackend {
         fwd: ForwardOutcome,
         bwd: BackwardOutcome,
         candidate_preamble_bytes: Option<&[u8]>,
+        candidate_footer_bytes: Option<&[u8]>,
     ) {
         match bwd {
             BackwardOutcome::Format(reason) => state.disable_backward(reason),
             BackwardOutcome::Streaming => state.disable_backward("streaming-zero-bwd"),
-            BackwardOutcome::NeedPreambleValidation { msg_start, length } => {
+            BackwardOutcome::NeedPreambleValidation {
+                msg_start,
+                length,
+                first_footer_offset: _,
+            } => {
                 let validation = candidate_preamble_bytes
                     .map(|bytes| validate_backward_preamble(bytes, msg_start, length))
                     .unwrap_or(BackwardCommit::Format("missing-candidate-preamble"));
-                Self::commit_or_yield_backward(state, &fwd, validation);
+                Self::commit_or_yield_backward(state, &fwd, validation, candidate_footer_bytes);
             }
         }
 
@@ -1007,13 +1048,19 @@ impl RemoteBackend {
     ///   layout.offset`) or forward ExceedsBound: backward's claim
     ///   conflicts with a canonical forward reading; disable backward
     ///   with the matching reason and let the forward branch commit.
-    /// - Otherwise: record the backward hop.
+    /// - Otherwise: record the backward hop.  When
+    ///   `candidate_footer_bytes` is `Some` and the message is
+    ///   footer-indexed, the eager-footer apply runs BEFORE
+    ///   `record_backward_hop` so `metadata` and `index` land in
+    ///   `suffix_rev` already populated; lazy `ensure_layout` then
+    ///   short-circuits.
     fn commit_or_yield_backward(
         state: &mut RemoteState,
         fwd: &ForwardOutcome,
         validation: BackwardCommit,
+        candidate_footer_bytes: Option<&[u8]>,
     ) {
-        let layout = match validation {
+        let mut layout = match validation {
             BackwardCommit::Format(reason) => {
                 state.disable_backward(reason);
                 return;
@@ -1033,7 +1080,41 @@ impl RemoteBackend {
             ForwardOutcome::ExceedsBound { .. } => {
                 state.disable_backward("forward-exceeds-backward-bound");
             }
-            _ => state.record_backward_hop(layout),
+            _ => {
+                if let Some(footer_bytes) = candidate_footer_bytes {
+                    Self::try_populate_eager_footer(&mut layout, footer_bytes);
+                }
+                state.record_backward_hop(layout);
+            }
+        }
+    }
+
+    /// Populate `layout.global_metadata` and `layout.index` from a
+    /// pre-fetched footer chunk when (and only when) the just-validated
+    /// preamble's flags carry `FOOTER_METADATA | FOOTER_INDEX`.
+    /// Best-effort: any parse failure is silently swallowed and the
+    /// lazy `ensure_layout` path picks up the layout later.
+    ///
+    /// Header-indexed messages with footer hash frames have a non-empty
+    /// footer region whose bytes the dispatcher fetched speculatively;
+    /// for those, the FOOTER_INDEX flag check below short-circuits and
+    /// the bytes are discarded harmlessly.
+    fn try_populate_eager_footer(layout: &mut CachedLayout, footer_bytes: &[u8]) {
+        let flags = layout.preamble.flags;
+        if !(flags.has(MessageFlags::FOOTER_METADATA) && flags.has(MessageFlags::FOOTER_INDEX)) {
+            return;
+        }
+        if let Ok((metadata, index)) = Self::parse_footer_frames_into(footer_bytes) {
+            if let (Some(m), Some(i)) = (metadata, index) {
+                layout.global_metadata = Some(m);
+                layout.index = Some(i);
+                tracing::debug!(
+                    target: "tensogram::remote_scan",
+                    action = "footer_eager",
+                    offset = layout.offset,
+                    footer_bytes = footer_bytes.len(),
+                );
+            }
         }
     }
 
@@ -1364,8 +1445,18 @@ impl RemoteBackend {
         Ok(())
     }
 
-    fn parse_footer_frames(state: &mut RemoteState, msg_idx: usize, buf: &[u8]) -> Result<()> {
+    /// Walk a footer-region byte buffer and extract the
+    /// `FooterMetadata` + `FooterIndex` frames (when present), without
+    /// touching any backend state.  Used by both the lazy
+    /// [`Self::parse_footer_frames`] populator and the eager-footer
+    /// fast path on the bidirectional walker, which discards the
+    /// returned options when the message turns out to be header-indexed.
+    fn parse_footer_frames_into(
+        buf: &[u8],
+    ) -> Result<(Option<GlobalMetadata>, Option<IndexFrame>)> {
         let min_frame_size = FRAME_HEADER_SIZE + FRAME_END.len();
+        let mut metadata: Option<GlobalMetadata> = None;
+        let mut index: Option<IndexFrame> = None;
         let mut pos = 0;
 
         while pos + FRAME_HEADER_SIZE <= buf.len() {
@@ -1400,18 +1491,28 @@ impl RemoteBackend {
 
             match fh.frame_type {
                 FrameType::FooterMetadata => {
-                    let meta = metadata::cbor_to_global_metadata(payload)?;
-                    state.layouts[msg_idx].global_metadata = Some(meta);
+                    metadata = Some(metadata::cbor_to_global_metadata(payload)?);
                 }
                 FrameType::FooterIndex => {
-                    let idx = metadata::cbor_to_index(payload)?;
-                    state.layouts[msg_idx].index = Some(idx);
+                    index = Some(metadata::cbor_to_index(payload)?);
                 }
                 _ => {}
             }
 
             let aligned = (frame_end.saturating_add(7)) & !7;
             pos = aligned.min(buf.len());
+        }
+
+        Ok((metadata, index))
+    }
+
+    fn parse_footer_frames(state: &mut RemoteState, msg_idx: usize, buf: &[u8]) -> Result<()> {
+        let (metadata, index) = Self::parse_footer_frames_into(buf)?;
+        if let Some(m) = metadata {
+            state.layouts[msg_idx].global_metadata = Some(m);
+        }
+        if let Some(i) = index {
+            state.layouts[msg_idx].index = Some(i);
         }
 
         if state.layouts[msg_idx].global_metadata.is_none() {
@@ -2126,12 +2227,33 @@ impl RemoteBackend {
         }
 
         let bwd_outcome = parse_backward_postamble(&bytes[1], &snap);
-        let candidate_preamble_bytes = match &bwd_outcome {
-            BackwardOutcome::NeedPreambleValidation { msg_start, .. } => Some(
-                self.get_range_async(*msg_start..*msg_start + PREAMBLE_SIZE as u64)
-                    .await?,
-            ),
-            _ => None,
+        let (candidate_preamble_bytes, candidate_footer_bytes) = match &bwd_outcome {
+            BackwardOutcome::NeedPreambleValidation {
+                msg_start,
+                length,
+                first_footer_offset,
+            } => {
+                let preamble_fut =
+                    self.get_range_async(*msg_start..*msg_start + PREAMBLE_SIZE as u64);
+                if footer_region_present(*first_footer_offset, *length) {
+                    let footer_start = msg_start.saturating_add(*first_footer_offset);
+                    let footer_end = msg_start
+                        .saturating_add(*length)
+                        .saturating_sub(POSTAMBLE_SIZE as u64);
+                    if footer_start < footer_end {
+                        let footer_fut = self.get_range_async(footer_start..footer_end);
+                        // Parallelise: preamble is required, footer is best-effort.
+                        // `tokio::join!` lets one future fail without aborting the other.
+                        let (preamble_res, footer_res) = tokio::join!(preamble_fut, footer_fut);
+                        (Some(preamble_res?), footer_res.ok())
+                    } else {
+                        (Some(preamble_fut.await?), None)
+                    }
+                } else {
+                    (Some(preamble_fut.await?), None)
+                }
+            }
+            _ => (None, None),
         };
 
         let mut state = self.lock_state()?;
@@ -2144,6 +2266,7 @@ impl RemoteBackend {
             fwd_outcome,
             bwd_outcome,
             candidate_preamble_bytes.as_deref(),
+            candidate_footer_bytes.as_deref(),
         );
         Ok(())
     }
@@ -3188,6 +3311,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_backward_postamble_propagates_first_footer_offset() {
+        let mut buf = vec![0u8; POSTAMBLE_SIZE];
+        let footer_offset: u64 = 96;
+        let total: u64 = 200;
+        buf[..8].copy_from_slice(&footer_offset.to_be_bytes());
+        buf[8..16].copy_from_slice(&total.to_be_bytes());
+        buf[POSTAMBLE_SIZE - crate::wire::END_MAGIC.len()..]
+            .copy_from_slice(crate::wire::END_MAGIC);
+        match parse_backward_postamble(&buf, &snap_at(200)) {
+            BackwardOutcome::NeedPreambleValidation {
+                msg_start,
+                length,
+                first_footer_offset,
+            } => {
+                assert_eq!(msg_start, 0);
+                assert_eq!(length, 200);
+                assert_eq!(first_footer_offset, footer_offset);
+            }
+            other => panic!("expected NeedPreambleValidation, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn validate_backward_preamble_short_fetch_yields_format() {
         let buf = vec![0u8; PREAMBLE_SIZE - 1];
         match validate_backward_preamble(&buf, 0, 100) {
@@ -3712,6 +3858,161 @@ mod bidir_http_tests {
         assert_eq!(
             bidir_count, fwd_count,
             "streaming-in-middle: bidirectional must match forward-only ({fwd_count} layouts)",
+        );
+    }
+
+    fn make_streaming_message(shape: Vec<u64>, fill: u8) -> Vec<u8> {
+        use crate::streaming::StreamingEncoder;
+
+        let strides = if shape.is_empty() {
+            vec![]
+        } else {
+            let mut s = vec![1u64; shape.len()];
+            for i in (0..shape.len() - 1).rev() {
+                s[i] = s[i + 1] * shape[i + 1];
+            }
+            s
+        };
+        let desc = DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: shape.len() as u64,
+            shape: shape.clone(),
+            strides,
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let num_bytes = shape.iter().product::<u64>() as usize * 4;
+        let data = vec![fill; num_bytes];
+        let meta = GlobalMetadata {
+            extra: BTreeMap::new(),
+            ..Default::default()
+        };
+        let cursor = std::io::Cursor::new(Vec::<u8>::new());
+        let mut enc = StreamingEncoder::new(cursor, &meta, &EncodeOptions::default())
+            .expect("streaming encoder");
+        enc.write_object(&desc, &data).expect("write object");
+        let cursor = enc.finish_with_backfill().expect("finish_with_backfill");
+        cursor.into_inner()
+    }
+
+    fn metadata_index_populated(backend: &RemoteBackend, msg_idx: usize) -> bool {
+        let state = backend.state.lock().expect("lock");
+        let layout = &state.layouts[msg_idx];
+        layout.global_metadata.is_some() && layout.index.is_some()
+    }
+
+    /// Footer-indexed messages discovered backward must have
+    /// `global_metadata` and `index` populated inline by the
+    /// eager-footer path; the lazy `discover_footer_layout` path then
+    /// short-circuits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bidir_eager_footer_populates_metadata_index_on_footer_indexed_file() {
+        let parts: Vec<Vec<u8>> = (0..6)
+            .map(|i| make_streaming_message(vec![4 + i as u64], i as u8))
+            .collect();
+        let buf = concat_messages(parts);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions {
+                bidirectional: true,
+            },
+        )
+        .expect("open bidirectional");
+        let count = backend.message_count().expect("count");
+        assert_eq!(count, 6);
+
+        // Backward-discovered messages (the suffix half) must be
+        // pre-populated; otherwise the eager-footer path is not
+        // firing on footer-indexed messages.
+        let any_pre_populated = (0..count).any(|i| metadata_index_populated(&backend, i));
+        assert!(
+            any_pre_populated,
+            "footer-indexed file: at least one layout must have eager-populated metadata + index",
+        );
+    }
+
+    /// Header-indexed messages on backward must NOT trigger eager
+    /// footer parsing — the existing test fixture set is header-
+    /// indexed and the eager-footer code path is gated on the
+    /// `FOOTER_METADATA | FOOTER_INDEX` flag combination.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bidir_header_indexed_skips_eager_footer_apply() {
+        let buf = concat_messages(vec![
+            make_message(vec![4], 1),
+            make_message(vec![8], 2),
+            make_message(vec![16], 3),
+            make_message(vec![32], 4),
+        ]);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions {
+                bidirectional: true,
+            },
+        )
+        .expect("open bidirectional");
+        let count = backend.message_count().expect("count");
+        assert_eq!(count, 4);
+
+        // Header-indexed messages stay lazy after scan — eager-footer
+        // gates on the FOOTER_INDEX flag and never fires for these.
+        let state = backend.state.lock().expect("lock");
+        for (i, layout) in state.layouts.iter().enumerate() {
+            assert!(
+                layout.global_metadata.is_none(),
+                "layout[{i}]: header-indexed must remain lazy, but metadata was populated",
+            );
+            assert!(
+                layout.index.is_none(),
+                "layout[{i}]: header-indexed must remain lazy, but index was populated",
+            );
+        }
+    }
+
+    /// Corrupted footer bytes must NOT poison preamble validation:
+    /// the layout commits regardless, and the lazy path takes over
+    /// for that message on subsequent metadata access.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bidir_corrupt_footer_falls_back_to_lazy_without_poisoning_layout() {
+        let mut parts: Vec<Vec<u8>> = (0..3)
+            .map(|i| make_streaming_message(vec![4 + i as u64], i as u8))
+            .collect();
+        // Corrupt the second message's footer region.  Each part
+        // begins with a preamble; the footer region for a streaming
+        // message lives between `first_footer_offset` (read from the
+        // postamble) and the postamble itself.  Patching the very
+        // start of the footer frames is enough to break CBOR parse.
+        let target = &mut parts[1];
+        let pa_start = target.len() - POSTAMBLE_SIZE;
+        let first_footer_offset_bytes: [u8; 8] = target[pa_start..pa_start + 8]
+            .try_into()
+            .expect("postamble first_footer_offset slot");
+        let first_footer_offset = u64::from_be_bytes(first_footer_offset_bytes) as usize;
+        for byte in &mut target[first_footer_offset..first_footer_offset + 8] {
+            *byte ^= 0xFF;
+        }
+        let buf = concat_messages(parts);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions {
+                bidirectional: true,
+            },
+        )
+        .expect("open bidirectional");
+        let count = backend.message_count().expect("count");
+        assert_eq!(
+            count, 3,
+            "corrupt footer must not abort layout commit: all 3 messages still discovered",
         );
     }
 }
