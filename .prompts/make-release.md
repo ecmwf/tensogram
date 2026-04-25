@@ -1,3 +1,8 @@
+---
+description: "Cut a new release — usage: /make-release <X.Y.Z>"
+agent: build
+---
+
 # Make Release
 
 Create a new release of Tensogram.

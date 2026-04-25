@@ -1,3 +1,8 @@
+---
+description: Audit error paths across Rust / Python / C++ / FFI and tighten up
+agent: build
+---
+
 # Improve Error Handling
 
 Perform a comprehensive error handling audit across the entire codebase.

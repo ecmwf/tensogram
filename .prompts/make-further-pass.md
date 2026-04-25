@@ -1,3 +1,8 @@
+---
+description: "Run a strictness-graded quality review pass — usage: /make-further-pass <pass-number>"
+agent: build
+---
+
 # Further Pass Review
 
 Perform a quality review pass over the codebase or the specified area.

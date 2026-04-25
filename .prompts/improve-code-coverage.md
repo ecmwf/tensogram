@@ -1,3 +1,8 @@
+---
+description: Measure coverage and fill gaps until every package is at >=95%
+agent: build
+---
+
 # Improve Code Coverage
 
 Perform a comprehensive code coverage analysis and fill gaps to reach 95%+ coverage.
