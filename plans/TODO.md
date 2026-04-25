@@ -379,7 +379,7 @@ For speculative ideas, see `IDEAS.md`.
     crate root (so `open_source` accepts it whether or not the
     `remote` feature is enabled).  `TensogramFile::open_remote` /
     `open_remote_async` / `open_source` / `open_source_async` gained
-    `scan_opts: Option<&RemoteScanOptions>` (default `None` →
+    `scan_opts: Option<RemoteScanOptions>` (default `None` →
     forward-only).  New `pub fn message_layouts()` (and async sibling)
     returns `Vec<MessageLayout>` so callers can compare layouts
     discovered by either walker without re-reading payload.  Internal
