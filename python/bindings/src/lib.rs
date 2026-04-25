@@ -1458,15 +1458,29 @@ fn compute_packing_params(
 /// Call :meth:`finish` to flush the footer frames + postamble and retrieve the
 /// complete wire-format message.
 ///
+/// Two finish modes:
+///
+/// - :meth:`finish` writes the postamble with ``total_length = 0`` and the
+///   preamble with ``total_length = 0`` — fastest path, but readers must
+///   forward-scan to find the next message boundary because the
+///   backward-locatability invariant in the wire format §7 is not met.
+/// - :meth:`finish_backfilled` seeks back into the in-memory cursor and
+///   patches both length slots with the real message length so readers can
+///   backward-scan from EOF in O(1) using the postamble's mirrored
+///   ``total_length``.  Required for fixtures or workloads that exercise
+///   the bidirectional remote walker.
+///
 /// Example::
 ///
 ///     enc = tensogram.StreamingEncoder({})
 ///     enc.write_object({"type": "ntensor", "shape": [4], "dtype": "float32"},
 ///                      np.ones(4, dtype=np.float32))
-///     msg = enc.finish()
+///     msg = enc.finish()              # streaming-mode (total_length=0)
+///     # or
+///     msg = enc.finish_backfilled()   # backfilled (full backward locatability)
 #[pyclass(name = "StreamingEncoder")]
 struct PyStreamingEncoder {
-    inner: Option<StreamingEncoder<Vec<u8>>>,
+    inner: Option<StreamingEncoder<std::io::Cursor<Vec<u8>>>>,
 }
 
 #[pymethods]
@@ -1523,7 +1537,8 @@ impl PyStreamingEncoder {
             create_header_hashes,
             create_footer_hashes,
         )?;
-        let inner = StreamingEncoder::new(Vec::new(), &global_meta, &options).map_err(to_py_err)?;
+        let inner = StreamingEncoder::new(std::io::Cursor::new(Vec::new()), &global_meta, &options)
+            .map_err(to_py_err)?;
         Ok(Self { inner: Some(inner) })
     }
 
@@ -1580,14 +1595,39 @@ impl PyStreamingEncoder {
 
     /// Finalize the stream and return the complete wire-format ``bytes``.
     ///
+    /// Streaming mode: writes ``total_length = 0`` in both the preamble and
+    /// postamble.  Readers fall back to forward-scan to find message
+    /// boundaries.  See :meth:`finish_backfilled` for the backward-locatable
+    /// alternative.
+    ///
     /// Subsequent calls on this encoder raise ``RuntimeError``.
     fn finish<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let inner = self
             .inner
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
-        let buf = inner.finish().map_err(to_py_err)?;
-        Ok(PyBytes::new(py, &buf))
+        let cursor = inner.finish().map_err(to_py_err)?;
+        Ok(PyBytes::new(py, cursor.get_ref()))
+    }
+
+    /// Finalize the stream and back-fill ``total_length`` in both the
+    /// preamble and postamble before returning the complete wire-format
+    /// ``bytes``.
+    ///
+    /// Equivalent to :meth:`finish` but the produced message satisfies the
+    /// backward-locatability invariant in the wire format §7: readers can
+    /// O(1) seek to ``end - 16`` to read the mirrored ``total_length`` and
+    /// jump straight to the message start.  Required for the bidirectional
+    /// remote walker and any workload that needs efficient backward access.
+    ///
+    /// Subsequent calls on this encoder raise ``RuntimeError``.
+    fn finish_backfilled<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let inner = self
+            .inner
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
+        let cursor = inner.finish_with_backfill().map_err(to_py_err)?;
+        Ok(PyBytes::new(py, cursor.get_ref()))
     }
 }
 
