@@ -15,7 +15,7 @@
     "scan_round": {
       "type": "integer",
       "minimum": -1,
-      "description": "Zero-based round index for 'scan' events. In bidirectional mode a round contains at most one forward preamble, one backward postamble, and one backward preamble validation (paired requests may arrive in either order). Non-scan events use -1."
+      "description": "Zero-based round index for 'scan' events. In bidirectional mode a round groups events with distinct roles; encountering a role that is already in the current round opens a new one. Either of the paired forward + backward requests can start a round. Non-scan events use -1."
     },
     "direction": {
       "enum": ["forward", "backward", "none"],
@@ -23,7 +23,7 @@
     },
     "role": {
       "enum": ["fwd_preamble", "bwd_postamble", "bwd_preamble_validation", "none"],
-      "description": "Scan-walk role assigned by the classifier and round builder. 'fwd_preamble' = forward preamble fetch at a known message start. 'bwd_postamble' = backward postamble fetch matching a known message end. 'bwd_preamble_validation' = a fwd_preamble-shaped fetch that follows a bwd_postamble in the same round. 'none' for non-scan events."
+      "description": "Scan-walk role assigned by the classifier. 'fwd_preamble' = 24-byte fetch at a known message_start. 'bwd_postamble' = 24-byte fetch ending at a known message_end. 'bwd_preamble_validation' = reserved for future analysis paths with access to dispatcher state; it is NOT currently emitted because a candidate-preamble validation fetch shares its wire shape with a paired forward preamble and the two cannot be distinguished from observation alone. 'none' for non-scan events."
     },
     "category": {
       "enum": ["probe", "scan", "payload", "fallback", "error"],

@@ -517,10 +517,12 @@ describe('TensogramFile.fromUrl bidirectional walker', () => {
 
     // Every scan-walk Range fetch is exactly PREAMBLE_BYTES (24) wide.
     // Eager-footer fetches would be larger (footer regions span multiple
-    // CBOR frames).  On header-indexed messages the FOOTER_INDEX flag
-    // gate must skip the speculative footer fetch entirely, so the
-    // observed request log contains only 24-byte scan ranges (plus the
-    // HEAD probe).
+    // CBOR frames).  `tensogram.encode()` produces header-indexed messages
+    // with no footer frames, so each postamble's `first_footer_offset`
+    // equals `length - POSTAMBLE_BYTES` — `footerRegionPresent(...)`
+    // returns `false` and the dispatcher never issues a speculative
+    // footer-region fetch.  The observed request log therefore contains
+    // only 24-byte scan ranges (plus the HEAD probe).
     const nonProbe = requests.filter((r) => r.method !== 'HEAD' && r.bytes !== undefined);
     for (const r of nonProbe) {
       expect(r.bytes).toBe(24);
