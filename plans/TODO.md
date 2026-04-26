@@ -451,40 +451,25 @@ For speculative ideas, see `IDEAS.md`.
     `floor(N/2)` (number of backward-discovered messages) and zero
     post-scan lazy fetches.  See `DONE.md` for the full breakdown.
 
-  - [ ] **benchmarks, docs, default-flip decision** (all languages,
-    ~400 LOC + docs).  Benchmarks live in existing infrastructure:
-    `rust/benchmarks/benches/remote_scan.rs` (Criterion),
-    `rust/benchmarks/python/bench_remote_scan.py` (pytest-benchmark
-    alongside `bench_threading.py`),
-    `typescript/test/remote_scan.bench.ts` (Vitest `bench()`).
-    Scenarios at tiers `{ 1, 10, 100, 1000 }` messages:
-    `message_count`, `read_message(0)`, `read_message(N-1)`,
-    `read_message(N/2)`, `iter`.  Metrics: physical HTTP request
-    count (primary gate), bytes fetched (regression check),
-    wall-clock (informational only — CI noise unreliable).
-    **Flip criterion**: bidirectional ≤ forward-only on request
-    count AND bytes fetched at every tier × every scenario, across
-    Rust + Python + TS.  Tiny `+1` exceptions on N=1 allowed only
-    if wall-clock clearly wins and the extra request is justified.
-    If criterion met: flip defaults in `RemoteScanOptions::default()`,
-    Python keyword defaults across four entry points, TS
-    `FromUrlOptions.bidirectional` default — all together, no
-    divergent per-language defaults.  If criterion fails anywhere:
-    keep defaults `false` across all languages; ship as opt-in.
-    Observability examples:
-    `examples/observability/remote_scan_trace.rs` (Rust `tracing`),
-    `examples/observability/remote_scan_trace.ts` (TS `debug: true`).
-    Docs: rewrite `plans/WIRE_FORMAT.md §9.3` to document remote
-    backend support + format-vs-transport taxonomy; update
-    `docs/src/guide/remote-access.md` with honest framing
-    ("approximately halves GETs for tail / full-scan in well-formed
-    files"; not "O(1) tail access"); update
-    `docs/src/guide/typescript-api.md` + `python-api.md`; entry in
-    `plans/DONE.md` in house style (no version numbers, no test
-    counts, shape-focused table).  Release notes highlight: "old
-    `.tgm` files gain the speedup automatically when read by a new
-    client — no migration, no re-encoding, no wire-format bump; opt
-    out with `bidirectional=False`".
+  - [x] ~~**benchmarks, docs, default-flip decision**~~ — Three
+    bench harnesses (Rust Criterion + metrics bin, Python custom,
+    TypeScript Vitest + Node runner) share a fixture roster and
+    `cold_open_plus_operation_plus_close` sample contract; their
+    NDJSON sidecars stack up cell-for-cell.  Decision artifact at
+    `plans/decisions/remote-bidirectional-default-flip.md` records
+    the verdict (FAIL on the request-count + bytes-fetched gates in
+    every language) and the two structural failure modes
+    (`object_store` range coalescing on Rust + Python; discarded
+    eager footer fetches on TypeScript).  Defaults stay opt-in.
+    Three latent opt-out bugs (`scan_opts_for(false) → None`, the
+    Rust parity driver's `then_some(...)` collapse, the TS
+    `concurrency: 1` literal-`=== true` guard) fixed in support so
+    the explicit `bidirectional=False` opt-out is robust against
+    any future flip.  Observability examples
+    (`examples/{rust/src/bin/18,typescript/18}_remote_scan_trace`),
+    new fixtures (`thousand-msg`, footer-indexed at higher tiers,
+    streaming-tail), and `plans/WIRE_FORMAT.md §9.3` rewrite with
+    format-vs-transport taxonomy all shipped together.
 
   - [ ] **adaptive direction** *(optional, deferred)*.  Only pursued
     if the default-flip benchmarks reveal a specific workload
