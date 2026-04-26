@@ -217,7 +217,8 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
         'TensogramFile.fromUrl: no fetch implementation is available',
       );
     }
-    if (options.bidirectional === true && options.concurrency === 1) {
+    const effectiveBidirectional = options.bidirectional ?? false;
+    if (effectiveBidirectional && options.concurrency === 1) {
       throw new InvalidArgumentError(
         'TensogramFile.fromUrl: bidirectional scan requires concurrency >= 2; ' +
           'concurrency: 1 would serialise the paired Range fetch and defeat the purpose',
@@ -260,7 +261,7 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
         // streaming-mode message or unrecognised magic), fall through
         // to eager.
         const scanResult = await lazyScanMessages(ctx, contentLength, {
-          bidirectional: options.bidirectional ?? false,
+          bidirectional: effectiveBidirectional,
           debug: options.debug ?? false,
           limit,
         });
