@@ -796,11 +796,43 @@ while pos >= PREAMBLE_SIZE + POSTAMBLE_SIZE:
 
 ### 9.3 Bidirectional scan
 
-For large files with both ends addressable, `scan_file()` spawns
-two walkers (forward from offset 0, backward from EOF) and meets
-in the middle.  Expected ~2× reduction in hop count.  Falls back
-to pure forward scanning if any backward hop hits a zero
-`total_length` (streaming non-seekable message).
+The wire format is **scan-direction-agnostic**: each message is
+delimited by a preamble at its start AND a postamble at its end,
+both bearing the same `total_length`.  A reader may walk forward
+from offset 0, backward from EOF, or both simultaneously.
+
+#### Format support
+
+- **Forward scan (§9.1)** — always available.
+- **Backward scan (§9.2)** — requires `total_length != 0`.  Streaming-
+  mode messages from non-seekable producers carry zero in both
+  preamble and postamble; backward scan falls back to forward for
+  the affected segment.
+- **Bidirectional scan** — lockstep forward + backward.  Available
+  when every message in the file has `total_length != 0`; falls
+  back per-segment otherwise.
+
+#### Reader implementations
+
+- **In-memory** (`framing::scan`, `framing::scan_file`): the walker
+  choice is performance-negligible because cost is dominated by
+  parsing, not by hop count.  The Rust in-memory `ScanOptions`
+  default is bidirectional with eager forward fallback on streaming-
+  mode messages; this is a library-internal choice with no externally
+  observable effect on the bytes produced or consumed.
+- **Remote** (HTTP `Range`, S3 GET range, etc.): the walker choice is
+  significant because each hop costs a round trip.  A bidirectional
+  walker pairs a forward preamble fetch with a backward postamble
+  fetch in the same paired round, halving the discovery hop count
+  for header-indexed files in principle.  The implementation is
+  exposed per-call via `RemoteScanOptions { bidirectional: bool }`
+  (Rust + Python) and `FromUrlOptions.bidirectional` (TypeScript),
+  defaulting to `false`.  See
+  `docs/src/guide/remote-access.md` for the operator-facing
+  description, including the failure modes (streaming-mode fallback,
+  format-error fallback, eager footer-indexed backward discovery)
+  and the empirical cost trade-offs measured against the current
+  transport stack.
 
 ### 9.4 Streaming producers and seekable sinks
 
