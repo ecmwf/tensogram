@@ -139,16 +139,17 @@ def _assert_fixture_well_formed(
 ) -> None:
     """Sanity-check a generated fixture before committing it.
 
-    Asserts that every message scans cleanly (postamble + preamble
-    agree on ``total_length``) and that the index-location flag
-    matches the requested kind.  Without this guard a silent encoder
-    regression could ship fixtures the bidirectional walker can never
-    discover backward.
+    Asserts that every message scans cleanly, that preamble and
+    postamble agree on ``total_length``, and that the index-location
+    flag matches the requested kind.  Without these guards a silent
+    encoder regression could ship fixtures the bidirectional walker
+    can never discover backward.
 
     For ``_STREAMING_TAIL`` fixtures the final message is allowed
-    (and required) to carry ``total_length = 0`` and no index flag;
-    the leading ``n - 1`` messages must remain header-indexed and
-    backward-locatable so only the tail forces fallback.
+    (and required) to carry ``total_length = 0`` in both preamble
+    and postamble; the leading ``n - 1`` messages must remain
+    header-indexed with mirrored non-zero lengths so only the tail
+    forces forward fallback.
     """
     data = path.read_bytes()
     layouts = list(tensogram.scan(data))
@@ -156,18 +157,28 @@ def _assert_fixture_well_formed(
         raise RuntimeError(
             f"{path}: expected {expected_count} messages, scan found {len(layouts)}"
         )
-    for i, (offset, _scanned_length) in enumerate(layouts):
+    for i, (offset, scanned_length) in enumerate(layouts):
         is_streaming_tail_msg = kind == _STREAMING_TAIL and i == expected_count - 1
         preamble_total_length = int.from_bytes(data[offset + 16 : offset + 24], "big")
+        # Postamble layout (24 B): first_footer_offset (8) + total_length (8) +
+        # END_MAGIC (8); total_length lives at bytes [scanned_length - 16, -8).
+        postamble_total_length = int.from_bytes(
+            data[offset + scanned_length - 16 : offset + scanned_length - 8], "big"
+        )
+        if preamble_total_length != postamble_total_length:
+            raise RuntimeError(
+                f"{path}: preamble.total_length={preamble_total_length} disagrees with "
+                f"postamble.total_length={postamble_total_length} at offset {offset}"
+            )
         if preamble_total_length == 0 and not is_streaming_tail_msg:
             raise RuntimeError(
-                f"{path}: unexpected preamble.total_length=0 at offset {offset}; "
+                f"{path}: unexpected total_length=0 at offset {offset}; "
                 "non-streaming fixtures must use finish_backfilled"
             )
         if is_streaming_tail_msg:
             if preamble_total_length != 0:
                 raise RuntimeError(
-                    f"{path}: streaming-tail message must have preamble.total_length=0, "
+                    f"{path}: streaming-tail message must have total_length=0, "
                     f"got {preamble_total_length}"
                 )
             continue
