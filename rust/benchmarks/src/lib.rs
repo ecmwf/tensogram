@@ -9,6 +9,8 @@
 pub mod codec_matrix;
 pub mod constants;
 pub mod datagen;
+pub mod mock_http;
+pub mod remote_scan_bench;
 pub mod report;
 pub mod threads_scaling;
 

@@ -2244,6 +2244,8 @@ dependencies = [
  "criterion",
  "eccodes",
  "eccodes-sys",
+ "serde",
+ "serde_json",
  "tensogram",
  "tensogram-encodings",
  "xxhash-rust",

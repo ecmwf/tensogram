@@ -18,12 +18,20 @@ required-features = ["eccodes"]
 name = "threads-scaling"
 path = "src/bin/threads_scaling.rs"
 
+[[bin]]
+name = "remote-scan-metrics"
+path = "src/bin/remote_scan_metrics.rs"
+
 [[bench]]
 name = "encode_pre_encoded"
 harness = false
 
 [[bench]]
 name = "hash_overhead"
+harness = false
+
+[[bench]]
+name = "remote_scan"
 harness = false
 
 [lib]
@@ -36,9 +44,11 @@ eccodes = ["dep:eccodes", "dep:eccodes-sys"]
 
 [dependencies]
 tensogram-encodings = { path = "../tensogram-encodings" }
-tensogram = { path = "../tensogram" }
+tensogram = { path = "../tensogram", features = ["remote", "async"] }
 ciborium = { workspace = true }
 clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 eccodes = { version = "0.14", default-features = false, optional = true }
 eccodes-sys = { version = "0.7", optional = true }
 
