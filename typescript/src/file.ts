@@ -1331,24 +1331,13 @@ async function runPipelinedBidirectional(
     valBytes: Uint8Array,
     overrideSignal?: AbortSignal,
   ): Promise<boolean> => {
-    let candidateFooterBytes: Uint8Array | undefined;
-    if (
-      footerRegionPresent(p.firstFooterOffset, p.length) &&
-      preambleHasFooterIndex(valBytes)
-    ) {
-      const footerStart = p.msgStart + p.firstFooterOffset;
-      const footerEnd = p.msgStart + p.length - POSTAMBLE_BYTES;
-      if (footerStart < footerEnd) {
-        try {
-          candidateFooterBytes = await options.limit(() =>
-            fetchRange(ctx, footerStart, footerEnd, true, overrideSignal),
-          );
-        } catch {
-          if (ctx.signal?.aborted) return false;
-          candidateFooterBytes = undefined;
-        }
-      }
-    }
+    // Validate the candidate preamble FIRST so the eager footer fetch
+    // is gated on a known-good preamble (matches `tryApplyEagerFooter`'s
+    // "just-validated preamble's flags" contract).  Issuing the footer
+    // GET before validation would waste a Range request on every
+    // malformed candidate (e.g. an attacker-planted byte sequence with
+    // valid MAGIC + flags but a `total_length` that doesn't match the
+    // postamble's claim).
     const validation = wbg.validate_backward_preamble_outcome(
       valBytes,
       BigInt(p.msgStart),
@@ -1363,8 +1352,25 @@ async function runPipelinedBidirectional(
       bailReason = 'preamble-parse-error-bwd';
       return true;
     }
-    if (candidateFooterBytes !== undefined) {
-      tryApplyEagerFooter(layout, candidateFooterBytes, options);
+
+    if (
+      footerRegionPresent(p.firstFooterOffset, p.length) &&
+      preambleHasFooterIndex(valBytes)
+    ) {
+      const footerStart = p.msgStart + p.firstFooterOffset;
+      const footerEnd = p.msgStart + p.length - POSTAMBLE_BYTES;
+      if (footerStart < footerEnd) {
+        try {
+          const candidateFooterBytes = await options.limit(() =>
+            fetchRange(ctx, footerStart, footerEnd, true, overrideSignal),
+          );
+          tryApplyEagerFooter(layout, candidateFooterBytes, options);
+        } catch {
+          if (ctx.signal?.aborted) return false;
+          // Best-effort: layout still commits; lazy populate path
+          // handles footer discovery on first metadata access.
+        }
+      }
     }
     localBwd.push(layout);
     return true;
