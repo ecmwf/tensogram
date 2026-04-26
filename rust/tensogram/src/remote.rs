@@ -899,20 +899,31 @@ impl RemoteBackend {
         let fwd_r = snap.next..snap.next + PREAMBLE_SIZE as u64;
         let bwd_r = snap.prev - POSTAMBLE_SIZE as u64..snap.prev;
 
-        let bytes = block_on_shared({
+        // Two independent `get_range` calls run in parallel via
+        // `tokio::join!` instead of `get_ranges(&[fwd, bwd])`.  The
+        // latter runs the paired ranges through `object_store`'s
+        // coalescer (default 1 MiB merge gap), which collapses
+        // discovery-time forward/backward probes into one HTTP Range
+        // covering the entire span between the two cursors —
+        // catastrophic for tightly-packed files where the cursors
+        // stay well within the merge window for the whole walk.  Two
+        // independent requests give us the round-trip parallelism
+        // without the bandwidth blow-up.
+        let (fwd_bytes, bwd_bytes) = block_on_shared({
             let store = self.store.clone();
             let path = self.path.clone();
-            let ranges = vec![fwd_r.clone(), bwd_r.clone()];
-            async move { store.get_ranges(&path, &ranges).await }
+            let fwd_r2 = fwd_r.clone();
+            let bwd_r2 = bwd_r.clone();
+            async move {
+                let (f, b) = tokio::join!(
+                    store.get_range(&path, fwd_r2),
+                    store.get_range(&path, bwd_r2),
+                );
+                Ok::<_, object_store::Error>((f?, b?))
+            }
         })?;
-        if bytes.len() != 2 {
-            return Err(TensogramError::Remote(format!(
-                "get_ranges returned {} buffers, expected 2",
-                bytes.len()
-            )));
-        }
 
-        let bwd_outcome = parse_backward_postamble(&bytes[1], &snap);
+        let bwd_outcome = parse_backward_postamble(&bwd_bytes, &snap);
 
         let (candidate_preamble_bytes, candidate_footer_bytes) = match &bwd_outcome {
             BackwardOutcome::NeedPreambleValidation {
@@ -946,7 +957,7 @@ impl RemoteBackend {
         // so the snapshot is guaranteed to still match.  The async sibling
         // does drop and re-acquire the lock around the await, which is
         // why it needs the explicit `state.matches` check.
-        let fwd_kind = parse_forward_preamble(&bytes[0], snap.next, self.file_size, bound);
+        let fwd_kind = parse_forward_preamble(&fwd_bytes, snap.next, self.file_size, bound);
         self.apply_round_outcomes(
             state,
             fwd_kind,
@@ -2228,19 +2239,17 @@ impl RemoteBackend {
 
         let fwd_r = snap.next..snap.next + PREAMBLE_SIZE as u64;
         let bwd_r = snap.prev - POSTAMBLE_SIZE as u64..snap.prev;
-        let bytes = self
-            .store
-            .get_ranges(&self.path, &[fwd_r.clone(), bwd_r.clone()])
-            .await
-            .map_err(|e| TensogramError::Remote(e.to_string()))?;
-        if bytes.len() != 2 {
-            return Err(TensogramError::Remote(format!(
-                "get_ranges returned {} buffers, expected 2",
-                bytes.len()
-            )));
-        }
+        // Two independent `get_range` futures joined in parallel —
+        // see `scan_bidir_round_locked` for why we deliberately bypass
+        // `get_ranges`'s coalescer.
+        let (fwd_res, bwd_res) = tokio::join!(
+            self.get_range_async(fwd_r.clone()),
+            self.get_range_async(bwd_r.clone())
+        );
+        let fwd_bytes = fwd_res?;
+        let bwd_bytes = bwd_res?;
 
-        let bwd_outcome = parse_backward_postamble(&bytes[1], &snap);
+        let bwd_outcome = parse_backward_postamble(&bwd_bytes, &snap);
         let (candidate_preamble_bytes, candidate_footer_bytes) = match &bwd_outcome {
             BackwardOutcome::NeedPreambleValidation {
                 msg_start,
@@ -2274,7 +2283,7 @@ impl RemoteBackend {
         if !state.matches(&snap) {
             return Ok(());
         }
-        let fwd_outcome = parse_forward_preamble(&bytes[0], snap.next, self.file_size, bound);
+        let fwd_outcome = parse_forward_preamble(&fwd_bytes, snap.next, self.file_size, bound);
         self.apply_round_outcomes(
             &mut state,
             fwd_outcome,
@@ -2283,6 +2292,151 @@ impl RemoteBackend {
             candidate_footer_bytes.as_deref(),
         );
         Ok(())
+    }
+
+    /// Pipelined full-discovery bidirectional scan.
+    ///
+    /// Each iteration fetches three ranges in parallel: the next forward
+    /// preamble, the next backward postamble, AND the validation
+    /// preamble for the previous iteration's backward-discovered
+    /// candidate.  That overlap collapses the per-round critical path
+    /// from 2 RTTs (paired primary then candidate validation) to 1 RTT,
+    /// halving wall-clock for full-discovery operations like
+    /// `message_count_async` and `message_layouts_async`.
+    ///
+    /// Snapshot/commit pattern: the function runs entirely off the
+    /// state mutex.  Layouts accumulate in local `Vec`s.  At the end,
+    /// the lock is reacquired; if the snapshot still matches, all
+    /// layouts commit through `record_forward_hop` / `record_backward_hop`.
+    /// If the snapshot is stale, the work is silently dropped and the
+    /// caller's outer loop drives discovery via `scan_step_async`.
+    ///
+    /// Returns `Ok(true)` on a successful pipelined run (state now
+    /// reflects full discovery) or `Ok(false)` to signal the caller
+    /// must fall back to the per-round walker — fired on any anomaly
+    /// (Format error, ExceedsBound, Streaming, gap-below-min,
+    /// snapshot mismatch).  The fallback path preserves all the
+    /// edge-case handling in `apply_round_outcomes`.
+    ///
+    /// Eager footer fetches are deliberately skipped on this fast
+    /// path; callers that need metadata/index frames trigger the
+    /// lazy `ensure_layout` fetch on first access.
+    async fn scan_all_pipelined_async(&self) -> Result<bool> {
+        let snap = {
+            let state = self.lock_state()?;
+            if state.scan_complete() {
+                return Ok(true);
+            }
+            if !state.bwd_active || state.fwd_terminated {
+                return Ok(false);
+            }
+            state.snapshot()
+        };
+
+        let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
+        let mut fwd_cursor = snap.next;
+        let mut bwd_cursor = snap.prev;
+        let mut pending: Option<(u64, u64)> = None;
+        let mut local_fwd: Vec<CachedLayout> = Vec::new();
+        let mut local_bwd: Vec<CachedLayout> = Vec::new();
+
+        loop {
+            if fwd_cursor == bwd_cursor {
+                break;
+            }
+            if bwd_cursor < fwd_cursor.saturating_add(min_message_size) {
+                return Ok(false);
+            }
+
+            let fwd_r = fwd_cursor..fwd_cursor + PREAMBLE_SIZE as u64;
+            let bwd_r = bwd_cursor - POSTAMBLE_SIZE as u64..bwd_cursor;
+            let val_r_opt = pending.map(|(ms, _)| ms..ms + PREAMBLE_SIZE as u64);
+
+            let (fwd_bytes, bwd_postamble_bytes, val_bytes_opt) = match val_r_opt {
+                Some(val_r) => {
+                    let (f, b, v) = tokio::join!(
+                        self.get_range_async(fwd_r),
+                        self.get_range_async(bwd_r),
+                        self.get_range_async(val_r),
+                    );
+                    (f?, b?, Some(v?))
+                }
+                None => {
+                    let (f, b) =
+                        tokio::join!(self.get_range_async(fwd_r), self.get_range_async(bwd_r));
+                    (f?, b?, None)
+                }
+            };
+
+            if let Some(val_bytes) = val_bytes_opt {
+                let (msg_start, length) = pending.take().expect("pending matched val_r_opt");
+                match validate_backward_preamble(&val_bytes, msg_start, length) {
+                    BackwardCommit::Layout(layout) => local_bwd.push(layout),
+                    BackwardCommit::Format(_) => return Ok(false),
+                }
+            }
+
+            let fwd_outcome =
+                parse_forward_preamble(&fwd_bytes, fwd_cursor, self.file_size, bwd_cursor);
+            match fwd_outcome {
+                ForwardOutcome::Hit {
+                    offset,
+                    length,
+                    preamble,
+                    msg_end,
+                } => {
+                    local_fwd.push(CachedLayout {
+                        offset,
+                        length,
+                        preamble,
+                        index: None,
+                        global_metadata: None,
+                    });
+                    fwd_cursor = msg_end;
+                }
+                _ => return Ok(false),
+            }
+
+            let snap_local = ScanSnapshot {
+                next: fwd_cursor,
+                prev: bwd_cursor,
+                epoch: snap.epoch,
+            };
+            match parse_backward_postamble(&bwd_postamble_bytes, &snap_local) {
+                BackwardOutcome::NeedPreambleValidation {
+                    msg_start,
+                    length,
+                    first_footer_offset: _,
+                } => {
+                    pending = Some((msg_start, length));
+                    bwd_cursor = msg_start;
+                }
+                _ => return Ok(false),
+            }
+        }
+
+        if let Some((msg_start, length)) = pending {
+            let val_bytes = self
+                .get_range_async(msg_start..msg_start + PREAMBLE_SIZE as u64)
+                .await?;
+            match validate_backward_preamble(&val_bytes, msg_start, length) {
+                BackwardCommit::Layout(layout) => local_bwd.push(layout),
+                BackwardCommit::Format(_) => return Ok(false),
+            }
+        }
+
+        let mut state = self.lock_state()?;
+        if !state.matches(&snap) {
+            return Ok(true);
+        }
+        for layout in local_fwd {
+            state.record_forward_hop(layout);
+        }
+        for layout in local_bwd {
+            state.record_backward_hop(layout);
+        }
+        state.close_gap();
+        Ok(true)
     }
 
     async fn ensure_message_async(&self, msg_idx: usize) -> Result<()> {
@@ -2509,6 +2663,16 @@ impl RemoteBackend {
     }
 
     async fn ensure_layout_eager_async(&self, msg_idx: usize) -> Result<()> {
+        let needs_layout = {
+            let state = self.lock_state()?;
+            msg_idx >= state.layouts.len()
+                && !state.scan_complete()
+                && state.bwd_active
+                && !state.fwd_terminated
+        };
+        if needs_layout {
+            let _ = self.scan_all_pipelined_async().await?;
+        }
         loop {
             let action = {
                 let state = self.lock_state()?;
@@ -2646,6 +2810,10 @@ impl RemoteBackend {
     }
 
     pub(crate) async fn message_count_async(&self) -> Result<usize> {
+        if self.scan_all_pipelined_async().await? {
+            let state = self.lock_state()?;
+            return Ok(state.layouts.len());
+        }
         loop {
             let done = {
                 let state = self.lock_state()?;
@@ -2661,15 +2829,17 @@ impl RemoteBackend {
     }
 
     pub(crate) async fn message_layouts_async(&self) -> Result<Vec<crate::MessageLayout>> {
-        loop {
-            let done = {
-                let state = self.lock_state()?;
-                state.scan_complete()
-            };
-            if done {
-                break;
+        if !self.scan_all_pipelined_async().await? {
+            loop {
+                let done = {
+                    let state = self.lock_state()?;
+                    state.scan_complete()
+                };
+                if done {
+                    break;
+                }
+                self.scan_step_async().await?;
             }
-            self.scan_step_async().await?;
         }
         let state = self.lock_state()?;
         Ok(state
@@ -2885,6 +3055,16 @@ impl RemoteBackend {
             return Ok(());
         }
         let max_idx = msg_indices.iter().copied().max().unwrap_or(0);
+        let needs_discovery = {
+            let state = self.lock_state()?;
+            state.layouts.len() <= max_idx
+                && !state.scan_complete()
+                && state.bwd_active
+                && !state.fwd_terminated
+        };
+        if needs_discovery {
+            let _ = self.scan_all_pipelined_async().await?;
+        }
         loop {
             let bidir = {
                 let state = self.lock_state()?;

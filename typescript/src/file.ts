@@ -1364,7 +1364,17 @@ async function tryBidirectionalRound(
       return false;
     }
 
-    if (footerRegionPresent(firstFooterOffset, msgLen)) {
+    // Gate the eager footer fetch on the just-validated preamble's
+    // flags: only footer-indexed messages (FOOTER_METADATA +
+    // FOOTER_INDEX both set) benefit from inlining the footer
+    // region into the same paired round.  Issuing the fetch
+    // unconditionally and discarding it post-hoc costs one HTTP
+    // round trip per backward-discovered message — measurable as
+    // a +50% request inflation against today's transport stack.
+    if (
+      footerRegionPresent(firstFooterOffset, msgLen) &&
+      preambleHasFooterIndex(candidatePreambleBytes)
+    ) {
       const footerStart = msgStart + firstFooterOffset;
       const footerEnd = msgStart + msgLen - POSTAMBLE_BYTES;
       if (footerStart < footerEnd) {
@@ -1403,6 +1413,17 @@ function footerRegionPresent(firstFooterOffset: number, length: number): boolean
   if (length < POSTAMBLE_BYTES) return false;
   const footerMax = length - POSTAMBLE_BYTES;
   return firstFooterOffset >= PREAMBLE_BYTES && firstFooterOffset < footerMax;
+}
+
+// Preamble flag bits per wire-format §3 (u16 BE at offset 10):
+//   FOOTER_METADATA = 1 << 1, FOOTER_INDEX = 1 << 3.
+const FLAG_FOOTER_METADATA = 1 << 1;
+const FLAG_FOOTER_INDEX = 1 << 3;
+
+function preambleHasFooterIndex(preambleBytes: Uint8Array): boolean {
+  if (preambleBytes.length < 12) return false;
+  const flags = (preambleBytes[10] << 8) | preambleBytes[11];
+  return (flags & FLAG_FOOTER_METADATA) !== 0 && (flags & FLAG_FOOTER_INDEX) !== 0;
 }
 
 async function tryForwardStep(
