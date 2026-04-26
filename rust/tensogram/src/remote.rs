@@ -2447,6 +2447,27 @@ impl RemoteBackend {
                         // terminates the walk via gap-closed.
                         continue;
                     }
+                    if msg_start < fwd_cursor {
+                        // Backward candidate overlaps the
+                        // just-committed forward message.
+                        // `parse_backward_postamble` only saw the
+                        // pre-iteration cursor and accepted the
+                        // candidate; without this guard a
+                        // target-driven walk would break out of the
+                        // loop before the next-iteration gap check
+                        // fires and the post-loop drain would commit
+                        // overlapping layouts (validation only checks
+                        // that the preamble bytes parse as a preamble
+                        // with a length matching the postamble's
+                        // claim, which is satisfied by an attacker
+                        // who plants a fake preamble inside the
+                        // forward message).  Bail to the per-round
+                        // walker, which catches the overlap via
+                        // `apply_round_outcomes`'
+                        // `msg_end > layout.offset` rejection and
+                        // continues forward-only.
+                        return Ok(false);
+                    }
                     pending = Some((msg_start, length));
                     bwd_cursor = msg_start;
                 }
@@ -4105,6 +4126,90 @@ mod bidir_http_tests {
         );
         let state = backend.lock_state().expect("lock");
         assert_eq!(state.layouts.len(), 3);
+    }
+
+    /// Forge a file where the last message's postamble claims a
+    /// `msg_start` strictly inside the message forward will commit
+    /// next, AND splice a copy of a real preamble at that interior
+    /// offset so backward-side validation would otherwise pass.
+    /// Without the inline `msg_start < fwd_cursor` guard, a
+    /// target-driven walk (`scan_pipelined_async(Some(2))` after
+    /// `open_with_scan_opts` has auto-committed msg_a) would queue
+    /// the candidate as `pending`, break out of the loop on the
+    /// target check at the top of the next iteration, drain
+    /// `pending` post-loop, validate it (succeeds because the
+    /// planted preamble parses and its `total_length` matches the
+    /// postamble's claim), and commit a fake layout that overlaps
+    /// the forward-committed message.  The guard must bail to the
+    /// per-round fallback, which detects the overlap via
+    /// `apply_round_outcomes`' `msg_end > layout.offset` rejection
+    /// and disables backward.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pipelined_overlapping_backward_candidate_bails_to_fallback() {
+        let msg_a = make_message(vec![10], 7);
+        let msg_a_len = msg_a.len();
+        let msg_b = make_message(vec![10], 8);
+        let msg_b_len = msg_b.len();
+        let mut buf = concat_messages(vec![msg_a, msg_b.clone()]);
+        let file_len = buf.len() as u64;
+
+        // Plant the fake preamble inside msg_b (which is what forward
+        // will commit on the first pipelined iteration after open's
+        // auto-commit of msg_a).  Use msg_b's own preamble bytes so
+        // the splice has valid MAGIC + parsable version/flags.
+        let fake_offset = (msg_a_len as u64) + (msg_b_len as u64) / 2;
+        let claimed_total = file_len - fake_offset;
+        let fake = fake_offset as usize;
+        buf[fake..fake + PREAMBLE_SIZE].copy_from_slice(&msg_b[..PREAMBLE_SIZE]);
+        // Patch the spliced preamble's `total_length` (offset 16 in
+        // the 24-byte preamble) to the forged claim so
+        // `validate_backward_preamble` accepts it.
+        buf[fake + 16..fake + 16 + 8].copy_from_slice(&claimed_total.to_be_bytes());
+        // Patch msg_b's postamble's `total_length` (offset 8 in the
+        // 24-byte postamble) so backward parsing yields
+        // `msg_start = fake_offset` with `length = claimed_total`.
+        let pa_total_off = buf.len() - POSTAMBLE_SIZE + 8;
+        buf[pa_total_off..pa_total_off + 8].copy_from_slice(&claimed_total.to_be_bytes());
+
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions {
+                bidirectional: true,
+            },
+        )
+        .expect("open bidirectional");
+
+        // open_with_scan_opts auto-commits msg_a (state.layouts.len() == 1).
+        // Pass target = Some(2): the pipelined walker enters iter 1
+        // (committed=1 < target=2), commits msg_b on the forward side
+        // (advancing fwd_cursor to file_len), and then sees the corrupted
+        // backward candidate at `fake_offset` strictly inside msg_b.
+        let pipelined_ok = backend
+            .scan_pipelined_async(Some(2))
+            .await
+            .expect("pipelined");
+        assert!(
+            !pipelined_ok,
+            "pipelined walker MUST bail (Ok(false)) on a backward candidate that \
+             overlaps the just-committed forward message; otherwise the post-loop \
+             drain on a target-driven walk would commit overlapping layouts",
+        );
+
+        // Per-round fallback handles the corruption: forward commits
+        // msg_a + msg_b, backward is disabled via apply_round_outcomes'
+        // overlap rejection.  No fake-msg layout is committed.
+        let count = backend.message_count_async().await.expect("count");
+        assert_eq!(
+            count, 2,
+            "after fallback only msg_a and msg_b are committed"
+        );
+        let state = backend.lock_state().expect("lock");
+        assert!(
+            !state.bwd_active,
+            "backward must be disabled after the per-round walker detects the overlap",
+        );
     }
 
     /// Forge a postamble whose `total_length` is between 1 and

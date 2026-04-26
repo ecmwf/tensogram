@@ -1492,6 +1492,17 @@ async function runPipelinedBidirectional(
         ) {
           // bwdCursor stays at its pre-iter value — fwd has already
           // claimed [candidateStart, fwdCursor), and they meet there.
+        } else if (candidateStart < fwdCursor) {
+          // Backward candidate overlaps the just-committed forward
+          // message: `parse_backward_postamble_outcome` only saw the
+          // pre-iteration cursor and accepted the candidate.  Mirrors
+          // the Rust pipelined walker's inline overlap guard; bail
+          // to the forward-only fallback rather than queue the
+          // candidate for validation (an attacker-planted preamble
+          // inside the forward window could otherwise commit
+          // overlapping layouts).
+          bailReason = 'backward-overlaps-forward';
+          break;
         } else {
           pending = {
             msgStart: candidateStart,
