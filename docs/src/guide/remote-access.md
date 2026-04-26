@@ -54,9 +54,16 @@ When no options are passed, credentials are read from the environment (e.g. `AWS
 
 ## Bidirectional Scan
 
-`open_source`, `open_remote`, and their async siblings accept a `scan_opts: Option<RemoteScanOptions>` argument. Passing `Some(RemoteScanOptions { bidirectional: true })` enables a walker that alternates forward and backward hops across the file, using the v3 postamble's mirrored `total_length` field to walk inward from EOF in parallel with the forward sweep. On well-formed header-indexed files this roughly halves the number of HTTP `GET` requests needed for tail / full-scan access.
+`open_source`, `open_remote`, and their async siblings accept a `scan_opts: Option<RemoteScanOptions>` argument. Passing `Some(RemoteScanOptions { bidirectional: true })` enables a walker that alternates forward and backward hops across the file, using the v3 postamble's mirrored `total_length` field to walk inward from EOF in parallel with the forward sweep.
 
 `None` (or `Some(RemoteScanOptions::default())`) keeps the forward-only walker. Both walkers produce identical layouts; the difference is only in the discovery path.
+
+The default is **forward-only** across all bindings. Benchmarks (see `plans/decisions/remote-bidirectional-default-flip.md`) showed the bidirectional walker fetches more bytes than forward-only on most cells against today's transport stack:
+
+- **Rust + Python** share `object_store`'s range coalescer; paired forward + backward fetches that fall under its merge threshold expand into single multi-range requests pulling back large contiguous spans of the file.
+- **TypeScript** issues each Range request separately so bytes stay close to forward (+2% at N=1000); requests scale at +50% because each backward-discovered message triggers an eager footer fetch that the flag-check gate later discards.
+
+Opt in when the workload's network round-trip cost exceeds the per-fetch byte cost — typically when serving over HTTPS to a remote object store from a high-latency client.
 
 ```rust
 use tensogram::{RemoteScanOptions, TensogramFile};
@@ -99,9 +106,11 @@ console.log('messageLayouts:', file.messageLayouts);
 file.close();
 ```
 
-Set `debug: true` alongside `bidirectional: true` to emit `console.debug` events on every walker state transition (`tensogram:scan:mode`, `tensogram:scan:fallback`, `tensogram:scan:fwd-terminated`, `tensogram:scan:gap-closed`, `tensogram:scan:hop`, `tensogram:scan:footer-eager`) — same vocabulary as the Rust `tracing` events at `target = "tensogram::remote_scan"`.
+Set `debug: true` alongside `bidirectional: true` to emit `console.debug` events on every walker state transition (`tensogram:scan:mode`, `tensogram:scan:fallback`, `tensogram:scan:fwd-terminated`, `tensogram:scan:gap-closed`, `tensogram:scan:hop`, `tensogram:scan:footer-eager`) — same vocabulary as the Rust `tracing` events at `target = "tensogram::remote_scan"`. Runnable end-to-end demos: `examples/rust/src/bin/18_remote_scan_trace.rs` and `examples/typescript/18_remote_scan_trace.ts`.
 
-The default is forward-only across all bindings until benchmarks confirm the win across every workload tier. Local-file backends accept the option and silently ignore it (a single forward sweep is the only sensible strategy locally).
+Local-file backends accept the option and silently ignore it (a single forward sweep is the only sensible strategy locally).
+
+> **Wire-format compatibility:** existing `.tgm` files read with the bidirectional walker produce identical decoded bytes; the walker is reader-side only, with no migration, no re-encoding, and no wire-format bump. Opt out with `bidirectional=False`.
 
 ### Eager footer-indexed backward discovery
 

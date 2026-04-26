@@ -421,8 +421,6 @@ enables a two-cursor walker.  The lazy backend issues paired
 forward-preamble and backward-postamble Range fetches per scan round,
 alternating with forward-only steps whenever backward yields (format
 error, streaming preamble, gap-below-min, overlap, exceeds-bound).
-On well-formed header-indexed files this roughly halves the number
-of `GET` requests needed for tail / full-scan access.
 
 ```typescript
 import { init, TensogramFile } from '@ecmwf.int/tensogram';
@@ -438,15 +436,29 @@ file.close();
 
 Forward-only and bidirectional opens produce identical
 `messageLayouts` on well-formed files; the parity harness asserts
-this on every fixture.  Default `false` until benchmarks confirm the
-win across every workload tier — same default across Rust, Python,
-and TypeScript.
+this on every fixture.
+
+The default is **`false`** across Rust, Python, and TypeScript.
+Benchmarks (see `plans/decisions/remote-bidirectional-default-flip.md`)
+showed the bidirectional walker fetches more bytes and at least as
+many requests as forward-only on every measured cell against
+today's transport stack.  TypeScript specifically issues each Range
+request separately so bytes stay close to forward (+2% at N=1000),
+but requests scale at +50% because each backward-discovered message
+triggers an eager footer fetch that the flag-check gate later
+discards.  Opt in when network round-trip cost dominates over
+per-fetch byte cost.
 
 `bidirectional: true` requires `concurrency >= 2` (the default of
 `6` is fine).  Passing `concurrency: 1` alongside `bidirectional:
 true` rejects the `fromUrl` promise with `InvalidArgumentError`
 before any HTTP probe is issued, since the paired round needs two
 parallel fetches to be useful.
+
+> **Wire-format compatibility:** existing `.tgm` files read with
+> `bidirectional: true` produce identical decoded bytes; the walker
+> is reader-side only, with no migration, no re-encoding, and no
+> wire-format bump.  Opt out with `bidirectional: false`.
 
 `debug: true` emits `console.debug` events on every state transition
 — `tensogram:scan:mode`, `tensogram:scan:fallback`,
