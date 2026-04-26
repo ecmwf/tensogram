@@ -1313,20 +1313,24 @@ async function runPipelinedBidirectional(
   const wbg = getWbg();
 
   type Pending = { msgStart: number; length: number; firstFooterOffset: number };
-  type LocalBwd = { layout: ScanLayoutEntry; footerBytes?: Uint8Array };
 
   const localFwd: ScanLayoutEntry[] = [];
-  const localBwd: LocalBwd[] = [];
+  const localBwd: ScanLayoutEntry[] = [];
   let fwdCursor = state.next;
   let bwdCursor = state.prev;
   let pending: Pending | undefined;
   let bailReason: string | undefined;
 
+  // Returns `false` if the caller's top-level signal aborted during
+  // the footer fetch (caller must surface the abort by returning
+  // `false` from the scan).  Returns `true` otherwise — including
+  // the `bailReason`-set fallback paths, which the caller detects
+  // via the shared `bailReason` after the call.
   const validatePending = async (
     p: Pending,
     valBytes: Uint8Array,
     overrideSignal?: AbortSignal,
-  ): Promise<{ ok: boolean; abort?: boolean }> => {
+  ): Promise<boolean> => {
     let candidateFooterBytes: Uint8Array | undefined;
     if (
       footerRegionPresent(p.firstFooterOffset, p.length) &&
@@ -1340,7 +1344,7 @@ async function runPipelinedBidirectional(
             fetchRange(ctx, footerStart, footerEnd, true, overrideSignal),
           );
         } catch {
-          if (ctx.signal?.aborted) return { ok: false, abort: true };
+          if (ctx.signal?.aborted) return false;
           candidateFooterBytes = undefined;
         }
       }
@@ -1352,18 +1356,18 @@ async function runPipelinedBidirectional(
     ) as BackwardCommit;
     if (validation.kind === 'Format') {
       bailReason = validation.reason;
-      return { ok: true };
+      return true;
     }
     const layout = buildLayoutFromPreamble(valBytes, p.msgStart, p.length);
     if (layout === null) {
       bailReason = 'preamble-parse-error-bwd';
-      return { ok: true };
+      return true;
     }
     if (candidateFooterBytes !== undefined) {
       tryApplyEagerFooter(layout, candidateFooterBytes, options);
     }
-    localBwd.push({ layout });
-    return { ok: true };
+    localBwd.push(layout);
+    return true;
   };
 
   while (true) {
@@ -1433,8 +1437,8 @@ async function runPipelinedBidirectional(
       if (valBytes !== undefined && pending !== undefined) {
         const p = pending;
         pending = undefined;
-        const r = await validatePending(p, valBytes, overrideSignal);
-        if (!r.ok) return false;
+        const ok = await validatePending(p, valBytes, overrideSignal);
+        if (!ok) return false;
         if (bailReason !== undefined) break;
       }
 
@@ -1521,14 +1525,14 @@ async function runPipelinedBidirectional(
     } catch {
       return false;
     }
-    const r = await validatePending(p, valBytes);
-    if (!r.ok) return false;
+    const ok = await validatePending(p, valBytes);
+    if (!ok) return false;
   }
 
   for (const layout of localFwd) {
     recordForwardHop(state, layout, options);
   }
-  for (const { layout } of localBwd) {
+  for (const layout of localBwd) {
     recordBackwardHop(state, layout, options);
   }
   if (state.bwdActive && state.next === state.prev) {
