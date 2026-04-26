@@ -119,10 +119,18 @@ function computeGridParams(
 }
 
 // ── Image cache ──────────────────────────────────────────────────────
+//
+// Stores raw RGBA + grid params, not dataUrls. The dataUrl is regenerated
+// on every render (~5 ms for 2K×1K, negligible compared to the worker
+// pass) so the exclude-mask can be re-applied cheaply when excludeBounds
+// changes without re-running the worker.
 
 interface CacheEntry {
-  dataUrl: string;
   key: string;
+  rgba: Uint8ClampedArray;
+  width: number;
+  height: number;
+  params: GridParams;
 }
 
 const IMAGE_CACHE_SIZE = 64;
@@ -162,18 +170,27 @@ function cacheKey(
   return `${dataFingerprint(data)}:${colorMin}:${colorMax}:${palKey}:${gridW}x${gridH}:${q(lonMin)},${q(lonMax)},${q(latMin)},${q(latMax)}:${renderMode}:${mapProjection}`;
 }
 
-function getCached(key: string): string | null {
+function getCached(key: string): CacheEntry | null {
   const idx = imageCache.findIndex((e) => e.key === key);
   if (idx < 0) return null;
   const [entry] = imageCache.splice(idx, 1);
   imageCache.unshift(entry);
-  return entry.dataUrl;
+  return entry;
 }
 
-function putCache(key: string, dataUrl: string): void {
+function putCache(entry: CacheEntry): void {
   if (imageCache.length >= IMAGE_CACHE_SIZE) imageCache.pop();
-  imageCache.unshift({ key, dataUrl });
+  imageCache.unshift(entry);
 }
+
+// Exposed for tests.
+export const __test = {
+  applyExcludeMask,
+  resolveBounds,
+  getCached,
+  putCache,
+  clearCache: () => { imageCache.length = 0; },
+};
 
 // ── Exclude-region masking ───────────────────────────────────────────
 //
@@ -365,7 +382,9 @@ export function useFieldImage(props: FieldOverlayProps | null): { image: FieldIm
     } = props;
     const numBands = getNumBands(palette, customStops);
 
-    const { lonMin, lonMax, latMin, latMax, vw, vh } = resolveBounds(props);
+    const { lonMin, lonMax, latMin, latMax, vw, vh } = resolveBounds(
+      mapProjection, props.bounds, props.viewportWidth, props.viewportHeight,
+    );
 
     const params = computeGridParams(data.length, mapProjection, lonMin, lonMax, latMin, latMax, vw, vh);
     const key = cacheKey(
@@ -382,15 +401,16 @@ export function useFieldImage(props: FieldOverlayProps | null): { image: FieldIm
       [lonMin, params.latMin],
     ];
 
-    // LRU cache stores unmasked dataUrls; skip for masked renders because we
-    // need the raw RGBA to re-apply the mask when excludeBounds changes.
-    if (!excludeBounds) {
-      const cached = getCached(key);
-      if (cached) {
-        setIsRendering(false);
-        setImage({ dataUrl: cached, coordinates: coords });
-        return;
-      }
+    const cached = getCached(key);
+    if (cached) {
+      const raw: RawRender = {
+        rgba: cached.rgba, width: cached.width, height: cached.height,
+        coords, params: cached.params,
+      };
+      rawRef.current = raw;
+      setIsRendering(false);
+      applyAndSet(raw, excludeBounds);
+      return;
     }
 
     const reqId = ++requestIdRef.current;
@@ -405,14 +425,8 @@ export function useFieldImage(props: FieldOverlayProps | null): { image: FieldIm
     setIsRendering(false);
     const raw: RawRender = { rgba: result.rgba, width: result.width, height: result.height, coords, params };
     rawRef.current = raw;
-
-    if (!excludeBounds) {
-      const dataUrl = rgbaToDataUrl(result.rgba, result.width, result.height);
-      putCache(key, dataUrl);
-      setImage({ dataUrl, coordinates: coords });
-    } else {
-      applyAndSet(raw, excludeBounds);
-    }
+    putCache({ key, rgba: result.rgba, width: result.width, height: result.height, params });
+    applyAndSet(raw, excludeBounds);
   }, [
     props?.data, props?.lat, props?.lon,
     props?.colorMin, props?.colorMax, props?.palette,
@@ -420,11 +434,6 @@ export function useFieldImage(props: FieldOverlayProps | null): { image: FieldIm
     props?.viewportWidth, props?.viewportHeight,
     props?.bounds?.west, props?.bounds?.east, props?.bounds?.south, props?.bounds?.north,
     applyAndSet,
-    // Only track presence of excludeBounds, not its value. Going null→non-null
-    // triggers a one-time re-render so rawRef gets populated from a fresh worker
-    // result (the cache is skipped when excludeBounds is set). Subsequent bound
-    // changes are handled cheaply by the re-mask effect below.
-    !!props?.excludeBounds,
   ]);
 
   useEffect(() => { render(); }, [render]);
@@ -433,8 +442,8 @@ export function useFieldImage(props: FieldOverlayProps | null): { image: FieldIm
   // viewport) without re-running the expensive worker.
   const excl = props?.excludeBounds;
   useEffect(() => {
-    if (!rawRef.current || !excl) return;
-    applyAndSet(rawRef.current, excl);
+    if (!rawRef.current) return;
+    applyAndSet(rawRef.current, excl ?? null);
   }, [excl?.west, excl?.east, excl?.south, excl?.north, applyAndSet]);
 
   return { image, isRendering };

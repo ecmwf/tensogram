@@ -15,6 +15,43 @@ import type { CustomStop } from './colormaps';
 
 const BASEMAP_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
 
+// Front render covers the visible viewport extended by this factor, so small
+// pans within the buffered rect do not require a re-render. The back layer
+// remains visible (never the basemap) while the front catches up.
+const FRONT_BUFFER_FACTOR = 1.5;
+
+// Once the buffered viewport spans more than this many longitude degrees the
+// front layer is skipped: the back already covers the visible area at its
+// full resolution, so adding a front would only introduce a rasterised-quad
+// seam at its outer edge for no resolution gain. resolveBounds also promotes
+// to global at 330°, so this matches its threshold.
+const FRONT_SKIP_LON_SPAN_DEG = 330;
+
+// Back-layer resolution at full extent. Used to align the Cesium front rect
+// to the back's bilinear blend zone (half-pixel extension) on the globe.
+const BACK_GEO_W = 2048;
+const BACK_GEO_H = 1024;
+const BACK_FLAT_W = 1440;
+const BACK_FLAT_H = 720;
+
+function bufferBounds(
+  bounds: ViewBounds,
+  factor: number,
+  latMin: number,
+  latMax: number,
+  lonMin: number,
+  lonMax: number,
+): ViewBounds {
+  const lonPad = ((factor - 1) / 2) * (bounds.east - bounds.west);
+  const latPad = ((factor - 1) / 2) * (bounds.north - bounds.south);
+  return {
+    west: Math.max(lonMin, bounds.west - lonPad),
+    east: Math.min(lonMax, bounds.east + lonPad),
+    south: Math.max(latMin, bounds.south - latPad),
+    north: Math.min(latMax, bounds.north + latPad),
+  };
+}
+
 export interface MapViewProps {
   data: Float32Array | null;
   lat: Float32Array | null;
@@ -146,69 +183,96 @@ export function MapView(props: MapViewProps) {
 
   // ── Overlay props ────────────────────────────────────────────────────
   //
-  // Single-layer rendering: one image shown at a time per view mode.
+  // Two-layer rendering per view: a low-resolution full-globe back layer that
+  // is always present, and a screen-resolution front layer covering the
+  // visible viewport extended by FRONT_BUFFER_FACTOR. The back's RGBA has
+  // alpha forced to zero in the rectangle covered by the front, so every
+  // pixel has at most one source contributing colour (no opacity stacking).
   //
-  // Globe: viewport-aware render (cesiumBounds) when the camera position is
-  //   known, falling back to a full-extent 2048×1024 render on first load.
-  //   A separate full-extent render is kept as a low-res fallback shown via
-  //   the ?? operator so the globe is never blank.
-  //
-  // Flat: screen-resolution render of the visible viewport when bounds are
-  //   known, falling back to a full-extent 1440×720 render otherwise.
-  //   Only one MapLibre source/layer is active at any time.
+  // Both layers display at raster-opacity 0.7 / Color(1,1,1,0.7).
 
-  // High-res globe viewport render disabled:
-  // const globeProps: FieldOverlayProps | null = isGlobe && data && lat && lon ? {
-  //   data, lat, lon, colorMin, colorMax, palette, paletteReversed, customStops,
-  //   renderMode, mapProjection: 'geographic',
-  //   ...(cesiumBounds
-  //     ? { bounds: cesiumBounds, viewportWidth: cesiumViewSize.width, viewportHeight: cesiumViewSize.height }
-  //     : { viewportWidth: 2048, viewportHeight: 1024 }),
-  // } : null;
-  const globeProps: FieldOverlayProps | null = null;
+  const bufferedFlatBounds: ViewBounds | null =
+    !isGlobe && viewportBounds
+      ? bufferBounds(viewportBounds, FRONT_BUFFER_FACTOR, -85, 85, -180, 180)
+      : null;
+
+  const bufferedGlobeBounds: ViewBounds | null =
+    isGlobe && cesiumBounds
+      ? bufferBounds(cesiumBounds, FRONT_BUFFER_FACTOR, -90, 90, -180, 180)
+      : null;
+
+  const flatFrontWorthwhile = bufferedFlatBounds
+    ? (bufferedFlatBounds.east - bufferedFlatBounds.west) < FRONT_SKIP_LON_SPAN_DEG
+    : false;
+  const globeFrontWorthwhile = bufferedGlobeBounds
+    ? (bufferedGlobeBounds.east - bufferedGlobeBounds.west) < FRONT_SKIP_LON_SPAN_DEG
+    : false;
+
+  // Front layers — viewport at screen resolution. Skipped when the buffered
+  // span is close to the global extent: at that zoom the back already covers
+  // the visible area at its full resolution and adding a front layer would
+  // only introduce a rasterised-quad seam at its outer edge for no gain.
+  const viewportFlatProps: FieldOverlayProps | null =
+    !isGlobe && data && lat && lon && bufferedFlatBounds && viewportSize && flatFrontWorthwhile
+      ? {
+          data, lat, lon, colorMin, colorMax, palette, paletteReversed, customStops,
+          renderMode, mapProjection: 'mercator',
+          bounds: bufferedFlatBounds,
+          viewportWidth: viewportSize.width,
+          viewportHeight: viewportSize.height,
+        }
+      : null;
+
+  const globeProps: FieldOverlayProps | null =
+    isGlobe && data && lat && lon && bufferedGlobeBounds && globeFrontWorthwhile
+      ? {
+          data, lat, lon, colorMin, colorMax, palette, paletteReversed, customStops,
+          renderMode, mapProjection: 'geographic',
+          bounds: bufferedGlobeBounds,
+          viewportWidth: cesiumViewSize.width,
+          viewportHeight: cesiumViewSize.height,
+        }
+      : null;
+
+  // Hooks must always be called in the same order regardless of isGlobe.
+  // The two layers are mutually exclusive at display time: when the front
+  // image fully contains the visible viewport, only the front is shown
+  // (single-layer 0.7 opacity, no boundary, no flashing from re-masking).
+  // Otherwise the front is hidden and the back covers the globe at its low
+  // resolution. No alpha-mask compositing is performed on either RGBA.
+  const { image: globeImage, isRendering: isGlobeFrontRendering } = useFieldImage(globeProps);
+  const { image: viewportFlatImage, isRendering: isFlatFrontRendering } = useFieldImage(viewportFlatProps);
 
   const globalGlobeProps: FieldOverlayProps | null = isGlobe && data && lat && lon ? {
     data, lat, lon, colorMin, colorMax, palette, paletteReversed, customStops,
     renderMode, mapProjection: 'geographic',
-    viewportWidth: 2048, viewportHeight: 1024,
+    viewportWidth: BACK_GEO_W, viewportHeight: BACK_GEO_H,
   } : null;
 
   const globalFlatProps: FieldOverlayProps | null = !isGlobe && data && lat && lon ? {
     data, lat, lon, colorMin, colorMax, palette, paletteReversed, customStops,
     renderMode, mapProjection: 'mercator',
-    viewportWidth: 1440, viewportHeight: 720,
+    viewportWidth: BACK_FLAT_W, viewportHeight: BACK_FLAT_H,
   } : null;
 
-  // High-res flat viewport render disabled:
-  // const viewportFlatProps: FieldOverlayProps | null =
-  //   !isGlobe && data && lat && lon && viewportBounds && viewportSize ? {
-  //     data, lat, lon, colorMin, colorMax, palette, paletteReversed, customStops,
-  //     renderMode, mapProjection: 'mercator',
-  //     bounds: viewportBounds,
-  //     viewportWidth: viewportSize.width,
-  //     viewportHeight: viewportSize.height,
-  //   } : null;
-  const viewportFlatProps: FieldOverlayProps | null = null;
+  const { image: globalGlobeImage, isRendering: isGlobeBackRendering } = useFieldImage(globalGlobeProps);
+  const { image: globalFlatImage, isRendering: isFlatBackRendering } = useFieldImage(globalFlatProps);
 
-  // Hooks must always be called in the same order regardless of isGlobe.
-  const { image: globeImage } = useFieldImage(globeProps);
-  const { image: globalGlobeImage, isRendering: isGlobeRendering } = useFieldImage(globalGlobeProps);
-  const { image: globalFlatImage, isRendering: isFlatRendering } = useFieldImage(globalFlatProps);
-  const { image: viewportFlatImage } = useFieldImage(viewportFlatProps);
+  const backFlatImage = globalFlatImage;
+  const frontFlatImage = viewportFlatImage;
+  const backGlobeImage = globalGlobeImage;
+  const frontGlobeImage = globeImage;
 
-  // High-res viewport rendering disabled; re-enable by restoring:
-  //   const flatImage = viewportFlatImage ?? globalFlatImage;
-  //   const cesiumImage = globeImage ?? globalGlobeImage;
-  const flatImage = globalFlatImage;
-  const cesiumImage = globalGlobeImage;
-
-  const showSpinner = isLoading || isGlobeRendering || isFlatRendering;
+  const showSpinner = isLoading
+    || isGlobeBackRendering || isFlatBackRendering
+    || isGlobeFrontRendering || isFlatFrontRendering;
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       {isGlobe ? (
         <CesiumView
-          fieldImage={cesiumImage}
+          fieldImage={frontGlobeImage}
+          backFieldImage={backGlobeImage}
           initialCenter={cameraCenter}
           onUnmount={handleCesiumUnmount}
           onViewChange={(b, w, h) => { setCesiumBounds(b); setCesiumViewSize({ width: w, height: h }); }}
@@ -230,9 +294,30 @@ export function MapView(props: MapViewProps) {
           onZoomEnd={captureViewport}
           onClick={handleMapClick}
         >
-          {flatImage && (
-            <Source id="field-overlay" type="image" url={flatImage.dataUrl} coordinates={flatImage.coordinates}>
-              <Layer id="field-overlay-layer" type="raster" paint={{ 'raster-opacity': 0.7, 'raster-fade-duration': 0 }} />
+          {backFlatImage && (
+            <Source id="field-overlay-back" type="image" url={backFlatImage.dataUrl} coordinates={backFlatImage.coordinates}>
+              <Layer
+                id="field-overlay-back-layer"
+                type="raster"
+                paint={{
+                  'raster-opacity': 1,
+                  'raster-fade-duration': 0,
+                  'raster-resampling': 'nearest',
+                }}
+              />
+            </Source>
+          )}
+          {frontFlatImage && (
+            <Source id="field-overlay-front" type="image" url={frontFlatImage.dataUrl} coordinates={frontFlatImage.coordinates}>
+              <Layer
+                id="field-overlay-front-layer"
+                type="raster"
+                paint={{
+                  'raster-opacity': 1,
+                  'raster-fade-duration': 0,
+                  'raster-resampling': 'nearest',
+                }}
+              />
             </Source>
           )}
           {selectedPoint && (() => {

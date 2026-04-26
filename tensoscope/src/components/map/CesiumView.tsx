@@ -29,6 +29,7 @@ import type { ClickPoint } from './usePointInspection';
 
 interface CesiumViewProps {
   fieldImage: FieldImage | null;
+  backFieldImage?: FieldImage | null;
   initialCenter: { lat: number; lon: number };
   onUnmount: (lat: number, lon: number) => void;
   onViewChange?: (bounds: ViewBounds | null, width: number, height: number) => void;
@@ -39,10 +40,11 @@ interface CesiumViewProps {
   onSelectedPointOutOfView?: () => void;
 }
 
-export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange, onMapClick, selectedPoint, selectedPointGridSpacing, onSelectedPointScreen, onSelectedPointOutOfView }: CesiumViewProps) {
+export function CesiumView({ fieldImage, backFieldImage, initialCenter, onUnmount, onViewChange, onMapClick, selectedPoint, selectedPointGridSpacing, onSelectedPointScreen, onSelectedPointOutOfView }: CesiumViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Viewer | undefined>(undefined);
   const overlayRef = useRef<Entity | undefined>(undefined);
+  const backOverlayRef = useRef<Entity | undefined>(undefined);
   const markerRef = useRef<Entity | undefined>(undefined);
   const selectedPointRef = useRef(selectedPoint);
   const onUnmountRef = useRef(onUnmount);
@@ -186,19 +188,56 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
       viewer.destroy();
       viewerRef.current = undefined;
       overlayRef.current = undefined;
+      backOverlayRef.current = undefined;
       markerRef.current = undefined;
     };
   }, []); // mount-once: intentional empty deps
 
-  // Update field overlay when fieldImage changes
+  // Back layer — full-globe low-resolution render. Always loaded; visibility
+  // is toggled by the showFront flag so the front and back never both
+  // contribute colour at the same screen pixel.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+
+    if (!backFieldImage) {
+      if (backOverlayRef.current) backOverlayRef.current.show = false;
+      return;
+    }
+
+    const [lonMin, latMax] = backFieldImage.coordinates[0];
+    const [lonMax, latMin] = backFieldImage.coordinates[2];
+    const rect = Rectangle.fromDegrees(lonMin, latMin, lonMax, latMax);
+
+    if (backOverlayRef.current) {
+      const rectProp = backOverlayRef.current.rectangle!;
+      rectProp.coordinates = new ConstantProperty(rect);
+      const mat = rectProp.material as ImageMaterialProperty;
+      mat.image = new ConstantProperty(backFieldImage.dataUrl);
+    } else {
+      backOverlayRef.current = viewer.entities.add({
+        rectangle: {
+          coordinates: rect,
+          material: new ImageMaterialProperty({
+            image: backFieldImage.dataUrl,
+            transparent: true,
+            color: new Color(1, 1, 1, 1),
+          }),
+          fill: true,
+        },
+      });
+    }
+  }, [backFieldImage]);
+
+  // Front layer — viewport at screen resolution. Visibility is toggled by
+  // showFront. No half-pixel rectangle extension is needed because the back
+  // is hidden when the front is visible, so there is no seam to mitigate.
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer) return;
 
     if (!fieldImage) {
-      if (overlayRef.current) {
-        overlayRef.current.show = false;
-      }
+      if (overlayRef.current) overlayRef.current.show = false;
       return;
     }
 
@@ -207,8 +246,6 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
     const rect = Rectangle.fromDegrees(lonMin, latMin, lonMax, latMax);
 
     if (overlayRef.current) {
-      // Update image and bounds in-place to avoid a blank frame between renders.
-      overlayRef.current.show = true;
       const rectProp = overlayRef.current.rectangle!;
       rectProp.coordinates = new ConstantProperty(rect);
       const mat = rectProp.material as ImageMaterialProperty;
@@ -220,13 +257,25 @@ export function CesiumView({ fieldImage, initialCenter, onUnmount, onViewChange,
           material: new ImageMaterialProperty({
             image: fieldImage.dataUrl,
             transparent: true,
-            color: new Color(1, 1, 1, 0.7),
+            color: new Color(1, 1, 1, 1),
           }),
           fill: true,
         },
       });
     }
   }, [fieldImage]);
+
+  // Both layers stay visible at 0.7 whenever they have an image. The front
+  // sits on top within its rectangle (slight saturation bump in the
+  // overlap), the back covers the rest. No visibility toggling — Cesium's
+  // entity show/hide produces a one-frame flash that is unacceptable on
+  // every pan, and the front's outer edge is normally offscreen because of
+  // the FRONT_BUFFER_FACTOR oversize.
+  useEffect(() => {
+    if (overlayRef.current) overlayRef.current.show = !!fieldImage;
+    if (backOverlayRef.current) backOverlayRef.current.show = !!backFieldImage;
+    viewerRef.current?.scene.requestRender();
+  }, [fieldImage, backFieldImage]);
 
   // Update selected-point marker when selectedPoint or grid spacing changes
   useEffect(() => {
