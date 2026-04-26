@@ -43,7 +43,9 @@
     "build": "npm run build:wasm && npm run build:ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "bench:remote-wallclock": "vitest bench --run tests/remote_scan.bench.ts",
+    "bench:remote-metrics": "npx tsx tests/run_remote_bench.ts"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

@@ -31,5 +31,8 @@ export default defineConfig({
         branches: 80,
       },
     },
+    benchmark: {
+      include: ['tests/**/*.bench.ts'],
+    },
   },
 });
