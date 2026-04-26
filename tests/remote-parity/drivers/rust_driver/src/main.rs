@@ -106,9 +106,9 @@ fn print_usage() {
 
 fn run(args: Args) -> Result<(), String> {
     let storage: BTreeMap<String, String> = BTreeMap::new();
-    let scan_opts = args
-        .bidirectional
-        .then_some(RemoteScanOptions { bidirectional: true });
+    let scan_opts = Some(RemoteScanOptions {
+        bidirectional: args.bidirectional,
+    });
     let file = TensogramFile::open_remote(&args.url, &storage, scan_opts)
         .map_err(|e| format!("open_remote failed: {e}"))?;
 
