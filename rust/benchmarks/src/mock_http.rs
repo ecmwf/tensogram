@@ -155,58 +155,33 @@ fn handle_one(
     let path = raw_path.trim_start_matches('/').to_string();
     let data = fixtures.get(&path);
 
-    let (status, response_bytes) = match (method.as_str(), data) {
-        (_, None) => {
-            write_status(&mut stream, 404, 0, &[]);
-            (404, 0)
-        }
-        ("HEAD", Some(data)) => {
-            let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
-                data.len()
-            );
-            let _ = stream.write_all(header.as_bytes());
-            (200, 0)
-        }
+    // Build the full response into a single buffer, then commit the
+    // counter record BEFORE writing.  The client returns as soon as
+    // its `read()` sees the bytes; if we recorded after `write_all`,
+    // a synchronous test that issues two GETs back-to-back could
+    // observe the snapshot in between the second GET's response
+    // arriving and our worker thread acquiring the counters mutex —
+    // that race surfaced as a flaky `total_requests = 1` instead of
+    // `2` in `counters_segregate_methods_and_ranges`.
+    let (status, response_bytes, response_buf) = match (method.as_str(), data) {
+        (_, None) => (404, 0, status_only(404)),
+        ("HEAD", Some(data)) => (200, 0, head_response(data.len())),
         ("GET", Some(data)) => match range_header
             .as_deref()
             .and_then(|h| parse_range(h, data.len()))
         {
             Some((start, end)) => {
                 let chunk = &data[start..end];
-                let header = format!(
-                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
-                    start,
-                    end - 1,
-                    data.len(),
+                (
+                    206,
                     chunk.len(),
-                );
-                let _ = stream.write_all(header.as_bytes());
-                let _ = stream.write_all(chunk);
-                (206, chunk.len())
+                    range_response(start, end, data.len(), chunk),
+                )
             }
-            None if range_header.is_some() => {
-                let header = format!(
-                    "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    data.len()
-                );
-                let _ = stream.write_all(header.as_bytes());
-                (416, 0)
-            }
-            None => {
-                let header = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
-                    data.len()
-                );
-                let _ = stream.write_all(header.as_bytes());
-                let _ = stream.write_all(data);
-                (200, data.len())
-            }
+            None if range_header.is_some() => (416, 0, range_not_satisfiable(data.len())),
+            None => (200, data.len(), full_get_response(data)),
         },
-        _ => {
-            write_status(&mut stream, 405, 0, &[]);
-            (405, 0)
-        }
+        _ => (405, 0, status_only(405)),
     };
 
     counters
@@ -220,21 +195,55 @@ fn handle_one(
             status,
             response_bytes,
         });
+
+    let _ = stream.write_all(&response_buf);
 }
 
-fn write_status(stream: &mut TcpStream, status: u16, len: usize, body: &[u8]) {
+fn status_only(status: u16) -> Vec<u8> {
     let phrase = match status {
         404 => "Not Found",
         405 => "Method Not Allowed",
-        416 => "Range Not Satisfiable",
         _ => "OK",
     };
-    let header =
-        format!("HTTP/1.1 {status} {phrase}\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n");
-    let _ = stream.write_all(header.as_bytes());
-    if !body.is_empty() {
-        let _ = stream.write_all(body);
-    }
+    format!("HTTP/1.1 {status} {phrase}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        .into_bytes()
+}
+
+fn head_response(total: usize) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n"
+    )
+    .into_bytes()
+}
+
+fn range_response(start: usize, end: usize, total: usize, chunk: &[u8]) -> Vec<u8> {
+    let header = format!(
+        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+        start,
+        end - 1,
+        total,
+        chunk.len(),
+    );
+    let mut buf = header.into_bytes();
+    buf.extend_from_slice(chunk);
+    buf
+}
+
+fn range_not_satisfiable(total: usize) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{total}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .into_bytes()
+}
+
+fn full_get_response(data: &[u8]) -> Vec<u8> {
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+        data.len()
+    );
+    let mut buf = header.into_bytes();
+    buf.extend_from_slice(data);
+    buf
 }
 
 fn parse_range(header: &str, total: usize) -> Option<(usize, usize)> {
