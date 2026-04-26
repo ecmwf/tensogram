@@ -450,14 +450,15 @@ export interface FromUrlOptions {
    * When `true`, the lazy HTTP backend issues paired forward-preamble
    * and backward-postamble Range fetches per scan round, alternating
    * with forward-only steps whenever backward yields (format error,
-   * streaming preamble, gap-below-min, overlap, exceeds-bound).  This
-   * roughly halves the number of `GET` requests for tail / full-scan
-   * access on header-indexed files.
+   * streaming preamble, gap-below-min, overlap, exceeds-bound).  The
+   * walker can reduce the number of discovery hops in transports that
+   * issue paired ranges as independent requests.
    *
    * Mirrors the Rust `RemoteScanOptions { bidirectional: true }` and
    * the Python `bidirectional=True` keyword argument.  Default
-   * `false` (forward-only walk, byte-identical to behaviour before
-   * this option existed).
+   * `false` because measured against today's transport stack the
+   * walker fetches more bytes than forward-only on every benchmarked
+   * cell — see `plans/decisions/remote-bidirectional-default-flip.md`.
    *
    * Requires `concurrency >= 2` so the paired round can fan out;
    * passing `bidirectional: true` with `concurrency: 1` rejects

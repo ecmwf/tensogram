@@ -50,8 +50,14 @@ and a `cold_open_plus_operation_plus_close` sample contract:
 - **Walkers**: `forward-only` (`bidirectional=false`) and
   `bidirectional` (`bidirectional=true`).
 
-Each cell is one fresh `open_remote → operation → close` cycle against
-an instrumented mock HTTP server.  The mock server records every
+Each cell is a fresh `open_remote → operation → handle dropped`
+cycle against an instrumented mock HTTP server.  The handle is not
+reused across cells, so all probe + discovery + payload traffic is
+attributed to the cell that issued it.  ("Close" in Python is the
+context manager's `__exit__` and in TypeScript a `#closed = true`
+flag — neither releases caches; the cold-handle invariant is
+established by creating a fresh `TensogramFile` per cell, not by
+clearing state on the existing one.)  The mock server records every
 request with method, path, range header, status, and response body
 size; the harness extracts `total_requests`, `range_get_requests`,
 `head_requests`, and `response_body_bytes` per cell.
@@ -116,15 +122,14 @@ For the `iter` scenario at `N=100` and `N=1000`, header-indexed:
 Two structurally distinct failures coexist:
 
 - **Rust + Python**: bidirectional fetches roughly 25× to 240× the
-  bytes of forward-only.  This is the `object_store::get_ranges`
-  range coalescer expanding paired forward + backward fetches that
-  fall under its merge threshold into a single multi-range request
-  whose body spans large contiguous regions of the file.  For the
-  `thousand-msg.tgm` fixture (~592 KB), bidirectional
-  `message_count` fetches ~148 MB — roughly 250 paired-round
-  fetches each pulling back ~600 KB instead of two 24-byte preamble
-  reads.  The walker is correct; the transport's coalescer is the
-  cost.
+  bytes of forward-only.  This is `object_store::get_ranges`'s
+  coalescer (default merge gap 1 MiB) collapsing paired forward +
+  backward fetches into one contiguous Range GET whose body spans
+  the file region between the two cursors.  For the `thousand-msg.tgm`
+  fixture (~592 KB), bidirectional `message_count` fetches ~148 MB
+  — roughly 250 paired-round fetches each pulling back ~600 KB
+  instead of two 24-byte preamble reads.  The walker is correct;
+  the transport's coalescer is the cost.
 - **TypeScript**: `Promise.allSettled` issues each Range request
   separately, so bytes stay close to forward-only (+2% at N=1000).
   Requests, however, scale at +50% because each backward-discovered

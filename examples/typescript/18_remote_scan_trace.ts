@@ -125,16 +125,16 @@ async function main(): Promise<void> {
   console.log(`Encoded ${N} messages, ${file.byteLength} bytes total`);
 
   const server = await serveRangeBody(file);
-  try {
-    const originalDebug = console.debug.bind(console);
-    console.debug = (label: unknown, payload?: unknown) => {
-      if (typeof label === 'string' && label.startsWith('tensogram:')) {
-        originalDebug(`  [trace] ${label}`, payload ?? '');
-      } else {
-        originalDebug(label as string, payload as object);
-      }
-    };
+  const originalDebug = console.debug.bind(console);
+  console.debug = (label: unknown, payload?: unknown) => {
+    if (typeof label === 'string' && label.startsWith('tensogram:')) {
+      originalDebug(`  [trace] ${label}`, payload ?? '');
+    } else {
+      originalDebug(label as string, payload as object);
+    }
+  };
 
+  try {
     console.log(`\nServing at ${server.url}`);
     console.log('\n── Forward-only walker (default) ──');
     const fwd = await TensogramFile.fromUrl(server.url, { debug: true });
@@ -155,10 +155,10 @@ async function main(): Promise<void> {
       bid.close();
     }
 
-    console.debug = originalDebug;
     console.log('\nDispatcher events streamed via console.debug above.');
     console.log('Replace the interceptor with your own logger to capture them.');
   } finally {
+    console.debug = originalDebug;
     await server.close();
   }
 }

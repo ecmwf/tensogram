@@ -36,16 +36,20 @@ pub struct RemoteScanOptions {
     /// When `true`, the remote backend alternates forward and
     /// backward hops across the file, using the v3 postamble's
     /// mirrored `total_length` field to walk inward from EOF in
-    /// parallel with the forward sweep.  This roughly halves the
-    /// number of HTTP `GET` requests needed for tail / full-scan
-    /// access on header-indexed files.
+    /// parallel with the forward sweep.  The walker can reduce the
+    /// number of discovery hops on transports that issue paired
+    /// ranges as independent requests.  Defaults to `false` because
+    /// measured against today's transport stack the walker fetches
+    /// more bytes than forward-only on every benchmarked cell — see
+    /// `plans/decisions/remote-bidirectional-default-flip.md`.
     ///
     /// `false` keeps the forward-only walker — every existing call
     /// site lands on this path unchanged.
     ///
-    /// Local-file backends ignore this flag entirely; the field is
-    /// only meaningful for [`crate::TensogramFile::open_remote`] and
-    /// its async sibling.
+    /// `RemoteScanOptions` only configures the remote backend.  The
+    /// local-file backend uses a separate in-memory walker
+    /// configured by [`crate::framing::ScanOptions`]; this flag is
+    /// silently ignored when the source resolves to a local path.
     pub bidirectional: bool,
 }
 

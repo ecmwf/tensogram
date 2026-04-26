@@ -95,9 +95,9 @@ impl TensogramFile {
     ///
     /// `scan_opts` configures the remote scan walker.  `None` (or
     /// `Some(RemoteScanOptions::default())`) keeps the forward-only
-    /// walk — byte-identical to behaviour before this option existed.
-    /// For local paths the value is silently ignored (a single forward
-    /// sweep over the file is the only sensible strategy locally).
+    /// walk.  For local paths the value is silently ignored — local
+    /// scanning runs through `framing::scan_file` with the in-memory
+    /// `ScanOptions`, which is unrelated to this remote-backend flag.
     pub fn open_source(
         source: impl AsRef<str>,
         scan_opts: Option<crate::RemoteScanOptions>,
@@ -118,9 +118,11 @@ impl TensogramFile {
     ///
     /// `scan_opts = None` (or `Some(RemoteScanOptions::default())`)
     /// runs the forward-only walker; `Some(RemoteScanOptions {
-    /// bidirectional: true })` enables the bidirectional walker that
-    /// roughly halves HTTP `GET` count for tail / full-scan access on
-    /// header-indexed files.
+    /// bidirectional: true })` enables the bidirectional walker.
+    /// See [`crate::RemoteScanOptions`] for the per-flag rationale
+    /// and the decision record under
+    /// `plans/decisions/remote-bidirectional-default-flip.md` for
+    /// the empirical trade-offs against today's transport stack.
     #[cfg(feature = "remote")]
     pub fn open_remote(
         source: &str,
