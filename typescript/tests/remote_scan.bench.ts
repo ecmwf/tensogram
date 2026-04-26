@@ -41,20 +41,32 @@ async function startMockServer(): Promise<void> {
   proc.stderr.on('data', () => {});
   await new Promise<void>((resolveStart, reject) => {
     let buffered = '';
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const cleanup = (): void => {
+      proc.stdout.off('data', onData);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    };
     const onData = (chunk: Buffer): void => {
       buffered += chunk.toString('utf-8');
       const match = buffered.match(/on\s+(http:\/\/127\.0\.0\.1:\d+)/);
       if (match) {
-        proc.stdout.off('data', onData);
+        cleanup();
         baseUrl = match[1];
         mockProc = proc;
         resolveStart();
       }
     };
     proc.stdout.on('data', onData);
-    proc.once('error', reject);
-    setTimeout(() => {
-      proc.stdout.off('data', onData);
+    proc.once('error', (err) => {
+      cleanup();
+      reject(err);
+    });
+    proc.once('exit', (code) => {
+      cleanup();
+      reject(new Error(`mock_server.py exited with code ${code} before announcing URL`));
+    });
+    timeoutHandle = setTimeout(() => {
+      cleanup();
       reject(new Error('timed out waiting for mock_server.py to announce its URL'));
     }, 10_000);
   });

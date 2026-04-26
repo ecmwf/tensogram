@@ -1379,11 +1379,26 @@ async function runPipelinedBidirectional(
     }
     if (ctx.signal?.aborted) return false;
 
+    // Per-iteration child controller: aborts on first sibling failure
+    // so a hung Range GET can't stall the round; also forwards the
+    // caller's top-level abort so user cancellation still propagates.
+    const childAc = new AbortController();
+    let parentAbortHandler: (() => void) | undefined;
+    if (ctx.signal !== undefined) {
+      if (ctx.signal.aborted) {
+        childAc.abort();
+      } else {
+        parentAbortHandler = (): void => childAc.abort();
+        ctx.signal.addEventListener('abort', parentAbortHandler, { once: true });
+      }
+    }
+    const overrideSignal = childAc.signal;
+
     const fwdPromise = options.limit(() =>
-      fetchRange(ctx, fwdCursor, fwdCursor + PREAMBLE_BYTES, true),
+      fetchRange(ctx, fwdCursor, fwdCursor + PREAMBLE_BYTES, true, overrideSignal),
     );
     const bwdPromise = options.limit(() =>
-      fetchRange(ctx, bwdCursor - POSTAMBLE_BYTES, bwdCursor, true),
+      fetchRange(ctx, bwdCursor - POSTAMBLE_BYTES, bwdCursor, true, overrideSignal),
     );
     const pendingForFetch = pending;
     const valPromise =
@@ -1394,15 +1409,27 @@ async function runPipelinedBidirectional(
               pendingForFetch.msgStart,
               pendingForFetch.msgStart + PREAMBLE_BYTES,
               true,
+              overrideSignal,
             ),
           )
         : undefined;
 
-    const settled = await Promise.allSettled(
+    const promises: Promise<Uint8Array>[] =
       valPromise !== undefined
         ? [fwdPromise, bwdPromise, valPromise]
-        : [fwdPromise, bwdPromise],
-    );
+        : [fwdPromise, bwdPromise];
+    for (const p of promises) {
+      p.then(undefined, () => childAc.abort());
+    }
+
+    let settled: PromiseSettledResult<Uint8Array>[];
+    try {
+      settled = await Promise.allSettled(promises);
+    } finally {
+      if (parentAbortHandler !== undefined && ctx.signal !== undefined) {
+        ctx.signal.removeEventListener('abort', parentAbortHandler);
+      }
+    }
     if (settled.some((r) => r.status === 'rejected')) return false;
 
     const fwdBytes = (settled[0] as PromiseFulfilledResult<Uint8Array>).value;
