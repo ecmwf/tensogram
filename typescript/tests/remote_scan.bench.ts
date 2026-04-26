@@ -81,6 +81,10 @@ async function startMockServer(): Promise<void> {
     });
     timeoutHandle = setTimeout(() => {
       cleanup();
+      // Stuck startup: the child is alive but hasn't printed its URL.
+      // SIGTERM it so Vitest doesn't leak an orphaned python process
+      // when the bench fails; Python's http.server handles SIGTERM cleanly.
+      proc.kill('SIGTERM');
       reject(new Error('timed out waiting for mock_server.py to announce its URL'));
     }, 10_000);
   });
