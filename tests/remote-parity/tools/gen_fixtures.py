@@ -23,11 +23,13 @@ intentional regenerations. Re-run this tool only when the wire format
 changes, the encoder version bumps, or the fixture set expands;
 review the diff and commit.
 
-Current scope: header-indexed (via ``tensogram.encode``) and
-backfilled footer-indexed (via ``StreamingEncoder.finish_backfilled``)
-fixtures.  Streaming-mode (``total_length = 0``) fixtures stay deferred
-because the lazy walker bails to eager on streaming-tail messages,
-making cross-language event parity non-comparable.
+Current scope: header-indexed (via ``tensogram.encode``), backfilled
+footer-indexed (via ``StreamingEncoder.finish_backfilled``), and a
+streaming-tail fixture whose final message uses ``StreamingEncoder.finish``
+(``total_length = 0``).  The streaming-tail fixture is excluded from
+cross-language event parity (the lazy walker bails to eager on its
+final message) but is exercised by the bench harness so the
+bidirectional walker's forward-fallback path stays measured.
 """
 
 from __future__ import annotations
@@ -59,6 +61,7 @@ def _descriptor(shape: tuple[int, ...]) -> dict:
 
 _HEADER_INDEXED = "header"
 _FOOTER_INDEXED = "footer"
+_STREAMING_TAIL = "streaming-tail"
 
 
 def _encode_header_indexed(msg_index: int, shape: tuple[int, ...]) -> bytes:
@@ -92,9 +95,29 @@ def _encode_footer_indexed(msg_index: int, shape: tuple[int, ...]) -> bytes:
     return enc.finish_backfilled()
 
 
+def _encode_streaming_tail_msg(msg_index: int, shape: tuple[int, ...]) -> bytes:
+    """Encode one streaming-mode message (``total_length = 0`` in both
+    preamble and postamble).  Forces the bidirectional walker to fall
+    back to forward scanning for this segment."""
+    count = math.prod(shape)
+    payload = np.arange(count, dtype=np.float32) + float(msg_index)
+    descriptor = _descriptor(shape)
+    metadata = {"base": [{"fixture": {"msg_index": msg_index, "shape": list(shape)}}]}
+    enc = tensogram.StreamingEncoder(metadata)
+    enc.write_object(descriptor, payload)
+    return enc.finish()
+
+
 def _build_multi_message(n: int, shape: tuple[int, ...], kind: str) -> bytes:
-    encoder = _encode_header_indexed if kind == _HEADER_INDEXED else _encode_footer_indexed
-    return b"".join(encoder(i, shape) for i in range(n))
+    if kind == _HEADER_INDEXED:
+        return b"".join(_encode_header_indexed(i, shape) for i in range(n))
+    if kind == _FOOTER_INDEXED:
+        return b"".join(_encode_footer_indexed(i, shape) for i in range(n))
+    if kind == _STREAMING_TAIL:
+        head = b"".join(_encode_header_indexed(i, shape) for i in range(n - 1))
+        tail = _encode_streaming_tail_msg(n - 1, shape)
+        return head + tail
+    raise ValueError(f"unknown fixture kind: {kind}")
 
 
 _FIXTURE_SPECS: dict[str, tuple[int, tuple[int, ...], str]] = {
@@ -102,8 +125,12 @@ _FIXTURE_SPECS: dict[str, tuple[int, tuple[int, ...], str]] = {
     "two-msg": (2, (4,), _HEADER_INDEXED),
     "ten-msg": (10, (4,), _HEADER_INDEXED),
     "hundred-msg": (100, (4,), _HEADER_INDEXED),
+    "thousand-msg": (1000, (4,), _HEADER_INDEXED),
     "single-msg-footer": (1, (4,), _FOOTER_INDEXED),
     "ten-msg-footer": (10, (4,), _FOOTER_INDEXED),
+    "hundred-msg-footer": (100, (4,), _FOOTER_INDEXED),
+    "thousand-msg-footer": (1000, (4,), _FOOTER_INDEXED),
+    "streaming-tail": (10, (4,), _STREAMING_TAIL),
 }
 
 
@@ -115,6 +142,11 @@ def _assert_fixture_well_formed(path: pathlib.Path, kind: str, expected_count: i
     matches the requested kind.  Without this guard a silent encoder
     regression could ship fixtures the bidirectional walker can never
     discover backward.
+
+    For ``_STREAMING_TAIL`` fixtures the final message is allowed
+    (and required) to carry ``total_length = 0`` and no index flag;
+    the leading ``n - 1`` messages must remain header-indexed and
+    backward-locatable so only the tail forces fallback.
     """
     data = path.read_bytes()
     layouts = list(tensogram.scan(data))
@@ -122,19 +154,26 @@ def _assert_fixture_well_formed(path: pathlib.Path, kind: str, expected_count: i
         raise RuntimeError(
             f"{path}: expected {expected_count} messages, scan found {len(layouts)}"
         )
-    for offset, length in layouts:
-        if length == 0:
+    for i, (offset, _scanned_length) in enumerate(layouts):
+        is_streaming_tail_msg = kind == _STREAMING_TAIL and i == expected_count - 1
+        preamble_total_length = int.from_bytes(data[offset + 16 : offset + 24], "big")
+        if preamble_total_length == 0 and not is_streaming_tail_msg:
             raise RuntimeError(
-                f"{path}: streaming-mode (total_length=0) message at offset {offset}; "
-                "fixtures must use finish_backfilled for the parity harness"
+                f"{path}: unexpected preamble.total_length=0 at offset {offset}; "
+                "non-streaming fixtures must use finish_backfilled"
             )
-        # Preamble flags are u16 BE at offset 10 (after magic 8 + version 2).
-        # MessageFlags bit positions per wire.rs: HEADER_METADATA=1<<0,
-        # FOOTER_METADATA=1<<1, HEADER_INDEX=1<<2, FOOTER_INDEX=1<<3.
+        if is_streaming_tail_msg:
+            if preamble_total_length != 0:
+                raise RuntimeError(
+                    f"{path}: streaming-tail message must have preamble.total_length=0, "
+                    f"got {preamble_total_length}"
+                )
+            continue
         flags_u16 = int.from_bytes(data[offset + 10 : offset + 12], "big")
         has_header_index = bool(flags_u16 & (1 << 2))
         has_footer_index = bool(flags_u16 & (1 << 3))
-        if kind == _HEADER_INDEXED and not has_header_index:
+        expects_header = kind in (_HEADER_INDEXED, _STREAMING_TAIL)
+        if expects_header and not has_header_index:
             raise RuntimeError(
                 f"{path}: message at offset {offset} missing HEADER_INDEX flag "
                 f"(flags=0x{flags_u16:04x})"
