@@ -2294,7 +2294,7 @@ impl RemoteBackend {
         Ok(())
     }
 
-    /// Pipelined full-discovery bidirectional scan.
+    /// Pipelined bidirectional scan with optional forward-side target.
     ///
     /// Each iteration fetches three ranges in parallel: the next forward
     /// preamble, the next backward postamble, AND the validation
@@ -2304,6 +2304,16 @@ impl RemoteBackend {
     /// halving wall-clock for full-discovery operations like
     /// `message_count_async` and `message_layouts_async`.
     ///
+    /// `target_fwd_count = Some(n)` stops the loop as soon as the
+    /// forward cursor has discovered at least `n` messages
+    /// (committed + locally-accumulated).  This eliminates the
+    /// "full-discovery overhead for early-access targets" regression:
+    /// for `decode_metadata(idx)` the caller passes `Some(idx + 1)`
+    /// so the walker stops walking once the target message's layout
+    /// is known on the forward side, rather than continuing all the
+    /// way to the cursor meeting point.  `None` requests full
+    /// discovery (cursors meet).
+    ///
     /// Snapshot/commit pattern: the function runs entirely off the
     /// state mutex.  Layouts accumulate in local `Vec`s.  At the end,
     /// the lock is reacquired; if the snapshot still matches, all
@@ -2312,25 +2322,31 @@ impl RemoteBackend {
     /// caller's outer loop drives discovery via `scan_step_async`.
     ///
     /// Returns `Ok(true)` on a successful pipelined run (state now
-    /// reflects full discovery) or `Ok(false)` to signal the caller
-    /// must fall back to the per-round walker — fired on any anomaly
-    /// (Format error, ExceedsBound, Streaming, gap-below-min,
-    /// snapshot mismatch).  The fallback path preserves all the
-    /// edge-case handling in `apply_round_outcomes`.
+    /// reflects discovery up to the target or to gap-closed) or
+    /// `Ok(false)` to signal the caller must fall back to the
+    /// per-round walker — fired on any anomaly (Format error,
+    /// ExceedsBound, Streaming, gap-below-min, snapshot mismatch).
+    /// The fallback path preserves all the edge-case handling in
+    /// `apply_round_outcomes`.
     ///
     /// Eager footer fetches are deliberately skipped on this fast
     /// path; callers that need metadata/index frames trigger the
     /// lazy `ensure_layout` fetch on first access.
-    async fn scan_all_pipelined_async(&self) -> Result<bool> {
-        let snap = {
+    async fn scan_pipelined_async(&self, target_fwd_count: Option<usize>) -> Result<bool> {
+        let (snap, committed_fwd_at_start) = {
             let state = self.lock_state()?;
             if state.scan_complete() {
                 return Ok(true);
             }
+            if let Some(target) = target_fwd_count {
+                if state.layouts.len() >= target {
+                    return Ok(true);
+                }
+            }
             if !state.bwd_active || state.fwd_terminated {
                 return Ok(false);
             }
-            state.snapshot()
+            (state.snapshot(), state.layouts.len())
         };
 
         let min_message_size = (PREAMBLE_SIZE + POSTAMBLE_SIZE) as u64;
@@ -2343,6 +2359,11 @@ impl RemoteBackend {
         loop {
             if fwd_cursor == bwd_cursor {
                 break;
+            }
+            if let Some(target) = target_fwd_count {
+                if committed_fwd_at_start + local_fwd.len() >= target {
+                    break;
+                }
             }
             if bwd_cursor < fwd_cursor.saturating_add(min_message_size) {
                 return Ok(false);
@@ -2435,11 +2456,23 @@ impl RemoteBackend {
         for layout in local_bwd {
             state.record_backward_hop(layout);
         }
-        state.close_gap();
+        if state.next_scan_offset == state.prev_scan_offset {
+            state.close_gap();
+        }
         Ok(true)
     }
 
     async fn ensure_message_async(&self, msg_idx: usize) -> Result<()> {
+        let needs_layout = {
+            let state = self.lock_state()?;
+            msg_idx >= state.layouts.len()
+                && !state.scan_complete()
+                && state.bwd_active
+                && !state.fwd_terminated
+        };
+        if needs_layout {
+            let _ = self.scan_pipelined_async(Some(msg_idx + 1)).await?;
+        }
         loop {
             let ready = {
                 let state = self.lock_state()?;
@@ -2671,7 +2704,7 @@ impl RemoteBackend {
                 && !state.fwd_terminated
         };
         if needs_layout {
-            let _ = self.scan_all_pipelined_async().await?;
+            let _ = self.scan_pipelined_async(Some(msg_idx + 1)).await?;
         }
         loop {
             let action = {
@@ -2810,7 +2843,7 @@ impl RemoteBackend {
     }
 
     pub(crate) async fn message_count_async(&self) -> Result<usize> {
-        if self.scan_all_pipelined_async().await? {
+        if self.scan_pipelined_async(None).await? {
             let state = self.lock_state()?;
             return Ok(state.layouts.len());
         }
@@ -2829,7 +2862,7 @@ impl RemoteBackend {
     }
 
     pub(crate) async fn message_layouts_async(&self) -> Result<Vec<crate::MessageLayout>> {
-        if !self.scan_all_pipelined_async().await? {
+        if !self.scan_pipelined_async(None).await? {
             loop {
                 let done = {
                     let state = self.lock_state()?;
@@ -3063,7 +3096,7 @@ impl RemoteBackend {
                 && !state.fwd_terminated
         };
         if needs_discovery {
-            let _ = self.scan_all_pipelined_async().await?;
+            let _ = self.scan_pipelined_async(Some(max_idx + 1)).await?;
         }
         loop {
             let bidir = {
