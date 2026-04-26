@@ -431,11 +431,21 @@ await init();
 
 // Default: bidirectional pipelined walker.
 const file = await TensogramFile.fromUrl('https://example.com/data.tgm');
+try {
+  // ... use file ...
+} finally {
+  file.close();
+}
 
 // Force forward-only.
 const fwdOnly = await TensogramFile.fromUrl('https://example.com/data.tgm', {
   bidirectional: false,
 });
+try {
+  // ... use fwdOnly ...
+} finally {
+  fwdOnly.close();
+}
 ```
 
 Forward-only and bidirectional opens produce identical

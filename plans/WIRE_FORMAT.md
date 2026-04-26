@@ -821,13 +821,15 @@ from offset 0, backward from EOF, or both simultaneously.
   mode messages; this is a library-internal choice with no externally
   observable effect on the bytes produced or consumed.
 - **Remote** (HTTP `Range`, S3 GET range, etc.): the walker choice is
-  significant because each hop costs a round trip.  A bidirectional
-  walker pairs a forward preamble fetch with a backward postamble
-  fetch in the same paired round, halving the discovery hop count
-  for header-indexed files in principle.  The implementation is
-  exposed per-call via `RemoteScanOptions { bidirectional: bool }`
-  (Rust + Python) and `FromUrlOptions.bidirectional` (TypeScript),
-  defaulting to `false`.  See
+  significant because each hop costs a round trip.  The shipped
+  walker is pipelined bidirectional: each iteration fetches the next
+  forward preamble, the next backward postamble, and the previous
+  iteration's candidate-preamble validation in one parallel round,
+  collapsing the per-round critical path from 2 RTTs to 1 RTT.  The
+  implementation is exposed per-call via
+  `RemoteScanOptions { bidirectional: bool }` (Rust + Python) and
+  `FromUrlOptions.bidirectional` (TypeScript), defaulting to `true`
+  (set `bidirectional: false` to force forward-only).  See
   `docs/src/guide/remote-access.md` for the operator-facing
   description, including the failure modes (streaming-mode fallback,
   format-error fallback, eager footer-indexed backward discovery)
