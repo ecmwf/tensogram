@@ -34,10 +34,24 @@ let mockProc: ChildProcessByStdio<null, Readable, Readable> | undefined;
 let baseUrl = '';
 
 async function startMockServer(): Promise<void> {
-  const proc = spawn('python', [MOCK_SERVER_PY, '--port', '0', '--fixtures-dir', FIXTURES_DIR], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, PYTHONUNBUFFERED: '1' },
-  });
+  const proc = spawn(
+    'python',
+    [
+      MOCK_SERVER_PY,
+      '--port',
+      '0',
+      '--fixtures-dir',
+      FIXTURES_DIR,
+      // The wall-clock bench never reads the per-request log; disable
+      // logging server-side so the per-run_id buffer can't accumulate
+      // across Vitest's many statistical iterations.
+      '--no-log-requests',
+    ],
+    {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    },
+  );
   proc.stderr.on('data', () => {});
   await new Promise<void>((resolveStart, reject) => {
     let buffered = '';
@@ -114,13 +128,6 @@ describe('remote_scan walker (wall-clock only)', () => {
     }
   });
 
-  // A single shared run_id keeps the parity mock server's
-  // run_id → log[] map at constant cardinality across the bench
-  // suite — Vitest runs each `bench` callback many times for its
-  // statistical sample, and a fresh id per iteration would grow the
-  // map without bound.  The wall-clock bench never reads the log,
-  // so reuse is safe and the mock server discards everything at
-  // process exit.
   const SHARED_RUN_ID = 'vitest-bench';
   for (const cell of HEADLINE_CELLS) {
     for (const bidirectional of [false, true]) {

@@ -24,6 +24,12 @@ Control endpoints (underscore-prefixed so they can't collide with a
 
 - ``POST /_reset`` — clears all in-memory logs.
 - ``GET /_log/<run_id>`` — returns that run's log as newline-delimited JSON.
+
+Pass ``--no-log-requests`` to disable the per-request log entirely.
+The Vitest wall-clock bench uses this so that long bench cycles can't
+accumulate an unbounded per-``run_id`` log; ``run_parity.py`` and the
+NDJSON metrics runner leave logging enabled because they consume the
+log to extract request counters.
 """
 
 from __future__ import annotations
@@ -255,12 +261,15 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class _ServerState:
-    def __init__(self, fixtures_dir: pathlib.Path) -> None:
+    def __init__(self, fixtures_dir: pathlib.Path, *, log_requests: bool = True) -> None:
         self.fixtures_dir = fixtures_dir
+        self._log_requests = log_requests
         self._lock = threading.Lock()
         self._log: dict[str, list[RequestRecord]] = {}
 
     def append(self, run_id: str | None, record: RequestRecord) -> None:
+        if not self._log_requests:
+            return
         key = run_id or "__untagged__"
         with self._lock:
             self._log.setdefault(key, []).append(record)
@@ -275,9 +284,16 @@ class _ServerState:
 
 
 class MockServer:
-    def __init__(self, fixtures_dir: pathlib.Path, port: int = 0) -> None:
+    def __init__(
+        self,
+        fixtures_dir: pathlib.Path,
+        port: int = 0,
+        *,
+        log_requests: bool = True,
+    ) -> None:
         self._fixtures_dir = fixtures_dir
         self._requested_port = port
+        self._log_requests = log_requests
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -303,7 +319,9 @@ class MockServer:
         if self._httpd is not None:
             raise RuntimeError("MockServer already started")
         httpd = ThreadingHTTPServer(("127.0.0.1", self._requested_port), _Handler)
-        httpd.state = _ServerState(self._fixtures_dir)  # type: ignore[attr-defined]
+        httpd.state = _ServerState(  # type: ignore[attr-defined]
+            self._fixtures_dir, log_requests=self._log_requests
+        )
         self._httpd = httpd
         self._thread = threading.Thread(
             target=httpd.serve_forever, name="parity-mock-server", daemon=True
@@ -338,6 +356,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Directory containing .tgm fixtures",
     )
     parser.add_argument("--port", type=int, default=0, help="Port (0 = auto)")
+    parser.add_argument(
+        "--no-log-requests",
+        action="store_true",
+        help="Disable per-request logging.  Use for long bench cycles that "
+        "don't query the log so the per-run_id buffer can't grow unbounded.",
+    )
     args = parser.parse_args(argv)
 
     if not args.fixtures_dir.exists():
@@ -348,7 +372,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    server = MockServer(args.fixtures_dir, args.port)
+    server = MockServer(
+        args.fixtures_dir, args.port, log_requests=not args.no_log_requests
+    )
     server.start()
     try:
         print(f"serving {args.fixtures_dir} on {server.base_url}")
