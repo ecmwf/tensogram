@@ -445,25 +445,30 @@ export interface FromUrlOptions {
    */
   concurrency?: number;
   /**
-   * Enable the bidirectional remote-scan walker on open.
+   * Enable the bidirectional remote-scan walker on open.  Defaults to
+   * `true`.
    *
-   * When `true`, the lazy HTTP backend issues paired forward-preamble
-   * and backward-postamble Range fetches per scan round, alternating
-   * with forward-only steps whenever backward yields (format error,
-   * streaming preamble, gap-below-min, overlap, exceeds-bound).  The
-   * walker can reduce the number of discovery hops in transports that
-   * issue paired ranges as independent requests.
+   * When `true` (the default), `lazyScanMessages` runs a pipelined
+   * bidirectional walk: each iteration fetches the next forward
+   * preamble, the next backward postamble, AND the previous
+   * iteration's candidate-preamble validation in one parallel
+   * `Promise.allSettled` round, collapsing the per-round critical
+   * path from 2 RTTs to 1 RTT.  On real-network workloads this
+   * roughly halves wall-clock for full layout discovery.
    *
-   * Mirrors the Rust `RemoteScanOptions { bidirectional: true }` and
-   * the Python `bidirectional=True` keyword argument.  Default
-   * `false` because measured against today's transport stack the
-   * walker fetches more bytes than forward-only on every benchmarked
-   * cell — see `plans/decisions/remote-bidirectional-default-flip.md`.
+   * Set `false` to force a forward-only walk — useful when an
+   * adversarial server might serve disagreeing forward and backward
+   * reads, or when you specifically want serial Range fetches with
+   * `concurrency: 1`.
    *
-   * Requires `concurrency >= 2` so the paired round can fan out;
-   * passing `bidirectional: true` with `concurrency: 1` rejects
-   * the {@link TensogramFile.fromUrl} promise with
-   * `InvalidArgumentError` before any HTTP probe is issued.
+   * Mirrors the Rust `RemoteScanOptions { bidirectional: true }`
+   * default and the Python `bidirectional=True` keyword default.
+   *
+   * `bidirectional: true` requires `concurrency >= 2` so the paired
+   * round can fan out; the default `concurrency` of `6` is fine.
+   * `concurrency: 1` is only legal alongside `bidirectional: false`;
+   * any other combination rejects the {@link TensogramFile.fromUrl}
+   * promise with `InvalidArgumentError` before any HTTP probe.
    *
    * Falls back to the eager full-body GET when the server does not
    * support Range requests, the same as forward-only mode.

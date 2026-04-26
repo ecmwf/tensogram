@@ -30,47 +30,47 @@
 
 ---
 
-## Remote-scan walker microbench + default-flip decision
+## Remote bidirectional walker — pipelined and on by default
 
-Three benchmark harnesses, one per language, share a fixture roster
-and a `cold_open_plus_operation_plus_close` sample contract so the
-NDJSON sidecars stack up cell-for-cell.  Drives a data-driven decision
-on whether the bidirectional walker should default to `true` across
-Rust, Python, and TypeScript.  Verdict: stay opt-in.
+The remote backend now uses a pipelined bidirectional walker out of
+the box across Rust, Python, and TypeScript.  Each iteration fetches
+the next forward preamble, the next backward postamble, AND the
+previous iteration's candidate-preamble validation in parallel,
+collapsing the per-round critical path from 2 RTTs to 1 RTT.  On
+real-network workloads (LUMI, ~47 ms RTT, 301 messages) this halves
+wall-clock for full layout discovery and produces 1.3× to 3.2× wins
+across `message_count`, `decode_metadata` at any index, and
+`prefetch_layouts`.
 
 | Component | Shape |
 |-----------|-------|
+| `rust/tensogram/src/scan_opts.rs` | `RemoteScanOptions::default()` returns `bidirectional: true`; doctest pinned to that value |
+| `rust/tensogram/src/remote.rs` | `scan_bidir_round_locked` and `scan_bidir_round_async` use two independent `get_range` futures joined via `tokio::join!` instead of `store.get_ranges(&[fwd, bwd])` (avoiding `object_store`'s 1 MiB coalescer) |
+| `rust/tensogram/src/remote.rs` | New `scan_pipelined_async(target_fwd_count: Option<usize>)` runs the full pipelined walk off the state mutex, accumulates layouts in local `Vec`s, and commits via `record_forward_hop` / `record_backward_hop` only on success.  `Ok(false)` on snapshot drift so concurrent callers never expose partial state.  `target_fwd_count = Some(idx + 1)` lets `decode_metadata(idx)` short-circuit once forward reaches the target |
+| `rust/tensogram/src/remote.rs` | `message_count_async`, `message_layouts_async`, `ensure_layout_eager_async`, `ensure_message_async`, `ensure_all_layouts_batch_async` route through `scan_pipelined_async` first, falling back to the per-round walker on bail |
+| `python/bindings/src/lib.rs` | Four PyO3 entry points (`PyTensogramFile.open` / `.open_remote`, `PyAsyncTensogramFile.open` / `.open_remote`) default `bidirectional=True`; `scan_opts_for` always emits explicit options so the opt-out survives any future default change |
+| `typescript/src/file.ts` | `lazyScanMessages` runs `runPipelinedBidirectional` (replaces the old per-round `tryBidirectionalRound`); same snapshot/commit pattern, same-message-meet detection, eager footer fetch gated on the just-validated preamble's flags before issuing the GET |
+| `typescript/src/file.ts` `effectiveBidirectional` | Default is `true`; `concurrency: 1` is illegal alongside the bidirectional default and rejects synchronously |
+| `tests/remote-parity/drivers/rust_driver` | Always passes explicit `RemoteScanOptions { bidirectional: args.bidirectional }` |
 | `rust/benchmarks/src/mock_http.rs` | `std`-only TCP listener with Range support and per-request counters; bench-local, no `hyper`/`tokio` |
-| `rust/benchmarks/src/remote_scan_bench.rs` | Shared `Scenario` enum, `FixtureSpec::matrix()`, and `run_cell()` consumed by both the metrics bin and the Criterion bench |
-| `rust/benchmarks/src/bin/remote_scan_metrics.rs` | Deterministic single-pass NDJSON emitter to `target/remote-scan-bench/rust.ndjson` |
-| `rust/benchmarks/benches/remote_scan.rs` | Criterion wall-clock for headline cells; metrics deliberately scoped to the metrics bin to avoid Criterion's iter-count smearing the request counters |
-| `rust/benchmarks/python/bench_remote_scan.py` | Custom argparse harness (`--quick`, `--headline`, `--mode {sync,async}`, `--json`) that imports `tests/remote-parity/mock_server.py` directly via sys.path insertion |
-| `typescript/tests/run_remote_bench.ts` | Node runner spawning `mock_server.py` via subprocess (`PYTHONUNBUFFERED=1` for prompt URL announce); fetches `/_log/<run_id>` per cell |
-| `typescript/tests/remote_scan.bench.ts` | Vitest `bench()` headline cells; `vitest.config.ts` gains a `benchmark.include` block so bench files don't run under regular tests |
-| `tests/remote-parity/tools/gen_fixtures.py` | New `_STREAMING_TAIL` kind plus `thousand-msg`, `hundred-msg-footer`, `thousand-msg-footer`, `streaming-tail` fixtures; validator reads preamble's `total_length` directly so streaming-mode messages are correctly accepted only on the final position, and now requires preamble.total_length == postamble.total_length on every message so an encoder regression desynchronising the postamble cannot ship silently |
-| `plans/decisions/remote-bidirectional-default-flip.md` | Decision record with criterion verbatim, aggregate verdict per language, headline cells table, structural failure-mode analysis, reproduce instructions |
-| `examples/rust/src/bin/18_remote_scan_trace.rs` | `tracing-subscriber` `EnvFilter` set in code; runs forward-only then bidirectional walks against an in-process Range server |
-| `examples/typescript/18_remote_scan_trace.ts` | Mirrors via Node http server + `console.debug` interceptor |
-| `docs/src/guide/remote-access.md`, `typescript-api.md`, `benchmark-results-remote-scan.md`, `SUMMARY.md` | Honest framing of the bidirectional default + new results page |
+| `rust/benchmarks/src/remote_scan_bench.rs`, `bin/remote_scan_metrics.rs`, `benches/remote_scan.rs` | Shared scenario runner + deterministic NDJSON emitter + Criterion wall-clock |
+| `rust/benchmarks/python/bench_remote_scan.py` | Custom argparse harness (`--quick`, `--headline`, `--mode {sync,async}`, `--json`) reusing `tests/remote-parity/mock_server.py` |
+| `typescript/tests/run_remote_bench.ts`, `tests/remote_scan.bench.ts` | Node runner spawning `mock_server.py` + Vitest `bench()` headline cells; `vitest.config.ts` gains `benchmark.include` |
+| `tests/remote-parity/tools/gen_fixtures.py` | New `_STREAMING_TAIL` kind plus `thousand-msg`, `hundred-msg-footer`, `thousand-msg-footer`, `streaming-tail` fixtures; validator requires `preamble.total_length == postamble.total_length` on every non-streaming message |
+| `examples/rust/src/bin/18_remote_scan_trace.rs`, `examples/typescript/18_remote_scan_trace.ts` | Subscribe to `tensogram::remote_scan` tracing events / `console.debug` walker events |
 | `plans/WIRE_FORMAT.md §9.3` | Rewritten with format-vs-transport taxonomy: in-memory `ScanOptions` vs remote `RemoteScanOptions` |
+| `docs/src/guide/remote-access.md`, `typescript-api.md` | Updated to reflect new defaults |
 
-Three latent opt-out bugs landed alongside the harnesses regardless of
-the verdict: Python `scan_opts_for(false) → None`, the Rust parity
-driver's `then_some(...)` collapse, and the TypeScript `concurrency: 1`
-guard's literal `=== true` check — all three would have silently
-overridden `bidirectional=False` once the default flipped, so each is
-fixed to pass explicit `RemoteScanOptions` (Rust + Python) or use a
-pre-computed `effectiveBidirectional` (TypeScript) before the
-validation runs.
-
-Verdict in one line: bidirectional walker correct on every fixture,
-identical layouts to forward-only; cost lives in the transport stack.
-Rust + Python share `object_store`'s range coalescer (paired ranges
-that fall under the merge threshold expand into multi-range fetches
-pulling back 25× to 240× forward bytes); TypeScript pays one wasted
-GET per backward-discovered message because the eager footer fetch
-runs before the flag-check gate.  Both are addressable but out of
-scope for this work.
+Architectural finding behind the work: the original per-round walker
+was paying 2 RTTs per round (paired primary fetch + sequential
+candidate-preamble validation), so the design's "halves discovery
+hops" claim was undelivered — both walkers paid roughly the same
+wall-clock.  Pipelining round k's validation with round k+1's
+primary fetches is what makes the design actually deliver.  An
+earlier round of localhost benchmarks measured request count and
+bytes (the criterion the TODO entry called out), but the actual
+operator-visible benefit lives in wall-clock under non-zero RTT,
+which the criterion explicitly demoted to informational.
 
 ---
 

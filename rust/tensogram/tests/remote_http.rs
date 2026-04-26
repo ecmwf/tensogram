@@ -647,7 +647,16 @@ async fn test_eager_layout_combines_scan_and_discover() -> Result<(), Box<dyn Er
     combined.extend_from_slice(&msg2);
     let server = MockServer::start(combined).await?;
 
-    let file = TensogramFile::open_source(server.url(), None)?;
+    // Pin to forward-only: this test exercises the combined-chunk
+    // eager layout optimisation specific to the forward walker.  The
+    // bidirectional pipelined scanner uses a different fetch shape
+    // (paired probes + validation) and is covered by its own tests.
+    let file = TensogramFile::open_source(
+        server.url(),
+        Some(RemoteScanOptions {
+            bidirectional: false,
+        }),
+    )?;
     server.reset_count();
     let (_, desc, data) = file.decode_object(1, 0, &DecodeOptions::default())?;
     let eager_requests = server.request_count();

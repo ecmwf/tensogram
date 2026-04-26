@@ -21,30 +21,34 @@
 
 /// Reader-side options for the scan walker.
 ///
-/// Defaults to a forward-only walk, which is byte-identical across
-/// every backend to behaviour before this option existed.
+/// Defaults to a bidirectional walk: the remote backend pairs
+/// forward preamble fetches with backward postamble fetches, and a
+/// pipelined full-discovery scanner overlaps each round's backward
+/// validation with the next round's primary fetches.  On real-network
+/// workloads this roughly halves wall-clock for full layout discovery
+/// and tail / middle access.
 ///
 /// ```
 /// use tensogram::RemoteScanOptions;
 /// let opts = RemoteScanOptions::default();
-/// assert!(!opts.bidirectional);
+/// assert!(opts.bidirectional);
 /// ```
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoteScanOptions {
     /// Enable the bidirectional walker on the remote backend.
     ///
-    /// When `true`, the remote backend alternates forward and
-    /// backward hops across the file, using the v3 postamble's
-    /// mirrored `total_length` field to walk inward from EOF in
-    /// parallel with the forward sweep.  The walker can reduce the
-    /// number of discovery hops on transports that issue paired
-    /// ranges as independent requests.  Defaults to `false` because
-    /// measured against today's transport stack the walker fetches
-    /// more bytes than forward-only on every benchmarked cell — see
-    /// `plans/decisions/remote-bidirectional-default-flip.md`.
+    /// When `true` (the default), the remote backend pairs forward
+    /// preamble fetches with backward postamble fetches across the
+    /// file, using the v3 postamble's mirrored `total_length` field
+    /// to walk inward from EOF in parallel with the forward sweep.
+    /// The pipelined scanner overlaps each round's candidate-preamble
+    /// validation with the next round's primary fetches, collapsing
+    /// the per-round critical path from 2 RTTs to 1 RTT.
     ///
-    /// `false` keeps the forward-only walker — every existing call
-    /// site lands on this path unchanged.
+    /// Set `false` to force a forward-only walk — useful when an
+    /// adversarial server might serve disagreeing forward and backward
+    /// reads, or when the remote source returns paired ranges over a
+    /// transport whose connection-pool serialises them anyway.
     ///
     /// `RemoteScanOptions` only configures the remote backend.  The
     /// local-file backend uses a separate in-memory walker
@@ -53,14 +57,22 @@ pub struct RemoteScanOptions {
     pub bidirectional: bool,
 }
 
+impl Default for RemoteScanOptions {
+    fn default() -> Self {
+        Self {
+            bidirectional: true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::RemoteScanOptions;
 
     #[test]
-    fn default_is_forward_only() {
+    fn default_is_bidirectional() {
         let opts = RemoteScanOptions::default();
-        assert!(!opts.bidirectional);
+        assert!(opts.bidirectional);
     }
 
     #[test]
@@ -75,7 +87,7 @@ mod tests {
         );
         assert_ne!(
             RemoteScanOptions {
-                bidirectional: true
+                bidirectional: false
             },
             RemoteScanOptions::default(),
         );

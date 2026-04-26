@@ -47,7 +47,6 @@
 - [Multi-Threaded Coding Pipeline](guide/multi-threaded-pipeline.md)
 - [Benchmarks](guide/benchmarks.md)
 - [Benchmark Results](guide/benchmark-results.md)
-- [Benchmark Results — Remote Scan Walker](guide/benchmark-results-remote-scan.md)
 
 ---
 

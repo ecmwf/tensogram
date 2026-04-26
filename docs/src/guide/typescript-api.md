@@ -368,7 +368,7 @@ Downloads the file over HTTPS using the ambient `globalThis.fetch`.
 | `headers` | `HeadersInit` | Extra request headers (auth, etc.). |
 | `signal` | `AbortSignal` | Cancels the download. |
 | `concurrency` | `number` | Per-host concurrency cap for fan-out operations (`messageObjectBatch`, `prefetchLayouts`, descriptor prefix fetches).  Defaults to `6`, matching typical browser per-host connection limits. |
-| `bidirectional` | `boolean` | Enable the bidirectional remote-scan walker on open.  See [Bidirectional scan](#bidirectional-scan) below.  Default `false`. |
+| `bidirectional` | `boolean` | Bidirectional remote-scan walker on open.  See [Bidirectional scan](#bidirectional-scan) below.  Default `true`. |
 | `debug` | `boolean` | Emit `console.debug` events on every walker state transition.  Default `false`. |
 
 ### `TensogramFile.fromBytes(bytes)`
@@ -416,52 +416,43 @@ Browser callers using `fromUrl` directly need CORS to expose the
 
 ### Bidirectional scan
 
-`fromUrl` accepts an opt-in `bidirectional: boolean` flag that
-enables a two-cursor walker.  The lazy backend issues paired
-forward-preamble and backward-postamble Range fetches per scan round,
-alternating with forward-only steps whenever backward yields (format
-error, streaming preamble, gap-below-min, overlap, exceeds-bound).
+`fromUrl` runs a **pipelined bidirectional walker by default**.  Each
+iteration of `lazyScanMessages` fetches the next forward preamble,
+the next backward postamble, AND the previous iteration's
+candidate-preamble validation in one parallel `Promise.allSettled`
+round.  That overlap collapses the per-round critical path from 2
+RTTs to 1 RTT, so on real-network workloads the open-time scan is
+roughly half the wall-clock of forward-only.
 
 ```typescript
 import { init, TensogramFile } from '@ecmwf.int/tensogram';
 
 await init();
-const file = await TensogramFile.fromUrl('https://example.com/data.tgm', {
-    bidirectional: true,
+
+// Default: bidirectional pipelined walker.
+const file = await TensogramFile.fromUrl('https://example.com/data.tgm');
+
+// Force forward-only.
+const fwdOnly = await TensogramFile.fromUrl('https://example.com/data.tgm', {
+  bidirectional: false,
 });
-console.log('messageCount:', file.messageCount);
-console.log('messageLayouts:', file.messageLayouts);
-file.close();
 ```
 
 Forward-only and bidirectional opens produce identical
 `messageLayouts` on well-formed files; the parity harness asserts
-this on every fixture.
+this on every fixture.  Set `bidirectional: false` when an adversarial
+server might serve disagreeing forward and backward reads, or when
+you specifically want serial Range fetches.
 
-The default is **`false`** across Rust, Python, and TypeScript.
-Benchmarks (see `plans/decisions/remote-bidirectional-default-flip.md`)
-showed the bidirectional walker fetches more bytes and at least as
-many requests as forward-only on every measured cell against
-today's transport stack.  TypeScript issues paired Range fetches
-via `Promise.allSettled([fetchRange(fwd), fetchRange(bwd)])`, so
-each Range becomes its own HTTP request and the byte total stays
-within +2% of forward at N=1000.  The +50% request inflation comes
-from a speculative footer fetch issued for every backward-discovered
-message; the flag-check gate inside `tryApplyEagerFooter` discards
-the bytes when the message turns out to be header-indexed, but the
-GET round trip still runs.  Opt in when network round-trip cost
-dominates over per-fetch byte cost.
+`concurrency: 1` is illegal alongside the bidirectional default
+because the paired round needs two parallel fetches to be useful.
+The `fromUrl` promise rejects with `InvalidArgumentError` before any
+HTTP probe in that case.  To use `concurrency: 1`, pair it with
+`bidirectional: false` explicitly.
 
-`bidirectional: true` requires `concurrency >= 2` (the default of
-`6` is fine).  Passing `concurrency: 1` alongside `bidirectional:
-true` rejects the `fromUrl` promise with `InvalidArgumentError`
-before any HTTP probe is issued, since the paired round needs two
-parallel fetches to be useful.
-
-> **Wire-format compatibility:** existing `.tgm` files read with
-> `bidirectional: true` produce identical decoded bytes; the walker
-> is reader-side only, with no migration, no re-encoding, and no
-> wire-format bump.  Opt out with `bidirectional: false`.
+> **Wire-format compatibility:** existing `.tgm` files gain the
+> speedup automatically — the walker is reader-side only, with no
+> migration, no re-encoding, and no wire-format bump.
 
 `debug: true` emits `console.debug` events on every state transition
 — `tensogram:scan:mode`, `tensogram:scan:fallback`,
@@ -482,13 +473,11 @@ footer-region GET.
 The fetch is best-effort: if the footer Range request fails or the
 chunk fails to parse, the layout still commits via the validated
 preamble alone, and the lazy populate path picks up footer discovery
-on first metadata access.  The dispatcher fetches the footer region
-speculatively whenever the postamble's `first_footer_offset` indicates
-one is present; the resulting bytes are only **applied** to the
-layout when the just-validated preamble's flags carry both
-`FOOTER_METADATA` and `FOOTER_INDEX`, otherwise they are discarded
-(typically a few hundred bytes per header-indexed message that
-carries a footer hash frame).
+on first metadata access.  The footer fetch fires only after the
+just-validated preamble's flags carry both `FOOTER_METADATA` and
+`FOOTER_INDEX`, so header-indexed messages (whose footer region
+typically holds only a hash frame) skip the fetch entirely instead
+of paying a discarded round trip.
 
 Behaviour is symmetric across the Rust sync / async dispatchers and
 the TypeScript walker — the same wire-format outcome enum

@@ -3409,11 +3409,11 @@ mod tests {
     }
 
     #[test]
-    fn scan_options_default_is_forward_only() {
+    fn scan_options_default_is_bidirectional() {
         let opts = RemoteScanOptions::default();
         assert!(
-            !opts.bidirectional,
-            "default must keep current forward-only behaviour",
+            opts.bidirectional,
+            "default enables the pipelined bidirectional walker",
         );
     }
 

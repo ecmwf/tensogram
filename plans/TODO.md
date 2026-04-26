@@ -451,33 +451,35 @@ For speculative ideas, see `IDEAS.md`.
     `floor(N/2)` (number of backward-discovered messages) and zero
     post-scan lazy fetches.  See `DONE.md` for the full breakdown.
 
-  - [x] ~~**benchmarks, docs, default-flip decision**~~ — Three
-    bench harnesses (Rust Criterion + metrics bin, Python custom,
-    TypeScript Vitest + Node runner) share a fixture roster and
-    `cold_open_plus_operation_plus_close` sample contract; their
-    NDJSON sidecars stack up cell-for-cell.  Decision artifact at
-    `plans/decisions/remote-bidirectional-default-flip.md` records
-    the verdict (FAIL on the request-count + bytes-fetched gates in
-    every language) and the two structural failure modes
-    (`object_store` range coalescing on Rust + Python; discarded
-    eager footer fetches on TypeScript).  Defaults stay opt-in.
-    Three latent opt-out bugs (`scan_opts_for(false) → None`, the
-    Rust parity driver's `then_some(...)` collapse, the TS
-    `concurrency: 1` literal-`=== true` guard) fixed in support so
-    the explicit `bidirectional=False` opt-out is robust against
-    any future flip.  Observability examples
-    (`examples/{rust/src/bin/18,typescript/18}_remote_scan_trace`),
-    new fixtures (`thousand-msg`, footer-indexed at higher tiers,
-    streaming-tail), and `plans/WIRE_FORMAT.md §9.3` rewrite with
-    format-vs-transport taxonomy all shipped together.
+  - [x] ~~**pipelined walker, default flip, benchmarks, docs**~~ —
+    The remote bidirectional walker is now the default across Rust,
+    Python, and TypeScript.  Each iteration of the pipelined scanner
+    fetches the next forward preamble, the next backward postamble,
+    AND the previous iteration's candidate-preamble validation in
+    parallel, collapsing the per-round critical path from 2 RTTs to
+    1 RTT.  Rust + Python use two independent `get_range` calls
+    joined via `tokio::join!` instead of `object_store::get_ranges`
+    to avoid the coalescer's 1 MiB merge gap; TypeScript gates the
+    eager footer fetch on the just-validated preamble's flags before
+    issuing the GET; both languages run the pipeline off the state
+    mutex / handle and commit layouts only after the loop terminates.
+    Target-driven early-stop in Rust (`scan_pipelined_async(target)`)
+    keeps `decode_metadata(idx)` from over-walking when the target
+    is below the cursor-meet point.  Three bench harnesses (Rust
+    Criterion + metrics bin, Python custom, TypeScript Vitest + Node
+    runner) share a fixture roster.  Three latent opt-out bugs
+    (`scan_opts_for(false) → None`, the Rust parity driver's
+    `then_some(...)` collapse, the TS `concurrency: 1`
+    literal-`=== true` guard) fixed.  Observability examples and
+    `WIRE_FORMAT.md §9.3` rewrite shipped together.
 
-  - [ ] **adaptive direction** *(optional, deferred)*.  Only pursued
-    if the default-flip benchmarks reveal a specific workload
-    measurably benefiting from walker scheduling.  Documented
-    honestly: "walker scheduling, not indexed tail access" —
-    backward-discovered messages have unknown absolute indices before
-    `gap_closed`, so adaptive direction cannot accelerate
-    index-targeted reads below the crossover point.
+  Adaptive direction was originally listed as a follow-up: pick
+  forward-only vs bidirectional based on which target index the
+  caller wants.  The pipelined walker's target-driven early-stop
+  subsumes that — for any `decode_metadata(idx)` the walker stops as
+  soon as forward reaches the target, behaving like forward-only for
+  early access and like bidirectional for tail access — so no
+  separate adaptive-direction work is needed.
 
   Out of scope for all sub-tasks above: C++ remote (no remote today),
   CLI remote (local paths only today), custom fetch-injection hooks
