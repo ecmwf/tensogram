@@ -479,9 +479,13 @@ footer-region GET.
 The fetch is best-effort: if the footer Range request fails or the
 chunk fails to parse, the layout still commits via the validated
 preamble alone, and the lazy populate path picks up footer discovery
-on first metadata access.  Header-indexed messages on backward keep
-the lazy path (the eager-footer code path is gated on the
-`FOOTER_METADATA + FOOTER_INDEX` flag combination).
+on first metadata access.  The dispatcher fetches the footer region
+speculatively whenever the postamble's `first_footer_offset` indicates
+one is present; the resulting bytes are only **applied** to the
+layout when the just-validated preamble's flags carry both
+`FOOTER_METADATA` and `FOOTER_INDEX`, otherwise they are discarded
+(typically a few hundred bytes per header-indexed message that
+carries a footer hash frame).
 
 Behaviour is symmetric across the Rust sync / async dispatchers and
 the TypeScript walker — the same wire-format outcome enum

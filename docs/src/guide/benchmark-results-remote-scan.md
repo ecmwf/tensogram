@@ -18,7 +18,7 @@ default choice, see
 | **Rust toolchain** | rustc 1.95.0 |
 | **Python** | 3.14.4 |
 | **Node** | 20+ (per `typescript/package.json` engines) |
-| **Methodology** | one cold open + operation + close per cell, deterministic single-pass — no warmup, no repetition (Criterion's iter-count would smear the request counters) |
+| **Methodology** | one fresh handle per cell — open + operation + handle dropped before the metrics fetch, deterministic single-pass, no warmup, no repetition (Criterion's iter-count would smear the request counters) |
 
 ## Matrix shape
 
@@ -51,10 +51,10 @@ Full-file walk (`iter` scenario), header-indexed:
 
 Two failure modes coexist:
 
-- **Rust + Python** share `object_store`'s range coalescer; paired
-  forward + backward fetches that fall under its merge threshold
-  expand into single multi-range requests pulling back large
-  contiguous spans of the file (25× to 240× forward bytes).
+- **Rust + Python** share `object_store`'s range coalescer (default
+  merge gap 1 MiB); paired forward + backward fetches collapse into
+  one contiguous Range GET whose body spans the file region between
+  the two cursors (25× to 240× forward bytes).
 - **TypeScript** issues each Range separately so bytes stay close
   to forward (+2%); requests scale at +50% because each backward-
   discovered message triggers an eager footer fetch that the gate

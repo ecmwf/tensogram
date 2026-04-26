@@ -92,11 +92,12 @@ def _quick_matrix() -> list[CellSpec]:
     return [s for s in _matrix() if s.tier == 10]
 
 
-def _headline_matrix() -> list[CellSpec]:
-    return [
-        CellSpec("header-indexed", "hundred-msg.tgm", 100),
-        CellSpec("footer-indexed", "hundred-msg-footer.tgm", 100),
-    ]
+_HEADLINE_CELLS: list[tuple[CellSpec, str]] = [
+    (CellSpec("header-indexed", "hundred-msg.tgm", 100), "iter"),
+    (CellSpec("footer-indexed", "hundred-msg-footer.tgm", 100), "iter"),
+    (CellSpec("header-indexed", "thousand-msg.tgm", 1000), "read_message(N-1)"),
+    (CellSpec("streaming-tail", _STREAMING_TAIL[0], _STREAMING_TAIL[1]), "iter"),
+]
 
 
 def _classify_log(records: list[RequestRecord]) -> dict[str, int]:
@@ -187,8 +188,7 @@ def _bench_one_cell(
 
 
 def _run_matrix(
-    matrix: list[CellSpec],
-    scenarios: tuple[str, ...],
+    cells: list[tuple[CellSpec, str]],
     mode: str,
 ) -> list[dict[str, object]]:
     server = MockServer(_FIXTURES_DIR)
@@ -196,17 +196,22 @@ def _run_matrix(
     records: list[dict[str, object]] = []
     cell_id = 0
     try:
-        for spec in matrix:
-            for scenario in scenarios:
-                for bidirectional in (False, True):
-                    cell_id += 1
-                    record = _bench_one_cell(
-                        server, spec, scenario, bidirectional, mode, cell_id
-                    )
-                    records.append(record)
+        for spec, scenario in cells:
+            for bidirectional in (False, True):
+                cell_id += 1
+                record = _bench_one_cell(
+                    server, spec, scenario, bidirectional, mode, cell_id
+                )
+                records.append(record)
     finally:
         server.stop()
     return records
+
+
+def _expand(
+    matrix: list[CellSpec], scenarios: tuple[str, ...]
+) -> list[tuple[CellSpec, str]]:
+    return [(spec, scenario) for spec in matrix for scenario in scenarios]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -230,17 +235,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.quick:
-        matrix = _quick_matrix()
-        scenarios = _SCENARIOS
+        cells = _expand(_quick_matrix(), _SCENARIOS)
     elif args.headline:
-        matrix = _headline_matrix()
-        scenarios = ("iter",)
+        cells = _HEADLINE_CELLS
     else:
-        matrix = _matrix()
-        scenarios = _SCENARIOS
+        cells = _expand(_matrix(), _SCENARIOS)
 
     args.json.parent.mkdir(parents=True, exist_ok=True)
-    records = _run_matrix(matrix, scenarios, args.mode)
+    records = _run_matrix(cells, args.mode)
     with args.json.open("w") as f:
         for record in records:
             json.dump(record, f, separators=(",", ":"))
