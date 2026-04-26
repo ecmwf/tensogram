@@ -1265,11 +1265,12 @@ async function lazyScanMessages(
     gapClosed: false,
   };
 
+  if (state.bwdActive && !state.fwdTerminated) {
+    const ok = await runPipelinedBidirectional(ctx, fileLen, state, options);
+    if (!ok) return null;
+  }
   while (!scanComplete(state)) {
-    const ok =
-      state.bwdActive && !state.fwdTerminated
-        ? await tryBidirectionalRound(ctx, fileLen, state, options)
-        : await tryForwardStep(ctx, fileLen, state, options);
+    const ok = await tryForwardStep(ctx, fileLen, state, options);
     if (!ok) return null;
   }
   if (state.layouts.length === 0 && state.suffixRev.length === 0 && !state.gapClosed) {
@@ -1282,132 +1283,245 @@ function scanComplete(s: ScanState): boolean {
   return s.gapClosed || (s.fwdTerminated && s.suffixRev.length === 0);
 }
 
-async function tryBidirectionalRound(
+/**
+ * Pipelined bidirectional walk: each iteration fetches the next forward
+ * preamble, the next backward postamble, AND the previous iteration's
+ * candidate-preamble validation in one parallel `Promise.allSettled`.
+ *
+ * That overlap collapses the per-round critical path from 2 RTTs to 1
+ * RTT, mirroring the Rust `scan_pipelined_async` shape so wall-clock
+ * for full-discovery operations is within constant factor of the Rust
+ * remote backend.
+ *
+ * Bails out (returns `true` after disabling backward) on any anomaly:
+ * gap-below-min, format error, ExceedsBound, streaming, or backward
+ * overlap.  After a bail the caller continues with forward-only steps;
+ * any pending validation is drained inline first so the suffix keeps
+ * its discovered layouts.  Returns `false` only on a transport-layer
+ * rejection that the caller treats as unrecoverable.
+ */
+async function runPipelinedBidirectional(
   ctx: FetchRangeContext,
   fileLen: number,
   state: ScanState,
   options: LazyScanOptions,
 ): Promise<boolean> {
   const minSize = MIN_MESSAGE_BYTES;
-  if (state.prev < state.next + minSize) {
-    if (state.next === state.prev) {
-      closeGap(state, options);
-      return true;
-    }
-    disableBackward(state, 'gap-below-min-message-size', options);
-    return true;
-  }
-
-  if (ctx.signal?.aborted) return false;
-
-  const childCtl = new AbortController();
-  const onParentAbort = (): void => childCtl.abort();
-  ctx.signal?.addEventListener('abort', onParentAbort, { once: true });
-
-  let fwdBytes: Uint8Array;
-  let bwdBytes: Uint8Array;
-  try {
-    const fwdPromise = options.limit(() =>
-      fetchRange(ctx, state.next, state.next + PREAMBLE_BYTES, true, childCtl.signal),
-    );
-    const bwdPromise = options.limit(() =>
-      fetchRange(ctx, state.prev - POSTAMBLE_BYTES, state.prev, true, childCtl.signal),
-    );
-    // Sibling abort: as soon as either side rejects, abort the
-    // still-pending one so the round resolves promptly instead of
-    // waiting for a hung fetch to time out at the network layer.
-    // The original promises are still awaited by `allSettled` below;
-    // the side-channel `catch` only attaches an extra abort handler.
-    const cancelSiblingOnReject = (p: Promise<unknown>): void => {
-      p.catch(() => childCtl.abort());
-    };
-    cancelSiblingOnReject(fwdPromise);
-    cancelSiblingOnReject(bwdPromise);
-    const [fwdRes, bwdRes] = await Promise.allSettled([fwdPromise, bwdPromise]);
-
-    if (fwdRes.status === 'rejected' || bwdRes.status === 'rejected') {
-      childCtl.abort();
-      return false;
-    }
-    fwdBytes = fwdRes.value;
-    bwdBytes = bwdRes.value;
-  } finally {
-    ctx.signal?.removeEventListener('abort', onParentAbort);
-  }
-
   const wbg = getWbg();
-  const fwdOutcome = wbg.parse_forward_preamble_outcome(
-    fwdBytes,
-    BigInt(state.next),
-    BigInt(fileLen),
-    BigInt(state.prev),
-  ) as ForwardOutcome;
-  const bwdOutcome = wbg.parse_backward_postamble_outcome(
-    bwdBytes,
-    BigInt(state.next),
-    BigInt(state.prev),
-  ) as BackwardOutcome;
 
-  let validation: BackwardCommit | undefined;
-  let candidatePreambleBytes: Uint8Array | undefined;
-  let candidateFooterBytes: Uint8Array | undefined;
-  if (bwdOutcome.kind === 'NeedPreambleValidation') {
-    const msgStart = Number(bwdOutcome.msgStart);
-    const msgLen = Number(bwdOutcome.length);
-    const firstFooterOffset = Number(bwdOutcome.firstFooterOffset);
+  type Pending = { msgStart: number; length: number; firstFooterOffset: number };
+  type LocalBwd = { layout: ScanLayoutEntry; footerBytes?: Uint8Array };
 
-    try {
-      candidatePreambleBytes = await options.limit(() =>
-        fetchRange(ctx, msgStart, msgStart + PREAMBLE_BYTES, true),
-      );
-    } catch {
-      return false;
-    }
+  const localFwd: ScanLayoutEntry[] = [];
+  const localBwd: LocalBwd[] = [];
+  let fwdCursor = state.next;
+  let bwdCursor = state.prev;
+  let pending: Pending | undefined;
+  let bailReason: string | undefined;
+  let cursorsMet = false;
 
-    // Gate the eager footer fetch on the just-validated preamble's
-    // flags: only footer-indexed messages (FOOTER_METADATA +
-    // FOOTER_INDEX both set) benefit from inlining the footer
-    // region into the same paired round.  Issuing the fetch
-    // unconditionally and discarding it post-hoc costs one HTTP
-    // round trip per backward-discovered message — measurable as
-    // a +50% request inflation against today's transport stack.
+  const validatePending = async (
+    p: Pending,
+    valBytes: Uint8Array,
+  ): Promise<{ ok: boolean; abort?: boolean }> => {
+    let candidateFooterBytes: Uint8Array | undefined;
     if (
-      footerRegionPresent(firstFooterOffset, msgLen) &&
-      preambleHasFooterIndex(candidatePreambleBytes)
+      footerRegionPresent(p.firstFooterOffset, p.length) &&
+      preambleHasFooterIndex(valBytes)
     ) {
-      const footerStart = msgStart + firstFooterOffset;
-      const footerEnd = msgStart + msgLen - POSTAMBLE_BYTES;
+      const footerStart = p.msgStart + p.firstFooterOffset;
+      const footerEnd = p.msgStart + p.length - POSTAMBLE_BYTES;
       if (footerStart < footerEnd) {
         try {
           candidateFooterBytes = await options.limit(() =>
             fetchRange(ctx, footerStart, footerEnd, true),
           );
         } catch {
-          if (ctx.signal?.aborted) return false;
+          if (ctx.signal?.aborted) return { ok: false, abort: true };
           candidateFooterBytes = undefined;
         }
       }
     }
-
-    validation = wbg.validate_backward_preamble_outcome(
-      candidatePreambleBytes,
-      BigInt(bwdOutcome.msgStart),
-      BigInt(bwdOutcome.length),
+    const validation = wbg.validate_backward_preamble_outcome(
+      valBytes,
+      BigInt(p.msgStart),
+      BigInt(p.length),
     ) as BackwardCommit;
+    if (validation.kind === 'Format') {
+      bailReason = validation.reason;
+      return { ok: true };
+    }
+    const layout = buildLayoutFromPreamble(valBytes, p.msgStart, p.length);
+    if (layout === null) {
+      bailReason = 'preamble-parse-error-bwd';
+      return { ok: true };
+    }
+    if (candidateFooterBytes !== undefined) {
+      tryApplyEagerFooter(layout, candidateFooterBytes, options);
+    }
+    localBwd.push({ layout });
+    if (options.debug) {
+      console.debug('tensogram:scan:hop', {
+        direction: 'bwd',
+        offset: layout.offset,
+        length: layout.length,
+      });
+    }
+    return { ok: true };
+  };
+
+  while (true) {
+    if (fwdCursor === bwdCursor) {
+      cursorsMet = true;
+      break;
+    }
+    if (bwdCursor < fwdCursor + minSize) {
+      bailReason = 'gap-below-min-message-size';
+      break;
+    }
+    if (ctx.signal?.aborted) return false;
+
+    const fwdPromise = options.limit(() =>
+      fetchRange(ctx, fwdCursor, fwdCursor + PREAMBLE_BYTES, true),
+    );
+    const bwdPromise = options.limit(() =>
+      fetchRange(ctx, bwdCursor - POSTAMBLE_BYTES, bwdCursor, true),
+    );
+    const valPromise =
+      pending !== undefined
+        ? options.limit(() =>
+            fetchRange(ctx, pending!.msgStart, pending!.msgStart + PREAMBLE_BYTES, true),
+          )
+        : undefined;
+
+    const settled = await Promise.allSettled(
+      valPromise !== undefined
+        ? [fwdPromise, bwdPromise, valPromise]
+        : [fwdPromise, bwdPromise],
+    );
+    if (settled.some((r) => r.status === 'rejected')) return false;
+
+    const fwdBytes = (settled[0] as PromiseFulfilledResult<Uint8Array>).value;
+    const bwdBytes = (settled[1] as PromiseFulfilledResult<Uint8Array>).value;
+    const valBytes =
+      valPromise !== undefined
+        ? (settled[2] as PromiseFulfilledResult<Uint8Array>).value
+        : undefined;
+
+    if (valBytes !== undefined && pending !== undefined) {
+      const p = pending;
+      pending = undefined;
+      const r = await validatePending(p, valBytes);
+      if (!r.ok) return false;
+      if (bailReason !== undefined) break;
+    }
+
+    const preIterFwdCursor = fwdCursor;
+    const fwdOutcome = wbg.parse_forward_preamble_outcome(
+      fwdBytes,
+      BigInt(fwdCursor),
+      BigInt(fileLen),
+      BigInt(bwdCursor),
+    ) as ForwardOutcome;
+    if (fwdOutcome.kind === 'Hit') {
+      const layout = buildLayoutFromPreamble(
+        fwdBytes,
+        Number(fwdOutcome.offset),
+        Number(fwdOutcome.length),
+      );
+      if (layout === null) {
+        bailReason = 'preamble-parse-error-fwd';
+        break;
+      }
+      localFwd.push(layout);
+      if (options.debug) {
+        console.debug('tensogram:scan:hop', {
+          direction: 'fwd',
+          offset: layout.offset,
+          length: layout.length,
+        });
+      }
+      fwdCursor = Number(fwdOutcome.msgEnd);
+    } else if (fwdOutcome.kind === 'ExceedsBound') {
+      bailReason = 'forward-exceeds-backward-bound';
+      break;
+    } else if (fwdOutcome.kind === 'Streaming') {
+      bailReason = 'streaming-fwd-non-tail';
+      break;
+    } else {
+      bailReason = `terminate-${fwdOutcome.reason}`;
+      break;
+    }
+
+    const bwdOutcome = wbg.parse_backward_postamble_outcome(
+      bwdBytes,
+      BigInt(preIterFwdCursor),
+      BigInt(bwdCursor),
+    ) as BackwardOutcome;
+    if (bwdOutcome.kind === 'NeedPreambleValidation') {
+      const candidateStart = Number(bwdOutcome.msgStart);
+      const candidateLength = Number(bwdOutcome.length);
+      // Same-message meet: forward just committed the same message that
+      // backward postamble points at (3-msg files, odd-count middle).
+      // Yield backward silently — don't pending-queue a duplicate of an
+      // already-forward-committed layout, and keep `bwdCursor` where it
+      // is so the next iteration's `cursorsMet` test fires correctly.
+      if (
+        fwdOutcome.kind === 'Hit' &&
+        Number(fwdOutcome.offset) === candidateStart &&
+        Number(fwdOutcome.length) === candidateLength
+      ) {
+        // bwdCursor stays at its pre-iter value — fwd has already
+        // claimed [candidateStart, fwdCursor), and they meet there.
+      } else {
+        pending = {
+          msgStart: candidateStart,
+          length: candidateLength,
+          firstFooterOffset: Number(bwdOutcome.firstFooterOffset),
+        };
+        bwdCursor = candidateStart;
+      }
+    } else if (bwdOutcome.kind === 'Format') {
+      bailReason = bwdOutcome.reason;
+      break;
+    } else {
+      bailReason = 'streaming-zero-bwd';
+      break;
+    }
   }
 
-  applyRoundOutcomes(
-    state,
-    fwdBytes,
-    candidatePreambleBytes,
-    candidateFooterBytes,
-    fwdOutcome,
-    bwdOutcome,
-    validation,
-    options,
-  );
+  if (pending !== undefined && bailReason === undefined) {
+    const p = pending;
+    pending = undefined;
+    let valBytes: Uint8Array;
+    try {
+      valBytes = await options.limit(() =>
+        fetchRange(ctx, p.msgStart, p.msgStart + PREAMBLE_BYTES, true),
+      );
+    } catch {
+      return false;
+    }
+    const r = await validatePending(p, valBytes);
+    if (!r.ok) return false;
+  }
+
+  for (const layout of localFwd) {
+    recordForwardHop(state, layout, options);
+  }
+  for (const { layout } of localBwd) {
+    recordBackwardHop(state, layout, options);
+  }
+  if (cursorsMet && state.bwdActive && state.next === state.prev) {
+    closeGap(state, options);
+  } else if (bailReason !== undefined) {
+    if (state.bwdActive) {
+      disableBackward(state, bailReason, options);
+    }
+  }
   return true;
 }
+
+
 
 function footerRegionPresent(firstFooterOffset: number, length: number): boolean {
   if (length < POSTAMBLE_BYTES) return false;
@@ -1478,119 +1592,6 @@ async function tryForwardStep(
     case 'ExceedsBound':
       return false;
   }
-}
-
-function applyRoundOutcomes(
-  state: ScanState,
-  fwdPreambleBytes: Uint8Array,
-  candidatePreambleBytes: Uint8Array | undefined,
-  candidateFooterBytes: Uint8Array | undefined,
-  fwd: ForwardOutcome,
-  bwd: BackwardOutcome,
-  validation: BackwardCommit | undefined,
-  options: LazyScanOptions,
-): void {
-  if (bwd.kind === 'Format') {
-    disableBackward(state, bwd.reason, options);
-  } else if (bwd.kind === 'Streaming') {
-    disableBackward(state, 'streaming-zero-bwd', options);
-  } else if (validation !== undefined) {
-    commitOrYieldBackward(
-      state,
-      candidatePreambleBytes,
-      candidateFooterBytes,
-      fwd,
-      validation,
-      options,
-    );
-  } else {
-    disableBackward(state, 'missing-candidate-preamble', options);
-  }
-
-  switch (fwd.kind) {
-    case 'Hit': {
-      const layout = buildLayoutFromPreamble(
-        fwdPreambleBytes,
-        Number(fwd.offset),
-        Number(fwd.length),
-      );
-      if (layout !== null) recordForwardHop(state, layout, options);
-      break;
-    }
-    case 'ExceedsBound': {
-      disableBackward(state, 'forward-exceeds-backward-bound', options);
-      const layout = buildLayoutFromPreamble(
-        fwdPreambleBytes,
-        Number(fwd.offset),
-        Number(fwd.length),
-      );
-      if (layout !== null) recordForwardHop(state, layout, options);
-      break;
-    }
-    case 'Streaming':
-      disableBackward(state, 'streaming-fwd-non-tail', options);
-      break;
-    case 'Terminate':
-      terminateForward(state, fwd.reason, options);
-      break;
-  }
-
-  if (state.bwdActive && state.next === state.prev) {
-    closeGap(state, options);
-  }
-}
-
-function commitOrYieldBackward(
-  state: ScanState,
-  candidatePreambleBytes: Uint8Array | undefined,
-  candidateFooterBytes: Uint8Array | undefined,
-  fwd: ForwardOutcome,
-  validation: BackwardCommit,
-  options: LazyScanOptions,
-): void {
-  if (validation.kind === 'Format') {
-    disableBackward(state, validation.reason, options);
-    return;
-  }
-  if (!state.bwdActive) return;
-
-  const layoutOffset = Number(validation.offset);
-  const layoutLength = Number(validation.length);
-
-  if (
-    fwd.kind === 'Hit' &&
-    Number(fwd.offset) === layoutOffset &&
-    Number(fwd.length) === layoutLength
-  ) {
-    return;
-  }
-
-  if (fwd.kind === 'Hit' && Number(fwd.msgEnd) > layoutOffset) {
-    disableBackward(state, 'backward-overlaps-forward', options);
-    return;
-  }
-  if (fwd.kind === 'ExceedsBound') {
-    disableBackward(state, 'forward-exceeds-backward-bound', options);
-    return;
-  }
-
-  if (candidatePreambleBytes === undefined) {
-    disableBackward(state, 'missing-candidate-preamble', options);
-    return;
-  }
-  const layout = buildLayoutFromPreamble(
-    candidatePreambleBytes,
-    layoutOffset,
-    layoutLength,
-  );
-  if (layout === null) {
-    disableBackward(state, 'preamble-parse-error-bwd', options);
-    return;
-  }
-  if (candidateFooterBytes !== undefined) {
-    tryApplyEagerFooter(layout, candidateFooterBytes, options);
-  }
-  recordBackwardHop(state, layout, options);
 }
 
 /**
