@@ -58,12 +58,12 @@ When no options are passed, credentials are read from the environment (e.g. `AWS
 
 `None` (or `Some(RemoteScanOptions::default())`) keeps the forward-only walker. Both walkers produce identical layouts; the difference is only in the discovery path.
 
-The default is **forward-only** across all bindings. Benchmarks (see `plans/decisions/remote-bidirectional-default-flip.md`) showed the bidirectional walker fetches more bytes than forward-only on most cells against today's transport stack:
+The default is **forward-only** across all bindings. Benchmarks (see `plans/decisions/remote-bidirectional-default-flip.md`) showed the bidirectional walker fetches more bytes than forward-only on every measured cell against today's transport stack, for two distinct structural reasons:
 
-- **Rust + Python** share `object_store`'s range coalescer (default merge gap 1 MiB); paired forward + backward fetches collapse into one contiguous Range GET whose body spans the file region between the two cursors.
-- **TypeScript** issues each Range request separately so bytes stay close to forward (+2% at N=1000); requests scale at +50% because each backward-discovered message triggers an eager footer fetch that the flag-check gate later discards.
+- **Rust + Python** submit each paired round as `object_store::get_ranges(&[fwd_preamble, bwd_postamble])`. `object_store`'s coalescer (default 1 MiB merge gap) collapses any two ranges within 1 MiB of each other into a **single contiguous HTTP Range covering the entire span between them**, then slices client-side.  Tightly-packed `.tgm` files keep both cursors well within 1 MiB for the whole walk, so every paired round fetches the file slab between the two cursors — even though the walker only consumes the 24-byte preamble + 24-byte postamble.  At N=100 this means ~25× the forward-only byte total; at N=1000, ~240×.
+- **TypeScript** issues paired Range fetches as `Promise.allSettled([fetchRange(fwd), fetchRange(bwd)])` — two independent HTTP requests — so bytes stay within +2% of forward at N=1000.  Requests, however, scale at +50% because each backward-discovered message also triggers a speculative footer-region fetch that the flag-check gate inside `tryApplyEagerFooter` later discards whenever the message is header-indexed.
 
-Opt in when the workload's network round-trip cost exceeds the per-fetch byte cost — typically when serving over HTTPS to a remote object store from a high-latency client.
+Opt in when the workload's network round-trip cost dominates over the per-fetch byte cost — typically when serving over high-latency HTTPS to a remote object store and the file size keeps cursors closer together than the network latency budget per round trip.
 
 ```rust
 use tensogram::{RemoteScanOptions, TensogramFile};

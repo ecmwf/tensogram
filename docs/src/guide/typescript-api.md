@@ -442,12 +442,15 @@ The default is **`false`** across Rust, Python, and TypeScript.
 Benchmarks (see `plans/decisions/remote-bidirectional-default-flip.md`)
 showed the bidirectional walker fetches more bytes and at least as
 many requests as forward-only on every measured cell against
-today's transport stack.  TypeScript specifically issues each Range
-request separately so bytes stay close to forward (+2% at N=1000),
-but requests scale at +50% because each backward-discovered message
-triggers an eager footer fetch that the flag-check gate later
-discards.  Opt in when network round-trip cost dominates over
-per-fetch byte cost.
+today's transport stack.  TypeScript issues paired Range fetches
+via `Promise.allSettled([fetchRange(fwd), fetchRange(bwd)])`, so
+each Range becomes its own HTTP request and the byte total stays
+within +2% of forward at N=1000.  The +50% request inflation comes
+from a speculative footer fetch issued for every backward-discovered
+message; the flag-check gate inside `tryApplyEagerFooter` discards
+the bytes when the message turns out to be header-indexed, but the
+GET round trip still runs.  Opt in when network round-trip cost
+dominates over per-fetch byte cost.
 
 `bidirectional: true` requires `concurrency >= 2` (the default of
 `6` is fine).  Passing `concurrency: 1` alongside `bidirectional:

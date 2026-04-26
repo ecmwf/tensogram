@@ -51,15 +51,27 @@ Full-file walk (`iter` scenario), header-indexed:
 
 Two failure modes coexist:
 
-- **Rust + Python** share `object_store`'s range coalescer (default
-  merge gap 1 MiB); paired forward + backward fetches collapse into
-  one contiguous Range GET whose body spans the file region between
-  the two cursors (25× to 240× forward bytes).
-- **TypeScript** issues each Range separately so bytes stay close
-  to forward (+2%); requests scale at +50% because each backward-
-  discovered message triggers an eager footer fetch that the gate
-  inside `tryApplyEagerFooter` discards once the preamble flags
-  reveal the message is header-indexed.
+- **Rust + Python** submit each paired round as
+  `object_store::get_ranges(&[fwd_preamble, bwd_postamble])`.
+  `object_store`'s coalescer (default merge gap 1 MiB) collapses any
+  two ranges within 1 MiB of each other into a single contiguous
+  HTTP Range covering **the entire span between them**, then slices
+  client-side.  Tightly-packed `.tgm` files keep both cursors well
+  within 1 MiB for the whole walk, so every paired round fetches the
+  slab between cursors even though the walker only uses 48 bytes
+  per round.  On `hundred-msg.tgm` round 1 fetches ~59 KB, round 50
+  fetches ~1.7 KB; cumulative ≈ 1.48 MB on a 59 KB file.  The
+  pathology runs to ~148 MB on the 592 KB `thousand-msg.tgm`.
+
+- **TypeScript** issues paired Range fetches as
+  `Promise.allSettled([fetchRange(fwd), fetchRange(bwd)])` — two
+  independent HTTP requests, so bytes stay close to forward (+2% at
+  N=1000).  Requests, however, scale at +50% because each backward-
+  discovered message also triggers a speculative footer-region fetch
+  that the gate inside `tryApplyEagerFooter` discards whenever the
+  preamble flags lack `FOOTER_METADATA + FOOTER_INDEX`.  The
+  discarded bytes cost a few hundred per message; the wasted GET
+  round trip is structural.
 
 ## Verdict
 
