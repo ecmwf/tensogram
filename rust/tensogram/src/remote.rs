@@ -2448,7 +2448,17 @@ impl RemoteBackend {
 
         let mut state = self.lock_state()?;
         if !state.matches(&snap) {
-            return Ok(true);
+            // Snapshot drift: another caller advanced state under us
+            // while we ran the pipeline off-lock.  Discard our local
+            // accumulators and tell the caller to drive the fallback
+            // loop — its termination check (`scan_complete()` or
+            // `layouts.len() >= target`) sees the post-drift state and
+            // either returns immediately (no further work needed) or
+            // dispatches per-round walks for whatever remains.
+            // Returning Ok(true) here would mislead `message_count_async`
+            // / `message_layouts_async` into treating the partial post-
+            // drift state as the final result.
+            return Ok(false);
         }
         for layout in local_fwd {
             state.record_forward_hop(layout);
@@ -3971,6 +3981,53 @@ mod bidir_http_tests {
         assert_eq!(
             final_count, 10,
             "concurrent readers must converge to 10 layouts"
+        );
+    }
+
+    /// Concurrent `message_count_async` racing a target-driven discovery
+    /// (e.g. `decode_metadata(idx)`).  The pipelined scanner runs off-lock,
+    /// so a sibling caller's commit can drift the snapshot under it.  The
+    /// scanner must surface that drift as `Ok(false)` so the caller's
+    /// fallback loop drives any remaining discovery — returning `Ok(true)`
+    /// on drift would expose the partial post-drift state as the final
+    /// answer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn bidir_message_count_race_with_partial_target() {
+        let parts: Vec<Vec<u8>> = (0..20)
+            .map(|i| make_message(vec![4 + i as u64], i as u8))
+            .collect();
+        let buf = concat_messages(parts);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = Arc::new(
+            RemoteBackend::open_with_scan_opts(
+                &server.url(),
+                &empty_storage(),
+                RemoteScanOptions {
+                    bidirectional: true,
+                },
+            )
+            .expect("open"),
+        );
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let backend = backend.clone();
+            handles.push(tokio::spawn(
+                async move { backend.read_metadata_async(5).await },
+            ));
+        }
+        let count_handle = {
+            let backend = backend.clone();
+            tokio::spawn(async move { backend.message_count_async().await })
+        };
+        for h in handles {
+            h.await.expect("join").expect("read_metadata_async");
+        }
+        let count = count_handle.await.expect("join").expect("count");
+        assert_eq!(
+            count, 20,
+            "message_count_async must return the FULL count even when racing target-driven readers; \
+             a partial result would mean the pipelined scanner returned Ok(true) on snapshot mismatch"
         );
     }
 
