@@ -30,6 +30,50 @@
 
 ---
 
+## Remote-scan walker microbench + default-flip decision
+
+Three benchmark harnesses, one per language, share a fixture roster
+and a `cold_open_plus_operation_plus_close` sample contract so the
+NDJSON sidecars stack up cell-for-cell.  Drives a data-driven decision
+on whether the bidirectional walker should default to `true` across
+Rust, Python, and TypeScript.  Verdict: stay opt-in.
+
+| Component | Shape |
+|-----------|-------|
+| `rust/benchmarks/src/mock_http.rs` | `std`-only TCP listener with Range support and per-request counters; bench-local, no `hyper`/`tokio` |
+| `rust/benchmarks/src/remote_scan_bench.rs` | Shared `Scenario` enum, `FixtureSpec::matrix()`, and `run_cell()` consumed by both the metrics bin and the Criterion bench |
+| `rust/benchmarks/src/bin/remote_scan_metrics.rs` | Deterministic single-pass NDJSON emitter to `target/remote-scan-bench/rust.ndjson` |
+| `rust/benchmarks/benches/remote_scan.rs` | Criterion wall-clock for headline cells; metrics deliberately scoped to the metrics bin to avoid Criterion's iter-count smearing the request counters |
+| `rust/benchmarks/python/bench_remote_scan.py` | Custom argparse harness (`--quick`, `--headline`, `--mode {sync,async}`, `--json`) that imports `tests/remote-parity/mock_server.py` directly via sys.path insertion |
+| `typescript/tests/run_remote_bench.ts` | Node runner spawning `mock_server.py` via subprocess (`PYTHONUNBUFFERED=1` for prompt URL announce); fetches `/_log/<run_id>` per cell |
+| `typescript/tests/remote_scan.bench.ts` | Vitest `bench()` headline cells; `vitest.config.ts` gains a `benchmark.include` block so bench files don't run under regular tests |
+| `tests/remote-parity/tools/gen_fixtures.py` | New `_STREAMING_TAIL` kind plus `thousand-msg`, `hundred-msg-footer`, `thousand-msg-footer`, `streaming-tail` fixtures; validator reads preamble's `total_length` directly so streaming-mode messages are correctly accepted only on the final position |
+| `plans/decisions/remote-bidirectional-default-flip.md` | Decision record with criterion verbatim, aggregate verdict per language, headline cells table, structural failure-mode analysis, reproduce instructions |
+| `examples/rust/src/bin/18_remote_scan_trace.rs` | `tracing-subscriber` `EnvFilter` set in code; runs forward-only then bidirectional walks against an in-process Range server |
+| `examples/typescript/18_remote_scan_trace.ts` | Mirrors via Node http server + `console.debug` interceptor |
+| `docs/src/guide/remote-access.md`, `typescript-api.md`, `benchmark-results-remote-scan.md`, `SUMMARY.md` | Honest framing of the bidirectional default + new results page |
+| `plans/WIRE_FORMAT.md §9.3` | Rewritten with format-vs-transport taxonomy: in-memory `ScanOptions` vs remote `RemoteScanOptions` |
+
+Three latent opt-out bugs landed alongside the harnesses regardless of
+the verdict: Python `scan_opts_for(false) → None`, the Rust parity
+driver's `then_some(...)` collapse, and the TypeScript `concurrency: 1`
+guard's literal `=== true` check — all three would have silently
+overridden `bidirectional=False` once the default flipped, so each is
+fixed to pass explicit `RemoteScanOptions` (Rust + Python) or use a
+pre-computed `effectiveBidirectional` (TypeScript) before the
+validation runs.
+
+Verdict in one line: bidirectional walker correct on every fixture,
+identical layouts to forward-only; cost lives in the transport stack.
+Rust + Python share `object_store`'s range coalescer (paired ranges
+that fall under the merge threshold expand into multi-range fetches
+pulling back 25× to 240× forward bytes); TypeScript pays one wasted
+GET per backward-discovered message because the eager footer fetch
+runs before the flag-check gate.  Both are addressable but out of
+scope for this work.
+
+---
+
 ## `tensogram doctor` — environment diagnostics subcommand
 
 A top-level CLI subcommand that reports compiled-in features, backend library
