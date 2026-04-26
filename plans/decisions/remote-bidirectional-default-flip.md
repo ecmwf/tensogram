@@ -122,21 +122,44 @@ For the `iter` scenario at `N=100` and `N=1000`, header-indexed:
 Two structurally distinct failures coexist:
 
 - **Rust + Python**: bidirectional fetches roughly 25× to 240× the
-  bytes of forward-only.  This is `object_store::get_ranges`'s
-  coalescer (default merge gap 1 MiB) collapsing paired forward +
-  backward fetches into one contiguous Range GET whose body spans
-  the file region between the two cursors.  For the `thousand-msg.tgm`
-  fixture (~592 KB), bidirectional `message_count` fetches ~148 MB
-  — roughly 250 paired-round fetches each pulling back ~600 KB
-  instead of two 24-byte preamble reads.  The walker is correct;
-  the transport's coalescer is the cost.
-- **TypeScript**: `Promise.allSettled` issues each Range request
-  separately, so bytes stay close to forward-only (+2% at N=1000).
-  Requests, however, scale at +50% because each backward-discovered
-  message triggers an eager footer fetch that the gate inside
-  `tryApplyEagerFooter` later discards (no `FOOTER_INDEX` flag on
-  header-indexed messages).  The discarded bytes cost a few hundred
-  per message; the wasted GET cost is structural.
+  bytes of forward-only because the walker submits each paired
+  round as `object_store::get_ranges(&[fwd_preamble, bwd_postamble])`,
+  and `object_store`'s coalescer (default merge gap 1 MiB) collapses
+  any two ranges within 1 MiB of each other into **a single
+  contiguous HTTP Range covering the entire span between them**,
+  then slices client-side.  Tightly-packed `.tgm` files keep both
+  cursors well within 1 MiB for the whole walk, so every paired
+  round fetches the slab between them — even though the walker
+  only uses 48 bytes per round (one preamble + one postamble).
+
+  Round-by-round on `hundred-msg.tgm` (59 200 B):
+
+  ```
+  Round  1: fwd@0,        bwd@59 176  → coalesces to bytes [0, 59 199]    = 59 200 B
+  Round  2: fwd@592,      bwd@58 584  → coalesces to bytes [592, 58 607]  = 58 016 B
+  Round  3: fwd@1 184,    bwd@57 992  → coalesces to bytes [1 184, 58 015] = 56 832 B
+  ...
+  Round 50: fwd@28 768,   bwd@30 432  → coalesces to bytes [28 768, 30 431] =  1 664 B
+                                                  ──── cumulative ≈ 1.48 MB ────
+  ```
+
+  At N=1000 every paired round still fits inside the 1 MiB window,
+  so the same pathology runs to ~148 MB on a 592 KB file.  This is
+  a fundamental mismatch between the walker's design (paired probes
+  far apart) and `get_ranges`'s coalescer (designed for nearby ranges
+  that genuinely belong in one fetch); the walker is correct, the
+  transport semantics make the design wasteful.
+
+- **TypeScript**: `lazyScanMessages` issues paired ranges as
+  `Promise.allSettled([fetchRange(fwd), fetchRange(bwd)])` —
+  two independent HTTP Range GETs, so bytes stay close to forward-only
+  (+2% at N=1000).  Requests, however, scale at +50% because every
+  backward-discovered message triggers a speculative footer-region
+  fetch that the gate inside `tryApplyEagerFooter` later discards
+  whenever the preamble flags lack `FOOTER_METADATA + FOOTER_INDEX`
+  (which is the case for header-indexed fixtures).  The discarded
+  bytes cost a few hundred per message; the wasted GET round trip
+  is structural.
 
 ## Streaming-tail cell evaluation
 
@@ -183,15 +206,20 @@ opt-out contract.
 The walker is shipping correctly today; the cost lives in the
 transport layer:
 
-- **Rust + Python**: tune or bypass `object_store`'s range coalescer
-  for paired discovery fetches, or stop using paired ranges for
-  preamble walks (use suffix-range backward postamble reads only,
-  letting the coalescer's heuristic match the access pattern).
-- **TypeScript**: skip the eager footer fetch when the backward-
+- **Rust + Python**: stop submitting paired probes to
+  `object_store::get_ranges`.  Either issue forward and backward as
+  two independent `get_range` calls (matching TypeScript's
+  `Promise.allSettled` shape and giving each Range its own HTTP
+  request), or cap the coalesce window the walker is willing to
+  accept (e.g. refuse to merge ranges more than `2 × PREAMBLE_SIZE`
+  apart so paired probes stay separate while genuinely-adjacent
+  reads still batch).  This is a remote-backend implementation
+  change, not a wire-format change.
+- **TypeScript**: avoid the eager footer fetch when the backward-
   discovered message's preamble flags clearly say header-indexed.
-  The gate currently runs after the fetch; pushing it before the
-  fetch (synchronous flag check on the just-fetched preamble) saves
-  one round trip per backward-discovered message.
+  The flag-check gate currently runs after the fetch; pushing it
+  before (a synchronous flag inspection on the just-validated
+  preamble) saves one round trip per backward-discovered message.
 
 Either change is out of scope for this work and can be revisited
 under the deferred *remote 8 — adaptive direction* sub-task.
