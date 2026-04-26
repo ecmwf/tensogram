@@ -1295,10 +1295,13 @@ function scanComplete(s: ScanState): boolean {
  *
  * Bails out (returns `true` after disabling backward) on any anomaly:
  * gap-below-min, format error, ExceedsBound, streaming, or backward
- * overlap.  After a bail the caller continues with forward-only steps;
- * any pending validation is drained inline first so the suffix keeps
- * its discovered layouts.  Returns `false` only on a transport-layer
- * rejection that the caller treats as unrecoverable.
+ * overlap.  Locally-accumulated forward layouts commit to
+ * `state.layouts` so the caller's subsequent forward-only walk
+ * continues from the latest discovered position; the backward suffix
+ * is discarded by `disableBackward` (mirrors Rust's `disable_backward`)
+ * and any unvalidated pending candidate is dropped.  Returns `false`
+ * only on a transport-layer rejection that the caller treats as
+ * unrecoverable.
  */
 async function runPipelinedBidirectional(
   ctx: FetchRangeContext,
@@ -1359,13 +1362,6 @@ async function runPipelinedBidirectional(
       tryApplyEagerFooter(layout, candidateFooterBytes, options);
     }
     localBwd.push({ layout });
-    if (options.debug) {
-      console.debug('tensogram:scan:hop', {
-        direction: 'bwd',
-        offset: layout.offset,
-        length: layout.length,
-      });
-    }
     return { ok: true };
   };
 
@@ -1465,13 +1461,6 @@ async function runPipelinedBidirectional(
         break;
       }
       localFwd.push(layout);
-      if (options.debug) {
-        console.debug('tensogram:scan:hop', {
-          direction: 'fwd',
-          offset: layout.offset,
-          length: layout.length,
-        });
-      }
       fwdCursor = Number(fwdOutcome.msgEnd);
     } else if (fwdOutcome.kind === 'ExceedsBound') {
       bailReason = 'forward-exceeds-backward-bound';
