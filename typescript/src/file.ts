@@ -1387,10 +1387,16 @@ async function runPipelinedBidirectional(
     const bwdPromise = options.limit(() =>
       fetchRange(ctx, bwdCursor - POSTAMBLE_BYTES, bwdCursor, true),
     );
+    const pendingForFetch = pending;
     const valPromise =
-      pending !== undefined
+      pendingForFetch !== undefined
         ? options.limit(() =>
-            fetchRange(ctx, pending!.msgStart, pending!.msgStart + PREAMBLE_BYTES, true),
+            fetchRange(
+              ctx,
+              pendingForFetch.msgStart,
+              pendingForFetch.msgStart + PREAMBLE_BYTES,
+              true,
+            ),
           )
         : undefined;
 
@@ -1511,12 +1517,10 @@ async function runPipelinedBidirectional(
   for (const { layout } of localBwd) {
     recordBackwardHop(state, layout, options);
   }
-  if (cursorsMet && state.bwdActive && state.next === state.prev) {
+  if (state.bwdActive && state.next === state.prev) {
     closeGap(state, options);
-  } else if (bailReason !== undefined) {
-    if (state.bwdActive) {
-      disableBackward(state, bailReason, options);
-    }
+  } else if (bailReason !== undefined && state.bwdActive) {
+    disableBackward(state, bailReason, options);
   }
   return true;
 }
