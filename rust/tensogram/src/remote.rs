@@ -2397,9 +2397,10 @@ impl RemoteBackend {
                 }
             }
 
+            let pre_iter_fwd_cursor = fwd_cursor;
             let fwd_outcome =
-                parse_forward_preamble(&fwd_bytes, fwd_cursor, self.file_size, bwd_cursor);
-            match fwd_outcome {
+                parse_forward_preamble(&fwd_bytes, pre_iter_fwd_cursor, self.file_size, bwd_cursor);
+            let (fwd_offset, fwd_length) = match fwd_outcome {
                 ForwardOutcome::Hit {
                     offset,
                     length,
@@ -2414,12 +2415,19 @@ impl RemoteBackend {
                         global_metadata: None,
                     });
                     fwd_cursor = msg_end;
+                    (offset, length)
                 }
                 _ => return Ok(false),
-            }
+            };
 
+            // `parse_backward_postamble` rejects `msg_start < snap.next`
+            // as `backward-overlaps-forward`, so we must pass the
+            // pre-iteration forward cursor — the post-hop cursor
+            // would falsely reject the same-message-meet case where
+            // backward identifies the message forward just committed
+            // (1-msg files, odd-count crossover).
             let snap_local = ScanSnapshot {
-                next: fwd_cursor,
+                next: pre_iter_fwd_cursor,
                 prev: bwd_cursor,
                 epoch: snap.epoch,
             };
@@ -2429,6 +2437,16 @@ impl RemoteBackend {
                     length,
                     first_footer_offset: _,
                 } => {
+                    if msg_start == fwd_offset && length == fwd_length {
+                        // Same-message meet: the backward postamble
+                        // points at the message forward just committed.
+                        // Skip the backward record (forward already
+                        // produced an authoritative layout) and leave
+                        // `bwd_cursor` where it is so the next
+                        // iteration's `fwd_cursor == bwd_cursor` check
+                        // terminates the walk via gap-closed.
+                        continue;
+                    }
                     pending = Some((msg_start, length));
                     bwd_cursor = msg_start;
                 }
@@ -4029,6 +4047,64 @@ mod bidir_http_tests {
             "message_count_async must return the FULL count even when racing target-driven readers; \
              a partial result would mean the pipelined scanner returned Ok(true) on snapshot mismatch"
         );
+    }
+
+    /// 1-message file: backward and forward identify the same message
+    /// in iteration 1.  The pipelined walker must record the forward
+    /// hop and skip the duplicate backward record without bailing to
+    /// the per-round fallback.  Asserts `Ok(true)` directly because
+    /// `message_count_async`'s outer fallback would mask a `false`
+    /// return as a (slower) success.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pipelined_one_message_completes_without_fallback() {
+        let buf = make_message(vec![4], 42);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions {
+                bidirectional: true,
+            },
+        )
+        .expect("open bidirectional");
+        let pipelined_ok = backend.scan_pipelined_async(None).await.expect("pipelined");
+        assert!(
+            pipelined_ok,
+            "1-message file: pipelined walker must complete without falling back \
+             (same-message-meet must not be misread as backward-overlaps-forward)",
+        );
+        let state = backend.lock_state().expect("lock");
+        assert_eq!(state.layouts.len(), 1);
+    }
+
+    /// Odd-count crossover (3 messages): forward commits msg 0 in
+    /// round 1, then in round 2 forward commits msg 1 while backward
+    /// postamble points at the same msg 1.  The pipelined walker must
+    /// detect the same-message meet and complete without bailing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pipelined_three_messages_odd_count_meet_completes_without_fallback() {
+        let buf = concat_messages(vec![
+            make_message(vec![4], 10),
+            make_message(vec![8], 20),
+            make_message(vec![16], 30),
+        ]);
+        let server = MockObjectStore::start(buf).await.expect("start");
+        let backend = RemoteBackend::open_with_scan_opts(
+            &server.url(),
+            &empty_storage(),
+            RemoteScanOptions {
+                bidirectional: true,
+            },
+        )
+        .expect("open bidirectional");
+        let pipelined_ok = backend.scan_pipelined_async(None).await.expect("pipelined");
+        assert!(
+            pipelined_ok,
+            "3-message file: pipelined walker must complete without falling back \
+             on the odd-count meet",
+        );
+        let state = backend.lock_state().expect("lock");
+        assert_eq!(state.layouts.len(), 3);
     }
 
     /// Forge a postamble whose `total_length` is between 1 and
