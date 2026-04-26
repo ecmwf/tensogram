@@ -136,23 +136,24 @@ async function main(): Promise<void> {
 
   try {
     console.log(`\nServing at ${server.url}`);
-    console.log('\n── Forward-only walker (default) ──');
-    const fwd = await TensogramFile.fromUrl(server.url, { debug: true });
-    try {
-      console.log(`Opened: ${fwd.messageCount} messages`);
-    } finally {
-      fwd.close();
-    }
 
-    console.log('\n── Bidirectional walker (opt-in) ──');
-    const bid = await TensogramFile.fromUrl(server.url, {
-      bidirectional: true,
-      debug: true,
-    });
+    console.log('\n── Bidirectional walker (default) ──');
+    const bid = await TensogramFile.fromUrl(server.url, { debug: true });
     try {
       console.log(`Opened: ${bid.messageCount} messages`);
     } finally {
       bid.close();
+    }
+
+    console.log('\n── Forward-only walker (opt-out) ──');
+    const fwd = await TensogramFile.fromUrl(server.url, {
+      bidirectional: false,
+      debug: true,
+    });
+    try {
+      console.log(`Opened: ${fwd.messageCount} messages`);
+    } finally {
+      fwd.close();
     }
 
     console.log('\nDispatcher events streamed via console.debug above.');

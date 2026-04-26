@@ -179,7 +179,7 @@ class TestPythonRemoteErrors:
 
 
 class TestBidirectionalKwarg:
-    def test_default_is_forward_only(self, serve_tgm_bytes):
+    def test_default_kwarg_omitted_opens_successfully(self, serve_tgm_bytes):
         msg = encode_test_message([4])
         url = serve_tgm_bytes(msg)
 

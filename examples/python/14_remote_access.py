@@ -125,15 +125,15 @@ print(f"is_remote_url({url!r}) = True")
 
 # ── Open remote file ─────────────────────────────────────────────────────────
 #
-# Pass `bidirectional=True` to opt in to the bidirectional walker, which
-# alternates forward and backward hops to roughly halve the number of HTTP
-# `GET`s needed for tail / full-scan access on header-indexed files.  The
-# walker returns identical layouts to the forward-only default; only the
-# discovery path differs.
+# `open_remote` defaults to the pipelined bidirectional walker, which
+# roughly halves the number of HTTP round trips needed for tail /
+# full-scan access on real-network workloads.  Pass
+# `bidirectional=False` to force a forward-only walk; both walkers
+# produce identical layouts.
 
 f = tensogram.TensogramFile.open_remote(url, {})
-# Equivalent opt-in form:
-#   f = tensogram.TensogramFile.open_remote(url, {}, bidirectional=True)
+# Equivalent opt-out form:
+#   f = tensogram.TensogramFile.open_remote(url, {}, bidirectional=False)
 print(f"\nOpened remote: source={f.source()}")
 print(f"  is_remote = {f.is_remote()}")
 print(f"  messages  = {f.message_count()}")
