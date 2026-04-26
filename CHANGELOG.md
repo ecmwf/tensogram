@@ -58,6 +58,17 @@ opt-out under any future default flip:
   the guard once the default flipped.  Lifted to use a pre-computed
   `effectiveBidirectional`.
 
+### Fixed — Fixture validator now checks postamble agreement
+
+`tests/remote-parity/tools/gen_fixtures.py` previously checked only
+the preamble's `total_length` field; the postamble carries a
+mirrored copy that the bidirectional walker reads to locate a
+message backward.  An encoder regression desynchronising the
+postamble would have shipped silently.  Validator now requires
+preamble.total_length == postamble.total_length on every message
+(both zero on the streaming-tail's final message, both non-zero
+elsewhere).
+
 ### Documentation
 
 - `plans/WIRE_FORMAT.md §9.3` rewritten with the format-vs-transport
