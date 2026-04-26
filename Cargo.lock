@@ -2334,6 +2334,8 @@ dependencies = [
  "tensogram",
  "tensogram-encodings",
  "tensogram-netcdf",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

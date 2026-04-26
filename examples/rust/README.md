@@ -49,6 +49,7 @@ cargo build --release -p tensogram-rust-examples --features netcdf,remote
 | `13_validate.rs` | Structural, integrity, and fidelity validation at four levels |
 | `14_remote_access.rs` | Opening a `.tgm` file over HTTP with a self-contained Range-capable server (requires `--features remote`) |
 | `16_multi_threaded_pipeline.rs` | Caller-controlled `threads=N` encode/decode with determinism invariants |
+| `18_remote_scan_trace.rs` | Subscribe to `tensogram::remote_scan` tracing events while running forward-only and bidirectional walkers (requires `--features remote`) |
 
 > Two bins share the `11_` prefix (`11_encode_pre_encoded` for the
 > pre-encoded payload API, `11_streaming` for the progressive
