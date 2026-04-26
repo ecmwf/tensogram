@@ -92,11 +92,12 @@ fn parse_storage_options(
     }
 }
 
-/// Build a `RemoteScanOptions` only when the caller opted in.
-/// `None` collapses to forward-only at the Rust layer without
-/// touching `RemoteScanOptions::default()` here.
+/// Always pass explicit `RemoteScanOptions` to the Rust layer so the
+/// caller's `bidirectional=False` opt-out survives any future change
+/// to `RemoteScanOptions::default()` — collapsing `false` to `None`
+/// would silently flip with the default.
 fn scan_opts_for(bidirectional: bool) -> Option<RemoteScanOptions> {
-    bidirectional.then_some(RemoteScanOptions { bidirectional: true })
+    Some(RemoteScanOptions { bidirectional })
 }
 
 // ---------------------------------------------------------------------------
