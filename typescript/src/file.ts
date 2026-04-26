@@ -217,7 +217,7 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
         'TensogramFile.fromUrl: no fetch implementation is available',
       );
     }
-    const effectiveBidirectional = options.bidirectional ?? false;
+    const effectiveBidirectional = options.bidirectional ?? true;
     if (effectiveBidirectional && options.concurrency === 1) {
       throw new InvalidArgumentError(
         'TensogramFile.fromUrl: bidirectional scan requires concurrency >= 2; ' +
@@ -1318,7 +1318,6 @@ async function runPipelinedBidirectional(
   let bwdCursor = state.prev;
   let pending: Pending | undefined;
   let bailReason: string | undefined;
-  let cursorsMet = false;
 
   const validatePending = async (
     p: Pending,
@@ -1372,7 +1371,6 @@ async function runPipelinedBidirectional(
 
   while (true) {
     if (fwdCursor === bwdCursor) {
-      cursorsMet = true;
       break;
     }
     if (bwdCursor < fwdCursor + minSize) {

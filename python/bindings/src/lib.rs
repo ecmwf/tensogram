@@ -400,7 +400,7 @@ struct PyTensogramFile {
 #[pymethods]
 impl PyTensogramFile {
     #[staticmethod]
-    #[pyo3(signature = (source, *, bidirectional=false))]
+    #[pyo3(signature = (source, *, bidirectional=true))]
     fn open(py: Python<'_>, source: &str, bidirectional: bool) -> PyResult<Self> {
         let scan_opts = scan_opts_for(bidirectional);
         let source = source.to_string();
@@ -411,7 +411,7 @@ impl PyTensogramFile {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (source, storage_options=None, *, bidirectional=false))]
+    #[pyo3(signature = (source, storage_options=None, *, bidirectional=true))]
     fn open_remote(
         py: Python<'_>,
         source: &str,
@@ -1801,7 +1801,7 @@ impl PyAsyncTensogramFile {
     ///
     ///     f = await AsyncTensogramFile.open("data.tgm")
     #[staticmethod]
-    #[pyo3(signature = (source, *, bidirectional=false))]
+    #[pyo3(signature = (source, *, bidirectional=true))]
     fn open<'py>(
         py: Python<'py>,
         source: &str,
@@ -1841,7 +1841,7 @@ impl PyAsyncTensogramFile {
     ///     f = await AsyncTensogramFile.open_remote("s3://bucket/data.tgm",
     ///                                               {"region": "eu-west-1"})
     #[staticmethod]
-    #[pyo3(signature = (source, storage_options=None, *, bidirectional=false))]
+    #[pyo3(signature = (source, storage_options=None, *, bidirectional=true))]
     fn open_remote<'py>(
         py: Python<'py>,
         source: &str,

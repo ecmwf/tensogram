@@ -219,12 +219,13 @@ describe('TensogramFile.fromUrl bidirectional walker', () => {
     }
   });
 
-  it('forward-only mode is byte-identical to behaviour before bidirectional', async () => {
+  it('forward-only mode walks one preamble per message', async () => {
     const body = makeNMessages(5);
     const { fetch: fakeFetch, requests } = makeRangeServer(body);
 
     const file = await TensogramFile.fromUrl('https://example.invalid/fwd.tgm', {
       fetch: fakeFetch,
+      bidirectional: false,
     });
     try {
       expect(file.messageCount).toBe(5);
@@ -328,6 +329,7 @@ describe('TensogramFile.fromUrl bidirectional walker', () => {
       const { fetch: fakeFetch } = makeRangeServer(body);
       const file = await TensogramFile.fromUrl('https://example.invalid/dbg2.tgm', {
         fetch: fakeFetch,
+        bidirectional: false,
         debug: true,
       });
       try {
