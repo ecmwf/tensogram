@@ -1830,8 +1830,9 @@ impl PyAsyncTensogramFile {
     /// Args:
     ///     source: Remote URL (``s3://``, ``gs://``, ``http://``, etc.).
     ///     storage_options: Optional dict of provider credentials / config.
-    ///     bidirectional: Opt-in keyword for the bidirectional remote
-    ///         scan walker (default ``False`` — forward-only).
+    ///     bidirectional: Default ``True`` — pipelined bidirectional
+    ///         remote scan walker.  Pass ``False`` to force a
+    ///         forward-only walk.
     ///
     /// Type errors on ``storage_options`` and ``bidirectional`` surface
     /// at the call site, before any I/O.

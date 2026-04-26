@@ -72,8 +72,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::spawn(move || serve_http(listener, &server_data));
 
     println!("Serving at {url}");
-    println!("\n── Forward-only walker (default) ──");
     let storage = std::collections::BTreeMap::new();
+
+    println!("\n── Bidirectional walker (default) ──");
     let file = TensogramFile::open_remote(&url, &storage, None)?;
     println!("Opened: {} messages", file.message_count()?);
     for i in 0..N_MESSAGES {
@@ -81,11 +82,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     drop(file);
 
-    println!("\n── Bidirectional walker (opt-in) ──");
-    let bidi_opts = Some(RemoteScanOptions {
-        bidirectional: true,
+    println!("\n── Forward-only walker (opt-out) ──");
+    let fwd_opts = Some(RemoteScanOptions {
+        bidirectional: false,
     });
-    let file = TensogramFile::open_remote(&url, &storage, bidi_opts)?;
+    let file = TensogramFile::open_remote(&url, &storage, fwd_opts)?;
     println!("Opened: {} messages", file.message_count()?);
     for i in 0..N_MESSAGES {
         let _ = file.decode_object(i, 0, &DecodeOptions::default())?;
