@@ -55,10 +55,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             masks: None,
         };
         let payload: Vec<u8> = (0..16).map(|b| b as u8 + i as u8).collect();
-        let msg = tensogram::encode::encode(&meta, &[(&desc, &payload)], &EncodeOptions::default())?;
+        let msg =
+            tensogram::encode::encode(&meta, &[(&desc, &payload)], &EncodeOptions::default())?;
         file_bytes.extend_from_slice(&msg);
     }
-    println!("Encoded {N_MESSAGES} messages, {} bytes total", file_bytes.len());
+    println!(
+        "Encoded {N_MESSAGES} messages, {} bytes total",
+        file_bytes.len()
+    );
 
     let tgm = Arc::new(file_bytes);
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -78,7 +82,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(file);
 
     println!("\n── Bidirectional walker (opt-in) ──");
-    let bidi_opts = Some(RemoteScanOptions { bidirectional: true });
+    let bidi_opts = Some(RemoteScanOptions {
+        bidirectional: true,
+    });
     let file = TensogramFile::open_remote(&url, &storage, bidi_opts)?;
     println!("Opened: {} messages", file.message_count()?);
     for i in 0..N_MESSAGES {
