@@ -134,7 +134,9 @@ _FIXTURE_SPECS: dict[str, tuple[int, tuple[int, ...], str]] = {
 }
 
 
-def _assert_fixture_well_formed(path: pathlib.Path, kind: str, expected_count: int) -> None:
+def _assert_fixture_well_formed(
+    path: pathlib.Path, kind: str, expected_count: int
+) -> None:
     """Sanity-check a generated fixture before committing it.
 
     Asserts that every message scans cleanly (postamble + preamble
