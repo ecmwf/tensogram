@@ -114,14 +114,20 @@ describe('remote_scan walker (wall-clock only)', () => {
     }
   });
 
-  let counter = 0;
+  // A single shared run_id keeps the parity mock server's
+  // run_id → log[] map at constant cardinality across the bench
+  // suite — Vitest runs each `bench` callback many times for its
+  // statistical sample, and a fresh id per iteration would grow the
+  // map without bound.  The wall-clock bench never reads the log,
+  // so reuse is safe and the mock server discards everything at
+  // process exit.
+  const SHARED_RUN_ID = 'vitest-bench';
   for (const cell of HEADLINE_CELLS) {
     for (const bidirectional of [false, true]) {
       const walkerLabel = bidirectional ? 'bidir' : 'forward';
       const id = `${cell.fixture}/${cell.scenario}/${walkerLabel}`;
       bench(id, async () => {
-        counter += 1;
-        await runCell(cell, bidirectional, `bench-${counter}`);
+        await runCell(cell, bidirectional, SHARED_RUN_ID);
       });
     }
   }

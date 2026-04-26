@@ -1325,6 +1325,7 @@ async function runPipelinedBidirectional(
   const validatePending = async (
     p: Pending,
     valBytes: Uint8Array,
+    overrideSignal?: AbortSignal,
   ): Promise<{ ok: boolean; abort?: boolean }> => {
     let candidateFooterBytes: Uint8Array | undefined;
     if (
@@ -1336,7 +1337,7 @@ async function runPipelinedBidirectional(
       if (footerStart < footerEnd) {
         try {
           candidateFooterBytes = await options.limit(() =>
-            fetchRange(ctx, footerStart, footerEnd, true),
+            fetchRange(ctx, footerStart, footerEnd, true, overrideSignal),
           );
         } catch {
           if (ctx.signal?.aborted) return { ok: false, abort: true };
@@ -1390,123 +1391,122 @@ async function runPipelinedBidirectional(
     }
     const overrideSignal = childAc.signal;
 
-    const fwdPromise = options.limit(() =>
-      fetchRange(ctx, fwdCursor, fwdCursor + PREAMBLE_BYTES, true, overrideSignal),
-    );
-    const bwdPromise = options.limit(() =>
-      fetchRange(ctx, bwdCursor - POSTAMBLE_BYTES, bwdCursor, true, overrideSignal),
-    );
-    const pendingForFetch = pending;
-    const valPromise =
-      pendingForFetch !== undefined
-        ? options.limit(() =>
-            fetchRange(
-              ctx,
-              pendingForFetch.msgStart,
-              pendingForFetch.msgStart + PREAMBLE_BYTES,
-              true,
-              overrideSignal,
-            ),
-          )
-        : undefined;
-
-    const promises: Promise<Uint8Array>[] =
-      valPromise !== undefined
-        ? [fwdPromise, bwdPromise, valPromise]
-        : [fwdPromise, bwdPromise];
-    for (const p of promises) {
-      p.then(undefined, () => childAc.abort());
-    }
-
-    let settled: PromiseSettledResult<Uint8Array>[];
     try {
-      settled = await Promise.allSettled(promises);
+      const fwdPromise = options.limit(() =>
+        fetchRange(ctx, fwdCursor, fwdCursor + PREAMBLE_BYTES, true, overrideSignal),
+      );
+      const bwdPromise = options.limit(() =>
+        fetchRange(ctx, bwdCursor - POSTAMBLE_BYTES, bwdCursor, true, overrideSignal),
+      );
+      const pendingForFetch = pending;
+      const valPromise =
+        pendingForFetch !== undefined
+          ? options.limit(() =>
+              fetchRange(
+                ctx,
+                pendingForFetch.msgStart,
+                pendingForFetch.msgStart + PREAMBLE_BYTES,
+                true,
+                overrideSignal,
+              ),
+            )
+          : undefined;
+
+      const promises: Promise<Uint8Array>[] =
+        valPromise !== undefined
+          ? [fwdPromise, bwdPromise, valPromise]
+          : [fwdPromise, bwdPromise];
+      for (const p of promises) {
+        p.then(undefined, () => childAc.abort());
+      }
+
+      const settled = await Promise.allSettled(promises);
+      if (settled.some((r) => r.status === 'rejected')) return false;
+
+      const fwdBytes = (settled[0] as PromiseFulfilledResult<Uint8Array>).value;
+      const bwdBytes = (settled[1] as PromiseFulfilledResult<Uint8Array>).value;
+      const valBytes =
+        valPromise !== undefined
+          ? (settled[2] as PromiseFulfilledResult<Uint8Array>).value
+          : undefined;
+
+      if (valBytes !== undefined && pending !== undefined) {
+        const p = pending;
+        pending = undefined;
+        const r = await validatePending(p, valBytes, overrideSignal);
+        if (!r.ok) return false;
+        if (bailReason !== undefined) break;
+      }
+
+      const preIterFwdCursor = fwdCursor;
+      const fwdOutcome = wbg.parse_forward_preamble_outcome(
+        fwdBytes,
+        BigInt(fwdCursor),
+        BigInt(fileLen),
+        BigInt(bwdCursor),
+      ) as ForwardOutcome;
+      if (fwdOutcome.kind === 'Hit') {
+        const layout = buildLayoutFromPreamble(
+          fwdBytes,
+          Number(fwdOutcome.offset),
+          Number(fwdOutcome.length),
+        );
+        if (layout === null) {
+          bailReason = 'preamble-parse-error-fwd';
+          break;
+        }
+        localFwd.push(layout);
+        fwdCursor = Number(fwdOutcome.msgEnd);
+      } else if (fwdOutcome.kind === 'ExceedsBound') {
+        bailReason = 'forward-exceeds-backward-bound';
+        break;
+      } else if (fwdOutcome.kind === 'Streaming') {
+        bailReason = 'streaming-fwd-non-tail';
+        break;
+      } else {
+        bailReason = `terminate-${fwdOutcome.reason}`;
+        break;
+      }
+
+      const bwdOutcome = wbg.parse_backward_postamble_outcome(
+        bwdBytes,
+        BigInt(preIterFwdCursor),
+        BigInt(bwdCursor),
+      ) as BackwardOutcome;
+      if (bwdOutcome.kind === 'NeedPreambleValidation') {
+        const candidateStart = Number(bwdOutcome.msgStart);
+        const candidateLength = Number(bwdOutcome.length);
+        // Same-message meet: forward just committed the same message that
+        // backward postamble points at (3-msg files, odd-count middle).
+        // Yield backward silently — don't pending-queue a duplicate of an
+        // already-forward-committed layout, and keep `bwdCursor` where it
+        // is so the next iteration's `cursorsMet` test fires correctly.
+        if (
+          fwdOutcome.kind === 'Hit' &&
+          Number(fwdOutcome.offset) === candidateStart &&
+          Number(fwdOutcome.length) === candidateLength
+        ) {
+          // bwdCursor stays at its pre-iter value — fwd has already
+          // claimed [candidateStart, fwdCursor), and they meet there.
+        } else {
+          pending = {
+            msgStart: candidateStart,
+            length: candidateLength,
+            firstFooterOffset: Number(bwdOutcome.firstFooterOffset),
+          };
+          bwdCursor = candidateStart;
+        }
+      } else if (bwdOutcome.kind === 'Format') {
+        bailReason = bwdOutcome.reason;
+        break;
+      } else {
+        bailReason = 'streaming-zero-bwd';
+        break;
+      }
     } finally {
       if (parentAbortHandler !== undefined && ctx.signal !== undefined) {
         ctx.signal.removeEventListener('abort', parentAbortHandler);
       }
-    }
-    if (settled.some((r) => r.status === 'rejected')) return false;
-
-    const fwdBytes = (settled[0] as PromiseFulfilledResult<Uint8Array>).value;
-    const bwdBytes = (settled[1] as PromiseFulfilledResult<Uint8Array>).value;
-    const valBytes =
-      valPromise !== undefined
-        ? (settled[2] as PromiseFulfilledResult<Uint8Array>).value
-        : undefined;
-
-    if (valBytes !== undefined && pending !== undefined) {
-      const p = pending;
-      pending = undefined;
-      const r = await validatePending(p, valBytes);
-      if (!r.ok) return false;
-      if (bailReason !== undefined) break;
-    }
-
-    const preIterFwdCursor = fwdCursor;
-    const fwdOutcome = wbg.parse_forward_preamble_outcome(
-      fwdBytes,
-      BigInt(fwdCursor),
-      BigInt(fileLen),
-      BigInt(bwdCursor),
-    ) as ForwardOutcome;
-    if (fwdOutcome.kind === 'Hit') {
-      const layout = buildLayoutFromPreamble(
-        fwdBytes,
-        Number(fwdOutcome.offset),
-        Number(fwdOutcome.length),
-      );
-      if (layout === null) {
-        bailReason = 'preamble-parse-error-fwd';
-        break;
-      }
-      localFwd.push(layout);
-      fwdCursor = Number(fwdOutcome.msgEnd);
-    } else if (fwdOutcome.kind === 'ExceedsBound') {
-      bailReason = 'forward-exceeds-backward-bound';
-      break;
-    } else if (fwdOutcome.kind === 'Streaming') {
-      bailReason = 'streaming-fwd-non-tail';
-      break;
-    } else {
-      bailReason = `terminate-${fwdOutcome.reason}`;
-      break;
-    }
-
-    const bwdOutcome = wbg.parse_backward_postamble_outcome(
-      bwdBytes,
-      BigInt(preIterFwdCursor),
-      BigInt(bwdCursor),
-    ) as BackwardOutcome;
-    if (bwdOutcome.kind === 'NeedPreambleValidation') {
-      const candidateStart = Number(bwdOutcome.msgStart);
-      const candidateLength = Number(bwdOutcome.length);
-      // Same-message meet: forward just committed the same message that
-      // backward postamble points at (3-msg files, odd-count middle).
-      // Yield backward silently — don't pending-queue a duplicate of an
-      // already-forward-committed layout, and keep `bwdCursor` where it
-      // is so the next iteration's `cursorsMet` test fires correctly.
-      if (
-        fwdOutcome.kind === 'Hit' &&
-        Number(fwdOutcome.offset) === candidateStart &&
-        Number(fwdOutcome.length) === candidateLength
-      ) {
-        // bwdCursor stays at its pre-iter value — fwd has already
-        // claimed [candidateStart, fwdCursor), and they meet there.
-      } else {
-        pending = {
-          msgStart: candidateStart,
-          length: candidateLength,
-          firstFooterOffset: Number(bwdOutcome.firstFooterOffset),
-        };
-        bwdCursor = candidateStart;
-      }
-    } else if (bwdOutcome.kind === 'Format') {
-      bailReason = bwdOutcome.reason;
-      break;
-    } else {
-      bailReason = 'streaming-zero-bwd';
-      break;
     }
   }
 
