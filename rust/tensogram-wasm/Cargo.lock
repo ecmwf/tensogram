@@ -680,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "built",
  "ciborium",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-encodings"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "built",
  "cc",
@@ -710,14 +710,14 @@ dependencies = [
 
 [[package]]
 name = "tensogram-szip"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "tensogram-wasm"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "ciborium",
  "getrandom 0.2.17",

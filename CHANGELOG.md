@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-04-26
+
 ### Changed — Remote bidirectional walker is now the default
 
 The remote backend now uses a pipelined bidirectional walker out of
@@ -84,6 +86,103 @@ message backward.  Validator now requires
 `preamble.total_length == postamble.total_length` on every message
 (both zero on the streaming-tail's final message, both non-zero
 elsewhere).
+
+### Fixed — Pipelined walker rejects backward candidates that overlap forward
+
+`scan_pipelined_async` (Rust) and `runPipelinedBidirectional` (TS)
+checked the same-message-meet equality but not the partial-overlap
+case where a backward candidate's `msg_start` lands strictly inside
+the just-committed forward window.  On the target-driven path
+(`scan_pipelined_async(Some(n))`) the loop could break out via the
+target check before the next-iteration gap-bail fired, the post-loop
+drain would then validate `pending` against attacker-planted preamble
+bytes (valid MAGIC + matching length), and the commit phase would
+write two overlapping layouts.  Fixed in both languages by adding an
+inline `msg_start < fwd_cursor` (post-hop) guard between the
+same-message-meet check and the `pending` queue: Rust returns
+`Ok(false)` so the per-round walker fallback's `apply_round_outcomes`
+catches the overlap via its `msg_end > layout.offset` rejection;
+TS sets `bailReason = 'backward-overlaps-forward'` and breaks.  New
+`pipelined_overlapping_backward_candidate_bails_to_fallback`
+regression test forges a corrupted file that exercises the attack
+path.
+
+### Fixed — Pipelined walker handles same-message meet without bailing
+
+`scan_pipelined_async` was passing the post-forward-hop `fwd_cursor`
+to `parse_backward_postamble` as `snap.next`.  When backward
+identified the message forward had just committed (1-msg files,
+odd-count crossover), the parser tripped its overlap guard, the
+walker returned `Ok(false)`, and all locally-accumulated forward and
+backward layouts were discarded — `message_count_async` /
+`message_layouts_async` then fell back to the per-round walker.  Fixed
+by snapshotting `pre_iter_fwd_cursor` before the forward parse
+advances `fwd_cursor` and detecting the same-message case explicitly,
+mirroring the TypeScript pipelined walker's existing handling.  Two
+new regression tests (`pipelined_one_message_completes_without_fallback`,
+`pipelined_three_messages_odd_count_meet_completes_without_fallback`)
+call `scan_pipelined_async` directly and assert `Ok(true)` so the
+outer fallback can't mask a future regression.
+
+### Fixed — Pipelined walker validates backward preamble before footer GET
+
+`validatePending` in the TypeScript pipelined walker issued the
+speculative footer-region Range GET before
+`validate_backward_preamble_outcome` confirmed the candidate
+preamble was well-formed.  On a `Format`-rejected or unparseable
+candidate the footer GET was wasted.  An attacker who plants byte
+sequences with valid MAGIC + FOOTER_INDEX flag bits but a
+`total_length` that doesn't match the postamble's claim could
+force a wasted Range request per backward candidate.  Reordered so
+the WASM validator runs first; only on a fully validated preamble
+does the footer fetch run.
+
+### Fixed — Per-iteration sibling cancellation in TypeScript pipelined walker
+
+The TS pipelined walker's `Promise.allSettled` over forward preamble +
+backward postamble + candidate-validation fetches waited for ALL three
+to settle, so one fast rejection plus one hung Range GET would stall
+the round indefinitely.  Reintroduced per-iteration child
+`AbortController` whose `signal` is passed to every `fetchRange` via
+`overrideSignal`; on first sibling failure a `p.then(undefined, () =>
+childAc.abort())` watcher aborts the rest, and the caller's top-level
+`ctx.signal` is forwarded into the child via a `{ once: true }`
+listener that's removed in `finally`.  The footer-region fetch inside
+`validatePending` also now passes through the same child signal, and
+the `try/finally` covers the full iteration body so parent
+cancellation propagates throughout.
+
+### Fixed — Bench mock-server log accumulation under Vitest
+
+The Vitest wall-clock bench previously generated a fresh `bench-${counter}`
+run_id per iteration; the parity mock server retained per-run_id logs in
+memory until `/_reset`, so across Vitest's many statistical samples the
+`run_id → log[]` map grew unbounded.  Added a `--no-log-requests` CLI
+flag to `tests/remote-parity/mock_server.py` that flips
+`_ServerState.append` into a no-op, and `remote_scan.bench.ts` passes it
+on spawn.  `run_parity.py` and the deterministic NDJSON metrics runner
+leave logging enabled because they read the log to extract counters.
+
+### Fixed — Mock HTTP server commits counter record before writing response
+
+`rust/benchmarks/src/mock_http.rs` `handle_one` was pushing the
+`RequestRecord` into the counter mutex AFTER `stream.write_all`
+returned.  The test's client returns as soon as it reads the response
+bytes, but the worker thread's record push is a separate operation that
+races with the next request's `snapshot()` — surfacing as a flaky
+`counters_segregate_methods_and_ranges` with `total_requests = 1`
+instead of `2`.  Refactored so each branch returns
+`(status, response_bytes, response_buf)`, the counter record is pushed,
+then `stream.write_all` runs once over the buffer.
+
+### Fixed — Mock server orphaned on startup timeout
+
+`startMockServer` in both `run_remote_bench.ts` and
+`remote_scan.bench.ts` rejected the start promise on the 10s
+URL-announce timeout but didn't terminate the spawned python child,
+leaving an orphaned `mock_server.py` running after the bench runner /
+Vitest exited.  Added `proc.kill('SIGTERM')` in both timeout handlers
+right before reject; Python's http.server handles SIGTERM cleanly.
 
 ### Documentation
 
