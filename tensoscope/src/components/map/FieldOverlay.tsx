@@ -45,6 +45,8 @@ export interface FieldOverlayProps {
 export interface FieldImage {
   dataUrl: string;
   coordinates: [[number, number], [number, number], [number, number], [number, number]];
+  width: number;
+  height: number;
 }
 
 const LAT_MAX_MERCATOR = 85;
@@ -365,7 +367,12 @@ export function useFieldImage(props: FieldOverlayProps | null): { image: FieldIm
 
   const applyAndSet = useCallback((raw: RawRender, excl: ViewBounds | null | undefined) => {
     const rgba = excl ? applyExcludeMask(raw.rgba, raw.params, excl) : raw.rgba;
-    setImage({ dataUrl: rgbaToDataUrl(rgba, raw.width, raw.height), coordinates: raw.coords });
+    setImage({
+      dataUrl: rgbaToDataUrl(rgba, raw.width, raw.height),
+      coordinates: raw.coords,
+      width: raw.width,
+      height: raw.height,
+    });
   }, []);
 
   const render = useCallback(async () => {

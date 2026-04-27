@@ -3,9 +3,11 @@ import {
   Viewer,
   ImageryLayer,
   UrlTemplateImageryProvider,
+  SingleTileImageryProvider,
+  GeoJsonDataSource,
   Rectangle,
-  ImageMaterialProperty,
   Color,
+  Cartesian2,
   Cartesian3,
   Math as CesiumMath,
   Credit,
@@ -27,9 +29,27 @@ import './CesiumView.css';
 import type { FieldImage, ViewBounds } from './FieldOverlay';
 import type { ClickPoint } from './usePointInspection';
 
+// CARTO publishes the dark-matter tiles split into separate sub-products:
+// `dark_nolabels` keeps the basemap tint and (some) borders; `dark_only_labels`
+// renders just place names on transparent tiles. We use nolabels at the bottom
+// and stack labels on top of the field so the user's data is never obscured.
+const BASEMAP_URL = 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png';
+const LABELS_URL = 'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png';
+const BASEMAP_SUBDOMAINS = ['a', 'b', 'c', 'd'];
+const BASEMAP_CREDIT = '© OpenStreetMap contributors © CARTO';
+
+// Natural Earth vector data via JSDelivr's GitHub CDN. 50 m is the middle
+// resolution — crisper than 110 m (which looked blocky on close zoom) but
+// without the rendering cost of 10 m at zoom-out (~500 KB coastlines,
+// ~150 KB borders, browser-cached after the first load).
+const COASTLINES_URL = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector/geojson/ne_50m_coastline.geojson';
+const BORDERS_URL = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector/geojson/ne_50m_admin_0_boundary_lines_land.geojson';
+
 interface CesiumViewProps {
   fieldImage: FieldImage | null;
   backFieldImage?: FieldImage | null;
+  showLabels?: boolean;
+  showLines?: boolean;
   initialCenter: { lat: number; lon: number };
   onUnmount: (lat: number, lon: number) => void;
   onViewChange?: (bounds: ViewBounds | null, width: number, height: number) => void;
@@ -40,11 +60,20 @@ interface CesiumViewProps {
   onSelectedPointOutOfView?: () => void;
 }
 
-export function CesiumView({ fieldImage, backFieldImage, initialCenter, onUnmount, onViewChange, onMapClick, selectedPoint, selectedPointGridSpacing, onSelectedPointScreen, onSelectedPointOutOfView }: CesiumViewProps) {
+export function CesiumView({
+  fieldImage, backFieldImage,
+  showLabels = false, showLines = true,
+  initialCenter, onUnmount, onViewChange, onMapClick,
+  selectedPoint, selectedPointGridSpacing,
+  onSelectedPointScreen, onSelectedPointOutOfView,
+}: CesiumViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Viewer | undefined>(undefined);
-  const overlayRef = useRef<Entity | undefined>(undefined);
-  const backOverlayRef = useRef<Entity | undefined>(undefined);
+  const backLayerRef = useRef<ImageryLayer | null>(null);
+  const frontLayerRef = useRef<ImageryLayer | null>(null);
+  const labelsLayerRef = useRef<ImageryLayer | null>(null);
+  const bordersDsRef = useRef<GeoJsonDataSource | null>(null);
+  const coastlinesDsRef = useRef<GeoJsonDataSource | null>(null);
   const markerRef = useRef<Entity | undefined>(undefined);
   const selectedPointRef = useRef(selectedPoint);
   const onUnmountRef = useRef(onUnmount);
@@ -62,19 +91,27 @@ export function CesiumView({ fieldImage, backFieldImage, initialCenter, onUnmoun
   useEffect(() => { onSelectedPointOutOfViewRef.current = onSelectedPointOutOfView; }, [onSelectedPointOutOfView]);
   useEffect(() => { selectedPointRef.current = selectedPoint; }, [selectedPoint]);
 
+  // Latest toggle values mirrored into refs so async data-source loads can
+  // honour the current value when they finish (otherwise a load that
+  // completes after a toggle ignores the toggle).
+  const showLabelsRef = useRef(showLabels);
+  const showLinesRef = useRef(showLines);
+  useEffect(() => { showLabelsRef.current = showLabels; }, [showLabels]);
+  useEffect(() => { showLinesRef.current = showLines; }, [showLines]);
+
   // Mount Cesium viewer once
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const osm = new UrlTemplateImageryProvider({
-      url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
-      subdomains: ['a', 'b', 'c', 'd'],
-      credit: new Credit('© OpenStreetMap contributors © CARTO'),
+    const basemap = new UrlTemplateImageryProvider({
+      url: BASEMAP_URL,
+      subdomains: BASEMAP_SUBDOMAINS,
+      credit: new Credit(BASEMAP_CREDIT),
       maximumLevel: 19,
     });
 
     const viewer = new Viewer(containerRef.current, {
-      baseLayer: ImageryLayer.fromProviderAsync(Promise.resolve(osm)),
+      baseLayer: ImageryLayer.fromProviderAsync(Promise.resolve(basemap)),
       baseLayerPicker: false,
       geocoder: false,
       homeButton: false,
@@ -91,6 +128,12 @@ export function CesiumView({ fieldImage, backFieldImage, initialCenter, onUnmoun
     });
 
     viewer.scene.globe.enableLighting = false;
+    // Cesium applies a hazy "ground atmosphere" pass to the globe surface
+    // and a sky-atmosphere halo around it. Both wash the field with a
+    // white-blue sheen at zoom-out — disable them so the field reads at
+    // its true colour.
+    viewer.scene.globe.showGroundAtmosphere = false;
+    if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false;
     viewer.scene.screenSpaceCameraController.enableCollisionDetection = false;
 
     viewer.camera.flyTo({
@@ -103,6 +146,41 @@ export function CesiumView({ fieldImage, backFieldImage, initialCenter, onUnmoun
     });
 
     viewerRef.current = viewer;
+
+    // Labels imagery layer — renders on top of the field. Toggled by the
+    // showLabels prop.
+    const labelsProvider = new UrlTemplateImageryProvider({
+      url: LABELS_URL,
+      subdomains: BASEMAP_SUBDOMAINS,
+      credit: new Credit(BASEMAP_CREDIT),
+      maximumLevel: 19,
+    });
+    labelsLayerRef.current = viewer.imageryLayers.addImageryProvider(labelsProvider);
+    labelsLayerRef.current.show = showLabelsRef.current;
+
+    // Borders and coastlines as ground-clamped GeoJSON polylines. They sit
+    // in `dataSources`, which Cesium renders above all imagery layers.
+    GeoJsonDataSource.load(COASTLINES_URL, {
+      stroke: Color.WHITE.withAlpha(0.55),
+      strokeWidth: 1,
+      clampToGround: true,
+    }).then((ds) => {
+      coastlinesDsRef.current = ds;
+      ds.show = showLinesRef.current;
+      viewer.dataSources.add(ds);
+      viewer.scene.requestRender();
+    }).catch(() => { /* network error — degrade silently */ });
+
+    GeoJsonDataSource.load(BORDERS_URL, {
+      stroke: Color.WHITE.withAlpha(0.55),
+      strokeWidth: 1,
+      clampToGround: true,
+    }).then((ds) => {
+      bordersDsRef.current = ds;
+      ds.show = showLinesRef.current;
+      viewer.dataSources.add(ds);
+      viewer.scene.requestRender();
+    }).catch(() => { /* network error — degrade silently */ });
 
     // Handle selected point marker position on globe
     const updateSelectedPointScreen = () => {
@@ -122,12 +200,10 @@ export function CesiumView({ fieldImage, backFieldImage, initialCenter, onUnmoun
       }
     };
 
-    // Update marker position on camera changes
     const cameraChangedHandler = () => {
       updateSelectedPointScreen();
     };
     viewer.camera.changed.addEventListener(cameraChangedHandler);
-    // Emit once on mount
     updateSelectedPointScreen();
 
     const clickHandler = new ScreenSpaceEventHandler(viewer.scene.canvas);
@@ -135,7 +211,7 @@ export function CesiumView({ fieldImage, backFieldImage, initialCenter, onUnmoun
       const pt = onMapClickRef.current;
       if (!pt) return;
       const cartesian = viewer.camera.pickEllipsoid(
-        event.position,
+        new Cartesian2(event.position.x, event.position.y),
         viewer.scene.globe.ellipsoid,
       );
       if (!cartesian) return;
@@ -148,8 +224,6 @@ export function CesiumView({ fieldImage, backFieldImage, initialCenter, onUnmoun
       });
     }, ScreenSpaceEventType.LEFT_CLICK);
 
-    // Debounced camera-change listener: computes the visible rectangle and
-    // passes it back so the caller can request a viewport-resolution render.
     let boundsTimer: ReturnType<typeof setTimeout> | null = null;
     const emitBounds = () => {
       if (boundsTimer !== null) clearTimeout(boundsTimer);
@@ -165,14 +239,12 @@ export function CesiumView({ fieldImage, backFieldImage, initialCenter, onUnmoun
             north: CesiumMath.toDegrees(rect.north),
           }, w, h);
         } else {
-          // Camera looking into space or very zoomed out -- use full extent
           onViewChangeRef.current?.(null, w, h);
         }
       }, 200);
     };
 
     viewer.camera.changed.addEventListener(emitBounds);
-    // Emit once on mount so we have initial bounds
     emitBounds();
 
     return () => {
@@ -187,95 +259,77 @@ export function CesiumView({ fieldImage, backFieldImage, initialCenter, onUnmoun
       );
       viewer.destroy();
       viewerRef.current = undefined;
-      overlayRef.current = undefined;
-      backOverlayRef.current = undefined;
+      backLayerRef.current = null;
+      frontLayerRef.current = null;
+      labelsLayerRef.current = null;
+      bordersDsRef.current = null;
+      coastlinesDsRef.current = null;
       markerRef.current = undefined;
     };
   }, []); // mount-once: intentional empty deps
 
-  // Back layer — full-globe low-resolution render. Always loaded; visibility
-  // is toggled by the showFront flag so the front and back never both
-  // contribute colour at the same screen pixel.
-  useEffect(() => {
+  // Swap a field-imagery layer in place. Cesium has no `setProvider`, so we
+  // remove the old layer and add a fresh one in the same z-order slot
+  // (between basemap and labels). `raiseToTop` on the labels layer afterwards
+  // keeps the labels above the field even though `addImageryProvider`
+  // appends to the end of the collection.
+  const swapFieldImagery = (
+    layerRef: React.MutableRefObject<ImageryLayer | null>,
+    image: FieldImage | null,
+  ) => {
     const viewer = viewerRef.current;
     if (!viewer) return;
-
-    if (!backFieldImage) {
-      if (backOverlayRef.current) backOverlayRef.current.show = false;
-      return;
+    if (layerRef.current) {
+      viewer.imageryLayers.remove(layerRef.current, true);
+      layerRef.current = null;
     }
-
-    const [lonMin, latMax] = backFieldImage.coordinates[0];
-    const [lonMax, latMin] = backFieldImage.coordinates[2];
+    if (!image) return;
+    const [lonMin, latMax] = image.coordinates[0];
+    const [lonMax, latMin] = image.coordinates[2];
     const rect = Rectangle.fromDegrees(lonMin, latMin, lonMax, latMax);
-
-    if (backOverlayRef.current) {
-      const rectProp = backOverlayRef.current.rectangle!;
-      rectProp.coordinates = new ConstantProperty(rect);
-      const mat = rectProp.material as ImageMaterialProperty;
-      mat.image = new ConstantProperty(backFieldImage.dataUrl);
-    } else {
-      backOverlayRef.current = viewer.entities.add({
-        rectangle: {
-          coordinates: rect,
-          material: new ImageMaterialProperty({
-            image: backFieldImage.dataUrl,
-            transparent: true,
-            color: new Color(1, 1, 1, 1),
-          }),
-          fill: true,
-        },
-      });
+    const provider = new SingleTileImageryProvider({
+      url: image.dataUrl,
+      rectangle: rect,
+      tileWidth: image.width,
+      tileHeight: image.height,
+    });
+    layerRef.current = viewer.imageryLayers.addImageryProvider(provider);
+    if (labelsLayerRef.current) {
+      viewer.imageryLayers.raiseToTop(labelsLayerRef.current);
     }
+    viewer.scene.requestRender();
+  };
+
+  // Back layer — full-globe low-resolution render.
+  useEffect(() => {
+    swapFieldImagery(backLayerRef, backFieldImage ?? null);
+    // swapFieldImagery is stable; no deps needed.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backFieldImage]);
 
-  // Front layer — viewport at screen resolution. Visibility is toggled by
-  // showFront. No half-pixel rectangle extension is needed because the back
-  // is hidden when the front is visible, so there is no seam to mitigate.
+  // Front layer — viewport at screen resolution.
   useEffect(() => {
-    const viewer = viewerRef.current;
-    if (!viewer) return;
-
-    if (!fieldImage) {
-      if (overlayRef.current) overlayRef.current.show = false;
-      return;
-    }
-
-    const [lonMin, latMax] = fieldImage.coordinates[0];
-    const [lonMax, latMin] = fieldImage.coordinates[2];
-    const rect = Rectangle.fromDegrees(lonMin, latMin, lonMax, latMax);
-
-    if (overlayRef.current) {
-      const rectProp = overlayRef.current.rectangle!;
-      rectProp.coordinates = new ConstantProperty(rect);
-      const mat = rectProp.material as ImageMaterialProperty;
-      mat.image = new ConstantProperty(fieldImage.dataUrl);
-    } else {
-      overlayRef.current = viewer.entities.add({
-        rectangle: {
-          coordinates: rect,
-          material: new ImageMaterialProperty({
-            image: fieldImage.dataUrl,
-            transparent: true,
-            color: new Color(1, 1, 1, 1),
-          }),
-          fill: true,
-        },
-      });
-    }
+    swapFieldImagery(frontLayerRef, fieldImage);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fieldImage]);
 
-  // Both layers stay visible at 0.7 whenever they have an image. The front
-  // sits on top within its rectangle (slight saturation bump in the
-  // overlap), the back covers the rest. No visibility toggling — Cesium's
-  // entity show/hide produces a one-frame flash that is unacceptable on
-  // every pan, and the front's outer edge is normally offscreen because of
-  // the FRONT_BUFFER_FACTOR oversize.
+  // Toggle labels visibility.
   useEffect(() => {
-    if (overlayRef.current) overlayRef.current.show = !!fieldImage;
-    if (backOverlayRef.current) backOverlayRef.current.show = !!backFieldImage;
+    if (labelsLayerRef.current) {
+      labelsLayerRef.current.show = showLabels;
+      viewerRef.current?.scene.requestRender();
+    }
+  }, [showLabels]);
+
+  // Toggle borders + coastlines visibility. Sets `show` on each data
+  // source; Cesium hides the contained entities and ground primitives
+  // accordingly. Falls through cleanly if the async load hasn't completed
+  // yet — the load callback applies showLinesRef.current at that point.
+  useEffect(() => {
+    if (bordersDsRef.current) bordersDsRef.current.show = showLines;
+    if (coastlinesDsRef.current) coastlinesDsRef.current.show = showLines;
     viewerRef.current?.scene.requestRender();
-  }, [fieldImage, backFieldImage]);
+  }, [showLines]);
 
   // Update selected-point marker when selectedPoint or grid spacing changes
   useEffect(() => {
