@@ -271,12 +271,14 @@ export function PointInspector({
         <span style={{ color: '#aaa', fontSize: 11 }}>
           Lat: {result.pointLat.toFixed(3)} &nbsp; Lon: {result.pointLon.toFixed(3)}
         </span>
-        <span
-          style={{ color: '#666', fontSize: 15, cursor: 'pointer', lineHeight: 1 }}
+        <button
+          type="button"
+          aria-label="Close point inspector"
+          style={{ color: '#666', fontSize: 15, cursor: 'pointer', lineHeight: 1, background: 'none', border: 'none', padding: 0 }}
           onMouseDown={(e) => { e.stopPropagation(); onClose(); }}
         >
           ✕
-        </span>
+        </button>
       </div>
 
       {/* Row 2: param + level + unit toggle */}

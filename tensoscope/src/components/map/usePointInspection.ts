@@ -157,9 +157,15 @@ export function usePointInspection(params: UsePointInspectionParams): Inspection
     if (!viewer || !fileIndex) return;
     setResult({ pointLat, pointLon, entries: [], singleValue: null, loading: true });
 
+    let cancelled = false;
     fetchTimeSeries(viewer, fileIndex, coordinates, frames, pointIndex, selectedLevel)
-      .then((entries) => setResult({ pointLat, pointLon, entries, singleValue: null, loading: false }))
-      .catch(() => setResult({ pointLat, pointLon, entries: [], singleValue: null, loading: false }));
+      .then((entries) => {
+        if (!cancelled) setResult({ pointLat, pointLon, entries, singleValue: null, loading: false });
+      })
+      .catch(() => {
+        if (!cancelled) setResult({ pointLat, pointLon, entries: [], singleValue: null, loading: false });
+      });
+    return () => { cancelled = true; };
   }, [point, coordinates, fieldData, viewer, fileIndex, frames, selectedLevel]);
 
   return result;

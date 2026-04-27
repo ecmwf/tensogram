@@ -324,13 +324,9 @@ export function MapView(props: MapViewProps) {
 
   // ── Overlay props ────────────────────────────────────────────────────
   //
-  // Two-layer rendering per view: a low-resolution full-globe back layer that
-  // is always present, and a screen-resolution front layer covering the
-  // visible viewport extended by FRONT_BUFFER_FACTOR. The back's RGBA has
-  // alpha forced to zero in the rectangle covered by the front, so every
-  // pixel has at most one source contributing colour (no opacity stacking).
-  //
-  // Both layers display at raster-opacity 0.7 / Color(1,1,1,0.7).
+  // Two-layer rendering per view: a low-resolution back layer that provides
+  // broad coverage, plus an optional screen-resolution front layer covering
+  // the visible viewport extended by FRONT_BUFFER_FACTOR.
 
   const bufferedFlatBounds: ViewBounds | null =
     !isGlobe && viewportBounds

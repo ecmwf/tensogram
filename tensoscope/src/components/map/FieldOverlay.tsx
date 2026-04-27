@@ -331,8 +331,11 @@ function resolveBounds(
   const { west, east, south, north } = bounds;
   const lonSpan = east - west;
 
-  // Antimeridian crossing or nearly-global view: use full extent
-  if (west < -180 || east > 180 || lonSpan > 330) {
+  // Antimeridian crossing or nearly-global view: use full extent.
+  // Also catches bounds represented as east < west within [-180, 180]
+  // (e.g. MapLibre wraps crossing the dateline that way), which would
+  // otherwise produce lonMin > lonMax and a negative span downstream.
+  if (west < -180 || east > 180 || lonSpan > 330 || lonSpan <= 0) {
     return { lonMin: -180, lonMax: 180, latMin: latMin_, latMax: latMax_, vw: viewportWidth ?? globalVw, vh: viewportHeight ?? globalVh };
   }
 
@@ -410,9 +413,19 @@ export function useFieldImage(props: FieldOverlayProps | null): { image: FieldIm
 
     const cached = getCached(key);
     if (cached) {
+      // Use coords derived from cached.params so the overlay bounds match the
+      // RGBA that was actually rendered (the cache key quantises to 0.5°, so
+      // the rendered window may differ slightly from the current un-quantised
+      // bounds; mixing them would misalign the image).
+      const cachedCoords: FieldImage['coordinates'] = [
+        [cached.params.lonMin, cached.params.latMax],
+        [cached.params.lonMax, cached.params.latMax],
+        [cached.params.lonMax, cached.params.latMin],
+        [cached.params.lonMin, cached.params.latMin],
+      ];
       const raw: RawRender = {
         rgba: cached.rgba, width: cached.width, height: cached.height,
-        coords, params: cached.params,
+        coords: cachedCoords, params: cached.params,
       };
       rawRef.current = raw;
       setIsRendering(false);

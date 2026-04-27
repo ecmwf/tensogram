@@ -90,7 +90,11 @@ export class FrameCache {
 
   flush(): void {
     this.generation++;
-    this.active = 0;
+    // Do not reset `active` — in-flight tasks from the previous generation
+    // still hold references and will decrement it when they finish. Zeroing
+    // it here would let those decrements drive the counter negative, causing
+    // drain() to exceed maxConcurrent. Let them complete naturally; they will
+    // not pollute the cache because the generation guard above fires first.
     this.cache.clear();
     this.inflight.clear();
     this.queue.length = 0;

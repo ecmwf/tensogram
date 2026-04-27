@@ -115,6 +115,7 @@ async function initViewer(
     fieldStats: null,
     colorScaleLocked: false,
     colorScaleParam: undefined,
+    frameLoading: false,
     error: null,
   });
 }
