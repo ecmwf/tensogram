@@ -13,13 +13,45 @@ import { StepSlider } from './components/animation/StepSlider';
 import { useAnimationSequence } from './components/animation/useAnimationSequence';
 import { useAnimationPlayer } from './components/animation/useAnimationPlayer';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
-import { useAppStore } from './store/useAppStore';
+import { useAppStore, decideSliceDim } from './store/useAppStore';
+import type { ClickPoint } from './components/map/usePointInspection';
+import { usePointInspection } from './components/map/usePointInspection';
+import { PointInspector } from './components/map/PointInspector';
 import { useIsMobile } from './hooks/useIsMobile';
 import { snapSheet, sheetHeightCss } from './components/mobile/sheetSnap';
 import type { SheetState } from './components/mobile/sheetSnap';
+import { getFrameCache } from './tensogram/frameCache';
+import type { CachedFrame } from './tensogram/frameCache';
+
+async function decodeFrameForCache(msgIdx: number, objIdx: number): Promise<CachedFrame> {
+  const { viewer, fileIndex, selectedLevel } = useAppStore.getState();
+  if (!viewer || !fileIndex) throw new Error('viewer not ready');
+  const coords = await viewer.fetchCoordinates(msgIdx);
+  const varInfo = fileIndex.variables.find((v) => v.msgIndex === msgIdx && v.objIndex === objIdx);
+  const originalShape = varInfo?.shape ?? [];
+  const coordLength = coords?.lat.length ?? 0;
+  const sliceDim = decideSliceDim(originalShape, coordLength);
+  let result;
+  if (sliceDim >= 0) {
+    let sliceIdx = 0;
+    if (selectedLevel != null) {
+      const anemoi = varInfo?.metadata?.anemoi as Record<string, unknown> | undefined;
+      const levels = anemoi?.levels as number[] | undefined;
+      if (levels) {
+        const idx = levels.indexOf(selectedLevel);
+        if (idx >= 0) sliceIdx = idx;
+      }
+    }
+    result = await viewer.decodeFieldSlice(msgIdx, objIdx, sliceDim, sliceIdx);
+  } else {
+    result = await viewer.decodeField(msgIdx, objIdx);
+  }
+  return { data: result.data, coordinates: coords, stats: result.stats, shape: originalShape };
+}
 
 function App() {
   const {
+    viewer,
     fileIndex,
     selectedObject,
     selectedLevel,
@@ -30,6 +62,7 @@ function App() {
     setColorScale,
     selectField,
     loading,
+    frameLoading,
     error,
   } = useAppStore();
 
@@ -53,10 +86,17 @@ function App() {
     const frame = frames[index];
     if (frame) {
       selectField(frame.msgIdx, frame.objIdx);
+      getFrameCache()?.prefetch(frames, index, decodeFrameForCache);
     }
   };
 
   const player = useAnimationPlayer(frames.length, handleFrameChange);
+
+  // Flush the frame cache when level changes — cached frames encode the
+  // selected level at decode time, so stale entries must be discarded.
+  useEffect(() => {
+    getFrameCache()?.flush();
+  }, [selectedLevel]);
 
   useKeyboardShortcuts({
     enabled: frames.length > 1,
@@ -173,6 +213,38 @@ function App() {
         : String(marsParamRaw);
   const units = (selectedVar?.metadata?.units as string) ?? marsParam;
 
+  const [clickPoint, setClickPoint] = useState<ClickPoint | null>(null);
+  const [inspectedScreenPos, setInspectedScreenPos] = useState<{ x: number; y: number } | null>(null);
+
+  const gridSpacing = coordinates
+    ? Math.sqrt(360 * 170 / Math.max(1, coordinates.lat.length))
+    : null;
+
+  const paramName = selectedVar?.name ?? marsParam ?? '';
+
+  const levelLabel = (() => {
+    if (selectedLevel == null) return '';
+    const mars = selectedVar?.metadata?.mars as Record<string, unknown> | undefined;
+    const levtype = mars?.levtype as string | undefined;
+    if (levtype === 'pl') return `${selectedLevel} hPa`;
+    if (levtype === 'ml') return `L${selectedLevel}`;
+    return `${selectedLevel}`;
+  })();
+
+  const inspectionResult = usePointInspection({
+    point: clickPoint,
+    coordinates,
+    fieldData,
+    viewer,
+    fileIndex,
+    frames,
+    selectedLevel,
+  });
+
+  const selectedPoint = inspectionResult
+    ? { lat: inspectionResult.pointLat, lon: inspectionResult.pointLon }
+    : null;
+
   return (
     <div
       className="app-layout"
@@ -197,7 +269,7 @@ function App() {
         <MetadataPanel />
       </aside>
       <div className="sidebar-resize-handle" onMouseDown={onDragStart} />
-      <main className="map-area">
+      <main className="map-area" style={{ position: 'relative' }}>
         {loading && (
           <div className="map-loading-overlay">
             <div className="map-loading-spinner" />
@@ -229,6 +301,12 @@ function App() {
           nativeUnits={colorScale.nativeUnits}
           displayUnit={colorScale.displayUnit}
           onDisplayUnitChange={(u) => setColorScale({ displayUnit: u })}
+          onMapClick={(pt) => { setClickPoint(pt); setInspectedScreenPos({ x: pt.screenX, y: pt.screenY }); }}
+          selectedPoint={selectedPoint}
+          selectedPointGridSpacing={gridSpacing}
+          onSelectedPointScreen={(x, y) => setInspectedScreenPos({ x, y })}
+          onSelectedPointOutOfView={() => { setClickPoint(null); setInspectedScreenPos(null); }}
+          isLoading={frameLoading}
         />
         {frames.length > 1 && (
           <div className="animation-bar">
@@ -249,6 +327,19 @@ function App() {
               onSpeedChange={player.setSpeed}
             />
           </div>
+        )}
+        {clickPoint !== null && inspectionResult !== null && inspectedScreenPos !== null && (
+          <PointInspector
+            result={inspectionResult}
+            screenX={inspectedScreenPos.x}
+            screenY={inspectedScreenPos.y}
+            paramName={paramName}
+            levelLabel={levelLabel}
+            nativeUnits={colorScale.nativeUnits}
+            displayUnit={colorScale.displayUnit}
+            onDisplayUnitChange={(u) => setColorScale({ displayUnit: u })}
+            onClose={() => { setClickPoint(null); setInspectedScreenPos(null); }}
+          />
         )}
       </main>
     </div>

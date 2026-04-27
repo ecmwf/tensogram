@@ -716,6 +716,20 @@ h2 {
   to { transform: rotate(360deg); }
 }
 
+.map-frame-spinner {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: rgba(255, 255, 255, 0.85);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  z-index: 10;
+  pointer-events: none;
+}
+
 .map-error-overlay {
   background: rgba(17, 19, 24, 0.7);
   pointer-events: auto;
@@ -775,6 +789,7 @@ h2 {
 }
 
 .map-picker-btn {
+  flex: 1;
   padding: 5px 14px;
   border: none;
   background: transparent;
@@ -784,6 +799,7 @@ h2 {
   transition: background 0.12s, color 0.12s;
   white-space: nowrap;
   font-family: inherit;
+  text-align: center;
 }
 
 .map-picker-btn + .map-picker-btn {
@@ -799,6 +815,67 @@ h2 {
   background: rgba(255, 255, 255, 0.14);
   color: #fff;
   font-weight: 500;
+}
+
+/* ── Display-options config pill (collapsed) and dropdown panel ── */
+.map-config-pill {
+  position: relative;
+  display: inline-flex;
+  background: rgba(20, 22, 32, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  overflow: visible;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.map-config-chevron {
+  margin-left: 6px;
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.map-config-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: rgba(20, 22, 32, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  z-index: 12;
+}
+
+.map-config-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  padding: 4px 2px;
+  border-radius: 4px;
+}
+
+.map-config-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.map-config-row input[type="checkbox"] {
+  margin: 0;
+  accent-color: rgba(255, 255, 255, 0.9);
+}
+
+.map-config-hint {
+  margin-left: auto;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.45);
 }
 
 /* ── Mobile layout (≤767px): sidebar becomes a bottom sheet ── */

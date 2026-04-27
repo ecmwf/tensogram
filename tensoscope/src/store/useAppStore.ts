@@ -5,6 +5,7 @@ import { Tensoscope } from '../tensogram';
 import type { FileIndex, DecodedField, CoordinateData } from '../tensogram';
 import { getAutoStyle } from '../components/map/autoStyles';
 import type { CustomStop } from '../components/map/colormaps';
+import { getFrameCache, initFrameCache } from '../tensogram/frameCache';
 
 /**
  * Decide which axis of a field to slice down to 2-D before rendering.
@@ -63,7 +64,10 @@ interface AppState {
   fieldStats: FieldStats | null;
   coordinates: CoordinateData | null;
   colorScale: ColorScaleConfig;
+  colorScaleLocked: boolean;
+  colorScaleParam: string | number | undefined;
   loading: boolean;
+  frameLoading: boolean;
   error: string | null;
 
   openLocalFile: (file: File) => Promise<void>;
@@ -109,7 +113,9 @@ async function initViewer(
     fieldData: null,
     fieldShape: [],
     fieldStats: null,
-    loading: false,
+    colorScaleLocked: false,
+    colorScaleParam: undefined,
+    frameLoading: false,
     error: null,
   });
 }
@@ -124,7 +130,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   fieldStats: null,
   coordinates: null,
   colorScale: DEFAULT_COLOR_SCALE,
+  colorScaleLocked: false,
+  colorScaleParam: undefined,
   loading: false,
+  frameLoading: false,
   error: null,
 
   openLocalFile: async (file: File) => {
@@ -133,11 +142,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       const prev = get().viewer;
       if (prev) prev.close();
       const viewer = await Tensoscope.fromFile(file);
+      initFrameCache(false);
       await initViewer(viewer, set);
       const first = get().fileIndex?.variables[0];
       if (first) await get().selectField(first.msgIndex, first.objIndex);
     } catch (err) {
-      set({ loading: false, error: String(err) });
+      set({ error: String(err) });
+    } finally {
+      set({ loading: false });
     }
   },
 
@@ -147,72 +159,114 @@ export const useAppStore = create<AppState>((set, get) => ({
       const prev = get().viewer;
       if (prev) prev.close();
       const viewer = await Tensoscope.fromUrl(url);
+      initFrameCache(true);
       await initViewer(viewer, set);
       const first = get().fileIndex?.variables[0];
       if (first) await get().selectField(first.msgIndex, first.objIndex);
     } catch (err) {
-      set({ loading: false, error: String(err) });
+      set({ error: String(err) });
+    } finally {
+      set({ loading: false });
     }
   },
 
   selectField: async (msgIdx: number, objIdx: number) => {
     const { viewer, fileIndex, selectedLevel } = get();
     if (!viewer || !fileIndex) return;
-    set({ loading: true, error: null, selectedObject: { msgIdx, objIdx } });
-    // Yield so React renders the loading state before the synchronous WASM decode blocks the thread.
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    set({ error: null, selectedObject: { msgIdx, objIdx } });
+
     try {
-      // Heterogeneous multi-message files may carry different grids per
-      // message; fetch the coords for the selected message so coordLength
-      // and downstream geolocation match the field we are about to decode.
-      // The wrapper's per-msgIdx cache makes repeat calls free.
-      const coords = await viewer.fetchCoordinates(msgIdx);
       const varInfo = fileIndex.variables.find(
         (v) => v.msgIndex === msgIdx && v.objIndex === objIdx,
       );
-      const originalShape = varInfo?.shape ?? [];
-      const coordLength = coords?.lat.length ?? 0;
+      const mars = varInfo?.metadata?.mars as Record<string, unknown> | undefined;
+      const marsParam = (mars?.param as string | number | undefined) ?? varInfo?.name;
+      const style = getAutoStyle(marsParam);
 
-      const sliceDim = decideSliceDim(originalShape, coordLength);
+      const frameCache = getFrameCache();
+      const cached = frameCache?.get(msgIdx, objIdx);
 
+      let coords: CoordinateData | null;
       let result: DecodedField;
-      if (sliceDim >= 0) {
-        let sliceIdx = 0;
-        if (selectedLevel != null) {
-          const anemoi = varInfo?.metadata?.anemoi as Record<string, unknown> | undefined;
-          const levels = anemoi?.levels as number[] | undefined;
-          if (levels) {
-            const idx = levels.indexOf(selectedLevel);
-            if (idx >= 0) sliceIdx = idx;
-          }
-        }
-        result = await viewer.decodeFieldSlice(msgIdx, objIdx, sliceDim, sliceIdx);
+      let originalShape: number[];
+
+      if (cached) {
+        coords = cached.coordinates;
+        originalShape = cached.shape;
+        result = { data: cached.data, shape: cached.shape, stats: cached.stats };
       } else {
-        result = await viewer.decodeField(msgIdx, objIdx);
+        set({ frameLoading: true });
+        // Yield to prevent WASM from blocking the main thread during decode.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+        coords = await viewer.fetchCoordinates(msgIdx);
+        originalShape = varInfo?.shape ?? [];
+        const coordLength = coords?.lat.length ?? 0;
+        const sliceDim = decideSliceDim(originalShape, coordLength);
+
+        if (sliceDim >= 0) {
+          let sliceIdx = 0;
+          if (selectedLevel != null) {
+            const anemoi = varInfo?.metadata?.anemoi as Record<string, unknown> | undefined;
+            const levels = anemoi?.levels as number[] | undefined;
+            if (levels) {
+              const idx = levels.indexOf(selectedLevel);
+              if (idx >= 0) sliceIdx = idx;
+            }
+          }
+          result = await viewer.decodeFieldSlice(msgIdx, objIdx, sliceDim, sliceIdx);
+        } else {
+          result = await viewer.decodeField(msgIdx, objIdx);
+        }
+
+        frameCache?.put(msgIdx, objIdx, {
+          data: result.data,
+          coordinates: coords,
+          stats: result.stats,
+          shape: originalShape,
+        });
       }
 
-      // Apply per-variable auto-style if available, otherwise use data range.
-      // mars.param can be either a short string ("2t", "t", ...) or a
-      // GRIB integer code (167, 130, ...); getAutoStyle handles both.
-      const mars = varInfo?.metadata?.mars as Record<string, unknown> | undefined;
-      const marsParam = mars?.param as string | number | undefined;
-      const param = marsParam ?? varInfo?.name;
-      const style = getAutoStyle(param);
+      // Re-read lock state after the async decode — user may have changed it.
+      const { colorScaleLocked, colorScaleParam } = get();
+      const paramChanged = marsParam !== colorScaleParam;
+
+      let newColorScale: ColorScaleConfig;
+      let nextLocked: boolean;
+
+      if (paramChanged) {
+        // New param: apply auto-style and clear any user lock.
+        newColorScale = style
+          ? { ...DEFAULT_COLOR_SCALE, palette: style.palette, min: style.min, max: style.max, logScale: false, nativeUnits: style.units, displayUnit: style.units }
+          : { ...get().colorScale, min: result.stats.min, max: result.stats.max, nativeUnits: '', displayUnit: '' };
+        nextLocked = false;
+      } else if (colorScaleLocked) {
+        // Same param, user has customised: preserve their settings.
+        newColorScale = get().colorScale;
+        nextLocked = true;
+      } else {
+        // Same param, auto mode: keep fixed auto-style range or auto-scale data range.
+        newColorScale = style
+          ? get().colorScale
+          : { ...get().colorScale, min: result.stats.min, max: result.stats.max };
+        nextLocked = false;
+      }
 
       // Commit data and coords together so consumers never see a field
       // decoded against one message paired with coords from another.
       set({
+        frameLoading: false,
         fieldData: result.data,
         fieldShape: originalShape,
         fieldStats: result.stats,
         coordinates: coords,
-        colorScale: style
-          ? { ...DEFAULT_COLOR_SCALE, palette: style.palette, min: style.min, max: style.max, logScale: false, nativeUnits: style.units, displayUnit: style.units }
-          : { ...get().colorScale, min: result.stats.min, max: result.stats.max, nativeUnits: '', displayUnit: '' },
-        loading: false,
+        colorScale: newColorScale,
+        colorScaleLocked: nextLocked,
+        colorScaleParam: marsParam,
       });
     } catch (err) {
-      set({ loading: false, error: String(err) });
+      set({ frameLoading: false, error: String(err) });
     }
   },
 
@@ -244,6 +298,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setColorScale: (config: Partial<ColorScaleConfig>) => {
-    set((state) => ({ colorScale: { ...state.colorScale, ...config } }));
+    set((state) => ({
+      colorScale: { ...state.colorScale, ...config },
+      colorScaleLocked: true,
+    }));
   },
 }));

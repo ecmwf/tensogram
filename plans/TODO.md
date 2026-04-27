@@ -609,7 +609,6 @@ For speculative ideas, see `IDEAS.md`.
 
 ## Viewer
 
-- [ ] Loading spinner/skeleton on map while field is being regridded
 - [ ] Wire LevelSelector into the UI for 3D pressure-level fields
 - [ ] Cache rendered frames client-side for instant scrubbing through previously viewed steps
 - [ ] OffscreenCanvas in worker to avoid main-thread canvas.toDataURL

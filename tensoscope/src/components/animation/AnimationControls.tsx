@@ -62,7 +62,6 @@ export function AnimationControls({
   onPlay,
   onPause,
   onStop,
-  onFrameChange: _onFrameChange,
   onSpeedChange,
 }: AnimationControlsProps) {
   const currentFrame = frames[currentFrameIndex];

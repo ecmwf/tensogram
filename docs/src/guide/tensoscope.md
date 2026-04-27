@@ -62,6 +62,31 @@ rendering styles:
   in the active palette (default 10 for continuous palettes; stop count for
   custom palettes). Each band is rendered with a single solid colour.
 
+## Point inspection
+
+Click anywhere on the map to inspect the value at the nearest grid point.
+
+A crosshair marker appears at the click position, and a floating popup opens
+showing:
+
+- The snapped grid-point coordinates (lat/lon).
+- The parameter name and level label (e.g. `T  500 hPa` for a pressure-level field).
+- **Single value** — when only one time step is loaded, the raw value is displayed
+  in large text with its unit.
+- **Time series** — when animation frames exist, an SVG line chart shows the value
+  at the selected point across all steps. Below the chart:
+  - For 8 steps or fewer, each step value is listed in a compact grid.
+  - For more than 8 steps, summary statistics (min, max, mean, std) are shown
+    instead.
+
+Unit conversion follows the same colour-scale unit toggle: changing the unit in
+the popup updates both the popup values and the colour bar simultaneously.
+
+To close the popup, click the **✕** button or click anywhere outside it.
+
+The feature works in both **flat** (MapLibre) and **globe** (Cesium) projection
+modes.
+
 ## Colour scale
 
 The colour bar at the bottom of the map shows the current field range. Use the
