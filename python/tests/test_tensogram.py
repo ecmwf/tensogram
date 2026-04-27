@@ -1297,9 +1297,9 @@ class TestEdgeCases:
 
         with tensogram.TensogramFile.open(path) as f:
             with pytest.raises(IndexError):
-                f[5]
+                _ = f[5]
             with pytest.raises(IndexError):
-                f[-2]
+                _ = f[-2]
 
     def test_file_slice_basic(self, tmp_path):
         """file[1:3] returns a list of two decoded messages."""
@@ -1392,7 +1392,7 @@ class TestEdgeCases:
             f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
 
         with tensogram.TensogramFile.open(path) as f, pytest.raises(TypeError):
-            f["bad"]
+            _ = f["bad"]
 
     # ── Message namedtuple ──
 
@@ -1600,7 +1600,7 @@ class TestMetadataCoverage:
         msg = encode_simple(np.ones(4, dtype=np.float32))
         meta = tensogram.decode_metadata(msg)
         with pytest.raises(KeyError, match="nonexistent"):
-            meta["nonexistent"]
+            _ = meta["nonexistent"]
 
     def test_contains(self):
         """__contains__ checks both base entries and extra."""
@@ -1885,7 +1885,7 @@ class TestMetadataEdgeCases:
         msg = encode_simple(np.ones(4, dtype=np.float32))
         meta = tensogram.decode_metadata(msg)
         with pytest.raises(KeyError, match="_reserved_"):
-            meta["_reserved_"]
+            _ = meta["_reserved_"]
 
     def test_contains_reserved_false(self):
         """'_reserved_' in meta returns False (hidden from dict access)."""
@@ -2096,12 +2096,12 @@ class TestFileSliceCoverage:
     def test_index_out_of_range(self, sample_file):
         """file[100] raises IndexError."""
         with tensogram.TensogramFile.open(sample_file) as f, pytest.raises(IndexError):
-            f[100]
+            _ = f[100]
 
     def test_negative_out_of_range(self, sample_file):
         """file[-100] raises IndexError."""
         with tensogram.TensogramFile.open(sample_file) as f, pytest.raises(IndexError):
-            f[-100]
+            _ = f[-100]
 
     def test_slice_reverse(self, sample_file):
         """file[::-1] reverses all messages."""
@@ -2554,7 +2554,7 @@ class TestPyMetadataAccessCoverage:
         # Base entries contain _reserved_ from encoder, but
         # __getitem__ skips _reserved_ → should raise KeyError
         with pytest.raises(KeyError, match="_reserved_"):
-            meta["_reserved_"]
+            _ = meta["_reserved_"]
 
     def test_repr_format(self):
         """__repr__ includes version, base_len, and extra_keys."""

@@ -65,7 +65,7 @@ class TestAsyncOpen:
     @pytest.mark.asyncio
     async def test_open_nonexistent(self):
         with pytest.raises(OSError, match=r"[Nn]o such|not found"):
-            await tensogram.AsyncTensogramFile.open("/nonexistent/path.tgm")
+            _ = await tensogram.AsyncTensogramFile.open("/nonexistent/path.tgm")
 
     @pytest.mark.asyncio
     async def test_repr(self, tgm_path):
@@ -209,9 +209,7 @@ class TestAsyncGather:
             f.file_decode_object(2, 0),
         )
         for i, r in enumerate(results):
-            np.testing.assert_allclose(
-                r["data"], np.full(10, float(i), dtype=np.float32)
-            )
+            np.testing.assert_allclose(r["data"], np.full(10, float(i), dtype=np.float32))
 
     @pytest.mark.asyncio
     async def test_gather_mixed_operations(self, tgm_path):
@@ -233,9 +231,7 @@ class TestAsyncGather:
         )
         for i, (meta, objects) in enumerate(messages):
             assert meta.version == 3
-            np.testing.assert_allclose(
-                objects[0][1], np.full(10, float(i), dtype=np.float32)
-            )
+            np.testing.assert_allclose(objects[0][1], np.full(10, float(i), dtype=np.float32))
 
 
 class TestAsyncParity:
@@ -277,31 +273,31 @@ class TestAsyncErrors:
     async def test_decode_message_out_of_range(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
         with pytest.raises((ValueError, RuntimeError)):
-            await f.decode_message(999)
+            _ = await f.decode_message(999)
 
     @pytest.mark.asyncio
     async def test_file_decode_object_out_of_range(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
         with pytest.raises((ValueError, RuntimeError)):
-            await f.file_decode_object(999, 0)
+            _ = await f.file_decode_object(999, 0)
 
     @pytest.mark.asyncio
     async def test_file_decode_metadata_out_of_range(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
         with pytest.raises((ValueError, RuntimeError)):
-            await f.file_decode_metadata(999)
+            _ = await f.file_decode_metadata(999)
 
     @pytest.mark.asyncio
     async def test_file_decode_descriptors_out_of_range(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
         with pytest.raises((ValueError, RuntimeError)):
-            await f.file_decode_descriptors(999)
+            _ = await f.file_decode_descriptors(999)
 
     @pytest.mark.asyncio
     async def test_read_message_out_of_range(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
         with pytest.raises((ValueError, RuntimeError)):
-            await f.read_message(999)
+            _ = await f.read_message(999)
 
     @pytest.mark.asyncio
     async def test_decode_message_verify_hash_mismatch(self, tmp_path):
@@ -313,7 +309,7 @@ class TestAsyncErrors:
             fh.write(corrupt)
         f = await tensogram.AsyncTensogramFile.open(path)
         with pytest.raises((ValueError, RuntimeError)):
-            await f.decode_message(0, verify_hash=True)
+            _ = await f.decode_message(0, verify_hash=True)
 
     @pytest.mark.asyncio
     async def test_open_remote_bad_storage_options(self, serve_tgm_bytes):
@@ -335,7 +331,7 @@ class TestAsyncErrors:
         task = asyncio.ensure_future(fut)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await task
+            _ = await task
 
         result = await f.file_decode_object(1, 0)
         np.testing.assert_allclose(result["data"], np.ones(10, dtype=np.float32))
@@ -403,7 +399,7 @@ class TestAsyncDecodeRange:
     async def test_file_decode_range_out_of_range(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
         with pytest.raises((ValueError, RuntimeError)):
-            await f.file_decode_range(999, 0, [(0, 5)])
+            _ = await f.file_decode_range(999, 0, [(0, 5)])
 
     @pytest.mark.asyncio
     async def test_file_decode_range_matches_sync(self, tgm_path):
@@ -465,9 +461,7 @@ class TestAsyncIteration:
         assert len(messages) == 3
         for i, (meta, objects) in enumerate(messages):
             assert meta.version == 3
-            np.testing.assert_allclose(
-                objects[0][1], np.full(10, float(i), dtype=np.float32)
-            )
+            np.testing.assert_allclose(objects[0][1], np.full(10, float(i), dtype=np.float32))
 
     @pytest.mark.asyncio
     async def test_aiter_early_break(self, tgm_path):
@@ -506,9 +500,7 @@ class TestAsyncIteration:
         async for m in f:
             messages.append(m)
         assert len(messages) == 1
-        np.testing.assert_allclose(
-            messages[0][1][0][1], np.full(4, 99.0, dtype=np.float32)
-        )
+        np.testing.assert_allclose(messages[0][1][0][1], np.full(4, 99.0, dtype=np.float32))
 
     @pytest.mark.asyncio
     async def test_aiter_repr(self, tgm_path):
@@ -549,7 +541,7 @@ class TestAsyncIteration:
         for _ in range(3):
             await it.__anext__()
         with pytest.raises(StopAsyncIteration):
-            await it.__anext__()
+            _ = await it.__anext__()
 
     @pytest.mark.asyncio
     async def test_aiter_concurrent_iterators(self, tgm_path):
@@ -693,7 +685,7 @@ class TestAsyncBatchRange:
         url = serve_tgm_bytes(msg)
         f = await tensogram.AsyncTensogramFile.open(url)
         with pytest.raises((ValueError, RuntimeError)):
-            await f.file_decode_range_batch([999], 0, [(0, 5)], join=True)
+            _ = await f.file_decode_range_batch([999], 0, [(0, 5)], join=True)
 
 
 class TestAsyncBatchObject:
@@ -722,9 +714,7 @@ class TestAsyncBatchObject:
             assert "data" in r
             assert "metadata" in r
             assert "descriptor" in r
-            np.testing.assert_allclose(
-                r["data"], np.full(10, float(i), dtype=np.float32)
-            )
+            np.testing.assert_allclose(r["data"], np.full(10, float(i), dtype=np.float32))
 
     @pytest.mark.asyncio
     async def test_batch_matches_individual(self, serve_tgm_bytes):
@@ -763,7 +753,7 @@ class TestAsyncBatchObject:
         url = serve_tgm_bytes(msg)
         f = await tensogram.AsyncTensogramFile.open(url)
         with pytest.raises((ValueError, RuntimeError)):
-            await f.file_decode_object_batch([999], 0)
+            _ = await f.file_decode_object_batch([999], 0)
 
 
 class TestSyncBatchObject:
@@ -787,9 +777,7 @@ class TestSyncBatchObject:
         results = f.file_decode_object_batch([0, 1, 2], 0)
         assert len(results) == 3
         for i, r in enumerate(results):
-            np.testing.assert_allclose(
-                r["data"], np.full(10, float(i), dtype=np.float32)
-            )
+            np.testing.assert_allclose(r["data"], np.full(10, float(i), dtype=np.float32))
 
     def test_batch_matches_individual(self, serve_tgm_bytes):
         meta = {"version": 3, "base": [{}]}
@@ -883,13 +871,13 @@ class TestBatchLocalFileError:
     async def test_async_object_batch_raises_on_local(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
         with pytest.raises(OSError, match="remote backend"):
-            await f.file_decode_object_batch([0, 1], 0)
+            _ = await f.file_decode_object_batch([0, 1], 0)
 
     @pytest.mark.asyncio
     async def test_async_range_batch_raises_on_local(self, tgm_path):
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
         with pytest.raises(OSError, match="remote backend"):
-            await f.file_decode_range_batch([0, 1], 0, [(0, 5)])
+            _ = await f.file_decode_range_batch([0, 1], 0, [(0, 5)])
 
 
 class TestAsyncPrefetchLayouts:
@@ -925,4 +913,4 @@ class TestAsyncPrefetchLayouts:
         url = serve_tgm_bytes(msg)
         f = await tensogram.AsyncTensogramFile.open(url)
         with pytest.raises((ValueError, RuntimeError)):
-            await f.prefetch_layouts([999])
+            _ = await f.prefetch_layouts([999])
