@@ -668,8 +668,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "tensogram"
-version = "0.19.0"
+name = "synstructure"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -692,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "tensogram-encodings"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "built",
  "cc",
@@ -708,14 +710,14 @@ dependencies = [
 
 [[package]]
 name = "tensogram-szip"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "tensogram-wasm"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "ciborium",
  "getrandom 0.2.17",
