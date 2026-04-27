@@ -48,6 +48,14 @@ jobs:
       - name: Format + Clippy
         run: make rust-lint
 
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Cargo audit (advisory database scan)
+        run: cargo audit
+
       - name: sccache stats
         if: always()
         run: sccache --show-adv-stats
@@ -477,6 +485,10 @@ jobs:
       - name: Install typescript deps
         run: make ts-install
 
+      - name: npm audit (typescript wrapper)
+        working-directory: typescript
+        run: npm audit --audit-level=moderate
+
       - name: Build WASM + TypeScript (wasm-pack → typescript/wasm, tsc → dist)
         run: make ts-build
 
@@ -490,6 +502,7 @@ jobs:
         run: |
           cd examples/typescript
           npm install --no-audit --no-fund
+          npm audit --audit-level=moderate
           npx tsx 01_encode_decode.ts
           npx tsx 02_mars_metadata.ts
           npx tsx 02b_generic_metadata.ts
@@ -529,6 +542,10 @@ jobs:
       - name: Install tensoscope deps
         working-directory: tensoscope
         run: npm ci || npm install --no-audit --no-fund
+
+      - name: npm audit (tensoscope)
+        working-directory: tensoscope
+        run: npm audit --audit-level=moderate
 
       - name: Run tests (vitest)
         working-directory: tensoscope
