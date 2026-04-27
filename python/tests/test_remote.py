@@ -186,9 +186,7 @@ class TestBidirectionalKwarg:
         with tensogram.TensogramFile.open_remote(url) as f:
             assert f.message_count() == 1
 
-    def test_open_remote_bidirectional_false_opt_out_matches_bidirectional(
-        self, serve_tgm_bytes
-    ):
+    def test_open_remote_bidirectional_false_opt_out_matches_bidirectional(self, serve_tgm_bytes):
         msg1 = encode_test_message([4], fill=10.0)
         msg2 = encode_test_message([8], fill=20.0)
         msg3 = encode_test_message([16], fill=30.0)
