@@ -56,6 +56,7 @@ pub use self::zstd_pure::ZstdPureCompressor;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum CompressionError {
     #[error("szip error: {0}")]
     Szip(String),

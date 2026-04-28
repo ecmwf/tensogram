@@ -144,24 +144,10 @@ impl Iterator for ObjectIter {
         // go through `validate --checksum`.
         let _ = (self.options.verify_hash, desc, payload_bytes);
 
-        let shape_product = match desc
-            .shape
-            .iter()
-            .try_fold(1u64, |acc, &x| acc.checked_mul(x))
-        {
-            Some(p) => p,
-            None => {
-                return Some(Err(crate::error::TensogramError::Metadata(
-                    "shape product overflow".to_string(),
-                )));
-            }
-        };
-        let num_elements = match usize::try_from(shape_product) {
+        let num_elements = match desc.num_elements() {
             Ok(n) => n,
-            Err(_) => {
-                return Some(Err(crate::error::TensogramError::Metadata(
-                    "element count overflows usize".to_string(),
-                )));
+            Err(e) => {
+                return Some(Err(crate::error::TensogramError::Metadata(e.to_string())));
             }
         };
 

@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::dtype::Dtype;
+use crate::error::Result;
+use crate::error::TensogramError;
 
 pub use tensogram_encodings::ByteOrder;
 
@@ -117,7 +119,6 @@ pub struct DataObjectDescriptor {
     /// no mask sections are present, and the frame is byte-compatible
     /// with an `NTensorFrame` emitted without the `allow_nan` /
     /// `allow_inf` opt-in.
-    ///
     /// Declared **before** `params` so that the flattened `params` map
     /// below does not absorb the `masks` key at deserialisation time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,6 +128,24 @@ pub struct DataObjectDescriptor {
     /// szip_block_offsets, etc.). Stored as ciborium::Value for flexibility.
     #[serde(flatten)]
     pub params: BTreeMap<String, ciborium::Value>,
+}
+
+impl DataObjectDescriptor {
+    /// Compute the total number of elements implied by `shape`, validating
+    /// against u64 overflow and usize range.
+    ///
+    /// Returns the element count in `usize`, or an error when the product
+    /// overflows `u64` or cannot fit in `usize`.
+    #[inline]
+    pub fn num_elements(&self) -> Result<usize> {
+        let shape_product = self
+            .shape
+            .iter()
+            .try_fold(1u64, |acc, &x| acc.checked_mul(x))
+            .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
+        usize::try_from(shape_product)
+            .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))
+    }
 }
 
 /// Global message metadata (carried in header/footer metadata frames).

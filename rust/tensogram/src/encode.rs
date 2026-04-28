@@ -248,13 +248,7 @@ fn encode_one_object(
         (std::borrow::Cow::Borrowed(data), MaskSet::empty(0))
     };
 
-    let shape_product = desc
-        .shape
-        .iter()
-        .try_fold(1u64, |acc, &x| acc.checked_mul(x))
-        .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
-    let num_elements = usize::try_from(shape_product)
-        .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
+    let num_elements = desc.num_elements()?;
     let dtype = desc.dtype;
 
     // Build the descriptor we will emit on the wire.  For Raw mode this
@@ -703,20 +697,10 @@ pub(crate) fn build_pipeline_config(
     )
 }
 
-/// Build a pipeline config with an explicit compression backend override
-/// and an intra-codec thread budget.
-///
-/// `intra_codec_threads == 0` preserves the pre-threads behaviour and is
-/// what direct pipeline callers (benchmarks, external code) should use.
-pub(crate) fn build_pipeline_config_with_backend(
-    desc: &DataObjectDescriptor,
-    num_values: usize,
-    dtype: Dtype,
-    compression_backend: pipeline::CompressionBackend,
-    intra_codec_threads: u32,
-) -> Result<PipelineConfig> {
-    let encoding = match desc.encoding.as_str() {
-        "none" => EncodingType::None,
+/// Resolve the encoding type from a descriptor.
+fn resolve_encoding(desc: &DataObjectDescriptor, dtype: Dtype) -> Result<EncodingType> {
+    match desc.encoding.as_str() {
+        "none" => Ok(EncodingType::None),
         "simple_packing" => {
             // Strict float64 check.  A `byte_width() != 8` test would
             // also let `Int64` / `Uint64` / `Complex64` through, and
@@ -728,17 +712,18 @@ pub(crate) fn build_pipeline_config_with_backend(
                 )));
             }
             let params = extract_simple_packing_params(&desc.params)?;
-            EncodingType::SimplePacking(params)
+            Ok(EncodingType::SimplePacking(params))
         }
-        other => {
-            return Err(TensogramError::Encoding(format!(
-                "unknown encoding: {other}"
-            )));
-        }
-    };
+        other => Err(TensogramError::Encoding(format!(
+            "unknown encoding: {other}"
+        ))),
+    }
+}
 
-    let filter = match desc.filter.as_str() {
-        "none" => FilterType::None,
+/// Resolve the filter type from a descriptor.
+fn resolve_filter(desc: &DataObjectDescriptor) -> Result<FilterType> {
+    match desc.filter.as_str() {
+        "none" => Ok(FilterType::None),
         "shuffle" => {
             let element_size = usize::try_from(get_u64_param(
                 &desc.params,
@@ -747,13 +732,23 @@ pub(crate) fn build_pipeline_config_with_backend(
             .map_err(|_| {
                 TensogramError::Metadata("shuffle_element_size out of usize range".to_string())
             })?;
-            FilterType::Shuffle { element_size }
+            Ok(FilterType::Shuffle { element_size })
         }
-        other => return Err(TensogramError::Encoding(format!("unknown filter: {other}"))),
-    };
+        other => Err(TensogramError::Encoding(format!("unknown filter: {other}"))),
+    }
+}
 
-    let compression = match desc.compression.as_str() {
-        "none" => CompressionType::None,
+/// Resolve the compression backend from a descriptor, using the resolved
+/// encoding and filter for any codec that depends on them (szip bits_per_sample,
+/// blosc2 typesize).
+fn resolve_compression(
+    desc: &DataObjectDescriptor,
+    dtype: Dtype,
+    encoding: &EncodingType,
+    filter: &FilterType,
+) -> Result<CompressionType> {
+    match desc.compression.as_str() {
+        "none" => Ok(CompressionType::None),
         #[cfg(any(feature = "szip", feature = "szip-pure"))]
         "szip" => {
             let rsi = u32::try_from(get_u64_param(&desc.params, "szip_rsi")?)
@@ -764,17 +759,17 @@ pub(crate) fn build_pipeline_config_with_backend(
                 })?;
             let flags = u32::try_from(get_u64_param(&desc.params, "szip_flags")?)
                 .map_err(|_| TensogramError::Metadata("szip_flags out of u32 range".to_string()))?;
-            let bits_per_sample = match (&encoding, &filter) {
+            let bits_per_sample = match (encoding, filter) {
                 (EncodingType::SimplePacking(params), _) => params.bits_per_value,
                 (EncodingType::None, FilterType::Shuffle { .. }) => 8,
                 (EncodingType::None, FilterType::None) => (dtype.byte_width() * 8) as u32,
             };
-            CompressionType::Szip {
+            Ok(CompressionType::Szip {
                 rsi,
                 block_size,
                 flags,
                 bits_per_sample,
-            }
+            })
         }
         #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
         "zstd" => {
@@ -782,10 +777,10 @@ pub(crate) fn build_pipeline_config_with_backend(
             let level = i32::try_from(level_i64).map_err(|_| {
                 TensogramError::Metadata(format!("zstd_level value {level_i64} out of i32 range"))
             })?;
-            CompressionType::Zstd { level }
+            Ok(CompressionType::Zstd { level })
         }
         #[cfg(feature = "lz4")]
-        "lz4" => CompressionType::Lz4,
+        "lz4" => Ok(CompressionType::Lz4),
         #[cfg(feature = "blosc2")]
         "blosc2" => {
             let codec_str = match desc.params.get("blosc2_codec") {
@@ -810,18 +805,18 @@ pub(crate) fn build_pipeline_config_with_backend(
                     "blosc2_clevel value {clevel_i64} out of i32 range"
                 ))
             })?;
-            let typesize = match (&encoding, &filter) {
+            let typesize = match (encoding, filter) {
                 (EncodingType::SimplePacking(params), _) => {
                     (params.bits_per_value as usize).div_ceil(8)
                 }
                 (EncodingType::None, FilterType::Shuffle { .. }) => 1,
                 (EncodingType::None, FilterType::None) => dtype.byte_width(),
             };
-            CompressionType::Blosc2 {
+            Ok(CompressionType::Blosc2 {
                 codec,
                 clevel,
                 typesize,
-            }
+            })
         }
         #[cfg(feature = "zfp")]
         "zfp" => {
@@ -855,7 +850,7 @@ pub(crate) fn build_pipeline_config_with_backend(
                     )));
                 }
             };
-            CompressionType::Zfp { mode }
+            Ok(CompressionType::Zfp { mode })
         }
         #[cfg(feature = "sz3")]
         "sz3" => {
@@ -878,7 +873,7 @@ pub(crate) fn build_pipeline_config_with_backend(
                     )));
                 }
             };
-            CompressionType::Sz3 { error_bound }
+            Ok(CompressionType::Sz3 { error_bound })
         }
         "rle" => {
             // Bitmask-only codec — see `plans/WIRE_FORMAT.md` §8.
@@ -888,7 +883,7 @@ pub(crate) fn build_pipeline_config_with_backend(
                     dtype
                 )));
             }
-            CompressionType::Rle
+            Ok(CompressionType::Rle)
         }
         "roaring" => {
             // Bitmask-only codec — see `plans/WIRE_FORMAT.md` §8.
@@ -898,14 +893,29 @@ pub(crate) fn build_pipeline_config_with_backend(
                     dtype
                 )));
             }
-            CompressionType::Roaring
+            Ok(CompressionType::Roaring)
         }
-        other => {
-            return Err(TensogramError::Encoding(format!(
-                "unknown compression: {other}"
-            )));
-        }
-    };
+        other => Err(TensogramError::Encoding(format!(
+            "unknown compression: {other}"
+        ))),
+    }
+}
+
+/// Build a pipeline config with an explicit compression backend override
+/// and an intra-codec thread budget.
+///
+/// `intra_codec_threads == 0` preserves the pre-threads behaviour and is
+/// what direct pipeline callers (benchmarks, external code) should use.
+pub(crate) fn build_pipeline_config_with_backend(
+    desc: &DataObjectDescriptor,
+    num_values: usize,
+    dtype: Dtype,
+    compression_backend: pipeline::CompressionBackend,
+    intra_codec_threads: u32,
+) -> Result<PipelineConfig> {
+    let encoding = resolve_encoding(desc, dtype)?;
+    let filter = resolve_filter(desc)?;
+    let compression = resolve_compression(desc, dtype, &encoding, &filter)?;
 
     Ok(PipelineConfig {
         encoding,
