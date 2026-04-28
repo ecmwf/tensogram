@@ -146,9 +146,7 @@ impl Iterator for ObjectIter {
 
         let num_elements = match desc.num_elements() {
             Ok(n) => n,
-            Err(e) => {
-                return Some(Err(crate::error::TensogramError::Metadata(e.to_string())));
-            }
+            Err(e) => return Some(Err(e)),
         };
 
         let config = match build_pipeline_config(desc, num_elements, desc.dtype) {

@@ -300,4 +300,87 @@ mod tests {
             assert_eq!(desc.byte_order, expected);
         }
     }
+
+    /// Build a minimal descriptor with the given shape; the other fields
+    /// are irrelevant to `num_elements()` because the method only inspects
+    /// `shape`.
+    fn descriptor_with_shape(shape: Vec<u64>) -> DataObjectDescriptor {
+        DataObjectDescriptor {
+            obj_type: "ntensor".to_string(),
+            ndim: shape.len() as u64,
+            shape,
+            strides: Vec::new(),
+            dtype: Dtype::Float32,
+            byte_order: ByteOrder::native(),
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            masks: None,
+            params: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn num_elements_empty_shape_is_one() {
+        // Empty shape (scalar tensor, ndim=0) — by convention the
+        // empty product is 1.
+        let desc = descriptor_with_shape(vec![]);
+        assert_eq!(desc.num_elements().unwrap(), 1);
+    }
+
+    #[test]
+    fn num_elements_single_dim() {
+        let desc = descriptor_with_shape(vec![100]);
+        assert_eq!(desc.num_elements().unwrap(), 100);
+    }
+
+    #[test]
+    fn num_elements_multi_dim() {
+        let desc = descriptor_with_shape(vec![3, 4, 5]);
+        assert_eq!(desc.num_elements().unwrap(), 60);
+    }
+
+    #[test]
+    fn num_elements_zero_dim_yields_zero() {
+        // A dimension of zero produces a zero-element tensor; this is
+        // valid and must not error.
+        let desc = descriptor_with_shape(vec![10, 0, 5]);
+        assert_eq!(desc.num_elements().unwrap(), 0);
+    }
+
+    #[test]
+    fn num_elements_u64_overflow_is_metadata_error() {
+        // u64::MAX × 2 overflows checked_mul.
+        let desc = descriptor_with_shape(vec![u64::MAX, 2]);
+        let err = desc.num_elements().unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(
+                    msg.contains("shape product overflow"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn num_elements_usize_overflow_is_metadata_error_on_32bit() {
+        // On 32-bit targets, a u64 product larger than usize::MAX
+        // surfaces the second error path.  On 64-bit targets the
+        // shape would have to be larger than `u64::MAX` to trigger
+        // this, which the previous test already covers.
+        let desc = descriptor_with_shape(vec![(usize::MAX as u64) + 1]);
+        let err = desc.num_elements().unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(
+                    msg.contains("element count overflows usize"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
 }

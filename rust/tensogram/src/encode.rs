@@ -738,7 +738,7 @@ fn resolve_filter(desc: &DataObjectDescriptor) -> Result<FilterType> {
     }
 }
 
-/// Resolve the compression backend from a descriptor, using the resolved
+/// Resolve the compression type from a descriptor, using the resolved
 /// encoding and filter for any codec that depends on them (szip bits_per_sample,
 /// blosc2 typesize).
 fn resolve_compression(
