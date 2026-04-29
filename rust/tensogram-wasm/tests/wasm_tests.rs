@@ -367,7 +367,9 @@ fn round_trip_with_hash_verification() {
     let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
-    // Decode with hash verification enabled
+    // Hashed message + verify_hash=true → succeeds.  The third
+    // positional arg is `verify_hash`; passing `Some(true)`
+    // exercises the verification path.
     let decoded = tensogram_wasm::decode(&msg, None, Some(true)).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
@@ -463,7 +465,8 @@ fn round_trip_lz4_with_hash_verification() {
     let payload = f32_payload(&values);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
-    // Decode with hash verification — verifies hash is computed over compressed bytes
+    // Decode with hash verification — verifies that the hash is
+    // computed over the compressed (post-encoding) bytes.
     let decoded = tensogram_wasm::decode(&msg, None, Some(true)).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
@@ -825,6 +828,7 @@ fn decode_object_with_hash_verification() {
     let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
+    // verify_hash is the fourth positional arg on decode_object.
     let decoded = tensogram_wasm::decode_object(&msg, 0, None, Some(true)).unwrap();
     assert_eq!(decoded.object_count(), 1);
     let raw: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
@@ -1620,28 +1624,42 @@ fn streaming_multi_object_base_entries() {
 // ═══════════════════════════════════════════════════════════════════════════════
 // 13. HASH VERIFICATION EDGE CASES
 // ═══════════════════════════════════════════════════════════════════════════════
+//
+// `decode`'s third positional argument is `verify_hash` (default
+// `false`).  These tests pin the strict-input contract added with
+// per-frame `HASH_PRESENT` (see `plans/WIRE_FORMAT.md` §2.5):
+//   * verify_hash=false: never inspects the slot, decode succeeds.
+//   * verify_hash=true on a hashed message: succeeds.
+//   * verify_hash=true on an unhashed message: errors (the
+//     equivalent of `MissingHashError` on the TS side).
+// The full happy-path matrix lives in
+// `typescript/tests/decodeVerifyHash.test.ts`; here we cover only
+// the WASM-bridge boundary cases.
 
 #[wasm_bindgen_test]
-fn decode_hash_disabled_succeeds_on_hashed_message() {
+fn decode_verify_hash_false_succeeds_on_hashed_message() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
     let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
-    // Decode without hash verification — should succeed
+    // verify_hash=false (third arg) is a no-op even on a hashed
+    // message — the slot and per-frame flag are both ignored.
     let decoded = tensogram_wasm::decode(&msg, None, Some(false)).unwrap();
     assert_eq!(decoded.object_count(), 1);
 }
 
 #[wasm_bindgen_test]
-fn decode_hash_enabled_on_unhashed_message_succeeds() {
+fn decode_verify_hash_true_errors_on_unhashed_message() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
     let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
-    // Encode without hash
+    // Encoded with hashing off — every frame's HASH_PRESENT bit
+    // is clear and the slot is undefined.
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    // Decode with hash verification — no hash to check, should still succeed
-    let decoded = tensogram_wasm::decode(&msg, None, Some(true)).unwrap();
-    assert_eq!(decoded.object_count(), 1);
+    // verify_hash=true on a flag-clear frame must surface a
+    // MissingHash error (TS routes this to `MissingHashError`).
+    let result = tensogram_wasm::decode(&msg, None, Some(true));
+    assert!(result.is_err(), "expected error on verify_hash=true with unhashed message");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2186,7 +2204,7 @@ fn encode_with_hash_round_trips() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
     let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
-    let decoded = tensogram_wasm::decode(&msg, None, Some(true)).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, Some(true), None).unwrap();
     assert_eq!(decoded.object_count(), 1);
 }
 

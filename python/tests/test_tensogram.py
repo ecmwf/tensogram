@@ -778,9 +778,9 @@ class TestTensogramFile:
             _, arr = objects[0]
             np.testing.assert_array_equal(arr, data)
         report = tensogram.validate_file(path, level="checksum")
-        assert all(
-            m["hash_verified"] for m in report["messages"]
-        ), f"checksum validation should pass after append, got: {report}"
+        assert all(m["hash_verified"] for m in report["messages"]), (
+            f"checksum validation should pass after append, got: {report}"
+        )
 
     def test_len(self, tmp_path):
         """len(file) returns message count."""
@@ -980,7 +980,8 @@ class TestErrors:
         report = tensogram.validate(bytes(corrupted), level="checksum")
         codes = [issue["code"] for issue in report["issues"]]
         assert any(
-            c in ("hash_mismatch", "decode_pipeline_failed", "cbor_offset_invalid") for c in codes
+            c in ("hash_mismatch", "decode_pipeline_failed", "cbor_offset_invalid")
+            for c in codes
         ), f"expected integrity or structural error in validate report, got: {report}"
 
     def test_file_open_nonexistent(self, tmp_path):
@@ -1135,7 +1136,9 @@ class TestEdgeCases:
             for idx in [0, 25, 49]:
                 meta, objects = f2.decode_message(idx)
                 _, arr = objects[0]
-                np.testing.assert_array_equal(arr, np.full(10, float(idx), dtype=np.float32))
+                np.testing.assert_array_equal(
+                    arr, np.full(10, float(idx), dtype=np.float32)
+                )
                 assert meta["index"] == idx
 
     def test_native_endian_roundtrip(self):
@@ -1190,7 +1193,9 @@ class TestEdgeCases:
 
         with (
             tensogram.TensogramFile.open(path) as f2,
-            pytest.raises((ValueError, IndexError), match=r"index|out of range|ObjectError"),
+            pytest.raises(
+                (ValueError, IndexError), match=r"index|out of range|ObjectError"
+            ),
         ):
             f2.decode_message(99)
 
@@ -1276,7 +1281,9 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for _i in range(3):
                 data = np.zeros(4, dtype=np.float32)
-                f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
+                f.append(
+                    make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)]
+                )
 
         with tensogram.TensogramFile.open(path) as f:
             it = iter(f)
@@ -1293,7 +1300,9 @@ class TestEdgeCases:
         path = str(tmp_path / "stop.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(
+                make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)]
+            )
 
         with tensogram.TensogramFile.open(path) as f:
             it = iter(f)
@@ -1323,7 +1332,9 @@ class TestEdgeCases:
         path = str(tmp_path / "oob.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(
+                make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)]
+            )
 
         with tensogram.TensogramFile.open(path) as f:
             with pytest.raises(IndexError):
@@ -1408,7 +1419,9 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for _i in range(3):
                 data = np.zeros(4, dtype=np.float32)
-                f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
+                f.append(
+                    make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)]
+                )
 
         with tensogram.TensogramFile.open(path) as f:
             assert f[2:2] == []
@@ -1419,7 +1432,9 @@ class TestEdgeCases:
         path = str(tmp_path / "badkey.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(
+                make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)]
+            )
 
         with tensogram.TensogramFile.open(path) as f, pytest.raises(TypeError):
             _ = f["bad"]
@@ -1506,7 +1521,9 @@ class TestEdgeCases:
         """iter_messages raises StopIteration after exhaustion."""
         data = np.ones(4, dtype=np.float32)
         msg = bytes(
-            tensogram.encode(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
+            tensogram.encode(
+                make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)]
+            )
         )
 
         it = tensogram.iter_messages(msg)
@@ -1839,7 +1856,8 @@ class TestErrorCoverage:
         report = tensogram.validate(bytes(msg), level="checksum")
         codes = [issue["code"] for issue in report["issues"]]
         assert any(
-            c in ("hash_mismatch", "decode_pipeline_failed", "cbor_offset_invalid") for c in codes
+            c in ("hash_mismatch", "decode_pipeline_failed", "cbor_offset_invalid")
+            for c in codes
         ), f"expected integrity error, got: {report}"
 
     def test_encode_shape_mismatch(self):
@@ -2095,7 +2113,9 @@ class TestDecodeRangeDtypeCoverage:
         """decode_range with join=True concatenates results."""
         data = np.arange(50, dtype=np.float32)
         msg = encode_simple(data)
-        joined = tensogram.decode_range(msg, object_index=0, ranges=[(0, 5), (20, 5)], join=True)
+        joined = tensogram.decode_range(
+            msg, object_index=0, ranges=[(0, 5), (20, 5)], join=True
+        )
         expected = np.concatenate([data[:5], data[20:25]])
         np.testing.assert_array_equal(joined, expected)
 
@@ -2711,7 +2731,9 @@ class TestUnicodeMetadata:
     def test_empty_string_and_whitespace(self):
         """Empty string and whitespace-only strings round-trip."""
         data = np.ones(4, dtype=np.float32)
-        msg = encode_simple(data, extra_meta={"empty": "", "spaces": "   ", "tabs": "\t\n"})
+        msg = encode_simple(
+            data, extra_meta={"empty": "", "spaces": "   ", "tabs": "\t\n"}
+        )
         meta = tensogram.decode_metadata(msg)
         assert meta["empty"] == ""
         assert meta["spaces"] == "   "

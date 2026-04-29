@@ -79,16 +79,12 @@ class TestOpenDatasetVerifyHash:
     def test_verify_hash_default_is_false(self, tmp_path):
         """Default ``verify_hash=False`` decodes both hashed and
         unhashed fixtures cleanly."""
-        ds_hashed = xr.open_dataset(
-            _build_hashed_message(tmp_path), engine="tensogram"
-        )
+        ds_hashed = xr.open_dataset(_build_hashed_message(tmp_path), engine="tensogram")
         # Force materialisation.
         np.asarray(ds_hashed[next(iter(ds_hashed.data_vars))].values)
         ds_hashed.close()
 
-        ds_unhashed = xr.open_dataset(
-            _build_unhashed_message(tmp_path), engine="tensogram"
-        )
+        ds_unhashed = xr.open_dataset(_build_unhashed_message(tmp_path), engine="tensogram")
         np.asarray(ds_unhashed[next(iter(ds_unhashed.data_vars))].values)
         ds_unhashed.close()
 

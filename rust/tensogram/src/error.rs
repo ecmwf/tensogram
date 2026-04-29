@@ -101,3 +101,34 @@ pub enum TensogramError {
 }
 
 pub type Result<T> = std::result::Result<T, TensogramError>;
+
+/// Stamp `object_index` onto an integrity error so the caller
+/// learns *which* object failed.
+///
+/// Used by every layer that knows the object index but receives
+/// an integrity error from a lower-level helper that did not:
+///   * [`crate::decode::decode`] / [`crate::decode::decode_object`]
+///     when iterating over multiple frames.
+///   * [`crate::decode::decode_object_from_frame`] callers that
+///     fetched a single frame by some prior path (e.g. the remote
+///     indexed fast path) and want to surface the surrounding
+///     `obj_idx` rather than the placeholder `0`.
+///
+/// All non-integrity errors pass through unchanged.
+pub(crate) fn with_object_index(e: TensogramError, idx: usize) -> TensogramError {
+    match e {
+        TensogramError::HashMismatch {
+            object_index: _,
+            expected,
+            actual,
+        } => TensogramError::HashMismatch {
+            object_index: Some(idx),
+            expected,
+            actual,
+        },
+        TensogramError::MissingHash { object_index: _ } => {
+            TensogramError::MissingHash { object_index: idx }
+        }
+        other => other,
+    }
+}

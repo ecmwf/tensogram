@@ -117,8 +117,7 @@ def open_datasets(
             lock=lock,
             storage_options=storage_options,
             shared_file=shared_file,
-        
-            )
+        )
         all_backend_arrays.append(backend_array)
         lazy_data = indexing.LazilyIndexedArray(backend_array)
 
@@ -387,7 +386,7 @@ def _build_dataset_from_group(
                 varying,
                 lock,
                 range_threshold=range_threshold,
-            verify_hash=verify_hash,
+                verify_hash=verify_hash,
                 storage_options=storage_options,
                 shared_file=shared_file,
                 backend_arrays=backend_arrays,
@@ -439,7 +438,7 @@ def _build_dataset_from_group(
         constant,
         lock,
         range_threshold=range_threshold,
-            verify_hash=verify_hash,
+        verify_hash=verify_hash,
         storage_options=storage_options,
         shared_file=shared_file,
     )
@@ -479,12 +478,11 @@ def _single_object_dataset(
         dtype=np_dtype,
         supports_range=_supports_range_decode(obj.descriptor),
         range_threshold=range_threshold,
-            verify_hash=verify_hash,
+        verify_hash=verify_hash,
         lock=lock,
         storage_options=storage_options,
         shared_file=shared_file,
-    
-        )
+    )
     if backend_arrays is not None:
         backend_arrays.append(backend_array)
     lazy_data = indexing.LazilyIndexedArray(backend_array)
@@ -537,8 +535,7 @@ def _flat_group_dataset(
             lock=lock,
             storage_options=storage_options,
             shared_file=shared_file,
-        
-            )
+        )
         if backend_arrays is not None:
             backend_arrays.append(backend_array)
         lazy_data = indexing.LazilyIndexedArray(backend_array)
@@ -621,12 +618,11 @@ def _hypercube_dataset(
                 dtype=np_dtype,
                 supports_range=_supports_range_decode(obj.descriptor),
                 range_threshold=range_threshold,
-            verify_hash=verify_hash,
+                verify_hash=verify_hash,
                 lock=lock,
                 storage_options=storage_options,
                 shared_file=shared_file,
-            
-                )
+            )
         )
 
     if backend_arrays is not None:
@@ -699,12 +695,11 @@ def _build_multi_variable_dataset(
                 dtype=np_dtype,
                 supports_range=_supports_range_decode(obj.descriptor),
                 range_threshold=range_threshold,
-            verify_hash=verify_hash,
+                verify_hash=verify_hash,
                 lock=lock,
                 storage_options=storage_options,
                 shared_file=shared_file,
-            
-                )
+            )
             if backend_arrays is not None:
                 backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
@@ -755,12 +750,11 @@ def _build_multi_variable_dataset(
                             dtype=np_dtype,
                             supports_range=_supports_range_decode(obj.descriptor),
                             range_threshold=range_threshold,
-            verify_hash=verify_hash,
+                            verify_hash=verify_hash,
                             lock=lock,
                             storage_options=storage_options,
                             shared_file=shared_file,
-                        
-                            )
+                        )
                     )
 
                 if backend_arrays is not None:
@@ -791,12 +785,11 @@ def _build_multi_variable_dataset(
                     dtype=np_dtype,
                     supports_range=_supports_range_decode(obj.descriptor),
                     range_threshold=range_threshold,
-            verify_hash=verify_hash,
+                    verify_hash=verify_hash,
                     lock=lock,
                     storage_options=storage_options,
                     shared_file=shared_file,
-                
-                    )
+                )
                 if backend_arrays is not None:
                     backend_arrays.append(backend_array)
                 lazy_data = indexing.LazilyIndexedArray(backend_array)
@@ -822,12 +815,11 @@ def _build_multi_variable_dataset(
                 dtype=np_dtype,
                 supports_range=_supports_range_decode(obj.descriptor),
                 range_threshold=range_threshold,
-            verify_hash=verify_hash,
+                verify_hash=verify_hash,
                 lock=lock,
                 storage_options=storage_options,
                 shared_file=shared_file,
-            
-                )
+            )
             if backend_arrays is not None:
                 backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)

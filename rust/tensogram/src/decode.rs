@@ -132,14 +132,13 @@ impl Default for DecodeOptions {
 /// surrounding message buffer, given its zero-based object index
 /// and frame-start offset.  No-op when `verify_hash` is false.
 ///
-/// Wraps the low-level [`crate::hash::check_frame_hash`] helper
-/// so that:
-///   * `Ok(false)` (flag clear) is repackaged as
-///     [`TensogramError::MissingHash { object_index }`].
-///   * `Err(HashMismatch { object_index: None, .. })` is
-///     repackaged with the surrounding `object_index`.
+/// Wraps the low-level [`crate::hash::check_frame_hash`] helper:
+/// flag-clear → [`TensogramError::MissingHash { object_index }`];
+/// flag-set + slot disagrees → [`TensogramError::HashMismatch`]
+/// stamped with the surrounding `object_index` via
+/// [`crate::error::with_object_index`].
 ///
-/// Other framing errors propagate unchanged.
+/// Other framing / I/O errors propagate unchanged.
 fn enforce_object_hash(
     buf: &[u8],
     frame_offset: usize,
@@ -177,19 +176,7 @@ fn enforce_object_hash(
     match crate::hash::check_frame_hash(frame_bytes, fh.frame_type) {
         Ok(true) => Ok(()),
         Ok(false) => Err(TensogramError::MissingHash { object_index }),
-        // Repackage the low-level mismatch (which carries
-        // object_index: None) with the surrounding index so
-        // callers know which object failed.
-        Err(TensogramError::HashMismatch {
-            object_index: _,
-            expected,
-            actual,
-        }) => Err(TensogramError::HashMismatch {
-            object_index: Some(object_index),
-            expected,
-            actual,
-        }),
-        Err(other) => Err(other),
+        Err(e) => Err(crate::error::with_object_index(e, object_index)),
     }
 }
 
@@ -453,11 +440,12 @@ pub fn decode_object_from_frame(
     let (desc, payload_bytes, mask_region, _) = framing::decode_data_object_frame(frame_bytes)?;
 
     // Hash verification when requested.  At this layer we don't
-    // know the surrounding object index (the caller has fetched a
-    // single frame's bytes by some prior path); we use `0` as the
-    // default in `MissingHash` / `HashMismatch.object_index` and
-    // expect the caller — typically a remote backend — to repackage
-    // with the real index when they have it.
+    // know the surrounding object index — the caller has fetched
+    // a single frame's bytes by some prior path — so the
+    // resulting `MissingHash` / `HashMismatch` carries the
+    // placeholder `0`.  Callers that have a real index (typically
+    // the remote indexed fast paths in `remote.rs`) re-stamp it
+    // via [`crate::error::with_object_index`].
     if options.verify_hash {
         use crate::wire::{FRAME_HEADER_SIZE, FrameHeader};
         let fh = FrameHeader::read_from(frame_bytes)?;
@@ -472,9 +460,8 @@ pub fn decode_object_from_frame(
                 frame_bytes.len()
             )));
         }
-        match crate::hash::check_frame_hash(&frame_bytes[..slice_end], fh.frame_type)? {
-            true => (),
-            false => return Err(TensogramError::MissingHash { object_index: 0 }),
+        if !crate::hash::check_frame_hash(&frame_bytes[..slice_end], fh.frame_type)? {
+            return Err(TensogramError::MissingHash { object_index: 0 });
         }
     }
 
