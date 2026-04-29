@@ -21,8 +21,11 @@
 #   include/tensogram/                C header
 #   share/doc/tensogram/{LICENSE,README.md,INSTALL.md}    metadata (FHS path)
 # rooted such that the user extracts under /usr/local with
-#     sudo tar -C /usr/local -xzf <out-asset>
+#     sudo tar --no-same-owner -C /usr/local -xzf <out-asset>
 # matching the prefix=/usr/local baked into the bundled tensogram.pc.
+# `--no-same-owner` is defence in depth: the archive is already packed
+# with uid=0 / gid=0 below, so this is what `sudo tar` would do anyway,
+# but the flag also covers self-rebuilt tarballs that did not normalise.
 
 set -euo pipefail
 
@@ -36,6 +39,13 @@ if [ ! -d "$STAGING/usr/local" ]; then
     exit 1
 fi
 
+# Resolve the repo root from the script's own location so the LICENSE and
+# README.md copies below do not depend on the caller's working directory.
+# This script lives at .github/scripts/pack-ffi-tarball.sh — repo root is
+# two levels up.
+SCRIPT_DIR="$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+
 # Explicit template form: works on both GNU and BSD mktemp.  Some BSD
 # variants reject `mktemp -d` without a template, and this script runs
 # on the macOS publish-ffi.yml matrix.
@@ -46,8 +56,8 @@ cp -a "$STAGING/usr/local/." "$ROOT/"
 
 DOCDIR="$ROOT/share/doc/tensogram"
 mkdir -p "$DOCDIR"
-cp LICENSE "$DOCDIR/"
-cp rust/tensogram-ffi/README.md "$DOCDIR/"
+cp "$REPO_ROOT/LICENSE" "$DOCDIR/"
+cp "$REPO_ROOT/rust/tensogram-ffi/README.md" "$DOCDIR/"
 
 cat > "$DOCDIR/INSTALL.md" <<EOF
 # Tensogram FFI binary distribution ($VERSION, $LABEL)
