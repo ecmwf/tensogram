@@ -107,16 +107,22 @@ data-object frames) appear *immediately before* the common tail.
 Offset (from frame_end)  Size  Field
 ───────────────────────  ────  ───────────────────────────────────
  ⋮                        ⋮    type-specific footer fields
--12                      8     hash (uint64 BE) — xxh3-64 digest,
-                                or 0x0000000000000000 when the
-                                preamble HASHES_PRESENT flag is 0
+-12                      8     hash (uint64 BE) — xxh3-64 digest
+                                of the frame body when the frame
+                                header's HASH_PRESENT flag bit is
+                                set; undefined otherwise (encoders
+                                write 0x00…00 by convention but
+                                decoders MUST NOT inspect the slot
+                                when the flag is clear).  See §2.5.
 -4                       4     End marker: ASCII "ENDF"
 ```
 
 The hash slot lives at exactly `frame_end − 12` for every frame
 type, so a validator can locate it without knowing anything about
-the frame's payload structure.  The total footer size varies by
-type — see §2.4 and the per-frame sections (§6).
+the frame's payload structure.  Whether the slot holds a real
+digest is determined by bit 1 (`HASH_PRESENT`) of the frame
+header `flags` field — see §2.5.  The total footer size varies
+by type — see §2.4 and the per-frame sections (§6).
 
 Footer sizes in v3:
 
@@ -172,8 +178,56 @@ order** — no algorithm identifier byte, no length prefix.  The
 algorithm name (always `"xxh3"` in v3) lives in the message-level
 hash frames (§6.3) and is therefore extensible.
 
-When `HASHES_PRESENT = 0`, every frame's hash slot is written as
-`0x0000000000000000` and validators skip hash verification.
+The slot holds a meaningful digest only when the frame header's
+`HASH_PRESENT` flag bit is set (§2.5); otherwise the slot is
+undefined.  Every 64-bit value — including `0x0000000000000000`
+— is a valid digest under `HASH_PRESENT = 1`.
+
+### 2.5 Frame header `flags` field
+
+The 16-bit `flags` field of every frame header (§2.1) is split
+into a *common* region (bits 8–15 reserved, bit 1 currently
+allocated) and a *type-specific* region (bit 0).  Common bits
+have the same meaning regardless of frame type; type-specific
+bits are interpreted in the context of `frame_type`.
+
+```
+Bit  Name              Scope               Meaning
+───  ──────────────    ──────────────────  ──────────────────────
+0    type-specific     per frame type      NTensorFrame: CBOR_AFTER_PAYLOAD (§6.5).
+                                            Other frame types: reserved, set 0.
+1    HASH_PRESENT      common, all types   Inline hash slot in this frame's
+                                            footer holds the xxh3-64 digest of
+                                            the body.  When clear, the slot is
+                                            undefined and decoders MUST NOT
+                                            inspect it.
+2-7  reserved          per frame type      Set 0; allocate via this section.
+8-15 reserved          common              Set 0; allocate via this section.
+```
+
+**Encoder contract.**  An encoder writing a frame with body
+hashing enabled (`EncodeOptions::hashing == true`) MUST set
+`HASH_PRESENT` on every frame it produces and write the xxh3-64
+digest of the body — including legitimate zero digests — into
+the slot.  An encoder writing without hashing MUST clear
+`HASH_PRESENT` on every frame; the slot is undefined and SHOULD
+be written as `0x0000000000000000` so file diffs stay clean.
+
+**Decoder contract.**  A decoder consults `HASH_PRESENT` to
+decide whether the slot carries a digest.  It MUST NOT use the
+slot value to infer presence or absence — every 64-bit value is
+a valid digest under `HASH_PRESENT = 1`.
+
+**Relationship to message-level `HASHES_PRESENT`.**  The preamble
+flag (§3.1) is a coarse-grained advisory: when set, the encoder
+guarantees that every frame in the message has `HASH_PRESENT`
+set as well, so a fast pre-flight scan can avoid examining
+individual frame headers.  The per-frame flag remains
+authoritative for any decision about a single frame's slot.  A
+reader that observes the inconsistency
+"`HASHES_PRESENT = 1` but `HASH_PRESENT = 0` for some frame"
+treats the per-frame flag as truth (and the file as
+malformed/tampered).
 
 ---
 
@@ -207,10 +261,13 @@ Bit  Flag                    Meaning
 5    FOOTER_HASHES           A FooterHash frame is present.
 6    PRECEDER_METADATA       At least one PrecederMetadata frame
                              appears in the body.
-7    HASHES_PRESENT          Per-frame hash slots are populated
-                             (non-zero).  When 0, every frame's
-                             hash slot is 0x00…00 and readers
-                             skip hash verification.
+7    HASHES_PRESENT          Coarse-grained advisory: every frame
+                             in this message has its per-frame
+                             HASH_PRESENT bit set (§2.5).  Lets
+                             pre-flight scans skip per-frame flag
+                             inspection.  The per-frame
+                             HASH_PRESENT bit remains authoritative
+                             for any individual frame's slot.
 8–15                         Reserved; set to 0.
 ```
 
@@ -485,10 +542,16 @@ When `CBOR_AFTER_PAYLOAD = 0` (CBOR-before-payload), the CBOR
 descriptor precedes the payload region; the two sections are
 swapped but every other offset is unchanged.
 
+**Frame flags.**  Bit 0 (`CBOR_AFTER_PAYLOAD`) is type-specific
+to NTensorFrame and selects the layout variant (above).  Bit 1
+(`HASH_PRESENT`) is the common cross-type flag defined in §2.5
+and signals whether the inline hash slot in the footer holds a
+real digest.  All other bits in the `flags` field are reserved.
+
 **Fixed offsets** (relative to `frame_end`, the byte after `ENDF`):
 
 - `-4  ..  0`  `"ENDF"` marker
-- `-12 ..  -4`  hash (uint64 BE; see §2.2)
+- `-12 ..  -4`  hash (uint64 BE; see §2.2 and §2.5)
 - `-20 ..  -12` `cbor_offset` (uint64 BE) — byte offset within
   the frame from the first byte of the frame header to the first
   byte of the CBOR descriptor
@@ -507,7 +570,9 @@ of range → `FramingError`.
 `cbor_offset` field is part of the footer and is **not** covered
 by the hash, nor are the hash slot itself, the `ENDF` marker, or
 the frame header.  Writing the hash is therefore strictly after
-the rest of the frame body is known.
+the rest of the frame body is known.  The slot holds a meaningful
+digest only when `HASH_PRESENT` is set in the frame header
+(§2.5).
 
 **CBOR descriptor** — the `DataObjectDescriptor`:
 
@@ -888,16 +953,61 @@ object.
 
 ## 11. Integrity verification
 
-### 11.1 Fast integrity scan (`tensogram validate --checksum`)
+Two integrity paths exist, with overlapping but distinct
+contracts:
 
-When `HASHES_PRESENT = 1`, every frame's inline hash slot can be
-verified without parsing CBOR.  `--checksum` recomputes each
-frame's xxh3-64 over the hash scope defined in §2.4 and compares
-it bit-for-bit to the stored slot value; any mismatch is a fatal
-validation error.
+* **Decode-time verification** (§11.1) — opt-in via
+  `DecodeOptions::verify_hash`; checks each *data-object* frame
+  the decoder touches.  Bytes are hashed while hot in cache, so
+  the cost is one extra walk over the frame body.
+* **Offline pre-flight validation** (`tensogram validate
+  --checksum`, §11.2) — checks every frame in the message
+  ahead of decode.  Reads every byte once.
+
+Both consult the per-frame `HASH_PRESENT` flag (§2.5) to decide
+whether a slot carries a real digest.
+
+### 11.1 Decode-time verification (`DecodeOptions::verify_hash`)
+
+When `verify_hash = true` is set on `decode` or `decode_object`
+(every binding's equivalent), the decoder verifies each
+*data-object* frame it materialises against the stored slot:
+
+```
+for each data-object frame F that decode touches:
+  if F.flags & HASH_PRESENT == 0:
+    fail F with MissingHash { object_index: i }
+  footer_size = 20  # NTensorFrame
+  scope_end   = F.total_length - footer_size
+  computed    = xxh3(F.bytes[16 .. scope_end])
+  stored      = read_u64_be(F.bytes, F.total_length - 12)
+  if computed != stored:
+    fail F with HashMismatch { object_index: Some(i),
+                                expected: stored, actual: computed }
+```
+
+Header / footer / index / hash / preceder frames are **not**
+verified by this path — that's `tensogram validate --checksum`'s
+responsibility (see §11.2).  The decode-time path is scoped to
+the data-object integrity that the user actually loads.
+
+`decode_range` does **not** carry a `verify_hash` flag in any
+binding.  The inline hash covers the whole post-encoding body of
+the source frame; verifying it requires reading every byte that
+range decode is designed to avoid.  When integrity matters, use
+`decode_object(buf, idx, { verify_hash: true })` — that path
+materialises the full body anyway, so verification is free.
+
+### 11.2 Fast integrity scan (`tensogram validate --checksum`)
+
+`--checksum` recomputes each frame's xxh3-64 over the hash scope
+defined in §2.4 and compares it bit-for-bit to the stored slot
+value; any mismatch is a fatal validation error.
 
 ```
 for each frame F in the message:
+  if F.flags & HASH_PRESENT == 0:
+    fail F with MissingHash
   footer_size = footer_size_for(F.frame_type)   # 12 B or 20 B
   scope_end   = F.total_length - footer_size
   computed    = xxh3(F.bytes[16 .. scope_end])
@@ -910,11 +1020,12 @@ This is the intended path for `tensogram validate --checksum`.
 It needs no codec and no CBOR parser, and hashes exactly the
 frame-body bytes on disk — the fastest possible integrity path.
 
-When `HASHES_PRESENT = 0`, `validate --checksum` fails with
-`ValidationError("message has no inline hashes — cannot run
-checksum validation; re-encode with hash_algorithm = Some(Xxh3)")`.
+When the message-level `HASHES_PRESENT = 0`, `validate
+--checksum` fails immediately with `ValidationError("message has
+no inline hashes — cannot run checksum validation; re-encode
+with hashing = true")`.
 
-### 11.2 Full validation (`tensogram validate --full`)
+### 11.3 Full validation (`tensogram validate --full`)
 
 Includes the above plus:
 - CBOR canonical ordering check
@@ -924,7 +1035,7 @@ Includes the above plus:
   At any other position, NaN / Inf still fails as `NanDetected` /
   `InfDetected`.
 
-### 11.3 Hash frame consistency
+### 11.4 Hash frame consistency
 
 If either a `HeaderHash` or `FooterHash` frame is present, the
 validator cross-checks each `hashes[i]` entry against the hex

@@ -180,7 +180,18 @@ Each data object specifies an independent pipeline: **encode → filter → comp
 - **Algorithm:** xxh3 (64-bit, non-cryptographic, ~30 GB/s)
 - **Scope:** Per-object payload, computed over final encoded bytes (after full pipeline)
 - **Encoding:** Hash computation is on by default (negligible overhead vs compression).  The hash is produced **inline with encoding** — the pipeline drives an `Xxh3Default` streaming hasher in lockstep with codec output, so the encoded payload is walked exactly once for both encoding and hashing.  See `plans/DONE.md` → *Hash-while-encoding* for the design and benchmark numbers.
-- **Decoding:** Hash verification is off by default. Enabled via option. Off by default because most transports already provide error correction (TCP, HTTPS, object-store ETag validation); enable it when the consumer wants end-to-end integrity.
+- **Decoding:** Hash verification is **off by default** and **opt-in** via `DecodeOptions::verify_hash = true` (or its equivalent kwarg/field in every binding).  Off by default because most transports already provide error correction (TCP, HTTPS, object-store ETag validation); enable it when the consumer wants end-to-end integrity.
+
+  Verification is fused with decode — bytes are hashed while hot in cache/buffer, so the cost is one extra walk over the post-encoding payload (typically a small fraction of decode time, dominated by decompression).  This is materially cheaper than running `tensogram validate --checksum` as a pre-flight pass and then decoding, which reads every byte twice.
+
+  **Per-frame contract.** Hash presence is signalled by the `FrameFlags::HASH_PRESENT` bit in the frame header's `flags` field (bit 1; common to all frame types — see `plans/WIRE_FORMAT.md` §2.5).  When set, the inline 8-byte slot in the frame footer holds the xxh3-64 digest of the frame body, including legitimate zero digests.  When clear, the slot is *undefined* — encoders write `0` by convention, but decoders MUST NOT inspect the value.  The preamble's `MessageFlags::HASHES_PRESENT` is retained as a coarse-grained advisory ("every frame in this message has a hash" by encoder invariant); per-frame `HASH_PRESENT` is authoritative for individual decoder decisions.
+
+  **Strict-input rules** (errors include `object_index` so the caller can act on the failure):
+  * `verify_hash=true` and `HASH_PRESENT` is clear on object *i* → `TensogramError::MissingHash { object_index: i }`.
+  * `verify_hash=true` and `HASH_PRESENT` is set on object *i* but the slot disagrees with the recomputed digest → `TensogramError::HashMismatch { object_index: Some(i), expected, actual }`.
+  * `verify_hash=false` (default) → no verification, decode is pure deserialisation; the per-frame flag and the slot value are both ignored.
+
+  **`decode_range` is unverified by construction.**  The inline hash covers the whole post-encoding payload of the source frame; verifying it would require reading every byte that the range-decode optimisation is designed to avoid.  No binding's `decode_range` accepts a `verify_hash` flag.  When integrity matters, use `decode_object(buf, idx, { verify_hash: true })` — that path materialises the full body anyway, so the verification is free.
 - **Threading invariant:** hashing runs in the calling thread *after* any intra-codec parallelism (axis B) has joined, and each object's hasher is owned by one thread (axis A).  Transparent codecs produce byte-identical hashes across thread counts; opaque codecs (blosc2, zstd with workers) hash their worker-completion-ordered output and round-trip losslessly.  This matches the determinism contract of the multi-threaded pipeline itself.
 
 ### Per-Object Byte Order
@@ -220,9 +231,10 @@ Each data object describes its tensor via `shape` + `strides`, separating logica
 ## Testing Strategy
 
 - **Round-trip correctness:** Bit-exact for lossless, quantization tolerance for lossy
-- **Cross-language golden files:** 5 canonical `.tgm` files decoded identically by Rust, C++, and Python
+- **Cross-language golden files:** canonical `.tgm` files decoded identically by Rust, C++, Python, and TypeScript
 - **Multi-object, multi-message, multi-dtype** parametrized tests
 - **Corruption injection:** Framing marker corruption, payload corruption, hash mismatch
+- **Decode-time integrity:** every binding asserts the same `MissingHash` / `HashMismatch` semantics under `verify_hash=true`, including the `object_index` payload that names *which* object failed
 - **Edge cases:** Zero-object messages, scalars (ndim=0), non-byte-aligned bit packing, >4 GiB offsets, shuffle + partial range rejection
 - **CI:** All language test suites run on every commit
 
