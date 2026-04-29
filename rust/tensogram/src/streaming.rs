@@ -21,8 +21,8 @@ use crate::metadata::{self, RESERVED_KEY};
 use crate::substitute_and_mask;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashFrame, IndexFrame};
 use crate::wire::{
-    FRAME_COMMON_FOOTER_SIZE, FRAME_END, FRAME_HEADER_SIZE, FrameHeader, FrameType, MessageFlags,
-    POSTAMBLE_SIZE, PREAMBLE_SIZE, Postamble, Preamble,
+    FRAME_COMMON_FOOTER_SIZE, FRAME_END, FRAME_HEADER_SIZE, FrameFlags, FrameHeader, FrameType,
+    MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE, Postamble, Preamble,
 };
 use tensogram_encodings::pipeline;
 
@@ -610,8 +610,12 @@ fn preamble_to_bytes(preamble: &Preamble) -> Vec<u8> {
 ///
 /// Layout: `[frame header 16][payload][hash u64][ENDF]` — the
 /// 12-byte common tail `[hash][ENDF]` is appended automatically.
-/// The inline hash slot is populated from xxh3-64 of `payload` when
-/// `hash_algorithm` is `Some(_)`, or zeros when `None`.
+/// When `hashing` is true, the frame header gains the
+/// [`FrameFlags::HASH_PRESENT`] bit and the slot holds the
+/// xxh3-64 digest of `payload` (including any legitimate zero
+/// digest).  When false, the flag bit is clear and the slot is
+/// written as zero by convention; readers must dispatch on the
+/// per-frame flag rather than inspecting the slot value.
 fn build_frame(
     frame_type: FrameType,
     version: u16,
@@ -624,17 +628,23 @@ fn build_frame(
         "streaming::build_frame is for non-data-object frames only"
     );
     let total_length = (FRAME_HEADER_SIZE + payload.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
+    let header_flags = if hashing {
+        flags | FrameFlags::HASH_PRESENT
+    } else {
+        flags & !FrameFlags::HASH_PRESENT
+    };
     let fh = FrameHeader {
         frame_type,
         version,
-        flags,
+        flags: header_flags,
         total_length,
     };
     let mut out = Vec::with_capacity(total_length as usize);
     fh.write_to(&mut out);
     out.extend_from_slice(payload);
 
-    // Inline hash slot (8 bytes).
+    // Inline hash slot (8 bytes); see frame doc-comment above and
+    // `plans/WIRE_FORMAT.md` §2.5 for the slot/flag contract.
     let hash_value: u64 = if hashing {
         xxhash_rust::xxh3::xxh3_64(payload)
     } else {
@@ -726,12 +736,20 @@ fn write_data_object_frame_hashed<W: Write>(
 
     // ── 1) Frame header ──────────────────────────────────────────────
     //
-    // v3 emits `NTensorFrame` (type 9).
+    // v3 emits `NTensorFrame` (type 9).  Bit 0 = CBOR_AFTER_PAYLOAD
+    // (always set — streaming layout puts payload first).  Bit 1 =
+    // HASH_PRESENT, set when `hashing` is true so a reader can
+    // identify the slot's contents from the frame header alone
+    // without consulting the message preamble.
+    let mut header_flags = DataObjectFlags::CBOR_AFTER_PAYLOAD;
+    if hashing {
+        header_flags |= FrameFlags::HASH_PRESENT;
+    }
     let mut header_bytes = Vec::with_capacity(FRAME_HEADER_SIZE);
     FrameHeader {
         frame_type: FrameType::NTensorFrame,
         version: 1,
-        flags: DataObjectFlags::CBOR_AFTER_PAYLOAD,
+        flags: header_flags,
         total_length,
     }
     .write_to(&mut header_bytes);

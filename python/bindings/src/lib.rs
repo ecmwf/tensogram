@@ -55,8 +55,28 @@ fn to_py_err(e: TensogramError) -> PyErr {
         }
         TensogramError::Object(msg) => PyValueError::new_err(format!("ObjectError: {msg}")),
         TensogramError::Io(e) => PyIOError::new_err(format!("{e}")),
-        TensogramError::HashMismatch { expected, actual } => PyRuntimeError::new_err(format!(
-            "HashMismatch: expected={expected}, actual={actual}"
+        TensogramError::HashMismatch {
+            object_index,
+            expected,
+            actual,
+        } => {
+            // The Python convention surfaces both errors as a
+            // single hierarchy below `tensogram.IntegrityError`;
+            // see `python/bindings/python/tensogram/__init__.py`.
+            // The wire-side prefix `"HashMismatch:"` lets the
+            // wrapper test the discriminant cheaply.
+            let idx = match object_index {
+                Some(i) => i.to_string(),
+                None => "?".to_string(),
+            };
+            PyRuntimeError::new_err(format!(
+                "HashMismatch: object_index={idx}, expected={expected}, actual={actual}"
+            ))
+        }
+        TensogramError::MissingHash { object_index } => PyRuntimeError::new_err(format!(
+            "MissingHash: object_index={object_index}; \
+             the message was encoded with hashing=false (HASH_PRESENT flag clear) — \
+             re-encode with hashing=true or call decode without verify_hash=True"
         )),
         TensogramError::Remote(msg) => PyIOError::new_err(format!("RemoteError: {msg}")),
         // `TensogramError` is `#[non_exhaustive]` (Wave 4); future

@@ -52,6 +52,16 @@ typedef enum {
    */
   TGM_ERROR_END_OF_ITER = 9,
   TGM_ERROR_REMOTE = 10,
+  /**
+   * Decode-time hash verification was requested but the frame's
+   * `HASH_PRESENT` flag is clear (see `plans/WIRE_FORMAT.md` §2.5).
+   * Distinct from `HashMismatch` — the digest didn't disagree;
+   * there was no digest recorded to compare against.  The
+   * offending object index is available through
+   * `tgm_last_error_object_index()` for the duration of the
+   * thread-local error.
+   */
+  TGM_ERROR_MISSING_HASH = 11,
 } tgm_error;
 
 /**

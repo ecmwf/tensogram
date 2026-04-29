@@ -96,6 +96,14 @@ pub enum TgmError {
     /// Returned by `tgm_*_iter_next` when iteration is exhausted.
     EndOfIter = 9,
     Remote = 10,
+    /// Decode-time hash verification was requested but the frame's
+    /// `HASH_PRESENT` flag is clear (see `plans/WIRE_FORMAT.md` §2.5).
+    /// Distinct from `HashMismatch` — the digest didn't disagree;
+    /// there was no digest recorded to compare against.  The
+    /// offending object index is available through
+    /// `tgm_last_error_object_index()` for the duration of the
+    /// thread-local error.
+    MissingHash = 11,
 }
 
 fn to_error_code(e: &TensogramError) -> TgmError {
@@ -107,6 +115,7 @@ fn to_error_code(e: &TensogramError) -> TgmError {
         TensogramError::Object(_) => TgmError::Object,
         TensogramError::Io(_) => TgmError::Io,
         TensogramError::HashMismatch { .. } => TgmError::HashMismatch,
+        TensogramError::MissingHash { .. } => TgmError::MissingHash,
         TensogramError::Remote(_) => TgmError::Remote,
         // `TensogramError` is `#[non_exhaustive]` so future variants
         // can land without breaking this mapping at compile time.

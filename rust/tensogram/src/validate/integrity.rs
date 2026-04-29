@@ -79,7 +79,11 @@ fn verify_object_frame_hash(
 
     match hash::verify_frame_hash(frame_bytes, fh.frame_type) {
         Ok(()) => HashCheckResult::Verified,
-        Err(TensogramError::HashMismatch { expected, actual }) => {
+        Err(TensogramError::HashMismatch {
+            object_index: _,
+            expected,
+            actual,
+        }) => {
             issues.push(err(
                 IssueCode::HashMismatch,
                 ValidationLevel::Integrity,

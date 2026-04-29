@@ -58,8 +58,42 @@ pub enum TensogramError {
     /// Frame-body hash digest disagreement between the stored slot
     /// and the recomputed digest.  Both digests are 16-character
     /// lowercase hex strings of the xxh3-64 value.
-    #[error("hash mismatch: expected {expected}, got {actual}")]
-    HashMismatch { expected: String, actual: String },
+    ///
+    /// `object_index` carries the 0-based index of the data-object
+    /// frame whose hash failed when the error originates from the
+    /// decode-time verification path (`DecodeOptions::verify_hash`);
+    /// it is `None` for header / footer / index / hash / preceder
+    /// frames where an object index has no meaning, and for
+    /// callers that don't have one available (e.g. legacy
+    /// `verify_frame_hash` direct uses).
+    #[error("hash mismatch on object {object_index:?}: expected {expected}, got {actual}")]
+    HashMismatch {
+        object_index: Option<usize>,
+        expected: String,
+        actual: String,
+    },
+    /// Decode-time hash verification was requested via
+    /// [`crate::decode::DecodeOptions::verify_hash`] but the
+    /// frame's `FrameFlags::HASH_PRESENT` bit is clear, so no
+    /// digest was recorded for this frame.
+    ///
+    /// Reasons this can happen in well-formed messages:
+    ///   * the producer encoded with `EncodeOptions::hashing=false`
+    ///     (every frame's flag is clear).
+    ///   * an attacker / lossy transformation cleared the flag bit.
+    ///
+    /// Resolutions: decode without `verify_hash`, or re-encode the
+    /// source with `EncodeOptions::hashing=true`.
+    ///
+    /// `object_index` carries the 0-based index of the data-object
+    /// frame whose flag was clear.  The decode-time path (the only
+    /// in-tree caller) always populates this with the offending
+    /// object's index so the user can act on the failure.
+    #[error(
+        "hash verification requested but object {object_index} has no inline hash recorded \
+         (HASH_PRESENT flag clear); re-encode with hashing=true or call decode without verify_hash=true"
+    )]
+    MissingHash { object_index: usize },
     /// Remote object-store error: HTTP transport failure, malformed
     /// URL, missing credentials, etc.
     #[error("remote error: {0}")]

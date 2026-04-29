@@ -197,6 +197,56 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
         results.push(("hash_xxh3.tgm", msg));
     }
 
+    // 6. Multi-object hashed message — three tensors, all with their
+    //    own `HASH_PRESENT` flag set.  Used by the cross-language
+    //    conformance harness to verify that
+    //    `verify_hash=true` + payload tampering on object *N* surfaces
+    //    `HashMismatch { object_index: Some(N) }`, and that
+    //    `verify_hash=true` + flag tampering on object *N* surfaces
+    //    `MissingHash { object_index: N }`.
+    //
+    //    Generic `parameter` labels distinguish the objects so per-
+    //    binding tests can route by descriptor metadata.
+    {
+        let meta = GlobalMetadata {
+            base: vec![
+                generic_base_entry("temperature"),
+                generic_base_entry("pressure"),
+                generic_base_entry("humidity"),
+            ],
+            ..Default::default()
+        };
+        let desc_a = make_descriptor(vec![2], Dtype::Float32);
+        let desc_b = make_descriptor(vec![3], Dtype::Int64);
+        let desc_c = make_descriptor(vec![5], Dtype::Uint8);
+
+        let mut payload_a = Vec::new();
+        for v in [1.5f32, 2.5] {
+            payload_a.extend_from_slice(&v.to_be_bytes());
+        }
+        let mut payload_b = Vec::new();
+        for v in [100i64, -200, 300] {
+            payload_b.extend_from_slice(&v.to_be_bytes());
+        }
+        let payload_c = vec![10u8, 20, 30, 40, 50];
+
+        let opts = EncodeOptions {
+            hashing: true,
+            ..Default::default()
+        };
+        let msg = encode::encode(
+            &meta,
+            &[
+                (&desc_a, &payload_a),
+                (&desc_b, &payload_b),
+                (&desc_c, &payload_c),
+            ],
+            &opts,
+        )
+        .unwrap();
+        results.push(("multi_object_xxh3.tgm", msg));
+    }
+
     results
 }
 
@@ -403,8 +453,8 @@ fn test_golden_multi_message() {
 #[test]
 fn test_golden_hash_xxh3() {
     use tensogram::framing::{decode_message, scan};
-    use tensogram::hash::verify_frame_hash;
-    use tensogram::wire::{FrameHeader, MessageFlags, Preamble};
+    use tensogram::hash::{check_frame_hash, verify_frame_hash};
+    use tensogram::wire::{FrameFlags, FrameHeader, MessageFlags, Preamble};
 
     let data = std::fs::read(golden_dir().join("hash_xxh3.tgm")).unwrap();
 
@@ -414,8 +464,10 @@ fn test_golden_hash_xxh3() {
     assert_product_efi_parameter(&meta.base[0], "pressure");
 
     // v3: the hash lives in the frame footer's inline slot.  Pin
-    // the committed golden's HASHES_PRESENT flag and the
-    // frame-level hash verification pathway.
+    // the committed golden's preamble-level flag, every frame's
+    // per-frame `HASH_PRESENT` flag, and both verification
+    // pathways (status-returning `check_frame_hash` and the
+    // strict `verify_frame_hash` wrapper).
     let preamble = Preamble::read_from(&data).unwrap();
     assert!(
         preamble.flags.has(MessageFlags::HASHES_PRESENT),
@@ -428,7 +480,66 @@ fn test_golden_hash_xxh3() {
     for (_, _, _, frame_offset) in &decoded.objects {
         let frame = &msg[*frame_offset..];
         let fh = FrameHeader::read_from(frame).unwrap();
+        assert!(
+            fh.flags & FrameFlags::HASH_PRESENT != 0,
+            "every data-object frame in hash_xxh3.tgm must have HASH_PRESENT set"
+        );
         let frame_bytes = &frame[..fh.total_length as usize];
+        // Status-returning helper agrees: flag set + slot matches.
+        assert!(
+            check_frame_hash(frame_bytes, fh.frame_type).unwrap(),
+            "frame_offset={frame_offset}: HASH_PRESENT set, slot must match recomputed digest",
+        );
+        // Strict wrapper passes for the same reason.
         verify_frame_hash(frame_bytes, fh.frame_type).expect("golden hash_xxh3 frame must verify");
+    }
+}
+
+/// Multi-object companion to `test_golden_hash_xxh3` — pins the
+/// committed `multi_object_xxh3.tgm` fixture (every object hashed)
+/// so cross-language tests can rely on its existence and
+/// structure.  Per-object byte-region tampering tests live in the
+/// cross-language conformance harness; here we just lock the
+/// shape and flag invariants.
+#[test]
+fn test_golden_multi_object_xxh3() {
+    use tensogram::framing::scan;
+    use tensogram::hash::check_frame_hash;
+    use tensogram::wire::{FrameFlags, FrameHeader, MessageFlags, Preamble};
+
+    let data = std::fs::read(golden_dir().join("multi_object_xxh3.tgm")).unwrap();
+    let (meta, objects) = decode::decode(&data, &DecodeOptions::default()).unwrap();
+    assert_eq!(objects.len(), 3);
+    assert_eq!(objects[0].0.dtype, Dtype::Float32);
+    assert_eq!(objects[1].0.dtype, Dtype::Int64);
+    assert_eq!(objects[2].0.dtype, Dtype::Uint8);
+    assert_product_efi_parameter(&meta.base[0], "temperature");
+    assert_product_efi_parameter(&meta.base[1], "pressure");
+    assert_product_efi_parameter(&meta.base[2], "humidity");
+
+    let preamble = Preamble::read_from(&data).unwrap();
+    assert!(preamble.flags.has(MessageFlags::HASHES_PRESENT));
+
+    // Walk every data-object frame and assert HASH_PRESENT + match.
+    let (offset, len) = scan(&data)[0];
+    let msg = &data[offset..offset + len];
+    let mut pos = 24; // past preamble
+    while pos + 16 <= msg.len() {
+        if &msg[pos..pos + 2] != b"FR" {
+            pos += 1;
+            continue;
+        }
+        let fh = FrameHeader::read_from(&msg[pos..]).unwrap();
+        let end = pos + fh.total_length as usize;
+        assert!(end <= msg.len());
+        if fh.frame_type.is_data_object() {
+            assert!(
+                fh.flags & FrameFlags::HASH_PRESENT != 0,
+                "every data-object frame in multi_object_xxh3.tgm must have HASH_PRESENT set"
+            );
+            assert!(check_frame_hash(&msg[pos..end], fh.frame_type).unwrap());
+        }
+        let aligned = (end + 7) & !7;
+        pos = aligned.min(msg.len());
     }
 }
