@@ -52,6 +52,17 @@ use tensogram_encodings::simple_packing;
 
 use crate::types::DataObjectDescriptor;
 
+/// Default bit count for `simple_packing` when the caller did not
+/// supply `--bits N` to the converter CLIs (or omitted
+/// [`DataPipeline::bits`] when calling [`apply_pipeline`] directly).
+///
+/// 16 bits is a reasonable default for typical scientific data —
+/// preserves ~4-decimal-digit precision per value while halving the
+/// payload size vs. raw f64.  Hard-coding the value here (rather than
+/// in two `unwrap_or(16)` call sites) makes the default discoverable
+/// through Cargo doc and easy to bump in one place.
+pub const DEFAULT_SIMPLE_PACKING_BITS: u32 = 16;
+
 /// Encoding/filter/compression configuration for data objects.
 ///
 /// Defaults to all `"none"` — produces uncompressed raw little-endian
@@ -97,22 +108,27 @@ impl Default for DataPipeline {
 /// skipped with a stderr warning and the conversion continues with
 /// `encoding = "none"`.
 ///
-/// `var_label` is embedded in warning/error messages for human-readable
+/// `var_label` is embedded in error messages for human-readable
 /// diagnostics — typically the variable name (`"temperature"`) or
 /// something like `"GRIB message"`.
 ///
 /// # Errors
 ///
-/// Returns a human-readable error string when `pipeline.encoding`,
-/// `pipeline.filter`, or `pipeline.compression` is not one of the
-/// recognised values. Callers wrap this string into their own
-/// importer-specific error type (`GribError::InvalidData` /
-/// `NetcdfError::InvalidData`).
+/// Returns a human-readable error string when:
+/// - `pipeline.encoding`, `pipeline.filter`, or `pipeline.compression`
+///   is not one of the recognised values.
+/// - `pipeline.encoding == "simple_packing"` is requested but `values`
+///   is `None` (non-f64 payload).  Caller decides whether to fall back
+///   to `encoding = "none"` themselves and rerun, or to skip the
+///   variable entirely.
+/// - `simple_packing::compute_params` rejects the input (NaN, Inf, or
+///   `bits_per_value > 64`).
 ///
-/// Soft failures (`simple_packing` rejecting `NaN`-containing data, or
-/// `simple_packing` requested on a non-f64 variable) are reported as
-/// stderr warnings and do NOT return an error — the variable falls
-/// back to `encoding = "none"` and the conversion continues.
+/// Strict-input contract: this helper does not silently downgrade.
+/// Earlier versions wrote a stderr warning and continued with
+/// `encoding = "none"` when `simple_packing` was requested on a
+/// non-f64 payload, hiding data-quality / configuration mistakes from
+/// callers.
 pub fn apply_pipeline(
     desc: &mut DataObjectDescriptor,
     values: Option<&[f64]>,
@@ -125,18 +141,22 @@ pub fn apply_pipeline(
         "none" => {}
         "simple_packing" => match values {
             None => {
-                // Non-f64 payloads cannot be simple-packed.  The dtype
-                // is the caller's choice and this branch is a sanity
-                // check, not a NaN/Inf failure — leave the stderr
-                // warning + fallback to `encoding="none"` so the rest
-                // of the conversion still succeeds.
-                eprintln!(
-                    "warning: skipping simple_packing for {var_label} \
-                     (not a float64 payload)"
-                );
+                // Strict-input contract: simple_packing is f64-only.
+                // Asking for it on a non-f64 payload is a configuration
+                // mistake the caller needs to address — earlier
+                // versions wrote a stderr warning and silently
+                // downgraded to encoding="none", which hid both the
+                // intent mismatch and any subsequent data-quality
+                // questions about that variable.
+                return Err(format!(
+                    "simple_packing requires float64 payload for {var_label}, \
+                     but the variable's dtype is not float64. \
+                     Either pre-cast the values to float64, or pick \
+                     encoding=\"none\" for this variable."
+                ));
             }
             Some(values) => {
-                let bits = pipeline.bits.unwrap_or(16);
+                let bits = pipeline.bits.unwrap_or(DEFAULT_SIMPLE_PACKING_BITS);
                 // Hard-fail on any `compute_params` error — most often
                 // NaN or Inf in the input data.  Pre-0.17 behaviour
                 // soft-downgraded silently to `encoding="none"` with
@@ -189,7 +209,7 @@ pub fn apply_pipeline(
             //   - simple_packing applied → ⌈bpv/8⌉
             //   - otherwise → native dtype byte width
             let element_size = if applied_simple_packing {
-                let bpv = pipeline.bits.unwrap_or(16) as usize;
+                let bpv = pipeline.bits.unwrap_or(DEFAULT_SIMPLE_PACKING_BITS) as usize;
                 bpv.div_ceil(8).max(1)
             } else {
                 desc.dtype.byte_width()
@@ -332,15 +352,26 @@ mod tests {
     }
 
     #[test]
-    fn simple_packing_with_no_values_skips_with_warning() {
+    fn simple_packing_with_no_values_is_a_hard_error() {
+        // Strict-input contract (Wave 1.8): simple_packing is f64-only.
+        // Asking for it on a non-f64 payload (`values = None`) used
+        // to silently downgrade to encoding="none" with a stderr
+        // warning.  The new contract surfaces it as an error so the
+        // caller's intent mismatch is visible.
         let mut desc = mk_desc();
         let p = DataPipeline {
             encoding: "simple_packing".to_string(),
             ..Default::default()
         };
-        apply_pipeline(&mut desc, None, &p, "int_var").unwrap();
-        assert_eq!(desc.encoding, "none", "should skip, not set");
-        assert!(desc.params.is_empty(), "no params should be inserted");
+        let err = apply_pipeline(&mut desc, None, &p, "int_var").unwrap_err();
+        assert!(
+            err.contains("simple_packing requires float64"),
+            "msg: {err}"
+        );
+        assert!(err.contains("int_var"), "should name the variable: {err}");
+        // Descriptor must be unchanged on error — no half-baked state.
+        assert_eq!(desc.encoding, "none");
+        assert!(desc.params.is_empty());
     }
 
     #[test]
@@ -411,20 +442,8 @@ mod tests {
         assert!(desc.params.contains_key("sp_reference_value"));
     }
 
-    #[test]
-    fn simple_packing_with_non_f64_payload_still_skips_with_warning() {
-        // The non-f64 branch is NOT a NaN/Inf failure — it's "variable
-        // is not float64, skip simple_packing".  That branch keeps its
-        // soft behaviour (stderr warning + encoding="none") because it
-        // reflects a structural mismatch, not a data-quality problem.
-        let mut desc = mk_desc();
-        let p = DataPipeline {
-            encoding: "simple_packing".to_string(),
-            ..Default::default()
-        };
-        apply_pipeline(&mut desc, None, &p, "int_var").unwrap();
-        assert_eq!(desc.encoding, "none");
-    }
+    // (Wave 1.8 removed the soft-fail behaviour — see
+    // `simple_packing_with_no_values_is_a_hard_error` above.)
 
     #[test]
     fn unknown_encoding_errors() {

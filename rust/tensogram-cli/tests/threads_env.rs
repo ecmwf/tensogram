@@ -134,24 +134,36 @@ fn threads_zero_runs_sequentially() {
     assert_eq!(f.message_count().unwrap(), 1);
 }
 
-/// An unparseable `TENSOGRAM_THREADS` should not crash — clap has `env`
-/// support that falls through to the default when the value is invalid.
+/// An unparseable `TENSOGRAM_THREADS` rejects cleanly with a non-zero
+/// exit (Wave 1.1: strict-input contract — no silent fall-back to 0).
+///
+/// Clap rejects invalid env-var values at arg-parse time because the
+/// `--threads` flag uses `env = "TENSOGRAM_THREADS"`, so the CLI
+/// never reaches the encoder with a corrupt budget.  Programmatic
+/// callers (Python, Rust API) bypassing clap see the same rejection
+/// from `parallel::resolve_budget`.
 #[test]
-fn invalid_env_var_falls_back() {
+fn invalid_env_var_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let input = make_input_file(dir.path());
     let output = dir.path().join("output.tgm");
 
-    let status = Command::new(cli_binary())
+    let result = Command::new(cli_binary())
         .env("TENSOGRAM_THREADS", "not-a-number")
         .args(["copy", input.to_str().unwrap(), output.to_str().unwrap()])
-        .status()
+        .output()
         .expect("spawn tensogram");
-    // Clap will reject the malformed env var with a non-zero exit.
-    // The point is: it must not panic or produce corrupt output.
-    if status.success() {
-        let f = tensogram::TensogramFile::open(&output).unwrap();
-        assert_eq!(f.message_count().unwrap(), 1);
-    }
-    // No assert on status — either clean rejection or clean success.
+    assert!(
+        !result.status.success(),
+        "unparseable TENSOGRAM_THREADS must be rejected, but the CLI \
+         exited successfully — this is a strict-input regression"
+    );
+    // No assertion on the exact stderr text — clap's error message
+    // shape is its own concern.  We only pin that the exit is
+    // non-zero and no `output.tgm` was produced.
+    assert!(
+        !output.exists(),
+        "the CLI must not write a partial output file when it rejects \
+         the TENSOGRAM_THREADS value"
+    );
 }

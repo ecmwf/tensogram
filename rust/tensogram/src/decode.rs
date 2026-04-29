@@ -113,7 +113,7 @@ impl Default for DecodeOptions {
 pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Vec<DecodedObject>)> {
     let msg = framing::decode_message(buf)?;
 
-    let budget = crate::parallel::resolve_budget(options.threads);
+    let budget = crate::parallel::resolve_budget(options.threads)?;
     let total_bytes: usize = msg.objects.iter().map(|(_, p, _, _)| p.len()).sum();
     let parallel =
         crate::parallel::should_parallelise(budget, total_bytes, options.parallel_threshold_bytes);
@@ -196,7 +196,7 @@ pub fn decode_with_masks(
 ) -> Result<(GlobalMetadata, Vec<DecodedObjectWithMasks>)> {
     let msg = framing::decode_message(buf)?;
 
-    let budget = crate::parallel::resolve_budget(options.threads);
+    let budget = crate::parallel::resolve_budget(options.threads)?;
     let total_bytes: usize = msg.objects.iter().map(|(_, p, _, _)| p.len()).sum();
     let parallel =
         crate::parallel::should_parallelise(budget, total_bytes, options.parallel_threshold_bytes);
@@ -283,7 +283,7 @@ pub fn decode_object(
 
     // Single-object decode: axis A is impossible — spend the entire
     // budget (if any) on the codec internally (axis B).
-    let budget = crate::parallel::resolve_budget(options.threads);
+    let budget = crate::parallel::resolve_budget(options.threads)?;
     let parallel = crate::parallel::should_parallelise(
         budget,
         payload_bytes.len(),
@@ -332,7 +332,7 @@ pub fn decode_object_from_frame(
 ) -> Result<(DataObjectDescriptor, Vec<u8>)> {
     let (desc, payload_bytes, mask_region, _) = framing::decode_data_object_frame(frame_bytes)?;
 
-    let budget = crate::parallel::resolve_budget(options.threads);
+    let budget = crate::parallel::resolve_budget(options.threads)?;
     let parallel = crate::parallel::should_parallelise(
         budget,
         payload_bytes.len(),
@@ -479,7 +479,7 @@ pub fn decode_range_from_payload(
     // Each range is an independent decode call; parallelism is natural
     // when the caller requests multiple ranges.  Axis B is always
     // preferred when there's only one range.
-    let budget = crate::parallel::resolve_budget(options.threads);
+    let budget = crate::parallel::resolve_budget(options.threads)?;
     // Work is proportional to decoded output, not the input payload —
     // sum the requested counts × element byte width.
     let elem_bytes = desc.dtype.byte_width();

@@ -506,15 +506,82 @@ fn unknown_hash_algorithm_skips_verification() {
     )
     .unwrap();
 
-    // The standalone `verify_hash` helper on a `HashDescriptor`
-    // must still silently skip verification for unknown algorithm
-    // names — the forward-compatibility contract documented in
-    // `crate::hash::verify_hash`.
+    // The standalone `verify_hash` helper rejects unknown algorithm
+    // names with `TensogramError::Metadata`.  Forward-compat for new
+    // algorithm names lives in the validator (see `validate
+    // --checksum` / `IssueCode::UnknownHashAlgorithm`), not in this
+    // helper — silently returning Ok would be an integrity bypass for
+    // callers who reached for `verify_hash` specifically to check
+    // integrity.
     let descriptor = HashDescriptor {
         algorithm: "sha512".to_string(),
         value: "fake_hash_value".to_string(),
     };
-    assert!(tensogram::verify_hash(b"any data", &descriptor).is_ok());
+    let err = tensogram::verify_hash(b"any data", &descriptor).unwrap_err();
+    assert!(matches!(err, tensogram::TensogramError::Metadata(_)));
+}
+
+#[test]
+fn encode_rejects_zstd_level_with_wrong_type() {
+    // Strict-input regression test (Wave 1.7): a typo'd
+    // `zstd_level: "high"` used to silently fall back to the
+    // default level (3).  The encoder now rejects it with a clear
+    // Metadata error.
+    let meta = make_global_meta();
+    let mut params = BTreeMap::new();
+    params.insert(
+        "zstd_level".to_string(),
+        ciborium::Value::Text("high".to_string()),
+    );
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::native(),
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "zstd".to_string(),
+        params,
+        masks: None,
+    };
+    let data = vec![0u8; 16];
+    let err = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("zstd_level"), "msg: {msg}");
+    assert!(msg.contains("expected integer"), "msg: {msg}");
+}
+
+#[test]
+fn encode_rejects_blosc2_codec_with_wrong_type() {
+    // Sibling of the zstd_level test for blosc2's `blosc2_codec`
+    // selector.  An integer-typed value used to silently fall back
+    // to "lz4" — now it errors.
+    let meta = make_global_meta();
+    let mut params = BTreeMap::new();
+    params.insert(
+        "blosc2_codec".to_string(),
+        ciborium::Value::Integer(99i64.into()),
+    );
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::native(),
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "blosc2".to_string(),
+        params,
+        masks: None,
+    };
+    let data = vec![0u8; 16];
+    let err = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("blosc2_codec"), "msg: {msg}");
+    assert!(msg.contains("expected text"), "msg: {msg}");
 }
 
 // ── 9. decode_range edge cases ───────────────────────────────────────────────

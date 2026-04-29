@@ -103,27 +103,112 @@ pub struct EncodeOptions {
     /// across all three masks.  Set to `0` to disable the auto-fallback
     /// and always use the requested method.
     pub small_mask_threshold_bytes: usize,
-    /// Emit a `HeaderHash` frame aggregating per-object hashes.
+    /// Where (if anywhere) to emit the aggregate xxh3 hash frame.
     ///
-    /// Buffered mode default: `true`.  Streaming mode: forced to
-    /// `false` — header frames are written before any data object,
-    /// so the hashes aren't known yet.  Setting this to `true` while
-    /// building a `StreamingEncoder` is a construction-time
-    /// `EncodingError`.
+    /// The aggregate is a CBOR-rendered list of every per-object inline
+    /// hash slot, useful for tools that want to read all hashes at once
+    /// without walking every frame.  See [`AggregateHashPolicy`] for
+    /// the variant semantics — `Auto` is the right choice for almost
+    /// every caller and adapts to buffered vs streaming mode.
     ///
-    /// Ignored when `hash_algorithm` is `None`: if hashing is
-    /// disabled there is nothing to aggregate.
-    pub create_header_hashes: bool,
-    /// Emit a `FooterHash` frame aggregating per-object hashes.
-    ///
-    /// Buffered mode default: `false` (the `HeaderHash` frame is
-    /// the canonical place for the aggregate in buffered mode).
-    /// Streaming mode default: `true` (the only place where the
-    /// aggregate can live, since streamed data objects precede the
-    /// footer).
-    ///
-    /// Ignored when `hash_algorithm` is `None`.
-    pub create_footer_hashes: bool,
+    /// Ignored when `hash_algorithm` is `None`: if hashing is disabled
+    /// there is nothing to aggregate.
+    pub aggregate_hash: AggregateHashPolicy,
+}
+
+/// Where to place the aggregate hash frame inside a message.
+///
+/// The frame holds every per-object xxh3 digest as hex-encoded text;
+/// it is a redundant copy of the per-frame inline hash slots that
+/// makes integrity checks possible without walking the body.  The
+/// per-frame inline slots are always authoritative — the aggregate
+/// frame is a convenience for legacy tooling.
+///
+/// # Mode constraints
+///
+/// - **Buffered encode** ([`encode`]) accepts every variant.
+/// - **Streaming encode** ([`crate::streaming::StreamingEncoder`])
+///   accepts `Auto`, `None`, `Footer`.  `Header` and `Both` are
+///   rejected at construction time with a clear error: header
+///   frames are written before any data object, so the hashes are
+///   not yet known.
+///
+/// `Auto` is the right choice for almost every caller — the encoder
+/// picks the mode-appropriate placement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AggregateHashPolicy {
+    /// Encoder picks: buffered → `Header`, streaming → `Footer`.
+    /// This is the default and is valid in every mode.
+    #[default]
+    Auto,
+    /// No aggregate hash frame is emitted.  Per-frame inline hash
+    /// slots are unaffected.
+    None,
+    /// Emit a `HeaderHash` frame.  **Buffered mode only**; rejected
+    /// at construction in streaming mode.
+    Header,
+    /// Emit a `FooterHash` frame.  Valid in both modes.
+    Footer,
+    /// Emit BOTH a `HeaderHash` and a `FooterHash` frame, carrying
+    /// identical hash lists.  **Buffered mode only**; rejected at
+    /// construction in streaming mode.
+    Both,
+}
+
+impl AggregateHashPolicy {
+    /// Resolve `Auto` against a buffered-mode default of `Header`.
+    /// Internal helper for the buffered encoder.
+    pub(crate) fn resolved_buffered(self) -> Self {
+        match self {
+            AggregateHashPolicy::Auto => AggregateHashPolicy::Header,
+            other => other,
+        }
+    }
+
+    /// Resolve `Auto` against the streaming-mode default of `Footer`,
+    /// rejecting variants that streaming cannot satisfy.  Used by
+    /// [`crate::streaming::StreamingEncoder::new`].
+    pub(crate) fn resolved_streaming(self) -> Result<Self> {
+        match self {
+            AggregateHashPolicy::Auto => Ok(AggregateHashPolicy::Footer),
+            AggregateHashPolicy::None => Ok(AggregateHashPolicy::None),
+            AggregateHashPolicy::Footer => Ok(AggregateHashPolicy::Footer),
+            AggregateHashPolicy::Header => Err(TensogramError::Encoding(
+                "AggregateHashPolicy::Header is not supported in streaming mode \
+                 — the header is written before any data object, so per-object \
+                 hashes are not yet known.  Use Auto (defaults to Footer in \
+                 streaming) or Footer explicitly."
+                    .to_string(),
+            )),
+            AggregateHashPolicy::Both => Err(TensogramError::Encoding(
+                "AggregateHashPolicy::Both is not supported in streaming mode \
+                 — the header is written before any data object, so per-object \
+                 hashes are not yet known.  Use Auto (defaults to Footer in \
+                 streaming) or Footer explicitly."
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// Whether this policy requests a HeaderHash frame in the output.
+    /// Only meaningful after a [`Self::resolved_buffered`] /
+    /// [`Self::resolved_streaming`] call has eliminated `Auto`.
+    pub(crate) fn emits_header(self) -> bool {
+        matches!(
+            self,
+            AggregateHashPolicy::Header | AggregateHashPolicy::Both
+        )
+    }
+
+    /// Whether this policy requests a FooterHash frame in the output.
+    /// Only meaningful after a [`Self::resolved_buffered`] /
+    /// [`Self::resolved_streaming`] call has eliminated `Auto`.
+    pub(crate) fn emits_footer(self) -> bool {
+        matches!(
+            self,
+            AggregateHashPolicy::Footer | AggregateHashPolicy::Both
+        )
+    }
 }
 
 impl Default for EncodeOptions {
@@ -140,9 +225,7 @@ impl Default for EncodeOptions {
             pos_inf_mask_method: MaskMethod::default(),
             neg_inf_mask_method: MaskMethod::default(),
             small_mask_threshold_bytes: 128,
-            // Buffered defaults: header-only aggregate.
-            create_header_hashes: true,
-            create_footer_hashes: false,
+            aggregate_hash: AggregateHashPolicy::Auto,
         }
     }
 }
@@ -191,6 +274,68 @@ pub(crate) fn validate_object(desc: &DataObjectDescriptor, data_len: usize) -> R
                 )));
             }
         }
+    }
+    // Strict-input contract on mask descriptor sub-maps: when the
+    // caller supplies a `masks` block, every present `MaskDescriptor`
+    // must be internally consistent (`method` recognised, `params`
+    // map populated only with keys the method actually understands).
+    if let Some(masks) = &desc.masks {
+        validate_mask_params(masks)?;
+    }
+    Ok(())
+}
+
+/// Per-method allow-list of legitimate `params` keys for a
+/// [`MaskDescriptor`].  See `plans/WIRE_FORMAT.md` §6.5.1 for the
+/// canonical schema.
+///
+/// Strict-input contract: a key not in the allow-list (typically a
+/// typo or a stale param from a previous codec choice) is rejected
+/// with a `MetadataError`.  Earlier versions silently round-tripped
+/// the unknown key, which would surface later as a decode failure on
+/// downstream consumers.
+fn mask_method_allowed_params(method: &str) -> Option<&'static [&'static str]> {
+    match method {
+        "none" | "rle" | "roaring" | "lz4" => Some(&[]),
+        "zstd" => Some(&["level"]),
+        "blosc2" => Some(&["codec", "level"]),
+        _ => None,
+    }
+}
+
+fn validate_mask_descriptor(kind: &str, md: &MaskDescriptor) -> Result<()> {
+    let allowed = mask_method_allowed_params(&md.method).ok_or_else(|| {
+        TensogramError::Metadata(format!(
+            "mask {kind} has unknown method {method:?}; \
+             expected one of: none, rle, roaring, lz4, zstd, blosc2",
+            kind = kind,
+            method = md.method,
+        ))
+    })?;
+    for k in md.params.keys() {
+        if !allowed.contains(&k.as_str()) {
+            return Err(TensogramError::Metadata(format!(
+                "mask {kind} (method {method:?}) has unknown param {key:?}; \
+                 allowed for this method: {allowed:?}",
+                kind = kind,
+                method = md.method,
+                key = k,
+                allowed = allowed,
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_mask_params(masks: &MasksMetadata) -> Result<()> {
+    if let Some(md) = &masks.nan {
+        validate_mask_descriptor("nan", md)?;
+    }
+    if let Some(md) = &masks.pos_inf {
+        validate_mask_descriptor("inf+", md)?;
+    }
+    if let Some(md) = &masks.neg_inf {
+        validate_mask_descriptor("inf-", md)?;
     }
     Ok(())
 }
@@ -402,7 +547,10 @@ fn encode_inner(
     // decide if the workload is large enough to parallelise, and pick
     // axis A (par_iter across objects) vs axis B (sequential, codec
     // uses the budget internally).
-    let budget = crate::parallel::resolve_budget(options.threads);
+    //
+    // `resolve_budget` surfaces an unparseable `TENSOGRAM_THREADS`
+    // value as a typed error — Wave 1.1 strict-input contract.
+    let budget = crate::parallel::resolve_budget(options.threads)?;
     let total_bytes: usize = descriptors.iter().map(|(_, d)| d.len()).sum();
     let parallel =
         crate::parallel::should_parallelise(budget, total_bytes, options.parallel_threshold_bytes);
@@ -470,13 +618,14 @@ fn encode_inner(
     populate_base_entries(&mut enriched_meta.base, &encoded_objects);
     populate_reserved_provenance(&mut enriched_meta.reserved);
 
-    // Derive the aggregate HashFrame policy from the buffered-mode
-    // options.  Streaming uses a different path (force-false
-    // `create_header_hashes`); here in `encode()` we honor the
-    // caller's choice as-is.
+    // Resolve the aggregate-hash policy for buffered mode.  `Auto`
+    // expands to `Header` (the canonical buffered placement); the
+    // explicit variants pass through unchanged.  Streaming uses a
+    // separate resolver that rejects `Header` / `Both`.
+    let resolved = options.aggregate_hash.resolved_buffered();
     let hash_policy = framing::HashFramePolicy {
-        header: options.create_header_hashes,
-        footer: options.create_footer_hashes,
+        header: resolved.emits_header(),
+        footer: resolved.emits_footer(),
     };
     framing::encode_message(
         &enriched_meta,
@@ -773,7 +922,11 @@ fn resolve_compression(
         }
         #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
         "zstd" => {
-            let level_i64 = get_i64_param(&desc.params, "zstd_level").unwrap_or(3);
+            // Strict-input contract: a present-but-wrong-type
+            // `zstd_level` errors instead of silently defaulting to 3.
+            // The `_or_default` accessor distinguishes "absent" (use
+            // the default) from "wrong type" (reject).
+            let level_i64 = get_i64_param_or_default(&desc.params, "zstd_level", 3)?;
             let level = i32::try_from(level_i64).map_err(|_| {
                 TensogramError::Metadata(format!("zstd_level value {level_i64} out of i32 range"))
             })?;
@@ -783,10 +936,10 @@ fn resolve_compression(
         "lz4" => Ok(CompressionType::Lz4),
         #[cfg(feature = "blosc2")]
         "blosc2" => {
-            let codec_str = match desc.params.get("blosc2_codec") {
-                Some(ciborium::Value::Text(s)) => s.as_str(),
-                _ => "lz4",
-            };
+            // Strict-input: present-but-non-text `blosc2_codec`
+            // rejects (vs. previously silently falling back to
+            // "lz4").
+            let codec_str = get_text_param_or_default(&desc.params, "blosc2_codec", "lz4")?;
             let codec = match codec_str {
                 "blosclz" => Blosc2Codec::Blosclz,
                 "lz4" => Blosc2Codec::Lz4,
@@ -799,7 +952,9 @@ fn resolve_compression(
                     )));
                 }
             };
-            let clevel_i64 = get_i64_param(&desc.params, "blosc2_clevel").unwrap_or(5);
+            // Strict-input: present-but-wrong-type `blosc2_clevel`
+            // rejects instead of defaulting to 5.
+            let clevel_i64 = get_i64_param_or_default(&desc.params, "blosc2_clevel", 5)?;
             let clevel = i32::try_from(clevel_i64).map_err(|_| {
                 TensogramError::Metadata(format!(
                     "blosc2_clevel value {clevel_i64} out of i32 range"
@@ -1060,13 +1215,18 @@ pub(crate) fn resolve_simple_packing_params(
 
     let bits_per_value = u32::try_from(get_u64_param(&desc.params, "sp_bits_per_value")?)
         .map_err(|_| TensogramError::Metadata("sp_bits_per_value out of u32 range".to_string()))?;
-    let decimal_scale_factor = if desc.params.contains_key("sp_decimal_scale_factor") {
-        i32::try_from(get_i64_param(&desc.params, "sp_decimal_scale_factor")?).map_err(|_| {
-            TensogramError::Metadata("sp_decimal_scale_factor out of i32 range".to_string())
-        })?
-    } else {
-        0
-    };
+    // Strict-input: a present-but-non-integer `sp_decimal_scale_factor`
+    // is rejected.  Absence falls back to `0` (the standard default
+    // documented at the field level — use a non-zero value only when
+    // your data needs decimal-tier scaling).
+    let decimal_scale_factor = i32::try_from(get_i64_param_or_default(
+        &desc.params,
+        "sp_decimal_scale_factor",
+        0,
+    )?)
+    .map_err(|_| {
+        TensogramError::Metadata("sp_decimal_scale_factor out of i32 range".to_string())
+    })?;
 
     let values = bytes_as_f64_vec(data_bytes, desc.byte_order)?;
     let params = simple_packing::compute_params(&values, bits_per_value, decimal_scale_factor)
@@ -1125,13 +1285,32 @@ fn bytes_as_f64_vec(bytes: &[u8], byte_order: ByteOrder) -> Result<Vec<f64>> {
     Ok(out)
 }
 
+/// Maximum integer absolutely representable in `f64` without loss of
+/// precision (`2^53`).  Beyond this magnitude, the conversion `i64 as
+/// f64` rounds to the nearest even — silent precision loss.
+const F64_EXACT_INT_BOUND: i128 = 1 << 53;
+
 pub(crate) fn get_f64_param(params: &BTreeMap<String, ciborium::Value>, key: &str) -> Result<f64> {
     match params.get(key) {
         Some(ciborium::Value::Float(f)) => Ok(*f),
         Some(ciborium::Value::Integer(i)) => {
-            // i128 → f64 may lose precision for very large integers (> 2^53),
-            // but this is acceptable for a float accessor on an integer value.
+            // Strict-input contract: integers outside `[-2^53, 2^53]`
+            // cannot be represented exactly in f64; converting them
+            // would silently round.  Reject so the caller is forced
+            // to either supply a float literal or pick a different
+            // codec parameter.
             let n: i128 = (*i).into();
+            if n.abs() > F64_EXACT_INT_BOUND {
+                return Err(TensogramError::Metadata(format!(
+                    "{key}: integer value {n} is outside the f64 \
+                     exact-representable range [-2^53, 2^53]; \
+                     converting to f64 would silently lose precision. \
+                     Supply a float literal or pick a parameter that \
+                     accepts integers up to i64::MAX."
+                )));
+            }
+            // Within the exact-representable range, `as f64` is
+            // lossless on every supported target.
             Ok(n as f64)
         }
         Some(other) => Err(TensogramError::Metadata(format!(
@@ -1160,6 +1339,37 @@ pub(crate) fn get_i64_param(params: &BTreeMap<String, ciborium::Value>, key: &st
     }
 }
 
+/// Optional integer parameter accessor.
+///
+/// Distinguishes "key absent" (returns `default`) from "key present
+/// but wrong CBOR type" (returns `Err`).  Earlier code used
+/// `get_i64_param(...).unwrap_or(default)` which collapsed both into
+/// the default — a strict-input violation: a typo such as
+/// `zstd_level: "high"` (string) silently fell back to the default
+/// level instead of erroring.
+///
+/// Use this whenever a numeric codec parameter has a sensible default
+/// for the absent case but should reject other CBOR shapes.
+pub(crate) fn get_i64_param_or_default(
+    params: &BTreeMap<String, ciborium::Value>,
+    key: &str,
+    default: i64,
+) -> Result<i64> {
+    match params.get(key) {
+        Some(ciborium::Value::Integer(i)) => {
+            let n: i128 = (*i).into();
+            i64::try_from(n).map_err(|_| {
+                TensogramError::Metadata(format!("integer value {n} out of i64 range for {key}"))
+            })
+        }
+        Some(other) => Err(TensogramError::Metadata(format!(
+            "expected integer for {key}, got {other:?}; \
+             if you meant to use the default ({default}), omit the key"
+        ))),
+        None => Ok(default),
+    }
+}
+
 pub(crate) fn get_u64_param(params: &BTreeMap<String, ciborium::Value>, key: &str) -> Result<u64> {
     match params.get(key) {
         Some(ciborium::Value::Integer(i)) => {
@@ -1174,6 +1384,26 @@ pub(crate) fn get_u64_param(params: &BTreeMap<String, ciborium::Value>, key: &st
         None => Err(TensogramError::Metadata(format!(
             "missing required parameter: {key}"
         ))),
+    }
+}
+
+/// Optional text parameter accessor with strict type-checking.
+///
+/// Same shape as [`get_i64_param_or_default`]: returns `default` when
+/// the key is absent, but rejects non-text CBOR values.  Used for
+/// codec sub-codec selectors (e.g. `blosc2_codec`).
+pub(crate) fn get_text_param_or_default<'a>(
+    params: &'a BTreeMap<String, ciborium::Value>,
+    key: &str,
+    default: &'a str,
+) -> Result<&'a str> {
+    match params.get(key) {
+        Some(ciborium::Value::Text(s)) => Ok(s.as_str()),
+        Some(other) => Err(TensogramError::Metadata(format!(
+            "expected text for {key}, got {other:?}; \
+             if you meant to use the default ({default:?}), omit the key"
+        ))),
+        None => Ok(default),
     }
 }
 
@@ -2418,5 +2648,313 @@ mod tests {
         };
 
         assert!(validate_no_szip_offsets_for_non_szip(&desc).is_ok());
+    }
+
+    // ── AggregateHashPolicy resolver tests ──────────────────────────
+
+    #[test]
+    fn aggregate_hash_policy_default_is_auto() {
+        assert_eq!(AggregateHashPolicy::default(), AggregateHashPolicy::Auto);
+    }
+
+    #[test]
+    fn aggregate_hash_policy_buffered_resolves_auto_to_header() {
+        assert_eq!(
+            AggregateHashPolicy::Auto.resolved_buffered(),
+            AggregateHashPolicy::Header
+        );
+        // Other variants pass through unchanged.
+        assert_eq!(
+            AggregateHashPolicy::None.resolved_buffered(),
+            AggregateHashPolicy::None
+        );
+        assert_eq!(
+            AggregateHashPolicy::Footer.resolved_buffered(),
+            AggregateHashPolicy::Footer
+        );
+        assert_eq!(
+            AggregateHashPolicy::Both.resolved_buffered(),
+            AggregateHashPolicy::Both
+        );
+    }
+
+    #[test]
+    fn aggregate_hash_policy_streaming_rejects_header() {
+        let err = AggregateHashPolicy::Header
+            .resolved_streaming()
+            .unwrap_err();
+        assert!(matches!(err, TensogramError::Encoding(_)));
+    }
+
+    #[test]
+    fn aggregate_hash_policy_streaming_rejects_both() {
+        let err = AggregateHashPolicy::Both.resolved_streaming().unwrap_err();
+        assert!(matches!(err, TensogramError::Encoding(_)));
+    }
+
+    #[test]
+    fn aggregate_hash_policy_streaming_resolves_auto_to_footer() {
+        assert_eq!(
+            AggregateHashPolicy::Auto.resolved_streaming().unwrap(),
+            AggregateHashPolicy::Footer
+        );
+    }
+
+    #[test]
+    fn aggregate_hash_policy_streaming_accepts_explicit_footer_and_none() {
+        assert_eq!(
+            AggregateHashPolicy::Footer.resolved_streaming().unwrap(),
+            AggregateHashPolicy::Footer
+        );
+        assert_eq!(
+            AggregateHashPolicy::None.resolved_streaming().unwrap(),
+            AggregateHashPolicy::None
+        );
+    }
+
+    #[test]
+    fn aggregate_hash_policy_emits_flags() {
+        // emits_header / emits_footer reflect what the resolver produced.
+        assert!(AggregateHashPolicy::Header.emits_header());
+        assert!(!AggregateHashPolicy::Header.emits_footer());
+        assert!(!AggregateHashPolicy::Footer.emits_header());
+        assert!(AggregateHashPolicy::Footer.emits_footer());
+        assert!(AggregateHashPolicy::Both.emits_header());
+        assert!(AggregateHashPolicy::Both.emits_footer());
+        assert!(!AggregateHashPolicy::None.emits_header());
+        assert!(!AggregateHashPolicy::None.emits_footer());
+    }
+
+    // ── Strict optional-param accessor tests (Wave 1.7) ───────────────
+
+    #[test]
+    fn get_i64_param_or_default_returns_default_on_absent() {
+        let params = BTreeMap::new();
+        assert_eq!(
+            get_i64_param_or_default(&params, "zstd_level", 3).unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn get_i64_param_or_default_returns_present_value() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "zstd_level".to_string(),
+            ciborium::Value::Integer(7i64.into()),
+        );
+        assert_eq!(
+            get_i64_param_or_default(&params, "zstd_level", 3).unwrap(),
+            7
+        );
+    }
+
+    #[test]
+    fn get_i64_param_or_default_rejects_wrong_type() {
+        // Strict-input contract: a present-but-non-integer value is
+        // rejected, NOT silently replaced by the default.  This is
+        // the bug class the helper exists to prevent: a typo such
+        // as `zstd_level: "high"` previously fell back to the default
+        // level.
+        let mut params = BTreeMap::new();
+        params.insert(
+            "zstd_level".to_string(),
+            ciborium::Value::Text("high".to_string()),
+        );
+        let err = get_i64_param_or_default(&params, "zstd_level", 3).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("expected integer"), "msg: {msg}");
+                assert!(msg.contains("zstd_level"), "msg: {msg}");
+                assert!(msg.contains("default"), "msg: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_text_param_or_default_returns_default_on_absent() {
+        let params = BTreeMap::new();
+        assert_eq!(
+            get_text_param_or_default(&params, "blosc2_codec", "lz4").unwrap(),
+            "lz4"
+        );
+    }
+
+    #[test]
+    fn get_text_param_or_default_returns_present_value() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "blosc2_codec".to_string(),
+            ciborium::Value::Text("zstd".to_string()),
+        );
+        assert_eq!(
+            get_text_param_or_default(&params, "blosc2_codec", "lz4").unwrap(),
+            "zstd"
+        );
+    }
+
+    #[test]
+    fn get_text_param_or_default_rejects_wrong_type() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "blosc2_codec".to_string(),
+            ciborium::Value::Integer(5i64.into()),
+        );
+        let err = get_text_param_or_default(&params, "blosc2_codec", "lz4").unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("expected text"), "msg: {msg}");
+                assert!(msg.contains("blosc2_codec"), "msg: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    // ── Mask params strict validation (Wave 1.14) ────────────────────
+
+    fn make_mask_desc(method: &str, params: BTreeMap<String, ciborium::Value>) -> MaskDescriptor {
+        MaskDescriptor {
+            method: method.to_string(),
+            offset: 0,
+            length: 1,
+            params,
+        }
+    }
+
+    #[test]
+    fn validate_mask_params_accepts_empty_for_paramless_methods() {
+        for m in ["none", "rle", "roaring", "lz4"] {
+            let masks = MasksMetadata {
+                nan: Some(make_mask_desc(m, BTreeMap::new())),
+                ..Default::default()
+            };
+            assert!(
+                validate_mask_params(&masks).is_ok(),
+                "method {m} must accept empty params"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_mask_params_accepts_zstd_level() {
+        let mut params = BTreeMap::new();
+        params.insert("level".to_string(), ciborium::Value::Integer(3i64.into()));
+        let masks = MasksMetadata {
+            nan: Some(make_mask_desc("zstd", params)),
+            ..Default::default()
+        };
+        assert!(validate_mask_params(&masks).is_ok());
+    }
+
+    #[test]
+    fn validate_mask_params_rejects_unknown_method() {
+        let masks = MasksMetadata {
+            nan: Some(make_mask_desc("snappy", BTreeMap::new())),
+            ..Default::default()
+        };
+        let err = validate_mask_params(&masks).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("unknown method"), "msg: {msg}");
+                assert!(msg.contains("snappy"), "msg: {msg}");
+                assert!(msg.contains("expected one of"), "msg: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_mask_params_rejects_unknown_param_for_paramless_method() {
+        // RLE has no params; a `level` here is a stale leftover from
+        // a different codec choice, almost certainly user error.
+        let mut params = BTreeMap::new();
+        params.insert("level".to_string(), ciborium::Value::Integer(5i64.into()));
+        let masks = MasksMetadata {
+            pos_inf: Some(make_mask_desc("rle", params)),
+            ..Default::default()
+        };
+        let err = validate_mask_params(&masks).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("unknown param"), "msg: {msg}");
+                assert!(msg.contains("level"), "msg: {msg}");
+                assert!(msg.contains("rle"), "msg: {msg}");
+                assert!(msg.contains("inf+"), "kind tag missing: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    // ── Strict integer→float bound (Wave 1.6) ────────────────────────
+
+    #[test]
+    fn get_f64_param_accepts_integer_within_exact_range() {
+        let mut params = BTreeMap::new();
+        // 2^53 is the boundary — must succeed (exact f64).
+        params.insert(
+            "tol".to_string(),
+            ciborium::Value::Integer((1i64 << 53).into()),
+        );
+        assert_eq!(get_f64_param(&params, "tol").unwrap(), (1u64 << 53) as f64);
+    }
+
+    #[test]
+    fn get_f64_param_rejects_integer_beyond_exact_range() {
+        // 2^53 + 1 cannot be represented exactly in f64; reject.
+        let mut params = BTreeMap::new();
+        let too_big = i64::from((1u32 << 30) - 1) << 24; // safely beyond 2^53
+        params.insert("tol".to_string(), ciborium::Value::Integer(too_big.into()));
+        let err = get_f64_param(&params, "tol").unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("exact-representable"), "msg: {msg}");
+                assert!(msg.contains("tol"), "msg: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_f64_param_accepts_negative_integer_within_range() {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "tol".to_string(),
+            ciborium::Value::Integer((-(1i64 << 53)).into()),
+        );
+        assert_eq!(
+            get_f64_param(&params, "tol").unwrap(),
+            -((1u64 << 53) as f64)
+        );
+    }
+
+    #[test]
+    fn get_f64_param_rejects_large_negative_integer() {
+        let mut params = BTreeMap::new();
+        let too_neg = -(i64::from((1u32 << 30) - 1) << 24);
+        params.insert("tol".to_string(), ciborium::Value::Integer(too_neg.into()));
+        let err = get_f64_param(&params, "tol").unwrap_err();
+        assert!(matches!(err, TensogramError::Metadata(_)));
+    }
+
+    #[test]
+    fn validate_mask_params_rejects_typo_param() {
+        // A typo on a known method (`levle` instead of `level` for
+        // zstd) is rejected.
+        let mut params = BTreeMap::new();
+        params.insert("levle".to_string(), ciborium::Value::Integer(3i64.into()));
+        let masks = MasksMetadata {
+            neg_inf: Some(make_mask_desc("zstd", params)),
+            ..Default::default()
+        };
+        let err = validate_mask_params(&masks).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("unknown param"), "msg: {msg}");
+                assert!(msg.contains("levle"), "msg: {msg}");
+                assert!(msg.contains("zstd"), "msg: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
     }
 }

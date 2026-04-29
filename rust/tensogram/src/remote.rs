@@ -938,9 +938,26 @@ impl RemoteBackend {
                         .saturating_add(*length)
                         .saturating_sub(POSTAMBLE_SIZE as u64);
                     if footer_start < footer_end {
-                        // Best-effort: silently drop on failure so the lazy
-                        // `ensure_layout` path picks up footer discovery later.
-                        self.get_range(footer_start..footer_end).ok()
+                        // Best-effort: a transport failure here means
+                        // the lazy `ensure_layout` path picks up footer
+                        // discovery later.  We still emit a debug
+                        // tracing event so a flapping endpoint is
+                        // visible to operators rather than appearing
+                        // as a silent perf regression.
+                        match self.get_range(footer_start..footer_end) {
+                            Ok(b) => Some(b),
+                            Err(e) => {
+                                tracing::debug!(
+                                    target: "tensogram::remote_scan",
+                                    error = %e,
+                                    msg_start = *msg_start,
+                                    footer_start = footer_start,
+                                    footer_end = footer_end,
+                                    "eager footer fetch failed; falling back to lazy"
+                                );
+                                None
+                            }
+                        }
                     } else {
                         None
                     }
@@ -2268,7 +2285,24 @@ impl RemoteBackend {
                         // Parallelise: preamble is required, footer is best-effort.
                         // `tokio::join!` lets one future fail without aborting the other.
                         let (preamble_res, footer_res) = tokio::join!(preamble_fut, footer_fut);
-                        (Some(preamble_res?), footer_res.ok())
+                        // Surface the best-effort failure as a tracing
+                        // event so a flapping endpoint isn't invisible
+                        // (parity with the sync path).
+                        let footer = match footer_res {
+                            Ok(b) => Some(b),
+                            Err(e) => {
+                                tracing::debug!(
+                                    target: "tensogram::remote_scan",
+                                    error = %e,
+                                    msg_start = *msg_start,
+                                    footer_start = footer_start,
+                                    footer_end = footer_end,
+                                    "eager footer fetch failed; falling back to lazy"
+                                );
+                                None
+                            }
+                        };
+                        (Some(preamble_res?), footer)
                     } else {
                         (Some(preamble_fut.await?), None)
                     }

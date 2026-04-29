@@ -1879,6 +1879,7 @@ fn scan_file_bidirectional_matches_in_memory() {
 // ── Phase 6: aggregate HashFrame policy ─────────────────────────────────────
 
 fn encode_sample_hashed(create_header: bool, create_footer: bool) -> Vec<u8> {
+    use tensogram::AggregateHashPolicy;
     let global = GlobalMetadata {
         ..Default::default()
     };
@@ -1896,9 +1897,18 @@ fn encode_sample_hashed(create_header: bool, create_footer: bool) -> Vec<u8> {
         masks: None,
     };
     let data = vec![0u8; 12];
+    // Translate the two-flag legacy form into the unambiguous
+    // `AggregateHashPolicy` enum.  The four (header, footer) → policy
+    // combinations are: (false,false)→None, (true,false)→Header,
+    // (false,true)→Footer, (true,true)→Both.
+    let aggregate_hash = match (create_header, create_footer) {
+        (false, false) => AggregateHashPolicy::None,
+        (true, false) => AggregateHashPolicy::Header,
+        (false, true) => AggregateHashPolicy::Footer,
+        (true, true) => AggregateHashPolicy::Both,
+    };
     let opts = EncodeOptions {
-        create_header_hashes: create_header,
-        create_footer_hashes: create_footer,
+        aggregate_hash,
         ..EncodeOptions::default()
     };
     encode(&global, &[(&desc, &data)], &opts).unwrap()
@@ -1986,8 +1996,9 @@ fn buffered_encode_without_hashing_clears_aggregate() {
     let data = vec![0u8; 4];
     let opts = EncodeOptions {
         hash_algorithm: None,
-        create_header_hashes: true,
-        create_footer_hashes: true,
+        // Even with `Both` requested, hashes are off so no aggregate
+        // frame is emitted.
+        aggregate_hash: tensogram::AggregateHashPolicy::Both,
         ..EncodeOptions::default()
     };
     let msg = encode(&global, &[(&desc, &data)], &opts).unwrap();
@@ -2287,7 +2298,7 @@ fn validate_detects_hash_frame_aggregate_tamper() {
         &global,
         &[(&desc, data.as_slice())],
         &EncodeOptions {
-            create_header_hashes: true,
+            aggregate_hash: tensogram::AggregateHashPolicy::Header,
             ..EncodeOptions::default()
         },
     )
@@ -2365,8 +2376,7 @@ fn validate_accepts_both_hash_aggregates_when_identical() {
     };
     let data = vec![0u8; 8];
     let opts = EncodeOptions {
-        create_header_hashes: true,
-        create_footer_hashes: true,
+        aggregate_hash: tensogram::AggregateHashPolicy::Both,
         ..EncodeOptions::default()
     };
     let msg = encode(&global, &[(&desc, &data)], &opts).unwrap();

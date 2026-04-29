@@ -42,6 +42,8 @@
 
 use std::sync::OnceLock;
 
+use crate::error::{Result, TensogramError};
+
 /// Default threshold below which the library runs sequentially even when
 /// `threads > 0`.  Chosen to be well above the per-call rayon pool
 /// construction cost (~10 µs) but small enough not to starve encode
@@ -51,32 +53,72 @@ use std::sync::OnceLock;
 /// or `DecodeOptions.parallel_threshold_bytes`.
 pub const DEFAULT_PARALLEL_THRESHOLD_BYTES: usize = 64 * 1024;
 
-/// Env var consulted when the caller-provided `threads` is `0`.  Must
-/// parse as a `u32`; zero, missing, empty, or otherwise unparseable
-/// values all resolve to `0` (sequential execution).
+/// Env var consulted when the caller-provided `threads` is `0`.
+///
+/// **Strict-input contract** (Wave 1.1): the value must parse as a
+/// `u32` (decimal).  An empty / unset variable falls through to `0`
+/// (sequential execution).  Any other unparseable value (e.g. `"four"`,
+/// `"-2"`) surfaces as a [`TensogramError::Encoding`] from the next
+/// encode / decode call rather than being silently swallowed.
 pub const ENV_THREADS: &str = "TENSOGRAM_THREADS";
 
-fn env_threads() -> u32 {
-    static CACHED: OnceLock<u32> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var(ENV_THREADS)
-            .ok()
-            .and_then(|s| s.trim().parse::<u32>().ok())
-            .unwrap_or(0)
-    })
+/// Pure parser for the `TENSOGRAM_THREADS` env variable shape.
+/// Extracted so unit tests can exercise every input without
+/// fighting the [`env_threads`] OnceLock cache.
+///
+/// Contract:
+/// - `None` (env unset) → `Ok(0)` (sequential).
+/// - `Some(empty / whitespace)` → `Ok(0)` (treat blank as unset).
+/// - `Some("N")` where N parses as `u32` → `Ok(N)`.
+/// - Any other value → `Err(_)` with a message naming the env var
+///   and the offending input.
+fn parse_env_threads(raw: Option<&str>) -> std::result::Result<u32, String> {
+    match raw {
+        None => Ok(0),
+        Some(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Ok(0);
+            }
+            trimmed.parse::<u32>().map_err(|e| {
+                format!(
+                    "invalid {ENV_THREADS} value {s:?}: {e}; \
+                     expected a non-negative integer (e.g. 0, 1, 4)"
+                )
+            })
+        }
+    }
+}
+
+fn env_threads() -> Result<u32> {
+    // Cache the parse result (Ok or typed Err) so repeated callers
+    // do not pay a syscall per call.  An invalid value is sticky:
+    // every encode in the process surfaces the same diagnostic until
+    // the env is fixed, matching `resolve_compression_backend`.
+    static CACHED: OnceLock<std::result::Result<u32, String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            let var = std::env::var(ENV_THREADS).ok();
+            parse_env_threads(var.as_deref())
+        })
+        .clone()
+        .map_err(TensogramError::Encoding)
 }
 
 /// Resolve the effective thread budget given a caller-provided value.
 ///
 /// - If `requested > 0`, returns `requested` unchanged (option beats env).
 /// - If `requested == 0`, returns `TENSOGRAM_THREADS` (0 when unset).
+/// - If `TENSOGRAM_THREADS` is set but unparseable, returns
+///   [`TensogramError::Encoding`] (Wave 1.1: strict-input contract,
+///   replaces the previous silent fall-back to 0).
 ///
 /// Values are not clamped to CPU count — rayon handles that naturally,
 /// and pathological N values simply see diminishing returns.
 #[inline]
-pub(crate) fn resolve_budget(requested: u32) -> u32 {
+pub(crate) fn resolve_budget(requested: u32) -> Result<u32> {
     if requested > 0 {
-        requested
+        Ok(requested)
     } else {
         env_threads()
     }
@@ -243,14 +285,62 @@ mod tests {
         // Env may or may not be set in the test environment; if set to 0
         // or unset the result must be 0.
         if std::env::var(ENV_THREADS).is_err() {
-            assert_eq!(resolve_budget(0), 0);
+            assert_eq!(resolve_budget(0).unwrap(), 0);
         }
     }
 
     #[test]
     fn resolve_nonzero_ignores_env() {
         // Even if TENSOGRAM_THREADS is set, a non-zero caller request wins.
-        assert_eq!(resolve_budget(4), 4);
+        assert_eq!(resolve_budget(4).unwrap(), 4);
+    }
+
+    // ── Pure parser for the env-var shape (Wave 1.1) ─────────────────
+
+    #[test]
+    fn parse_env_threads_unset_is_zero() {
+        assert_eq!(parse_env_threads(None).unwrap(), 0);
+    }
+
+    #[test]
+    fn parse_env_threads_empty_is_zero() {
+        assert_eq!(parse_env_threads(Some("")).unwrap(), 0);
+    }
+
+    #[test]
+    fn parse_env_threads_whitespace_is_zero() {
+        assert_eq!(parse_env_threads(Some("   ")).unwrap(), 0);
+    }
+
+    #[test]
+    fn parse_env_threads_valid_integer() {
+        assert_eq!(parse_env_threads(Some("4")).unwrap(), 4);
+        assert_eq!(parse_env_threads(Some("  4 ")).unwrap(), 4);
+    }
+
+    #[test]
+    fn parse_env_threads_rejects_unparseable() {
+        // Strict-input contract: anything that is not a valid u32 is
+        // rejected with a typed error mentioning both the env var and
+        // the offending value.  Earlier versions silently swallowed
+        // such typos and ran sequentially.
+        let err = parse_env_threads(Some("four")).unwrap_err();
+        assert!(err.contains("TENSOGRAM_THREADS"), "msg: {err}");
+        assert!(err.contains("four"), "msg: {err}");
+        assert!(err.contains("non-negative integer"), "msg: {err}");
+    }
+
+    #[test]
+    fn parse_env_threads_rejects_negative() {
+        let err = parse_env_threads(Some("-2")).unwrap_err();
+        assert!(err.contains("TENSOGRAM_THREADS"));
+        assert!(err.contains("-2"));
+    }
+
+    #[test]
+    fn parse_env_threads_rejects_float() {
+        let err = parse_env_threads(Some("4.5")).unwrap_err();
+        assert!(err.contains("TENSOGRAM_THREADS"));
     }
 
     #[test]

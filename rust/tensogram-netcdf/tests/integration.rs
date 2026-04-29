@@ -775,11 +775,12 @@ fn simple_packing_on_multi_dtype_fails_on_nan_variable() {
 
 // Note: the pre-0.17 test `simple_packing_skips_non_f64_variables` was
 // removed.  Its fixture (`multi_dtype.nc`) contains a `f64_with_nan`
-// variable that now hard-fails simple_packing; the replacement
+// variable that hard-fails simple_packing; the replacement
 // `simple_packing_on_multi_dtype_fails_on_nan_variable` covers the
-// new contract.  The "skip non-f64" branch is now covered by the unit
-// test `simple_packing_with_non_f64_payload_still_skips_with_warning`
-// in `rust/tensogram/src/pipeline.rs`.
+// NaN contract, and `simple_packing_on_non_f64_variable_hard_fails`
+// covers the strict-input non-f64 contract (Wave 1.8 — earlier
+// versions of the converter silently downgraded with a stderr
+// warning).
 
 #[test]
 fn pipeline_round_trip_zstd_decodes_back_to_input() {

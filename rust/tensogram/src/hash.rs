@@ -177,20 +177,18 @@ pub(crate) fn format_xxh3_digest(digest: u64) -> String {
 
 /// Verify a hash descriptor against data.
 ///
-/// If the hash algorithm is not recognized, a warning is logged and
-/// verification is skipped (returns Ok). This ensures forward compatibility
-/// when new hash algorithms are added.
+/// **Strict-input contract.** This helper is the explicit "verify integrity
+/// of these bytes against this descriptor" path.  An unknown algorithm name
+/// is rejected with [`TensogramError::Metadata`] — silently returning `Ok`
+/// would be an integrity bypass for callers who reached for `verify_hash`
+/// specifically to check integrity.
+///
+/// Forward-compatibility for unknown algorithms is the validator's concern,
+/// not this helper's: see `validate --checksum` and the
+/// `IssueCode::UnknownHashAlgorithm` warning emitted by
+/// `validate::integrity::validate_integrity`.
 pub fn verify_hash(data: &[u8], descriptor: &HashDescriptor) -> Result<()> {
-    let algorithm = match HashAlgorithm::parse(&descriptor.algorithm) {
-        Ok(algo) => algo,
-        Err(_) => {
-            tracing::warn!(
-                algorithm = %descriptor.algorithm,
-                "unknown hash algorithm, skipping verification"
-            );
-            return Ok(());
-        }
-    };
+    let algorithm = HashAlgorithm::parse(&descriptor.algorithm)?;
     let actual = compute_hash(data, algorithm);
     if actual != descriptor.value {
         return Err(TensogramError::HashMismatch {
@@ -236,14 +234,38 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_hash_type_skips_verification() {
+    fn test_verify_hash_rejects_unknown_algorithm() {
+        // Strict-input contract: an unknown algorithm name is rejected
+        // with `TensogramError::Metadata` rather than silently skipped.
+        // Forward-compat for new algorithm names lives in the validator,
+        // not in `verify_hash`.
         let data = b"test data";
         let descriptor = HashDescriptor {
             algorithm: "sha256".to_string(),
             value: "abc123".to_string(),
         };
-        // Unknown hash algorithms skip verification with a warning (forward compatibility)
-        assert!(verify_hash(data, &descriptor).is_ok());
+        let err = verify_hash(data, &descriptor).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(
+                    msg.contains("unknown hash type"),
+                    "expected unknown-hash-type message, got: {msg}"
+                );
+                assert!(msg.contains("sha256"), "expected algo name, got: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_verify_hash_rejects_empty_algorithm() {
+        let data = b"test data";
+        let descriptor = HashDescriptor {
+            algorithm: String::new(),
+            value: "abc123".to_string(),
+        };
+        let err = verify_hash(data, &descriptor).unwrap_err();
+        assert!(matches!(err, TensogramError::Metadata(_)));
     }
 
     // ── Inline-slot error paths ─────────────────────────────────────

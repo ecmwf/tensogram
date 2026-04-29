@@ -26,20 +26,25 @@ pub fn global_metadata_to_cbor(metadata: &GlobalMetadata) -> Result<Vec<u8>> {
 ///
 /// The CBOR metadata frame is free-form: only `base`, `_reserved_`, and
 /// `_extra_` are named sections the library interprets.  Any other
-/// top-level key (including a stray legacy `"version"` key emitted by
-/// pre-0.17 encoders) is routed into `_extra_` for forward-compatibility.
-/// The wire-format version lives exclusively in the preamble (see
-/// [`crate::wire::WIRE_VERSION`]).
+/// top-level **text** key (including a stray legacy `"version"` key
+/// emitted by pre-0.17 encoders) is routed into `_extra_` for
+/// forward-compatibility.  The wire-format version lives exclusively
+/// in the preamble (see [`crate::wire::WIRE_VERSION`]).
 ///
-/// # Priority rule for `_extra_` collisions
+/// # Strict-input rules
 ///
-/// When the caller supplies both an explicit `_extra_` section AND a
-/// free-form top-level key with the same name (e.g.
-/// `{"_extra_": {"version": 1}, "version": 99}`), the **explicit
-/// `_extra_` entry wins**.  Free-form top-level keys only fill slots
-/// that `_extra_` did not already claim.  This matches the "explicit
-/// beats implicit" principle: a caller who spelled out an entry
-/// inside `_extra_` clearly intended it to land there verbatim.
+/// - **Non-text top-level keys are rejected.**  Canonical CBOR uses
+///   text keys for our schema (RFC 8949 §4.2 + `plans/WIRE_FORMAT.md`).
+///   A malformed producer emitting integer / bytes / map keys at the
+///   top level surfaces as `MetadataError` rather than being silently
+///   dropped — silent drop would lose round-trip fidelity without
+///   informing the caller.
+/// - **Collisions between explicit `_extra_` and free-form top-level
+///   keys are rejected.**  Both `{"_extra_": {"version": 1}, "version": 99}`
+///   forms convey the same intent ambiguously; the producer must
+///   choose one.  Earlier versions silently preferred the explicit
+///   `_extra_` entry, which made the surprise discoverable only by
+///   reading the source.
 pub fn cbor_to_global_metadata(cbor_bytes: &[u8]) -> Result<GlobalMetadata> {
     let value: ciborium::Value = ciborium::from_reader(cbor_bytes)
         .map_err(|e| TensogramError::Metadata(format!("failed to parse CBOR: {e}")))?;
@@ -55,26 +60,22 @@ pub fn cbor_to_global_metadata(cbor_bytes: &[u8]) -> Result<GlobalMetadata> {
 
     let mut meta = GlobalMetadata::default();
     // Accumulate free-form top-level entries in a separate bucket so
-    // the explicit `_extra_` section (processed once below) can take
-    // precedence over same-named free-form keys on collision.
+    // the explicit `_extra_` section (processed once below) can be
+    // checked for collisions before merge.
     let mut free_form: BTreeMap<String, ciborium::Value> = BTreeMap::new();
 
     for (k, v) in map {
-        // Skip non-text map keys defensively.  Canonical CBOR uses
-        // text keys for our schema (RFC 8949 §4.2 + the wire-format
-        // spec at `plans/WIRE_FORMAT.md`).  A malformed producer
-        // could still emit integer / bytes keys at the top level;
-        // those entries are silently dropped here rather than
-        // failing the decode, matching the forward-compatibility
-        // rule applied throughout the frame walker.  Dropping (as
-        // opposed to routing into `_extra_` under a synthetic name)
-        // is deliberate — the caller cannot usefully re-consume a
-        // non-text key without losing round-trip fidelity anyway,
-        // and routing would leak the malformed structure into the
-        // library-defined `_extra_` namespace.
         let key = match k {
             ciborium::Value::Text(s) => s,
-            _ => continue,
+            other => {
+                return Err(TensogramError::Metadata(format!(
+                    "global metadata CBOR has non-text top-level key {}; \
+                     canonical CBOR uses text keys for the tensogram schema \
+                     (RFC 8949 §4.2 + WIRE_FORMAT.md). \
+                     Re-encode through a canonical CBOR producer.",
+                    cbor_kind_label(&other),
+                )));
+            }
         };
 
         match key.as_str() {
@@ -98,21 +99,51 @@ pub fn cbor_to_global_metadata(cbor_bytes: &[u8]) -> Result<GlobalMetadata> {
                 meta.extra = entries;
             }
             // Anything else (including a stray legacy `"version"` key)
-            // flows into `_extra_` via the free-form bucket.  The
-            // explicit `_extra_` section always wins on key collisions.
+            // flows into `_extra_` via the free-form bucket.
             _ => {
                 free_form.insert(key, v);
             }
         }
     }
 
-    // Promote free-form keys only where `_extra_` did not already
-    // claim the slot — explicit beats implicit.
+    // Strict collision check: a key cannot appear both as a top-level
+    // free-form entry AND inside `_extra_`.  Earlier versions silently
+    // preferred the explicit entry; the new rule rejects ambiguity.
+    for k in free_form.keys() {
+        if meta.extra.contains_key(k) {
+            return Err(TensogramError::Metadata(format!(
+                "ambiguous metadata: key {k:?} appears both at the top \
+                 level and inside `_extra_`. Producers must pick one \
+                 placement; the wire format does not allow both."
+            )));
+        }
+    }
+
+    // No collisions — promote every free-form key into `_extra_`.
     for (k, v) in free_form {
-        meta.extra.entry(k).or_insert(v);
+        meta.extra.insert(k, v);
     }
 
     Ok(meta)
+}
+
+/// Human-readable label for a non-text CBOR top-level key, used in
+/// the strict-input error message above.  Trims to a short tag so
+/// the error stays readable even when the key is a long byte array.
+fn cbor_kind_label(value: &ciborium::Value) -> &'static str {
+    use ciborium::Value;
+    match value {
+        Value::Integer(_) => "(integer key)",
+        Value::Bytes(_) => "(byte-string key)",
+        Value::Float(_) => "(float key)",
+        Value::Bool(_) => "(boolean key)",
+        Value::Null => "(null key)",
+        Value::Tag(_, _) => "(tagged key)",
+        Value::Array(_) => "(array key)",
+        Value::Map(_) => "(map key)",
+        Value::Text(_) => "(text key)",
+        _ => "(unknown CBOR key kind)",
+    }
 }
 
 /// Serialize a data object descriptor to deterministic CBOR bytes.
@@ -187,18 +218,28 @@ pub fn cbor_to_index(cbor_bytes: &[u8]) -> Result<IndexFrame> {
     let mut index = IndexFrame::default();
 
     for (k, v) in map {
+        // Non-text keys in a closed schema (index frame) are
+        // strict-input errors — there's no forward-compat slot they
+        // could slot into.  Unknown text keys still pass through for
+        // forward-compat (a future version may add fields).
         let key = match k {
-            ciborium::Value::Text(s) => s.as_str(),
-            _ => continue,
+            ciborium::Value::Text(s) => s,
+            other => {
+                return Err(TensogramError::Metadata(format!(
+                    "index frame CBOR has non-text key {} — \
+                     the index schema uses text keys only",
+                    cbor_kind_label(other),
+                )));
+            }
         };
-        match key {
+        match key.as_str() {
             "offsets" => {
                 index.offsets = cbor_to_u64_array(v, "offsets")?;
             }
             "lengths" => {
                 index.lengths = cbor_to_u64_array(v, "lengths")?;
             }
-            _ => {} // ignore unknown keys (forward compat)
+            _ => {} // unknown text keys reserved for future versions
         }
     }
 
@@ -264,11 +305,18 @@ pub fn cbor_to_hash_frame(cbor_bytes: &[u8]) -> Result<HashFrame> {
     let mut hashes = Vec::new();
 
     for (k, v) in map {
+        // Closed schema: non-text keys are strict-input errors.
         let key = match k {
-            ciborium::Value::Text(s) => s.as_str(),
-            _ => continue,
+            ciborium::Value::Text(s) => s,
+            other => {
+                return Err(TensogramError::Metadata(format!(
+                    "hash frame CBOR has non-text key {} — \
+                     the hash-frame schema uses text keys only",
+                    cbor_kind_label(other),
+                )));
+            }
         };
-        match key {
+        match key.as_str() {
             "algorithm" => {
                 algorithm = match v {
                     ciborium::Value::Text(s) => s.clone(),
@@ -297,7 +345,7 @@ pub fn cbor_to_hash_frame(cbor_bytes: &[u8]) -> Result<HashFrame> {
                     }
                 };
             }
-            _ => {} // ignore unknown keys (forward compat)
+            _ => {} // unknown text keys reserved for future versions
         }
     }
 
@@ -652,12 +700,12 @@ mod tests {
     }
 
     #[test]
-    fn test_explicit_extra_wins_over_free_form_top_level() {
-        // When a producer emits both an explicit `_extra_` section AND
-        // a free-form top-level key of the same name, the explicit
-        // `_extra_` entry takes priority.  Matches "explicit beats
-        // implicit": a caller who spelled out the value inside `_extra_`
-        // clearly meant for that value to land there verbatim.
+    fn test_global_metadata_rejects_collision_between_extra_and_top_level() {
+        // Strict-input contract: a key cannot appear both in the
+        // explicit `_extra_` section AND as a free-form top-level
+        // key.  Earlier versions silently preferred the explicit
+        // entry; the new rule rejects the ambiguity so the producer
+        // is forced to pick one placement.
         use ciborium::Value;
 
         let colliding = Value::Map(vec![
@@ -676,12 +724,78 @@ mod tests {
         let mut bytes = Vec::new();
         ciborium::into_writer(&colliding, &mut bytes).unwrap();
 
-        let decoded = cbor_to_global_metadata(&bytes).unwrap();
-        assert_eq!(
-            decoded.extra.get("version"),
-            Some(&Value::Integer(1.into())),
-            "explicit `_extra_.version` must win over free-form top-level `version`"
-        );
+        let err = cbor_to_global_metadata(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("ambiguous metadata"), "msg: {msg}");
+                assert!(msg.contains("version"), "msg: {msg}");
+                assert!(msg.contains("`_extra_`"), "msg: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_global_metadata_rejects_non_text_top_level_key() {
+        // Strict-input contract: a non-text key at the top level is
+        // rejected, not silently dropped.  Canonical CBOR uses text
+        // keys for our schema; an integer key here likely indicates
+        // a malformed producer.
+        use ciborium::Value;
+
+        let bad = Value::Map(vec![(
+            Value::Integer(42i64.into()),
+            Value::Text("oops".to_string()),
+        )]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&bad, &mut bytes).unwrap();
+
+        let err = cbor_to_global_metadata(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("non-text top-level key"), "msg: {msg}");
+                assert!(msg.contains("integer"), "msg: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_index_frame_rejects_non_text_key() {
+        use ciborium::Value;
+        let bad = Value::Map(vec![(
+            Value::Integer(7i64.into()),
+            Value::Array(vec![Value::Integer(0u64.into())]),
+        )]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&bad, &mut bytes).unwrap();
+
+        let err = cbor_to_index(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("non-text key"), "msg: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_hash_frame_rejects_non_text_key() {
+        use ciborium::Value;
+        let bad = Value::Map(vec![(
+            Value::Bytes(vec![1, 2, 3]),
+            Value::Text("xxh3".to_string()),
+        )]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&bad, &mut bytes).unwrap();
+
+        let err = cbor_to_hash_frame(&bytes).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("non-text key"), "msg: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
     }
 
     #[test]

@@ -66,8 +66,11 @@ pub struct StreamingEncoder<W: Write> {
     hash_algorithm: Option<HashAlgorithm>,
     /// Whether to emit an aggregate `FooterHash` frame at finish-time
     /// (v3).  The header-hash aggregate is unavailable in streaming
-    /// mode — if the caller sets `create_header_hashes`, construction
-    /// errors at `StreamingEncoder::new`.
+    /// mode — if the caller's [`AggregateHashPolicy`] resolves to
+    /// `Header` or `Both`, [`StreamingEncoder::new`] errors at
+    /// construction time.
+    ///
+    /// [`AggregateHashPolicy`]: crate::encode::AggregateHashPolicy
     emit_footer_hash_frame: bool,
     /// Original global metadata — re-used to build the footer metadata frame.
     global_meta: GlobalMetadata,
@@ -107,15 +110,17 @@ impl<W: Write> StreamingEncoder<W> {
         global_meta: &GlobalMetadata,
         options: &EncodeOptions,
     ) -> Result<Self> {
-        // v3: `create_header_hashes` in streaming mode silently
-        // redirects to `create_footer_hashes` — the header frames
-        // are emitted before any data object, so there are no
-        // hashes to aggregate there yet.  Rather than erroring on
-        // the buffered-friendly default, we honour the caller's
-        // "I want the aggregate" intent in the only place where
-        // streaming can put it.
-        let emit_footer_hash = options.hash_algorithm.is_some()
-            && (options.create_footer_hashes || options.create_header_hashes);
+        // Strict-input contract: streaming mode rejects placements it
+        // cannot satisfy (`Header`, `Both`).  `Auto` resolves to
+        // `Footer` — the only valid placement when the header is
+        // written before any data object.
+        //
+        // Earlier versions silently coerced `create_header_hashes=true`
+        // into a footer hash, which made the docs disagree with the
+        // code.  The new contract surfaces the mismatch as a typed
+        // error at construction time.
+        let resolved = options.aggregate_hash.resolved_streaming()?;
+        let emit_footer_hash = options.hash_algorithm.is_some() && resolved.emits_footer();
 
         let meta_cbor = metadata::global_metadata_to_cbor(global_meta)?;
 
@@ -162,7 +167,7 @@ impl<W: Write> StreamingEncoder<W> {
         // Snapshot the thread budget now so that mid-message changes to
         // TENSOGRAM_THREADS don't leak in between write_object calls —
         // one message is deterministic.
-        let intra_codec_threads = crate::parallel::resolve_budget(options.threads);
+        let intra_codec_threads = crate::parallel::resolve_budget(options.threads)?;
 
         Ok(Self {
             writer,
@@ -489,7 +494,8 @@ impl<W: Write> StreamingEncoder<W> {
         }
 
         // Footer hash frame — only when the caller opted in via
-        // `EncodeOptions.create_footer_hashes`.
+        // `EncodeOptions.aggregate_hash` (resolved to `Footer` for
+        // streaming mode at construction time).
         if self.emit_footer_hash_frame && self.hash_entries.iter().any(|e| e.is_some()) {
             let algorithm = self
                 .hash_algorithm
@@ -1542,5 +1548,85 @@ mod tests {
         } else {
             panic!("_reserved_ should be a map");
         }
+    }
+
+    // ── AggregateHashPolicy strict-input tests ─────────────────────────
+
+    #[test]
+    fn streaming_rejects_aggregate_hash_header() {
+        // Strict-input contract: Header placement is impossible in
+        // streaming because the header is written before any data
+        // object.  Earlier versions silently coerced this to Footer.
+        let meta = GlobalMetadata::default();
+        let opts = EncodeOptions {
+            aggregate_hash: crate::encode::AggregateHashPolicy::Header,
+            ..Default::default()
+        };
+        match StreamingEncoder::new(Vec::new(), &meta, &opts) {
+            Ok(_) => panic!("expected Header to be rejected in streaming mode"),
+            Err(TensogramError::Encoding(msg)) => {
+                assert!(
+                    msg.contains("Header is not supported in streaming"),
+                    "expected Header rejection, got: {msg}"
+                );
+                assert!(msg.contains("Footer"), "should suggest Footer: {msg}");
+            }
+            Err(other) => panic!("expected Encoding error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn streaming_rejects_aggregate_hash_both() {
+        let meta = GlobalMetadata::default();
+        let opts = EncodeOptions {
+            aggregate_hash: crate::encode::AggregateHashPolicy::Both,
+            ..Default::default()
+        };
+        match StreamingEncoder::new(Vec::new(), &meta, &opts) {
+            Ok(_) => panic!("expected Both to be rejected in streaming mode"),
+            Err(TensogramError::Encoding(msg)) => {
+                assert!(
+                    msg.contains("Both is not supported in streaming"),
+                    "expected Both rejection, got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected Encoding error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn streaming_accepts_aggregate_hash_auto() {
+        // Auto resolves to Footer in streaming mode — no error.
+        let meta = GlobalMetadata::default();
+        let opts = EncodeOptions {
+            aggregate_hash: crate::encode::AggregateHashPolicy::Auto,
+            ..Default::default()
+        };
+        let res = StreamingEncoder::new(Vec::new(), &meta, &opts);
+        assert!(res.is_ok(), "Auto must be accepted in streaming mode");
+    }
+
+    #[test]
+    fn streaming_accepts_aggregate_hash_footer() {
+        let meta = GlobalMetadata::default();
+        let opts = EncodeOptions {
+            aggregate_hash: crate::encode::AggregateHashPolicy::Footer,
+            ..Default::default()
+        };
+        let res = StreamingEncoder::new(Vec::new(), &meta, &opts);
+        assert!(res.is_ok(), "Footer must be accepted in streaming mode");
+    }
+
+    #[test]
+    fn streaming_accepts_aggregate_hash_none() {
+        // Explicit "no aggregate" is also valid; per-frame inline
+        // hashes are still produced when hash_algorithm is set.
+        let meta = GlobalMetadata::default();
+        let opts = EncodeOptions {
+            aggregate_hash: crate::encode::AggregateHashPolicy::None,
+            ..Default::default()
+        };
+        let res = StreamingEncoder::new(Vec::new(), &meta, &opts);
+        assert!(res.is_ok(), "None must be accepted in streaming mode");
     }
 }

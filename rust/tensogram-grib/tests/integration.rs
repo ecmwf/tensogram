@@ -715,8 +715,7 @@ fn test_mars_area_regular_ll_emitted() {
 #[test]
 fn test_mars_area_normalises_dateline_first() {
     let path = testdata().join("lsm.grib2");
-    let messages =
-        convert_grib_file(&path, &ConvertOptions::default()).expect("convert lsm.grib2");
+    let messages = convert_grib_file(&path, &ConvertOptions::default()).expect("convert lsm.grib2");
     let (meta, _) = decode(&messages[0], &decode_opts()).expect("decode");
     let area = mars_area_as_f64s(get_mars_from_base(&meta)).expect("mars.area present");
 
@@ -740,8 +739,7 @@ fn test_mars_area_emitted_in_one_to_one_grouping() {
         grouping: Grouping::OneToOne,
         ..ConvertOptions::default()
     };
-    let messages =
-        convert_grib_file(combined.path(), &opts).expect("convert combined fixture");
+    let messages = convert_grib_file(combined.path(), &opts).expect("convert combined fixture");
 
     assert_eq!(messages.len(), 2);
     for (i, message) in messages.iter().enumerate() {

@@ -460,8 +460,7 @@ impl PyTensogramFile {
             pos_inf_mask_method=None,
             neg_inf_mask_method=None,
             small_mask_threshold_bytes=None,
-            create_header_hashes=None,
-            create_footer_hashes=None,
+            aggregate_hash=None,
         )
     )]
     #[allow(clippy::too_many_arguments)]
@@ -478,8 +477,7 @@ impl PyTensogramFile {
         pos_inf_mask_method: Option<&str>,
         neg_inf_mask_method: Option<&str>,
         small_mask_threshold_bytes: Option<usize>,
-        create_header_hashes: Option<bool>,
-        create_footer_hashes: Option<bool>,
+        aggregate_hash: Option<&str>,
     ) -> PyResult<()> {
         let global_meta = dict_to_global_metadata(global_meta_dict)?;
         let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
@@ -495,8 +493,7 @@ impl PyTensogramFile {
             pos_inf_mask_method,
             neg_inf_mask_method,
             small_mask_threshold_bytes,
-            create_header_hashes,
-            create_footer_hashes,
+            aggregate_hash,
         )?;
         py.detach(|| self.file.append(&global_meta, &refs, &options))
             .map_err(to_py_err)
@@ -929,8 +926,7 @@ impl PyFileIter {
         pos_inf_mask_method=None,
         neg_inf_mask_method=None,
         small_mask_threshold_bytes=None,
-        create_header_hashes=None,
-        create_footer_hashes=None,
+        aggregate_hash=None,
     )
 )]
 #[allow(clippy::too_many_arguments)]
@@ -946,8 +942,7 @@ fn py_encode<'py>(
     pos_inf_mask_method: Option<&str>,
     neg_inf_mask_method: Option<&str>,
     small_mask_threshold_bytes: Option<usize>,
-    create_header_hashes: Option<bool>,
-    create_footer_hashes: Option<bool>,
+    aggregate_hash: Option<&str>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let global_meta = dict_to_global_metadata(global_meta_dict)?;
     let pairs = extract_descriptor_data_pairs(py, descriptors_and_data)?;
@@ -963,8 +958,7 @@ fn py_encode<'py>(
         pos_inf_mask_method,
         neg_inf_mask_method,
         small_mask_threshold_bytes,
-        create_header_hashes,
-        create_footer_hashes,
+        aggregate_hash,
     )?;
     let msg = py.detach(|| encode(&global_meta, &refs, &options).map_err(to_py_err))?;
     Ok(PyBytes::new(py, &msg))
@@ -1507,8 +1501,7 @@ impl PyStreamingEncoder {
             pos_inf_mask_method=None,
             neg_inf_mask_method=None,
             small_mask_threshold_bytes=None,
-            create_header_hashes=None,
-            create_footer_hashes=None,
+            aggregate_hash=None,
         )
     )]
     #[allow(clippy::too_many_arguments)]
@@ -1522,8 +1515,7 @@ impl PyStreamingEncoder {
         pos_inf_mask_method: Option<&str>,
         neg_inf_mask_method: Option<&str>,
         small_mask_threshold_bytes: Option<usize>,
-        create_header_hashes: Option<bool>,
-        create_footer_hashes: Option<bool>,
+        aggregate_hash: Option<&str>,
     ) -> PyResult<Self> {
         let global_meta = dict_to_global_metadata(global_meta_dict)?;
         let options = make_encode_options_full(
@@ -1535,8 +1527,7 @@ impl PyStreamingEncoder {
             pos_inf_mask_method,
             neg_inf_mask_method,
             small_mask_threshold_bytes,
-            create_header_hashes,
-            create_footer_hashes,
+            aggregate_hash,
         )?;
         let inner = StreamingEncoder::new(std::io::Cursor::new(Vec::new()), &global_meta, &options)
             .map_err(to_py_err)?;
@@ -2883,7 +2874,7 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 fn make_encode_options(hash: Option<&str>, threads: u32) -> PyResult<EncodeOptions> {
     make_encode_options_full(
-        hash, threads, false, false, None, None, None, None, None, None,
+        hash, threads, false, false, None, None, None, None, None,
     )
 }
 
@@ -2897,13 +2888,17 @@ fn make_encode_options(hash: Option<&str>, threads: u32) -> PyResult<EncodeOptio
 /// (`Roaring` for methods, `128` for the small-mask fallback
 /// threshold).
 ///
-/// `create_header_hashes` / `create_footer_hashes` are v3 opt-in
-/// flags controlling the aggregate HashFrame emission.  When
-/// `None`, the library default applies (buffered mode: header-
-/// only; streaming mode: footer-only).  Either or both may be
-/// set explicitly — streaming mode silently folds
-/// `create_header_hashes = true` into `create_footer_hashes`
-/// because a streaming header is emitted before any data object.
+/// `aggregate_hash` controls the aggregate HashFrame placement.
+/// Accepted values:
+/// - `None` (or omitted) → `Auto`: encoder picks (buffered → Header,
+///   streaming → Footer).
+/// - `"auto"`, `"none"`, `"header"`, `"footer"`, `"both"` → explicit.
+///
+/// **Streaming mode** rejects `"header"` and `"both"` at construction
+/// time because the streaming header is written before any data
+/// object.  Earlier versions silently folded those into a footer
+/// hash; the current contract surfaces the mismatch as a `ValueError`
+/// from the encoder constructor.
 #[allow(clippy::too_many_arguments)]
 fn make_encode_options_full(
     hash: Option<&str>,
@@ -2914,10 +2909,9 @@ fn make_encode_options_full(
     pos_inf_mask_method: Option<&str>,
     neg_inf_mask_method: Option<&str>,
     small_mask_threshold_bytes: Option<usize>,
-    create_header_hashes: Option<bool>,
-    create_footer_hashes: Option<bool>,
+    aggregate_hash: Option<&str>,
 ) -> PyResult<EncodeOptions> {
-    use tensogram_lib::encode::MaskMethod;
+    use tensogram_lib::encode::{AggregateHashPolicy, MaskMethod};
 
     let hash_algorithm = match hash {
         None => None,
@@ -2934,6 +2928,20 @@ fn make_encode_options_full(
         MaskMethod::from_name(name).map_err(|e| PyValueError::new_err(e.to_string()))
     };
 
+    let aggregate = match aggregate_hash {
+        None | Some("auto") => AggregateHashPolicy::Auto,
+        Some("none") => AggregateHashPolicy::None,
+        Some("header") => AggregateHashPolicy::Header,
+        Some("footer") => AggregateHashPolicy::Footer,
+        Some("both") => AggregateHashPolicy::Both,
+        Some(other) => {
+            return Err(PyValueError::new_err(format!(
+                "unknown aggregate_hash policy {other:?}; \
+                 expected one of: 'auto', 'none', 'header', 'footer', 'both'"
+            )));
+        }
+    };
+
     let defaults = EncodeOptions::default();
     Ok(EncodeOptions {
         hash_algorithm,
@@ -2945,8 +2953,7 @@ fn make_encode_options_full(
         neg_inf_mask_method: parse_method(neg_inf_mask_method, defaults.neg_inf_mask_method)?,
         small_mask_threshold_bytes: small_mask_threshold_bytes
             .unwrap_or(defaults.small_mask_threshold_bytes),
-        create_header_hashes: create_header_hashes.unwrap_or(defaults.create_header_hashes),
-        create_footer_hashes: create_footer_hashes.unwrap_or(defaults.create_footer_hashes),
+        aggregate_hash: aggregate,
         ..defaults
     })
 }

@@ -211,16 +211,14 @@ pub(crate) fn postprocess_signed(
             } else {
                 d as i32 - xmax_s - 1
             }
-        } else {
-            if half_d <= xmax_s - last {
-                if d & 1 == 0 {
-                    last + (d >> 1) as i32
-                } else {
-                    last - (d >> 1) as i32 - 1
-                }
+        } else if half_d <= xmax_s - last {
+            if d & 1 == 0 {
+                last + (d >> 1) as i32
             } else {
-                xmax_s - d as i32
+                last - (d >> 1) as i32 - 1
             }
+        } else {
+            xmax_s - d as i32
         };
 
         // Store as unsigned representation (masking to bits_per_sample).
