@@ -214,6 +214,7 @@ class TensogramDataStore:
         variable_key: str | None = None,
         range_threshold: float = 0.5,
         storage_options: dict[str, Any] | None = None,
+        verify_hash: bool = False,
     ):
         import tensogram
 
@@ -224,6 +225,7 @@ class TensogramDataStore:
         self.variable_key = variable_key
         self.range_threshold = range_threshold
         self.storage_options = storage_options
+        self.verify_hash = verify_hash
         self._lock = threading.Lock()
         self._backend_arrays: list[TensogramBackendArray] = []
 
@@ -347,6 +349,7 @@ class TensogramDataStore:
                 lock=self._lock,
                 storage_options=self.storage_options,
                 shared_file=self._file,
+                verify_hash=self.verify_hash,
             )
             self._backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
@@ -386,6 +389,7 @@ class TensogramDataStore:
                 lock=self._lock,
                 storage_options=self.storage_options,
                 shared_file=self._file,
+                verify_hash=self.verify_hash,
             )
             self._backend_arrays.append(backend_array)
 

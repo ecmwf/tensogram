@@ -204,6 +204,7 @@ class TensogramBackendArray(BackendArray):
         lock: threading.Lock | None = None,
         storage_options: dict[str, Any] | None = None,
         shared_file: Any | None = None,
+        verify_hash: bool = False,
     ):
         import tensogram
 
@@ -217,6 +218,7 @@ class TensogramBackendArray(BackendArray):
         self.range_threshold = range_threshold
         self.storage_options = storage_options
         self._shared_file = shared_file
+        self.verify_hash = verify_hash
 
     # -- pickle support (no open handles stored) ----------------------------
 
@@ -265,6 +267,20 @@ class TensogramBackendArray(BackendArray):
                 total_elements = math.prod(self.shape)
 
                 if total_elements > 0 and total_requested / total_elements <= self.range_threshold:
+                    # Per the decode-time verification contract
+                    # (PLAN_DECODE_HASH_VERIFICATION §6, Q6): the
+                    # range-decode fast path does *not* verify
+                    # hashes — verifying a whole-frame hash would
+                    # require reading every byte the optimisation
+                    # is designed to avoid.  When `verify_hash` is
+                    # True, callers who care about integrity should
+                    # set ``range_threshold=0`` to force every read
+                    # through the full-decode path below.  We
+                    # *do* allow this fast path even under
+                    # ``verify_hash=True`` so the user keeps the
+                    # remote-fetch cost characteristics they
+                    # opted in to via ``range_threshold``; the
+                    # verification simply does not apply.
                     arr = f.file_decode_range(
                         self.msg_index,
                         obj_index=self.obj_index,
@@ -286,6 +302,7 @@ class TensogramBackendArray(BackendArray):
             result = f.file_decode_object(
                 self.msg_index,
                 self.obj_index,
+                verify_hash=self.verify_hash,
             )
             return np.asarray(result["data"][key])
 
@@ -293,6 +310,7 @@ class TensogramBackendArray(BackendArray):
         _meta, _desc, arr = tensogram.decode_object(
             raw_msg,
             self.obj_index,
+            verify_hash=self.verify_hash,
         )
         return np.asarray(arr[key])
 

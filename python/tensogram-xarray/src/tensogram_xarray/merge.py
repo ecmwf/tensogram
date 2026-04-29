@@ -52,6 +52,7 @@ def open_datasets(
     dim_names: Sequence[str] | None = None,
     variable_key: str | None = None,
     range_threshold: float = 0.5,
+    verify_hash: bool = False,
     storage_options: dict[str, Any] | None = None,
 ) -> list[xr.Dataset]:
     """Open a ``.tgm`` file, auto-grouping into compatible Datasets.
@@ -112,10 +113,12 @@ def open_datasets(
             dtype=np_dtype,
             supports_range=_supports_range_decode(obj.descriptor),
             range_threshold=range_threshold,
+            verify_hash=verify_hash,
             lock=lock,
             storage_options=storage_options,
             shared_file=shared_file,
-        )
+        
+            )
         all_backend_arrays.append(backend_array)
         lazy_data = indexing.LazilyIndexedArray(backend_array)
 
@@ -149,6 +152,7 @@ def open_datasets(
             variable_key=variable_key,
             lock=lock,
             range_threshold=range_threshold,
+            verify_hash=verify_hash,
             storage_options=storage_options,
             shared_file=shared_file,
             backend_arrays=all_backend_arrays,
@@ -328,6 +332,7 @@ def _build_dataset_from_group(
     variable_key: str | None,
     lock: threading.Lock,
     range_threshold: float = 0.5,
+    verify_hash: bool = False,
     storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
@@ -352,6 +357,7 @@ def _build_dataset_from_group(
             variable_key,
             lock,
             range_threshold=range_threshold,
+            verify_hash=verify_hash,
             storage_options=storage_options,
             shared_file=shared_file,
             backend_arrays=backend_arrays,
@@ -381,6 +387,7 @@ def _build_dataset_from_group(
                 varying,
                 lock,
                 range_threshold=range_threshold,
+            verify_hash=verify_hash,
                 storage_options=storage_options,
                 shared_file=shared_file,
                 backend_arrays=backend_arrays,
@@ -399,6 +406,7 @@ def _build_dataset_from_group(
             constant,
             lock,
             range_threshold=range_threshold,
+            verify_hash=verify_hash,
             storage_options=storage_options,
             shared_file=shared_file,
             backend_arrays=backend_arrays,
@@ -415,6 +423,7 @@ def _build_dataset_from_group(
             varying,
             lock,
             range_threshold=range_threshold,
+            verify_hash=verify_hash,
             storage_options=storage_options,
             shared_file=shared_file,
             backend_arrays=backend_arrays,
@@ -430,6 +439,7 @@ def _build_dataset_from_group(
         constant,
         lock,
         range_threshold=range_threshold,
+            verify_hash=verify_hash,
         storage_options=storage_options,
         shared_file=shared_file,
     )
@@ -443,6 +453,7 @@ def _single_object_dataset(
     variable_key: str | None,
     lock: threading.Lock,
     range_threshold: float = 0.5,
+    verify_hash: bool = False,
     storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
@@ -468,10 +479,12 @@ def _single_object_dataset(
         dtype=np_dtype,
         supports_range=_supports_range_decode(obj.descriptor),
         range_threshold=range_threshold,
+            verify_hash=verify_hash,
         lock=lock,
         storage_options=storage_options,
         shared_file=shared_file,
-    )
+    
+        )
     if backend_arrays is not None:
         backend_arrays.append(backend_array)
     lazy_data = indexing.LazilyIndexedArray(backend_array)
@@ -491,6 +504,7 @@ def _flat_group_dataset(
     constant: dict[str, Any],
     lock: threading.Lock,
     range_threshold: float = 0.5,
+    verify_hash: bool = False,
     storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
@@ -519,10 +533,12 @@ def _flat_group_dataset(
             dtype=np_dtype,
             supports_range=_supports_range_decode(obj.descriptor),
             range_threshold=range_threshold,
+            verify_hash=verify_hash,
             lock=lock,
             storage_options=storage_options,
             shared_file=shared_file,
-        )
+        
+            )
         if backend_arrays is not None:
             backend_arrays.append(backend_array)
         lazy_data = indexing.LazilyIndexedArray(backend_array)
@@ -543,6 +559,7 @@ def _hypercube_dataset(
     varying: dict[str, list[Any]],
     lock: threading.Lock,
     range_threshold: float = 0.5,
+    verify_hash: bool = False,
     storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
@@ -604,10 +621,12 @@ def _hypercube_dataset(
                 dtype=np_dtype,
                 supports_range=_supports_range_decode(obj.descriptor),
                 range_threshold=range_threshold,
+            verify_hash=verify_hash,
                 lock=lock,
                 storage_options=storage_options,
                 shared_file=shared_file,
-            )
+            
+                )
         )
 
     if backend_arrays is not None:
@@ -637,6 +656,7 @@ def _build_multi_variable_dataset(
     varying: dict[str, list[Any]],
     lock: threading.Lock,
     range_threshold: float = 0.5,
+    verify_hash: bool = False,
     storage_options: dict[str, Any] | None = None,
     *,
     shared_file: Any = None,
@@ -679,10 +699,12 @@ def _build_multi_variable_dataset(
                 dtype=np_dtype,
                 supports_range=_supports_range_decode(obj.descriptor),
                 range_threshold=range_threshold,
+            verify_hash=verify_hash,
                 lock=lock,
                 storage_options=storage_options,
                 shared_file=shared_file,
-            )
+            
+                )
             if backend_arrays is not None:
                 backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
@@ -733,10 +755,12 @@ def _build_multi_variable_dataset(
                             dtype=np_dtype,
                             supports_range=_supports_range_decode(obj.descriptor),
                             range_threshold=range_threshold,
+            verify_hash=verify_hash,
                             lock=lock,
                             storage_options=storage_options,
                             shared_file=shared_file,
-                        )
+                        
+                            )
                     )
 
                 if backend_arrays is not None:
@@ -767,10 +791,12 @@ def _build_multi_variable_dataset(
                     dtype=np_dtype,
                     supports_range=_supports_range_decode(obj.descriptor),
                     range_threshold=range_threshold,
+            verify_hash=verify_hash,
                     lock=lock,
                     storage_options=storage_options,
                     shared_file=shared_file,
-                )
+                
+                    )
                 if backend_arrays is not None:
                     backend_arrays.append(backend_array)
                 lazy_data = indexing.LazilyIndexedArray(backend_array)
@@ -796,10 +822,12 @@ def _build_multi_variable_dataset(
                 dtype=np_dtype,
                 supports_range=_supports_range_decode(obj.descriptor),
                 range_threshold=range_threshold,
+            verify_hash=verify_hash,
                 lock=lock,
                 storage_options=storage_options,
                 shared_file=shared_file,
-            )
+            
+                )
             if backend_arrays is not None:
                 backend_arrays.append(backend_array)
             lazy_data = indexing.LazilyIndexedArray(backend_array)
