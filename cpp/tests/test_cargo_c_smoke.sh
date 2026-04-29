@@ -11,9 +11,10 @@
 #   <prefix>/include/tensogram/tensogram.h
 # a C program can be compiled, linked, and run against it via pkg-config.
 #
-# The C program does an `tgm_encode` -> `tgm_decode` round trip and
-# memcmp's the decoded payload against the input, so the linker
-# resolves real FFI symbols and the runtime actually loads the library.
+# The C program does a `tgm_encode` -> `tgm_decode` round trip and
+# compares the decoded payload against the input with `memcmp`, so the
+# linker resolves real FFI symbols and the runtime actually loads the
+# library.
 #
 # Usage: test_cargo_c_smoke.sh <installed-prefix>
 #
