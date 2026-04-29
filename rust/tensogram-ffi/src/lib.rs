@@ -108,6 +108,14 @@ fn to_error_code(e: &TensogramError) -> TgmError {
         TensogramError::Io(_) => TgmError::Io,
         TensogramError::HashMismatch { .. } => TgmError::HashMismatch,
         TensogramError::Remote(_) => TgmError::Remote,
+        // `TensogramError` is `#[non_exhaustive]` so future variants
+        // can land without breaking this mapping at compile time.
+        // Until a more specific FFI code is needed, route unknown
+        // variants to the catch-all `Encoding` bucket — every
+        // existing variant maps cleanly today, and any new variant
+        // surfaces as a stable error code that callers can still
+        // handle generically through `tgm_last_error()`.
+        _ => TgmError::Encoding,
     }
 }
 

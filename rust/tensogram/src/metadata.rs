@@ -146,6 +146,30 @@ fn cbor_kind_label(value: &ciborium::Value) -> &'static str {
     }
 }
 
+/// Human-readable label for a CBOR value's kind, suitable for
+/// "expected X, got Y" diagnostics.  Friendlier than the raw
+/// `Debug` impl on `ciborium::Value` (which produces verbose
+/// `Integer(42)` / `Text("foo")` strings) — this returns short
+/// tags like `"integer"`, `"text"`, `"array"`.
+///
+/// Used by encoder param accessors that reject wrong-type CBOR
+/// values: see [`crate::encode::get_i64_param`] and friends.
+pub(crate) fn cbor_value_kind(value: &ciborium::Value) -> &'static str {
+    use ciborium::Value;
+    match value {
+        Value::Integer(_) => "integer",
+        Value::Bytes(_) => "byte-string",
+        Value::Float(_) => "float",
+        Value::Bool(_) => "boolean",
+        Value::Null => "null",
+        Value::Tag(_, _) => "tagged value",
+        Value::Array(_) => "array",
+        Value::Map(_) => "map",
+        Value::Text(_) => "text",
+        _ => "unknown CBOR value kind",
+    }
+}
+
 /// Serialize a data object descriptor to deterministic CBOR bytes.
 pub fn object_descriptor_to_cbor(desc: &DataObjectDescriptor) -> Result<Vec<u8>> {
     let mut value: ciborium::Value = ciborium::Value::serialized(desc)

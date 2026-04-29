@@ -59,6 +59,11 @@ fn to_py_err(e: TensogramError) -> PyErr {
             "HashMismatch: expected={expected}, actual={actual}"
         )),
         TensogramError::Remote(msg) => PyIOError::new_err(format!("RemoteError: {msg}")),
+        // `TensogramError` is `#[non_exhaustive]` (Wave 4); future
+        // variants surface here as a generic `ValueError` carrying
+        // their `Display` form until a more specific Python
+        // exception type is wired in.
+        other => PyValueError::new_err(format!("TensogramError: {other}")),
     }
 }
 

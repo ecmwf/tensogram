@@ -1305,7 +1305,8 @@ pub(crate) fn get_f64_param(params: &BTreeMap<String, ciborium::Value>, key: &st
             Ok(n as f64)
         }
         Some(other) => Err(TensogramError::Metadata(format!(
-            "expected number for {key}, got {other:?}"
+            "expected number for {key}, got {kind}",
+            kind = crate::metadata::cbor_value_kind(other),
         ))),
         None => Err(TensogramError::Metadata(format!(
             "missing required parameter: {key}"
@@ -1322,7 +1323,8 @@ pub(crate) fn get_i64_param(params: &BTreeMap<String, ciborium::Value>, key: &st
             })
         }
         Some(other) => Err(TensogramError::Metadata(format!(
-            "expected integer for {key}, got {other:?}"
+            "expected integer for {key}, got {kind}",
+            kind = crate::metadata::cbor_value_kind(other),
         ))),
         None => Err(TensogramError::Metadata(format!(
             "missing required parameter: {key}"
@@ -1354,8 +1356,9 @@ pub(crate) fn get_i64_param_or_default(
             })
         }
         Some(other) => Err(TensogramError::Metadata(format!(
-            "expected integer for {key}, got {other:?}; \
-             if you meant to use the default ({default}), omit the key"
+            "expected integer for {key}, got {kind}; \
+             if you meant to use the default ({default}), omit the key",
+            kind = crate::metadata::cbor_value_kind(other),
         ))),
         None => Ok(default),
     }
@@ -1370,7 +1373,8 @@ pub(crate) fn get_u64_param(params: &BTreeMap<String, ciborium::Value>, key: &st
             })
         }
         Some(other) => Err(TensogramError::Metadata(format!(
-            "expected integer for {key}, got {other:?}"
+            "expected integer for {key}, got {kind}",
+            kind = crate::metadata::cbor_value_kind(other),
         ))),
         None => Err(TensogramError::Metadata(format!(
             "missing required parameter: {key}"
@@ -1391,8 +1395,9 @@ pub(crate) fn get_text_param_or_default<'a>(
     match params.get(key) {
         Some(ciborium::Value::Text(s)) => Ok(s.as_str()),
         Some(other) => Err(TensogramError::Metadata(format!(
-            "expected text for {key}, got {other:?}; \
-             if you meant to use the default ({default:?}), omit the key"
+            "expected text for {key}, got {kind}; \
+             if you meant to use the default ({default:?}), omit the key",
+            kind = crate::metadata::cbor_value_kind(other),
         ))),
         None => Ok(default),
     }
