@@ -23,6 +23,78 @@ implement until promoted to `TODO.md`.
 
 - [ ] Tensogram as a storage backend for NetCDF
 
+## Python API & Serialisation
+
+- [ ] **Raw bytes retention on decoded `Message` — `RawMessage` type**
+
+  When `tensogram.decode(raw_bytes)` is called today the original wire bytes are discarded after
+  parsing; only the decoded `Metadata` / `DataObjectDescriptor` / NumPy arrays are kept.  Retaining
+  the raw bytes would make a decoded `Message` a lossless handle on the original wire representation,
+  enabling efficient round-trips in any system that serialises, routes, or caches tensogram data
+  without re-encoding.
+
+  Two implementation options:
+
+  - Add an optional `_raw: bytes | None = None` field to the `Message` `NamedTuple` (set by
+    `decode()`, `None` for programmatically constructed messages).
+  - Introduce a separate **`RawMessage`** type that wraps `bytes` and exposes `.decoded: Message` as
+    a lazy cached property — a cleaner API that does not pollute the primary `Message` type and makes
+    the intent explicit.
+
+  The `RawMessage` variant is arguably the right design: it is a first-class type for *uninterpreted*
+  tensogram bytes, useful as a routing token in message brokers, workflow engines, and caches that
+  must forward data without ever decoding it.  A workflow scheduler, for example, moves data between
+  machines but never inspects tensor values — handing it a `RawMessage` means it pays zero decode
+  cost.  `RawMessage` would be the natural input/output type for the `message_to_bytes` function
+  and for the `__reduce__` protocol described below.
+
+- [ ] **`__reduce__` / pickle support via wire bytes**
+
+  `Metadata` and `DataObjectDescriptor` are PyO3 `#[pyclass]` objects with no custom `__reduce__`.
+  Cloudpickle handles some PyO3 types via bytecode introspection, but this is fragile, version-
+  dependent, and may silently produce wrong results or error at unpredictable times.  If raw bytes
+  are retained (see above), a correct and efficient `__reduce__` becomes trivial:
+
+  ```python
+  def __reduce__(self):
+      return (tensogram.decode, (self._raw,))
+  ```
+
+  This makes cloudpickling a `Message` equivalent to: pickle-protocol overhead + one copy of already-
+  serialised wire bytes — far cheaper than pickling NumPy arrays by value (which copies all tensor
+  data twice: once when the array is allocated by `decode`, once when pickle serialises it).
+
+  The `tensogram-xarray` `TensogramBackendArray` is a direct precedent: it already implements
+  `__getstate__` / `__setstate__` that drops open file handles and reconstructs lazily from
+  `(file_path, msg_index, obj_index)`.  The same pattern applied to in-memory wire bytes covers
+  the in-process / over-the-wire case.
+
+- [ ] **`message_to_bytes(msg: Message) -> bytes` convenience function**
+
+  A canonical public function to obtain wire bytes from any `Message`, regardless of how it was
+  constructed.  If the message carries retained raw bytes (from `decode()`), this is O(1).  If the
+  message was built programmatically, it falls back to a fresh `tensogram.encode(...)` call.
+
+  Having a single stable API surface decouples callers from the internal representation and avoids
+  forcing callers to replicate the `encode()` call with the correct options.  It also acts as the
+  natural serialisation hook for third-party integrations (serde registries, object stores, IPC
+  transports) that need "give me bytes I can hand to `decode()`" without caring whether the source
+  was a decode round-trip or a fresh encode.
+
+- [ ] **Guarantee that `decode()` accepts buffer-protocol objects (including `memoryview`) without copying**
+
+  Currently `decode()` accepts bytes-like / `PyBackedBytes` input.  Whether a `memoryview` is
+  accepted *zero-copy* — i.e. the Rust core parses directly from the provided buffer without first
+  copying into a Rust-owned `Vec<u8>` — is undocumented and may not hold.
+
+  Explicitly supporting and documenting zero-copy `memoryview` input matters for systems that hold
+  tensogram bytes in POSIX shared memory (e.g. `multiprocessing.shared_memory`) and want to decode
+  in a receiving process without a userspace memcpy.  For example: producer task serialises once
+  into shared memory; all consumer tasks on the same host call `tensogram.decode(shm_memoryview)`
+  and get their `Message` with zero additional copies of the wire bytes.  The NumPy arrays produced
+  by decode will always involve a copy (they own their memory), but the metadata-parsing and
+  descriptor-reading phases are read-only and need not copy the input buffer at all.
+
 ## Languages
 
 - [ ] Go interface over Rust
