@@ -144,7 +144,16 @@ int main(void) {
 }
 EOF
 
-cc $CFLAGS_OUT "$TMP/main.c" $LIBS_OUT -o "$TMP/main"
+# Capture pkg-config output as bash arrays rather than relying on
+# unquoted-variable word-splitting. The flag-validation `case` blocks
+# above operate on the joined strings; here we re-split via `read -r -a`
+# so each flag is a separate argv entry to `cc`. This is the standard
+# way to pass pkg-config output through bash and survives flags that
+# happen to contain non-IFS characters.
+read -r -a cflags_arr <<< "$CFLAGS_OUT"
+read -r -a libs_arr   <<< "$LIBS_OUT"
+
+cc "${cflags_arr[@]}" "$TMP/main.c" "${libs_arr[@]}" -o "$TMP/main"
 
 LD_LIBRARY_PATH="$PREFIX/lib:${LD_LIBRARY_PATH:-}" \
 DYLD_LIBRARY_PATH="$PREFIX/lib:${DYLD_LIBRARY_PATH:-}" \
