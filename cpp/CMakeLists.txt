@@ -11,13 +11,19 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CARGO_TARGET_DIR "${CMAKE_SOURCE_DIR}/../target")
 set(RUST_LIB "${CARGO_TARGET_DIR}/release/libtensogram_ffi.a")
 
-add_custom_command(
-    OUTPUT "${RUST_LIB}"
+# Always invoke cargo. Cargo's own incremental cache decides whether to
+# actually rebuild — sub-second when nothing changed, full rebuild when any
+# Rust source moved. add_custom_target (without OUTPUT) avoids CMake's
+# mtime "skip if output exists" heuristic, which can otherwise serve a
+# days-old static library to today's test binary if the .a is unchanged on
+# disk while the Rust source has moved on (cargo had no reason to retouch
+# the file mtime, so CMake's check passes).
+add_custom_target(rust_lib ALL
+    BYPRODUCTS "${RUST_LIB}"
     COMMAND cargo build --release -p tensogram-ffi
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/.."
-    COMMENT "Building Rust tensogram-ffi static library"
+    COMMENT "Invoking cargo build -p tensogram-ffi (cargo decides freshness)"
 )
-add_custom_target(rust_lib ALL DEPENDS "${RUST_LIB}")
 
 # Import the Rust static library as a CMake target
 add_library(tensogram_ffi STATIC IMPORTED GLOBAL)
@@ -29,8 +35,12 @@ add_dependencies(tensogram_ffi rust_lib)
 # Header-only C++ wrapper library (INTERFACE target)
 # ---------------------------------------------------------------------------
 add_library(tensogram INTERFACE)
+# `cpp/include`     for the header-only C++ wrapper `tensogram.hpp`.
+# `rust/tensogram-ffi` for the cbindgen-generated `tensogram.h` (regenerated
+# on every cargo build, single source of truth for the C API).
 target_include_directories(tensogram INTERFACE
-    "${CMAKE_SOURCE_DIR}/include")
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/../rust/tensogram-ffi")
 target_link_libraries(tensogram INTERFACE tensogram_ffi)
 
 # Platform-specific system libraries required by the Rust static library

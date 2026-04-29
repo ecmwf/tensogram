@@ -187,10 +187,14 @@ The FFI crate generates `tensogram.h` via cbindgen:
 ```bash
 cargo build -p tensogram-ffi
 # Output:
-#   cpp/include/tensogram.h
+#   rust/tensogram-ffi/tensogram.h     (regenerated each build)
 #   target/debug/libtensogram_ffi.a
 #   target/debug/libtensogram_ffi.{so,dylib}
 ```
+
+For the cargo-c flow (versioned shared library, pkg-config descriptor,
+installed header) and the binary-tarball release path see the
+[C API guide](docs/src/guide/c-api.md).
 
 ## TypeScript Wrapper
 
