@@ -476,6 +476,13 @@ to Tensogram's N-dimensional objects.
 This opens Tensogram data to SQL-style query tools without any
 conversion step.
 
+*Note: Arrow's buffer model supports the same zero-copy-from-external-buffer pattern as NumPy's
+`frombuffer`.  When implementing `to_arrow()`, ensure that plain-layout objects (no compression,
+no filter, native byte order) produce Arrow arrays that view the original wire bytes directly
+rather than copying into new Arrow-managed memory — analogous to the zero-copy NumPy
+deserialisation idea in `IDEAS.md`.  This requires the `RawMessage` idea (also in `IDEAS.md`) so
+that the source buffer has a Python object lifetime that Arrow's buffer can anchor to.*
+
 ### G4. ONNX Runtime Direct Feed
 
 If an ONNX model expects a specific input tensor shape and dtype, and

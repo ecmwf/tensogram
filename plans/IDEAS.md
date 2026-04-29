@@ -48,6 +48,11 @@ implement until promoted to `TODO.md`.
   cost.  `RawMessage` would be the natural input/output type for the `message_to_bytes` function
   and for the `__reduce__` protocol described below.
 
+  **Note:** `RawMessage` is also the enabling primitive for true zero-copy NumPy (and Arrow)
+  deserialisation — the source buffer must outlive the arrays that view it, and `RawMessage`
+  provides the Python object whose lifetime NumPy's `.base` reference can anchor to.  See the
+  zero-copy NumPy deserialisation idea below.
+
 - [ ] **`__reduce__` / pickle support via wire bytes**
 
   `Metadata` and `DataObjectDescriptor` are PyO3 `#[pyclass]` objects with no custom `__reduce__`.
@@ -115,6 +120,53 @@ implement until promoted to `TODO.md`.
   and get their `Message` with zero additional copies of the wire bytes.  The NumPy arrays produced
   by decode will always involve a copy (they own their memory), but the metadata-parsing and
   descriptor-reading phases are read-only and need not copy the input buffer at all.
+
+- [ ] **Zero-copy NumPy deserialisation for plain-layout objects**
+
+  *Requires the `RawMessage` idea.*
+
+  NumPy supports viewing an external buffer as an array without any copy via
+  `numpy.frombuffer(buffer, dtype=dtype).reshape(shape)`.  The resulting array holds a reference to
+  the source object as its `.base`, keeping it alive for as long as the array exists.  Tensogram
+  does not currently exploit this: every decode path copies tensor data into NumPy-owned memory,
+  and the `float16` / `complex` path (`numpy_via_frombuffer` in the Python bindings) even copies
+  *twice* — once from the Rust decode buffer into a temporary `PyBytes`, and again via an explicit
+  `.copy()` call whose sole purpose is to break the lifetime dependency on that temporary.
+
+  For objects whose encoding pipeline is a no-op (no compression, no filter, no encoding
+  transformation), the decoded payload bytes are a contiguous slice directly into the original wire
+  buffer — already in the correct in-memory layout for NumPy.  If the source wire buffer is kept
+  alive as a `RawMessage` Python object, `numpy.frombuffer` can create a zero-copy array view of
+  those bytes.  The array's `.base` reference to the `RawMessage` prevents premature collection.
+  No data movement at all is required.
+
+  For compressed or filtered objects the decompression / filter-reversal output is a freshly
+  allocated `Vec<u8>` that did not exist in the source buffer; one copy is genuinely unavoidable.
+  However, even there the current code copies *again* from the decompressed Vec into a separate
+  NumPy buffer — a second unnecessary copy that the same `frombuffer`-with-base technique would
+  eliminate.
+
+  **Optional extension — `DataObjectDescriptor.allows_zerocopy_deser() -> bool`.**
+  Whether an object qualifies for the zero-copy path is entirely determinable from its descriptor
+  metadata, which is already fully exposed to Python:
+
+  ```python
+  import sys
+
+  def allows_zerocopy_deser(descriptor) -> bool:
+      return (
+          descriptor.encoding    == "none" and
+          descriptor.filter      == "none" and
+          descriptor.compression == "none" and
+          descriptor.byte_order  == sys.byteorder   # "little" or "big"
+      )
+  ```
+
+  Exposing this as a method on `DataObjectDescriptor` lets callers (library code, integrations,
+  benchmarks) make an informed decision about whether to use the zero-copy path or fall back to a
+  full decode, without reimplementing the check themselves.  It also serves as a stable contract:
+  if new encoding / filter types are added in the future, the method's implementation is the single
+  place that must be updated.
 
 ## Languages
 
