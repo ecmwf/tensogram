@@ -45,13 +45,25 @@ use wasm_bindgen::prelude::*;
 ///                             NaN / +Inf / -Inf at positions recorded in
 ///                             the frame's mask companion.  Set to false to
 ///                             receive 0.0-substituted bytes as on disk.
+/// @param verify_hash - When true, verify each data-object frame's
+///                      inline xxh3 hash against the recomputed
+///                      digest.  Default false (opt-in).  Errors
+///                      surface as `JsError` whose `name` is
+///                      `"MissingHashError"` (when the per-frame
+///                      `HASH_PRESENT` flag is clear) or
+///                      `"HashMismatchError"` (when the slot
+///                      disagrees), routed by the TS wrapper to
+///                      dedicated error classes.  See
+///                      `plans/DESIGN.md` §"Integrity Hashing".
 #[wasm_bindgen]
 pub fn decode(
     buf: &[u8],
     restore_non_finite: Option<bool>,
+    verify_hash: Option<bool>,
 ) -> Result<DecodedMessage, JsError> {
     let options = DecodeOptions {
         restore_non_finite: restore_non_finite.unwrap_or(true),
+        verify_hash: verify_hash.unwrap_or(false),
         ..Default::default()
     };
     let (metadata, objects) = core::decode(buf, &options).map_err(js_err)?;
@@ -74,14 +86,18 @@ pub fn decode_metadata(buf: &[u8]) -> Result<JsValue, JsError> {
 /// @param buf - Raw .tgm message bytes
 /// @param index - Zero-based object index
 /// @param restore_non_finite - Restore canonical NaN / Inf from mask companion (default: true)
+/// @param verify_hash - Per-frame hash verification (default false).
+///                      See `decode` for the full contract.
 #[wasm_bindgen]
 pub fn decode_object(
     buf: &[u8],
     index: usize,
     restore_non_finite: Option<bool>,
+    verify_hash: Option<bool>,
 ) -> Result<DecodedMessage, JsError> {
     let options = DecodeOptions {
         restore_non_finite: restore_non_finite.unwrap_or(true),
+        verify_hash: verify_hash.unwrap_or(false),
         ..Default::default()
     };
     let (metadata, descriptor, data) = core::decode_object(buf, index, &options).map_err(js_err)?;

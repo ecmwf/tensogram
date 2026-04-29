@@ -83,19 +83,72 @@ export class RemoteError extends TensogramError {
   readonly name = 'RemoteError';
 }
 
+/**
+ * Base class for decode-time integrity verification failures.
+ *
+ * Subclasses surface specific failure modes when the user opts in
+ * to verification via `DecodeOptions.verifyHash = true`:
+ *
+ *   - `HashMismatchError` — the per-frame `HASH_PRESENT` flag is
+ *     set and the inline-hash slot disagrees with the recomputed
+ *     digest.
+ *   - `MissingHashError` — the per-frame `HASH_PRESENT` flag is
+ *     clear (no digest was recorded for this frame).
+ *
+ * Catch this base when you want either kind handled uniformly;
+ * use `instanceof` to discriminate.
+ *
+ * @see {@link plans/DESIGN.md} §"Integrity Hashing"
+ * @see {@link plans/WIRE_FORMAT.md} §2.5
+ */
+export abstract class IntegrityError extends TensogramError {
+  /**
+   * Zero-based index of the data-object frame whose verification
+   * failed.  Always populated by the decode-time path; the
+   * offline validator may produce `undefined` for non-object
+   * frames (header / footer / index / hash frames).
+   */
+  readonly objectIndex: number | undefined;
+
+  constructor(message: string, rawMessage: string = message, objectIndex?: number) {
+    super(message, rawMessage);
+    this.objectIndex = objectIndex;
+  }
+}
+
 /** Payload integrity hash mismatch. */
-export class HashMismatchError extends TensogramError {
+export class HashMismatchError extends IntegrityError {
   readonly name = 'HashMismatchError';
   /** Hex-encoded expected digest, when available. */
   readonly expected: string | undefined;
   /** Hex-encoded actual digest, when available. */
   readonly actual: string | undefined;
 
-  constructor(message: string, rawMessage: string = message, expected?: string, actual?: string) {
-    super(message, rawMessage);
+  constructor(
+    message: string,
+    rawMessage: string = message,
+    expected?: string,
+    actual?: string,
+    objectIndex?: number,
+  ) {
+    super(message, rawMessage, objectIndex);
     this.expected = expected;
     this.actual = actual;
   }
+}
+
+/**
+ * Decode-time hash verification was requested but the per-frame
+ * `HASH_PRESENT` flag is clear — no digest was recorded for that
+ * frame.  Distinct from {@link HashMismatchError}: the digest
+ * didn't disagree; there was no digest to compare against.
+ *
+ * Resolutions:
+ *   - decode without `verifyHash`, or
+ *   - re-encode the source with hashing enabled.
+ */
+export class MissingHashError extends IntegrityError {
+  readonly name = 'MissingHashError';
 }
 
 /** Non-WASM-origin error thrown by the TS layer itself (e.g. NULL input, wrong type, pre-init accessor call). */
@@ -128,19 +181,33 @@ export class StreamingLimitError extends TensogramError {
 export function mapTensogramError(err: unknown): TensogramError {
   const raw = err instanceof Error ? err.message : String(err);
 
-  // Hash mismatches have a structured payload we can pull fields from.
-  // Rust formats this as: "hash mismatch: expected {hex}, got {hex}"
+  // Decode-time integrity failures (PLAN_DECODE_HASH_VERIFICATION).
+  //
+  // Rust `HashMismatch` Display:
+  //   "hash mismatch on object {object_index?}: expected {hex}, got {hex}"
+  // where `object_index?` is `Some(N)` from the decode-time path or
+  // `None` from the offline validator.
+  //
+  // Rust `MissingHash` Display:
+  //   "hash verification requested but object {N} has no inline hash recorded ..."
   if (raw.startsWith('hash mismatch')) {
-    // Accept both "expected X" and "expected=X" for robustness across
-    // future error-message tweaks.
     const expectedMatch = /expected[=\s]+([0-9a-fA-F]+)/.exec(raw);
     const actualMatch = /(?:got|actual)[=\s]+([0-9a-fA-F]+)/.exec(raw);
-    // Strip the "hash mismatch: " prefix so `err.message` is consistent
-    // with the other variants in `TensogramError`. If the raw message is
-    // just `"hash mismatch"` with no trailing detail, keep the raw form
-    // rather than leaving `.message` empty.
+    const indexMatch = /object\s+Some\((\d+)\)/.exec(raw);
+    const objectIndex = indexMatch ? Number.parseInt(indexMatch[1], 10) : undefined;
     const stripped = raw.replace(/^hash mismatch:?\s*/, '') || raw;
-    return new HashMismatchError(stripped, raw, expectedMatch?.[1], actualMatch?.[1]);
+    return new HashMismatchError(
+      stripped,
+      raw,
+      expectedMatch?.[1],
+      actualMatch?.[1],
+      objectIndex,
+    );
+  }
+  if (raw.startsWith('hash verification requested but object')) {
+    const indexMatch = /object\s+(\d+)/.exec(raw);
+    const objectIndex = indexMatch ? Number.parseInt(indexMatch[1], 10) : undefined;
+    return new MissingHashError(raw, raw, objectIndex);
   }
 
   // Streaming decoder buffer-limit errors are raw JsError strings, not

@@ -27,20 +27,26 @@ import type {
 /**
  * Decode all objects from a complete Tensogram message.
  *
- * Decode is a pure deserialisation in v3 — per-frame integrity
- * verification has moved to the validation layer.  Use
- * {@link validate} with `level: "checksum"` for the equivalent of
- * the legacy `verifyHash` option.
+ * Decode is a pure deserialisation by default.  Pass
+ * `opts.verifyHash = true` to fold per-frame xxh3 verification
+ * into the decode pass — see {@link DecodeOptions.verifyHash} for
+ * the failure modes.
  *
  * @throws {FramingError}   if the buffer is not a valid message
  * @throws {MetadataError}  if CBOR metadata is malformed
  * @throws {CompressionError} on decompression failure
+ * @throws {MissingHashError} on `verifyHash=true` + flag clear
+ * @throws {HashMismatchError} on `verifyHash=true` + slot disagrees
  */
 export function decode(buf: Uint8Array, opts?: DecodeOptions): DecodedMessage {
   assertUint8Array(buf, 'buf');
   const wbg = getWbg();
   const handle = rethrowTyped(() =>
-    wbg.decode(buf, opts?.restoreNonFinite ?? true) as unknown as WbgDecodedMessage,
+    wbg.decode(
+      buf,
+      opts?.restoreNonFinite ?? true,
+      opts?.verifyHash ?? false,
+    ) as unknown as WbgDecodedMessage,
   );
   return buildDecodedMessage(handle);
 }
@@ -73,6 +79,7 @@ export function decodeObject(
       buf,
       index,
       opts?.restoreNonFinite ?? true,
+      opts?.verifyHash ?? false,
     ) as unknown as WbgDecodedMessage,
   );
   return buildDecodedMessage(handle);

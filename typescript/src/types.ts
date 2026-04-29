@@ -385,13 +385,33 @@ export interface DecodeOptions {
    * are on disk.  Only meaningful for frames produced with
    * `allowNan` / `allowInf` on encode.  See
    * `docs/src/guide/nan-inf-handling.md`.
-   *
-   * Per-frame integrity verification has moved to the validation
-   * layer in v3 — see `validate(buf, { level: "checksum" })` for
-   * the equivalent of the legacy `verifyHash` option (which has
-   * been removed).
    */
   restoreNonFinite?: boolean;
+  /**
+   * When `true`, every data-object frame the decoder touches is
+   * verified against its inline xxh3-64 hash.  See
+   * `plans/DESIGN.md` §"Integrity Hashing" for the contract.
+   *
+   * Default `false` — opt-in.  Decode is otherwise a pure
+   * deserialisation (the per-frame `HASH_PRESENT` flag and the
+   * slot value are both ignored).
+   *
+   * Throws:
+   *   - {@link MissingHashError} when the per-frame
+   *     `HASH_PRESENT` flag is clear (no digest recorded).
+   *   - {@link HashMismatchError} when the slot disagrees with
+   *     the recomputed digest.
+   *
+   * Both errors carry the offending `objectIndex` and subclass
+   * {@link IntegrityError} for unified catch.
+   *
+   * **Not respected by `decodeRange` / `TensogramFile.decodeRange`:**
+   * range decode reads only a slice of the encoded payload, so
+   * verifying the whole-frame hash would defeat the optimisation.
+   * When integrity matters on a partial-load workflow, use
+   * `decodeObject` with `verifyHash=true`.
+   */
+  verifyHash?: boolean;
 }
 
 /** Information supplied to {@link DecodeStreamOptions.onError}. */

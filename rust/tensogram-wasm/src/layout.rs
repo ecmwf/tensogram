@@ -366,13 +366,18 @@ pub fn parse_descriptor_cbor(cbor_bytes: &[u8]) -> Result<JsValue, JsError> {
 
 /// Decode a single data-object frame's full bytes to a `DecodedMessage`
 /// that owns one decoded object.
+///
+/// @param verify_hash - Per-frame hash verification (default false).
+///                      See `crate::decode` for the contract.
 #[wasm_bindgen]
 pub fn decode_object_from_frame(
     frame_bytes: &[u8],
     restore_non_finite: Option<bool>,
+    verify_hash: Option<bool>,
 ) -> Result<DecodedMessage, JsError> {
     let options = DecodeOptions {
         restore_non_finite: restore_non_finite.unwrap_or(true),
+        verify_hash: verify_hash.unwrap_or(false),
         ..Default::default()
     };
     let (desc, data) =
