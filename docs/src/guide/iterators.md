@@ -97,7 +97,9 @@ size_t msg_len;
 while (tgm_buffer_iter_next(iter, &msg_ptr, &msg_len) == TGM_OK) {
     // msg_ptr borrows from the original buffer
     tgm_message_t *msg;
-    tgm_decode(msg_ptr, msg_len, 0, &msg);
+    tgm_decode(msg_ptr, msg_len,
+               /*native_byte_order=*/1, /*threads=*/0,
+               /*verify_hash=*/0, &msg);
     // ... use msg ...
     tgm_message_free(msg);
 }
@@ -119,7 +121,9 @@ tgm_bytes_t raw;
 while (tgm_file_iter_next(iter, &raw) == TGM_OK) {
     // raw.data is owned — free with tgm_bytes_free
     tgm_message_t *msg;
-    tgm_decode(raw.data, raw.len, 0, &msg);
+    tgm_decode(raw.data, raw.len,
+               /*native_byte_order=*/1, /*threads=*/0,
+               /*verify_hash=*/0, &msg);
     // ... use msg ...
     tgm_message_free(msg);
     tgm_bytes_free(raw);

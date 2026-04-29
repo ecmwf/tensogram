@@ -196,7 +196,8 @@ int main(void) {
 
     tgm_message_t *msg = NULL;
     if (tgm_decode(enc.data, enc.len,
-                   /*native_byte_order=*/1, /*threads=*/0, &msg) != TGM_ERROR_OK) {
+                   /*native_byte_order=*/1, /*threads=*/0,
+                   /*verify_hash=*/0, &msg) != TGM_ERROR_OK) {
         fprintf(stderr, "decode failed: %s\n", tgm_last_error());
         tgm_bytes_free(enc);
         return 1;

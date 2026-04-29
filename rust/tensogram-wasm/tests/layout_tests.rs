@@ -258,7 +258,7 @@ fn decode_object_from_frame_parity() {
         if fh.frame_type == FrameType::NTensorFrame {
             let end = pos + fh.total_length as usize;
             let frame_bytes = &msg[pos..end];
-            let decoded = decode_object_from_frame(frame_bytes, None).unwrap();
+            let decoded = decode_object_from_frame(frame_bytes, None, None).unwrap();
             assert_eq!(decoded.object_count(), 1);
             let view: js_sys::Uint8Array = decoded.object_data_u8(0).unwrap();
             let got: Vec<u8> = view.to_vec();

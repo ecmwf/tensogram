@@ -20,13 +20,86 @@ use serde::Serialize;
 use tensogram::{self as core, EncodeOptions};
 use wasm_bindgen::prelude::*;
 
-/// Convert any `Display`-able error to a `JsError` by stringifying it.
+/// Convert a [`tensogram::TensogramError`] to a thrown JS error
+/// value for the WASM boundary.
 ///
-/// All WASM entrypoints funnel errors through this helper so the
-/// TypeScript wrapper's `mapTensogramError` sees a consistent message
-/// shape.
-pub(crate) fn js_err<E: std::fmt::Display>(e: E) -> JsError {
-    JsError::new(&e.to_string())
+/// For most variants this returns a plain `js_sys::Error` carrying
+/// the `Display` form — the TypeScript wrapper's
+/// `mapTensogramError` parses the human-readable message into the
+/// matching error class.
+///
+/// For decode-time integrity failures
+/// ([`tensogram::TensogramError::HashMismatch`] and
+/// [`tensogram::TensogramError::MissingHash`]) we additionally
+/// attach **structured own-properties** to the resulting JS
+/// error object so the TS wrapper can read them directly without
+/// reverse-engineering the Display string:
+///
+///   * `name` — `"HashMismatchError"` or `"MissingHashError"`
+///   * `objectIndex` — the offending object's 0-based index
+///     (number; absent when unknown for `HashMismatch`)
+///   * `expected` / `actual` — 16-char xxh3-64 hex digests
+///     (`HashMismatch` only)
+///
+/// Property setters use `js_sys::Reflect::set`; failures (which
+/// shouldn't happen on a fresh `Error` object) are silently
+/// ignored — the user-visible Display string still carries the
+/// same information, so a meta-error here would only obscure the
+/// underlying integrity failure.
+///
+/// Returns `JsValue` rather than `JsError` because
+/// `wasm_bindgen::JsError` has no public constructor that can
+/// preserve caller-attached properties; `wasm_bindgen` accepts
+/// `Result<T, JsValue>` from exported functions and throws the
+/// value verbatim, which is what we want.
+pub(crate) fn js_err(e: tensogram::TensogramError) -> JsValue {
+    use tensogram::TensogramError as E;
+    let js_err: JsValue = js_sys::Error::new(&e.to_string()).into();
+    match &e {
+        E::HashMismatch {
+            object_index,
+            expected,
+            actual,
+        } => {
+            attach_string_prop(&js_err, "name", "HashMismatchError");
+            if let Some(idx) = object_index {
+                attach_number_prop(&js_err, "objectIndex", *idx);
+            }
+            attach_string_prop(&js_err, "expected", expected);
+            attach_string_prop(&js_err, "actual", actual);
+        }
+        E::MissingHash { object_index } => {
+            attach_string_prop(&js_err, "name", "MissingHashError");
+            attach_number_prop(&js_err, "objectIndex", *object_index);
+        }
+        _ => {}
+    }
+    js_err
+}
+
+/// Convert any `Display`-able non-`TensogramError` (e.g.
+/// [`serde_wasm_bindgen::Error`]) to a thrown JS error value.
+/// Used by the few WASM call sites that don't originate from
+/// the tensogram core (notably the `serde_wasm_bindgen`
+/// (de)serialisation boundaries).
+pub(crate) fn js_err_display<E: std::fmt::Display>(e: E) -> JsValue {
+    js_sys::Error::new(&e.to_string()).into()
+}
+
+/// Best-effort attach a string-valued own-property on a JS error
+/// object via `js_sys::Reflect::set`.  See [`js_err`] for the
+/// silent-failure rationale.
+fn attach_string_prop(err: &JsValue, key: &str, value: &str) {
+    let _ = js_sys::Reflect::set(err, &key.into(), &value.into());
+}
+
+/// Best-effort attach a numeric (`usize`-valued) own-property.
+fn attach_number_prop(err: &JsValue, key: &str, value: usize) {
+    // JS Number is f64; up to 2^53 - 1 is exactly representable.
+    // `usize` exceeding that bound on a 64-bit target would silently
+    // round.  In practice `object_index` is a small frame counter
+    // (rarely > 2^16); the cast is safe for every realistic input.
+    let _ = js_sys::Reflect::set(err, &key.into(), &(value as f64).into());
 }
 
 /// Build an `EncodeOptions` from the JS `hash: boolean` option.
@@ -49,8 +122,9 @@ pub(crate) fn build_encode_options(hash: Option<bool>) -> EncodeOptions {
 /// - `allow_nan` / `allow_inf`: both default `false` (reject policy).
 /// - `*_mask_method`: optional string name (`"none"` | `"rle"` |
 ///   `"roaring"` | `"lz4"` | `"zstd"` | `"blosc2"`).  Unknown names
-///   return a `JsError` naming the offending value and the full
-///   list of accepted names — no silent fallback.
+///   return a `JsValue` carrying a thrown `js_sys::Error` that
+///   names the offending value and the full list of accepted names
+///   — no silent fallback.
 /// - `small_mask_threshold_bytes`: default `128`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_encode_options_full(
@@ -61,13 +135,13 @@ pub(crate) fn build_encode_options_full(
     pos_inf_mask_method: Option<&str>,
     neg_inf_mask_method: Option<&str>,
     small_mask_threshold_bytes: Option<usize>,
-) -> Result<EncodeOptions, JsError> {
+) -> Result<EncodeOptions, JsValue> {
     use core::encode::MaskMethod;
 
     let defaults = EncodeOptions::default();
-    let parse = |s: Option<&str>, d: MaskMethod| -> Result<MaskMethod, JsError> {
+    let parse = |s: Option<&str>, d: MaskMethod| -> Result<MaskMethod, JsValue> {
         match s {
-            Some(name) => MaskMethod::from_name(name).map_err(js_err),
+            Some(name) => MaskMethod::from_name(name).map_err(js_err_display),
             None => Ok(d),
         }
     };
@@ -92,20 +166,20 @@ pub(crate) fn build_encode_options_full(
 /// can `zip` into `&[(&DataObjectDescriptor, &[u8])]`.
 pub(crate) fn extract_descriptor_data_pairs(
     objects_js: &js_sys::Array,
-) -> Result<(Vec<core::DataObjectDescriptor>, Vec<Vec<u8>>), JsError> {
+) -> Result<(Vec<core::DataObjectDescriptor>, Vec<Vec<u8>>), JsValue> {
     let len = objects_js.length();
     let mut descriptors = Vec::with_capacity(len as usize);
     let mut data_vec = Vec::with_capacity(len as usize);
     for i in 0..len {
         let entry = objects_js.get(i);
         let desc_val = js_sys::Reflect::get(&entry, &"descriptor".into())
-            .map_err(|_| JsError::new("each object must have a 'descriptor' field"))?;
+            .map_err(|_| JsValue::from(js_sys::Error::new("each object must have a 'descriptor' field")))?;
         let data_val = js_sys::Reflect::get(&entry, &"data".into())
-            .map_err(|_| JsError::new("each object must have a 'data' field"))?;
+            .map_err(|_| JsValue::from(js_sys::Error::new("each object must have a 'data' field")))?;
         let desc: core::DataObjectDescriptor =
-            serde_wasm_bindgen::from_value(desc_val).map_err(js_err)?;
+            serde_wasm_bindgen::from_value(desc_val).map_err(js_err_display)?;
         let data_bytes = typed_array_or_u8_to_bytes(&data_val)
-            .ok_or_else(|| JsError::new("data must be a TypedArray, DataView, or Uint8Array"))?;
+            .ok_or_else(|| JsValue::from(js_sys::Error::new("data must be a TypedArray, DataView, or Uint8Array")))?;
         descriptors.push(desc);
         data_vec.push(data_bytes);
     }
@@ -124,10 +198,10 @@ pub(crate) fn extract_descriptor_data_pairs(
 /// The existing `wasm-bindgen-test` suite round-trips through
 /// `from_value`, which accepts both `Map` and plain object input,
 /// so this switch is backwards-compatible.
-pub(crate) fn to_js<T: Serialize>(val: &T) -> Result<JsValue, JsError> {
+pub(crate) fn to_js<T: Serialize>(val: &T) -> Result<JsValue, JsValue> {
     let serializer = serde_wasm_bindgen::Serializer::json_compatible();
     val.serialize(&serializer)
-        .map_err(|e| JsError::new(&e.to_string()))
+        .map_err(|e| JsValue::from(js_sys::Error::new(&e.to_string())))
 }
 
 /// Deserialize a JavaScript metadata object into a
@@ -145,55 +219,55 @@ pub(crate) fn to_js<T: Serialize>(val: &T) -> Result<JsValue, JsError> {
 /// exists to close that gap.
 pub(crate) fn metadata_from_js(
     metadata_js: &JsValue,
-) -> Result<tensogram::GlobalMetadata, JsError> {
+) -> Result<tensogram::GlobalMetadata, JsValue> {
     use std::collections::BTreeMap;
     use tensogram::RESERVED_KEY;
 
     // Reject outright non-object input.
     if !metadata_js.is_object() || metadata_js.is_null() {
-        return Err(JsError::new(&format!(
+        return Err(JsValue::from(js_sys::Error::new(&format!(
             "metadata must be a plain object, got {metadata_js:?}"
-        )));
+        ))));
     }
 
     let obj: &js_sys::Object = metadata_js.unchecked_ref();
 
     // Reject `_reserved_` at the top level — library-managed namespace.
     if js_sys::Reflect::has(obj, &JsValue::from_str(RESERVED_KEY))
-        .map_err(|_| JsError::new("internal: Reflect.has failed on metadata object"))?
+        .map_err(|_| JsValue::from(js_sys::Error::new("internal: Reflect.has failed on metadata object")))?
     {
-        return Err(JsError::new(&format!(
+        return Err(JsValue::from(js_sys::Error::new(&format!(
             "'{RESERVED_KEY}' must not be set by client code — the encoder populates it"
-        )));
+        ))));
     }
 
     // Pull `base` explicitly so serde-wasm-bindgen handles the nested
     // CBOR conversion (lists of dicts → Vec<BTreeMap>).  Absent ≡ empty.
     let base: Vec<BTreeMap<String, ciborium::Value>> =
         match js_sys::Reflect::get(obj, &JsValue::from_str("base"))
-            .map_err(|_| JsError::new("internal: Reflect.get('base') failed"))?
+            .map_err(|_| JsValue::from(js_sys::Error::new("internal: Reflect.get('base') failed")))?
         {
             v if v.is_undefined() => Vec::new(),
-            v => serde_wasm_bindgen::from_value(v).map_err(js_err)?,
+            v => serde_wasm_bindgen::from_value(v).map_err(js_err_display)?,
         };
 
     // Reject `_reserved_` inside any `base[i]` entry for parity with
     // the Rust core + Python validators.
     for (i, entry) in base.iter().enumerate() {
         if entry.contains_key(RESERVED_KEY) {
-            return Err(JsError::new(&format!(
+            return Err(JsValue::from(js_sys::Error::new(&format!(
                 "base[{i}] must not contain '{RESERVED_KEY}' — the encoder populates it"
-            )));
+            ))));
         }
     }
 
     // Pull `_extra_` explicitly (authoritative — wins collisions).
     let mut extra: BTreeMap<String, ciborium::Value> =
         match js_sys::Reflect::get(obj, &JsValue::from_str("_extra_"))
-            .map_err(|_| JsError::new("internal: Reflect.get('_extra_') failed"))?
+            .map_err(|_| JsValue::from(js_sys::Error::new("internal: Reflect.get('_extra_') failed")))?
         {
             v if v.is_undefined() => BTreeMap::new(),
-            v => serde_wasm_bindgen::from_value(v).map_err(js_err)?,
+            v => serde_wasm_bindgen::from_value(v).map_err(js_err_display)?,
         };
 
     // Everything else becomes a free-form `_extra_` entry.  Explicit
@@ -213,8 +287,8 @@ pub(crate) fn metadata_from_js(
             continue; // explicit _extra_ already claimed this slot
         }
         let value = js_sys::Reflect::get(obj, &key_val)
-            .map_err(|_| JsError::new("internal: Reflect.get for free-form key failed"))?;
-        let cbor: ciborium::Value = serde_wasm_bindgen::from_value(value).map_err(js_err)?;
+            .map_err(|_| JsValue::from(js_sys::Error::new("internal: Reflect.get for free-form key failed")))?;
+        let cbor: ciborium::Value = serde_wasm_bindgen::from_value(value).map_err(js_err_display)?;
         extra.insert(key, cbor);
     }
 
@@ -237,7 +311,7 @@ pub(crate) fn metadata_from_js(
 /// Any user-supplied free-form `"version"` key in `_extra_` remains
 /// reachable via `metadata._extra_.version` — the synthetic top-level
 /// `version` is purely the wire-format answer.
-pub(crate) fn metadata_to_js(meta: &tensogram::GlobalMetadata) -> Result<JsValue, JsError> {
+pub(crate) fn metadata_to_js(meta: &tensogram::GlobalMetadata) -> Result<JsValue, JsValue> {
     let obj = to_js(meta)?;
     // The serialised form is a plain JS object (via json_compatible
     // serializer).  Inject the synthetic `version` field in place so
@@ -249,9 +323,9 @@ pub(crate) fn metadata_to_js(meta: &tensogram::GlobalMetadata) -> Result<JsValue
         &JsValue::from(tensogram::WIRE_VERSION),
     );
     if reflect.is_err() {
-        return Err(JsError::new(
+        return Err(JsValue::from(js_sys::Error::new(
             "internal: failed to set synthetic `version` on metadata JS object",
-        ));
+        )));
     }
     Ok(obj)
 }
@@ -267,12 +341,12 @@ pub(crate) fn metadata_to_js(meta: &tensogram::GlobalMetadata) -> Result<JsValue
 /// alive and WASM linear memory is not grown (which would reallocate
 /// the underlying `ArrayBuffer`).  The caller must read/copy the data
 /// before any further WASM calls that might allocate.
-pub(crate) fn view_as_f32(data: &[u8]) -> Result<js_sys::Float32Array, JsError> {
+pub(crate) fn view_as_f32(data: &[u8]) -> Result<js_sys::Float32Array, JsValue> {
     if !data.len().is_multiple_of(4) {
-        return Err(JsError::new(&format!(
+        return Err(JsValue::from(js_sys::Error::new(&format!(
             "data length {} is not a multiple of 4 (Float32)",
             data.len()
-        )));
+        ))));
     }
     if data.is_empty() {
         return Ok(js_sys::Float32Array::new_with_length(0));
@@ -293,12 +367,12 @@ pub(crate) fn view_as_f32(data: &[u8]) -> Result<js_sys::Float32Array, JsError> 
 ///
 /// Same rationale as [`view_as_f32`]: uses byte offsets into WASM memory,
 /// no misaligned Rust references are formed.  Invalidated if WASM memory grows.
-pub(crate) fn view_as_f64(data: &[u8]) -> Result<js_sys::Float64Array, JsError> {
+pub(crate) fn view_as_f64(data: &[u8]) -> Result<js_sys::Float64Array, JsValue> {
     if !data.len().is_multiple_of(8) {
-        return Err(JsError::new(&format!(
+        return Err(JsValue::from(js_sys::Error::new(&format!(
             "data length {} is not a multiple of 8 (Float64)",
             data.len()
-        )));
+        ))));
     }
     if data.is_empty() {
         return Ok(js_sys::Float64Array::new_with_length(0));
@@ -319,12 +393,12 @@ pub(crate) fn view_as_f64(data: &[u8]) -> Result<js_sys::Float64Array, JsError> 
 ///
 /// Same rationale as [`view_as_f32`]: uses byte offsets into WASM memory,
 /// no misaligned Rust references are formed.  Invalidated if WASM memory grows.
-pub(crate) fn view_as_i32(data: &[u8]) -> Result<js_sys::Int32Array, JsError> {
+pub(crate) fn view_as_i32(data: &[u8]) -> Result<js_sys::Int32Array, JsValue> {
     if !data.len().is_multiple_of(4) {
-        return Err(JsError::new(&format!(
+        return Err(JsValue::from(js_sys::Error::new(&format!(
             "data length {} is not a multiple of 4 (Int32)",
             data.len()
-        )));
+        ))));
     }
     if data.is_empty() {
         return Ok(js_sys::Int32Array::new_with_length(0));
@@ -348,7 +422,7 @@ pub(crate) fn view_as_u8(data: &[u8]) -> js_sys::Uint8Array {
 }
 
 /// Create a safe-copy `Float32Array` (JS-heap owned).
-pub(crate) fn copy_as_f32(data: &[u8]) -> Result<js_sys::Float32Array, JsError> {
+pub(crate) fn copy_as_f32(data: &[u8]) -> Result<js_sys::Float32Array, JsValue> {
     let view = view_as_f32(data)?;
     Ok(js_sys::Float32Array::new(&view))
 }

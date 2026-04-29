@@ -52,19 +52,19 @@ fn set_metadata_and_index(
     out: &js_sys::Object,
     metadata: Option<core::GlobalMetadata>,
     index: Option<IndexFrameJs>,
-) -> Result<(), JsError> {
+) -> Result<(), JsValue> {
     let meta_val = match metadata {
         Some(m) => metadata_to_js(&m)?,
         None => JsValue::NULL,
     };
     js_sys::Reflect::set(out, &JsValue::from_str("metadata"), &meta_val)
-        .map_err(|_| JsError::new("internal: failed to set chunk.metadata"))?;
+        .map_err(|_| JsValue::from(js_sys::Error::new("internal: failed to set chunk.metadata")))?;
     let index_val = match index {
         Some(idx) => to_js(&idx)?,
         None => JsValue::NULL,
     };
     js_sys::Reflect::set(out, &JsValue::from_str("index"), &index_val)
-        .map_err(|_| JsError::new("internal: failed to set chunk.index"))?;
+        .map_err(|_| JsValue::from(js_sys::Error::new("internal: failed to set chunk.index")))?;
     Ok(())
 }
 
@@ -119,12 +119,12 @@ struct DataObjectFooterJs {
 ///
 /// @param bytes - At least 24 bytes; the first 24 bytes of a message.
 #[wasm_bindgen]
-pub fn read_preamble_info(bytes: &[u8]) -> Result<JsValue, JsError> {
+pub fn read_preamble_info(bytes: &[u8]) -> Result<JsValue, JsValue> {
     if bytes.len() < PREAMBLE_SIZE {
-        return Err(JsError::new(&format!(
+        return Err(JsValue::from(js_sys::Error::new(&format!(
             "preamble buffer too short: {} < {PREAMBLE_SIZE}",
             bytes.len()
-        )));
+        ))));
     }
     let pre = Preamble::read_from(&bytes[..PREAMBLE_SIZE]).map_err(js_err)?;
     let flags = pre.flags;
@@ -145,12 +145,12 @@ pub fn read_preamble_info(bytes: &[u8]) -> Result<JsValue, JsError> {
 ///
 /// @param bytes - At least 24 bytes; typically the last 24 bytes of a message.
 #[wasm_bindgen]
-pub fn read_postamble_info(bytes: &[u8]) -> Result<JsValue, JsError> {
+pub fn read_postamble_info(bytes: &[u8]) -> Result<JsValue, JsValue> {
     if bytes.len() < POSTAMBLE_SIZE {
-        return Err(JsError::new(&format!(
+        return Err(JsValue::from(js_sys::Error::new(&format!(
             "postamble buffer too short: {} < {POSTAMBLE_SIZE}",
             bytes.len()
-        )));
+        ))));
     }
     let pa = Postamble::read_from(&bytes[bytes.len() - POSTAMBLE_SIZE..]).map_err(js_err)?;
     let tail = &bytes[bytes.len() - core::wire::END_MAGIC.len()..];
@@ -168,15 +168,15 @@ pub fn read_postamble_info(bytes: &[u8]) -> Result<JsValue, JsError> {
 /// preceder frame.  Returns nulls for frames that fall outside the
 /// supplied chunk so TS can decide to widen its Range fetch.
 #[wasm_bindgen]
-pub fn parse_header_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
+pub fn parse_header_chunk(chunk: &[u8]) -> Result<JsValue, JsValue> {
     if chunk.len() < PREAMBLE_SIZE {
-        return Err(JsError::new(&format!(
+        return Err(JsValue::from(js_sys::Error::new(&format!(
             "header chunk too short: {} < {PREAMBLE_SIZE}",
             chunk.len()
-        )));
+        ))));
     }
     if &chunk[..MAGIC.len()] != MAGIC {
-        return Err(JsError::new("header chunk does not start with TENSOGRM"));
+        return Err(JsValue::from(js_sys::Error::new("header chunk does not start with TENSOGRM")));
     }
 
     let mut metadata: Option<core::GlobalMetadata> = None;
@@ -192,14 +192,14 @@ pub fn parse_header_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
         let fh = FrameHeader::read_from(&chunk[pos..]).map_err(js_err)?;
         let total = match usize::try_from(fh.total_length) {
             Ok(t) => t,
-            Err(_) => return Err(JsError::new("frame total_length exceeds usize")),
+            Err(_) => return Err(JsValue::from(js_sys::Error::new("frame total_length exceeds usize"))),
         };
         if total < FRAME_HEADER_SIZE + FRAME_END.len() {
-            return Err(JsError::new("frame total_length below minimum"));
+            return Err(JsValue::from(js_sys::Error::new("frame total_length below minimum")));
         }
         let frame_end = match pos.checked_add(total) {
             Some(e) => e,
-            None => return Err(JsError::new("frame end overflows")),
+            None => return Err(JsValue::from(js_sys::Error::new("frame end overflows"))),
         };
         if frame_end > chunk.len() {
             break;
@@ -214,7 +214,7 @@ pub fn parse_header_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
         }
 
         if &chunk[frame_end - FRAME_END.len()..frame_end] != FRAME_END {
-            return Err(JsError::new("header frame missing ENDF trailer"));
+            return Err(JsValue::from(js_sys::Error::new("header frame missing ENDF trailer")));
         }
 
         let payload = &chunk[pos + FRAME_HEADER_SIZE..frame_end - FRAME_COMMON_FOOTER_SIZE];
@@ -243,14 +243,14 @@ pub fn parse_header_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
         None => JsValue::NULL,
     };
     js_sys::Reflect::set(&out, &JsValue::from_str("body_start"), &body_start_val)
-        .map_err(|_| JsError::new("internal: failed to set header_chunk.body_start"))?;
+        .map_err(|_| JsValue::from(js_sys::Error::new("internal: failed to set header_chunk.body_start")))?;
     Ok(out.into())
 }
 
 /// Parse footer metadata + index from a chunk that covers the footer
 /// region — i.e. `[first_footer_offset, message_end - POSTAMBLE_SIZE)`.
 #[wasm_bindgen]
-pub fn parse_footer_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
+pub fn parse_footer_chunk(chunk: &[u8]) -> Result<JsValue, JsValue> {
     let mut metadata: Option<core::GlobalMetadata> = None;
     let mut index: Option<IndexFrameJs> = None;
 
@@ -263,10 +263,10 @@ pub fn parse_footer_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
         let fh = FrameHeader::read_from(&chunk[pos..]).map_err(js_err)?;
         let total = match usize::try_from(fh.total_length) {
             Ok(t) => t,
-            Err(_) => return Err(JsError::new("footer frame total_length exceeds usize")),
+            Err(_) => return Err(JsValue::from(js_sys::Error::new("footer frame total_length exceeds usize"))),
         };
         if total < FRAME_HEADER_SIZE + FRAME_END.len() {
-            return Err(JsError::new("footer frame total_length below minimum"));
+            return Err(JsValue::from(js_sys::Error::new("footer frame total_length below minimum")));
         }
         let frame_end = match pos.checked_add(total) {
             Some(e) if e <= chunk.len() => e,
@@ -274,7 +274,7 @@ pub fn parse_footer_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
         };
 
         if &chunk[frame_end - FRAME_END.len()..frame_end] != FRAME_END {
-            return Err(JsError::new("footer frame missing ENDF trailer"));
+            return Err(JsValue::from(js_sys::Error::new("footer frame missing ENDF trailer")));
         }
 
         let payload = &chunk[pos + FRAME_HEADER_SIZE..frame_end - FRAME_COMMON_FOOTER_SIZE];
@@ -305,12 +305,12 @@ pub fn parse_footer_chunk(chunk: &[u8]) -> Result<JsValue, JsError> {
 
 /// Parse the 16-byte header of a data-object frame.
 #[wasm_bindgen]
-pub fn read_data_object_frame_header(bytes: &[u8]) -> Result<JsValue, JsError> {
+pub fn read_data_object_frame_header(bytes: &[u8]) -> Result<JsValue, JsValue> {
     if bytes.len() < FRAME_HEADER_SIZE {
-        return Err(JsError::new(&format!(
+        return Err(JsValue::from(js_sys::Error::new(&format!(
             "frame header buffer too short: {} < {FRAME_HEADER_SIZE}",
             bytes.len()
-        )));
+        ))));
     }
     let fh = FrameHeader::read_from(&bytes[..FRAME_HEADER_SIZE]).map_err(js_err)?;
     to_js(&FrameHeaderJs {
@@ -329,23 +329,23 @@ pub fn read_data_object_frame_header(bytes: &[u8]) -> Result<JsValue, JsError> {
 /// the in-frame `cbor_offset` (where the descriptor CBOR lives) and the
 /// 64-bit frame hash, plus a sanity flag on the `ENDF` trailer.
 #[wasm_bindgen]
-pub fn read_data_object_frame_footer(bytes: &[u8]) -> Result<JsValue, JsError> {
+pub fn read_data_object_frame_footer(bytes: &[u8]) -> Result<JsValue, JsValue> {
     if bytes.len() < DATA_OBJECT_FOOTER_SIZE {
-        return Err(JsError::new(&format!(
+        return Err(JsValue::from(js_sys::Error::new(&format!(
             "data-object frame footer too short: {} < {DATA_OBJECT_FOOTER_SIZE}",
             bytes.len()
-        )));
+        ))));
     }
     let footer = &bytes[bytes.len() - DATA_OBJECT_FOOTER_SIZE..];
     let cbor_offset = u64::from_be_bytes(
         footer[..8]
             .try_into()
-            .map_err(|_| JsError::new("cbor_offset truncated"))?,
+            .map_err(|_| JsValue::from(js_sys::Error::new("cbor_offset truncated")))?,
     );
     let hash = u64::from_be_bytes(
         footer[8..16]
             .try_into()
-            .map_err(|_| JsError::new("hash truncated"))?,
+            .map_err(|_| JsValue::from(js_sys::Error::new("hash truncated")))?,
     );
     let end = &footer[16..20];
     to_js(&DataObjectFooterJs {
@@ -357,7 +357,7 @@ pub fn read_data_object_frame_footer(bytes: &[u8]) -> Result<JsValue, JsError> {
 
 /// Decode a `DataObjectDescriptor` from its raw CBOR bytes.
 #[wasm_bindgen]
-pub fn parse_descriptor_cbor(cbor_bytes: &[u8]) -> Result<JsValue, JsError> {
+pub fn parse_descriptor_cbor(cbor_bytes: &[u8]) -> Result<JsValue, JsValue> {
     let desc = cbor_to_object_descriptor(cbor_bytes).map_err(js_err)?;
     to_js(&desc)
 }
@@ -366,13 +366,18 @@ pub fn parse_descriptor_cbor(cbor_bytes: &[u8]) -> Result<JsValue, JsError> {
 
 /// Decode a single data-object frame's full bytes to a `DecodedMessage`
 /// that owns one decoded object.
+///
+/// @param verify_hash - Per-frame hash verification (default false).
+///                      See `crate::decode` for the contract.
 #[wasm_bindgen]
 pub fn decode_object_from_frame(
     frame_bytes: &[u8],
     restore_non_finite: Option<bool>,
-) -> Result<DecodedMessage, JsError> {
+    verify_hash: Option<bool>,
+) -> Result<DecodedMessage, JsValue> {
     let options = DecodeOptions {
         restore_non_finite: restore_non_finite.unwrap_or(true),
+        verify_hash: verify_hash.unwrap_or(false),
         ..Default::default()
     };
     let (desc, data) =
@@ -387,12 +392,12 @@ pub fn decode_object_from_frame(
 pub fn decode_range_from_frame(
     frame_bytes: &[u8],
     ranges: &js_sys::BigUint64Array,
-) -> Result<JsValue, JsError> {
+) -> Result<JsValue, JsValue> {
     let flat: Vec<u64> = ranges.to_vec();
     if !flat.len().is_multiple_of(2) {
-        return Err(JsError::new(
+        return Err(JsValue::from(js_sys::Error::new(
             "ranges length must be a multiple of 2 (flat [offset, count] pairs)",
-        ));
+        )));
     }
     let range_pairs: Vec<(u64, u64)> = flat.chunks_exact(2).map(|w| (w[0], w[1])).collect();
 
@@ -405,12 +410,12 @@ pub fn decode_range_from_frame(
 
     let result = js_sys::Object::new();
     js_sys::Reflect::set(&result, &"descriptor".into(), &to_js(&descriptor)?)
-        .map_err(|_| JsError::new("failed to set descriptor"))?;
+        .map_err(|_| JsValue::from(js_sys::Error::new("failed to set descriptor")))?;
     let parts_js = js_sys::Array::new_with_length(parts.len() as u32);
     for (i, bytes) in parts.iter().enumerate() {
         parts_js.set(i as u32, js_sys::Uint8Array::from(bytes.as_slice()).into());
     }
     js_sys::Reflect::set(&result, &"parts".into(), &parts_js)
-        .map_err(|_| JsError::new("failed to set parts"))?;
+        .map_err(|_| JsValue::from(js_sys::Error::new("failed to set parts")))?;
     Ok(result.into())
 }

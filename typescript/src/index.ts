@@ -103,7 +103,9 @@ export {
   ObjectError,
   IoError,
   RemoteError,
+  IntegrityError,
   HashMismatchError,
+  MissingHashError,
   InvalidArgumentError,
   StreamingLimitError,
 } from './errors.js';

@@ -21,6 +21,7 @@ add_executable(tensogram_tests
     test_encode_pre_encoded.cpp
     test_validate.cpp
     test_allow_nan_inf.cpp
+    test_decode_verify_hash.cpp
 )
 
 target_include_directories(tensogram_tests PRIVATE

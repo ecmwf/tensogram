@@ -113,10 +113,51 @@ public:
     io_error(tgm_error code, const std::string& msg) : error(code, msg) {}
 };
 
-/// Thrown when a payload hash does not match the expected value.
-class hash_mismatch_error : public error {
+/// Base for decode-time integrity verification failures.
+///
+/// Subclasses surface specific failure modes when the user has
+/// opted in to verification via `decode_options::verify_hash =
+/// true`:
+///   * `hash_mismatch_error` — frame's `HASH_PRESENT` flag is set
+///     and the inline hash slot disagrees with the recomputed
+///     digest.
+///   * `missing_hash_error` — frame's `HASH_PRESENT` flag is
+///     clear (no digest was recorded for this frame).
+///
+/// Catch this base when you want to handle either kind
+/// uniformly; catch the subclasses to discriminate.  See
+/// `plans/DESIGN.md` §"Integrity Hashing".
+class integrity_error : public error {
 public:
-    hash_mismatch_error(tgm_error code, const std::string& msg) : error(code, msg) {}
+    integrity_error(tgm_error code, const std::string& msg) : error(code, msg) {}
+};
+
+/// Thrown when decode-time hash verification was requested,
+/// the frame's `HASH_PRESENT` flag is set, but the inline-hash
+/// slot disagrees with the recomputed digest of the frame body.
+/// Distinct from `missing_hash_error` — the digest WAS recorded
+/// but doesn't match the body, indicating transport / storage
+/// corruption or a deliberately tampered frame.
+///
+/// The expected (stored) and actual (recomputed) 16-character
+/// xxh3-64 hex digests are embedded in the exception message
+/// (`what()`); a future binding extension may surface them as
+/// structured fields.  See `plans/WIRE_FORMAT.md` §2.5.
+class hash_mismatch_error : public integrity_error {
+public:
+    hash_mismatch_error(tgm_error code, const std::string& msg)
+        : integrity_error(code, msg) {}
+};
+
+/// Thrown when decode-time hash verification was requested but
+/// the frame's `HASH_PRESENT` flag is clear (no inline hash
+/// recorded for that frame).  Distinct from `hash_mismatch_error`
+/// — the digest didn't disagree; there was no digest to compare
+/// against.  See `plans/WIRE_FORMAT.md` §2.5.
+class missing_hash_error : public integrity_error {
+public:
+    missing_hash_error(tgm_error code, const std::string& msg)
+        : integrity_error(code, msg) {}
 };
 
 /// Thrown when an invalid argument is passed to a Tensogram function.
@@ -151,6 +192,7 @@ inline void check(tgm_error err) {
         case TGM_ERROR_OBJECT:        throw object_error(err, message);
         case TGM_ERROR_IO:            throw io_error(err, message);
         case TGM_ERROR_HASH_MISMATCH: throw hash_mismatch_error(err, message);
+        case TGM_ERROR_MISSING_HASH:  throw missing_hash_error(err, message);
         case TGM_ERROR_INVALID_ARG:   throw invalid_arg_error(err, message);
         case TGM_ERROR_REMOTE:        throw remote_error(err, message);
         case TGM_ERROR_END_OF_ITER:   throw error(err, message);
@@ -245,12 +287,25 @@ struct decode_options {
     /// When true (the default) AND the message carries a mask companion,
     /// decode writes canonical NaN / ±Inf at the masked positions.  Set
     /// to false to receive the 0.0-substituted bytes as on disk.
-    ///
-    /// Per-frame integrity verification has moved to the validation
-    /// layer in v3 — see `tensogram::validate(msg, "checksum")` or the
-    /// `tensogram validate --checksum` CLI subcommand.  The decode
-    /// path itself is a pure deserialisation.
     bool restore_non_finite = true;
+    /// When true, every data-object frame the decoder touches is
+    /// verified against its inline xxh3-64 hash.  See
+    /// `plans/DESIGN.md` §"Integrity Hashing" for the contract:
+    ///   * frame's `HASH_PRESENT` flag clear → throws
+    ///     `tensogram::missing_hash_error`.
+    ///   * flag set + slot disagrees → throws
+    ///     `tensogram::hash_mismatch_error`.
+    /// Both subclass `tensogram::integrity_error`.  Default
+    /// `false` — opt in when the consumer wants end-to-end
+    /// integrity beyond what the transport layer provides.
+    ///
+    /// **Not respected by `decode_range` / `file::decode_range`:**
+    /// the inline hash covers the whole post-encoding payload of
+    /// the source frame, so verifying it would require reading
+    /// every byte that range decode is designed to avoid.  Use
+    /// `decode_object` with `verify_hash=true` when integrity
+    /// matters on a partial-load workflow.
+    bool verify_hash = false;
 };
 
 namespace detail {
@@ -639,8 +694,10 @@ public:
                            const decode_options& opts = {}) {
         tgm_message_t* raw = nullptr;
         detail::check(tgm_file_decode_message(
-            handle_.get(), index, 
-            opts.native_byte_order ? 1 : 0, opts.threads, &raw));
+            handle_.get(), index,
+            opts.native_byte_order ? 1 : 0, opts.threads,
+            opts.verify_hash ? 1 : 0,
+            &raw));
         return message(raw);
     }
 
@@ -817,8 +874,10 @@ public:
                     const decode_options& opts = {}) {
         tgm_object_iter_t* raw = nullptr;
         detail::check(tgm_object_iter_create(
-            buf, len, 
-            opts.native_byte_order ? 1 : 0, &raw));
+            buf, len,
+            opts.native_byte_order ? 1 : 0,
+            opts.verify_hash ? 1 : 0,
+            &raw));
         handle_.reset(raw);
     }
 
@@ -1059,15 +1118,18 @@ private:
     // true, which matches the library default; in that case we use
     // the legacy entry point.
     if (opts.restore_non_finite) {
-        detail::check(tgm_decode(buf, len, 
+        detail::check(tgm_decode(buf, len,
                                   opts.native_byte_order ? 1 : 0,
-                                  opts.threads, &raw));
+                                  opts.threads,
+                                  opts.verify_hash ? 1 : 0,
+                                  &raw));
     } else {
         TgmDecodeMaskOptions mask_opts{};
         mask_opts.restore_non_finite = false;
         detail::check(tgm_decode_with_options(
-            buf, len, 
+            buf, len,
             opts.native_byte_order ? 1 : 0, opts.threads,
+            opts.verify_hash ? 1 : 0,
             &mask_opts, &raw));
     }
     return message(raw);
@@ -1088,9 +1150,10 @@ private:
 {
     tgm_message_t* raw = nullptr;
     detail::check(tgm_decode_object(buf, len, index,
-                                     
                                      opts.native_byte_order ? 1 : 0,
-                                     opts.threads, &raw));
+                                     opts.threads,
+                                     opts.verify_hash ? 1 : 0,
+                                     &raw));
     return message(raw);
 }
 

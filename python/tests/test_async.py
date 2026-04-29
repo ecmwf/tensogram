@@ -145,12 +145,14 @@ class TestAsyncDecode:
         np.testing.assert_allclose(arr, np.zeros(10, dtype=np.float32))
 
     @pytest.mark.asyncio
-    async def test_decode_message_verify_hash_kwarg_removed(self, tgm_path):
-        """The async ``decode_message`` no longer accepts ``verify_hash``
-        (Wave 2.3 — see ``test_tensogram.py`` for the rationale)."""
+    async def test_decode_message_verify_hash_succeeds_on_hashed(self, tgm_path):
+        """Async ``decode_message`` accepts ``verify_hash=True`` and
+        returns the data when the per-frame hash flag is set + slot
+        matches.  See ``test_tensogram.py`` for the synchronous matrix."""
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
-        with pytest.raises(TypeError, match="verify_hash"):
-            _ = await f.decode_message(0, verify_hash=True)
+        meta, objects = await f.decode_message(0, verify_hash=True)
+        assert meta.version == 3
+        assert len(objects) == 1
 
     @pytest.mark.asyncio
     async def test_file_decode_metadata(self, tgm_path):
@@ -210,7 +212,9 @@ class TestAsyncGather:
             f.file_decode_object(2, 0),
         )
         for i, r in enumerate(results):
-            np.testing.assert_allclose(r["data"], np.full(10, float(i), dtype=np.float32))
+            np.testing.assert_allclose(
+                r["data"], np.full(10, float(i), dtype=np.float32)
+            )
 
     @pytest.mark.asyncio
     async def test_gather_mixed_operations(self, tgm_path):
@@ -232,7 +236,9 @@ class TestAsyncGather:
         )
         for i, (meta, objects) in enumerate(messages):
             assert meta.version == 3
-            np.testing.assert_allclose(objects[0][1], np.full(10, float(i), dtype=np.float32))
+            np.testing.assert_allclose(
+                objects[0][1], np.full(10, float(i), dtype=np.float32)
+            )
 
 
 class TestAsyncParity:
@@ -301,20 +307,35 @@ class TestAsyncErrors:
             _ = await f.read_message(999)
 
     @pytest.mark.asyncio
-    async def test_decode_message_verify_hash_kwarg_removed_async(self, tmp_path):
-        """Async ``decode_message`` rejects the obsolete ``verify_hash``
-        kwarg (Wave 2.3).  Integrity verification lives in the
-        validation layer (``tensogram.validate_file(level="checksum")``).
-        """
-        path = str(tmp_path / "corrupt.tgm")
-        msg = _encode_test_message([4])
-        corrupt = bytearray(msg)
-        corrupt[-5] ^= 0xFF
+    async def test_decode_message_verify_hash_raises_missing_hash_on_unhashed_async(
+        self, tmp_path
+    ):
+        """Async ``decode_message(verify_hash=True)`` on an unhashed
+        message raises ``MissingHashError`` with the offending object
+        index.  Pins the strict-input contract from PR #110 on the
+        async surface."""
+        path = str(tmp_path / "unhashed.tgm")
+        # Build a hashing=false message via the tensogram.encode entry
+        # point with hash=None.
+        meta = {"version": 3}
+        desc = {
+            "type": "ntensor",
+            "ndim": 1,
+            "shape": [4],
+            "strides": [1],
+            "dtype": "float32",
+            "encoding": "none",
+            "filter": "none",
+            "compression": "none",
+        }
+        data = np.zeros(4, dtype=np.float32)
+        msg = bytes(tensogram.encode(meta, [(desc, data)], hash=None))
         with open(path, "wb") as fh:
-            fh.write(corrupt)
+            fh.write(msg)
         f = await tensogram.AsyncTensogramFile.open(path)
-        with pytest.raises(TypeError, match="verify_hash"):
+        with pytest.raises(tensogram.MissingHashError) as excinfo:
             _ = await f.decode_message(0, verify_hash=True)
+        assert excinfo.value.object_index == 0
 
     @pytest.mark.asyncio
     async def test_open_remote_bad_storage_options(self, serve_tgm_bytes):
@@ -466,7 +487,9 @@ class TestAsyncIteration:
         assert len(messages) == 3
         for i, (meta, objects) in enumerate(messages):
             assert meta.version == 3
-            np.testing.assert_allclose(objects[0][1], np.full(10, float(i), dtype=np.float32))
+            np.testing.assert_allclose(
+                objects[0][1], np.full(10, float(i), dtype=np.float32)
+            )
 
     @pytest.mark.asyncio
     async def test_aiter_early_break(self, tgm_path):
@@ -505,7 +528,9 @@ class TestAsyncIteration:
         async for m in f:
             messages.append(m)
         assert len(messages) == 1
-        np.testing.assert_allclose(messages[0][1][0][1], np.full(4, 99.0, dtype=np.float32))
+        np.testing.assert_allclose(
+            messages[0][1][0][1], np.full(4, 99.0, dtype=np.float32)
+        )
 
     @pytest.mark.asyncio
     async def test_aiter_repr(self, tgm_path):
@@ -719,7 +744,9 @@ class TestAsyncBatchObject:
             assert "data" in r
             assert "metadata" in r
             assert "descriptor" in r
-            np.testing.assert_allclose(r["data"], np.full(10, float(i), dtype=np.float32))
+            np.testing.assert_allclose(
+                r["data"], np.full(10, float(i), dtype=np.float32)
+            )
 
     @pytest.mark.asyncio
     async def test_batch_matches_individual(self, serve_tgm_bytes):
@@ -782,7 +809,9 @@ class TestSyncBatchObject:
         results = f.file_decode_object_batch([0, 1, 2], 0)
         assert len(results) == 3
         for i, r in enumerate(results):
-            np.testing.assert_allclose(r["data"], np.full(10, float(i), dtype=np.float32))
+            np.testing.assert_allclose(
+                r["data"], np.full(10, float(i), dtype=np.float32)
+            )
 
     def test_batch_matches_individual(self, serve_tgm_bytes):
         meta = {"version": 3, "base": [{}]}

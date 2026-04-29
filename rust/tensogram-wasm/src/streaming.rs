@@ -50,7 +50,7 @@ const DEFAULT_MAX_BUFFER: usize = 256 * 1024 * 1024;
 ///
 /// **Memory limit**: The internal buffer is capped at 256 MiB by
 /// default.  Call `set_max_buffer(n)` to change it.  Exceeding the
-/// limit makes `feed()` return a `JsError`.
+/// limit makes `feed()` return a thrown `JsValue` (a `js_sys::Error`).
 #[wasm_bindgen]
 pub struct StreamingDecoder {
     buffer: Vec<u8>,
@@ -97,15 +97,15 @@ impl StreamingDecoder {
     ///
     /// Returns an error if the internal buffer exceeds `max_buffer` bytes.
     /// Check `last_error()` after feeding to detect skipped corrupt messages.
-    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), JsError> {
+    pub fn feed(&mut self, chunk: &[u8]) -> Result<(), JsValue> {
         let new_size = (self.buffer.len() - self.consumed)
             .checked_add(chunk.len())
-            .ok_or_else(|| JsError::new("buffer size overflow"))?;
+            .ok_or_else(|| JsValue::from(js_sys::Error::new("buffer size overflow")))?;
         if new_size > self.max_buffer {
-            return Err(JsError::new(&format!(
+            return Err(JsValue::from(js_sys::Error::new(&format!(
                 "streaming buffer would grow to {} bytes (limit {})",
                 new_size, self.max_buffer
-            )));
+            ))));
         }
         // Compact before extending so the actual Vec length (and WASM memory)
         // stays close to the logical limit instead of growing by `consumed`.
@@ -133,7 +133,7 @@ impl StreamingDecoder {
     }
 
     /// Get the global metadata from the most recently decoded message.
-    pub fn metadata(&self) -> Result<JsValue, JsError> {
+    pub fn metadata(&self) -> Result<JsValue, JsValue> {
         match &self.global_metadata {
             // Use `metadata_to_js` so `version` is synthesised from
             // the preamble for TypeScript ergonomics — the CBOR
@@ -273,12 +273,12 @@ pub struct DecodedFrame {
 #[wasm_bindgen]
 impl DecodedFrame {
     /// Object descriptor (shape, dtype, encoding, etc.) as a JS object.
-    pub fn descriptor(&self) -> Result<JsValue, JsError> {
+    pub fn descriptor(&self) -> Result<JsValue, JsValue> {
         to_js(&self.descriptor)
     }
 
     /// Per-object metadata entry from the base array (if available).
-    pub fn base_entry(&self) -> Result<JsValue, JsError> {
+    pub fn base_entry(&self) -> Result<JsValue, JsValue> {
         match &self.base_entry {
             Some(entry) => to_js(entry),
             None => Ok(JsValue::NULL),
@@ -288,22 +288,22 @@ impl DecodedFrame {
     /// Zero-copy Float32Array view into decoded payload.
     ///
     /// **Warning**: invalidated if WASM memory grows.
-    pub fn data_f32(&self) -> Result<js_sys::Float32Array, JsError> {
+    pub fn data_f32(&self) -> Result<js_sys::Float32Array, JsValue> {
         view_as_f32(&self.data)
     }
 
     /// Zero-copy Float64Array view.
-    pub fn data_f64(&self) -> Result<js_sys::Float64Array, JsError> {
+    pub fn data_f64(&self) -> Result<js_sys::Float64Array, JsValue> {
         view_as_f64(&self.data)
     }
 
     /// Zero-copy Int32Array view.
-    pub fn data_i32(&self) -> Result<js_sys::Int32Array, JsError> {
+    pub fn data_i32(&self) -> Result<js_sys::Int32Array, JsValue> {
         view_as_i32(&self.data)
     }
 
     /// Zero-copy Uint8Array view.
-    pub fn data_u8(&self) -> Result<js_sys::Uint8Array, JsError> {
+    pub fn data_u8(&self) -> Result<js_sys::Uint8Array, JsValue> {
         Ok(view_as_u8(&self.data))
     }
 

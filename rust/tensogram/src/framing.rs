@@ -13,8 +13,8 @@ use crate::metadata::{self, RESERVED_KEY};
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashFrame, IndexFrame};
 use crate::wire::{
     DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_COMMON_FOOTER_SIZE, FRAME_END,
-    FRAME_HEADER_SIZE, FrameHeader, FrameType, MAGIC, MessageFlags, POSTAMBLE_SIZE, PREAMBLE_SIZE,
-    Postamble, Preamble, WIRE_VERSION,
+    FRAME_HEADER_SIZE, FrameFlags, FrameHeader, FrameType, MAGIC, MessageFlags, POSTAMBLE_SIZE,
+    PREAMBLE_SIZE, Postamble, Preamble, WIRE_VERSION,
 };
 
 /// Compute the byte offset in `buf` where the encoded payload ends
@@ -113,17 +113,32 @@ fn write_frame(
     );
     let total_length = (FRAME_HEADER_SIZE + payload.len() + FRAME_COMMON_FOOTER_SIZE) as u64;
 
+    // The per-frame `HASH_PRESENT` flag bit is the authoritative
+    // signal that the inline hash slot carries a real digest
+    // (`plans/WIRE_FORMAT.md` §2.5).  Caller-supplied `flags`
+    // typically arrive as `0` for non-data-object frames; we OR in
+    // the hash bit so the bit lives on the frame header alongside
+    // any future per-type flag bits.
+    let header_flags = if hashing {
+        flags | FrameFlags::HASH_PRESENT
+    } else {
+        flags & !FrameFlags::HASH_PRESENT
+    };
+
     let fh = FrameHeader {
         frame_type,
         version,
-        flags,
+        flags: header_flags,
         total_length,
     };
     fh.write_to(out);
     out.extend_from_slice(payload);
 
-    // Inline hash slot (8 bytes) — hashes the body (just `payload`
-    // for non-data-object frames).
+    // Inline hash slot (8 bytes).  The slot holds a real xxh3-64
+    // digest of the body when `hashing` is true (including any
+    // legitimate zero result); otherwise we write zero by
+    // convention but readers must dispatch on the per-frame
+    // `HASH_PRESENT` flag rather than inspecting the slot value.
     let hash_value: u64 = if hashing {
         xxhash_rust::xxh3::xxh3_64(payload)
     } else {
@@ -217,11 +232,16 @@ pub fn encode_data_object_frame(
     hashing: bool,
 ) -> Result<Vec<u8>> {
     let cbor_bytes = metadata::object_descriptor_to_cbor(descriptor)?;
-    let flags = if cbor_before {
+    // Bit 0 is type-specific (CBOR placement); bit 1 is the common
+    // `HASH_PRESENT` signal (`plans/WIRE_FORMAT.md` §2.5).
+    let mut flags = if cbor_before {
         0
     } else {
         DataObjectFlags::CBOR_AFTER_PAYLOAD
     };
+    if hashing {
+        flags |= FrameFlags::HASH_PRESENT;
+    }
 
     // Calculate the total frame length (v3 data-object footer = 20 B):
     //   header(16) + body + footer(20)

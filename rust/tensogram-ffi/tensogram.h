@@ -52,6 +52,16 @@ typedef enum {
    */
   TGM_ERROR_END_OF_ITER = 9,
   TGM_ERROR_REMOTE = 10,
+  /**
+   * Decode-time hash verification was requested but the frame's
+   * `HASH_PRESENT` flag is clear (see `plans/WIRE_FORMAT.md` §2.5).
+   * Distinct from `HashMismatch` — the digest didn't disagree;
+   * there was no digest recorded to compare against.  The
+   * offending object index is available through
+   * `tgm_last_error_object_index()` for the duration of the
+   * thread-local error.
+   */
+  TGM_ERROR_MISSING_HASH = 11,
 } tgm_error;
 
 /**
@@ -219,6 +229,7 @@ tgm_error tgm_decode_with_options(const uint8_t *buf,
                                   size_t buf_len,
                                   int32_t native_byte_order,
                                   uint32_t threads,
+                                  int32_t verify_hash,
                                   const TgmDecodeMaskOptions *mask_options,
                                   tgm_message_t **out);
 
@@ -302,6 +313,7 @@ tgm_error tgm_decode(const uint8_t *buf,
                      size_t buf_len,
                      int32_t native_byte_order,
                      uint32_t threads,
+                     int32_t verify_hash,
                      tgm_message_t **out);
 
 /**
@@ -320,6 +332,7 @@ tgm_error tgm_decode_object(const uint8_t *buf,
                             size_t index,
                             int32_t native_byte_order,
                             uint32_t threads,
+                            int32_t verify_hash,
                             tgm_message_t **out);
 
 /**
@@ -556,6 +569,7 @@ tgm_error tgm_file_decode_message(tgm_file_t *file,
                                   size_t index,
                                   int32_t native_byte_order,
                                   uint32_t threads,
+                                  int32_t verify_hash,
                                   tgm_message_t **out);
 
 /**
@@ -667,6 +681,7 @@ void tgm_file_iter_free(tgm_file_iter_t *iter);
 tgm_error tgm_object_iter_create(const uint8_t *buf,
                                  size_t buf_len,
                                  int32_t native_byte_order,
+                                 int32_t verify_hash,
                                  tgm_object_iter_t **out);
 
 /**

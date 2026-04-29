@@ -156,18 +156,28 @@ class TestEncodeDecode:
         _, arr = objects[0]
         np.testing.assert_array_equal(arr, data)
 
-    def test_verify_hash_kwarg_removed(self):
-        """The legacy ``verify_hash`` kwarg has been removed in v3 (Wave 2.3).
-
-        Per-frame integrity verification lives at the validation layer
-        — see ``tensogram.validate(msg, level="checksum")`` or the
-        ``tensogram validate --checksum`` CLI subcommand.  The decode
-        path is a pure deserialisation.
-        """
+    def test_decode_verify_hash_succeeds_on_hashed_message(self):
+        """Cell B (PLAN_DECODE_HASH_VERIFICATION §5.2): verify_hash=True
+        on a message encoded with hashing on returns the data cleanly."""
         data = np.ones(10, dtype=np.float32)
         msg = encode_simple(data, hash_algo="xxh3")
-        with pytest.raises(TypeError, match="verify_hash"):
+        _, objects = tensogram.decode(msg, verify_hash=True)
+        _, arr = objects[0]
+        np.testing.assert_array_equal(arr, data)
+
+    def test_decode_verify_hash_raises_missing_hash_on_unhashed_message(self):
+        """Cell C: verify_hash=True on a message encoded with hashing
+        off raises ``MissingHashError`` and surfaces the offending
+        object index."""
+        data = np.ones(4, dtype=np.float32)
+        msg = encode_simple(data, hash_algo=None)
+        with pytest.raises(tensogram.MissingHashError) as excinfo:
             _ = tensogram.decode(msg, verify_hash=True)
+        # Public attribute set on the exception instance — see the
+        # `attach_missing_hash_attrs` helper in the bindings.
+        assert excinfo.value.object_index == 0
+        # `MissingHashError` is a subclass of `IntegrityError`.
+        assert isinstance(excinfo.value, tensogram.IntegrityError)
 
 
 # ---------------------------------------------------------------------------
@@ -301,14 +311,22 @@ class TestDecodeObject:
         with pytest.raises(ValueError, match="ObjectError"):
             tensogram.decode_object(msg, 99)
 
-    def test_verify_hash_kwarg_removed(self):
-        """``decode_object`` no longer accepts the legacy ``verify_hash``
-        kwarg (Wave 2.3 — see the class-level note on
-        ``test_verify_hash_kwarg_removed``)."""
+    def test_decode_object_verify_hash_succeeds_on_hashed_message(self):
+        """``decode_object`` accepts ``verify_hash=True`` and returns
+        cleanly when the per-frame `HASH_PRESENT` flag is set and the
+        slot matches the recomputed digest."""
         data = np.arange(20, dtype=np.float32)
         msg = encode_simple(data, hash_algo="xxh3")
-        with pytest.raises(TypeError, match="verify_hash"):
+        _, _, arr = tensogram.decode_object(msg, 0, verify_hash=True)
+        np.testing.assert_array_equal(arr, data)
+
+    def test_decode_object_verify_hash_raises_missing_hash_on_unhashed(self):
+        """``verify_hash=True`` on an unhashed message → MissingHashError."""
+        data = np.arange(20, dtype=np.float32)
+        msg = encode_simple(data, hash_algo=None)
+        with pytest.raises(tensogram.MissingHashError) as excinfo:
             _ = tensogram.decode_object(msg, 0, verify_hash=True)
+        assert excinfo.value.object_index == 0
 
 
 # ---------------------------------------------------------------------------
@@ -760,9 +778,9 @@ class TestTensogramFile:
             _, arr = objects[0]
             np.testing.assert_array_equal(arr, data)
         report = tensogram.validate_file(path, level="checksum")
-        assert all(
-            m["hash_verified"] for m in report["messages"]
-        ), f"checksum validation should pass after append, got: {report}"
+        assert all(m["hash_verified"] for m in report["messages"]), (
+            f"checksum validation should pass after append, got: {report}"
+        )
 
     def test_len(self, tmp_path):
         """len(file) returns message count."""
@@ -962,7 +980,8 @@ class TestErrors:
         report = tensogram.validate(bytes(corrupted), level="checksum")
         codes = [issue["code"] for issue in report["issues"]]
         assert any(
-            c in ("hash_mismatch", "decode_pipeline_failed", "cbor_offset_invalid") for c in codes
+            c in ("hash_mismatch", "decode_pipeline_failed", "cbor_offset_invalid")
+            for c in codes
         ), f"expected integrity or structural error in validate report, got: {report}"
 
     def test_file_open_nonexistent(self, tmp_path):
@@ -1117,7 +1136,9 @@ class TestEdgeCases:
             for idx in [0, 25, 49]:
                 meta, objects = f2.decode_message(idx)
                 _, arr = objects[0]
-                np.testing.assert_array_equal(arr, np.full(10, float(idx), dtype=np.float32))
+                np.testing.assert_array_equal(
+                    arr, np.full(10, float(idx), dtype=np.float32)
+                )
                 assert meta["index"] == idx
 
     def test_native_endian_roundtrip(self):
@@ -1172,7 +1193,9 @@ class TestEdgeCases:
 
         with (
             tensogram.TensogramFile.open(path) as f2,
-            pytest.raises((ValueError, IndexError), match=r"index|out of range|ObjectError"),
+            pytest.raises(
+                (ValueError, IndexError), match=r"index|out of range|ObjectError"
+            ),
         ):
             f2.decode_message(99)
 
@@ -1258,7 +1281,9 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for _i in range(3):
                 data = np.zeros(4, dtype=np.float32)
-                f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
+                f.append(
+                    make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)]
+                )
 
         with tensogram.TensogramFile.open(path) as f:
             it = iter(f)
@@ -1275,7 +1300,9 @@ class TestEdgeCases:
         path = str(tmp_path / "stop.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(
+                make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)]
+            )
 
         with tensogram.TensogramFile.open(path) as f:
             it = iter(f)
@@ -1305,7 +1332,9 @@ class TestEdgeCases:
         path = str(tmp_path / "oob.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(
+                make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)]
+            )
 
         with tensogram.TensogramFile.open(path) as f:
             with pytest.raises(IndexError):
@@ -1390,7 +1419,9 @@ class TestEdgeCases:
         with tensogram.TensogramFile.create(path) as f:
             for _i in range(3):
                 data = np.zeros(4, dtype=np.float32)
-                f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
+                f.append(
+                    make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)]
+                )
 
         with tensogram.TensogramFile.open(path) as f:
             assert f[2:2] == []
@@ -1401,7 +1432,9 @@ class TestEdgeCases:
         path = str(tmp_path / "badkey.tgm")
         with tensogram.TensogramFile.create(path) as f:
             data = np.ones(4, dtype=np.float32)
-            f.append(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
+            f.append(
+                make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)]
+            )
 
         with tensogram.TensogramFile.open(path) as f, pytest.raises(TypeError):
             _ = f["bad"]
@@ -1488,7 +1521,9 @@ class TestEdgeCases:
         """iter_messages raises StopIteration after exhaustion."""
         data = np.ones(4, dtype=np.float32)
         msg = bytes(
-            tensogram.encode(make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)])
+            tensogram.encode(
+                make_global_meta(3), [(make_descriptor([4], dtype="float32"), data)]
+            )
         )
 
         it = tensogram.iter_messages(msg)
@@ -1509,22 +1544,35 @@ class TestEdgeCases:
         for meta, _ in collected:
             assert meta["tag"] == "valid"
 
-    def test_iter_messages_verify_hash_kwarg_removed(self):
-        """``iter_messages`` no longer accepts ``verify_hash`` (Wave 2.3)."""
+    def test_iter_messages_verify_hash_succeeds_on_hashed(self):
+        """``iter_messages(buf, verify_hash=True)`` decodes a hashed
+        single-message buffer faithfully."""
         data = np.arange(16, dtype=np.float32)
         meta = make_global_meta(3)
         desc = make_descriptor([16], dtype="float32")
         msg = bytes(tensogram.encode(meta, [(desc, data)], hash="xxh3"))
 
-        with pytest.raises(TypeError, match="verify_hash"):
-            _ = list(tensogram.iter_messages(msg, verify_hash=True))
-
-        # Plain iteration still decodes the data faithfully.
-        collected = list(tensogram.iter_messages(msg))
+        collected = list(tensogram.iter_messages(msg, verify_hash=True))
         assert len(collected) == 1
         _, objects = collected[0]
         _, arr = objects[0]
         np.testing.assert_array_equal(arr, data)
+
+    def test_iter_messages_verify_hash_raises_missing_hash_on_unhashed(self):
+        """``iter_messages`` with ``verify_hash=True`` on an unhashed
+        message raises ``MissingHashError`` for the offending object."""
+        data = np.arange(8, dtype=np.float32)
+        meta = make_global_meta(3)
+        desc = make_descriptor([8], dtype="float32")
+        msg = bytes(tensogram.encode(meta, [(desc, data)], hash=None))
+
+        it = tensogram.iter_messages(msg, verify_hash=True)
+        with pytest.raises(tensogram.MissingHashError) as excinfo:
+            _ = next(it)
+        assert excinfo.value.object_index == 0
+        # Per Q4 (PLAN_DECODE_HASH_VERIFICATION): after the first
+        # failure the iterator is exhausted on the next pull.
+        assert next(it, None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1808,7 +1856,8 @@ class TestErrorCoverage:
         report = tensogram.validate(bytes(msg), level="checksum")
         codes = [issue["code"] for issue in report["issues"]]
         assert any(
-            c in ("hash_mismatch", "decode_pipeline_failed", "cbor_offset_invalid") for c in codes
+            c in ("hash_mismatch", "decode_pipeline_failed", "cbor_offset_invalid")
+            for c in codes
         ), f"expected integrity error, got: {report}"
 
     def test_encode_shape_mismatch(self):
@@ -2064,7 +2113,9 @@ class TestDecodeRangeDtypeCoverage:
         """decode_range with join=True concatenates results."""
         data = np.arange(50, dtype=np.float32)
         msg = encode_simple(data)
-        joined = tensogram.decode_range(msg, object_index=0, ranges=[(0, 5), (20, 5)], join=True)
+        joined = tensogram.decode_range(
+            msg, object_index=0, ranges=[(0, 5), (20, 5)], join=True
+        )
         expected = np.concatenate([data[:5], data[20:25]])
         np.testing.assert_array_equal(joined, expected)
 
@@ -2416,17 +2467,16 @@ class TestEncodeOptionsCoverage:
         _, objects = tensogram.decode(msg)
         assert len(objects) == 1
 
-    def test_verify_hash_kwarg_rejected_no_hash(self):
-        """Even on an unhashed message, ``verify_hash=True`` is rejected
-        (Wave 2.3 — the kwarg has been removed altogether)."""
+    def test_verify_hash_default_is_false(self):
+        """``verify_hash`` defaults to False so unhashed messages decode
+        cleanly without an opt-in.  This is the contract documented in
+        ``DecodeOptions::verify_hash`` (Rust core)."""
         msg = encode_simple(np.ones(4, dtype=np.float32), hash_algo=None)
-        with pytest.raises(TypeError, match="verify_hash"):
-            _ = tensogram.decode(msg, verify_hash=True)
-
-    def test_verify_hash_kwarg_rejected_clean(self):
-        msg = encode_simple(np.ones(4, dtype=np.float32), hash_algo="xxh3")
-        with pytest.raises(TypeError, match="verify_hash"):
-            _ = tensogram.decode(msg, verify_hash=True)
+        _, objects = tensogram.decode(msg)
+        assert len(objects) == 1
+        # Symmetric: explicit verify_hash=False matches the default.
+        _, objects = tensogram.decode(msg, verify_hash=False)
+        assert len(objects) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2681,7 +2731,9 @@ class TestUnicodeMetadata:
     def test_empty_string_and_whitespace(self):
         """Empty string and whitespace-only strings round-trip."""
         data = np.ones(4, dtype=np.float32)
-        msg = encode_simple(data, extra_meta={"empty": "", "spaces": "   ", "tabs": "\t\n"})
+        msg = encode_simple(
+            data, extra_meta={"empty": "", "spaces": "   ", "tabs": "\t\n"}
+        )
         meta = tensogram.decode_metadata(msg)
         assert meta["empty"] == ""
         assert meta["spaces"] == "   "

@@ -156,11 +156,19 @@ impl MessageFlags {
     pub const FOOTER_HASHES: u16 = 1 << 5;
     /// At least one PrecederMetadata frame is present in the data objects section.
     pub const PRECEDER_METADATA: u16 = 1 << 6;
-    /// New in v3.  When set, every frame in the message has its
-    /// inline `hash` slot populated with the xxh3-64 digest of the
-    /// frame body (see `plans/WIRE_FORMAT.md` §2.4).  When clear,
-    /// every slot is `0x0000000000000000` and readers skip hash
-    /// verification.  Message-wide flag — no per-frame override.
+    /// Message-level advisory: when set, the encoder guarantees
+    /// that every frame in the message has its per-frame
+    /// [`FrameFlags::HASH_PRESENT`] bit set as well, so a reader
+    /// can do a single fast pre-flight check before scanning per-
+    /// frame headers.  See `plans/WIRE_FORMAT.md` §2.5 and §3.1.
+    ///
+    /// **The per-frame [`FrameFlags::HASH_PRESENT`] flag is
+    /// authoritative** for any individual frame's hash slot —
+    /// callers that need to verify or skip a single frame's
+    /// digest must check the per-frame flag, not this one.  The
+    /// duplication is deliberate: per-frame information is always
+    /// accessible from a single 16-byte frame-header read,
+    /// without consulting the surrounding message preamble.
     pub const HASHES_PRESENT: u16 = 1 << 7;
 
     pub fn new(bits: u16) -> Self {
@@ -185,9 +193,44 @@ impl MessageFlags {
     }
 }
 
+// ── Frame Flags ──────────────────────────────────────────────────────────────
+
+/// Common flags in every frame header's `flags: u16` field.
+///
+/// Bit 0 is **type-specific** — its meaning depends on `frame_type`
+/// (e.g. [`DataObjectFlags::CBOR_AFTER_PAYLOAD`] for `NTensorFrame`).
+/// Bits 1–7 are common across all frame types.  Bits 8–15 are
+/// reserved for future common flags; encoders must write zero,
+/// decoders must ignore unknown bits.
+///
+/// See `plans/WIRE_FORMAT.md` §2.5 for the full bit-allocation
+/// table and the encoder/decoder contract.
+pub struct FrameFlags;
+
+impl FrameFlags {
+    /// Bit 1 (common to all frame types).  When set, this frame's
+    /// inline 8-byte hash slot in its footer holds the xxh3-64
+    /// digest of the frame body — including legitimate zero
+    /// digests.  When clear, the slot is **undefined**: encoders
+    /// write `0x0000000000000000` by convention but decoders MUST
+    /// NOT inspect the value.
+    ///
+    /// Mirrors the message-level [`MessageFlags::HASHES_PRESENT`]
+    /// flag for locality: per-frame information is always
+    /// accessible from a single 16-byte read of the frame header,
+    /// without consulting the surrounding message preamble.  The
+    /// per-frame flag is authoritative for any individual frame's
+    /// slot; the message-level flag is a coarse-grained advisory.
+    pub const HASH_PRESENT: u16 = 1 << 1;
+}
+
 // ── Data Object Flags ────────────────────────────────────────────────────────
 
 /// Flags in data object frame header.
+///
+/// Type-specific bits live in bit 0; common flags (currently
+/// [`FrameFlags::HASH_PRESENT`] at bit 1) apply to every frame
+/// type and are documented separately.
 pub struct DataObjectFlags;
 
 impl DataObjectFlags {

@@ -1031,30 +1031,65 @@ fn streaming_encoder_multiple_objects() {
 
 /// In v3 frame-level integrity is verified by recomputing the
 /// xxh3-64 of the frame body and comparing to the inline hash slot.
-/// `verify_frame_hash` returns `HashMismatch` on disagreement.  The
-/// legacy standalone `verify_hash(&[u8], &HashDescriptor)` helper
-/// was removed in Wave 2.2 alongside `HashDescriptor` itself.
+/// Hash presence is signalled by the per-frame `HASH_PRESENT` flag
+/// in the frame header (bit 1 of the `flags` field — see
+/// `plans/WIRE_FORMAT.md` §2.5); the slot value alone is not a
+/// presence signal because every 64-bit value, including zero, is
+/// a valid digest.
+///
+/// `verify_frame_hash` returns:
+///  * `Ok(())` — flag set + slot matches recomputed digest
+///  * `Err(HashMismatch)` — flag set + slot disagrees
+///  * `Err(MissingHash)` — flag clear (no digest recorded)
+///
+/// This test pins the mismatch case: set the flag and tamper with
+/// the slot.
 #[test]
 fn hash_mismatch_detected_on_corrupted_frame() {
-    use tensogram::wire::{FRAME_END, FRAME_MAGIC, FrameType};
-    // Build a minimal HeaderMetadata frame with a wrong inline slot
-    // (the body actually hashes to something non-zero).
+    use tensogram::wire::{FRAME_END, FRAME_MAGIC, FrameFlags, FrameType};
+    // Build a minimal HeaderMetadata frame with HASH_PRESENT set
+    // and a wrong inline slot.
     let body = b"hello";
     let mut buf = Vec::new();
     buf.extend_from_slice(FRAME_MAGIC);
     buf.extend_from_slice(&1u16.to_be_bytes()); // type = HeaderMetadata
     buf.extend_from_slice(&1u16.to_be_bytes()); // version
-    buf.extend_from_slice(&0u16.to_be_bytes()); // flags
+    buf.extend_from_slice(&FrameFlags::HASH_PRESENT.to_be_bytes()); // flag SET
     let total_length = (16 + body.len() + 12) as u64;
     buf.extend_from_slice(&total_length.to_be_bytes());
     buf.extend_from_slice(body);
-    buf.extend_from_slice(&0u64.to_be_bytes()); // wrong slot
+    buf.extend_from_slice(&0xDEADBEEFu64.to_be_bytes()); // wrong slot
     buf.extend_from_slice(FRAME_END);
 
-    let result = tensogram::hash::verify_frame_hash(&buf, FrameType::HeaderMetadata);
+    let result = tensogram::hash::verify_frame_hash(&buf, FrameType::HeaderMetadata, None);
     assert!(matches!(
         result,
         Err(tensogram::TensogramError::HashMismatch { .. })
+    ));
+}
+
+/// Companion test for the *missing*-hash path: flag clear, slot
+/// value irrelevant.  `verify_frame_hash` (the strict wrapper)
+/// raises `MissingHash`.
+#[test]
+fn missing_hash_detected_when_flag_clear() {
+    use tensogram::wire::{FRAME_END, FRAME_MAGIC, FrameType};
+    let body = b"hello";
+    let mut buf = Vec::new();
+    buf.extend_from_slice(FRAME_MAGIC);
+    buf.extend_from_slice(&1u16.to_be_bytes());
+    buf.extend_from_slice(&1u16.to_be_bytes());
+    buf.extend_from_slice(&0u16.to_be_bytes()); // flag CLEAR
+    let total_length = (16 + body.len() + 12) as u64;
+    buf.extend_from_slice(&total_length.to_be_bytes());
+    buf.extend_from_slice(body);
+    buf.extend_from_slice(&0u64.to_be_bytes());
+    buf.extend_from_slice(FRAME_END);
+
+    let result = tensogram::hash::verify_frame_hash(&buf, FrameType::HeaderMetadata, None);
+    assert!(matches!(
+        result,
+        Err(tensogram::TensogramError::MissingHash { .. })
     ));
 }
 

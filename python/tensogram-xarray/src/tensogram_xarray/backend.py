@@ -57,6 +57,7 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
         merge_objects: bool = False,
         range_threshold: float = 0.5,
         storage_options: dict[str, Any] | None = None,
+        verify_hash: bool = False,
     ) -> xr.Dataset:
         """Open a single tensogram message as an :class:`xr.Dataset`.
 
@@ -85,6 +86,26 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
         storage_options
             Key-value pairs forwarded to the object store backend when
             the path is a remote URL.  Ignored for local files.
+        verify_hash
+            When *True*, every full ``decode_object`` (or
+            ``file_decode_object``) call materialised by this Dataset's
+            lazy backing arrays is verified against its inline xxh3
+            hash; ``MissingHashError`` / ``HashMismatchError`` from
+            the underlying tensogram bindings propagate to the
+            caller's first read.
+
+            **Caveat — partial-range fast path is unverified.**  Per
+            the decode-time verification contract (see
+            ``plans/DESIGN.md`` §"Integrity Hashing" and
+            ``plans/WIRE_FORMAT.md`` §11.1), ``decode_range`` reads
+            only a slice of the encoded payload and cannot meaningfully
+            verify a whole-frame hash.  When ``verify_hash=True`` and
+            the lazy reader chooses ``file_decode_range`` (because
+            the requested slice is below ``range_threshold``), no
+            verification happens for that read.  Set
+            ``range_threshold=0`` to force every read through the
+            full-decode path if you need consistent integrity
+            coverage.
 
         Returns
         -------
@@ -106,6 +127,7 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
                 variable_key=variable_key,
                 range_threshold=range_threshold,
                 storage_options=storage_options,
+                verify_hash=verify_hash,
             )
             if not datasets:
                 return xr.Dataset()
@@ -118,6 +140,7 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
             variable_key=variable_key,
             range_threshold=range_threshold,
             storage_options=storage_options,
+            verify_hash=verify_hash,
         )
 
         drop_set = set(drop_variables) if drop_variables else None

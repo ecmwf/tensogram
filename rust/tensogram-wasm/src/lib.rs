@@ -45,13 +45,29 @@ use wasm_bindgen::prelude::*;
 ///                             NaN / +Inf / -Inf at positions recorded in
 ///                             the frame's mask companion.  Set to false to
 ///                             receive 0.0-substituted bytes as on disk.
+/// @param verify_hash - When true, verify each data-object frame's
+///                      inline xxh3 hash against the recomputed
+///                      digest.  Default false (opt-in).
+///                      Integrity failures are returned as a
+///                      `JsValue` carrying a thrown `js_sys::Error`
+///                      with structured properties attached: `name`
+///                      is `"MissingHashError"` (when the per-frame
+///                      `HASH_PRESENT` flag is clear) or
+///                      `"HashMismatchError"` (when the slot
+///                      disagrees), and `objectIndex` /
+///                      `expected` / `actual` carry the structured
+///                      payload that the TS wrapper routes to
+///                      dedicated error classes.  See
+///                      `plans/DESIGN.md` §"Integrity Hashing".
 #[wasm_bindgen]
 pub fn decode(
     buf: &[u8],
     restore_non_finite: Option<bool>,
-) -> Result<DecodedMessage, JsError> {
+    verify_hash: Option<bool>,
+) -> Result<DecodedMessage, JsValue> {
     let options = DecodeOptions {
         restore_non_finite: restore_non_finite.unwrap_or(true),
+        verify_hash: verify_hash.unwrap_or(false),
         ..Default::default()
     };
     let (metadata, objects) = core::decode(buf, &options).map_err(js_err)?;
@@ -64,7 +80,7 @@ pub fn decode(
 /// @returns Plain JS object with version (synthesised from the
 ///   preamble), base, _reserved_, _extra_ fields
 #[wasm_bindgen]
-pub fn decode_metadata(buf: &[u8]) -> Result<JsValue, JsError> {
+pub fn decode_metadata(buf: &[u8]) -> Result<JsValue, JsValue> {
     let meta = core::decode_metadata(buf).map_err(js_err)?;
     metadata_to_js(&meta)
 }
@@ -74,14 +90,18 @@ pub fn decode_metadata(buf: &[u8]) -> Result<JsValue, JsError> {
 /// @param buf - Raw .tgm message bytes
 /// @param index - Zero-based object index
 /// @param restore_non_finite - Restore canonical NaN / Inf from mask companion (default: true)
+/// @param verify_hash - Per-frame hash verification (default false).
+///                      See `decode` for the full contract.
 #[wasm_bindgen]
 pub fn decode_object(
     buf: &[u8],
     index: usize,
     restore_non_finite: Option<bool>,
-) -> Result<DecodedMessage, JsError> {
+    verify_hash: Option<bool>,
+) -> Result<DecodedMessage, JsValue> {
     let options = DecodeOptions {
         restore_non_finite: restore_non_finite.unwrap_or(true),
+        verify_hash: verify_hash.unwrap_or(false),
         ..Default::default()
     };
     let (metadata, descriptor, data) = core::decode_object(buf, index, &options).map_err(js_err)?;
@@ -98,7 +118,7 @@ pub fn decode_object(
 /// @param buf - Buffer potentially containing multiple .tgm messages
 /// @returns Array of [offset, length] pairs
 #[wasm_bindgen]
-pub fn scan(buf: &[u8]) -> Result<JsValue, JsError> {
+pub fn scan(buf: &[u8]) -> Result<JsValue, JsValue> {
     let positions = core::scan(buf);
     to_js(&positions)
 }
@@ -131,7 +151,7 @@ pub fn encode(
     pos_inf_mask_method: Option<String>,
     neg_inf_mask_method: Option<String>,
     small_mask_threshold_bytes: Option<usize>,
-) -> Result<js_sys::Uint8Array, JsError> {
+) -> Result<js_sys::Uint8Array, JsValue> {
     let metadata = metadata_from_js(&metadata_js)?;
     let (descriptors, data_vec) = extract_descriptor_data_pairs(&objects_js)?;
     let pairs: Vec<(&core::DataObjectDescriptor, &[u8])> = descriptors
@@ -177,7 +197,7 @@ impl DecodedMessage {
     /// `version` is synthesised from the preamble (v3: always `3`)
     /// for TypeScript ergonomics — see `metadata_to_js` in
     /// `convert.rs`.
-    pub fn metadata(&self) -> Result<JsValue, JsError> {
+    pub fn metadata(&self) -> Result<JsValue, JsValue> {
         metadata_to_js(&self.metadata)
     }
 
@@ -187,7 +207,7 @@ impl DecodedMessage {
     }
 
     /// Object descriptor (shape, dtype, encoding, etc.) as a JS object.
-    pub fn object_descriptor(&self, index: usize) -> Result<JsValue, JsError> {
+    pub fn object_descriptor(&self, index: usize) -> Result<JsValue, JsValue> {
         // Reuse payload() for the bounds check so the error message is consistent.
         let _ = self.payload(index)?;
         to_js(&self.objects[index].0)
@@ -200,25 +220,25 @@ impl DecodedMessage {
     /// **Warning**: This view points directly into WASM linear memory.
     /// It becomes invalid if WASM memory grows.  Read the data or pass
     /// it to WebGL before any further WASM calls.
-    pub fn object_data_f32(&self, index: usize) -> Result<js_sys::Float32Array, JsError> {
+    pub fn object_data_f32(&self, index: usize) -> Result<js_sys::Float32Array, JsValue> {
         let data = self.payload(index)?;
         view_as_f32(data)
     }
 
     /// Zero-copy Float64Array view.
-    pub fn object_data_f64(&self, index: usize) -> Result<js_sys::Float64Array, JsError> {
+    pub fn object_data_f64(&self, index: usize) -> Result<js_sys::Float64Array, JsValue> {
         let data = self.payload(index)?;
         view_as_f64(data)
     }
 
     /// Zero-copy Int32Array view.
-    pub fn object_data_i32(&self, index: usize) -> Result<js_sys::Int32Array, JsError> {
+    pub fn object_data_i32(&self, index: usize) -> Result<js_sys::Int32Array, JsValue> {
         let data = self.payload(index)?;
         view_as_i32(data)
     }
 
     /// Zero-copy Uint8Array view.
-    pub fn object_data_u8(&self, index: usize) -> Result<js_sys::Uint8Array, JsError> {
+    pub fn object_data_u8(&self, index: usize) -> Result<js_sys::Uint8Array, JsValue> {
         let data = self.payload(index)?;
         Ok(view_as_u8(data))
     }
@@ -226,24 +246,24 @@ impl DecodedMessage {
     // ── Safe-copy variants ───────────────────────────────────────────────
 
     /// Safe-copy Float32Array (JS-heap owned, survives WASM memory growth).
-    pub fn object_data_copy_f32(&self, index: usize) -> Result<js_sys::Float32Array, JsError> {
+    pub fn object_data_copy_f32(&self, index: usize) -> Result<js_sys::Float32Array, JsValue> {
         let data = self.payload(index)?;
         copy_as_f32(data)
     }
 
     /// Raw payload byte length for object at `index`.
-    pub fn object_byte_length(&self, index: usize) -> Result<usize, JsError> {
+    pub fn object_byte_length(&self, index: usize) -> Result<usize, JsValue> {
         Ok(self.payload(index)?.len())
     }
 }
 
 impl DecodedMessage {
-    fn payload(&self, index: usize) -> Result<&[u8], JsError> {
+    fn payload(&self, index: usize) -> Result<&[u8], JsValue> {
         if index >= self.objects.len() {
-            return Err(JsError::new(&format!(
+            return Err(JsValue::from(js_sys::Error::new(&format!(
                 "object index {index} out of range (have {})",
                 self.objects.len()
-            )));
+            ))));
         }
         Ok(&self.objects[index].1)
     }
@@ -318,7 +338,7 @@ pub use extras::{
 /// }
 /// ```
 #[wasm_bindgen]
-pub fn doctor() -> Result<JsValue, JsError> {
+pub fn doctor() -> Result<JsValue, JsValue> {
     let report = tensogram::doctor::run_diagnostics();
     convert::to_js(&report)
 }

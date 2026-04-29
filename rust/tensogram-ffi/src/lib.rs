@@ -96,6 +96,14 @@ pub enum TgmError {
     /// Returned by `tgm_*_iter_next` when iteration is exhausted.
     EndOfIter = 9,
     Remote = 10,
+    /// Decode-time hash verification was requested but the frame's
+    /// `HASH_PRESENT` flag is clear (see `plans/WIRE_FORMAT.md` §2.5).
+    /// Distinct from `HashMismatch` — the digest didn't disagree;
+    /// there was no digest recorded to compare against.  The
+    /// offending object index is available through
+    /// `tgm_last_error_object_index()` for the duration of the
+    /// thread-local error.
+    MissingHash = 11,
 }
 
 fn to_error_code(e: &TensogramError) -> TgmError {
@@ -107,6 +115,7 @@ fn to_error_code(e: &TensogramError) -> TgmError {
         TensogramError::Object(_) => TgmError::Object,
         TensogramError::Io(_) => TgmError::Io,
         TensogramError::HashMismatch { .. } => TgmError::HashMismatch,
+        TensogramError::MissingHash { .. } => TgmError::MissingHash,
         TensogramError::Remote(_) => TgmError::Remote,
         // `TensogramError` is `#[non_exhaustive]` so future variants
         // can land without breaking this mapping at compile time.
@@ -927,6 +936,7 @@ pub extern "C" fn tgm_decode_with_options(
     buf_len: usize,
     native_byte_order: i32,
     threads: u32,
+    verify_hash: i32,
     mask_options: *const TgmDecodeMaskOptions,
     out: *mut *mut TgmMessage,
 ) -> TgmError {
@@ -939,6 +949,7 @@ pub extern "C" fn tgm_decode_with_options(
     let mut options = DecodeOptions {
         native_byte_order: native_byte_order != 0,
         threads,
+        verify_hash: verify_hash != 0,
         ..Default::default()
     };
     unsafe { apply_decode_mask_options(&mut options, mask_options) };
@@ -1239,6 +1250,7 @@ pub extern "C" fn tgm_decode(
     buf_len: usize,
     native_byte_order: i32,
     threads: u32,
+    verify_hash: i32,
     out: *mut *mut TgmMessage,
 ) -> TgmError {
     if buf.is_null() || out.is_null() {
@@ -1250,6 +1262,7 @@ pub extern "C" fn tgm_decode(
     let options = DecodeOptions {
         native_byte_order: native_byte_order != 0,
         threads,
+        verify_hash: verify_hash != 0,
         ..Default::default()
     };
 
@@ -1324,6 +1337,7 @@ pub extern "C" fn tgm_decode_object(
     index: usize,
     native_byte_order: i32,
     threads: u32,
+    verify_hash: i32,
     out: *mut *mut TgmMessage,
 ) -> TgmError {
     if buf.is_null() || out.is_null() {
@@ -1335,6 +1349,7 @@ pub extern "C" fn tgm_decode_object(
     let options = DecodeOptions {
         native_byte_order: native_byte_order != 0,
         threads,
+        verify_hash: verify_hash != 0,
         ..Default::default()
     };
 
@@ -2019,6 +2034,7 @@ pub extern "C" fn tgm_file_decode_message(
     index: usize,
     native_byte_order: i32,
     threads: u32,
+    verify_hash: i32,
     out: *mut *mut TgmMessage,
 ) -> TgmError {
     if file.is_null() || out.is_null() {
@@ -2030,6 +2046,7 @@ pub extern "C" fn tgm_file_decode_message(
     let options = DecodeOptions {
         native_byte_order: native_byte_order != 0,
         threads,
+        verify_hash: verify_hash != 0,
         ..Default::default()
     };
 
@@ -2593,6 +2610,7 @@ pub extern "C" fn tgm_object_iter_create(
     buf: *const u8,
     buf_len: usize,
     native_byte_order: i32,
+    verify_hash: i32,
     out: *mut *mut TgmObjectIter,
 ) -> TgmError {
     if buf.is_null() || out.is_null() {
@@ -2602,6 +2620,7 @@ pub extern "C" fn tgm_object_iter_create(
     let data = unsafe { slice::from_raw_parts(buf, buf_len) };
     let options = DecodeOptions {
         native_byte_order: native_byte_order != 0,
+        verify_hash: verify_hash != 0,
         ..Default::default()
     };
 
@@ -3521,6 +3540,7 @@ mod tests {
             encoded.len(),
             0, // no native byte order rewrite
             0, // threads
+            0, // verify_hash
             &mut msg,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -3605,6 +3625,7 @@ mod tests {
             encoded.len(),
             0,
             0, // threads
+            0, // verify_hash
             &mut msg,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -3631,7 +3652,7 @@ mod tests {
         let encoded = ffi_encode_single_f32_tensor(&values, "");
 
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         assert_eq!(super::tgm_payload_has_hash(msg, 0), 0);
@@ -3641,13 +3662,158 @@ mod tests {
         super::tgm_message_free(msg);
     }
 
+    // ── verify_hash on the FFI surface ───────────────────────────────
+
+    #[test]
+    fn ffi_decode_verify_hash_succeeds_on_hashed_message() {
+        // Cell B: hashed message + verify_hash=1 → Ok.
+        let encoded = ffi_encode_with_hash(&[1.0f32, 2.0]);
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(
+            encoded.as_ptr(),
+            encoded.len(),
+            0,
+            0,
+            1, // verify_hash
+            &mut msg,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        assert!(!msg.is_null());
+        super::tgm_message_free(msg);
+    }
+
+    #[test]
+    fn ffi_decode_verify_hash_returns_missing_hash_on_unhashed_message() {
+        // Cell C: unhashed message + verify_hash=1 → MissingHash.
+        let encoded = ffi_encode_single_f32_tensor(&[5.0f32], "");
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(
+            encoded.as_ptr(),
+            encoded.len(),
+            0,
+            0,
+            1, // verify_hash
+            &mut msg,
+        );
+        assert!(
+            matches!(err, super::TgmError::MissingHash),
+            "expected MissingHash, got error code {}",
+            err as i32
+        );
+        let last = unsafe { CStr::from_ptr(super::tgm_last_error()) }
+            .to_str()
+            .unwrap();
+        assert!(
+            last.contains("object 0"),
+            "last error should name the offending object: {last}"
+        );
+        // No message handle was returned — nothing to free.
+    }
+
+    #[test]
+    fn ffi_decode_verify_hash_returns_hash_mismatch_on_tampered_slot() {
+        // Cell D: hashed message with a flipped inline-hash-slot
+        // byte + verify_hash=1 → HashMismatch.  Tampering the
+        // slot (rather than the body) keeps the rest of the frame
+        // structurally valid so the CBOR descriptor parses
+        // cleanly — only the inline-hash check fires.  See
+        // `decode_verify_hash.rs` (Rust core) for the cell E
+        // variant where the payload itself is tampered.
+        let mut encoded = ffi_encode_with_hash(&[10.0f32, 20.0, 30.0]);
+        // Locate the message footer's preceding object frame and
+        // flip a byte of the 8-byte hash slot, which lives at
+        // `frame_end - 12` for every frame.  Walking from the
+        // preamble end (24) we find the first NTensorFrame.
+        let frame_start = {
+            let mut pos = 24usize;
+            loop {
+                assert!(pos + 16 <= encoded.len(), "frame not found");
+                if &encoded[pos..pos + 2] == b"FR"
+                    && tensogram::wire::FrameHeader::read_from(&encoded[pos..])
+                        .map(|fh| fh.frame_type.is_data_object())
+                        .unwrap_or(false)
+                {
+                    break pos;
+                }
+                pos += 1;
+            }
+        };
+        let fh = tensogram::wire::FrameHeader::read_from(&encoded[frame_start..]).unwrap();
+        let frame_end = frame_start + fh.total_length as usize;
+        let slot_byte = frame_end - 12; // first byte of the 8-byte slot
+        encoded[slot_byte] ^= 0xFF;
+
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(
+            encoded.as_ptr(),
+            encoded.len(),
+            0,
+            0,
+            1, // verify_hash
+            &mut msg,
+        );
+        assert!(
+            matches!(err, super::TgmError::HashMismatch),
+            "expected HashMismatch, got error code {}",
+            err as i32
+        );
+        let last = unsafe { CStr::from_ptr(super::tgm_last_error()) }
+            .to_str()
+            .unwrap();
+        assert!(
+            last.contains("object 0"),
+            "last error should name the offending object: {last}"
+        );
+    }
+
+    #[test]
+    fn ffi_decode_verify_hash_off_silently_decodes_unhashed_message() {
+        // Cell A complement — no verify, unhashed message decodes
+        // cleanly (the existing `ffi_encode_decode_no_hash` test
+        // covers this implicitly; here we add an explicit
+        // verify_hash=0 assertion to pin the default).
+        let encoded = ffi_encode_single_f32_tensor(&[5.0f32], "");
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode(
+            encoded.as_ptr(),
+            encoded.len(),
+            0,
+            0,
+            0, // verify_hash off
+            &mut msg,
+        );
+        assert!(matches!(err, super::TgmError::Ok));
+        super::tgm_message_free(msg);
+    }
+
+    #[test]
+    fn ffi_decode_object_verify_hash_returns_missing_hash_on_unhashed() {
+        // Cell C for tgm_decode_object.
+        let encoded = ffi_encode_single_f32_tensor(&[5.0f32], "");
+        let mut msg: *mut super::TgmMessage = ptr::null_mut();
+        let err = super::tgm_decode_object(
+            encoded.as_ptr(),
+            encoded.len(),
+            0,
+            0,
+            0,
+            1, // verify_hash
+            &mut msg,
+        );
+        assert!(
+            matches!(err, super::TgmError::MissingHash),
+            "expected MissingHash, got error code {}",
+            err as i32
+        );
+    }
+
     #[test]
     fn ffi_encode_with_extra_metadata() {
         let values = [1.0f32, 2.0];
         let encoded = ffi_encode_single_f32_tensor(&values, r#""source":"test_source","count":42"#);
 
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         // Extract metadata from decoded message
@@ -3751,14 +3917,14 @@ mod tests {
     #[test]
     fn ffi_decode_null_buf() {
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(ptr::null(), 0, 0, 0, &mut msg);
+        let err = super::tgm_decode(ptr::null(), 0, 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::InvalidArg));
     }
 
     #[test]
     fn ffi_decode_null_out() {
         let data = [0u8; 10];
-        let err = super::tgm_decode(data.as_ptr(), data.len(), 0, 0, ptr::null_mut());
+        let err = super::tgm_decode(data.as_ptr(), data.len(), 0, 0, 0, ptr::null_mut());
         assert!(matches!(err, super::TgmError::InvalidArg));
     }
 
@@ -3766,7 +3932,7 @@ mod tests {
     fn ffi_decode_garbage_data() {
         let data = [0u8; 10];
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(data.as_ptr(), data.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(data.as_ptr(), data.len(), 0, 0, 0, &mut msg);
         // Should fail with a framing or other error
         assert!(!matches!(err, super::TgmError::Ok));
     }
@@ -3906,6 +4072,7 @@ mod tests {
             0, // index
             0, // native byte order
             0, // threads
+            0, // verify_hash
             &mut msg,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -3938,6 +4105,7 @@ mod tests {
             999, // out of range
             0,
             0, // threads
+            0, // verify_hash
             &mut msg,
         );
         assert!(!matches!(err, super::TgmError::Ok));
@@ -3946,11 +4114,11 @@ mod tests {
     #[test]
     fn ffi_decode_object_null_args() {
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode_object(ptr::null(), 0, 0, 0, 0, &mut msg);
+        let err = super::tgm_decode_object(ptr::null(), 0, 0, 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::InvalidArg));
 
         let data = [0u8; 10];
-        let err = super::tgm_decode_object(data.as_ptr(), data.len(), 0, 0, 0, ptr::null_mut());
+        let err = super::tgm_decode_object(data.as_ptr(), data.len(), 0, 0, 0, 0, ptr::null_mut());
         assert!(matches!(err, super::TgmError::InvalidArg));
     }
 
@@ -3963,7 +4131,7 @@ mod tests {
 
         let encoded = ffi_encode_single_f32_tensor(&[1.0f32], "");
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         let err = super::tgm_message_metadata(msg, ptr::null_mut());
@@ -4004,7 +4172,7 @@ mod tests {
     fn ffi_message_accessors_out_of_bounds() {
         let encoded = ffi_encode_single_f32_tensor(&[1.0f32], "");
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         // Index 1 does not exist (only index 0)
@@ -4035,7 +4203,7 @@ mod tests {
     fn ffi_object_data_null_out_len() {
         let encoded = ffi_encode_single_f32_tensor(&[1.0f32], "");
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         // null out_len should not crash
@@ -4375,7 +4543,7 @@ mod tests {
 
         // Decode message
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_file_decode_message(file2, 0, 0, 0, &mut msg);
+        let err = super::tgm_file_decode_message(file2, 0, 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         assert_eq!(super::tgm_message_num_objects(msg), 1);
@@ -4440,7 +4608,7 @@ mod tests {
         assert!(matches!(err, super::TgmError::InvalidArg));
 
         // decode_message null args
-        let err = super::tgm_file_decode_message(ptr::null_mut(), 0, 0, 0, ptr::null_mut());
+        let err = super::tgm_file_decode_message(ptr::null_mut(), 0, 0, 0, 0, ptr::null_mut());
         assert!(matches!(err, super::TgmError::InvalidArg));
 
         // read_message null args
@@ -4559,7 +4727,7 @@ mod tests {
         assert_eq!(count, 1);
 
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_file_decode_message(file, 0, 0, 0, &mut msg);
+        let err = super::tgm_file_decode_message(file, 0, 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         let mut data_len: usize = 0;
@@ -4710,7 +4878,7 @@ mod tests {
         assert!(matches!(err, super::TgmError::Ok));
 
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_file_decode_message(file, 0, 0, 0, &mut msg);
+        let err = super::tgm_file_decode_message(file, 0, 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         let mut meta: *mut super::TgmMetadata = ptr::null_mut();
@@ -5028,7 +5196,7 @@ mod tests {
 
         // Decode
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         let mut dl: usize = 0;
@@ -5118,6 +5286,7 @@ mod tests {
             encoded.as_ptr(),
             encoded.len(),
             0, // no native byte order
+            0, // verify_hash
             &mut iter,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -5150,11 +5319,11 @@ mod tests {
     #[test]
     fn ffi_object_iter_null_args() {
         let mut iter: *mut super::TgmObjectIter = ptr::null_mut();
-        let err = super::tgm_object_iter_create(ptr::null(), 0, 0, &mut iter);
+        let err = super::tgm_object_iter_create(ptr::null(), 0, 0, 0, &mut iter);
         assert!(matches!(err, super::TgmError::InvalidArg));
 
         let data = [0u8; 10];
-        let err = super::tgm_object_iter_create(data.as_ptr(), data.len(), 0, ptr::null_mut());
+        let err = super::tgm_object_iter_create(data.as_ptr(), data.len(), 0, 0, ptr::null_mut());
         assert!(matches!(err, super::TgmError::InvalidArg));
 
         // next null iter
@@ -5279,7 +5448,7 @@ mod tests {
         super::tgm_bytes_free(out);
 
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         assert_eq!(super::tgm_message_version(msg), 3);
@@ -5339,7 +5508,7 @@ mod tests {
         // hashes are extracted.
         let bytes = std::fs::read(&path).expect("read file");
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(bytes.as_ptr(), bytes.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(bytes.as_ptr(), bytes.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         assert_eq!(super::tgm_payload_has_hash(msg, 0), 1);
@@ -5411,7 +5580,7 @@ mod tests {
         ));
         let mut file_msg: *mut super::TgmMessage = ptr::null_mut();
         assert!(matches!(
-            super::tgm_file_decode_message(file, 0, 0, 0, &mut file_msg),
+            super::tgm_file_decode_message(file, 0, 0, 0, 0, &mut file_msg),
             super::TgmError::Ok
         ));
         let file_has = super::tgm_payload_has_hash(file_msg, 0);
@@ -5427,7 +5596,7 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         let mut buf_msg: *mut super::TgmMessage = ptr::null_mut();
         assert!(matches!(
-            super::tgm_decode(bytes.as_ptr(), bytes.len(), 0, 0, &mut buf_msg),
+            super::tgm_decode(bytes.as_ptr(), bytes.len(), 0, 0, 0, &mut buf_msg),
             super::TgmError::Ok
         ));
         let buf_hv_ptr = super::tgm_object_hash_value(buf_msg, 0);
@@ -5537,7 +5706,7 @@ mod tests {
 
         // Decode all
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, &mut msg);
+        let err = super::tgm_decode(encoded.as_ptr(), encoded.len(), 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
         assert_eq!(super::tgm_message_num_objects(msg), 2);
 
@@ -5699,7 +5868,7 @@ mod tests {
         assert!(matches!(err, super::TgmError::Ok));
 
         let mut msg: *mut super::TgmMessage = ptr::null_mut();
-        let err = super::tgm_file_decode_message(file, 0, 0, 0, &mut msg);
+        let err = super::tgm_file_decode_message(file, 0, 0, 0, 0, &mut msg);
         assert!(matches!(err, super::TgmError::Ok));
 
         let mut dl: usize = 0;
@@ -6022,6 +6191,7 @@ mod tests {
             encoded.len(),
             /* native_byte_order */ 0,
             /* threads */ 0,
+            0, // verify_hash
             &mut msg,
         );
         assert!(matches!(err, super::TgmError::Ok));
@@ -6181,6 +6351,7 @@ mod tests {
             encoded.len(),
             0,
             0,
+            0,           // verify_hash
             ptr::null(), // mask_options = NULL → default restore_non_finite=true
             &mut msg,
         );
@@ -6206,6 +6377,7 @@ mod tests {
             encoded.len(),
             0,
             0,
+            0, // verify_hash
             &mask_opts,
             &mut msg,
         );
@@ -6218,7 +6390,7 @@ mod tests {
     #[test]
     fn ffi_decode_with_options_null_out() {
         let err =
-            super::tgm_decode_with_options(b"x".as_ptr(), 1, 0, 0, ptr::null(), ptr::null_mut());
+            super::tgm_decode_with_options(b"x".as_ptr(), 1, 0, 0, 0, ptr::null(), ptr::null_mut());
         assert!(matches!(err, super::TgmError::InvalidArg));
         let msg = unsafe { CStr::from_ptr(super::tgm_last_error()) }
             .to_str()

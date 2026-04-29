@@ -7,7 +7,7 @@
 // does it submit to any jurisdiction.
 
 //! Integration tests for mask-aware `validate --full`.
-//! See `plans/WIRE_FORMAT.md` §11.2 for the spec.
+//! See `plans/WIRE_FORMAT.md` §11.3 for the spec.
 //!
 //! Covers:
 //! - Masked NaN/Inf positions do NOT raise NanDetected / InfDetected

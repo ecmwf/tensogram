@@ -115,6 +115,7 @@ int main(void) {
     rc = tgm_decode(enc.data, enc.len,
                     /*native_byte_order=*/1,
                     /*threads=*/0,
+                    /*verify_hash=*/0,
                     &msg);
     if (rc != TGM_ERROR_OK || msg == NULL) {
         fprintf(stderr, "decode failed: rc=%d msg=%s\n", (int)rc, err_or(tgm_last_error()));
