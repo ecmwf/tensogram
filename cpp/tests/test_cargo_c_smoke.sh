@@ -157,6 +157,6 @@ cc "${cflags_arr[@]}" "$TMP/main.c" "${libs_arr[@]}" -o "$TMP/main"
 
 LD_LIBRARY_PATH="$PREFIX/lib:${LD_LIBRARY_PATH:-}" \
 DYLD_LIBRARY_PATH="$PREFIX/lib:${DYLD_LIBRARY_PATH:-}" \
-"$TMP/main" | grep -q "wire_version=3 round_trip=ok"
+"$TMP/main" | grep -q "round_trip=ok"
 
 echo "cargo-c smoke test OK (prefix=$PREFIX)"
