@@ -34,9 +34,9 @@ use tensogram_lib::validate::{
 };
 use tensogram_lib::{
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
-    HashAlgorithm, RESERVED_KEY, RemoteScanOptions, StreamingEncoder, TensogramError,
-    TensogramFile, decode, decode_descriptors, decode_metadata, decode_object, decode_range,
-    encode, encode_pre_encoded, scan,
+    RESERVED_KEY, RemoteScanOptions, StreamingEncoder, TensogramError, TensogramFile, decode,
+    decode_descriptors, decode_metadata, decode_object, decode_range, encode, encode_pre_encoded,
+    parse_hash_name, scan,
 };
 
 type PyObject = Py<PyAny>;
@@ -1315,8 +1315,10 @@ impl PyBufferIter {
 #[pyfunction]
 #[pyo3(name = "compute_hash", signature = (data, algo="xxh3"))]
 fn py_compute_hash(data: PyBackedBytes, algo: &str) -> PyResult<String> {
-    let algorithm = HashAlgorithm::parse(algo).map_err(to_py_err)?;
-    Ok(tensogram_lib::compute_hash(&data, algorithm))
+    // v3 has exactly one algorithm; the binding still accepts a
+    // string for forward-compat and to reject typos cleanly.
+    parse_hash_name(Some(algo)).map_err(to_py_err)?;
+    Ok(tensogram_lib::compute_hash(&data))
 }
 
 /// Run environment diagnostics and return the report as a Python dict.
@@ -2875,10 +2877,21 @@ fn make_encode_options_full(
 ) -> PyResult<EncodeOptions> {
     use tensogram_lib::encode::{AggregateHashPolicy, MaskMethod};
 
-    let hash_algorithm = match hash {
-        None => None,
-        Some("xxh3") => Some(HashAlgorithm::Xxh3),
-        Some(other) => return Err(PyValueError::new_err(format!("unknown hash: {other}"))),
+    // Python-side `hash=` semantics — distinct from the Rust core
+    // `parse_hash_name`:
+    //   - `hash=None`     → no hashing (off)
+    //   - `hash="xxh3"`   → on (the canonical algorithm)
+    //   - `hash="none"`   → off
+    //   - any other value → ValueError
+    //
+    // The Python convention `hash=None` ⇒ "off" is preserved from
+    // pre-Wave-2.1; the Rust `parse_hash_name(None)` default is "on"
+    // for callers that omit the field entirely.  The FFI follows the
+    // same NULL → off rule as Python.
+    let hashing = match hash {
+        None => false,
+        Some(name) => parse_hash_name(Some(name))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?,
     };
     let parse_method = |s: Option<&str>, default: MaskMethod| -> PyResult<MaskMethod> {
         let Some(name) = s else {
@@ -2906,7 +2919,7 @@ fn make_encode_options_full(
 
     let defaults = EncodeOptions::default();
     Ok(EncodeOptions {
-        hash_algorithm,
+        hashing,
         threads,
         allow_nan,
         allow_inf,

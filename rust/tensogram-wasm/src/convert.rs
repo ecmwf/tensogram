@@ -72,12 +72,7 @@ pub(crate) fn build_encode_options_full(
         }
     };
     Ok(EncodeOptions {
-        hash_algorithm: if hash.unwrap_or(true) {
-            Some(core::hash::HashAlgorithm::Xxh3)
-        } else {
-            None
-        },
-        emit_preceders: false,
+        hashing: hash.unwrap_or(true),
         allow_nan: allow_nan.unwrap_or(false),
         allow_inf: allow_inf.unwrap_or(false),
         nan_mask_method: parse(nan_mask_method, defaults.nan_mask_method.clone())?,

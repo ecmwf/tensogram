@@ -70,7 +70,7 @@ fn allow_nan_on_finite_input_produces_no_masks() {
     let options = EncodeOptions {
         allow_nan: true,
         allow_inf: true,
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
@@ -119,7 +119,7 @@ fn allow_nan_f64_produces_nan_mask_with_correct_positions() {
     let desc = make_descriptor(vec![5], Dtype::Float64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         // Force roaring explicitly even for small masks to avoid the
         // small-mask auto-fallback to "none" kicking in.
         nan_mask_method: MaskMethod::Roaring,
@@ -148,7 +148,7 @@ fn allow_nan_default_decode_restores_canonical_nan() {
     let desc = make_descriptor(vec![5], Dtype::Float64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
@@ -193,7 +193,7 @@ fn restore_honours_non_native_byte_order() {
         .collect();
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -223,7 +223,7 @@ fn allow_nan_restore_disabled_returns_substituted_zero() {
     let desc = make_descriptor(vec![5], Dtype::Float64);
     let enc_options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &enc_options).unwrap();
@@ -252,7 +252,7 @@ fn allow_inf_both_signs_produces_separate_masks() {
     let desc = make_descriptor(vec![6], Dtype::Float64);
     let options = EncodeOptions {
         allow_inf: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -293,7 +293,7 @@ fn all_three_kinds_coexist_in_one_frame() {
     let options = EncodeOptions {
         allow_nan: true,
         allow_inf: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -320,7 +320,7 @@ fn mask_method_rle_reflected_in_descriptor() {
     let desc = make_descriptor(vec![8], Dtype::Float64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         nan_mask_method: MaskMethod::Rle,
         small_mask_threshold_bytes: 0,
         ..Default::default()
@@ -340,7 +340,7 @@ fn small_mask_auto_fallback_to_none() {
     let desc = make_descriptor(vec![2], Dtype::Float64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         nan_mask_method: MaskMethod::Roaring,
         small_mask_threshold_bytes: 128, // default
         ..Default::default()
@@ -362,7 +362,7 @@ fn small_mask_threshold_zero_disables_auto_fallback() {
     let desc = make_descriptor(vec![2], Dtype::Float64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         nan_mask_method: MaskMethod::Roaring,
         small_mask_threshold_bytes: 0,
         ..Default::default()
@@ -386,7 +386,7 @@ fn complex64_nan_restored_to_both_components() {
     let desc = make_descriptor(vec![4], Dtype::Complex64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -425,7 +425,7 @@ fn allow_nan_and_allow_inf_f32_end_to_end_restores_all_kinds() {
     let options = EncodeOptions {
         allow_nan: true,
         allow_inf: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -456,7 +456,7 @@ fn streaming_allow_nan_produces_equivalent_frame() {
     let desc = make_descriptor(vec![3], Dtype::Float64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -504,7 +504,7 @@ fn hash_verifies_against_substituted_payload() {
     let options = EncodeOptions {
         allow_nan: true,
         allow_inf: true,
-        hash_algorithm: Some(HashAlgorithm::Xxh3),
+        hashing: true,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -532,7 +532,7 @@ fn zero_element_tensor_with_allow_nan_has_no_masks() {
     let options = EncodeOptions {
         allow_nan: true,
         allow_inf: true,
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
@@ -553,7 +553,7 @@ fn all_nan_payload_round_trips() {
     let desc = make_descriptor(vec![16], Dtype::Float64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -579,7 +579,7 @@ fn unknown_mask_method_at_decode_errors_clearly() {
     let desc = make_descriptor(vec![2], Dtype::Float64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -620,7 +620,7 @@ fn multi_object_message_with_mixed_finite_and_nan_payloads() {
 
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };

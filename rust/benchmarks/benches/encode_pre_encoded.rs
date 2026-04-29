@@ -91,7 +91,7 @@ fn bench_encode_paths(c: &mut Criterion) {
     let meta = GlobalMetadata::default();
     // Disable hashing to isolate encode pipeline cost (not hash cost).
     let opts = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
 

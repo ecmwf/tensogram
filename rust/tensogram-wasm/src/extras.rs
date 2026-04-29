@@ -84,13 +84,13 @@ pub fn decode_range(
 ///
 /// @param data - Bytes to hash.
 /// @param algo - Algorithm name; default `"xxh3"`.  Unknown algorithm
-///   names raise a metadata error (matching `HashAlgorithm::parse`).
+///   names raise a metadata error.
 /// @returns The hex digest as a string (16 chars for xxh3-64).
 #[wasm_bindgen]
 pub fn compute_hash(data: &[u8], algo: Option<String>) -> Result<String, JsError> {
     let name = algo.as_deref().unwrap_or("xxh3");
-    let algorithm = core::HashAlgorithm::parse(name).map_err(js_err)?;
-    Ok(core::compute_hash(data, algorithm))
+    core::parse_hash_name(Some(name)).map_err(js_err)?;
+    Ok(core::compute_hash(data))
 }
 
 // ── simple_packing_compute_params ────────────────────────────────────────────

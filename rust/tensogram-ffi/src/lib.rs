@@ -50,9 +50,9 @@ use tensogram::validate::{
     ValidateOptions, ValidationLevel, validate_file as core_validate_file, validate_message,
 };
 use tensogram::{
-    DataObjectDescriptor, DecodeOptions, EncodeOptions, GlobalMetadata, HashAlgorithm,
-    RESERVED_KEY, StreamingEncoder, TensogramError, TensogramFile, decode, decode_metadata,
-    decode_object, decode_range, encode, encode_pre_encoded, scan,
+    DataObjectDescriptor, DecodeOptions, EncodeOptions, GlobalMetadata, RESERVED_KEY,
+    StreamingEncoder, TensogramError, TensogramFile, decode, decode_metadata, decode_object,
+    decode_range, encode, encode_pre_encoded, parse_hash_name, scan,
 };
 
 // ---------------------------------------------------------------------------
@@ -616,11 +616,22 @@ struct ParsedEncode<'a> {
 
 /// Parse the hash algorithm from a nullable C string pointer.
 ///
-/// Returns `Ok(None)` when the pointer is null, `Ok(Some(algo))` when valid,
-/// or `Err((code, message))` on parse failure.
-fn parse_hash_algo(hash_algo: *const c_char) -> Result<Option<HashAlgorithm>, (TgmError, String)> {
+/// Returns `Ok(false)` when the pointer is null (the C-FFI
+/// convention: `hash_algo = NULL` means "no hashing"), `Ok(true)`
+/// when the caller named the canonical algorithm `"xxh3"`,
+/// `Ok(false)` for the explicit `"none"`, and `Err((code, message))`
+/// on parse failure.
+///
+/// **Important — diverges from the Rust API default.** The Rust
+/// [`tensogram::parse_hash_name`] helper treats `None` as "use the
+/// default = hashing on", which matches `EncodeOptions::default()`.
+/// The FFI keeps the v2 convention `NULL → off` because the C-call
+/// idiom is "if you want a feature, name it; if you don't, pass
+/// NULL" and the FFI's `tgm_encode_*` functions always require an
+/// explicit `hash_algo` argument anyway.
+fn parse_hash_algo(hash_algo: *const c_char) -> Result<bool, (TgmError, String)> {
     if hash_algo.is_null() {
-        return Ok(None);
+        return Ok(false);
     }
     let s = unsafe { CStr::from_ptr(hash_algo) }.to_str().map_err(|_| {
         (
@@ -628,9 +639,7 @@ fn parse_hash_algo(hash_algo: *const c_char) -> Result<Option<HashAlgorithm>, (T
             "invalid UTF-8 in hash_algo".to_string(),
         )
     })?;
-    HashAlgorithm::parse(s)
-        .map(Some)
-        .map_err(|e| (TgmError::InvalidArg, e.to_string()))
+    parse_hash_name(Some(s)).map_err(|e| (TgmError::InvalidArg, e.to_string()))
 }
 
 /// Collect data slices from parallel C arrays with null-pointer validation.
@@ -709,9 +718,9 @@ unsafe fn parse_encode_args<'a>(
     }
 
     let data_slices = unsafe { collect_data_slices(data_ptrs, data_lens, num_objects) }?;
-    let hash_algorithm = parse_hash_algo(hash_algo)?;
+    let hashing = parse_hash_algo(hash_algo)?;
     let options = EncodeOptions {
-        hash_algorithm,
+        hashing,
         threads,
         ..Default::default()
     };
@@ -1006,22 +1015,11 @@ pub extern "C" fn tgm_streaming_encoder_create_with_options(
             return TgmError::Metadata;
         }
     };
-    let hash_algorithm = if hash_algo.is_null() {
-        None
-    } else {
-        let s = match unsafe { CStr::from_ptr(hash_algo) }.to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                set_last_error("invalid UTF-8 in hash_algo");
-                return TgmError::InvalidArg;
-            }
-        };
-        match HashAlgorithm::parse(s) {
-            Ok(a) => Some(a),
-            Err(e) => {
-                set_last_error(&e.to_string());
-                return TgmError::InvalidArg;
-            }
+    let hashing = match parse_hash_algo(hash_algo) {
+        Ok(b) => b,
+        Err((code, msg)) => {
+            set_last_error(&msg);
+            return code;
         }
     };
     let file = match std::fs::File::create(path_str) {
@@ -1032,7 +1030,7 @@ pub extern "C" fn tgm_streaming_encoder_create_with_options(
         }
     };
     let mut options = EncodeOptions {
-        hash_algorithm,
+        hashing,
         threads,
         ..Default::default()
     };
@@ -6273,9 +6271,14 @@ pub extern "C" fn tgm_compute_hash(
         return TgmError::InvalidArg;
     }
 
-    let algorithm = if algo.is_null() {
-        HashAlgorithm::Xxh3
-    } else {
+    // v3 has exactly one algorithm; the FFI accepts NULL, "xxh3" or
+    // "none" through `parse_hash_algo`.  When the caller passes
+    // "none" we still compute and return the xxh3 digest because
+    // `tgm_compute_hash` is the standalone "compute a digest" entry
+    // point — there is no "no hash" output for it; the only thing
+    // strict-input gets us is rejecting bogus algorithm names like
+    // "sha256" with a clear error.
+    if !algo.is_null() {
         let s = match unsafe { CStr::from_ptr(algo) }.to_str() {
             Ok(s) => s,
             Err(_) => {
@@ -6283,17 +6286,14 @@ pub extern "C" fn tgm_compute_hash(
                 return TgmError::InvalidArg;
             }
         };
-        match HashAlgorithm::parse(s) {
-            Ok(a) => a,
-            Err(e) => {
-                set_last_error(&e.to_string());
-                return TgmError::InvalidArg;
-            }
+        if let Err(e) = parse_hash_name(Some(s)) {
+            set_last_error(&e.to_string());
+            return TgmError::InvalidArg;
         }
-    };
+    }
 
     let input = unsafe { slice::from_raw_parts(data, data_len) };
-    let hex = tensogram::hash::compute_hash(input, algorithm);
+    let hex = tensogram::hash::compute_hash(input);
     // Rebuild via boxed slice to guarantee capacity == len for tgm_bytes_free.
     let mut bytes = hex.into_bytes().into_boxed_slice().into_vec();
     let result = TgmBytes {
@@ -6481,22 +6481,11 @@ pub extern "C" fn tgm_streaming_encoder_create(
         }
     };
 
-    let hash_algorithm = if hash_algo.is_null() {
-        None
-    } else {
-        let s = match unsafe { CStr::from_ptr(hash_algo) }.to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                set_last_error("invalid UTF-8 in hash_algo");
-                return TgmError::InvalidArg;
-            }
-        };
-        match HashAlgorithm::parse(s) {
-            Ok(a) => Some(a),
-            Err(e) => {
-                set_last_error(&e.to_string());
-                return TgmError::InvalidArg;
-            }
+    let hashing = match parse_hash_algo(hash_algo) {
+        Ok(b) => b,
+        Err((code, msg)) => {
+            set_last_error(&msg);
+            return code;
         }
     };
 
@@ -6509,7 +6498,7 @@ pub extern "C" fn tgm_streaming_encoder_create(
     };
 
     let options = EncodeOptions {
-        hash_algorithm,
+        hashing,
         threads,
         ..Default::default()
     };

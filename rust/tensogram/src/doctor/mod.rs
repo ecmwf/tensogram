@@ -405,7 +405,7 @@ fn encode_decode_one(
     use crate::{decode::DecodeOptions, encode, encode::EncodeOptions, types::GlobalMetadata};
     let meta = GlobalMetadata::default();
     let opts = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let encoded = encode(&meta, &[(desc, raw)], &opts)?;
@@ -578,8 +578,7 @@ pub fn run_self_test() -> Vec<SelfTestResult> {
 
 fn run_core_self_tests(out: &mut Vec<SelfTestResult>) {
     use crate::{
-        decode::DecodeOptions, encode, encode::EncodeOptions, hash::HashAlgorithm, iter::messages,
-        types::GlobalMetadata,
+        decode::DecodeOptions, encode, encode::EncodeOptions, iter::messages, types::GlobalMetadata,
     };
 
     // ── encode/decode none/none/none round-trip ──────────────────────────────
@@ -612,7 +611,7 @@ fn run_core_self_tests(out: &mut Vec<SelfTestResult>) {
                 .extra
                 .insert("param".to_owned(), ciborium::Value::Text("2t".to_owned()));
             let opts = EncodeOptions {
-                hash_algorithm: None,
+                hashing: false,
                 ..Default::default()
             };
             let encoded = encode(
@@ -643,7 +642,7 @@ fn run_core_self_tests(out: &mut Vec<SelfTestResult>) {
             );
             let meta = GlobalMetadata::default();
             let opts = EncodeOptions {
-                hash_algorithm: None,
+                hashing: false,
                 ..Default::default()
             };
             let mut buf = Vec::new();
@@ -677,7 +676,7 @@ fn run_core_self_tests(out: &mut Vec<SelfTestResult>) {
             );
             let meta = GlobalMetadata::default();
             let opts = EncodeOptions {
-                hash_algorithm: Some(HashAlgorithm::Xxh3),
+                hashing: true,
                 ..Default::default()
             };
             let encoded = encode(&meta, &[(&desc, f32_to_bytes(&data).as_slice())], &opts)?;

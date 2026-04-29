@@ -11,7 +11,6 @@ use std::collections::BTreeMap;
 use crate::dtype::Dtype;
 use crate::error::{Result, TensogramError};
 use crate::framing::{self, EncodedObject};
-use crate::hash::HashAlgorithm;
 use crate::metadata::RESERVED_KEY;
 use crate::substitute_and_mask::{self, MaskSet};
 use crate::types::{DataObjectDescriptor, GlobalMetadata, MaskDescriptor, MasksMetadata};
@@ -30,8 +29,20 @@ use tensogram_encodings::simple_packing::{self, SimplePackingParams};
 /// Options for encoding.
 #[derive(Debug, Clone)]
 pub struct EncodeOptions {
-    /// Hash algorithm to use for payload integrity. None = no hashing.
-    pub hash_algorithm: Option<HashAlgorithm>,
+    /// Whether to compute frame-body integrity hashes (xxh3-64).
+    ///
+    /// `true` (the default) populates the inline hash slot of every
+    /// frame and sets the message-wide `HASHES_PRESENT` preamble flag.
+    /// `false` writes zero into every slot and leaves `HASHES_PRESENT`
+    /// clear; readers skip integrity verification.
+    ///
+    /// v3 has exactly one hash algorithm — xxh3-64 — so this is a
+    /// `bool` rather than an `Option<HashAlgorithm>` (Wave 2.1
+    /// collapse).  When a second algorithm is added the field will
+    /// become an enum again as a deliberate signal at every call site.
+    /// The wire-format string identifier is
+    /// [`crate::hash::HASH_ALGORITHM_NAME`].
+    pub hashing: bool,
     /// Which backend to use for szip / zstd when both FFI and pure-Rust
     /// implementations are compiled in.
     ///
@@ -207,7 +218,7 @@ impl AggregateHashPolicy {
 impl Default for EncodeOptions {
     fn default() -> Self {
         Self {
-            hash_algorithm: Some(HashAlgorithm::Xxh3),
+            hashing: true,
             compression_backend: pipeline::CompressionBackend::default(),
             threads: 0,
             parallel_threshold_bytes: None,
@@ -422,16 +433,12 @@ fn encode_one_object(
     // path is xxh3-specific; other `HashAlgorithm` variants and
     // `PreEncoded` mode fall back to `compute_hash` further down.
     //
-    // The match on `options.hash_algorithm` is exhaustive so that
-    // adding a new `HashAlgorithm` variant becomes a compile error
-    // here, forcing the maintainer to either wire a new inline path
-    // for that algorithm or to route it explicitly through the
-    // post-hoc `compute_hash` fallback below.
-    let inline_hash_requested = matches!(mode, EncodeMode::Raw)
-        && match options.hash_algorithm {
-            Some(HashAlgorithm::Xxh3) => true,
-            None => false,
-        };
+    // v3 has a single hash algorithm (xxh3-64); the boolean
+    // `options.hashing` selects between "hash" and "no hash".  When
+    // a second algorithm is added this collapses back to a match on
+    // an enum so that adding a variant forces a compile error at
+    // every call site.
+    let inline_hash_requested = matches!(mode, EncodeMode::Raw) && options.hashing;
     config.compute_hash = inline_hash_requested;
 
     let (encoded_payload, inline_hash) = match mode {
@@ -614,7 +621,7 @@ fn encode_inner(
     framing::encode_message(
         &enriched_meta,
         &encoded_objects,
-        options.hash_algorithm,
+        options.hashing,
         hash_policy,
     )
 }
@@ -1680,7 +1687,7 @@ mod tests {
         let desc = make_descriptor(vec![4]);
         let data = vec![0u8; 16];
         let options = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..Default::default()
         };
         let result = encode(
@@ -1709,7 +1716,7 @@ mod tests {
         let desc = make_descriptor(vec![2]);
         let data = vec![0u8; 8];
         let options = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..Default::default()
         };
         let msg = encode(
@@ -1753,7 +1760,7 @@ mod tests {
         let desc = make_descriptor(vec![2]);
         let data = vec![0u8; 8];
         let options = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..Default::default()
         };
         let msg = encode(&meta, &[(&desc, data.as_slice())], &options).unwrap();
@@ -1790,7 +1797,7 @@ mod tests {
         let desc = make_descriptor(vec![2]);
         let data = vec![0u8; 8];
         let options = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..Default::default()
         };
         // Should succeed — only top-level _reserved_ is rejected
@@ -1862,7 +1869,7 @@ mod tests {
         let desc = make_descriptor(vec![3, 4]);
         let data = vec![0u8; 3 * 4 * 4]; // 3*4 float32
         let options = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..Default::default()
         };
         let msg = encode(&meta, &[(&desc, data.as_slice())], &options).unwrap();
@@ -1920,7 +1927,7 @@ mod tests {
         let data = vec![0u8; 4]; // 1 float32
         let meta = GlobalMetadata::default();
         let options = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..Default::default()
         };
         let msg = encode(&meta, &[(&desc, data.as_slice())], &options).unwrap();
@@ -1981,7 +1988,7 @@ mod tests {
         let desc = make_descriptor(vec![2]);
         let data = vec![0u8; 8];
         let options = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..Default::default()
         };
         let msg = encode(&meta, &[(&desc, data.as_slice())], &options).unwrap();
@@ -2006,7 +2013,7 @@ mod tests {
         let desc = make_descriptor(vec![2]);
         let data = vec![0u8; 8];
         let options = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..Default::default()
         };
         let msg = encode(&meta, &[(&desc, data.as_slice())], &options).unwrap();
@@ -2038,7 +2045,7 @@ mod tests {
         let desc = make_descriptor(vec![2]);
         let data = vec![0u8; 8];
         let options = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..Default::default()
         };
         let msg = encode(&meta, &[(&desc, data.as_slice())], &options).unwrap();
@@ -2152,7 +2159,7 @@ mod tests {
         let desc = make_descriptor(vec![2]);
         let data = vec![0u8; 8];
         let options = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..Default::default()
         };
         let msg = encode(
@@ -2210,7 +2217,7 @@ mod tests {
             let data = vec![0u8; data_len];
             let meta = GlobalMetadata::default();
             let options = EncodeOptions {
-                hash_algorithm: None,
+                hashing: false,
                 ..Default::default()
             };
             let msg = encode(&meta, &[(&desc, data.as_slice())], &options).unwrap();
@@ -2287,7 +2294,7 @@ mod tests {
         let desc = make_descriptor(vec![2]);
         let data = vec![0u8; 8];
         let options = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..Default::default()
         };
         let msg = encode(&meta, &[(&desc, data.as_slice())], &options).unwrap();

@@ -317,7 +317,7 @@ mod tests {
             &meta,
             &[(&desc, &data)],
             &EncodeOptions {
-                hash_algorithm: None,
+                hashing: false,
                 ..Default::default()
             },
         )
@@ -390,7 +390,7 @@ mod tests {
             &meta,
             &[],
             &EncodeOptions {
-                hash_algorithm: None,
+                hashing: false,
                 ..Default::default()
             },
         )
@@ -424,7 +424,7 @@ mod tests {
             &meta,
             &[(&desc0, data0.as_slice()), (&desc1, data1.as_slice())],
             &EncodeOptions {
-                hash_algorithm: None,
+                hashing: false,
                 ..Default::default()
             },
         )

@@ -1054,7 +1054,7 @@ fn test_encode_pre_encoded_no_hash() {
     let desc = make_raw_desc(4, Dtype::Float32, "none", BTreeMap::new());
     let meta = GlobalMetadata::default();
     let opts = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode_pre_encoded(&meta, &[(&desc, &raw)], &opts)
@@ -1161,7 +1161,7 @@ fn test_streaming_pre_encoded_with_preceder() {
     // `EncodeOptions` field.
     let meta = GlobalMetadata::default();
     let opts = EncodeOptions {
-        hash_algorithm: Some(tensogram::HashAlgorithm::Xxh3),
+        hashing: true,
         ..Default::default()
     };
 

@@ -163,7 +163,7 @@ fn f64_exhaustive_encoding_none_filter_none_compression_none() {
             let options = EncodeOptions {
                 allow_nan: true,
                 allow_inf: true,
-                hash_algorithm: None,
+                hashing: false,
                 nan_mask_method: method.clone(),
                 pos_inf_mask_method: method.clone(),
                 neg_inf_mask_method: method.clone(),
@@ -280,7 +280,7 @@ fn f64_simple_packing_with_nan_round_trip() {
 
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -323,7 +323,7 @@ fn f64_shuffle_filter_with_nan_round_trip() {
 
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -349,7 +349,7 @@ fn f64_zstd_compression_with_nan_round_trip() {
         .insert("zstd_level".to_string(), ciborium::Value::Integer(3.into()));
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -379,7 +379,7 @@ fn f64_blosc2_compression_with_nan_round_trip() {
     );
     let options = EncodeOptions {
         allow_inf: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -503,7 +503,7 @@ fn c64_exhaustive_encoding_none_filter_none_compression_none() {
             let options = EncodeOptions {
                 allow_nan: true,
                 allow_inf: true,
-                hash_algorithm: None,
+                hashing: false,
                 nan_mask_method: method.clone(),
                 pos_inf_mask_method: method.clone(),
                 neg_inf_mask_method: method.clone(),
@@ -542,7 +542,7 @@ fn f32_with_nan_round_trip_sampled() {
     let options = EncodeOptions {
         allow_nan: true,
         allow_inf: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -569,7 +569,7 @@ fn f16_with_nan_round_trip_sampled() {
     let options = EncodeOptions {
         allow_nan: true,
         allow_inf: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -597,7 +597,7 @@ fn bf16_with_nan_round_trip_sampled() {
     let options = EncodeOptions {
         allow_nan: true,
         allow_inf: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -625,7 +625,7 @@ fn c128_with_nan_round_trip_sampled() {
     let options = EncodeOptions {
         allow_nan: true,
         allow_inf: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };

@@ -136,7 +136,7 @@ pub(crate) fn validate_integrity(
         }
         match metadata::cbor_to_hash_frame(payload) {
             Ok(hf) => {
-                if hash::HashAlgorithm::parse(&hf.algorithm).is_err() {
+                if hf.algorithm != hash::HASH_ALGORITHM_NAME {
                     issues.push(warn(
                         IssueCode::UnknownHashAlgorithm,
                         ValidationLevel::Integrity,

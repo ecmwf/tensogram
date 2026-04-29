@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 
 use tensogram::{
     ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
-    HashAlgorithm, IssueCode, ValidateOptions, decode, encode, validate_message,
+    HASH_ALGORITHM_NAME, IssueCode, ValidateOptions, decode, encode, validate_message,
 };
 
 fn make_descriptor() -> DataObjectDescriptor {
@@ -58,26 +58,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 1. Default encode populates the inline hash slots ─────────────────────
     //
-    // EncodeOptions::default() sets hash_algorithm = Some(Xxh3).  When
-    // hash_algorithm is Some(_) the preamble's HASHES_PRESENT flag is
-    // set and every frame's inline body-hash slot is populated with
-    // xxh3-64 of its body — that's the surface validate_message reads
-    // at level Integrity.  The separate `create_header_hashes` /
-    // `create_footer_hashes` options control an optional aggregate
-    // HashFrame that lists per-object hashes in a single CBOR frame
-    // (a listing convenience, not the integrity surface).
+    // EncodeOptions::default() sets hashing = true.  When hashing is on
+    // the preamble's HASHES_PRESENT flag is set and every frame's
+    // inline body-hash slot is populated with xxh3-64 of its body —
+    // that's the surface validate_message reads at level Integrity.
+    // The separate `aggregate_hash` policy controls an optional
+    // aggregate HashFrame that lists per-object hashes in a single
+    // CBOR frame (a listing convenience, not the integrity surface).
 
     let hashed = encode(&meta, &[(&desc, &data)], &EncodeOptions::default())?;
     println!("Hashed message:   {} bytes", hashed.len());
 
     // ── 2. Encode with hashing turned off ─────────────────────────────────────
     //
-    // `HASHES_PRESENT` is set iff `hash_algorithm.is_some()` — setting it
-    // to `None` clears the preamble flag and leaves every inline slot
+    // `HASHES_PRESENT` is set iff `hashing == true` — setting it to
+    // `false` clears the preamble flag and leaves every inline slot
     // zero.  validate_message then reports `hash_verified = false`.
 
     let no_hash_opts = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let unhashed = encode(&meta, &[(&desc, &data)], &no_hash_opts)?;
@@ -85,9 +84,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── 3. Decode is hash-agnostic ────────────────────────────────────────────
     //
-    // Both messages round-trip through `decode`.  `verify_hash: true`
-    // is accepted for API compatibility but does not perform integrity
-    // checking — use `validate_message` for that.
+    // Both messages round-trip through `decode`.  Decode is a pure
+    // deserialisation in v3 — integrity checking lives in
+    // `validate_message`.
 
     decode(&hashed, &DecodeOptions::default())?;
     decode(&unhashed, &DecodeOptions::default())?;
@@ -98,10 +97,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== validate_message (clean, hashed) ===");
     let report = validate_message(&hashed, &ValidateOptions::default());
     println!(
-        "  issues={}  hash_verified={}  algorithm={:?}",
+        "  issues={}  hash_verified={}  algorithm={}",
         report.issues.len(),
         report.hash_verified,
-        HashAlgorithm::Xxh3,
+        HASH_ALGORITHM_NAME,
     );
     assert!(report.is_ok());
     assert!(report.hash_verified);

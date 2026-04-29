@@ -1993,7 +1993,7 @@ fn buffered_encode_without_hashing_clears_aggregate() {
     };
     let data = vec![0u8; 4];
     let opts = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         // Even with `Both` requested, hashes are off so no aggregate
         // frame is emitted.
         aggregate_hash: tensogram::AggregateHashPolicy::Both,
@@ -2455,7 +2455,7 @@ fn data_object_inline_hashes_none_when_hashing_disabled() {
     };
     let data = vec![0u8; 4];
     let opts = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(&global, &[(&desc, &data)], &opts).unwrap();

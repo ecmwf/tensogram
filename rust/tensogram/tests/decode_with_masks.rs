@@ -70,7 +70,7 @@ fn decode_with_masks_returns_substituted_payload_plus_masks() {
     let options = EncodeOptions {
         allow_nan: true,
         allow_inf: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -101,7 +101,7 @@ fn decode_with_masks_empty_when_no_masks_present() {
     let data = f64_bytes(&[1.0, 2.0, 3.0]);
     let desc = make_descriptor(vec![3], Dtype::Float64);
     let options = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
@@ -130,7 +130,7 @@ fn round_trip_with_method(method: MaskMethod) {
     let options = EncodeOptions {
         allow_nan: true,
         nan_mask_method: method.clone(),
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -203,7 +203,7 @@ fn restore_non_finite_false_keeps_zeros() {
     let options = EncodeOptions {
         allow_nan: true,
         allow_inf: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -232,7 +232,7 @@ fn large_sparse_nan_payload_round_trips() {
     let desc = make_descriptor(vec![n as u64], Dtype::Float64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: Some(HashAlgorithm::Xxh3),
+        hashing: true,
         // small_mask_threshold stays at default 128; 10_000 bits is
         // ~1_250 bytes so roaring is used.
         ..Default::default()
@@ -263,7 +263,7 @@ fn decode_object_restores_nan() {
     let desc = make_descriptor(vec![3], Dtype::Float64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };

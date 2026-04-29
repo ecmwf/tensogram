@@ -759,7 +759,7 @@ fn encode_without_hash() {
     let data = vec![0u8; 16];
 
     let options = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let encoded = encode(&meta, &[(&desc, &data)], &options).unwrap();
@@ -779,7 +779,7 @@ fn verify_hash_true_on_unhashed_message_succeeds() {
     let data = vec![0u8; 16];
 
     let options = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let encoded = encode(&meta, &[(&desc, &data)], &options).unwrap();
@@ -1165,9 +1165,9 @@ fn concatenated_messages_scannable() {
 // ── 24. Encode options: default includes xxh3 hash ───────────────────────────
 
 #[test]
-fn default_encode_options_use_xxh3() {
+fn default_encode_options_have_hashing_on() {
     let opts = EncodeOptions::default();
-    assert_eq!(opts.hash_algorithm, Some(HashAlgorithm::Xxh3));
+    assert!(opts.hashing);
 }
 
 // ── 25. Get param with integer as f64 ────────────────────────────────────────
@@ -1761,25 +1761,23 @@ fn little_endian_roundtrip() {
     assert_eq!(objects[0].0.byte_order, ByteOrder::Little);
 }
 
-// ── 36. HashAlgorithm methods ────────────────────────────────────────────────
+// ── 36. parse_hash_name (Wave 2.1) ───────────────────────────────────────────
 
 #[test]
-fn hash_algorithm_as_str() {
-    assert_eq!(HashAlgorithm::Xxh3.as_str(), "xxh3");
+fn hash_algorithm_constant_is_xxh3() {
+    assert_eq!(tensogram::HASH_ALGORITHM_NAME, "xxh3");
 }
 
 #[test]
-fn hash_algorithm_parse_valid() {
-    assert_eq!(
-        tensogram::hash::HashAlgorithm::parse("xxh3").unwrap(),
-        HashAlgorithm::Xxh3
-    );
+fn parse_hash_name_accepts_canonical() {
+    assert!(tensogram::parse_hash_name(None).unwrap());
+    assert!(tensogram::parse_hash_name(Some("xxh3")).unwrap());
+    assert!(!tensogram::parse_hash_name(Some("none")).unwrap());
 }
 
 #[test]
-fn hash_algorithm_parse_invalid() {
-    let result = tensogram::hash::HashAlgorithm::parse("md5");
-    assert!(result.is_err());
+fn parse_hash_name_rejects_unknown() {
+    assert!(tensogram::parse_hash_name(Some("md5")).is_err());
 }
 
 // ── 37. compute_hash determinism ─────────────────────────────────────────────
@@ -1787,15 +1785,15 @@ fn hash_algorithm_parse_invalid() {
 #[test]
 fn compute_hash_deterministic() {
     let data = b"hello tensogram";
-    let h1 = tensogram::compute_hash(data, HashAlgorithm::Xxh3);
-    let h2 = tensogram::compute_hash(data, HashAlgorithm::Xxh3);
+    let h1 = tensogram::compute_hash(data);
+    let h2 = tensogram::compute_hash(data);
     assert_eq!(h1, h2);
     assert_eq!(h1.len(), 16); // 64-bit hex
 }
 
 #[test]
 fn compute_hash_empty_data() {
-    let h = tensogram::compute_hash(b"", HashAlgorithm::Xxh3);
+    let h = tensogram::compute_hash(b"");
     assert_eq!(h.len(), 16);
 }
 
@@ -1903,7 +1901,7 @@ fn preceder_with_hash_verification() {
     );
 
     let options = EncodeOptions {
-        hash_algorithm: Some(hash::HashAlgorithm::Xxh3),
+        hashing: true,
         ..Default::default()
     };
     let buf = Vec::new();
@@ -1944,7 +1942,7 @@ fn preceder_with_extra_keys_tolerated() {
 
     let desc = make_descriptor(vec![4], Dtype::Float32);
     let payload = vec![0u8; 16];
-    let obj_frame = framing::encode_data_object_frame(&desc, &payload, false, None).unwrap();
+    let obj_frame = framing::encode_data_object_frame(&desc, &payload, false, false).unwrap();
 
     let mut out = Vec::new();
     // Preamble placeholder
@@ -2207,7 +2205,7 @@ fn framing_base_auto_extends_when_fewer_than_objects() {
     let desc = make_descriptor(vec![2], Dtype::Float32);
     let data = vec![0u8; 8];
     let options = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(
@@ -2278,7 +2276,7 @@ fn encode_base_exactly_matches_descriptors() {
     let desc = make_descriptor(vec![2], Dtype::Float32);
     let data = vec![0u8; 8];
     let options = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(
@@ -2454,7 +2452,7 @@ fn garbage_between_messages_scan_still_finds_both() {
 fn streaming_encoder_finish_immediately_produces_valid_message() {
     let meta = make_global_meta();
     let options = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
 
@@ -3088,7 +3086,7 @@ fn mask_threshold_small_mask_is_downgraded_to_none() {
         allow_nan: true,
         nan_mask_method: MaskMethod::Roaring,
         small_mask_threshold_bytes: 16,
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &opts).unwrap();
@@ -3123,7 +3121,7 @@ fn mask_threshold_large_mask_keeps_requested_method() {
         allow_nan: true,
         nan_mask_method: MaskMethod::Roaring,
         small_mask_threshold_bytes: 4,
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &opts).unwrap();
@@ -3163,7 +3161,7 @@ fn zstd_mask_level_preserved_in_descriptor_params() {
         allow_nan: true,
         nan_mask_method: MaskMethod::Zstd { level: Some(5) },
         small_mask_threshold_bytes: 0,
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &opts).unwrap();

@@ -24,8 +24,8 @@ use std::collections::BTreeMap;
 
 use ciborium::Value as CborValue;
 use tensogram::{
-    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata,
-    HashAlgorithm, decode, encode,
+    ByteOrder, DataObjectDescriptor, DecodeOptions, Dtype, EncodeOptions, GlobalMetadata, decode,
+    encode,
 };
 
 fn make_global_meta() -> GlobalMetadata {
@@ -447,7 +447,7 @@ fn auto_compute_matches_explicit_path_byte_for_byte() {
     // metadata level, so we compare the decoded descriptor params +
     // decoded payload rather than raw wire bytes).
     let opts = EncodeOptions {
-        hash_algorithm: Some(HashAlgorithm::Xxh3),
+        hashing: true,
         ..EncodeOptions::default()
     };
 

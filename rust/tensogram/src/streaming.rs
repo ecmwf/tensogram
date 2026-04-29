@@ -16,7 +16,7 @@ use crate::encode::{
 };
 use crate::error::{Result, TensogramError};
 use crate::framing::EncodedObject;
-use crate::hash::HashAlgorithm;
+
 use crate::metadata::{self, RESERVED_KEY};
 use crate::substitute_and_mask;
 use crate::types::{DataObjectDescriptor, GlobalMetadata, HashFrame, IndexFrame};
@@ -62,8 +62,9 @@ pub struct StreamingEncoder<W: Write> {
     completed_objects: Vec<EncodedObject>,
     /// Total bytes written so far.
     bytes_written: u64,
-    /// Hash algorithm to use for payload integrity.
-    hash_algorithm: Option<HashAlgorithm>,
+    /// Whether to compute frame-body integrity hashes (xxh3-64).
+    /// True when [`EncodeOptions.hashing`] was true at construction.
+    hashing: bool,
     /// Whether to emit an aggregate `FooterHash` frame at finish-time
     /// (v3).  The header-hash aggregate is unavailable in streaming
     /// mode — if the caller's [`AggregateHashPolicy`] resolves to
@@ -120,7 +121,7 @@ impl<W: Write> StreamingEncoder<W> {
         // code.  The new contract surfaces the mismatch as a typed
         // error at construction time.
         let resolved = options.aggregate_hash.resolved_streaming()?;
-        let emit_footer_hash = options.hash_algorithm.is_some() && resolved.emits_footer();
+        let emit_footer_hash = options.hashing && resolved.emits_footer();
 
         let meta_cbor = metadata::global_metadata_to_cbor(global_meta)?;
 
@@ -132,7 +133,7 @@ impl<W: Write> StreamingEncoder<W> {
         flags.set(MessageFlags::FOOTER_METADATA);
         flags.set(MessageFlags::FOOTER_INDEX);
         flags.set(MessageFlags::PRECEDER_METADATA);
-        if options.hash_algorithm.is_some() {
+        if options.hashing {
             // v3: HASHES_PRESENT signals per-frame inline hash slots
             // are populated; set whenever hashing is enabled.
             flags.set(MessageFlags::HASHES_PRESENT);
@@ -152,13 +153,7 @@ impl<W: Write> StreamingEncoder<W> {
         let mut bytes_written = PREAMBLE_SIZE as u64;
 
         // Write header metadata frame
-        let frame_bytes = build_frame(
-            FrameType::HeaderMetadata,
-            1,
-            0,
-            &meta_cbor,
-            options.hash_algorithm,
-        );
+        let frame_bytes = build_frame(FrameType::HeaderMetadata, 1, 0, &meta_cbor, options.hashing);
         writer.write_all(&frame_bytes)?;
         bytes_written += frame_bytes.len() as u64;
 
@@ -176,7 +171,7 @@ impl<W: Write> StreamingEncoder<W> {
             hash_entries: Vec::new(),
             completed_objects: Vec::new(),
             bytes_written,
-            hash_algorithm: options.hash_algorithm,
+            hashing: options.hashing,
             emit_footer_hash_frame: emit_footer_hash,
             global_meta: global_meta.clone(),
             pending_preceder: false,
@@ -220,13 +215,7 @@ impl<W: Write> StreamingEncoder<W> {
             ..Default::default()
         };
         let cbor = crate::metadata::global_metadata_to_cbor(&preceder_meta)?;
-        let frame_bytes = build_frame(
-            FrameType::PrecederMetadata,
-            1,
-            0,
-            &cbor,
-            self.hash_algorithm,
-        );
+        let frame_bytes = build_frame(FrameType::PrecederMetadata, 1, 0, &cbor, self.hashing);
         self.writer.write_all(&frame_bytes)?;
         self.bytes_written += frame_bytes.len() as u64;
 
@@ -394,7 +383,7 @@ impl<W: Write> StreamingEncoder<W> {
             &mut self.writer,
             &mut final_desc,
             encoded_bytes,
-            self.hash_algorithm,
+            self.hashing,
         )?;
         self.bytes_written += frame_len;
 
@@ -406,7 +395,7 @@ impl<W: Write> StreamingEncoder<W> {
         // a second pass over the payload.
         let hash_entry = inline_digest.map(|d| {
             (
-                HashAlgorithm::Xxh3.as_str().to_string(),
+                crate::hash::HASH_ALGORITHM_NAME.to_string(),
                 crate::hash::format_xxh3_digest(d),
             )
         });
@@ -481,13 +470,8 @@ impl<W: Write> StreamingEncoder<W> {
                 }
             }
             let meta_cbor = metadata::global_metadata_to_cbor(&enriched_meta)?;
-            let frame_bytes = build_frame(
-                FrameType::FooterMetadata,
-                1,
-                0,
-                &meta_cbor,
-                self.hash_algorithm,
-            );
+            let frame_bytes =
+                build_frame(FrameType::FooterMetadata, 1, 0, &meta_cbor, self.hashing);
             self.writer.write_all(&frame_bytes)?;
             self.bytes_written += frame_bytes.len() as u64;
             write_padding(&mut self.writer, &mut self.bytes_written)?;
@@ -497,10 +481,11 @@ impl<W: Write> StreamingEncoder<W> {
         // `EncodeOptions.aggregate_hash` (resolved to `Footer` for
         // streaming mode at construction time).
         if self.emit_footer_hash_frame && self.hash_entries.iter().any(|e| e.is_some()) {
-            let algorithm = self
-                .hash_algorithm
-                .map(|a| a.as_str().to_string())
-                .unwrap_or_default();
+            let algorithm = if self.hashing {
+                crate::hash::HASH_ALGORITHM_NAME.to_string()
+            } else {
+                String::new()
+            };
             let hashes: Vec<String> = self
                 .hash_entries
                 .iter()
@@ -508,8 +493,7 @@ impl<W: Write> StreamingEncoder<W> {
                 .collect();
             let hash_frame = HashFrame { algorithm, hashes };
             let hash_cbor = metadata::hash_frame_to_cbor(&hash_frame)?;
-            let frame_bytes =
-                build_frame(FrameType::FooterHash, 1, 0, &hash_cbor, self.hash_algorithm);
+            let frame_bytes = build_frame(FrameType::FooterHash, 1, 0, &hash_cbor, self.hashing);
             self.writer.write_all(&frame_bytes)?;
             self.bytes_written += frame_bytes.len() as u64;
 
@@ -522,13 +506,7 @@ impl<W: Write> StreamingEncoder<W> {
             lengths: self.object_lengths,
         };
         let index_cbor = metadata::index_to_cbor(&index)?;
-        let frame_bytes = build_frame(
-            FrameType::FooterIndex,
-            1,
-            0,
-            &index_cbor,
-            self.hash_algorithm,
-        );
+        let frame_bytes = build_frame(FrameType::FooterIndex, 1, 0, &index_cbor, self.hashing);
         self.writer.write_all(&frame_bytes)?;
         self.bytes_written += frame_bytes.len() as u64;
 
@@ -639,7 +617,7 @@ fn build_frame(
     version: u16,
     flags: u16,
     payload: &[u8],
-    hash_algorithm: Option<HashAlgorithm>,
+    hashing: bool,
 ) -> Vec<u8> {
     debug_assert!(
         !frame_type.is_data_object(),
@@ -657,9 +635,10 @@ fn build_frame(
     out.extend_from_slice(payload);
 
     // Inline hash slot (8 bytes).
-    let hash_value: u64 = match hash_algorithm {
-        Some(HashAlgorithm::Xxh3) => xxhash_rust::xxh3::xxh3_64(payload),
-        None => 0,
+    let hash_value: u64 = if hashing {
+        xxhash_rust::xxh3::xxh3_64(payload)
+    } else {
+        0
     };
     out.extend_from_slice(&hash_value.to_be_bytes());
     out.extend_from_slice(FRAME_END);
@@ -719,7 +698,7 @@ fn write_data_object_frame_hashed<W: Write>(
     writer: &mut W,
     descriptor: &mut DataObjectDescriptor,
     payload: &[u8],
-    hash_algorithm: Option<HashAlgorithm>,
+    hashing: bool,
 ) -> Result<(u64, Option<u64>)> {
     use crate::wire::{DATA_OBJECT_FOOTER_SIZE, DataObjectFlags, FRAME_END};
 
@@ -765,9 +744,7 @@ fn write_data_object_frame_hashed<W: Write>(
     // then fold the CBOR bytes into the same hasher in step 3.
     const CHUNK: usize = 64 * 1024;
     let mut inline_hasher: Option<xxhash_rust::xxh3::Xxh3Default> =
-        hash_algorithm.map(|alg| match alg {
-            HashAlgorithm::Xxh3 => xxhash_rust::xxh3::Xxh3Default::new(),
-        });
+        hashing.then(xxhash_rust::xxh3::Xxh3Default::new);
     let mut offset = 0;
     while offset < payload_len {
         let end = (offset + CHUNK).min(payload_len);
@@ -882,7 +859,7 @@ mod tests {
         let desc = make_descriptor(vec![4]);
         let data = vec![42u8; 4 * 4];
         let options = EncodeOptions {
-            hash_algorithm: Some(HashAlgorithm::Xxh3),
+            hashing: true,
             ..Default::default()
         };
 
@@ -922,7 +899,7 @@ mod tests {
         let desc = make_descriptor(vec![4]);
         let data = vec![42u8; 4 * 4];
         let options = EncodeOptions {
-            hash_algorithm: Some(HashAlgorithm::Xxh3),
+            hashing: true,
             ..Default::default()
         };
 
@@ -957,7 +934,7 @@ mod tests {
     fn streaming_no_objects() {
         let meta = GlobalMetadata::default();
         let options = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..Default::default()
         };
 
@@ -1274,7 +1251,7 @@ mod tests {
         let desc_for_frame = make_descriptor(vec![4]);
         let payload = vec![0u8; 4 * 4];
         let frame =
-            crate::framing::encode_data_object_frame(&desc_for_frame, &payload, false, None)
+            crate::framing::encode_data_object_frame(&desc_for_frame, &payload, false, false)
                 .unwrap();
 
         // Footer metadata with _reserved_.tensor

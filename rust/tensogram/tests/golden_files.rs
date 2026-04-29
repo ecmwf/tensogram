@@ -190,7 +190,7 @@ fn generate_golden_bytes() -> Vec<(&'static str, Vec<u8>)> {
             payload.extend_from_slice(&v.to_be_bytes());
         }
         let opts = EncodeOptions {
-            hash_algorithm: Some(tensogram::hash::HashAlgorithm::Xxh3),
+            hashing: true,
             ..Default::default()
         };
         let msg = encode::encode(&meta, &[(&desc, &payload)], &opts).unwrap();
