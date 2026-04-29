@@ -16,7 +16,8 @@ use std::ffi::CString;
 use std::path::Path;
 
 use numpy::PyArrayMethods;
-use pyo3::exceptions::{PyIOError, PyRuntimeError, PyUserWarning, PyValueError};
+use pyo3::create_exception;
+use pyo3::exceptions::{PyException, PyIOError, PyRuntimeError, PyUserWarning, PyValueError};
 // `PyFileNotFoundError` is only referenced from the GRIB/NetCDF converter
 // error-mapping helpers, which are themselves cfg-gated.  Gate the import
 // so `--no-default-features --features async` builds do not warn.
@@ -45,6 +46,23 @@ type PyObject = Py<PyAny>;
 // Error conversion
 // ---------------------------------------------------------------------------
 
+// Dedicated exception types for decode-time integrity failures.
+// Hierarchy:
+//
+//     Exception
+//       └── tensogram.IntegrityError                       (base)
+//             ├── tensogram.MissingHashError               (HASH_PRESENT clear)
+//             └── tensogram.HashMismatchError              (slot disagrees)
+//
+// Lets users catch the family with `except IntegrityError:` and
+// distinguish with `isinstance(...)` when they care.  Both
+// classes also carry the structured `object_index` /
+// `expected` / `actual` attributes via Python-side post-
+// construction in the module init below.
+create_exception!(tensogram, IntegrityError, PyException);
+create_exception!(tensogram, MissingHashError, IntegrityError);
+create_exception!(tensogram, HashMismatchError, IntegrityError);
+
 fn to_py_err(e: TensogramError) -> PyErr {
     match e {
         TensogramError::Framing(msg) => PyValueError::new_err(format!("FramingError: {msg}")),
@@ -60,24 +78,31 @@ fn to_py_err(e: TensogramError) -> PyErr {
             expected,
             actual,
         } => {
-            // The Python convention surfaces both errors as a
-            // single hierarchy below `tensogram.IntegrityError`;
-            // see `python/bindings/python/tensogram/__init__.py`.
-            // The wire-side prefix `"HashMismatch:"` lets the
-            // wrapper test the discriminant cheaply.
             let idx = match object_index {
                 Some(i) => i.to_string(),
                 None => "?".to_string(),
             };
-            PyRuntimeError::new_err(format!(
+            // The Display form is the user-facing stringification;
+            // structured fields are also attached to the exception
+            // instance via `set_attr` below (see
+            // `attach_hash_mismatch_attrs`) so user code can write
+            // `except HashMismatchError as e: e.object_index`
+            // rather than parsing the string.
+            let err = HashMismatchError::new_err(format!(
                 "HashMismatch: object_index={idx}, expected={expected}, actual={actual}"
-            ))
+            ));
+            attach_hash_mismatch_attrs(&err, object_index, &expected, &actual);
+            err
         }
-        TensogramError::MissingHash { object_index } => PyRuntimeError::new_err(format!(
-            "MissingHash: object_index={object_index}; \
-             the message was encoded with hashing=false (HASH_PRESENT flag clear) — \
-             re-encode with hashing=true or call decode without verify_hash=True"
-        )),
+        TensogramError::MissingHash { object_index } => {
+            let err = MissingHashError::new_err(format!(
+                "MissingHash: object_index={object_index}; \
+                 the message was encoded with hashing=false (HASH_PRESENT flag clear) — \
+                 re-encode with hashing=true or call decode without verify_hash=True"
+            ));
+            attach_missing_hash_attrs(&err, object_index);
+            err
+        }
         TensogramError::Remote(msg) => PyIOError::new_err(format!("RemoteError: {msg}")),
         // `TensogramError` is `#[non_exhaustive]` (Wave 4); future
         // variants surface here as a generic `ValueError` carrying
@@ -85,6 +110,31 @@ fn to_py_err(e: TensogramError) -> PyErr {
         // exception type is wired in.
         other => PyValueError::new_err(format!("TensogramError: {other}")),
     }
+}
+
+/// Best-effort attachment of structured fields to a Python
+/// exception instance.  `set_attr` failure here is silent because
+/// the user-visible string is still informative; we don't want to
+/// shadow the underlying error with a meta-error.
+fn attach_missing_hash_attrs(err: &PyErr, object_index: usize) {
+    Python::attach(|py| {
+        let value = err.value(py);
+        let _ = value.setattr("object_index", object_index);
+    });
+}
+
+fn attach_hash_mismatch_attrs(
+    err: &PyErr,
+    object_index: Option<usize>,
+    expected: &str,
+    actual: &str,
+) {
+    Python::attach(|py| {
+        let value = err.value(py);
+        let _ = value.setattr("object_index", object_index);
+        let _ = value.setattr("expected", expected);
+        let _ = value.setattr("actual", actual);
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -535,8 +585,10 @@ impl PyTensogramFile {
             native_byte_order=true,
             threads=0,
             restore_non_finite=true,
+            verify_hash=false,
         )
     )]
+    #[allow(clippy::too_many_arguments)]
     fn decode_message(
         &self,
         py: Python<'_>,
@@ -544,11 +596,13 @@ impl PyTensogramFile {
         native_byte_order: bool,
         threads: u32,
         restore_non_finite: bool,
+        verify_hash: bool,
     ) -> PyResult<PyObject> {
         let options = DecodeOptions {
             native_byte_order,
             threads,
             restore_non_finite,
+            verify_hash,
             ..Default::default()
         };
         let (global_meta, data_objects) = py
@@ -587,7 +641,7 @@ impl PyTensogramFile {
         Ok(result.into_any().unbind())
     }
 
-    #[pyo3(signature = (msg_index, obj_index, native_byte_order=true, threads=0))]
+    #[pyo3(signature = (msg_index, obj_index, native_byte_order=true, threads=0, verify_hash=false))]
     #[allow(clippy::too_many_arguments)]
     fn file_decode_object(
         &self,
@@ -596,10 +650,12 @@ impl PyTensogramFile {
         obj_index: usize,
         native_byte_order: bool,
         threads: u32,
+        verify_hash: bool,
     ) -> PyResult<PyObject> {
         let options = DecodeOptions {
             native_byte_order,
             threads,
+            verify_hash,
             ..Default::default()
         };
         let (meta, desc, data) = py
@@ -646,7 +702,7 @@ impl PyTensogramFile {
     }
 
     /// Batch-decode full objects across multiple messages. Remote only.
-    #[pyo3(signature = (msg_indices, obj_index, native_byte_order=true, threads=0))]
+    #[pyo3(signature = (msg_indices, obj_index, native_byte_order=true, threads=0, verify_hash=false))]
     #[allow(clippy::too_many_arguments)]
     fn file_decode_object_batch(
         &self,
@@ -655,10 +711,12 @@ impl PyTensogramFile {
         obj_index: usize,
         native_byte_order: bool,
         threads: u32,
+        verify_hash: bool,
     ) -> PyResult<PyObject> {
         let options = DecodeOptions {
             native_byte_order,
             threads,
+            verify_hash,
             ..Default::default()
         };
 
@@ -822,7 +880,7 @@ impl PyTensogramFile {
                     "message index {index} out of range for file with {count} messages"
                 )));
             }
-            return self.decode_message(py, idx as usize, true, 0, true);
+            return self.decode_message(py, idx as usize, true, 0, true, false);
         }
 
         if let Ok(slice) = key.cast::<pyo3::types::PySlice>() {
@@ -830,7 +888,7 @@ impl PyTensogramFile {
             let mut items: Vec<PyObject> = Vec::with_capacity(indices.slicelength as usize);
             let mut i = indices.start;
             while (indices.step > 0 && i < indices.stop) || (indices.step < 0 && i > indices.stop) {
-                items.push(self.decode_message(py, i as usize, true, 0, true)?);
+                items.push(self.decode_message(py, i as usize, true, 0, true, false)?);
                 i += indices.step;
             }
             return Ok(PyList::new(py, items)?.into_any().unbind());
@@ -1026,6 +1084,7 @@ fn py_encode_pre_encoded<'py>(
         native_byte_order=true,
         threads=0,
         restore_non_finite=true,
+        verify_hash=false,
     )
 )]
 fn py_decode(
@@ -1034,11 +1093,13 @@ fn py_decode(
     native_byte_order: bool,
     threads: u32,
     restore_non_finite: bool,
+    verify_hash: bool,
 ) -> PyResult<PyObject> {
     let options = DecodeOptions {
         native_byte_order,
         threads,
         restore_non_finite,
+        verify_hash,
         ..Default::default()
     };
     let (global_meta, data_objects) = py.detach(|| decode(&buf, &options).map_err(to_py_err))?;
@@ -1140,6 +1201,7 @@ fn py_decode_descriptors(py: Python<'_>, buf: &[u8]) -> PyResult<(PyMetadata, Py
         native_byte_order=true,
         threads=0,
         restore_non_finite=true,
+        verify_hash=false,
     )
 )]
 #[allow(clippy::too_many_arguments)]
@@ -1150,11 +1212,13 @@ fn py_decode_object(
     native_byte_order: bool,
     threads: u32,
     restore_non_finite: bool,
+    verify_hash: bool,
 ) -> PyResult<(PyMetadata, PyDataObjectDescriptor, PyObject)> {
     let options = DecodeOptions {
         native_byte_order,
         threads,
         restore_non_finite,
+        verify_hash,
         ..Default::default()
     };
     let (global_meta, desc, obj_bytes) =
@@ -1253,13 +1317,14 @@ fn py_scan(py: Python<'_>, buf: PyBackedBytes) -> Vec<(usize, usize)> {
 ///     for msg in tensogram.iter_messages(buf):
 ///         desc, arr = msg.objects[0]
 #[pyfunction]
-#[pyo3(name = "iter_messages", signature = (buf))]
-fn py_iter_messages(buf: &[u8]) -> PyBufferIter {
+#[pyo3(name = "iter_messages", signature = (buf, *, verify_hash=false))]
+fn py_iter_messages(buf: &[u8], verify_hash: bool) -> PyBufferIter {
     let offsets = scan(buf);
     PyBufferIter {
         buf: buf.to_vec(),
         offsets,
         index: 0,
+        verify_hash,
     }
 }
 
@@ -1271,6 +1336,7 @@ struct PyBufferIter {
     buf: Vec<u8>,
     offsets: Vec<(usize, usize)>,
     index: usize,
+    verify_hash: bool,
 }
 
 #[pymethods]
@@ -1284,9 +1350,18 @@ impl PyBufferIter {
             return Ok(None);
         }
         let (offset, length) = self.offsets[self.index];
+        // Per the iterator-failure contract (PLAN_DECODE_HASH_VERIFICATION
+        // §11 Q4): on a verification failure we yield `Err` once,
+        // then the next call returns `None`.  Here we advance the
+        // index BEFORE the decode so a failure doesn't loop on
+        // the same message; the iterator is exhausted on the next
+        // call regardless of which item raised.
         self.index += 1;
         let msg_bytes = self.buf[offset..offset + length].to_vec();
-        let options = DecodeOptions::default();
+        let options = DecodeOptions {
+            verify_hash: self.verify_hash,
+            ..Default::default()
+        };
         let (global_meta, data_objects) =
             py.detach(|| decode(&msg_bytes, &options).map_err(to_py_err))?;
         let result_list = data_objects_to_python(py, &data_objects)?;
@@ -1865,18 +1940,20 @@ impl PyAsyncTensogramFile {
     ///
     /// Returns ``Message(metadata, objects)`` — identical to the sync
     /// :meth:`TensogramFile.decode_message`.
-    #[pyo3(signature = (index,  native_byte_order=true, threads=0))]
+    #[pyo3(signature = (index,  native_byte_order=true, threads=0, verify_hash=false))]
     fn decode_message<'py>(
         &self,
         py: Python<'py>,
         index: usize,
         native_byte_order: bool,
         threads: u32,
+        verify_hash: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let file = Arc::clone(&self.file);
         let options = DecodeOptions {
             native_byte_order,
             threads,
+            verify_hash,
             ..Default::default()
         };
 
@@ -1949,7 +2026,7 @@ impl PyAsyncTensogramFile {
     /// Decode a single data object asynchronously.
     ///
     /// Returns ``dict(metadata=Metadata, descriptor=DataObjectDescriptor, data=ndarray)``.
-    #[pyo3(signature = (msg_index, obj_index, native_byte_order=true, threads=0))]
+    #[pyo3(signature = (msg_index, obj_index, native_byte_order=true, threads=0, verify_hash=false))]
     #[allow(clippy::too_many_arguments)]
     fn file_decode_object<'py>(
         &self,
@@ -1958,11 +2035,13 @@ impl PyAsyncTensogramFile {
         obj_index: usize,
         native_byte_order: bool,
         threads: u32,
+        verify_hash: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let file = Arc::clone(&self.file);
         let options = DecodeOptions {
             native_byte_order,
             threads,
+            verify_hash,
             ..Default::default()
         };
 
@@ -2071,7 +2150,7 @@ impl PyAsyncTensogramFile {
     }
 
     /// Batch-decode full objects across multiple messages. Remote only.
-    #[pyo3(signature = (msg_indices, obj_index, native_byte_order=true, threads=0))]
+    #[pyo3(signature = (msg_indices, obj_index, native_byte_order=true, threads=0, verify_hash=false))]
     #[allow(clippy::too_many_arguments)]
     fn file_decode_object_batch<'py>(
         &self,
@@ -2080,11 +2159,13 @@ impl PyAsyncTensogramFile {
         obj_index: usize,
         native_byte_order: bool,
         threads: u32,
+        verify_hash: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let file = Arc::clone(&self.file);
         let options = DecodeOptions {
             native_byte_order,
             threads,
+            verify_hash,
             ..Default::default()
         };
 
@@ -2853,6 +2934,13 @@ fn tensogram(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // CBOR metadata frame.  Exposed here so tooling and notebooks can
     // read it without having to decode a message first.
     m.add("WIRE_VERSION", tensogram_lib::WIRE_VERSION)?;
+
+    // Decode-time integrity exceptions — see `to_py_err` for the
+    // hierarchy and `plans/DESIGN.md` §"Integrity Hashing" for
+    // the full contract.
+    m.add("IntegrityError", m.py().get_type::<IntegrityError>())?;
+    m.add("MissingHashError", m.py().get_type::<MissingHashError>())?;
+    m.add("HashMismatchError", m.py().get_type::<HashMismatchError>())?;
 
     Ok(())
 }

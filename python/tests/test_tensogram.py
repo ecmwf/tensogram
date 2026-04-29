@@ -156,18 +156,28 @@ class TestEncodeDecode:
         _, arr = objects[0]
         np.testing.assert_array_equal(arr, data)
 
-    def test_verify_hash_kwarg_removed(self):
-        """The legacy ``verify_hash`` kwarg has been removed in v3 (Wave 2.3).
-
-        Per-frame integrity verification lives at the validation layer
-        — see ``tensogram.validate(msg, level="checksum")`` or the
-        ``tensogram validate --checksum`` CLI subcommand.  The decode
-        path is a pure deserialisation.
-        """
+    def test_decode_verify_hash_succeeds_on_hashed_message(self):
+        """Cell B (PLAN_DECODE_HASH_VERIFICATION §5.2): verify_hash=True
+        on a message encoded with hashing on returns the data cleanly."""
         data = np.ones(10, dtype=np.float32)
         msg = encode_simple(data, hash_algo="xxh3")
-        with pytest.raises(TypeError, match="verify_hash"):
+        _, objects = tensogram.decode(msg, verify_hash=True)
+        _, arr = objects[0]
+        np.testing.assert_array_equal(arr, data)
+
+    def test_decode_verify_hash_raises_missing_hash_on_unhashed_message(self):
+        """Cell C: verify_hash=True on a message encoded with hashing
+        off raises ``MissingHashError`` and surfaces the offending
+        object index."""
+        data = np.ones(4, dtype=np.float32)
+        msg = encode_simple(data, hash_algo=None)
+        with pytest.raises(tensogram.MissingHashError) as excinfo:
             _ = tensogram.decode(msg, verify_hash=True)
+        # Public attribute set on the exception instance — see the
+        # `attach_missing_hash_attrs` helper in the bindings.
+        assert excinfo.value.object_index == 0
+        # `MissingHashError` is a subclass of `IntegrityError`.
+        assert isinstance(excinfo.value, tensogram.IntegrityError)
 
 
 # ---------------------------------------------------------------------------
@@ -301,14 +311,22 @@ class TestDecodeObject:
         with pytest.raises(ValueError, match="ObjectError"):
             tensogram.decode_object(msg, 99)
 
-    def test_verify_hash_kwarg_removed(self):
-        """``decode_object`` no longer accepts the legacy ``verify_hash``
-        kwarg (Wave 2.3 — see the class-level note on
-        ``test_verify_hash_kwarg_removed``)."""
+    def test_decode_object_verify_hash_succeeds_on_hashed_message(self):
+        """``decode_object`` accepts ``verify_hash=True`` and returns
+        cleanly when the per-frame `HASH_PRESENT` flag is set and the
+        slot matches the recomputed digest."""
         data = np.arange(20, dtype=np.float32)
         msg = encode_simple(data, hash_algo="xxh3")
-        with pytest.raises(TypeError, match="verify_hash"):
+        _, _, arr = tensogram.decode_object(msg, 0, verify_hash=True)
+        np.testing.assert_array_equal(arr, data)
+
+    def test_decode_object_verify_hash_raises_missing_hash_on_unhashed(self):
+        """``verify_hash=True`` on an unhashed message → MissingHashError."""
+        data = np.arange(20, dtype=np.float32)
+        msg = encode_simple(data, hash_algo=None)
+        with pytest.raises(tensogram.MissingHashError) as excinfo:
             _ = tensogram.decode_object(msg, 0, verify_hash=True)
+        assert excinfo.value.object_index == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1509,22 +1527,35 @@ class TestEdgeCases:
         for meta, _ in collected:
             assert meta["tag"] == "valid"
 
-    def test_iter_messages_verify_hash_kwarg_removed(self):
-        """``iter_messages`` no longer accepts ``verify_hash`` (Wave 2.3)."""
+    def test_iter_messages_verify_hash_succeeds_on_hashed(self):
+        """``iter_messages(buf, verify_hash=True)`` decodes a hashed
+        single-message buffer faithfully."""
         data = np.arange(16, dtype=np.float32)
         meta = make_global_meta(3)
         desc = make_descriptor([16], dtype="float32")
         msg = bytes(tensogram.encode(meta, [(desc, data)], hash="xxh3"))
 
-        with pytest.raises(TypeError, match="verify_hash"):
-            _ = list(tensogram.iter_messages(msg, verify_hash=True))
-
-        # Plain iteration still decodes the data faithfully.
-        collected = list(tensogram.iter_messages(msg))
+        collected = list(tensogram.iter_messages(msg, verify_hash=True))
         assert len(collected) == 1
         _, objects = collected[0]
         _, arr = objects[0]
         np.testing.assert_array_equal(arr, data)
+
+    def test_iter_messages_verify_hash_raises_missing_hash_on_unhashed(self):
+        """``iter_messages`` with ``verify_hash=True`` on an unhashed
+        message raises ``MissingHashError`` for the offending object."""
+        data = np.arange(8, dtype=np.float32)
+        meta = make_global_meta(3)
+        desc = make_descriptor([8], dtype="float32")
+        msg = bytes(tensogram.encode(meta, [(desc, data)], hash=None))
+
+        it = tensogram.iter_messages(msg, verify_hash=True)
+        with pytest.raises(tensogram.MissingHashError) as excinfo:
+            _ = next(it)
+        assert excinfo.value.object_index == 0
+        # Per Q4 (PLAN_DECODE_HASH_VERIFICATION): after the first
+        # failure the iterator is exhausted on the next pull.
+        assert next(it, None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -2416,17 +2447,16 @@ class TestEncodeOptionsCoverage:
         _, objects = tensogram.decode(msg)
         assert len(objects) == 1
 
-    def test_verify_hash_kwarg_rejected_no_hash(self):
-        """Even on an unhashed message, ``verify_hash=True`` is rejected
-        (Wave 2.3 — the kwarg has been removed altogether)."""
+    def test_verify_hash_default_is_false(self):
+        """``verify_hash`` defaults to False so unhashed messages decode
+        cleanly without an opt-in.  This is the contract documented in
+        ``DecodeOptions::verify_hash`` (Rust core)."""
         msg = encode_simple(np.ones(4, dtype=np.float32), hash_algo=None)
-        with pytest.raises(TypeError, match="verify_hash"):
-            _ = tensogram.decode(msg, verify_hash=True)
-
-    def test_verify_hash_kwarg_rejected_clean(self):
-        msg = encode_simple(np.ones(4, dtype=np.float32), hash_algo="xxh3")
-        with pytest.raises(TypeError, match="verify_hash"):
-            _ = tensogram.decode(msg, verify_hash=True)
+        _, objects = tensogram.decode(msg)
+        assert len(objects) == 1
+        # Symmetric: explicit verify_hash=False matches the default.
+        _, objects = tensogram.decode(msg, verify_hash=False)
+        assert len(objects) == 1
 
 
 # ---------------------------------------------------------------------------
