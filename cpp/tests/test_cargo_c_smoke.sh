@@ -17,6 +17,9 @@
 #
 # Usage: test_cargo_c_smoke.sh <installed-prefix>
 #
+# The script resolves the repo's VERSION file relative to its own
+# location, so it can be invoked from any working directory.
+#
 # Two callers:
 # - CI cargo-c job (and release-preflight) installs to `mktemp -d`:
 #       cargo cinstall --prefix=$PFX -p tensogram-ffi
@@ -35,6 +38,18 @@ if [ ! -d "$PREFIX" ]; then
     exit 1
 fi
 
+# Resolve the repo's VERSION file relative to this script, not the
+# caller's CWD. This script lives at cpp/tests/test_cargo_c_smoke.sh,
+# so the repo root is two levels up. Locating the file this way lets
+# the script be run from any directory (e.g. a CI build dir, or a
+# tarball-validation workflow that has its own CWD).
+SCRIPT_DIR="$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+if [ ! -f "$REPO_ROOT/VERSION" ]; then
+    echo "error: $REPO_ROOT/VERSION not found (resolved from script path)" >&2
+    exit 1
+fi
+
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
 pkg-config --exists tensogram || {
@@ -42,7 +57,7 @@ pkg-config --exists tensogram || {
     exit 1
 }
 
-EXPECTED_VERSION="$(tr -d '[:space:]' < VERSION)"
+EXPECTED_VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")"
 ACTUAL_VERSION="$(pkg-config --modversion tensogram)"
 if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
     echo "error: pkg-config --modversion = $ACTUAL_VERSION, expected $EXPECTED_VERSION" >&2
