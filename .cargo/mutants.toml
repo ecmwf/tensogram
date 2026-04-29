@@ -1,0 +1,34 @@
+# .cargo/mutants.toml
+#
+# See MUTATION_TESTING.md for the rollout plan.
+# See https://mutants.rs/ for cargo-mutants usage.
+
+# Per-mutant test-time bound. tensogram's release-mode test loop runs
+# in ~41s; multiplier 3.0 gives a 2-minute kill window per mutant
+# before declaring timeout.
+minimum_test_timeout = 30
+timeout_multiplier = 3.0
+
+# Files / paths excluded from both phases.
+exclude_globs = [
+    "rust/tensogram/src/remote.rs",          # I/O-driven; revisit post-Phase-2
+    "rust/tensogram/src/doctor/**",          # diagnostic prints; not correctness
+    "rust/tensogram-cli/**",                 # clap-driven CLI; noise
+    "rust/tensogram-rust-examples/**",       # illustrative; not library code
+    "rust/benchmarks/**",                    # perf only
+    "rust/tensogram-sz3-sys/**",             # FFI shim; mutate tensogram-sz3
+    "rust/tensogram/src/lib.rs",             # re-exports only
+    "**/build.rs",                           # build scripts
+]
+
+# Per-mutation regex exemptions. Each entry MUST have a one-line
+# rationale comment explaining why the mutation is equivalent or
+# cosmetic. Entries are added by Phase-1 PRs as survivors are
+# triaged; never mass-suppressed by category.
+exclude_re = [
+    # (entries land per-PR during Phase 1)
+]
+
+# Run cargo test in release mode — ~8x faster per iteration on this
+# codebase (release ~41s vs debug ~6 min for the tensogram crate).
+additional_cargo_test_args = ["--release"]
