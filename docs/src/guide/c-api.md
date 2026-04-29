@@ -2,8 +2,10 @@
 
 Tensogram exposes a flat C ABI through the `tensogram-ffi` crate. The
 generated header is `tensogram.h`; all public functions are prefixed
-`tgm_`, all public types are prefixed `tgm_*_t`, and all error codes
-are members of the `tgm_error` enum.
+`tgm_`, most public types follow the `tgm_*_t` pattern (the option
+structs `TgmEncodeMaskOptions` and `TgmDecodeMaskOptions` are PascalCase
+exceptions inherited from the underlying Rust types), and all error
+codes are members of the `tgm_error` enum.
 
 The C++ wrapper at `cpp/include/tensogram.hpp` is built directly on top
 of this C API; see [C++ API](cpp-api.md) for the higher-level
