@@ -48,8 +48,12 @@ Download the tarball for your platform from the
 then extract under `/usr/local`:
 
 ```bash
-curl -LO https://github.com/ecmwf/tensogram/releases/download/0.20.0/tensogram-ffi-0.20.0-linux-x86_64.tar.gz
-sudo tar -C /usr/local -xzf tensogram-ffi-0.20.0-linux-x86_64.tar.gz
+VERSION=<release-version>      # e.g. 0.20.0
+PLATFORM=linux-x86_64          # or linux-aarch64 / macos-x86_64 / macos-aarch64
+ASSET="tensogram-ffi-${VERSION}-${PLATFORM}.tar.gz"
+
+curl -LO "https://github.com/ecmwf/tensogram/releases/download/${VERSION}/${ASSET}"
+sudo tar -C /usr/local -xzf "${ASSET}"
 sudo ldconfig                  # Linux only
 pkg-config --modversion tensogram
 ```
