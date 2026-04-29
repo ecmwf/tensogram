@@ -202,12 +202,16 @@ yet exist):
 
 ```bash
 # Identify the publish-ffi.yml run for THIS tag's commit, not just the
-# latest run on the workflow (which could be a manual rerun for another
-# tag). Filtering by --commit guarantees we watch the correct run.
+# latest run on the workflow (which could be a run for another tag).
+# Filter by --commit so we watch the run for this tag whether it was
+# triggered by 'git push --tags' (event=push) or re-triggered manually
+# via 'gh workflow run' (event=workflow_dispatch). The '// empty' jq
+# fallback makes the variable empty (rather than the literal string
+# "null") when no run exists yet, so the -z guard fires correctly.
 TAG_SHA=$(git rev-list -n1 X.Y.Z)
 RUN_ID=$(gh run list --workflow=publish-ffi.yml \
-    --event push --commit "$TAG_SHA" \
-    --limit 1 --json databaseId --jq '.[0].databaseId')
+    --commit "$TAG_SHA" \
+    --limit 1 --json databaseId --jq '.[0].databaseId // empty')
 test -n "$RUN_ID" || { echo "no publish-ffi.yml run for $TAG_SHA"; exit 1; }
 gh run watch "$RUN_ID"
 
