@@ -78,6 +78,7 @@ pub fn byteswap(data: &mut [u8], unit_size: usize) -> Result<(), PipelineError> 
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum PipelineError {
     #[error("encoding error: {0}")]
     Encoding(#[from] PackingError),

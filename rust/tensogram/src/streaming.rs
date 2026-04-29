@@ -247,13 +247,7 @@ impl<W: Write> StreamingEncoder<W> {
     pub fn write_object(&mut self, desc: &DataObjectDescriptor, data: &[u8]) -> Result<()> {
         validate_object(desc, data.len())?;
 
-        let shape_product = desc
-            .shape
-            .iter()
-            .try_fold(1u64, |acc, &x| acc.checked_mul(x))
-            .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
-        let num_elements = usize::try_from(shape_product)
-            .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
+        let num_elements = desc.num_elements()?;
 
         // Honour the intra-codec thread budget captured at construction.
         // Small-message threshold: if the payload is below the threshold,
@@ -360,13 +354,7 @@ impl<W: Write> StreamingEncoder<W> {
     ) -> Result<()> {
         validate_object(descriptor, pre_encoded_bytes.len())?;
 
-        let shape_product = descriptor
-            .shape
-            .iter()
-            .try_fold(1u64, |acc, &x| acc.checked_mul(x))
-            .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
-        let num_elements = usize::try_from(shape_product)
-            .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
+        let num_elements = descriptor.num_elements()?;
 
         // Validate descriptor pipeline configuration without encoding.
         build_pipeline_config(descriptor, num_elements, descriptor.dtype)?;

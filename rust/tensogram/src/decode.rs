@@ -473,13 +473,7 @@ pub fn decode_range_from_payload(
     // `tensogram validate --checksum` or call
     // `hash::verify_frame_hash` on the full frame directly.
 
-    let shape_product = desc
-        .shape
-        .iter()
-        .try_fold(1u64, |acc, &x| acc.checked_mul(x))
-        .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
-    let num_elements = usize::try_from(shape_product)
-        .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
+    let num_elements = desc.num_elements()?;
     // Thread-budget dispatch for range decode.
     //
     // Each range is an independent decode call; parallelism is natural
@@ -585,13 +579,7 @@ fn decode_single_object_with_backend(
     // for programmatic per-frame verification.
     let _ = options.verify_hash;
 
-    let shape_product = desc
-        .shape
-        .iter()
-        .try_fold(1u64, |acc, &x| acc.checked_mul(x))
-        .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
-    let num_elements = usize::try_from(shape_product)
-        .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))?;
+    let num_elements = desc.num_elements()?;
     let config = build_pipeline_config_with_backend(
         desc,
         num_elements,

@@ -120,13 +120,7 @@ fn each_mask_kind(
 }
 
 fn element_count(desc: &DataObjectDescriptor) -> Result<usize> {
-    let product = desc
-        .shape
-        .iter()
-        .try_fold(1u64, |acc, &x| acc.checked_mul(x))
-        .ok_or_else(|| TensogramError::Metadata("shape product overflow".to_string()))?;
-    usize::try_from(product)
-        .map_err(|_| TensogramError::Metadata("element count overflows usize".to_string()))
+    desc.num_elements()
 }
 
 /// Decompress one mask blob at `mask_region[md.offset - mask_region_base ..
