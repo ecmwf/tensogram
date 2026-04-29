@@ -11,7 +11,15 @@ on:
         type: string
 
 concurrency:
-  group: publish-ffi-${{ github.ref }}
+  # Key the dedupe group on the resolved version, not the launching ref.
+  # For tag-push, github.ref_name is the bare tag (e.g. "0.20.0").
+  # For workflow_dispatch, github.ref_name is the launching branch
+  # (typically "main"), so manual runs would otherwise all share a single
+  # group regardless of which version they target — a manual run for
+  # 0.21.0 would queue behind a manual run for 0.20.0 from the same
+  # branch.  Falling back to inputs.version when present lets manual runs
+  # dedupe per-version like tag-push runs do.
+  group: publish-ffi-${{ inputs.version || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
