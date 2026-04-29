@@ -26,7 +26,9 @@ exclude_globs = [
 # cosmetic. Entries are added by Phase-1 PRs as survivors are
 # triaged; never mass-suppressed by category.
 exclude_re = [
-    # (entries land per-PR during Phase 1)
+    # fmt_object_location is a Display-only helper for HashMismatch's #[error(…)] string;
+    # no test validates the exact wording — only error type/variant matters.
+    "replace fmt_object_location",
 ]
 
 # Run cargo test in release mode — ~8x faster per iteration on this
