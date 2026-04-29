@@ -43,6 +43,31 @@
 - IMPORTANT:
   - when you commit your work, make sure it passes all checks, tests and lints -- by running `make all`
 
+- IMPORTANT: Derived artefacts have one source of truth.
+  If a file is produced from another file or tool invocation — codegen output,
+  schema-generated bindings, vendored headers, generated docs, lockstep API
+  maps, compiled assets — do not maintain an unmanaged copy elsewhere.
+  Consumers should read from the canonical generated location, or the
+  duplicate must be guarded by a CI step that regenerates from source and
+  fails on any drift. The same rule applies to values that are conceptually
+  one piece of data but appear in many places (release version, ABI version,
+  wire-format version, error code lists, dtype tables): pick one source of
+  truth and either generate the others from it or add a consistency check.
+
+- IMPORTANT: Build-system wrappers must not replace the inner tool's
+  freshness logic.
+  When CMake / Make / Bazel / shell scripts / CI jobs invoke another build
+  tool (Cargo, npm, maturin, wasm-pack, Gradle, Docker, another Makefile),
+  the wrapper must either invoke the inner tool unconditionally or declare a
+  complete dependency graph for it. Do not key freshness solely on "output
+  file exists" — the inner tool already knows what is stale, and an mtime
+  check from the outer tool can serve a days-old artefact to today's
+  consumers with no warning. Prefer always-running wrapper targets
+  (e.g. `add_custom_target` over `add_custom_command(OUTPUT ...)` when the
+  command is a nested incremental build tool); use output-file rules only
+  for truly declarative single-input → single-output generators with all
+  inputs listed in `DEPENDS`.
+
 - IMPORTANT: NEVER use process-ephemeral references in code, comments, docstrings,
   commit messages, or planning documents. The code outlives the workflow that
   produced it; references to that workflow age into noise.
