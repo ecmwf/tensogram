@@ -10,7 +10,14 @@ function.
 
 ## Quickstart (C)
 
+A self-contained, copy-pasteable encode example. The C API guide has
+the matching `tgm_decode` round-trip:
+<https://sites.ecmwf.int/docs/tensogram/main/guide/c-api.html>.
+
 ```c
+#include <stdio.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <tensogram/tensogram.h>
 
 const char* meta_json =
@@ -20,8 +27,15 @@ const char* meta_json =
     "\"byte_order\": \"little\", \"encoding\": \"none\", "
     "\"filter\": \"none\", \"compression\": \"none\"}]}";
 
+/* Replace these two with your own data: a single-object encode takes
+   one (uint8_t*, size_t) pair per descriptor.  Here we encode a 100×200
+   float32 grid (= 80000 bytes of zeros) for illustration. */
+float            payload_data[100 * 200] = {0};
+const uint8_t*   payload_bytes           = (const uint8_t*)payload_data;
+const size_t     payload_len             = sizeof(payload_data);
+
 const uint8_t* ptrs[1] = { payload_bytes };
-const size_t lens[1] = { payload_len };
+const size_t   lens[1] = { payload_len };
 
 tgm_bytes_t out;
 tgm_error err = tgm_encode(meta_json, ptrs, lens, 1, "xxh3", 0, &out);
@@ -30,7 +44,7 @@ if (err != TGM_ERROR_OK) {
     return 1;
 }
 
-// Use out.data / out.len ...
+/* Use out.data / out.len ... */
 tgm_bytes_free(out);
 ```
 
