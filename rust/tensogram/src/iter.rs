@@ -54,6 +54,13 @@ pub fn messages(buf: &[u8]) -> MessageIter<'_> {
 ///
 /// Parses the frame header and metadata once, then decodes objects lazily via
 /// the full pipeline (encoding + filter + decompression).
+///
+/// Note: payload + mask region bytes are eagerly cloned into the
+/// returned [`ObjectIter`] because the iterator handle must outlive
+/// any caller-owned input slice — the FFI/Python/C++ bindings keep
+/// the iterator handle around long after the original buffer is
+/// freed.  Each `next()` call still decodes lazily through the full
+/// pipeline; the eager clone is just per-frame book-keeping.
 pub fn objects(buf: &[u8], options: DecodeOptions) -> Result<ObjectIter> {
     let msg = framing::decode_message(buf)?;
     let object_data: Vec<(DataObjectDescriptor, Vec<u8>, Vec<u8>)> = msg
@@ -125,8 +132,17 @@ impl ExactSizeIterator for MessageIter<'_> {}
 
 /// Iterator over the decoded objects (tensors) in a single message.
 ///
-/// Decodes each object through the full pipeline on demand.
-/// Yields `Result<(DataObjectDescriptor, Vec<u8>)>`.
+/// Decodes each object through the full pipeline on demand.  Owns
+/// per-frame `Vec<u8>` clones of the input bytes so the iterator
+/// handle survives independently of the source buffer (the C FFI
+/// and Python iterator handles keep the iterator alive long after
+/// the input bytes are freed).
+///
+/// Yields `Result<(DataObjectDescriptor, Vec<u8>)>` — the descriptor
+/// is cloned on each yield because callers typically want to inspect
+/// it after iteration; the decoded payload is freshly allocated by
+/// the decode pipeline.
+///
 /// Implements [`ExactSizeIterator`].
 pub struct ObjectIter {
     objects: Vec<(DataObjectDescriptor, Vec<u8>, Vec<u8>)>,
@@ -143,7 +159,7 @@ impl Iterator for ObjectIter {
         }
         let i = self.index;
         self.index += 1;
-        let (ref desc, ref payload_bytes, ref mask_region) = self.objects[i];
+        let (desc, payload_bytes, mask_region) = &self.objects[i];
 
         // v3: hash verification lives at the frame layer (see the
         // inline slot in `plans/WIRE_FORMAT.md` §2.4).  An iter
