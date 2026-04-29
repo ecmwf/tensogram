@@ -755,9 +755,9 @@ fn simple_packing_on_multi_dtype_fails_on_nan_variable() {
     // i16, …, u64), each of which is also a hard-fail trigger for
     // simple_packing.  The conversion errors on whichever offending
     // variable the underlying netCDF library yields first; that order
-    // is netcdf-c-version-dependent (e.g. Linux libnetcdf-dev vs macOS
-    // brew netcdf differ), so the assertion accepts either failure
-    // mode rather than depending on iteration order.
+    // is netcdf-c-version-dependent (e.g. Linux's libnetcdf-dev and
+    // macOS's Homebrew netcdf disagree), so the assertion accepts
+    // either failure mode rather than depending on iteration order.
     let path = testdata("multi_dtype.nc");
     let opts = ConvertOptions {
         pipeline: DataPipeline {
