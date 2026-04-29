@@ -22,7 +22,10 @@ import { describe, expect, it } from 'vitest';
 import {
   decode,
   decodeMetadata,
+  HashMismatchError,
   init,
+  IntegrityError,
+  MissingHashError,
   scan,
 } from '../src/index.js';
 
@@ -175,10 +178,120 @@ describe('Cross-language golden-file parity', () => {
       'multi_object.tgm',
       'mars_metadata.tgm',
       'hash_xxh3.tgm',
+      'multi_object_xxh3.tgm',
     ]) {
       const bytes = loadGolden(name);
       const meta = decodeMetadata(bytes);
       expect(meta.version, `version in ${name}`).toBe(3);
     }
+  });
+
+  it('multi_object_xxh3.tgm verifies cleanly with verify_hash=true', async () => {
+    // Cross-language conformance: every binding decodes the
+    // same on-disk fixture identically when verify is on.  See
+    // `rust/tensogram/tests/golden_files.rs::test_golden_multi_object_xxh3`,
+    // `python/tests/test_decode_verify_hash.py::TestCellsAAndB`,
+    // and `cpp/tests/test_decode_verify_hash.cpp` for the
+    // corresponding bindings.
+    await init();
+    const bytes = loadGolden('multi_object_xxh3.tgm');
+    const decoded = decode(bytes, { verifyHash: true });
+    try {
+      expect(decoded.objects).toHaveLength(3);
+      expect(decoded.objects[0].descriptor.dtype).toBe('float32');
+      expect(decoded.objects[1].descriptor.dtype).toBe('int64');
+      expect(decoded.objects[2].descriptor.dtype).toBe('uint8');
+    } finally {
+      decoded.close();
+    }
+  });
+
+  it('multi_object_xxh3.tgm tamper on object 1 → HashMismatchError(objectIndex=1)', async () => {
+    // The "be informative — tell the user *which* object failed"
+    // contract.  Walk the buffer to locate the second NTensorFrame,
+    // flip a byte of its inline hash slot, and assert the error
+    // names index 1 (not 0 or 2).  Mirrors `cell_f_*` in the Rust
+    // matrix tests.
+    await init();
+    const bytes = new Uint8Array(loadGolden('multi_object_xxh3.tgm'));
+    let pos = 24;
+    let target: number | undefined = undefined;
+    let seen = 0;
+    while (pos + 16 <= bytes.length) {
+      if (bytes[pos] !== 0x46 || bytes[pos + 1] !== 0x52) {
+        pos += 1;
+        continue;
+      }
+      const frameType = (bytes[pos + 2] << 8) | bytes[pos + 3];
+      let total = 0;
+      for (let i = 0; i < 8; i++) total = total * 256 + bytes[pos + 8 + i];
+      if (frameType === 9) {
+        if (seen === 1) {
+          target = pos + total - 12;
+          break;
+        }
+        seen += 1;
+      }
+      pos = (pos + total + 7) & ~7;
+    }
+    expect(target).toBeDefined();
+    bytes[target!] ^= 0xff;
+
+    let caught: unknown;
+    try {
+      decode(bytes, { verifyHash: true });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(HashMismatchError);
+    expect(caught).toBeInstanceOf(IntegrityError);
+    expect((caught as HashMismatchError).objectIndex).toBe(1);
+  });
+
+  it('multi_object_xxh3.tgm clear HASH_PRESENT flag on object 1 → MissingHashError(1)', async () => {
+    // Cross-flag-consistency: per-frame `HASH_PRESENT` flag
+    // wins over the message-level `HASHES_PRESENT` advisory.
+    // Forge a fixture by clearing bit 1 of the second
+    // NTensorFrame's `flags` field; the decoder must report
+    // `MissingHashError` for object 1 specifically.
+    await init();
+    const bytes = new Uint8Array(loadGolden('multi_object_xxh3.tgm'));
+    let pos = 24;
+    let target: number | undefined = undefined;
+    let seen = 0;
+    while (pos + 16 <= bytes.length) {
+      if (bytes[pos] !== 0x46 || bytes[pos + 1] !== 0x52) {
+        pos += 1;
+        continue;
+      }
+      const frameType = (bytes[pos + 2] << 8) | bytes[pos + 3];
+      let total = 0;
+      for (let i = 0; i < 8; i++) total = total * 256 + bytes[pos + 8 + i];
+      if (frameType === 9) {
+        if (seen === 1) {
+          target = pos + 6; // `flags` u16 lives at frame_offset + 6
+          break;
+        }
+        seen += 1;
+      }
+      pos = (pos + total + 7) & ~7;
+    }
+    expect(target).toBeDefined();
+    // Read the existing u16 and clear bit 1 (HASH_PRESENT).
+    const flagsHi = bytes[target!];
+    const flagsLo = bytes[target! + 1];
+    let flags = (flagsHi << 8) | flagsLo;
+    flags &= ~(1 << 1);
+    bytes[target!] = (flags >> 8) & 0xff;
+    bytes[target! + 1] = flags & 0xff;
+
+    let caught: unknown;
+    try {
+      decode(bytes, { verifyHash: true });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(MissingHashError);
+    expect((caught as MissingHashError).objectIndex).toBe(1);
   });
 });
