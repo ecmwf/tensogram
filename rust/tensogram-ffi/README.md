@@ -19,6 +19,14 @@ A self-contained, copy-pasteable encode example. The C API guide has
 the matching `tgm_decode` round-trip:
 <https://sites.ecmwf.int/docs/tensogram/main/guide/c-api.html>.
 
+The snippet assumes the **installed** layout
+(`<prefix>/include/tensogram/tensogram.h`) — produced by either of the
+first two install paths below. For the in-tree contributor flow
+(`cargo build -p tensogram-ffi`, third path) the header lives at
+`rust/tensogram-ffi/tensogram.h`; replace the include with
+`#include "tensogram.h"` and pass `-Irust/tensogram-ffi` to your
+compiler.
+
 ```c
 #include <stdio.h>
 #include <stdint.h>
