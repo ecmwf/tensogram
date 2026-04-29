@@ -102,7 +102,15 @@ impl<'a> Iterator for MessageIter<'a> {
         }
         let (offset, length) = self.offsets[self.pos];
         self.pos += 1;
-        Some(&self.buf[offset..offset + length])
+        // Bounds-checked slicing.  In normal use the offsets come from
+        // `framing::scan(buf)` and are correct by construction, but
+        // the `MessageIter` constructor is `pub` so callers could
+        // build one with stale or hand-rolled offsets.  Falling
+        // through to `None` on a bad offset is preferable to a panic
+        // — the iteration simply ends early, matching what a
+        // well-behaved caller would expect from a corrupt buffer.
+        let end = offset.checked_add(length)?;
+        self.buf.get(offset..end)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

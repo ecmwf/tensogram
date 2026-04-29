@@ -81,10 +81,10 @@ pub fn validate_backward_preamble_outcome(
 /// @param bound     - Soft upper bound (`prev_scan_offset` in
 ///                    bidirectional mode, `file_size` in forward-only mode).
 /// @returns One of:
-///   - `{ kind: "Hit",          offset: bigint, length: bigint, msgEnd: bigint }`
-///   - `{ kind: "ExceedsBound", offset: bigint, length: bigint, msgEnd: bigint }`
-///   - `{ kind: "Streaming",    remaining: bigint }`
-///   - `{ kind: "Terminate",    reason: string }`
+///   - `{ kind: "Hit",            offset: bigint, length: bigint, msgEnd: bigint }`
+///   - `{ kind: "HitBeyondBound", offset: bigint, length: bigint, msgEnd: bigint }`
+///   - `{ kind: "Streaming",      remaining: bigint }`
+///   - `{ kind: "Terminate",      reason: string }`
 #[wasm_bindgen]
 pub fn parse_forward_preamble_outcome(
     preamble_bytes: &[u8],

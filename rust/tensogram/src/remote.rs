@@ -293,15 +293,21 @@ enum ForwardOutcome {
         preamble: Preamble,
         msg_end: u64,
     },
-    /// Forward parsed cleanly but `msg_end` exceeds the bidirectional
-    /// dispatcher's `bound` (= `prev_scan_offset`) while still fitting
-    /// within `file_size`.  Reachable only when `suffix_rev` already
-    /// holds a backward-committed layout with a corrupt offset —
-    /// forward's reading of the message length is canonical, so the
-    /// commit decision disables backward (clearing `suffix_rev`) and
-    /// records the forward hop.  Forward-only mode never produces this
-    /// variant because the dispatcher passes `bound = file_size`.
-    ExceedsBound {
+    /// Forward parsed a clean preamble whose `msg_end` exceeds the
+    /// bidirectional dispatcher's `bound` (= `prev_scan_offset`) while
+    /// still fitting within `file_size`.  Reachable only when
+    /// `suffix_rev` already holds a backward-committed layout with a
+    /// corrupt offset — forward's reading of the message length is
+    /// canonical, so the commit decision disables backward (clearing
+    /// `suffix_rev`) and records the forward hop.  Forward-only mode
+    /// never produces this variant because the dispatcher passes
+    /// `bound = file_size`.
+    ///
+    /// Renamed from `ExceedsBound` for clarity (Wave 5.1.3): the
+    /// variant carries a *valid* hit whose endpoint just lands
+    /// beyond the bidirectional bound, not a generic out-of-range
+    /// error.
+    HitBeyondBound {
         offset: u64,
         length: u64,
         preamble: Preamble,
@@ -361,7 +367,7 @@ fn parse_forward_preamble(
         return ForwardOutcome::Terminate("length-out-of-range-fwd");
     }
     if end > bound {
-        return ForwardOutcome::ExceedsBound {
+        return ForwardOutcome::HitBeyondBound {
             offset: pos,
             length: msg_len,
             preamble,
@@ -1030,7 +1036,7 @@ impl RemoteBackend {
                     global_metadata: None,
                 });
             }
-            ForwardOutcome::ExceedsBound {
+            ForwardOutcome::HitBeyondBound {
                 offset,
                 length,
                 preamble,
@@ -1087,7 +1093,7 @@ impl RemoteBackend {
     ///   itself.  Yield silently (do NOT call `disable_backward` —
     ///   that would clear `suffix_rev` from earlier hops).
     /// - Forward Hit overlapping the candidate (`fwd.msg_end >
-    ///   layout.offset`) or forward ExceedsBound: backward's claim
+    ///   layout.offset`) or forward HitBeyondBound: backward's claim
     ///   conflicts with a canonical forward reading; disable backward
     ///   with the matching reason and let the forward branch commit.
     /// - Otherwise: record the backward hop.  When
@@ -1119,7 +1125,7 @@ impl RemoteBackend {
             ForwardOutcome::Hit { msg_end, .. } if *msg_end > layout.offset => {
                 state.disable_backward("backward-overlaps-forward");
             }
-            ForwardOutcome::ExceedsBound { .. } => {
+            ForwardOutcome::HitBeyondBound { .. } => {
                 state.disable_backward("forward-exceeds-backward-bound");
             }
             _ => {
@@ -2359,7 +2365,7 @@ impl RemoteBackend {
     /// reflects discovery up to the target or to gap-closed) or
     /// `Ok(false)` to signal the caller must fall back to the
     /// per-round walker — fired on any anomaly (Format error,
-    /// ExceedsBound, Streaming, gap-below-min, snapshot mismatch).
+    /// HitBeyondBound, Streaming, gap-below-min, snapshot mismatch).
     /// The fallback path preserves all the edge-case handling in
     /// `apply_round_outcomes`.
     ///

@@ -143,11 +143,11 @@ fn parse_forward_preamble_hit_kind_with_camelcase_fields() {
 }
 
 #[wasm_bindgen_test]
-fn parse_forward_preamble_exceeds_bound_kind() {
+fn parse_forward_preamble_hit_beyond_bound_kind() {
     let buf = make_preamble(100);
     let outcome = parse_forward_preamble_outcome(&buf, 0, 1024, 50).unwrap();
     let obj: js_sys::Object = outcome.dyn_into().unwrap();
-    assert_eq!(kind(&obj), "ExceedsBound");
+    assert_eq!(kind(&obj), "HitBeyondBound");
     assert_eq!(u64_field(&obj, "offset"), 0);
     assert_eq!(u64_field(&obj, "length"), 100);
     assert_eq!(u64_field(&obj, "msgEnd"), 100);
