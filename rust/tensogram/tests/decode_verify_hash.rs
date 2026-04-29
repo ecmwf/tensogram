@@ -375,3 +375,46 @@ fn decode_range_ignores_verify_hash_on_tampered_payload() {
         Err(_) => (),
     }
 }
+
+// ── Verify-first ordering regression (Pass 5+) ────────────────────────
+
+#[test]
+fn cell_e_variant_decode_verify_reports_hash_mismatch_on_tampered_cbor() {
+    // Body-tamper variant of Cell E that targets a byte INSIDE
+    // the CBOR descriptor region rather than the encoded-tensor
+    // region.  Pre-Pass-5, `decode` would parse the broken CBOR
+    // before running the hash check and surface
+    // `TensogramError::Metadata`; under verify-first ordering
+    // the corruption surfaces as `HashMismatch` regardless of
+    // where it lands inside the hashed body.
+    //
+    // The buffered encoder writes `[payload][CBOR][cbor_offset]
+    // [hash][ENDF]` for `simple_f32`-style fixtures; the CBOR
+    // descriptor sits between the encoded payload (16 B for a
+    // 4-element f32 tensor) and the 20-byte type-specific
+    // footer.  Flipping `frame_end - 32` lands inside the CBOR
+    // for any descriptor at least ~12 B wide (the minimum for a
+    // valid `ntensor` descriptor) — well outside the encoded
+    // payload.
+    let mut data = read_golden("hash_xxh3.tgm");
+    let (frame_start, slot_offset_within_frame) = locate_object_frame(&data, 0);
+    let frame_end =
+        frame_start + slot_offset_within_frame + tensogram::wire::FRAME_COMMON_FOOTER_SIZE;
+    let cbor_byte = frame_end - 32;
+    assert!(
+        cbor_byte > frame_start + tensogram::wire::FRAME_HEADER_SIZE + 16,
+        "tamper offset must land past the 16-byte encoded f32 payload region"
+    );
+    data[cbor_byte] ^= 0xff;
+
+    let err = decode(&data, &opts_verify()).unwrap_err();
+    match err {
+        TensogramError::HashMismatch { object_index, .. } => {
+            assert_eq!(object_index, Some(0));
+        }
+        other => panic!(
+            "expected HashMismatch (verify-first ordering) on tampered \
+             CBOR byte, got: {other:?}"
+        ),
+    }
+}

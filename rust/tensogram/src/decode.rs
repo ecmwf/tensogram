@@ -113,19 +113,16 @@ pub struct DecodeOptions {
     /// that path materialises the full body anyway, so the
     /// verification is free.
     ///
-    /// **Discriminant note for [`decode`] and [`decode_object`].**
-    /// Both invoke [`crate::framing::decode_message`] up-front,
-    /// which parses every data-object frame's CBOR descriptor
-    /// before the hash check runs.  In the corner case where the
-    /// corruption sits inside the CBOR-encoded region (which IS
-    /// covered by the hash, per `WIRE_FORMAT.md` §2.4), the user
-    /// receives [`TensogramError::Metadata`] from the failing
-    /// CBOR parse rather than [`TensogramError::HashMismatch`]
-    /// from the hash check.  The corruption is still detected;
-    /// only the discriminant changes.  [`decode_object_from_frame`]
-    /// uses verify-first ordering and surfaces `HashMismatch`
-    /// uniformly — call it directly when the discriminant
-    /// matters for catch-by-class semantics.
+    /// **Verify-first ordering.** [`decode`], [`decode_object`],
+    /// and [`decode_object_from_frame`] all run hash verification
+    /// *before* CBOR descriptor parsing.  A tamper anywhere in
+    /// the hashed body region — encoded payload bytes, mask
+    /// blobs, or the CBOR descriptor itself — surfaces uniformly
+    /// as [`TensogramError::HashMismatch`] (or
+    /// [`TensogramError::MissingHash`] when `HASH_PRESENT` is
+    /// clear), never as a downstream
+    /// [`TensogramError::Metadata`].  Catch-by-class semantics
+    /// behave consistently across all three entry points.
     pub verify_hash: bool,
 }
 
@@ -142,64 +139,117 @@ impl Default for DecodeOptions {
     }
 }
 
-/// Verify the inline hash of one data-object frame within the
-/// surrounding message buffer, given its zero-based object index
-/// and frame-start offset.  No-op when `verify_hash` is false.
+/// Walk the data-object frames in a single message buffer and
+/// verify each frame's inline xxh3 hash *before* any CBOR is
+/// parsed downstream.
 ///
-/// Wraps the low-level [`crate::hash::check_frame_hash`] helper:
-/// flag-clear → [`TensogramError::MissingHash { object_index }`];
-/// flag-set + slot disagrees → [`TensogramError::HashMismatch`]
-/// stamped with the surrounding `object_index` via
-/// [`crate::error::with_object_index`].
+/// `target_index = None` verifies every data-object frame in the
+/// message; `target_index = Some(i)` verifies only the frame at
+/// the i-th data-object position (used by [`decode_object`] which
+/// only materialises one object).  Either way, hash verification
+/// runs before [`framing::decode_message`] gets to parse the CBOR
+/// descriptor, so a tamper anywhere in the hashed body region —
+/// including within the CBOR bytes — surfaces as
+/// [`TensogramError::HashMismatch`] / [`TensogramError::MissingHash`]
+/// rather than the [`TensogramError::Metadata`] that a downstream
+/// CBOR parse would emit.
 ///
-/// Other framing / I/O errors propagate unchanged.
-fn enforce_object_hash(
-    buf: &[u8],
-    frame_offset: usize,
-    object_index: usize,
-    verify_hash: bool,
-) -> Result<()> {
-    if !verify_hash {
-        return Ok(());
-    }
-    use crate::wire::{FRAME_HEADER_SIZE, FrameHeader};
-    if frame_offset + FRAME_HEADER_SIZE > buf.len() {
+/// `buf` is a single-message buffer: the 24-byte preamble at byte
+/// 0 is skipped, and the walk continues until either a frame
+/// reports `total_length == 0` (corrupt) or the buffer is
+/// exhausted.  Frame ordering is **not** validated here — that's
+/// `framing::decode_message`'s job — so this helper tolerates
+/// non-data-object frames in any phase and simply skips them.
+///
+/// Returns:
+///   * `Ok(())` — every checked data-object frame's flag was set
+///     and its slot matched the recomputed digest.
+///   * `Err(MissingHash { object_index })` — at least one checked
+///     frame had `HASH_PRESENT = 0`.
+///   * `Err(HashMismatch { object_index: Some(i), .. })` — at
+///     least one checked frame's slot disagreed with the
+///     recomputed digest.
+///   * `Err(Framing(_))` — buffer too short, frame header
+///     malformed, or frame extends past `buf`.
+fn verify_data_object_frames(buf: &[u8], target_index: Option<usize>) -> Result<()> {
+    use crate::wire::{FRAME_HEADER_SIZE, FRAME_MAGIC, FrameHeader, PREAMBLE_SIZE};
+
+    if buf.len() < PREAMBLE_SIZE {
         return Err(TensogramError::Framing(format!(
-            "frame_offset {frame_offset} + header({FRAME_HEADER_SIZE}) exceeds buffer length \
-             {} while verifying hash for object {object_index}",
+            "buffer too short for preamble while verifying hashes: {} < {PREAMBLE_SIZE}",
             buf.len()
         )));
     }
-    let fh = FrameHeader::read_from(&buf[frame_offset..])?;
-    // `try_from` rather than `as usize` so a 32-bit target with a
-    // >4 GB frame fails cleanly instead of truncating + producing
-    // a wrong hash slice.
-    let frame_total = usize::try_from(fh.total_length).map_err(|_| {
-        TensogramError::Framing(format!(
-            "frame total_length ({}) overflows usize on this target \
-             while verifying hash for object {object_index}",
-            fh.total_length
-        ))
-    })?;
-    let frame_end = frame_offset.checked_add(frame_total).ok_or_else(|| {
-        TensogramError::Framing(format!(
-            "frame total_length overflow at offset {frame_offset} \
-             while verifying hash for object {object_index}"
-        ))
-    })?;
-    if frame_end > buf.len() {
-        return Err(TensogramError::Framing(format!(
-            "frame at offset {frame_offset} runs past buffer end ({frame_end} > {}) \
-             while verifying hash for object {object_index}",
-            buf.len()
-        )));
+
+    let mut pos = PREAMBLE_SIZE;
+    let mut object_index: usize = 0;
+    while pos + FRAME_HEADER_SIZE <= buf.len() {
+        // Tolerate alignment padding / between-frame slop the same
+        // way `framing::decode_message` does — advance one byte at
+        // a time until we land on a frame magic.  Pathological
+        // inputs that contain `b"FR"` mid-padding would be caught
+        // by the subsequent `FrameHeader::read_from` validation.
+        if &buf[pos..pos + FRAME_MAGIC.len()] != FRAME_MAGIC {
+            pos += 1;
+            continue;
+        }
+        let fh = FrameHeader::read_from(&buf[pos..])?;
+        // `try_from` rather than `as usize` so a 32-bit target
+        // with a >4 GB frame fails cleanly instead of truncating
+        // + producing a wrong hash slice.
+        let frame_total = usize::try_from(fh.total_length).map_err(|_| {
+            TensogramError::Framing(format!(
+                "frame total_length ({}) overflows usize on this target \
+                 while verifying hash at offset {pos}",
+                fh.total_length
+            ))
+        })?;
+        let frame_end = pos.checked_add(frame_total).ok_or_else(|| {
+            TensogramError::Framing(format!(
+                "frame total_length overflow at offset {pos} while verifying hashes"
+            ))
+        })?;
+        if frame_end > buf.len() {
+            return Err(TensogramError::Framing(format!(
+                "frame at offset {pos} runs past buffer end ({frame_end} > {}) \
+                 while verifying hashes",
+                buf.len()
+            )));
+        }
+
+        if fh.frame_type.is_data_object() {
+            // Run the hash check unless a `target_index` was
+            // supplied and this is not the targeted object —
+            // either way, we still increment `object_index`
+            // afterwards so subsequent frames see the right
+            // counter.
+            let should_check = target_index.is_none_or(|t| t == object_index);
+            if should_check {
+                let frame_bytes = &buf[pos..frame_end];
+                match crate::hash::check_frame_hash(frame_bytes, fh.frame_type) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return Err(TensogramError::MissingHash { object_index });
+                    }
+                    Err(e) => {
+                        return Err(crate::error::with_object_index(e, object_index));
+                    }
+                }
+                // When verifying a single targeted object we can
+                // stop walking once it's checked — no need to hash
+                // the rest of the message.
+                if target_index.is_some() {
+                    return Ok(());
+                }
+            }
+            object_index += 1;
+        }
+
+        // 8-byte alignment padding may follow `ENDF`; advance to
+        // the next aligned boundary.
+        pos = (frame_end + 7) & !7;
     }
-    let frame_bytes = &buf[frame_offset..frame_end];
-    match crate::hash::check_frame_hash(frame_bytes, fh.frame_type) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(TensogramError::MissingHash { object_index }),
-        Err(e) => Err(crate::error::with_object_index(e, object_index)),
-    }
+    Ok(())
 }
 
 /// Decode all objects from a message buffer.
@@ -212,6 +262,21 @@ fn enforce_object_hash(
 /// byte-identical to the sequential path regardless of thread count.
 #[tracing::instrument(skip(buf, options), fields(buf_len = buf.len()))]
 pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Vec<DecodedObject>)> {
+    // Hash verification runs as a *pre-pass*: we walk every
+    // data-object frame's inline xxh3 BEFORE
+    // `framing::decode_message` parses any CBOR descriptor.
+    // That means a tamper inside the CBOR-encoded region (which
+    // IS covered by the frame body hash, per `WIRE_FORMAT.md`
+    // §2.4) surfaces as `HashMismatch` rather than the
+    // `Metadata` error a downstream CBOR parse would otherwise
+    // produce.  The xxh3 work here is identical to a per-object
+    // re-check after decoding — bytes are walked exactly once,
+    // and the cost is dominated by the single body hash, so
+    // verifying first costs effectively nothing extra.
+    if options.verify_hash {
+        verify_data_object_frames(buf, None)?;
+    }
+
     let msg = framing::decode_message(buf)?;
 
     let budget = crate::parallel::resolve_budget(options.threads)?;
@@ -224,26 +289,13 @@ pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Ve
     let use_axis_a = parallel && crate::parallel::use_axis_a(msg.objects.len(), budget, any_axis_b);
     let intra_codec_threads = if parallel && !use_axis_a { budget } else { 0 };
 
-    // Hash verification (`options.verify_hash`) happens before
-    // decode so that callers never see decoded data they have
-    // reason to distrust.  Each object's frame slice is
-    // recomputed-and-compared against its inline slot via the
-    // shared `enforce_object_hash` helper; a mismatch or missing
-    // flag short-circuits the whole call.  The hash walk is a
-    // single linear pass over bytes that decode is about to
-    // touch anyway, so it's effectively free in cache.
-    //
-    // The closure parameter type is the standard
-    // `(usize, &<framing entry>)` pair produced by
-    // `iter().enumerate()`; aliased here so the clippy
-    // type-complexity lint stays quiet.
-    type FramingEntry<'a> = (DataObjectDescriptor, &'a [u8], &'a [u8], usize);
-    let decode_one = |(idx, (desc, payload_bytes, mask_region, frame_offset)): (
+    let decode_one = |(desc, payload_bytes, mask_region, _offset): &(
+        DataObjectDescriptor,
+        &[u8],
+        &[u8],
         usize,
-        &FramingEntry<'_>,
     )|
      -> Result<DecodedObject> {
-        enforce_object_hash(buf, *frame_offset, idx, options.verify_hash)?;
         let mut decoded = decode_single_object_with_backend(
             desc,
             payload_bytes,
@@ -269,26 +321,17 @@ pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Ve
             crate::parallel::with_pool(budget, || {
                 msg.objects
                     .par_iter()
-                    .enumerate()
-                    .map(decode_one)
+                    .map(&decode_one)
                     .collect::<Result<Vec<_>>>()
             })?
         }
         #[cfg(not(feature = "threads"))]
         {
-            msg.objects
-                .iter()
-                .enumerate()
-                .map(decode_one)
-                .collect::<Result<_>>()?
+            msg.objects.iter().map(decode_one).collect::<Result<_>>()?
         }
     } else {
         crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, || {
-            msg.objects
-                .iter()
-                .enumerate()
-                .map(decode_one)
-                .collect::<Result<_>>()
+            msg.objects.iter().map(decode_one).collect::<Result<_>>()
         })?
     };
 
@@ -392,6 +435,17 @@ pub fn decode_object(
     index: usize,
     options: &DecodeOptions,
 ) -> Result<(GlobalMetadata, DataObjectDescriptor, Vec<u8>)> {
+    // Hash verification runs as a *pre-pass*: walk frame headers
+    // and hash-verify object `index` BEFORE
+    // `framing::decode_message` parses any CBOR descriptor.  See
+    // `verify_data_object_frames` for the rationale.  Passing
+    // `Some(index)` short-circuits once that single object is
+    // checked, so the cost is one body hash recompute + the
+    // header walk up to it (microseconds for typical messages).
+    if options.verify_hash {
+        verify_data_object_frames(buf, Some(index))?;
+    }
+
     let msg = framing::decode_message(buf)?;
 
     if index >= msg.objects.len() {
@@ -402,13 +456,7 @@ pub fn decode_object(
         )));
     }
 
-    let (desc, payload_bytes, mask_region, frame_offset) = &msg.objects[index];
-
-    // Hash verification (`options.verify_hash`) precedes decode
-    // so callers never receive decoded data they have reason to
-    // distrust.  See `enforce_object_hash` and DESIGN.md
-    // §"Integrity Hashing".
-    enforce_object_hash(buf, *frame_offset, index, options.verify_hash)?;
+    let (desc, payload_bytes, mask_region, _frame_offset) = &msg.objects[index];
 
     // Single-object decode: axis A is impossible — spend the entire
     // budget (if any) on the codec internally (axis B).
