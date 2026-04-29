@@ -1,6 +1,6 @@
 {
   "name": "@ecmwf.int/tensogram",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "description": "TypeScript bindings for the Tensogram N-tensor message format",
   "keywords": [
     "tensogram",

@@ -5,6 +5,137 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-04-29
+
+### Added — Decode-time hash verification with per-frame `HASH_PRESENT` flag
+
+Every frame header now carries a `FrameFlags::HASH_PRESENT` bit (#111).
+Decoders can opt in to verifying recorded `xxh3_64` digests for the
+data frames they actually consume — partial-decode workloads still
+skip frames they do not touch. The presence bit cleanly separates
+"no hash recorded" from a 1-in-2^64 legitimate digest of zero, which
+the old zero-slot-as-absence convention conflated. Wire-format-version
+3 is unchanged: the flag uses a previously-unused common-flag bit, so
+existing 0.20.x readers see the new bytes as a no-op and existing
+0.20.x writers produce frames that 0.21.0 readers accept (with the
+flag clear, hashes still discoverable but not auto-verified).
+
+The opt-in surface is symmetric across bindings: `verify_hash: true`
+on the Rust `DecodeOptions`, `verify_hash=True` on the Python `decode`
+and `decode_range` calls, `{ verifyHash: true }` on the TypeScript
+`decode` API. xarray and zarr backends pass the flag through to
+underlying decode calls.
+
+### Added — Pre-built FFI release binaries and `cargo-c` support
+
+C and C++ users can now consume `tensogram-ffi` without the Rust
+toolchain (#110). Tag pushes trigger a new `publish-ffi.yml` workflow
+that builds release tarballs for Linux x86_64, Linux aarch64, macOS
+x86_64 and macOS aarch64 inside `manylinux_2_28` (Linux) and
+GitHub-hosted (macOS) runners, then attaches them to the GitHub
+Release. Each tarball is rooted for `/usr/local`, packed with
+`uid=0/gid=0`, and contains:
+
+- `lib/libtensogram.{so,dylib,a}` with proper SONAME / `install_name`
+  versioning
+- `lib/pkgconfig/tensogram.pc`
+- `include/tensogram/tensogram.h`
+- `share/doc/tensogram/{LICENSE,README.md,INSTALL.md}` (FHS layout)
+
+`cargo cinstall -p tensogram-ffi --prefix=$HOME/.local --libdir=lib`
+produces the equivalent layout from source. New
+`docs/src/guide/c-api.md` documents the three install paths
+(pre-built tarball, `cargo cinstall`, in-tree `cargo build`),
+the pkg-config / CMake / manual linking recipes, memory-ownership
+rules, and the pre-1.0 SONAME policy.
+
+### Changed — Stricter encode/decode input validation
+
+Several silent input-coercion paths now return typed errors instead
+of accepting malformed input (#109). Defaults stay reserved for
+genuinely-absent input; never for malformed input.
+
+- `hash::verify_hash` rejects unknown algorithm names with
+  `TensogramError::Metadata`. Forward-compat for new algorithm names
+  lives in the validator (`IssueCode::UnknownHashAlgorithm`), not in
+  the integrity-check helper.
+- `metadata::cbor_to_global_metadata` rejects non-text top-level keys
+  (the schema uses text keys per RFC 8949 §4.2 + WIRE_FORMAT.md §6),
+  and rejects collisions between explicit `_extra_` and free-form
+  top-level keys (earlier silently preferred `_extra_`).
+- `metadata::cbor_to_index` and `cbor_to_hash_frame` reject non-text
+  keys for closed schemas with no forward-compat slot.
+- `streaming::StreamingEncoder::new` rejects
+  `AggregateHashPolicy::Header` and `::Both` with a clear error,
+  replacing a silent header→footer coercion that made the docs
+  disagree with the code.
+- The two `create_header_hashes` / `create_footer_hashes` boolean
+  flags collapse into a single `aggregate_hash: AggregateHashPolicy`
+  enum (`Auto | None | Header | Footer | Both`). `Auto` resolves at
+  the encoder boundary: buffered → `Header`, streaming → `Footer`.
+- Codec parameter accessors distinguish "key absent" (use default)
+  from "key present but wrong type" (return error). Touches
+  `zstd_level`, `blosc2_clevel`, `blosc2_codec`,
+  `sp_decimal_scale_factor`. `get_f64_param` rejects integers outside
+  the f64 exact-representable range `[-2^53, 2^53]`.
+- `validate_mask_params` enforces a per-method allow-list of params
+  keys (e.g. `level` is invalid on `rle`, valid on `zstd`).
+
+### Added — Re-enabled macOS CI jobs and a new `cargo-c` smoke job
+
+The `main-macos` and `cpp-macos` self-hosted jobs that had been
+disabled while the runner pool was unhealthy run on every push and
+PR again. A new `cargo-c (C API)` job runs `cargo cbuild` plus
+`cargo cinstall` plus the C-API smoke test on every PR, plus a
+header-byte-identity diff between the cargo-c-installed header and
+the in-tree `rust/tensogram-ffi/tensogram.h` so any divergence is
+caught at PR time rather than at consumer-link time.
+`release-preflight.yml` runs the same checks before tagging.
+
+### Fixed — Two silent-drift bugs in the C++ build path
+
+The committed `cpp/include/tensogram.h` was a hand-vendored copy of
+the cbindgen output that had drifted from
+`rust/tensogram-ffi/tensogram.h` — declarations added to the FFI
+after the last manual sync existed in the auto-generated header but
+were missing from the committed copy, so any C/C++ caller using the
+latter would fail to compile. Deleted the duplicate; CMake now
+consumes the canonical generated header directly.
+
+`cpp/CMakeLists.txt` wrapped `cargo build` with
+`add_custom_command(OUTPUT …)`, which made CMake skip the cargo
+invocation whenever the `.a` file existed on disk regardless of
+whether the Rust source had moved on. Replaced with
+`add_custom_target` so cargo runs unconditionally and its own
+incremental cache decides freshness in milliseconds.
+
+### Refactored — `num_elements` helper, pipeline config resolver, error enums
+
+Smaller refactor (#107) ahead of #109's strict-input changes:
+extracted a shared `num_elements` helper used across
+`DataObjectDescriptor` consumers, split the pipeline config resolver
+into orthogonal stages, and marked the error enums
+`#[non_exhaustive]` so future variants do not break consumer code.
+
+### Changed — `AGENTS.md` and `make-further-pass` guardrails
+
+Two durable principles documented in `AGENTS.md` after the
+silent-drift bugs: derived artefacts have one source of truth (or a
+CI regenerate-and-diff guard), and build-system wrappers must not
+replace the inner tool's freshness logic. `make-further-pass.md`
+gains executable greps for these classes plus a clean-room rebuild
+gate at Pass 5+.
+
+### Stats
+
+- **Rust**: 545 lib tests + remote_http integration + benchmarks lib
+- **Python**: core, xarray, zarr suites green
+- **TypeScript**: vitest tests green (incl. new
+  `decodeVerifyHash.test.ts`)
+- **C++**: 146 ctest binaries + 14 examples
+- **C API**: new `cpp/tests/test_cargo_c_smoke.sh` end-to-end smoke
+  test (encode → decode round-trip via pkg-config flags)
+
 ## [0.20.0] - 2026-04-26
 
 ### Changed — Remote bidirectional walker is now the default
