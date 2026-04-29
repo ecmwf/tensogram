@@ -147,6 +147,28 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Install cargo-c (pinned, matches publish-ffi.yml)
+        env:
+          CARGO_C_VERSION: "0.10.21"
+        run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked
+
+      - name: cargo cbuild + smoke test the C API distribution
+        run: |
+          cargo cbuild --release -p tensogram-ffi
+          BASE=target/x86_64-unknown-linux-gnu/release
+          for f in libtensogram.so libtensogram.a tensogram.pc include/tensogram/tensogram.h; do
+            test -e "$BASE/$f" || { echo "::error::missing $BASE/$f"; exit 1; }
+          done
+          # Header drift would break consumers using the cargo-c-installed
+          # header against a binary built from cargo build's tensogram.h.
+          diff -u rust/tensogram-ffi/tensogram.h \
+                  "$BASE/include/tensogram/tensogram.h"
+          # --libdir=lib pins the install layout so the smoke script's
+          # $PFX/lib/pkgconfig assumption holds on Debian multiarch.
+          PFX="$(mktemp -d)"
+          cargo cinstall --release -p tensogram-ffi --prefix="$PFX" --libdir=lib
+          bash cpp/tests/test_cargo_c_smoke.sh "$PFX"
+
       - name: Dry-run publish (leaf crates only)
         env: { CARGO_REGISTRY_TOKEN: "dry-run-placeholder" }
         run: |
