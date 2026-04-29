@@ -418,3 +418,75 @@ fn cell_e_variant_decode_verify_reports_hash_mismatch_on_tampered_cbor() {
         ),
     }
 }
+
+// ── Multi-message bound regression (Pass 7) ──────────────────────────
+//
+// `verify_data_object_frames` must respect the first message's
+// `Preamble.total_length` boundary, the same way
+// `framing::decode_message` does.  Without this bound, a
+// concatenated `[msgA][msgB]` buffer would have its msgB frames
+// hashed by the verify pre-pass even though `decode` only ever
+// returns msgA's contents — producing spurious failures when
+// msgB has a different hashing posture from msgA.
+//
+// Found in Copilot review of PR #111 (rust/tensogram/src/decode.rs:252).
+
+#[test]
+fn decode_verify_respects_first_message_total_length_on_concat() {
+    // The committed `hash_xxh3.tgm` golden is hashed (HASH_PRESENT
+    // set on every data-object frame); the in-process helper
+    // builds an explicitly-hashless single-object message
+    // (HASH_PRESENT clear).  Concatenating them produces a
+    // `[hashed][unhashed]` buffer whose first message decodes
+    // cleanly under `verify_hash=true` and whose second message
+    // would fail `MissingHash` if the verify pre-pass leaked
+    // past `Preamble.total_length`.
+    let hashed = read_golden("hash_xxh3.tgm");
+    let unhashed = build_unhashed_single_object_message();
+
+    // Sanity baseline: each message verifies independently as
+    // expected (hashed → Ok, unhashed → MissingHash on object 0).
+    decode(&hashed, &opts_verify()).expect("hashed message verifies");
+    let unhashed_err = decode(&unhashed, &opts_verify()).unwrap_err();
+    assert!(
+        matches!(
+            unhashed_err,
+            TensogramError::MissingHash { object_index: 0 }
+        ),
+        "baseline: unhashed message must fail verify with MissingHash, got {unhashed_err:?}"
+    );
+
+    // Concatenation: `[hashed][unhashed]`.  `decode` returns only
+    // msg1's contents (one object), and verification must honour
+    // that same scope — msg2's hashless frames must NOT cause
+    // `MissingHash`.
+    let mut concat = hashed.clone();
+    concat.extend_from_slice(&unhashed);
+    let (_meta, objects) = decode(&concat, &opts_verify()).unwrap_or_else(|e| {
+        panic!(
+            "decode(concat[hashed,unhashed], verify_hash=true) must \
+             not leak into msg2: {e:?}"
+        )
+    });
+    assert_eq!(
+        objects.len(),
+        1,
+        "decode is bounded to first message; helper must match"
+    );
+}
+
+#[test]
+fn decode_object_verify_respects_first_message_total_length_on_concat() {
+    // Same regression, exercised through the targeted-decode
+    // surface — `decode_object` uses the same pre-pass helper
+    // with `target_index = Some(i)`, but the message-end bound
+    // is independent of which target index is requested.
+    let hashed = read_golden("hash_xxh3.tgm");
+    let unhashed = build_unhashed_single_object_message();
+    let mut concat = hashed.clone();
+    concat.extend_from_slice(&unhashed);
+
+    // Object 0 is in msg1 and is hashed → must succeed.
+    decode_object(&concat, 0, &opts_verify())
+        .expect("decode_object(0) on concat must verify msg1's first object");
+}

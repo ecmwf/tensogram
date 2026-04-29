@@ -50,7 +50,7 @@ const DEFAULT_MAX_BUFFER: usize = 256 * 1024 * 1024;
 ///
 /// **Memory limit**: The internal buffer is capped at 256 MiB by
 /// default.  Call `set_max_buffer(n)` to change it.  Exceeding the
-/// limit makes `feed()` return a `JsError`.
+/// limit makes `feed()` return a thrown `JsValue` (a `js_sys::Error`).
 #[wasm_bindgen]
 pub struct StreamingDecoder {
     buffer: Vec<u8>,

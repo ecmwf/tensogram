@@ -154,10 +154,18 @@ impl Default for DecodeOptions {
 /// rather than the [`TensogramError::Metadata`] that a downstream
 /// CBOR parse would emit.
 ///
-/// `buf` is a single-message buffer: the 24-byte preamble at byte
-/// 0 is skipped, and the walk continues until either a frame
-/// reports `total_length == 0` (corrupt) or the buffer is
-/// exhausted.  Frame ordering is **not** validated here — that's
+/// `buf` may begin with one or more concatenated `.tgm` messages
+/// (the `multi_message.tgm` golden is the canonical example);
+/// this helper verifies only the **first** message, matching the
+/// scope of [`framing::decode_message`].  The walk runs from
+/// `PREAMBLE_SIZE` up to `msg_end`, where `msg_end` is computed
+/// from `Preamble.total_length` when non-zero (the closed-stream
+/// case) and from `buf.len() - POSTAMBLE_SIZE` otherwise (the
+/// open-stream case).  Without this bound, a `[hashed][unhashed]`
+/// concatenation would have its second message's frames hashed by
+/// the verify pre-pass, surfacing spurious `MissingHash` errors
+/// even though `decode` only ever returns the first message's
+/// contents.  Frame ordering is **not** validated here — that's
 /// `framing::decode_message`'s job — so this helper tolerates
 /// non-data-object frames in any phase and simply skips them.
 ///
@@ -169,10 +177,13 @@ impl Default for DecodeOptions {
 ///   * `Err(HashMismatch { object_index: Some(i), .. })` — at
 ///     least one checked frame's slot disagreed with the
 ///     recomputed digest.
-///   * `Err(Framing(_))` — buffer too short, frame header
-///     malformed, or frame extends past `buf`.
+///   * `Err(Framing(_))` — buffer too short, preamble malformed,
+///     `total_length` exceeds buffer, frame header malformed, or
+///     frame extends past the message bound.
 fn verify_data_object_frames(buf: &[u8], target_index: Option<usize>) -> Result<()> {
-    use crate::wire::{FRAME_HEADER_SIZE, FRAME_MAGIC, FrameHeader, PREAMBLE_SIZE};
+    use crate::wire::{
+        FRAME_HEADER_SIZE, FRAME_MAGIC, FrameHeader, POSTAMBLE_SIZE, PREAMBLE_SIZE, Preamble,
+    };
 
     if buf.len() < PREAMBLE_SIZE {
         return Err(TensogramError::Framing(format!(
@@ -181,9 +192,41 @@ fn verify_data_object_frames(buf: &[u8], target_index: Option<usize>) -> Result<
         )));
     }
 
+    // Match `framing::decode_message`'s message-bounded walk:
+    // when the preamble carries a non-zero `total_length` (the
+    // back-filled / closed-stream case), restrict the verify
+    // pre-pass to that range; otherwise fall back to "everything
+    // up to the trailing postamble".  This is what makes
+    // concatenated `[msgA][msgB]` buffers verify only msgA — the
+    // same scope `decode` returns.
+    let preamble = Preamble::read_from(buf)?;
+    let msg_end = if preamble.total_length > 0 {
+        let total_len = usize::try_from(preamble.total_length).map_err(|_| {
+            TensogramError::Framing(format!(
+                "preamble total_length ({}) overflows usize while verifying hashes",
+                preamble.total_length
+            ))
+        })?;
+        if total_len > buf.len() {
+            return Err(TensogramError::Framing(format!(
+                "preamble total_length ({total_len}) exceeds buffer size ({}) \
+                 while verifying hashes",
+                buf.len()
+            )));
+        }
+        total_len.saturating_sub(POSTAMBLE_SIZE)
+    } else {
+        buf.len().checked_sub(POSTAMBLE_SIZE).ok_or_else(|| {
+            TensogramError::Framing(format!(
+                "buffer too short for postamble while verifying hashes: {} < {POSTAMBLE_SIZE}",
+                buf.len()
+            ))
+        })?
+    };
+
     let mut pos = PREAMBLE_SIZE;
     let mut object_index: usize = 0;
-    while pos + FRAME_HEADER_SIZE <= buf.len() {
+    while pos + FRAME_HEADER_SIZE <= msg_end {
         // Tolerate alignment padding / between-frame slop the same
         // way `framing::decode_message` does — advance one byte at
         // a time until we land on a frame magic.  Pathological
@@ -209,11 +252,14 @@ fn verify_data_object_frames(buf: &[u8], target_index: Option<usize>) -> Result<
                 "frame total_length overflow at offset {pos} while verifying hashes"
             ))
         })?;
-        if frame_end > buf.len() {
+        // Bound by `msg_end` rather than `buf.len()`: a frame that
+        // straddles the end of the first message into a following
+        // concatenated message would mean the buffer is malformed,
+        // since `framing::decode_message` has the same bound.
+        if frame_end > msg_end {
             return Err(TensogramError::Framing(format!(
-                "frame at offset {pos} runs past buffer end ({frame_end} > {}) \
-                 while verifying hashes",
-                buf.len()
+                "frame at offset {pos} runs past first-message end \
+                 ({frame_end} > {msg_end}) while verifying hashes"
             )));
         }
 

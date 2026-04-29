@@ -47,12 +47,16 @@ use wasm_bindgen::prelude::*;
 ///                             receive 0.0-substituted bytes as on disk.
 /// @param verify_hash - When true, verify each data-object frame's
 ///                      inline xxh3 hash against the recomputed
-///                      digest.  Default false (opt-in).  Errors
-///                      surface as `JsError` whose `name` is
-///                      `"MissingHashError"` (when the per-frame
+///                      digest.  Default false (opt-in).
+///                      Integrity failures are returned as a
+///                      `JsValue` carrying a thrown `js_sys::Error`
+///                      with structured properties attached: `name`
+///                      is `"MissingHashError"` (when the per-frame
 ///                      `HASH_PRESENT` flag is clear) or
 ///                      `"HashMismatchError"` (when the slot
-///                      disagrees), routed by the TS wrapper to
+///                      disagrees), and `objectIndex` /
+///                      `expected` / `actual` carry the structured
+///                      payload that the TS wrapper routes to
 ///                      dedicated error classes.  See
 ///                      `plans/DESIGN.md` §"Integrity Hashing".
 #[wasm_bindgen]

@@ -122,8 +122,9 @@ pub(crate) fn build_encode_options(hash: Option<bool>) -> EncodeOptions {
 /// - `allow_nan` / `allow_inf`: both default `false` (reject policy).
 /// - `*_mask_method`: optional string name (`"none"` | `"rle"` |
 ///   `"roaring"` | `"lz4"` | `"zstd"` | `"blosc2"`).  Unknown names
-///   return a `JsError` naming the offending value and the full
-///   list of accepted names — no silent fallback.
+///   return a `JsValue` carrying a thrown `js_sys::Error` that
+///   names the offending value and the full list of accepted names
+///   — no silent fallback.
 /// - `small_mask_threshold_bytes`: default `128`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_encode_options_full(
