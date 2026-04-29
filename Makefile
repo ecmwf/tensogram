@@ -14,6 +14,7 @@
         python-build python-dist python-dist-extras python-test python-lint python-fmt \
         earthkit-install earthkit-test earthkit-lint \
         cpp-build cpp-test \
+        cargo-c-build cargo-c-install cargo-c-smoke \
         wasm-test docs-build \
         ts-install ts-build ts-test ts-typecheck \
         remote-parity-rust-build remote-parity-ts-install remote-parity-fixtures \
@@ -116,6 +117,23 @@ cpp-build: ## Build C++ tests via CMake
 
 cpp-test: cpp-build ## Run C++ tests
 	cd build && ctest --output-on-failure
+
+# ── cargo-c (C API distribution) ──────────────────────────────────────────
+
+# Default prefix for `make cargo-c-install` — overrideable.
+PREFIX ?= $(HOME)/.local
+
+cargo-c-build: ## Build the C library + pkg-config + header via cargo-c
+	cargo cbuild --release -p tensogram-ffi
+
+# --libdir=lib pins the layout so PREFIX/lib/pkgconfig/tensogram.pc lands at
+# a predictable path. Without it cargo-c picks a multiarch libdir on
+# Debian/Ubuntu (lib/x86_64-linux-gnu/...) and the smoke target breaks.
+cargo-c-install: ## Install via cargo-c into PREFIX (default $HOME/.local)
+	cargo cinstall --release -p tensogram-ffi --prefix=$(PREFIX) --libdir=lib
+
+cargo-c-smoke: cargo-c-install ## Install + run the C-API smoke test against the install prefix
+	bash cpp/tests/test_cargo_c_smoke.sh $(PREFIX)
 
 # ── WASM ──────────────────────────────────────────────────────────────────
 
