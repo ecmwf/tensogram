@@ -200,7 +200,6 @@ class TensogramBackendArray(BackendArray):
         dtype: np.dtype,
         supports_range: bool,
         *,
-        verify_hash: bool = False,
         range_threshold: float = DEFAULT_RANGE_THRESHOLD,
         lock: threading.Lock | None = None,
         storage_options: dict[str, Any] | None = None,
@@ -215,7 +214,6 @@ class TensogramBackendArray(BackendArray):
         self.shape = shape
         self.dtype = dtype
         self.supports_range = supports_range
-        self.verify_hash = verify_hash
         self.range_threshold = range_threshold
         self.storage_options = storage_options
         self._shared_file = shared_file
@@ -272,7 +270,6 @@ class TensogramBackendArray(BackendArray):
                         obj_index=self.obj_index,
                         ranges=flat_ranges,
                         join=True,
-                        verify_hash=self.verify_hash,
                         native_byte_order=True,
                     )
                     return np.asarray(arr).reshape(out_shape)
@@ -289,7 +286,6 @@ class TensogramBackendArray(BackendArray):
             result = f.file_decode_object(
                 self.msg_index,
                 self.obj_index,
-                verify_hash=self.verify_hash,
             )
             return np.asarray(result["data"][key])
 
@@ -297,7 +293,6 @@ class TensogramBackendArray(BackendArray):
         _meta, _desc, arr = tensogram.decode_object(
             raw_msg,
             self.obj_index,
-            verify_hash=self.verify_hash,
         )
         return np.asarray(arr[key])
 

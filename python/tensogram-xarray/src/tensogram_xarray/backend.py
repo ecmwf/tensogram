@@ -55,7 +55,6 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
         variable_key: str | None = None,
         message_index: int = 0,
         merge_objects: bool = False,
-        verify_hash: bool = False,
         range_threshold: float = 0.5,
         storage_options: dict[str, Any] | None = None,
     ) -> xr.Dataset:
@@ -79,8 +78,6 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
             If *True*, attempt to merge objects across messages by stacking
             along metadata dimensions that vary.  When *False* (default),
             only the single message at *message_index* is opened.
-        verify_hash
-            Whether to verify xxh3 hashes during decode.
         range_threshold
             Maximum fraction of total array elements (0.0-1.0) for which
             partial ``decode_range()`` is used instead of a full
@@ -107,7 +104,6 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
                 file_path,
                 dim_names=dim_names,
                 variable_key=variable_key,
-                verify_hash=verify_hash,
                 range_threshold=range_threshold,
                 storage_options=storage_options,
             )
@@ -120,7 +116,6 @@ class TensogramBackendEntrypoint(BackendEntrypoint):
             msg_index=message_index,
             dim_names=dim_names,
             variable_key=variable_key,
-            verify_hash=verify_hash,
             range_threshold=range_threshold,
             storage_options=storage_options,
         )

@@ -258,7 +258,7 @@ fn decode_object_from_frame_parity() {
         if fh.frame_type == FrameType::NTensorFrame {
             let end = pos + fh.total_length as usize;
             let frame_bytes = &msg[pos..end];
-            let decoded = decode_object_from_frame(frame_bytes, None, None).unwrap();
+            let decoded = decode_object_from_frame(frame_bytes, None).unwrap();
             assert_eq!(decoded.object_count(), 1);
             let view: js_sys::Uint8Array = decoded.object_data_u8(0).unwrap();
             let got: Vec<u8> = view.to_vec();
@@ -297,7 +297,7 @@ fn decode_range_from_frame_parity() {
             ranges.set_index(2, 10);
             ranges.set_index(3, 4);
 
-            let result = decode_range_from_frame(frame_bytes, &ranges, None).unwrap();
+            let result = decode_range_from_frame(frame_bytes, &ranges).unwrap();
             let obj: js_sys::Object = result.dyn_into().unwrap();
             let parts: js_sys::Array = js_sys::Reflect::get(&obj, &"parts".into())
                 .unwrap()

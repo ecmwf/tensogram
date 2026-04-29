@@ -1387,6 +1387,12 @@ pub(crate) fn get_u64_param(params: &BTreeMap<String, ciborium::Value>, key: &st
 /// Same shape as [`get_i64_param_or_default`]: returns `default` when
 /// the key is absent, but rejects non-text CBOR values.  Used for
 /// codec sub-codec selectors (e.g. `blosc2_codec`).
+//
+// Currently the only call site lives behind `#[cfg(feature = "blosc2")]`,
+// so the function would be flagged as dead code in feature combinations
+// that exclude blosc2 (notably the WASM build).  The helper is also
+// exercised by unit tests, so we permit `test` builds too.
+#[cfg(any(feature = "blosc2", test))]
 pub(crate) fn get_text_param_or_default<'a>(
     params: &'a BTreeMap<String, ciborium::Value>,
     key: &str,
