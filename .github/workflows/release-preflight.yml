@@ -150,7 +150,9 @@ jobs:
       - name: Install cargo-c (pinned, matches publish-ffi.yml)
         env:
           CARGO_C_VERSION: "0.10.21"
-        run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked
+        # vendored-openssl: ECMWF CI image lacks libssl-dev (see ci.yml's
+        # cargo-c job for full rationale).
+        run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked --features vendored-openssl
 
       - name: cargo cbuild + smoke test the C API distribution
         run: |

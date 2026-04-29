@@ -424,7 +424,10 @@ jobs:
       - run: mkdir -p "$TMPDIR"
 
       - name: Install cargo-c (pinned)
-        run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked
+        # vendored-openssl: the ECMWF CI image does not ship libssl-dev,
+        # so cargo-c's transitive openssl-sys dependency cannot find a
+        # system OpenSSL. Vendoring is the upstream-recommended escape.
+        run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked --features vendored-openssl
 
       - name: Build C API artifacts
         run: cargo cbuild --release -p tensogram-ffi
