@@ -888,28 +888,14 @@ mod tests {
 
         // Buffered encode
         let buffered = encode(&meta, &[(&desc, &data)], &options).unwrap();
-        let (_buf_meta, buf_objects) = decode(
-            &buffered,
-            &DecodeOptions {
-                verify_hash: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let (_buf_meta, buf_objects) = decode(&buffered, &DecodeOptions::default()).unwrap();
 
         // Streaming encode
         let buf = Vec::new();
         let mut enc = StreamingEncoder::new(buf, &meta, &options).unwrap();
         enc.write_object(&desc, &data).unwrap();
         let streamed = enc.finish().unwrap();
-        let (_str_meta, str_objects) = decode(
-            &streamed,
-            &DecodeOptions {
-                verify_hash: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let (_str_meta, str_objects) = decode(&streamed, &DecodeOptions::default()).unwrap();
 
         // Data must match (wire bytes may differ due to header vs footer layout).
         assert_eq!(buf_objects.len(), str_objects.len());

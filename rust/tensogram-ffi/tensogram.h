@@ -217,7 +217,6 @@ tgm_error tgm_encode_with_options(const char *metadata_json,
  */
 tgm_error tgm_decode_with_options(const uint8_t *buf,
                                   size_t buf_len,
-                                  int32_t verify_hash,
                                   int32_t native_byte_order,
                                   uint32_t threads,
                                   const TgmDecodeMaskOptions *mask_options,
@@ -295,14 +294,12 @@ tgm_error tgm_encode_pre_encoded(const char *metadata_json,
  * Decode a complete message (global metadata + all object payloads).
  *
  * `buf` / `buf_len`: the wire-format message bytes.
- * `verify_hash`: if non-zero, verify payload hashes during decode.
  *
  * On success, fills `out` with a `TgmMessage` handle.
  * Free with `tgm_message_free`.
  */
 tgm_error tgm_decode(const uint8_t *buf,
                      size_t buf_len,
-                     int32_t verify_hash,
                      int32_t native_byte_order,
                      uint32_t threads,
                      tgm_message_t **out);
@@ -321,7 +318,6 @@ tgm_error tgm_decode_metadata(const uint8_t *buf, size_t buf_len, tgm_metadata_t
 tgm_error tgm_decode_object(const uint8_t *buf,
                             size_t buf_len,
                             size_t index,
-                            int32_t verify_hash,
                             int32_t native_byte_order,
                             uint32_t threads,
                             tgm_message_t **out);
@@ -346,7 +342,6 @@ tgm_error tgm_decode_range(const uint8_t *buf,
                            const uint64_t *ranges_offsets,
                            const uint64_t *ranges_counts,
                            size_t num_ranges,
-                           int32_t verify_hash,
                            int32_t native_byte_order,
                            uint32_t threads,
                            int32_t join,
@@ -559,7 +554,6 @@ tgm_error tgm_file_message_count(tgm_file_t *file, size_t *out_count);
  */
 tgm_error tgm_file_decode_message(tgm_file_t *file,
                                   size_t index,
-                                  int32_t verify_hash,
                                   int32_t native_byte_order,
                                   uint32_t threads,
                                   tgm_message_t **out);
@@ -672,7 +666,6 @@ void tgm_file_iter_free(tgm_file_iter_t *iter);
  */
 tgm_error tgm_object_iter_create(const uint8_t *buf,
                                  size_t buf_len,
-                                 int32_t verify_hash,
                                  int32_t native_byte_order,
                                  tgm_object_iter_t **out);
 

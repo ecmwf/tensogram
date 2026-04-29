@@ -1034,7 +1034,7 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     const wbg = getWbg();
     const result = rethrowTyped(
       () =>
-        wbg.decode_range_from_frame(frameBytes, flat, options?.verifyHash ?? false) as {
+        wbg.decode_range_from_frame(frameBytes, flat) as {
           descriptor: DataObjectDescriptor;
           parts: Uint8Array[];
         },
@@ -1076,11 +1076,7 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     const { wrapWbgDecodedMessage } = await import('./internal/wbgWrap.js');
     const wbg = getWbg();
     const handle = rethrowTyped(() =>
-      wbg.decode_object_from_frame(
-        frameBytes,
-        options?.verifyHash ?? false,
-        options?.restoreNonFinite ?? true,
-      ),
+      wbg.decode_object_from_frame(frameBytes, options?.restoreNonFinite ?? true),
     );
     return wrapWbgDecodedMessage(handle, metadata);
   }

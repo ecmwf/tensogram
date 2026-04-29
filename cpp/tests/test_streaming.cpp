@@ -220,7 +220,6 @@ TEST(StreamingTest, StreamingWithHash) {
 
     auto f = tensogram::file::open(tmp.path);
     tensogram::decode_options dec_opts;
-    dec_opts.verify_hash = true;
     auto msg = f.decode_message(0, dec_opts);
     EXPECT_EQ(msg.num_objects(), 1u);
 

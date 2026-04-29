@@ -27,7 +27,6 @@ use wasm_bindgen::prelude::*;
 /// @param object_index - Zero-based index of the target object.
 /// @param ranges - Flat `BigUint64Array` of `[offset0, count0, offset1, count1, …]`
 ///   pairs, in element units (not bytes).  Empty array returns an empty result.
-/// @param verify_hash - Optional, default `false`.  When set, the object's
 ///   hash is checked against the payload before any range is decoded.
 /// @returns `{ descriptor, parts: Uint8Array[] }` — one raw-bytes view
 ///   per requested range, in request order.  Callers (e.g. the TS
@@ -47,7 +46,6 @@ pub fn decode_range(
     buf: &[u8],
     object_index: usize,
     ranges: &js_sys::BigUint64Array,
-    verify_hash: Option<bool>,
 ) -> Result<JsValue, JsError> {
     let flat: Vec<u64> = ranges.to_vec();
     if !flat.len().is_multiple_of(2) {
@@ -58,7 +56,6 @@ pub fn decode_range(
     let range_pairs: Vec<(u64, u64)> = flat.chunks_exact(2).map(|w| (w[0], w[1])).collect();
 
     let options = DecodeOptions {
-        verify_hash: verify_hash.unwrap_or(false),
         ..Default::default()
     };
     let (descriptor, parts) =

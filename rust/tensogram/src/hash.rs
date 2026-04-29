@@ -7,7 +7,6 @@
 // does it submit to any jurisdiction.
 
 use crate::error::{Result, TensogramError};
-use crate::types::HashDescriptor;
 use crate::wire::{FRAME_HEADER_SIZE, FrameType, footer_size_for};
 
 /// Cryptographic / checksum algorithm identifiers understood by
@@ -164,7 +163,7 @@ pub fn verify_frame_hash(frame_bytes: &[u8], frame_type: FrameType) -> Result<()
 }
 
 /// Format a raw xxh3-64 digest into the canonical 16-char hex string used
-/// in [`HashDescriptor::value`].
+/// by [`crate::types::HashFrame`] entries.
 ///
 /// Exposed `pub(crate)` so that the buffered encoder can reuse this
 /// formatting when it consumes the digest produced by the
@@ -175,29 +174,10 @@ pub(crate) fn format_xxh3_digest(digest: u64) -> String {
     format!("{digest:016x}")
 }
 
-/// Verify a hash descriptor against data.
-///
-/// **Strict-input contract.** This helper is the explicit "verify integrity
-/// of these bytes against this descriptor" path.  An unknown algorithm name
-/// is rejected with [`TensogramError::Metadata`] — silently returning `Ok`
-/// would be an integrity bypass for callers who reached for `verify_hash`
-/// specifically to check integrity.
-///
-/// Forward-compatibility for unknown algorithms is the validator's concern,
-/// not this helper's: see `validate --checksum` and the
-/// `IssueCode::UnknownHashAlgorithm` warning emitted by
-/// `validate::integrity::validate_integrity`.
-pub fn verify_hash(data: &[u8], descriptor: &HashDescriptor) -> Result<()> {
-    let algorithm = HashAlgorithm::parse(&descriptor.algorithm)?;
-    let actual = compute_hash(data, algorithm);
-    if actual != descriptor.value {
-        return Err(TensogramError::HashMismatch {
-            expected: descriptor.value.clone(),
-            actual,
-        });
-    }
-    Ok(())
-}
+// (Wave 2.2 removed the standalone
+// `verify_hash(&[u8], &HashDescriptor)` helper — `HashDescriptor`
+// itself is gone in v3.  Frame-level integrity goes through
+// [`hash_frame_body`] / [`verify_frame_hash`] over raw frame bytes.)
 
 #[cfg(test)]
 mod tests {
@@ -212,61 +192,12 @@ mod tests {
         assert_eq!(hash, compute_hash(data, HashAlgorithm::Xxh3));
     }
 
-    #[test]
-    fn test_verify_hash() {
-        let data = b"test data";
-        let hash = compute_hash(data, HashAlgorithm::Xxh3);
-        let descriptor = HashDescriptor {
-            algorithm: "xxh3".to_string(),
-            value: hash,
-        };
-        assert!(verify_hash(data, &descriptor).is_ok());
-    }
-
-    #[test]
-    fn test_verify_hash_mismatch() {
-        let data = b"test data";
-        let descriptor = HashDescriptor {
-            algorithm: "xxh3".to_string(),
-            value: "0000000000000000".to_string(),
-        };
-        assert!(verify_hash(data, &descriptor).is_err());
-    }
-
-    #[test]
-    fn test_verify_hash_rejects_unknown_algorithm() {
-        // Strict-input contract: an unknown algorithm name is rejected
-        // with `TensogramError::Metadata` rather than silently skipped.
-        // Forward-compat for new algorithm names lives in the validator,
-        // not in `verify_hash`.
-        let data = b"test data";
-        let descriptor = HashDescriptor {
-            algorithm: "sha256".to_string(),
-            value: "abc123".to_string(),
-        };
-        let err = verify_hash(data, &descriptor).unwrap_err();
-        match err {
-            TensogramError::Metadata(msg) => {
-                assert!(
-                    msg.contains("unknown hash type"),
-                    "expected unknown-hash-type message, got: {msg}"
-                );
-                assert!(msg.contains("sha256"), "expected algo name, got: {msg}");
-            }
-            other => panic!("expected Metadata error, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_verify_hash_rejects_empty_algorithm() {
-        let data = b"test data";
-        let descriptor = HashDescriptor {
-            algorithm: String::new(),
-            value: "abc123".to_string(),
-        };
-        let err = verify_hash(data, &descriptor).unwrap_err();
-        assert!(matches!(err, TensogramError::Metadata(_)));
-    }
+    // (Wave 2.2 removed `HashDescriptor` and its `verify_hash`
+    // helper.  Frame-level integrity is exercised by the
+    // `verify_frame_hash_*` tests below; the strict-input contract
+    // for unknown algorithm names now lives in the validator —
+    // see `validate::integrity::validate_integrity` and
+    // `IssueCode::UnknownHashAlgorithm`.)
 
     // ── Inline-slot error paths ─────────────────────────────────────
 

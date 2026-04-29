@@ -156,13 +156,18 @@ class TestEncodeDecode:
         _, arr = objects[0]
         np.testing.assert_array_equal(arr, data)
 
-    def test_verify_hash_clean(self):
-        """verify_hash=True on a valid message should succeed."""
+    def test_verify_hash_kwarg_removed(self):
+        """The legacy ``verify_hash`` kwarg has been removed in v3 (Wave 2.3).
+
+        Per-frame integrity verification lives at the validation layer
+        — see ``tensogram.validate(msg, level="checksum")`` or the
+        ``tensogram validate --checksum`` CLI subcommand.  The decode
+        path is a pure deserialisation.
+        """
         data = np.ones(10, dtype=np.float32)
         msg = encode_simple(data, hash_algo="xxh3")
-        _, objects = tensogram.decode(msg, verify_hash=True)
-        _, arr = objects[0]
-        np.testing.assert_array_equal(arr, data)
+        with pytest.raises(TypeError, match="verify_hash"):
+            _ = tensogram.decode(msg, verify_hash=True)
 
 
 # ---------------------------------------------------------------------------
@@ -296,12 +301,14 @@ class TestDecodeObject:
         with pytest.raises(ValueError, match="ObjectError"):
             tensogram.decode_object(msg, 99)
 
-    def test_verify_hash(self):
-        """decode_object with verify_hash=True should succeed on valid data."""
+    def test_verify_hash_kwarg_removed(self):
+        """``decode_object`` no longer accepts the legacy ``verify_hash``
+        kwarg (Wave 2.3 — see the class-level note on
+        ``test_verify_hash_kwarg_removed``)."""
         data = np.arange(20, dtype=np.float32)
         msg = encode_simple(data, hash_algo="xxh3")
-        _meta, _desc, arr = tensogram.decode_object(msg, 0, verify_hash=True)
-        np.testing.assert_array_equal(arr, data)
+        with pytest.raises(TypeError, match="verify_hash"):
+            _ = tensogram.decode_object(msg, 0, verify_hash=True)
 
 
 # ---------------------------------------------------------------------------
@@ -737,7 +744,9 @@ class TestTensogramFile:
             assert meta["step"] == 6
 
     def test_append_with_hash(self, tmp_path):
-        """Append with hash, then decode with verification."""
+        """Append with hash, decode plainly, then verify integrity via
+        the validation layer (Wave 2.3 — ``decode`` no longer accepts
+        ``verify_hash`` because it is a pure deserialisation in v3)."""
         path = str(tmp_path / "test.tgm")
 
         with tensogram.TensogramFile.create(path) as f:
@@ -747,9 +756,13 @@ class TestTensogramFile:
             f.append(meta, [(desc, data)], hash="xxh3")
 
         with tensogram.TensogramFile.open(path) as f2:
-            meta, objects = f2.decode_message(0, verify_hash=True)
+            _, objects = f2.decode_message(0)
             _, arr = objects[0]
             np.testing.assert_array_equal(arr, data)
+        report = tensogram.validate_file(path, level="checksum")
+        assert all(
+            m["hash_verified"] for m in report["messages"]
+        ), f"checksum validation should pass after append, got: {report}"
 
     def test_len(self, tmp_path):
         """len(file) returns message count."""
@@ -918,18 +931,16 @@ class TestErrors:
             tensogram.encode(meta, [(desc, data)])
 
     def test_hash_mismatch_detected(self):
-        """v3: corruption detection moved to `validate`, not `decode`.
+        """v3: corruption detection lives in ``validate``, not ``decode``.
 
-        `decode(verify_hash=True)` is a no-op in v3 (the option is
-        kept for source compatibility).  Frame-level integrity now
-        goes through `tensogram.validate(msg, level="checksum")`,
-        which recomputes each frame's body hash and compares it to
-        the inline slot.  Corruption in the payload or header region
-        surfaces as a validation issue, not a decode error.
-
-        Decode may still raise `ValueError` (FramingError) if the
+        Frame-level integrity goes through
+        ``tensogram.validate(msg, level="checksum")``, which recomputes
+        each frame's body hash and compares it to the inline slot.
+        Corruption in the payload or header region surfaces as a
+        validation issue.  Decode itself is a pure deserialisation
+        and may still raise ``ValueError`` (FramingError) if the
         corruption breaks frame boundaries; otherwise decode succeeds
-        and the validation report flags the mismatch.
+        cleanly and validation flags the mismatch.
         """
         data = np.arange(100, dtype=np.float32)
         msg = encode_simple(data, hash_algo="xxh3")
@@ -938,11 +949,11 @@ class TestErrors:
         mid = len(corrupted) // 2
         corrupted[mid] ^= 0xFF
 
-        # Decode no longer checks the hash — may succeed or raise
+        # Decode no longer checks hashes — it may succeed or raise
         # FramingError depending on where the tamper lands.  Ignore
-        # that return value; the real check is in validate.
+        # the return value; the real check is in validate.
         try:
-            tensogram.decode(bytes(corrupted), verify_hash=True)
+            tensogram.decode(bytes(corrupted))
         except ValueError:
             return  # FramingError is an acceptable v3 detection path
 
@@ -1119,20 +1130,21 @@ class TestEdgeCases:
         _decoded_desc, arr = objects[0]
         np.testing.assert_array_equal(arr, data)
 
-    def test_decode_range_with_verify_hash(self):
-        """decode_range with verify_hash=True on valid data."""
+    def test_decode_range_verify_hash_kwarg_removed(self):
+        """``decode_range`` no longer accepts ``verify_hash`` (Wave 2.3 —
+        per-frame integrity verification lives in the validation layer)."""
         data = np.arange(100, dtype=np.float32)
         msg = encode_simple(data, hash_algo="xxh3")
 
-        # Default (join=False) with verify_hash
-        result = tensogram.decode_range(msg, 0, [(10, 5)], verify_hash=True)
-        assert isinstance(result, list)
-        assert len(result) == 1
-        np.testing.assert_array_equal(result[0], data[10:15])
+        with pytest.raises(TypeError, match="verify_hash"):
+            _ = tensogram.decode_range(msg, 0, [(10, 5)], verify_hash=True)
+        with pytest.raises(TypeError, match="verify_hash"):
+            _ = tensogram.decode_range(msg, 0, [(10, 5)], join=True, verify_hash=True)
 
-        # join=True with verify_hash
-        joined = tensogram.decode_range(msg, 0, [(10, 5)], join=True, verify_hash=True)
-        assert isinstance(joined, np.ndarray)
+        # Without the obsolete kwarg, decode_range works as before.
+        result = tensogram.decode_range(msg, 0, [(10, 5)])
+        np.testing.assert_array_equal(result[0], data[10:15])
+        joined = tensogram.decode_range(msg, 0, [(10, 5)], join=True)
         np.testing.assert_array_equal(joined, data[10:15])
 
     def test_decode_metadata_multi_object(self):
@@ -1497,14 +1509,18 @@ class TestEdgeCases:
         for meta, _ in collected:
             assert meta["tag"] == "valid"
 
-    def test_iter_messages_verify_hash(self):
-        """iter_messages with verify_hash=True on hashed data."""
+    def test_iter_messages_verify_hash_kwarg_removed(self):
+        """``iter_messages`` no longer accepts ``verify_hash`` (Wave 2.3)."""
         data = np.arange(16, dtype=np.float32)
         meta = make_global_meta(3)
         desc = make_descriptor([16], dtype="float32")
         msg = bytes(tensogram.encode(meta, [(desc, data)], hash="xxh3"))
 
-        collected = list(tensogram.iter_messages(msg, verify_hash=True))
+        with pytest.raises(TypeError, match="verify_hash"):
+            _ = list(tensogram.iter_messages(msg, verify_hash=True))
+
+        # Plain iteration still decodes the data faithfully.
+        collected = list(tensogram.iter_messages(msg))
         assert len(collected) == 1
         _, objects = collected[0]
         _, arr = objects[0]
@@ -2400,17 +2416,17 @@ class TestEncodeOptionsCoverage:
         _, objects = tensogram.decode(msg)
         assert len(objects) == 1
 
-    def test_verify_hash_on_no_hash(self):
-        """verify_hash=True silently skips when no hash stored."""
+    def test_verify_hash_kwarg_rejected_no_hash(self):
+        """Even on an unhashed message, ``verify_hash=True`` is rejected
+        (Wave 2.3 — the kwarg has been removed altogether)."""
         msg = encode_simple(np.ones(4, dtype=np.float32), hash_algo=None)
-        result = tensogram.decode(msg, verify_hash=True)
-        assert len(result.objects) == 1
+        with pytest.raises(TypeError, match="verify_hash"):
+            _ = tensogram.decode(msg, verify_hash=True)
 
-    def test_verify_hash_on_clean(self):
-        """verify_hash=True passes on clean message."""
+    def test_verify_hash_kwarg_rejected_clean(self):
         msg = encode_simple(np.ones(4, dtype=np.float32), hash_algo="xxh3")
-        result = tensogram.decode(msg, verify_hash=True)
-        assert len(result.objects) == 1
+        with pytest.raises(TypeError, match="verify_hash"):
+            _ = tensogram.decode(msg, verify_hash=True)
 
 
 # ---------------------------------------------------------------------------

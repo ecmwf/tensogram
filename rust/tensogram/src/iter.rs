@@ -137,12 +137,10 @@ impl Iterator for ObjectIter {
         self.index += 1;
         let (ref desc, ref payload_bytes, ref mask_region) = self.objects[i];
 
-        // v3: hash verification moved to frame-level (see the inline
-        // slot in `plans/WIRE_FORMAT.md` §2.4).  `options.verify_hash`
-        // is retained on the public API for source compatibility
-        // but a full-iter caller that wants integrity checks should
-        // go through `validate --checksum`.
-        let _ = (self.options.verify_hash, desc, payload_bytes);
+        // v3: hash verification lives at the frame layer (see the
+        // inline slot in `plans/WIRE_FORMAT.md` §2.4).  An iter
+        // caller wanting integrity checks goes through
+        // `validate --checksum`.
 
         let num_elements = match desc.num_elements() {
             Ok(n) => n,

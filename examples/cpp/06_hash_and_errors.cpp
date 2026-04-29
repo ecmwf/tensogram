@@ -64,11 +64,16 @@ int main() {
     std::printf("Unhashed message: %zu bytes\n", unhashed.size());
 
     // ── 2. decode is hash-agnostic ────────────────────────────────────────
+    //
+    // The decode path is a pure deserialisation in v3 — per-frame
+    // integrity verification lives at the validation layer.  Use
+    // `tensogram::validate(...)` (see step 3 below) or the
+    // `tensogram validate --checksum` CLI subcommand for integrity
+    // checks.
     {
-        tensogram::decode_options verify;
-        verify.verify_hash = true;
-        auto m1 = tensogram::decode(hashed.data(),   hashed.size(),   verify);
-        auto m2 = tensogram::decode(unhashed.data(), unhashed.size(), verify);
+        tensogram::decode_options opts;
+        auto m1 = tensogram::decode(hashed.data(),   hashed.size(),   opts);
+        auto m2 = tensogram::decode(unhashed.data(), unhashed.size(), opts);
         std::printf("\nBoth messages decode cleanly (decode is hash-agnostic).\n");
         (void)m1; (void)m2;
     }

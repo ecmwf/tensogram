@@ -239,14 +239,7 @@ fn large_sparse_nan_payload_round_trips() {
     };
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
 
-    let (_, objects) = decode(
-        &msg,
-        &DecodeOptions {
-            verify_hash: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let (_, objects) = decode(&msg, &DecodeOptions::default()).unwrap();
     let got: Vec<f64> = objects[0]
         .1
         .chunks_exact(8)

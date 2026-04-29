@@ -483,42 +483,27 @@ fn realistic_binary_scale_factor_accepted() {
     }
 }
 
-// ── 8. Unknown hash algorithm on decode ──────────────────────────────────────
+// ── 8. Decode is a pure deserialisation (Wave 2.2 / 2.3) ─────────────────────
 
 #[test]
-fn unknown_hash_algorithm_skips_verification() {
+fn decode_does_not_verify_hashes() {
+    // v3 contract: per-frame integrity verification lives at the
+    // validation layer (`validate --checksum`), not in `decode`.
+    // The legacy `verify_hash` field on `DecodeOptions` and the
+    // standalone `verify_hash(&[u8], &HashDescriptor)` helper were
+    // both removed in Wave 2.2 / 2.3.  Decode itself is a pure
+    // deserialisation.
     let meta = make_global_meta();
     let desc = make_descriptor(vec![4], Dtype::Float32);
     let data = vec![0u8; 16];
 
-    // Encode with a hash
     let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let (_, _objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
 
-    // Decode works; `verify_hash` on DecodeOptions is a no-op in
-    // v3 (frame-level integrity moved to validate --checksum) but
-    // the option is kept for source compatibility.
-    let (_, _objects) = decode(
-        &encoded,
-        &DecodeOptions {
-            verify_hash: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-
-    // The standalone `verify_hash` helper rejects unknown algorithm
-    // names with `TensogramError::Metadata`.  Forward-compat for new
-    // algorithm names lives in the validator (see `validate
-    // --checksum` / `IssueCode::UnknownHashAlgorithm`), not in this
-    // helper — silently returning Ok would be an integrity bypass for
-    // callers who reached for `verify_hash` specifically to check
-    // integrity.
-    let descriptor = HashDescriptor {
-        algorithm: "sha512".to_string(),
-        value: "fake_hash_value".to_string(),
-    };
-    let err = tensogram::verify_hash(b"any data", &descriptor).unwrap_err();
-    assert!(matches!(err, tensogram::TensogramError::Metadata(_)));
+    // Forward-compat for unknown algorithm names is the validator's
+    // concern.  An unknown `algorithm` in a HashFrame surfaces as
+    // an `UnknownHashAlgorithm` warning, not a hard error — see
+    // the validator's integrity tests.
 }
 
 #[test]
@@ -802,7 +787,6 @@ fn verify_hash_true_on_unhashed_message_succeeds() {
     let result = decode(
         &encoded,
         &DecodeOptions {
-            verify_hash: true,
             ..Default::default()
         },
     );
@@ -1043,23 +1027,35 @@ fn streaming_encoder_multiple_objects() {
     assert_eq!(objects[1].1, data1);
 }
 
-// ── 20. Hash verification on decode ──────────────────────────────────────────
+// ── 20. Hash verification (now via verify_frame_hash) ────────────────────────
 
-/// `verify_hash` (the standalone `HashDescriptor`-based helper)
-/// returns `HashMismatch` when the stored digest disagrees with
-/// the recomputed xxh3-64.  Frame-level integrity in v3 goes
-/// through the inline slot + `validate --checksum` instead.
+/// In v3 frame-level integrity is verified by recomputing the
+/// xxh3-64 of the frame body and comparing to the inline hash slot.
+/// `verify_frame_hash` returns `HashMismatch` on disagreement.  The
+/// legacy standalone `verify_hash(&[u8], &HashDescriptor)` helper
+/// was removed in Wave 2.2 alongside `HashDescriptor` itself.
 #[test]
-fn hash_mismatch_detected_on_verify() {
-    let data = vec![42u8; 16];
-    let bad_hash = HashDescriptor {
-        algorithm: "xxh3".to_string(),
-        value: "0000000000000000".to_string(),
-    };
-    let result = tensogram::verify_hash(&data, &bad_hash);
-    assert!(result.is_err());
-    let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("hash mismatch"));
+fn hash_mismatch_detected_on_corrupted_frame() {
+    use tensogram::wire::{FRAME_END, FRAME_MAGIC, FrameType};
+    // Build a minimal HeaderMetadata frame with a wrong inline slot
+    // (the body actually hashes to something non-zero).
+    let body = b"hello";
+    let mut buf = Vec::new();
+    buf.extend_from_slice(FRAME_MAGIC);
+    buf.extend_from_slice(&1u16.to_be_bytes()); // type = HeaderMetadata
+    buf.extend_from_slice(&1u16.to_be_bytes()); // version
+    buf.extend_from_slice(&0u16.to_be_bytes()); // flags
+    let total_length = (16 + body.len() + 12) as u64;
+    buf.extend_from_slice(&total_length.to_be_bytes());
+    buf.extend_from_slice(body);
+    buf.extend_from_slice(&0u64.to_be_bytes()); // wrong slot
+    buf.extend_from_slice(FRAME_END);
+
+    let result = tensogram::hash::verify_frame_hash(&buf, FrameType::HeaderMetadata);
+    assert!(matches!(
+        result,
+        Err(tensogram::TensogramError::HashMismatch { .. })
+    ));
 }
 
 // ── 21. GlobalMetadata namespaces ────────────────────────────────────────────
@@ -1818,7 +1814,6 @@ fn decode_range_with_hash_verification() {
         0,
         &[(0, 5)],
         &DecodeOptions {
-            verify_hash: true,
             ..Default::default()
         },
     )
@@ -1844,26 +1839,8 @@ fn streaming_encoder_rejects_invalid_object() {
     assert!(result.is_err());
 }
 
-#[test]
-fn buffered_encode_rejects_emit_preceders() {
-    let meta = make_global_meta();
-    let desc = make_descriptor(vec![4], Dtype::Float32);
-    let data = vec![0u8; 16];
-    let options = EncodeOptions {
-        emit_preceders: true,
-        ..Default::default()
-    };
-    let result = encode(&meta, &[(&desc, &data)], &options);
-    assert!(
-        result.is_err(),
-        "emit_preceders in buffered mode should fail"
-    );
-    let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("StreamingEncoder"),
-        "error should mention StreamingEncoder: {err}"
-    );
-}
+// (Wave 2.4 removed the dead `EncodeOptions.emit_preceders` field —
+// the only path to emit preceders is `StreamingEncoder::write_preceder()`.)
 
 // ── PrecederMetadata edge cases ─────────────────────────────────────────────
 
@@ -1941,7 +1918,6 @@ fn preceder_with_hash_verification() {
     // compatibility and decoding still succeeds when the message
     // is well-formed.
     let verify_opts = decode::DecodeOptions {
-        verify_hash: true,
         ..Default::default()
     };
     let (decoded_meta, _objects) = decode(&result, &verify_opts).unwrap();

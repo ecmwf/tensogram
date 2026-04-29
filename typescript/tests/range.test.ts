@@ -224,14 +224,17 @@ describe('Scope C.1 — decodeRange', () => {
     }
   });
 
-  it('verifyHash: true passes on an unmodified message', async () => {
+  it('decodeRange has no legacy verifyHash option in v3', async () => {
+    // The legacy `verifyHash` field on `DecodeRangeOptions` was
+    // removed in Wave 2.3 — integrity verification lives in the
+    // validate API (`tensogram validate --checksum`).
     const msg = encode(defaultMeta(), [
       {
         descriptor: makeDescriptor([4], 'float32'),
         data: new Float32Array([1, 2, 3, 4]),
       },
     ]);
-    const { parts } = decodeRange(msg, 0, [[0, 4]], { verifyHash: true });
+    const { parts } = decodeRange(msg, 0, [[0, 4]]);
     expect(Array.from(parts[0] as Float32Array)).toEqual([1, 2, 3, 4]);
   });
 });

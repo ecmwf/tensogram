@@ -145,11 +145,12 @@ class TestAsyncDecode:
         np.testing.assert_allclose(arr, np.zeros(10, dtype=np.float32))
 
     @pytest.mark.asyncio
-    async def test_decode_message_with_verify_hash(self, tgm_path):
+    async def test_decode_message_verify_hash_kwarg_removed(self, tgm_path):
+        """The async ``decode_message`` no longer accepts ``verify_hash``
+        (Wave 2.3 — see ``test_tensogram.py`` for the rationale)."""
         f = await tensogram.AsyncTensogramFile.open(tgm_path)
-        meta, objects = await f.decode_message(0, verify_hash=True)
-        assert meta.version == 3
-        assert len(objects) == 1
+        with pytest.raises(TypeError, match="verify_hash"):
+            _ = await f.decode_message(0, verify_hash=True)
 
     @pytest.mark.asyncio
     async def test_file_decode_metadata(self, tgm_path):
@@ -300,7 +301,11 @@ class TestAsyncErrors:
             _ = await f.read_message(999)
 
     @pytest.mark.asyncio
-    async def test_decode_message_verify_hash_mismatch(self, tmp_path):
+    async def test_decode_message_verify_hash_kwarg_removed_async(self, tmp_path):
+        """Async ``decode_message`` rejects the obsolete ``verify_hash``
+        kwarg (Wave 2.3).  Integrity verification lives in the
+        validation layer (``tensogram.validate_file(level="checksum")``).
+        """
         path = str(tmp_path / "corrupt.tgm")
         msg = _encode_test_message([4])
         corrupt = bytearray(msg)
@@ -308,7 +313,7 @@ class TestAsyncErrors:
         with open(path, "wb") as fh:
             fh.write(corrupt)
         f = await tensogram.AsyncTensogramFile.open(path)
-        with pytest.raises((ValueError, RuntimeError)):
+        with pytest.raises(TypeError, match="verify_hash"):
             _ = await f.decode_message(0, verify_hash=True)
 
     @pytest.mark.asyncio

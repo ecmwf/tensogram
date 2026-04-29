@@ -32,13 +32,6 @@ use tensogram_encodings::simple_packing::{self, SimplePackingParams};
 pub struct EncodeOptions {
     /// Hash algorithm to use for payload integrity. None = no hashing.
     pub hash_algorithm: Option<HashAlgorithm>,
-    /// Reserved for future buffered-mode preceder support.
-    ///
-    /// Currently, setting this to `true` in buffered mode (`encode()`)
-    /// returns an error — use [`StreamingEncoder::write_preceder`](crate::streaming::StreamingEncoder::write_preceder) instead.
-    /// The streaming encoder ignores this field; it emits preceders only
-    /// when `write_preceder()` is called explicitly.
-    pub emit_preceders: bool,
     /// Which backend to use for szip / zstd when both FFI and pure-Rust
     /// implementations are compiled in.
     ///
@@ -215,7 +208,6 @@ impl Default for EncodeOptions {
     fn default() -> Self {
         Self {
             hash_algorithm: Some(HashAlgorithm::Xxh3),
-            emit_preceders: false,
             compression_backend: pipeline::CompressionBackend::default(),
             threads: 0,
             parallel_threshold_bytes: None,
@@ -533,14 +525,6 @@ fn encode_inner(
     options: &EncodeOptions,
     mode: EncodeMode,
 ) -> Result<Vec<u8>> {
-    // Buffered encode does not support emit_preceders — use StreamingEncoder
-    // with write_preceder() instead.
-    if options.emit_preceders {
-        return Err(TensogramError::Encoding(
-            "emit_preceders is not supported in buffered mode; use StreamingEncoder::write_preceder() instead".to_string(),
-        ));
-    }
-
     // ── Thread-budget dispatch (axis-B-first policy) ────────────────────
     //
     // Resolve the effective thread budget (explicit option > env var),
@@ -659,9 +643,9 @@ pub fn encode(
 /// - Compute a fresh xxh3 hash over the caller's bytes (overwrites any caller-supplied hash)
 /// - Preserve caller-supplied `szip_block_offsets` in descriptor params
 ///
-/// Callers must NOT set:
-/// - `emit_preceders = true` — use `StreamingEncoder::write_preceder()` for streaming
-///   preceder support.
+/// Per-object preceder metadata is a streaming-mode concept
+/// (`StreamingEncoder::write_preceder()`); the buffered
+/// `encode_pre_encoded` path does not emit preceders.
 ///
 /// Unlike `encode()`, this path does NOT run the finite-value check — the caller's
 /// bytes are assumed to be already well-formed for the declared encoding and are
@@ -2426,27 +2410,9 @@ mod tests {
         );
     }
 
-    /// emit_preceders=true must be rejected by encode_pre_encoded (buffered mode).
-    #[test]
-    fn test_encode_pre_encoded_rejects_emit_preceders() {
-        let desc = make_descriptor(vec![2]);
-        let data = vec![0u8; 8];
-        let meta = GlobalMetadata::default();
-        let options = EncodeOptions {
-            emit_preceders: true,
-            ..Default::default()
-        };
-        let result = encode_pre_encoded(&meta, &[(&desc, data.as_slice())], &options);
-        assert!(
-            result.is_err(),
-            "encode_pre_encoded with emit_preceders=true should fail"
-        );
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("emit_preceders"),
-            "error should mention emit_preceders: {err}"
-        );
-    }
+    // (Wave 2.4 removed the dead `EncodeOptions.emit_preceders` field.
+    // Per-object preceder metadata in streaming mode flows through
+    // `StreamingEncoder::write_preceder()` instead.)
 
     /// `encode_pre_encoded` populates each data-object frame's
     /// inline hash slot with the xxh3-64 of the frame body when

@@ -46,7 +46,7 @@ pub use framing::{
     ScanOptions, data_object_inline_hashes, scan, scan_file, scan_file_with_options,
     scan_with_options,
 };
-pub use hash::{HashAlgorithm, compute_hash, verify_hash};
+pub use hash::{HashAlgorithm, compute_hash};
 pub use iter::{FileMessageIter, MessageIter, ObjectIter, messages, objects, objects_metadata};
 pub use metadata::{RESERVED_KEY, compute_common, verify_canonical_cbor};
 pub use parallel::{DEFAULT_PARALLEL_THRESHOLD_BYTES, ENV_THREADS};
@@ -61,8 +61,8 @@ pub use streaming::StreamingEncoder;
 pub use tensogram_encodings::bitmask::MaskMethod;
 pub use tensogram_encodings::pipeline::CompressionBackend;
 pub use types::{
-    ByteOrder, DataObjectDescriptor, DecodedObject, GlobalMetadata, HashDescriptor, HashFrame,
-    IndexFrame, MaskDescriptor, MasksMetadata,
+    ByteOrder, DataObjectDescriptor, DecodedObject, GlobalMetadata, HashFrame, IndexFrame,
+    MaskDescriptor, MasksMetadata,
 };
 pub use validate::{
     FileIssue, FileValidationReport, IssueCode, IssueSeverity, ValidateOptions, ValidationIssue,

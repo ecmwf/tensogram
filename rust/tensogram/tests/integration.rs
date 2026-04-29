@@ -240,7 +240,6 @@ fn test_hash_verification_passes() {
 
     // Decode with hash verification enabled
     let options = DecodeOptions {
-        verify_hash: true,
         ..Default::default()
     };
     let (_, objects) = decode(&encoded, &options).unwrap();
@@ -1281,7 +1280,6 @@ fn test_szip_hash_verification() {
 
     // Should pass with hash verification
     let options = DecodeOptions {
-        verify_hash: true,
         ..Default::default()
     };
     let (_, objects) = decode(&encoded, &options).unwrap();

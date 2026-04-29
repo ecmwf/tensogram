@@ -72,12 +72,13 @@ describe('Phase 1 — decode wrapper', () => {
     expect(() => decode(garbage)).toThrow(FramingError);
   });
 
-  it('verifyHash: true is a no-op in v3 (integrity moved to validate)', async () => {
-    // v3: `verifyHash: true` on decode is retained for source
-    // compatibility but is a no-op.  Frame-level integrity
-    // verification moved to the validate API
-    // (plans/WIRE_FORMAT.md §11).  Corruption detection lives in
-    // `validate --checksum`; decode is a pure deserialisation.
+  it('decode never throws HashMismatchError in v3 (integrity moved to validate)', async () => {
+    // v3 contract: decode is a pure deserialisation.  Per-frame
+    // integrity verification lives in the validate API
+    // (plans/WIRE_FORMAT.md §11).  The legacy `verifyHash` option
+    // has been removed (Wave 2.3).  Corruption may still surface
+    // as a FramingError when the tamper lands on a structural byte;
+    // otherwise decode succeeds and `validate` flags the mismatch.
     await init();
     const data = new Float32Array(1000);
     for (let i = 0; i < data.length; i++) data[i] = i;
@@ -86,21 +87,15 @@ describe('Phase 1 — decode wrapper', () => {
     ]);
     const tampered = new Uint8Array(msg);
     tampered[500] ^= 0xff;
-    // decode must NOT throw HashMismatchError — that surface moved
-    // to validate.  It may still throw FramingError if the tamper
-    // lands on a structural byte; otherwise it succeeds silently.
     try {
-      const decoded = decode(tampered, { verifyHash: true });
+      const decoded = decode(tampered);
       decoded.close();
     } catch (e) {
-      // Structural tamper → FramingError is acceptable; hash-only
-      // tamper → decode succeeds.  Either way, HashMismatchError
-      // must not escape the decode path.
       expect(e).not.toBeInstanceOf(HashMismatchError);
     }
   });
 
-  it('verifyHash: true on untampered data succeeds', async () => {
+  it('decode untampered message succeeds without integrity options', async () => {
     await init();
     const msg = encode(defaultMeta(), [
       {
@@ -108,7 +103,7 @@ describe('Phase 1 — decode wrapper', () => {
         data: new Float32Array([1, 2, 3, 4]),
       },
     ]);
-    const decoded = decode(msg, { verifyHash: true });
+    const decoded = decode(msg);
     expect(decoded.objects).toHaveLength(1);
     decoded.close();
   });

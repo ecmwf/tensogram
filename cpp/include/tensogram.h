@@ -217,7 +217,6 @@ tgm_error tgm_encode_with_options(const char *metadata_json,
  */
 tgm_error tgm_decode_with_options(const uint8_t *buf,
                                   size_t buf_len,
-                                  int32_t verify_hash,
                                   int32_t native_byte_order,
                                   uint32_t threads,
                                   const TgmDecodeMaskOptions *mask_options,
@@ -295,14 +294,12 @@ tgm_error tgm_encode_pre_encoded(const char *metadata_json,
  * Decode a complete message (global metadata + all object payloads).
  *
  * `buf` / `buf_len`: the wire-format message bytes.
- * `verify_hash`: if non-zero, verify payload hashes during decode.
  *
  * On success, fills `out` with a `TgmMessage` handle.
  * Free with `tgm_message_free`.
  */
 tgm_error tgm_decode(const uint8_t *buf,
                      size_t buf_len,
-                     int32_t verify_hash,
                      int32_t native_byte_order,
                      uint32_t threads,
                      tgm_message_t **out);
@@ -321,7 +318,6 @@ tgm_error tgm_decode_metadata(const uint8_t *buf, size_t buf_len, tgm_metadata_t
 tgm_error tgm_decode_object(const uint8_t *buf,
                             size_t buf_len,
                             size_t index,
-                            int32_t verify_hash,
                             int32_t native_byte_order,
                             uint32_t threads,
                             tgm_message_t **out);
@@ -346,7 +342,6 @@ tgm_error tgm_decode_range(const uint8_t *buf,
                            const uint64_t *ranges_offsets,
                            const uint64_t *ranges_counts,
                            size_t num_ranges,
-                           int32_t verify_hash,
                            int32_t native_byte_order,
                            uint32_t threads,
                            int32_t join,
@@ -559,7 +554,6 @@ tgm_error tgm_file_message_count(tgm_file_t *file, size_t *out_count);
  */
 tgm_error tgm_file_decode_message(tgm_file_t *file,
                                   size_t index,
-                                  int32_t verify_hash,
                                   int32_t native_byte_order,
                                   uint32_t threads,
                                   tgm_message_t **out);
@@ -672,7 +666,6 @@ void tgm_file_iter_free(tgm_file_iter_t *iter);
  */
 tgm_error tgm_object_iter_create(const uint8_t *buf,
                                  size_t buf_len,
-                                 int32_t verify_hash,
                                  int32_t native_byte_order,
                                  tgm_object_iter_t **out);
 
@@ -710,6 +703,39 @@ tgm_error tgm_compute_hash(const uint8_t *data,
                            size_t data_len,
                            const char *algo,
                            tgm_bytes_t *out);
+
+/**
+ * Run environment diagnostics and serialise the report as a JSON byte buffer.
+ *
+ * The report mirrors `tensogram::doctor::run_diagnostics()` and the
+ * `tensogram doctor` CLI subcommand.  Cross-language parity: the same
+ * JSON shape is produced by the Python `tensogram.doctor()` and the
+ * WASM `doctor()` exports — see `docs/src/cli/doctor.md` for the
+ * schema.  The C FFI build does **not** run the GRIB or NetCDF
+ * converter self-tests (those features are CLI-only), so the
+ * `self_test` array covers only the core encode/decode pipeline plus
+ * the codecs compiled into the dylib.
+ *
+ * On success returns `TgmError::Ok` and fills `out` with a JSON
+ * payload (UTF-8, NOT null-terminated).  Use `tgm_bytes_free` to
+ * release it.  Callers can safely treat `out.data` as a `char*` of
+ * length `out.len` and pass it to `json_loads` / `nlohmann::json::parse`
+ * / equivalent.
+ *
+ * On serialisation failure returns `TgmError::Encoding` and writes a
+ * human-readable description retrievable via `tgm_last_error()`.
+ *
+ * # Example
+ *
+ * ```c
+ * tgm_bytes_t report = {0};
+ * if (tgm_doctor_to_json(&report) == TGM_ERROR_OK) {
+ *     fwrite(report.data, 1, report.len, stdout);
+ *     tgm_bytes_free(report);
+ * }
+ * ```
+ */
+tgm_error tgm_doctor_to_json(tgm_bytes_t *out);
 
 /**
  * Create a streaming encoder writing to a file.

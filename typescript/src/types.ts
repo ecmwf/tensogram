@@ -379,17 +379,17 @@ export interface EncodeOptions {
 /** Options for `decode()` / `decodeObject()`. */
 export interface DecodeOptions {
   /**
-   * If `true`, the decoder verifies every object's payload hash and
-   * throws `HashMismatchError` on mismatch. Default `false`.
-   */
-  verifyHash?: boolean;
-  /**
    * When `true` (the default), decode writes canonical NaN / ±Inf
    * bit patterns at positions recorded in the frame's mask companion.
    * Set to `false` to receive the `0.0`-substituted bytes as they
    * are on disk.  Only meaningful for frames produced with
    * `allowNan` / `allowInf` on encode.  See
    * `docs/src/guide/nan-inf-handling.md`.
+   *
+   * Per-frame integrity verification has moved to the validation
+   * layer in v3 — see `validate(buf, { level: "checksum" })` for
+   * the equivalent of the legacy `verifyHash` option (which has
+   * been removed).
    */
   restoreNonFinite?: boolean;
 }
@@ -508,8 +508,6 @@ export type RangePair = readonly [number | bigint, number | bigint];
 
 /** Options for {@link decodeRange}. */
 export interface DecodeRangeOptions {
-  /** If `true`, verifies the object's payload hash before decoding. */
-  verifyHash?: boolean;
   /**
    * If `true`, the resulting `parts` array has exactly one entry — the
    * concatenation of every requested range.  Default `false` (one entry

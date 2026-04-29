@@ -138,7 +138,7 @@ describe('Cross-language golden-file parity', () => {
     // (plans/WIRE_FORMAT.md §11).
     await init();
     const bytes = loadGolden('hash_xxh3.tgm');
-    const decoded = decode(bytes, { verifyHash: true });
+    const decoded = decode(bytes);
     try {
       expect(decoded.metadata.version).toBe(3);
       expect(decoded.objects).toHaveLength(1);
@@ -148,21 +148,20 @@ describe('Cross-language golden-file parity', () => {
     }
   });
 
-  it('hash_xxh3.tgm tamper may or may not throw on decode in v3', async () => {
-    // v3: `verifyHash: true` on decode is a no-op (integrity
-    // verification moved to validate).  A byte flip in the tail
+  it('hash_xxh3.tgm tamper in tail region may or may not throw on decode in v3', async () => {
+    // v3: decode is a pure deserialisation; the legacy `verifyHash`
+    // option has been removed (Wave 2.3).  A byte flip in the tail
     // region may still throw FramingError (structural corruption)
     // but is not guaranteed to — hash-only tamper slips through
-    // decode silently.  The replacement TS-side integrity test
-    // lives in the validate suite (once the TS `validate`
-    // wrapper lands).
+    // decode silently.  The TS-side integrity check lives in the
+    // validate suite.
     await init();
     const bytes = loadGolden('hash_xxh3.tgm');
     const tampered = new Uint8Array(bytes);
     const target = tampered.length - 24;
     tampered[target] ^= 0xff;
     try {
-      const d = decode(tampered, { verifyHash: true });
+      const d = decode(tampered);
       d.close();
     } catch {
       // FramingError on structural tamper is acceptable.

@@ -27,20 +27,20 @@ import type {
 /**
  * Decode all objects from a complete Tensogram message.
  *
+ * Decode is a pure deserialisation in v3 — per-frame integrity
+ * verification has moved to the validation layer.  Use
+ * {@link validate} with `level: "checksum"` for the equivalent of
+ * the legacy `verifyHash` option.
+ *
  * @throws {FramingError}   if the buffer is not a valid message
  * @throws {MetadataError}  if CBOR metadata is malformed
  * @throws {CompressionError} on decompression failure
- * @throws {HashMismatchError} if `opts.verifyHash` is true and a hash doesn't match
  */
 export function decode(buf: Uint8Array, opts?: DecodeOptions): DecodedMessage {
   assertUint8Array(buf, 'buf');
   const wbg = getWbg();
   const handle = rethrowTyped(() =>
-    wbg.decode(
-      buf,
-      opts?.verifyHash ?? false,
-      opts?.restoreNonFinite ?? true,
-    ) as unknown as WbgDecodedMessage,
+    wbg.decode(buf, opts?.restoreNonFinite ?? true) as unknown as WbgDecodedMessage,
   );
   return buildDecodedMessage(handle);
 }
@@ -72,7 +72,6 @@ export function decodeObject(
     wbg.decode_object(
       buf,
       index,
-      opts?.verifyHash ?? false,
       opts?.restoreNonFinite ?? true,
     ) as unknown as WbgDecodedMessage,
   );

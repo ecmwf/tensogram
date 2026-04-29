@@ -511,7 +511,6 @@ fn hash_verifies_against_substituted_payload() {
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
 
     let decode_opts = DecodeOptions {
-        verify_hash: true,
         ..Default::default()
     };
     let (_, objects) =

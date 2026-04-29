@@ -235,8 +235,6 @@ struct encode_options {
 
 /// Options controlling message decoding.
 struct decode_options {
-    /// When true, payload hashes are verified during decode.
-    bool verify_hash = false;
     /// When true (the default), decoded payloads are converted to the
     /// caller's native byte order.  Set to false to receive bytes in the
     /// message's declared wire byte order.
@@ -247,6 +245,11 @@ struct decode_options {
     /// When true (the default) AND the message carries a mask companion,
     /// decode writes canonical NaN / ±Inf at the masked positions.  Set
     /// to false to receive the 0.0-substituted bytes as on disk.
+    ///
+    /// Per-frame integrity verification has moved to the validation
+    /// layer in v3 — see `tensogram::validate(msg, "checksum")` or the
+    /// `tensogram validate --checksum` CLI subcommand.  The decode
+    /// path itself is a pure deserialisation.
     bool restore_non_finite = true;
 };
 
@@ -636,7 +639,7 @@ public:
                            const decode_options& opts = {}) {
         tgm_message_t* raw = nullptr;
         detail::check(tgm_file_decode_message(
-            handle_.get(), index, opts.verify_hash ? 1 : 0,
+            handle_.get(), index, 
             opts.native_byte_order ? 1 : 0, opts.threads, &raw));
         return message(raw);
     }
@@ -814,7 +817,7 @@ public:
                     const decode_options& opts = {}) {
         tgm_object_iter_t* raw = nullptr;
         detail::check(tgm_object_iter_create(
-            buf, len, opts.verify_hash ? 1 : 0,
+            buf, len, 
             opts.native_byte_order ? 1 : 0, &raw));
         handle_.reset(raw);
     }
@@ -1056,14 +1059,14 @@ private:
     // true, which matches the library default; in that case we use
     // the legacy entry point.
     if (opts.restore_non_finite) {
-        detail::check(tgm_decode(buf, len, opts.verify_hash ? 1 : 0,
+        detail::check(tgm_decode(buf, len, 
                                   opts.native_byte_order ? 1 : 0,
                                   opts.threads, &raw));
     } else {
         TgmDecodeMaskOptions mask_opts{};
         mask_opts.restore_non_finite = false;
         detail::check(tgm_decode_with_options(
-            buf, len, opts.verify_hash ? 1 : 0,
+            buf, len, 
             opts.native_byte_order ? 1 : 0, opts.threads,
             &mask_opts, &raw));
     }
@@ -1085,7 +1088,7 @@ private:
 {
     tgm_message_t* raw = nullptr;
     detail::check(tgm_decode_object(buf, len, index,
-                                     opts.verify_hash ? 1 : 0,
+                                     
                                      opts.native_byte_order ? 1 : 0,
                                      opts.threads, &raw));
     return message(raw);
@@ -1109,7 +1112,7 @@ private:
     std::size_t out_count = 0;
     detail::check(tgm_decode_range(buf, len, object_index,
                                     offsets.data(), counts.data(), ranges.size(),
-                                    opts.verify_hash ? 1 : 0,
+                                    
                                     opts.native_byte_order ? 1 : 0,
                                     opts.threads, 0,
                                     bufs.data(), &out_count));
@@ -1146,7 +1149,7 @@ private:
     std::size_t out_count = 0;
     detail::check(tgm_decode_range(buf, len, object_index,
                                     offsets.data(), counts.data(), ranges.size(),
-                                    opts.verify_hash ? 1 : 0,
+                                    
                                     opts.native_byte_order ? 1 : 0,
                                     opts.threads, 1,
                                     &bytes, &out_count));

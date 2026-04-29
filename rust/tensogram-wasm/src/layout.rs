@@ -369,11 +369,9 @@ pub fn parse_descriptor_cbor(cbor_bytes: &[u8]) -> Result<JsValue, JsError> {
 #[wasm_bindgen]
 pub fn decode_object_from_frame(
     frame_bytes: &[u8],
-    verify_hash: Option<bool>,
     restore_non_finite: Option<bool>,
 ) -> Result<DecodedMessage, JsError> {
     let options = DecodeOptions {
-        verify_hash: verify_hash.unwrap_or(false),
         restore_non_finite: restore_non_finite.unwrap_or(true),
         ..Default::default()
     };
@@ -389,7 +387,6 @@ pub fn decode_object_from_frame(
 pub fn decode_range_from_frame(
     frame_bytes: &[u8],
     ranges: &js_sys::BigUint64Array,
-    verify_hash: Option<bool>,
 ) -> Result<JsValue, JsError> {
     let flat: Vec<u64> = ranges.to_vec();
     if !flat.len().is_multiple_of(2) {
@@ -400,7 +397,6 @@ pub fn decode_range_from_frame(
     let range_pairs: Vec<(u64, u64)> = flat.chunks_exact(2).map(|w| (w[0], w[1])).collect();
 
     let options = DecodeOptions {
-        verify_hash: verify_hash.unwrap_or(false),
         ..Default::default()
     };
     let (descriptor, parts) =
