@@ -89,7 +89,16 @@ impl MockServer {
                         // the connection before sending any response.  Force
                         // the worker stream back to blocking so reads wait for
                         // the request bytes the way the handler expects.
-                        let _ = stream.set_nonblocking(false);
+                        // Surfacing the error is critical: silently swallowing
+                        // it would let the same flake reappear if a future
+                        // platform regresses, with no log to diagnose from.
+                        if let Err(e) = stream.set_nonblocking(false) {
+                            eprintln!(
+                                "mock_http: set_nonblocking(false) failed on accepted stream: {e}; \
+                                dropping connection"
+                            );
+                            continue;
+                        }
                         let fixtures = fixtures_thread.clone();
                         let counters = counters_thread.clone();
                         thread::spawn(move || {
