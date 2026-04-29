@@ -34,7 +34,8 @@ The Linux tarballs are built inside `manylinux_2_28` containers (glibc
 tarballs are built on the corresponding GitHub-hosted runners.
 
 Each tarball is **rooted for `/usr/local`** (the bundled `tensogram.pc`
-hard-codes `prefix=/usr/local`), so the default install is:
+hard-codes `prefix=/usr/local`), and is packed with uid=0 / gid=0 so
+extraction under `sudo` produces root-owned files. The default install is:
 
 ```bash
 VERSION=<release-version>          # e.g. 0.20.0
@@ -42,7 +43,7 @@ PLATFORM=linux-x86_64              # or linux-aarch64 / macos-x86_64 / macos-aar
 ASSET=tensogram-ffi-${VERSION}-${PLATFORM}.tar.gz
 
 curl -LO "https://github.com/ecmwf/tensogram/releases/download/${VERSION}/${ASSET}"
-sudo tar -C /usr/local -xzf "${ASSET}"
+sudo tar --no-same-owner -C /usr/local -xzf "${ASSET}"
 sudo ldconfig                      # Linux: refresh dynamic linker cache
 pkg-config --modversion tensogram  # → ${VERSION}
 ```

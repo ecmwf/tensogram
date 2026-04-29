@@ -51,8 +51,13 @@ cat > "$DOCDIR/INSTALL.md" <<EOF
 
 Default install (drop into \`/usr/local\`):
 
-    sudo tar -C /usr/local -xzf $ASSET
+    sudo tar --no-same-owner -C /usr/local -xzf $ASSET
     pkg-config --cflags --libs tensogram
+
+\`--no-same-owner\` is defence in depth: the archive is packed with
+uid=0 / gid=0, so by default this is already what \`sudo tar\` would
+do, but the flag also protects you against a self-rebuilt tarball
+that did not normalise ownership.
 
 Custom prefix: the bundled \`tensogram.pc\` hard-codes \`prefix=/usr/local\`.
 For any other prefix, build from source with the desired prefix:
@@ -64,5 +69,17 @@ For any other prefix, build from source with the desired prefix:
 Documentation: https://sites.ecmwf.int/docs/tensogram/main/guide/c-api.html
 EOF
 
-tar -czf "$ASSET" -C "$ROOT" .
+# Normalise ownership in the archive: extracting `sudo tar` would otherwise
+# preserve whatever uid/gid the CI runner used (often a numeric uid with no
+# matching name on the consumer's machine), leaving files under /usr/local
+# owned by an arbitrary user.  Force uid=0 / gid=0 (root:root).
+# GNU tar (Linux) and BSD/libarchive tar (macOS) spell the flag differently;
+# distinguish by the `tar --version` banner.
+if tar --version 2>&1 | grep -q '^bsdtar'; then
+    TAR_OWN_FLAGS=(--uid 0 --gid 0)
+else
+    TAR_OWN_FLAGS=(--owner=0 --group=0)
+fi
+
+tar "${TAR_OWN_FLAGS[@]}" -czf "$ASSET" -C "$ROOT" .
 echo "packed $ASSET ($(du -h "$ASSET" | cut -f1))"

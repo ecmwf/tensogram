@@ -53,7 +53,7 @@ PLATFORM=linux-x86_64          # or linux-aarch64 / macos-x86_64 / macos-aarch64
 ASSET="tensogram-ffi-${VERSION}-${PLATFORM}.tar.gz"
 
 curl -LO "https://github.com/ecmwf/tensogram/releases/download/${VERSION}/${ASSET}"
-sudo tar -C /usr/local -xzf "${ASSET}"
+sudo tar --no-same-owner -C /usr/local -xzf "${ASSET}"
 sudo ldconfig                  # Linux only
 pkg-config --modversion tensogram
 ```
