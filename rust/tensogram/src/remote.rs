@@ -631,6 +631,31 @@ impl std::fmt::Debug for RemoteBackend {
     }
 }
 
+/// Re-stamp the `object_index` field on `MissingHash` / `HashMismatch`
+/// errors raised by helpers that don't know the surrounding object
+/// index (e.g. `decode_object_from_frame`, which uses `0` as a
+/// placeholder).  The remote indexed fast paths use this so callers
+/// receive an actionable error that names the offending object.
+///
+/// All other errors pass through unchanged.
+fn reattach_object_index(e: TensogramError, obj_idx: usize) -> TensogramError {
+    match e {
+        TensogramError::HashMismatch {
+            object_index: _,
+            expected,
+            actual,
+        } => TensogramError::HashMismatch {
+            object_index: Some(obj_idx),
+            expected,
+            actual,
+        },
+        TensogramError::MissingHash { object_index: _ } => TensogramError::MissingHash {
+            object_index: obj_idx,
+        },
+        other => other,
+    }
+}
+
 impl RemoteBackend {
     pub(crate) fn source_url(&self) -> &str {
         &self.source_url
@@ -1809,10 +1834,14 @@ impl RemoteBackend {
             )?;
             let frame_bytes = self.get_range(range)?;
 
-            let (desc, payload, _mask_region, _consumed) =
-                framing::decode_data_object_frame(&frame_bytes)?;
-
-            let decoded = crate::decode::decode_single_object(&desc, payload, options)?;
+            // Delegate to the high-level single-frame helper so
+            // `options.verify_hash` is honoured on the remote
+            // indexed fast path; the helper raises MissingHash /
+            // HashMismatch with `object_index = 0` (it has no
+            // surrounding context), which we repackage with the
+            // real `obj_idx` so callers get an actionable error.
+            let (desc, decoded) = crate::decode::decode_object_from_frame(&frame_bytes, options)
+                .map_err(|e| reattach_object_index(e, obj_idx))?;
 
             Ok((meta, desc, decoded))
         } else {
@@ -1917,9 +1946,11 @@ impl RemoteBackend {
 
         let mut results = Vec::with_capacity(msg_indices.len());
         for (frame_bytes, meta) in all_bytes.iter().zip(metas) {
-            let (desc, payload, _mask_region, _consumed) =
-                framing::decode_data_object_frame(frame_bytes)?;
-            let decoded = crate::decode::decode_single_object(&desc, payload, options)?;
+            // Use the verifying single-frame helper; remap the
+            // placeholder object_index = 0 to the batched obj_idx
+            // so the failure names the offending object.
+            let (desc, decoded) = crate::decode::decode_object_from_frame(frame_bytes, options)
+                .map_err(|e| reattach_object_index(e, obj_idx))?;
             results.push((meta, desc, decoded));
         }
         Ok(results)
@@ -3162,9 +3193,10 @@ impl RemoteBackend {
                 index.lengths[obj_idx],
             )?;
             let frame_bytes = self.get_range_async(range).await?;
-            let (desc, payload, _mask_region, _consumed) =
-                framing::decode_data_object_frame(&frame_bytes)?;
-            let decoded = crate::decode::decode_single_object(&desc, payload, options)?;
+            // See `read_object` for the rationale; same hash-
+            // verification dispatch on the indexed fast path.
+            let (desc, decoded) = crate::decode::decode_object_from_frame(&frame_bytes, options)
+                .map_err(|e| reattach_object_index(e, obj_idx))?;
             Ok((meta, desc, decoded))
         } else {
             let msg_bytes = self.read_message_async(msg_idx).await?;
@@ -3373,9 +3405,9 @@ impl RemoteBackend {
 
         let mut results = Vec::with_capacity(msg_indices.len());
         for (frame_bytes, meta) in all_bytes.iter().zip(metas) {
-            let (desc, payload, _mask_region, _consumed) =
-                framing::decode_data_object_frame(frame_bytes)?;
-            let decoded = crate::decode::decode_single_object(&desc, payload, options)?;
+            // See `read_object_batch` (sync) for the rationale.
+            let (desc, decoded) = crate::decode::decode_object_from_frame(frame_bytes, options)
+                .map_err(|e| reattach_object_index(e, obj_idx))?;
             results.push((meta, desc, decoded));
         }
         Ok(results)

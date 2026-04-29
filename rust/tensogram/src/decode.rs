@@ -711,15 +711,6 @@ pub fn decode_range_from_payload(
     Ok(results)
 }
 
-#[cfg(feature = "remote")]
-pub(crate) fn decode_single_object(
-    desc: &DataObjectDescriptor,
-    payload_bytes: &[u8],
-    options: &DecodeOptions,
-) -> Result<Vec<u8>> {
-    decode_single_object_with_backend(desc, payload_bytes, options, options.compression_backend, 0)
-}
-
 /// Decode a single object payload using the specified compression backend
 /// and intra-codec thread budget.
 ///

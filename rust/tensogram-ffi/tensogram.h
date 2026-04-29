@@ -229,6 +229,7 @@ tgm_error tgm_decode_with_options(const uint8_t *buf,
                                   size_t buf_len,
                                   int32_t native_byte_order,
                                   uint32_t threads,
+                                  int32_t verify_hash,
                                   const TgmDecodeMaskOptions *mask_options,
                                   tgm_message_t **out);
 
@@ -312,6 +313,7 @@ tgm_error tgm_decode(const uint8_t *buf,
                      size_t buf_len,
                      int32_t native_byte_order,
                      uint32_t threads,
+                     int32_t verify_hash,
                      tgm_message_t **out);
 
 /**
@@ -330,6 +332,7 @@ tgm_error tgm_decode_object(const uint8_t *buf,
                             size_t index,
                             int32_t native_byte_order,
                             uint32_t threads,
+                            int32_t verify_hash,
                             tgm_message_t **out);
 
 /**
@@ -566,6 +569,7 @@ tgm_error tgm_file_decode_message(tgm_file_t *file,
                                   size_t index,
                                   int32_t native_byte_order,
                                   uint32_t threads,
+                                  int32_t verify_hash,
                                   tgm_message_t **out);
 
 /**
@@ -677,6 +681,7 @@ void tgm_file_iter_free(tgm_file_iter_t *iter);
 tgm_error tgm_object_iter_create(const uint8_t *buf,
                                  size_t buf_len,
                                  int32_t native_byte_order,
+                                 int32_t verify_hash,
                                  tgm_object_iter_t **out);
 
 /**
