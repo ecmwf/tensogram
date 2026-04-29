@@ -21,9 +21,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 import tensogram
-
 
 GOLDEN_DIR = Path(__file__).resolve().parents[2] / "rust/tensogram/tests/golden"
 
@@ -60,12 +58,12 @@ def _build_unhashed_message() -> bytes:
 class TestCellsAAndB:
     def test_decode_no_verify_succeeds(self):
         data = _read("hash_xxh3.tgm")
-        meta, objects = tensogram.decode(data)
+        _meta, objects = tensogram.decode(data)
         assert len(objects) == 1
 
     def test_decode_with_verify_succeeds(self):
         data = _read("hash_xxh3.tgm")
-        meta, objects = tensogram.decode(data, verify_hash=True)
+        _meta, objects = tensogram.decode(data, verify_hash=True)
         assert len(objects) == 1
 
     def test_decode_object_with_verify_succeeds(self):
@@ -98,7 +96,7 @@ class TestCellC:
 
     def test_no_verify_silently_decodes_unhashed(self):
         msg = _build_unhashed_message()
-        meta, objects = tensogram.decode(msg)
+        _meta, objects = tensogram.decode(msg)
         assert len(objects) == 1
 
 
