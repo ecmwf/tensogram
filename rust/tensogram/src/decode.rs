@@ -78,6 +78,41 @@ pub struct DecodeOptions {
     /// need the raw masks alongside the substituted payload use
     /// [`decode_with_masks`] instead.
     pub restore_non_finite: bool,
+    /// When `true`, the decoder verifies the inline xxh3-64 hash
+    /// of every data-object frame it materialises against the
+    /// recomputed digest of the frame body.  Verification is
+    /// fused with decode — bytes are hashed while hot in
+    /// cache/buffer, so the cost is one extra walk over the
+    /// post-encoding payload.  See `plans/DESIGN.md`
+    /// §"Integrity Hashing" and `plans/WIRE_FORMAT.md` §11.1.
+    ///
+    /// When `false` (the default), no verification is performed.
+    /// Decode is a pure deserialisation; the per-frame
+    /// `HASH_PRESENT` flag and the slot value are both ignored.
+    ///
+    /// Strict-input rules under `verify_hash = true`:
+    ///   * frame's `HASH_PRESENT` flag clear → returns
+    ///     [`TensogramError::MissingHash`] with the offending
+    ///     object index.
+    ///   * flag set + slot disagrees with recomputed digest →
+    ///     returns [`TensogramError::HashMismatch`] with the
+    ///     offending object index.
+    ///
+    /// Scope: applies to **data-object** frames only (i.e. every
+    /// `NTensorFrame` the decoder touches).  Header / footer /
+    /// index / hash / preceder frames are not verified by this
+    /// option — that's the offline `tensogram validate
+    /// --checksum` validator's responsibility.
+    ///
+    /// **Not respected by `decode_range` / `decode_range_from_frame`
+    /// / `RemoteBackend::decode_range`.**  Range decode reads
+    /// only a slice of the encoded payload; verifying the inline
+    /// hash would require reading every byte the optimisation is
+    /// designed to avoid.  When integrity matters on a partial
+    /// read, call `decode_object` with `verify_hash=true` —
+    /// that path materialises the full body anyway, so the
+    /// verification is free.
+    pub verify_hash: bool,
 }
 
 impl Default for DecodeOptions {
@@ -88,7 +123,73 @@ impl Default for DecodeOptions {
             threads: 0,
             parallel_threshold_bytes: None,
             restore_non_finite: true,
+            verify_hash: false,
         }
+    }
+}
+
+/// Verify the inline hash of one data-object frame within the
+/// surrounding message buffer, given its zero-based object index
+/// and frame-start offset.  No-op when `verify_hash` is false.
+///
+/// Wraps the low-level [`crate::hash::check_frame_hash`] helper
+/// so that:
+///   * `Ok(false)` (flag clear) is repackaged as
+///     [`TensogramError::MissingHash { object_index }`].
+///   * `Err(HashMismatch { object_index: None, .. })` is
+///     repackaged with the surrounding `object_index`.
+///
+/// Other framing errors propagate unchanged.
+fn enforce_object_hash(
+    buf: &[u8],
+    frame_offset: usize,
+    object_index: usize,
+    verify_hash: bool,
+) -> Result<()> {
+    if !verify_hash {
+        return Ok(());
+    }
+    use crate::wire::{FRAME_HEADER_SIZE, FrameHeader};
+    if frame_offset + FRAME_HEADER_SIZE > buf.len() {
+        return Err(TensogramError::Framing(format!(
+            "frame_offset {frame_offset} + header({FRAME_HEADER_SIZE}) exceeds buffer length \
+             {} while verifying hash for object {object_index}",
+            buf.len()
+        )));
+    }
+    let fh = FrameHeader::read_from(&buf[frame_offset..])?;
+    let frame_end = frame_offset
+        .checked_add(fh.total_length as usize)
+        .ok_or_else(|| {
+            TensogramError::Framing(format!(
+                "frame total_length overflow at offset {frame_offset} \
+                 while verifying hash for object {object_index}"
+            ))
+        })?;
+    if frame_end > buf.len() {
+        return Err(TensogramError::Framing(format!(
+            "frame at offset {frame_offset} runs past buffer end ({frame_end} > {}) \
+             while verifying hash for object {object_index}",
+            buf.len()
+        )));
+    }
+    let frame_bytes = &buf[frame_offset..frame_end];
+    match crate::hash::check_frame_hash(frame_bytes, fh.frame_type) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(TensogramError::MissingHash { object_index }),
+        // Repackage the low-level mismatch (which carries
+        // object_index: None) with the surrounding index so
+        // callers know which object failed.
+        Err(TensogramError::HashMismatch {
+            object_index: _,
+            expected,
+            actual,
+        }) => Err(TensogramError::HashMismatch {
+            object_index: Some(object_index),
+            expected,
+            actual,
+        }),
+        Err(other) => Err(other),
     }
 }
 
@@ -114,13 +215,26 @@ pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Ve
     let use_axis_a = parallel && crate::parallel::use_axis_a(msg.objects.len(), budget, any_axis_b);
     let intra_codec_threads = if parallel && !use_axis_a { budget } else { 0 };
 
-    let decode_one = |(desc, payload_bytes, mask_region, _offset): &(
-        DataObjectDescriptor,
-        &[u8],
-        &[u8],
+    // Hash verification (`options.verify_hash`) happens before
+    // decode so that callers never see decoded data they have
+    // reason to distrust.  Each object's frame slice is
+    // recomputed-and-compared against its inline slot via the
+    // shared `enforce_object_hash` helper; a mismatch or missing
+    // flag short-circuits the whole call.  The hash walk is a
+    // single linear pass over bytes that decode is about to
+    // touch anyway, so it's effectively free in cache.
+    //
+    // The closure parameter type is the standard
+    // `(usize, &<framing entry>)` pair produced by
+    // `iter().enumerate()`; aliased here so the clippy
+    // type-complexity lint stays quiet.
+    type FramingEntry<'a> = (DataObjectDescriptor, &'a [u8], &'a [u8], usize);
+    let decode_one = |(idx, (desc, payload_bytes, mask_region, frame_offset)): (
         usize,
+        &FramingEntry<'_>,
     )|
      -> Result<DecodedObject> {
+        enforce_object_hash(buf, *frame_offset, idx, options.verify_hash)?;
         let mut decoded = decode_single_object_with_backend(
             desc,
             payload_bytes,
@@ -146,17 +260,26 @@ pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Ve
             crate::parallel::with_pool(budget, || {
                 msg.objects
                     .par_iter()
-                    .map(&decode_one)
+                    .enumerate()
+                    .map(decode_one)
                     .collect::<Result<Vec<_>>>()
             })?
         }
         #[cfg(not(feature = "threads"))]
         {
-            msg.objects.iter().map(decode_one).collect::<Result<_>>()?
+            msg.objects
+                .iter()
+                .enumerate()
+                .map(decode_one)
+                .collect::<Result<_>>()?
         }
     } else {
         crate::parallel::run_maybe_pooled(budget, parallel, intra_codec_threads, || {
-            msg.objects.iter().map(decode_one).collect::<Result<_>>()
+            msg.objects
+                .iter()
+                .enumerate()
+                .map(decode_one)
+                .collect::<Result<_>>()
         })?
     };
 
@@ -270,7 +393,13 @@ pub fn decode_object(
         )));
     }
 
-    let (desc, payload_bytes, mask_region, _) = &msg.objects[index];
+    let (desc, payload_bytes, mask_region, frame_offset) = &msg.objects[index];
+
+    // Hash verification (`options.verify_hash`) precedes decode
+    // so callers never receive decoded data they have reason to
+    // distrust.  See `enforce_object_hash` and DESIGN.md
+    // §"Integrity Hashing".
+    enforce_object_hash(buf, *frame_offset, index, options.verify_hash)?;
 
     // Single-object decode: axis A is impossible — spend the entire
     // budget (if any) on the codec internally (axis B).
@@ -323,6 +452,32 @@ pub fn decode_object_from_frame(
 ) -> Result<(DataObjectDescriptor, Vec<u8>)> {
     let (desc, payload_bytes, mask_region, _) = framing::decode_data_object_frame(frame_bytes)?;
 
+    // Hash verification when requested.  At this layer we don't
+    // know the surrounding object index (the caller has fetched a
+    // single frame's bytes by some prior path); we use `0` as the
+    // default in `MissingHash` / `HashMismatch.object_index` and
+    // expect the caller — typically a remote backend — to repackage
+    // with the real index when they have it.
+    if options.verify_hash {
+        use crate::wire::{FRAME_HEADER_SIZE, FrameHeader};
+        let fh = FrameHeader::read_from(frame_bytes)?;
+        // Slice down to total_length in case the caller passed a
+        // larger buffer (frame + trailing alignment); the hash
+        // helper is strict about ENDF placement.
+        let slice_end = (fh.total_length as usize).min(frame_bytes.len());
+        if slice_end < FRAME_HEADER_SIZE {
+            return Err(TensogramError::Framing(format!(
+                "frame buffer ({}) shorter than total_length-bounded slice while \
+                 verifying hash on decode_object_from_frame",
+                frame_bytes.len()
+            )));
+        }
+        match crate::hash::check_frame_hash(&frame_bytes[..slice_end], fh.frame_type)? {
+            true => (),
+            false => return Err(TensogramError::MissingHash { object_index: 0 }),
+        }
+    }
+
     let budget = crate::parallel::resolve_budget(options.threads)?;
     let parallel = crate::parallel::should_parallelise(
         budget,
@@ -363,6 +518,15 @@ pub fn decode_object_from_frame(
 ///
 /// Returns `(descriptor, parts)` in the same shape as
 /// [`decode_range`].
+///
+/// **`options.verify_hash` is ignored** by this function.  The
+/// inline hash covers the whole post-encoding payload of the
+/// source frame; verifying it requires reading every byte that
+/// range decode is designed to avoid.  When integrity matters,
+/// call [`decode_object_from_frame`] with `verify_hash=true` —
+/// that path materialises the full body anyway, so the
+/// verification is free.  See `plans/DESIGN.md`
+/// §"Integrity Hashing" and `plans/WIRE_FORMAT.md` §11.1.
 pub fn decode_range_from_frame(
     frame_bytes: &[u8],
     ranges: &[(u64, u64)],
@@ -390,6 +554,11 @@ pub fn decode_range_from_frame(
 /// Returns `(descriptor, parts)` where `parts` contains one `Vec<u8>`
 /// per range.  The descriptor is included so callers can determine
 /// the dtype without a separate lookup.
+///
+/// **`options.verify_hash` is ignored** by this function — see
+/// [`decode_range_from_frame`] for the rationale.  Callers that
+/// need integrity should reach for [`decode_object`] with
+/// `verify_hash=true`.
 pub fn decode_range(
     buf: &[u8],
     object_index: usize,
