@@ -184,16 +184,19 @@ export function mapTensogramError(err: unknown): TensogramError {
   // Decode-time integrity failures (PLAN_DECODE_HASH_VERIFICATION).
   //
   // Rust `HashMismatch` Display:
-  //   "hash mismatch on object {object_index?}: expected {hex}, got {hex}"
-  // where `object_index?` is `Some(N)` from the decode-time path or
-  // `None` from the offline validator.
+  //   - "hash mismatch on object N: expected {hex}, got {hex}"
+  //     when the offending object index is known.
+  //   - "hash mismatch on frame: expected {hex}, got {hex}"
+  //     when the underlying error was raised by a context
+  //     without a surrounding object (e.g. validator on a
+  //     non-data-object frame).
   //
   // Rust `MissingHash` Display:
   //   "hash verification requested but object {N} has no inline hash recorded ..."
   if (raw.startsWith('hash mismatch')) {
     const expectedMatch = /expected[=\s]+([0-9a-fA-F]+)/.exec(raw);
     const actualMatch = /(?:got|actual)[=\s]+([0-9a-fA-F]+)/.exec(raw);
-    const indexMatch = /object\s+Some\((\d+)\)/.exec(raw);
+    const indexMatch = /object\s+(\d+)/.exec(raw);
     const objectIndex = indexMatch ? Number.parseInt(indexMatch[1], 10) : undefined;
     const stripped = raw.replace(/^hash mismatch:?\s*/, '') || raw;
     return new HashMismatchError(

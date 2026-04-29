@@ -77,7 +77,7 @@ fn verify_object_frame_hash(
     }
     let frame_bytes = &buf[frame_offset..frame_offset + total];
 
-    match hash::verify_frame_hash(frame_bytes, fh.frame_type) {
+    match hash::verify_frame_hash(frame_bytes, fh.frame_type, Some(obj_idx)) {
         Ok(()) => HashCheckResult::Verified,
         Err(TensogramError::HashMismatch {
             object_index: _,

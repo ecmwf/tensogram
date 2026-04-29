@@ -3761,7 +3761,7 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(
-            last.contains("object Some(0)"),
+            last.contains("object 0"),
             "last error should name the offending object: {last}"
         );
     }

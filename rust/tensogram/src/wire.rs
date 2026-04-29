@@ -156,11 +156,19 @@ impl MessageFlags {
     pub const FOOTER_HASHES: u16 = 1 << 5;
     /// At least one PrecederMetadata frame is present in the data objects section.
     pub const PRECEDER_METADATA: u16 = 1 << 6;
-    /// New in v3.  When set, every frame in the message has its
-    /// inline `hash` slot populated with the xxh3-64 digest of the
-    /// frame body (see `plans/WIRE_FORMAT.md` §2.4).  When clear,
-    /// every slot is `0x0000000000000000` and readers skip hash
-    /// verification.  Message-wide flag — no per-frame override.
+    /// Message-level advisory: when set, the encoder guarantees
+    /// that every frame in the message has its per-frame
+    /// [`FrameFlags::HASH_PRESENT`] bit set as well, so a reader
+    /// can do a single fast pre-flight check before scanning per-
+    /// frame headers.  See `plans/WIRE_FORMAT.md` §2.5 and §3.1.
+    ///
+    /// **The per-frame [`FrameFlags::HASH_PRESENT`] flag is
+    /// authoritative** for any individual frame's hash slot —
+    /// callers that need to verify or skip a single frame's
+    /// digest must check the per-frame flag, not this one.  The
+    /// duplication is deliberate: per-frame information is always
+    /// accessible from a single 16-byte frame-header read,
+    /// without consulting the surrounding message preamble.
     pub const HASHES_PRESENT: u16 = 1 << 7;
 
     pub fn new(bits: u16) -> Self {

@@ -121,7 +121,7 @@ fn buffered_encode_inline_slot_verifies_against_body() {
         let frame = &only[*frame_offset..];
         let fh = FrameHeader::read_from(frame).unwrap();
         let frame_bytes = &frame[..fh.total_length as usize];
-        verify_frame_hash(frame_bytes, fh.frame_type)
+        verify_frame_hash(frame_bytes, fh.frame_type, None)
             .expect("buffered inline slot must verify against body");
     }
 }

@@ -205,10 +205,12 @@ TEST(VerifyHashTest, CellFTamperObjectOneSurfacesIndexOne) {
         tensogram::decode(bytes.data(), bytes.size(), opts);
         FAIL() << "expected hash_mismatch_error";
     } catch (const tensogram::hash_mismatch_error& e) {
-        // The Display form embeds `object Some(N)` (mirrors the
-        // Rust core); pin the canonical "object Some(1)" substring
-        // so this test fails loudly if the format ever changes.
-        EXPECT_NE(std::string(e.what()).find("object Some(1)"), std::string::npos)
+        // The Display form renders the object index as
+        // `"object N"` (the `Some` / `None` Rust internals are
+        // hidden by `error::fmt_object_location`); pin the
+        // canonical substring so this test fails loudly if the
+        // wire-side format ever drifts.
+        EXPECT_NE(std::string(e.what()).find("object 1"), std::string::npos)
             << "expected message to name object 1, got: " << e.what();
     }
 }

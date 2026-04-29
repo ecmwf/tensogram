@@ -491,7 +491,8 @@ fn test_golden_hash_xxh3() {
             "frame_offset={frame_offset}: HASH_PRESENT set, slot must match recomputed digest",
         );
         // Strict wrapper passes for the same reason.
-        verify_frame_hash(frame_bytes, fh.frame_type).expect("golden hash_xxh3 frame must verify");
+        verify_frame_hash(frame_bytes, fh.frame_type, None)
+            .expect("golden hash_xxh3 frame must verify");
     }
 }
 

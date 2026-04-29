@@ -943,7 +943,7 @@ mod tests {
             let frame = &msg[*frame_offset..];
             let fh = FrameHeader::read_from(frame).unwrap();
             let frame_bytes = &frame[..fh.total_length as usize];
-            verify_frame_hash(frame_bytes, fh.frame_type)
+            verify_frame_hash(frame_bytes, fh.frame_type, None)
                 .expect("streaming data-object inline hash must verify");
         }
     }

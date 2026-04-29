@@ -1061,7 +1061,7 @@ fn hash_mismatch_detected_on_corrupted_frame() {
     buf.extend_from_slice(&0xDEADBEEFu64.to_be_bytes()); // wrong slot
     buf.extend_from_slice(FRAME_END);
 
-    let result = tensogram::hash::verify_frame_hash(&buf, FrameType::HeaderMetadata);
+    let result = tensogram::hash::verify_frame_hash(&buf, FrameType::HeaderMetadata, None);
     assert!(matches!(
         result,
         Err(tensogram::TensogramError::HashMismatch { .. })
@@ -1086,7 +1086,7 @@ fn missing_hash_detected_when_flag_clear() {
     buf.extend_from_slice(&0u64.to_be_bytes());
     buf.extend_from_slice(FRAME_END);
 
-    let result = tensogram::hash::verify_frame_hash(&buf, FrameType::HeaderMetadata);
+    let result = tensogram::hash::verify_frame_hash(&buf, FrameType::HeaderMetadata, None);
     assert!(matches!(
         result,
         Err(tensogram::TensogramError::MissingHash { .. })

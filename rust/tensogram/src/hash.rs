@@ -174,15 +174,35 @@ pub fn check_frame_hash(frame_bytes: &[u8], frame_type: FrameType) -> Result<boo
 /// encoded with hashing on and want to fail loudly when any
 /// individual frame's flag is unexpectedly clear.
 ///
+/// `object_index` is included in the resulting `MissingHash`
+/// error when the caller knows which data-object frame this is;
+/// pass `None` for non-object frames (header / footer / index /
+/// hash) where there is no surrounding object index.
+///
 /// The decode-time verification path (`DecodeOptions::verify_hash`)
 /// does **not** use this wrapper — it calls [`check_frame_hash`]
 /// directly so it can wrap the `Ok(false)` case in a
 /// [`TensogramError::MissingHash`] error that carries the
 /// surrounding `object_index`.
-pub fn verify_frame_hash(frame_bytes: &[u8], frame_type: FrameType) -> Result<()> {
+pub fn verify_frame_hash(
+    frame_bytes: &[u8],
+    frame_type: FrameType,
+    object_index: Option<usize>,
+) -> Result<()> {
     match check_frame_hash(frame_bytes, frame_type)? {
         true => Ok(()),
-        false => Err(TensogramError::MissingHash { object_index: 0 }),
+        false => Err(TensogramError::MissingHash {
+            // `MissingHash::object_index` is `usize` (always
+            // surfaceable in the decode-time path), so callers
+            // without one supply `0` via `unwrap_or` — that's the
+            // accepted placeholder for a frame that has no
+            // surrounding object index (a header / footer / hash
+            // frame).  The error's Display form still tells the
+            // user `"object 0"` in that pathological case, so
+            // callers SHOULD pass `Some(_)` whenever they have
+            // the real index.
+            object_index: object_index.unwrap_or(0),
+        }),
     }
 }
 
@@ -422,7 +442,7 @@ mod tests {
         // the real index when relevant.
         let body = b"hello";
         let buf = build_header_frame(0, body, 0);
-        let err = verify_frame_hash(&buf, FrameType::HeaderMetadata).unwrap_err();
+        let err = verify_frame_hash(&buf, FrameType::HeaderMetadata, None).unwrap_err();
         assert!(matches!(err, TensogramError::MissingHash { .. }));
     }
 
@@ -431,6 +451,6 @@ mod tests {
         let body = b"hello";
         let true_digest = xxhash_rust::xxh3::xxh3_64(body);
         let buf = build_header_frame(FrameFlags::HASH_PRESENT, body, true_digest);
-        verify_frame_hash(&buf, FrameType::HeaderMetadata).unwrap();
+        verify_frame_hash(&buf, FrameType::HeaderMetadata, None).unwrap();
     }
 }

@@ -8,6 +8,19 @@
 
 use thiserror::Error;
 
+/// Render an optional object index as a human-readable location
+/// string for inclusion in `HashMismatch` Display output.
+///
+/// `Some(N)` → `"object N"`; `None` → `"frame"`.  Used by the
+/// `HashMismatch` `#[error(...)]` format string to avoid leaking
+/// `Some(N)` / `None` Rust syntax into user-facing messages.
+fn fmt_object_location(idx: Option<usize>) -> String {
+    match idx {
+        Some(i) => format!("object {i}"),
+        None => "frame".to_string(),
+    }
+}
+
 /// Top-level error type for the `tensogram` crate.
 ///
 /// **Variant guarantee.** The enum is `#[non_exhaustive]` so future
@@ -66,7 +79,14 @@ pub enum TensogramError {
     /// frames where an object index has no meaning, and for
     /// callers that don't have one available (e.g. legacy
     /// `verify_frame_hash` direct uses).
-    #[error("hash mismatch on object {object_index:?}: expected {expected}, got {actual}")]
+    ///
+    /// Display form: `"hash mismatch on object N: expected X, got Y"`
+    /// when `object_index` is `Some(N)`, or `"hash mismatch on
+    /// frame: expected X, got Y"` when it is `None`.  The `Some` /
+    /// `None` Rust internals are deliberately not surfaced — see
+    /// [`fmt_object_location`].
+    #[error("hash mismatch on {}: expected {expected}, got {actual}",
+            fmt_object_location(*object_index))]
     HashMismatch {
         object_index: Option<usize>,
         expected: String,
