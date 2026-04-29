@@ -46,12 +46,12 @@ pub fn decode_range(
     buf: &[u8],
     object_index: usize,
     ranges: &js_sys::BigUint64Array,
-) -> Result<JsValue, JsError> {
+) -> Result<JsValue, JsValue> {
     let flat: Vec<u64> = ranges.to_vec();
     if !flat.len().is_multiple_of(2) {
-        return Err(JsError::new(
+        return Err(JsValue::from(js_sys::Error::new(
             "ranges length must be a multiple of 2 (flat [offset, count] pairs)",
-        ));
+        )));
     }
     let range_pairs: Vec<(u64, u64)> = flat.chunks_exact(2).map(|w| (w[0], w[1])).collect();
 
@@ -63,7 +63,7 @@ pub fn decode_range(
 
     let result = js_sys::Object::new();
     js_sys::Reflect::set(&result, &"descriptor".into(), &to_js(&descriptor)?)
-        .map_err(|_| JsError::new("failed to set descriptor"))?;
+        .map_err(|_| JsValue::from(js_sys::Error::new("failed to set descriptor")))?;
     // `js_sys::Array::new_with_length` is defined in terms of `u32`; a
     // Rust-side Vec of 2^32 entries would already have failed the
     // earlier `to_vec()` from the input `BigUint64Array` (WASM linear
@@ -74,7 +74,7 @@ pub fn decode_range(
         parts_js.set(i as u32, js_sys::Uint8Array::from(bytes.as_slice()).into());
     }
     js_sys::Reflect::set(&result, &"parts".into(), &parts_js)
-        .map_err(|_| JsError::new("failed to set parts"))?;
+        .map_err(|_| JsValue::from(js_sys::Error::new("failed to set parts")))?;
     Ok(result.into())
 }
 
@@ -87,7 +87,7 @@ pub fn decode_range(
 ///   names raise a metadata error.
 /// @returns The hex digest as a string (16 chars for xxh3-64).
 #[wasm_bindgen]
-pub fn compute_hash(data: &[u8], algo: Option<String>) -> Result<String, JsError> {
+pub fn compute_hash(data: &[u8], algo: Option<String>) -> Result<String, JsValue> {
     let name = algo.as_deref().unwrap_or("xxh3");
     core::parse_hash_name(Some(name)).map_err(js_err)?;
     Ok(core::compute_hash(data))
@@ -130,9 +130,9 @@ pub fn simple_packing_compute_params(
     values: &[f64],
     bits_per_value: u32,
     decimal_scale_factor: i32,
-) -> Result<JsValue, JsError> {
+) -> Result<JsValue, JsValue> {
     let params = simple_packing::compute_params(values, bits_per_value, decimal_scale_factor)
-        .map_err(|e| JsError::new(&format!("encoding error: {e}")))?;
+        .map_err(|e| JsValue::from(js_sys::Error::new(&format!("encoding error: {e}"))))?;
     to_js(&SimplePackingParamsJs {
         sp_reference_value: params.reference_value,
         sp_binary_scale_factor: params.binary_scale_factor,
@@ -161,7 +161,7 @@ pub fn encode_pre_encoded(
     metadata_js: JsValue,
     objects_js: js_sys::Array,
     hash: Option<bool>,
-) -> Result<js_sys::Uint8Array, JsError> {
+) -> Result<js_sys::Uint8Array, JsValue> {
     let metadata = metadata_from_js(&metadata_js)?;
     let (descriptors, data_vec) = extract_descriptor_data_pairs(&objects_js)?;
     let pairs: Vec<(&core::DataObjectDescriptor, &[u8])> = descriptors
@@ -198,16 +198,16 @@ pub fn validate_buffer(
     buf: &[u8],
     level: Option<String>,
     check_canonical: bool,
-) -> Result<String, JsError> {
+) -> Result<String, JsValue> {
     let options = parse_validate_options(level.as_deref(), check_canonical)?;
     let report = core::validate::validate_message(buf, &options);
-    serde_json::to_string(&report).map_err(|e| JsError::new(&format!("encoding error: {e}")))
+    serde_json::to_string(&report).map_err(|e| JsValue::from(js_sys::Error::new(&format!("encoding error: {e}"))))
 }
 
 fn parse_validate_options(
     level: Option<&str>,
     check_canonical: bool,
-) -> Result<core::validate::ValidateOptions, JsError> {
+) -> Result<core::validate::ValidateOptions, JsValue> {
     use core::validate::{ValidateOptions, ValidationLevel};
 
     let (max_level, checksum_only) = match level.unwrap_or("default") {
@@ -216,9 +216,9 @@ fn parse_validate_options(
         "checksum" => (ValidationLevel::Integrity, true),
         "full" => (ValidationLevel::Fidelity, false),
         other => {
-            return Err(JsError::new(&format!(
+            return Err(JsValue::from(js_sys::Error::new(&format!(
                 "unknown validation level '{other}', expected one of: quick, default, checksum, full",
-            )));
+            ))));
         }
     };
     Ok(ValidateOptions {

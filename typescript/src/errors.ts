@@ -196,6 +196,39 @@ export function mapTensogramError(err: unknown): TensogramError {
 
   // Decode-time integrity failures (PLAN_DECODE_HASH_VERIFICATION).
   //
+  // The WASM `convert::js_err` helper attaches structured own-
+  // properties to the thrown JS Error for these variants:
+  //   * `name`        — `"HashMismatchError"` / `"MissingHashError"`
+  //   * `objectIndex` — number; absent when unknown for HashMismatch
+  //   * `expected`    — 16-char xxh3-64 hex (HashMismatch only)
+  //   * `actual`      — 16-char xxh3-64 hex (HashMismatch only)
+  //
+  // We prefer the structured payload when present and fall back
+  // to message-string parsing for any future-variant or
+  // non-WASM-origin error that didn't go through `js_err`.
+  if (typeof err === 'object' && err !== null) {
+    const errAny = err as { name?: unknown; objectIndex?: unknown;
+                            expected?: unknown; actual?: unknown };
+    if (errAny.name === 'HashMismatchError') {
+      const objectIndex =
+        typeof errAny.objectIndex === 'number' ? errAny.objectIndex : undefined;
+      const expected = typeof errAny.expected === 'string' ? errAny.expected : undefined;
+      const actual = typeof errAny.actual === 'string' ? errAny.actual : undefined;
+      const stripped = raw.replace(/^hash mismatch:?\s*/, '') || raw;
+      return new HashMismatchError(stripped, raw, expected, actual, objectIndex);
+    }
+    if (errAny.name === 'MissingHashError') {
+      const objectIndex =
+        typeof errAny.objectIndex === 'number' ? errAny.objectIndex : undefined;
+      return new MissingHashError(raw, raw, objectIndex);
+    }
+  }
+
+  // Fallback: parse the Display string when the structured payload
+  // is absent.  Exercised by errors that don't originate from
+  // `js_err` — currently none in-tree but future bindings or
+  // FFI wrappers may produce them.
+  //
   // Rust `HashMismatch` Display:
   //   - "hash mismatch on object N: expected {hex}, got {hex}"
   //     when the offending object index is known.

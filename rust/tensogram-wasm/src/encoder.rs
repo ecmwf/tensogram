@@ -210,7 +210,7 @@ impl StreamingEncoder {
         pos_inf_mask_method: Option<String>,
         neg_inf_mask_method: Option<String>,
         small_mask_threshold_bytes: Option<usize>,
-    ) -> Result<StreamingEncoder, JsError> {
+    ) -> Result<StreamingEncoder, JsValue> {
         let metadata = metadata_from_js(&metadata_js)?;
         let options = build_encode_options_full(
             hash,
@@ -241,10 +241,10 @@ impl StreamingEncoder {
     /// single-entry `base` array.  Must be followed by exactly one
     /// `write_object` / `write_object_pre_encoded` call before another
     /// `write_preceder` or `finish`.
-    pub fn write_preceder(&mut self, metadata_js: JsValue) -> Result<(), JsError> {
+    pub fn write_preceder(&mut self, metadata_js: JsValue) -> Result<(), JsValue> {
         let inner = self.inner.as_mut().ok_or_else(already_finished)?;
         let map: BTreeMap<String, ciborium::Value> =
-            serde_wasm_bindgen::from_value(metadata_js).map_err(js_err)?;
+            serde_wasm_bindgen::from_value(metadata_js).map_err(js_err_display)?;
         inner.write_preceder(map).map_err(js_err)
     }
 
@@ -252,7 +252,7 @@ impl StreamingEncoder {
     ///
     /// @param descriptor_js - `DataObjectDescriptor` as a plain JS object.
     /// @param data - Raw native-endian payload as any TypedArray.
-    pub fn write_object(&mut self, descriptor_js: JsValue, data: JsValue) -> Result<(), JsError> {
+    pub fn write_object(&mut self, descriptor_js: JsValue, data: JsValue) -> Result<(), JsValue> {
         self.write_with(descriptor_js, data, |inner, desc, bytes| {
             inner.write_object(desc, bytes)
         })
@@ -270,7 +270,7 @@ impl StreamingEncoder {
         &mut self,
         descriptor_js: JsValue,
         data: JsValue,
-    ) -> Result<(), JsError> {
+    ) -> Result<(), JsValue> {
         self.write_with(descriptor_js, data, |inner, desc, bytes| {
             inner.write_object_pre_encoded(desc, bytes)
         })
@@ -279,7 +279,7 @@ impl StreamingEncoder {
     /// Number of data objects written so far.  Zero after `new()`,
     /// increments on every successful `write_object` /
     /// `write_object_pre_encoded`.
-    pub fn object_count(&self) -> Result<usize, JsError> {
+    pub fn object_count(&self) -> Result<usize, JsValue> {
         Ok(self
             .inner
             .as_ref()
@@ -295,7 +295,7 @@ impl StreamingEncoder {
     /// Returned as `f64` because JS numbers are the lingua-franca for
     /// sizes on the wire boundary.  `Number.MAX_SAFE_INTEGER` ≈ 9 PiB,
     /// which is well beyond any realistic Tensogram message.
-    pub fn bytes_written(&self) -> Result<f64, JsError> {
+    pub fn bytes_written(&self) -> Result<f64, JsValue> {
         Ok(self
             .inner
             .as_ref()
@@ -313,7 +313,7 @@ impl StreamingEncoder {
     /// After this call the encoder is closed — any further method call
     /// throws "already finished".  Callers must still invoke the
     /// wasm-bindgen `free()` method when done with the handle.
-    pub fn finish(&mut self) -> Result<js_sys::Uint8Array, JsError> {
+    pub fn finish(&mut self) -> Result<js_sys::Uint8Array, JsValue> {
         let inner = self.inner.take().ok_or_else(already_finished)?;
         match inner {
             Inner::Buffered(e) => {
@@ -345,16 +345,16 @@ impl StreamingEncoder {
             &core::DataObjectDescriptor,
             &[u8],
         ) -> Result<(), TensogramError>,
-    ) -> Result<(), JsError> {
+    ) -> Result<(), JsValue> {
         let inner = self.inner.as_mut().ok_or_else(already_finished)?;
         let desc: core::DataObjectDescriptor =
-            serde_wasm_bindgen::from_value(descriptor_js).map_err(js_err)?;
+            serde_wasm_bindgen::from_value(descriptor_js).map_err(js_err_display)?;
         let bytes = typed_array_or_u8_to_bytes(&data)
-            .ok_or_else(|| JsError::new("data must be a TypedArray or Uint8Array"))?;
+            .ok_or_else(|| JsValue::from(js_sys::Error::new("data must be a TypedArray or Uint8Array")))?;
         core_fn(inner, &desc, &bytes).map_err(js_err)
     }
 }
 
-fn already_finished() -> JsError {
-    JsError::new("StreamingEncoder already finished")
+fn already_finished() -> JsValue {
+    js_sys::Error::new("StreamingEncoder already finished").into()
 }

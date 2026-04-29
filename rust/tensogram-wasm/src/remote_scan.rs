@@ -51,7 +51,7 @@ pub fn parse_backward_postamble_outcome(
     pa_bytes: &[u8],
     snap_next: u64,
     snap_prev: u64,
-) -> Result<JsValue, JsError> {
+) -> Result<JsValue, JsValue> {
     to_js(&parse_backward_postamble(pa_bytes, snap_next, snap_prev))
 }
 
@@ -69,7 +69,7 @@ pub fn validate_backward_preamble_outcome(
     preamble_bytes: &[u8],
     msg_start: u64,
     length: u64,
-) -> Result<JsValue, JsError> {
+) -> Result<JsValue, JsValue> {
     to_js(&validate_backward_preamble(preamble_bytes, msg_start, length))
 }
 
@@ -91,7 +91,7 @@ pub fn parse_forward_preamble_outcome(
     pos: u64,
     file_size: u64,
     bound: u64,
-) -> Result<JsValue, JsError> {
+) -> Result<JsValue, JsValue> {
     to_js(&parse_forward_preamble(preamble_bytes, pos, file_size, bound))
 }
 
