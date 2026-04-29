@@ -112,6 +112,20 @@ pub struct DecodeOptions {
     /// read, call `decode_object` with `verify_hash=true` —
     /// that path materialises the full body anyway, so the
     /// verification is free.
+    ///
+    /// **Discriminant note for [`decode`] and [`decode_object`].**
+    /// Both invoke [`crate::framing::decode_message`] up-front,
+    /// which parses every data-object frame's CBOR descriptor
+    /// before the hash check runs.  In the corner case where the
+    /// corruption sits inside the CBOR-encoded region (which IS
+    /// covered by the hash, per `WIRE_FORMAT.md` §2.4), the user
+    /// receives [`TensogramError::Metadata`] from the failing
+    /// CBOR parse rather than [`TensogramError::HashMismatch`]
+    /// from the hash check.  The corruption is still detected;
+    /// only the discriminant changes.  [`decode_object_from_frame`]
+    /// uses verify-first ordering and surfaces `HashMismatch`
+    /// uniformly — call it directly when the discriminant
+    /// matters for catch-by-class semantics.
     pub verify_hash: bool,
 }
 
@@ -157,14 +171,22 @@ fn enforce_object_hash(
         )));
     }
     let fh = FrameHeader::read_from(&buf[frame_offset..])?;
-    let frame_end = frame_offset
-        .checked_add(fh.total_length as usize)
-        .ok_or_else(|| {
-            TensogramError::Framing(format!(
-                "frame total_length overflow at offset {frame_offset} \
-                 while verifying hash for object {object_index}"
-            ))
-        })?;
+    // `try_from` rather than `as usize` so a 32-bit target with a
+    // >4 GB frame fails cleanly instead of truncating + producing
+    // a wrong hash slice.
+    let frame_total = usize::try_from(fh.total_length).map_err(|_| {
+        TensogramError::Framing(format!(
+            "frame total_length ({}) overflows usize on this target \
+             while verifying hash for object {object_index}",
+            fh.total_length
+        ))
+    })?;
+    let frame_end = frame_offset.checked_add(frame_total).ok_or_else(|| {
+        TensogramError::Framing(format!(
+            "frame total_length overflow at offset {frame_offset} \
+             while verifying hash for object {object_index}"
+        ))
+    })?;
     if frame_end > buf.len() {
         return Err(TensogramError::Framing(format!(
             "frame at offset {frame_offset} runs past buffer end ({frame_end} > {}) \
@@ -437,33 +459,51 @@ pub fn decode_object_from_frame(
     frame_bytes: &[u8],
     options: &DecodeOptions,
 ) -> Result<(DataObjectDescriptor, Vec<u8>)> {
-    let (desc, payload_bytes, mask_region, _) = framing::decode_data_object_frame(frame_bytes)?;
-
-    // Hash verification when requested.  At this layer we don't
-    // know the surrounding object index — the caller has fetched
-    // a single frame's bytes by some prior path — so the
-    // resulting `MissingHash` / `HashMismatch` carries the
-    // placeholder `0`.  Callers that have a real index (typically
-    // the remote indexed fast paths in `remote.rs`) re-stamp it
-    // via [`crate::error::with_object_index`].
+    // Verify-first ordering when `verify_hash` is set.  The hash
+    // covers the post-encoding payload + CBOR descriptor, so a
+    // corruption inside the CBOR bytes would otherwise surface as
+    // `MetadataError` from `decode_data_object_frame` *before* the
+    // hash check fires — leaking implementation detail through the
+    // error class.  Verifying ahead of the CBOR parse guarantees
+    // every corruption inside the hashed region surfaces as
+    // `HashMismatch`, matching the contract documented on
+    // [`DecodeOptions::verify_hash`].
+    //
+    // At this layer we don't know the surrounding object index —
+    // the caller has fetched a single frame's bytes by some prior
+    // path — so the resulting `MissingHash` / `HashMismatch`
+    // carries the placeholder `0`.  Callers that have a real index
+    // (typically the remote indexed fast paths in `remote.rs`)
+    // re-stamp it via [`crate::error::with_object_index`].
     if options.verify_hash {
         use crate::wire::{FRAME_HEADER_SIZE, FrameHeader};
         let fh = FrameHeader::read_from(frame_bytes)?;
         // Slice down to total_length in case the caller passed a
         // larger buffer (frame + trailing alignment); the hash
-        // helper is strict about ENDF placement.
-        let slice_end = (fh.total_length as usize).min(frame_bytes.len());
-        if slice_end < FRAME_HEADER_SIZE {
+        // helper is strict about ENDF placement.  `try_from`
+        // bails cleanly on a 32-bit target with a >4 GB frame
+        // (exotic, but a silent `as usize` truncation here would
+        // hash too few bytes and surface as a spurious mismatch).
+        let total = usize::try_from(fh.total_length).map_err(|_| {
+            TensogramError::Framing(format!(
+                "frame total_length ({}) overflows usize on this target; \
+                 cannot verify hash on decode_object_from_frame",
+                fh.total_length
+            ))
+        })?;
+        if total < FRAME_HEADER_SIZE || total > frame_bytes.len() {
             return Err(TensogramError::Framing(format!(
-                "frame buffer ({}) shorter than total_length-bounded slice while \
-                 verifying hash on decode_object_from_frame",
+                "frame total_length ({}) outside bounds of supplied frame buffer \
+                 ({} bytes); cannot verify hash on decode_object_from_frame",
+                fh.total_length,
                 frame_bytes.len()
             )));
         }
-        if !crate::hash::check_frame_hash(&frame_bytes[..slice_end], fh.frame_type)? {
+        if !crate::hash::check_frame_hash(&frame_bytes[..total], fh.frame_type)? {
             return Err(TensogramError::MissingHash { object_index: 0 });
         }
     }
+    let (desc, payload_bytes, mask_region, _) = framing::decode_data_object_frame(frame_bytes)?;
 
     let budget = crate::parallel::resolve_budget(options.threads)?;
     let parallel = crate::parallel::should_parallelise(

@@ -132,7 +132,17 @@ public:
     integrity_error(tgm_error code, const std::string& msg) : error(code, msg) {}
 };
 
-/// Thrown when a payload hash does not match the expected value.
+/// Thrown when decode-time hash verification was requested,
+/// the frame's `HASH_PRESENT` flag is set, but the inline-hash
+/// slot disagrees with the recomputed digest of the frame body.
+/// Distinct from `missing_hash_error` — the digest WAS recorded
+/// but doesn't match the body, indicating transport / storage
+/// corruption or a deliberately tampered frame.
+///
+/// The expected (stored) and actual (recomputed) 16-character
+/// xxh3-64 hex digests are embedded in the exception message
+/// (`what()`); a future binding extension may surface them as
+/// structured fields.  See `plans/WIRE_FORMAT.md` §2.5.
 class hash_mismatch_error : public integrity_error {
 public:
     hash_mismatch_error(tgm_error code, const std::string& msg)

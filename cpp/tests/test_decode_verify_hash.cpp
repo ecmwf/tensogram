@@ -219,27 +219,32 @@ TEST(VerifyHashTest, CellDDecodeVerifyOnTamperedSlotThrowsHashMismatch) {
     auto bytes = encode_simple_with_hash({1.0f, 2.0f, 3.0f}, /*hashing=*/true);
     // Walk frame-by-frame to find the first NTensorFrame and flip a
     // byte of its inline hash slot (frame_end - 12).
-    std::size_t pos = 24;  // past 24-byte preamble
-    std::size_t target = 0;
-    while (pos + 16 <= bytes.size()) {
-        if (std::memcmp(bytes.data() + pos, "FR", 2) != 0) {
-            ++pos;
-            continue;
-        }
-        const auto frame_type =
-            static_cast<std::uint16_t>((bytes[pos + 2] << 8) | bytes[pos + 3]);
-        std::uint64_t total_length = 0;
-        for (int i = 0; i < 8; ++i) {
-            total_length = (total_length << 8) | bytes[pos + 8 + i];
-        }
-        if (frame_type == 9 /* NTensorFrame */) {
-            target = pos + total_length - 12;
-            break;
-        }
-        pos = (pos + total_length + 7) & ~static_cast<std::size_t>(7);
-    }
-    ASSERT_GT(target, 0u);
-    bytes[target] ^= 0xFF;
+    auto [frame_start, total_length] = locate_object_frame(bytes, 0);
+    ASSERT_GT(total_length, 0u);
+    bytes[frame_start + total_length - 12] ^= 0xFF;
+
+    tensogram::decode_options opts{};
+    opts.verify_hash = true;
+    EXPECT_THROW(
+        tensogram::decode(bytes.data(), bytes.size(), opts),
+        tensogram::hash_mismatch_error);
+}
+
+// ── Cell E — tampered payload byte (slot intact, body modified) ───────
+
+TEST(VerifyHashTest, CellETamperedPayloadByteThrowsHashMismatch) {
+    // Body-tamper variant of Cell D: leave the inline hash slot
+    // alone and flip a byte inside the encoded payload.  The
+    // recompute-side of the hash equation diverges, surfacing as
+    // `hash_mismatch_error`.  Mirrors `cell_e_*` in the Rust matrix.
+    auto bytes = encode_simple_with_hash({1.0f, 2.0f, 3.0f}, /*hashing=*/true);
+    auto [frame_start, total_length] = locate_object_frame(bytes, 0);
+    ASSERT_GT(total_length, 0u);
+    // First byte after the 16-byte frame header sits in the
+    // hashed body region — by encoder layout it lands in the
+    // encoded-tensor payload (cbor-after-payload default), not
+    // the CBOR descriptor.
+    bytes[frame_start + 16] ^= 0xFF;
 
     tensogram::decode_options opts{};
     opts.verify_hash = true;

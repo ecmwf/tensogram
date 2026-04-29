@@ -160,3 +160,32 @@ describe('verifyHash — Cell D (tampered hash slot)', () => {
       .toThrow(HashMismatchError);
   });
 });
+
+// ── Cell E — tampered payload byte (slot intact, body modified) ───────
+
+describe('verifyHash — Cell E (tampered payload byte)', () => {
+  // Body-tamper variant of Cell D: the inline hash slot is left
+  // alone and a single byte of the encoded payload is flipped.
+  // The recompute-side of the hash equation diverges, surfacing
+  // as `HashMismatchError`.  Mirrors `cell_e_*` in the Rust matrix.
+  it('decode reports HashMismatchError', () => {
+    const bytes = encodeSimpleHashed([1, 2, 3, 4]);
+    const [frameStart] = locateFirstObjectFrame(bytes);
+    const tampered = new Uint8Array(bytes);
+    // First byte of the hashed body region — the buffered encoder
+    // uses cbor-after-payload, so this lands in the encoded
+    // tensor payload, not the CBOR descriptor.
+    tampered[frameStart + 16] ^= 0xff;
+
+    let caught: unknown;
+    try {
+      decode(tampered, { verifyHash: true });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(HashMismatchError);
+    const err = caught as HashMismatchError;
+    expect(err.objectIndex).toBe(0);
+    expect(err.expected).not.toBe(err.actual);
+  });
+});

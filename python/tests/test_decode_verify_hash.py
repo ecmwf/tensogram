@@ -139,6 +139,31 @@ class TestCellD:
         assert excinfo.value.expected != excinfo.value.actual
 
 
+# ── Cell E — tampered payload byte (slot intact, body modified) ───────
+
+
+class TestCellE:
+    """Body-tamper path is symmetric to Cell D's slot-tamper but
+    exercises the *recomputed* side of the hash equation: the
+    stored slot is left alone and a single byte of the encoded
+    tensor payload is flipped, so check_frame_hash sees stored ≠
+    recomputed.  Mirrors `cell_e_*` in the Rust matrix tests."""
+
+    def test_decode_reports_hash_mismatch_on_tampered_payload(self):
+        data = bytearray(_read("hash_xxh3.tgm"))
+        frame_start, _ = _locate_first_object_frame(bytes(data))
+        # First byte of the hashed body region — guaranteed to
+        # land in the encoded tensor payload (cbor-after-payload
+        # is the buffered-encoder default for `simple_f32_hashed`-
+        # style fixtures), not in the CBOR descriptor.
+        payload_byte = frame_start + 16  # skip frame header
+        data[payload_byte] ^= 0xFF
+        with pytest.raises(tensogram.HashMismatchError) as excinfo:
+            _ = tensogram.decode(bytes(data), verify_hash=True)
+        assert excinfo.value.object_index == 0
+        assert excinfo.value.expected != excinfo.value.actual
+
+
 # ── Cell F — multi-object: tamper object 1, expect index 1 ───────────
 
 

@@ -116,12 +116,25 @@ export abstract class IntegrityError extends TensogramError {
   }
 }
 
-/** Payload integrity hash mismatch. */
+/**
+ * Decode-time hash verification was requested and the frame's
+ * `HASH_PRESENT` flag is set, but the inline-hash slot disagrees
+ * with the recomputed digest of the frame body.  Distinct from
+ * {@link MissingHashError}: the digest WAS recorded but doesn't
+ * match — typically a transport / storage corruption, or a
+ * deliberately tampered frame.
+ *
+ * `expected` / `actual` carry the 16-character lowercase hex
+ * digests as recorded vs. recomputed; comparing them helps tell
+ * an off-by-a-byte tamper from full payload corruption.
+ *
+ * @see {@link plans/WIRE_FORMAT.md} §2.5
+ */
 export class HashMismatchError extends IntegrityError {
   readonly name = 'HashMismatchError';
-  /** Hex-encoded expected digest, when available. */
+  /** Hex-encoded digest stored in the frame's inline slot. */
   readonly expected: string | undefined;
-  /** Hex-encoded actual digest, when available. */
+  /** Hex-encoded digest recomputed from the frame body. */
   readonly actual: string | undefined;
 
   constructor(
