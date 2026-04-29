@@ -297,8 +297,11 @@ try {
 ```c
 #include "tensogram.h"
 
-tgm_message* msg = tgm_decode(buf, len, 0);
-if (!msg) {
+tgm_message_t *msg = NULL;
+tgm_error rc = tgm_decode(buf, len,
+                          /*native_byte_order=*/1, /*threads=*/0,
+                          /*verify_hash=*/0, &msg);
+if (rc != TGM_ERROR_OK) {
     tgm_error code = tgm_last_error_code();
     const char* message = tgm_last_error();
     fprintf(stderr, "%s (%d): %s\n",

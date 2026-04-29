@@ -56,8 +56,8 @@ auto msg = tensogram::decode(buf, len, dec);
 ```c
 tgm_encode(meta_json, data_ptrs, data_lens, num_objects,
            "xxh3", /* threads= */ 4, &out);
-tgm_decode(buf, len, /* verify_hash */ 0, /* native_byte_order */ 1,
-           /* threads= */ 8, &msg);
+tgm_decode(buf, len, /* native_byte_order= */ 1, /* threads= */ 8,
+           /* verify_hash= */ 0, &msg);
 ```
 
 ```bash
