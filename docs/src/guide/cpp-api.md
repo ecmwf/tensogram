@@ -2,6 +2,8 @@
 
 Tensogram provides a header-only C++17 wrapper at `cpp/include/tensogram.hpp`. It delegates all work to the C FFI and adds RAII handle management, typed exceptions, and idiomatic C++ patterns.
 
+> The C ABI underneath this wrapper is documented in [C API](c-api.md). The build flow on this page is the **in-tree** wrapper build: the bundled CMake reads the cbindgen-generated header from `rust/tensogram-ffi/` and links against `cargo build`'s `libtensogram_ffi.{a,so}`. The C API page also covers the **distribution** paths (pre-built tarballs, `cargo cinstall`) used when shipping the C library to consumers; the SONAME / versioning policy described there applies to those distributed binaries. Building the C++ wrapper against a cargo-c-installed `libtensogram` (rather than the in-tree static library) is not currently wired into `cpp/CMakeLists.txt`.
+
 ## Requirements
 
 - C++17 compiler (GCC 7+, Clang 5+, MSVC 19.14+)

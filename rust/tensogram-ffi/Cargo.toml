@@ -17,6 +17,10 @@ include = ["src/**", "build.rs", "cbindgen.toml", "tensogram.h", "Cargo.toml", "
 [lib]
 crate-type = ["cdylib", "staticlib"]
 
+[features]
+# Empty marker feature required by cargo-c to identify the C-callable crate.
+capi = []
+
 [dependencies]
 tensogram = { path = "../tensogram", version = "=0.20.0" }
 tensogram-encodings = { path = "../tensogram-encodings", version = "=0.20.0" }
@@ -26,3 +30,33 @@ serde.workspace = true
 
 [build-dependencies]
 cbindgen = "0.29"
+
+# cargo-c metadata — see docs/src/guide/c-api.md for the install layout
+# and consumption flow. Plain `cargo build` is unchanged.
+
+[package.metadata.capi]
+min_version = "0.10.21"
+
+[package.metadata.capi.header]
+name = "tensogram.h"
+subdirectory = "tensogram"
+generation = true
+# Disabled to keep cargo-c output byte-identical to build.rs cbindgen output.
+emit_version_constants = false
+
+[package.metadata.capi.pkg_config]
+name = "tensogram"
+# Override the default crate-name-based filename; ship `tensogram.pc`, not `tensogram-ffi.pc`.
+filename = "tensogram"
+description = "C FFI for the Tensogram N-tensor message format library"
+# Emit `-I${includedir}` so consumers write `#include <tensogram/tensogram.h>`.
+strip_include_path_components = 1
+
+[package.metadata.capi.library]
+# Drop the `_ffi` suffix from the crate name. Coexists with cargo build's libtensogram_ffi.*.
+name = "tensogram"
+versioning = true
+# Lock SONAME to MAJOR.MINOR explicitly; matches cargo-c's pre-1.0 default
+# but survives a future bump past 1.0.
+version_suffix_components = 2
+# `rustflags = "-Cpanic=abort"` deliberately omitted: workspace [profile.release] sets panic = "abort".

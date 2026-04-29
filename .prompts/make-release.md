@@ -132,10 +132,19 @@ git push
 ### 4. Preflight and Tag
 ```bash
 # Trigger release-preflight.yml workflow (workflow_dispatch, input: version)
-# Wait for it to pass — all green required
+# Wait for it to pass — all green required.
+# release-preflight now also exercises `cargo cbuild -p tensogram-ffi` and
+# the C-API smoke test, so a broken cargo-c metadata or header drift is
+# caught here before tagging.
 git tag X.Y.Z
 git push --tags
 ```
+
+Pushing the tag also triggers `publish-ffi.yml`, which builds the four
+release tarballs (Linux x86_64/aarch64, macOS x86_64/aarch64) and
+**creates the GitHub Release** with binaries attached. This runs in
+parallel with the registry publishes below; you must wait for it to
+finish before editing release notes (step 6).
 
 ### 5. Publish to Registries
 
@@ -184,13 +193,47 @@ the next automatically.
    npm install @ecmwf.int/tensogram@X.Y.Z
    ```
 
-### 6. Create GitHub Release
+### 6. Edit GitHub Release notes
+
+The release was already created by `publish-ffi.yml` (step 4) with the
+four binary tarballs attached. **Wait for that specific run to finish**
+before editing notes (`gh release edit` fails if the release does not
+yet exist):
+
 ```bash
-gh release create X.Y.Z --title "X.Y.Z" --notes "..."
+# Identify the publish-ffi.yml run for THIS tag's commit, not just the
+# latest run on the workflow (which could be a run for another tag).
+# Filter by --commit so we watch the run for this tag whether it was
+# triggered by 'git push --tags' (event=push) or re-triggered manually
+# via 'gh workflow run' (event=workflow_dispatch). The '// empty' jq
+# fallback makes the variable empty (rather than the literal string
+# "null") when no run exists yet, so the -z guard fires correctly.
+TAG_SHA=$(git rev-list -n1 X.Y.Z)
+RUN_ID=$(gh run list --workflow=publish-ffi.yml \
+    --commit "$TAG_SHA" \
+    --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+test -n "$RUN_ID" || { echo "no publish-ffi.yml run for $TAG_SHA"; exit 1; }
+gh run watch "$RUN_ID"
+
+# Verify the four expected assets are attached.
+gh release view X.Y.Z --json assets --jq '.assets[].name'
+
+# Now add release notes (Highlights, Added/Changed/Fixed, Stats,
+# link to the full CHANGELOG entry).
+gh release edit X.Y.Z --title "X.Y.Z" --notes-file <(cat <<'EOF'
+## Highlights
+...
+EOF
+)
 ```
 
-Release notes should include: Highlights, key Added/Changed items, Stats, and a
-link to the full CHANGELOG entry.
+If the FFI binary release workflow failed, re-trigger it manually
+before editing notes (workflow_dispatch picks up the `--ref` you pass
+on the CLI; pass the tag name so the rerun checks out the correct
+source):
+```bash
+gh workflow run publish-ffi.yml --ref X.Y.Z -f version=X.Y.Z
+```
 
 **IMPORTANT:** Version tags are bare semver (e.g. `0.14.0`), NEVER prefixed with `v`.
 **IMPORTANT:** NEVER bump MAJOR unless the user explicitly says so.

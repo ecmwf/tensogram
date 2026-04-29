@@ -81,6 +81,24 @@ impl MockServer {
             while !shutdown_thread.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        // The listener is non-blocking so the accept loop can
+                        // honour `shutdown_thread`.  On macOS (unlike Linux),
+                        // accepted streams inherit the listener's non-blocking
+                        // flag, which makes `handle_one`'s blocking `read`
+                        // return `WouldBlock` immediately and the worker drop
+                        // the connection before sending any response.  Force
+                        // the worker stream back to blocking so reads wait for
+                        // the request bytes the way the handler expects.
+                        // Surfacing the error is critical: silently swallowing
+                        // it would let the same flake reappear if a future
+                        // platform regresses, with no log to diagnose from.
+                        if let Err(e) = stream.set_nonblocking(false) {
+                            eprintln!(
+                                "mock_http: set_nonblocking(false) failed on accepted stream: {e}; \
+                                dropping connection"
+                            );
+                            continue;
+                        }
                         let fixtures = fixtures_thread.clone();
                         let counters = counters_thread.clone();
                         thread::spawn(move || {
