@@ -91,7 +91,7 @@ fn write_frame(
     version: u16,
     flags: u16,
     payload: &[u8],
-    hash_algorithm: Option<crate::hash::HashAlgorithm>,
+    hashing: bool,
     align: bool,
 ) {
     // Data-object frames have their own encoder; this helper only
@@ -124,9 +124,10 @@ fn write_frame(
 
     // Inline hash slot (8 bytes) — hashes the body (just `payload`
     // for non-data-object frames).
-    let hash_value: u64 = match hash_algorithm {
-        Some(crate::hash::HashAlgorithm::Xxh3) => xxhash_rust::xxh3::xxh3_64(payload),
-        None => 0,
+    let hash_value: u64 = if hashing {
+        xxhash_rust::xxh3::xxh3_64(payload)
+    } else {
+        0
     };
     out.extend_from_slice(&hash_value.to_be_bytes());
 
@@ -213,7 +214,7 @@ pub fn encode_data_object_frame(
     descriptor: &DataObjectDescriptor,
     payload: &[u8],
     cbor_before: bool,
-    hash_algorithm: Option<crate::hash::HashAlgorithm>,
+    hashing: bool,
 ) -> Result<Vec<u8>> {
     let cbor_bytes = metadata::object_descriptor_to_cbor(descriptor)?;
     let flags = if cbor_before {
@@ -281,11 +282,10 @@ pub fn encode_data_object_frame(
     // appended since the header end; cbor_offset and the hash slot
     // itself live in the footer and are not in scope
     // (`plans/WIRE_FORMAT.md` §2.4).
-    let hash_value: u64 = match hash_algorithm {
-        Some(crate::hash::HashAlgorithm::Xxh3) => {
-            xxhash_rust::xxh3::xxh3_64(&out[FRAME_HEADER_SIZE..])
-        }
-        None => 0,
+    let hash_value: u64 = if hashing {
+        xxhash_rust::xxh3::xxh3_64(&out[FRAME_HEADER_SIZE..])
+    } else {
+        0
     };
 
     // Footer: [cbor_offset u64][hash u64][ENDF 4].
@@ -463,15 +463,12 @@ pub struct EncodedObject {
 ///
 /// The helper is cheap (no hashing) because the inline slot was
 /// already computed at frame-encode time.
-fn build_hash_frame_cbor(
-    object_frames: &[Vec<u8>],
-    hash_algorithm: Option<crate::hash::HashAlgorithm>,
-) -> Result<Option<Vec<u8>>> {
+fn build_hash_frame_cbor(object_frames: &[Vec<u8>], hashing: bool) -> Result<Option<Vec<u8>>> {
     use crate::wire::{FRAME_COMMON_FOOTER_SIZE, read_u64_be};
 
-    let Some(algorithm) = hash_algorithm else {
+    if !hashing {
         return Ok(None);
-    };
+    }
     if object_frames.is_empty() {
         return Ok(None);
     }
@@ -491,7 +488,7 @@ fn build_hash_frame_cbor(
     }
 
     let hf = HashFrame {
-        algorithm: algorithm.as_str().to_string(),
+        algorithm: crate::hash::HASH_ALGORITHM_NAME.to_string(),
         hashes,
     };
     Ok(Some(metadata::hash_frame_to_cbor(&hf)?))
@@ -502,7 +499,7 @@ fn build_hash_frame_cbor(
 fn build_index_frame(
     header_size_no_index: usize,
     object_frames: &[Vec<u8>],
-    hash_algorithm: Option<crate::hash::HashAlgorithm>,
+    hashing: bool,
 ) -> Result<Option<Vec<u8>>> {
     if object_frames.is_empty() {
         return Ok(None);
@@ -558,7 +555,7 @@ fn build_index_frame(
         1,
         0,
         &final_cbor,
-        hash_algorithm,
+        hashing,
         true,
     );
     Ok(Some(idx_frame))
@@ -598,7 +595,7 @@ fn assemble_message(
     header_hash_cbor: Option<&[u8]>,
     footer_hash_cbor: Option<&[u8]>,
     object_frames: &[Vec<u8>],
-    hash_algorithm: Option<crate::hash::HashAlgorithm>,
+    hashing: bool,
 ) -> Vec<u8> {
     let mut out = Vec::new();
 
@@ -613,7 +610,7 @@ fn assemble_message(
         1,
         0,
         meta_cbor,
-        hash_algorithm,
+        hashing,
         true,
     );
 
@@ -624,15 +621,7 @@ fn assemble_message(
 
     // Header hash frame
     if let Some(h_cbor) = header_hash_cbor {
-        write_frame(
-            &mut out,
-            FrameType::HeaderHash,
-            1,
-            0,
-            h_cbor,
-            hash_algorithm,
-            true,
-        );
+        write_frame(&mut out, FrameType::HeaderHash, 1, 0, h_cbor, hashing, true);
     }
 
     // Data object frames with inter-frame alignment
@@ -654,15 +643,7 @@ fn assemble_message(
     // footer frames exist.
     let footer_start_offset = out.len();
     if let Some(h_cbor) = footer_hash_cbor {
-        write_frame(
-            &mut out,
-            FrameType::FooterHash,
-            1,
-            0,
-            h_cbor,
-            hash_algorithm,
-            true,
-        );
+        write_frame(&mut out, FrameType::FooterHash, 1, 0, h_cbor, hashing, true);
     }
 
     // Postamble.  `first_footer_offset` = the footer-frames region
@@ -732,7 +713,7 @@ pub struct HashFramePolicy {
 pub fn encode_message(
     global_meta: &GlobalMetadata,
     objects: &[EncodedObject],
-    hash_algorithm: Option<crate::hash::HashAlgorithm>,
+    hashing: bool,
     hash_policy: HashFramePolicy,
 ) -> Result<Vec<u8>> {
     // Serialize metadata CBOR
@@ -742,18 +723,17 @@ pub fn encode_message(
     let mut object_frames: Vec<Vec<u8>> = Vec::with_capacity(objects.len());
     for obj in objects {
         let frame =
-            encode_data_object_frame(&obj.descriptor, &obj.encoded_payload, false, hash_algorithm)?;
+            encode_data_object_frame(&obj.descriptor, &obj.encoded_payload, false, hashing)?;
         object_frames.push(frame);
     }
 
     // Build aggregate HashFrame CBOR from the inline slots.  The
     // same bytes are used for both header and footer aggregates.
-    let aggregate_hash_cbor =
-        if hash_algorithm.is_some() && (hash_policy.header || hash_policy.footer) {
-            build_hash_frame_cbor(&object_frames, hash_algorithm)?
-        } else {
-            None
-        };
+    let aggregate_hash_cbor = if hashing && (hash_policy.header || hash_policy.footer) {
+        build_hash_frame_cbor(&object_frames, hashing)?
+    } else {
+        None
+    };
     let header_hash_cbor: Option<&[u8]> = if hash_policy.header {
         aggregate_hash_cbor.as_deref()
     } else {
@@ -774,7 +754,7 @@ pub fn encode_message(
         1,
         0,
         &meta_cbor,
-        hash_algorithm,
+        hashing,
         true,
     );
     if let Some(h_cbor) = header_hash_cbor {
@@ -784,23 +764,22 @@ pub fn encode_message(
             1,
             0,
             h_cbor,
-            hash_algorithm,
+            hashing,
             true,
         );
     }
 
     // Two-pass index construction
-    let index_frame_bytes =
-        build_index_frame(header_no_index.len(), &object_frames, hash_algorithm)?;
+    let index_frame_bytes = build_index_frame(header_no_index.len(), &object_frames, hashing)?;
 
     // Compute flags and assemble.  `HASHES_PRESENT` is set whenever
-    // `hash_algorithm.is_some()` — the per-frame hash slots are
-    // populated uniformly for every frame in the message.
+    // hashing is on — the per-frame hash slots are populated
+    // uniformly for every frame in the message.
     let mut flags = compute_message_flags(index_frame_bytes.is_some(), header_hash_cbor.is_some());
     if footer_hash_cbor.is_some() {
         flags.set(MessageFlags::FOOTER_HASHES);
     }
-    if hash_algorithm.is_some() {
+    if hashing {
         flags.set(MessageFlags::HASHES_PRESENT);
     }
 
@@ -811,7 +790,7 @@ pub fn encode_message(
         header_hash_cbor,
         footer_hash_cbor,
         &object_frames,
-        hash_algorithm,
+        hashing,
     ))
 }
 
@@ -1841,7 +1820,7 @@ mod tests {
         let desc = make_descriptor(vec![4]);
         let payload = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 
-        let frame = encode_data_object_frame(&desc, &payload, false, None).unwrap();
+        let frame = encode_data_object_frame(&desc, &payload, false, false).unwrap();
 
         let (decoded_desc, decoded_payload, _mask_region, consumed) =
             decode_data_object_frame(&frame).unwrap();
@@ -1856,7 +1835,7 @@ mod tests {
         let desc = make_descriptor(vec![2, 3]);
         let payload = vec![0xABu8; 24]; // 2*3*4 = 24 bytes for float32
 
-        let frame = encode_data_object_frame(&desc, &payload, true, None).unwrap();
+        let frame = encode_data_object_frame(&desc, &payload, true, false).unwrap();
 
         let (decoded_desc, decoded_payload, _mask_region, _) =
             decode_data_object_frame(&frame).unwrap();
@@ -1867,7 +1846,7 @@ mod tests {
     #[test]
     fn test_empty_message_round_trip() {
         let meta = make_global_meta();
-        let msg = encode_message(&meta, &[], None, Default::default()).unwrap();
+        let msg = encode_message(&meta, &[], false, Default::default()).unwrap();
 
         // Check magic and end magic
         assert_eq!(&msg[0..8], MAGIC);
@@ -1889,7 +1868,7 @@ mod tests {
             encoded_payload: payload.clone(),
         }];
 
-        let msg = encode_message(&meta, &objects, None, Default::default()).unwrap();
+        let msg = encode_message(&meta, &objects, false, Default::default()).unwrap();
         let decoded = decode_message(&msg).unwrap();
         assert_eq!(decoded.objects.len(), 1);
         assert_eq!(decoded.objects[0].0.shape, vec![4]);
@@ -1917,7 +1896,7 @@ mod tests {
             },
         ];
 
-        let msg = encode_message(&meta, &objects, None, Default::default()).unwrap();
+        let msg = encode_message(&meta, &objects, false, Default::default()).unwrap();
         let decoded = decode_message(&msg).unwrap();
 
         assert_eq!(decoded.objects.len(), 2);
@@ -1940,7 +1919,7 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
-            None,
+            false,
             Default::default(),
         )
         .unwrap();
@@ -1950,7 +1929,7 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
-            None,
+            false,
             Default::default(),
         )
         .unwrap();
@@ -1973,7 +1952,7 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
-            None,
+            false,
             Default::default(),
         )
         .unwrap();
@@ -2001,7 +1980,7 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
-            None,
+            false,
             Default::default(),
         )
         .unwrap();
@@ -2026,7 +2005,7 @@ mod tests {
         for (content, frame_type) in frames {
             match frame_type {
                 FrameType::NTensorFrame => {
-                    let frame = encode_data_object_frame(&desc, &payload, false, None).unwrap();
+                    let frame = encode_data_object_frame(&desc, &payload, false, false).unwrap();
                     out.extend_from_slice(&frame);
                     let pad = (8 - (out.len() % 8)) % 8;
                     out.extend(std::iter::repeat_n(0u8, pad));
@@ -2037,7 +2016,7 @@ mod tests {
                     } else {
                         *content
                     };
-                    write_frame(&mut out, *frame_type, 1, 0, data, None, true);
+                    write_frame(&mut out, *frame_type, 1, 0, data, false, true);
                 }
             }
         }
@@ -2138,7 +2117,7 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
-            None,
+            false,
             Default::default(),
         )
         .unwrap();
@@ -2148,7 +2127,7 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
-            None,
+            false,
             Default::default(),
         )
         .unwrap();
@@ -2174,7 +2153,7 @@ mod tests {
                 descriptor: make_descriptor(vec![4]),
                 encoded_payload: vec![1u8; 16],
             }],
-            None,
+            false,
             Default::default(),
         )
         .unwrap();

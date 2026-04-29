@@ -69,7 +69,7 @@ fn make_finite_file(path: &std::path::Path) {
     let meta = GlobalMetadata::default();
     let mut buf = Vec::new();
     let enc_opts = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let mut enc = StreamingEncoder::new(&mut buf, &meta, &enc_opts).unwrap();

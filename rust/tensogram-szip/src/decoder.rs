@@ -80,12 +80,10 @@ pub(crate) fn decode(
 
     let xmax = if signed {
         (1u64 << (bps - 1)) as u32 - 1
+    } else if bps == 32 {
+        u32::MAX
     } else {
-        if bps == 32 {
-            u32::MAX
-        } else {
-            (1u32 << bps) - 1
-        }
+        (1u32 << bps) - 1
     };
 
     if data.is_empty() {
@@ -214,12 +212,10 @@ pub(crate) fn decode_range(
 
     let xmax = if signed {
         (1u64 << (bps - 1)) as u32 - 1
+    } else if bps == 32 {
+        u32::MAX
     } else {
-        if bps == 32 {
-            u32::MAX
-        } else {
-            (1u32 << bps) - 1
-        }
+        (1u32 << bps) - 1
     };
 
     let rsi_buffer = decode_rsi(

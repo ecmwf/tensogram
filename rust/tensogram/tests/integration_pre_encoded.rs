@@ -521,24 +521,10 @@ fn test_encode_pre_encoded_decode_range_fails_without_offsets() {
 
 // ── Rejection branches ───────────────────────────────────────────────────────
 
-#[test]
-fn test_encode_pre_encoded_rejects_emit_preceders() {
-    let raw = vec![0u8; 16]; // 4 × float32
-    let desc = make_raw_desc(4, Dtype::Float32, "none", BTreeMap::new());
-    let meta = GlobalMetadata::default();
-    let opts = EncodeOptions {
-        hash_algorithm: Some(tensogram::HashAlgorithm::Xxh3),
-        emit_preceders: true,
-        ..Default::default()
-    };
-    let result = encode_pre_encoded(&meta, &[(&desc, &raw)], &opts);
-    assert!(result.is_err(), "emit_preceders=true must be rejected");
-    let err = result.expect_err("err").to_string();
-    assert!(
-        err.contains("emit_preceders"),
-        "error should mention emit_preceders, got: {err}"
-    );
-}
+// Wave 2.4 removed the dead `EncodeOptions.emit_preceders` field.
+// Per-object preceder metadata in streaming mode flows through
+// `StreamingEncoder::write_preceder()` exclusively; the buffered
+// path has no equivalent knob.
 
 #[test]
 fn test_encode_pre_encoded_rejects_caller_reserved() {
@@ -1068,8 +1054,7 @@ fn test_encode_pre_encoded_no_hash() {
     let desc = make_raw_desc(4, Dtype::Float32, "none", BTreeMap::new());
     let meta = GlobalMetadata::default();
     let opts = EncodeOptions {
-        hash_algorithm: None,
-        emit_preceders: false,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode_pre_encoded(&meta, &[(&desc, &raw)], &opts)
@@ -1171,10 +1156,12 @@ fn test_encode_pre_encoded_strides_shape_mismatch_rejected() {
 #[test]
 fn test_streaming_pre_encoded_with_preceder() {
     // Streaming: write_object_pre_encoded after writing a preceder.
+    // Preceder emission is controlled by explicit
+    // `StreamingEncoder::write_preceder()` calls, not by an
+    // `EncodeOptions` field.
     let meta = GlobalMetadata::default();
     let opts = EncodeOptions {
-        hash_algorithm: Some(tensogram::HashAlgorithm::Xxh3),
-        emit_preceders: true,
+        hashing: true,
         ..Default::default()
     };
 

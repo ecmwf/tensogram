@@ -99,8 +99,7 @@ fn encode_native_no_hash(
         meta,
         descriptors,
         &tensogram::EncodeOptions {
-            hash_algorithm: None,
-            emit_preceders: false,
+            hashing: false,
             ..Default::default()
         },
     )
@@ -137,7 +136,7 @@ fn golden_simple_f32_decode() {
     let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
 
     assert_eq!(decoded.object_count(), 1);
     assert_eq!(decoded.object_byte_length(0).unwrap(), 16);
@@ -168,7 +167,7 @@ fn golden_multi_object_decode() {
         ],
     );
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
 
     assert_eq!(decoded.object_count(), 3);
     assert_eq!(decoded.object_byte_length(0).unwrap(), 8);
@@ -199,7 +198,7 @@ fn golden_mars_metadata_decode() {
     let payload = f64_payload(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     let msg = encode_native(&meta, &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
 
     let meta_js = decoded.metadata().unwrap();
@@ -217,7 +216,7 @@ fn golden_2d_tensor_f32_decode() {
     let payload = f32_payload(&values);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     assert_eq!(decoded.object_byte_length(0).unwrap(), 48); // 12 * 4
     let raw: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
@@ -232,7 +231,7 @@ fn golden_3d_tensor_f64_decode() {
     let payload = f64_payload(&values);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     assert_eq!(decoded.object_byte_length(0).unwrap(), 192); // 24 * 8
 }
@@ -248,7 +247,7 @@ fn round_trip_f32_no_compression() {
     let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload, "round-trip f32 payload mismatch");
@@ -263,7 +262,7 @@ fn round_trip_f64_no_compression() {
     let payload = f64_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -274,7 +273,7 @@ fn round_trip_u8_no_compression() {
     let payload: Vec<u8> = (0..=255).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -285,7 +284,7 @@ fn round_trip_i8() {
     let payload: Vec<u8> = (-128..=127i8).map(|v| v as u8).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -297,7 +296,7 @@ fn round_trip_i32() {
     let payload = i32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -309,7 +308,7 @@ fn round_trip_i64() {
     let payload = i64_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -321,7 +320,7 @@ fn round_trip_u16() {
     let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -333,7 +332,7 @@ fn round_trip_u32() {
     let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -345,7 +344,7 @@ fn round_trip_u64() {
     let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -357,7 +356,7 @@ fn round_trip_i16() {
     let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -369,7 +368,7 @@ fn round_trip_with_hash_verification() {
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
     // Decode with hash verification enabled
-    let decoded = tensogram_wasm::decode(&msg, Some(true), None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, Some(true)).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -388,7 +387,7 @@ fn round_trip_lz4_compression() {
     let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload, "lz4 round-trip payload mismatch");
 }
@@ -404,7 +403,7 @@ fn round_trip_lz4_large() {
     let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -418,7 +417,7 @@ fn round_trip_lz4_u8() {
     let payload: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -433,7 +432,7 @@ fn round_trip_lz4_f64() {
     let payload = f64_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -449,7 +448,7 @@ fn round_trip_lz4_constant_data() {
     let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -465,7 +464,7 @@ fn round_trip_lz4_with_hash_verification() {
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
     // Decode with hash verification — verifies hash is computed over compressed bytes
-    let decoded = tensogram_wasm::decode(&msg, Some(true), None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, Some(true)).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -495,7 +494,7 @@ fn round_trip_szip_pure() {
     let payload: Vec<u8> = (0..2048).map(|i| (i % 256) as u8).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload, "szip-pure round-trip mismatch");
 }
@@ -524,7 +523,7 @@ fn round_trip_szip_pure_constant_data() {
     let payload = vec![42u8; 4096];
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -541,7 +540,7 @@ fn round_trip_zstd_pure() {
     let payload: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload, "zstd-pure round-trip mismatch");
 }
@@ -559,7 +558,7 @@ fn round_trip_zstd_pure_f32() {
     let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload);
 }
@@ -582,7 +581,7 @@ fn round_trip_shuffle_plus_lz4() {
     let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload, "shuffle+lz4 round-trip mismatch");
 }
@@ -605,7 +604,7 @@ fn round_trip_shuffle_plus_zstd_pure() {
     let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw_vec: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw_vec, payload, "shuffle+zstd-pure round-trip mismatch");
 }
@@ -621,7 +620,7 @@ fn zero_copy_f32_view_values_correct() {
     let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let view = decoded.object_data_f32(0).unwrap();
 
     assert_eq!(view.length(), 4);
@@ -640,7 +639,7 @@ fn zero_copy_f64_view_values_correct() {
     let payload = f64_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let view = decoded.object_data_f64(0).unwrap();
 
     assert_eq!(view.length(), 3);
@@ -656,7 +655,7 @@ fn zero_copy_i32_view_values_correct() {
     let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let view = decoded.object_data_i32(0).unwrap();
 
     assert_eq!(view.length(), 4);
@@ -672,7 +671,7 @@ fn safe_copy_f32_survives_independently() {
     let payload = f32_payload(&[42.0, 99.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let copy = decoded.object_data_copy_f32(0).unwrap();
 
     assert_eq!(copy.length(), 2);
@@ -686,7 +685,7 @@ fn typed_array_wrong_alignment_returns_error() {
     let payload = vec![1u8, 2, 3]; // 3 bytes — not a multiple of 4 for f32
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     // f32 view should fail — 3 bytes not divisible by 4
     assert!(decoded.object_data_f32(0).is_err());
     // f64 view should also fail — 3 not divisible by 8
@@ -703,7 +702,7 @@ fn f32_view_on_5_byte_payload_errors() {
     let payload = vec![0u8; 5];
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert!(decoded.object_data_f32(0).is_err());
 }
 
@@ -714,7 +713,7 @@ fn f64_view_on_4_byte_payload_errors() {
     let payload = f32_payload(&[1.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert!(decoded.object_data_f64(0).is_err());
     assert!(decoded.object_data_f32(0).is_ok());
 }
@@ -725,7 +724,7 @@ fn safe_copy_f32_on_misaligned_errors() {
     let payload = vec![1u8, 2, 3];
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert!(decoded.object_data_copy_f32(0).is_err());
 }
 
@@ -786,7 +785,7 @@ fn decode_object_by_index() {
     );
 
     // Decode only object 1
-    let decoded = tensogram_wasm::decode_object(&msg, 1, None, None).unwrap();
+    let decoded = tensogram_wasm::decode_object(&msg, 1, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     assert_eq!(decoded.object_byte_length(0).unwrap(), 12);
 }
@@ -803,7 +802,7 @@ fn decode_object_first_index() {
     );
 
     // Decode object 0
-    let decoded = tensogram_wasm::decode_object(&msg, 0, None, None).unwrap();
+    let decoded = tensogram_wasm::decode_object(&msg, 0, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     assert_eq!(decoded.object_byte_length(0).unwrap(), 8);
     let raw: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
@@ -816,7 +815,7 @@ fn decode_object_out_of_range_returns_error() {
     let payload = vec![0u8; 8];
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let result = tensogram_wasm::decode_object(&msg, 99, None, None);
+    let result = tensogram_wasm::decode_object(&msg, 99, None);
     assert!(result.is_err());
 }
 
@@ -826,7 +825,7 @@ fn decode_object_with_hash_verification() {
     let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode_object(&msg, 0, Some(true), None).unwrap();
+    let decoded = tensogram_wasm::decode_object(&msg, 0, Some(true)).unwrap();
     assert_eq!(decoded.object_count(), 1);
     let raw: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw, payload);
@@ -907,7 +906,7 @@ fn scan_garbage_prefix_skipped() {
 
 #[wasm_bindgen_test]
 fn decode_corrupt_data_returns_error() {
-    let result = tensogram_wasm::decode(b"this is not a tgm file", None, None);
+    let result = tensogram_wasm::decode(b"this is not a tgm file", None);
     assert!(result.is_err());
 }
 
@@ -918,26 +917,26 @@ fn decode_truncated_message_returns_error() {
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     let truncated = &msg[..msg.len() / 2];
-    let result = tensogram_wasm::decode(truncated, None, None);
+    let result = tensogram_wasm::decode(truncated, None);
     assert!(result.is_err());
 }
 
 #[wasm_bindgen_test]
 fn decode_empty_buffer_returns_error() {
-    let result = tensogram_wasm::decode(&[], None, None);
+    let result = tensogram_wasm::decode(&[], None);
     assert!(result.is_err());
 }
 
 #[wasm_bindgen_test]
 fn decode_single_byte_returns_error() {
-    let result = tensogram_wasm::decode(&[0x42], None, None);
+    let result = tensogram_wasm::decode(&[0x42], None);
     assert!(result.is_err());
 }
 
 #[wasm_bindgen_test]
 fn decode_just_preamble_magic_returns_error() {
     // TENSOGRM = [0x54, 0x45, 0x4E, 0x53, 0x4F, 0x47, 0x52, 0x4D]
-    let result = tensogram_wasm::decode(b"TENSOGRM", None, None);
+    let result = tensogram_wasm::decode(b"TENSOGRM", None);
     assert!(result.is_err());
 }
 
@@ -959,7 +958,7 @@ fn object_index_out_of_bounds_returns_error() {
     let payload = vec![0u8; 8];
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert!(decoded.object_data_f32(99).is_err());
     assert!(decoded.object_descriptor(99).is_err());
     assert!(decoded.object_byte_length(99).is_err());
@@ -971,13 +970,13 @@ fn object_data_u8_oob_returns_error() {
     let payload = vec![0u8; 8];
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert!(decoded.object_data_u8(1).is_err());
 }
 
 #[wasm_bindgen_test]
 fn decode_object_corrupt_returns_error() {
-    let result = tensogram_wasm::decode_object(b"garbage data", 0, None, None);
+    let result = tensogram_wasm::decode_object(b"garbage data", 0, None);
     assert!(result.is_err());
 }
 
@@ -1218,7 +1217,7 @@ fn decode_zero_element_tensor() {
     let desc = make_descriptor(vec![0], Dtype::Float32);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &[])]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     assert_eq!(decoded.object_byte_length(0).unwrap(), 0);
 }
@@ -1241,7 +1240,7 @@ fn decode_scalar_tensor() {
     let payload = 42.0f64.to_le_bytes().to_vec();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     assert_eq!(decoded.object_byte_length(0).unwrap(), 8);
 }
@@ -1252,7 +1251,7 @@ fn decode_single_element_tensor() {
     let payload = f32_payload(&[99.5]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     assert_eq!(decoded.object_byte_length(0).unwrap(), 4);
     let raw: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
@@ -1287,7 +1286,7 @@ fn decode_large_metadata_survives() {
     let desc = make_descriptor(vec![1], Dtype::Uint8);
     let msg = encode_native_no_hash(&meta, &[(&desc, &[0u8])]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let meta_js = decoded.metadata().unwrap();
     assert!(meta_js.is_object(), "large metadata should be an object");
 
@@ -1313,7 +1312,7 @@ fn decode_unicode_metadata_keys() {
     let desc = make_descriptor(vec![1], Dtype::Uint8);
     let msg = encode_native_no_hash(&meta, &[(&desc, &[0u8])]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let meta_js = decoded.metadata().unwrap();
     assert!(meta_js.is_object());
 }
@@ -1326,7 +1325,7 @@ fn decode_many_objects() {
         (0..20).map(|_| (&desc, [0u8].as_slice())).collect();
     let msg = encode_native_no_hash(&default_metadata(), &pairs);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 20);
 
     // Verify every object is accessible
@@ -1358,7 +1357,7 @@ fn decode_mixed_dtype_objects() {
         ],
     );
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 4);
     assert_eq!(decoded.object_byte_length(0).unwrap(), 8); // 2*f32
     assert_eq!(decoded.object_byte_length(1).unwrap(), 16); // 2*f64
@@ -1374,7 +1373,7 @@ fn decode_high_dimensional_tensor() {
     let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     assert_eq!(decoded.object_byte_length(0).unwrap(), 128); // 32 * 4
 }
@@ -1389,7 +1388,7 @@ fn api_metadata_returns_object() {
     let payload = vec![0u8; 8];
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let meta = decoded.metadata().unwrap();
 
     assert!(meta.is_object());
@@ -1403,7 +1402,7 @@ fn api_descriptor_returns_object_with_expected_keys() {
     let payload = vec![0u8; 48]; // 4*3*4
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let desc_js = decoded.object_descriptor(0).unwrap();
 
     assert!(
@@ -1443,7 +1442,7 @@ fn api_object_count_is_stable() {
         &[(&desc, &[1u8]), (&desc, &[2u8]), (&desc, &[3u8])],
     );
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     // Calling object_count() multiple times should return the same value
     assert_eq!(decoded.object_count(), 3);
     assert_eq!(decoded.object_count(), 3);
@@ -1455,7 +1454,7 @@ fn api_typed_array_length_matches_byte_length() {
     let payload = vec![0u8; 32]; // 8 * 4
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
 
     let byte_len = decoded.object_byte_length(0).unwrap();
     let f32_view = decoded.object_data_f32(0).unwrap();
@@ -1471,7 +1470,7 @@ fn api_metadata_version_field_accessible() {
     let desc = make_descriptor(vec![1], Dtype::Uint8);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &[0u8])]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let meta = decoded.metadata().unwrap();
 
     // Version should be accessible as a number
@@ -1492,7 +1491,7 @@ fn streaming_frame_data_matches_direct_decode() {
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     // Direct decode
-    let direct = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let direct = tensogram_wasm::decode(&msg, None).unwrap();
     let direct_bytes: Vec<u8> = direct.object_data_u8(0).unwrap().to_vec();
 
     // Streaming decode
@@ -1513,7 +1512,7 @@ fn streaming_frame_descriptor_matches_direct() {
     let payload = vec![0u8; 96]; // 4*3*8
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let direct = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let direct = tensogram_wasm::decode(&msg, None).unwrap();
     let direct_desc: String = js_sys::JSON::stringify(&direct.object_descriptor(0).unwrap())
         .unwrap()
         .into();
@@ -1629,7 +1628,7 @@ fn decode_hash_disabled_succeeds_on_hashed_message() {
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
 
     // Decode without hash verification — should succeed
-    let decoded = tensogram_wasm::decode(&msg, Some(false), None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, Some(false)).unwrap();
     assert_eq!(decoded.object_count(), 1);
 }
 
@@ -1641,7 +1640,7 @@ fn decode_hash_enabled_on_unhashed_message_succeeds() {
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
     // Decode with hash verification — no hash to check, should still succeed
-    let decoded = tensogram_wasm::decode(&msg, Some(true), None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, Some(true)).unwrap();
     assert_eq!(decoded.object_count(), 1);
 }
 
@@ -1664,7 +1663,7 @@ fn metadata_extra_survives_round_trip() {
     let desc = make_descriptor(vec![1], Dtype::Uint8);
     let msg = encode_native_no_hash(&meta, &[(&desc, &[0u8])]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let meta_js = decoded.metadata().unwrap();
     let extra_js = js_sys::Reflect::get(&meta_js, &"_extra_".into()).unwrap();
     assert!(extra_js.is_object(), "_extra_ should survive encode→decode");
@@ -1721,7 +1720,7 @@ fn metadata_deep_nested_mars_keys() {
     let msg = encode_native_no_hash(&meta, &[(&desc, &payload)]);
 
     // Just verify it decodes without error — metadata fidelity
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     let meta_js = decoded.metadata().unwrap();
     assert!(meta_js.is_object());
@@ -1738,7 +1737,7 @@ fn metadata_empty_base_array() {
     let payload = f32_payload(&[1.0, 2.0]);
     let msg = encode_native_no_hash(&meta, &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
 }
 
@@ -1756,8 +1755,8 @@ fn encode_is_deterministic() {
     let msg1 = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
     let msg2 = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded1 = tensogram_wasm::decode(&msg1, None, None).unwrap();
-    let decoded2 = tensogram_wasm::decode(&msg2, None, None).unwrap();
+    let decoded1 = tensogram_wasm::decode(&msg1, None).unwrap();
+    let decoded2 = tensogram_wasm::decode(&msg2, None).unwrap();
 
     let d1: Vec<u8> = decoded1.object_data_u8(0).unwrap().to_vec();
     let d2: Vec<u8> = decoded2.object_data_u8(0).unwrap().to_vec();
@@ -1771,8 +1770,8 @@ fn decode_is_deterministic() {
     let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded1 = tensogram_wasm::decode(&msg, None, None).unwrap();
-    let decoded2 = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded1 = tensogram_wasm::decode(&msg, None).unwrap();
+    let decoded2 = tensogram_wasm::decode(&msg, None).unwrap();
 
     let raw1: Vec<u8> = decoded1.object_data_u8(0).unwrap().to_vec();
     let raw2: Vec<u8> = decoded2.object_data_u8(0).unwrap().to_vec();
@@ -1791,7 +1790,7 @@ fn decode_100k_element_f32() {
     let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     assert_eq!(decoded.object_byte_length(0).unwrap(), n * 4);
 }
@@ -1807,7 +1806,7 @@ fn round_trip_lz4_100k_elements() {
     let payload = f32_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw, payload, "100K element lz4 round-trip mismatch");
 }
@@ -1824,14 +1823,14 @@ fn decode_then_reencode_produces_same_data() {
     let msg1 = encode_native_no_hash(&default_metadata(), &[(&desc, &original_payload)]);
 
     // Decode
-    let decoded = tensogram_wasm::decode(&msg1, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg1, None).unwrap();
     let decoded_payload: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
 
     // Re-encode with same descriptor and metadata
     let msg2 = encode_native_no_hash(&default_metadata(), &[(&desc, &decoded_payload)]);
 
     // Decode again
-    let decoded2 = tensogram_wasm::decode(&msg2, None, None).unwrap();
+    let decoded2 = tensogram_wasm::decode(&msg2, None).unwrap();
     let final_payload: Vec<u8> = decoded2.object_data_u8(0).unwrap().to_vec();
 
     assert_eq!(
@@ -1924,7 +1923,7 @@ fn round_trip_big_endian_f32_decoded_to_native() {
         .collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let view = decoded.object_data_f32(0).unwrap();
     assert_eq!(view.get_index(0), 1.0);
     assert_eq!(view.get_index(3), 4.0);
@@ -1937,7 +1936,7 @@ fn round_trip_little_endian_f32_bytes_identical() {
     let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw, payload);
 }
@@ -1951,7 +1950,7 @@ fn round_trip_big_endian_f64_decoded_to_native() {
         .collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let view = decoded.object_data_f64(0).unwrap();
     assert_eq!(view.get_index(0), 1.1);
     assert_eq!(view.get_index(2), 3.3);
@@ -1963,7 +1962,7 @@ fn round_trip_little_endian_f64_bytes_identical() {
     let payload = f64_payload(&[1.1, 2.2, 3.3]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw, payload);
 }
@@ -2078,7 +2077,7 @@ fn decode_zero_byte_payload_all_dtypes() {
     ] {
         let desc = make_descriptor(vec![0], dtype);
         let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &[])]);
-        let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+        let decoded = tensogram_wasm::decode(&msg, None).unwrap();
         assert_eq!(decoded.object_count(), 1);
         assert_eq!(decoded.object_byte_length(0).unwrap(), 0);
     }
@@ -2094,11 +2093,11 @@ fn decode_object_index_exactly_at_boundary() {
     );
 
     // Last valid index
-    let decoded = tensogram_wasm::decode_object(&msg, 2, None, None).unwrap();
+    let decoded = tensogram_wasm::decode_object(&msg, 2, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
 
     // First invalid index
-    assert!(tensogram_wasm::decode_object(&msg, 3, None, None).is_err());
+    assert!(tensogram_wasm::decode_object(&msg, 3, None).is_err());
 }
 
 #[wasm_bindgen_test]
@@ -2121,7 +2120,7 @@ fn typed_view_on_zero_length_payload() {
     let desc = make_descriptor(vec![0], Dtype::Float32);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &[])]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
 
     // Zero-length views should succeed (not error)
     let f32_view = decoded.object_data_f32(0).unwrap();
@@ -2136,7 +2135,7 @@ fn safe_copy_on_zero_length_payload() {
     let desc = make_descriptor(vec![0], Dtype::Float32);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &[])]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let copy = decoded.object_data_copy_f32(0).unwrap();
     assert_eq!(copy.length(), 0);
 }
@@ -2177,7 +2176,7 @@ fn encode_no_hash_round_trips() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
     let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
 }
 
@@ -2187,7 +2186,7 @@ fn encode_with_hash_round_trips() {
     let desc = make_descriptor(vec![4], Dtype::Float32);
     let payload = f32_payload(&[1.0, 2.0, 3.0, 4.0]);
     let msg = encode_native(&default_metadata(), &[(&desc, &payload)]);
-    let decoded = tensogram_wasm::decode(&msg, Some(true), None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, Some(true)).unwrap();
     assert_eq!(decoded.object_count(), 1);
 }
 
@@ -2247,7 +2246,7 @@ fn streaming_frame_u8_view() {
 fn zero_length_f64_view() {
     let desc = make_descriptor(vec![0], Dtype::Float64);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &[])]);
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let view = decoded.object_data_f64(0).unwrap();
     assert_eq!(view.length(), 0);
 }
@@ -2256,7 +2255,7 @@ fn zero_length_f64_view() {
 fn zero_length_i32_view() {
     let desc = make_descriptor(vec![0], Dtype::Int32);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &[])]);
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let view = decoded.object_data_i32(0).unwrap();
     assert_eq!(view.length(), 0);
 }
@@ -2313,7 +2312,7 @@ fn round_trip_szip_pure_16bit() {
         .flat_map(|i| (i.wrapping_mul(7)).to_le_bytes())
         .collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw, payload, "szip-pure 16-bit round-trip mismatch");
 }
@@ -2331,7 +2330,7 @@ fn round_trip_zstd_pure_constant() {
     };
     let payload = vec![42u8; 4096]; // constant → high compression ratio
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let raw: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(raw, payload);
 }
@@ -2360,7 +2359,7 @@ fn streaming_frame_zero_length_views() {
 fn object_descriptor_oob_returns_error() {
     let desc = make_descriptor(vec![1], Dtype::Uint8);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &[0u8])]);
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     assert!(decoded.object_descriptor(1).is_err());
     assert!(decoded.object_descriptor(999).is_err());
 }
@@ -2377,7 +2376,7 @@ fn compressed_data_f64_view_correct() {
     let payload = f64_payload(&values);
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let view = decoded.object_data_f64(0).unwrap();
     assert_eq!(view.length(), 3);
     assert_eq!(view.get_index(0), 1.5);
@@ -2393,7 +2392,7 @@ fn compressed_data_i32_view_correct() {
     let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     let msg = encode_native_no_hash(&default_metadata(), &[(&desc, &payload)]);
 
-    let decoded = tensogram_wasm::decode(&msg, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg, None).unwrap();
     let view = decoded.object_data_i32(0).unwrap();
     assert_eq!(view.length(), 4);
     assert_eq!(view.get_index(0), -10);
@@ -2428,7 +2427,7 @@ fn decode_range_single_range_uncompressed() {
 
     // Elements 4..8 (count = 4) — byte range [16, 32).
     let ranges = flatten_ranges(&[(4, 4)]);
-    let result = tensogram_wasm::decode_range(&msg, 0, &ranges, None).unwrap();
+    let result = tensogram_wasm::decode_range(&msg, 0, &ranges).unwrap();
     let parts = js_sys::Reflect::get(&result, &"parts".into()).unwrap();
     let parts_arr = Array::from(&parts);
     assert_eq!(parts_arr.length(), 1);
@@ -2449,7 +2448,7 @@ fn decode_range_multiple_ranges() {
 
     // Two disjoint ranges: [0..4] and [20..24].
     let ranges = flatten_ranges(&[(0, 4), (20, 4)]);
-    let result = tensogram_wasm::decode_range(&msg, 0, &ranges, None).unwrap();
+    let result = tensogram_wasm::decode_range(&msg, 0, &ranges).unwrap();
     let parts = js_sys::Reflect::get(&result, &"parts".into()).unwrap();
     let parts_arr = Array::from(&parts);
     assert_eq!(parts_arr.length(), 2);
@@ -2468,7 +2467,7 @@ fn decode_range_empty_ranges_returns_empty_parts() {
         &[(&desc, &f32_payload(&[1.0, 2.0, 3.0, 4.0]))],
     );
     let ranges = flatten_ranges(&[]);
-    let result = tensogram_wasm::decode_range(&msg, 0, &ranges, None).unwrap();
+    let result = tensogram_wasm::decode_range(&msg, 0, &ranges).unwrap();
     let parts = js_sys::Reflect::get(&result, &"parts".into()).unwrap();
     assert_eq!(Array::from(&parts).length(), 0);
 }
@@ -2485,7 +2484,7 @@ fn decode_range_odd_length_rejected() {
     odd.set_index(0, 0);
     odd.set_index(1, 2);
     odd.set_index(2, 4);
-    assert!(tensogram_wasm::decode_range(&msg, 0, &odd, None).is_err());
+    assert!(tensogram_wasm::decode_range(&msg, 0, &odd).is_err());
 }
 
 #[wasm_bindgen_test]
@@ -2506,7 +2505,7 @@ fn decode_range_filter_shuffle_rejected() {
         &[(&desc, &f32_payload(&[1.0, 2.0, 3.0, 4.0]))],
     );
     let ranges = flatten_ranges(&[(0, 2)]);
-    let res = tensogram_wasm::decode_range(&msg, 0, &ranges, None);
+    let res = tensogram_wasm::decode_range(&msg, 0, &ranges);
     assert!(res.is_err(), "filter=shuffle should reject decode_range");
 }
 
@@ -2617,7 +2616,7 @@ fn encode_pre_encoded_round_trip_uncompressed() {
 
     let msg = tensogram_wasm::encode_pre_encoded(meta_js, objects, Some(true)).unwrap();
     let msg_bytes = msg.to_vec();
-    let decoded = tensogram_wasm::decode(&msg_bytes, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg_bytes, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     let data: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(data, payload);
@@ -2701,7 +2700,7 @@ fn streaming_encoder_single_object_round_trip() {
 
     let bytes = enc.finish().unwrap();
     let msg_vec = bytes.to_vec();
-    let decoded = tensogram_wasm::decode(&msg_vec, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&msg_vec, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     let got: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(got, payload);
@@ -2768,7 +2767,7 @@ fn streaming_encoder_preceder_merges_into_base() {
         .unwrap();
 
     let bytes = enc.finish().unwrap().to_vec();
-    let decoded = tensogram_wasm::decode(&bytes, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&bytes, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     let meta = decoded.metadata().unwrap();
     assert!(meta.is_object());
@@ -2852,7 +2851,7 @@ fn streaming_encoder_callback_mode_round_trip() {
     assert_eq!(final_bytes.length(), 0);
 
     let streamed = flatten_chunks(&chunks);
-    let decoded = tensogram_wasm::decode(&streamed, None, None).unwrap();
+    let decoded = tensogram_wasm::decode(&streamed, None).unwrap();
     assert_eq!(decoded.object_count(), 1);
     let got: Vec<u8> = decoded.object_data_u8(0).unwrap().to_vec();
     assert_eq!(got, payload);

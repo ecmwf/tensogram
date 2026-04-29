@@ -35,12 +35,17 @@ import type {
 /**
  * Decode one or more sub-ranges from a single data object.
  *
+ * Decode is a pure deserialisation in v3 — per-frame integrity
+ * verification has moved to the validation layer.  Use
+ * {@link validate} with `level: "checksum"` for the equivalent of
+ * the legacy `verifyHash` option (which has been removed).
+ *
  * @param buf         - Wire-format message bytes.
  * @param objectIndex - Zero-based index of the target object.
  * @param ranges      - Array of `[offset, count]` pairs in element units.
  *                      `number` and `bigint` are both accepted; values
  *                      above `Number.MAX_SAFE_INTEGER` must be `bigint`.
- * @param opts        - `verifyHash` and `join` (see {@link DecodeRangeOptions}).
+ * @param opts        - See {@link DecodeRangeOptions}.
  * @returns           - `{ descriptor, parts }`.  One entry in `parts`
  *                      per requested range (split mode — the default), or
  *                      a single concatenated entry when `join: true`.
@@ -48,8 +53,6 @@ import type {
  * @throws {EncodingError}  when the object has a filter (e.g. shuffle)
  *                          or a bitmask dtype — both unsupported by the
  *                          underlying range API.
- * @throws {HashMismatchError} if `verifyHash: true` and a payload hash
- *                             does not match the descriptor's recorded hash.
  * @throws {InvalidArgumentError} on malformed `ranges`.
  */
 export function decodeRange(
@@ -76,7 +79,7 @@ export function decodeRange(
   const wbg = getWbg();
   const result = rethrowTyped(
     () =>
-      wbg.decode_range(buf, objectIndex, flat, opts?.verifyHash ?? false) as {
+      wbg.decode_range(buf, objectIndex, flat) as {
         descriptor: DataObjectDescriptor;
         parts: Uint8Array[];
       },

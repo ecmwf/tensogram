@@ -27,7 +27,9 @@ pub struct PipelineArgs {
     )]
     pub encoding: String,
 
-    /// Bits per value for simple_packing encoding (default: 16 when omitted).
+    /// Bits per value for simple_packing encoding.  Default
+    /// `tensogram::pipeline::DEFAULT_SIMPLE_PACKING_BITS` (16) when
+    /// `--encoding simple_packing` is set without `--bits`.
     #[arg(long, value_name = "N")]
     pub bits: Option<u32>,
 

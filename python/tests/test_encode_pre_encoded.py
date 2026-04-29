@@ -372,8 +372,10 @@ class TestEncodePreEncodedHashOverwrite:
 
         msg = bytes(tensogram.encode_pre_encoded(meta, [(desc, raw_bytes)]))
 
-        # Decode the payload and confirm round-trip equality.
-        _, objects = tensogram.decode(msg, verify_hash=True)
+        # Decode the payload and confirm round-trip equality.  Decode
+        # in v3 is a pure deserialisation; integrity is checked via
+        # `validate(level="checksum")` below.
+        _, objects = tensogram.decode(msg)
         _desc_out, arr = objects[0]
         np.testing.assert_array_equal(arr, data)
 

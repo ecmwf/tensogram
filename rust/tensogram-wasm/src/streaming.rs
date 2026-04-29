@@ -208,7 +208,6 @@ impl StreamingDecoder {
         let positions = core::scan(remaining);
 
         let options = core::DecodeOptions {
-            verify_hash: false,
             ..Default::default()
         };
 

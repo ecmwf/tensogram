@@ -196,8 +196,6 @@ class TensogramDataStore:
         Optional user-specified dimension names for data variables.
     variable_key
         Optional dotted metadata path for variable naming.
-    verify_hash
-        Whether to verify object hashes on decode.
     range_threshold
         Maximum fraction of total array elements (0.0-1.0) for which
         partial ``decode_range()`` is used.  Default ``0.5``.
@@ -214,7 +212,6 @@ class TensogramDataStore:
         msg_index: int = 0,
         dim_names: Sequence[str] | None = None,
         variable_key: str | None = None,
-        verify_hash: bool = False,
         range_threshold: float = 0.5,
         storage_options: dict[str, Any] | None = None,
     ):
@@ -225,7 +222,6 @@ class TensogramDataStore:
         self.msg_index = msg_index
         self.dim_names = dim_names
         self.variable_key = variable_key
-        self.verify_hash = verify_hash
         self.range_threshold = range_threshold
         self.storage_options = storage_options
         self._lock = threading.Lock()
@@ -347,7 +343,6 @@ class TensogramDataStore:
                 shape=shape,
                 dtype=np_dtype,
                 supports_range=_supports_range_decode(desc),
-                verify_hash=self.verify_hash,
                 range_threshold=self.range_threshold,
                 lock=self._lock,
                 storage_options=self.storage_options,
@@ -387,7 +382,6 @@ class TensogramDataStore:
                 shape=shape,
                 dtype=np_dtype,
                 supports_range=_supports_range_decode(desc),
-                verify_hash=self.verify_hash,
                 range_threshold=self.range_threshold,
                 lock=self._lock,
                 storage_options=self.storage_options,

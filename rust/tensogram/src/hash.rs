@@ -7,64 +7,56 @@
 // does it submit to any jurisdiction.
 
 use crate::error::{Result, TensogramError};
-use crate::types::HashDescriptor;
 use crate::wire::{FRAME_HEADER_SIZE, FrameType, footer_size_for};
 
-/// Cryptographic / checksum algorithm identifiers understood by
-/// this crate's hashing surface.
+/// Wire-format string identifier for the v3 frame-level hash
+/// algorithm.  Stored in the `algorithm` field of
+/// [`crate::types::HashFrame`] (see `plans/WIRE_FORMAT.md` §6.3)
+/// and returned by the FFI `tgm_object_hash_type` accessor.
 ///
-/// v3 recognises a single algorithm — xxh3-64 — named `"xxh3"`
-/// on the wire (see the `algorithm` field of the
-/// [`crate::types::HashFrame`] CBOR schema).  Any other algorithm
-/// name parsed from a wire message surfaces as an
-/// `UnknownHashAlgorithm` validation warning; the inline per-frame
-/// hash slot still serves as the authoritative integrity source.
+/// v3 ships exactly one algorithm — xxh3-64.  When a second algorithm
+/// lands the strict-input contract for the encoder boundary
+/// ([`parse_hash_name`]) becomes a multi-arm match; until then it is
+/// a string equality check against this constant.  Keeping the name
+/// in one place makes the future addition mechanical.
+pub const HASH_ALGORITHM_NAME: &str = "xxh3";
+
+/// Whether a binding-supplied algorithm name selects integrity
+/// hashing on encode.
 ///
-/// Adding a new variant here is deliberate: the `as_str` /
-/// `parse` match arms are exhaustive at compile time, so every
-/// call site that names an algorithm forces an explicit answer
-/// for the new variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HashAlgorithm {
-    /// xxh3-64 — the canonical v3 algorithm.  64-bit digest,
-    /// rendered on the wire as a lowercase 16-character hex
-    /// string (see [`format_xxh3_digest`]).
-    Xxh3,
-}
-
-impl HashAlgorithm {
-    /// Returns the wire-format string identifier for this
-    /// algorithm (e.g. `"xxh3"`).  Used by the HashFrame CBOR
-    /// encoder and the FFI `tgm_object_hash_type` accessor.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            HashAlgorithm::Xxh3 => "xxh3",
-        }
-    }
-
-    /// Parse a wire-format algorithm string into a
-    /// [`HashAlgorithm`].
-    ///
-    /// # Errors
-    ///
-    /// Returns `TensogramError::Metadata` when `s` is not a
-    /// recognised algorithm name.  v3 readers treat the error
-    /// loosely at the HashFrame layer (the inline slot remains
-    /// authoritative and an unknown algorithm becomes a warning
-    /// rather than a hard failure).
-    pub fn parse(s: &str) -> Result<Self> {
-        match s {
-            "xxh3" => Ok(HashAlgorithm::Xxh3),
-            _ => Err(TensogramError::Metadata(format!("unknown hash type: {s}"))),
-        }
+/// Strict-input contract:
+/// - `None` → use the encoder's default (hashing on).
+/// - `Some("xxh3")` → on.
+/// - `Some("none")` → off.
+/// - Any other value → [`TensogramError::Metadata`] with the
+///   offending string in the message.
+///
+/// Replaces the v2 `HashAlgorithm::parse(&str) -> Result<HashAlgorithm>`
+/// helper.  The single-variant enum it returned was dead surface — the
+/// only meaningful question on the encode path is "hash or don't",
+/// which is a `bool`.  The wire-format string still exists (in
+/// `HashFrame.algorithm`) and is the [`HASH_ALGORITHM_NAME`]
+/// constant.
+pub fn parse_hash_name(name: Option<&str>) -> Result<bool> {
+    match name {
+        None => Ok(true),
+        Some(HASH_ALGORITHM_NAME) => Ok(true),
+        Some("none") => Ok(false),
+        Some(other) => Err(TensogramError::Metadata(format!(
+            "unknown hash type: {other}; expected \"{HASH_ALGORITHM_NAME}\" or \"none\""
+        ))),
     }
 }
 
-/// Compute a hash of the given data, returning the hex-encoded digest.
-pub fn compute_hash(data: &[u8], algorithm: HashAlgorithm) -> String {
-    match algorithm {
-        HashAlgorithm::Xxh3 => format_xxh3_digest(xxhash_rust::xxh3::xxh3_64(data)),
-    }
+/// Compute the canonical xxh3-64 hex digest of the given bytes.
+///
+/// v3 has exactly one algorithm — xxh3-64.  Earlier versions took an
+/// `algorithm: HashAlgorithm` argument; collapsed in Wave 2.1 to
+/// reflect reality.  When a second algorithm lands the function will
+/// gain an `algorithm` parameter again as a deliberate signal at
+/// every call site.
+pub fn compute_hash(data: &[u8]) -> String {
+    format_xxh3_digest(xxhash_rust::xxh3::xxh3_64(data))
 }
 
 // ── Inline per-frame hashing (v3) ────────────────────────────────────────────
@@ -164,7 +156,7 @@ pub fn verify_frame_hash(frame_bytes: &[u8], frame_type: FrameType) -> Result<()
 }
 
 /// Format a raw xxh3-64 digest into the canonical 16-char hex string used
-/// in [`HashDescriptor::value`].
+/// by [`crate::types::HashFrame`] entries.
 ///
 /// Exposed `pub(crate)` so that the buffered encoder can reuse this
 /// formatting when it consumes the digest produced by the
@@ -175,76 +167,70 @@ pub(crate) fn format_xxh3_digest(digest: u64) -> String {
     format!("{digest:016x}")
 }
 
-/// Verify a hash descriptor against data.
-///
-/// If the hash algorithm is not recognized, a warning is logged and
-/// verification is skipped (returns Ok). This ensures forward compatibility
-/// when new hash algorithms are added.
-pub fn verify_hash(data: &[u8], descriptor: &HashDescriptor) -> Result<()> {
-    let algorithm = match HashAlgorithm::parse(&descriptor.algorithm) {
-        Ok(algo) => algo,
-        Err(_) => {
-            tracing::warn!(
-                algorithm = %descriptor.algorithm,
-                "unknown hash algorithm, skipping verification"
-            );
-            return Ok(());
-        }
-    };
-    let actual = compute_hash(data, algorithm);
-    if actual != descriptor.value {
-        return Err(TensogramError::HashMismatch {
-            expected: descriptor.value.clone(),
-            actual,
-        });
-    }
-    Ok(())
-}
+// (Wave 2.2 removed the standalone
+// `verify_hash(&[u8], &HashDescriptor)` helper — `HashDescriptor`
+// itself is gone in v3.  Frame-level integrity goes through
+// [`hash_frame_body`] / [`verify_frame_hash`] over raw frame bytes.)
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_xxh3() {
+    fn test_xxh3_compute_hash_is_deterministic() {
         let data = b"hello world";
-        let hash = compute_hash(data, HashAlgorithm::Xxh3);
-        assert_eq!(hash.len(), 16); // 64-bit = 16 hex chars
-        // Verify deterministic
-        assert_eq!(hash, compute_hash(data, HashAlgorithm::Xxh3));
+        let hash = compute_hash(data);
+        assert_eq!(hash.len(), 16); // 64-bit digest = 16 hex chars
+        assert_eq!(hash, compute_hash(data));
+    }
+
+    // ── parse_hash_name strict-input contract (Wave 2.1) ─────────────
+
+    #[test]
+    fn parse_hash_name_default_is_on() {
+        assert!(parse_hash_name(None).unwrap());
     }
 
     #[test]
-    fn test_verify_hash() {
-        let data = b"test data";
-        let hash = compute_hash(data, HashAlgorithm::Xxh3);
-        let descriptor = HashDescriptor {
-            algorithm: "xxh3".to_string(),
-            value: hash,
-        };
-        assert!(verify_hash(data, &descriptor).is_ok());
+    fn parse_hash_name_accepts_xxh3() {
+        assert!(parse_hash_name(Some("xxh3")).unwrap());
+        assert!(parse_hash_name(Some(HASH_ALGORITHM_NAME)).unwrap());
     }
 
     #[test]
-    fn test_verify_hash_mismatch() {
-        let data = b"test data";
-        let descriptor = HashDescriptor {
-            algorithm: "xxh3".to_string(),
-            value: "0000000000000000".to_string(),
-        };
-        assert!(verify_hash(data, &descriptor).is_err());
+    fn parse_hash_name_accepts_none() {
+        assert!(!parse_hash_name(Some("none")).unwrap());
     }
 
     #[test]
-    fn test_unknown_hash_type_skips_verification() {
-        let data = b"test data";
-        let descriptor = HashDescriptor {
-            algorithm: "sha256".to_string(),
-            value: "abc123".to_string(),
-        };
-        // Unknown hash algorithms skip verification with a warning (forward compatibility)
-        assert!(verify_hash(data, &descriptor).is_ok());
+    fn parse_hash_name_rejects_unknown() {
+        // Strict-input: unknown names are rejected (was an integrity
+        // bypass on the standalone helper before Wave 1.2; the
+        // collapse in Wave 2.1 keeps that contract).
+        let err = parse_hash_name(Some("sha256")).unwrap_err();
+        match err {
+            TensogramError::Metadata(msg) => {
+                assert!(msg.contains("sha256"), "msg: {msg}");
+                assert!(msg.contains("xxh3"), "msg: {msg}");
+                assert!(msg.contains("none"), "msg: {msg}");
+            }
+            other => panic!("expected Metadata error, got: {other:?}"),
+        }
     }
+
+    #[test]
+    fn parse_hash_name_rejects_uppercase() {
+        // Case-sensitive — wire format uses lowercase exclusively.
+        let err = parse_hash_name(Some("XXH3")).unwrap_err();
+        assert!(matches!(err, TensogramError::Metadata(_)));
+    }
+
+    // (Wave 2.2 removed `HashDescriptor` and its `verify_hash`
+    // helper.  Frame-level integrity is exercised by the
+    // `verify_frame_hash_*` tests below; the strict-input contract
+    // for unknown algorithm names now lives in the validator —
+    // see `validate::integrity::validate_integrity` and
+    // `IssueCode::UnknownHashAlgorithm`.)
 
     // ── Inline-slot error paths ─────────────────────────────────────
 

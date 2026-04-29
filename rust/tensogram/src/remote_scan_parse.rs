@@ -41,7 +41,7 @@
 //!
 //! ```text
 //! { "kind": "Hit",                "offset": 0,  "length": 100, "msgEnd": 100 }
-//! { "kind": "ExceedsBound",       "offset": 0,  "length": 100, "msgEnd": 100 }
+//! { "kind": "HitBeyondBound",     "offset": 0,  "length": 100, "msgEnd": 100 }
 //! { "kind": "Streaming",          "remaining": 1024 }
 //! { "kind": "Terminate",          "reason": "bad-magic-fwd" }
 //! { "kind": "Format",             "reason": "bad-end-magic-bwd" }
@@ -178,7 +178,7 @@ pub enum BackwardCommit {
 /// Bidirectional callers pass `bound = prev_scan_offset` so the
 /// forward walker cannot overrun into the suffix already claimed by
 /// backward.  Forward-only callers pass `bound = file_size`, which
-/// makes the [`ForwardOutcome::ExceedsBound`] branch unreachable.
+/// makes the [`ForwardOutcome::HitBeyondBound`] branch unreachable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum ForwardOutcome {
@@ -188,13 +188,20 @@ pub enum ForwardOutcome {
         length: u64,
         msg_end: u64,
     },
-    /// Forward parsed a message whose end exceeds `bound` while still
-    /// fitting inside `file_size`.  Reachable only in bidirectional
-    /// mode when `suffix_rev` already holds a backward-committed
-    /// layout with a corrupt offset — forward's reading is canonical,
-    /// so the caller disables backward (clearing `suffix_rev`) before
-    /// committing the forward hop.
-    ExceedsBound {
+    /// Forward parsed a clean preamble whose declared message end
+    /// **exceeds** `bound` while still fitting inside `file_size`.
+    /// Reachable only in bidirectional mode when `suffix_rev` already
+    /// holds a backward-committed layout with a corrupt offset —
+    /// forward's reading of the message length is canonical, so the
+    /// dispatcher disables backward (clearing `suffix_rev`) and
+    /// commits the forward hop.
+    ///
+    /// Renamed from `ExceedsBound` for clarity (Wave 5.1.3): the
+    /// variant carries a *valid* hit whose endpoint just lands
+    /// beyond the bidirectional bound, not a generic out-of-range
+    /// error.  The canonical interpretation is "forward is right;
+    /// backward is wrong; commit forward".
+    HitBeyondBound {
         offset: u64,
         length: u64,
         msg_end: u64,
@@ -428,7 +435,7 @@ pub fn parse_forward_preamble(
         };
     }
     if end > bound {
-        return ForwardOutcome::ExceedsBound {
+        return ForwardOutcome::HitBeyondBound {
             offset: pos,
             length: msg_len,
             msg_end: end,
@@ -762,7 +769,7 @@ mod tests {
         let outcome = parse_forward_preamble(&buf, 0, 1024, 50);
         assert_eq!(
             outcome,
-            ForwardOutcome::ExceedsBound {
+            ForwardOutcome::HitBeyondBound {
                 offset: 0,
                 length: 100,
                 msg_end: 100,

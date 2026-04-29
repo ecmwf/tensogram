@@ -44,14 +44,6 @@ fn extract_block_offsets(
 /// Options for decoding.
 #[derive(Debug, Clone)]
 pub struct DecodeOptions {
-    /// **No-op in v3.**  Frame-level integrity verification now
-    /// goes through `tensogram validate --checksum` or
-    /// [`crate::hash::verify_frame_hash`] on raw frame bytes; the
-    /// decode path is a pure deserialisation with no hash
-    /// checking.  Retained on the public API for source
-    /// compatibility with pre-v3 code; will be removed in a
-    /// future breaking release.
-    pub verify_hash: bool,
     /// When true (the default), decoded payloads are converted to the
     /// caller's native byte order regardless of the wire byte order declared
     /// in the descriptor.  Set to false to receive bytes in the message's
@@ -91,7 +83,6 @@ pub struct DecodeOptions {
 impl Default for DecodeOptions {
     fn default() -> Self {
         Self {
-            verify_hash: false,
             native_byte_order: true,
             compression_backend: pipeline::CompressionBackend::default(),
             threads: 0,
@@ -113,7 +104,7 @@ impl Default for DecodeOptions {
 pub fn decode(buf: &[u8], options: &DecodeOptions) -> Result<(GlobalMetadata, Vec<DecodedObject>)> {
     let msg = framing::decode_message(buf)?;
 
-    let budget = crate::parallel::resolve_budget(options.threads);
+    let budget = crate::parallel::resolve_budget(options.threads)?;
     let total_bytes: usize = msg.objects.iter().map(|(_, p, _, _)| p.len()).sum();
     let parallel =
         crate::parallel::should_parallelise(budget, total_bytes, options.parallel_threshold_bytes);
@@ -196,7 +187,7 @@ pub fn decode_with_masks(
 ) -> Result<(GlobalMetadata, Vec<DecodedObjectWithMasks>)> {
     let msg = framing::decode_message(buf)?;
 
-    let budget = crate::parallel::resolve_budget(options.threads);
+    let budget = crate::parallel::resolve_budget(options.threads)?;
     let total_bytes: usize = msg.objects.iter().map(|(_, p, _, _)| p.len()).sum();
     let parallel =
         crate::parallel::should_parallelise(budget, total_bytes, options.parallel_threshold_bytes);
@@ -283,7 +274,7 @@ pub fn decode_object(
 
     // Single-object decode: axis A is impossible — spend the entire
     // budget (if any) on the codec internally (axis B).
-    let budget = crate::parallel::resolve_budget(options.threads);
+    let budget = crate::parallel::resolve_budget(options.threads)?;
     let parallel = crate::parallel::should_parallelise(
         budget,
         payload_bytes.len(),
@@ -332,7 +323,7 @@ pub fn decode_object_from_frame(
 ) -> Result<(DataObjectDescriptor, Vec<u8>)> {
     let (desc, payload_bytes, mask_region, _) = framing::decode_data_object_frame(frame_bytes)?;
 
-    let budget = crate::parallel::resolve_budget(options.threads);
+    let budget = crate::parallel::resolve_budget(options.threads)?;
     let parallel = crate::parallel::should_parallelise(
         budget,
         payload_bytes.len(),
@@ -479,7 +470,7 @@ pub fn decode_range_from_payload(
     // Each range is an independent decode call; parallelism is natural
     // when the caller requests multiple ranges.  Axis B is always
     // preferred when there's only one range.
-    let budget = crate::parallel::resolve_budget(options.threads);
+    let budget = crate::parallel::resolve_budget(options.threads)?;
     // Work is proportional to decoded output, not the input payload —
     // sum the requested counts × element byte width.
     let elem_bytes = desc.dtype.byte_width();
@@ -571,14 +562,11 @@ fn decode_single_object_with_backend(
     backend: pipeline::CompressionBackend,
     intra_codec_threads: u32,
 ) -> Result<Vec<u8>> {
-    // v3: hash verification moved to frame-level (see the inline
-    // slot in `plans/WIRE_FORMAT.md` §2.4).  `options.verify_hash`
-    // is retained on the public API for source compatibility but is
-    // a no-op at this layer; use `validate --checksum` for a full
-    // integrity sweep or `hash::verify_frame_hash(frame_bytes, ft)`
-    // for programmatic per-frame verification.
-    let _ = options.verify_hash;
-
+    // v3: hash verification lives at the frame layer (see the inline
+    // slot in `plans/WIRE_FORMAT.md` §2.4).  Use `validate --checksum`
+    // for a full integrity sweep or `hash::verify_frame_hash(frame_bytes, ft)`
+    // for programmatic per-frame verification — the decode path itself
+    // is a pure deserialisation.
     let num_elements = desc.num_elements()?;
     let config = build_pipeline_config_with_backend(
         desc,
@@ -889,8 +877,8 @@ mod tests {
     #[test]
     fn test_decode_options_defaults() {
         let opts = DecodeOptions::default();
-        assert!(!opts.verify_hash);
         assert!(opts.native_byte_order);
+        assert!(opts.restore_non_finite);
     }
 
     // ── decode with unknown encoding in descriptor ───────────────────────

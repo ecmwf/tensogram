@@ -41,7 +41,6 @@ use wasm_bindgen::prelude::*;
 /// into the decoded payloads.
 ///
 /// @param buf - Raw .tgm message bytes
-/// @param verify_hash - Whether to verify payload integrity hashes (default: false)
 /// @param restore_non_finite - When true (default), decode writes canonical
 ///                             NaN / +Inf / -Inf at positions recorded in
 ///                             the frame's mask companion.  Set to false to
@@ -49,11 +48,9 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 pub fn decode(
     buf: &[u8],
-    verify_hash: Option<bool>,
     restore_non_finite: Option<bool>,
 ) -> Result<DecodedMessage, JsError> {
     let options = DecodeOptions {
-        verify_hash: verify_hash.unwrap_or(false),
         restore_non_finite: restore_non_finite.unwrap_or(true),
         ..Default::default()
     };
@@ -76,17 +73,14 @@ pub fn decode_metadata(buf: &[u8]) -> Result<JsValue, JsError> {
 ///
 /// @param buf - Raw .tgm message bytes
 /// @param index - Zero-based object index
-/// @param verify_hash - Whether to verify hash
 /// @param restore_non_finite - Restore canonical NaN / Inf from mask companion (default: true)
 #[wasm_bindgen]
 pub fn decode_object(
     buf: &[u8],
     index: usize,
-    verify_hash: Option<bool>,
     restore_non_finite: Option<bool>,
 ) -> Result<DecodedMessage, JsError> {
     let options = DecodeOptions {
-        verify_hash: verify_hash.unwrap_or(false),
         restore_non_finite: restore_non_finite.unwrap_or(true),
         ..Default::default()
     };

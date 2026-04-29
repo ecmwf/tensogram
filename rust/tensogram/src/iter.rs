@@ -54,6 +54,13 @@ pub fn messages(buf: &[u8]) -> MessageIter<'_> {
 ///
 /// Parses the frame header and metadata once, then decodes objects lazily via
 /// the full pipeline (encoding + filter + decompression).
+///
+/// Note: payload + mask region bytes are eagerly cloned into the
+/// returned [`ObjectIter`] because the iterator handle must outlive
+/// any caller-owned input slice — the FFI/Python/C++ bindings keep
+/// the iterator handle around long after the original buffer is
+/// freed.  Each `next()` call still decodes lazily through the full
+/// pipeline; the eager clone is just per-frame book-keeping.
 pub fn objects(buf: &[u8], options: DecodeOptions) -> Result<ObjectIter> {
     let msg = framing::decode_message(buf)?;
     let object_data: Vec<(DataObjectDescriptor, Vec<u8>, Vec<u8>)> = msg
@@ -102,7 +109,15 @@ impl<'a> Iterator for MessageIter<'a> {
         }
         let (offset, length) = self.offsets[self.pos];
         self.pos += 1;
-        Some(&self.buf[offset..offset + length])
+        // Bounds-checked slicing.  In normal use the offsets come from
+        // `framing::scan(buf)` and are correct by construction, but
+        // the `MessageIter` constructor is `pub` so callers could
+        // build one with stale or hand-rolled offsets.  Falling
+        // through to `None` on a bad offset is preferable to a panic
+        // — the iteration simply ends early, matching what a
+        // well-behaved caller would expect from a corrupt buffer.
+        let end = offset.checked_add(length)?;
+        self.buf.get(offset..end)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -117,8 +132,17 @@ impl ExactSizeIterator for MessageIter<'_> {}
 
 /// Iterator over the decoded objects (tensors) in a single message.
 ///
-/// Decodes each object through the full pipeline on demand.
-/// Yields `Result<(DataObjectDescriptor, Vec<u8>)>`.
+/// Decodes each object through the full pipeline on demand.  Owns
+/// per-frame `Vec<u8>` clones of the input bytes so the iterator
+/// handle survives independently of the source buffer (the C FFI
+/// and Python iterator handles keep the iterator alive long after
+/// the input bytes are freed).
+///
+/// Yields `Result<(DataObjectDescriptor, Vec<u8>)>` — the descriptor
+/// is cloned on each yield because callers typically want to inspect
+/// it after iteration; the decoded payload is freshly allocated by
+/// the decode pipeline.
+///
 /// Implements [`ExactSizeIterator`].
 pub struct ObjectIter {
     objects: Vec<(DataObjectDescriptor, Vec<u8>, Vec<u8>)>,
@@ -135,14 +159,12 @@ impl Iterator for ObjectIter {
         }
         let i = self.index;
         self.index += 1;
-        let (ref desc, ref payload_bytes, ref mask_region) = self.objects[i];
+        let (desc, payload_bytes, mask_region) = &self.objects[i];
 
-        // v3: hash verification moved to frame-level (see the inline
-        // slot in `plans/WIRE_FORMAT.md` §2.4).  `options.verify_hash`
-        // is retained on the public API for source compatibility
-        // but a full-iter caller that wants integrity checks should
-        // go through `validate --checksum`.
-        let _ = (self.options.verify_hash, desc, payload_bytes);
+        // v3: hash verification lives at the frame layer (see the
+        // inline slot in `plans/WIRE_FORMAT.md` §2.4).  An iter
+        // caller wanting integrity checks goes through
+        // `validate --checksum`.
 
         let num_elements = match desc.num_elements() {
             Ok(n) => n,
@@ -295,7 +317,7 @@ mod tests {
             &meta,
             &[(&desc, &data)],
             &EncodeOptions {
-                hash_algorithm: None,
+                hashing: false,
                 ..Default::default()
             },
         )
@@ -368,7 +390,7 @@ mod tests {
             &meta,
             &[],
             &EncodeOptions {
-                hash_algorithm: None,
+                hashing: false,
                 ..Default::default()
             },
         )
@@ -402,7 +424,7 @@ mod tests {
             &meta,
             &[(&desc0, data0.as_slice()), (&desc1, data1.as_slice())],
             &EncodeOptions {
-                hash_algorithm: None,
+                hashing: false,
                 ..Default::default()
             },
         )

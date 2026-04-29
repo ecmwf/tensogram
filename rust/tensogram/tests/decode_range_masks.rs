@@ -67,7 +67,7 @@ fn decode_range_restores_nan_when_position_falls_inside_range() {
     let desc = make_descriptor(vec![8], Dtype::Float64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -91,7 +91,7 @@ fn decode_range_without_any_masked_positions_returns_finite_values() {
     let desc = make_descriptor(vec![8], Dtype::Float64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -124,7 +124,7 @@ fn decode_range_multiple_ranges_each_gets_correct_restoration() {
     let options = EncodeOptions {
         allow_nan: true,
         allow_inf: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -165,7 +165,7 @@ fn decode_range_restore_off_returns_substituted_zeros() {
     let desc = make_descriptor(vec![4], Dtype::Float64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         small_mask_threshold_bytes: 0,
         ..Default::default()
     };
@@ -194,7 +194,7 @@ fn decode_range_large_sparse_payload() {
     let desc = make_descriptor(vec![n as u64], Dtype::Float64);
     let options = EncodeOptions {
         allow_nan: true,
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &options).unwrap();
@@ -234,7 +234,7 @@ fn decode_range_without_masks_returns_expected_values() {
         &make_global_meta(),
         &[(&desc, &data)],
         &EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..Default::default()
         },
     )

@@ -39,18 +39,18 @@ pub use decode::{
     decode_metadata, decode_object, decode_range, decode_range_from_payload, decode_with_masks,
 };
 pub use dtype::Dtype;
-pub use encode::{EncodeOptions, encode, encode_pre_encoded};
+pub use encode::{AggregateHashPolicy, EncodeOptions, encode, encode_pre_encoded};
 pub use error::{Result, TensogramError};
 pub use file::{MessageLayout, TensogramFile};
 pub use framing::{
     ScanOptions, data_object_inline_hashes, scan, scan_file, scan_file_with_options,
     scan_with_options,
 };
-pub use hash::{HashAlgorithm, compute_hash, verify_hash};
+pub use hash::{HASH_ALGORITHM_NAME, compute_hash, parse_hash_name};
 pub use iter::{FileMessageIter, MessageIter, ObjectIter, messages, objects, objects_metadata};
 pub use metadata::{RESERVED_KEY, compute_common, verify_canonical_cbor};
 pub use parallel::{DEFAULT_PARALLEL_THRESHOLD_BYTES, ENV_THREADS};
-pub use pipeline::{DataPipeline, apply_pipeline};
+pub use pipeline::{DEFAULT_SIMPLE_PACKING_BITS, DataPipeline, apply_pipeline};
 pub use remote_scan_parse::{
     BackwardCommit, BackwardOutcome, ForwardOutcome, footer_region_present,
     parse_backward_postamble, parse_forward_preamble, same_message_check,
@@ -61,8 +61,8 @@ pub use streaming::StreamingEncoder;
 pub use tensogram_encodings::bitmask::MaskMethod;
 pub use tensogram_encodings::pipeline::CompressionBackend;
 pub use types::{
-    ByteOrder, DataObjectDescriptor, DecodedObject, GlobalMetadata, HashDescriptor, HashFrame,
-    IndexFrame, MaskDescriptor, MasksMetadata,
+    ByteOrder, DataObjectDescriptor, DecodedObject, GlobalMetadata, HashFrame, IndexFrame,
+    MaskDescriptor, MasksMetadata,
 };
 pub use validate::{
     FileIssue, FileValidationReport, IssueCode, IssueSeverity, ValidateOptions, ValidationIssue,

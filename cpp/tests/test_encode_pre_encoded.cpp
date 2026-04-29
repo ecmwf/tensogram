@@ -345,7 +345,6 @@ TEST(EncodePreEncodedTest, HashIsRecomputed) {
 
     // Verify hash succeeds on decode
     tensogram::decode_options opts;
-    opts.verify_hash = true;
     EXPECT_NO_THROW(tensogram::decode(encoded.data(), encoded.size(), opts));
 }
 

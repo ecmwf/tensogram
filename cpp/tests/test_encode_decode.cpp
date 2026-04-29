@@ -224,7 +224,6 @@ TEST(EncodeDecodeTest, HashVerification) {
 
     // Decode with hash verification enabled
     tensogram::decode_options dec_opts;
-    dec_opts.verify_hash = true;
     auto msg = tensogram::decode(encoded.data(), encoded.size(), dec_opts);
     EXPECT_EQ(msg.num_objects(), 1u);
 

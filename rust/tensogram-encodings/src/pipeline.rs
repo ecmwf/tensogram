@@ -94,6 +94,12 @@ pub enum PipelineError {
     UnknownFilter(String),
     #[error("unknown compression: {0}")]
     UnknownCompression(String),
+    /// Surfaced when a process-wide configuration source (typically an
+    /// environment variable like `TENSOGRAM_COMPRESSION_BACKEND` or
+    /// `TENSOGRAM_THREADS`) carries a value that does not parse.
+    /// Strict-input contract: bad config does not silently default.
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
 }
 
 #[derive(Debug, Clone)]
@@ -189,11 +195,19 @@ pub enum CompressionType {
 /// When only one feature is enabled the backend field is ignored — the
 /// available implementation is always used.
 ///
-/// The default is resolved once from the `TENSOGRAM_COMPRESSION_BACKEND`
-/// environment variable (values: `ffi` or `pure`).
-/// On `wasm32` the default is always `Pure`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `Auto` is the default and means "consult the
+/// `TENSOGRAM_COMPRESSION_BACKEND` environment variable; on a missing
+/// variable, fall back to the platform default — `Pure` on `wasm32`,
+/// `Ffi` on native".  `Ffi` and `Pure` are explicit overrides that
+/// always win over the env var.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CompressionBackend {
+    /// Consult `TENSOGRAM_COMPRESSION_BACKEND` and platform defaults at
+    /// pipeline-build time.  An unparseable env variable surfaces as a
+    /// [`PipelineError`] at the next encode / decode call rather than
+    /// being silently swallowed by `Default::default()` at process start.
+    #[default]
+    Auto,
     /// Use the C FFI implementation (libaec for szip, libzstd for zstd).
     /// Falls back to pure-Rust if the FFI feature is not compiled in.
     Ffi,
@@ -202,37 +216,66 @@ pub enum CompressionBackend {
     Pure,
 }
 
-impl Default for CompressionBackend {
-    fn default() -> Self {
-        default_compression_backend()
+/// Environment variable consulted by `Auto` backend resolution.  An
+/// unparseable value (anything other than `"ffi"` or `"pure"`,
+/// case-insensitive, after trimming) is rejected with
+/// [`PipelineError::InvalidConfig`] at the next pipeline call.
+pub const ENV_COMPRESSION_BACKEND: &str = "TENSOGRAM_COMPRESSION_BACKEND";
+
+/// Resolve a [`CompressionBackend`] to a concrete `Ffi` or `Pure`
+/// variant.  No-op when the input is already explicit.
+///
+/// **Strict-input contract.**  Values of
+/// [`ENV_COMPRESSION_BACKEND`] other than `"ffi"` / `"pure"`
+/// (case-insensitive, trimmed) are rejected with
+/// [`PipelineError::InvalidConfig`].  Earlier versions silently
+/// fell back to `Ffi` on any unrecognised value, which masked typos
+/// such as `TENSOGRAM_COMPRESSION_BACKEND=ffix`.
+///
+/// The result is cached after the first successful resolution so
+/// repeated calls do not re-read the environment.  A single bad
+/// value is therefore reported on every subsequent encode / decode,
+/// not just the first one — operators see the same diagnostic until
+/// the env is fixed.
+pub fn resolve_compression_backend(
+    requested: CompressionBackend,
+) -> Result<CompressionBackend, PipelineError> {
+    match requested {
+        CompressionBackend::Ffi | CompressionBackend::Pure => Ok(requested),
+        CompressionBackend::Auto => resolve_auto_backend(),
     }
 }
 
-/// Resolve the default compression backend from environment variables.
-///
-/// - `TENSOGRAM_COMPRESSION_BACKEND=pure|ffi` overrides the default for
-///   both szip and zstd.
-/// - On `wasm32` the default is always `Pure` (FFI backends cannot exist).
-/// - On native the default is `Ffi` (faster, battle-tested).
-pub fn default_compression_backend() -> CompressionBackend {
-    static DEFAULT: OnceLock<CompressionBackend> = OnceLock::new();
-    *DEFAULT.get_or_init(|| {
-        if cfg!(target_arch = "wasm32") {
-            return CompressionBackend::Pure;
-        }
-        // Check env — accept "pure" or "ffi" (case-insensitive)
-        if let Ok(val) = std::env::var("TENSOGRAM_COMPRESSION_BACKEND") {
-            return parse_backend(&val);
-        }
-        // Native default: prefer FFI
-        CompressionBackend::Ffi
-    })
+fn resolve_auto_backend() -> Result<CompressionBackend, PipelineError> {
+    // Cache the resolved value (or the typed parse error) so repeated
+    // `Default::default()` callers don't pay a syscall per call.  An
+    // unparseable env variable is sticky: every encode in the
+    // process surfaces the same typed error until the env is fixed
+    // and the process restarts.
+    static CACHED: OnceLock<Result<CompressionBackend, String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            if cfg!(target_arch = "wasm32") {
+                return Ok(CompressionBackend::Pure);
+            }
+            match std::env::var(ENV_COMPRESSION_BACKEND) {
+                Ok(val) => parse_backend(&val),
+                // env var unset → platform default.
+                Err(_) => Ok(CompressionBackend::Ffi),
+            }
+        })
+        .clone()
+        .map_err(PipelineError::InvalidConfig)
 }
 
-fn parse_backend(val: &str) -> CompressionBackend {
+fn parse_backend(val: &str) -> Result<CompressionBackend, String> {
     match val.trim().to_ascii_lowercase().as_str() {
-        "pure" | "rust" => CompressionBackend::Pure,
-        _ => CompressionBackend::Ffi,
+        "pure" | "rust" => Ok(CompressionBackend::Pure),
+        "ffi" | "c" => Ok(CompressionBackend::Ffi),
+        other => Err(format!(
+            "invalid {ENV_COMPRESSION_BACKEND} value {other:?}; \
+             expected 'ffi' or 'pure' (case-insensitive)"
+        )),
     }
 }
 
@@ -374,10 +417,16 @@ fn build_zstd_compressor(
 /// For szip and zstd, the `compression_backend` field in `PipelineConfig`
 /// selects between FFI and pure-Rust implementations at **runtime**.  When
 /// only one feature is compiled in, the backend field is ignored.
+///
+/// `Auto` backend variants are resolved here via
+/// [`resolve_compression_backend`]; bad
+/// `TENSOGRAM_COMPRESSION_BACKEND` env values surface as
+/// [`PipelineError::InvalidConfig`] (rather than silently defaulting
+/// to FFI as earlier versions did).
 fn build_compressor(
     compression: &CompressionType,
     #[allow(unused_variables)] config: &PipelineConfig,
-) -> Result<Option<Box<dyn Compressor>>, CompressionError> {
+) -> Result<Option<Box<dyn Compressor>>, PipelineError> {
     match compression {
         CompressionType::None => Ok(None),
         #[cfg(any(feature = "szip", feature = "szip-pure"))]
@@ -387,6 +436,7 @@ fn build_compressor(
             flags,
             bits_per_sample,
         } => {
+            let backend = resolve_compression_backend(config.compression_backend)?;
             let mut szip_flags = *flags;
             // simple_packing output is MSB-first; tell the szip codec so its
             // predictor sees bytes in the correct significance order.
@@ -398,22 +448,15 @@ fn build_compressor(
             // Runtime backend selection.  The helper builds the right
             // Box<dyn Compressor> based on what features are compiled in
             // and what the caller requested.
-            let compressor: Box<dyn Compressor> = build_szip_compressor(
-                config.compression_backend,
-                *rsi,
-                *block_size,
-                szip_flags,
-                *bits_per_sample,
-            );
+            let compressor: Box<dyn Compressor> =
+                build_szip_compressor(backend, *rsi, *block_size, szip_flags, *bits_per_sample);
             Ok(Some(compressor))
         }
         #[cfg(any(feature = "zstd", feature = "zstd-pure"))]
         CompressionType::Zstd { level } => {
-            let compressor: Box<dyn Compressor> = build_zstd_compressor(
-                config.compression_backend,
-                *level,
-                config.intra_codec_threads,
-            );
+            let backend = resolve_compression_backend(config.compression_backend)?;
+            let compressor: Box<dyn Compressor> =
+                build_zstd_compressor(backend, *level, config.intra_codec_threads);
             Ok(Some(compressor))
         }
         #[cfg(feature = "lz4")]
@@ -904,6 +947,73 @@ fn f64_to_bytes(values: &[f64], byte_order: ByteOrder) -> Result<Vec<u8>, Pipeli
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── parse_backend strict-input tests (Wave 1.1) ──────────────────
+
+    #[test]
+    fn parse_backend_accepts_ffi_pure_aliases() {
+        for (raw, expected) in [
+            ("ffi", CompressionBackend::Ffi),
+            ("FFI", CompressionBackend::Ffi),
+            ("c", CompressionBackend::Ffi),
+            ("pure", CompressionBackend::Pure),
+            ("Pure", CompressionBackend::Pure),
+            ("rust", CompressionBackend::Pure),
+            ("  ffi  ", CompressionBackend::Ffi),
+        ] {
+            assert_eq!(
+                parse_backend(raw).unwrap(),
+                expected,
+                "backend {raw:?} should parse as {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_backend_rejects_unknown_value() {
+        // Strict-input contract: anything other than the accepted
+        // aliases is rejected with a typed error naming the env var
+        // and the offending input.  Earlier versions silently fell
+        // back to FFI on any unknown value, which masked typos like
+        // `TENSOGRAM_COMPRESSION_BACKEND=ffix`.
+        let err = parse_backend("ffix").unwrap_err();
+        assert!(err.contains("TENSOGRAM_COMPRESSION_BACKEND"));
+        assert!(err.contains("ffix"));
+        assert!(err.contains("'ffi' or 'pure'"));
+    }
+
+    #[test]
+    fn parse_backend_rejects_empty_string() {
+        let err = parse_backend("").unwrap_err();
+        assert!(err.contains("TENSOGRAM_COMPRESSION_BACKEND"));
+    }
+
+    #[test]
+    fn parse_backend_rejects_whitespace_only() {
+        let err = parse_backend("   ").unwrap_err();
+        assert!(err.contains("TENSOGRAM_COMPRESSION_BACKEND"));
+    }
+
+    #[test]
+    fn resolve_compression_backend_passes_through_explicit() {
+        // Explicit `Ffi` / `Pure` are no-ops regardless of env state.
+        assert_eq!(
+            resolve_compression_backend(CompressionBackend::Ffi).unwrap(),
+            CompressionBackend::Ffi
+        );
+        assert_eq!(
+            resolve_compression_backend(CompressionBackend::Pure).unwrap(),
+            CompressionBackend::Pure
+        );
+    }
+
+    #[test]
+    fn compression_backend_default_is_auto() {
+        // `Default` no longer reads env vars at struct-init time
+        // (Wave 7.1).  Resolution now happens at pipeline-build time
+        // via `resolve_compression_backend`, where errors can surface.
+        assert_eq!(CompressionBackend::default(), CompressionBackend::Auto);
+    }
 
     #[test]
     fn test_passthrough_pipeline() {

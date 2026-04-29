@@ -35,7 +35,7 @@
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use tensogram::framing::{decode_message, scan};
-use tensogram::hash::{HashAlgorithm, verify_frame_hash};
+use tensogram::hash::{HASH_ALGORITHM_NAME, parse_hash_name, verify_frame_hash};
 use tensogram::streaming::StreamingEncoder;
 use tensogram::wire::{FRAME_COMMON_FOOTER_SIZE, FrameHeader, MessageFlags, Preamble};
 use tensogram::{
@@ -159,7 +159,7 @@ fn streaming_encode_matches_buffered_inline_hash() {
 #[test]
 fn hash_algorithm_none_clears_flag_and_zeros_slot() {
     let options = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(
@@ -185,10 +185,14 @@ fn hash_algorithm_none_clears_flag_and_zeros_slot() {
 }
 
 #[test]
-fn hash_algorithm_enum_parses_roundtrip() {
-    // Pin that the string form is "xxh3" — relied upon by
-    // aggregate HashFrame serialisation and FFI accessors.
-    assert_eq!(HashAlgorithm::Xxh3.as_str(), "xxh3");
-    assert_eq!(HashAlgorithm::parse("xxh3").unwrap(), HashAlgorithm::Xxh3);
-    assert!(HashAlgorithm::parse("sha256").is_err());
+fn hash_algorithm_constant_and_parse_roundtrip() {
+    // Pin that the wire-format algorithm string is "xxh3" — relied
+    // upon by aggregate HashFrame serialisation and FFI accessors.
+    assert_eq!(HASH_ALGORITHM_NAME, "xxh3");
+    // parse_hash_name maps caller-supplied algorithm names to
+    // "is hashing on" booleans; rejects unknown values.
+    assert!(parse_hash_name(None).unwrap());
+    assert!(parse_hash_name(Some("xxh3")).unwrap());
+    assert!(!parse_hash_name(Some("none")).unwrap());
+    assert!(parse_hash_name(Some("sha256")).is_err());
 }

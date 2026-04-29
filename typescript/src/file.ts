@@ -1034,7 +1034,7 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     const wbg = getWbg();
     const result = rethrowTyped(
       () =>
-        wbg.decode_range_from_frame(frameBytes, flat, options?.verifyHash ?? false) as {
+        wbg.decode_range_from_frame(frameBytes, flat) as {
           descriptor: DataObjectDescriptor;
           parts: Uint8Array[];
         },
@@ -1076,11 +1076,7 @@ export class TensogramFile implements AsyncIterable<DecodedMessage> {
     const { wrapWbgDecodedMessage } = await import('./internal/wbgWrap.js');
     const wbg = getWbg();
     const handle = rethrowTyped(() =>
-      wbg.decode_object_from_frame(
-        frameBytes,
-        options?.verifyHash ?? false,
-        options?.restoreNonFinite ?? true,
-      ),
+      wbg.decode_object_from_frame(frameBytes, options?.restoreNonFinite ?? true),
     );
     return wrapWbgDecodedMessage(handle, metadata);
   }
@@ -1191,7 +1187,7 @@ interface LazyScanOptions {
  */
 type ForwardOutcome =
   | { kind: 'Hit'; offset: bigint; length: bigint; msgEnd: bigint }
-  | { kind: 'ExceedsBound'; offset: bigint; length: bigint; msgEnd: bigint }
+  | { kind: 'HitBeyondBound'; offset: bigint; length: bigint; msgEnd: bigint }
   | { kind: 'Streaming'; remaining: bigint }
   | { kind: 'Terminate'; reason: string };
 
@@ -1294,7 +1290,7 @@ function scanComplete(s: ScanState): boolean {
  * remote backend.
  *
  * Bails out (returns `true` after disabling backward) on any anomaly:
- * gap-below-min, format error, ExceedsBound, streaming, or backward
+ * gap-below-min, format error, HitBeyondBound, streaming, or backward
  * overlap.  Locally-accumulated forward layouts commit to
  * `state.layouts` so the caller's subsequent forward-only walk
  * continues from the latest discovered position; the backward suffix
@@ -1467,7 +1463,7 @@ async function runPipelinedBidirectional(
         }
         localFwd.push(layout);
         fwdCursor = Number(fwdOutcome.msgEnd);
-      } else if (fwdOutcome.kind === 'ExceedsBound') {
+      } else if (fwdOutcome.kind === 'HitBeyondBound') {
         bailReason = 'forward-exceeds-backward-bound';
         break;
       } else if (fwdOutcome.kind === 'Streaming') {
@@ -1628,7 +1624,7 @@ async function tryForwardStep(
       terminateForward(state, outcome.reason, options);
       return true;
     }
-    case 'ExceedsBound':
+    case 'HitBeyondBound':
       return false;
   }
 }

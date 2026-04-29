@@ -483,38 +483,90 @@ fn realistic_binary_scale_factor_accepted() {
     }
 }
 
-// ── 8. Unknown hash algorithm on decode ──────────────────────────────────────
+// ── 8. Decode is a pure deserialisation (Wave 2.2 / 2.3) ─────────────────────
 
 #[test]
-fn unknown_hash_algorithm_skips_verification() {
+fn decode_does_not_verify_hashes() {
+    // v3 contract: per-frame integrity verification lives at the
+    // validation layer (`validate --checksum`), not in `decode`.
+    // The legacy `verify_hash` field on `DecodeOptions` and the
+    // standalone `verify_hash(&[u8], &HashDescriptor)` helper were
+    // both removed in Wave 2.2 / 2.3.  Decode itself is a pure
+    // deserialisation.
     let meta = make_global_meta();
     let desc = make_descriptor(vec![4], Dtype::Float32);
     let data = vec![0u8; 16];
 
-    // Encode with a hash
     let encoded = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap();
+    let (_, _objects) = decode(&encoded, &DecodeOptions::default()).unwrap();
 
-    // Decode works; `verify_hash` on DecodeOptions is a no-op in
-    // v3 (frame-level integrity moved to validate --checksum) but
-    // the option is kept for source compatibility.
-    let (_, _objects) = decode(
-        &encoded,
-        &DecodeOptions {
-            verify_hash: true,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    // Forward-compat for unknown algorithm names is the validator's
+    // concern.  An unknown `algorithm` in a HashFrame surfaces as
+    // an `UnknownHashAlgorithm` warning, not a hard error — see
+    // the validator's integrity tests.
+}
 
-    // The standalone `verify_hash` helper on a `HashDescriptor`
-    // must still silently skip verification for unknown algorithm
-    // names — the forward-compatibility contract documented in
-    // `crate::hash::verify_hash`.
-    let descriptor = HashDescriptor {
-        algorithm: "sha512".to_string(),
-        value: "fake_hash_value".to_string(),
+#[test]
+fn encode_rejects_zstd_level_with_wrong_type() {
+    // Strict-input regression test (Wave 1.7): a typo'd
+    // `zstd_level: "high"` used to silently fall back to the
+    // default level (3).  The encoder now rejects it with a clear
+    // Metadata error.
+    let meta = make_global_meta();
+    let mut params = BTreeMap::new();
+    params.insert(
+        "zstd_level".to_string(),
+        ciborium::Value::Text("high".to_string()),
+    );
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::native(),
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "zstd".to_string(),
+        params,
+        masks: None,
     };
-    assert!(tensogram::verify_hash(b"any data", &descriptor).is_ok());
+    let data = vec![0u8; 16];
+    let err = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("zstd_level"), "msg: {msg}");
+    assert!(msg.contains("expected integer"), "msg: {msg}");
+}
+
+#[test]
+fn encode_rejects_blosc2_codec_with_wrong_type() {
+    // Sibling of the zstd_level test for blosc2's `blosc2_codec`
+    // selector.  An integer-typed value used to silently fall back
+    // to "lz4" — now it errors.
+    let meta = make_global_meta();
+    let mut params = BTreeMap::new();
+    params.insert(
+        "blosc2_codec".to_string(),
+        ciborium::Value::Integer(99i64.into()),
+    );
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![4],
+        strides: vec![4],
+        dtype: Dtype::Float32,
+        byte_order: ByteOrder::native(),
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "blosc2".to_string(),
+        params,
+        masks: None,
+    };
+    let data = vec![0u8; 16];
+    let err = encode(&meta, &[(&desc, &data)], &EncodeOptions::default()).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("blosc2_codec"), "msg: {msg}");
+    assert!(msg.contains("expected text"), "msg: {msg}");
 }
 
 // ── 9. decode_range edge cases ───────────────────────────────────────────────
@@ -707,7 +759,7 @@ fn encode_without_hash() {
     let data = vec![0u8; 16];
 
     let options = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let encoded = encode(&meta, &[(&desc, &data)], &options).unwrap();
@@ -727,7 +779,7 @@ fn verify_hash_true_on_unhashed_message_succeeds() {
     let data = vec![0u8; 16];
 
     let options = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let encoded = encode(&meta, &[(&desc, &data)], &options).unwrap();
@@ -735,7 +787,6 @@ fn verify_hash_true_on_unhashed_message_succeeds() {
     let result = decode(
         &encoded,
         &DecodeOptions {
-            verify_hash: true,
             ..Default::default()
         },
     );
@@ -976,23 +1027,35 @@ fn streaming_encoder_multiple_objects() {
     assert_eq!(objects[1].1, data1);
 }
 
-// ── 20. Hash verification on decode ──────────────────────────────────────────
+// ── 20. Hash verification (now via verify_frame_hash) ────────────────────────
 
-/// `verify_hash` (the standalone `HashDescriptor`-based helper)
-/// returns `HashMismatch` when the stored digest disagrees with
-/// the recomputed xxh3-64.  Frame-level integrity in v3 goes
-/// through the inline slot + `validate --checksum` instead.
+/// In v3 frame-level integrity is verified by recomputing the
+/// xxh3-64 of the frame body and comparing to the inline hash slot.
+/// `verify_frame_hash` returns `HashMismatch` on disagreement.  The
+/// legacy standalone `verify_hash(&[u8], &HashDescriptor)` helper
+/// was removed in Wave 2.2 alongside `HashDescriptor` itself.
 #[test]
-fn hash_mismatch_detected_on_verify() {
-    let data = vec![42u8; 16];
-    let bad_hash = HashDescriptor {
-        algorithm: "xxh3".to_string(),
-        value: "0000000000000000".to_string(),
-    };
-    let result = tensogram::verify_hash(&data, &bad_hash);
-    assert!(result.is_err());
-    let msg = result.unwrap_err().to_string();
-    assert!(msg.contains("hash mismatch"));
+fn hash_mismatch_detected_on_corrupted_frame() {
+    use tensogram::wire::{FRAME_END, FRAME_MAGIC, FrameType};
+    // Build a minimal HeaderMetadata frame with a wrong inline slot
+    // (the body actually hashes to something non-zero).
+    let body = b"hello";
+    let mut buf = Vec::new();
+    buf.extend_from_slice(FRAME_MAGIC);
+    buf.extend_from_slice(&1u16.to_be_bytes()); // type = HeaderMetadata
+    buf.extend_from_slice(&1u16.to_be_bytes()); // version
+    buf.extend_from_slice(&0u16.to_be_bytes()); // flags
+    let total_length = (16 + body.len() + 12) as u64;
+    buf.extend_from_slice(&total_length.to_be_bytes());
+    buf.extend_from_slice(body);
+    buf.extend_from_slice(&0u64.to_be_bytes()); // wrong slot
+    buf.extend_from_slice(FRAME_END);
+
+    let result = tensogram::hash::verify_frame_hash(&buf, FrameType::HeaderMetadata);
+    assert!(matches!(
+        result,
+        Err(tensogram::TensogramError::HashMismatch { .. })
+    ));
 }
 
 // ── 21. GlobalMetadata namespaces ────────────────────────────────────────────
@@ -1102,9 +1165,9 @@ fn concatenated_messages_scannable() {
 // ── 24. Encode options: default includes xxh3 hash ───────────────────────────
 
 #[test]
-fn default_encode_options_use_xxh3() {
+fn default_encode_options_have_hashing_on() {
     let opts = EncodeOptions::default();
-    assert_eq!(opts.hash_algorithm, Some(HashAlgorithm::Xxh3));
+    assert!(opts.hashing);
 }
 
 // ── 25. Get param with integer as f64 ────────────────────────────────────────
@@ -1698,25 +1761,23 @@ fn little_endian_roundtrip() {
     assert_eq!(objects[0].0.byte_order, ByteOrder::Little);
 }
 
-// ── 36. HashAlgorithm methods ────────────────────────────────────────────────
+// ── 36. parse_hash_name (Wave 2.1) ───────────────────────────────────────────
 
 #[test]
-fn hash_algorithm_as_str() {
-    assert_eq!(HashAlgorithm::Xxh3.as_str(), "xxh3");
+fn hash_algorithm_constant_is_xxh3() {
+    assert_eq!(tensogram::HASH_ALGORITHM_NAME, "xxh3");
 }
 
 #[test]
-fn hash_algorithm_parse_valid() {
-    assert_eq!(
-        tensogram::hash::HashAlgorithm::parse("xxh3").unwrap(),
-        HashAlgorithm::Xxh3
-    );
+fn parse_hash_name_accepts_canonical() {
+    assert!(tensogram::parse_hash_name(None).unwrap());
+    assert!(tensogram::parse_hash_name(Some("xxh3")).unwrap());
+    assert!(!tensogram::parse_hash_name(Some("none")).unwrap());
 }
 
 #[test]
-fn hash_algorithm_parse_invalid() {
-    let result = tensogram::hash::HashAlgorithm::parse("md5");
-    assert!(result.is_err());
+fn parse_hash_name_rejects_unknown() {
+    assert!(tensogram::parse_hash_name(Some("md5")).is_err());
 }
 
 // ── 37. compute_hash determinism ─────────────────────────────────────────────
@@ -1724,15 +1785,15 @@ fn hash_algorithm_parse_invalid() {
 #[test]
 fn compute_hash_deterministic() {
     let data = b"hello tensogram";
-    let h1 = tensogram::compute_hash(data, HashAlgorithm::Xxh3);
-    let h2 = tensogram::compute_hash(data, HashAlgorithm::Xxh3);
+    let h1 = tensogram::compute_hash(data);
+    let h2 = tensogram::compute_hash(data);
     assert_eq!(h1, h2);
     assert_eq!(h1.len(), 16); // 64-bit hex
 }
 
 #[test]
 fn compute_hash_empty_data() {
-    let h = tensogram::compute_hash(b"", HashAlgorithm::Xxh3);
+    let h = tensogram::compute_hash(b"");
     assert_eq!(h.len(), 16);
 }
 
@@ -1751,7 +1812,6 @@ fn decode_range_with_hash_verification() {
         0,
         &[(0, 5)],
         &DecodeOptions {
-            verify_hash: true,
             ..Default::default()
         },
     )
@@ -1777,26 +1837,8 @@ fn streaming_encoder_rejects_invalid_object() {
     assert!(result.is_err());
 }
 
-#[test]
-fn buffered_encode_rejects_emit_preceders() {
-    let meta = make_global_meta();
-    let desc = make_descriptor(vec![4], Dtype::Float32);
-    let data = vec![0u8; 16];
-    let options = EncodeOptions {
-        emit_preceders: true,
-        ..Default::default()
-    };
-    let result = encode(&meta, &[(&desc, &data)], &options);
-    assert!(
-        result.is_err(),
-        "emit_preceders in buffered mode should fail"
-    );
-    let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("StreamingEncoder"),
-        "error should mention StreamingEncoder: {err}"
-    );
-}
+// (Wave 2.4 removed the dead `EncodeOptions.emit_preceders` field —
+// the only path to emit preceders is `StreamingEncoder::write_preceder()`.)
 
 // ── PrecederMetadata edge cases ─────────────────────────────────────────────
 
@@ -1859,7 +1901,7 @@ fn preceder_with_hash_verification() {
     );
 
     let options = EncodeOptions {
-        hash_algorithm: Some(hash::HashAlgorithm::Xxh3),
+        hashing: true,
         ..Default::default()
     };
     let buf = Vec::new();
@@ -1874,7 +1916,6 @@ fn preceder_with_hash_verification() {
     // compatibility and decoding still succeeds when the message
     // is well-formed.
     let verify_opts = decode::DecodeOptions {
-        verify_hash: true,
         ..Default::default()
     };
     let (decoded_meta, _objects) = decode(&result, &verify_opts).unwrap();
@@ -1901,7 +1942,7 @@ fn preceder_with_extra_keys_tolerated() {
 
     let desc = make_descriptor(vec![4], Dtype::Float32);
     let payload = vec![0u8; 16];
-    let obj_frame = framing::encode_data_object_frame(&desc, &payload, false, None).unwrap();
+    let obj_frame = framing::encode_data_object_frame(&desc, &payload, false, false).unwrap();
 
     let mut out = Vec::new();
     // Preamble placeholder
@@ -2164,7 +2205,7 @@ fn framing_base_auto_extends_when_fewer_than_objects() {
     let desc = make_descriptor(vec![2], Dtype::Float32);
     let data = vec![0u8; 8];
     let options = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(
@@ -2235,7 +2276,7 @@ fn encode_base_exactly_matches_descriptors() {
     let desc = make_descriptor(vec![2], Dtype::Float32);
     let data = vec![0u8; 8];
     let options = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(
@@ -2411,7 +2452,7 @@ fn garbage_between_messages_scan_still_finds_both() {
 fn streaming_encoder_finish_immediately_produces_valid_message() {
     let meta = make_global_meta();
     let options = EncodeOptions {
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
 
@@ -3045,7 +3086,7 @@ fn mask_threshold_small_mask_is_downgraded_to_none() {
         allow_nan: true,
         nan_mask_method: MaskMethod::Roaring,
         small_mask_threshold_bytes: 16,
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &opts).unwrap();
@@ -3080,7 +3121,7 @@ fn mask_threshold_large_mask_keeps_requested_method() {
         allow_nan: true,
         nan_mask_method: MaskMethod::Roaring,
         small_mask_threshold_bytes: 4,
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &opts).unwrap();
@@ -3120,7 +3161,7 @@ fn zstd_mask_level_preserved_in_descriptor_params() {
         allow_nan: true,
         nan_mask_method: MaskMethod::Zstd { level: Some(5) },
         small_mask_threshold_bytes: 0,
-        hash_algorithm: None,
+        hashing: false,
         ..Default::default()
     };
     let msg = encode(&make_global_meta(), &[(&desc, &data)], &opts).unwrap();

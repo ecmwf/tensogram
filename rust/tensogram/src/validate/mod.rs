@@ -686,7 +686,7 @@ mod tests {
         };
         let data = vec![0u8; 32];
         let opts = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..EncodeOptions::default()
         };
         let msg = encode(&meta, &[(&desc, data.as_slice())], &opts).unwrap();
@@ -788,7 +788,7 @@ mod tests {
     fn zero_object_message_validates() {
         let meta = GlobalMetadata::default();
         let opts = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..EncodeOptions::default()
         };
         let msg = encode(&meta, &[], &opts).unwrap();
@@ -1280,7 +1280,7 @@ mod tests {
         };
         let data = vec![0u8; 12]; // 3 × f32, valid
         let opts = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..EncodeOptions::default()
         };
         let mut msg = encode(&meta, &[(&desc, data.as_slice())], &opts).unwrap();
@@ -1404,7 +1404,7 @@ mod tests {
 
     /// Helper: build a data object frame from a descriptor and payload.
     fn build_data_object_frame(desc: &DataObjectDescriptor, payload: &[u8]) -> Vec<u8> {
-        crate::framing::encode_data_object_frame(desc, payload, false, None).unwrap()
+        crate::framing::encode_data_object_frame(desc, payload, false, false).unwrap()
     }
 
     /// Helper: the default ndarray descriptor used in many tests.
@@ -1780,7 +1780,7 @@ mod tests {
         let desc = default_desc();
         let data = vec![0u8; 32];
         let opts = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..EncodeOptions::default()
         };
         let _msg = encode(&meta, &[(&desc, data.as_slice())], &opts).unwrap();
@@ -2301,7 +2301,7 @@ mod tests {
             };
             let data = vec![0u8; 32];
             let opts = EncodeOptions {
-                hash_algorithm: None,
+                hashing: false,
                 ..EncodeOptions::default()
             };
             let mut msg = encode(&meta, &[(&desc, data.as_slice())], &opts).unwrap();
@@ -2509,7 +2509,7 @@ mod tests {
         let desc = default_desc();
         let data = vec![0u8; 32];
         let opts = EncodeOptions {
-            hash_algorithm: None,
+            hashing: false,
             ..EncodeOptions::default()
         };
         let msg = encode(&meta, &[(&desc, data.as_slice())], &opts).unwrap();
@@ -3665,7 +3665,7 @@ mod tests {
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions {
-                hash_algorithm: Some(crate::hash::HashAlgorithm::Xxh3),
+                hashing: true,
                 ..EncodeOptions::default()
             },
         )
@@ -3702,7 +3702,7 @@ mod tests {
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions {
-                hash_algorithm: Some(crate::hash::HashAlgorithm::Xxh3),
+                hashing: true,
                 ..EncodeOptions::default()
             },
         )
@@ -3747,7 +3747,7 @@ mod tests {
             &meta,
             &[(&desc, data.as_slice())],
             &EncodeOptions {
-                hash_algorithm: Some(crate::hash::HashAlgorithm::Xxh3),
+                hashing: true,
                 ..EncodeOptions::default()
             },
         )

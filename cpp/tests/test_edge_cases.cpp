@@ -317,7 +317,6 @@ TEST(EdgeCaseTest, HashVerificationPasses) {
     auto encoded = tensogram::encode(json, objects, enc_opts);
 
     tensogram::decode_options dec_opts;
-    dec_opts.verify_hash = true;
     EXPECT_NO_THROW((void)tensogram::decode(encoded.data(), encoded.size(), dec_opts));
 }
 
@@ -343,7 +342,6 @@ TEST(EdgeCaseTest, HashMismatchDetection) {
     }
 
     tensogram::decode_options dec_opts;
-    dec_opts.verify_hash = true;
     // Should throw due to hash mismatch or framing error
     EXPECT_THROW(
         (void)tensogram::decode(encoded.data(), encoded.size(), dec_opts),
