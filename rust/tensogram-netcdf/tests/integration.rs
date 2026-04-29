@@ -782,6 +782,26 @@ fn simple_packing_on_multi_dtype_fails_on_nan_variable() {
         "error must name a known simple_packing trigger \
          (f64_with_nan / NaN / non-f64 dtype): {msg}"
     );
+
+    // The pipeline error template embeds the variable name as
+    // `for {var_label},` or `for {var_label}:` (see
+    // rust/tensogram/src/pipeline.rs).  multi_dtype.nc has a closed
+    // set of variables, so the assertion checks the message names
+    // one of them with the punctuation context — a bare substring
+    // match would false-positive on dtype substrings like `f64`
+    // appearing inside `float64`.
+    const KNOWN_VARS: &[&str] = &[
+        "f64_with_nan", "i8", "i16", "i32", "i64",
+        "u8", "u16", "u32", "u64", "f32", "f64",
+    ];
+    let names_a_variable = KNOWN_VARS.iter().any(|v| {
+        msg.contains(&format!("for {v},")) || msg.contains(&format!("for {v}:"))
+    });
+    assert!(
+        names_a_variable,
+        "error must identify which variable triggered the failure \
+         using the `for <var>,` / `for <var>:` template: {msg}"
+    );
 }
 
 // Note: the pre-0.17 test `simple_packing_skips_non_f64_variables` was
