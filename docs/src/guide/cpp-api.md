@@ -2,6 +2,8 @@
 
 Tensogram provides a header-only C++17 wrapper at `cpp/include/tensogram.hpp`. It delegates all work to the C FFI and adds RAII handle management, typed exceptions, and idiomatic C++ patterns.
 
+> The C ABI underneath this wrapper is documented in [C API](c-api.md), including how to install pre-built binaries, how to install via `cargo cinstall`, and the SONAME / versioning policy. The C++ wrapper inherits all of those rules.
+
 ## Requirements
 
 - C++17 compiler (GCC 7+, Clang 5+, MSVC 19.14+)
