@@ -77,7 +77,11 @@ case "$LIBS_OUT" in
     *) echo "error: pkg-config --libs missing -ltensogram: '$LIBS_OUT'" >&2; exit 1 ;;
 esac
 
-TMP="$(mktemp -d)"
+# Use an explicit template so this works on every BSD/GNU mktemp the
+# CI matrix lands on.  Some BSD mktemp variants reject `mktemp -d`
+# without a template; an explicit `${TMPDIR:-/tmp}/<name>.XXXXXX`
+# spelling is the lowest-common-denominator form.
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/tensogram-smoke.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
 cat > "$TMP/main.c" <<'EOF'

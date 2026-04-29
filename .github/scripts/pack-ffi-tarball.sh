@@ -36,7 +36,10 @@ if [ ! -d "$STAGING/usr/local" ]; then
     exit 1
 fi
 
-ROOT="$(mktemp -d)"
+# Explicit template form: works on both GNU and BSD mktemp.  Some BSD
+# variants reject `mktemp -d` without a template, and this script runs
+# on the macOS publish-ffi.yml matrix.
+ROOT="$(mktemp -d "${TMPDIR:-/tmp}/tensogram-ffi-pack.XXXXXX")"
 trap 'rm -rf "$ROOT"' EXIT
 
 cp -a "$STAGING/usr/local/." "$ROOT/"
