@@ -751,7 +751,13 @@ fn simple_packing_on_multi_dtype_fails_on_nan_variable() {
     // Post-0.17: simple_packing on a NetCDF that contains ANY NaN-bearing
     // f64 variable now hard-fails (previously soft-downgraded with a
     // warning, which hid data-quality problems).  `multi_dtype.nc` has
-    // a `f64_with_nan` variable so the whole-file conversion must error.
+    // a `f64_with_nan` variable plus several non-f64 variables (i8,
+    // i16, …, u64), each of which is also a hard-fail trigger for
+    // simple_packing.  The conversion errors on whichever offending
+    // variable the underlying netCDF library yields first; that order
+    // is netcdf-c-version-dependent (e.g. Linux libnetcdf-dev vs macOS
+    // brew netcdf differ), so the assertion accepts either failure
+    // mode rather than depending on iteration order.
     let path = testdata("multi_dtype.nc");
     let opts = ConvertOptions {
         pipeline: DataPipeline {
@@ -764,12 +770,17 @@ fn simple_packing_on_multi_dtype_fails_on_nan_variable() {
     let err = convert_netcdf_file(&path, &opts).unwrap_err();
     let msg = format!("{err}");
     assert!(
-        msg.contains("simple_packing") && msg.contains("f64_with_nan"),
-        "error must name encoding + offending variable: {msg}"
+        msg.contains("simple_packing"),
+        "error must name the encoding: {msg}"
     );
+    let names_a_trigger = msg.contains("f64_with_nan")
+        || msg.contains("NaN")
+        || msg.contains("not float64")
+        || msg.contains("requires float64");
     assert!(
-        msg.contains("NaN"),
-        "error must name the trigger kind: {msg}"
+        names_a_trigger,
+        "error must name a known simple_packing trigger \
+         (f64_with_nan / NaN / non-f64 dtype): {msg}"
     );
 }
 
