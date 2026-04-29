@@ -81,6 +81,15 @@ impl MockServer {
             while !shutdown_thread.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        // The listener is non-blocking so the accept loop can
+                        // honour `shutdown_thread`.  On macOS (unlike Linux),
+                        // accepted streams inherit the listener's non-blocking
+                        // flag, which makes `handle_one`'s blocking `read`
+                        // return `WouldBlock` immediately and the worker drop
+                        // the connection before sending any response.  Force
+                        // the worker stream back to blocking so reads wait for
+                        // the request bytes the way the handler expects.
+                        let _ = stream.set_nonblocking(false);
                         let fixtures = fixtures_thread.clone();
                         let counters = counters_thread.clone();
                         thread::spawn(move || {
