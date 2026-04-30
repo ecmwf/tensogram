@@ -1939,7 +1939,7 @@ mod tests {
 
         let mut parts: Vec<Vec<u8>> = Vec::new();
         for i in 0u8..3 {
-            enc.write_object(&desc, &vec![i; 4 * 4]).unwrap();
+            enc.write_object(&desc, &[i; 16]).unwrap();
             parts.push(enc.finish_and_reset_with_backfill().unwrap());
         }
 

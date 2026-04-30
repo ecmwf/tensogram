@@ -105,7 +105,7 @@ def test_finish_and_reset_then_finish() -> None:
     """Encoder remains valid for a final finish() after finish_and_reset()."""
     enc = tensogram.StreamingEncoder(_GLOBAL_META)
     enc.write_object(_DESCRIPTOR, _PAYLOAD)
-    _msg1 = enc.finish_and_reset()
+    enc.finish_and_reset()
 
     payload2 = _PAYLOAD + 10.0
     enc.write_object(_DESCRIPTOR, payload2)
