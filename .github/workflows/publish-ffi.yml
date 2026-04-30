@@ -30,17 +30,22 @@ env:
   TMPDIR: ${{ github.workspace }}/.tmp
 
 jobs:
-  # Compute the checkout ref + version once so every downstream job is
-  # consistent. workflow_dispatch must check out the tag (not the
-  # branch the workflow was launched from), otherwise binaries would
-  # be built from the wrong source.
+  # Compute the checkout ref + version + ci-ffi image tag once so every
+  # downstream job is consistent.  workflow_dispatch must check out the
+  # tag (not the branch the workflow was launched from), otherwise
+  # binaries would be built from the wrong source.  The image tag is
+  # read from .github/ci-ffi/VERSION (the single source of truth — the
+  # same file ci-image-ffi.yml uses to tag pushed images), so there is
+  # no separately-pinned tag in this file that can drift.
   resolve-ref:
-    name: Resolve checkout ref
+    name: Resolve checkout ref + image tag
     runs-on: ubuntu-24.04
     outputs:
       ref: ${{ steps.r.outputs.ref }}
       version: ${{ steps.r.outputs.version }}
+      image_tag: ${{ steps.r.outputs.image_tag }}
     steps:
+      - uses: actions/checkout@v4
       - id: r
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -50,6 +55,7 @@ jobs:
             echo "ref=${GITHUB_REF}" >> "$GITHUB_OUTPUT"
             echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
+          echo "image_tag=$(tr -d '[:space:]' < .github/ci-ffi/VERSION)" >> "$GITHUB_OUTPUT"
 
   build-linux:
     name: Build linux-x86_64
@@ -62,7 +68,7 @@ jobs:
     # SCCACHE_ENDPOINT object store so cache hits are cheap.
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     container:
-      image: eccr.ecmwf.int/tensogram/ci-ffi:1.0.1
+      image: eccr.ecmwf.int/tensogram/ci-ffi:${{ needs.resolve-ref.outputs.image_tag }}
       credentials:
         username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
         password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
