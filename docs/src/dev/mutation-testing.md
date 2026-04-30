@@ -48,18 +48,47 @@ time reasonable (typically under five minutes). The job uploads
 without running locally. The plan is to flip this job to
 required-for-merge once Phase 1 stabilises.
 
-### Nightly full sweep (sharded)
+### Weekly full sweep (sharded)
 
 A scheduled workflow in
-[`.github/workflows/mutants-nightly.yml`](../../../.github/workflows/mutants-nightly.yml)
+[`.github/workflows/mutants-weekly.yml`](../../../.github/workflows/mutants-weekly.yml)
 runs the full mutation sweep across all configured modules, split into
-eight shards (`--shard 1/8` through `--shard 8/8`) for parallelism.
-It triggers on weekdays at 02:00 UTC. Surviving mutants automatically
-open GitHub issues tagged `mutation-testing` for triage within seven
-days.
+sixteen shards (`--shard 1/16` through `--shard 16/16`) for parallelism.
 
-> **Note:** The nightly workflow is not yet live — it will be added in a
-> subsequent step of the rollout plan.
+**Schedule**: Saturday + Sunday at 09:00 UTC (weekend daytime, when
+the ECMWF builder fleet is least contended). Two runs per weekend
+catches commits made on Friday (Saturday's run) and on Saturday
+(Sunday's run).
+
+**Runner**: ECMWF self-hosted infrastructure
+(`platform-builder-docker-xl` fleet) inside the
+`eccr.ecmwf.int/tensogram/ci:1.3.0` container — the same runner the
+rest of the test matrix uses. Zero GitHub-Actions minutes are
+consumed by the sweep itself; only the small "open triage issue"
+job at the end runs on `ubuntu-latest` (one short API call per
+failed weekend).
+
+**Failure detection**: surviving mutants surface through three
+independent channels:
+
+1. **GitHub issue auto-created** with labels `mutation-testing` and
+   `triage`, containing a status table, the full `missed.txt`
+   dump, and a link to the run artifact. Repo watchers receive an
+   email.
+2. **Workflow run summary** (`$GITHUB_STEP_SUMMARY`) shows the
+   caught/missed/timeout/unviable totals + the first 50 surviving
+   mutants directly on the GitHub Actions run page — no artifact
+   download needed for triage.
+3. **Red badge** on the Actions tab + commit status.
+
+The triage SLA is seven days from the auto-issue date.
+
+**Timeout safety**: each shard has an 8-hour hard cap via
+GH-Actions `timeout-minutes: 480`, with a `timeout 7h` wrapper
+around `cargo mutants` so that if a shard hits the cap, the
+artifact-upload step still runs with whatever was tested before
+the kill. Typical shard wallclock is ~30 minutes, so the cap is
+belt-and-braces only.
 
 ## Running mutation testing locally
 

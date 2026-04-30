@@ -28,7 +28,7 @@ Repo: ecmwf/tensogram
 | `tensogram-zarr` | `python/tensogram-zarr/tests/*.py` | Zarr v3 store read + write, mapping, edge cases, remote |
 | `tensogram-earthkit` | `python/tensogram-earthkit/tests/*.py` | earthkit-data source + encoder plugins, MARS FieldList path, xarray non-MARS path, memory + stream + remote inputs, array-namespace interop |
 | `tensogram-benchmarks` | `tests/smoke.rs` + per-binary unit | Smoke coverage so benchmarks do not silently rot |
-| Mutation testing | `.cargo/mutants.toml`, `.github/workflows/mutants-nightly.yml` | Measurement layer over the existing Rust suite — see `MUTATION_TESTING.md` |
+| Mutation testing | `.cargo/mutants.toml`, `.github/workflows/mutants-weekly.yml` | Measurement layer over the existing Rust suite — see `MUTATION_TESTING.md` |
 
 To see current counts, run `cargo test --workspace`, `cargo test` in
 each opt-in crate directory, and `pytest` / `ctest` for the other
@@ -44,7 +44,7 @@ byte-parity tests).
 - **PR-time** (`--in-diff origin/main..HEAD`): non-blocking job in
   `.github/workflows/ci.yml`; uploads `mutants.out/` as artifact.
   Flip to required-for-merge after Phase-1 stabilises (see rollout plan).
-- **Nightly full sweep** (sharded 1/8..8/8): `.github/workflows/mutants-nightly.yml`,
+- **Weekly full sweep** (sharded 1/16..16/16, Sat+Sun 09:00 UTC): `.github/workflows/mutants-weekly.yml`,
   weekdays 02:00 UTC. Surviving mutants → auto-issue tagged `mutation-testing`.
 
 **Config:** `.cargo/mutants.toml` at repo root. Excludes: `remote.rs` (I/O-driven),

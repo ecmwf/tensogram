@@ -150,7 +150,7 @@ runners to tell you the current numbers.
 | xarray | `python/tensogram-xarray/tests/` | Backend engine, coordinate detection, hypercube stacking |
 | Zarr | `python/tensogram-zarr/tests/` | Zarr v3 store read/write path |
 | C++ wrapper | `cpp/tests/*.cpp` | RAII handle behaviour, exception mapping, cross-language round-trip |
-| Mutation testing | `.cargo/mutants.toml` + `.github/workflows/mutants-nightly.yml` | Measure test depth on critical-path modules — see [Mutation Testing](docs/src/dev/mutation-testing.md) |
+| Mutation testing | `.cargo/mutants.toml` + `.github/workflows/mutants-weekly.yml` | Measure test depth on critical-path modules — see [Mutation Testing](docs/src/dev/mutation-testing.md) |
 
 Golden binary files in `rust/tensogram/tests/golden/` are checked
 into the repo. If the wire format changes, regenerate them by running
