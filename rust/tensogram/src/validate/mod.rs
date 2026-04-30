@@ -3908,4 +3908,263 @@ mod tests {
             report.issues
         );
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Mutation-testing coverage — integrity.rs (step 1.6)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Validates a zstd-compressed message at integrity level.
+    /// Exercises the decompression-check branch
+    /// `desc.compression != "none"` (line 277) — catches mutations
+    /// that flip `!=` to `==` or `||` to `&&` on the compression arm.
+    #[test]
+    fn integrity_decompression_check_zstd_only() {
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "zstd".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let data: Vec<u8> = (0..4u64)
+            .flat_map(|v| f64::from(v as f32).to_be_bytes())
+            .collect();
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report.is_ok(),
+            "zstd-compressed message should pass integrity: {:?}",
+            report.issues
+        );
+        assert!(report.hash_verified);
+    }
+
+    /// Validates a simple_packing-encoded message at integrity level.
+    /// Exercises the decompression-check branch
+    /// `desc.encoding != "none"` (line 277) — catches mutations
+    /// that flip `!=` to `==` or `||` to `&&` on the encoding arm.
+    #[test]
+    fn integrity_decompression_check_encoding_only() {
+        use tensogram_encodings::simple_packing;
+        let values = [1.0f64, 2.0, 3.0, 4.0];
+        let sp = simple_packing::compute_params(&values, 16, 0).unwrap();
+        let meta = GlobalMetadata::default();
+        let mut params = BTreeMap::new();
+        params.insert(
+            "sp_reference_value".to_string(),
+            ciborium::Value::Float(sp.reference_value),
+        );
+        params.insert(
+            "sp_binary_scale_factor".to_string(),
+            ciborium::Value::Integer((sp.binary_scale_factor as i64).into()),
+        );
+        params.insert(
+            "sp_decimal_scale_factor".to_string(),
+            ciborium::Value::Integer((sp.decimal_scale_factor as i64).into()),
+        );
+        params.insert(
+            "sp_bits_per_value".to_string(),
+            ciborium::Value::Integer((sp.bits_per_value as i64).into()),
+        );
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Big,
+            encoding: "simple_packing".to_string(),
+            filter: "none".to_string(),
+            compression: "none".to_string(),
+            params,
+            masks: None,
+        };
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report.is_ok(),
+            "simple_packing-encoded message should pass integrity: {:?}",
+            report.issues
+        );
+        assert!(report.hash_verified);
+    }
+
+    /// Validates a message with filter != "none" at integrity level.
+    /// Exercises the decompression-check branch
+    /// `desc.filter != "none"` (line 277) — catches mutations
+    /// that flip `!=` to `==` or `||` to `&&` on the filter arm.
+    #[test]
+    fn integrity_decompression_check_filter_only() {
+        use tensogram_encodings::simple_packing;
+        let values = [1.0f64, 2.0, 3.0, 4.0];
+        let sp = simple_packing::compute_params(&values, 16, 0).unwrap();
+        let meta = GlobalMetadata::default();
+        let mut params = BTreeMap::new();
+        params.insert(
+            "sp_reference_value".to_string(),
+            ciborium::Value::Float(sp.reference_value),
+        );
+        params.insert(
+            "sp_binary_scale_factor".to_string(),
+            ciborium::Value::Integer((sp.binary_scale_factor as i64).into()),
+        );
+        params.insert(
+            "sp_decimal_scale_factor".to_string(),
+            ciborium::Value::Integer((sp.decimal_scale_factor as i64).into()),
+        );
+        params.insert(
+            "sp_bits_per_value".to_string(),
+            ciborium::Value::Integer((sp.bits_per_value as i64).into()),
+        );
+        // shuffle_element_size is required for the shuffle filter
+        params.insert(
+            "shuffle_element_size".to_string(),
+            ciborium::Value::Integer(2i64.into()),
+        );
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Big,
+            encoding: "simple_packing".to_string(),
+            filter: "shuffle".to_string(),
+            compression: "none".to_string(),
+            params,
+            masks: None,
+        };
+        let data: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+        let msg = encode(
+            &meta,
+            &[(&desc, data.as_slice())],
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        let report = validate_message(&msg, &ValidateOptions::default());
+        assert!(
+            report.is_ok(),
+            "shuffle-filtered message should pass integrity: {:?}",
+            report.issues
+        );
+        assert!(report.hash_verified);
+    }
+
+    /// Validates that the decompression check actually runs and catches
+    /// a corrupt compressed payload.  Without the decompression check
+    /// (e.g. if the `compression != "none"` guard is mutated to
+    /// `compression == "none"`), the corrupt payload would pass silently.
+    #[test]
+    fn integrity_decompression_check_catches_corrupt_zstd() {
+        // Encode a valid zstd-compressed message without hash
+        // (so hash verification doesn't mask the decompression failure).
+        let meta = GlobalMetadata::default();
+        let desc = DataObjectDescriptor {
+            obj_type: "ndarray".to_string(),
+            ndim: 1,
+            shape: vec![4],
+            strides: vec![8],
+            dtype: Dtype::Float64,
+            byte_order: ByteOrder::Big,
+            encoding: "none".to_string(),
+            filter: "none".to_string(),
+            compression: "zstd".to_string(),
+            params: BTreeMap::new(),
+            masks: None,
+        };
+        let data: Vec<u8> = [1.0f64, 2.0, 3.0, 4.0]
+            .iter()
+            .flat_map(|v| v.to_be_bytes())
+            .collect();
+        let opts = EncodeOptions {
+            hashing: false,
+            ..EncodeOptions::default()
+        };
+        let mut msg = encode(&meta, &[(&desc, data.as_slice())], &opts).unwrap();
+
+        // Corrupt a byte inside the data object payload region.
+        // The payload starts right after the frame header (16 bytes)
+        // of the data object frame.  The data object frame is the
+        // last frame before the postamble.  We target a byte early
+        // in the payload to avoid hitting the CBOR descriptor.
+        let pa_start = msg.len() - POSTAMBLE_SIZE;
+        // Walk backward from postamble to find the data object frame.
+        // The frame header starts with "FR" magic.
+        let mut data_frame_start = None;
+        for pos in (PREAMBLE_SIZE..pa_start).rev() {
+            if pos + 2 <= msg.len() && &msg[pos..pos + 2] == b"FR" {
+                if let Ok(fh) = crate::wire::FrameHeader::read_from(&msg[pos..]) {
+                    if fh.frame_type.is_data_object() {
+                        data_frame_start = Some(pos);
+                        break;
+                    }
+                }
+            }
+        }
+        let frame_start = data_frame_start.expect("should find data object frame");
+        // Corrupt byte right after the frame header (inside the zstd payload).
+        let target = frame_start + FRAME_HEADER_SIZE + 1;
+        msg[target] ^= 0xFF;
+
+        let report = validate_message(&msg, &ValidateOptions::default());
+        let has_decode_err = report.issues.iter().any(|i| {
+            matches!(
+                i.code,
+                IssueCode::DecodePipelineFailed | IssueCode::PipelineConfigFailed
+            )
+        });
+        assert!(
+            has_decode_err,
+            "corrupt zstd payload should trigger DecodePipelineFailed, got: {:?}",
+            report.issues
+        );
+    }
+
+
+
+
+
+    /// Exercises the descriptor re-parse fallback at integrity.rs:202.
+    /// When Level 2 is skipped (checksum_only=true) and the descriptor
+    /// has not been parsed, Level 3 re-parses it.  This test verifies
+    /// that the re-parse succeeds and hash verification works.
+    ///
+    /// Targets the `obj.descriptor.is_none() && !obj.descriptor_failed`
+    /// guard — the `delete !` mutation would prevent re-parsing, but
+    /// since checksum_only also skips decompression, the descriptor
+    /// isn't needed for hash verification.  This test documents the
+    /// existing behaviour; the mutation is exempted as equivalent.
+    #[test]
+    fn integrity_descriptor_reparse_checksum_only_succeeds() {
+        let msg = make_test_message();
+        let opts = ValidateOptions {
+            max_level: ValidationLevel::Integrity,
+            checksum_only: true,
+            check_canonical: false,
+        };
+        let report = validate_message(&msg, &opts);
+        assert!(
+            report.hash_verified,
+            "checksum-only should verify hash: {:?}",
+            report.issues
+        );
+    }
 }

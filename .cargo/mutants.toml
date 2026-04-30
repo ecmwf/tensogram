@@ -47,6 +47,48 @@ exclude_re = [
     # Tests assert error variant, not exact wording.
     "replace cbor_value_kind",
     "delete match arm .* in cbor_value_kind",
+
+    # ── integrity.rs: defensive bounds checks (step 1.6) ──────────────
+
+    # inline_slot_hex (lines 35, 40): defensive bounds guards that duplicate
+    # the identical checks in verify_object_frame_hash.  inline_slot_hex is
+    # only called when verify_object_frame_hash already returned Verified,
+    # meaning the frame was already validated in-bounds.  The conditions are
+    # unreachable in practice — mutations are equivalent.
+    "integrity\\.rs:35:.*in inline_slot_hex",
+    "integrity\\.rs:40:.*in inline_slot_hex",
+
+    # verify_object_frame_hash (lines 64, 75): defensive bounds guards that
+    # duplicate structure validation (Level 1).  The frame offsets come from
+    # FrameWalkResult which already ensures frames are within the buffer.
+    # These guards only fire on structurally-invalid input that Level 1
+    # would have already flagged — mutations are equivalent.
+    "integrity\\.rs:64:.*in verify_object_frame_hash",
+    "integrity\\.rs:75:.*in verify_object_frame_hash",
+
+    # validate_integrity line 202: descriptor re-parse guard
+    # `obj.descriptor.is_none() && !obj.descriptor_failed`.  The re-parse
+    # path is only exercised in checksum_only mode (Level 2 skipped), where
+    # the descriptor is parsed but never consumed (decompression is also
+    # skipped).  In non-checksum mode Level 2 always runs first, so the
+    # descriptor is already populated.  Both `&& → ||` and `delete !`
+    # mutations are equivalent — they change when a redundant re-parse
+    # occurs but never affect observable output.
+    "integrity\\.rs:202:.*in validate_integrity",
+
+    # validate_integrity line 277: decompression-check guard second `||`
+    # and the `encoding !=` / `filter !=` arms.  The only encoding
+    # (simple_packing) and filter (shuffle) are lossless transformations
+    # whose decode never errors on corrupt input — single-byte corruption
+    # produces wrong values, not pipeline errors.  Only compression codecs
+    # (zstd, lz4, etc.) have internal checksums that detect corruption.
+    # The `compression !=` arm and first `||` are caught by the corrupt-
+    # zstd test; the remaining arms are equivalent because skipping the
+    # decompression check for encoding-only or filter-only pipelines
+    # produces no observable difference at integrity level.
+    "integrity\\.rs:277:61:.*in validate_integrity",
+    "integrity\\.rs:277:71:.*in validate_integrity",
+    "integrity\\.rs:277:86:.*in validate_integrity",
 ]
 
 # Run cargo test in release mode — ~8x faster per iteration on this
