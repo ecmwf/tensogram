@@ -29,6 +29,13 @@ exclude_re = [
     # fmt_object_location is a Display-only helper for HashMismatch's #[error(…)] string;
     # no test validates the exact wording — only error type/variant matters.
     "replace fmt_object_location",
+
+    # 1 << 0 and 1 >> 0 both evaluate to 1 — the mutation is algebraically
+    # equivalent and cannot be observed by any test.  Applies to
+    # MessageFlags::HEADER_METADATA (wire.rs:151) and
+    # DataObjectFlags::CBOR_AFTER_PAYLOAD (wire.rs:238).
+    "wire\\.rs:151:.*replace << with >>",
+    "wire\\.rs:238:.*replace << with >>",
 ]
 
 # Run cargo test in release mode — ~8x faster per iteration on this
