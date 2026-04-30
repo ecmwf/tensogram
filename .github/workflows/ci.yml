@@ -499,6 +499,55 @@ jobs:
           sccache --stop-server || true
           rm -rf "$TMPDIR" build .rustup .cargo .sccache target
 
+  # ── Remote parity: cross-language HTTP Range parity harness ───
+  #
+  # Runs the harness under tests/remote-parity/ which drives the Rust
+  # `TensogramFile::open_remote` and TS `TensogramFile.fromUrl` against
+  # a Python mock HTTP server and asserts request-shape parity.  The
+  # harness needs the TS WASM build, an extra `npm install` for the TS
+  # driver, and a Rust release binary built outside the main workspace
+  # (`tests/remote-parity/drivers/rust_driver/`).  All of that lives
+  # behind `make remote-parity-build`, which `make remote-parity` then
+  # consumes.  Kept as its own job so a slow harness build cannot stall
+  # the rest of the matrix.
+  remote-parity:
+    name: Remote parity (Rust ↔ TS)
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.3.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p "$TMPDIR"
+
+      # `make remote-parity` is the single source of truth: it depends
+      # on python-build (maturin develop), remote-parity-rust-build
+      # (isolated cargo workspace under tests/remote-parity/drivers/),
+      # and remote-parity-ts-install (ts-build + npm install for the TS
+      # driver), then runs pytest.  The orchestrator and fixture scanner
+      # both `import tensogram`, which python-build provides.
+      - name: Set up Python toolchain
+        run: |
+          uv python install 3.13
+          uv venv .venv --python 3.13
+
+      - name: Run parity harness (build drivers + pytest)
+        run: make remote-parity
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-adv-stats
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf "$TMPDIR" .venv target \
+                 tests/remote-parity/drivers/rust_driver/target \
+                 tests/remote-parity/drivers/node_modules \
+                 typescript/node_modules typescript/dist typescript/wasm
+
   # ── WASM: build + test ────────────────────────────────────────
   wasm:
     name: WASM
