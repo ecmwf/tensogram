@@ -152,8 +152,15 @@ jobs:
         with:
           targets: aarch64-apple-darwin
 
-      - name: Install sccache
-        run: brew list sccache &>/dev/null || brew install sccache
+      - name: Install sccache and pkg-config
+        # pkg-config is what the smoke test below uses to discover the
+        # staged tensogram.pc.  GitHub-hosted macos-14 had it pre-installed;
+        # the ECMWF self-hosted Apple Silicon pool does not guarantee it,
+        # so install on demand.  brew is idempotent — `brew list` returns
+        # 0 if the formula is already linked.
+        run: |
+          brew list sccache &>/dev/null || brew install sccache
+          brew list pkg-config &>/dev/null || brew install pkg-config
 
       - name: Install cargo-c
         run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked --features vendored-openssl
