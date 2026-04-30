@@ -499,6 +499,32 @@ jobs:
           sccache --stop-server || true
           rm -rf "$TMPDIR" build .rustup .cargo .sccache target
 
+  # ── Drift guard: ci-ffi tag pin must match VERSION ────────────
+  # publish-ffi.yml hard-codes the ci-ffi image tag (e.g. ci-ffi:1.0.0)
+  # while .github/ci-ffi/VERSION is the source of truth bumped when the
+  # image is rebuilt.  Fail the PR fast if a developer bumps one and
+  # forgets the other.  Cheap: GitHub-hosted, ~5 s end-to-end.
+  verify-ci-ffi-pin:
+    name: Verify ci-ffi tag pin
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: VERSION matches publish-ffi.yml pin
+        run: |
+          expected=$(tr -d '[:space:]' < .github/ci-ffi/VERSION)
+          pin=$(grep -oE 'eccr\.ecmwf\.int/tensogram/ci-ffi:[0-9]+\.[0-9]+\.[0-9]+' \
+                  .github/workflows/publish-ffi.yml | head -1 | sed 's/.*://')
+          if [ -z "$pin" ]; then
+            echo "::error::no ci-ffi tag pin found in publish-ffi.yml"
+            exit 1
+          fi
+          if [ "$expected" != "$pin" ]; then
+            echo "::error::ci-ffi VERSION=$expected but publish-ffi.yml pins :$pin"
+            echo "Bump one or revert the other so they agree."
+            exit 1
+          fi
+          echo "ok: publish-ffi.yml pins ci-ffi:$pin matching VERSION"
+
   # ── Remote parity: Rust ↔ TS HTTP Range parity harness ────────
   # Drives both backends against a Python mock server (see
   # tests/remote-parity/) and asserts request-shape parity.
