@@ -76,20 +76,21 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install perl-IPC-Cmd (manylinux container missing it for openssl-src vendored build)
-        # cargo-c brings in `cargo` which depends on `openssl-sys`. The
-        # vendored-openssl feature builds OpenSSL from source, whose
-        # ./Configure script is perl and uses IPC::Cmd. manylinux_2_28
-        # ships a stripped perl without that module, so the build script
-        # fails with `Can't locate IPC/Cmd.pm in @INC`. Install it from
-        # the AlmaLinux 8 / RHEL 8 base repo (`dnf` is available because
-        # manylinux_2_28 is RHEL-family).
-        run: dnf install -y perl-IPC-Cmd
+      - name: Install perl-core
+        # cargo-c brings in `cargo` which depends on `openssl-sys`.
+        # `vendored-openssl` builds OpenSSL from source, whose
+        # ./Configure script and Makefile.in are perl that need
+        # several stdlib modules (IPC::Cmd, Time::Piece, Pod::Html,
+        # …).  manylinux_2_28's perl is stripped down to just the
+        # interpreter; the AlmaLinux 8 `perl-core` metapackage pulls
+        # in the complete standard library in one go, avoiding a
+        # whack-a-mole of module-by-module installs.
+        run: dnf install -y perl-core
 
-      - name: Install cargo-c (pinned)
+      - name: Install cargo-c
         run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked --features vendored-openssl
 
-      - name: Stage install (--prefix=/usr/local --destdir=staging)
+      - name: Stage install
         # The .pc file's `prefix=` is taken from --prefix and is baked into
         # the released tarball, so the on-disk layout the user extracts must
         # match. We pick /usr/local because that is the conventional UX.
@@ -99,7 +100,7 @@ jobs:
             --prefix=/usr/local --libdir=lib \
             --destdir="$PWD/staging"
 
-      - name: Smoke test against the staged tree
+      - name: Smoke test
         # PKG_CONFIG_SYSROOT_DIR rewrites the .pc file's /usr/local/... paths
         # to the staged tree for the duration of the test, so the smoke test
         # uses the staged copy (not whatever may already be installed at
@@ -149,17 +150,17 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cargo-c (pinned)
+      - name: Install cargo-c
         run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked --features vendored-openssl
 
-      - name: Stage install (--prefix=/usr/local --destdir=staging)
+      - name: Stage install
         run: |
           cargo cinstall --release -p tensogram-ffi \
             --target "${{ matrix.target }}" \
             --prefix=/usr/local --libdir=lib \
             --destdir="$PWD/staging"
 
-      - name: Smoke test against the staged tree
+      - name: Smoke test
         run: |
           export PKG_CONFIG_SYSROOT_DIR="$PWD/staging"
           bash cpp/tests/test_cargo_c_smoke.sh "$PWD/staging/usr/local"
@@ -189,10 +190,10 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: List artifacts (sanity check)
+      - name: List artifacts
         run: ls -la artifacts/
 
-      - name: Upload to release (create or update)
+      - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.resolve-ref.outputs.version }}
