@@ -26,8 +26,13 @@
 #     dlopens; `clang-resource-filesystem` ships clang's standard C
 #     headers (stddef.h, stdarg.h, ...) which bindgen needs at parse
 #     time when libclang traverses `#include <stddef.h>` in headers
-#     like zstd.h.  Together ~27 MB; `clang-devel` would also drag in
-#     the full Clang dev environment (~250 MB) we never use.
+#     like zstd.h.  AlmaLinux's LLVM 20 module installs the resource
+#     dir at `/usr/lib/clang/<version>/` while libclang.so lives at
+#     `/usr/lib64/libclang.so.<version>` — libclang's relative-path
+#     resource-dir lookup expects `/usr/lib64/clang/<version>/`, so
+#     we symlink `/usr/lib64/clang -> /usr/lib/clang` below.
+#     `clang-devel` would also drag in the full Clang dev environment
+#     (~250 MB) we never use.
 #   - gcc + gcc-c++ + make + cmake + pkg-config: cargo cinstall's
 #     transitive C/C++ compilation (zstd-sys, blosc2-rs-sys, libaec-sys
 #     for szip, sz3-sys, openssl-sys vendored build, final cdylib link).
@@ -58,7 +63,8 @@ RUN set -eux \
       curl ca-certificates tar gzip \
       perl-core clang-libs clang-resource-filesystem \
  && dnf clean all \
- && rm -rf /var/cache/dnf
+ && rm -rf /var/cache/dnf \
+ && ln -sfn /usr/lib/clang /usr/lib64/clang
 
 RUN set -eux \
  && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
