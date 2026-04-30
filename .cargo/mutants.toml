@@ -168,4 +168,22 @@ exclude_re = [
 
 # Run cargo test in release mode — ~8x faster per iteration on this
 # codebase (release ~41s vs debug ~6 min for the tensogram crate).
-additional_cargo_test_args = ["--release"]
+#
+# Also clamp test-binary parallelism to 2 threads.  Without this,
+# each test binary spawns one thread per logical CPU (12 on a typical
+# dev laptop), and with `CARGO_MUTANTS_JOBS=2` workers running
+# concurrent test phases that's 24 active test threads — load avg
+# spikes to ~18 on a 12-core machine and triggers thermal throttling
+# / power-draw events.  `--test-threads=2` keeps each binary at 2
+# threads; combined with jobs=2 that's 4 active test threads peak.
+#
+# Build-side parallelism is clamped separately via cargo-mutants'
+# `--jobserver-tasks=2` flag (see the §3.0.1 wrapper invocation in
+# MUTATION_TESTING.md).  Internal tensogram parallelism (rayon /
+# axis-A / axis-B) is clamped via `TENSOGRAM_THREADS=1` in the same
+# wrapper.
+additional_cargo_test_args = [
+    "--release",
+    "--",
+    "--test-threads=2",
+]
