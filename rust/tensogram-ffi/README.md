@@ -76,7 +76,7 @@ then extract under `/usr/local`:
 
 ```bash
 VERSION=<release-version>      # e.g. 0.20.0
-PLATFORM=linux-x86_64          # or linux-aarch64 / macos-x86_64 / macos-aarch64
+PLATFORM=linux-x86_64          # or linux-aarch64 / macos-aarch64
 ASSET="tensogram-ffi-${VERSION}-${PLATFORM}.tar.gz"
 
 curl -LO "https://github.com/ecmwf/tensogram/releases/download/${VERSION}/${ASSET}"
@@ -85,8 +85,8 @@ sudo ldconfig                  # Linux only
 pkg-config --modversion tensogram
 ```
 
-Available platforms: `linux-x86_64`, `linux-aarch64`, `macos-x86_64`,
-`macos-aarch64`. The bundled `tensogram.pc` hard-codes
+Available platforms: `linux-x86_64`, `linux-aarch64`, `macos-aarch64`.
+The bundled `tensogram.pc` hard-codes
 `prefix=/usr/local`, so the default extract path matters; see the
 [C API guide](https://sites.ecmwf.int/docs/tensogram/main/guide/c-api.html)
 for non-default prefixes.

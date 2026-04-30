@@ -147,14 +147,14 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: Install cargo-c (pinned, matches publish-ffi.yml)
+      - name: Install cargo-c
         env:
           CARGO_C_VERSION: "0.10.21"
         # vendored-openssl: ECMWF CI image lacks libssl-dev (see ci.yml's
         # cargo-c job for full rationale).
         run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked --features vendored-openssl
 
-      - name: cargo cbuild + smoke test the C API distribution
+      - name: Build and smoke test C API
         run: |
           cargo cbuild --release -p tensogram-ffi
           BASE=target/x86_64-unknown-linux-gnu/release

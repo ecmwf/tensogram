@@ -76,10 +76,24 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cargo-c (pinned)
+      - name: Install build dependencies
+        # Two manylinux gaps the workflow hits:
+        # * perl-core: `cargo install cargo-c --features vendored-openssl`
+        #   pulls in openssl-sys, whose vendored build runs perl scripts
+        #   that need IPC::Cmd, Time::Piece, Pod::Html, etc. manylinux's
+        #   perl is interpreter-only; perl-core is the AlmaLinux 8
+        #   metapackage that drags in the full stdlib in one install,
+        #   sparing us a whack-a-mole of module-by-module additions.
+        # * clang-devel: `cargo cinstall -p tensogram-ffi` transitively
+        #   builds blosc2-rs-sys / zstd-sys, which use bindgen and need
+        #   libclang at compile time. publish-pypi.yml installs the
+        #   same package for the same reason.
+        run: dnf install -y perl-core clang-devel
+
+      - name: Install cargo-c
         run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked --features vendored-openssl
 
-      - name: Stage install (--prefix=/usr/local --destdir=staging)
+      - name: Stage install
         # The .pc file's `prefix=` is taken from --prefix and is baked into
         # the released tarball, so the on-disk layout the user extracts must
         # match. We pick /usr/local because that is the conventional UX.
@@ -89,7 +103,7 @@ jobs:
             --prefix=/usr/local --libdir=lib \
             --destdir="$PWD/staging"
 
-      - name: Smoke test against the staged tree
+      - name: Smoke test
         # PKG_CONFIG_SYSROOT_DIR rewrites the .pc file's /usr/local/... paths
         # to the staged tree for the duration of the test, so the smoke test
         # uses the staged copy (not whatever may already be installed at
@@ -120,10 +134,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # macOS x86_64 is intentionally not in the matrix: the rest of
+        # the project (publish-pypi.yml, ECMWF wheels) ships only
+        # macOS arm64, so an x86_64 FFI tarball would be the only
+        # x86_64-Mac artefact in the release without a corresponding
+        # Python wheel or smoke test elsewhere.  Apple Silicon is the
+        # supported macOS target.
         include:
-          - label: macos-x86_64
-            runs-on: macos-13
-            target: x86_64-apple-darwin
           - label: macos-aarch64
             runs-on: macos-14
             target: aarch64-apple-darwin
@@ -136,17 +153,17 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cargo-c (pinned)
+      - name: Install cargo-c
         run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked --features vendored-openssl
 
-      - name: Stage install (--prefix=/usr/local --destdir=staging)
+      - name: Stage install
         run: |
           cargo cinstall --release -p tensogram-ffi \
             --target "${{ matrix.target }}" \
             --prefix=/usr/local --libdir=lib \
             --destdir="$PWD/staging"
 
-      - name: Smoke test against the staged tree
+      - name: Smoke test
         run: |
           export PKG_CONFIG_SYSROOT_DIR="$PWD/staging"
           bash cpp/tests/test_cargo_c_smoke.sh "$PWD/staging/usr/local"
@@ -176,10 +193,10 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: List artifacts (sanity check)
+      - name: List artifacts
         run: ls -la artifacts/
 
-      - name: Upload to release (create or update)
+      - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.resolve-ref.outputs.version }}
