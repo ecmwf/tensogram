@@ -689,4 +689,20 @@ mod tests {
         let buf = vec![0u8; 10];
         assert!(Preamble::read_from(&buf).is_err());
     }
+
+    #[test]
+    fn test_preamble_nonzero_reserved_round_trip() {
+        // Exercises read_u32_be on the reserved field with a non-zero
+        // value so that mutating the helper to return 0 or 1 is caught.
+        let preamble = Preamble {
+            version: WIRE_VERSION,
+            flags: MessageFlags::default(),
+            reserved: 0xDEAD_BEEF,
+            total_length: 128,
+        };
+        let mut buf = Vec::new();
+        preamble.write_to(&mut buf);
+        let parsed = Preamble::read_from(&buf).unwrap();
+        assert_eq!(parsed.reserved, 0xDEAD_BEEF);
+    }
 }
