@@ -23,16 +23,16 @@ versioning.
 
 ### Prebuilt binary tarball (recommended for users)
 
-Each tagged release publishes four tarballs at
+Each tagged release publishes two tarballs at
 <https://github.com/ecmwf/tensogram/releases>:
 
 - `tensogram-ffi-<VERSION>-linux-x86_64.tar.gz`
-- `tensogram-ffi-<VERSION>-linux-aarch64.tar.gz`
 - `tensogram-ffi-<VERSION>-macos-aarch64.tar.gz`
 
-The Linux tarballs are built inside `manylinux_2_28` containers (glibc
+The Linux tarball is built inside a `manylinux_2_28` container (glibc
 2.28+, works on RHEL 8 / Debian 11 / Ubuntu 20.04 and newer). The macOS
-tarballs are built on the corresponding GitHub-hosted runners.
+tarball is built on Apple Silicon. For other platforms (linux-aarch64,
+macos-x86_64, etc.) build from source with `cargo cinstall` below.
 
 Each tarball is **rooted for `/usr/local`** (the bundled `tensogram.pc`
 hard-codes `prefix=/usr/local`), and is packed with uid=0 / gid=0 so
@@ -40,7 +40,7 @@ extraction under `sudo` produces root-owned files. The default install is:
 
 ```bash
 VERSION=<release-version>          # e.g. 0.20.0
-PLATFORM=linux-x86_64              # or linux-aarch64 / macos-aarch64
+PLATFORM=linux-x86_64              # or macos-aarch64
 ASSET=tensogram-ffi-${VERSION}-${PLATFORM}.tar.gz
 
 curl -LO "https://github.com/ecmwf/tensogram/releases/download/${VERSION}/${ASSET}"
