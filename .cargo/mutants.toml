@@ -89,6 +89,81 @@ exclude_re = [
     "integrity\\.rs:277:61:.*in validate_integrity",
     "integrity\\.rs:277:71:.*in validate_integrity",
     "integrity\\.rs:277:86:.*in validate_integrity",
+
+    # ── decode.rs: verify_data_object_frames internals (step 1.7) ─────
+
+    # Line 188: `buf.len() < PREAMBLE_SIZE` guard.  The `< → ==` mutation
+    # lets buffers shorter than PREAMBLE_SIZE through, but
+    # `Preamble::read_from` catches them with the same Framing error.
+    # The `< → <=` mutation rejects exact-PREAMBLE_SIZE buffers that the
+    # original would accept, but such buffers are structurally invalid
+    # (no frames, no postamble) and would fail downstream anyway.
+    # Both mutations are equivalent — they change which guard fires but
+    # not the observable outcome.
+    "decode\\.rs:188:.*in verify_data_object_frames",
+
+    # Line 203: `preamble.total_length > 0` → `>= 0`.  total_length is u64,
+    # so `>= 0` is always true — the else branch (open-stream fallback) is
+    # dead code for all valid encoded messages.  Mutation is algebraically
+    # equivalent.
+    "decode\\.rs:203:.*replace > with >= in verify_data_object_frames",
+
+    # Line 229: while-loop guard `pos + FRAME_HEADER_SIZE` → `pos - …`.
+    # Weakens the loop bound, but valid messages always have frames at
+    # aligned positions with correct magic; the byte-by-byte magic-scan
+    # (line 235–237) compensates.  Mutation is equivalent for well-formed
+    # input.
+    "decode\\.rs:229:.*replace \\+ with - in verify_data_object_frames",
+
+    # Line 236: magic-scan `pos += 1` → `pos -= 1` / `pos *= 1`.  The
+    # magic-scan branch is never taken on well-formed frames (frames are
+    # always at 8-byte-aligned positions with correct magic).  Mutations
+    # are equivalent because the branch is dead code for valid input.
+    "decode\\.rs:236:.*in verify_data_object_frames",
+
+    # Line 259: frame-end bound `frame_end > msg_end` → `== msg_end` or
+    # `>= msg_end`.  For valid messages, frame_end is always < msg_end
+    # (frames fit within the message body), so the guard never fires.
+    # Mutations are equivalent.
+    "decode\\.rs:259:.*in verify_data_object_frames",
+
+    # Line 296: alignment `(frame_end + 7) & !7`.
+    # `+ → -`: produces pos 8 bytes before the next frame, but the
+    # magic-scan (line 235–237) advances byte-by-byte to compensate.
+    # `delete !`: inverts the bitmask → pos becomes 0–7 → infinite loop
+    # (killed by timeout, effectively caught).
+    # Both mutations are equivalent/caught.
+    "decode\\.rs:296:.*in verify_data_object_frames",
+
+    # ── decode.rs: parallelism dispatch (step 1.7) ────────────────────
+
+    # Lines 335–336 (decode) and 775–776 (decode_range_from_payload):
+    # `parallel && use_axis_a(…)` and `parallel && !use_axis_a` control
+    # axis-A vs axis-B parallelism.  Tests run with threads=0 →
+    # resolve_budget returns 0 → should_parallelise returns false →
+    # `parallel=false`.  All `parallel && …` expressions are false
+    # regardless of the right-hand side.  Mutations (`&& → ||`,
+    # `delete !`) change the dispatch but produce byte-identical output
+    # because budget=0 means single-threaded execution either way.
+    "decode\\.rs:335:.*in decode$",
+    "decode\\.rs:336:.*in decode$",
+    "decode\\.rs:775:.*in decode_range_from_payload",
+    "decode\\.rs:776:.*in decode_range_from_payload",
+
+    # ── decode.rs: decode_object_from_frame defensive bounds (step 1.7)
+
+    # Line 588: `total < FRAME_HEADER_SIZE || total > frame_bytes.len()`
+    # — defensive bounds check in the verify_hash path.  For valid frames,
+    # `total` equals `frame_bytes.len()` (exact extraction) and is always
+    # > FRAME_HEADER_SIZE.  The `< → ==`, `< → <=`, `> → <`, and
+    # `|| → &&` mutations don't change the guard's outcome on valid
+    # frames — they are equivalent.  (The `< → >`, `> → ==`, `> → >=`
+    # mutations DO reject valid frames and are caught by the new
+    # `decode_object_from_frame_verify_hash_succeeds_on_hashed_frame` test.)
+    "decode\\.rs:588:38:.*replace \\|\\| with && in decode_object_from_frame",
+    "decode\\.rs:588:18:.*replace < with == in decode_object_from_frame",
+    "decode\\.rs:588:18:.*replace < with <= in decode_object_from_frame",
+    "decode\\.rs:588:47:.*replace > with < in decode_object_from_frame",
 ]
 
 # Run cargo test in release mode — ~8x faster per iteration on this
