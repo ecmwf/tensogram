@@ -612,3 +612,29 @@ jobs:
       - name: Cleanup
         if: always()
         run: rm -rf "$TMPDIR" target tensoscope/node_modules typescript/node_modules typescript/dist typescript/wasm
+
+  # ── Mutation testing (PR diff only, non-blocking) ──────────────
+  mutants-diff:
+    name: Mutants (diff)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need base branch for --in-diff
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-mutants --version 27.0.0 --locked
+      - name: Mutate diff vs base
+        run: |
+          cargo mutants \
+            --in-diff origin/${{ github.base_ref }}..HEAD \
+            --no-shuffle \
+            --jobs 4 \
+            --timeout-multiplier 3.0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-diff-output
+          path: mutants.out/
