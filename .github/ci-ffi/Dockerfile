@@ -20,16 +20,23 @@
 #   - sccache (S3-backed, same bucket as .github/ci/), so the actual
 #     `cargo cinstall -p tensogram-ffi` step is incrementally cached
 #     across runs
-#   - perl-core + clang-libs — needed for openssl-sys (vendored perl
-#     scripts) and bindgen-driven *-sys crates (libclang).  `clang-libs`
-#     ships only the runtime libclang.so; `clang-devel` would also drag
-#     in the full Clang dev environment (~250 MB) we never use.
+#   - perl-core + clang-libs + clang-resource-filesystem — needed for
+#     openssl-sys (vendored perl scripts) and bindgen-driven *-sys
+#     crates.  `clang-libs` ships the runtime libclang.so that bindgen
+#     dlopens; `clang-resource-filesystem` ships clang's standard C
+#     headers (stddef.h, stdarg.h, ...) which bindgen needs at parse
+#     time when libclang traverses `#include <stddef.h>` in headers
+#     like zstd.h.  Together ~27 MB; `clang-devel` would also drag in
+#     the full Clang dev environment (~250 MB) we never use.
 #   - gcc + gcc-c++ + make + cmake + pkg-config: cargo cinstall's
 #     transitive C/C++ compilation (zstd-sys, blosc2-rs-sys, libaec-sys
 #     for szip, sz3-sys, openssl-sys vendored build, final cdylib link).
 #     Provided implicitly by manylinux; on AlmaLinux they are explicit
 #     dnf installs.  cmake covers libaec/blosc2/sz3; gcc-c++ covers
 #     anything pulling in C++ (libaec, sz3, blosc2 internals).
+#   - which: AlmaLinux 8 base ships without /usr/bin/which; some
+#     autoconf-style configure scripts in transitive C deps shell out
+#     to it.  ~80 KB defensive insurance.
 #
 #   docker build -t tensogram-ci-ffi:test .github/ci-ffi/
 # ────────────────────────────────────────────────────────────────
@@ -47,8 +54,9 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 
 RUN set -eux \
  && dnf install -y --setopt=install_weak_deps=False \
-      gcc gcc-c++ make cmake pkg-config curl ca-certificates tar gzip \
-      perl-core clang-libs \
+      gcc gcc-c++ make cmake pkg-config which \
+      curl ca-certificates tar gzip \
+      perl-core clang-libs clang-resource-filesystem \
  && dnf clean all \
  && rm -rf /var/cache/dnf
 
