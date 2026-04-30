@@ -26,7 +26,22 @@ permissions:
   contents: write   # softprops/action-gh-release attaches assets to the GitHub Release
 
 env:
-  CARGO_C_VERSION: "0.10.21"
+  CARGO_INCREMENTAL: "0"
+  TMPDIR: ${{ github.workspace }}/.tmp
+  # sccache against the same ECMWF S3-compatible bucket the main CI uses.
+  # Hits across publish-ffi runs and ci.yml runs whenever the FFI crate
+  # graph hasn't changed.  AWS_* env var names are required by the S3
+  # SDK that sccache uses internally — no actual AWS service is involved.
+  RUSTC_WRAPPER: sccache
+  SCCACHE_BUCKET: tensogram-ci-cache
+  SCCACHE_ENDPOINT: "https://object-store.os-api.cci1.ecmwf.int"
+  SCCACHE_REGION: us-east-1
+  SCCACHE_S3_USE_SSL: "true"
+  SCCACHE_S3_KEY_PREFIX: tensogram/
+  SCCACHE_BASEDIRS: ${{ github.workspace }}
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+  AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
 
 jobs:
   # Compute the checkout ref + version once so every downstream job is
@@ -51,47 +66,26 @@ jobs:
           fi
 
   build-linux:
-    name: Build ${{ matrix.label }}
+    name: Build linux-x86_64
     needs: resolve-ref
-    runs-on: ${{ matrix.runs-on }}
-    container: ${{ matrix.container }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: linux-x86_64
-            runs-on: ubuntu-24.04
-            container: quay.io/pypa/manylinux_2_28_x86_64
-            target: x86_64-unknown-linux-gnu
-          - label: linux-aarch64
-            runs-on: ubuntu-24.04-arm
-            container: quay.io/pypa/manylinux_2_28_aarch64
-            target: aarch64-unknown-linux-gnu
+    # Runs inside the manylinux-based ci-ffi image (see .github/ci-ffi/
+    # Dockerfile) which pre-bakes Rust, cargo-c (vendored-openssl),
+    # sccache, perl-core, and clang-devel — eliminating the ~4 min
+    # cargo-c install and the ~30 s dnf step that the previous workflow
+    # paid on every tag push.  Self-hosted runner sits next to the
+    # SCCACHE_ENDPOINT object store so cache hits are cheap.
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci-ffi:1.0.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve-ref.outputs.ref }}
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install build dependencies
-        # Two manylinux gaps the workflow hits:
-        # * perl-core: `cargo install cargo-c --features vendored-openssl`
-        #   pulls in openssl-sys, whose vendored build runs perl scripts
-        #   that need IPC::Cmd, Time::Piece, Pod::Html, etc. manylinux's
-        #   perl is interpreter-only; perl-core is the AlmaLinux 8
-        #   metapackage that drags in the full stdlib in one install,
-        #   sparing us a whack-a-mole of module-by-module additions.
-        # * clang-devel: `cargo cinstall -p tensogram-ffi` transitively
-        #   builds blosc2-rs-sys / zstd-sys, which use bindgen and need
-        #   libclang at compile time. publish-pypi.yml installs the
-        #   same package for the same reason.
-        run: dnf install -y perl-core clang-devel
-
-      - name: Install cargo-c
-        run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked --features vendored-openssl
+      - run: mkdir -p "$TMPDIR"
 
       - name: Stage install
         # The .pc file's `prefix=` is taken from --prefix and is baked into
@@ -99,7 +93,7 @@ jobs:
         # match. We pick /usr/local because that is the conventional UX.
         run: |
           cargo cinstall --release -p tensogram-ffi \
-            --target "${{ matrix.target }}" \
+            --target x86_64-unknown-linux-gnu \
             --prefix=/usr/local --libdir=lib \
             --destdir="$PWD/staging"
 
@@ -114,11 +108,11 @@ jobs:
 
       - name: Pack tarball
         run: |
-          ASSET="tensogram-ffi-${{ needs.resolve-ref.outputs.version }}-${{ matrix.label }}.tar.gz"
+          ASSET="tensogram-ffi-${{ needs.resolve-ref.outputs.version }}-linux-x86_64.tar.gz"
           bash .github/scripts/pack-ffi-tarball.sh \
             "$PWD/staging" \
             "${{ needs.resolve-ref.outputs.version }}" \
-            "${{ matrix.label }}" \
+            "linux-x86_64" \
             "$ASSET"
           echo "ASSET=$ASSET" >> "$GITHUB_ENV"
 
@@ -127,31 +121,39 @@ jobs:
           name: ${{ env.ASSET }}
           path: ${{ env.ASSET }}
 
+      - name: sccache stats
+        if: always()
+        run: sccache --show-adv-stats
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$TMPDIR" target staging
+
   build-macos:
-    name: Build ${{ matrix.label }}
+    name: Build macos-aarch64
     needs: resolve-ref
-    runs-on: ${{ matrix.runs-on }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # macOS x86_64 is intentionally not in the matrix: the rest of
-        # the project (publish-pypi.yml, ECMWF wheels) ships only
-        # macOS arm64, so an x86_64 FFI tarball would be the only
-        # x86_64-Mac artefact in the release without a corresponding
-        # Python wheel or smoke test elsewhere.  Apple Silicon is the
-        # supported macOS target.
-        include:
-          - label: macos-aarch64
-            runs-on: macos-14
-            target: aarch64-apple-darwin
+    # Self-hosted Apple Silicon runner — same one ci.yml's macos jobs
+    # use.  Drops the macos-14 GitHub-hosted queue + brings the macOS
+    # leg into the same sccache bucket as everything else.
+    runs-on: [self-hosted, macOS, platform-builder-MacOSX-13.4.1-arm64]
+    env:
+      RUSTUP_HOME: ${{ github.workspace }}/.rustup
+      CARGO_HOME: ${{ github.workspace }}/.cargo
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      CARGO_C_VERSION: "0.10.21"
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve-ref.outputs.ref }}
 
+      - run: mkdir -p "$TMPDIR"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin
+
+      - name: Install sccache
+        run: brew list sccache &>/dev/null || brew install sccache
 
       - name: Install cargo-c
         run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked --features vendored-openssl
@@ -159,7 +161,7 @@ jobs:
       - name: Stage install
         run: |
           cargo cinstall --release -p tensogram-ffi \
-            --target "${{ matrix.target }}" \
+            --target aarch64-apple-darwin \
             --prefix=/usr/local --libdir=lib \
             --destdir="$PWD/staging"
 
@@ -170,11 +172,11 @@ jobs:
 
       - name: Pack tarball
         run: |
-          ASSET="tensogram-ffi-${{ needs.resolve-ref.outputs.version }}-${{ matrix.label }}.tar.gz"
+          ASSET="tensogram-ffi-${{ needs.resolve-ref.outputs.version }}-macos-aarch64.tar.gz"
           bash .github/scripts/pack-ffi-tarball.sh \
             "$PWD/staging" \
             "${{ needs.resolve-ref.outputs.version }}" \
-            "${{ matrix.label }}" \
+            "macos-aarch64" \
             "$ASSET"
           echo "ASSET=$ASSET" >> "$GITHUB_ENV"
 
@@ -182,6 +184,16 @@ jobs:
         with:
           name: ${{ env.ASSET }}
           path: ${{ env.ASSET }}
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-adv-stats || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          sccache --stop-server || true
+          rm -rf "$TMPDIR" target staging .rustup .cargo .sccache
 
   release:
     name: Attach binaries to GitHub Release
