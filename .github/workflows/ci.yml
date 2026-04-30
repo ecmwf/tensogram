@@ -628,8 +628,10 @@ jobs:
       - run: cargo install cargo-mutants --version 27.0.0 --locked
       - name: Mutate diff vs base
         env:
-          CARGO_MUTANTS_JOBS: 2     # mutant worker count — see MUTATION_TESTING.md §3.0.1
-          TENSOGRAM_THREADS: 1      # cap library-internal rayon parallelism
+          CARGO_MUTANTS_JOBS: 2          # mutant worker count — see MUTATION_TESTING.md §3.0.1
+          TENSOGRAM_THREADS: 1           # cap library-internal rayon
+          CMAKE_BUILD_PARALLEL_LEVEL: 1  # cmake-driven build.rs in deps (libaec-sys, blosc2-sys, …)
+          MAKEFLAGS: -j1                 # nested make invocations from cmake
         run: |
           cargo mutants \
             --in-diff origin/${{ github.base_ref }}..HEAD \

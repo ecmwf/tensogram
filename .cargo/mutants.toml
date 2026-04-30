@@ -166,8 +166,12 @@ exclude_re = [
     "decode\\.rs:588:47:.*replace > with < in decode_object_from_frame",
 ]
 
-# Run cargo test in release mode — ~8x faster per iteration on this
-# codebase (release ~41s vs debug ~6 min for the tensogram crate).
+# Use the `release-mutants` profile (defined in workspace `Cargo.toml`)
+# instead of plain `--release`.  `release-mutants` inherits release but
+# pins `codegen-units = 1` to serialise rustc's 16 default codegen
+# threads — see MUTATION_TESTING.md §3.0.1 for why a codegen fan-out of
+# 16 threads per rustc invocation slips through `--jobserver-tasks 2`
+# and triggers peak-power events on dev laptops.
 #
 # Also clamp test-binary parallelism to 2 threads.  Without this,
 # each test binary spawns one thread per logical CPU (12 on a typical
@@ -177,13 +181,17 @@ exclude_re = [
 # / power-draw events.  `--test-threads=2` keeps each binary at 2
 # threads; combined with jobs=2 that's 4 active test threads peak.
 #
-# Build-side parallelism is clamped separately via cargo-mutants'
-# `--jobserver-tasks=2` flag (see the §3.0.1 wrapper invocation in
-# MUTATION_TESTING.md).  Internal tensogram parallelism (rayon /
-# axis-A / axis-B) is clamped via `TENSOGRAM_THREADS=1` in the same
-# wrapper.
+# Build-side parallelism is clamped separately via:
+#   * cargo-mutants' `--jobserver-tasks 2` flag (cargo+rustc count)
+#   * `CMAKE_BUILD_PARALLEL_LEVEL=1` env (cmake-driven build.rs in
+#     libaec-sys, blosc2-sys, zfp-sys-cc, tensogram-sz3-sys)
+#   * `MAKEFLAGS=-j1` env (any nested make invocations from cmake)
+#   * `TENSOGRAM_THREADS=1` env (tensogram-internal rayon)
+#
+# See the canonical wrapper invocation in MUTATION_TESTING.md §3.0.1.
 additional_cargo_test_args = [
-    "--release",
+    "--profile",
+    "release-mutants",
     "--",
     "--test-threads=2",
 ]
