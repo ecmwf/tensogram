@@ -28,7 +28,6 @@ Each tagged release publishes four tarballs at
 
 - `tensogram-ffi-<VERSION>-linux-x86_64.tar.gz`
 - `tensogram-ffi-<VERSION>-linux-aarch64.tar.gz`
-- `tensogram-ffi-<VERSION>-macos-x86_64.tar.gz`
 - `tensogram-ffi-<VERSION>-macos-aarch64.tar.gz`
 
 The Linux tarballs are built inside `manylinux_2_28` containers (glibc
@@ -41,7 +40,7 @@ extraction under `sudo` produces root-owned files. The default install is:
 
 ```bash
 VERSION=<release-version>          # e.g. 0.20.0
-PLATFORM=linux-x86_64              # or linux-aarch64 / macos-x86_64 / macos-aarch64
+PLATFORM=linux-x86_64              # or linux-aarch64 / macos-aarch64
 ASSET=tensogram-ffi-${VERSION}-${PLATFORM}.tar.gz
 
 curl -LO "https://github.com/ecmwf/tensogram/releases/download/${VERSION}/${ASSET}"

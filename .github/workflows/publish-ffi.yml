@@ -76,6 +76,16 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install perl-IPC-Cmd (manylinux container missing it for openssl-src vendored build)
+        # cargo-c brings in `cargo` which depends on `openssl-sys`. The
+        # vendored-openssl feature builds OpenSSL from source, whose
+        # ./Configure script is perl and uses IPC::Cmd. manylinux_2_28
+        # ships a stripped perl without that module, so the build script
+        # fails with `Can't locate IPC/Cmd.pm in @INC`. Install it from
+        # the AlmaLinux 8 / RHEL 8 base repo (`dnf` is available because
+        # manylinux_2_28 is RHEL-family).
+        run: dnf install -y perl-IPC-Cmd
+
       - name: Install cargo-c (pinned)
         run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked --features vendored-openssl
 
@@ -120,10 +130,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # macOS x86_64 is intentionally not in the matrix: the rest of
+        # the project (publish-pypi.yml, ECMWF wheels) ships only
+        # macOS arm64, so an x86_64 FFI tarball would be the only
+        # x86_64-Mac artefact in the release without a corresponding
+        # Python wheel or smoke test elsewhere.  Apple Silicon is the
+        # supported macOS target.
         include:
-          - label: macos-x86_64
-            runs-on: macos-13
-            target: x86_64-apple-darwin
           - label: macos-aarch64
             runs-on: macos-14
             target: aarch64-apple-darwin
