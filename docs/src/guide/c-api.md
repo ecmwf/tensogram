@@ -29,10 +29,11 @@ Each tagged release publishes two tarballs at
 - `tensogram-ffi-<VERSION>-linux-x86_64.tar.gz`
 - `tensogram-ffi-<VERSION>-macos-aarch64.tar.gz`
 
-The Linux tarball is built inside a `manylinux_2_28` container (glibc
-2.28+, works on RHEL 8 / Debian 11 / Ubuntu 20.04 and newer). The macOS
-tarball is built on Apple Silicon. For other platforms (linux-aarch64,
-macos-x86_64, etc.) build from source with `cargo cinstall` below.
+The Linux tarball is built on AlmaLinux 8 (glibc 2.28; ABI-compatible
+with the `manylinux_2_28` wheel platform tag, works on RHEL 8 / Debian 11
+/ Ubuntu 20.04 and newer). The macOS tarball is built on Apple Silicon.
+For other platforms (linux-aarch64, macos-x86_64, etc.) build from
+source with `cargo cinstall` below.
 
 Each tarball is **rooted for `/usr/local`** (the bundled `tensogram.pc`
 hard-codes `prefix=/usr/local`), and is packed with uid=0 / gid=0 so
