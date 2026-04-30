@@ -24,10 +24,12 @@
 #     scripts) and bindgen-driven *-sys crates (libclang).  `clang-libs`
 #     ships only the runtime libclang.so; `clang-devel` would also drag
 #     in the full Clang dev environment (~250 MB) we never use.
-#   - gcc + make + pkg-config: cargo cinstall's transitive C
-#     compilation (zstd-sys, blosc2-sys, openssl-sys vendored build,
-#     final cdylib link).  Provided implicitly by manylinux; on
-#     AlmaLinux they are explicit dnf installs.
+#   - gcc + gcc-c++ + make + cmake + pkg-config: cargo cinstall's
+#     transitive C/C++ compilation (zstd-sys, blosc2-rs-sys, libaec-sys
+#     for szip, sz3-sys, openssl-sys vendored build, final cdylib link).
+#     Provided implicitly by manylinux; on AlmaLinux they are explicit
+#     dnf installs.  cmake covers libaec/blosc2/sz3; gcc-c++ covers
+#     anything pulling in C++ (libaec, sz3, blosc2 internals).
 #
 #   docker build -t tensogram-ci-ffi:test .github/ci-ffi/
 # ────────────────────────────────────────────────────────────────
@@ -45,7 +47,7 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 
 RUN set -eux \
  && dnf install -y --setopt=install_weak_deps=False \
-      gcc make pkg-config curl ca-certificates tar gzip \
+      gcc gcc-c++ make cmake pkg-config curl ca-certificates tar gzip \
       perl-core clang-libs \
  && dnf clean all \
  && rm -rf /var/cache/dnf
