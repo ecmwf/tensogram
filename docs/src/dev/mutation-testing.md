@@ -69,43 +69,87 @@ Install the pinned version of `cargo-mutants`:
 cargo install cargo-mutants --version 27.0.0 --locked
 ```
 
-### Concurrency — three knobs that compound
+### Concurrency — seven nested layers
 
-cargo-mutants concurrency is **not** a single number.  Three independent
-layers each fan out by default to one thread per logical CPU; multiplied
-together they saturate a 12-core laptop even at `CARGO_MUTANTS_JOBS=2`.
-**All three must be clamped** for a comfortable load profile:
+cargo-mutants concurrency is **not** a single number.  **Seven**
+independent layers each fan out by default to one thread per logical
+CPU; multiplied together they saturate a 12-core laptop even at
+`CARGO_MUTANTS_JOBS=2`.  **All seven must be clamped** for a
+sustainable load profile:
 
-| Layer | Knob | Default | Recommended |
-|---|---|---|---|
-| Mutant workers | `CARGO_MUTANTS_JOBS` env (= `--jobs`) | NCPUS | `2` |
-| Build / rustc fan-out | `--jobserver-tasks` flag | NCPUS | `2` |
-| Test-binary threads | `cargo test -- --test-threads=N` | NCPUS | `2` (already pinned in `.cargo/mutants.toml`) |
-| Library-internal rayon | `TENSOGRAM_THREADS` env | NCPUS | `1` |
+| # | Layer | Knob | Default | Recommended |
+|---|---|---|---|---|
+| 1 | Mutant workers | `CARGO_MUTANTS_JOBS` env | NCPUS | `2` |
+| 2 | cargo + rustc *invocation* count | `--jobserver-tasks` flag | NCPUS | `2` |
+| 3 | rustc *codegen* threads inside each rustc | `[profile].codegen-units` | **16** in release | `1` (pinned in `[profile.release-mutants]`) |
+| 4 | Test-binary threads | `cargo test -- --test-threads=N` | NCPUS | `2` (pinned in `.cargo/mutants.toml`) |
+| 5 | cmake build.rs (libaec-sys, blosc2-sys, zfp-sys-cc, tensogram-sz3-sys) | `CMAKE_BUILD_PARALLEL_LEVEL` | NCPUS | `1` |
+| 6 | nested make from cmake | `MAKEFLAGS=-j1` | NCPUS | `-j1` |
+| 7 | tensogram-internal rayon | `TENSOGRAM_THREADS` env | NCPUS | `1` |
+
+**Layer 3 is the most pernicious.** Each rustc in release mode
+defaults to 16 codegen threads, and cargo's jobserver only counts the
+rustc *process* as one slot. Without `codegen-units = 1`, even at
+`--jobserver-tasks 2` peak parallelism is 32 codegen threads — drawing
+>120W on M-series silicon for 5–15-second bursts that the 1-minute
+load average smooths away but a laptop power supply does not. The
+`[profile.release-mutants]` profile (in workspace `Cargo.toml`)
+inherits release and pins `codegen-units = 1`; `.cargo/mutants.toml`
+selects this profile via `--profile release-mutants` so every cargo
+build during a sweep uses it automatically.
 
 **Canonical local invocation** for a Phase-1 file sweep:
 
 ```bash
 CARGO_MUTANTS_JOBS=2 \
 TENSOGRAM_THREADS=1 \
+CMAKE_BUILD_PARALLEL_LEVEL=1 \
+MAKEFLAGS=-j1 \
 cargo mutants -p tensogram --file rust/tensogram/src/hash.rs --jobserver-tasks 2
 ```
 
-The test-thread cap is committed to `.cargo/mutants.toml` so it doesn't
-need to appear on every command line.
+The test-thread cap (`--test-threads=2`) and the
+`--profile release-mutants` selection are pinned in
+`.cargo/mutants.toml` so they don't need to appear on every command
+line.
 
-| Use case | Jobs | Jobserver tasks | TENSOGRAM_THREADS |
-|---|---|---|---|
-| Default (12-core laptop) | `2` | `2` | `1` |
-| Strict serial (unattended overnight) | `1` | `1` | `1` |
-| Workstation with ≥16 cores + good cooling | `4` | `4` | `1` |
+### macOS escape hatch — `taskpolicy -b`
 
-**Why all four clamps?** Without them, `CARGO_MUTANTS_JOBS=2` still
-produces ~24 simultaneous rustc threads × ~24 concurrent test threads
-on a 12-core box because each layer fans out independently.  Load
-average climbs to ~18 (saturating), thermal throttling kicks in, and
-laptops have been observed to power down mid-sweep.  The four clamps
-together bring sustained load to ~4 on the same hardware.
+On Apple Silicon laptops, application-level clamps can still miss
+something — an undocumented threadpool in a future dependency, a code
+path that bypasses `TENSOGRAM_THREADS`, etc. For unattended runs where
+a power event is unacceptable, prefix the canonical invocation with
+`taskpolicy -b`:
+
+```bash
+taskpolicy -b -- env \
+  CARGO_MUTANTS_JOBS=2 \
+  TENSOGRAM_THREADS=1 \
+  CMAKE_BUILD_PARALLEL_LEVEL=1 \
+  MAKEFLAGS=-j1 \
+  cargo mutants -p tensogram --file rust/tensogram/src/framing.rs --jobserver-tasks 2
+```
+
+`taskpolicy -b` runs the entire process tree under **background QoS**:
+restricted to E-cores only (4 efficiency cores out of 12 on M-series),
+with total package power capped at ~30% of system maximum. Applies to
+all child processes — rustc, cc-rs, cmake, make, ld64, rayon, zstdmt
+workers, blosc2 workers — without their cooperation. Kernel-level
+enforcement, not application-level.
+
+**Cost**: 2-3x wallclock (E-cores are slower than P-cores).
+Acceptable for unattended overnight runs; unsuitable for interactive
+iteration. Use the bare canonical invocation when you're driving the
+sweep from a desk and watching it.
+
+### Per-context defaults
+
+| Use case | Jobs | Jobserver tasks | TENSOGRAM_THREADS | CMAKE / MAKEFLAGS | taskpolicy |
+|---|---|---|---|---|---|
+| Default (12-core laptop, attended) | `2` | `2` | `1` | `1` / `-j1` | optional |
+| Unattended overnight on a laptop | `2` | `2` | `1` | `1` / `-j1` | **required** |
+| Workstation (≥16 cores, good cooling) | `4` | `4` | `1` | `2` / `-j2` | not needed |
+| CI runner | `2` | `2` | `1` | `1` / `-j1` | not applicable |
 
 ### Common invocations
 
@@ -113,13 +157,9 @@ together bring sustained load to ~4 on the same hardware.
 step):
 
 ```bash
-# Default: 2 mutant workers × 2 jobserver tasks × 2 test threads × 1 rayon
 CARGO_MUTANTS_JOBS=2 TENSOGRAM_THREADS=1 \
+CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 \
   cargo mutants -p tensogram --file rust/tensogram/src/hash.rs --jobserver-tasks 2
-
-# Faster on a workstation
-CARGO_MUTANTS_JOBS=4 TENSOGRAM_THREADS=1 \
-  cargo mutants -p tensogram --file rust/tensogram/src/hash.rs --jobserver-tasks 4
 ```
 
 **Diff-only** (the most common workflow for PR authors — mutates only
@@ -127,6 +167,7 @@ lines you changed):
 
 ```bash
 CARGO_MUTANTS_JOBS=2 TENSOGRAM_THREADS=1 \
+CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 \
   cargo mutants --in-diff origin/main..HEAD --jobserver-tasks 2
 ```
 
