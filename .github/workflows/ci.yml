@@ -552,18 +552,25 @@ jobs:
 
       # The orchestrator (run_parity.py) and fixture scanner both
       # `import tensogram`, which must be the freshly-built local
-      # binding — not whatever release is on PyPI.  A regression in
-      # `make python-build` could silently shadow HEAD with the
-      # published wheel; assert the loaded module lives in `.venv`
-      # before letting pytest run.
+      # binding — not whatever release is on PyPI.  `maturin develop`
+      # does an editable install (puts a .pth in site-packages
+      # pointing to the source tree), so the canonical loaded path
+      # is `python/bindings/python/tensogram/__init__.py`.  In the
+      # regression scenario `python-build` was guarding against,
+      # `tensogram` ends up resolved from PyPI under
+      # `.venv/lib/.../site-packages/tensogram/__init__.py` instead.
+      # Assert the editable path; reject anything else.
       - name: Verify local tensogram binding is loaded
         run: |
           . .venv/bin/activate
           python - <<'EOF'
           import pathlib, tensogram
           src = pathlib.Path(tensogram.__file__).resolve()
-          venv = pathlib.Path(".venv").resolve()
-          assert venv in src.parents, f"tensogram from {src}, expected under {venv}"
+          expected = pathlib.Path("python/bindings/python/tensogram/__init__.py").resolve()
+          assert src == expected, (
+              f"tensogram from {src}, expected editable install at {expected}\n"
+              "If `make python-build`'s maturin invocation changed, update this assertion."
+          )
           print("tensogram from:", src)
           EOF
 
