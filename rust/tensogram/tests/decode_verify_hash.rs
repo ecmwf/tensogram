@@ -28,7 +28,10 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use tensogram::decode::{DecodeOptions, decode, decode_object, decode_range};
+use tensogram::decode::{
+    DecodeOptions, decode, decode_object, decode_object_from_frame, decode_range,
+    decode_range_from_frame,
+};
 use tensogram::encode::{EncodeOptions, encode};
 use tensogram::types::{ByteOrder, DataObjectDescriptor, GlobalMetadata};
 use tensogram::{Dtype, TensogramError, framing, wire};
@@ -489,4 +492,173 @@ fn decode_object_verify_respects_first_message_total_length_on_concat() {
     // Object 0 is in msg1 and is hashed → must succeed.
     decode_object(&concat, 0, &opts_verify())
         .expect("decode_object(0) on concat must verify msg1's first object");
+}
+
+// ── verify_hash on buffer shorter than preamble ──────────────────────
+//
+// Catches mutations of the `buf.len() < PREAMBLE_SIZE` guard in
+// `verify_data_object_frames` (line 188).
+
+#[test]
+fn verify_hash_on_buffer_shorter_than_preamble_returns_framing_error() {
+    // A buffer shorter than PREAMBLE_SIZE (24 bytes) must fail with
+    // a Framing error when verify_hash is true.
+    let tiny = vec![0u8; 10];
+    let err = decode(&tiny, &opts_verify()).unwrap_err();
+    match &err {
+        TensogramError::Framing(msg) => {
+            assert!(
+                msg.contains("preamble") || msg.contains("too short"),
+                "expected preamble/too-short error, got: {msg}"
+            );
+        }
+        other => panic!("expected Framing error, got: {other:?}"),
+    }
+}
+
+#[test]
+fn verify_hash_on_empty_buffer_returns_framing_error() {
+    let empty: Vec<u8> = vec![];
+    let err = decode(&empty, &opts_verify()).unwrap_err();
+    assert!(
+        matches!(&err, TensogramError::Framing(_)),
+        "expected Framing error on empty buffer, got: {err:?}"
+    );
+}
+
+// ── decode_object_from_frame with verify_hash ────────────────────────
+//
+// Catches mutations of the `!check_frame_hash(...)` guard (line 596)
+// and the `total < FRAME_HEADER_SIZE || total > frame_bytes.len()`
+// bounds check (line 588) in `decode_object_from_frame`.
+
+/// Extract the raw bytes of the i-th data-object frame from a message.
+fn extract_raw_object_frame(buf: &[u8], object_index: usize) -> Vec<u8> {
+    let (frame_start, slot_offset) = locate_object_frame(buf, object_index);
+    let frame_len = slot_offset + wire::FRAME_COMMON_FOOTER_SIZE;
+    buf[frame_start..frame_start + frame_len].to_vec()
+}
+
+#[test]
+fn decode_object_from_frame_verify_hash_succeeds_on_hashed_frame() {
+    let data = read_golden("hash_xxh3.tgm");
+    let frame = extract_raw_object_frame(&data, 0);
+    let (desc, decoded) = decode_object_from_frame(&frame, &opts_verify())
+        .expect("verify_hash on a valid hashed frame must succeed");
+    assert_eq!(desc.shape, vec![4]);
+    assert!(!decoded.is_empty());
+}
+
+#[test]
+fn decode_object_from_frame_verify_hash_rejects_unhashed_frame() {
+    let data = build_unhashed_single_object_message();
+    let frame = extract_raw_object_frame(&data, 0);
+    let err = decode_object_from_frame(&frame, &opts_verify()).unwrap_err();
+    match err {
+        TensogramError::MissingHash { object_index } => {
+            assert_eq!(object_index, 0);
+        }
+        other => panic!("expected MissingHash, got: {other:?}"),
+    }
+}
+
+#[test]
+fn decode_object_from_frame_verify_hash_rejects_tampered_payload() {
+    let data = read_golden("hash_xxh3.tgm");
+    let mut frame = extract_raw_object_frame(&data, 0);
+    // Flip a byte in the payload region (right after the frame header).
+    frame[wire::FRAME_HEADER_SIZE] ^= 0xFF;
+    let err = decode_object_from_frame(&frame, &opts_verify()).unwrap_err();
+    // `decode_object_from_frame` calls `check_frame_hash` directly
+    // (not via the pre-pass helper), so the error carries
+    // `object_index: None` from the hash module.
+    assert!(
+        matches!(err, TensogramError::HashMismatch { .. }),
+        "expected HashMismatch, got: {err:?}"
+    );
+}
+
+#[test]
+fn decode_object_from_frame_no_verify_succeeds_on_unhashed_frame() {
+    // Without verify_hash, an unhashed frame decodes fine.
+    let data = build_unhashed_single_object_message();
+    let frame = extract_raw_object_frame(&data, 0);
+    let (desc, decoded) = decode_object_from_frame(&frame, &opts_no_verify())
+        .expect("no-verify on unhashed frame must succeed");
+    assert_eq!(desc.shape, vec![4]);
+    assert!(!decoded.is_empty());
+}
+
+// ── decode_range_from_frame with masks ───────────────────────────────
+//
+// Catches the `&& → ||` mutation on line 658:
+// `options.restore_non_finite && desc.masks.is_some()`.
+
+#[test]
+fn decode_range_from_frame_restores_non_finite_masks() {
+    // Encode a message with NaN values so masks are present.
+    let values: Vec<f64> = vec![1.0, f64::NAN, 3.0, f64::INFINITY, 5.0, 6.0, 7.0, 8.0];
+    let data: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+    let desc = DataObjectDescriptor {
+        obj_type: "ntensor".to_string(),
+        ndim: 1,
+        shape: vec![8],
+        strides: vec![1],
+        dtype: Dtype::Float64,
+        byte_order: ByteOrder::native(),
+        encoding: "none".to_string(),
+        filter: "none".to_string(),
+        compression: "none".to_string(),
+        params: std::collections::BTreeMap::new(),
+        masks: None,
+    };
+    let enc_opts = EncodeOptions {
+        allow_nan: true,
+        allow_inf: true,
+        hashing: true,
+        small_mask_threshold_bytes: 0,
+        ..Default::default()
+    };
+    let msg = encode(&GlobalMetadata::default(), &[(&desc, &data)], &enc_opts).unwrap();
+
+    // Extract the frame bytes.
+    let frame = extract_raw_object_frame(&msg, 0);
+
+    // Decode range [0..4] with restore_non_finite=true.
+    let opts_restore = DecodeOptions {
+        restore_non_finite: true,
+        ..Default::default()
+    };
+    let (ret_desc, parts) = decode_range_from_frame(&frame, &[(0, 4)], &opts_restore).unwrap();
+    assert_eq!(parts.len(), 1);
+    // The range covers elements [1.0, NaN, 3.0, Inf].
+    let decoded: Vec<f64> = parts[0]
+        .chunks_exact(8)
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+        .collect();
+    assert_eq!(decoded[0], 1.0);
+    assert!(decoded[1].is_nan(), "NaN must be restored");
+    assert_eq!(decoded[2], 3.0);
+    assert!(decoded[3].is_infinite() && decoded[3] > 0.0, "+Inf must be restored");
+
+    // With restore_non_finite=false, NaN/Inf positions should be 0.0.
+    let opts_no_restore = DecodeOptions {
+        restore_non_finite: false,
+        ..Default::default()
+    };
+    let (_, parts_no) = decode_range_from_frame(&frame, &[(0, 4)], &opts_no_restore).unwrap();
+    let decoded_no: Vec<f64> = parts_no[0]
+        .chunks_exact(8)
+        .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
+        .collect();
+    assert_eq!(decoded_no[0], 1.0);
+    assert_eq!(decoded_no[1], 0.0, "NaN should be 0.0 when restore is off");
+    assert_eq!(decoded_no[2], 3.0);
+    assert_eq!(decoded_no[3], 0.0, "Inf should be 0.0 when restore is off");
+
+    // Also verify the descriptor reports masks.
+    assert!(
+        ret_desc.masks.is_some(),
+        "descriptor must carry masks for NaN/Inf data"
+    );
 }
