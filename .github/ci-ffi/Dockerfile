@@ -11,9 +11,12 @@
 #   - sccache (S3-backed, same bucket as .github/ci/), so the actual
 #     `cargo cinstall -p tensogram-ffi` step is incrementally cached
 #     across runs
-#   - perl-core + clang-devel — the manylinux gaps documented in
+#   - perl-core + clang-libs — the manylinux gaps documented in
 #     publish-ffi.yml ("Install build dependencies"), needed for
-#     openssl-sys (perl) and bindgen-driven *-sys crates (libclang)
+#     openssl-sys (perl) and bindgen-driven *-sys crates (libclang).
+#     `clang-libs` ships only the runtime libclang.so that bindgen
+#     dlopens; `clang-devel` would also pull in the full Clang dev
+#     environment (~250 MB) we never use.
 #
 # Builds on quay.io/pypa/manylinux_2_28_x86_64 so the produced
 # libtensogram.so links against glibc 2.28, matching the manylinux_2_28
@@ -37,7 +40,7 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     PATH=/usr/local/cargo/bin:$PATH
 
 RUN set -eux \
- && dnf install -y perl-core clang-devel \
+ && dnf install -y --setopt=install_weak_deps=False perl-core clang-libs \
  && dnf clean all \
  && rm -rf /var/cache/dnf
 
@@ -50,6 +53,9 @@ RUN set -eux \
 
 RUN set -eux \
  && cargo install cargo-c --version "${CARGO_C_VERSION}" --locked --features vendored-openssl \
+ && strip "${CARGO_HOME}"/bin/cargo-cbuild \
+          "${CARGO_HOME}"/bin/cargo-capi \
+          "${CARGO_HOME}"/bin/cargo-cinstall \
  && rm -rf "${CARGO_HOME}"/registry "${CARGO_HOME}"/git /tmp/*
 
 RUN set -eux \
