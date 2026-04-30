@@ -1,6 +1,15 @@
 # ────────────────────────────────────────────────────────────────
 # tensogram FFI publish image
 #
+# AlmaLinux 8 ships glibc 2.28 — the same ABI floor the manylinux_2_28
+# image guarantees — at ~80 MB instead of ~1.5 GB.  The manylinux image
+# adds Python interpreters + PyPy + a manylinux-audited build-tool
+# stack none of which a pure Rust C-API .so consumes; libtensogram
+# only links against glibc / libstdc++ / libgcc.  The
+# manylinux_2_28 ABI contract reduces here to "glibc <= 2.28", which
+# AlmaLinux 8 satisfies natively.  Python wheel auditwheel runs
+# against publish-pypi.yml's own image, not this one.
+#
 # Pre-bakes everything publish-ffi.yml's Linux leg used to install on
 # every run:
 #
@@ -11,24 +20,19 @@
 #   - sccache (S3-backed, same bucket as .github/ci/), so the actual
 #     `cargo cinstall -p tensogram-ffi` step is incrementally cached
 #     across runs
-#   - perl-core + clang-libs — the manylinux gaps documented in
-#     publish-ffi.yml ("Install build dependencies"), needed for
-#     openssl-sys (perl) and bindgen-driven *-sys crates (libclang).
-#     `clang-libs` ships only the runtime libclang.so that bindgen
-#     dlopens; `clang-devel` would also pull in the full Clang dev
-#     environment (~250 MB) we never use.
-#
-# Builds on quay.io/pypa/manylinux_2_28_x86_64 so the produced
-# libtensogram.so links against glibc 2.28, matching the manylinux_2_28
-# wheel ABI.  Anything newer (e.g. the ubuntu:24.04 base used by
-# .github/ci/Dockerfile) would link against glibc 2.39 and break every
-# distro older than Ubuntu 24.04 / RHEL 9.4 — the whole point of using
-# the manylinux base in publish-ffi is glibc compatibility.
+#   - perl-core + clang-libs — needed for openssl-sys (vendored perl
+#     scripts) and bindgen-driven *-sys crates (libclang).  `clang-libs`
+#     ships only the runtime libclang.so; `clang-devel` would also drag
+#     in the full Clang dev environment (~250 MB) we never use.
+#   - gcc + make + pkg-config: cargo cinstall's transitive C
+#     compilation (zstd-sys, blosc2-sys, openssl-sys vendored build,
+#     final cdylib link).  Provided implicitly by manylinux; on
+#     AlmaLinux they are explicit dnf installs.
 #
 #   docker build -t tensogram-ci-ffi:test .github/ci-ffi/
 # ────────────────────────────────────────────────────────────────
 
-ARG BASE=quay.io/pypa/manylinux_2_28_x86_64
+ARG BASE=almalinux:8
 FROM ${BASE}
 
 ARG RUST_VERSION=1.94.0
@@ -40,7 +44,9 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     PATH=/usr/local/cargo/bin:$PATH
 
 RUN set -eux \
- && dnf install -y --setopt=install_weak_deps=False perl-core clang-libs \
+ && dnf install -y --setopt=install_weak_deps=False \
+      gcc make pkg-config curl ca-certificates tar gzip \
+      perl-core clang-libs \
  && dnf clean all \
  && rm -rf /var/cache/dnf
 
@@ -66,6 +72,7 @@ RUN set -eux \
 RUN set -eux \
  && rustc --version && cargo --version \
  && cargo cbuild --help >/dev/null \
- && sccache --version
+ && sccache --version \
+ && ldd --version | head -1
 
 WORKDIR /workspace
