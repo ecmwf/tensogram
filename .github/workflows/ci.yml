@@ -628,11 +628,13 @@ jobs:
       - run: cargo install cargo-mutants --version 27.0.0 --locked
       - name: Mutate diff vs base
         env:
-          CARGO_MUTANTS_JOBS: 2  # see MUTATION_TESTING.md §3.0.1
+          CARGO_MUTANTS_JOBS: 2     # mutant worker count — see MUTATION_TESTING.md §3.0.1
+          TENSOGRAM_THREADS: 1      # cap library-internal rayon parallelism
         run: |
           cargo mutants \
             --in-diff origin/${{ github.base_ref }}..HEAD \
             --no-shuffle \
+            --jobserver-tasks 2 \
             --timeout-multiplier 3.0
       - uses: actions/upload-artifact@v4
         if: always()

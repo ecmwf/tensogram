@@ -69,20 +69,43 @@ Install the pinned version of `cargo-mutants`:
 cargo install cargo-mutants --version 27.0.0 --locked
 ```
 
-### Concurrency
+### Concurrency — three knobs that compound
 
-Set `CARGO_MUTANTS_JOBS` to control parallelism (cargo-mutants 27.0+
-reads this natively, equivalent to `--jobs N`):
+cargo-mutants concurrency is **not** a single number.  Three independent
+layers each fan out by default to one thread per logical CPU; multiplied
+together they saturate a 12-core laptop even at `CARGO_MUTANTS_JOBS=2`.
+**All three must be clamped** for a comfortable load profile:
 
-| Value | When to use |
-|---|---|
-| `1` | Strictly serial. Safest for unattended overnight runs; least risk of OOM, thermal throttling, or interrupt during long sweeps. |
-| `2` (**default**) | Two parallel mutants saturates a typical 8-core dev laptop without thermal throttling. Used by the PR-time `mutants-diff` and the nightly shards. |
-| `4` | Faster on workstations with ≥16 GB RAM and good cooling. Match the original cargo-mutants default. |
+| Layer | Knob | Default | Recommended |
+|---|---|---|---|
+| Mutant workers | `CARGO_MUTANTS_JOBS` env (= `--jobs`) | NCPUS | `2` |
+| Build / rustc fan-out | `--jobserver-tasks` flag | NCPUS | `2` |
+| Test-binary threads | `cargo test -- --test-threads=N` | NCPUS | `2` (already pinned in `.cargo/mutants.toml`) |
+| Library-internal rayon | `TENSOGRAM_THREADS` env | NCPUS | `1` |
 
-The repo's `.cargo/mutants.toml` does **not** pin a value — it lives in
-the environment so each invocation can be tuned without touching version
-control.
+**Canonical local invocation** for a Phase-1 file sweep:
+
+```bash
+CARGO_MUTANTS_JOBS=2 \
+TENSOGRAM_THREADS=1 \
+cargo mutants -p tensogram --file rust/tensogram/src/hash.rs --jobserver-tasks 2
+```
+
+The test-thread cap is committed to `.cargo/mutants.toml` so it doesn't
+need to appear on every command line.
+
+| Use case | Jobs | Jobserver tasks | TENSOGRAM_THREADS |
+|---|---|---|---|
+| Default (12-core laptop) | `2` | `2` | `1` |
+| Strict serial (unattended overnight) | `1` | `1` | `1` |
+| Workstation with ≥16 cores + good cooling | `4` | `4` | `1` |
+
+**Why all four clamps?** Without them, `CARGO_MUTANTS_JOBS=2` still
+produces ~24 simultaneous rustc threads × ~24 concurrent test threads
+on a 12-core box because each layer fans out independently.  Load
+average climbs to ~18 (saturating), thermal throttling kicks in, and
+laptops have been observed to power down mid-sweep.  The four clamps
+together bring sustained load to ~4 on the same hardware.
 
 ### Common invocations
 
@@ -90,18 +113,21 @@ control.
 step):
 
 ```bash
-# Uses the default of 2 parallel jobs
-cargo mutants -p tensogram --file rust/tensogram/src/hash.rs
+# Default: 2 mutant workers × 2 jobserver tasks × 2 test threads × 1 rayon
+CARGO_MUTANTS_JOBS=2 TENSOGRAM_THREADS=1 \
+  cargo mutants -p tensogram --file rust/tensogram/src/hash.rs --jobserver-tasks 2
 
-# Override for a faster run on a workstation
-CARGO_MUTANTS_JOBS=4 cargo mutants -p tensogram --file rust/tensogram/src/hash.rs
+# Faster on a workstation
+CARGO_MUTANTS_JOBS=4 TENSOGRAM_THREADS=1 \
+  cargo mutants -p tensogram --file rust/tensogram/src/hash.rs --jobserver-tasks 4
 ```
 
 **Diff-only** (the most common workflow for PR authors — mutates only
 lines you changed):
 
 ```bash
-cargo mutants --in-diff origin/main..HEAD
+CARGO_MUTANTS_JOBS=2 TENSOGRAM_THREADS=1 \
+  cargo mutants --in-diff origin/main..HEAD --jobserver-tasks 2
 ```
 
 Both commands write results to `mutants.out/` in the current directory.
