@@ -423,7 +423,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: mkdir -p "$TMPDIR"
 
-      - name: Install cargo-c (pinned)
+      - name: Install cargo-c
         # vendored-openssl: the ECMWF CI image does not ship libssl-dev,
         # so cargo-c's transitive openssl-sys dependency cannot find a
         # system OpenSSL. Vendoring is the upstream-recommended escape.
@@ -439,7 +439,7 @@ jobs:
             test -e "$BASE/$f" || { echo "::error::missing $BASE/$f"; exit 1; }
           done
 
-      - name: Header drift check (cargo-c vs build.rs cbindgen output)
+      - name: Header drift check
         # Both invocations must consume the same cbindgen.toml and emit a
         # byte-identical header. Any drift means cargo-c metadata or
         # cbindgen.toml is out of sync.
@@ -447,7 +447,7 @@ jobs:
           diff -u rust/tensogram-ffi/tensogram.h \
                   target/x86_64-unknown-linux-gnu/release/include/tensogram/tensogram.h
 
-      - name: Install to a temp prefix and smoke-test
+      - name: Install and smoke test
         # --libdir=lib pinned because the ECMWF Debian-based CI image
         # would otherwise pick a multiarch libdir (lib/x86_64-linux-gnu),
         # putting tensogram.pc somewhere the smoke script does not look.
