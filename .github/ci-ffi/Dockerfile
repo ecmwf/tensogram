@@ -27,10 +27,15 @@
 #     headers (stddef.h, stdarg.h, ...) which bindgen needs at parse
 #     time when libclang traverses `#include <stddef.h>` in headers
 #     like zstd.h.  AlmaLinux's LLVM 20 module installs the resource
-#     dir at `/usr/lib/clang/<version>/` while libclang.so lives at
-#     `/usr/lib64/libclang.so.<version>` — libclang's relative-path
-#     resource-dir lookup expects `/usr/lib64/clang/<version>/`, so
-#     we symlink `/usr/lib64/clang -> /usr/lib/clang` below.
+#     dir at `/usr/lib/clang/20/include/` but libclang's resource-dir
+#     auto-discovery (compile-time-baked-in path + relative-path-from-
+#     libclang.so heuristic) doesn't find it on this packaging.  Two
+#     belt-and-suspenders fixes below:
+#     (a) symlink /usr/lib64/clang -> /usr/lib/clang so the relative-
+#         path heuristic resolves;
+#     (b) ENV BINDGEN_EXTRA_CLANG_ARGS=\"-isystem /usr/lib/clang/20/
+#         include\" so bindgen's libclang invocation includes the path
+#         explicitly regardless of discovery.
 #     `clang-devel` would also drag in the full Clang dev environment
 #     (~250 MB) we never use.
 #   - gcc + gcc-c++ + make + cmake + pkg-config: cargo cinstall's
@@ -55,7 +60,8 @@ ARG SCCACHE_VERSION=0.10.0
 
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
-    PATH=/usr/local/cargo/bin:$PATH
+    PATH=/usr/local/cargo/bin:$PATH \
+    BINDGEN_EXTRA_CLANG_ARGS="-isystem /usr/lib/clang/20/include"
 
 RUN set -eux \
  && dnf install -y --setopt=install_weak_deps=False \
