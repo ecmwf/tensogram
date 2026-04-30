@@ -36,6 +36,17 @@ exclude_re = [
     # DataObjectFlags::CBOR_AFTER_PAYLOAD (wire.rs:238).
     "wire\\.rs:151:.*replace << with >>",
     "wire\\.rs:238:.*replace << with >>",
+
+    # cbor_kind_label is a Display-only helper producing human-readable labels
+    # for non-text CBOR keys in error messages.  Tests assert error variant, not
+    # exact wording — deleting individual match arms just changes the label string.
+    "delete match arm .* in cbor_kind_label",
+
+    # cbor_value_kind is a Display-only helper producing human-readable labels
+    # for CBOR value types in error messages (used by encode.rs param accessors).
+    # Tests assert error variant, not exact wording.
+    "replace cbor_value_kind",
+    "delete match arm .* in cbor_value_kind",
 ]
 
 # Run cargo test in release mode — ~8x faster per iteration on this
