@@ -627,11 +627,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-mutants --version 27.0.0 --locked
       - name: Mutate diff vs base
+        env:
+          CARGO_MUTANTS_JOBS: 2  # see MUTATION_TESTING.md §3.0.1
         run: |
           cargo mutants \
             --in-diff origin/${{ github.base_ref }}..HEAD \
             --no-shuffle \
-            --jobs 4 \
             --timeout-multiplier 3.0
       - uses: actions/upload-artifact@v4
         if: always()

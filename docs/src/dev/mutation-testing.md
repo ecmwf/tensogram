@@ -69,11 +69,32 @@ Install the pinned version of `cargo-mutants`:
 cargo install cargo-mutants --version 27.0.0 --locked
 ```
 
+### Concurrency
+
+Set `CARGO_MUTANTS_JOBS` to control parallelism (cargo-mutants 27.0+
+reads this natively, equivalent to `--jobs N`):
+
+| Value | When to use |
+|---|---|
+| `1` | Strictly serial. Safest for unattended overnight runs; least risk of OOM, thermal throttling, or interrupt during long sweeps. |
+| `2` (**default**) | Two parallel mutants saturates a typical 8-core dev laptop without thermal throttling. Used by the PR-time `mutants-diff` and the nightly shards. |
+| `4` | Faster on workstations with ≥16 GB RAM and good cooling. Match the original cargo-mutants default. |
+
+The repo's `.cargo/mutants.toml` does **not** pin a value — it lives in
+the environment so each invocation can be tuned without touching version
+control.
+
+### Common invocations
+
 **Full sweep of a single file** (useful when closing out a Phase-1
 step):
 
 ```bash
-cargo mutants -p tensogram --file rust/tensogram/src/hash.rs --jobs 4
+# Uses the default of 2 parallel jobs
+cargo mutants -p tensogram --file rust/tensogram/src/hash.rs
+
+# Override for a faster run on a workstation
+CARGO_MUTANTS_JOBS=4 cargo mutants -p tensogram --file rust/tensogram/src/hash.rs
 ```
 
 **Diff-only** (the most common workflow for PR authors — mutates only
@@ -84,6 +105,29 @@ cargo mutants --in-diff origin/main..HEAD
 ```
 
 Both commands write results to `mutants.out/` in the current directory.
+
+### Resuming an interrupted sweep
+
+Long sweeps (notably the framing-module sweep at ~12 hours with the
+default concurrency) can be interrupted by power events, OOM kills, or
+laptop sleep. cargo-mutants does not have a native resume flag, but
+`--shard N/K` partitions the mutant list deterministically and lets you
+re-run a subset:
+
+```bash
+# Run quarter 1 of 4 — first ~138 mutants of framing.rs
+cargo mutants -p tensogram --file rust/tensogram/src/framing.rs --shard 1/4
+
+# Then quarter 2, 3, 4 in subsequent sessions
+cargo mutants -p tensogram --file rust/tensogram/src/framing.rs --shard 2/4
+cargo mutants -p tensogram --file rust/tensogram/src/framing.rs --shard 3/4
+cargo mutants -p tensogram --file rust/tensogram/src/framing.rs --shard 4/4
+```
+
+Shard assignment is stable across runs, so re-running a single shard
+re-tests the same mutants. `mutants.out/` is overwritten per
+invocation; copy or rename between shard runs if you want to preserve
+per-shard results.
 
 ## Reading `mutants.out/`
 
