@@ -93,4 +93,5 @@
 
 - [Error Handling](guide/error-handling.md)
 - [Edge Cases](edge-cases.md)
+- [Mutation Testing](dev/mutation-testing.md)
 - [Internals](internals.md)
