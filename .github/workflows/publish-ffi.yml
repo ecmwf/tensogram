@@ -76,7 +76,7 @@ jobs:
     # SCCACHE_ENDPOINT object store so cache hits are cheap.
     runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
     container:
-      image: eccr.ecmwf.int/tensogram/ci-ffi:1.0.0
+      image: eccr.ecmwf.int/tensogram/ci-ffi:1.0.1
       credentials:
         username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
         password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
