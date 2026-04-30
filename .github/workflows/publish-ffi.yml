@@ -76,16 +76,19 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install perl-core
-        # cargo-c brings in `cargo` which depends on `openssl-sys`.
-        # `vendored-openssl` builds OpenSSL from source, whose
-        # ./Configure script and Makefile.in are perl that need
-        # several stdlib modules (IPC::Cmd, Time::Piece, Pod::Html,
-        # …).  manylinux_2_28's perl is stripped down to just the
-        # interpreter; the AlmaLinux 8 `perl-core` metapackage pulls
-        # in the complete standard library in one go, avoiding a
-        # whack-a-mole of module-by-module installs.
-        run: dnf install -y perl-core
+      - name: Install build dependencies
+        # Two manylinux gaps the workflow hits:
+        # * perl-core: `cargo install cargo-c --features vendored-openssl`
+        #   pulls in openssl-sys, whose vendored build runs perl scripts
+        #   that need IPC::Cmd, Time::Piece, Pod::Html, etc. manylinux's
+        #   perl is interpreter-only; perl-core is the AlmaLinux 8
+        #   metapackage that drags in the full stdlib in one install,
+        #   sparing us a whack-a-mole of module-by-module additions.
+        # * clang-devel: `cargo cinstall -p tensogram-ffi` transitively
+        #   builds blosc2-rs-sys / zstd-sys, which use bindgen and need
+        #   libclang at compile time. publish-pypi.yml installs the
+        #   same package for the same reason.
+        run: dnf install -y perl-core clang-devel
 
       - name: Install cargo-c
         run: cargo install cargo-c --version "$CARGO_C_VERSION" --locked --features vendored-openssl
