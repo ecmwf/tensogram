@@ -56,7 +56,16 @@ RUFF    ?= uv run --with ruff ruff
 # time because the new sibling extras (tensogram-xarray / tensogram-zarr at
 # the new minor) don't exist on PyPI yet — the publish flow itself is what
 # uploads them. maturin still reads pyproject.toml directly for the build.
-MATURIN ?= uv run --no-project --with maturin maturin
+#
+# Maturin must live in the project's `.venv` rather than a `uv run --with`
+# ephemeral env: with `--with maturin --no-project`, uv runs maturin in a
+# transient interpreter under `~/.cache/uv/builds-v0/...`, and `maturin
+# develop --uv` then installs the freshly-built wheel into THAT env, not
+# `.venv`.  The subsequent `uv pip install ./python/tensogram-{xarray,zarr}`
+# resolves `tensogram` from PyPI as a transitive dep, silently shadowing
+# HEAD.  The `python-build` recipe below installs maturin into `.venv`
+# explicitly before invoking this macro.
+MATURIN ?= uv run --no-project maturin
 RUFF_CFG ?= python/bindings/pyproject.toml
 # Space-separated --interpreter flags passed to maturin build; defaults to
 # auto-discovery. Override in CI: MATURIN_INTERP_ARGS="--interpreter /path/to/py"
@@ -68,6 +77,7 @@ MATURIN_COMPAT_ARG = $(if $(MATURIN_COMPAT),--compatibility $(MATURIN_COMPAT))
 
 python-build: ## Build Python bindings via maturin (dev install into .venv)
 	if [ ! -d .venv ] ; then uv venv ; fi
+	uv pip install maturin
 	cd python/bindings && $(MATURIN) develop --release --uv
 	uv pip install ./python/tensogram-xarray
 	uv pip install ./python/tensogram-zarr
