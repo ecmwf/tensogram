@@ -1539,6 +1539,10 @@ fn compute_packing_params(
 ///   ``total_length``.  Required for fixtures or workloads that exercise
 ///   the bidirectional remote walker.
 ///
+/// To produce a sequence of messages from a single encoder, use
+/// :meth:`finish_and_reset` or :meth:`finish_and_reset_backfilled` instead
+/// of constructing a new encoder per message.
+///
 /// Example::
 ///
 ///     enc = tensogram.StreamingEncoder({})
@@ -1547,6 +1551,14 @@ fn compute_packing_params(
 ///     msg = enc.finish()              # streaming-mode (total_length=0)
 ///     # or
 ///     msg = enc.finish_backfilled()   # backfilled (full backward locatability)
+///
+/// Multi-message sequence without re-allocation::
+///
+///     enc = tensogram.StreamingEncoder({})
+///     for field in fields:
+///         enc.write_object(descriptor, data)
+///         wire_bytes = enc.finish_and_reset_backfilled()
+///         send(wire_bytes)
 #[pyclass(name = "StreamingEncoder")]
 struct PyStreamingEncoder {
     inner: Option<StreamingEncoder<std::io::Cursor<Vec<u8>>>>,
@@ -1694,6 +1706,54 @@ impl PyStreamingEncoder {
             .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
         let cursor = inner.finish_with_backfill().map_err(to_py_err)?;
         Ok(PyBytes::new(py, cursor.get_ref()))
+    }
+
+    /// Finalise the current message and immediately begin the next one.
+    ///
+    /// Returns the wire-format ``bytes`` of the completed message (streaming
+    /// mode: ``total_length = 0`` in both preamble and postamble, matching
+    /// the :meth:`finish` contract).
+    ///
+    /// The encoder's accumulated state is reset and a fresh preamble +
+    /// header metadata frame are written so this encoder object is
+    /// immediately ready for the next :meth:`write_object` call.
+    ///
+    /// This is semantically equivalent to::
+    ///
+    ///     msg = enc.finish()
+    ///     enc = tensogram.StreamingEncoder(...)   # expensive re-init
+    ///
+    /// but without the re-allocation of the encoder object.
+    ///
+    /// Raises ``RuntimeError`` if the encoder has already been exhausted
+    /// by :meth:`finish` or :meth:`finish_backfilled`.
+    fn finish_and_reset<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
+        let bytes = inner.finish_and_reset().map_err(to_py_err)?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Finalise the current message with back-filled length fields and
+    /// immediately begin the next one.
+    ///
+    /// Like :meth:`finish_and_reset` but patches ``total_length`` in both
+    /// the preamble and postamble before returning the bytes, satisfying the
+    /// backward-locatability invariant from wire-format §7.  Use this when
+    /// the concatenated output must support the bidirectional remote walker
+    /// or O(1) backward scans.
+    ///
+    /// Raises ``RuntimeError`` if the encoder has already been exhausted
+    /// by :meth:`finish` or :meth:`finish_backfilled`.
+    fn finish_and_reset_backfilled<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let inner = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| PyRuntimeError::new_err("StreamingEncoder already finished"))?;
+        let bytes = inner.finish_and_reset_with_backfill().map_err(to_py_err)?;
+        Ok(PyBytes::new(py, &bytes))
     }
 }
 

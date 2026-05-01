@@ -30,6 +30,26 @@
 
 ---
 
+## `finish_and_reset()` on `StreamingEncoder` for multi-message sequences
+
+The `StreamingEncoder` acquired two new methods that finalise the current
+message and atomically reset the encoder for the next one, avoiding the
+overhead of constructing a fresh `StreamingEncoder` between messages.
+
+| Component | What changed |
+|-----------|--------------|
+| `rust/tensogram/src/streaming.rs` | `write_footer_frames_and_postamble(&mut self)` private helper extracted from `finish()`; shared by `finish()`, `finish_with_backfill()`, and the new methods. `write_preamble_and_header()` private free function extracted from `new()` so `reset_message_state()` can restart the encoder without re-running construction logic. |
+| `rust/tensogram/src/streaming.rs` | `impl StreamingEncoder<Cursor<Vec<u8>>>` specialised block adds `finish_and_reset() -> Result<Vec<u8>>` (streaming mode, `total_length = 0`) and `finish_and_reset_with_backfill() -> Result<Vec<u8>>` (back-fills both preamble and postamble lengths, satisfying §7 backward-locatability). `reset_message_state()` private helper clears per-message bookkeeping and writes the fresh preamble + header. |
+| `python/bindings/src/lib.rs` | `PyStreamingEncoder` gains `finish_and_reset()` and `finish_and_reset_backfilled()` methods. Unlike `finish()` / `finish_backfilled()` (which exhaust `self.inner`), these operate on `self.inner.as_mut()` and leave the encoder valid. |
+| `python/tests/test_streaming_encoder_finish_and_reset.py` | New test module: decode correctness, streaming-mode zero lengths, backfill lengths, multiple resets, encoder still usable after reset, exhaust-after-finish error, empty message, multi-object message, concatenation + scan, global-meta preserved across resets. |
+| `rust/tensogram/src/streaming.rs` tests | Eight new unit tests: decode correctness, zero lengths, backfill lengths, five-message loop, encoder usable after reset then finish(), dangling preceder error, concatenation scannable, empty message. |
+
+The public API change is additive — existing `finish()` / `finish_backfilled()` semantics are
+unchanged.  The internal refactor (shared `write_footer_frames_and_postamble` helper) is
+behaviour-preserving: verified by the full existing test suite.
+
+---
+
 ## Remote bidirectional walker — pipelined and on by default
 
 The remote backend now uses a pipelined bidirectional walker out of

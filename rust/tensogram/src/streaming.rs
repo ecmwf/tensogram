@@ -123,41 +123,14 @@ impl<W: Write> StreamingEncoder<W> {
         let resolved = options.aggregate_hash.resolved_streaming()?;
         let emit_footer_hash = options.hashing && resolved.emits_footer();
 
-        let meta_cbor = metadata::global_metadata_to_cbor(global_meta)?;
-
-        // Streaming preamble: total_length=0 signals unknown length at write time.
-        // Always set PRECEDER_METADATA in streaming mode — the flag is advisory
-        // and decoders handle the absence of actual preceder frames gracefully.
-        let mut flags = MessageFlags::default();
-        flags.set(MessageFlags::HEADER_METADATA);
-        flags.set(MessageFlags::FOOTER_METADATA);
-        flags.set(MessageFlags::FOOTER_INDEX);
-        flags.set(MessageFlags::PRECEDER_METADATA);
-        if options.hashing {
-            // v3: HASHES_PRESENT signals per-frame inline hash slots
-            // are populated; set whenever hashing is enabled.
-            flags.set(MessageFlags::HASHES_PRESENT);
-            if emit_footer_hash {
-                flags.set(MessageFlags::FOOTER_HASHES);
-            }
-        }
-
-        let preamble = Preamble {
-            version: crate::wire::WIRE_VERSION,
-            flags,
-            reserved: 0,
-            total_length: 0,
-        };
-        let preamble_bytes = preamble_to_bytes(&preamble);
-        writer.write_all(&preamble_bytes)?;
-        let mut bytes_written = PREAMBLE_SIZE as u64;
-
-        // Write header metadata frame
-        let frame_bytes = build_frame(FrameType::HeaderMetadata, 1, 0, &meta_cbor, options.hashing);
-        writer.write_all(&frame_bytes)?;
-        bytes_written += frame_bytes.len() as u64;
-
-        write_padding(&mut writer, &mut bytes_written)?;
+        let mut bytes_written = 0u64;
+        write_preamble_and_header(
+            &mut writer,
+            &mut bytes_written,
+            global_meta,
+            options.hashing,
+            emit_footer_hash,
+        )?;
 
         // Snapshot the thread budget now so that mid-message changes to
         // TENSOGRAM_THREADS don't leak in between write_object calls —
@@ -430,6 +403,26 @@ impl<W: Write> StreamingEncoder<W> {
     /// Writes footer frames (payload metadata + hash + index) and the postamble.
     /// Consumes the encoder and returns the underlying writer.
     pub fn finish(mut self) -> Result<W> {
+        self.write_footer_frames_and_postamble()?;
+        self.writer.flush()?;
+        Ok(self.writer)
+    }
+
+    /// Write footer frames (metadata + optional hash + index) and the postamble
+    /// to the underlying writer.
+    ///
+    /// This is the shared inner implementation for [`finish`](Self::finish),
+    /// [`finish_with_backfill`](StreamingEncoder::finish_with_backfill), and
+    /// [`finish_and_reset`](StreamingEncoder::finish_and_reset).  It operates
+    /// on `&mut self` so that the specialized `finish_and_reset` variants can
+    /// reset the encoder state and write a new preamble without consuming the
+    /// encoder.
+    ///
+    /// After a successful call the accumulated per-message bookkeeping
+    /// (`object_offsets`, `object_lengths`) is consumed by the index frame
+    /// (via [`std::mem::take`]) and left empty; callers that reset the encoder
+    /// must also clear the remaining fields.
+    fn write_footer_frames_and_postamble(&mut self) -> Result<()> {
         if self.pending_preceder {
             return Err(TensogramError::Framing(
                 "dangling PrecederMetadata: finish called without a following write_object/write_object_pre_encoded"
@@ -500,10 +493,11 @@ impl<W: Write> StreamingEncoder<W> {
             write_padding(&mut self.writer, &mut self.bytes_written)?;
         }
 
-        // Footer index frame
+        // Footer index frame — `mem::take` moves the vecs out without cloning,
+        // leaving empty vecs in `self` (relevant for finish_and_reset callers).
         let index = IndexFrame {
-            offsets: self.object_offsets,
-            lengths: self.object_lengths,
+            offsets: std::mem::take(&mut self.object_offsets),
+            lengths: std::mem::take(&mut self.object_lengths),
         };
         let index_cbor = metadata::index_to_cbor(&index)?;
         let frame_bytes = build_frame(FrameType::FooterIndex, 1, 0, &index_cbor, self.hashing);
@@ -529,9 +523,7 @@ impl<W: Write> StreamingEncoder<W> {
         self.writer.write_all(&postamble_bytes)?;
         self.bytes_written += postamble_bytes.len() as u64;
 
-        self.writer.flush()?;
-
-        Ok(self.writer)
+        Ok(())
     }
 
     /// Returns the number of data objects written so far.
@@ -568,37 +560,194 @@ impl<W: Write + std::io::Seek> StreamingEncoder<W> {
     /// `write_all`, or `flush`.
     ///
     /// [`finish`]: StreamingEncoder::finish
-    pub fn finish_with_backfill(self) -> Result<W> {
+    pub fn finish_with_backfill(mut self) -> Result<W> {
         use std::io::SeekFrom;
-        // `finish()` consumes self and returns the inner writer;
-        // we then seek back to patch both length slots.
-        let mut writer = self.finish()?;
+        self.write_footer_frames_and_postamble()?;
 
         // Determine the current file position, which equals the full
-        // message length after finish() (finish() consumed self, so
-        // we re-derive via `stream_position`).
-        let end_pos = writer.stream_position()?;
+        // message length after the footer + postamble have been written.
+        let end_pos = self.writer.stream_position()?;
         let total_length = end_pos;
 
         // Back-fill the preamble's total_length (bytes 16..24).
-        writer.seek(SeekFrom::Start(16))?;
-        writer.write_all(&total_length.to_be_bytes())?;
+        self.writer.seek(SeekFrom::Start(16))?;
+        self.writer.write_all(&total_length.to_be_bytes())?;
 
         // Back-fill the postamble's total_length (second u64 field,
         // located at `end - 16 .. end - 8`; the trailing 8 bytes are
         // the END_MAGIC).
-        writer.seek(SeekFrom::Start(end_pos - 16))?;
-        writer.write_all(&total_length.to_be_bytes())?;
+        self.writer.seek(SeekFrom::Start(end_pos - 16))?;
+        self.writer.write_all(&total_length.to_be_bytes())?;
 
         // Seek back to EOF so the returned writer matches
         // `finish()`'s post-condition (cursor at the very end).
-        writer.seek(SeekFrom::Start(end_pos))?;
-        writer.flush()?;
-        Ok(writer)
+        self.writer.seek(SeekFrom::Start(end_pos))?;
+        self.writer.flush()?;
+        Ok(self.writer)
+    }
+}
+
+// ── In-memory cursor specialisation — finish_and_reset ───────────────────────
+
+impl StreamingEncoder<std::io::Cursor<Vec<u8>>> {
+    /// Finalise the current message and immediately begin the next one.
+    ///
+    /// Returns the wire bytes of the completed message (streaming mode:
+    /// `total_length = 0` in both preamble and postamble, matching the
+    /// [`finish`](StreamingEncoder::finish) contract).
+    ///
+    /// The encoder's accumulated per-message state is cleared and a fresh
+    /// preamble + header metadata frame are written so the same encoder
+    /// object is immediately ready for the next sequence of
+    /// [`write_object`](StreamingEncoder::write_object) calls.
+    ///
+    /// This is semantically equivalent to:
+    /// ```no_run
+    /// # use tensogram::streaming::StreamingEncoder;
+    /// # use tensogram::{GlobalMetadata, EncodeOptions};
+    /// # let meta = GlobalMetadata::default();
+    /// # let opts = EncodeOptions::default();
+    /// # let mut enc = StreamingEncoder::new(
+    /// #     std::io::Cursor::new(Vec::new()), &meta, &opts).unwrap();
+    /// let bytes: Vec<u8> = enc.finish().unwrap().into_inner();
+    /// enc = StreamingEncoder::new(
+    ///     std::io::Cursor::new(Vec::new()), &meta, &opts).unwrap();
+    /// ```
+    /// but without re-allocating the encoder object.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TensogramError::Framing`] if a
+    /// [`write_preceder`](StreamingEncoder::write_preceder) call has no
+    /// corresponding [`write_object`](StreamingEncoder::write_object)
+    /// (dangling preceder).
+    pub fn finish_and_reset(&mut self) -> Result<Vec<u8>> {
+        self.write_footer_frames_and_postamble()?;
+        self.writer.flush()?;
+        let finished_bytes = self.writer.get_ref().clone();
+        self.reset_message_state()?;
+        Ok(finished_bytes)
+    }
+
+    /// Finalise the current message with back-filled length fields and
+    /// immediately begin the next one.
+    ///
+    /// Like [`finish_and_reset`](Self::finish_and_reset) but patches
+    /// `total_length` in both the preamble (byte offset 16) and the
+    /// postamble (byte offset `end - 16`) before returning the bytes,
+    /// satisfying the backward-locatability invariant from wire-format §7.
+    ///
+    /// Readers can then O(1) backward-scan the concatenated output produced
+    /// by repeated `finish_and_reset_with_backfill` calls; use this variant
+    /// when the multi-message sequence must support the bidirectional remote
+    /// walker.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TensogramError::Framing`] if a
+    /// [`write_preceder`](StreamingEncoder::write_preceder) call has no
+    /// corresponding [`write_object`](StreamingEncoder::write_object)
+    /// (dangling preceder).
+    pub fn finish_and_reset_with_backfill(&mut self) -> Result<Vec<u8>> {
+        use std::io::{Seek, SeekFrom};
+        self.write_footer_frames_and_postamble()?;
+
+        // Back-fill total_length in preamble and postamble.
+        let end_pos = self.writer.stream_position()?;
+        let total_length = end_pos;
+        self.writer.seek(SeekFrom::Start(16))?;
+        self.writer.write_all(&total_length.to_be_bytes())?;
+        self.writer.seek(SeekFrom::Start(end_pos - 16))?;
+        self.writer.write_all(&total_length.to_be_bytes())?;
+        self.writer.seek(SeekFrom::Start(end_pos))?;
+        self.writer.flush()?;
+
+        let finished_bytes = self.writer.get_ref().clone();
+        self.reset_message_state()?;
+        Ok(finished_bytes)
+    }
+
+    /// Clear all per-message accumulated state and write a fresh preamble +
+    /// header metadata frame so the encoder is ready for the next message.
+    fn reset_message_state(&mut self) -> Result<()> {
+        // Replace the cursor with a fresh empty buffer.
+        self.writer = std::io::Cursor::new(Vec::new());
+        // Clear per-message bookkeeping.  object_offsets and object_lengths
+        // were already consumed by write_footer_frames_and_postamble via
+        // mem::take, but we clear them defensively.
+        self.object_offsets.clear();
+        self.object_lengths.clear();
+        self.hash_entries.clear();
+        self.completed_objects.clear();
+        self.pending_preceder = false;
+        self.preceder_payloads.clear();
+        self.bytes_written = 0;
+        // Snapshot fields that cannot be borrowed while self.writer is mutably
+        // borrowed by write_preamble_and_header.
+        let global_meta = self.global_meta.clone();
+        let hashing = self.hashing;
+        let emit_footer_hash_frame = self.emit_footer_hash_frame;
+        write_preamble_and_header(
+            &mut self.writer,
+            &mut self.bytes_written,
+            &global_meta,
+            hashing,
+            emit_footer_hash_frame,
+        )
     }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Write the streaming-mode preamble (`total_length = 0`) and the
+/// `HeaderMetadata` frame to `writer`, updating `bytes_written` accordingly.
+///
+/// Extracted from [`StreamingEncoder::new`] so it can also be called by
+/// [`StreamingEncoder::reset_message_state`] to begin a fresh message after
+/// [`StreamingEncoder::finish_and_reset`].
+fn write_preamble_and_header<W: Write>(
+    writer: &mut W,
+    bytes_written: &mut u64,
+    global_meta: &GlobalMetadata,
+    hashing: bool,
+    emit_footer_hash_frame: bool,
+) -> Result<()> {
+    let meta_cbor = metadata::global_metadata_to_cbor(global_meta)?;
+
+    // Streaming preamble: total_length=0 signals unknown length at write time.
+    // Always set PRECEDER_METADATA in streaming mode — the flag is advisory
+    // and decoders handle the absence of actual preceder frames gracefully.
+    let mut flags = MessageFlags::default();
+    flags.set(MessageFlags::HEADER_METADATA);
+    flags.set(MessageFlags::FOOTER_METADATA);
+    flags.set(MessageFlags::FOOTER_INDEX);
+    flags.set(MessageFlags::PRECEDER_METADATA);
+    if hashing {
+        // v3: HASHES_PRESENT signals per-frame inline hash slots
+        // are populated; set whenever hashing is enabled.
+        flags.set(MessageFlags::HASHES_PRESENT);
+        if emit_footer_hash_frame {
+            flags.set(MessageFlags::FOOTER_HASHES);
+        }
+    }
+
+    let preamble = Preamble {
+        version: crate::wire::WIRE_VERSION,
+        flags,
+        reserved: 0,
+        total_length: 0,
+    };
+    let preamble_bytes = preamble_to_bytes(&preamble);
+    writer.write_all(&preamble_bytes)?;
+    *bytes_written += PREAMBLE_SIZE as u64;
+
+    let frame_bytes = build_frame(FrameType::HeaderMetadata, 1, 0, &meta_cbor, hashing);
+    writer.write_all(&frame_bytes)?;
+    *bytes_written += frame_bytes.len() as u64;
+
+    write_padding(writer, bytes_written)?;
+    Ok(())
+}
 
 fn preamble_to_bytes(preamble: &Preamble) -> Vec<u8> {
     let mut out = Vec::with_capacity(PREAMBLE_SIZE);
@@ -1609,5 +1758,228 @@ mod tests {
         };
         let res = StreamingEncoder::new(Vec::new(), &meta, &opts);
         assert!(res.is_ok(), "None must be accepted in streaming mode");
+    }
+
+    // ── finish_and_reset tests ────────────────────────────────────────────
+
+    #[test]
+    fn finish_and_reset_produces_independently_decodable_messages() {
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4]);
+        let data1 = vec![1u8; 4 * 4];
+        let data2 = vec![2u8; 4 * 4];
+
+        let mut enc = StreamingEncoder::new(
+            std::io::Cursor::new(Vec::new()),
+            &meta,
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+
+        enc.write_object(&desc, &data1).unwrap();
+        let msg1 = enc.finish_and_reset().unwrap();
+
+        enc.write_object(&desc, &data2).unwrap();
+        let msg2 = enc.finish_and_reset().unwrap();
+
+        let (_, objs1) = decode(&msg1, &DecodeOptions::default()).unwrap();
+        assert_eq!(objs1.len(), 1);
+        assert_eq!(objs1[0].1, data1, "message 1 payload mismatch");
+
+        let (_, objs2) = decode(&msg2, &DecodeOptions::default()).unwrap();
+        assert_eq!(objs2.len(), 1);
+        assert_eq!(objs2[0].1, data2, "message 2 payload mismatch");
+    }
+
+    #[test]
+    fn finish_and_reset_streaming_mode_zero_lengths() {
+        // finish_and_reset (without backfill) matches finish(): total_length = 0.
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 4 * 4];
+
+        let mut enc = StreamingEncoder::new(
+            std::io::Cursor::new(Vec::new()),
+            &meta,
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        enc.write_object(&desc, &data).unwrap();
+        let msg = enc.finish_and_reset().unwrap();
+
+        let preamble_len = u64::from_be_bytes(msg[16..24].try_into().unwrap());
+        let postamble_len =
+            u64::from_be_bytes(msg[msg.len() - 16..msg.len() - 8].try_into().unwrap());
+        assert_eq!(
+            preamble_len, 0,
+            "streaming mode preamble total_length must be 0"
+        );
+        assert_eq!(
+            postamble_len, 0,
+            "streaming mode postamble total_length must be 0"
+        );
+    }
+
+    #[test]
+    fn finish_and_reset_with_backfill_fills_total_length() {
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4]);
+        let data = vec![0u8; 4 * 4];
+
+        let mut enc = StreamingEncoder::new(
+            std::io::Cursor::new(Vec::new()),
+            &meta,
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        enc.write_object(&desc, &data).unwrap();
+        let msg = enc.finish_and_reset_with_backfill().unwrap();
+
+        let total = msg.len() as u64;
+        let preamble_len = u64::from_be_bytes(msg[16..24].try_into().unwrap());
+        let postamble_len =
+            u64::from_be_bytes(msg[msg.len() - 16..msg.len() - 8].try_into().unwrap());
+        assert_eq!(
+            preamble_len, total,
+            "backfilled preamble total_length must equal message length"
+        );
+        assert_eq!(
+            postamble_len, total,
+            "backfilled postamble total_length must equal message length"
+        );
+    }
+
+    #[test]
+    fn finish_and_reset_allows_multiple_resets() {
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4]);
+
+        let mut enc = StreamingEncoder::new(
+            std::io::Cursor::new(Vec::new()),
+            &meta,
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+
+        let mut messages = Vec::new();
+        for i in 0u8..5 {
+            let data = vec![i; 4 * 4];
+            enc.write_object(&desc, &data).unwrap();
+            messages.push((enc.finish_and_reset_with_backfill().unwrap(), data));
+        }
+
+        for (msg, expected_data) in &messages {
+            let (_, objs) = decode(msg, &DecodeOptions::default()).unwrap();
+            assert_eq!(objs.len(), 1);
+            assert_eq!(&objs[0].1, expected_data);
+        }
+    }
+
+    #[test]
+    fn finish_and_reset_encoder_still_usable_after_reset() {
+        // After finish_and_reset(), calling finish() on the same encoder must work.
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4]);
+        let data1 = vec![10u8; 4 * 4];
+        let data2 = vec![20u8; 4 * 4];
+
+        let mut enc = StreamingEncoder::new(
+            std::io::Cursor::new(Vec::new()),
+            &meta,
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+
+        enc.write_object(&desc, &data1).unwrap();
+        let _msg1 = enc.finish_and_reset().unwrap();
+
+        // enc is now reset; use finish() for the final message.
+        enc.write_object(&desc, &data2).unwrap();
+        let cursor = enc.finish().unwrap();
+        let (_, objs) = decode(cursor.get_ref(), &DecodeOptions::default()).unwrap();
+        assert_eq!(objs[0].1, data2);
+    }
+
+    #[test]
+    fn finish_and_reset_dangling_preceder_returns_error() {
+        let meta = GlobalMetadata::default();
+        let mut prec = BTreeMap::new();
+        prec.insert("key".to_string(), ciborium::Value::Text("val".to_string()));
+
+        let mut enc = StreamingEncoder::new(
+            std::io::Cursor::new(Vec::new()),
+            &meta,
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+        enc.write_preceder(prec).unwrap();
+        // finish_and_reset without the corresponding write_object must fail.
+        let result = enc.finish_and_reset();
+        assert!(
+            result.is_err(),
+            "dangling preceder must cause finish_and_reset to fail"
+        );
+    }
+
+    #[test]
+    fn finish_and_reset_concatenated_messages_scannable() {
+        // Messages produced by finish_and_reset_with_backfill can be concatenated
+        // and scanned back as independent messages.
+        use crate::framing::scan;
+
+        let meta = GlobalMetadata::default();
+        let desc = make_descriptor(vec![4]);
+
+        let mut enc = StreamingEncoder::new(
+            std::io::Cursor::new(Vec::new()),
+            &meta,
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+
+        let mut parts: Vec<Vec<u8>> = Vec::new();
+        for i in 0u8..3 {
+            enc.write_object(&desc, &[i; 16]).unwrap();
+            parts.push(enc.finish_and_reset_with_backfill().unwrap());
+        }
+
+        let combined: Vec<u8> = parts.iter().flatten().copied().collect();
+        let scanned = scan(&combined);
+        assert_eq!(
+            scanned.len(),
+            3,
+            "three concatenated messages must scan as three"
+        );
+
+        let mut offset = 0usize;
+        for (i, part) in parts.iter().enumerate() {
+            assert_eq!(
+                scanned[i],
+                (offset, part.len()),
+                "scan offset/length mismatch for message {i}"
+            );
+            offset += part.len();
+        }
+    }
+
+    #[test]
+    fn finish_and_reset_empty_message_is_decodable() {
+        // finish_and_reset with no objects must produce a valid empty message.
+        let meta = GlobalMetadata::default();
+
+        let mut enc = StreamingEncoder::new(
+            std::io::Cursor::new(Vec::new()),
+            &meta,
+            &EncodeOptions::default(),
+        )
+        .unwrap();
+
+        let msg = enc.finish_and_reset().unwrap();
+        let (_, objs) = decode(&msg, &DecodeOptions::default()).unwrap();
+        assert_eq!(
+            objs.len(),
+            0,
+            "empty message after finish_and_reset must decode to 0 objects"
+        );
     }
 }

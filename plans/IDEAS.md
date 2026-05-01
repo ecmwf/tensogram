@@ -74,27 +74,6 @@ implement until promoted to `TODO.md`.
   `(file_path, msg_index, obj_index)`.  The same pattern applied to in-memory wire bytes covers
   the in-process / over-the-wire case.
 
-- [ ] **`finish_and_reset()` on `StreamingEncoder` for multi-message sequences**
-
-  The current `StreamingEncoder` is one-shot: `finish()` (or `finish_backfilled()`) finalises the
-  message and returns its bytes, after which the encoder is spent.  Producing a sequence of messages
-  — e.g. one tensogram message per model field in a loop — therefore requires constructing a new
-  `StreamingEncoder` for every iteration, which carries non-trivial allocation overhead and makes
-  the intent less readable.
-
-  A `finish_and_reset()` method would finalise the current message (returning its bytes exactly as
-  `finish()` does) and then atomically reset the encoder's internal cursor so the same object can
-  immediately start accumulating the next message.  Semantics are identical to:
-
-  ```python
-  bytes = enc.finish()
-  enc = tensogram.StreamingEncoder(...)   # expensive re-init
-  ```
-
-  but without the re-allocation.  The method is useful standalone (any multi-message file writer)
-  and is the natural primitive for workflow engines that intercept message boundaries to decide
-  when to forward data to downstream consumers.
-
 - [ ] **`message_to_bytes(msg: Message) -> bytes` convenience function**
 
   A canonical public function to obtain wire bytes from any `Message`, regardless of how it was
