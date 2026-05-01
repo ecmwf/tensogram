@@ -45,6 +45,12 @@ concurrency:
   group: mutants-weekly
   cancel-in-progress: false
 
+# Explicit least-privilege GITHUB_TOKEN permissions for this workflow.
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
 jobs:
   full-sweep:
     name: Sweep (shard ${{ matrix.shard }}/16)
