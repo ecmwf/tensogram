@@ -639,7 +639,10 @@ fn decode_range_from_frame_restores_non_finite_masks() {
     assert_eq!(decoded[0], 1.0);
     assert!(decoded[1].is_nan(), "NaN must be restored");
     assert_eq!(decoded[2], 3.0);
-    assert!(decoded[3].is_infinite() && decoded[3] > 0.0, "+Inf must be restored");
+    assert!(
+        decoded[3].is_infinite() && decoded[3] > 0.0,
+        "+Inf must be restored"
+    );
 
     // With restore_non_finite=false, NaN/Inf positions should be 0.0.
     let opts_no_restore = DecodeOptions {
