@@ -18,6 +18,11 @@ rust/tensogram-wasm/Cargo.lock
 .venv/
 **/__pycache__/
 *.pyc
+
+# cargo-mutants working directory + per-run logs
+mutants.out/
+mutants.out.*/
+mutants*.log
 python/bindings/python/tensogram/tensogram*.so
 # TODO do we want to have uv.locks ignored?
 **/uv.lock

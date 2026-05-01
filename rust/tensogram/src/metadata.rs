@@ -1328,6 +1328,121 @@ mod tests {
         assert!(cbor_values_equal(&a, &b));
     }
 
+    // ── Mutation-testing gap-fillers ────────────────────────────────────
+
+    #[test]
+    fn test_cbor_values_equal_map_same_keys_different_values() {
+        // Kills: replace && with || in cbor_values_equal (line 464).
+        // With ||, matching keys alone would make the whole pair "equal"
+        // even when values differ.
+        use super::cbor_values_equal;
+        let a = ciborium::Value::Map(vec![(
+            ciborium::Value::Text("k".to_string()),
+            ciborium::Value::Integer(1.into()),
+        )]);
+        let b = ciborium::Value::Map(vec![(
+            ciborium::Value::Text("k".to_string()),
+            ciborium::Value::Integer(2.into()),
+        )]);
+        assert!(
+            !cbor_values_equal(&a, &b),
+            "maps with same keys but different values must not be equal"
+        );
+    }
+
+    #[test]
+    fn test_cbor_values_equal_map_different_keys_same_values() {
+        // Also kills && → || : matching values alone would make the pair
+        // "equal" even when keys differ.
+        use super::cbor_values_equal;
+        let a = ciborium::Value::Map(vec![(
+            ciborium::Value::Text("x".to_string()),
+            ciborium::Value::Integer(1.into()),
+        )]);
+        let b = ciborium::Value::Map(vec![(
+            ciborium::Value::Text("y".to_string()),
+            ciborium::Value::Integer(1.into()),
+        )]);
+        assert!(
+            !cbor_values_equal(&a, &b),
+            "maps with different keys but same values must not be equal"
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_recurses_into_tagged_values() {
+        // Kills: delete match arm Tag in canonicalize (line 528).
+        // A tagged value wrapping a map with unsorted keys must still
+        // be canonicalized.
+        use ciborium::Value;
+        let mut tagged = Value::Tag(
+            1,
+            Box::new(Value::Map(vec![
+                (Value::Text("z".to_string()), Value::Integer(2.into())),
+                (Value::Text("a".to_string()), Value::Integer(1.into())),
+            ])),
+        );
+        canonicalize(&mut tagged).unwrap();
+
+        // After canonicalization, the inner map keys must be sorted.
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&tagged, &mut bytes).unwrap();
+        // Extract the inner map and verify key order.
+        match tagged {
+            Value::Tag(_, inner) => match *inner {
+                Value::Map(entries) => {
+                    let keys: Vec<_> = entries
+                        .iter()
+                        .map(|(k, _)| match k {
+                            Value::Text(s) => s.as_str(),
+                            _ => panic!("expected text key"),
+                        })
+                        .collect();
+                    assert_eq!(keys, vec!["a", "z"], "tagged map keys must be sorted");
+                }
+                _ => panic!("expected map inside tag"),
+            },
+            _ => panic!("expected tag"),
+        }
+    }
+
+    #[test]
+    fn test_verify_canonical_recurses_into_arrays() {
+        // Kills: delete match arm Array in verify_canonical_value (line 573).
+        // An array containing a non-canonical map must be detected.
+        use ciborium::Value;
+        let non_canonical_in_array = Value::Array(vec![Value::Map(vec![
+            (Value::Text("z".to_string()), Value::Integer(2.into())),
+            (Value::Text("a".to_string()), Value::Integer(1.into())),
+        ])]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&non_canonical_in_array, &mut bytes).unwrap();
+        assert!(
+            verify_canonical_cbor(&bytes).is_err(),
+            "non-canonical map inside array must be detected"
+        );
+    }
+
+    #[test]
+    fn test_verify_canonical_recurses_into_tags() {
+        // Kills: delete match arm Tag in verify_canonical_value (line 578).
+        // A tagged value wrapping a non-canonical map must be detected.
+        use ciborium::Value;
+        let non_canonical_in_tag = Value::Tag(
+            1,
+            Box::new(Value::Map(vec![
+                (Value::Text("z".to_string()), Value::Integer(2.into())),
+                (Value::Text("a".to_string()), Value::Integer(1.into())),
+            ])),
+        );
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&non_canonical_in_tag, &mut bytes).unwrap();
+        assert!(
+            verify_canonical_cbor(&bytes).is_err(),
+            "non-canonical map inside tag must be detected"
+        );
+    }
+
     #[test]
     fn test_compute_common_cbor_maps_with_different_key_order() {
         // CBOR Maps with same content but different key ordering should be

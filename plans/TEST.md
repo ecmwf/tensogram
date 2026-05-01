@@ -28,10 +28,48 @@ Repo: ecmwf/tensogram
 | `tensogram-zarr` | `python/tensogram-zarr/tests/*.py` | Zarr v3 store read + write, mapping, edge cases, remote |
 | `tensogram-earthkit` | `python/tensogram-earthkit/tests/*.py` | earthkit-data source + encoder plugins, MARS FieldList path, xarray non-MARS path, memory + stream + remote inputs, array-namespace interop |
 | `tensogram-benchmarks` | `tests/smoke.rs` + per-binary unit | Smoke coverage so benchmarks do not silently rot |
+| Mutation testing | `.cargo/mutants.toml`, `.github/workflows/mutants-weekly.yml` | Measurement layer over the existing Rust suite — see `MUTATION_TESTING.md` |
 
 To see current counts, run `cargo test --workspace`, `cargo test` in
 each opt-in crate directory, and `pytest` / `ctest` for the other
 languages — these numbers are the source of truth.
+
+## Mutation testing
+
+**Tool:** `cargo-mutants` 27.0.0 (pinned). Rust workspace only — does not extend
+to Python, C++, TypeScript, or WASM bindings (those rely on golden-file
+byte-parity tests).
+
+**Regimes:**
+- **PR-time** (`--in-diff origin/main..HEAD`): non-blocking job in
+  `.github/workflows/ci.yml`; uploads `mutants.out/` as artifact.
+  Flip to required-for-merge after Phase-1 stabilises (see rollout plan).
+- **Weekly full sweep** (sharded 1/16..16/16, Sat+Sun 09:00 UTC): `.github/workflows/mutants-weekly.yml`,
+  weekdays 02:00 UTC. Surviving mutants → auto-issue tagged `mutation-testing`.
+
+**Config:** `.cargo/mutants.toml` at repo root. Excludes: `remote.rs` (I/O-driven),
+`doctor/**`, `tensogram-cli/**`, benchmarks, examples, `tensogram-sz3-sys`.
+Rollout plan: `MUTATION_TESTING.md` (repo root). User-facing docs:
+`docs/src/dev/mutation-testing.md`.
+
+**Critical-path priority order (Phase 1, 8 files):**
+
+| Step | File | Why |
+|---|---|---|
+| 1.1 | `rust/tensogram/src/hash.rs` | xxh3 + `HASH_PRESENT` flag dispatch — bit-flag mutations |
+| 1.2 | `rust/tensogram/src/error.rs` | `MissingHash` + `HashMismatch { object_index }` — PR #111 additions |
+| 1.3 | `rust/tensogram/src/wire.rs` | Preamble/frame-header layout + flag bits — wire-format byte equality |
+| 1.4 | `rust/tensogram/src/dtype.rs` | `swap_unit_size()` for complex types — endianness correctness |
+| 1.5 | `rust/tensogram/src/metadata.rs` | Canonical CBOR ordering — cross-language byte equality |
+| 1.6 | `rust/tensogram/src/validate/integrity.rs` | Level-3 hash validation with `object_index` |
+| 1.7 | `rust/tensogram/src/decode.rs` | Verify-first pre-pass + frame-bound fix (PR #111 Pass 7) |
+| 1.8 | `rust/tensogram/src/framing.rs` | Frame ordering, scan recovery, `decode_message` |
+
+**Agent decision rule:** if a change touches any of the 8 critical-path modules
+above, run `cargo mutants --in-diff origin/main..HEAD` and triage survivors
+before declaring the feature covered. Genuine survivors → write a test.
+Cosmetic survivors → add an `exclude_re` entry to `.cargo/mutants.toml` with
+a one-line rationale comment (no mass suppression).
 
 ## Affected components
 
@@ -123,6 +161,9 @@ languages — these numbers are the source of truth.
 - Remote ranges that straddle object boundaries.
 - Free-threaded Python: concurrent encode/decode on multiple OS
   threads without data races.
+- Per-frame `HASH_PRESENT` flag-bit handling: bitwise operator
+  flips (`&` ↔ `|` ↔ `^`) on flag checks must be killed by
+  the cell-C / cell-D / cell-F matrix tests in every binding.
 
 ## Critical paths
 

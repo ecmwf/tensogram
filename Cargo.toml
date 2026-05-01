@@ -58,3 +58,17 @@ panic = "abort"
 
 [profile.dev]
 panic = "abort"
+
+# Profile used by `cargo mutants` for both the build and test phases.
+# Inherits from `release` (so test wallclock is 8x faster than dev) but
+# pins `codegen-units = 1` to serialise rustc's internal codegen
+# threads.  Without this pin, each rustc invocation in release mode
+# defaults to 16 codegen threads — and cargo's jobserver only counts
+# the rustc *process* as one slot, not its 16 internal threads.  With
+# `--jobserver-tasks 2` that's 2 × 16 = 32 simultaneous codegen threads
+# during peak build.  On a 12-core laptop this triggers brief peak-power
+# events that load average smooths over but a power supply does not.
+# See MUTATION_TESTING.md §3.0.1 for the full story.
+[profile.release-mutants]
+inherits = "release"
+codegen-units = 1

@@ -1,0 +1,302 @@
+# Mutation Testing
+
+Mutation testing is a technique for measuring the depth of a test suite.
+The tool systematically corrupts the source code — flipping operators,
+replacing return values, deleting statements — and then re-runs the
+tests. If the tests still pass after a mutation, that *surviving mutant*
+marks untested behaviour: a place where the code could silently change
+without any test noticing. Survivors are the signal; killed mutants
+confirm the suite already covers that logic.
+
+## Why tensogram uses it
+
+Tensogram's critical path is a small set of Rust modules that handle
+wire-format layout, bit-flag dispatch, frame boundaries, and hash
+verification. These modules share three properties that make them
+ideal targets for mutation testing:
+
+- **Bit-flag handling.** Per-frame flags like `HASH_PRESENT` rely on
+  bitwise operators (`&`, `|`, `^`). Swapping one for another is the
+  exact mutation class `cargo-mutants` generates, and a missed swap
+  means silent data corruption.
+- **Off-by-one frame-bound bugs.** Boundary arithmetic in the decoder
+  (`<` vs `<=`, `+1` vs `-1`) is another mutation sweet spot. The
+  Pass-7 frame-bound bug caught during PR #111 review is a textbook
+  example.
+- **Wire-format byte-equality.** Tensogram guarantees that the same
+  input produces bit-identical output across Rust, Python, C++, and
+  TypeScript. Golden-file tests enforce this, but mutation testing
+  reveals whether those golden files actually exercise every branch
+  in the encoder and decoder.
+
+The full rollout plan, including phasing, shard strategy, and triage
+SLAs, lives in [`MUTATION_TESTING.md`](../../../MUTATION_TESTING.md) at
+the repository root.
+
+## The two regimes
+
+Mutation testing runs in two complementary modes:
+
+### PR-time (`--in-diff`)
+
+Every pull request runs `cargo mutants --in-diff origin/main..HEAD` as
+a non-blocking job inside
+[`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml). This
+restricts mutation to lines the PR actually touches, keeping wall-clock
+time reasonable (typically under five minutes). The job uploads
+`mutants.out/` as a CI artifact so reviewers can inspect survivors
+without running locally. The plan is to flip this job to
+required-for-merge once Phase 1 stabilises.
+
+### Weekly full sweep (sharded)
+
+A scheduled workflow in
+[`.github/workflows/mutants-weekly.yml`](../../../.github/workflows/mutants-weekly.yml)
+runs the full mutation sweep across all configured modules, split into
+sixteen shards (`--shard 1/16` through `--shard 16/16`) for parallelism.
+
+**Schedule**: Saturday + Sunday at 09:00 UTC (weekend daytime, when
+the ECMWF builder fleet is least contended). Two runs per weekend
+catches commits made on Friday (Saturday's run) and on Saturday
+(Sunday's run).
+
+**Runner**: ECMWF self-hosted infrastructure
+(`platform-builder-docker-xl` fleet) inside the
+`eccr.ecmwf.int/tensogram/ci:1.3.0` container — the same runner the
+rest of the test matrix uses. Zero GitHub-Actions minutes are
+consumed by the sweep itself; only the small "open triage issue"
+job at the end runs on `ubuntu-latest` (one short API call per
+failed weekend).
+
+**Failure detection**: surviving mutants surface through three
+independent channels:
+
+1. **GitHub issue auto-created** with labels `mutation-testing` and
+   `triage`, containing a status table, the full `missed.txt`
+   dump, and a link to the run artifact. Repo watchers receive an
+   email.
+2. **Workflow run summary** (`$GITHUB_STEP_SUMMARY`) shows the
+   caught/missed/timeout/unviable totals + the first 50 surviving
+   mutants directly on the GitHub Actions run page — no artifact
+   download needed for triage.
+3. **Red badge** on the Actions tab + commit status.
+
+The triage SLA is seven days from the auto-issue date.
+
+**Timeout safety**: each shard has an 8-hour hard cap via
+GH-Actions `timeout-minutes: 480`, with a `timeout 7h` wrapper
+around `cargo mutants` so that if a shard hits the cap, the
+artifact-upload step still runs with whatever was tested before
+the kill. Typical shard wallclock is ~30 minutes, so the cap is
+belt-and-braces only.
+
+## Running mutation testing locally
+
+Install the pinned version of `cargo-mutants`:
+
+```bash
+cargo install cargo-mutants --version 27.0.0 --locked
+```
+
+### Concurrency — seven nested layers
+
+cargo-mutants concurrency is **not** a single number.  **Seven**
+independent layers each fan out by default to one thread per logical
+CPU; multiplied together they saturate a 12-core laptop even at
+`CARGO_MUTANTS_JOBS=2`.  **All seven must be clamped** for a
+sustainable load profile:
+
+| # | Layer | Knob | Default | Recommended |
+|---|---|---|---|---|
+| 1 | Mutant workers | `CARGO_MUTANTS_JOBS` env | NCPUS | `2` |
+| 2 | cargo + rustc *invocation* count | `--jobserver-tasks` flag | NCPUS | `2` |
+| 3 | rustc *codegen* threads inside each rustc | `[profile].codegen-units` | **16** in release | `1` (pinned in `[profile.release-mutants]`) |
+| 4 | Test-binary threads | `cargo test -- --test-threads=N` | NCPUS | `2` (pinned in `.cargo/mutants.toml`) |
+| 5 | cmake build.rs (libaec-sys, blosc2-sys, zfp-sys-cc, tensogram-sz3-sys) | `CMAKE_BUILD_PARALLEL_LEVEL` | NCPUS | `1` |
+| 6 | nested make from cmake | `MAKEFLAGS=-j1` | NCPUS | `-j1` |
+| 7 | tensogram-internal rayon | `TENSOGRAM_THREADS` env | NCPUS | `1` |
+
+**Layer 3 is the most pernicious.** Each rustc in release mode
+defaults to 16 codegen threads, and cargo's jobserver only counts the
+rustc *process* as one slot. Without `codegen-units = 1`, even at
+`--jobserver-tasks 2` peak parallelism is 32 codegen threads — drawing
+>120W on M-series silicon for 5–15-second bursts that the 1-minute
+load average smooths away but a laptop power supply does not. The
+`[profile.release-mutants]` profile (in workspace `Cargo.toml`)
+inherits release and pins `codegen-units = 1`; `.cargo/mutants.toml`
+selects this profile via `--profile release-mutants` so every cargo
+build during a sweep uses it automatically.
+
+**Canonical local invocation** for a Phase-1 file sweep:
+
+```bash
+CARGO_MUTANTS_JOBS=2 \
+TENSOGRAM_THREADS=1 \
+CMAKE_BUILD_PARALLEL_LEVEL=1 \
+MAKEFLAGS=-j1 \
+cargo mutants -p tensogram --file rust/tensogram/src/hash.rs --jobserver-tasks 2
+```
+
+The test-thread cap (`--test-threads=2`) and the
+`--profile release-mutants` selection are pinned in
+`.cargo/mutants.toml` so they don't need to appear on every command
+line.
+
+### macOS escape hatch — `taskpolicy -b`
+
+On Apple Silicon laptops, application-level clamps can still miss
+something — an undocumented threadpool in a future dependency, a code
+path that bypasses `TENSOGRAM_THREADS`, etc. For unattended runs where
+a power event is unacceptable, prefix the canonical invocation with
+`taskpolicy -b`:
+
+```bash
+taskpolicy -b -- env \
+  CARGO_MUTANTS_JOBS=2 \
+  TENSOGRAM_THREADS=1 \
+  CMAKE_BUILD_PARALLEL_LEVEL=1 \
+  MAKEFLAGS=-j1 \
+  cargo mutants -p tensogram --file rust/tensogram/src/framing.rs --jobserver-tasks 2
+```
+
+`taskpolicy -b` runs the entire process tree under **background QoS**:
+restricted to E-cores only (4 efficiency cores out of 12 on M-series),
+with total package power capped at ~30% of system maximum. Applies to
+all child processes — rustc, cc-rs, cmake, make, ld64, rayon, zstdmt
+workers, blosc2 workers — without their cooperation. Kernel-level
+enforcement, not application-level.
+
+**Cost**: 2-3x wallclock (E-cores are slower than P-cores).
+Acceptable for unattended overnight runs; unsuitable for interactive
+iteration. Use the bare canonical invocation when you're driving the
+sweep from a desk and watching it.
+
+### Per-context defaults
+
+| Use case | Jobs | Jobserver tasks | TENSOGRAM_THREADS | CMAKE / MAKEFLAGS | taskpolicy |
+|---|---|---|---|---|---|
+| Default (12-core laptop, attended) | `2` | `2` | `1` | `1` / `-j1` | optional |
+| Unattended overnight on a laptop | `2` | `2` | `1` | `1` / `-j1` | **required** |
+| Workstation (≥16 cores, good cooling) | `4` | `4` | `1` | `2` / `-j2` | not needed |
+| CI runner | `2` | `2` | `1` | `1` / `-j1` | not applicable |
+
+### Common invocations
+
+**Full sweep of a single file** (useful when closing out a Phase-1
+step):
+
+```bash
+CARGO_MUTANTS_JOBS=2 TENSOGRAM_THREADS=1 \
+CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 \
+  cargo mutants -p tensogram --file rust/tensogram/src/hash.rs --jobserver-tasks 2
+```
+
+**Diff-only** (the most common workflow for PR authors — mutates only
+lines you changed):
+
+```bash
+CARGO_MUTANTS_JOBS=2 TENSOGRAM_THREADS=1 \
+CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 \
+  cargo mutants --in-diff origin/main..HEAD --jobserver-tasks 2
+```
+
+Both commands write results to `mutants.out/` in the current directory.
+
+### Resuming an interrupted sweep
+
+Long sweeps (notably the framing-module sweep at ~12 hours with the
+default concurrency) can be interrupted by power events, OOM kills, or
+laptop sleep. cargo-mutants does not have a native resume flag, but
+`--shard N/K` partitions the mutant list deterministically and lets you
+re-run a subset:
+
+```bash
+# Run quarter 1 of 4 — first ~138 mutants of framing.rs
+cargo mutants -p tensogram --file rust/tensogram/src/framing.rs --shard 1/4
+
+# Then quarter 2, 3, 4 in subsequent sessions
+cargo mutants -p tensogram --file rust/tensogram/src/framing.rs --shard 2/4
+cargo mutants -p tensogram --file rust/tensogram/src/framing.rs --shard 3/4
+cargo mutants -p tensogram --file rust/tensogram/src/framing.rs --shard 4/4
+```
+
+Shard assignment is stable across runs, so re-running a single shard
+re-tests the same mutants. `mutants.out/` is overwritten per
+invocation; copy or rename between shard runs if you want to preserve
+per-shard results.
+
+## Reading `mutants.out/`
+
+After a run completes, `cargo-mutants` writes four result files into the
+`mutants.out/` directory:
+
+- **`caught.txt`** — Mutants that were killed by the test suite. This is
+  the happy path: the tests detected the corruption and failed. A long
+  `caught.txt` and an empty `missed.txt` is the goal.
+
+- **`missed.txt`** — Surviving mutants. Each entry describes a source
+  location and the mutation that was applied. Survivors indicate either
+  a genuine coverage gap (write a test) or an equivalent mutant (the
+  mutation does not change observable behaviour — add an exemption).
+  This is the file you triage.
+
+- **`timeout.txt`** — Mutants that caused the test suite to hang until
+  the timeout expired. These are usually equivalent or dead-code
+  mutations (e.g. removing a loop-break that the test harness never
+  reaches). Worth a quick look, but rarely actionable.
+
+- **`unviable.txt`** — Mutants that did not compile. Expected for
+  type-constrained mutations (e.g. replacing a `u32` return with
+  `String`). These are noise and can be ignored.
+
+## When to add a test vs. an exemption
+
+When you encounter a surviving mutant, follow this decision tree:
+
+1. **Does the mutation change observable behaviour?** Read the diff
+   `cargo-mutants` prints. If flipping that operator or deleting that
+   statement would produce incorrect output, a wrong error, or a
+   panic in production, the answer is yes — write a test.
+
+2. **Is the mutant equivalent?** Some mutations produce code that is
+   functionally identical to the original (e.g. replacing
+   `x > 0` with `x >= 1` when `x` is always a positive integer). If
+   you can convince yourself (and a reviewer) that no input
+   distinguishes the original from the mutant, add an `exclude_re`
+   entry to `.cargo/mutants.toml`.
+
+3. **Is the code cosmetic or logging-only?** Display implementations,
+   `fmt::Debug` overrides, and log-line formatting are legitimate
+   exemption targets. Add an `exclude_re` entry.
+
+Two strict rules apply in all cases:
+
+- **No mass suppression by category.** Do not add broad patterns like
+  `"impl Display"` or `"fn fmt"` that suppress entire classes of
+  mutants across the codebase. Each exemption must be scoped to a
+  specific function or pattern.
+- **Every `exclude_re` entry needs a rationale.** Add a one-line
+  comment above the entry in `.cargo/mutants.toml` explaining *why*
+  the mutant is equivalent or cosmetic.
+
+## Bumping cargo-mutants
+
+The version is pinned at **27.0.0** across local installs, CI workflows,
+and this documentation. Version bumps land in dedicated PRs that:
+
+1. Update the version in `.cargo/mutants.toml` comments, CI workflow
+   files, and this page.
+2. Re-run the full sweep on `rust/tensogram/src/hash.rs` as a smoke
+   test to confirm the new version produces comparable results.
+3. Document any changed mutant operators or output-format differences
+   in the PR description.
+
+## References
+
+- [`MUTATION_TESTING.md`](../../../MUTATION_TESTING.md) — full rollout
+  plan at the repository root (phasing, shard strategy, triage SLAs,
+  anti-patterns).
+- [`plans/TEST.md`](../../../plans/TEST.md) — test plan covering the
+  full suite shape, including the mutation testing layer.
+- [mutants.rs](https://mutants.rs/) — upstream `cargo-mutants`
+  documentation.

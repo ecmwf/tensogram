@@ -679,3 +679,41 @@ jobs:
       - name: Cleanup
         if: always()
         run: rm -rf "$TMPDIR" target tensoscope/node_modules typescript/node_modules typescript/dist typescript/wasm
+
+  # ── Mutation testing (PR diff only, non-blocking) ──────────────
+  # Runs on ECMWF self-hosted infrastructure to avoid burning
+  # GitHub-Actions minutes on every PR push.  Container matches the
+  # rest of the test matrix (libaec, libnetcdf, eccodes etc. pre-built).
+  mutants-diff:
+    name: Mutants (diff)
+    runs-on: [self-hosted, Linux, platform-builder-docker-xl, platform-builder-Ubuntu-22.04]
+    container:
+      image: eccr.ecmwf.int/tensogram/ci:1.3.0
+      credentials:
+        username: ${{ secrets.ECMWF_DOCKER_REGISTRY_USERNAME }}
+        password: ${{ secrets.ECMWF_DOCKER_REGISTRY_ACCESS_TOKEN }}
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need base branch for --in-diff
+      - run: mkdir -p "$TMPDIR"
+      - run: cargo install cargo-mutants --version 27.0.0 --locked
+      - name: Mutate diff vs base
+        env:
+          CARGO_MUTANTS_JOBS: 2          # mutant worker count — see MUTATION_TESTING.md §3.0.1
+          TENSOGRAM_THREADS: 1           # cap library-internal rayon
+          CMAKE_BUILD_PARALLEL_LEVEL: 1  # cmake-driven build.rs in deps (libaec-sys, blosc2-sys, …)
+          MAKEFLAGS: -j1                 # nested make invocations from cmake
+        run: |
+          cargo mutants \
+            --in-diff origin/${{ github.base_ref }}..HEAD \
+            --no-shuffle \
+            --jobserver-tasks 2 \
+            --timeout-multiplier 3.0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-diff-output
+          path: mutants.out/
