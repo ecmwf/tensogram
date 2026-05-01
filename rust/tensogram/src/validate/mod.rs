@@ -4138,10 +4138,6 @@ mod tests {
         );
     }
 
-
-
-
-
     /// Exercises the descriptor re-parse fallback at integrity.rs:202.
     /// When Level 2 is skipped (checksum_only=true) and the descriptor
     /// has not been parsed, Level 3 re-parses it.  This test verifies

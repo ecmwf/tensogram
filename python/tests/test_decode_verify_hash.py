@@ -192,9 +192,7 @@ class TestCellF:
 
         with pytest.raises(tensogram.HashMismatchError) as excinfo:
             _ = tensogram.decode(bytes(data), verify_hash=True)
-        assert excinfo.value.object_index == 1, (
-            "must surface the *tampered* object's index, not 0"
-        )
+        assert excinfo.value.object_index == 1, "must surface the *tampered* object's index, not 0"
 
     def test_decode_object_targets_specific_object(self):
         data = bytes(self._multi_obj())
