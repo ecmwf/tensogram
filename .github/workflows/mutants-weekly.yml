@@ -38,6 +38,10 @@ on:
         required: false
         default: "16"
 
+permissions:
+  contents: read
+  actions: read
+
 # Concurrency control: if a manual workflow_dispatch fires while the
 # previous scheduled run is still going, queue the second one rather
 # than running both in parallel.  The shared builder fleet appreciates.
@@ -193,6 +197,9 @@ jobs:
     # runs are typically smoke tests / debugging — humans driving
     # those don't need an auto-issue.
     if: failure() && github.event_name == 'schedule'
+    permissions:
+      contents: read
+      issues: write
     runs-on: ubuntu-latest # tiny job, just hits the GitHub API
     steps:
       - uses: actions/download-artifact@v4
