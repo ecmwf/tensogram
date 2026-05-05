@@ -6,6 +6,69 @@ Code Agents are very much encouraged to ask questions to get the design correct,
 
 For speculative ideas, see `IDEAS.md`.
 
+## C++ Async API
+
+- [ ] **cpp-async — PR 1: Rust `AsyncStreamingEncoder`**
+    - New `rust/tensogram/src/streaming_async.rs` with
+      `AsyncStreamingEncoder<W: AsyncWrite + Unpin>`.
+    - Refactor `StreamingEncoder` to share frame-emission logic via a
+      private `FrameBuilder` helper.
+    - Tests: `streaming_async_local`, `streaming_async_object_store`,
+      `streaming_async_backfill`.
+    - No FFI or C++ changes in this PR.
+    - See `plans/PLAN_CPP_ASYNC.md` §5 and §13 PR 1.
+
+- [ ] **cpp-async — PR 2: FFI async core (read path)**
+    - New `tgm_async_task_t`, `tgm_cancellation_token_t`, completion
+      callbacks, typed join functions for all read-side async fns.
+    - Wire to existing `TensogramFile` async methods.
+    - New error codes `TGM_ERROR_TIMEOUT = 12`, `TGM_ERROR_CANCELLED = 13`.
+    - `tgm_runtime_configure(workers)` (single global, default
+      `min(num_cpus, 8)`) and `tgm_runtime_shutdown_blocking(timeout_ms)`
+      returning count of unfinished tasks.
+    - See `plans/PLAN_CPP_ASYNC.md` §3 and §13 PR 2.
+
+- [ ] **cpp-async — PR 3: FFI async core (write path)**
+    - `tgm_async_streaming_encoder_*` family.
+    - Local file (`tokio::fs::File`) and object-store
+      (`object_store::MultipartUpload`) backends.
+    - Cancellation mid-stream leaves file as-is (no truncate/delete).
+    - Tests including in-process HTTP fixture for object-store path.
+    - See `plans/PLAN_CPP_ASYNC.md` §3.4, §5, §13 PR 3.
+
+- [ ] **cpp-async — PR 4: C++ `async/callback.hpp` (callback frontend)**
+    - Header-only, C++17, always available.
+    - `result<T>` discriminated union (no exceptions required).
+    - `async_file`, `async_streaming_encoder`, `cancellation_token`.
+    - All `async/*.hpp` definitions are `inline` — no new shared-library
+      ABI surface.
+    - 6+ test files, 3+ examples (`22_async_callback.cpp`,
+      `24_async_cancellation.cpp`).
+    - See `plans/PLAN_CPP_ASYNC.md` §4.1 and §13 PR 4.
+
+- [ ] **cpp-async — PR 5: C++ `async/coro.hpp` + `async/std_future.hpp`**
+    - `coro.hpp`: C++20 `task<T>`, `when_all`, `block_on`,
+      `async_for_each` helper.
+    - `std_future.hpp`: C++17 `std::future<T>` adapter via
+      `std::promise` set in completion callback.
+    - Both frontends are header-only.
+    - New CMake CI lanes: `cpp-async-callback` (C++17) and
+      `cpp-async-coro` (C++20, GCC ≥ 11 + Clang ≥ 14 + Apple Clang).
+    - 4+ test files, 4+ examples (`19_async_decode_remote.cpp`,
+      `20_async_producer.cpp`, `21_async_consumer.cpp`,
+      `23_async_stdfuture.cpp`).
+    - See `plans/PLAN_CPP_ASYNC.md` §4.2–4.3 and §13 PR 5.
+
+- [ ] **cpp-async — PR 6: Integration tests, docs, polish**
+    - Two-process producer/consumer integration test on local tmpfs
+      (HPC-filesystem testing handled separately by ops).
+    - Cross-language parity test: C++ async producer + Python async
+      consumer via in-process HTTP fixture.
+    - `docs/src/guide/cpp-async.md` and
+      `docs/src/guide/cpp-streaming-async.md`.
+    - Update `plans/DONE.md`, `README.md`, `plans/ARCHITECTURE.md`.
+    - See `plans/PLAN_CPP_ASYNC.md` §11.3, §13 PR 6.
+
 ## Multi-Language Support
 
   - [ ] **typescript-wrapper (Scope C.3) — distribution & CI maturity**
